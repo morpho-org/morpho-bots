@@ -14,51 +14,44 @@
 
 - **What.** Port a curated foundation slice of `morpho-apps` into the fresh `curator-bots` repo across 7 phases.
 - **Why now.** Curator operations need off-chain bots that do not belong inside a NextJS front-end monorepo. A new bot-only repo needs conventions, agent alignment, and shared utilities on day one — rebuilding from scratch guarantees drift from `morpho-apps`.
-- **Tech stack.** bun 1.3.12 + Node 24.14.1, oxlint, oxfmt 0.35+, knip 5, vitest 4.x, TypeScript 5.9, bun workspace scripts — no turbo.
+- **Tech stack.** bun, oxlint, oxfmt, knip, vitest, TypeScript. See §Tech Stack for versions.
 - **Divergence from `morpho-apps`.** `morpho-apps` is NextJS-centric on pnpm + ESLint + Prettier + turbo. `curator-bots` is headless services on bun + ox stack + bun workspaces. See §Tech Stack.
 - **Inherited workflows.** Commit conventions, TIB process, CONVENTIONS.md ethos, `@repo/*` namespace, agent role definitions, self-verification ritual, MCP servers (linear + context7). See §Workflow & Agent Continuity.
 - **Success signal.** Green CI on first post-migration PR; Claude adds a utility to `@repo/utils` following CONVENTIONS without prompting. See §Success Criteria.
 
 ## Context
 
-Morpho curator operations need off-chain bot services — reallocators, liquidation monitors, rebalancers — that do not belong inside `morpho-apps`, the NextJS-centric front-end monorepo. Putting headless bots next to web apps would share nothing except pain: their dependency graphs overlap only on `@repo/utils` and `@repo/abis`, their deployment surfaces are unrelated, their CI needs diverge, and bot code would inherit front-end-only tooling (Next.js, Tailwind, Sentry browser SDK, Playwright). A dedicated repo lets bots evolve on their own cadence.
-
-`morpho-apps`, meanwhile, has matured a set of **cross-cutting foundations** that are domain-agnostic: AI-agent role definitions (reviewer / documentor / morpho-protocol-engineer / product-manager), self-verification discipline, the TIB decision-record workflow, a coding-conventions document, the ox lint/format stack, knip dead-code detection, and a lean CI pipeline. These foundations are not tied to Next.js or to any specific app; they encode how this team wants to work. Rebuilding them from scratch in `curator-bots` would waste weeks and guarantee drift between the two repos.
-
-Two code packages (`@repo/utils`, `@repo/abis`) are also clear migration candidates because every bot will need bigint/WAD math, retry helpers, env validation, and Morpho contract ABIs on day one.
-
-The rest of `morpho-apps` — Next.js apps, UI packages, observability wiring, web3/wagmi layer, resolvers, indexer, Playwright/anvil E2E — is out of scope here. Those exist to serve frontends; bots do not need them.
+Morpho curator operations need off-chain bots — reallocators, liquidation monitors, a Kill Switch Bot — and those do not belong inside `morpho-apps`, which is a NextJS front-end monorepo. `curator-bots` exists to give bots their own home with their own deploy surface, dependency graph, and CI. At the same time, `morpho-apps` has matured conventions worth inheriting wholesale: agent definitions, the TIB workflow, `CONVENTIONS.md`, the ox lint/format stack, and two packages — `@repo/utils` and `@repo/abis` — every bot needs on day one. This TIB ports that slice; everything NextJS, UI, observability, or web3-specific stays behind.
 
 ## Goals / Non-Goals
 
 **Goals**
 
-- Establish a dev experience in `curator-bots` that feels identical to `morpho-apps` for anyone (including Claude) used to working in the source: same commit conventions, same self-verification ritual, same TIB workflow, same lint/format commands.
-- Adopt the ox tooling stack fully: **oxlint** (not ESLint), **oxfmt** (not Prettier), with **knip** and **vitest** on top, all orchestrated by **bun workspace scripts** (`bun run --filter '*' <task>`) — no turbo — and running under **bun 1.3.12** with **Node 24.14.1**.
-- Ship two workspace packages — `@repo/utils` (server-safe subset) and `@repo/abis` (full port) — ready for the first bot to consume.
-- Leave a clean `docs/` scaffold (CONVENTIONS.md, GUIDANCE.md, empty decisions/retros folders, TIB + DATA-FLOW templates) so the team writes its own content from day one, and commits to the TIB discipline.
-- Land a minimal CI (lint / typecheck / test:unit / knip on every PR), plus pre-commit + commit-msg git hooks enforcing the convention locally.
-- Keep the package namespace `@repo/*` so code lifted from `morpho-apps` compiles with zero import rewrites.
+- Give a contributor coming from `morpho-apps` the same dev experience here: same commit conventions, same self-verification ritual, same TIB workflow, same lint and format commands.
+- Adopt the ox stack and bun workspaces as the full tooling posture. Versions and the divergence from `morpho-apps` are in §Tech Stack.
+- Ship `@repo/utils` and `@repo/abis` ready for the first bot to consume, with `@repo/utils` trimmed to server-safe code.
+- Seed a `docs/` scaffold — conventions, guidance, empty decisions and retros folders, TIB and data-flow templates — so the team writes its own records from day one.
+- Land a small CI pipeline that runs lint, typecheck, unit tests, and dead-code detection on every PR, backed by pre-commit and commit-msg hooks.
+- Keep the `@repo/*` package namespace so code copied from `morpho-apps` compiles without import rewrites.
 
 **Non-Goals**
 
-- Porting any Next.js app (curator-app, curator-v2-app, liquidation-app, delegate-app, markets-v2-app, brand-app, data-app, storybook-app, fallback-rpc). Bots are headless services, not web UIs.
-- Porting UI / observability / platform packages (`@repo/ui`, `@repo/hooks`, `@repo/tailwind-config`, `@repo/morpho-brand-ui`, `@repo/web3`, `@repo/observability`, `@repo/resolvers`, `@repo/indexer`). They either have no place in bots or are large enough to deserve their own per-bot decisions.
-- Porting existing TIBs, retros, `docs/CI-CD.md`, `docs/adding-a-new-chain.md`, or `docs/context/` content. New repo authors new docs.
-- Porting E2E infrastructure (Playwright, anvil/Foundry fork, Upstash KV cache). Bot testing strategy is a separate TIB when the first bot needs it.
-- Porting deployment surfaces (Vercel configs, Sentry/PostHog wiring, GraphQL codegen, release/label automation).
-- Choosing the first bot. This TIB stops at the empty `apps/` directory.
+- Nothing NextJS-specific. No apps, UI packages, wagmi, Tailwind, Sentry browser, GraphQL codegen, or Playwright/anvil E2E.
+- Nothing platform-level yet. Observability, resolvers, indexer, and per-bot deploy surfaces land in their own TIBs when the first bot needs them.
+- No existing `morpho-apps` TIBs, retros, or context docs — `curator-bots` authors its own.
+- Not choosing the first bot in this TIB. Scaffolding stops at an empty `bots/` directory.
 
 ## Tech Stack
 
-**Chosen stack:** bun 1.3.12 runtime, oxlint, oxfmt 0.35+, knip 5, vitest 4.x, TypeScript 5.9, orchestrated by bun workspace scripts (`bun run --filter '*' <task>`). Deliberately divergent from `morpho-apps` (NextJS / pnpm / ESLint + Prettier / turbo). `curator-bots` is headless services and adopts the ox stack fully; the table below lists the chosen stack alongside `morpho-apps` for quick comparison. Bold entries are the curator-bots choice.
+`curator-bots` diverges from `morpho-apps` on runtime and JS tooling. `morpho-apps` is NextJS-centric on pnpm, ESLint, Prettier, and turbo; `curator-bots` runs the ox stack on bun workspaces. The table below is the source of truth for versions. Bold entries are the curator-bots choice.
 
 | Decision           | curator-bots                         | morpho-apps            | Why                                                                                   |
 | ------------------ | ------------------------------------ | ---------------------- | ------------------------------------------------------------------------------------- |
 | Package manager    | **bun 1.3.12**                       | pnpm 10.32.1           | Target is already bun; ox/bun direction for the new repo                              |
 | Node version       | **24.14.1**                          | 24.14.1                | Matches source's `.nvmrc`; required by some morpho deps                               |
-| Linter             | **oxlint**                           | ESLint (flat config)   | User is fully on the ox stack                                                         |
+| Linter             | **oxlint**                           | ESLint (flat config)   | Rust-based; faster and clearer diagnostics                                            |
 | Formatter          | **oxfmt 0.35+**                      | Prettier               | ox stack; fast, zero-config                                                           |
+| TypeScript         | **6.0**                              | 6.0                    | Already upgraded repo-wide (commit `6a56d0a`); keep in step with source               |
 | Dead-code detector | **knip 5**                           | knip 5                 | Matches source; invoked directly as `bun run knip` (no turbo task graph needed)       |
 | Task runner        | **bun workspace scripts**            | turbo 2.x              | **Divergence.** Turbo's pipeline graph + remote cache payoff is invisible at 2-package scale; `bun run --filter '*' <task>` covers our needs with zero extra tooling and no `TURBO_TOKEN` provisioning. Revisit if workspace count or CI time grows. |
 | Version pinning    | **bun catalog**                      | pnpm catalog           | Bun 1.2+ supports the catalog pattern; mirrors source's `pnpm-workspace.yaml` catalog |
@@ -68,31 +61,26 @@ The rest of `morpho-apps` — Next.js apps, UI packages, observability wiring, w
 
 ## Workflow & Agent Continuity with `morpho-apps`
 
-A contributor or agent arriving from `morpho-apps` should find the workflows below **identical on day one**; adaptations are scoped and explicit. This section is the contract between the two repos: when muscle memory from `morpho-apps` matters, this is where you verify whether it carries over.
+Contributors and agents coming from `morpho-apps` should recognise the disciplines below. This section is the keep/adapt/skip list at the file level.
 
-| Inherited verbatim from `morpho-apps`                                                            | Adapted / new here                                                                                             |
-| ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
-| Commit conventions (`type(scope): description` ≤72 chars)                                        | CI task runner — `bun run` (`--filter '*'`) instead of `turbo run`                                             |
-| TIB workflow + templates (`GUIDANCE.md`, `TIB.md`, `DATA-FLOW.md`)                               | `CONVENTIONS.md` pruned (React Error Boundaries, Toast, Sentry hooks, `getClientEnvVar`/`getServerEnvVar` out) |
-| Self-verification ritual, anti-rationalization table, Strict Rules, plan-review gate             | Env access — server-only `getEnvVar` + zod (no client/server split)                                            |
-| `@repo/*` package namespace (imports copy-paste unchanged)                                       | `.mcp.json` — linear + context7 kept; playwright dropped (headless repo)                                       |
-| Agent role definitions (reviewer, documentor, morpho-protocol-engineer, product-manager)         | Package manager commands — `pnpm → bun` throughout `CLAUDE.md`                                                 |
-| `tryCatch` usage, colocated types, code-complexity, file-structure rules                         | oxlint rule catalog smaller than ESLint — known gaps listed in §Risks & Mitigations                            |
-| `.cursor/`, `.vscode/`, `.zed/` dev-environment files                                            | No turbo / no remote cache / no `TURBO_TOKEN`+`TURBO_TEAM` provisioning                                        |
-| CODEOWNERS + branch-protection posture                                                           | No Next.js / UI / web3-wagmi / observability / Playwright / anvil surface                                      |
+**Keep as-is:**
 
-### Agent behaviors: preserved / adapted / removed
+- `CLAUDE.md` — Strict Rules, Agent Team, self-verification, anti-rationalization, plan-review gate. The meta-discipline is domain-agnostic.
+- `GUIDANCE.md`, `TIB.md`, `DATA-FLOW.md` templates — same decision-record workflow applies.
+- `CONVENTIONS.md` — file structure, code style, `tryCatch` usage, commit format. The style sections do not depend on React.
+- `.cursor/`, `.vscode/`, `.zed/` — editor settings port cleanly.
+- `@repo/*` package namespace — imports copy-paste without rewrites.
 
-| Preserved                                         | Adapted                                                  | Removed                                            |
-| ------------------------------------------------- | -------------------------------------------------------- | -------------------------------------------------- |
-| Strict Rules (no main commits, no ENV keys)       | `pnpm <cmd>` → `bun <cmd>` in examples                   | Playwright MCP server                              |
-| Plan-review gate before implementation            | `turbo run <task>` → `bun run --filter '*' <task>`       | React Error Boundary patterns                      |
-| Self-verification loop                            | `CONVENTIONS.md` Env Access section (server-only)        | Toast error-surfacing patterns                     |
-| Anti-rationalization discipline                   | Agent Team list (UI-specific roles trimmed if any)       | `captureError` / Sentry browser hooks              |
-| Completion-status discipline                      | Directory references — `apps/*-app/` → `apps/<bot>/`     | `getClientEnvVar` / `getServerEnvVar` split        |
-| `tryCatch` use + colocated types                  | Build flow — no turbo pipeline graph                     | Next.js env inlining                               |
-| Commit format (`type(scope): description`)        | Example code paths rewritten for bot context             | GraphQL / `gen:graphql` agent prompts              |
-| TIB authoring discipline + retro cadence          | —                                                        | E2E / Playwright / anvil agent prompts             |
+**Adapt:**
+
+- `CLAUDE.md` — rewrite `pnpm` → `bun` commands and drop React/UI examples.
+- `CONVENTIONS.md` — drop React Error Boundaries, Toast patterns, `captureError`; rewrite env access for server-only `getEnvVar` + zod.
+- `.mcp.json` — keep Linear and Context7; drop Playwright.
+
+**Skip:**
+
+- Agent prompts for GraphQL codegen, Playwright E2E, and anvil forks — no surface here.
+- Front-end-only patterns: Sentry browser SDK, `getClientEnvVar`/`getServerEnvVar` split, Next.js env inlining.
 
 ## Current Solution
 
@@ -110,7 +98,9 @@ curator-bots/
 
 Root `package.json` declares `packageManager: "bun@1.3.12"`, `engines.node: ">=18"`, and workspace globs `apps/*`, `packages/*`. CODEOWNERS assigns `@cashd` to all paths, with branch protection requiring code-owner approval on main. Nothing else exists.
 
-Doing nothing means new bots land in a repo with no conventions, no agent guidance, and no shared utilities. Every contributor reinvents formatting, error handling, and env validation. Claude gets no CLAUDE.md to align behavior.
+The scaffold above is the baseline we're migrating away from, not the end state. Phase 1 of this TIB removes turbo entirely — `turbo.json` is deleted, the `turbo` dev-dep is dropped, and root scripts move to bun workspace commands.
+
+Doing nothing means new bots land in a repo with no conventions, no agent guidance, and no shared utilities. Every contributor reinvents formatting, error handling, and env validation. Claude gets no `CLAUDE.md` to align behavior.
 
 ## Proposed Solution
 
@@ -183,32 +173,32 @@ curator-bots/
 
 **Rollout:** land as a single PR (scope is cohesive at this size and reviews faster in one diff than seven). If review churn emerges, split at the Phase 3 / Phase 4 boundary. Effort sizing: S (≤1d), M (1–3d), L (3–5d).
 
-**Phase 1 — Tooling foundation (bun + ox)**
-Root `package.json` gains workspaces catalog (seed: viem, vitest, typescript, zod, lodash-es, date-fns), dev deps per §Dependencies, and root scripts (lint, format, typecheck, test:unit, knip, clean) that fan out to workspaces via `bun run --filter '*' <task>`. Delete the default `turbo.json` seeded by `npm create turbo` and drop `turbo` from dev deps. Create `.nvmrc`, `.oxlintrc.json`, `.oxfmtrc.json`, `knip.json` (root-only; per-package entries land in Phase 4 alongside each workspace), and root `tsconfig.json`.
+**Phase 1 — Tooling foundation**
+Stand up the root-level tooling: a root `package.json` with workspace globs and the bun catalog, ox lint/format configs, knip at the root, and a shared `tsconfig.json`. Remove the turbo scaffold left over from `npm create turbo` and wire root scripts to bun workspace commands. See §Dependencies for the dev-dep set and §Tech Stack for versions.
 **Effort:** S. **Blocks:** Phases 2, 3, 4, 5, 6.
 
 **Phase 2 — Agent & editor infrastructure**
-Port `CLAUDE.md` with `pnpm → bun` rewrite and removal of React/UI references; keep Strict Rules, Agent Team, agent conventions (plan review gate, test verification, transparency, mirror discipline, completion status), self-verification workflow, anti-rationalization table, proactive verification tests. Symlink `AGENTS.md → CLAUDE.md`. Port `.cursor/`, `.vscode/`, `.zed/` verbatim (small files). Create `.mcp.json` with **linear + context7** servers only (drop playwright — headless repo).
+Port `CLAUDE.md` and the editor configs from `morpho-apps`, keeping all meta-discipline intact and rewriting commands for bun. Symlink `AGENTS.md` to `CLAUDE.md`. Set up `.mcp.json` with just Linear and Context7 — Playwright has no surface here.
 **Effort:** S. **Blocks:** none (parallel with Phase 3).
 
 **Phase 3 — Conventions & docs scaffold**
-Port `docs/CONVENTIONS.md` pruned: keep file-structure, general code style, comments, function-organization, code-complexity, type-safe errors, `tryCatch` reference. Drop React Error Boundaries, Toast patterns, `getClientEnvVar`/`getServerEnvVar` split, Sentry hooks, `captureError`. Rewrite the Env Access section for server-only `getEnvVar` + zod. Port `docs/GUIDANCE.md`, `docs/templates/TIB.md`, `docs/templates/DATA-FLOW.md` verbatim. Create placeholder READMEs in `docs/`, `docs/decisions/`, `docs/retros/`, plus a minimal `docs/INDEX.md`. Do **not** port existing TIBs, retros, `docs/CI-CD.md`, `docs/adding-a-new-chain.md`, or `docs/context/`.
-**Effort:** M (pruning CONVENTIONS.md is careful work). **Blocks:** none (parallel with Phase 2).
+Port `CONVENTIONS.md` with React, Sentry, and env-split content stripped out, and rewrite the env-access section for server-only code. Port `GUIDANCE.md` and the two templates verbatim. Create placeholder READMEs in `docs/`, `docs/decisions/`, and `docs/retros/`, plus a minimal `INDEX.md`. Do not port existing TIBs, retros, or `morpho-apps` context docs.
+**Effort:** M. **Blocks:** none (parallel with Phase 2).
 
-**Phase 4 — Code packages (`@repo/utils` server-safe + `@repo/abis` full)**
-`@repo/utils`: copy `src/`; delete `client.ts` export and any helper touching `window`/`document`/`localStorage`; drop `js-cookie` + `@types/js-cookie` deps + `jsdom` dev dep. Keep `sideEffects: false`, pure-TS (no build step), exports `.`, `./server`, `./types`. Runtime deps: `@internationalized/date`, `@morpho-org/morpho-ts@2.5.0`, `date-fns`, `lodash-es`, `viem`, `zod` (catalog where possible). `@repo/abis`: copy `src/` verbatim including v1/v2/SafeWallet ABIs; keep `.`, `./v1`, `./v2` exports; keep tsc build to `dist/`; keep `tsconfig.test.json` split. Both packages' scripts: lint (oxlint), lint:fix, format/format:check (oxfmt), typecheck, test:unit (vitest), clean. Add per-package `knip.json` entries here. **Gate:** before finalizing the `@repo/utils` trim, confirm by reading source that every `@repo/abis` import of `@repo/utils` lands inside the server-safe subset (expected: error helpers + bigint math only).
+**Phase 4 — Code packages `@repo/utils` and `@repo/abis`**
+Port `@repo/utils` as a server-safe subset: drop the client export and any helper that touches the browser (`window`, `document`, `localStorage`, `js-cookie`, `jsdom`). Port `@repo/abis` verbatim. Both packages get standard ox-stack scripts and their own knip entries. **Gate:** before finalising the utils trim, read the source to confirm every `@repo/abis` import from `@repo/utils` lands in the server-safe subset.
 **Effort:** M–L. **Blocks:** Phases 5, 7.
 
-**Phase 5 — Tooling packages (`@repo/typescript-config` + `@repo/oxlint-config`)**
-`@repo/typescript-config`: new package exporting `./base` and `./module` only (drop `./nextjs`, `./playwright`, `./react-library` — not needed). Strict TS config with declaration + noEmit, ESNext target. `@repo/oxlint-config`: new package exporting `./base`. Rewrite from the *spirit* of source's `@repo/eslint-config`: `js.configs.recommended` + `typescript-eslint` recommended map to oxlint's `eslint/*` + `typescript/*` categories; `no-console` off, `prefer-const`, strict equality, error-on-warning via lint-staged's `--max-warnings 0`. **Known gaps** (see §Risks & Mitigations for full treatment): `perfectionist/*` import-sort rules have no oxlint equivalent → use oxlint's `import/order` with a trimmed grouping; `turbo/no-undeclared-env-vars` is N/A (no turbo); `no-restricted-imports` wagmi/React patterns in source are N/A in a bot repo. **Net-new rules worth adding** (not in source but wanted for bot correctness): `@typescript-eslint/no-floating-promises`, `no-misused-promises`, `switch-exhaustiveness-check` — adopt where oxlint supports, backstop with TS strict flags (`noImplicitReturns`, `noUncheckedIndexedAccess`) where it does not. Phase 4 packages consume both config packages.
+**Phase 5 — Tooling packages `@repo/typescript-config` and `@repo/oxlint-config`**
+Ship a trimmed typescript-config package exporting just `./base` and `./module`, with strict TS settings. Author `@repo/oxlint-config` in the spirit of `morpho-apps`' ESLint config — recommended JS and typescript-eslint rules, no-console off, error-on-warning — and adopt `no-floating-promises`, `no-misused-promises`, and `switch-exhaustiveness-check` where oxlint supports them. §Risks & Mitigations covers the known gaps.
 **Effort:** S. **Blocks:** Phases 6, 7.
 
-**Phase 6 — CI workflows & git hooks**
-Port `.github/actions/setup/action.yml` rewritten for bun: `oven-sh/setup-bun@v2` with `bun-version: 1.3.12`, `actions/setup-node@v4` reading `.nvmrc`, `bun install --frozen-lockfile`. Keep the `install` + `frozen-lockfile` input parameters. Do **not** port `_cache-setup.yml` — no turbo, no remote cache. Port `checks.yml` adapted: drop all `NEXT_PUBLIC_*` / REOWN / BLUE_SERVICES / `TURBO_TOKEN` / `TURBO_TEAM` env; keep `CI`; 4 jobs (Lint, Typecheck, Unit-Test, Dead-Code — job IDs in `checks.yml` match these labels) running `bun run ...` (which fans out via `bun run --filter '*'` under the hood). Rely on GitHub Actions' built-in `actions/cache` for `bun install` and `node_modules` caching. Husky: `bunx husky init`; pre-commit runs `bunx lint-staged`; commit-msg validates `type(scope): description` ≤ 72 chars (bash regex — commitlint revisit tracked in §Future Considerations). `.lintstagedrc.mjs` runs `oxfmt --no-error-on-unmatched-pattern` on `*.{js,jsx,ts,tsx,json,md,yaml,yml}` and `oxlint --fix --max-warnings 0` on JS/TS.
+**Phase 6 — CI workflows and git hooks**
+Port the setup action for bun and the `checks.yml` workflow (four jobs: Lint, Typecheck, Unit-Test, Dead-Code), dropping all NextJS, REOWN, BLUE_SERVICES, and turbo-related env. Skip `_cache-setup.yml` — no turbo means no remote cache. Install husky with a pre-commit hook that runs lint-staged and a commit-msg hook that enforces the conventional format. Rely on the built-in GitHub Actions cache for installs.
 **Effort:** S. **Blocks:** Phase 7.
 
-**Phase 7 — Validation sweep & cut-over**
-From clean state: `bun install`, `bun run lint` (0 warnings), `bun run format:check` (clean), `bun run typecheck` (0 errors), `bun run test:unit` (passes), `bun run knip` (0 unused), `bun run build` on `@repo/abis` (dist emitted). Push a branch, open PR, verify all 4 CI jobs pass and that CODEOWNERS enforces review. Update `README.md` with a one-paragraph intro pointing at `CLAUDE.md`, `docs/CONVENTIONS.md`, `docs/GUIDANCE.md`. Smoke-test the agent surface per §Success Criteria.
+**Phase 7 — Validation sweep and cut-over**
+From a clean checkout, run install, lint, format check, typecheck, unit tests, knip, and the `@repo/abis` build; all should pass cleanly. Open a PR and confirm all four CI jobs pass and CODEOWNERS enforces review. Update `README.md` to point at `CLAUDE.md`, `CONVENTIONS.md`, and `GUIDANCE.md`. Smoke-test the agent surface per §Success Criteria.
 **Effort:** S. **Blocks:** merge.
 
 ## Considered Alternatives
@@ -217,7 +207,7 @@ From clean state: `bun install`, `bun run lint` (0 warnings), `bun run format:ch
 
 Replicate `morpho-apps` exactly — pnpm 10.32.1, ESLint flat config, eslint-config package — so diffs are trivial.
 
-**Why rejected:** User has explicitly chosen the ox stack (oxlint + oxfmt) and bun. Staying on pnpm/ESLint would violate that direction and preserve tooling the user is moving away from.
+**Why rejected:** The ox stack is Rust-based and measurably faster than ESLint + Prettier on comparable projects, with clearer diagnostics — worth it for a small repo where lint runs on every keystroke through lint-staged. Bun also consolidates three roles — package manager, runtime, and workspace task runner — that pnpm + Node + turbo split across three tools, cutting the dep count and eliminating the `TURBO_TOKEN`/`TURBO_TEAM` provisioning tax. The tradeoff is a narrower oxlint rule catalog (gaps enumerated in §Risks & Mitigations) and a younger bun ecosystem; both are acceptable for a bot repo with no React, wagmi, or a11y surfaces to pressure-test rule edges.
 
 ### Alternative 2: Full-monorepo mirror minus brand/data/storybook
 
@@ -255,7 +245,7 @@ Bring over `turbo.json` (trimmed from source's 14 tasks to ~10), wire root `pack
 
 - **Source snapshot**: `morpho-apps` as of 2026-04-16 (local path: `/Users/cashd/workspace/morpho/prime-monorepo-0/` — the folder retains the pre-rename name on disk). If source files change materially during this migration, re-read before porting.
 - **Runtime**: bun 1.3.12 (repo-pinned), Node 24.14.1 (via `.nvmrc`).
-- **Core tooling** (dev deps): oxlint (latest), oxfmt 0.35+, knip 5.x, husky 9+, lint-staged 15+, vitest 4.x, typescript 5.9. **No turbo.**
+- **Core tooling** (dev deps): oxlint (latest), oxfmt 0.35+, knip 5.x, husky 9+, lint-staged 15+, vitest 4.x, typescript 6.0.2. **No turbo.**
 - **Catalog versions** (runtime): viem (matching source's 2.47.x), `@morpho-org/morpho-ts@2.5.0`, zod, date-fns, lodash-es, `@internationalized/date`.
 - **CI**: GitHub Actions with `depot-ubuntu-latest` runners (can fall back to `ubuntu-latest` if depot isn't provisioned).
 - **MCP servers** in `.mcp.json`: Linear (`mcp.linear.app/sse`), Context7 (`mcp.context7.com/mcp`).
