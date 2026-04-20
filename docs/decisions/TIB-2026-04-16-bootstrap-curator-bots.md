@@ -1,4 +1,4 @@
-# TIB-2026-04-16: Bootstrap `curator-bots` repo from `prime-monorepo-1` foundations
+# TIB-2026-04-16: Bootstrap `curator-bots` repo from `morpho-apps` foundations
 
 | Field      | Value                                |
 | ---------- | ------------------------------------ |
@@ -17,7 +17,7 @@ rebalancers — exact first bot TBD). The repo currently contains only `npm crea
 defaults plus a CODEOWNERS file, meaning a new contributor — human or AI — starts from no
 conventions, no agent guidance, no shared packages, and no CI.
 
-Meanwhile, `prime-monorepo-1` has matured a set of **cross-cutting foundations** that are
+Meanwhile, `morpho-apps` has matured a set of **cross-cutting foundations** that are
 domain-agnostic: AI-agent role definitions (reviewer / documentor / morpho-protocol-engineer /
 product-manager), self-verification discipline, the TIB decision-record workflow, a
 coding-conventions document, the ox lint/format stack, knip dead-code detection, and a lean CI
@@ -28,7 +28,7 @@ drift between the two repos.
 Two code packages (`@repo/utils`, `@repo/abis`) are also clear migration candidates because every
 bot will need bigint/WAD math, retry helpers, env validation, and Morpho contract ABIs on day one.
 
-The rest of `prime-monorepo-1` — Next.js apps, UI packages, observability wiring, web3/wagmi layer,
+The rest of `morpho-apps` — Next.js apps, UI packages, observability wiring, web3/wagmi layer,
 resolvers, indexer, Playwright/anvil E2E — is out of scope here. Those exist to serve frontends;
 bots do not need them.
 
@@ -36,19 +36,20 @@ bots do not need them.
 
 **Goals**
 
-- Establish a dev experience in `curator-bots` that feels identical to `prime-monorepo-1` for
+- Establish a dev experience in `curator-bots` that feels identical to `morpho-apps` for
   anyone (including Claude) used to working in the source: same commit conventions, same
   self-verification ritual, same TIB workflow, same lint/format commands.
 - Adopt the ox tooling stack fully: **oxlint** (not ESLint), **oxfmt** (not Prettier), with
-  **knip**, **turbo**, and **vitest** on top, all running under **bun** with **Node 24.14.1**.
+  **knip** and **vitest** on top, all orchestrated by **bun workspace scripts** (`bun run --filter
+  '*' <task>`) — no turbo — and running under **bun 1.3.12** with **Node 24.14.1**.
 - Ship two workspace packages — `@repo/utils` (server-safe subset) and `@repo/abis` (full port) —
   ready for the first bot to consume.
 - Leave a clean `docs/` scaffold (CONVENTIONS.md, GUIDANCE.md, empty decisions/retros folders,
   TIB + DATA-FLOW templates) so the team writes its own content from day one, and commits to the
   TIB discipline.
-- Land a minimal CI (lint / typecheck / test:unit / knip on every PR) with turbo remote cache
-  support, plus pre-commit + commit-msg git hooks enforcing the convention locally.
-- Keep the package namespace `@repo/*` so code lifted from `prime-monorepo-1` compiles with zero
+- Land a minimal CI (lint / typecheck / test:unit / knip on every PR), plus pre-commit + commit-msg
+  git hooks enforcing the convention locally.
+- Keep the package namespace `@repo/*` so code lifted from `morpho-apps` compiles with zero
   import rewrites.
 
 **Non-Goals**
@@ -92,24 +93,29 @@ no CLAUDE.md to align behavior.
 
 ## Proposed Solution
 
-Port a **curated foundation slice** of `prime-monorepo-1` into `curator-bots` across seven ordered
+Port a **curated foundation slice** of `morpho-apps` into `curator-bots` across seven ordered
 phases. The slice is: ox-stack tooling, agent infra, pruned conventions + TIB scaffold, two code
 packages trimmed to bot needs, two new config packages, and lean CI.
 
 ### Key design decisions
 
-| Decision              | Choice                                                 | Why                                                                                    |
-| --------------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------- |
-| Package manager       | **bun** (stays)                                        | Target is already bun; no reason to regress                                            |
-| Node version          | **24.14.1**                                            | Matches source's `.nvmrc`; required by some morpho deps                                |
-| Linter                | **oxlint**                                             | User is fully on the ox stack                                                          |
-| Formatter             | **oxfmt 0.35+**                                        | Matches source, fast, zero-config                                                      |
-| Dead-code detector    | **knip 5**                                             | Matches source; turbo task `//#knip:check`                                             |
-| Task runner           | **turbo 2.x**                                          | Already installed; bun-native workspace support                                        |
-| Version pinning       | **bun catalog**                                        | Bun 1.2+ supports the catalog pattern; mirrors source's `pnpm-workspace.yaml` catalog  |
-| Package namespace     | **`@repo/*`**                                          | Max copy-paste compatibility from source                                               |
-| Test runner           | **vitest 4.x**                                         | Matches source                                                                         |
-| Pre-commit            | **husky + lint-staged + commit-msg**                   | oxlint/oxfmt on staged files; enforce `type(scope): description` 72-char commits       |
+`curator-bots` deliberately **diverges** from `morpho-apps` on runtime and JS tooling. `morpho-apps`
+is a NextJS-centric monorepo; `curator-bots` is headless services and adopts the ox stack fully.
+The table below shows the chosen stack alongside the source repo's stack for quick comparison; bold
+entries are the curator-bots choice.
+
+| Decision           | curator-bots                         | morpho-apps            | Why                                                                                   |
+| ------------------ | ------------------------------------ | ---------------------- | ------------------------------------------------------------------------------------- |
+| Package manager    | **bun 1.3.12**                       | pnpm 10.32.1           | Target is already bun; ox/bun direction for the new repo                              |
+| Node version       | **24.14.1**                          | 24.14.1                | Matches source's `.nvmrc`; required by some morpho deps                               |
+| Linter             | **oxlint**                           | ESLint (flat config)   | User is fully on the ox stack                                                         |
+| Formatter          | **oxfmt 0.35+**                      | Prettier               | ox stack; fast, zero-config                                                           |
+| Dead-code detector | **knip 5**                           | knip 5                 | Matches source; invoked directly as `bun run knip` (no turbo task graph needed)       |
+| Task runner        | **bun workspace scripts**            | turbo 2.x              | **Divergence.** Turbo's pipeline graph + remote cache payoff is invisible at 2-package scale; `bun run --filter '*' <task>` covers our needs with zero extra tooling and no `TURBO_TOKEN` provisioning. Revisit if workspace count or CI time grows. |
+| Version pinning    | **bun catalog**                      | pnpm catalog           | Bun 1.2+ supports the catalog pattern; mirrors source's `pnpm-workspace.yaml` catalog |
+| Package namespace  | **`@repo/*`**                        | `@repo/*`              | Max copy-paste compatibility from source                                              |
+| Test runner        | **vitest 4.x**                       | vitest 4.x             | Matches source                                                                        |
+| Pre-commit         | **husky + lint-staged + commit-msg** | husky + lint-staged    | oxlint/oxfmt on staged files; enforce `type(scope): description` 72-char commits      |
 
 ### Target directory structure
 
@@ -119,8 +125,7 @@ curator-bots/
 ├── .github/
 │   ├── actions/setup/action.yml      # bun + Node, rewritten from source
 │   ├── workflows/
-│   │   ├── checks.yml                # lint + typecheck + test:unit + knip
-│   │   └── _cache-setup.yml          # turbo remote cache prewarm
+│   │   └── checks.yml                # lint + typecheck + test:unit + knip
 │   └── CODEOWNERS                    # existing
 ├── .husky/{pre-commit,commit-msg,pre-push}
 ├── .vscode/settings.json
@@ -137,7 +142,6 @@ curator-bots/
 ├── knip.json
 ├── package.json                      # workspaces + catalog
 ├── tsconfig.json
-├── turbo.json                        # 10-task minimal shape
 ├── docs/
 │   ├── README.md, INDEX.md           # nav placeholders
 │   ├── CONVENTIONS.md                # pruned for bots
@@ -155,11 +159,12 @@ curator-bots/
 
 ### Implementation Phases
 
-**Phase 1 — Tooling foundation (bun + ox + turbo)**
+**Phase 1 — Tooling foundation (bun + ox)**
 Root `package.json` gains workspaces catalog (seed: viem, vitest, typescript, zod, lodash-es,
-date-fns), dev deps (turbo, typescript, oxlint, oxfmt, knip, husky, lint-staged), scripts (lint,
-format, typecheck, test:unit, knip, clean) delegating to turbo. Create `.nvmrc`, `turbo.json` with
-the 10-task minimal shape, `.oxlintrc.json`, `.oxfmtrc.json`, `knip.json` (root-only), and root
+date-fns), dev deps (typescript, oxlint, oxfmt, knip, husky, lint-staged), and root scripts (lint,
+format, typecheck, test:unit, knip, clean) that fan out to workspaces via `bun run --filter '*'
+<task>`. Delete the default `turbo.json` seeded by `npm create turbo` and drop `turbo` from dev
+deps. Create `.nvmrc`, `.oxlintrc.json`, `.oxfmtrc.json`, `knip.json` (root-only), and root
 `tsconfig.json`.
 
 **Phase 2 — Agent & editor infrastructure**
@@ -200,13 +205,15 @@ packages consume both.
 **Phase 6 — CI workflows & git hooks**
 Port `.github/actions/setup/action.yml` rewritten for bun: `oven-sh/setup-bun@v2` with
 `bun-version: 1.3.12`, `actions/setup-node@v4` reading `.nvmrc`, `bun install --frozen-lockfile`.
-Keep the `install` + `frozen-lockfile` input parameters. Port `_cache-setup.yml` nearly verbatim
-(only the action reference changes). Port `checks.yml` adapted: drop all `NEXT_PUBLIC_*` / REOWN /
-BLUE_SERVICES env; keep `TURBO_TOKEN`/`TURBO_TEAM`/`CI`; 4 jobs (Lint, Typecheck, Unit-Test,
-Dead-Code) running `bun run ...`. Husky: `bunx husky init`; pre-commit runs `bunx lint-staged`;
-commit-msg validates `type(scope): description` ≤ 72 chars (bash regex — commitlint optional
-later). `.lintstagedrc.mjs` runs `oxfmt --no-error-on-unmatched-pattern` on
-`*.{js,jsx,ts,tsx,json,md,yaml,yml}` and `oxlint --fix --max-warnings 0` on JS/TS.
+Keep the `install` + `frozen-lockfile` input parameters. Do **not** port `_cache-setup.yml` — no
+turbo, no remote cache. Port `checks.yml` adapted: drop all `NEXT_PUBLIC_*` / REOWN /
+BLUE_SERVICES / `TURBO_TOKEN` / `TURBO_TEAM` env; keep `CI`; 4 jobs (Lint, Typecheck, Unit-Test,
+Dead-Code) running `bun run ...` (which fans out via `bun run --filter '*'` under the hood). Rely on
+GitHub Actions' built-in `actions/cache` for `bun install` and `node_modules` caching. Husky: `bunx
+husky init`; pre-commit runs `bunx lint-staged`; commit-msg validates `type(scope): description`
+≤ 72 chars (bash regex — commitlint optional later). `.lintstagedrc.mjs` runs
+`oxfmt --no-error-on-unmatched-pattern` on `*.{js,jsx,ts,tsx,json,md,yaml,yml}` and
+`oxlint --fix --max-warnings 0` on JS/TS.
 
 **Phase 7 — Validation sweep & cut-over**
 From clean state: `bun install`, `bun run lint` (0 warnings), `bun run format:check` (clean),
@@ -221,7 +228,7 @@ Code, ask it to add a trivial utility to `@repo/utils`, confirm it follows the c
 
 ### Alternative 1: Keep source's pnpm + ESLint stack
 
-Replicate `prime-monorepo-1` exactly — pnpm 10.32.1, ESLint flat config, eslint-config package — so
+Replicate `morpho-apps` exactly — pnpm 10.32.1, ESLint flat config, eslint-config package — so
 diffs are trivial.
 
 **Why rejected:** User has explicitly chosen the ox stack (oxlint + oxfmt) and bun. Staying on
@@ -241,7 +248,7 @@ will never run. The user explicitly scoped to "workflows + conventions + agent t
 
 Rename packages to match the repo or the org.
 
-**Why rejected:** Every `import { ... } from '@repo/utils'` line copied from `prime-monorepo-1`
+**Why rejected:** Every `import { ... } from '@repo/utils'` line copied from `morpho-apps`
 would need a rewrite. For a foundation migration where we're explicitly aiming to keep things
 portable between the two repos, the cost outweighs the aesthetic gain. A future rename is a
 mechanical codemod if it's ever wanted.
@@ -255,29 +262,24 @@ Boundaries, Toasts, `getClientEnvVar`/`getServerEnvVar`, and Next.js env inlinin
 misleading in a bot repo. They'd send Claude down wrong paths (e.g., "Use `captureError`" when no
 such function exists). Prune-up-front costs ~30 min and prevents months of drift.
 
-### Alternative 5: Match source's 14-task `turbo.json` shape
+### Alternative 5: Keep turbo 2.x as the task runner
 
-Bring over `build`, `start`, `dev`, `lint`, `format`, `analyze`, `gen:graphql`, `test:unit`,
-`test:e2e`, `typecheck`, `clean`, etc.
+Bring over `turbo.json` (trimmed from source's 14 tasks to ~10), wire root `package.json` scripts
+through `turbo run <task>`, port `_cache-setup.yml`, and rely on `TURBO_TOKEN`/`TURBO_TEAM` for
+Vercel-hosted remote caching — matching `morpho-apps` task orchestration 1:1.
 
-**Why rejected:** `start`, `analyze`, `gen:graphql`, `test:e2e`, `test:e2e:dev` are all no-ops
-without UIs and a GraphQL layer. Inserting them as placeholders invites copy-paste cargo-culting.
-The 10-task minimal shape is honest about what this repo runs.
-
-### Alternative 6: Skip turbo remote cache initially
-
-`_cache-setup.yml` as a no-op stub; plain workflow caching only.
-
-**Why rejected for now, kept as fallback:** Remote cache pays for itself fast on any multi-workspace
-repo. But it depends on external state (`TURBO_TOKEN`/`TURBO_TEAM`) that must be provisioned. Phase
-6 ships remote-cache-capable; if the secrets aren't available when Phase 6 lands, the workflow
-still runs (it just no-ops the cache). Tracked under Open Questions.
+**Why rejected:** At two packages and an empty `apps/`, turbo's pipeline graph and remote cache buy
+almost nothing — the value kicks in with many workspaces, long-running builds, and high CI volume,
+none of which describe this repo today. Bun's `bun run --filter '*' <task>` already runs scripts
+across workspaces natively and needs zero provisioning (no Vercel team, no tokens, no extra
+workflow). Dropping turbo removes a class of external-state dependencies and keeps the root shape
+honest — root scripts mean what they say. Turbo is a mechanical add-back later (a `turbo.json` + one
+dev dep) if workspace count grows or CI parallelism becomes painful; tracked under Future
+Considerations. This is a **deliberate divergence from `morpho-apps`** and is captured in the Key
+design decisions table.
 
 ## Assumptions & Constraints
 
-- `morpho-org` GitHub organisation has (or can provision) `TURBO_TOKEN` and `TURBO_TEAM` for the
-  Vercel-hosted turbo remote cache; otherwise the cache workflow runs as a no-op until secrets are
-  added.
 - Bun 1.3.12's workspace catalog resolves the same versions that pnpm's catalog did for the
   transitive deps we care about (viem, vitest, typescript, etc.). Any divergence gets manually
   pinned at the workspace level.
@@ -294,11 +296,11 @@ still runs (it just no-ops the cache). Tracked under Open Questions.
 
 ## Dependencies
 
-- **Source snapshot**: `prime-monorepo-1` as of 2026-04-16. If source files change materially
+- **Source snapshot**: `morpho-apps` as of 2026-04-16. If source files change materially
   during this migration, re-read before porting.
 - **Runtime**: bun 1.3.12 (repo-pinned), Node 24.14.1 (via `.nvmrc`).
-- **Core tooling** (dev deps): turbo 2.x, oxlint (latest), oxfmt 0.35+, knip 5.x, husky 9+,
-  lint-staged 15+, vitest 4.x, typescript 5.9.
+- **Core tooling** (dev deps): oxlint (latest), oxfmt 0.35+, knip 5.x, husky 9+, lint-staged 15+,
+  vitest 4.x, typescript 5.9. **No turbo.**
 - **Catalog versions** (runtime): viem (matching source's 2.47.x), `@morpho-org/morpho-ts@2.5.0`,
   zod, date-fns, lodash-es, `@internationalized/date`.
 - **CI**: GitHub Actions with `depot-ubuntu-latest` runners (can fall back to `ubuntu-latest` if
@@ -312,8 +314,8 @@ still runs (it just no-ops the cache). Tracked under Open Questions.
 - CODEOWNERS + main branch protection require code-owner approval before merge. Force-push +
   deletion disabled.
 - Repo is private under `morpho-org`. Access control inherits org-level team permissions.
-- No secrets are encoded in committed workflow files — only references to `secrets.TURBO_TOKEN`
-  etc.
+- No secrets are encoded in committed workflow files; this migration introduces none (dropping
+  turbo removed the need for `TURBO_TOKEN`/`TURBO_TEAM`).
 - `CLAUDE.md` Strict Rules (never commit to main, never add ENV keys) are mirrored into
   Cursor/Zed/MCP agent contexts, so AI edits inherit the same guardrails.
 
@@ -329,8 +331,9 @@ still runs (it just no-ops the cache). Tracked under Open Questions.
 - **oxlint rule gaps**: as gaps surface in real code (e.g., a rule source relied on that oxlint
   lacks), record each in a follow-up TIB and decide: strict-TS backstop, oxlint custom rule, or
   explicit acceptance.
-- **Turbo remote cache decision**: Vercel-hosted vs self-hosted (Upstash +
-  `@ducktors/turborepo-remote-cache`). Tracked under Open Questions but deferrable.
+- **Revisit turbo**: if workspace count grows past ~5 or CI job time gets painful, reconsider
+  turbo as the task runner. Adding it back is a `turbo.json` + one dev dep; bun's `--filter` covers
+  today's scale.
 - **Repo rename**: the GitHub repo is already `curator-bots`; the local working directory
   `/Users/cashd/workspace/morpho/morpho-bots/` renames to `curator-bots` at author convenience.
 - **Linear + PR automation**: source has PR label / Slack / team-label workflows not ported here.
@@ -338,9 +341,6 @@ still runs (it just no-ops the cache). Tracked under Open Questions.
 
 ## Open Questions
 
-- **Turbo remote cache backend**: Does `morpho-org` already have a shared Vercel turbo team with
-  token/team values we can reuse, or do we need to stand up a self-hosted cache? Decision can be
-  made during Phase 6 implementation — workflows ship cache-capable either way.
 - **Bun catalog parity**: does bun 1.3.12's catalog resolve the same transitive peer-dep graph as
   pnpm's catalog, particularly around viem + wagmi peer deps? Tested at the end of Phase 4 when
   `bun install` runs with real package.jsons.
@@ -357,29 +357,27 @@ still runs (it just no-ops the cache). Tracked under Open Questions.
 ## References
 
 - **Target repo**: https://github.com/morpho-org/curator-bots (private)
-- **Source repo (local snapshot)**: `/Users/cashd/workspace/morpho/prime-monorepo-1`
+- **Source repo (local snapshot)**: `/Users/cashd/workspace/morpho/morpho-apps`
 - **Source files authoritative for the migration**:
-  - `prime-monorepo-1/CLAUDE.md`
-  - `prime-monorepo-1/.mcp.json`
-  - `prime-monorepo-1/.cursor/worktrees.json`
-  - `prime-monorepo-1/.vscode/settings.json`
-  - `prime-monorepo-1/.zed/settings.json`
-  - `prime-monorepo-1/turbo.json`
-  - `prime-monorepo-1/knip.json`
-  - `prime-monorepo-1/.oxfmtrc.json`
-  - `prime-monorepo-1/.lintstagedrc.mjs`
-  - `prime-monorepo-1/.husky/pre-commit`
-  - `prime-monorepo-1/.github/actions/setup/action.yml`
-  - `prime-monorepo-1/.github/workflows/checks.yml`
-  - `prime-monorepo-1/.github/workflows/_cache-setup.yml`
-  - `prime-monorepo-1/docs/CONVENTIONS.md`
-  - `prime-monorepo-1/docs/GUIDANCE.md`
-  - `prime-monorepo-1/docs/templates/TIB.md`
-  - `prime-monorepo-1/docs/templates/DATA-FLOW.md`
-  - `prime-monorepo-1/packages/utils/` (tree)
-  - `prime-monorepo-1/packages/abis/` (tree)
-  - `prime-monorepo-1/packages/typescript-config/` (shape reference)
-  - `prime-monorepo-1/packages/eslint-config/` (spirit reference for Phase 5 oxlint rewrite)
+  - `morpho-apps/CLAUDE.md`
+  - `morpho-apps/.mcp.json`
+  - `morpho-apps/.cursor/worktrees.json`
+  - `morpho-apps/.vscode/settings.json`
+  - `morpho-apps/.zed/settings.json`
+  - `morpho-apps/knip.json`
+  - `morpho-apps/.oxfmtrc.json`
+  - `morpho-apps/.lintstagedrc.mjs`
+  - `morpho-apps/.husky/pre-commit`
+  - `morpho-apps/.github/actions/setup/action.yml`
+  - `morpho-apps/.github/workflows/checks.yml`
+  - `morpho-apps/docs/CONVENTIONS.md`
+  - `morpho-apps/docs/GUIDANCE.md`
+  - `morpho-apps/docs/templates/TIB.md`
+  - `morpho-apps/docs/templates/DATA-FLOW.md`
+  - `morpho-apps/packages/utils/` (tree)
+  - `morpho-apps/packages/abis/` (tree)
+  - `morpho-apps/packages/typescript-config/` (shape reference)
+  - `morpho-apps/packages/eslint-config/` (spirit reference for Phase 5 oxlint rewrite)
 
 <!--
 TIB conventions:
