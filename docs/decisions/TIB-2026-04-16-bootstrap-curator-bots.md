@@ -24,7 +24,7 @@ Morpho curator operations need off-chain bots — reallocators, liquidation moni
 - Land a small CI pipeline that runs lint, typecheck, unit tests, and dead-code detection on every PR, backed by pre-commit and commit-msg hooks.
 - Keep the `@repo/*` package namespace so code copied from `morpho-apps` compiles without import rewrites.
 
-**Success signal.** CI is green on the first post-migration PR across all four jobs (Lint, Typecheck, Unit-Test, Dead-Code); `bun run lint` emits 0 warnings; `@repo/abis` builds cleanly; opening Claude Code surfaces `CLAUDE.md` Strict Rules and Agent Team config identical to `morpho-apps`. Smoke task: asked to add a trivial utility to `@repo/utils`, Claude colocates types, uses `tryCatch`, writes a vitest spec, and commits with `feat(utils): ...` format — without being prompted on conventions.
+**Success signal.** CI is green on the first post-migration PR across all four jobs (Lint, Typecheck, Unit-Test, Dead-Code); `bun run lint` emits 0 warnings; `@repo/abis` builds cleanly; opening Claude Code surfaces `CLAUDE.md` Strict Rules and Agent Team config identical to `morpho-apps`. Smoke task: asked to add a trivial utility to `@repo/utils`, Claude colocates types, uses `tryCatch`, writes a `bun test` spec, and commits with `feat(utils): ...` format — without being prompted on conventions.
 
 **Non-Goals**
 
@@ -66,7 +66,7 @@ Port a **curated foundation slice** of `morpho-apps` into `curator-bots` across 
 | Task runner        | bun workspace scripts                | turbo 2.x            | Divergence. Turbo's pipeline graph + remote cache payoff is invisible at 2-package scale; `bun run --filter '*' <task>` covers our needs with zero extra tooling and no `TURBO_TOKEN` provisioning. Revisit if workspace count or CI time grows.   |
 | Version pinning    | bun catalog                          | pnpm catalog         | Bun 1.2+ supports the catalog pattern; mirrors source's `pnpm-workspace.yaml` catalog                                                                                                                                                              |
 | Package namespace  | `@repo/*`                            | `@repo/*`            | Max copy-paste compatibility from source                                                                                                                                                                                                           |
-| Test runner        | vitest 4.x                           | vitest 4.x           | Matches source                                                                                                                                                                                                                                     |
+| Test runner        | `bun test` (built-in)                | vitest 4.x           | Divergence. Bun ships a vitest-compatible runner; using it drops a dev-dep and keeps the runtime, package manager, and test runner on one tool.                                                                                                   |
 | Pre-commit         | husky + lint-staged + commit-msg     | husky + lint-staged  | oxlint/oxfmt on staged files; enforce `type(scope): description` 72-char commits                                                                                                                                                                   |
 
 ### Source → target mapping
@@ -79,7 +79,7 @@ Contributors and agents coming from `morpho-apps` should recognise every workflo
 | `.mcp.json`                                                                           | Port adapted (Linear + Context7 kept; Playwright dropped)                                                                                                                                                     |
 | `.cursor/`, `.vscode/`, `.zed/`                                                       | Port verbatim (agent + editor settings)                                                                                                                                                                       |
 | `docs/GUIDANCE.md`, `docs/templates/*`                                                | Port verbatim                                                                                                                                                                                                 |
-| `docs/CONVENTIONS.md`                                                                 | Port pruned (React Error Boundaries, Toast patterns, Sentry, `captureError`, `getClientEnvVar`/`getServerEnvVar`, Next.js env inlining removed; env access rewritten for server-only `getEnvVar` + zod)        |
+| `docs/CONVENTIONS.md`                                                                 | Port pruned (React Error Boundaries, Toast patterns, Sentry, `captureError`, `getClientEnvVar`/`getServerEnvVar`/`getEnvVar`, Next.js env inlining, and the env-access section all removed — bots read `Bun.env.*` directly) |
 | `packages/utils/`                                                                     | Port adapted (server-safe subset; `client.ts` dropped)                                                                                                                                                        |
 | `packages/abis/`                                                                      | Port verbatim                                                                                                                                                                                                 |
 | `packages/typescript-config/`                                                         | Port adapted (`./base` + `./module` only)                                                                                                                                                                     |
@@ -135,7 +135,7 @@ curator-bots/
 
 ### Implementation Phases
 
-Rollout: land as a single PR — scope is cohesive at this size and reviews faster in one diff than seven. If review churn emerges, split at the Phase 3 / Phase 4 boundary. Effort sizing: S (≤1d), M (1–3d), L (3–5d).
+Rollout: each phase below is tracked as its own Linear ticket the implementing agent picks up, and ships as an independent PR in dependency order. Effort sizing: S (≤1d), M (1–3d), L (3–5d).
 
 **Phase 1 — Tooling foundation**
 
@@ -151,7 +151,7 @@ Rollout: land as a single PR — scope is cohesive at this size and reviews fast
 
 **Phase 3 — Conventions & docs scaffold**
 
-- **Deliverables:** port `CONVENTIONS.md` with React, Sentry, and client/server env-split content stripped; rewrite the env-access section for server-only `getEnvVar` + zod; port `GUIDANCE.md` and the two templates verbatim; create placeholder READMEs in `docs/`, `docs/decisions/`, and `docs/retros/`, plus `docs/INDEX.md`. Do not port existing TIBs, retros, or `morpho-apps` context docs.
+- **Deliverables:** port `CONVENTIONS.md` with React, Sentry, client/server env-split content, and the env-access section all stripped (bots read `Bun.env.*` directly — no helper, no runtime schema); port `GUIDANCE.md` and the two templates verbatim; create placeholder READMEs in `docs/`, `docs/decisions/`, and `docs/retros/`, plus `docs/INDEX.md`. Do not port existing TIBs, retros, or `morpho-apps` context docs.
 - **Effort:** M.
 - **Blocks:** none (parallel with Phase 2). Docs scaffolding has already landed on the `docs/bootstrap-tib-scaffold` branch; Phase 3 finalises the remaining placeholders against the main migration commit.
 
@@ -208,7 +208,7 @@ Bring over `turbo.json` (trimmed from source's 14 tasks to ~10), wire root `pack
 
 ## Assumptions & Constraints
 
-- **Bun catalog parity.** Bun 1.3.12's workspace catalog resolves the same versions that pnpm's catalog did for the transitive deps we care about (viem, vitest, typescript, etc.). If bun and pnpm resolve different transitive versions for a given package, per-workspace pin is the fallback. Phase 5 end validates by running `bun install` against real `package.json`s.
+- **Bun catalog parity.** Bun 1.3.12's workspace catalog resolves the same versions that pnpm's catalog did for the transitive deps we care about (viem, typescript, etc.). If bun and pnpm resolve different transitive versions for a given package, per-workspace pin is the fallback. Phase 5 end validates by running `bun install` against real `package.json`s.
 - **oxlint rule catalog sufficiency.** oxlint's rule catalog (smaller than ESLint's) is sufficient for bot code. Verified known gaps against `morpho-apps/packages/eslint-config/base.js`: `perfectionist/*` import-sort rules (use oxlint's `import/order`); `turbo/no-undeclared-env-vars` (N/A — no turbo); `no-restricted-imports` wagmi/React patterns (N/A in a bot repo). Rules wanted for bot correctness — `no-floating-promises`, `no-misused-promises`, `switch-exhaustiveness-check` — adopted where oxlint supports, otherwise backstopped by TS strict flags (`noImplicitReturns`, `noUncheckedIndexedAccess`). If a gap becomes painful in real code, follow-up TIB.
 - **`@repo/abis` → `@repo/utils` import surface stays server-safe.** `@repo/abis`'s dependency on `@repo/utils` only reaches utilities that survive the server-safe trim. Phase 5 includes an explicit pre-trim gate to verify this from source.
 - **`CLAUDE.md` meta-rules preserved.** `CLAUDE.md` edits keep all meta-rules (self-verification, anti-rationalization, completion status) intact. The only edits are command rewrites (pnpm→bun) and deletion of UI-specific examples.
@@ -218,8 +218,8 @@ Bring over `turbo.json` (trimmed from source's 14 tasks to ~10), wire root `pack
 
 - **Source snapshot:** `morpho-apps` as of 2026-04-16 (local path: `/Users/cashd/workspace/morpho/prime-monorepo-0/` — the folder retains the pre-rename name on disk). If source files change materially during this migration, re-read before porting.
 - **Runtime:** bun 1.3.12 (repo-pinned), Node 24.14.1 (via `.nvmrc`).
-- **Core tooling** (dev deps): oxlint (latest), oxfmt 0.35+, knip 5.x, husky 9+, lint-staged 15+, vitest 4.x, typescript 6.0.2. No turbo.
-- **Catalog versions** (runtime): viem (matching source's 2.47.x), `@morpho-org/morpho-ts@2.5.0`, zod, date-fns, lodash-es, `@internationalized/date`.
+- **Core tooling** (dev deps): oxlint (latest), oxfmt 0.35+, knip 5.x, husky 9+, lint-staged 15+, typescript 6.0.2. No turbo, no separate test runner — tests use bun's built-in `bun test`.
+- **Catalog versions** (runtime): viem (matching source's 2.47.x), `@morpho-org/morpho-ts@2.5.0`, date-fns, lodash-es, `@internationalized/date`.
 - **CI:** GitHub Actions with `depot-ubuntu-latest` runners (fall back to `ubuntu-latest` if depot isn't provisioned).
 - **MCP servers** in `.mcp.json`: Linear (`mcp.linear.app/sse`), Context7 (`mcp.context7.com/mcp`).
 
@@ -227,14 +227,14 @@ Bring over `turbo.json` (trimmed from source's 14 tasks to ~10), wire root `pack
 
 - Pre-commit + commit-msg hooks enforce the Strict Rule of never committing ENV keys; lint-staged can also run a secret-scanner as a follow-up.
 - CODEOWNERS + main branch protection require code-owner approval before merge. Force-push + deletion disabled.
-- **Repo is private under `morpho-org` and stays private.** Access control inherits org-level team permissions. When a bot is ready to be published as a public reference implementation (an "OSS template"), extract it into a **separate public repo** with its own TIB — do not flip this repo's visibility. That keeps unreleased bots, curator addresses, and any operational detail from leaking at the moment of open-sourcing.
+- **Repo is private under `morpho-org` today; plan is to flip to public once the first bot (Kill Switch Bot) ships.** Access control inherits org-level team permissions while private. Before the flip, a separate TIB will cover the cut-over: git-history audit for secrets / curator addresses / internal ops detail, licensing, and any redaction needed for committed configs.
 - No secrets are encoded in committed workflow files; this migration introduces none — dropping turbo removed the need for `TURBO_TOKEN`/`TURBO_TEAM`.
 - `CLAUDE.md` Strict Rules (never commit to main, never add ENV keys) are mirrored into Cursor/Zed/MCP agent contexts, so AI edits inherit the same guardrails.
 
 ## Future Considerations
 
 - **First bot (Kill Switch Bot).** A separate TIB will address the first concrete bot — a one-shot curator circuit breaker — bringing its own deps (probably `@repo/web3` lite or a direct viem client, observability wiring, a job runner) and possibly extending `@repo/utils` with bot-specific helpers.
-- **OSS bot templates.** When a bot is ready to be published as a public reference implementation, create a new public repo under `morpho-org` with its own TIB covering licensing, secret redaction, and upstream-sync cadence. Do not toggle this repo's visibility.
+- **Public cut-over.** Once the first bot (Kill Switch Bot) ships, flip this repo to public under `morpho-org`. A separate TIB will cover the pre-flip git-history audit, licensing, and any redaction needed for committed configs. Individual bots publish as versioned npm packages and container images from the same repo — no extract-to-separate-public-repo step.
 - **Per-bot platform packages.** If and when bots need observability, chain clients, or resolver-style aggregation, port them lazily — one package per TIB — with server-only trimming, not a wholesale pull from source.
 - **oxlint rule gaps.** As gaps surface in real code (e.g., a rule source relied on that oxlint lacks), record each in a follow-up TIB and decide: strict-TS backstop, oxlint custom rule, or explicit acceptance.
 - **Agent drift from `morpho-apps`.** The Source → target mapping is the contract between the two repos. Plan a quarterly cross-repo review; write a TIB when divergence is intentional.
@@ -245,7 +245,7 @@ Bring over `turbo.json` (trimmed from source's 14 tasks to ~10), wire root `pack
 
 ## References
 
-- **Target repo:** https://github.com/morpho-org/curator-bots (private)
+- **Target repo:** https://github.com/morpho-org/curator-bots (private today; going public after the first bot ships)
 - **Source repo:** `morpho-apps` — local snapshot at `/Users/cashd/workspace/morpho/prime-monorepo-0/` (on-disk folder retains the pre-rename name).
 - **Source files authoritative for the migration:**
   - `morpho-apps/CLAUDE.md`

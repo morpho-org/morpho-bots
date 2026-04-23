@@ -11,7 +11,7 @@
 
 | Source                 | Type                      | Endpoint / Config | Auth                         |
 | ---------------------- | ------------------------- | ----------------- | ---------------------------- |
-| <!-- e.g. BlueApi -->  | GraphQL / REST / RPC      | `ENV_VAR` or URL  | <!-- API key, none, etc. --> |
+| <!-- e.g. MorphoApi --> | GraphQL / REST / RPC      | `ENV_VAR` or URL  | <!-- API key, none, etc. --> |
 | <!-- e.g. chain RPC -->| JSON-RPC                  | `PRIVATE_RPC_URL` | <!-- signer / none -->       |
 
 ## Architecture Diagram
