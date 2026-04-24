@@ -131,39 +131,42 @@ No branch creation — this is backlog triage only.
 
 ## Example Flows
 
-**User**: `/create-issue fix flicker in curator sidebar`
+**User**: `/create-issue add retry-with-backoff to kill-switch deallocate calls`
 
 **Claude**: Routes to Curator Backlog (CRTR). Generates:
 
 ```
-Title:   fix(cv2): resolve sidebar flicker on mount
+Title:   feat(kill-switch): add retry-with-backoff to deallocate calls
 Project: Curator Backlog (CRTR)
 
 ## Context
-The curator app sidebar flickers on initial mount, causing a jarring visual artifact for users.
+The kill-switch bot aborts the trigger loop on any transient RPC failure from the VaultV2
+deallocate call. Curator operators then have to re-run manually.
 
 ## References
-- apps/curator-v2-app/components/Sidebar.tsx
+- bots/kill-switch/src/actions/deallocate.ts
 
 ## Possible solution
 > ⚠️ AI-generated — treat as a starting point, not a prescription.
 
-Investigate whether a CSS transition or a layout shift during hydration is the cause. Adding a visibility guard or deferring the animation until after mount may resolve the flicker.
+Wrap the deallocate call site in a retry-with-backoff helper (3 attempts, exponential backoff).
+Distinguish "will revert" from "estimation failed" before retrying — don't retry on a genuine
+revert.
 ```
 
 Label? Priority?
 
 ---
 
-**User**: `/create-issue add chart to markets v2 app`
+**User**: `/create-issue add bigint helpers to @repo/utils`
 
-**Claude**: Routes to Markets v2 App (MKT).
+**Claude**: Routes to Curator Backlog (CRTR).
 
 ---
 
-**User**: `/create-issue improve @repo/ui table performance`
+**User**: `/create-issue align lint config with morpho-apps base rules`
 
-**Claude**: Routes to Apps Monorepo Backlog (APPS).
+**Claude**: Routes to Apps Monorepo Backlog (APPS) — cross-repo shared config.
 
 ---
 

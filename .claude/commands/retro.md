@@ -118,15 +118,10 @@ Follow these phases in order. Do not skip phases.
 
 ### Phase 5: Synthesize the Retrospective
 
-1. Read the retro template:
-
-   ```bash
-   cat docs/retros/TEMPLATE.md
-   ```
-
-2. Generate the retrospective document following the template structure. For each section:
+Generate the retrospective document following the structure laid out below. No standalone
+template file exists in this repo — the sections here are the template. For each section:
    - **Metadata table**: Fill in date, author (use the project lead or "Team"), period, affected
-     apps, and project link.
+     bots or packages, and project link.
 
    - **Executive Summary**: 2-4 sentences covering what, how big, key outcome, and main tradeoff.
 
@@ -180,7 +175,7 @@ Follow these phases in order. Do not skip phases.
 
    - **References**: TIBs, Linear project, any other relevant links.
 
-3. Use reference-style markdown links for all PR and TIB references (at the bottom of the file).
+Use reference-style markdown links for all PR and TIB references (at the bottom of the file).
 
 ---
 
