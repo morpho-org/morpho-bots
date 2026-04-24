@@ -93,8 +93,8 @@ addressing PR feedback, etc.).
   for the new behavior. Run them immediately.
 - During multi-step work, if you're iterating on earlier changes (bug fixes, feedback), existing
   verification tests catch if the fix broke earlier changes.
-- Follow existing test conventions: colocate as `{module}.spec.ts` next to source, use `bun test`,
-  follow patterns from the nearest existing test file.
+- Follow existing test conventions: place tests under `test/` mirroring `src/` as
+  `{module}.test.ts`, use `bun test`, follow patterns from the nearest existing test file.
 - If a test file already exists for the module, add to it rather than creating a new one.
 
 **When NOT to write tests:**

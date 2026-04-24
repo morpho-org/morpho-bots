@@ -107,7 +107,7 @@ Once approved, write each rule to its destination:
 
 - Create a new skill directory under `.claude/skills/`
 - Include a `SKILL.md` with proper frontmatter (name, description, trigger conditions)
-- Add rule files as needed following the existing skill structure (see
-  `.claude/skills/vercel-react-best-practices/` for reference)
+- Add rule files as needed following the skill structure documented at
+  https://docs.anthropic.com/en/docs/claude-code/skills
 
 After writing, confirm what was written and where.

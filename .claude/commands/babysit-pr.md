@@ -226,7 +226,7 @@ Found N unresolved review comment(s), P conversation comment(s), M CI failure(s)
 |---|-------|-----|-------|
 | 4 | Typecheck | typecheck | TS2345: Argument of type 'string' is not assignable... in `src/foo.ts:10` |
 | 5 | Lint | lint | no-unused-vars in `src/bar.tsx:5` |
-| 6 | Tests | test-unit | FAIL useSwap.spec.ts — expected 42, received undefined |
+| 6 | Tests | test-unit | FAIL test/trigger.test.ts — expected 42, received undefined |
 
 ### Merge Conflicts
 | # | File |
