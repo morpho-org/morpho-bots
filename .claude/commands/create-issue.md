@@ -55,10 +55,9 @@ Check `$ARGUMENTS`:
 
 From the description, determine the target using the routing table above:
 
-- Mentions `apps/curator-*` → **Curator Backlog** (CRTR)
-- Mentions `apps/markets-v2-app` → **Markets v2 App** (MKT)
-- Mentions `@repo/*`, infra, tooling, or cross-cutting concerns → **Apps Monorepo Backlog** (APPS)
-- If ambiguous, ask the user to pick from the three options above
+- Mentions `bots/*`, `packages/*`, `@repo/*`, repo-wide infra → **Curator Backlog** (CRTR)
+- Mentions cross-repo infra shared with `morpho-apps` → **Apps Monorepo Backlog** (APPS)
+- If ambiguous, ask the user to pick from the two options above
 
 ### Step 3: Generate title + draft description
 

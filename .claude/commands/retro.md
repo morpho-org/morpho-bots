@@ -200,7 +200,7 @@ Follow these phases in order. Do not skip phases.
 
 4. Verify the document:
    - All PR links point to valid GitHub URLs
-   - All TIB links use correct relative paths (e.g., `../tibs/TIB-YYYY-MM-DD-title.md`)
+   - All TIB links use correct relative paths (e.g., `../decisions/TIB-YYYY-MM-DD-title.md`)
    - The Linear project link is correct
    - Markdown renders correctly (no broken tables or formatting)
 

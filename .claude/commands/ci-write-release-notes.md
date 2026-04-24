@@ -29,20 +29,20 @@ For each release tag:
 2. **Compare the diff** between the newly-published tag and the previous one:
 
    ```bash
-   git diff {previous-tag}...{new-tag} -- apps/{app}
+   git diff {previous-tag}...{new-tag} -- bots/{bot}
    ```
 
 3. **Get commit messages** in the release range for context:
 
    ```bash
-   git log {previous-tag}...{new-tag} --oneline -- apps/{app}
+   git log {previous-tag}...{new-tag} --oneline -- bots/{bot}
    ```
 
 4. **Extract PR numbers** from commit messages:
 
    ```bash
    # Get PR numbers from merge commits and PR references
-   git log {previous-tag}...{new-tag} --oneline -- apps/{app} | \
+   git log {previous-tag}...{new-tag} --oneline -- bots/{bot} | \
      grep -oE '#[0-9]+' | \
      sort -u
    ```

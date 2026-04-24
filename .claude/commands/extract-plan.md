@@ -17,7 +17,7 @@ implementation work.
 The input document may be a TIB, RFC, design doc, or any structured technical document that
 describes a decision, approach, and/or implementation plan.
 
-Refer to `/create-issue` for how to structure issue descriptions and titles. Refer to `/plan` for how to
+Refer to `/create-issue` for how to structure issue descriptions and titles. Refer to `/start-plan` for how to
 structure project descriptions and workstream breakdowns.
 
 ---
