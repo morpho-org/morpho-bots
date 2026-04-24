@@ -34,7 +34,7 @@ For each app identified by the `release-{app}` labels:
 2. **Get the current package version** to determine what the new release will be:
 
    ```bash
-   jq -r .version apps/{app}/package.json
+   jq -r .version bots/{bot}/package.json
    ```
 
    If the app version hasn't actually been bumped yet, skip remaining analysis and omit the app from
@@ -43,19 +43,19 @@ For each app identified by the `release-{app}` labels:
 3. **Compare the diff** between the latest tag and the current HEAD:
 
    ```bash
-   git diff {latest-tag}...HEAD -- apps/{app}
+   git diff {latest-tag}...HEAD -- bots/{bot}
    ```
 
    If no tag exists (initial release), compare against the base branch:
 
    ```bash
-   git diff origin/main...HEAD -- apps/{app}
+   git diff origin/main...HEAD -- bots/{bot}
    ```
 
 4. **Get commit messages** in the release range for context:
 
    ```bash
-   git log {latest-tag}...HEAD --oneline -- apps/{app}
+   git log {latest-tag}...HEAD --oneline -- bots/{bot}
    ```
 
    (or use `origin/main...HEAD` for initial releases)
@@ -83,8 +83,8 @@ Format your analysis as markdown and post it as a sticky comment. Use the PR num
 > [!IMPORTANT]
 > | App | Old Version | New Version | Diff |
 > | --- | ----------- | ----------- | ---- |
-> | {app-name} | `{old-version}` | `{new-version}` | https://github.com/morpho-org/morpho-apps/compare/{base-tag}...{head} |
-> | {another-app-name} | `{old-version}` | `{new-version}` | https://github.com/morpho-org/morpho-apps/compare/{another-base-tag}...{head} |
+> | {app-name} | `{old-version}` | `{new-version}` | https://github.com/morpho-org/curator-bots/compare/{base-tag}...{head} |
+> | {another-app-name} | `{old-version}` | `{new-version}` | https://github.com/morpho-org/curator-bots/compare/{another-base-tag}...{head} |
 
 #### {app-name}
 

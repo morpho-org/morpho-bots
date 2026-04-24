@@ -6,7 +6,7 @@ with milestones and implementation issues from it.
 ## Arguments
 
 - `$ARGUMENTS` should contain: `<doc-file-path> [linear-project-name-or-id]`
-- Example: `/extract-plan docs/tibs/TIB-2026-03-11-observability-package.md "Observability Package"`
+- Example: `/extract-plan docs/decisions/TIB-2026-04-16-bootstrap-curator-bots.md "Curator Bots Scaffolding"`
 
 ## Instructions
 

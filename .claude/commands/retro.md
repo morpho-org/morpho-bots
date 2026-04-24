@@ -63,7 +63,7 @@ Follow these phases in order. Do not skip phases.
 
 1. Collect all unique PR numbers found in Phase 2.
 
-2. For each PR, use `gh pr view <number> --repo morpho-org/morpho-apps --json number,title,additions,deletions,changedFiles,mergedAt,body,url`
+2. For each PR, use `gh pr view <number> --repo morpho-org/curator-bots --json number,title,additions,deletions,changedFiles,mergedAt,body,url`
    to get stats. Parse the JSON output.
 
 3. Build a timeline of milestones by sorting PRs by merge date.
@@ -88,7 +88,7 @@ Follow these phases in order. Do not skip phases.
 1. List the TIB files in the repo:
 
    ```bash
-   ls docs/tibs/TIB-*.md
+   ls docs/decisions/TIB-*.md
    ```
 
 2. For each TIB, read the title and check if it relates to the project. Look for:
@@ -99,8 +99,8 @@ Follow these phases in order. Do not skip phases.
 3. For each related TIB:
    - Read the full TIB content
    - Identify the "planned approach" section. New-format TIBs (see
-     [TIB-2026-04-08](../../docs/tibs/TIB-2026-04-08-tib-structure.md)) use **Proposed Solution**;
-     legacy renamed ADRs use **Decision**. Fall back to the other if the first isn't present.
+     [`docs/templates/TIB.md`](../../docs/templates/TIB.md)) use **Proposed Solution**; legacy
+     renamed ADRs use **Decision**. Fall back to the other if the first isn't present.
    - Compare that section against what was actually built (from the PR analysis)
    - Note:
      - **Delivered as planned**: What matched the TIB

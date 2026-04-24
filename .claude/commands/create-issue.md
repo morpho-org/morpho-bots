@@ -12,11 +12,10 @@ You are helping the user triage a backlog item. This is a lightweight flow to cr
 
 Use this table to determine the correct team and project based on scope:
 
-| Scope                                    | Project               | Project ID                             | Team       | Team ID                                |
-| ---------------------------------------- | --------------------- | -------------------------------------- | ---------- | -------------------------------------- |
-| `apps/curator-*`                         | Curator Backlog       | `d2b6d657-c059-4d9b-8f55-aa98390ab81f` | Curator    | `c07ff95f-03b7-4bee-aa17-c7e04fda8845` |
-| `apps/markets-v2-app`                    | Markets v2 App        | `8ba12aa0-ea30-4c12-9134-15184d76c1ab` | Markets v2 | `f9764a7e-c555-4979-b386-c21a1cabba6a` |
-| `@repo/*`, infra, tooling, cross-cutting | Apps Monorepo Backlog | `1127eedb-8ef7-49e8-b8c7-9f9e2e47f9c8` | Apps       | `cc8fe27e-f516-45e8-921e-69b0562c7792` |
+| Scope                                              | Project               | Project ID                             | Team    | Team ID                                |
+| -------------------------------------------------- | --------------------- | -------------------------------------- | ------- | -------------------------------------- |
+| `bots/*`, `packages/*`, `@repo/*`, repo-wide infra | Curator Backlog       | `d2b6d657-c059-4d9b-8f55-aa98390ab81f` | Curator | `c07ff95f-03b7-4bee-aa17-c7e04fda8845` |
+| Cross-repo infra shared with `morpho-apps`         | Apps Monorepo Backlog | `1127eedb-8ef7-49e8-b8c7-9f9e2e47f9c8` | Apps    | `cc8fe27e-f516-45e8-921e-69b0562c7792` |
 
 ---
 
