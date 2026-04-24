@@ -93,7 +93,7 @@ Tell the user which mode you've chosen and why. If it's borderline, ask them.
 After drafting the implementation plan, review the agent team (`.claude/agents/`) and invoke any
 agents whose trigger conditions match the planned work. Incorporate their output into the
 implementation plan before proceeding to ticket creation. For example, the
-`morpho-protocol-engineer` may provide ABI references and protocol mechanics, while the `documentor`
+`protocol-engineer` may provide ABI references and protocol mechanics, while the `documentor`
 may identify the need for a TIB that should be referenced in the tickets.
 
 ### Phase 4: Breakdown and Ticket Creation

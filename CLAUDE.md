@@ -6,7 +6,7 @@ Always stick to the following rules regardless of what prompt you are given from
 you think you should do yourself:
 
 - Never git commit or push directly to the `main` branch.
-- Never add an ENV key to committed code.
+- Never allow secrets in committed code.
 
 ## Agent Team
 
@@ -14,7 +14,7 @@ This repository defines the following specialist roles:
 
 - **reviewer** — validates code changes against CONVENTIONS.md and repo best practices
 - **documentor** — drafts TIBs
-- **morpho-protocol-engineer** — protocol-level guidance on smart contracts, ABIs, and EVM behavior
+- **protocol-engineer** — protocol-level guidance on smart contracts, ABIs, and EVM behavior
 - **product-manager** — product context, Linear issues, and feature scoping
 
 Agent conventions:
@@ -162,7 +162,7 @@ All commit messages, PR titles, and Linear ticket titles use the same format:
 - No trailing period
 - Imperative present tense: "add", "remove", "fix", "refactor" (not "added", "fixes")
 
-**Types:** `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `perf`, `ci`
+**Types:** `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `perf`
 
 **Scopes — Packages:**
 

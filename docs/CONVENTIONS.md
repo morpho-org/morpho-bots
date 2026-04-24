@@ -4,7 +4,7 @@
 
 ### Type Colocation
 
-- **Colocate types with functions**: Define types directly above the function that uses them to aid discoverability and navigation
+- **Colocate types with functions**: Define types inline in the function (or directly above it) unless they're explicitly meant to be reused
 - **Shared types at the top**: If a type or symbol is used by multiple functions in the same file, place it at the top of the file
 - **Avoid standalone type files**: Dedicated `.types.ts` files should generally be avoided. Only use them for pure type definitions that have no accompanying code (e.g., shared API response shapes, domain models referenced across many files). If a type has a related function, hook, or component, keep the type in that file instead.
 
@@ -25,7 +25,7 @@
 - **When to Comment**:
   - Complex business logic that isn't immediately obvious
   - Non-obvious workarounds or bug fixes
-  - Public API documentation (JSDoc for exported functions)
+  - Public API documentation (JSDoc for exported functions, particularly under `packages/`)
 - **When NOT to Comment**:
   - Obvious code that describes what it does
   - Redundant information already clear from code
@@ -34,14 +34,13 @@
 ### Function and Method Organization
 
 - **Function Length**: Keep functions focused and concise (ideally < 10 lines)
-- **Parameter Count**: Functions with more than 3 parameters must accept a single destructured
-  object argument
+- **Parameter Count**: Functions with more than 3 parameters should be refactored to accept ≤3 parameters, with the last one being a destructured object
 - **TypeScript Inference**: Omit type annotations TypeScript can infer (including return types)
 - **Pure Functions**: Prefer pure functions without side effects when possible
 - **Function Ordering**:
   - Export statements at top
-  - Main function
-  - Helper functions below
+  - Helper functions (defined before they're called)
+  - Main function below helpers
   - Types colocated above their consuming function, or at the top if shared (see [File Structure Patterns](#file-structure-patterns))
 
 ### Error Handling
@@ -71,9 +70,7 @@
 ### Performance Considerations
 
 - **Premature Optimization**: Don't optimize until you measure and identify bottlenecks
-- **RPC efficiency**: Batch on-chain reads where possible (multicall / Bundler3). Prefer
-  `readContract` with explicit block tags for deterministic snapshots over loose calls that pick
-  up whatever the provider last saw.
+- **RPC efficiency**: Batch on-chain reads where possible. Use `readDeploylessBatchLens` for fetching entities that would be well-modeled by a Lens contract, and `multicall` otherwise (e.g., for one-off fetching of heterogenous data / data sourced from multiple, unrelated contracts). Prefer `readContract` with explicit block tags for deterministic snapshots over loose calls that pick up whatever the provider last saw.
 - **Bundle Size**: Be mindful of third-party dependencies and their impact — each bot ships as its
   own image, so a dep added in one bot doesn't have to cost the others.
 
@@ -83,19 +80,18 @@
 
 - **Suffix Patterns**:
   - `Props` for handler/component props
-  - `Response` for function return types where the shape needs naming
+  - `Parameters` for function input objects (unabbreviated to match `viem` conventions)
   - `Config` for configuration objects
 
 ## Testing Patterns
 
 ### Test Organization
 
-- **Co-location**: Tests alongside source files with `.test.ts` or `.spec.ts`
-- **Test utilities**: Per-bot or per-package `test/` directory for shared test helpers
+- **Centralized under `test/`**: Each bot / package keeps all tests in a top-level `test/` directory whose hierarchy mirrors `src/`. Shared test helpers live alongside the tests in the same `test/` tree.
 
 ### Test File Naming
 
-- **Unit Tests**: `{module}.test.ts` or `{module}.spec.ts`
+- **Unit Tests**: `{module}.test.ts`
 - **Integration Tests**: `{module}.integration.test.ts`
 
 ### Test Quality
@@ -118,8 +114,6 @@ Avoid these patterns that produce tests that pass but verify nothing useful:
   is likely incomplete or incorrect
 - **Incomplete mocks that diverge from real behavior**: Mocks that return hardcoded happy-path data
   without matching the real API's shape, edge cases, or error modes
-- **Tests with no meaningful assertions**: A test that only checks `toBeDefined()` or
-  `not.toThrow()` without verifying actual output is a false safety net
 
 ## Import Patterns
 
@@ -151,106 +145,7 @@ Avoid these patterns that produce tests that pass but verify nothing useful:
   import { isNil } from 'lodash-es'
   ```
 
-## API and Data Fetching Patterns
-
-### oRPC Procedures
-
-If a bot exposes an RPC-style service boundary (e.g. for a control plane, an internal trigger
-API, or a future UI wrapper), follow **resource-oriented routing** — structure procedures around
-resources (nouns), not actions (verbs). This keeps the procedure tree navigable as it grows.
-
-#### Singular vs. plural distinguishes single resource from collection
-
-Use the **plural** form for a collection and the **singular** form for a single resource. The
-singular/plural distinction replaces action verbs (`get`, `list`, `find`, etc.) — no verb is needed
-when the resource is a leaf procedure. The one exception is when a resource becomes a namespace
-because it has children (see [Router structure](#router-structure)).
-
-```typescript
-orpc.vaults              // → collection of vaults
-orpc.vault               // → single vault (by address, id, etc.)
-```
-
-#### Nest child resources under parents
-
-When a resource belongs to another, nest the child under the parent in the procedure path. Use
-nesting to express different scopes rather than action-verb suffixes — e.g., a user's vaults are
-`orpc.user.vaults`, not `orpc.vaults.listByUser`.
-
-```typescript
-orpc.user.vaults         // → vaults belonging to a user (collection)
-orpc.user.vault          // → single vault belonging to a user
-orpc.vault.markets       // → markets within a vault (collection)
-orpc.vault.market        // → single market within a vault
-```
-
-#### Resource-specific base procedures
-
-When a resource scopes all of its children, define a **resource-specific base procedure** that
-validates and injects the resource's context — similar to how `chainSpecificProcedure` guarantees
-`chainId` and a viem client. Procedures nested under that resource then extend the base and inherit
-the context without re-validating it.
-
-```typescript
-// Guarantees userAddress is present in context for all child procedures
-export const userSpecificProcedure = o
-  .use(errorLoggingMiddleware)
-  .use(async ({ context, next }) => {
-    if (!context.userAddress) {
-      throw new Error('userAddress is required in context for this procedure')
-    }
-    return next({ context: { userAddress: context.userAddress } })
-  })
-
-// All procedures under orpc.user.* extend userSpecificProcedure
-const userVaultsProcedure = userSpecificProcedure
-  .handler(async ({ context }) => {
-    // context.userAddress is guaranteed
-  })
-```
-
-#### Router structure
-
-A resource is either a callable procedure (leaf) or a router with children (namespace) — oRPC does
-not support both on the same key. When a resource has no children, it is a procedure. When it gains
-children, it becomes a router and the self-lookup moves to a `get` key.
-
-```typescript
-// Leaf resources — no children, callable directly
-const appRouter = {
-  vaults: vaultsProcedure,     // orpc.vaults — collection
-  vault: vaultProcedure,       // orpc.vault — single resource
-  user: userRouter,            // orpc.user.* — has children, so it's a router
-}
-
-// When a resource has children, it becomes a router.
-// The self-lookup moves to `get`, following the HTTP method convention.
-const userRouter = {
-  get: userGetProcedure,           // user.get (the user itself)
-  vaults: userVaultsProcedure,     // user.vaults (user-scoped collection)
-  vault: userVaultProcedure,       // user.vault (user-scoped single)
-}
-```
-
-#### File organization
-
-Each resource gets its own router directory or procedure file:
-
-```
-lib/orpc/routers/
-├── index.ts              # Top-level router composition
-├── vaults.ts             # vaultsProcedure (collection, leaf)
-├── vault/
-│   ├── index.ts          # vaultRouter — composes child procedures
-│   ├── markets.ts        # vaultMarketsProcedure (child collection)
-│   └── market.ts         # vaultMarketProcedure (single child)
-└── user/
-    ├── index.ts          # userRouter — composes child procedures
-    ├── vaults.ts         # userVaultsProcedure (user-scoped collection)
-    └── vault.ts          # userVaultProcedure (user-scoped single)
-```
-
-### Web3 Integration
+## Web3 Integration
 
 - **Viem**: Bots use viem directly (no wagmi — there is no React surface).
 - **Multi-chain**: Each bot declares its supported chains in its own config.
@@ -261,13 +156,3 @@ lib/orpc/routers/
   `as Address` casts. For runtime normalization (checksumming), use `getAddress()` after an
   `isAddress` guard.
 - **Address Comparison**: Use `isAddressEqual` from viem, never `.toLowerCase()` comparisons.
-
-### Resolvers (`@repo/resolvers`)
-
-If a bot imports `@repo/resolvers` (not shipped with the repo today; would arrive via a future
-package TIB):
-
-- **Event log resolvers** (`getLogs`-based) may require a `MorphoClient` since they depend on
-  deployment metadata (e.g. `startBlock`) from the chain config.
-- **State read resolvers** (`readContract`-based) should accept a generic `Client` with optional
-  contract address params so they can be called from any chain client configured in the bot.

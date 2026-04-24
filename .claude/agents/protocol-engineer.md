@@ -1,5 +1,5 @@
 ---
-name: morpho-protocol-engineer
+name: protocol-engineer
 description: >
   Morpho protocol expert. Use proactively when implementing or modifying code that interacts with
   smart contracts or on-chain state — including viem utilities (encodeFunctionData, readContract,
