@@ -142,10 +142,10 @@ For the full tech-stack rationale and source-of-truth versions, see
 
 ### Team IDs
 
-| Team        | ID                                   | Key  | Scope                                                |
-| ----------- | ------------------------------------ | ---- | ---------------------------------------------------- |
-| **Apps**    | cc8fe27e-f516-45e8-921e-69b0562c7792 | APPS | Cross-repo tasks shared with `morpho-apps`           |
-| **Curator** | c07ff95f-03b7-4bee-aa17-c7e04fda8845 | CRTR | Default team for all `curator-bots` work             |
+| Team        | ID                                   | Key  | Scope                                      |
+| ----------- | ------------------------------------ | ---- | ------------------------------------------ |
+| **Apps**    | cc8fe27e-f516-45e8-921e-69b0562c7792 | APPS | Cross-repo tasks shared with `morpho-apps` |
+| **Curator** | c07ff95f-03b7-4bee-aa17-c7e04fda8845 | CRTR | Default team for all `curator-bots` work   |
 
 ### Title convention (commits, PRs, and Linear tickets)
 
@@ -177,17 +177,17 @@ All commit messages, PR titles, and Linear ticket titles use the same format:
 
 **Scopes — Cross-cutting:**
 
-| Scope         | Use when                                                       |
-| ------------- | -------------------------------------------------------------- |
-| `repo`        | Repo-wide scaffolding, workspace config, root-level files      |
-| `bots`        | Change spans multiple bots                                     |
-| `packages`    | Change spans multiple packages                                 |
-| `ci`          | CI/CD pipeline changes                                         |
-| `agents`      | `CLAUDE.md`, `.mcp.json`, editor configs, agent definitions    |
-| `conventions` | `CONVENTIONS.md`, `GUIDANCE.md`, docs templates                |
-| `tooling`     | `@repo/typescript-config`, `@repo/oxlint-config`, oxfmt, knip  |
-| `checks`      | CI workflow files and git hooks                                |
-| `docs`        | TIBs, retros, READMEs, `docs/context/`                         |
+| Scope         | Use when                                                      |
+| ------------- | ------------------------------------------------------------- |
+| `repo`        | Repo-wide scaffolding, workspace config, root-level files     |
+| `bots`        | Change spans multiple bots                                    |
+| `packages`    | Change spans multiple packages                                |
+| `ci`          | CI/CD pipeline changes                                        |
+| `agents`      | `CLAUDE.md`, `.mcp.json`, editor configs, agent definitions   |
+| `conventions` | `CONVENTIONS.md`, `GUIDANCE.md`, docs templates               |
+| `tooling`     | `@repo/typescript-config`, `@repo/oxlint-config`, oxfmt, knip |
+| `checks`      | CI workflow files and git hooks                               |
+| `docs`        | TIBs, retros, READMEs, `docs/context/`                        |
 
 When a change touches multiple scopes, use the most impacted one. No multi-scope syntax — if truly
 cross-cutting, use `bots`, `packages`, or `repo` as appropriate.
