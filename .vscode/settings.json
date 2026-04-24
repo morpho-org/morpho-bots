@@ -4,9 +4,7 @@
     "**/node_modules": true,
     "**/dist/**": true,
     "**/build/**": true,
-    "**/.next/**": true,
     "**/coverage/**": true,
-    "**/.turbo/**": true,
     "**/__generated__/**": true
   },
   "files.watcherExclude": {
@@ -14,12 +12,9 @@
     "**/.git/subtree-cache/**": true,
     "**/.hg/store/**": true,
     "**/node_modules/**": true,
-    "**/.vercel": true,
     "**/dist/**": true,
     "**/build/**": true,
-    "**/.next/**": true,
     "**/coverage/**": true,
-    "**/.turbo/**": true,
     "**/__generated__/**": true
   },
   "eslint.workingDirectories": [
