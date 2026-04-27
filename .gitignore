@@ -19,7 +19,6 @@ dist
 
 # Debug
 *.log
-npm-debug.log*
 
 # Misc
 .DS_Store
