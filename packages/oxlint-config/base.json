@@ -4,21 +4,6 @@
     "correctness": "error",
     "suspicious": "error"
   },
-  "env": {
-    "builtin": true,
-    "node": true
-  },
-  "ignorePatterns": [
-    "**/node_modules",
-    "**/dist",
-    "**/build",
-    "**/coverage",
-    "**/generated",
-    "bun.lock",
-    "**/*.cjs",
-    "**/*.mjs",
-    "**/*.js"
-  ],
   "rules": {
     "no-console": "off",
     "typescript/switch-exhaustiveness-check": "error",

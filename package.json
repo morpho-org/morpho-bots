@@ -22,9 +22,11 @@
     "test": "bun test"
   },
   "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
     "knip": "catalog:",
     "oxfmt": "catalog:",
     "oxlint": "catalog:",
+    "oxlint-tsgolint": "^0.22.1",
     "typescript": "catalog:"
   },
   "engines": {
