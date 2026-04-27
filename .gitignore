@@ -2,8 +2,6 @@
 
 # Dependencies
 node_modules
-.pnp
-.pnp.js
 
 # Local env files
 .env
@@ -15,24 +13,24 @@ node_modules
 # Testing
 coverage
 
-# Turbo
-.turbo
-
-# Vercel
-.vercel
-
 # Build Outputs
-.next/
-out/
 build
 dist
 
-
 # Debug
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+*.log
 
 # Misc
 .DS_Store
 *.pem
+
+# tsbuildinfo
+**/*.tsbuildinfo
+
+# IDE preferences
+.idea
+
+# Claude settings (local overrides only)
+.claude/settings.local.json
+.claude/worktrees/
+.claude/scheduled_tasks.lock

@@ -9,10 +9,10 @@
 
 ## External Data Sources
 
-| Source                 | Type                      | Endpoint / Config | Auth                         |
-| ---------------------- | ------------------------- | ----------------- | ---------------------------- |
-| <!-- e.g. MorphoApi --> | GraphQL / REST / RPC      | `ENV_VAR` or URL  | <!-- API key, none, etc. --> |
-| <!-- e.g. chain RPC -->| JSON-RPC                  | `PRIVATE_RPC_URL` | <!-- signer / none -->       |
+| Source                  | Type                 | Endpoint / Config | Auth                         |
+| ----------------------- | -------------------- | ----------------- | ---------------------------- |
+| <!-- e.g. MorphoApi --> | GraphQL / REST / RPC | `ENV_VAR` or URL  | <!-- API key, none, etc. --> |
+| <!-- e.g. chain RPC --> | JSON-RPC             | `PRIVATE_RPC_URL` | <!-- signer / none -->       |
 
 ## Architecture Diagram
 
@@ -52,10 +52,10 @@ flowchart TD
 
 ## Fetching Mechanisms
 
-| Mechanism                    | Library          | Used For                    | Config                              |
-| ---------------------------- | ---------------- | --------------------------- | ----------------------------------- |
-| <!-- e.g. viem client -->    | `viem`           | On-chain reads / writes     | <!-- transport, chain config -->    |
-| <!-- e.g. fetch w/ retry --> | `@repo/utils`    | REST / GraphQL calls        | <!-- retry budget, timeout -->      |
+| Mechanism                    | Library       | Used For                | Config                           |
+| ---------------------------- | ------------- | ----------------------- | -------------------------------- |
+| <!-- e.g. viem client -->    | `viem`        | On-chain reads / writes | <!-- transport, chain config --> |
+| <!-- e.g. fetch w/ retry --> | `@repo/utils` | REST / GraphQL calls    | <!-- retry budget, timeout -->   |
 
 ## Caching / State Strategy
 
@@ -77,9 +77,9 @@ sequenceDiagram
     Tick->>State: Update last-seen
 ```
 
-| Layer                              | Technology      | TTL / Eviction              | Scope   |
-| ---------------------------------- | --------------- | --------------------------- | ------- |
-| <!-- e.g. in-memory LRU -->        | plain `Map`     | <!-- size-bounded -->       | Process |
+| Layer                       | Technology  | TTL / Eviction        | Scope   |
+| --------------------------- | ----------- | --------------------- | ------- |
+| <!-- e.g. in-memory LRU --> | plain `Map` | <!-- size-bounded --> | Process |
 
 ## Data Flow by Workflow
 

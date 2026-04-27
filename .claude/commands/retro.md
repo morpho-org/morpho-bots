@@ -120,60 +120,61 @@ Follow these phases in order. Do not skip phases.
 
 Generate the retrospective document following the structure laid out below. No standalone
 template file exists in this repo — the sections here are the template. For each section:
-   - **Metadata table**: Fill in date, author (use the project lead or "Team"), period, affected
-     bots or packages, and project link.
 
-   - **Executive Summary**: 2-4 sentences covering what, how big, key outcome, and main tradeoff.
+- **Metadata table**: Fill in date, author (use the project lead or "Team"), period, affected
+  bots or packages, and project link.
 
-   - **Outcome Assessment**: This is the core success/failure quantification section.
-     - **Goal Scorecard**: Extract explicit goals from the Linear project description, the related
-       TIB's "Decision" section, or the kickoff document/Notion page. For each goal, determine
-       whether it was Hit, Partial, or Missed, and link to the PR or metric that proves it. If no
-       explicit goals were written down, note that as a process gap and infer goals from issue
-       titles.
-     - **Quantitative Indicators**: Calculate these from the data gathered in Phases 2-4:
-       - Scope completion = done issues / total issues (as percentage)
-       - Timeline adherence = actual duration vs. target dates from the Linear project
-       - Fix ratio = PRs with `fix(` prefix / total PRs (flag if > 20%)
-       - Unplanned work ratio = PRs not linked to any original issue / total PRs
-       - TIB conformance = decisions from the TIB that were followed / total decisions
-     - Rate each indicator with a verdict (On track, Behind, Healthy, Elevated, etc.)
+- **Executive Summary**: 2-4 sentences covering what, how big, key outcome, and main tradeoff.
 
-   - **Timeline**: Use the milestone table from Phase 3, ordered chronologically.
+- **Outcome Assessment**: This is the core success/failure quantification section.
+  - **Goal Scorecard**: Extract explicit goals from the Linear project description, the related
+    TIB's "Decision" section, or the kickoff document/Notion page. For each goal, determine
+    whether it was Hit, Partial, or Missed, and link to the PR or metric that proves it. If no
+    explicit goals were written down, note that as a process gap and infer goals from issue
+    titles.
+  - **Quantitative Indicators**: Calculate these from the data gathered in Phases 2-4:
+    - Scope completion = done issues / total issues (as percentage)
+    - Timeline adherence = actual duration vs. target dates from the Linear project
+    - Fix ratio = PRs with `fix(` prefix / total PRs (flag if > 20%)
+    - Unplanned work ratio = PRs not linked to any original issue / total PRs
+    - TIB conformance = decisions from the TIB that were followed / total decisions
+  - Rate each indicator with a verdict (On track, Behind, Healthy, Elevated, etc.)
 
-   - **What Changed**: Describe the major changes. Include the "By the Numbers" table from the
-     `retro-pr-stats.mjs` output. Call out if line counts are inflated by lockfiles or generated
-     code.
+- **Timeline**: Use the milestone table from Phase 3, ordered chronologically.
 
-   - **TIB Comparison**: Use the analysis from Phase 4. Include the planned-vs-delivered breakdown.
+- **What Changed**: Describe the major changes. Include the "By the Numbers" table from the
+  `retro-pr-stats.mjs` output. Call out if line counts are inflated by lockfiles or generated
+  code.
 
-   - **Impact**: Note any observable improvements or regressions (performance, DX, reliability).
-     Be honest about what wasn't measured.
+- **TIB Comparison**: Use the analysis from Phase 4. Include the planned-vs-delivered breakdown.
 
-   - **Issue Completion Analysis**: Use the categorization from Phase 2. For each incomplete issue,
-     provide a one-line explanation of why it wasn't done.
+- **Impact**: Note any observable improvements or regressions (performance, DX, reliability).
+  Be honest about what wasn't measured.
 
-   - **Post-Completion Fix Cluster**: Identify PRs with `fix(` prefixes that were merged after the
-     main work was done. For each, describe the problem, fix, and lesson. Calculate the fix ratio.
+- **Issue Completion Analysis**: Use the categorization from Phase 2. For each incomplete issue,
+  provide a one-line explanation of why it wasn't done.
 
-   - **What Went Well**: Extract from the overall analysis — what strategies, patterns, or
-     decisions paid off?
+- **Post-Completion Fix Cluster**: Identify PRs with `fix(` prefixes that were merged after the
+  main work was done. For each, describe the problem, fix, and lesson. Calculate the fix ratio.
 
-   - **What Could Be Better**: Be specific and include concrete recommendations. Don't just list
-     problems — suggest what should be done differently next time.
+- **What Went Well**: Extract from the overall analysis — what strategies, patterns, or
+  decisions paid off?
 
-   - **Recommendations**: Numbered, actionable, general enough to apply to future projects.
+- **What Could Be Better**: Be specific and include concrete recommendations. Don't just list
+  problems — suggest what should be done differently next time.
 
-   - **Verdict**: Write one honest paragraph summarizing whether the project was a success, partial
-     success, or failure. Ground it in the Goal Scorecard and Quantitative Indicators. Call out the
-     single biggest win and the single biggest miss. If partial success, explain what would have
-     made it a full success.
+- **Recommendations**: Numbered, actionable, general enough to apply to future projects.
 
-   - **Current State**: What does the relevant part of the codebase look like now?
+- **Verdict**: Write one honest paragraph summarizing whether the project was a success, partial
+  success, or failure. Ground it in the Goal Scorecard and Quantitative Indicators. Call out the
+  single biggest win and the single biggest miss. If partial success, explain what would have
+  made it a full success.
 
-   - **Key PRs**: Table of all analyzed PRs with links.
+- **Current State**: What does the relevant part of the codebase look like now?
 
-   - **References**: TIBs, Linear project, any other relevant links.
+- **Key PRs**: Table of all analyzed PRs with links.
+
+- **References**: TIBs, Linear project, any other relevant links.
 
 Use reference-style markdown links for all PR and TIB references (at the bottom of the file).
 

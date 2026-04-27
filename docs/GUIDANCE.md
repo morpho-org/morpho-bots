@@ -32,13 +32,13 @@ Concrete signals:
 
 ### Examples
 
-| Scenario                                                        | TIB?                                               | Linear? |
-| --------------------------------------------------------------- | -------------------------------------------------- | ------- |
-| Choosing a job scheduler for bots (cron vs. queue vs. Temporal) | Yes — TIB first, then Linear tickets               | Yes     |
-| Adding a new bot that reuses the existing scheduler pattern     | No — pattern already decided in the scheduler TIB  | Yes     |
-| Migrating from library A to library B                           | Yes                                                | Yes     |
-| Fixing a bug in a bot's reallocation logic                      | No                                                 | Yes     |
-| Changing how all bots handle RPC failover                       | Yes                                                | Yes     |
+| Scenario                                                        | TIB?                                              | Linear? |
+| --------------------------------------------------------------- | ------------------------------------------------- | ------- |
+| Choosing a job scheduler for bots (cron vs. queue vs. Temporal) | Yes — TIB first, then Linear tickets              | Yes     |
+| Adding a new bot that reuses the existing scheduler pattern     | No — pattern already decided in the scheduler TIB | Yes     |
+| Migrating from library A to library B                           | Yes                                               | Yes     |
+| Fixing a bug in a bot's reallocation logic                      | No                                                | Yes     |
+| Changing how all bots handle RPC failover                       | Yes                                               | Yes     |
 
 ---
 
