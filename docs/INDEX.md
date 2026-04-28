@@ -23,10 +23,9 @@ Quick navigation for the curator-bots documentation.
 
 | Package                                                   | Description                     | Docs |
 | --------------------------------------------------------- | ------------------------------- | ---- |
-| [@repo/oxlint-config](../packages/oxlint-config/)         | Shared oxlint configuration     | —    |
+| [@repo/abis](../packages/abis/)                           | Shared Morpho protocol ABIs     | —    |
 | [@repo/typescript-config](../packages/typescript-config/) | Shared TypeScript configuration | —    |
-
-_More packages (`@repo/abis`, `@repo/utils`) land as the scaffold rolls out — see [TIB-2026-04-16](./decisions/TIB-2026-04-16-bootstrap-curator-bots.md)._
+| [@repo/utils](../packages/utils/)                         | Shared server-safe utilities    | —    |
 
 ---
 

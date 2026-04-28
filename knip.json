@@ -5,7 +5,6 @@
   "workspaces": {
     ".": {},
     "packages/typescript-config": {},
-    "packages/oxlint-config": {},
     "packages/utils": {},
     "packages/abis": {}
   }

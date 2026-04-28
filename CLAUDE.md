@@ -126,8 +126,7 @@ These files provide important background information about dependencies and rela
 This is a **bun workspaces monorepo** housing off-chain Morpho curator bots:
 
 - `/bots/` — individual bot apps (first: Kill Switch Bot)
-- `/packages/` — shared libraries (`@repo/utils`, `@repo/abis`, `@repo/typescript-config`,
-  `@repo/oxlint-config`)
+- `/packages/` — shared libraries (`@repo/utils`, `@repo/abis`, `@repo/typescript-config`)
 
 **Key technologies**: bun 1.3.12 (runtime + package manager + workspace task runner), Node.js
 24.14.1, TypeScript 6.0, viem for Web3, oxlint + oxfmt for lint/format, knip for dead-code
@@ -166,12 +165,11 @@ All commit messages, PR titles, and Linear ticket titles use the same format:
 
 **Scopes — Packages:**
 
-| Package                 | Scope           |
-| ----------------------- | --------------- |
-| @repo/abis              | `abis`          |
-| @repo/oxlint-config     | `oxlint-config` |
-| @repo/typescript-config | `ts-config`     |
-| @repo/utils             | `utils`         |
+| Package                 | Scope       |
+| ----------------------- | ----------- |
+| @repo/abis              | `abis`      |
+| @repo/typescript-config | `ts-config` |
+| @repo/utils             | `utils`     |
 
 **Scopes — Bots:** one scope per bot, added as bots land (first will be `kill-switch`).
 
@@ -185,7 +183,7 @@ All commit messages, PR titles, and Linear ticket titles use the same format:
 | `ci`          | CI/CD pipeline changes                                        |
 | `agents`      | `CLAUDE.md`, `.mcp.json`, editor configs, agent definitions   |
 | `conventions` | `CONVENTIONS.md`, `GUIDANCE.md`, docs templates               |
-| `tooling`     | `@repo/typescript-config`, `@repo/oxlint-config`, oxfmt, knip |
+| `tooling`     | `@repo/typescript-config`, oxlint, oxfmt, knip                |
 | `checks`      | CI workflow files and git hooks                               |
 | `docs`        | TIBs, retros, READMEs, `docs/context/`                        |
 
@@ -195,5 +193,5 @@ cross-cutting, use `bots`, `packages`, or `repo` as appropriate.
 Examples:
 
 - `chore(agents): port CLAUDE.md, editor configs, and .mcp.json for bun-first bots repo`
-- `feat(tooling): ship @repo/typescript-config and @repo/oxlint-config`
+- `feat(tooling): ship @repo/typescript-config`
 - `ci(checks): port setup action, checks.yml, husky pre-commit and commit-msg hooks`
