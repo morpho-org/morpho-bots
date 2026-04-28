@@ -1,0 +1,36 @@
+{
+  "name": "@repo/abis",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./v1": {
+      "types": "./src/v1/index.ts",
+      "default": "./src/v1/index.ts"
+    },
+    "./v2": {
+      "types": "./src/v2/index.ts",
+      "default": "./src/v2/index.ts"
+    }
+  },
+  "scripts": {
+    "lint": "oxlint --config ../../.oxlintrc.json --no-error-on-unmatched-pattern",
+    "lint:fix": "oxlint --config ../../.oxlintrc.json --fix --no-error-on-unmatched-pattern",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@repo/utils": "workspace:*",
+    "viem": "catalog:"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@types/bun": "catalog:",
+    "typescript": "catalog:"
+  }
+}

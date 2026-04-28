@@ -13,6 +13,19 @@
         "typescript": "catalog:",
       },
     },
+    "packages/abis": {
+      "name": "@repo/abis",
+      "version": "0.0.0",
+      "dependencies": {
+        "@repo/utils": "workspace:*",
+        "viem": "catalog:",
+      },
+      "devDependencies": {
+        "@repo/typescript-config": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "packages/oxlint-config": {
       "name": "@repo/oxlint-config",
       "version": "0.0.0",
@@ -209,6 +222,8 @@
     "@oxlint/binding-win32-ia32-msvc": ["@oxlint/binding-win32-ia32-msvc@1.61.0", "", { "os": "win32", "cpu": "ia32" }, "sha512-0ySj4/4zd2XjePs3XAQq7IigIstN4LPQZgCyigX5/ERMLjdWAJfnxcTsrtxZxuij8guJW8foXuHmhGxW0H4dDA=="],
 
     "@oxlint/binding-win32-x64-msvc": ["@oxlint/binding-win32-x64-msvc@1.61.0", "", { "os": "win32", "cpu": "x64" }, "sha512-0xgSiyeqDLDZxXoe9CVJrOx3TUVsfyoOY7cNi03JbItNcC9WCZqrSNdrAbHONxhSPaVh/lzfnDcON1RqSUMhHw=="],
+
+    "@repo/abis": ["@repo/abis@workspace:packages/abis"],
 
     "@repo/oxlint-config": ["@repo/oxlint-config@workspace:packages/oxlint-config"],
 
