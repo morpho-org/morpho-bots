@@ -1,4 +1,4 @@
-# start-plan
+# plan
 
 Act as a product manager to refine specs and create Linear tickets.
 
@@ -10,9 +10,9 @@ single issue to a full project with many workstreams.
 ### Phase 1: Context Gathering Interview
 
 Before creating any plan, interview the user to fully understand their intent. The user will
-typically provide brief context like "/start-plan add a retry loop to the kill-switch bot" or
-"/start-plan scaffold a new reallocation bot". Your job is to ask follow-up questions based on
-what they've provided.
+typically provide brief context like "/plan add a retry loop to the kill-switch bot" or
+"/plan scaffold a new reallocation bot". Your job is to ask follow-up questions based on what
+they've provided.
 
 **Start by asking the user:**
 
