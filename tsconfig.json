@@ -1,22 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/tsconfig",
-  "compilerOptions": {
-    "target": "ESNext",
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "lib": ["ESNext"],
-    "types": [],
-    "strict": true,
-    "noUncheckedIndexedAccess": true,
-    "noImplicitReturns": true,
-    "esModuleInterop": true,
-    "isolatedModules": true,
-    "moduleDetection": "force",
-    "resolveJsonModule": true,
-    "skipLibCheck": true,
-    "noEmit": true,
-    "incremental": true
-  },
+  "extends": "@repo/typescript-config/base",
   "include": [],
   "exclude": ["**/node_modules", "**/dist", "**/build"]
 }
