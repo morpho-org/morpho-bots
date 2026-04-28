@@ -20,8 +20,6 @@
     }
   },
   "scripts": {
-    "lint": "oxlint --config ../../.oxlintrc.json --no-error-on-unmatched-pattern",
-    "lint:fix": "oxlint --config ../../.oxlintrc.json --fix --no-error-on-unmatched-pattern",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

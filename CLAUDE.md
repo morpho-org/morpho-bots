@@ -52,9 +52,8 @@ your expectation, THEN claim success.
 ### During development
 
 Running lint or typecheck mid-implementation is fine — use your judgment. For tricky changes, a
-quick `bun run --filter <pkg> typecheck` or `bun run --filter <pkg> lint` can help you
-course-correct early. But **do not force the full validation suite after every change**. Focus on
-writing code.
+quick `bun run --filter <pkg> typecheck` or `bun lint` can help you course-correct early. But
+**do not force the full validation suite after every change**. Focus on writing code.
 
 ### Before committing or when the user says "validate"
 
@@ -62,7 +61,8 @@ Run the full suite once the user confirms they're happy with the code (or when p
 commit/push):
 
 1. **Type safety**: Run `bun run --filter <affected-package> typecheck` — zero errors required.
-2. **Lint**: Run `bun run --filter <affected-package> lint` — zero warnings policy.
+2. **Lint**: Run `bun lint` from the repo root — zero warnings policy. Lint is a workspace-level
+   concern; oxlint walks the whole tree and per-package `lint` scripts are deliberately omitted.
 3. **Format**: Run `bun format` — auto-fixes formatting in place.
 4. **Existing tests**: Run `bun test` — all must pass.
 
