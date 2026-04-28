@@ -1,0 +1,28 @@
+#!/usr/bin/env sh
+
+commit_msg_file="$1"
+first_line=$(head -n 1 "$commit_msg_file" | sed 's/[[:space:]]*$//')
+
+case "$first_line" in
+  Merge*|Revert*|fixup!*|squash!*) exit 0 ;;
+esac
+
+max_len=72
+if [ "${#first_line}" -gt "$max_len" ]; then
+  echo "commit-msg: subject is ${#first_line} chars, max is $max_len" >&2
+  echo "  $first_line" >&2
+  exit 1
+fi
+
+# Keep `types` in sync with CLAUDE.md "Title convention" types list.
+types='feat|fix|refactor|chore|docs|test|perf'
+pattern="^(${types})\\([a-z0-9-]+\\): [a-z].+[^.]$"
+if ! printf '%s' "$first_line" | grep -Eq "$pattern"; then
+  cat >&2 <<EOF
+commit-msg: subject does not follow <type>(<scope>): <description>
+  Types: feat, fix, refactor, chore, docs, test, perf
+  Rules: lowercase after the colon, no trailing period, max ${max_len} chars
+  Got:   $first_line
+EOF
+  exit 1
+fi
