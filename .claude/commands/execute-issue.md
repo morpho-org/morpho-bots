@@ -1,4 +1,4 @@
-# execute-plan
+# execute-issue
 
 Execute a Linear ticket implementation plan — creates branch, implements changes, commits, pushes,
 and creates PR.

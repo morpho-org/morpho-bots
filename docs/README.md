@@ -5,6 +5,8 @@ This directory holds architectural decision records (TIBs), retrospectives, and 
 
 ## Layout
 
+- [`INDEX.md`](./INDEX.md) — discovery index linking guides, bots, packages, TIBs, and external
+  context.
 - [`GUIDANCE.md`](./GUIDANCE.md) — when to write a TIB, the TIB lifecycle, and how TIBs relate to
   Linear specs and RFCs.
 - [`templates/TIB.md`](./templates/TIB.md) — canonical TIB template. Copy to
