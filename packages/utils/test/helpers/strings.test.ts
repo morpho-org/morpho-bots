@@ -84,6 +84,12 @@ describe('arrayToSentence', () => {
   it('should handle array with undefined values', () => {
     expect(arrayToSentence([undefined as any])).toBe('')
   })
+
+  it('should not mutate the input array', () => {
+    const input = ['apple', 'banana', 'orange']
+    arrayToSentence(input)
+    expect(input).toEqual(['apple', 'banana', 'orange'])
+  })
 })
 
 describe('sortAlphabetically', () => {

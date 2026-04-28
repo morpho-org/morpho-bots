@@ -30,8 +30,8 @@ export function arrayToSentence(arr: string[]): string {
   if (arr.length === 1) return arr[0] ?? ''
   if (arr.length === 2) return arr.join(' and ')
 
-  const lastElement = arr.pop()
-  return arr.join(', ') + ', and ' + lastElement
+  const lastElement = arr[arr.length - 1]
+  return arr.slice(0, -1).join(', ') + ', and ' + lastElement
 }
 
 /**
