@@ -1,0 +1,55 @@
+name: Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize]
+  merge_group:
+
+env:
+  CI: true
+
+jobs:
+  Lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Setup
+        uses: ./.github/actions/setup
+
+      - name: Run lint
+        run: bun lint
+
+      - name: Run format check
+        run: bun format:check
+
+  Typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Setup
+        uses: ./.github/actions/setup
+
+      - name: Run typecheck
+        run: bun run --filter '*' typecheck
+
+  Unit-Test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Setup
+        uses: ./.github/actions/setup
+
+      - name: Run unit tests
+        run: bun test
+
+  Dead-Code:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Setup
+        uses: ./.github/actions/setup
+
+      - name: Check for unused code and dependencies
+        run: bun knip

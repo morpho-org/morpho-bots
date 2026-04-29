@@ -1,0 +1,44 @@
+#!/usr/bin/env sh
+
+commit_msg_file="$1"
+first_line=$(head -n 1 "$commit_msg_file" | sed 's/[[:space:]]*$//')
+
+case "$first_line" in
+  Merge*|Revert*|fixup!*|squash!*) exit 0 ;;
+esac
+
+# Only enforce on the first commit of a branch. Follow-up commits (e.g.
+# "@reviewer review") get squashed away when the PR merges, so only the first
+# commit's subject becomes the PR title and matters for the convention.
+default_ref=""
+if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+  default_ref=origin/main
+elif git rev-parse --verify --quiet main >/dev/null 2>&1; then
+  default_ref=main
+fi
+if [ -n "$default_ref" ]; then
+  ahead=$(git rev-list --count "$default_ref..HEAD" 2>/dev/null || echo 0)
+  if [ "$ahead" -gt 0 ]; then
+    exit 0
+  fi
+fi
+
+max_len=72
+if [ "${#first_line}" -gt "$max_len" ]; then
+  echo "commit-msg: subject is ${#first_line} chars, max is $max_len" >&2
+  echo "  $first_line" >&2
+  exit 1
+fi
+
+# Keep `types` in sync with CLAUDE.md "Title convention" types list.
+types='feat|fix|refactor|chore|docs|test|perf|ci'
+pattern="^(${types})\\([a-z0-9-]+\\): [a-z].+[^.]$"
+if ! printf '%s' "$first_line" | grep -Eq "$pattern"; then
+  cat >&2 <<EOF
+commit-msg: subject does not follow <type>(<scope>): <description>
+  Types: feat, fix, refactor, chore, docs, test, perf, ci
+  Rules: lowercase after the colon, no trailing period, max ${max_len} chars
+  Got:   $first_line
+EOF
+  exit 1
+fi
