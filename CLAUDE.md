@@ -161,7 +161,7 @@ All commit messages, PR titles, and Linear ticket titles use the same format:
 - No trailing period
 - Imperative present tense: "add", "remove", "fix", "refactor" (not "added", "fixes")
 
-**Types:** `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `perf`
+**Types:** `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `perf`, `ci`
 
 **Scopes — Packages:**
 

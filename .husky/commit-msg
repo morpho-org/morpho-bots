@@ -15,12 +15,12 @@ if [ "${#first_line}" -gt "$max_len" ]; then
 fi
 
 # Keep `types` in sync with CLAUDE.md "Title convention" types list.
-types='feat|fix|refactor|chore|docs|test|perf'
+types='feat|fix|refactor|chore|docs|test|perf|ci'
 pattern="^(${types})\\([a-z0-9-]+\\): [a-z].+[^.]$"
 if ! printf '%s' "$first_line" | grep -Eq "$pattern"; then
   cat >&2 <<EOF
 commit-msg: subject does not follow <type>(<scope>): <description>
-  Types: feat, fix, refactor, chore, docs, test, perf
+  Types: feat, fix, refactor, chore, docs, test, perf, ci
   Rules: lowercase after the colon, no trailing period, max ${max_len} chars
   Got:   $first_line
 EOF
