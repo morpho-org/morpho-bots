@@ -160,6 +160,9 @@ All commit messages, PR titles, and Linear ticket titles use the same format:
 - Lowercase everything after the colon
 - No trailing period
 - Imperative present tense: "add", "remove", "fix", "refactor" (not "added", "fixes")
+- Only the first commit on a branch needs to follow this — follow-up commits
+  (e.g. `"@reviewer review"`) are squashed at merge, so the commit-msg hook
+  only enforces the convention on the branch's first commit
 
 **Types:** `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `perf`, `ci`
 
