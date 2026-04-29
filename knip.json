@@ -4,6 +4,8 @@
   "ignore": [".claude/**"],
   "workspaces": {
     ".": {},
-    "packages/typescript-config": {}
+    "packages/typescript-config": {},
+    "packages/utils": {},
+    "packages/abis": {}
   }
 }

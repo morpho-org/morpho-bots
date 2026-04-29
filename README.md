@@ -6,8 +6,8 @@ bots, and similar — and the shared packages they consume.
 This is a [bun workspaces](https://bun.com/docs/install/workspaces) monorepo:
 
 - `bots/` — individual bot apps (one per bot)
-- `packages/` — shared libraries (e.g. `@repo/typescript-config`, future
-  `@repo/utils`, `@repo/abis`, `@repo/oxlint-config`)
+- `packages/` — shared libraries (e.g. `@repo/typescript-config`, `@repo/utils`,
+  `@repo/abis`)
 
 ## Getting started
 

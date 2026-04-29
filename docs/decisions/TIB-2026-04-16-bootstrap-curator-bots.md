@@ -268,6 +268,44 @@ Bring over `turbo.json` (trimmed from source's 14 tasks to ~10), wire root `pack
   - `morpho-apps/packages/typescript-config/` (shape reference)
   - `morpho-apps/packages/eslint-config/base.js` (spirit reference for Phase 4 oxlint rewrite; gap list in §Assumptions & Constraints)
 
+## Addenda
+
+### 2026-04-28 — Phase 5 execution refinements (CRTR-2283)
+
+The core Phase 5 decision (port `@repo/utils` server-safe + `@repo/abis` verbatim) stands. The
+following execution-time refinements were applied during the port and are recorded here so
+future readers don't mistake the as-built state for drift:
+
+- **`@repo/oxlint-config` inlined into root `.oxlintrc.json` and the package was deleted.** The
+  shipped package had exactly one consumer (the root config, via a relative path — never via
+  the `@repo/` package name), unlike `@repo/typescript-config` which is referenced by
+  per-package `tsconfig.json` extends. Phase 4's package wrapper bought no ergonomics in
+  practice. If a future bot needs per-package lint overrides, extract a shared config back into
+  a package then.
+- **Per-package `lint`/`lint:fix` scripts dropped in favor of root-only `bun lint`.** oxlint's
+  `options.typeAware` is gated to "the root config" — when run from a sub-package cwd, oxlint
+  treats the parent `.oxlintrc.json` as a non-root extended config and rejects `typeAware`.
+  The workaround (passing `--config ../../.oxlintrc.json`) leaks workspace structure. Lint is
+  now exclusively a workspace-level concern; CLAUDE.md's validation suite was updated to point
+  at `bun lint` (root) instead of `bun run --filter <pkg> lint`.
+- **Five oxlint rules turned off** in the merged root config to keep the port close-to-verbatim:
+  `typescript/no-unsafe-type-assertion`, `typescript/await-thenable`,
+  `typescript/no-unnecessary-type-parameters`, `unicorn/consistent-function-scoping`, and
+  `eslint/no-shadow`. `await-thenable` was a flat false positive on `bun:test`'s
+  `.rejects.toThrow()` chain; the others were noisy on pre-existing `as`-cast and
+  inner-function patterns we didn't want to rewrite during a verbatim port. Per-rule re-enable
+  is a follow-up once bots stabilise.
+- **`@repo/utils` shipped without `cdn.ts` and `env.ts`** in addition to the storage subsystem
+  the TIB called out. `cdn.ts` builds CDN image URLs (frontend-only). `env.ts` wraps env-var
+  reading with override hooks designed for Next.js client-side / cookie-driven E2E flows;
+  bots read `Bun.env` directly per CONVENTIONS, so the wrapper added noise without value.
+- **`@repo/abis` shipped source-only, no `dist/` build.** Bots run TS-native under bun and
+  consume `./src/index.ts` directly, matching the `@repo/utils` shape. Build/dev/`tsconfig.test.json`
+  scripts that source had were dropped.
+- **Tests use `bun:test` under `test/` mirroring `src/`.** One retry-timing test is `it.skip`d
+  because `bun:test` lacks `vi.advanceTimersByTimeAsync`; the inline comment explains the
+  limitation. All other vitest specs were straightforward to convert.
+
 <!--
 TIB conventions:
 - Once accepted, do not substantively edit this TIB. If the decision needs to change,

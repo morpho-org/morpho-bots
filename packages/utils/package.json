@@ -1,0 +1,35 @@
+{
+  "name": "@repo/utils",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./types": {
+      "types": "./src/types/index.ts",
+      "default": "./src/types/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@internationalized/date": "catalog:",
+    "@morpho-org/morpho-ts": "catalog:",
+    "date-fns": "catalog:",
+    "lodash-es": "catalog:",
+    "viem": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@types/bun": "catalog:",
+    "@types/lodash-es": "catalog:",
+    "typescript": "catalog:"
+  }
+}
