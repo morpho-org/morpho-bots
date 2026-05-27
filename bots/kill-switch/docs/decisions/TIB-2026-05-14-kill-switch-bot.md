@@ -13,7 +13,7 @@
 
 Morpho curators operating Vaults V1 (MetaMorpho V1.0 and V1.1) supply liquidity across potentially hundreds of underlying markets per vault. Each market is priced by an oracle whose price can drift away from the asset's true off-chain reference, whose `updatedAt` timestamp can stale out, or whose `price()` call can revert outright. When any of those conditions surfaces and the curator can't intervene fast enough, new deposits keep routing into a market the curator no longer trusts — and lender funds end up exposed to a broken price feed.
 
-The curator needs an automated circuit breaker — a "kill switch" — that watches the chain, detects oracle staleness, deviation, or reverting on the markets in a vault's supply queue, and stops new deposits to the affected markets without the curator having to be at a keyboard. The bot does **not** pull existing funds out; existing exposure drains naturally as users withdraw, and a future Reallocation Bot (called out in the Linear project description) will handle the reallocate-existing-funds case.
+The curator needs an automated circuit breaker — a "kill switch" — that watches the chain, detects oracle staleness, deviation, or reverting on any market in a vault's supply queue, and **halts all new deposits to the vault** without the curator having to be at a keyboard. The bot does **not** selectively remove the affected market; it nukes the entire `supplyQueue`. This is the literal kill-switch posture: any single suspicious oracle stops the whole flow of new deposits, and the curator triages and selectively re-adds markets after reviewing. The bot also does **not** pull existing funds out; existing exposure drains naturally as users withdraw, and a future Reallocation Bot will handle the reallocate-existing-funds case.
 
 [TIB-2026-04-16](../../../../docs/decisions/TIB-2026-04-16-bootstrap-curator-bots.md) stood up the `curator-bots` repo scaffolding and named the Kill Switch Bot as the first planned bot. That bootstrap TIB stopped at "empty `bots/`" — it did not decide how the bot is built. This TIB picks up there and settles the architecture for `kill-switch` only.
 
@@ -24,21 +24,21 @@ Operational constraints that bound the design, per the Linear project descriptio
 - **Fault-tolerant + self-correcting.** Transient failures recover on the next tick without manual intervention; persistent failures alert loudly.
 - **Open-source deployable.** Curators clone (or fork) the repo, configure, and run their own instance.
 
-**Process model up front.** The bot ships as **one Bun process per `(chain, vault)`**. A curator running N vaults across M chains runs N processes total — container orchestration (Docker Compose, k8s, Railway services) is the curator's responsibility. Each process has its own private key, its own RPC list, and its own vault config. This gives true fault isolation between vaults and chains, trivial nonce management (one process = one nonce stream), and a drastically simpler implementation than a single multi-tenant runtime.
+**Process model up front.** The bot ships as **one Bun process per `(chain, vault)`**. A curator running K vaults runs K processes total — regardless of how those vaults are distributed across chains. Container orchestration (Docker Compose, k8s, Railway services) is the curator's responsibility. Each process has its own private key, its own RPC list, and its own vault config. This gives true fault isolation between vaults and chains, trivial nonce management (one process = one nonce stream), and a drastically simpler implementation than a single multi-tenant runtime.
 
 ## Goals / Non-Goals
 
 **Goals**
 
-- Detect oracle health issues — **staleness**, **deviation**, **reverting** — on every market in a vault's `supplyQueue` and call `setSupplyQueue` excluding the affected markets.
-- Run as **one Bun process per `(chain, vault)`**. Operator orchestrates multiple processes if they have multiple vaults or chains.
-- Submit calls from a single EOA per process via viem's `nonceManager`. v1 is EOA-only; smart-wallet support is captured under Future Considerations.
-- Make adapter layers pluggable: **oracle staleness** (Chainlink, Pyth, RedStone) and **reference-price** (vendor-direct Chainlink/Pyth/RedStone as gold standard, plus morpho-api and DefiLlama as discouraged-but-shipped reference implementations). Ship sensible defaults so the common case is configurable without writing code; require a fork to add new vendor-specific implementations.
-- Detect staleness **entirely on-chain**, by reading the underlying vendor feed directly (e.g., Chainlink `AggregatorV3.latestRoundData`) — never through the Morpho `IOracle` interface, which doesn't expose `updatedAt`.
+- Detect oracle health issues — **staleness**, **deviation**, **reverting** — on any market in a vault's `supplyQueue`.
+- On any detection, **halt all new deposits to the vault** by calling `setSupplyQueue([])`. The action is deliberately all-or-nothing; the curator triages and selectively re-adds markets after reviewing.
+- Discover the set of markets to watch by reading the vault's `supplyQueue` directly — no operator-declared market list.
+- Run as **one Bun process per `(chain, vault)`**. Operator orchestrates multiple processes for multiple vaults / chains.
+- Pluggable adapter layers: **oracle staleness** (Chainlink, Pyth, RedStone) and **reference-price** (vendor-direct Chainlink/Pyth/RedStone as gold standard; morpho-api and DefiLlama as discouraged-but-shipped reference implementations).
 - Stay RPC-only and stateless on the hot path. All caches reconstructable; restart is idempotent.
 - Ship as an **open-source bot curators can clone and run** with a documented setup path (README, sample config, CONTRIBUTING, SECURITY, mainnet walkthrough).
 
-**Success signal.** `kill-switch` runs continuously against one Vaults V1 vault on mainnet for one week in live mode with no operator intervention; on a synthesized oracle condition (staleness, deviation, or revert), the bot emits one `setSupplyQueue` transaction within one polling interval (block seen → tx broadcast). Before that, the same bot ran in dry-run mode against the same configuration for at least 24h with the operator reviewing `/status/near-misses` and confirming threshold tuning.
+**Success signal.** `kill-switch` runs continuously against one Vaults V1 vault on mainnet for one week in live mode with no operator intervention; on a synthesized oracle condition (staleness, deviation, or revert), the bot emits one `setSupplyQueue([])` transaction within one polling interval (block seen → tx broadcast). Before that, the same bot ran in dry-run mode against the same configuration for at least 24h with the operator reviewing `/status/near-misses` and confirming threshold tuning.
 
 **Non-Goals**
 
@@ -46,7 +46,8 @@ Operational constraints that bound the design, per the Linear project descriptio
 - **New on-chain code.** This TIB does not propose deploying any new smart contracts.
 - **A "Vaults V1 bot framework" abstraction.** No `(trigger, action)` registry, no `BotEntry`, no shared multi-bot scaffolding in v1. If a second curator bot lands, that work decides what to extract — this TIB does not anticipate it.
 - **Multi-vault or multi-chain per process.** One process serves exactly one `(chain, vault)`. Curators run multiple processes for multiple vaults / chains.
-- **Action surface broader than `setSupplyQueue`.** No `reallocate` (future Reallocation Bot), no cap management (timelocked, curator-only), no withdraw-queue updates.
+- **Action surface broader than `setSupplyQueue([])`.** No selective market filtering (the action is all-or-nothing), no `reallocate` (future Reallocation Bot), no cap management (timelocked, curator-only), no withdraw-queue updates.
+- **Operator-declared market list.** Markets are discovered from the live `supplyQueue`; the operator does not maintain a market list in config.
 - **PublicAllocator interaction.** If a curator has it enabled with non-zero flow caps on an affected market, that path is outside this bot's protection scope. Curator-side decision.
 - **Smart-wallet submission.** EOA-only in v1. Smart-wallet (Safe-1/1, CB Smart Wallet, EIP-7702) tracked under Future Considerations.
 - **OpenTelemetry / distributed tracing / Prometheus `/metrics`.** v1 ships stdout JSON logs + `/status`. OTEL gets its own follow-up TIB if a curator asks for it.
@@ -67,10 +68,10 @@ One Bun process serves exactly one `(chain, vault)`. The per-tick loop is:
     → if blockNumber > lastSeen, run the pipeline
         → multicall (aggregate3): isAllocator + supplyQueue + oracle.price + vendor staleness feeds
         → reference-price adapter fetches (parallel HTTP, deduped per oracle)
-        → evaluate: per-market staleness ∪ deviation ∪ reverting
-        → plan: setSupplyQueue with affected markets removed (idempotent)
+        → evaluate: any market staleness ∪ deviation ∪ reverting
+        → if any market fires AND supplyQueue is non-empty, plan setSupplyQueue([])
         → simulate via eth_call from wallet
-        → submit one TX through viem nonceManager
+        → submit one TX
         → observe via stdout JSON + /status
 ```
 
@@ -80,22 +81,22 @@ There is no "framework layer" — the code is organized internally (evaluator, w
 
 Inherits the repo posture established in [TIB-2026-04-16](../../../../docs/decisions/TIB-2026-04-16-bootstrap-curator-bots.md) (bun runtime + package manager, oxlint/oxfmt, `bun test`, `@repo/*` namespace, TS-as-config). Bot-specific choices:
 
-| Layer                     | Choice                                                                                                                       | Rationale                                                                                                                                                                                                                                        |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Runtime                   | Bun (repo default)                                                                                                           | Fast startup, good fetch perf for adapter calls.                                                                                                                                                                                                 |
-| Language                  | TypeScript strict (repo default)                                                                                             | Type safety across ABI decoding, price math, adapter interfaces.                                                                                                                                                                                 |
-| Config format             | TS-as-config, operator-forked; Zod for runtime validation at the boundary                                                    | Type safety and autocomplete at edit time; matches the "fork to extend" pattern used for custom adapters. Types are hand-written and canonical; Zod schemas validate at runtime and are kept in sync via a CI assertion.                         |
-| Chain interaction         | viem (stable surface)                                                                                                        | Typed ABI encoding, native multicall, viem's `nonceManager` for ordered EOA submission, lighter than ethers.                                                                                                                                     |
-| Block ingestion           | **HTTP polling** of `eth_blockNumber` at configurable interval (default 10s mainnet, 4s L2)                                  | Simpler than WS. Reaction time is not a sub-block product requirement. No watchdog, no reconnect, no rotate-on-WS-failure machinery.                                                                                                             |
-| Read batching             | Multicall3 (`0xcA11bde05977b3631167028862bE2a173976CA11`) `aggregate3` with `allowFailure: true`, **static chunk size ~100** | Reverting oracle calls don't poison the whole batch; per-call success flags surface the revert as a trigger condition. Static chunking is simpler than adaptive grow/shrink; ~100 fits gas on every chain we target.                             |
-| Reference-price source    | Per-oracle adapter, **operator-declared explicitly** — no `auto` default                                                     | Recommended: `chainlink-direct`, `pyth-direct`, `redstone-direct` (vendor-direct, independent of the Morpho oracle under test). Discouraged-but-shipped: `morpho-api`, `defillama` as reference implementations (see circularity warning below). |
-| Oracle staleness adapters | **Vendor-direct** (Chainlink `AggregatorV3`, Pyth `PriceFeed`, RedStone, …)                                                  | The Morpho `IOracle` interface doesn't expose `updatedAt`; the bot reads the vendor feed directly. Operator declares vendor feed addresses per oracle in config. Ships default vendor adapters; fork to add new vendors.                         |
-| Write path                | EOA-direct submission via viem; `nonceManager` orders nonce issuance within the process                                      | One process = one EOA = one nonce stream. No abstraction layer; the EOA submitter is inlined.                                                                                                                                                    |
-| Signing key custody       | `Bun.env.SIGNER_PRIVATE_KEY`                                                                                                 | Matches repo convention. Custodial upgrade (KMS / Turnkey / Privy) tracked in Future Considerations.                                                                                                                                             |
-| Hosting                   | Railway US-East as reference deployment; bot is portable (any Bun + RPC host runs it)                                        | Persistent process, managed deploys, proximity to Alchemy us-east-1. Docker image is the primary distribution; Railway is one of many places to run it.                                                                                          |
-| RPC provider              | Operator-supplied ordered HTTP list; per-endpoint circuit breaker rotates on failure                                         | Bot makes no recommendation beyond "at least two HTTP endpoints".                                                                                                                                                                                |
-| Observability             | **stdout JSON logs** + `/status` rich-health endpoint                                                                        | Vendor-neutral; containers (Railway, Docker, k8s) pick up stdout natively. OTEL deferred to a follow-up TIB.                                                                                                                                     |
-| Health endpoints          | `Bun.serve()` exposing `/healthz`, `/readyz`, `/status`, `/status/near-misses` (dry-run only)                                | Single small surface; no framework needed.                                                                                                                                                                                                       |
+| Layer                     | Choice                                                                                                                                                                   | Rationale                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Runtime                   | Bun (repo default)                                                                                                                                                       | Fast startup, good fetch perf for adapter calls.                                                                                                                                                                                                                                                                                                                                                                           |
+| Language                  | TypeScript strict (repo default)                                                                                                                                         | Type safety across ABI decoding, price math, adapter interfaces.                                                                                                                                                                                                                                                                                                                                                           |
+| Config format             | TS-as-config, operator-forked; Zod for runtime validation at the boundary                                                                                                | Type safety and autocomplete at edit time; matches the "fork to extend" pattern used for custom adapters. Types are hand-written and canonical; Zod schemas validate at runtime and are kept in sync via a CI assertion.                                                                                                                                                                                                   |
+| Chain interaction         | viem (stable surface)                                                                                                                                                    | Typed ABI encoding, native multicall, lighter than ethers. Nonce handling is trivial in v1 (one in-flight TX per process); the writer can either fetch `eth_getTransactionCount` per send or use viem's [`nonceManager`](https://viem.sh/docs/clients/nonce-managers) (a small abstraction that caches the next nonce locally and recovers from RPC nonce-state drift). Implementation detail, picked in the writer phase. |
+| Block ingestion           | **HTTP polling** of `eth_blockNumber` at configurable interval (default 10s mainnet, 4s L2)                                                                              | Simpler than WS. Reaction time is not a sub-block product requirement. No watchdog, no reconnect, no rotate-on-WS-failure machinery.                                                                                                                                                                                                                                                                                       |
+| Read batching             | Multicall3 (`0xcA11bde05977b3631167028862bE2a173976CA11`) `aggregate3` with `allowFailure: true`, **fixed calldata byte-length budget (~50 KB per chunk, configurable)** | Reverting oracle calls don't poison the whole batch; per-call success flags surface the revert as a trigger condition. Byte-length chunking tracks what actually drives gas (calldata size, not call count) and stays correct as adapters with larger payloads land.                                                                                                                                                       |
+| Reference-price source    | Per-oracle adapter, **operator-declared explicitly** — no `auto` default                                                                                                 | Recommended: `chainlink-direct`, `pyth-direct`, `redstone-direct` (vendor-direct, independent of the Morpho oracle under test). Discouraged-but-shipped: `morpho-api`, `defillama` as reference implementations (see circularity warning below).                                                                                                                                                                           |
+| Oracle staleness adapters | **Vendor-direct** (Chainlink `AggregatorV3`, Pyth `PriceFeed`, RedStone, …)                                                                                              | The Morpho `IOracle` interface doesn't expose `updatedAt`; the bot reads the vendor feed directly. Operator declares vendor feed addresses per oracle in config. Ships default vendor adapters; fork to add new vendors.                                                                                                                                                                                                   |
+| Write path                | EOA-direct submission via viem; the writer always sends `setSupplyQueue([])` when any market fires                                                                       | One process = one EOA = one nonce stream. No selective filtering; the action is always the full kill. No WalletAdapter abstraction; the EOA submitter is inlined.                                                                                                                                                                                                                                                          |
+| Signing key custody       | `Bun.env.SIGNER_PRIVATE_KEY`                                                                                                                                             | Matches repo convention. Custodial upgrade (KMS / Turnkey / Privy) tracked in Future Considerations.                                                                                                                                                                                                                                                                                                                       |
+| Hosting                   | Railway US-East as reference deployment; bot is portable (any Bun + RPC host runs it)                                                                                    | Persistent process, managed deploys, proximity to Alchemy us-east-1. Docker image is the primary distribution; Railway is one of many places to run it.                                                                                                                                                                                                                                                                    |
+| RPC provider              | Operator-supplied ordered HTTP list; per-endpoint circuit breaker rotates on failure                                                                                     | Bot makes no recommendation beyond "at least two HTTP endpoints".                                                                                                                                                                                                                                                                                                                                                          |
+| Observability             | **stdout JSON logs** + `/status` rich-health endpoint                                                                                                                    | Vendor-neutral; containers (Railway, Docker, k8s) pick up stdout natively. OTEL deferred to a follow-up TIB.                                                                                                                                                                                                                                                                                                               |
+| Health endpoints          | `Bun.serve()` exposing `/healthz`, `/readyz`, `/status`, `/status/near-misses` (dry-run only)                                                                            | Single small surface; no framework needed.                                                                                                                                                                                                                                                                                                                                                                                 |
 
 ### Block ingestion: HTTP polling
 
@@ -118,28 +119,30 @@ while (!stopRequested) {
 
 **Why polling, not WebSocket.** Reaction time isn't a sub-block product requirement — the oracle conditions this bot detects (staleness on the order of minutes, deviation on the order of bps drift, outright revert) are seconds-to-minutes phenomena, not block-to-block races. Polling at 10s on mainnet adds at most one polling interval of latency over WS, in exchange for removing the WS connection lifecycle (reconnect, keepalive, liveness watchdog, rotate-on-WS-failure) entirely.
 
-**Cancellation on new block.** If a tick for block N is still running when the next poll returns N+1, cancel N via `AbortController` and start N+1. Stale results from a prior block are worthless for kill-switch decisions.
+**Overlapping ticks.** If tick N is still running when the next poll returns N+1, let N finish; do **not** cancel it. The writer is idempotent (`setSupplyQueue([])` against an already-empty queue is a no-op) and any conditions still present at N+1 will fire again on the next tick. This deliberately avoids the cross-cutting `AbortController` plumbing that cancellation would require; the cost is at most one extra no-op `setSupplyQueue([])` per overlapping tick when the kill has already been initiated.
 
 **Poll failure.** If `eth_blockNumber` itself fails (RPC error, timeout), the per-endpoint circuit breaker counts the failure and the next attempt rotates to the next RPC. The tick is skipped; the bot tries again next interval.
 
-### Read path: Multicall3 `aggregate3`, static chunk size
+### Read path: Multicall3 `aggregate3`, byte-length-budgeted chunks
 
-All on-chain reads per tick fold into one or more `Multicall3.aggregate3(allowFailure: true)` calls. Per tick the batch contains:
+All on-chain reads per tick fold into one or more `Multicall3.aggregate3(allowFailure: true)` calls. The tick has two phases:
 
-1. **`vault.supplyQueue(i)` enumerations** — the current supply queue.
-2. **`vault.isAllocator(walletAddress)`** — per-tick re-check; revocation surfaces in the same tick it happens.
-3. **Oracle `price()` calls** — one per unique oracle across the deduped watched-market set.
-4. **Vendor staleness reads** — for each oracle, the calls its staleness adapter contributes (e.g., for Chainlink: `latestRoundData()` on each configured underlying feed). Reads the vendor feed **directly**, never the Morpho `IOracle` wrapper.
+1. **Discovery phase.** Read `vault.supplyQueue(i)` to enumerate the live supply queue, plus `vault.isAllocator(walletAddress)` for the per-tick role re-check. Each market's oracle is resolved on first sight (`MorphoBlue.idToMarketParams(marketId).oracle`) and cached process-locally (markets are immutable).
+2. **Evaluation phase.** For each unique oracle in the current supply queue, the batch packs:
+   - **`oracle.price()`** — one per unique oracle.
+   - **Vendor staleness reads** — the calls the oracle's configured staleness adapter contributes (e.g., for Chainlink: `latestRoundData()` on each underlying feed). Reads the vendor feed **directly**, never the Morpho `IOracle` wrapper.
 
 Per-call `allowFailure: true` is the critical knob: a reverting `oracle.price()` becomes a per-call success flag in the response (not a multicall-wide revert), which the bot reads as the "reverting" trigger condition (one of kill switch's three).
 
-**Static chunk size.** Fixed at ~100 calls per chunk (configurable). If a chunk would exceed practical RPC gas ceilings, the operator lowers the value. Hand-rolled adaptive chunking and library options (viem-dlc / soltag-lens) are captured under Future Considerations — for the read volume one vault produces, static is sufficient.
+**Chunking by calldata byte-length.** Chunks are packed by a fixed calldata byte budget (~50 KB per chunk, configurable). Gas cost on `aggregate3` is driven by calldata size, not call count — packing by bytes stays correct as adapters with larger payloads land and avoids both under-utilization (when calls are small) and gas overshoot (when they're large). Operators can lower the budget if a specific RPC endpoint enforces tighter ceilings. Hand-rolled adaptive growth and library options (viem-dlc / soltag-lens) are captured under Future Considerations.
 
-This collapses ~200 individual `eth_call`s into 1–2 round-trips per tick. Per [CONVENTIONS.md](../../../../docs/CONVENTIONS.md), prefer `readDeploylessBatchLens` when a Lens contract models the entity well; for the heterogeneous price + staleness + state read here, Multicall3 is the right tool.
+This collapses dozens of individual `eth_call`s into a small number of round-trips per tick. Per [CONVENTIONS.md](../../../../docs/CONVENTIONS.md), prefer `readDeploylessBatchLens` when a Lens contract models the entity well; for the heterogeneous price + staleness + state read here, Multicall3 is the right tool.
 
 ### Markets and oracle configuration
 
-Operator config declares the **vault** (one) and its **markets** (one or more). Each oracle in use is configured separately in `oracleConfigs`, keyed by the Morpho oracle wrapper address that `MorphoBlue.idToMarketParams(marketId).oracle` resolves to.
+Operator config declares the **vault** (one). It does **not** declare a market list — markets are discovered each tick from the live `supplyQueue`. Each oracle the bot encounters is configured separately in `oracleConfigs`, keyed by the Morpho oracle wrapper address that `MorphoBlue.idToMarketParams(marketId).oracle` resolves to.
+
+**Why no market list.** The vault's `supplyQueue` already names the markets at risk of new exposure on-chain, authoritatively, in the same place the bot reads anyway. Asking the operator to mirror that list in config buys no safety (oracle config is keyed by oracle address, not market) but adds an "edit config + redeploy whenever you change the queue" burden. Auto-discovery removes the burden and collapses what used to be "runtime drift handling" into the normal flow.
 
 **Startup gate (fail loud, never silently degrade).** For the configured `(chain, vault)`, in this order:
 
@@ -147,13 +150,13 @@ Operator config declares the **vault** (one) and its **markets** (one or more). 
 2. **Wallet derivation.** Derive EOA address from `signer.privateKeyEnv`.
 3. **Allocator role check.** `vault.isAllocator(walletAddress) == true`. **Bot refuses to start** if this fails.
 4. **Wallet balance floor.** `wallet.balance >= configured floor`. **FAIL** in live mode; **WARN** in dry-run mode (no gas will be spent).
-5. **Market → oracle resolution.** For every declared market, read `MorphoBlue.idToMarketParams(marketId)` once; cache the resulting oracle address process-locally (markets are immutable). **Fail loud** if any market resolves to an oracle without a config entry in `oracleConfigs`.
+5. **Initial supplyQueue + oracle resolution.** Read the vault's current `supplyQueue`. For every market in it, resolve and cache the oracle address (`MorphoBlue.idToMarketParams(marketId).oracle`). **Fail loud** if any oracle in the current queue lacks a config entry in `oracleConfigs` — this is the operator's signal that they need to add oracle config before bringing the bot up.
 
-**Runtime drift handling.** If on a later tick the bot finds a market in the vault's `supplyQueue` whose oracle isn't configured (curator added a market with a new oracle while the bot was running):
+**Runtime new-oracle handling.** When a new market enters the `supplyQueue` mid-run whose oracle isn't in `oracleConfigs` (curator added a market while the bot was running):
 
 - **Staleness + reverting checks still run** with fallback defaults (24h staleness, single revert), because they're pure on-chain reads needing no operator input.
-- **Deviation check is skipped** (no reference adapter configured → no reference price → can't compute deviation).
-- **High-severity stdout ERROR** to the operator: "new oracle in vault — configure it or accept the deviation-blind protection".
+- **Deviation check is skipped** for that oracle (no reference adapter configured → no reference price → can't compute deviation).
+- **High-severity stdout ERROR** to the operator: "new oracle in vault supplyQueue — configure it or accept the deviation-blind protection".
 
 This preserves a partial-protection floor for newly-added markets without requiring an instant config update, while making the visibility gap loud enough that the operator can't miss it.
 
@@ -216,7 +219,7 @@ export const config: KillSwitchBotConfig = {
   },
   vault: {
     address: '0xVAULT_A',
-    markets: ['0xMARKET_1', '0xMARKET_2', /* ... */],
+    // No market list — the bot discovers markets from the live supplyQueue each tick.
   },
   oracleConfigs: [
     {
@@ -238,17 +241,17 @@ export const config: KillSwitchBotConfig = {
 
 ### Kill switch: evaluation and writer
 
-The per-tick evaluator emits, for each `(market)` in the vault's `supplyQueue` whose oracle fires any of three conditions, an `OracleHealthIntent`:
+The per-tick evaluator inspects each market in the live `supplyQueue` against three conditions:
 
 | Condition | Predicate                                                          |
-| --------- | ------------------------------------------------------------------ | ---------------------- | ------------------------------------ |
+| --------- | ------------------------------------------------------------------ |
 | Staleness | `blockTime - oracleUpdatedAt > stalenessSeconds`                   |
-| Deviation | `                                                                  | oraclePrice - refPrice | / refPrice \* 10_000 > deviationBps` |
+| Deviation | `abs(oraclePrice - refPrice) / refPrice * 10_000 > deviationBps`   |
 | Reverting | The oracle's `price()` per-call success flag was `false` this tick |
 
-A single revert is enough to fire reverting (RPC blips fail the whole multicall, not per-call). Configured thresholds are per-oracle. A market whose oracle is reverting can't be price-checked, so deviation/staleness are skipped for it on that tick — but reverting itself fires the protection, so the market is still protected.
+A single revert is enough to fire reverting (RPC blips fail the whole multicall, not per-call). Configured thresholds are per-oracle. A market whose oracle is reverting can't be price-checked, so deviation/staleness are skipped for it on that tick — but reverting itself fires the protection, so the market is still surfaced as a kill condition.
 
-The writer consumes the intents and, if at least one affected market remains in the current `supplyQueue`, produces exactly one `Call`:
+**Writer: nuke the supply queue.** If **any** market in the current `supplyQueue` fires **any** of the three conditions, the writer produces exactly one call — `setSupplyQueue([])` — emptying the entire queue:
 
 ```typescript
 {
@@ -256,29 +259,33 @@ The writer consumes the intents and, if at least one affected market remains in 
   data: encodeFunctionData({
     abi: MetaMorphoAbi,
     functionName: 'setSupplyQueue',
-    args: [filteredSupplyQueue],     // current supplyQueue with affected markets removed
+    args: [[]],    // empty queue; all new deposits halted until curator triages
   }),
   value: 0n,
 }
 ```
 
-Properties:
+This is the literal kill-switch posture, and it has three important properties:
 
-- **Idempotent.** If the affected market is no longer in the current `supplyQueue` (curator removed it manually, or a prior fire already filtered it), no `Call` is produced.
-- **No-op safe.** Restart between detection and submission, or two concurrent bot instances by mistake, produce calls whose effect is "set the queue to the already-current state" — a transactional no-op, not a corruption.
-- **Atomic per call.** A single `setSupplyQueue` either lands fully or reverts fully.
+- **No race with the curator.** The call args don't depend on the queue snapshot — they're always `[]`. A curator who concurrently modifies the queue cannot have their change overwritten by stale bot args, because there are no stale args; the bot's only possible action is "set to empty." The selective-filtering alternative (computing `currentQueue - affectedMarkets` from a tick-N snapshot, then broadcasting at tick N+k) has a real correctness bug where the bot could re-add a market the curator just removed. The nuke avoids it entirely.
+- **Conservative-by-design.** Any single suspicious oracle halts new deposits to the whole vault, not just the affected market. This matches what a curator would do if paged at 3 AM with an oracle alert: pause everything, investigate, selectively re-enable. The bot does the same thing without waking the curator.
+- **Idempotent.** If `supplyQueue` is already empty (prior fire already landed, or curator manually emptied it), no call is produced. Restart between detection and submission, or two concurrent bot instances by mistake, both converge on the same state.
+
+**Recovery is the curator's job.** After the bot fires, the curator reviews `/status` (which surfaces the firing condition, oracle, and market that triggered), investigates, and selectively re-adds healthy markets via their normal allocator workflow. The kill switch deliberately does not attempt to self-recover or re-add markets — that's curator judgment territory.
+
+**Operator visibility.** Even though the writer doesn't differentiate which market fired (it always nukes the whole queue), the evaluator emits per-market and per-condition findings to logs + `/status`. The operator sees "vault killed because oracle X fired condition Y on markets [A, B, C]" — full forensic detail, single decisive action.
 
 The V1.0 and V1.1 `setSupplyQueue` signatures are byte-for-byte identical (the V1.1 ABI diffs are purely additive — `lostAssets`, `setName`/`setSymbol`, `UpdateLostAssets`). The bot uses the V1.0 ABI subset for both generations.
 
 ### Write path: EOA submission
 
-One process → one EOA → one nonce stream. The submission path is inlined:
+One process → one EOA → one nonce stream → at most one in-flight `setSupplyQueue([])` TX at a time. The submission path is inlined:
 
 - **Simulation.** Before broadcast, the planned call is simulated via `eth_call` with `from: walletAddress` — `msg.sender` inside the called contract is correctly the bot's EOA, so the allocator-role check passes during simulation when it'll pass at submission. Simulation-revert errors are caught and surface as a structured log + `/status` entry; the submission is skipped and the next tick re-evaluates idempotently.
-- **Nonce ordering.** viem's `nonceManager` issues nonces sequentially. Within a single process this is trivial (one in-flight TX at a time on the kill-switch hot path; the `nonceManager` is still useful for nonce caching and recovery from RPC nonce-state drift).
-- **Inflight tracking.** Per-process in-memory pending-tx tracker. While a TX is inflight the writer doesn't re-plan; clears on terminal status. Lost on restart, but stateless recovery: post-restart the next tick reads the filtered queue (if confirmed) or the unfiltered queue (if reverted/abandoned) and re-plans idempotently. Hard timeout: 20 blocks before treating an inflight as abandoned.
+- **Nonce handling.** Trivial — one in-flight TX at a time. The writer either calls `eth_getTransactionCount` immediately before each send or wires up viem's [`nonceManager`](https://viem.sh/docs/clients/nonce-managers) (which caches the next nonce locally and recovers from RPC nonce-state drift). Either approach works; picked in the writer phase.
+- **Inflight tracking.** Per-process in-memory pending-tx tracker. While a TX is inflight the writer doesn't re-plan; clears on terminal status. Lost on restart, but stateless recovery: post-restart the next tick reads the live `supplyQueue` — if empty, the kill already landed and no further action is needed; if non-empty and conditions still fire, the writer plans again. Hard timeout: 20 blocks before treating an inflight as abandoned.
 - **Stuck-TX recovery.** If a broadcast TX hasn't confirmed within `min(3 blocks, 30s)`, replace-at-nonce with a 1.5× gas bump; cap at 3 bumps; after exhaustion, mark the submission failed and let the next tick retry.
-- **Persistent revert handling.** **No streak fuse.** If submissions keep reverting (e.g., a config bug or a persistent race), the bot keeps trying every tick. The operator's signal is the gas burn and the revert counter exposed in `/status`. A fuse adds complexity for a failure mode the operator can detect and respond to manually; if real operator experience shows uncapped retries are worse than the alternative, a fuse can land in a follow-up.
+- **Persistent revert handling.** **No streak fuse.** If submissions keep reverting (e.g., a config bug, allocator role revoked, RPC issue), the bot keeps trying every tick. The operator's signal is the gas burn and the revert counter exposed in `/status`. A fuse adds complexity for a failure mode the operator can detect and respond to manually; if real operator experience shows uncapped retries are worse than the alternative, a fuse can land in a follow-up.
 
 ### RPC fault tolerance
 
@@ -331,18 +338,22 @@ A `dryRun: true` flag in config replaces broadcast with simulation-and-record. W
   "vault": {
     "address": "0xVAULT",
     "isAllocator": true,
-    "marketsWatched": 12,
-    "lastActionAt": "2026-05-13T10:00:00Z",
-    "lastActionTxHash": "0x...",
+    "supplyQueueLength": 12,
+    "marketsDiscovered": 12,
+    "lastFire": {
+      "at": "2026-05-13T10:00:00Z",
+      "txHash": "0x...",
+      "trigger": { "oracle": "0xORACLE_X", "condition": "deviation", "markets": ["0xMARKET_A"] }
+    },
     "consecutiveReverts": 0
   },
-  "oracleConfigsHealth": { "configured": 8, "unconfigured": 0 },
-  "recentActions": [/* ring buffer, last 50 evaluations that produced a call */],
+  "oracleConfigsHealth": { "configured": 8, "unconfiguredInSupplyQueue": 0 },
+  "recentEvaluations": [/* ring buffer, last 50 ticks summarized */],
   "errors": { "last24h": 0, "lastError": null }
 }
 ```
 
-**Log catalog (high-level; specific names locked at impl time).** `tick.start`, `tick.skipped`, `multicall.ok`, `multicall.failed`, `multicall.partial_revert` (carries per-call success flags), `adapter.fetch.ok`, `adapter.fetch.failed`, `oracle.staleness.evaluated`, `oracle.deviation.evaluated`, `oracle.reverting.detected`, `kill_switch.fire`, `tx.simulated.ok`, `tx.simulated.reverted`, `tx.broadcast`, `tx.confirmed`, `tx.reverted`, `tx.bumped`, `rpc.circuit.open`, `rpc.rotated`, `startup.gate.passed`, `startup.gate.failed`, `drift.new_oracle_detected`, `reference_adapter.discouraged_use_warning`.
+**Log catalog (high-level; specific names locked at impl time).** `tick.start`, `tick.skipped`, `multicall.ok`, `multicall.failed`, `multicall.partial_revert` (carries per-call success flags), `adapter.fetch.ok`, `adapter.fetch.failed`, `oracle.staleness.evaluated`, `oracle.deviation.evaluated`, `oracle.reverting.detected`, `kill_switch.fire` (carries triggering oracle, condition, and affected market list), `tx.simulated.ok`, `tx.simulated.reverted`, `tx.broadcast`, `tx.confirmed`, `tx.reverted`, `tx.bumped`, `rpc.circuit.open`, `rpc.rotated`, `startup.gate.passed`, `startup.gate.failed`, `supplyQueue.new_oracle_detected`, `reference_adapter.discouraged_use_warning`.
 
 **OpenTelemetry / `/metrics` Prometheus / distributed tracing.** Deferred. v1 ships stdout JSON + `/status`; that gets a curator to "I know what my bot is doing" without adding a dependency stack or expanding this TIB's surface. A follow-up TIB covers OTEL once one curator running v1 actually asks for it.
 
@@ -350,20 +361,20 @@ A `dryRun: true` flag in config replaces broadcast with simulation-and-record. W
 
 **Posture: fail-safe and alert-loud.** When the bot can't do its job perfectly, it does as much as it safely can, alerts the operator via stdout + `/status`, and never silently degrades into a state where it could miss a kill-switch trigger.
 
-| #   | Mode                                      | Cause                                                       | Response                                                                                                                                                                                                          |
-| --- | ----------------------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | RPC endpoint degraded                     | Provider rate-limit, latency spike                          | Circuit breaker rotates to next endpoint; degraded cooldown then re-tried.                                                                                                                                        |
-| 2   | All RPCs failed                           | Provider-wide outage                                        | Skip tick; `multicall.all_endpoints_failed` log + `/status` flag; retry next tick.                                                                                                                                |
-| 3   | Multicall partial revert (oracle reverts) | An oracle's `price()` reverts                               | `aggregate3` per-call success flags surface it; the reverting trigger condition fires. **Normal flow, not an error.**                                                                                             |
-| 4   | Reference adapter fails                   | morpho-api down, DefiLlama 503, custom adapter throws       | Skip deviation check for that oracle this tick; staleness + reverting still run. Persistent failure → stdout WARN; `/status` counter.                                                                             |
-| 5   | Action simulation reverts (pre-broadcast) | Race with curator manual change; bot-computed queue invalid | Skip submission; log + `/status` with diff (computed vs current queue); next tick re-reads idempotently.                                                                                                          |
-| 6   | Action TX reverts (post-broadcast)        | Race won between sim and submission                         | Log + `/status` revert counter increments; clear inflight; next tick re-reads and re-evaluates. **No fuse — bot keeps trying.**                                                                                   |
-| 7   | Action TX stuck pending                   | Mempool congestion, underpriced gas                         | Replace-at-nonce with 1.5× bump; detect at `min(3 blocks, 30s)`; 3-bump cap; after exhaustion, log as `submission_failed` and let next tick retry.                                                                |
-| 8   | Wallet balance below floor (mid-run)      | Bot has been firing; operator hasn't topped up              | Metric + `/status` flag + stdout WARN. Bot continues (detection + alerts continue); no auto-pause.                                                                                                                |
-| 9   | Allocator role revoked mid-run            | Curator changed vault config                                | Detected via per-tick `isAllocator` read in the standard multicall. stdout ERROR; bot continues (subsequent submissions will fail at simulation, which is the right shape — the operator sees the revoke loudly). |
-| 10  | New oracle in supplyQueue without config  | Curator added a market mid-run                              | Apply fallback staleness (24h) + reverting checks; skip deviation (no reference); stdout ERROR.                                                                                                                   |
-| 11  | Process crash / restart                   | OOM, deploy, signal                                         | Stateless recovery: re-read everything on next tick. Inflight from before crash unknown to bot but idempotent (`setSupplyQueue` of already-filtered queue is a no-op).                                            |
-| 12  | Two bot instances against same vault      | Operator mistake or HA experiment                           | Both attempt to fire; first lands, second's read sees filtered queue and skips. Documented as **not supported** but not actively prevented.                                                                       |
+| #   | Mode                                      | Cause                                                                            | Response                                                                                                                                                                                                                                                      |
+| --- | ----------------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | RPC endpoint degraded                     | Provider rate-limit, latency spike                                               | Circuit breaker rotates to next endpoint; degraded cooldown then re-tried.                                                                                                                                                                                    |
+| 2   | All RPCs failed                           | Provider-wide outage                                                             | Skip tick; `multicall.all_endpoints_failed` log + `/status` flag; retry next tick.                                                                                                                                                                            |
+| 3   | Multicall partial revert (oracle reverts) | An oracle's `price()` reverts                                                    | `aggregate3` per-call success flags surface it; the reverting trigger condition fires. **Normal flow, not an error.**                                                                                                                                         |
+| 4   | Reference adapter fails                   | morpho-api down, DefiLlama 503, custom adapter throws                            | Skip deviation check for that oracle this tick; staleness + reverting still run. Persistent failure → stdout WARN; `/status` counter.                                                                                                                         |
+| 5   | Action simulation reverts (pre-broadcast) | Allocator role revoked between startup and submission; rare protocol-level issue | Skip submission; log + `/status` with the revert reason; next tick re-evaluates.                                                                                                                                                                              |
+| 6   | Action TX reverts (post-broadcast)        | Race against the curator (curator's tx landed just before bot's)                 | Log + `/status` revert counter increments; clear inflight; next tick re-reads `supplyQueue` — if curator already emptied it, the bot is idempotently done. **No fuse — bot keeps trying.**                                                                    |
+| 7   | Action TX stuck pending                   | Mempool congestion, underpriced gas                                              | Replace-at-nonce with 1.5× bump; detect at `min(3 blocks, 30s)`; 3-bump cap; after exhaustion, log as `submission_failed` and let next tick retry.                                                                                                            |
+| 8   | Wallet balance below floor (mid-run)      | Bot has been firing; operator hasn't topped up                                   | Metric + `/status` flag + stdout WARN. Bot continues (detection + alerts continue); no auto-pause.                                                                                                                                                            |
+| 9   | Allocator role revoked mid-run            | Curator changed vault config                                                     | Detected via per-tick `isAllocator` read in the standard multicall. stdout ERROR; bot continues (subsequent submissions will fail at simulation, which is the right shape — the operator sees the revoke loudly).                                             |
+| 10  | New oracle in supplyQueue without config  | Curator added a market mid-run                                                   | Apply fallback staleness (24h) + reverting checks; skip deviation (no reference); stdout ERROR.                                                                                                                                                               |
+| 11  | Process crash / restart                   | OOM, deploy, signal                                                              | Stateless recovery: re-read `supplyQueue` on next tick. If queue is empty, prior fire already landed and there's nothing to do; if non-empty and conditions still fire, re-plan idempotently. `setSupplyQueue([])` against an already-empty queue is a no-op. |
+| 12  | Two bot instances against same vault      | Operator mistake or HA experiment                                                | Both attempt to fire; first lands `setSupplyQueue([])`; second's tick sees an empty queue and produces no call. Documented as **not supported** but the nuke action is naturally idempotent across instances.                                                 |
 
 ### Hosting
 
@@ -376,19 +387,19 @@ A `dryRun: true` flag in config replaces broadcast with simulation-and-record. W
 
 Each phase below is tracked as its own Linear ticket and ships as an independent PR in dependency order. Effort: S (≤1d), M (1–3d), L (3–5d).
 
-**Phase 1 — Skeleton + config.** `bots/kill-switch/` directory; single per-vault process harness with polling loop; config loader (TS-as-config with Zod boundary validation, hand-written types, CI assertion of schema↔type alignment); `AbortController` plumbing; `Bun.serve()` health server with `/healthz`, `/readyz` stubs. **Effort:** M. **Blocks:** 2–7.
+**Phase 1 — Skeleton + config.** `bots/kill-switch/` directory; single per-vault process harness with the polling loop (no tick cancellation — overlapping ticks complete naturally per the design); config loader (TS-as-config with Zod boundary validation, hand-written types, CI assertion of schema↔type alignment); `Bun.serve()` health server with `/healthz`, `/readyz` stubs. **Effort:** M. **Blocks:** 2–7.
 
 **Phase 2 — RPC fault tolerance.** Per-endpoint circuit breaker, ordered HTTP failover, shared state between poll loop and multicall path. **Effort:** M. **Blocks:** 3, 6.
 
-**Phase 3 — Read path: `aggregate3` + static chunking.** Multicall3 client with `allowFailure: true`, static chunk size (~100, configurable), `BlockContext` builder combining on-chain reads with adapter results (parallel), per-tick `isAllocator` folded into the multicall. **Effort:** M. **Blocks:** 4, 5.
+**Phase 3 — Read path: `aggregate3` + byte-length chunking.** Multicall3 client with `allowFailure: true`, fixed calldata byte-length budget per chunk (~50 KB, configurable), `BlockContext` builder combining on-chain reads with adapter results (parallel), per-tick `isAllocator` folded into the multicall, per-tick `supplyQueue` read + first-sight oracle resolution + process-local cache. **Effort:** M. **Blocks:** 4, 5.
 
-**Phase 4 — Staleness adapters.** `OracleStalenessAdapter` interface; built-in vendor adapters for Chainlink, Pyth, RedStone; per-oracle config schema; market → Morpho oracle resolution at startup with process-local cache. **Effort:** M. **Blocks:** 6.
+**Phase 4 — Staleness adapters.** `OracleStalenessAdapter` interface; built-in vendor adapters for Chainlink, Pyth, RedStone; per-oracle config schema. **Effort:** M. **Blocks:** 6.
 
 **Phase 5 — Reference-price adapters.** `ReferencePriceAdapter` interface; built-in vendor-direct adapters (`chainlink-direct`, `pyth-direct`, `redstone-direct`); discouraged-but-shipped `morpho-api` and `defillama` adapters with startup + fetch-time circularity warnings. No `auto` selection — operator declares per oracle explicitly. **Effort:** M. **Blocks:** 6.
 
-**Phase 6 — Kill switch detection + writer.** Evaluation logic (staleness ∪ deviation ∪ reverting against `BlockContext`); `setSupplyQueue` writer; inflight tracker; idempotent recovery. **Effort:** M. **Blocks:** 7.
+**Phase 6 — Kill switch detection + writer.** Evaluation logic (any-market staleness ∪ deviation ∪ reverting); `setSupplyQueue([])` writer (always full kill, never selective); inflight tracker; idempotent recovery via live `supplyQueue` re-read. **Effort:** M. **Blocks:** 7.
 
-**Phase 7 — EOA submission + startup gate + dry-run wrapper.** viem `nonceManager` integration; per-call `eth_call` simulation; stuck-TX recovery (1.5× bump, 3-bump cap); five-step fail-loud startup gate; dry-run mode (config flag + `/status/near-misses` endpoint). **Effort:** L. **Blocks:** 8.
+**Phase 7 — EOA submission + startup gate + dry-run wrapper.** Nonce handling (viem `nonceManager` or per-send `eth_getTransactionCount` — writer's choice); per-call `eth_call` simulation; stuck-TX recovery (1.5× bump, 3-bump cap); five-step fail-loud startup gate; dry-run mode (config flag + `/status/near-misses` endpoint). **Effort:** L. **Blocks:** 8.
 
 **Phase 8 — Open-source readiness + mainnet canary.** README (clone-to-running in <10 min for a technical operator); CONTRIBUTING.md (how forks contribute back); SECURITY.md (vuln disclosure, scope); sample `config.ts` with placeholder values; "from clone to first dry-run fire" mainnet walkthrough; Docker image build (via repo CI) and publish; license file (MIT, pending engineering leadership confirmation per Open Questions). Then: run against one curator-owned V1 vault on mainnet in dry-run for ≥24h; curator reviews `/status/near-misses` and confirms threshold tuning; synthesize a deviation event in dry-run to verify the bot would have fired correctly; flip to live behind a curator-acknowledged flag; observe for one week. **Effort:** L. **Blocks:** Merge `kill-switch` v1.0.
 
@@ -412,11 +423,11 @@ Use the plain `aggregate` function which reverts the whole batch on any inner ca
 
 **Why rejected.** A reverting oracle is one of the kill-switch's three trigger conditions. Using `aggregate` makes a reverting oracle indistinguishable from a network failure — both fail the whole multicall, and the bot would have to retry to discover whether any specific oracle was the cause. `aggregate3` with per-call `allowFailure: true` surfaces the revert as data instead of an error, which is exactly what the trigger logic needs.
 
-### Alternative 4: Adaptive multicall chunk sizing
+### Alternative 4: Fixed call-count chunks (or adaptive chunking) for the multicall
 
-Start large, shrink on revert, grow on success.
+Either a fixed `~100 calls per chunk` budget, or adaptive grow-on-success / shrink-on-revert.
 
-**Why rejected for v1.** Hand-rolled adaptive chunking is real code surface to maintain and reason about. Static ~100 fits comfortably under gas on every chain we target for one vault's read volume. If RPC ceilings tighten or we measure waste, revisit. viem-dlc / soltag-lens auto-chunking is captured as a future possibility.
+**Why rejected for v1.** Fixed-count is the wrong metric — gas cost is driven by calldata bytes, not call count, so a 100-call budget under-utilizes the gas headroom on small-payload chunks and risks overshooting on large-payload chunks. Byte-length chunking (~50 KB per chunk, configurable) tracks what actually matters and stays correct as adapters with larger payloads land. Adaptive grow/shrink is more code surface than the byte-budget needs for v1's read volume; viem-dlc / soltag-lens auto-chunking is captured as a future possibility.
 
 ### Alternative 5: Off-chain staleness detection
 
@@ -484,14 +495,35 @@ Build the bot on a `(trigger, action)` registry, `BotEntry` config shape, and sh
 
 **Why rejected for v1.** v1 ships one bot. Designing a framework abstraction around a single concrete instance is the kind of speculative generality that ages badly — the second bot, when it arrives, will reveal which seams the framework actually needed and which were guesses. Building the framework now also expands the v1 correctness surface (the most operationally critical thing in a kill switch) for use cases that don't exist yet. If a second bot lands, that work will decide whether to extract a framework from kill switch's structure.
 
+### Alternative 16: Selective filtering — `setSupplyQueue(currentQueue \ affectedMarkets)`
+
+Earlier drafts had the writer compute the current `supplyQueue` minus the affected markets and submit that filtered list. This is the obvious "minimally-invasive" action: only remove the markets that fired, leave the rest of the vault productive.
+
+**Why rejected.** It has a real correctness bug under a curator-vs-bot race. The bot reads `supplyQueue` at tick N, computes `[A, B, C, D] \ [C] = [A, B, D]`, broadcasts at tick N+k. Between N and N+k, the curator independently sees the same condition (or knows more about contagion) and removes both `C` and `D`. Curator's tx lands first; queue becomes `[A, B]`. Bot's tx lands; `setSupplyQueue([A, B, D])` re-adds `D` — the very market the curator just removed. Simulation doesn't catch it (the call itself succeeds; the post-condition is just wrong). Nuking the queue (`setSupplyQueue([])`) eliminates the race entirely: the bot's args don't depend on a stale snapshot, so they can't conflict with a concurrent curator action. The cost is over-conservatism — a single suspicious oracle halts the whole vault — but that's exactly what a kill switch should do, and the curator's recovery (selectively re-add healthy markets) is the curator's normal allocator workflow.
+
+A future TIB may revisit selective filtering via a tiny on-chain `KillSwitchHelper` contract that does read-modify-write atomically. v1 keeps it simple.
+
+### Alternative 17: Operator-declared market list
+
+Operator declares `vault.markets: [...]` explicitly in config; the bot only watches the declared markets.
+
+**Why rejected.** The vault's live `supplyQueue` is the authoritative list of markets at risk of new exposure. Asking the operator to mirror that list in config buys no safety (oracle configuration is keyed by oracle address, not market) and adds an "edit config + redeploy whenever the queue changes" burden. Auto-discovery from `supplyQueue` removes the burden and collapses what used to be "runtime drift handling" into the normal flow.
+
+### Alternative 18: Cancel in-flight ticks on new block via `AbortController`
+
+If tick N is still running when tick N+1 arrives, abort N via a cross-cutting `AbortController` plumbed through the multicall path, adapter fetches, simulation, and submission.
+
+**Why rejected.** Wiring `AbortController` through every async boundary in the pipeline is real implementation surface and easy to get wrong (cancel-during-broadcast in particular is delicate). Because the writer's action is idempotent (`setSupplyQueue([])` against an already-empty queue is a no-op) and the conditions firing in tick N will fire again in tick N+1, letting the in-flight tick complete naturally costs at most one extra no-op TX per overlap and saves the entire `AbortController` plumbing. Stale results from a prior block can't corrupt anything — the worst case is a redundant kill confirmation.
+
 ## Assumptions & Constraints
 
 - **Process model.** One Bun process per `(chain, vault)`. Curator orchestrates multiple processes for multiple vaults or chains. Container orchestration is the curator's responsibility.
-- **EOA submission via viem `nonceManager`.** Within a single process, nonce issuance is sequential and the kill-switch hot path produces at most one in-flight TX. Assumption holds for the chains this bot targets.
+- **Nuke-the-queue action.** The bot's only on-chain action is `setSupplyQueue([])`. Curators accept that any single firing condition halts all new deposits to the vault and that re-enabling markets is their manual triage step. This is the explicit product posture (kill switch, not partial pause).
+- **One in-flight TX per process.** The hot path emits at most one `setSupplyQueue([])` at a time per process; nonce handling is therefore trivial (per-send `eth_getTransactionCount` or viem `nonceManager` — implementation detail).
 - **Vault `ALLOCATOR` role grants `setSupplyQueue`.** Validated at startup. Cap management remains curator-only and is not in the bot's surface.
-- **Markets are immutable.** `MorphoBlue.idToMarketParams(marketId)` returns the same `(loanToken, collateralToken, oracle, irm, lltv)` forever after market creation. The bot caches the market → oracle resolution process-locally.
+- **Markets are immutable.** `MorphoBlue.idToMarketParams(marketId)` returns the same `(loanToken, collateralToken, oracle, irm, lltv)` forever after market creation. The bot caches the market → oracle resolution process-locally on first sight from `supplyQueue`.
 - **V1.0 and V1.1 share the allocator-relevant surface.** Confirmed by ABI diff — V1.1 adds only `lostAssets`, `setName`/`setSymbol`, and an `UpdateLostAssets` event. The bot uses the V1.0 ABI subset for both generations; it is forward-compatible.
-- **In-memory state is acceptable.** Inflight tracker, RPC circuit-breaker state, market → oracle cache. Restart loses these; the worst case is one duplicate `setSupplyQueue` that's a no-op, or one re-evaluation of an already-protected vault. Stateless property preserved.
+- **In-memory state is acceptable.** Inflight tracker, RPC circuit-breaker state, market → oracle cache. Restart loses these; the worst case is one duplicate `setSupplyQueue([])` that's a no-op (the queue is already empty), or one re-evaluation of an already-protected vault. Stateless property preserved.
 - **Signing key in env.** `Bun.env.SIGNER_PRIVATE_KEY` is v1; KMS / Turnkey / Privy is in Future Considerations. Operators MUST treat their deploy environment as the trust boundary.
 - **Block timestamps are monotonic and chain-truthful.** Sequencer-time anomalies on L2s are a known risk; the bot's fail-safe stance means a clock anomaly causes (at worst) an early kill-switch — the safer direction.
 - **PublicAllocator is out of scope.** If a curator has PublicAllocator enabled with non-zero flow caps on an affected market, that path is not covered by `setSupplyQueue`. Curator-side decision.
@@ -500,7 +532,7 @@ Build the bot on a `(trigger, action)` registry, `BotEntry` config shape, and sh
 
 ## Dependencies
 
-- **viem** (workspace catalog). Stable surface only — `sendTransaction`, `waitForTransactionReceipt`, `nonceManager`, `call` (for simulation), HTTP transport with JSON-RPC batching.
+- **viem** (workspace catalog). Stable surface only — `sendTransaction`, `waitForTransactionReceipt`, `call` (for simulation), HTTP transport with JSON-RPC batching. Optionally `nonceManager` (writer's choice; see Write path).
 - **Bun** runtime (repo-pinned). `Bun.serve()` for the health server, `bun:test` for tests.
 - **Reference-price endpoints.** Vendor-direct (Chainlink/Pyth/RedStone) — on-chain via Multicall3, no HTTP dependency. morpho-api (`https://blue-api.morpho.org/graphql`) and DefiLlama (`https://coins.llama.fi`) — discouraged-but-shipped reference implementations; no key required.
 - **RPC providers.** At least two HTTP endpoints per chain (operator-supplied). No specific provider required.
@@ -511,7 +543,7 @@ Build the bot on a `(trigger, action)` registry, `BotEntry` config shape, and sh
 
 ## Security
 
-- **Threat model.** The bot's authority is bounded by the `ALLOCATOR` role on the one vault the process serves. A compromised signing key gives an attacker the ability to call `setSupplyQueue` on that vault (replicating the curator's allocator-role surface) — not to move funds out of the protocol, not to mint shares, not to change curator. Blast radius: reshape the supply queue within the markets the curator already permitted on that vault. The action surface is strictly less than the curator's, by design.
+- **Threat model.** The bot's authority is bounded by the `ALLOCATOR` role on the one vault the process serves. A compromised signing key gives an attacker the ability to call `setSupplyQueue` on that vault (replicating the curator's allocator-role surface) — not to move funds out of the protocol, not to mint shares, not to change curator. Blast radius: reshape the supply queue within the markets the curator already permitted on that vault. The bot's _own_ action is even narrower: only ever `setSupplyQueue([])` (the full kill). A compromised key still has full `setSupplyQueue` authority (because the key holds the role), but the bot's own behavior cannot accidentally re-enable a market the curator just disabled — the args are always `[]`. The action surface is strictly less than the curator's, by design.
 - **Signer custody.** v1 reads the EOA private key from `Bun.env.SIGNER_PRIVATE_KEY`. Hosting environment (Railway / Docker host) is the trust boundary. Future custody upgrade to managed signing (KMS, Turnkey, Privy) tracked in Future Considerations.
 - **Reference-price tamper risk.** A compromised reference-price source (morpho-api, DefiLlama, custom adapter) can fabricate deviation and induce a false fire. Mitigations: (1) operators set their own `deviationBps` thresholds — the bot does not act on tiny apparent deviations; (2) per-oracle adapter is operator-chosen and recommended choices are vendor-direct; (3) morpho-api / DefiLlama adapters are flagged as discouraged; (4) future TIB may add cross-adapter agreement.
 - **RPC tamper risk.** A compromised RPC endpoint can fabricate on-chain reads. Mitigations: (1) circuit breaker reduces dependence on any one endpoint; (2) per CONVENTIONS.md, RPC calls use explicit block tags for determinism; (3) future TIB may add per-block cross-RPC agreement on critical reads.
@@ -525,10 +557,11 @@ Build the bot on a `(trigger, action)` registry, `BotEntry` config shape, and sh
 - **Smart-wallet submission (Safe-1/1, CB Smart Wallet, EIP-7702).** Reopens cross-call atomic batching if a future composite action needs it. v1's process-per-vault model has nothing to batch.
 - **Cross-adapter price agreement.** Require N-of-M reference-price adapters to agree before firing deviation. Useful once a curator runs the bot on a high-stakes vault and wants belt-and-braces on the reference source.
 - **Per-block cross-RPC agreement.** Read the same oracle from 2+ RPCs and only act on agreement. Adds latency and cost; defer until a real attack scenario justifies it.
-- **In-process state persistence.** If `recentActions` / inflight loss across restarts becomes operationally painful, a small SQLite or Bun KV layer can persist them without crossing into "external database on the hot path".
+- **In-process state persistence.** If `recentEvaluations` / inflight loss across restarts becomes operationally painful, a small SQLite or Bun KV layer can persist them without crossing into "external database on the hot path".
 - **Hot-reload of certain config fields.** Threshold tuning during dry-run currently requires restart. A future iteration may allow live threshold changes via an admin endpoint (token-gated, audit-logged) without touching the hot path.
 - **PublicAllocator companion action.** If curators run PublicAllocator with non-zero flow caps on markets the kill switch is protecting, a follow-up TIB may add a companion action to zero PublicAllocator flow caps as part of the protective action.
-- **Adaptive multicall chunking.** Hand-rolled grow/shrink, or buy in to viem-dlc / soltag-lens auto-chunking. Static ~100 is fine for v1.
+- **Adaptive multicall chunking.** Hand-rolled grow/shrink, or buy in to viem-dlc / soltag-lens auto-chunking. Fixed byte-length budget is fine for v1.
+- **Selective filtering via a `KillSwitchHelper` contract.** A tiny stateless on-chain helper exposing `removeMarkets(vault, marketIds[])`: reads the current `supplyQueue`, filters the named markets, calls `setSupplyQueue` with the result — all atomically. Curator grants `ALLOCATOR` to the helper (strictly less authority than to the bot's EOA — the helper can only ever shrink the queue, never re-add). Removes the v1 over-conservatism (nuke-the-queue) without re-opening the curator-vs-bot race. Material work: contract audit, deployment story, CREATE2 registry, curator-config update. Worth its own scoped TIB once we have real operator demand for partial-pause semantics.
 - **Streak fuse / submission backoff.** If real operator experience shows uncapped retries waste enough gas to matter, add a fuse pattern.
 - **A shared "curator bots" framework.** When the second curator bot lands (e.g., Reallocation Bot V1 migration, governance-triggered actions), that work decides what to extract from kill switch's structure. v1 deliberately does not anticipate it.
 - **Vaults V2 support.** V2's allocator surface (multi-asset, market obligations, offers) is materially different. A separate TIB extends or supersedes this one when V2 vaults are live.
