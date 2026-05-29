@@ -38,7 +38,7 @@ Operational constraints that bound the design:
 - Stay RPC-only and stateless on the hot path. All caches reconstructable; restart is idempotent.
 - Ship as an **open-source bot curators can clone and run** with a documented setup path (README, sample config, CONTRIBUTING, SECURITY, mainnet walkthrough).
 
-**Success signal.** `kill-switch` runs continuously against one Vaults V1 vault on mainnet for one week in live mode with no operator intervention; on a synthesized oracle condition (staleness, deviation, or revert), the bot emits one `setSupplyQueue([])` transaction within one polling interval (block seen → tx broadcast). Before that, the same bot ran in dry-run mode against the same configuration for at least 24h with the operator reviewing `/status/near-misses` and confirming threshold tuning.
+**Success signal.** `kill-switch` runs continuously against one Vaults V1 vault on mainnet for one week in live mode with no operator intervention; on a synthesized oracle condition (staleness, deviation, or revert), the bot emits one `setSupplyQueue([])` transaction within one polling interval (block seen → tx broadcast). Before that, the same bot ran in dry-run mode against the same configuration for at least 24h with the operator reviewing `/status/near-misses` and confirming threshold tuning. As a concrete pre-canary detection bar, the bot must also **fire** (emit `setSupplyQueue([])`) on a fork replay of the March 2025 cbETH/WETH Pyth oracle skew on Base — and stay quiet at a synchronized block (see Testing → Golden incident replay).
 
 **Non-Goals**
 
@@ -343,7 +343,7 @@ A `dryRun: true` flag in config replaces broadcast with simulate-and-record. Whe
 
 ### Implementation Phases
 
-Each phase below is tracked as its own Linear ticket and ships as an independent PR in dependency order. Effort: S (≤1d), M (1–3d), L (3–5d).
+Each phase below is tracked as its own Linear ticket and ships as an independent PR in dependency order. Effort: S (≤1d), M (1–3d), L (3–5d). Every phase ships its **Unit + Simulated-RPC** tests (`bun test`); the **anvil fork harness + Integration CI job** land in Phase 1, and **fork-integration** tests accrue per phase so the full fault-tolerance fork suite is green before the Phase 8 canary. See the Testing section.
 
 **Phase 1 — Skeleton + config.** `bots/kill-switch/` directory; single per-vault process harness with the polling loop (no tick cancellation — overlapping ticks complete naturally per the design); config loader (TS-as-config with Zod boundary validation, hand-written types, CI assertion of schema↔type alignment); `Bun.serve()` health server with `/healthz`, `/readyz` stubs. **Effort:** M. **Blocks:** 2–7.
 
@@ -360,6 +360,102 @@ Each phase below is tracked as its own Linear ticket and ships as an independent
 **Phase 7 — EOA submission + startup gate + dry-run wrapper.** Nonce handling (viem `nonceManager` or per-send `eth_getTransactionCount` — writer's choice); per-call `eth_call` simulation; stuck-TX recovery (1.5× bump, 3-bump cap); five-step fail-loud startup gate (incl. the allocator-only least-privilege role check); dry-run mode (config flag + `/status/near-misses` endpoint). **Effort:** L. **Blocks:** 8.
 
 **Phase 8 — Open-source readiness + mainnet canary.** README (clone-to-running in <10 min for a technical operator); CONTRIBUTING.md (how forks contribute back); SECURITY.md (vuln disclosure, scope, and the reference-source circularity risk); sample `config.ts` with placeholder values; "from clone to first dry-run fire" mainnet walkthrough; Docker / OCI image build (via repo CI) and publish; license file (MIT, pending engineering leadership confirmation per Open Questions). Then: run against one curator-owned V1 vault on mainnet in dry-run for ≥24h; curator reviews `/status/near-misses` and confirms threshold tuning; synthesize a deviation event in dry-run to verify the bot would have fired correctly; flip to live behind a curator-acknowledged flag; observe for one week. **Effort:** L. **Blocks:** Merge `kill-switch` v1.0.
+
+## Testing
+
+The kill switch is correctness-critical, so testing is a first-class part of the design. The whole suite runs under a **single `bun test` runner** — we deliberately do **not** add Vitest. The fork tier uses [`@morpho-org/test`](https://github.com/morpho-org/sdks/tree/main/packages/test)'s framework-agnostic `spawnAnvil` (its root export imports only `node:child_process` + viem — no Vitest) to fork mainnet while staying on bun test. This is a deliberate, minimal divergence from [TIB-2026-04-16](../../../../docs/decisions/TIB-2026-04-16-bootstrap-curator-bots.md), which deferred "Playwright/anvil E2E (no surface in a bot repo)": the kill switch _is_ that surface. The bun-test-only runner decision is preserved; only the anvil/Foundry dependency is added (the bootstrap TIB should get a one-line addendum noting this).
+
+### Three tiers (all `bun test`)
+
+| Tier                                           | Needs                                                                | Validates                                                                                                                                                                                                                                                                                                    |
+| ---------------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Unit**                                       | nothing                                                              | Pure logic: staleness/deviation/reverting predicates, byte-length chunking, adapter decoders, Zod config validation, the writer + inflight state machines, the least-privilege role-check predicate.                                                                                                         |
+| **Simulated-RPC**                              | a viem custom transport returning/throwing canned JSON-RPC responses | The tick loop and fault handling without a chain: block-advance/skip, overlapping ticks, `fallback` rotation, partial `aggregate3` reverts, reference-fetch failure, nonce behavior, simulation-revert handling. Uses a _real_ viem transport (not a hand-mocked client), so encoding/decoding is exercised. |
+| **Fork integration** (`*.integration.test.ts`) | Foundry (`anvil`) + archive RPC + pinned block                       | End-to-end against a real MetaMorpho V1 vault on a mainnet fork: real `setSupplyQueue([])` txs, forged oracle/role/time state, curator-vs-bot races, restart recovery.                                                                                                                                       |
+
+### Fork harness (no Vitest)
+
+`spawnAnvil` returns `{ rpcUrl, stop }`; we point a viem test client at it and manage isolation with `snapshot`/`revert` ourselves (the Vitest fixture would do this for us, but we're not using it):
+
+```typescript
+// test/integration/fork.ts — runs under `bun test`, no Vitest
+import { spawnAnvil } from '@morpho-org/test'
+import { createTestClient, http, publicActions, walletActions } from 'viem'
+import { mainnet } from 'viem/chains'
+import { afterAll, afterEach, beforeAll, beforeEach } from 'bun:test'
+
+let anvil: Awaited<ReturnType<typeof spawnAnvil>>
+let client: ReturnType<typeof makeClient>
+let snapshotId: `0x${string}`
+
+const makeClient = (rpcUrl: string) =>
+  createTestClient({ chain: mainnet, mode: 'anvil', transport: http(rpcUrl) })
+    .extend(publicActions)
+    .extend(walletActions)
+
+beforeAll(async () => {
+  anvil = await spawnAnvil({ forkUrl: process.env.ARCHIVE_RPC_URL!, forkBlockNumber: FORK_BLOCK })
+  client = makeClient(anvil.rpcUrl)
+})
+beforeEach(async () => { snapshotId = await client.snapshot() })  // isolate each test
+afterEach(async () => { await client.revert({ id: snapshotId }) })
+afterAll(() => anvil.stop())
+```
+
+The fork tier leans on anvil cheatcodes: `anvil_impersonateAccount` (act as the curator/owner — grant/revoke roles, `setSupplyQueue`), `anvil_setStorageAt` (forge a feed's `answer`/`updatedAt`), `evm_increaseTime` / `evm_setNextBlockTimestamp` (age an oracle into staleness), mining control (`evm_setAutomine`, `anvil_mine` — stuck-tx / gas-bump paths), plus `viem-deal` (fund the bot EOA, seed vault deposits) and `viem-tracer` (call traces when a fork test fails).
+
+### Scenario catalog
+
+Tier key: **U** = Unit, **S** = Simulated-RPC, **F** = Fork.
+
+| Stage            | Scenario                                                                                                             | Tier  |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------- | ----- |
+| Startup gate     | allocator present → boots; allocator missing → refuses                                                               | F     |
+|                  | least-privilege: EOA also owner/curator/guardian/pendingOwner/pendingGuardian → refuses                              | F + U |
+|                  | chainId mismatch; balance floor (live FAIL / dry WARN); unconfigured oracle in queue → fail loud                     | S + F |
+| Polling          | new block runs / same block skips; overlapping ticks both complete (no cancel)                                       | S     |
+|                  | poll failure → `fallback` rotates, tick skipped                                                                      | S     |
+| Hydration        | discovery enumerates `supplyQueue`, resolves + caches oracle first-sight                                             | F     |
+|                  | byte-length chunk boundaries                                                                                         | U     |
+|                  | `allowFailure`: one oracle reverts, others succeed                                                                   | F + S |
+|                  | runtime new-oracle (curator adds market) → staleness+reverting w/ fallback, deviation skipped, ERROR                 | F     |
+| Evaluation       | staleness at threshold edge; deviation incl. 47-vs-50 bps near-miss; reverting                                       | U + F |
+|                  | reference fetch fails → skip deviation, keep staleness+reverting, WARN                                               | S     |
+|                  | **golden replay**: cbETH/WETH Pyth cbETH/ETH skew (Base, 2025-03-02) → deviation fires; synchronized block → no fire | F     |
+| Trigger / writer | any condition → exactly one `setSupplyQueue([])`; already-empty queue → no call                                      | U + F |
+|                  | curator-vs-bot race → no re-add bug (args always `[]`)                                                               | F     |
+|                  | two instances → second is a no-op                                                                                    | F     |
+| Write path       | sim passes → broadcast → `supplyQueue` empty on-chain (headline E2E)                                                 | F     |
+|                  | sim reverts (role revoked after boot) → skip + retry next tick                                                       | F     |
+|                  | stuck tx → 1.5× bump, 3-bump cap, then `submission_failed`                                                           | F + S |
+|                  | post-broadcast revert (curator landed first) → counter++, clear inflight, next tick done                             | F     |
+| Dry-run          | no broadcast, records near-miss, balance floor WARN not FAIL                                                         | F + S |
+| Observability    | `/status` shape + fields after a fire; log-catalog events on the right transitions                                   | U     |
+| Recovery         | crash/restart → re-read live `supplyQueue`; empty → no-op                                                            | F     |
+
+The 11-mode **Fault tolerance posture** table doubles as the sim/fork checklist: RPC-all-failed, partial revert, reference failure, nonce → **S**; role revoked, sim/broadcast revert, stuck tx, restart, two-instance → **F**.
+
+### Golden incident replay (deviation)
+
+The deviation trigger must catch real oracle skews, so the fork suite pins a replay of the **March 2, 2025 cbETH/WETH Pyth skew on Base** ([forum report](https://forum.morpho.org/t/pyth-cbeth-price-feed-is-easily-manipulated-resulted-in-me-losing-33000/1577/8)) as a success criterion:
+
+- **What happened.** The market's Pyth oracle derives cbETH/ETH from two push feeds (cbETH/USD, ETH/USD) that update on different cadences. Between ~04:39:33 and ~04:44:51 UTC the ETH/USD leg moved to $2,405.22 while cbETH/USD lagged at $2,538.33, compressing the derived cbETH/ETH ratio from ~1.091 to ~1.055 — a **~3.3% (≈330 bps) deviation** from the true ratio — long enough to trigger liquidations at the 94.5% LLTV. Prices weren't manipulated and neither leg was independently "stale"; the failure was the _relative_ skew between legs, which a per-leg staleness check can miss but a deviation-vs-independent-reference check catches.
+- **The test.** Fork Base at a block inside the skew window; read the market's Morpho oracle `price()` (the distorted ~1.055 ratio) and compare against an independent cbETH/ETH reference (an independent Chainlink cbETH/ETH feed, or the cbETH contract's `exchangeRate()` via a small custom adapter). Assert deviation ≈ 330 bps > a configured `deviationBps` (e.g. 100), the evaluator fires the deviation condition, and the writer produces `setSupplyQueue([])` that empties the watched vault's queue on-chain. **Paired negative:** fork at a synchronized block (~04:36:55 or ~04:44:51 UTC) and assert deviation ≈ 0 → the bot does **not** fire (no false positive).
+- **Scope honesty.** The kill switch _activates_ here — it detects the skew and halts new deposits — but it does **not** unwind existing positions or prevent the liquidations that hurt the original reporter; pulling/repaying existing exposure is explicitly out of scope (see Context; the future Reallocation Bot). The success criterion is detection + halt, validated on the fork.
+- **Pinning.** The exact Base block (and either a real vault that held the market or an impersonated allocator on a test vault) are pinned at impl time; the forum timestamps anchor the window.
+
+### Test quality
+
+- Per CLAUDE.md, after writing a test, break one assertion to confirm it actually fails, then revert — guards against vacuous passes.
+- Per CONVENTIONS.md, don't assert on mock behavior: the Simulated-RPC tier injects faults at a _real_ viem transport so encoding/decoding and viem's own retry/fallback run for real; on-chain assertions go through the fork, not a stubbed client.
+
+### CI
+
+A new **Integration** job joins the bootstrap's Lint / Typecheck / Unit-Test / Dead-Code jobs:
+
+- Installs Foundry (`foundryup`); reads `ARCHIVE_RPC_URL` (secret) and a pinned `FORK_BLOCK`.
+- Runs the `*.integration.test.ts` glob under `bun test`; the Unit + Simulated-RPC tiers stay in the existing Unit-Test job (no fork needed).
+- **Gates merge.** To bound archive-RPC cost/flake: pin the fork block, keep the fork set tight (one happy-path E2E + the fault matrix), and rely on `snapshot`/`revert` rather than re-forking per test.
 
 ## Considered Alternatives
 
@@ -473,6 +569,12 @@ If tick N is still running when tick N+1 arrives, abort N via a cross-cutting `A
 
 **Why rejected.** Wiring `AbortController` through every async boundary in the pipeline is real implementation surface and easy to get wrong (cancel-during-broadcast in particular is delicate). Because the writer's action is idempotent (`setSupplyQueue([])` against an already-empty queue is a no-op) and the conditions firing in tick N will fire again in tick N+1, letting the in-flight tick complete naturally costs at most one extra no-op TX per overlap and saves the entire `AbortController` plumbing. Stale results from a prior block can't corrupt anything — the worst case is a redundant kill confirmation.
 
+### Alternative 19: Run fork tests on Vitest via `@morpho-org/test` fixtures
+
+`@morpho-org/test` ships `createViemTest` (`@morpho-org/test/vitest`), a Vitest `test.extend` fixture that forks a chain per test with automatic snapshot/revert. Adopt it as-is — either add Vitest as a second runner alongside `bun test`, or move the whole suite to Vitest.
+
+**Why rejected.** The fixtures require the **Vitest runner** (`test.extend`, which `bun test` doesn't implement), pulling Vitest back in after [TIB-2026-04-16](../../../../docs/decisions/TIB-2026-04-16-bootstrap-curator-bots.md) deliberately dropped it for bun's built-in runner. A second runner splits CI and the contributor mental model across two tools; moving everything to Vitest reverses the bootstrap decision wholesale. The package's framework-agnostic `spawnAnvil` (root export, Vitest-free) gives us the fork without the runner change — we re-implement the small snapshot/revert lifecycle in `bun test` `beforeEach`/`afterEach`. The fixture ergonomics we give up are a few lines of harness; the runner consolidation is worth more. See Testing.
+
 ## Assumptions & Constraints
 
 - **Process model.** One Bun process per `(chain, vault)`. Curator orchestrates multiple processes for multiple vaults or chains. Container orchestration is the curator's responsibility.
@@ -492,6 +594,8 @@ If tick N is still running when tick N+1 arrives, abort N via a cross-cutting `A
 
 - **viem** (workspace catalog). Stable surface only — `sendTransaction`, `waitForTransactionReceipt`, `call` (for simulation), the `fallback` transport over an ordered HTTP list, HTTP transport with JSON-RPC batching. Optionally `nonceManager` (writer's choice; see Write path).
 - **Bun** runtime (repo-pinned). `Bun.serve()` for the health server, `bun:test` for tests.
+- **`@morpho-org/test`** (dev). Fork-test harness — v1 uses only its framework-agnostic `spawnAnvil` (root export, Vitest-free); the Vitest fixtures (`./vitest`) are intentionally unused so the suite stays on one `bun test` runner. Brings `viem-deal` (fund/seed test wallets) and `viem-tracer` (call traces).
+- **Foundry / `anvil`** (dev + CI system dependency). The fork tier spawns `anvil`; CI installs it via `foundryup`. Fork tests need an archive-node RPC (`ARCHIVE_RPC_URL`) pinned at a fork block. See Testing.
 - **Reference-price sources.** Vendor-direct (Chainlink / Pyth / RedStone) — read on-chain via Multicall3, no HTTP dependency beyond the RPC list. No off-chain/aggregator reference services are shipped.
 - **RPC providers.** At least two HTTP endpoints per chain (operator-supplied). No specific provider required.
 - **`@repo/utils`** — `tryCatch`, structured-log helpers, env-reading conventions.
