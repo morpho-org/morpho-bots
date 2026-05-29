@@ -306,6 +306,10 @@ future readers don't mistake the as-built state for drift:
   because `bun:test` lacks `vi.advanceTimersByTimeAsync`; the inline comment explains the
   limitation. All other vitest specs were straightforward to convert.
 
+### 2026-05-29 — kill-switch adds anvil fork tests (CRTR-2405)
+
+The kill-switch architecture TIB ([TIB-2026-05-14](../../bots/kill-switch/docs/decisions/TIB-2026-05-14-kill-switch-bot.md)) adds **anvil fork integration tests** — a new CI Integration job plus Foundry (`anvil`) as a dev/CI system dependency — which this TIB deferred under "no Playwright/anvil E2E (no surface in a bot repo)." A safety-critical kill switch is that surface. The **single-runner decision is unchanged**: fork tests run under `bun test` via `@morpho-org/test`'s framework-agnostic `spawnAnvil` (the Vitest fixtures are intentionally not used), so no second test runner is introduced.
+
 <!--
 TIB conventions:
 - Once accepted, do not substantively edit this TIB. If the decision needs to change,
