@@ -6,6 +6,10 @@
     ".": {},
     "packages/typescript-config": {},
     "packages/utils": {},
-    "packages/abis": {}
+    "packages/abis": {},
+    "bots/kill-switch": {
+      "entry": ["test/**/*.test.ts"],
+      "project": ["src/**", "test/**"]
+    }
   }
 }
