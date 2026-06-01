@@ -49,6 +49,7 @@ export function createPollingLoop({ client, pollIntervalMs, onTick }: PollingLoo
   }
 
   return {
+    // Single-use: once stopped the loop is not restartable (Phase 1 starts it once via main()).
     start(): void {
       if (loop) return
       loop = runLoop()

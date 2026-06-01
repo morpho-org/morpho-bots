@@ -1,3 +1,5 @@
+import type { Hex } from 'viem'
+
 import { delay } from '@repo/utils'
 import { describe, expect, it } from 'bun:test'
 import { createPublicClient, custom } from 'viem'
@@ -7,7 +9,7 @@ import { createPollingLoop, shouldRunTick } from '../src/poll'
 
 // A real viem client whose eth_blockNumber answers come from a script (held at the last value once
 // exhausted, simulating "no new block"). Returns raw hex — the wire shape viem decodes to bigint.
-function scriptedClient(blockNumbersHex: readonly `0x${string}`[]) {
+function scriptedClient(blockNumbersHex: readonly Hex[]) {
   let i = 0
   return createPublicClient({
     chain: mainnet,

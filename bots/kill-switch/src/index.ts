@@ -31,6 +31,7 @@ export function main(config: KillSwitchBotConfig): void {
   })
 
   const shutdown = () => {
+    // TODO Phase 7: await loop.stop() to drain an in-flight write before exit.
     void loop.stop()
     void server.stop()
   }
