@@ -8,7 +8,7 @@
     "packages/utils": {},
     "packages/abis": {},
     "bots/kill-switch": {
-      "entry": ["test/**/*.test.ts"],
+      "entry": ["src/index.ts", "test/**/*.test.ts"],
       "project": ["src/**", "test/**"]
     }
   }
