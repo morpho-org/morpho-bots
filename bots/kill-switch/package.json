@@ -13,6 +13,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@morpho-org/test": "catalog:",
     "@repo/typescript-config": "workspace:*",
     "@types/bun": "catalog:",
     "typescript": "catalog:"
