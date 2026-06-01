@@ -248,8 +248,14 @@ struct LensOut {
   uint256 bestCollateralPrice;    // raw oracle price (ORACLE_PRICE_SCALE units)
   uint256 bestCollateralMaxLif;
   uint256 bestCollateralLltv;
-  uint256 remainingCollateralUsd; // sum over OTHER activated slots; for RCF exemption
 }
+
+// RCF exemption is computed off-chain from the fields above:
+//   exempt = (bestCollateralAmt × bestCollateralPrice / ORACLE_PRICE_SCALE × WAD / lif)
+//              .zeroFloorSub(maxRepaid) < obligation.rcfThreshold
+// — i.e. it tests the *liquidated* slot's pre-seizure value (expressed in repaid-units after
+// dividing by LIF, then subtracting maxRepaid), per midnight-contracts.txt:1578-1583. It does
+// not depend on any other slot, so the lens does not return a separate field for it.
 ```
 
 This gives us everything to (a) confirm liquidatable fresh, (b) pick the slot, (c) compute
@@ -301,7 +307,22 @@ function maxRepaidPreMaturity(debt: bigint, maxDebt: bigint, lif: bigint, lltv: 
   return ceilDiv((debt - maxDebt) * WAD, denom)
 }
 
-// Exempt when remaining-collateral value after seize < rcfThreshold (in loan-asset units).
+// RCF cap is waived for the SAME slot being liquidated when the slot's pre-seizure value
+// (converted to repaid-units by dividing through LIF, then subtracting maxRepaid with a
+// zero floor) is below rcfThreshold. Mirrors midnight-contracts.txt:1578-1583 exactly.
+function isRcfExempt(
+  bestCollateralAmt: bigint,
+  bestCollateralPrice: bigint,   // ORACLE_PRICE_SCALE units
+  lif: bigint,
+  maxRepaid: bigint,
+  rcfThreshold: bigint
+): boolean {
+  const slotInLoanUnits =
+    floorDiv(bestCollateralAmt * bestCollateralPrice, ORACLE_PRICE_SCALE)
+  const slotInRepaidUnits = floorDiv(slotInLoanUnits * WAD, lif)
+  const residual = zeroFloorSub(slotInRepaidUnits, maxRepaid)
+  return residual < rcfThreshold
+}
 ```
 
 `sizing/plan.ts` chooses between `{ seizedAssets, repaidUnits=0 }` and
