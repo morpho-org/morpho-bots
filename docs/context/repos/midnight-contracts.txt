@@ -1,7 +1,7 @@
-Midnight Protocol — Solidity source (src/ only)
-Pinned commit: 907e35b6321c0672e6f90a37e0b84da92af94525
+Midnight Protocol: Solidity source (src/ only)
+Pinned commit: 5e9ecd58bf48ce762cf2b0691163e2831381dcbd
 Source repo: morpho-org/midnight (private)
-Generated: 2026-04-08
+Generated: 2026-06-03
 
 This file is a merged representation of a subset of the codebase, containing specifically included files, combined into a single document by Repomix.
 
@@ -32,14 +32,16 @@ The content is organized as follows:
   between different files in the repository.
 - Be aware that this file may contain sensitive information. Handle it with
   the same level of security as you would the original repository.
+- Pay special attention to the Repository Description. These contain important context and guidelines specific to this project.
 </usage_guidelines>
 
 <notes>
 - Some files may have been excluded based on .gitignore rules and Repomix's configuration
 - Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
-- Only files matching these patterns are included: src/**
+- Only files matching these patterns are included: src/**/*.sol
 - Files matching patterns in .gitignore are excluded
 - Files matching default ignore patterns are excluded
+- Security check has been disabled - content may contain sensitive information
 - Files are sorted by Git change count (files with more changes are at the bottom)
 </notes>
 
@@ -47,11 +49,8 @@ The content is organized as follows:
 
 <directory_structure>
 src/
-  authorizers/
-    EcrecoverAuthorizer.sol
   interfaces/
     ICallbacks.sol
-    IEcrecover.sol
     IERC20.sol
     IGate.sol
     IMidnight.sol
@@ -65,88 +64,28 @@ src/
     TickLib.sol
     UtilsLib.sol
   periphery/
+    interfaces/
+      IEcrecoverAuthorizer.sol
+      IERC20Permit.sol
+      IMidnightBundles.sol
+      IPermit2.sol
+    ConsumableUnitsLib.sol
+    EcrecoverAuthorizer.sol
+    MidnightBundles.sol
     TakeAmountsLib.sol
-    TakeBundler.sol
   ratifiers/
-    ApprovalRatifier.sol
+    interfaces/
+      IEcrecoverRatifier.sol
+      ISetterRatifier.sol
+    libraries/
+      HashLib.sol
     EcrecoverRatifier.sol
+    SetterRatifier.sol
   Midnight.sol
 </directory_structure>
 
 <files>
 This section contains the contents of the repository's files.
-
-<file path="src/interfaces/ICallbacks.sol">
-// SPDX-License-Identifier: GPL-2.0-or-later
-// Copyright (c) 2025 Morpho Association
-pragma solidity >=0.5.0;
-
-import {Obligation} from "./IMidnight.sol";
-
-interface ICallbacks {
-    function onBuy(
-        bytes32 id,
-        Obligation memory obligation,
-        address buyer,
-        uint256 buyerAssets,
-        uint256 units,
-        bytes memory data
-    ) external returns (bytes32);
-    function onSell(
-        bytes32 id,
-        Obligation memory obligation,
-        address seller,
-        uint256 sellerAssets,
-        uint256 units,
-        bytes memory data
-    ) external returns (bytes32);
-    function onLiquidate(
-        bytes32 id,
-        Obligation memory obligation,
-        uint256 collateralIndex,
-        uint256 seizedAssets,
-        uint256 repaidUnits,
-        address borrower,
-        bytes memory data
-    ) external;
-    function onRepay(
-        bytes32 obligationId,
-        Obligation memory obligation,
-        uint256 units,
-        address onBehalf,
-        bytes memory data
-    ) external;
-}
-
-interface IFlashLoanCallback {
-    function onFlashLoan(address token, uint256 amount, bytes memory data) external;
-}
-</file>
-
-<file path="src/interfaces/IEcrecover.sol">
-// SPDX-License-Identifier: GPL-2.0-or-later
-// Copyright (c) 2025 Morpho Association
-pragma solidity >=0.5.0;
-
-struct Signature {
-    uint8 v;
-    bytes32 r;
-    bytes32 s;
-}
-
-struct Authorization {
-    address authorizer;
-    address authorized;
-    bool isAuthorized;
-    uint256 nonce;
-    uint256 deadline;
-}
-
-bytes32 constant AUTHORIZATION_TYPEHASH =
-    keccak256("Authorization(address authorizer,address authorized,bool isAuthorized,uint256 nonce,uint256 deadline)");
-bytes32 constant EIP712_DOMAIN_TYPEHASH = keccak256("EIP712Domain(uint256 chainId,address verifyingContract)");
-bytes32 constant ROOT_TYPEHASH = keccak256("Root(bytes32 root)");
-</file>
 
 <file path="src/interfaces/IERC20.sol">
 // SPDX-License-Identifier: GPL-2.0-or-later
@@ -158,6 +97,7 @@ interface IERC20 {
     function transfer(address receiver, uint256 amount) external returns (bool);
     function transferFrom(address sender, address receiver, uint256 amount) external returns (bool);
     function balanceOf(address account) external view returns (uint256);
+    function allowance(address owner, address spender) external view returns (uint256);
 }
 </file>
 
@@ -194,85 +134,7 @@ pragma solidity >=0.5.0;
 import {Offer} from "./IMidnight.sol";
 
 interface IRatifier {
-    function onRatify(Offer memory offer, bytes32 root, bytes memory data) external returns (bytes32);
-}
-</file>
-
-<file path="src/libraries/ConstantsLib.sol">
-// SPDX-License-Identifier: GPL-2.0-or-later
-// Copyright (c) 2025 Morpho Association
-pragma solidity ^0.8.0;
-
-uint256 constant WAD = 1e18;
-uint256 constant ORACLE_PRICE_SCALE = 1e36;
-uint256 constant FEE_STEP = 1e12;
-uint32 constant MAX_CONTINUOUS_FEE = uint32(uint256(0.01e18) / uint256(365 days));
-uint256 constant TIME_TO_MAX_LIF = 15 minutes;
-uint256 constant MAX_COLLATERALS = 128;
-uint256 constant MAX_COLLATERALS_PER_BORROWER = 10;
-uint256 constant LIQUIDATION_CURSOR_LOW = 0.25e18;
-uint256 constant LIQUIDATION_CURSOR_HIGH = 0.5e18;
-uint256 constant LIQUIDATION_LOCK_SLOT = uint256(keccak256("midnight.liquidationLocked"));
-bytes32 constant CALLBACK_SUCCESS = keccak256("MIDNIGHT CALLBACK SUCCESS");
-
-/// @dev The allowed LLTV values, copied from Morpho Blue's enabled tiers (excluding zero, including WAD).
-uint256 constant LLTV_0 = 0.385e18;
-uint256 constant LLTV_1 = 0.625e18;
-uint256 constant LLTV_2 = 0.77e18;
-uint256 constant LLTV_3 = 0.86e18;
-uint256 constant LLTV_4 = 0.915e18;
-uint256 constant LLTV_5 = 0.945e18;
-uint256 constant LLTV_6 = 0.965e18;
-uint256 constant LLTV_7 = 0.98e18;
-uint256 constant LLTV_8 = 1e18;
-
-/// @dev Returns true if `lltv` is one of the allowed LLTV tiers.
-function isLltvAllowed(uint256 lltv) pure returns (bool) {
-    return lltv == LLTV_0 || lltv == LLTV_1 || lltv == LLTV_2 || lltv == LLTV_3 || lltv == LLTV_4 || lltv == LLTV_5
-        || lltv == LLTV_6 || lltv == LLTV_7 || lltv == LLTV_8;
-}
-</file>
-
-<file path="src/libraries/IdLib.sol">
-// SPDX-License-Identifier: GPL-2.0-or-later
-// Copyright (c) 2025 Morpho Association
-pragma solidity ^0.8.0;
-
-import {Obligation} from "../interfaces/IMidnight.sol";
-
-library IdLib {
-    /// @dev Used as a prefix to some data, to give a creation code that deploys the data as runtime bytecode.
-    /// @dev Explanation of the prefix:
-    /// hex       opcode          stack              comments
-    /// ------------------------------------------------------------------------------
-    /// 60 0b     PUSH1 0x0b      [11]               11 = length(prefix)
-    /// 38        CODESIZE        [codesize, 11]
-    /// 03        SUB             [len]              with len = codesize - 11
-    /// 80        DUP1            [len, len]
-    /// 60 0b     PUSH1 0x0b      [11, len, len]     code offset = 11
-    /// 5f        PUSH0           [0, 11, len, len]  mem offset = 0
-    /// 39        CODECOPY        [len]              mem[0:len] <- code[11:11+len]
-    /// 5f        PUSH0           [0, len]           return offset = 0
-    /// f3        RETURN          []                 mem[0:len] is returned
-    bytes constant SSTORE2_PREFIX = hex"600b380380600b5f395ff3";
-
-    function toId(Obligation memory obligation, uint256 chainId, address midnight) internal pure returns (bytes32) {
-        return keccak256(
-            abi.encodePacked(
-                uint8(0xff), midnight, chainId, keccak256(abi.encodePacked(SSTORE2_PREFIX, abi.encode(obligation)))
-            )
-        );
-    }
-
-    /// @dev Stores the data in the code of the contract at the given address.
-    /// @dev Uses the chain id as salt.
-    function storeInCode(Obligation memory obligation) internal returns (address create2Address) {
-        bytes memory creationCode = abi.encodePacked(SSTORE2_PREFIX, abi.encode(obligation));
-        assembly ("memory-safe") {
-            create2Address := create2(0, add(creationCode, 0x20), mload(creationCode), chainid())
-        }
-        require(create2Address != address(0), "Failed to create SStore2 contract");
-    }
+    function isRatified(Offer memory offer, bytes memory ratifierData) external view returns (bytes32);
 }
 </file>
 
@@ -284,8 +146,12 @@ pragma solidity ^0.8.0;
 import {IERC20} from "../interfaces/IERC20.sol";
 
 library SafeTransferLib {
+    error NoCode();
+    error TransferFromReturnedFalse();
+    error TransferReturnedFalse();
+
     function safeTransfer(address token, address to, uint256 value) internal {
-        require(token.code.length > 0, "no code");
+        require(token.code.length > 0, NoCode());
 
         (bool success, bytes memory returndata) = token.call(abi.encodeCall(IERC20.transfer, (to, value)));
         if (!success) {
@@ -293,11 +159,11 @@ library SafeTransferLib {
                 revert(add(returndata, 0x20), mload(returndata))
             }
         }
-        require(returndata.length == 0 || abi.decode(returndata, (bool)), "transfer returned false");
+        require(returndata.length == 0 || abi.decode(returndata, (bool)), TransferReturnedFalse());
     }
 
     function safeTransferFrom(address token, address from, address to, uint256 value) internal {
-        require(token.code.length > 0, "no code");
+        require(token.code.length > 0, NoCode());
 
         (bool success, bytes memory returndata) = token.call(abi.encodeCall(IERC20.transferFrom, (from, to, value)));
         if (!success) {
@@ -305,72 +171,7 @@ library SafeTransferLib {
                 revert(add(returndata, 0x20), mload(returndata))
             }
         }
-        require(returndata.length == 0 || abi.decode(returndata, (bool)), "transferFrom returned false");
-    }
-}
-</file>
-
-<file path="src/libraries/TickLib.sol">
-// SPDX-License-Identifier: GPL-2.0-or-later
-// Copyright (c) 2025 Morpho Association
-pragma solidity ^0.8.0;
-
-int256 constant LN_ONE_PLUS_DELTA = 0.024692612590371501e18; // ln(1 + 0.025)
-uint256 constant MAX_TICK = 1046;
-
-library TickLib {
-    using TickLib for uint256;
-
-    /// @dev Returns (`x` + `d` - 1) / `d` rounded to the nearest integer with ties rounded down, without checking for
-    /// overflow.
-    function divHalfDownUnchecked(uint256 x, uint256 d) internal pure returns (uint256) {
-        unchecked {
-            return (x + (d - 1) / 2) / d;
-        }
-    }
-
-    function wExp(int256 x) internal pure returns (uint256) {
-        unchecked {
-            if (x < 0) {
-                return 1e36 / wExp(-x);
-            } else {
-                int256 ln2 = 0.693147180559945309e18;
-                int256 q = (x + ln2 / 2) / ln2;
-                int256 r = x - q * ln2;
-                int256 secondTerm = r * r / (2 * 1e18);
-                int256 thirdTerm = secondTerm * r / (3 * 1e18);
-                int256 expR = 1e18 + r + secondTerm + thirdTerm;
-                // forge-lint: disable-next-item(unsafe-typecast)
-                // - q is non-negative because x is non-negative in this branch
-                // - expR is positive because |r| < ln2 < 1e18 and |secondTerm| > |thirdTerm|
-                return uint256(expR) << uint256(q);
-            }
-        }
-    }
-
-    function tickToPrice(uint256 tick) internal pure returns (uint256) {
-        require(tick <= MAX_TICK, "tick out of range");
-        unchecked {
-            // forge-lint: disable-next-item(unsafe-typecast)
-            return uint256(1e36)
-                    .divHalfDownUnchecked(1e18 + wExp(LN_ONE_PLUS_DELTA * (int256(MAX_TICK / 2) - int256(tick))))
-                    .divHalfDownUnchecked(5e12) * 5e12;
-        }
-    }
-
-    /// @dev Returns the lowest tick with a higher price.
-    function priceToTick(uint256 price) internal pure returns (uint256) {
-        require(price <= 1e18, "Price is greater than one");
-        uint256 low = 0;
-        uint256 high = MAX_TICK;
-        while (low != high) {
-            unchecked {
-                uint256 mid = (low + high) / 2;
-                if (tickToPrice(mid) < price) low = mid + 1;
-                else high = mid;
-            }
-        }
-        return low;
+        require(returndata.length == 0 || abi.decode(returndata, (bool)), TransferFromReturnedFalse());
     }
 }
 </file>
@@ -381,17 +182,12 @@ library TickLib {
 pragma solidity ^0.8.0;
 
 library UtilsLib {
-    /// @dev Returns true if at most one of `x` and `y` is nonzero.
+    error CastOverflow();
+
+    /// @dev Returns true if at most one of x and y is nonzero.
     function atMostOneNonZero(uint256 x, uint256 y) internal pure returns (bool z) {
         assembly {
-            z := gt(add(iszero(x), iszero(y)), 0)
-        }
-    }
-
-    /// @dev Returns true if at most one of `x`, `y`, and `z` is nonzero.
-    function atMostOneNonZero(uint256 x, uint256 y, uint256 z) internal pure returns (bool r) {
-        assembly {
-            r := gt(add(add(iszero(x), iszero(y)), iszero(z)), 1)
+            z := or(iszero(x), iszero(y))
         }
     }
 
@@ -408,38 +204,18 @@ library UtilsLib {
         }
     }
 
-    /// @dev Returns (`x` * `y`) / `d` rounded down.
+    /// @dev Returns (x * y) / d rounded down.
     function mulDivDown(uint256 x, uint256 y, uint256 d) internal pure returns (uint256) {
         return (x * y) / d;
     }
 
-    /// @dev Returns (`x` * `y`) / `d` rounded up.
+    /// @dev Returns (x * y) / d rounded up.
     function mulDivUp(uint256 x, uint256 y, uint256 d) internal pure returns (uint256) {
         return (x * y + (d - 1)) / d;
     }
 
-    /// @dev Returns hash(... hash(leafHash, proof[0]), ..., proof[n]) == root.
-    /// @dev Hash sorts the inputs lexicographically.
-    function isLeaf(bytes32 root, bytes32 leafHash, bytes32[] memory proof) internal pure returns (bool) {
-        bytes32 currentHash = leafHash;
-        for (uint256 i = 0; i < proof.length; i++) {
-            currentHash = commutativeHash(currentHash, proof[i]);
-        }
-        return currentHash == root;
-    }
-
-    /// @dev Returns the keccak256 hash of the sorted concatenation of `a` and `b`.
-    function commutativeHash(bytes32 a, bytes32 b) internal pure returns (bytes32 value) {
-        if (a > b) (a, b) = (b, a);
-        assembly ("memory-safe") {
-            mstore(0x00, a)
-            mstore(0x20, b)
-            value := keccak256(0x00, 0x40)
-        }
-    }
-
     function toUint128(uint256 x) internal pure returns (uint128) {
-        require(x <= type(uint128).max, "uint256 overflows uint128");
+        require(x <= type(uint128).max, CastOverflow());
         // forge-lint: disable-next-item(unsafe-typecast) as x is less than type(uint128).max
         return uint128(x);
     }
@@ -453,6 +229,7 @@ library UtilsLib {
         }
     }
 
+    /// @dev Assumes bitmap is not zero.
     function msb(uint128 bitmap) internal pure returns (uint256 res) {
         require(bitmap != 0);
         while (bitmap >> (res + 1) != 0) {
@@ -460,19 +237,19 @@ library UtilsLib {
         }
     }
 
-    /// @dev Assumes `bit` is less than 128.
+    /// @dev Assumes bit is less than 128.
     function setBit(uint128 bitmap, uint256 bit) internal pure returns (uint128) {
         // forge-lint: disable-next-item(unsafe-typecast) as bit < 128
         return uint128(bitmap | (1 << bit));
     }
 
-    /// @dev Assumes `bit` is less than 128.
+    /// @dev Assumes bit is less than 128.
     function clearBit(uint128 bitmap, uint256 bit) internal pure returns (uint128) {
         // forge-lint: disable-next-item(unsafe-typecast)
         return uint128(bitmap & ~(1 << bit));
     }
 
-    /// @dev Sets a boolean in transient storage keyed by a `(bytes32, address)` pair.
+    /// @dev Sets a boolean in transient storage keyed by a (bytes32, address) pair.
     /// @dev Returns the previous value at the written slot.
     function tExchange(uint256 baseSlot, bytes32 key1, address key2, bool value) internal returns (bool previous) {
         uint256 slot = uint256(keccak256(abi.encode(key1, key2, baseSlot)));
@@ -482,7 +259,7 @@ library UtilsLib {
         }
     }
 
-    /// @dev Gets a boolean from transient storage keyed by a `(bytes32, address)` pair.
+    /// @dev Gets a boolean from transient storage keyed by a (bytes32, address) pair.
     function tGet(uint256 baseSlot, bytes32 key1, address key2) internal view returns (bool value) {
         uint256 slot = uint256(keccak256(abi.encode(key1, key2, baseSlot)));
         assembly ("memory-safe") {
@@ -492,229 +269,184 @@ library UtilsLib {
 }
 </file>
 
-<file path="src/periphery/TakeAmountsLib.sol">
+<file path="src/periphery/interfaces/IERC20Permit.sol">
 // SPDX-License-Identifier: GPL-2.0-or-later
-pragma solidity ^0.8.0;
+// Copyright (c) 2025 Morpho Association
+pragma solidity >=0.5.0;
 
-import {Midnight} from "../Midnight.sol";
-import {Offer} from "../interfaces/IMidnight.sol";
-import {UtilsLib} from "../libraries/UtilsLib.sol";
-import {TickLib} from "../libraries/TickLib.sol";
-import {WAD} from "../libraries/ConstantsLib.sol";
+interface IERC20Permit {
+    function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s)
+        external;
+}
+</file>
 
-library TakeAmountsLib {
-    using UtilsLib for uint256;
+<file path="src/periphery/interfaces/IPermit2.sol">
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (c) 2025 Morpho Association
+pragma solidity >=0.5.0;
 
-    // Forward: buyerAssets = offer.buy ? units.mulDivDown(buyerPrice, WAD) : units.mulDivUp(buyerPrice, WAD).
-    /// @dev Reverts if buyerPrice > WAD, because not all buyerAssets are reachable then.
-    /// @dev Returns the number of units to take to get the target buyer assets.
-    function buyerAssetsToUnits(Midnight midnight, bytes32 id, Offer memory offer, uint256 targetBuyerAssets)
-        internal
-        view
-        returns (uint256)
-    {
-        uint256 offerPrice = TickLib.tickToPrice(offer.tick);
-        uint256 tradingFee = midnight.tradingFee(id, UtilsLib.zeroFloorSub(offer.obligation.maturity, block.timestamp));
-        uint256 buyerPrice = offer.buy ? offerPrice : offerPrice + tradingFee;
-        require(buyerPrice <= WAD, "buyerPrice");
-        return offer.buy ? targetBuyerAssets.mulDivUp(WAD, buyerPrice) : targetBuyerAssets.mulDivDown(WAD, buyerPrice);
+interface IPermit2 {
+    struct TokenPermissions {
+        address token;
+        uint256 amount;
     }
 
-    // Forward: sellerAssets = offer.buy ? units.mulDivDown(sellerPrice, WAD) : units.mulDivUp(sellerPrice, WAD).
-    /// @dev Returns the number of units to take to get the target seller assets.
-    function sellerAssetsToUnits(Midnight midnight, bytes32 id, Offer memory offer, uint256 targetSellerAssets)
-        internal
-        view
-        returns (uint256)
-    {
-        uint256 offerPrice = TickLib.tickToPrice(offer.tick);
-        uint256 tradingFee = midnight.tradingFee(id, UtilsLib.zeroFloorSub(offer.obligation.maturity, block.timestamp));
-        uint256 sellerPrice = offer.buy ? offerPrice - tradingFee : offerPrice;
-        return
-            offer.buy ? targetSellerAssets.mulDivUp(WAD, sellerPrice) : targetSellerAssets.mulDivDown(WAD, sellerPrice);
+    struct PermitTransferFrom {
+        TokenPermissions permitted;
+        uint256 nonce;
+        uint256 deadline;
+    }
+
+    struct SignatureTransferDetails {
+        address to;
+        uint256 requestedAmount;
+    }
+
+    function permitTransferFrom(
+        PermitTransferFrom calldata permit,
+        SignatureTransferDetails calldata transferDetails,
+        address owner,
+        bytes calldata signature
+    ) external;
+}
+</file>
+
+<file path="src/libraries/IdLib.sol">
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (c) 2025 Morpho Association
+pragma solidity ^0.8.0;
+
+import {Market} from "../interfaces/IMidnight.sol";
+
+library IdLib {
+    error SStore2DeploymentFailed();
+
+    /// @dev Used as a prefix to some data, to give a creation code that deploys the data as runtime bytecode.
+    /// @dev Explanation of the prefix:
+    /// hex       opcode          stack              comments
+    /// ------------------------------------------------------------------------------
+    /// 60 0b     PUSH1 0x0b      [11]               11 = length(prefix)
+    /// 38        CODESIZE        [codesize, 11]
+    /// 03        SUB             [len]              with len = codesize - 11
+    /// 80        DUP1            [len, len]
+    /// 60 0b     PUSH1 0x0b      [11, len, len]     code offset = 11
+    /// 5f        PUSH0           [0, 11, len, len]  mem offset = 0
+    /// 39        CODECOPY        [len]              mem[0:len] <- code[11:11+len]
+    /// 5f        PUSH0           [0, len]           return offset = 0
+    /// f3        RETURN          []                 mem[0:len] is returned
+    bytes constant SSTORE2_PREFIX = hex"600b380380600b5f395ff3";
+
+    function toId(Market memory market, uint256 chainId, address midnight) internal pure returns (bytes32) {
+        return keccak256(
+            abi.encodePacked(
+                uint8(0xff), midnight, chainId, keccak256(abi.encodePacked(SSTORE2_PREFIX, abi.encode(market)))
+            )
+        );
+    }
+
+    /// @dev Stores the data in the code of the contract at the given address.
+    /// @dev Uses the given chain id as salt.
+    function storeInCode(Market memory market, uint256 chainId) internal returns (address create2Address) {
+        bytes memory creationCode = abi.encodePacked(SSTORE2_PREFIX, abi.encode(market));
+        assembly ("memory-safe") {
+            create2Address := create2(0, add(creationCode, 0x20), mload(creationCode), chainId)
+        }
+        require(create2Address != address(0), SStore2DeploymentFailed());
     }
 }
 </file>
 
-<file path="src/periphery/TakeBundler.sol">
+<file path="src/periphery/interfaces/IEcrecoverAuthorizer.sol">
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (c) 2025 Morpho Association
-pragma solidity 0.8.34;
+pragma solidity >=0.5.0;
 
-import {Midnight} from "../Midnight.sol";
-import {Offer} from "../interfaces/IMidnight.sol";
+struct Signature {
+    uint8 v;
+    bytes32 r;
+    bytes32 s;
+}
+
+struct Authorization {
+    address authorizer;
+    address authorized;
+    bool isAuthorized;
+    uint256 nonce;
+    uint256 deadline;
+}
+
+/// @dev keccak256("Authorization(address authorizer,address authorized,bool isAuthorized,uint256 nonce,uint256
+/// deadline)").
+bytes32 constant AUTHORIZATION_TYPEHASH = 0x81d0284fb0e2cde18d0553b06189d6f7613c96a01bb5b5e7828eade6a0dcac91;
+
+/// @dev keccak256("EIP712Domain(uint256 chainId,address verifyingContract)").
+bytes32 constant EIP712_DOMAIN_TYPEHASH = 0x47e79534a245952e8b16893a336b85a3d9ea9fa8c573f3d803afb92a79469218;
+
+interface IEcrecoverAuthorizer {
+    /// ERRORS ///
+    error Expired();
+    error InvalidNonce();
+    error InvalidSignature();
+    error Unauthorized();
+
+    /// EVENTS ///
+    event SetIsAuthorized(
+        address indexed caller, address indexed authorizer, address indexed authorized, bool isAuthorized, uint256 nonce
+    );
+
+    /// STORAGE GETTERS ///
+    function MIDNIGHT() external view returns (address);
+    function nonce(address authorizer) external view returns (uint256);
+
+    /// FUNCTIONS ///
+    function setIsAuthorized(Authorization memory authorization, Signature memory signature) external;
+}
+</file>
+
+<file path="src/periphery/ConsumableUnitsLib.sol">
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (c) 2025 Morpho Association
+pragma solidity ^0.8.0;
+
+import {IMidnight, Offer} from "../interfaces/IMidnight.sol";
 import {UtilsLib} from "../libraries/UtilsLib.sol";
 import {TakeAmountsLib} from "./TakeAmountsLib.sol";
 
-contract TakeBundler {
+library ConsumableUnitsLib {
     using UtilsLib for uint256;
 
-    struct Take {
-        uint256 units;
-        Offer offer;
-        bytes sig;
-        bytes32 root;
-        bytes32[] proof;
-    }
-
-    /// @dev Iterates through orders, filling up to targetUnits units total.
-    /// @dev Assumes offers are all buy or all sell and share the same obligation id.
-    /// @dev The taker must have authorized this bundler and the msg.sender (if different from the taker) on Midnight.
-    /// @dev The bundler skips every reason why `take` can revert (including ones that are not asynchrony related).
-    /// @dev If taking an offer reverts, the bundler will completely skip this offer.
-    function bundleTakeUnits(
-        Midnight midnight,
-        uint256 targetUnits,
-        address taker,
-        address receiverIfTakerIsSeller,
-        Take[] calldata takes,
-        uint256 minBuyerAssets,
-        uint256 maxBuyerAssets,
-        uint256 minSellerAssets,
-        uint256 maxSellerAssets
-    ) external {
-        require(taker == msg.sender || midnight.isAuthorized(taker, msg.sender), "unauthorized");
-
-        uint256 totalFilledUnits;
-        uint256 totalBuyerAssets;
-        uint256 totalSellerAssets;
-        for (uint256 i; i < takes.length && totalFilledUnits < targetUnits; i++) {
-            try midnight.take(
-                UtilsLib.min(targetUnits - totalFilledUnits, takes[i].units),
-                taker,
-                address(0),
-                "",
-                receiverIfTakerIsSeller,
-                takes[i].offer,
-                takes[i].sig,
-                takes[i].root,
-                takes[i].proof
-            ) returns (
-                uint256 filledBuyerAssets, uint256 filledSellerAssets, uint256 filledUnits
-            ) {
-                totalFilledUnits += filledUnits;
-                totalBuyerAssets += filledBuyerAssets;
-                totalSellerAssets += filledSellerAssets;
-            } catch {}
+    /// @dev Returns a number of units such that it fully consumes the offer.
+    /// @dev Assumes that `id` matches `offer.market`.
+    function consumableUnits(address midnight, bytes32 id, Offer memory offer) internal view returns (uint256) {
+        uint256 consumed = IMidnight(midnight).consumed(offer.maker, offer.group);
+        if (offer.maxUnits > 0) {
+            return offer.maxUnits.zeroFloorSub(consumed);
+        } else if (offer.buy) {
+            return TakeAmountsLib.buyerAssetsToUnits(midnight, id, offer, offer.maxAssets.zeroFloorSub(consumed));
+        } else {
+            return TakeAmountsLib.sellerAssetsToUnits(midnight, id, offer, offer.maxAssets.zeroFloorSub(consumed));
         }
-
-        require(totalFilledUnits == targetUnits, "insufficient liquidity");
-        require(totalBuyerAssets >= minBuyerAssets, "buyer assets below min");
-        require(totalBuyerAssets <= maxBuyerAssets, "buyer assets above max");
-        require(totalSellerAssets >= minSellerAssets, "seller assets below min");
-        require(totalSellerAssets <= maxSellerAssets, "seller assets above max");
-    }
-
-    /// @dev Same as bundleTakeUnits but targets buyer assets.
-    /// @dev Not usable if buyerPrice > WAD, because not all buyerAssets are reachable then.
-    /// @dev buyerAssetsToUnits is evaluated before midnight.take, so reverts there (e.g. underflow when offerPrice <
-    /// tradingFee) are not caught by the try/catch and will abort the bundle.
-    /// @dev Requires a non-empty takes array.
-    function bundleTakeBuyerAssets(
-        Midnight midnight,
-        uint256 targetBuyerAssets,
-        address taker,
-        address receiverIfTakerIsSeller,
-        Take[] calldata takes,
-        uint256 minUnits,
-        uint256 maxUnits
-    ) external {
-        require(taker == msg.sender || midnight.isAuthorized(taker, msg.sender), "unauthorized");
-        bytes32 id = midnight.touchObligation(takes[0].offer.obligation); // to have the correct trading fees.
-
-        uint256 totalFilledBuyerAssets;
-        uint256 totalUnits;
-        for (uint256 i; i < takes.length && totalFilledBuyerAssets < targetBuyerAssets; i++) {
-            try midnight.take(
-                UtilsLib.min(
-                    TakeAmountsLib.buyerAssetsToUnits(
-                        midnight, id, takes[i].offer, targetBuyerAssets - totalFilledBuyerAssets
-                    ),
-                    takes[i].units
-                ),
-                taker,
-                address(0),
-                "",
-                receiverIfTakerIsSeller,
-                takes[i].offer,
-                takes[i].sig,
-                takes[i].root,
-                takes[i].proof
-            ) returns (
-                uint256 filledBuyerAssets, uint256, uint256 filledUnits
-            ) {
-                totalFilledBuyerAssets += filledBuyerAssets;
-                totalUnits += filledUnits;
-            } catch {}
-        }
-
-        require(totalFilledBuyerAssets == targetBuyerAssets, "insufficient liquidity");
-        require(totalUnits >= minUnits, "units below min");
-        require(totalUnits <= maxUnits, "units above max");
-    }
-
-    /// @dev Same as bundleTakeUnits but targets seller assets.
-    /// @dev sellerAssetsToUnits is evaluated before midnight.take, so reverts there (e.g. underflow when offerPrice <
-    /// tradingFee) are not caught by the try/catch and will abort the bundle.
-    /// @dev Requires a non-empty takes array.
-    function bundleTakeSellerAssets(
-        Midnight midnight,
-        uint256 targetSellerAssets,
-        address taker,
-        address receiverIfTakerIsSeller,
-        Take[] calldata takes,
-        uint256 minUnits,
-        uint256 maxUnits
-    ) external {
-        require(taker == msg.sender || midnight.isAuthorized(taker, msg.sender), "unauthorized");
-        bytes32 id = midnight.touchObligation(takes[0].offer.obligation); // to have the correct trading fees.
-
-        uint256 totalFilledSellerAssets;
-        uint256 totalUnits;
-        for (uint256 i; i < takes.length && totalFilledSellerAssets < targetSellerAssets; i++) {
-            try midnight.take(
-                UtilsLib.min(
-                    TakeAmountsLib.sellerAssetsToUnits(
-                        midnight, id, takes[i].offer, targetSellerAssets - totalFilledSellerAssets
-                    ),
-                    takes[i].units
-                ),
-                taker,
-                address(0),
-                "",
-                receiverIfTakerIsSeller,
-                takes[i].offer,
-                takes[i].sig,
-                takes[i].root,
-                takes[i].proof
-            ) returns (
-                uint256, uint256 filledSellerAssets, uint256 filledUnits
-            ) {
-                totalFilledSellerAssets += filledSellerAssets;
-                totalUnits += filledUnits;
-            } catch {}
-        }
-
-        require(totalFilledSellerAssets == targetSellerAssets, "insufficient liquidity");
-        require(totalUnits >= minUnits, "units below min");
-        require(totalUnits <= maxUnits, "units above max");
     }
 }
 </file>
 
-<file path="src/authorizers/EcrecoverAuthorizer.sol">
+<file path="src/periphery/EcrecoverAuthorizer.sol">
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (c) 2025 Morpho Association
 pragma solidity 0.8.34;
 
 import {IMidnight} from "../interfaces/IMidnight.sol";
-import {Authorization, Signature, AUTHORIZATION_TYPEHASH, EIP712_DOMAIN_TYPEHASH} from "../interfaces/IEcrecover.sol";
+import {
+    IEcrecoverAuthorizer,
+    Authorization,
+    Signature,
+    AUTHORIZATION_TYPEHASH,
+    EIP712_DOMAIN_TYPEHASH
+} from "./interfaces/IEcrecoverAuthorizer.sol";
 
-event SetIsAuthorized(
-    address indexed caller, address indexed authorizer, address indexed authorized, bool isAuthorized, uint256 nonce
-);
-
-contract EcrecoverAuthorizer {
+/// @dev If block.chainid changes (hard fork), the EIP-712 domain separator changes and previously signed authorizations
+/// are no longer valid.
+contract EcrecoverAuthorizer is IEcrecoverAuthorizer {
     address public immutable MIDNIGHT;
     mapping(address => uint256) public nonce;
 
@@ -723,18 +455,17 @@ contract EcrecoverAuthorizer {
     }
 
     function setIsAuthorized(Authorization memory authorization, Signature calldata signature) external {
-        require(block.timestamp <= authorization.deadline, "expired");
-        require(authorization.nonce == nonce[authorization.authorizer]++, "invalid nonce");
+        require(block.timestamp <= authorization.deadline, Expired());
+        require(authorization.nonce == nonce[authorization.authorizer]++, InvalidNonce());
 
         bytes32 hashStruct = keccak256(abi.encode(AUTHORIZATION_TYPEHASH, authorization));
         bytes32 domainSeparator = keccak256(abi.encode(EIP712_DOMAIN_TYPEHASH, block.chainid, address(this)));
         bytes32 digest = keccak256(bytes.concat("\x19\x01", domainSeparator, hashStruct));
         address signer = ecrecover(digest, signature.v, signature.r, signature.s);
+        require(signer != address(0), InvalidSignature());
         require(
-            signer != address(0)
-                && (signer == authorization.authorizer
-                    || IMidnight(MIDNIGHT).isAuthorized(authorization.authorizer, signer)),
-            "invalid signature"
+            signer == authorization.authorizer || IMidnight(MIDNIGHT).isAuthorized(authorization.authorizer, signer),
+            Unauthorized()
         );
 
         emit SetIsAuthorized(
@@ -746,35 +477,527 @@ contract EcrecoverAuthorizer {
         );
 
         IMidnight(MIDNIGHT)
-            .setIsAuthorized(authorization.authorizer, authorization.authorized, authorization.isAuthorized);
+            .setIsAuthorized(authorization.authorized, authorization.isAuthorized, authorization.authorizer);
     }
 }
 </file>
 
-<file path="src/ratifiers/ApprovalRatifier.sol">
+<file path="src/ratifiers/interfaces/IEcrecoverRatifier.sol">
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (c) 2025 Morpho Association
+pragma solidity ^0.8.0;
+
+import {IRatifier} from "../../interfaces/IRatifier.sol";
+
+struct Signature {
+    uint8 v;
+    bytes32 r;
+    bytes32 s;
+}
+
+/// @dev keccak256("EIP712Domain(uint256 chainId,address verifyingContract)").
+bytes32 constant EIP712_DOMAIN_TYPEHASH = 0x47e79534a245952e8b16893a336b85a3d9ea9fa8c573f3d803afb92a79469218;
+
+interface IEcrecoverRatifier is IRatifier {
+    /// ERRORS ///
+    error InvalidProof();
+    error InvalidSignature();
+    error NotMidnight();
+    error RootCanceled();
+    error Unauthorized();
+
+    /// EVENTS ///
+    event CancelRoot(address indexed caller, address indexed maker, bytes32 indexed root);
+
+    /// FUNCTIONS ///
+    function cancelRoot(address maker, bytes32 root) external;
+
+    /// STORAGE GETTERS ///
+    function MIDNIGHT() external view returns (address);
+    function isRootCanceled(address maker, bytes32 root) external view returns (bool);
+}
+</file>
+
+<file path="src/ratifiers/interfaces/ISetterRatifier.sol">
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (c) 2025 Morpho Association
+pragma solidity ^0.8.0;
+
+import {IRatifier} from "../../interfaces/IRatifier.sol";
+
+interface ISetterRatifier is IRatifier {
+    /// ERRORS ///
+    error InvalidProof();
+    error Unauthorized();
+    error NotMidnight();
+    error NotRatified();
+
+    /// EVENTS ///
+    event SetIsRootRatified(
+        address indexed caller, address indexed maker, bytes32 indexed root, bool newIsRootRatified
+    );
+
+    /// FUNCTIONS ///
+    function setIsRootRatified(address maker, bytes32 root, bool newIsRootRatified) external;
+
+    /// STORAGE GETTERS ///
+    function MIDNIGHT() external view returns (address);
+    function isRootRatified(address maker, bytes32 root) external view returns (bool);
+}
+</file>
+
+<file path="src/libraries/TickLib.sol">
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (c) 2025 Morpho Association
+pragma solidity ^0.8.0;
+
+int256 constant LN_ONE_PLUS_DELTA = 0.004987541511039073e18; // floor(ln(1.005) * 1e18)
+uint256 constant MAX_TICK = 5820;
+// Minimum representable price increment in WAD (1e-6 WAD). Tick prices are rounded to multiples of this value.
+uint256 constant PRICE_ROUNDING_STEP = 1e12;
+
+library TickLib {
+    using TickLib for uint256;
+
+    error PriceGreaterThanOne();
+    error TickOutOfRange();
+
+    /// @dev Returns x / d rounded to the nearest integer with ties rounded down, without checking for overflow.
+    function divHalfDownUnchecked(uint256 x, uint256 d) internal pure returns (uint256) {
+        unchecked {
+            return (x + (d - 1) / 2) / d;
+        }
+    }
+
+    function wExp(int256 x) internal pure returns (uint256) {
+        unchecked {
+            if (x < 0) {
+                return 1e36 / wExp(-x);
+            } else {
+                int256 ln2 = 0.693147180559945309e18; // floor(ln(2) * 1e18)
+                // offset is chosen such that 2 * expR(-offset) == expR(ln2 - offset - 1), so wExp is non-decreasing.
+                int256 offset = 0.32261121498945987e18;
+                int256 q = (x + offset) / ln2;
+                int256 r = x - q * ln2;
+                int256 secondTerm = r * r / (2 * 1e18);
+                int256 thirdTerm = secondTerm * r / (3 * 1e18);
+                int256 expR = 1e18 + r + secondTerm + thirdTerm;
+                // forge-lint: disable-next-item(unsafe-typecast)
+                // - q is non-negative because x is non-negative in this branch
+                // - expR is positive because |r| < ln2 < 1e18 and |secondTerm| > |thirdTerm|
+                return uint256(expR) << uint256(q);
+            }
+        }
+    }
+
+    function tickToPrice(uint256 tick) internal pure returns (uint256) {
+        require(tick <= MAX_TICK, TickOutOfRange());
+        unchecked {
+            // forge-lint: disable-next-item(unsafe-typecast)
+            return uint256(1e36)
+                    .divHalfDownUnchecked(1e18 + wExp(LN_ONE_PLUS_DELTA * (int256(MAX_TICK / 2) - int256(tick))))
+                    .divHalfDownUnchecked(PRICE_ROUNDING_STEP) * PRICE_ROUNDING_STEP;
+        }
+    }
+
+    /// @dev Among the ticks than are multiples of spacing, returns the lowest one with a price higher or equal.
+    /// @dev spacing should divide MAX_TICK.
+    function priceToTick(uint256 price, uint256 spacing) internal pure returns (uint256) {
+        require(price <= 1e18, PriceGreaterThanOne());
+        uint256 low = 0;
+        uint256 high = MAX_TICK;
+        while (low != high) {
+            unchecked {
+                uint256 mid = (low + high) / 2;
+                if (tickToPrice(mid) < price) low = mid + 1;
+                else high = mid;
+            }
+        }
+        return (low + spacing - 1) / spacing * spacing;
+    }
+}
+</file>
+
+<file path="src/periphery/interfaces/IMidnightBundles.sol">
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (c) 2025 Morpho Association
+pragma solidity >=0.5.0;
+
+import {Offer, Market} from "../../interfaces/IMidnight.sol";
+
+struct Take {
+    uint256 units;
+    Offer offer;
+    bytes ratifierData;
+}
+
+enum PermitKind {
+    None,
+    ERC2612,
+    Permit2
+}
+
+struct TokenPermit {
+    PermitKind kind;
+    bytes data;
+}
+
+struct CollateralWithdrawal {
+    uint256 collateralIndex;
+    uint256 assets;
+}
+
+struct CollateralSupply {
+    uint256 collateralIndex;
+    uint256 assets;
+    TokenPermit permit;
+}
+
+interface IMidnightBundles {
+    /// ERRORS ///
+    error ApproveReturnedFalse();
+    error InconsistentMarket();
+    error InconsistentSide();
+    error OutOfOffers();
+    error PctExceeded();
+    error SellerAssetsTooLow();
+    error Unauthorized();
+    error UnitsTooHigh();
+    error UnitsTooLow();
+
+    /// STORAGE GETTERS ///
+    function PERMIT2() external view returns (address);
+    function MIDNIGHT() external view returns (address);
+
+    // forgefmt: disable-start
+    /// FUNCTIONS ///
+    function buyWithUnitsTargetAndWithdrawCollateral(uint256 targetUnits, uint256 maxBuyerAssets, address taker, TokenPermit memory loanTokenPermit, Take[] memory takes, CollateralWithdrawal[] memory collateralWithdrawals, address collateralReceiver, uint256 referralFeePct, address referralFeeRecipient) external;
+    function supplyCollateralAndSellWithUnitsTarget(uint256 targetUnits, uint256 minSellerAssets, address taker, address receiverIfTakerIsSeller, CollateralSupply[] memory collateralSupplies, Take[] memory takes, uint256 referralFeePct, address referralFeeRecipient) external;
+    function buyWithAssetsTargetAndWithdrawCollateral(uint256 targetBuyerAssets, uint256 minUnits, address taker, TokenPermit memory loanTokenPermit, Take[] memory takes, CollateralWithdrawal[] memory collateralWithdrawals, address collateralReceiver, uint256 referralFeePct, address referralFeeRecipient) external;
+    function supplyCollateralAndSellWithAssetsTarget(uint256 targetSellerAssets, uint256 maxUnits, address taker, address receiverIfTakerIsSeller, CollateralSupply[] memory collateralSupplies, Take[] memory takes, uint256 referralFeePct, address referralFeeRecipient) external;
+    function repayAndWithdrawCollateral(Market memory market, uint256 assets, address onBehalf, TokenPermit memory loanTokenPermit, CollateralWithdrawal[] memory collateralWithdrawals, address collateralReceiver, uint256 referralFeePct, address referralFeeRecipient) external;
+    // forgefmt: disable-end
+}
+</file>
+
+<file path="src/periphery/TakeAmountsLib.sol">
+// SPDX-License-Identifier: GPL-2.0-or-later
+pragma solidity ^0.8.0;
+
+import {IMidnight, Offer} from "../interfaces/IMidnight.sol";
+import {UtilsLib} from "../libraries/UtilsLib.sol";
+import {TickLib} from "../libraries/TickLib.sol";
+import {WAD} from "../libraries/ConstantsLib.sol";
+
+library TakeAmountsLib {
+    using UtilsLib for uint256;
+
+    /// @dev Forward: buyerAssets = offer.buy ? units.mulDivDown(buyerPrice, WAD) : units.mulDivUp(buyerPrice, WAD).
+    /// @dev Assumes that id and offer.market match.
+    /// @dev Reverts if buyerPrice > WAD, because not all buyerAssets are reachable then.
+    /// @dev Reverts if offerPrice < settlementFee in case of a buy offer (midnight reverts too).
+    /// @dev Returns a number of units for which take yields exactly targetBuyerAssets (not necessarily the biggest).
+    function buyerAssetsToUnits(address midnight, bytes32 id, Offer memory offer, uint256 targetBuyerAssets)
+        internal
+        view
+        returns (uint256)
+    {
+        uint256 offerPrice = TickLib.tickToPrice(offer.tick);
+        uint256 settlementFee =
+            IMidnight(midnight).settlementFee(id, UtilsLib.zeroFloorSub(offer.market.maturity, block.timestamp));
+        // Mirrors Midnight's computation to revert if offerPrice < settlementFee in case of a buy offer.
+        uint256 sellerPrice = offer.buy ? offerPrice - settlementFee : offerPrice;
+        uint256 buyerPrice = sellerPrice + settlementFee;
+        require(buyerPrice <= WAD, TickLib.PriceGreaterThanOne());
+        return offer.buy ? targetBuyerAssets.mulDivUp(WAD, buyerPrice) : targetBuyerAssets.mulDivDown(WAD, buyerPrice);
+    }
+
+    /// @dev Forward: sellerAssets = offer.buy ? units.mulDivDown(sellerPrice, WAD) : units.mulDivUp(sellerPrice, WAD).
+    /// @dev Assumes that id and offer.market match.
+    /// @dev Reverts if offerPrice < settlementFee in case of a buy offer (midnight reverts too).
+    /// @dev Returns a number of units for which take yields exactly targetSellerAssets (not necessarily the smallest).
+    function sellerAssetsToUnits(address midnight, bytes32 id, Offer memory offer, uint256 targetSellerAssets)
+        internal
+        view
+        returns (uint256)
+    {
+        uint256 offerPrice = TickLib.tickToPrice(offer.tick);
+        uint256 settlementFee =
+            IMidnight(midnight).settlementFee(id, UtilsLib.zeroFloorSub(offer.market.maturity, block.timestamp));
+        uint256 sellerPrice = offer.buy ? offerPrice - settlementFee : offerPrice;
+        return
+            offer.buy ? targetSellerAssets.mulDivUp(WAD, sellerPrice) : targetSellerAssets.mulDivDown(WAD, sellerPrice);
+    }
+}
+</file>
+
+<file path="src/ratifiers/libraries/HashLib.sol">
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (c) 2025 Morpho Association
+pragma solidity ^0.8.0;
+
+import {Offer, Market, CollateralParams} from "../../interfaces/IMidnight.sol";
+
+/// @dev keccak256("CollateralParams(address token,uint256 lltv,uint256 maxLif,address oracle)").
+bytes32 constant COLLATERAL_PARAMS_TYPEHASH = 0xaf44a88eb50ebdbbebd980e5a23045c44f61ece5f80ab708a1bbe8718102e6af;
+/// @dev keccak256(bytes.concat(MARKET_TYPE, COLLATERAL_PARAMS_TYPE)).
+bytes32 constant MARKET_TYPEHASH = 0x358117e98511cc3df97175dca58053b06675b43ad090b0553f8a1eff008b6e2e;
+/// @dev keccak256(bytes.concat(OFFER_TYPE, COLLATERAL_PARAMS_TYPE, MARKET_TYPE)).
+bytes32 constant OFFER_TYPEHASH = 0x980a4cfc9766df84667f316d76e10cefc8caf04fb4cd4a9fca00a8e7b34f619c;
+
+library HashLib {
+    error LeafIndexOutOfRange();
+    error TreeTooHigh();
+
+    /// @dev Returns the EIP-712 typehash of OfferTree(Offer[2]...[2] offerTree) with height levels.
+    /// @dev Same as keccak256(bytes.concat("OfferTree(Offer[2]...[2] offerTree)", COLLATERAL_PARAMS_TYPE,
+    /// MARKET_TYPE, OFFER_TYPE)).
+    /// @dev Reverts if height is greater than 20.
+    function offerTreeTypeHash(uint256 height) internal pure returns (bytes32) {
+        if (height <= 10) {
+            if (height == 0) return 0x2b9ee710e1977dfc5778fe18c905ccc1d9e144baf3ba83be732d4da65ecb73e3;
+            if (height == 1) return 0x3cc16189b92a85898f1d5c6e87282c8ded7c1c93b2323d5e85ae10c5f4b2b220;
+            if (height == 2) return 0x6de37d3e570afa293a8107d4b6b1d9547616c04f42164d009c89194787b2ffa6;
+            if (height == 3) return 0xba3ea2ddfbf40a906fcd1b9506dbd344c062e8dcba8b5c902ceb13339f45a358;
+            if (height == 4) return 0xe5faa865e93bc1b7b8fdf91980f54682d649683b014edd6c54b642f5a0c96977;
+            if (height == 5) return 0xeda50f61dd2a827c6ff9fbfcd54335628dcaa78aaa4f2d118c60886219cdce2b;
+            if (height == 6) return 0x54e2c9cc40cdc0e9ad530cf2be298f952f57af2b18b02f88274a9bbab359d23a;
+            if (height == 7) return 0xc9d81859d60d6b21c688f4be93ca83e3be222728bb156ef5f4cf497f879f1e29;
+            if (height == 8) return 0xd59b0c4544e0c60c8611eab0aaa402575f14ee784d22289c5d57f48c422a62d6;
+            if (height == 9) return 0xccad21701f34f08bb8398a3dbc77e20e4c9c424930f3a8b31485bf059e2bdb20;
+            return 0x8a42dfb49807647bfc49c906aef322aa0239d40e4cb675761e141bc7bfa530da;
+        } else {
+            if (height == 11) return 0x2adc0d948b2e3ecb642661590d2eec36d4e71e9acf382deb6574371800caf198;
+            if (height == 12) return 0xf5845dfaed016de272342f346346a49d4b1694f622144d420558a38e46ac9dad;
+            if (height == 13) return 0x3d7df854e6294bf433b64bbb8d0a82fa875a87b45b0016db27fc5752e54126ad;
+            if (height == 14) return 0x72a991a101708716ff427c524404ab44f4d4d1f4e7e76c0ae8b967222164b348;
+            if (height == 15) return 0x762c88fc52cf78a54401d247790f1bdb619d51d3458d1415c20d1422197cecc4;
+            if (height == 16) return 0x8ede2209e94c8d5f8379d733dc8712b71a3888c1c4b70f3d6b22285f70bf4286;
+            if (height == 17) return 0x425b18f07b3ac2f641977d2c294590565dd40b5d8414610568dca64628399975;
+            if (height == 18) return 0x7e7d98718c0180e882e5963b9bd49810096912c273dfa38d8afdd6d39fde86ec;
+            if (height == 19) return 0x8d35d491a29d846489e19688efff3c4cc7dbd54458058d49b30294074539f0b9;
+            if (height == 20) return 0x824e385eea1953bcbc783bf900b18aa6fba129b6908765e986cf0968b491ec4f;
+            revert TreeTooHigh();
+        }
+    }
+
+    /// @dev Verifies a Merkle proof using the leaf index to determine the left/right position of each sibling.
+    /// @dev Works for offer-tree heights up to 256, the bit-width of leafIndex. In practice the height is capped at 20
+    /// by offerTreeTypeHash.
+    function isLeaf(bytes32 root, bytes32 leafHash, uint256 leafIndex, bytes32[] memory proof)
+        internal
+        pure
+        returns (bool)
+    {
+        require(leafIndex >> proof.length == 0, LeafIndexOutOfRange());
+        bytes32 currentHash = leafHash;
+        for (uint256 i = 0; i < proof.length; i++) {
+            currentHash = (leafIndex >> i) & 1 == 0 ? hashNode(currentHash, proof[i]) : hashNode(proof[i], currentHash);
+        }
+        return currentHash == root;
+    }
+
+    /// @dev Returns the keccak256 hash of the concatenation of left and right.
+    function hashNode(bytes32 left, bytes32 right) internal pure returns (bytes32 value) {
+        assembly ("memory-safe") {
+            mstore(0x00, left)
+            mstore(0x20, right)
+            value := keccak256(0x00, 0x40)
+        }
+    }
+
+    /// @dev Computes the EIP-712 hash struct of a CollateralParams.
+    function hashCollateralParams(CollateralParams memory collateralParams) internal pure returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                COLLATERAL_PARAMS_TYPEHASH,
+                collateralParams.token,
+                collateralParams.lltv,
+                collateralParams.maxLif,
+                collateralParams.oracle
+            )
+        );
+    }
+
+    /// @dev Computes the EIP-712 hash struct of a Market.
+    function hashMarket(Market memory market) internal pure returns (bytes32) {
+        bytes32[] memory collateralParamsHashes = new bytes32[](market.collateralParams.length);
+        for (uint256 i = 0; i < market.collateralParams.length; i++) {
+            collateralParamsHashes[i] = hashCollateralParams(market.collateralParams[i]);
+        }
+
+        bytes32 collateralParamsHash;
+        // same as keccak256(abi.encodePacked(collateralParamsHashes));
+        assembly ("memory-safe") {
+            collateralParamsHash := keccak256(
+                add(collateralParamsHashes, 0x20),
+                mul(mload(collateralParamsHashes), 0x20)
+            )
+        }
+
+        return keccak256(
+            abi.encode(
+                MARKET_TYPEHASH,
+                market.loanToken,
+                collateralParamsHash,
+                market.maturity,
+                market.rcfThreshold,
+                market.enterGate,
+                market.liquidatorGate
+            )
+        );
+    }
+
+    /// @dev Computes the EIP-712 hash struct of an Offer.
+    function hashOffer(Offer memory offer) internal pure returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                OFFER_TYPEHASH,
+                hashMarket(offer.market),
+                offer.buy,
+                offer.maker,
+                offer.start,
+                offer.expiry,
+                offer.tick,
+                offer.group,
+                offer.callback,
+                keccak256(offer.callbackData),
+                offer.receiverIfMakerIsSeller,
+                offer.ratifier,
+                offer.reduceOnly,
+                offer.maxUnits,
+                offer.maxAssets
+            )
+        );
+    }
+}
+</file>
+
+<file path="src/ratifiers/SetterRatifier.sol">
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Copyright (c) 2025 Morpho Association
 pragma solidity 0.8.34;
 
-import {IRatifier} from "../interfaces/IRatifier.sol";
-import {Offer} from "../interfaces/IMidnight.sol";
+import {ISetterRatifier} from "./interfaces/ISetterRatifier.sol";
+import {IMidnight, Offer} from "../interfaces/IMidnight.sol";
 import {CALLBACK_SUCCESS} from "../libraries/ConstantsLib.sol";
+import {HashLib} from "./libraries/HashLib.sol";
 
-contract ApprovalRatifier is IRatifier {
-    event SetApproval(address indexed maker, bytes32 indexed root, bool newApproval);
+/// @dev This ratifier checks that the offer has been ratified by an authorized address in a Merkle tree of offers.
+/// To that end, it expects the ratifier data to contain the root of the tree, the leaf index of the offer in the tree,
+/// and the proof of the offer in the tree.
+/// @dev The root should correspond to the root of the offer tree, which is a Merkle tree of offers.
+/// @dev The leaf index determines each hash order during merkle proof verification.
+contract SetterRatifier is ISetterRatifier {
+    address public immutable MIDNIGHT;
 
-    mapping(address maker => mapping(bytes32 root => bool)) public approved;
+    mapping(address maker => mapping(bytes32 root => bool)) public isRootRatified;
 
-    function setApproval(bytes32 root, bool newApproval) external {
-        approved[msg.sender][root] = newApproval;
-        emit SetApproval(msg.sender, root, newApproval);
+    constructor(address _midnight) {
+        MIDNIGHT = _midnight;
     }
 
-    function onRatify(Offer memory offer, bytes32 root, bytes memory) external view returns (bytes32) {
-        require(approved[offer.maker][root], "not approved");
+    function setIsRootRatified(address maker, bytes32 root, bool newIsRootRatified) public {
+        require(maker == msg.sender || IMidnight(MIDNIGHT).isAuthorized(maker, msg.sender), Unauthorized());
+        isRootRatified[maker][root] = newIsRootRatified;
+        emit SetIsRootRatified(msg.sender, maker, root, newIsRootRatified);
+    }
+
+    function isRatified(Offer memory offer, bytes memory ratifierData) external view returns (bytes32) {
+        require(msg.sender == MIDNIGHT, NotMidnight());
+        (bytes32 root, uint256 leafIndex, bytes32[] memory proof) =
+            abi.decode(ratifierData, (bytes32, uint256, bytes32[]));
+        require(HashLib.isLeaf(root, HashLib.hashOffer(offer), leafIndex, proof), InvalidProof());
+        require(isRootRatified[offer.maker][root], NotRatified());
         return CALLBACK_SUCCESS;
     }
 }
+</file>
+
+<file path="src/interfaces/ICallbacks.sol">
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (c) 2025 Morpho Association
+pragma solidity >=0.5.0;
+
+import {Market} from "./IMidnight.sol";
+
+// forgefmt: disable-start
+interface IBuyCallback {
+    function onBuy(bytes32 id, Market memory market, uint256 buyerAssets, uint256 units, uint256 pendingFeeIncrease, address buyer, bytes memory data) external returns (bytes32);
+}
+
+interface ISellCallback {
+    function onSell(bytes32 id, Market memory market, uint256 sellerAssets, uint256 units, uint256 pendingFeeDecrease, address seller, address receiver, bytes memory data) external returns (bytes32);
+}
+
+interface ILiquidateCallback {
+    function onLiquidate(address caller, bytes32 id, Market memory market, uint256 collateralIndex, uint256 seizedAssets, uint256 repaidUnits, address borrower, address receiver, bytes memory data, uint256 badDebt) external returns (bytes32);
+}
+
+interface IRepayCallback {
+    function onRepay(bytes32 id, Market memory market, uint256 units, address onBehalf, bytes memory data) external returns (bytes32);
+}
+
+interface IFlashLoanCallback {
+    function onFlashLoan(address caller, address[] memory tokens, uint256[] memory assets, bytes memory data) external returns (bytes32);
+}
+// forgefmt: disable-end
+</file>
+
+<file path="src/libraries/ConstantsLib.sol">
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (c) 2025 Morpho Association
+pragma solidity ^0.8.0;
+
+import {UtilsLib} from "./UtilsLib.sol";
+
+// forgefmt: disable-start
+uint256 constant WAD = 1e18;
+uint256 constant ORACLE_PRICE_SCALE = 1e36;
+uint256 constant CBP = 1e12;
+uint256 constant MAX_SETTLEMENT_FEE_0_DAYS = 0.000014e18;
+uint256 constant MAX_SETTLEMENT_FEE_1_DAY = 0.000014e18;
+uint256 constant MAX_SETTLEMENT_FEE_7_DAYS = 0.000098e18;
+uint256 constant MAX_SETTLEMENT_FEE_30_DAYS = 0.000417e18;
+uint256 constant MAX_SETTLEMENT_FEE_90_DAYS = 0.00125e18;
+uint256 constant MAX_SETTLEMENT_FEE_180_DAYS = 0.0025e18;
+uint256 constant MAX_SETTLEMENT_FEE_360_DAYS = 0.005e18;
+uint32 constant MAX_CONTINUOUS_FEE = uint32(uint256(0.01e18) / uint256(365 days));
+uint256 constant TIME_TO_MAX_LIF = 15 minutes;
+uint256 constant MAX_COLLATERALS = 128;
+uint256 constant MAX_COLLATERALS_PER_BORROWER = 16;
+uint256 constant LIQUIDATION_CURSOR_LOW = 0.25e18;
+uint256 constant LIQUIDATION_CURSOR_HIGH = 0.5e18;
+uint256 constant LIQUIDATION_LOCK_SLOT = uint256(keccak256("morpho.midnight.liquidationLocked"));
+bytes32 constant CALLBACK_SUCCESS = keccak256("morpho.midnight.callbackSuccess");
+uint8 constant DEFAULT_TICK_SPACING = 4;
+
+/// @dev The allowed LLTV values, copied from Morpho Blue's enabled tiers (excluding zero, including WAD).
+uint256 constant LLTV_0 = 0.385e18;
+uint256 constant LLTV_1 = 0.625e18;
+uint256 constant LLTV_2 = 0.77e18;
+uint256 constant LLTV_3 = 0.86e18;
+uint256 constant LLTV_4 = 0.915e18;
+uint256 constant LLTV_5 = 0.945e18;
+uint256 constant LLTV_6 = 0.965e18;
+uint256 constant LLTV_7 = 0.98e18;
+uint256 constant LLTV_8 = 1e18;
+
+/// @dev Returns true if lltv is one of the allowed LLTV tiers.
+function isLltvAllowed(uint256 lltv) pure returns (bool) {
+    return lltv == LLTV_0 || lltv == LLTV_1 || lltv == LLTV_2 || lltv == LLTV_3 || lltv == LLTV_4 || lltv == LLTV_5 || lltv == LLTV_6 || lltv == LLTV_7 || lltv == LLTV_8;
+}
+
+/// @dev Returns the max settlement fee for the given index.
+function maxSettlementFee(uint256 index) pure returns (uint256) {
+    return [MAX_SETTLEMENT_FEE_0_DAYS, MAX_SETTLEMENT_FEE_1_DAY, MAX_SETTLEMENT_FEE_7_DAYS, MAX_SETTLEMENT_FEE_30_DAYS, MAX_SETTLEMENT_FEE_90_DAYS, MAX_SETTLEMENT_FEE_180_DAYS, MAX_SETTLEMENT_FEE_360_DAYS][index];
+}
+
+/// @dev Returns the max LIF for the given lltv and cursor.
+function maxLif(uint256 lltv, uint256 cursor) pure returns (uint256) {
+    return UtilsLib.mulDivDown(WAD, WAD, WAD - UtilsLib.mulDivDown(cursor, WAD - lltv, WAD));
+}
+// forgefmt: disable-end
 </file>
 
 <file path="src/ratifiers/EcrecoverRatifier.sol">
@@ -782,26 +1005,46 @@ contract ApprovalRatifier is IRatifier {
 // Copyright (c) 2025 Morpho Association
 pragma solidity 0.8.34;
 
-import {IRatifier} from "../interfaces/IRatifier.sol";
+import {IEcrecoverRatifier, Signature, EIP712_DOMAIN_TYPEHASH} from "./interfaces/IEcrecoverRatifier.sol";
 import {IMidnight, Offer} from "../interfaces/IMidnight.sol";
 import {CALLBACK_SUCCESS} from "../libraries/ConstantsLib.sol";
-import {Signature, EIP712_DOMAIN_TYPEHASH, ROOT_TYPEHASH} from "../interfaces/IEcrecover.sol";
+import {HashLib} from "./libraries/HashLib.sol";
 
-contract EcrecoverRatifier is IRatifier {
+/// @dev If block.chainid changes (hard fork), the EIP-712 domain separator changes and previously signed offers are
+/// no longer valid.
+/// @dev This ratifier checks that the offer has been signed by an authorized address in a Merkle tree of offers.
+/// To that end, it expects the ratifier data to contain the signature, the root of the tree, the leaf index of the
+/// offer, and the proof of the offer in the tree.
+/// @dev The root should correspond to the root of the offer tree, which is a Merkle tree of offers.
+/// @dev The leaf index determines each sibling's left/right position.
+/// @dev Hashing offers as in EIP-712, which allows clear signing of the tree, credits to Seaport for this mechanism.
+contract EcrecoverRatifier is IEcrecoverRatifier {
     address public immutable MIDNIGHT;
+
+    mapping(address maker => mapping(bytes32 root => bool)) public isRootCanceled;
 
     constructor(address _midnight) {
         MIDNIGHT = _midnight;
     }
 
-    function onRatify(Offer memory offer, bytes32 root, bytes memory data) external view returns (bytes32) {
-        Signature memory sig = abi.decode(data, (Signature));
-        bytes32 structHash = keccak256(abi.encode(ROOT_TYPEHASH, root));
+    function cancelRoot(address maker, bytes32 root) external {
+        require(maker == msg.sender || IMidnight(MIDNIGHT).isAuthorized(maker, msg.sender), Unauthorized());
+        isRootCanceled[maker][root] = true;
+        emit CancelRoot(msg.sender, maker, root);
+    }
+
+    function isRatified(Offer memory offer, bytes memory ratifierData) external view returns (bytes32) {
+        require(msg.sender == MIDNIGHT, NotMidnight());
+        (Signature memory sig, bytes32 root, uint256 leafIndex, bytes32[] memory proof) =
+            abi.decode(ratifierData, (Signature, bytes32, uint256, bytes32[]));
+        require(HashLib.isLeaf(root, HashLib.hashOffer(offer), leafIndex, proof), InvalidProof());
+        require(!isRootCanceled[offer.maker][root], RootCanceled());
+        bytes32 structHash = keccak256(abi.encode(HashLib.offerTreeTypeHash(proof.length), root));
         bytes32 domainSeparator = keccak256(abi.encode(EIP712_DOMAIN_TYPEHASH, block.chainid, address(this)));
         bytes32 digest = keccak256(bytes.concat("\x19\x01", domainSeparator, structHash));
         address _signer = ecrecover(digest, sig.v, sig.r, sig.s);
-        require(_signer != address(0), "invalid signature");
-        require(_signer == offer.maker || IMidnight(MIDNIGHT).isAuthorized(offer.maker, _signer), "unauthorized");
+        require(_signer != address(0), InvalidSignature());
+        require(_signer == offer.maker || IMidnight(MIDNIGHT).isAuthorized(offer.maker, _signer), Unauthorized());
         return CALLBACK_SUCCESS;
     }
 }
@@ -812,35 +1055,37 @@ contract EcrecoverRatifier is IRatifier {
 // Copyright (c) 2025 Morpho Association
 pragma solidity ^0.8.0;
 
-import {Obligation} from "../interfaces/IMidnight.sol";
+import {Market} from "../interfaces/IMidnight.sol";
 
 /// @dev id_ is used to avoid naming conflicts in indexers.
 library EventsLib {
     // forgefmt: disable-start
-    event Constructor(address indexed roleSetter);
+    event Constructor(address indexed roleSetter, uint256 initialChainId);
     event SetRoleSetter(address indexed roleSetter);
     event SetFeeSetter(address indexed feeSetter);
-    event SetObligationTradingFee(bytes32 indexed id_, uint256 indexed index, uint256 newTradingFee);
-    event SetDefaultTradingFee(address indexed loanToken, uint256 indexed index, uint256 newTradingFee);
-    event SetLimits(address indexed token, uint128 maxTotalUnits, uint256 maxTakeableAssets, uint256 maxCollateralPerUser);
-    event SetFeeRecipient(address indexed feeRecipient);
+    event SetTickSpacingSetter(address indexed tickSpacingSetter);
+    event SetMarketTickSpacing(bytes32 indexed id_, uint256 newTickSpacing);
+    event SetMarketSettlementFee(bytes32 indexed id_, uint256 indexed index, uint256 newSettlementFee);
+    event SetDefaultSettlementFee(address indexed loanToken, uint256 indexed index, uint256 newSettlementFee);
+    event SetMaxTotalUnits(address indexed token, uint128 maxTotalUnits);
+    event SetMaxTakeableAssets(address indexed token, uint256 maxTakeableAssets);
+    event SetMaxCollateralPerUser(address indexed token, uint256 maxCollateralPerUser);
     event SetFeeClaimer(address indexed feeClaimer);
-    event SetObligationContinuousFee(bytes32 indexed id_, uint256 newContinuousFee);
+    event SetMarketContinuousFee(bytes32 indexed id_, uint256 newContinuousFee);
     event SetDefaultContinuousFee(address indexed loanToken, uint256 newContinuousFee);
     event UpdatePosition(bytes32 indexed id_, address indexed user, uint256 creditDecrease, uint256 pendingFeeDecrease, uint256 accruedFee);
-    event ObligationCreated(bytes32 indexed id_, Obligation obligation);
-    event Take(address caller, bytes32 indexed id_, address indexed maker, address indexed taker, bool offerIsBuy, uint256 buyerAssets, uint256 sellerAssets, uint256 units, address sellerReceiver, bytes32 group, uint256 consumed, uint256 buyerPendingFeeIncrease, uint256 sellerPendingFeeDecrease, uint256 buyerCreditIncrease, uint256 sellerCreditDecrease);
+    event MarketCreated(Market market, bytes32 indexed id_);
+    event Take(address caller, bytes32 indexed id_, uint256 units, address indexed taker, address indexed maker, bool offerIsBuy, bytes32 group, uint256 buyerAssets, uint256 sellerAssets, uint256 consumed, uint256 buyerPendingFeeIncrease, uint256 sellerPendingFeeDecrease, uint256 buyerCreditIncrease, uint256 sellerCreditDecrease, address receiver, address payer);
     event Withdraw(address caller, bytes32 indexed id_, uint256 units, address indexed onBehalf, address indexed receiver, uint256 pendingFeeDecrease);
-    event Repay(address indexed caller, bytes32 indexed id_, uint256 units, address indexed onBehalf);
+    event Repay(address indexed caller, bytes32 indexed id_, uint256 units, address indexed onBehalf, address payer);
     event SupplyCollateral(address caller, bytes32 indexed id_, address indexed collateral, uint256 assets, address indexed onBehalf);
     event WithdrawCollateral(address caller, bytes32 indexed id_, address indexed collateral, uint256 assets, address indexed onBehalf, address receiver);
-    event Liquidate(address caller, bytes32 indexed id_, address indexed collateral, uint256 seizedAssets, uint256 repaidUnits, address indexed borrower, uint256 badDebt, uint256 latestLossIndex);
-    event SetConsumed(address indexed caller, address indexed onBehalf, bytes32 indexed group, uint256 amount);
-    event ShuffleSession(address indexed caller, address indexed onBehalf, bytes32 session);
-    event FlashLoan(address indexed caller, address indexed token, uint256 assets);
-    event SetIsAuthorized(address indexed caller, address indexed onBehalf, address indexed authorized, bool newIsAuthorized);
+    event Liquidate(address caller, bytes32 indexed id_, address indexed collateral, uint256 seizedAssets, uint256 repaidUnits, address indexed borrower, bool postMaturityMode, address receiver, address payer, uint256 badDebt, uint256 latestLossFactor, uint256 latestContinuousFeeCredit);
+    event SetConsumed(address indexed caller, bytes32 indexed group, uint256 amount, address indexed onBehalf);
+    event FlashLoan(address indexed caller, address[] tokens, uint256[] assets, address indexed callback);
+    event SetIsAuthorized(address indexed caller, address indexed authorized, bool newIsAuthorized, address indexed onBehalf);
     event ClaimContinuousFee(address indexed caller, bytes32 indexed id_, uint256 amount, address indexed receiver);
-    event ClaimTradingFee(address indexed caller, address indexed token, uint256 amount, address indexed receiver);
+    event ClaimSettlementFee(address indexed caller, address indexed token, uint256 amount, address indexed receiver);
     // forgefmt: disable-end
 }
 </file>
@@ -850,7 +1095,7 @@ library EventsLib {
 // Copyright (c) 2025 Morpho Association
 pragma solidity >=0.5.0;
 
-struct Obligation {
+struct Market {
     address loanToken;
     CollateralParams[] collateralParams;
     uint256 maturity;
@@ -867,121 +1112,574 @@ struct CollateralParams {
 }
 
 struct Offer {
-    Obligation obligation;
+    Market market;
     bool buy;
     address maker;
     uint256 start;
     uint256 expiry;
     uint256 tick;
     bytes32 group;
-    bytes32 session;
     address callback;
     bytes callbackData;
     address receiverIfMakerIsSeller;
     address ratifier;
     bool reduceOnly;
     uint256 maxUnits;
-    uint256 maxSellerAssets;
-    uint256 maxBuyerAssets;
+    uint256 maxAssets; // buyerAssets if offer.buy else sellerAssets
 }
 
-struct ObligationState {
+/// @dev Settlement fee cbp values and the continuous fee are 0 until the market is created, then set to the default
+/// values.
+struct MarketState {
     uint128 totalUnits;
-    uint128 lossIndex;
+    uint128 lossFactor;
     uint128 withdrawable;
     uint128 continuousFeeCredit;
-    uint16 fee0;
-    uint16 fee1;
-    uint16 fee2;
-    uint16 fee3;
-    uint16 fee4;
-    uint16 fee5;
-    uint16 fee6;
+    uint16 settlementFeeCbp0;
+    uint16 settlementFeeCbp1;
+    uint16 settlementFeeCbp2;
+    uint16 settlementFeeCbp3;
+    uint16 settlementFeeCbp4;
+    uint16 settlementFeeCbp5;
+    uint16 settlementFeeCbp6;
     uint32 continuousFee;
-    bool created;
+    uint8 tickSpacing;
 }
 
 struct Position {
     uint128 credit;
     uint128 pendingFee;
-    uint128 lossIndex;
+    uint128 lastLossFactor;
     uint128 lastAccrual;
     uint128 debt;
-    uint128 activatedCollaterals;
+    uint128 collateralBitmap;
     uint128[128] collateral;
 }
 
 interface IMidnight {
+    /// ERRORS ///
+    error AlreadyConsumed();
+    error BuyerGatedFromIncreasingCredit();
+    error CannotIncreaseDebtPostMaturity();
+    error CollateralParamsNotSorted();
+    error CollateralPerUserExceeded();
+    error ConsumedAssets();
+    error ConsumedUnits();
+    error ContinuousFeeTooHigh();
+    error FeeNotMultipleOfFeeCbp();
+    error InconsistentInput();
+    error WrongBuyCallbackReturnValue();
+    error WrongSellCallbackReturnValue();
+    error WrongRepayCallbackReturnValue();
+    error WrongLiquidateCallbackReturnValue();
+    error WrongFlashLoanCallbackReturnValue();
+    error InvalidFeeIndex();
+    error InvalidMaxLif();
+    error InvalidTickSpacing();
+    error LiquidatorGatedFromLiquidating();
+    error LltvNotAllowed();
+    error MakerCreditOrDebtIncreased();
+    error MaturityTooFar();
+    error MaxTakeableAssetsExceeded();
+    error MaxTotalUnitsExceeded();
+    error MultipleNonZero();
+    error NoCollateralParams();
+    error NotBorrower();
+    error NotLiquidatable();
+    error MarketLossFactorMaxedOut();
+    error MarketNotCreated();
+    error OfferExpired();
+    error OfferNotStarted();
+    error OnlyFeeClaimer();
+    error OnlyFeeSetter();
+    error OnlyRoleSetter();
+    error OnlyTickSpacingSetter();
+    error RatifierFail();
+    error RatifierUnauthorized();
+    error RecoveryCloseFactorConditionsViolated();
+    error SelfTake();
+    error SellerGatedFromIncreasingDebt();
+    error SellerIsLiquidatable();
+    error TakerUnauthorized();
+    error TickNotAccessible();
+    error TooManyActivatedCollaterals();
+    error TooManyCollateralParams();
+    error SettlementFeeTooHigh();
+    error Unauthorized();
+    error UnhealthyBorrower();
+
     // forgefmt: disable-start
+    /// IMMUTABLES ///
+    function INITIAL_CHAIN_ID() external view returns (uint256);
+
     /// STORAGE GETTERS ///
-    function position(bytes32 id, address user) external view returns (uint128 credit, uint128 pendingFee, uint128 lossIndex, uint128 lastAccrual, uint128 debt, uint128 activatedCollaterals);
-    function obligationState(bytes32 id) external view returns (uint128 totalUnits, uint128 lossIndex, uint128 withdrawable, uint128 continuousFeeCredit, uint16 fee0, uint16 fee1, uint16 fee2, uint16 fee3, uint16 fee4, uint16 fee5, uint16 fee6, uint32 continuousFee, bool created);
+    function position(bytes32 id, address user) external view returns (uint128 credit, uint128 pendingFee, uint128 lastLossFactor, uint128 lastAccrual, uint128 debt, uint128 collateralBitmap);
+    function marketState(bytes32 id) external view returns (uint128 totalUnits, uint128 lossFactor, uint128 withdrawable, uint128 continuousFeeCredit, uint16 settlementFeeCbp0, uint16 settlementFeeCbp1, uint16 settlementFeeCbp2, uint16 settlementFeeCbp3, uint16 settlementFeeCbp4, uint16 settlementFeeCbp5, uint16 settlementFeeCbp6, uint32 continuousFee, uint8 tickSpacing);
     function consumed(address user, bytes32 group) external view returns (uint256);
-    function session(address user) external view returns (bytes32);
     function isAuthorized(address authorizer, address authorized) external view returns (bool);
-    function defaultTradingFees(address loanToken, uint256 index) external view returns (uint16);
+    function defaultSettlementFeeCbp(address loanToken, uint256 index) external view returns (uint16);
     function defaultContinuousFee(address loanToken) external view returns (uint32);
-    function claimableTradingFee(address token) external view returns (uint256);
-    function feeClaimer() external view returns (address);
+    function claimableSettlementFee(address token) external view returns (uint256);
     function roleSetter() external view returns (address);
     function feeSetter() external view returns (address);
+    function feeClaimer() external view returns (address);
+    function tickSpacingSetter() external view returns (address);
+
+    /// MULTICALL ///
+    function multicall(bytes[] memory calls) external;
 
     /// ADMIN FUNCTIONS ///
-
     function setRoleSetter(address newRoleSetter) external;
     function setFeeSetter(address newFeeSetter) external;
     function setFeeClaimer(address newFeeClaimer) external;
-    function setObligationTradingFee(bytes32 id, uint256 index, uint256 newTradingFee) external;
-    function setDefaultTradingFee(address loanToken, uint256 index, uint256 newTradingFee) external;
-    function setObligationContinuousFee(bytes32 id, uint256 newContinuousFee) external;
+    function setTickSpacingSetter(address newTickSpacingSetter) external;
+    function setMarketTickSpacing(bytes32 id, uint256 newTickSpacing) external;
+    function setMarketSettlementFee(bytes32 id, uint256 index, uint256 newSettlementFee) external;
+    function setDefaultSettlementFee(address loanToken, uint256 index, uint256 newSettlementFee) external;
+    function setMarketContinuousFee(bytes32 id, uint256 newContinuousFee) external;
     function setDefaultContinuousFee(address loanToken, uint256 newContinuousFee) external;
-    function claimTradingFee(address token, uint256 amount, address receiver) external;
-    function claimContinuousFee(Obligation memory obligation, uint256 amount, address receiver) external;
+    function claimSettlementFee(address token, uint256 amount, address receiver) external;
+    function claimContinuousFee(Market memory market, uint256 amount, address receiver) external;
 
     /// ENTRY-POINTS ///
-
-    function take(uint256 units, address taker, address takerCallback, bytes memory takerCallbackData, address receiverIfTakerIsSeller, Offer memory offer, bytes memory ratifierData, bytes32 root, bytes32[] memory proof) external returns (uint256, uint256, uint256);
-    function withdraw(Obligation memory obligation, uint256 units, address onBehalf, address receiver) external;
-    function repay(Obligation memory obligation, uint256 units, address onBehalf, bytes calldata data) external;
-    function supplyCollateral(Obligation memory obligation, uint256 collateralIndex, uint256 assets, address onBehalf) external;
-    function withdrawCollateral(Obligation memory obligation, uint256 collateralIndex, uint256 assets, address onBehalf, address receiver) external;
-    function liquidate(Obligation calldata obligation, uint256 collateralIndex, uint256 seizedAssets, uint256 repaidUnits, address borrower, bytes calldata data) external returns (uint256, uint256);
+    function take(Offer memory offer, bytes memory ratifierData, uint256 units, address taker, address receiverIfTakerIsSeller, address takerCallback, bytes memory takerCallbackData) external returns (uint256, uint256);
+    function withdraw(Market memory market, uint256 units, address onBehalf, address receiver) external;
+    function repay(Market memory market, uint256 units, address onBehalf, address callback, bytes memory data) external;
+    function supplyCollateral(Market memory market, uint256 collateralIndex, uint256 assets, address onBehalf) external;
+    function withdrawCollateral(Market memory market, uint256 collateralIndex, uint256 assets, address onBehalf, address receiver) external;
+    function liquidate(Market memory market, uint256 collateralIndex, uint256 seizedAssets, uint256 repaidUnits, address borrower, bool postMaturityMode, address receiver, address callback, bytes memory data) external returns (uint256, uint256);
     function setConsumed(bytes32 group, uint256 amount, address onBehalf) external;
-    function shuffleSession(address onBehalf) external;
-    function setIsAuthorized(address onBehalf, address authorized, bool newIsAuthorized) external;
-    function flashLoan(address token, uint256 assets, address callback, bytes calldata data) external;
-    function touchObligation(Obligation memory obligation) external returns (bytes32);
+    function setIsAuthorized(address authorized, bool newIsAuthorized, address onBehalf) external;
+    function flashLoan(address[] memory tokens, uint256[] memory assets, address callback, bytes memory data) external;
+    function touchMarket(Market memory market) external returns (bytes32);
 
     /// SLASHING AND CONTINUOUS FEE ACCRUAL ///
-
-    function updatePositionView(Obligation memory obligation, bytes32 id, address user) external view returns (uint128, uint128, uint128);
-    function updatePosition(Obligation memory obligation, address user) external;
+    function updatePositionView(Market memory market, bytes32 id, address user) external view returns (uint128, uint128, uint128);
+    function updatePosition(Market memory market, address user) external returns (uint128, uint128, uint128);
 
     /// OTHER VIEW FUNCTIONS ///
-
-    function userLossIndex(bytes32 id, address user) external view returns (uint128);
-    function activatedCollaterals(bytes32 id, address user) external view returns (uint128);
+    function lastLossFactor(bytes32 id, address user) external view returns (uint128);
+    function collateralBitmap(bytes32 id, address user) external view returns (uint128);
     function collateral(bytes32 id, address user, uint256 index) external view returns (uint128);
-    function toId(Obligation memory obligation) external view returns (bytes32);
-    function toObligation(bytes32 id) external view returns (Obligation memory);
-    function creditOf(bytes32 id, address user) external view returns (uint256);
-    function debtOf(bytes32 id, address user) external view returns (uint256);
-    function totalUnits(bytes32 id) external view returns (uint256);
-    function lossIndex(bytes32 id) external view returns (uint128);
-    function obligationCreated(bytes32 id) external view returns (bool);
-    function withdrawable(bytes32 id) external view returns (uint256);
-    function tradingFees(bytes32 id) external view returns (uint16[7] memory);
+    function toId(Market memory market) external view returns (bytes32);
+    function toMarket(bytes32 id) external view returns (Market memory);
+    function creditOf(bytes32 id, address user) external view returns (uint128);
+    function debtOf(bytes32 id, address user) external view returns (uint128);
+    function totalUnits(bytes32 id) external view returns (uint128);
+    function lossFactor(bytes32 id) external view returns (uint128);
+    function tickSpacing(bytes32 id) external view returns (uint8);
+    function withdrawable(bytes32 id) external view returns (uint128);
+    function settlementFeeCbps(bytes32 id) external view returns (uint16[7] memory);
     function continuousFee(bytes32 id) external view returns (uint32);
-    function continuousFeeCredit(bytes32 id) external view returns (uint256);
+    function continuousFeeCredit(bytes32 id) external view returns (uint128);
     function pendingFee(bytes32 id, address user) external view returns (uint128);
     function lastAccrual(bytes32 id, address user) external view returns (uint128);
     function liquidationLocked(bytes32 id, address user) external view returns (bool);
-    function isLiquidatable(Obligation memory obligation, bytes32 id, address borrower) external view returns (bool);
-    function isHealthy(Obligation memory obligation, bytes32 id, address borrower) external view returns (bool);
-    function maxLif(uint256 lltv, uint256 cursor) external pure returns (uint256);
-    function maxTradingFee(uint256 index) external pure returns (uint256);
-    function tradingFee(bytes32 id, uint256 timeToMaturity) external view returns (uint256);
+    function isHealthy(Market memory market, bytes32 id, address borrower) external view returns (bool);
+    function settlementFee(bytes32 id, uint256 timeToMaturity) external view returns (uint256);
     // forgefmt: disable-end
+}
+</file>
+
+<file path="src/periphery/MidnightBundles.sol">
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (c) 2025 Morpho Association
+pragma solidity 0.8.34;
+
+import {IMidnight, Market, Offer} from "../interfaces/IMidnight.sol";
+import {IERC20} from "../interfaces/IERC20.sol";
+import {
+    IMidnightBundles,
+    Take,
+    CollateralWithdrawal,
+    CollateralSupply,
+    TokenPermit,
+    PermitKind
+} from "./interfaces/IMidnightBundles.sol";
+import {IERC20Permit} from "./interfaces/IERC20Permit.sol";
+import {IPermit2} from "./interfaces/IPermit2.sol";
+import {UtilsLib} from "../libraries/UtilsLib.sol";
+import {SafeTransferLib} from "../libraries/SafeTransferLib.sol";
+import {TakeAmountsLib} from "./TakeAmountsLib.sol";
+import {ConsumableUnitsLib} from "./ConsumableUnitsLib.sol";
+import {WAD} from "../libraries/ConstantsLib.sol";
+
+/// @dev Inherits the token safety requirements of Midnight (see Midnight.sol).
+/// @dev Unusable with tokens that revert on such a sequence: approve(..., 0); approve(..., type(uint256).max).
+/// @dev No-ops are allowed.
+/// @dev Zero checks are not systematically performed.
+contract MidnightBundles is IMidnightBundles {
+    using UtilsLib for uint256;
+
+    address public constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
+    address public immutable MIDNIGHT;
+
+    constructor(address _midnight) {
+        MIDNIGHT = _midnight;
+    }
+
+    /// EXTERNAL ///
+
+    /// @dev The taker must have authorized this bundler and the msg.sender (if different from the taker) on Midnight.
+    /// @dev This function should only be called with the same market for all takes.
+    /// @dev The collateral transfers always use the first offer's market.
+    /// @dev Skips every reason why take can revert (including ones that are not asynchrony related).
+    /// @dev Reverts if ConsumableUnitsLib reverts.
+    /// @dev If taking an offer reverts, the bundler will completely skip this offer.
+    /// @dev This function pulls maxBuyerAssets from the msg.sender and transfers back the remaining tokens at the end.
+    /// @dev The msg.sender will pay at most maxBuyerAssets.
+    /// @dev Total loan assets transferred from msg.sender is
+    /// filledBuyerAssets + filledBuyerAssets * referralFeePct / (WAD - referralFeePct).
+    function buyWithUnitsTargetAndWithdrawCollateral(
+        uint256 targetUnits,
+        uint256 maxBuyerAssets,
+        address taker,
+        TokenPermit memory loanTokenPermit,
+        Take[] memory takes,
+        CollateralWithdrawal[] memory collateralWithdrawals,
+        address collateralReceiver,
+        uint256 referralFeePct,
+        address referralFeeRecipient
+    ) external {
+        require(taker == msg.sender || IMidnight(MIDNIGHT).isAuthorized(taker, msg.sender), Unauthorized());
+        require(referralFeePct < WAD, PctExceeded());
+        address loanToken = takes[0].offer.market.loanToken;
+        // touchMarket to have the correct settlement fees.
+        bytes32 id = IMidnight(MIDNIGHT).touchMarket(takes[0].offer.market);
+
+        pullToken(loanToken, msg.sender, maxBuyerAssets, loanTokenPermit);
+        forceApproveMax(loanToken, MIDNIGHT);
+
+        uint256 filledUnits;
+        uint256 filledBuyerAssets;
+        for (uint256 i; i < takes.length && filledUnits < targetUnits; i++) {
+            require(!takes[i].offer.buy, InconsistentSide());
+            require(IMidnight(MIDNIGHT).toId(takes[i].offer.market) == id, InconsistentMarket());
+            uint256 unitsToTake = min(
+                targetUnits - filledUnits,
+                takes[i].units,
+                ConsumableUnitsLib.consumableUnits(MIDNIGHT, id, takes[i].offer)
+            );
+            try IMidnight(MIDNIGHT)
+                .take(takes[i].offer, takes[i].ratifierData, unitsToTake, taker, address(0), address(0), "") returns (
+                uint256 resBuyerAssets, uint256
+            ) {
+                filledUnits += unitsToTake;
+                filledBuyerAssets += resBuyerAssets;
+            } catch {}
+        }
+
+        require(filledUnits == targetUnits, OutOfOffers());
+
+        Market memory market = takes[0].offer.market;
+        for (uint256 i; i < collateralWithdrawals.length; i++) {
+            IMidnight(MIDNIGHT)
+                .withdrawCollateral(
+                    market,
+                    collateralWithdrawals[i].collateralIndex,
+                    collateralWithdrawals[i].assets,
+                    taker,
+                    collateralReceiver
+                );
+        }
+
+        uint256 referralFeeAssets = filledBuyerAssets.mulDivDown(referralFeePct, WAD - referralFeePct);
+        if (referralFeeAssets > 0) SafeTransferLib.safeTransfer(loanToken, referralFeeRecipient, referralFeeAssets);
+        SafeTransferLib.safeTransfer(loanToken, msg.sender, maxBuyerAssets - filledBuyerAssets - referralFeeAssets);
+    }
+
+    /// @dev The taker must have authorized this bundler and the msg.sender (if different from the taker) on Midnight.
+    /// @dev This function should only be called with the same market for all takes.
+    /// @dev The collateral transfers always use the first offer's market.
+    /// @dev Skips every reason why take can revert (including ones that are not asynchrony related).
+    /// @dev Reverts if ConsumableUnitsLib reverts.
+    /// @dev If taking an offer reverts, the bundler will completely skip this offer.
+    /// @dev The msg.sender should have approved the bundler to transfer enough collateral.
+    /// @dev The receiver will receive at least minSellerAssets.
+    /// @dev Total loan assets received by the receiver is
+    /// filledSellerAssets - filledSellerAssets * referralFeePct / WAD.
+    function supplyCollateralAndSellWithUnitsTarget(
+        uint256 targetUnits,
+        uint256 minSellerAssets,
+        address taker,
+        address receiver,
+        CollateralSupply[] memory collateralSupplies,
+        Take[] memory takes,
+        uint256 referralFeePct,
+        address referralFeeRecipient
+    ) external {
+        require(taker == msg.sender || IMidnight(MIDNIGHT).isAuthorized(taker, msg.sender), Unauthorized());
+        require(referralFeePct < WAD, PctExceeded());
+        address loanToken = takes[0].offer.market.loanToken;
+        // touchMarket to have the correct settlement fees.
+        bytes32 id = IMidnight(MIDNIGHT).touchMarket(takes[0].offer.market);
+
+        Market memory market = takes[0].offer.market;
+        for (uint256 i; i < collateralSupplies.length; i++) {
+            address token = market.collateralParams[collateralSupplies[i].collateralIndex].token;
+            pullToken(token, msg.sender, collateralSupplies[i].assets, collateralSupplies[i].permit);
+            forceApproveMax(token, MIDNIGHT);
+            IMidnight(MIDNIGHT)
+                .supplyCollateral(market, collateralSupplies[i].collateralIndex, collateralSupplies[i].assets, taker);
+        }
+
+        uint256 filledUnits;
+        uint256 filledSellerAssets;
+        for (uint256 i; i < takes.length && filledUnits < targetUnits; i++) {
+            require(takes[i].offer.buy, InconsistentSide());
+            require(IMidnight(MIDNIGHT).toId(takes[i].offer.market) == id, InconsistentMarket());
+            uint256 unitsToTake = min(
+                targetUnits - filledUnits,
+                takes[i].units,
+                ConsumableUnitsLib.consumableUnits(MIDNIGHT, id, takes[i].offer)
+            );
+            try IMidnight(MIDNIGHT)
+                .take(
+                    takes[i].offer, takes[i].ratifierData, unitsToTake, taker, address(this), address(0), ""
+                ) returns (
+                uint256, uint256 resSellerAssets
+            ) {
+                filledUnits += unitsToTake;
+                filledSellerAssets += resSellerAssets;
+            } catch {}
+        }
+
+        require(filledUnits == targetUnits, OutOfOffers());
+
+        uint256 referralFeeAssets = filledSellerAssets.mulDivDown(referralFeePct, WAD);
+        require(filledSellerAssets - referralFeeAssets >= minSellerAssets, SellerAssetsTooLow());
+        if (referralFeeAssets > 0) SafeTransferLib.safeTransfer(loanToken, referralFeeRecipient, referralFeeAssets);
+        SafeTransferLib.safeTransfer(loanToken, receiver, filledSellerAssets - referralFeeAssets);
+    }
+
+    /// @dev The taker must have authorized this bundler and the msg.sender (if different from the taker) on Midnight.
+    /// @dev This function should only be called with the same market for all takes.
+    /// @dev The collateral transfers always use the first offer's market.
+    /// @dev Skips every reason why take can revert (including ones that are not asynchrony related).
+    /// @dev Reverts if TakeAmountsLib or ConsumableUnitsLib reverts.
+    /// @dev If taking an offer reverts, the bundler will completely skip this offer.
+    /// @dev Total loan assets transferred from msg.sender is targetBuyerAssets.
+    /// @dev The taker will gain at least minUnits.
+    /// @dev The referral fee changes the amount that must be filled, which can change the average taking price.
+    function buyWithAssetsTargetAndWithdrawCollateral(
+        uint256 targetBuyerAssets,
+        uint256 minUnits,
+        address taker,
+        TokenPermit memory loanTokenPermit,
+        Take[] memory takes,
+        CollateralWithdrawal[] memory collateralWithdrawals,
+        address collateralReceiver,
+        uint256 referralFeePct,
+        address referralFeeRecipient
+    ) external {
+        require(taker == msg.sender || IMidnight(MIDNIGHT).isAuthorized(taker, msg.sender), Unauthorized());
+        require(referralFeePct < WAD, PctExceeded());
+        address loanToken = takes[0].offer.market.loanToken;
+        // touchMarket to have the correct settlement fees.
+        bytes32 id = IMidnight(MIDNIGHT).touchMarket(takes[0].offer.market);
+
+        pullToken(loanToken, msg.sender, targetBuyerAssets, loanTokenPermit);
+        forceApproveMax(loanToken, MIDNIGHT);
+
+        uint256 referralFeeAssets = targetBuyerAssets.mulDivDown(referralFeePct, WAD);
+        uint256 targetFilledBuyerAssets = targetBuyerAssets - referralFeeAssets;
+
+        uint256 filledUnits;
+        uint256 filledBuyerAssets;
+        for (uint256 i; i < takes.length && filledBuyerAssets < targetFilledBuyerAssets; i++) {
+            require(!takes[i].offer.buy, InconsistentSide());
+            require(IMidnight(MIDNIGHT).toId(takes[i].offer.market) == id, InconsistentMarket());
+            uint256 unitsToTake = min(
+                TakeAmountsLib.buyerAssetsToUnits(
+                    MIDNIGHT, id, takes[i].offer, targetFilledBuyerAssets - filledBuyerAssets
+                ),
+                takes[i].units,
+                ConsumableUnitsLib.consumableUnits(MIDNIGHT, id, takes[i].offer)
+            );
+            try IMidnight(MIDNIGHT)
+                .take(takes[i].offer, takes[i].ratifierData, unitsToTake, taker, address(0), address(0), "") returns (
+                uint256 resBuyerAssets, uint256
+            ) {
+                filledUnits += unitsToTake;
+                filledBuyerAssets += resBuyerAssets;
+            } catch {}
+        }
+
+        require(filledBuyerAssets == targetFilledBuyerAssets, OutOfOffers());
+        require(filledUnits >= minUnits, UnitsTooLow());
+
+        Market memory market = takes[0].offer.market;
+        for (uint256 i; i < collateralWithdrawals.length; i++) {
+            IMidnight(MIDNIGHT)
+                .withdrawCollateral(
+                    market,
+                    collateralWithdrawals[i].collateralIndex,
+                    collateralWithdrawals[i].assets,
+                    taker,
+                    collateralReceiver
+                );
+        }
+
+        if (referralFeeAssets > 0) SafeTransferLib.safeTransfer(loanToken, referralFeeRecipient, referralFeeAssets);
+    }
+
+    /// @dev The taker must have authorized this bundler and the msg.sender (if different from the taker) on Midnight.
+    /// @dev This function should only be called with the same market for all takes.
+    /// @dev The collateral transfers always use the first offer's market.
+    /// @dev Skips every reason why take can revert (including ones that are not asynchrony related).
+    /// @dev Reverts if TakeAmountsLib or ConsumableUnitsLib reverts.
+    /// @dev If taking an offer reverts, the bundler will completely skip this offer.
+    /// @dev The msg.sender should have approved the bundler to transfer enough collateral.
+    /// @dev Total loan assets received by the receiver is targetSellerAssets.
+    /// @dev The taker will lose at most maxUnits.
+    /// @dev The referral fee changes the amount that must be filled, which can change the average taking price.
+    function supplyCollateralAndSellWithAssetsTarget(
+        uint256 targetSellerAssets,
+        uint256 maxUnits,
+        address taker,
+        address receiver,
+        CollateralSupply[] memory collateralSupplies,
+        Take[] memory takes,
+        uint256 referralFeePct,
+        address referralFeeRecipient
+    ) external {
+        require(taker == msg.sender || IMidnight(MIDNIGHT).isAuthorized(taker, msg.sender), Unauthorized());
+        require(referralFeePct < WAD, PctExceeded());
+        address loanToken = takes[0].offer.market.loanToken;
+        // touchMarket to have the correct settlement fees.
+        bytes32 id = IMidnight(MIDNIGHT).touchMarket(takes[0].offer.market);
+
+        Market memory market = takes[0].offer.market;
+        for (uint256 i; i < collateralSupplies.length; i++) {
+            address token = market.collateralParams[collateralSupplies[i].collateralIndex].token;
+            pullToken(token, msg.sender, collateralSupplies[i].assets, collateralSupplies[i].permit);
+            forceApproveMax(token, MIDNIGHT);
+            IMidnight(MIDNIGHT)
+                .supplyCollateral(market, collateralSupplies[i].collateralIndex, collateralSupplies[i].assets, taker);
+        }
+
+        uint256 referralFeeAssets = targetSellerAssets.mulDivDown(referralFeePct, WAD - referralFeePct);
+        uint256 targetFilledSellerAssets = targetSellerAssets + referralFeeAssets;
+
+        uint256 filledUnits;
+        uint256 filledSellerAssets;
+        for (uint256 i; i < takes.length && filledSellerAssets < targetFilledSellerAssets; i++) {
+            require(takes[i].offer.buy, InconsistentSide());
+            require(IMidnight(MIDNIGHT).toId(takes[i].offer.market) == id, InconsistentMarket());
+            uint256 unitsToTake = min(
+                TakeAmountsLib.sellerAssetsToUnits(
+                    MIDNIGHT, id, takes[i].offer, targetFilledSellerAssets - filledSellerAssets
+                ),
+                takes[i].units,
+                ConsumableUnitsLib.consumableUnits(MIDNIGHT, id, takes[i].offer)
+            );
+            try IMidnight(MIDNIGHT)
+                .take(
+                    takes[i].offer, takes[i].ratifierData, unitsToTake, taker, address(this), address(0), ""
+                ) returns (
+                uint256, uint256 resSellerAssets
+            ) {
+                filledUnits += unitsToTake;
+                filledSellerAssets += resSellerAssets;
+            } catch {}
+        }
+
+        require(filledSellerAssets == targetFilledSellerAssets, OutOfOffers());
+        require(filledUnits <= maxUnits, UnitsTooHigh());
+
+        if (referralFeeAssets > 0) SafeTransferLib.safeTransfer(loanToken, referralFeeRecipient, referralFeeAssets);
+        SafeTransferLib.safeTransfer(loanToken, receiver, targetSellerAssets);
+    }
+
+    /// @dev The onBehalf must have authorized this contract and the msg.sender (if different from onBehalf) on
+    /// Midnight.
+    /// @dev The msg.sender must have approved the contract to transfer assets of the market's loan token.
+    /// @dev Fee = assets * pct / WAD; units repaid = assets - fee.
+    /// @dev To fully repay a debt D, pass assets = floor(D * WAD / (WAD - pct)).
+    function repayAndWithdrawCollateral(
+        Market memory market,
+        uint256 assets,
+        address onBehalf,
+        TokenPermit memory loanTokenPermit,
+        CollateralWithdrawal[] memory collateralWithdrawals,
+        address collateralReceiver,
+        uint256 referralFeePct,
+        address referralFeeRecipient
+    ) external {
+        require(onBehalf == msg.sender || IMidnight(MIDNIGHT).isAuthorized(onBehalf, msg.sender), Unauthorized());
+        require(referralFeePct < WAD, PctExceeded());
+
+        address loanToken = market.loanToken;
+        uint256 referralFeeAssets = assets.mulDivDown(referralFeePct, WAD);
+        uint256 units = assets - referralFeeAssets;
+        pullToken(loanToken, msg.sender, assets, loanTokenPermit);
+        forceApproveMax(loanToken, MIDNIGHT);
+
+        IMidnight(MIDNIGHT).repay(market, units, onBehalf, address(0), "");
+
+        for (uint256 i; i < collateralWithdrawals.length; i++) {
+            IMidnight(MIDNIGHT)
+                .withdrawCollateral(
+                    market,
+                    collateralWithdrawals[i].collateralIndex,
+                    collateralWithdrawals[i].assets,
+                    onBehalf,
+                    collateralReceiver
+                );
+        }
+
+        if (referralFeeAssets > 0) SafeTransferLib.safeTransfer(loanToken, referralFeeRecipient, referralFeeAssets);
+    }
+
+    /// @dev Returns min(x, y, w).
+    function min(uint256 x, uint256 y, uint256 w) internal pure returns (uint256) {
+        return UtilsLib.min(UtilsLib.min(x, y), w);
+    }
+
+    /// INTERNAL ///
+
+    /// @dev Not checking the code size because a transfer (checking the code size) will always be performed after.
+    function safeApprove(address token, address spender, uint256 value) internal {
+        (bool success, bytes memory returndata) = token.call(abi.encodeCall(IERC20.approve, (spender, value)));
+        if (!success) {
+            assembly ("memory-safe") {
+                revert(add(returndata, 0x20), mload(returndata))
+            }
+        }
+        require(returndata.length == 0 || abi.decode(returndata, (bool)), ApproveReturnedFalse());
+    }
+
+    /// @dev Skips the approval entirely to save gas when the current allowance is already 2^95 - 1 (value chosen
+    /// because some token like COMP and UNI on ethereum have a max allowance of type(uint96).max).
+    /// @dev Resets to 0 before re-approving to support USDT like tokens.
+    function forceApproveMax(address token, address spender) internal {
+        if (IERC20(token).allowance(address(this), spender) >= type(uint96).max / 2) return;
+        safeApprove(token, spender, 0);
+        safeApprove(token, spender, type(uint256).max);
+    }
+
+    /// @dev Pulls `amount` of `token` from `from` to this bundler, optionally using ERC2612 or Permit2.
+    function pullToken(address token, address from, uint256 amount, TokenPermit memory permit) internal {
+        if (permit.kind == PermitKind.ERC2612) {
+            (uint256 deadline, uint8 v, bytes32 r, bytes32 s) =
+                abi.decode(permit.data, (uint256, uint8, bytes32, bytes32));
+            // Tolerate revert: a third party may have already consumed the permit.
+            try IERC20Permit(token).permit(from, address(this), amount, deadline, v, r, s) {} catch {}
+            SafeTransferLib.safeTransferFrom(token, from, address(this), amount);
+        } else if (permit.kind == PermitKind.Permit2) {
+            (uint256 nonce, uint256 deadline, bytes memory signature) =
+                abi.decode(permit.data, (uint256, uint256, bytes));
+            IPermit2(PERMIT2)
+                .permitTransferFrom(
+                    IPermit2.PermitTransferFrom(IPermit2.TokenPermissions(token, amount), nonce, deadline),
+                    IPermit2.SignatureTransferDetails(address(this), amount),
+                    from,
+                    signature
+                );
+        } else {
+            SafeTransferLib.safeTransferFrom(token, from, address(this), amount);
+        }
+    }
 }
 </file>
 
@@ -994,127 +1692,197 @@ import {UtilsLib} from "./libraries/UtilsLib.sol";
 import {IdLib} from "./libraries/IdLib.sol";
 import {TickLib} from "./libraries/TickLib.sol";
 import {SafeTransferLib} from "./libraries/SafeTransferLib.sol";
-import "./libraries/ConstantsLib.sol";
+import {EventsLib} from "./libraries/EventsLib.sol";
+import "./libraries/ConstantsLib.sol"; // forge-lint: disable-line(unaliased-plain-import)
+import "./interfaces/ICallbacks.sol"; // forge-lint: disable-line(unaliased-plain-import)
 import {IOracle} from "./interfaces/IOracle.sol";
-import {IMidnight, Obligation, Offer, CollateralParams, ObligationState, Position} from "./interfaces/IMidnight.sol";
-import {ICallbacks, IFlashLoanCallback} from "./interfaces/ICallbacks.sol";
 import {IRatifier} from "./interfaces/IRatifier.sol";
 import {IEnterGate, ILiquidatorGate} from "./interfaces/IGate.sol";
-import {EventsLib} from "./libraries/EventsLib.sol";
+import {IMidnight, Market, Offer, CollateralParams, MarketState, Position} from "./interfaces/IMidnight.sol";
 
-/// OBLIGATIONS
-/// @dev The following constraints are enforced on obligation creation (in `touchObligation`):
-/// - `collateralParams.length > 0`: at least one collateral is required.
-/// - `collateralParams.length <= MAX_COLLATERALS` (128): at most 128 collateralParams per obligation.
-/// - Collateral tokens must be non-zero and strictly sorted by address (ascending, no duplicates).
-/// - Each collateral's `lltv` must be one of the allowed tiers (see `isLltvAllowed` in ConstantsLib).
-/// - Each collateral's `maxLif` must equal `maxLif(lltv, LIQUIDATION_CURSOR_LOW)` or
-///   `maxLif(lltv, LIQUIDATION_CURSOR_HIGH)`.
-/// @dev Additionally, within a single obligation, a borrower can use at most MAX_COLLATERALS_PER_BORROWER (10)
-/// collaterals simultaneously.
+/// MARKETS
+/// @dev The maximum time to maturity is 100 years.
+/// @dev Markets have at most 128 collaterals.
+/// @dev Collaterals list must be sorted by collateral address (ascending, no duplicates), and not empty.
+/// @dev Within a market, a borrower can use at most MAX_COLLATERALS_PER_BORROWER (16) collaterals simultaneously.
+/// @dev The case LLTV = 1 is special, and should be used with care, notably:
+/// - It has no overcollateralization, so unhealthy positions will almost always realize bad debt when liquidated. In
+/// particular, the RCF (see LIQUIDATIONS section) is "inactive", meaning liquidations can always liquidate everything.
+/// - It has no liquidation incentive, so liquidators repay at exactly the oracle price (plus roundings).
+/// @dev To check if a market has been touched, check if tickSpacing(marketId) > 0.
+/// @dev When some assets become withdrawable before maturity (after a repayment or a liquidation), there
+/// is an incentive to take resting sell offers with price < 1 and withdraw instantly. Lenders (and the fee claimer)
+/// might also race to withdraw first.
 ///
-/// TRADING FEES
-/// @dev A default trading fee (per loan token) is set on new obligations. Then, the fee setter can override it.
-/// @dev The trading fee is computed using piecewise linear interpolation between breakpoints.
-/// @dev Trading fee breakpoint indices: 0=0d, 1=1d, 2=7d, 3=30d, 4=90d, 5=180d, 6=360d.
-/// @dev For TTM > 360d, the trading fee is the fee at the 360d breakpoint.
-/// @dev Post-maturity, the trading fee is the fee at the 0d breakpoint.
-/// @dev Trading fees are stored divided by FEE_STEP (1e12) to fit in 16 bits.
-/// @dev Max trading fee is defined per index: 50 bps for ttm=360 days, scaled linearly. For post maturity, 0.14 bps.
+/// MULTI-COLLATERAL MARKETS
+/// @dev Borrowers can supply/withdraw their collaterals at any time, subject only to a health check on withdrawal. In
+/// particular, the borrowers of multi-collateral markets can completely change their collateral composition.
+/// @dev Liquidation reverts if any of the activated collaterals' oracle reverts (see LIVENESS).
+/// @dev Note that a borrower can activate a collateral once its oracle is reverting because the oracle is not called in
+/// supplyCollateral.
+/// @dev The oracle-quoted liquidator incentive (i.e., maxRepayable * (LIF-1)) might not be constant across activated
+/// collaterals. Hence, liquidators may have a preference order over collaterals when liquidating.
+///
+/// SETTLEMENT FEES
+/// @dev A default settlement fee (per loan token) is set on new markets. Then, the fee setter can override it.
+/// @dev The settlement fee is a piecewise linear function on the TTM (time to maturity). It is computed with linear
+/// approximation between breakpoints.
+/// @dev Settlement fee breakpoint indices: 0=0d, 1=1d, 2=7d, 3=30d, 4=90d, 5=180d, 6=360d.
+/// @dev For TTM > 360d, the settlement fee is the fee at the 360d breakpoint.
+/// @dev Post-maturity, the settlement fee is the fee at the 0d breakpoint.
+/// @dev Settlement fees are stored in cbp (centi-basis-points): settlementFee / CBP.
+/// @dev One cbp is 1e-6 WAD, i.e. 0.01 bps. This fits each breakpoint in 16 bits.
+/// @dev Max settlement fee is defined per index: 50 bps for ttm=360 days, scaled linearly (except for 0d, 0.14 bps).
 ///
 /// CONTINUOUS FEES
-/// @dev A default continuous fee (per loan token) is set on new obligations. Then, the fee setter can override it.
-/// @dev The fee is tracked per lender via `pendingFee` in each position. If the obligation's continuous fee changes,
-/// the pending fee of existing lenders is not updated (=> their fee is fixed).
-/// @dev Absent bad debt, the face value of a lender's position is `credit - pendingFee`.
+/// @dev A default continuous fee (per loan token) is set on new markets. Then, the fee setter can override it.
+/// @dev The fee is tracked per lender via pendingFee in each position. If the market's continuous fee changes, the
+/// pending fee of existing lenders is not updated (=> their fee is fixed).
+/// @dev In the absence of bad debt realizations, the face value of a lender's position is credit - pendingFee.
+///
+/// LIQUIDATIONS
+/// @dev Accounts are liquidatable only if they are either unhealthy or the maturity has passed. The liquidation
+/// shouldn't be locked either.
+/// @dev Liquidations are locked for the seller during the callbacks of take.
+/// @dev Liquidations can revert for other reasons, see LIVENESS.
+/// @dev There are two liquidation modes: The "post-maturity mode", available after the market's maturity, and the
+/// "normal mode", available if the borrower is unhealthy. After maturity, an unhealthy borrower's liquidator can choose
+/// between both modes.
+/// @dev In the "normal mode", the liquidation incentive factor (LIF) is maxLif and the liquidation amount is capped
+/// by what is needed to put back the position into health ("recovery close factor", or "RCF").
+/// @dev The RCF condition is (omitting scaling and roundings):
+///   newDebt >= newMaxDebt <=> debtOf - repaidUnits >= maxDebt - repaidUnits*LIF*LLTV
+///                         <=> repaidUnits <= (debtOf-maxDebt) / (1 - LIF*LLTV).
+/// @dev The RCF is deactivated for small collateral amount, essentially to mitigate issues with liquidations that are
+/// too small compared to the gas cost. More precisely, it is deactivated if the liquidation could leave a collateral
+/// with a value that would not be enough to repay rcfThreshold units. Which means (omitting scaling and roundings):
+///   minNewCollateral * liquidatedCollatPrice / LIF < rcfThreshold
+///     <=> (collateral - maxRepaid * LIF / liquidatedCollatPrice) * liquidatedCollatPrice / LIF < rcfThreshold
+///     <=> collateral * liquidatedCollatPrice / LIF - maxRepaid < rcfThreshold
+/// @dev In the "post-maturity mode", the LIF (liquidation incentive factor) grows linearly from 1 at maturity to maxLif
+/// at maturity + TIME_TO_MAX_LIF, and the RCF is deactivated.
+/// @dev In both modes, maxLif is used to determine if the account has some bad debt, to always assume the worst case.
 ///
 /// SLASHING
-/// @dev When some bad debt is realized, it is socialized among lenders in the obligation.
+/// @dev When a borrower's bad debt is realized, it is socialized among lenders in this market.
 /// @dev At each lender's next interaction, their credit is slashed proportionally.
 ///
 /// GROUPS
-/// @dev Groups are useful to have a global offered amount shared across multiple offers ("OCO").
-/// @dev To work as expected, all offers in the same group should have the same max values and loan token.
-/// @dev Only one of `maxSellerAssets`, `maxBuyerAssets`, or `maxUnits` can be nonzero per offer.
+/// @dev Groups are useful to have a global offered amount shared across multiple offers ("One cancels the other").
+/// @dev To work as expected, all offers in the same group should have the same direction (offer.buy), max values and
+/// loan token.
 ///
-/// SESSION
-/// @dev The session can be shuffled by the user to cancel all current offers easily and efficiently.
-/// @dev Offers should have the current session to be valid.
+/// OFFER CAPS
+/// @dev At most one of maxAssets or maxUnits can be nonzero per offer.
+/// @dev maxAssets caps max buyer assets if offer.buy is true, and caps max seller assets otherwise.
+/// @dev If maxAssets > 0, assets are capped to maxAssets, otherwise units are capped to maxUnits.
+/// @dev Midnight can call the callback of offers through a no-op take, even if those offers have consumed==max.
+/// @dev It is possible to give units to a fully consumed assets-based buy offer with price < 1.
+///
+/// TICK SPACING
+/// @dev Offers can only be placed at ticks that are multiples of the market's spacing.
+/// @dev Newly created markets start at the global DEFAULT_TICK_SPACING.
+/// @dev The tickSpacingSetter can decrease the spacing to a divisor of the current spacing, unlocking new ticks only.
 ///
 /// AUTHORIZATIONS
-/// @dev All functions that change the position, session, consumed and authorization are accessible to the user and to
-/// any account that has been authorized.
-/// @dev In particular, authorized accounts can authorize other accounts on behalf of the user.
+/// @dev All functions that change the position, consumed and authorization are accessible to the user and to
+/// any account that has been authorized. Thus, to scope authorizations one should authorize a smart-contract with
+/// scoped behavior.
+/// @dev When authorizing a smart-contract, one should consider:
+/// - The targets/functions that the account can call. At least Midnight's functions should be considered, but other
+/// contracts might re-use Midnight's authorization mapping too (e.g ratifiers and authorizers). In particular,
+/// authorized accounts can authorize other accounts on behalf of the user.
+/// - Under which conditions the account can return CALLBACK_SUCCESS when its isRatified function is called.
 /// @dev updatePosition and liquidate (for liquidatable users) also impact the position and are permissionless.
 ///
 /// ROUNDINGS
-/// @dev Because of roundings, trading and continuous fees might charge less than expected, which can become problematic
-/// for chains where the gas is cheaper than 1 asset of the loan token.
-/// @dev lossIndex is rounded up so lenders collectively lose a bit more on each bad debt realization.
-/// @dev slash rounds the credit down, so lenders lose a bit at each interaction.
-/// @dev If an obligation loses more than 99%+ of its value to bad debt over its lifetime, it won't function properly
-/// afterwards (bad debt can no longer be realized).
+/// @dev assets are rounded against the taker and in favor of the maker in take. Therefore, the settlement fee has no
+/// defined rounding direction, which could lead to fees manipulations on chains with very cheap gas.
+/// @dev pendingFee updates are rounded in favor of the user. It could lead to fees manipulations too.
+/// @dev maxDebt is rounded down in isHealthy and liquidate.
+/// @dev lossFactor is rounded up so lenders collectively lose a bit more than badDebt on each bad debt realization.
+/// @dev If a market loses almost all of its value to bad debt over its lifetime, then the accounting of the loss
+/// may become extremely imprecise (against the user), potentially leading to a total loss. Note that the take function
+/// reverts when the loss factor is maxed out.
+/// @dev updatePosition rounds credit down, so each lender loses a bit at their next interaction after a bad debt
+/// realization.
+/// @dev repaidUnits/seizedAssets computations round against the liquidator.
+/// @dev maxRepaid is rounded up to avoid consecutive max liquidations, so the liquidated position could be slightly
+/// healthy after a liquidation in the normal mode.
 ///
 /// GATES
 /// @dev Gates are optional (address(0) = unrestricted).
-/// @dev The entry gate can prevent entry actions (increasing credit or debt) in the obligation.
-/// @dev In particular, it does not prevent the user from exiting the obligation even when the entry gate is reverting.
-/// @dev The liquidator gate can prevent the user from liquidating borrowers in the obligation (and realizing bad debt).
+/// @dev The entry gate can prevent increasing credit or debt in the market.
+/// @dev In particular, it does not prevent the user from exiting the market even when the entry gate is reverting.
+/// @dev The liquidator gate can prevent the user from liquidating borrowers in the market (and realizing bad debt).
 ///
-/// TOKEN REQUIREMENTS
+/// TOKEN SAFETY REQUIREMENTS
 /// @dev List of assumptions on tokens that guarantee that Midnight behaves as expected:
-/// - It should be ERC-20 compliant, except that it can omit return values on `transfer` and `transferFrom`.
-/// - Midnight's balance of the token should only decrease on `transfer` and `transferFrom`.
-/// - It should not re-enter Midnight on `transfer` nor `transferFrom`.
+/// - It should be ERC-20 compliant, except that it can omit return values on transfer and transferFrom. In particular,
+/// it should not revert because a transfer is no-op.
+/// - Midnight's balance of the token should only decrease on transfer and transferFrom.
+/// - It should not re-enter Midnight on transfer nor transferFrom.
 /// - Midnight must send/receive exactly the requested amount on transfers.
-/// - It should not revert on `transfer` and `transferFrom` if balances and approvals are right.
-/// - It should not revert on no-op transfers.
+/// @dev See LIVENESS for liveness guarantees.
 ///
 /// LIVENESS
-/// @dev If an activated collateral oracle reverts on `price`, `liquidate`, `isHealthy`, `withdrawCollateral`  when the
-/// borrower has debt, and `take` whenever the seller still has debt all revert.
-/// @dev If an activated collateral oracle returns 0 on `price`, `isHealthy`, `withdrawCollateral` when the borrower has
-/// debt, `take` whenever the seller still has debt, and `liquidate` with repaid input all revert.
-/// @dev If `enterGate.canIncreaseCredit` reverts or returns false, `take` reverts if the buyer's credit increases.
-/// @dev If `enterGate.canIncreaseDebt` reverts or returns false, `take` reverts if the seller's debt increases.
-/// @dev If `liquidatorGate` reverts or returns false on `canLiquidate`, `liquidate` reverts.
-/// @dev If a token pulled by Midnight reverts on `transferFrom` despite balances and approvals being right, `take`,
-/// `repay`, `supplyCollateral`, `liquidate`, and `flashLoan` repayment revert when they need to pull that token.
-/// @dev If a token sent by Midnight reverts on `transfer` despite balances being right, `withdraw`,
-/// `withdrawCollateral`, fee claims, the collateral leg of `liquidate`, and `flashLoan` revert when they need to send
-/// that token.
-/// @dev If a callback reverts, or if a buy/sell callback returns something other than `CALLBACK_SUCCESS`,
-/// callback-enabled `take`, `repay`, `liquidate`, and `flashLoan` revert.
+/// @dev If an activated collateral oracle reverts on price, liquidate reverts.
+/// @dev If an activated collateral oracle reverts on price, isHealthy, withdrawCollateral and take revert when the user
+/// (seller for take) has non-zero debt.
+/// @dev If the liquidated collateral oracle returns 0 on price, liquidate with repaid input reverts.
+/// @dev If an activated collateral oracle returns a price such that the user's collateral quoted in loan token is
+/// greater than type(uint128).max, then liquidate, isHealthy, withdrawCollateral when the borrower has debt, and take
+/// whenever the seller still has debt could revert.
+/// @dev If enterGate.canIncreaseCredit reverts or returns false, take reverts if the buyer's credit increases.
+/// @dev If enterGate.canIncreaseDebt reverts or returns false, take reverts if the seller's debt increases.
+/// @dev If liquidatorGate.canLiquidate reverts or returns false, liquidate reverts.
+/// @dev If a token pulled by Midnight reverts or returns false on transferFrom, take, repay, supplyCollateral,
+/// liquidate, and flashLoan repayment revert when they need to pull that token.
+/// @dev If a token sent by Midnight reverts or returns false on transfer, withdraw, withdrawCollateral, fee claims,
+/// liquidate, and flashLoan revert when they need to send that token.
+/// @dev If a callback reverts or returns something other than CALLBACK_SUCCESS, take, repay, liquidate, and flashLoan
+/// revert.
 ///
 /// ROLES
-/// @dev The role setter can set the role setter, fee setter, and fee claimer.
-/// @dev The fee setter can set the default and per-obligation trading fee and continuous fee.
-/// @dev The fee claimer can claim the trading fee and continuous fee.
+/// @dev The role setter can set the role setter, fee setter, fee claimer, and tick spacing setter.
+/// @dev The fee setter can set the default and per-market settlement fee and continuous fee.
+/// @dev The fee claimer can claim the settlement fee and continuous fee.
 /// @dev When the claimer is set, the old claimer loses the unclaimed fees.
+/// @dev The tick spacing setter can decrease the tick spacing of a market.
 ///
 /// MISC
-/// @dev The max amount of totalUnits, collateral, credit, and debt is type(uint128).max (~1e38).
-/// @dev Zero checks are not systematically performed.
 /// @dev No-ops are allowed.
+/// @dev Zero checks are not systematically performed.
 /// @dev NatSpec comments are included only when they bring clarity.
+/// @dev creditOf, pendingFee, and lossFactor are not up to date. Use updatePositionView to get the up-to-date values.
+/// @dev The max amount of totalUnits, collateral, credit, continuousFeeCredit and debt is type(uint128).max (~1e38).
+/// @dev INITIAL_CHAIN_ID is captured at construction and used in place of block.chainid when computing market ids,
+/// so a hard fork that changes block.chainid does not strand existing accounting. But as a result, after a hard-fork
+/// there can be some market id clashes.
+/// @dev Relies on the clz opcode (Osaka), on the mcopy, tload, and tstore opcodes (Cancun), and on the push0 opcode
+/// (Shanghai).
 ///
 contract Midnight is IMidnight {
     using UtilsLib for uint256;
     using UtilsLib for uint128;
 
+    /// IMMUTABLES ///
+
+    uint256 public immutable INITIAL_CHAIN_ID;
+
     /// STORAGE ///
 
     mapping(bytes32 id => mapping(address user => Position)) public position;
-    mapping(bytes32 id => ObligationState) public obligationState;
+    mapping(bytes32 id => MarketState) public marketState;
     mapping(address user => mapping(bytes32 group => uint256)) public consumed;
-    mapping(address user => bytes32) public session;
     mapping(address authorizer => mapping(address authorized => bool)) public isAuthorized;
-    mapping(address loanToken => uint16[7]) public defaultTradingFees;
+    mapping(address loanToken => uint16[7]) public defaultSettlementFeeCbp;
     mapping(address loanToken => uint32) public defaultContinuousFee;
-    mapping(address token => uint256) public claimableTradingFee;
+    mapping(address token => uint256) public claimableSettlementFee;
     address public roleSetter;
     address public feeSetter;
     address public feeClaimer;
+    address public tickSpacingSetter;
 
     // max total units per obligation of a given loan token
     mapping(address loanToken => uint128) private maxTotalUnits;
@@ -1127,186 +1895,226 @@ contract Midnight is IMidnight {
 
     constructor() {
         roleSetter = msg.sender;
-        emit EventsLib.Constructor(roleSetter);
+        INITIAL_CHAIN_ID = block.chainid;
+        emit EventsLib.Constructor(msg.sender, INITIAL_CHAIN_ID);
+    }
+
+    /// MULTICALL ///
+
+    function multicall(bytes[] calldata calls) external {
+        for (uint256 i = 0; i < calls.length; i++) {
+            (bool success, bytes memory returnData) = address(this).delegatecall(calls[i]);
+            if (!success) {
+                assembly ("memory-safe") {
+                    revert(add(returnData, 0x20), mload(returnData))
+                }
+            }
+        }
     }
 
     /// ADMIN FUNCTIONS ///
 
     function setRoleSetter(address newRoleSetter) external {
-        _onlyRoleSetter();
+        require(msg.sender == roleSetter, OnlyRoleSetter());
         roleSetter = newRoleSetter;
         emit EventsLib.SetRoleSetter(newRoleSetter);
     }
 
     function setFeeSetter(address newFeeSetter) external {
-        _onlyRoleSetter();
+        require(msg.sender == roleSetter, OnlyRoleSetter());
         feeSetter = newFeeSetter;
         emit EventsLib.SetFeeSetter(newFeeSetter);
     }
 
     function setFeeClaimer(address newFeeClaimer) external {
-        _onlyRoleSetter();
+        require(msg.sender == roleSetter, OnlyRoleSetter());
         feeClaimer = newFeeClaimer;
         emit EventsLib.SetFeeClaimer(newFeeClaimer);
     }
 
-    function setObligationTradingFee(bytes32 id, uint256 index, uint256 newTradingFee) external {
-        ObligationState storage _obligationState = obligationState[id];
-        _onlyFeeSetter();
-        require(index <= 6, "invalid index");
-        require(newTradingFee <= maxTradingFee(index), "too high");
-        require(newTradingFee % FEE_STEP == 0, "fee not FEE_STEP multiple");
-        require(_obligationState.created, "not created");
-        // forge-lint: disable-next-item(unsafe-typecast) as newTradingFee <= maxTradingFee <= uint16.max * FEE_STEP
-        uint16 toStore = uint16(newTradingFee / FEE_STEP);
-        if (index == 0) _obligationState.fee0 = toStore;
-        else if (index == 1) _obligationState.fee1 = toStore;
-        else if (index == 2) _obligationState.fee2 = toStore;
-        else if (index == 3) _obligationState.fee3 = toStore;
-        else if (index == 4) _obligationState.fee4 = toStore;
-        else if (index == 5) _obligationState.fee5 = toStore;
-        else if (index == 6) _obligationState.fee6 = toStore;
-        emit EventsLib.SetObligationTradingFee(id, index, newTradingFee);
+    function setTickSpacingSetter(address newTickSpacingSetter) external {
+        require(msg.sender == roleSetter, OnlyRoleSetter());
+        tickSpacingSetter = newTickSpacingSetter;
+        emit EventsLib.SetTickSpacingSetter(newTickSpacingSetter);
     }
 
-    function setDefaultTradingFee(address loanToken, uint256 index, uint256 newTradingFee) external {
-        _onlyFeeSetter();
-        require(index <= 6, "invalid index");
-        require(newTradingFee <= maxTradingFee(index), "too high");
-        require(newTradingFee % FEE_STEP == 0, "fee should be a multiple of FEE_STEP");
-        // forge-lint: disable-next-item(unsafe-typecast) as newTradingFee <= maxTradingFee <= uint16.max * FEE_STEP
-        defaultTradingFees[loanToken][index] = uint16(newTradingFee / FEE_STEP);
-        emit EventsLib.SetDefaultTradingFee(loanToken, index, newTradingFee);
+    /// @dev Refines the tick spacing of a market. Can not increase (more ticks become accessible).
+    function setMarketTickSpacing(bytes32 id, uint256 newTickSpacing) external {
+        require(msg.sender == tickSpacingSetter, OnlyTickSpacingSetter());
+        require(marketState[id].tickSpacing > 0, MarketNotCreated());
+        require(newTickSpacing > 0 && marketState[id].tickSpacing % newTickSpacing == 0, InvalidTickSpacing());
+        // forge-lint: disable-next-line(unsafe-typecast) as newTickSpacing <= DEFAULT_TICK_SPACING < type(uint8).max
+        marketState[id].tickSpacing = uint8(newTickSpacing);
+        emit EventsLib.SetMarketTickSpacing(id, newTickSpacing);
     }
 
-    function setObligationContinuousFee(bytes32 id, uint256 newContinuousFee) external {
-        ObligationState storage _obligationState = obligationState[id];
-        _onlyFeeSetter();
-        require(newContinuousFee <= MAX_CONTINUOUS_FEE, "continuous fee too high");
-        require(_obligationState.created, "obligation not created");
+    function setMarketSettlementFee(bytes32 id, uint256 index, uint256 newSettlementFee) external {
+        MarketState storage _marketState = marketState[id];
+        require(msg.sender == feeSetter, OnlyFeeSetter());
+        require(index <= 6, InvalidFeeIndex());
+        require(newSettlementFee <= maxSettlementFee(index), SettlementFeeTooHigh());
+        require(newSettlementFee % CBP == 0, FeeNotMultipleOfFeeCbp());
+        require(_marketState.tickSpacing > 0, MarketNotCreated());
+        // forge-lint: disable-next-item(unsafe-typecast) as newSettlementFee <= maxSettlementFee <= uint16.max * CBP
+        uint16 newSettlementFeeCbp = uint16(newSettlementFee / CBP);
+        if (index == 0) _marketState.settlementFeeCbp0 = newSettlementFeeCbp;
+        else if (index == 1) _marketState.settlementFeeCbp1 = newSettlementFeeCbp;
+        else if (index == 2) _marketState.settlementFeeCbp2 = newSettlementFeeCbp;
+        else if (index == 3) _marketState.settlementFeeCbp3 = newSettlementFeeCbp;
+        else if (index == 4) _marketState.settlementFeeCbp4 = newSettlementFeeCbp;
+        else if (index == 5) _marketState.settlementFeeCbp5 = newSettlementFeeCbp;
+        else if (index == 6) _marketState.settlementFeeCbp6 = newSettlementFeeCbp;
+        emit EventsLib.SetMarketSettlementFee(id, index, newSettlementFee);
+    }
+
+    function setDefaultSettlementFee(address loanToken, uint256 index, uint256 newSettlementFee) external {
+        require(msg.sender == feeSetter, OnlyFeeSetter());
+        require(index <= 6, InvalidFeeIndex());
+        require(newSettlementFee <= maxSettlementFee(index), SettlementFeeTooHigh());
+        require(newSettlementFee % CBP == 0, FeeNotMultipleOfFeeCbp());
+        // forge-lint: disable-next-item(unsafe-typecast) as newSettlementFee <= maxSettlementFee <= uint16.max * CBP
+        defaultSettlementFeeCbp[loanToken][index] = uint16(newSettlementFee / CBP);
+        emit EventsLib.SetDefaultSettlementFee(loanToken, index, newSettlementFee);
+    }
+
+    function setMarketContinuousFee(bytes32 id, uint256 newContinuousFee) external {
+        MarketState storage _marketState = marketState[id];
+        require(msg.sender == feeSetter, OnlyFeeSetter());
+        require(newContinuousFee <= MAX_CONTINUOUS_FEE, ContinuousFeeTooHigh());
+        require(_marketState.tickSpacing > 0, MarketNotCreated());
         // forge-lint: disable-next-line(unsafe-typecast) as newContinuousFee <= MAX_CONTINUOUS_FEE < type(uint32).max
-        _obligationState.continuousFee = uint32(newContinuousFee);
-        emit EventsLib.SetObligationContinuousFee(id, newContinuousFee);
+        _marketState.continuousFee = uint32(newContinuousFee);
+        emit EventsLib.SetMarketContinuousFee(id, newContinuousFee);
     }
 
     function setDefaultContinuousFee(address loanToken, uint256 newContinuousFee) external {
-        _onlyFeeSetter();
-        require(newContinuousFee <= MAX_CONTINUOUS_FEE, "too high");
+        require(msg.sender == feeSetter, OnlyFeeSetter());
+        require(newContinuousFee <= MAX_CONTINUOUS_FEE, ContinuousFeeTooHigh());
         // forge-lint: disable-next-line(unsafe-typecast) as newContinuousFee <= MAX_CONTINUOUS_FEE < type(uint32).max
         defaultContinuousFee[loanToken] = uint32(newContinuousFee);
         emit EventsLib.SetDefaultContinuousFee(loanToken, newContinuousFee);
     }
 
-    function setLimits(
-        address token,
-        uint128 newMaxTotalUnits,
-        uint256 newMaxTakeableAssets,
-        uint256 newMaxCollateralPerUser
-    ) external {
-        _onlyRoleSetter();
+    function setMaxTotalUnits(address token, uint128 newMaxTotalUnits) external {
+        require(msg.sender == roleSetter, OnlyRoleSetter());
         maxTotalUnits[token] = newMaxTotalUnits;
-        maxTakeableAssets[token] = newMaxTakeableAssets;
-        maxCollateralPerUser[token] = newMaxCollateralPerUser;
-        emit EventsLib.SetLimits(token, newMaxTotalUnits, newMaxTakeableAssets, newMaxCollateralPerUser);
+        emit EventsLib.SetMaxTotalUnits(token, newMaxTotalUnits);
     }
 
-    function claimTradingFee(address token, uint256 amount, address receiver) external {
-        _onlyFeeClaimer();
-        claimableTradingFee[token] -= amount;
-        emit EventsLib.ClaimTradingFee(msg.sender, token, amount, receiver);
+    function setMaxTakeableAssets(address token, uint256 newMaxTakeableAssets) external {
+        require(msg.sender == roleSetter, OnlyRoleSetter());
+        maxTakeableAssets[token] = newMaxTakeableAssets;
+        emit EventsLib.SetMaxTakeableAssets(token, newMaxTakeableAssets);
+    }
+
+    function setMaxCollateralPerUser(address token, uint256 newMaxCollateralPerUser) external {
+        require(msg.sender == roleSetter, OnlyRoleSetter());
+        maxCollateralPerUser[token] = newMaxCollateralPerUser;
+        emit EventsLib.SetMaxCollateralPerUser(token, newMaxCollateralPerUser);
+    }
+
+    function claimSettlementFee(address token, uint256 amount, address receiver) external {
+        require(msg.sender == feeClaimer, OnlyFeeClaimer());
+        claimableSettlementFee[token] -= amount;
+        emit EventsLib.ClaimSettlementFee(msg.sender, token, amount, receiver);
         SafeTransferLib.safeTransfer(token, receiver, amount);
     }
 
-    function claimContinuousFee(Obligation memory obligation, uint256 amount, address receiver) external {
-        bytes32 id = toId(obligation);
-        ObligationState storage _obligationState = obligationState[id];
-        _onlyFeeClaimer();
-        require(_obligationState.created, "obligation not created");
+    function claimContinuousFee(Market memory market, uint256 amount, address receiver) external {
+        bytes32 id = toId(market);
+        MarketState storage _marketState = marketState[id];
+        require(msg.sender == feeClaimer, OnlyFeeClaimer());
+        require(_marketState.tickSpacing > 0, MarketNotCreated());
 
-        _obligationState.continuousFeeCredit -= UtilsLib.toUint128(amount);
-        _obligationState.totalUnits -= UtilsLib.toUint128(amount);
-        _obligationState.withdrawable -= UtilsLib.toUint128(amount);
+        _marketState.continuousFeeCredit -= UtilsLib.toUint128(amount);
+        _marketState.totalUnits -= UtilsLib.toUint128(amount);
+        _marketState.withdrawable -= UtilsLib.toUint128(amount);
 
         emit EventsLib.ClaimContinuousFee(msg.sender, id, amount, receiver);
 
-        SafeTransferLib.safeTransfer(obligation.loanToken, receiver, amount);
+        SafeTransferLib.safeTransfer(market.loanToken, receiver, amount);
     }
 
     /// ENTRY-POINTS ///
 
-    /// @dev Same function used to buy and sell.
-    /// @dev If one wants to match two offers without taking a position, they can batch take them and not have a
-    /// position at the end.
-    /// @dev The taker might not get the price they expected if the trading fee was just changed.
-    /// @dev All sellerAssets are reachable with the units input, and all buyerAssets are reachable only if
-    /// buyerPrice <= WAD.
+    /// @dev The taker might not get the price they expected if the settlement fee was just changed. A smart-contract
+    /// can be used to perform atomic price checks.
+    /// @dev Taking buy offers with price < settlement fee will revert.
+    /// @dev In particular, if the settlement fee gets increased, it might implicitly cancel offers with very low price.
+    /// @dev All sellerAssets are reachable with the units input, and all buyerAssets are reachable only if buyerPrice
+    /// <= WAD.
     /// @dev The seller cannot be liquidated during the callbacks of a take.
-    /// @dev Returns buyerAssets, sellerAssets, units.
+    /// @dev Returns buyerAssets and sellerAssets.
     function take(
-        uint256 units,
-        address taker,
-        address takerCallback,
-        bytes memory takerCallbackData,
-        address receiverIfTakerIsSeller,
         Offer memory offer,
         bytes memory ratifierData,
-        bytes32 root,
-        bytes32[] memory proof
-    ) external returns (uint256, uint256, uint256) {
-        bytes32 id = touchObligation(offer.obligation);
-        ObligationState storage _obligationState = obligationState[id];
-        require(UtilsLib.atMostOneNonZero(offer.maxSellerAssets, offer.maxBuyerAssets, offer.maxUnits), "multiple max");
-        _checkAuth(taker);
-        require(block.timestamp >= offer.start, "offer not started");
-        require(block.timestamp <= offer.expiry, "offer expired");
-        require(offer.maker != taker, "cannot self take");
-        require(UtilsLib.isLeaf(root, keccak256(abi.encode(offer)), proof), "invalid proof");
-        require(offer.session == session[offer.maker], "invalid session");
-        require(isAuthorized[offer.maker][offer.ratifier], "ratifier unauthorized");
-        require(IRatifier(offer.ratifier).onRatify(offer, root, ratifierData) == CALLBACK_SUCCESS, "not ratified");
+        uint256 units,
+        address taker,
+        address receiverIfTakerIsSeller,
+        address takerCallback,
+        bytes memory takerCallbackData
+    ) external returns (uint256, uint256) {
+        require(taker == msg.sender || isAuthorized[taker][msg.sender], TakerUnauthorized());
+        bytes32 id = touchMarket(offer.market);
+        MarketState storage _marketState = marketState[id];
+        require(_marketState.lossFactor < type(uint128).max, MarketLossFactorMaxedOut());
+        require(UtilsLib.atMostOneNonZero(offer.maxAssets, offer.maxUnits), MultipleNonZero());
+        require(offer.tick % _marketState.tickSpacing == 0, TickNotAccessible());
+        require(block.timestamp >= offer.start, OfferNotStarted());
+        require(block.timestamp <= offer.expiry, OfferExpired());
+        require(offer.maker != taker, SelfTake());
+        require(isAuthorized[offer.maker][offer.ratifier], RatifierUnauthorized());
+        require(IRatifier(offer.ratifier).isRatified(offer, ratifierData) == CALLBACK_SUCCESS, RatifierFail());
 
-        address buyer = offer.buy ? offer.maker : taker;
-        address seller = offer.buy ? taker : offer.maker;
-        address receiver = offer.buy ? receiverIfTakerIsSeller : offer.receiverIfMakerIsSeller;
-
-        uint256 timeToMaturity = UtilsLib.zeroFloorSub(offer.obligation.maturity, block.timestamp);
-        uint256 buyerAssets;
-        uint256 sellerAssets;
-        {
-            uint256 offerPrice = TickLib.tickToPrice(offer.tick);
-            uint256 _tradingFee = tradingFee(id, timeToMaturity);
-            uint256 sellerPrice = offer.buy ? offerPrice - _tradingFee : offerPrice;
-            uint256 buyerPrice = sellerPrice + _tradingFee;
-            buyerAssets = offer.buy ? units.mulDivDown(buyerPrice, WAD) : units.mulDivUp(buyerPrice, WAD);
-            sellerAssets = offer.buy ? units.mulDivDown(sellerPrice, WAD) : units.mulDivUp(sellerPrice, WAD);
-        }
+        uint256 offerPrice = TickLib.tickToPrice(offer.tick);
+        uint256 timeToMaturity = UtilsLib.zeroFloorSub(offer.market.maturity, block.timestamp);
+        uint256 _settlementFee = settlementFee(id, timeToMaturity);
+        uint256 sellerPrice = offer.buy ? offerPrice - _settlementFee : offerPrice;
+        uint256 buyerPrice = sellerPrice + _settlementFee;
+        uint256 buyerAssets = offer.buy ? units.mulDivDown(buyerPrice, WAD) : units.mulDivUp(buyerPrice, WAD);
+        uint256 sellerAssets = offer.buy ? units.mulDivDown(sellerPrice, WAD) : units.mulDivUp(sellerPrice, WAD);
 
         uint256 newConsumed;
-        if (offer.maxSellerAssets > 0) {
-            newConsumed = consumed[offer.maker][offer.group] += sellerAssets;
-            require(newConsumed <= offer.maxSellerAssets, "consumed seller assets");
-        } else if (offer.maxBuyerAssets > 0) {
-            newConsumed = consumed[offer.maker][offer.group] += buyerAssets;
-            require(newConsumed <= offer.maxBuyerAssets, "consumed buyer assets");
+        if (offer.maxAssets > 0) {
+            newConsumed = consumed[offer.maker][offer.group] += offer.buy ? buyerAssets : sellerAssets;
+            require(newConsumed <= offer.maxAssets, ConsumedAssets());
         } else {
             newConsumed = consumed[offer.maker][offer.group] += units;
-            require(newConsumed <= offer.maxUnits, "consumed units");
+            require(newConsumed <= offer.maxUnits, ConsumedUnits());
         }
 
+        (address buyer, address seller) = offer.buy ? (offer.maker, taker) : (taker, offer.maker);
         Position storage buyerPos = position[id][buyer];
         Position storage sellerPos = position[id][seller];
 
-        if (hasCredit(id, buyer) || units > buyerPos.debt) _updatePosition(offer.obligation, id, buyer);
-        if (hasCredit(id, seller)) _updatePosition(offer.obligation, id, seller);
+        if (hasCredit(id, buyer) || units > buyerPos.debt) _updatePosition(offer.market, id, buyer);
+        if (hasCredit(id, seller)) _updatePosition(offer.market, id, seller);
 
         uint256 buyerCreditIncrease = UtilsLib.zeroFloorSub(units, buyerPos.debt);
         uint256 sellerCreditDecrease = UtilsLib.min(units, sellerPos.credit);
         uint256 sellerDebtIncrease = units - sellerCreditDecrease;
         uint128 buyerPendingFeeIncrease =
-            UtilsLib.toUint128(buyerCreditIncrease.mulDivDown(_obligationState.continuousFee * timeToMaturity, WAD));
+            UtilsLib.toUint128(buyerCreditIncrease.mulDivDown(_marketState.continuousFee * timeToMaturity, WAD));
         uint128 sellerPendingFeeDecrease = sellerPos.credit > 0
             ? UtilsLib.toUint128(sellerPos.pendingFee.mulDivUp(sellerCreditDecrease, sellerPos.credit))
             : 0;
+
+        require(block.timestamp <= offer.market.maturity || sellerDebtIncrease == 0, CannotIncreaseDebtPostMaturity());
+        require(
+            !offer.reduceOnly || (offer.buy ? buyerCreditIncrease == 0 : sellerDebtIncrease == 0),
+            MakerCreditOrDebtIncreased()
+        );
+
+        require(
+            offer.market.enterGate == address(0) || buyerCreditIncrease == 0
+                || IEnterGate(offer.market.enterGate).canIncreaseCredit(buyer),
+            BuyerGatedFromIncreasingCredit()
+        );
+        require(
+            offer.market.enterGate == address(0) || sellerDebtIncrease == 0
+                || IEnterGate(offer.market.enterGate).canIncreaseDebt(seller),
+            SellerGatedFromIncreasingDebt()
+        );
 
         buyerPos.debt -= UtilsLib.toUint128(units - buyerCreditIncrease);
         buyerPos.pendingFee += buyerPendingFeeIncrease;
@@ -1316,87 +2124,80 @@ contract Midnight is IMidnight {
         sellerPos.credit -= UtilsLib.toUint128(sellerCreditDecrease);
         sellerPos.debt += UtilsLib.toUint128(sellerDebtIncrease);
 
-        _obligationState.totalUnits =
-            UtilsLib.toUint128(_obligationState.totalUnits + buyerCreditIncrease - sellerCreditDecrease);
+        _marketState.totalUnits =
+            UtilsLib.toUint128(_marketState.totalUnits + buyerCreditIncrease - sellerCreditDecrease);
+        claimableSettlementFee[offer.market.loanToken] += buyerAssets - sellerAssets;
 
-        require(buyerPos.pendingFee <= buyerPos.credit, "buyer pendingFee exceeds credit");
-        if (offer.reduceOnly) {
-            require(offer.buy ? buyerCreditIncrease == 0 : sellerDebtIncrease == 0, "maker credit or debt increased");
-        }
-
-        require(
-            offer.obligation.enterGate == address(0) || buyerCreditIncrease == 0
-                || IEnterGate(offer.obligation.enterGate).canIncreaseCredit(buyer),
-            "buyer gated"
-        );
-        require(
-            offer.obligation.enterGate == address(0) || sellerDebtIncrease == 0
-                || IEnterGate(offer.obligation.enterGate).canIncreaseDebt(seller),
-            "seller gated"
-        );
+        address buyerCallback = offer.buy ? offer.callback : takerCallback;
+        address sellerCallback = offer.buy ? takerCallback : offer.callback;
+        address payer = buyerCallback != address(0) ? buyerCallback : (offer.buy ? buyer : msg.sender);
+        address receiver = offer.buy ? receiverIfTakerIsSeller : offer.receiverIfMakerIsSeller;
 
         emit EventsLib.Take(
             msg.sender,
             id,
-            offer.maker,
+            units,
             taker,
+            offer.maker,
             offer.buy,
+            offer.group,
             buyerAssets,
             sellerAssets,
-            units,
-            receiver,
-            offer.group,
             newConsumed,
             buyerPendingFeeIncrease,
             sellerPendingFeeDecrease,
             buyerCreditIncrease,
-            sellerCreditDecrease
+            sellerCreditDecrease,
+            receiver,
+            payer
         );
 
-        address buyerCallback = offer.buy ? offer.callback : takerCallback;
         bool wasLocked = UtilsLib.tExchange(LIQUIDATION_LOCK_SLOT, id, seller, true);
         if (buyerCallback != address(0)) {
             bytes memory buyerCallbackData = offer.buy ? offer.callbackData : takerCallbackData;
             require(
-                ICallbacks(buyerCallback).onBuy(id, offer.obligation, buyer, buyerAssets, units, buyerCallbackData)
-                    == CALLBACK_SUCCESS,
-                "invalid callback"
+                IBuyCallback(buyerCallback)
+                    .onBuy(id, offer.market, buyerAssets, units, buyerPendingFeeIncrease, buyer, buyerCallbackData)
+                == CALLBACK_SUCCESS,
+                WrongBuyCallbackReturnValue()
             );
         }
 
-        address payer = buyerCallback != address(0) ? buyerCallback : (offer.buy ? buyer : msg.sender);
-        SafeTransferLib.safeTransferFrom(offer.obligation.loanToken, payer, address(this), buyerAssets - sellerAssets);
-        claimableTradingFee[offer.obligation.loanToken] += buyerAssets - sellerAssets;
-        SafeTransferLib.safeTransferFrom(offer.obligation.loanToken, payer, receiver, sellerAssets);
+        SafeTransferLib.safeTransferFrom(offer.market.loanToken, payer, address(this), buyerAssets - sellerAssets);
+        SafeTransferLib.safeTransferFrom(offer.market.loanToken, payer, receiver, sellerAssets);
 
-        {
-            address sellerCallback = offer.buy ? takerCallback : offer.callback;
-            if (sellerCallback != address(0)) {
-                bytes memory sellerCallbackData = offer.buy ? takerCallbackData : offer.callbackData;
-                require(
-                    ICallbacks(sellerCallback)
-                        .onSell(id, offer.obligation, seller, sellerAssets, units, sellerCallbackData)
-                    == CALLBACK_SUCCESS,
-                    "invalid callback"
-                );
-            }
+        if (sellerCallback != address(0)) {
+            bytes memory sellerCallbackData = offer.buy ? takerCallbackData : offer.callbackData;
+            require(
+                ISellCallback(sellerCallback)
+                    .onSell(
+                        id,
+                        offer.market,
+                        sellerAssets,
+                        units,
+                        sellerPendingFeeDecrease,
+                        seller,
+                        receiver,
+                        sellerCallbackData
+                    ) == CALLBACK_SUCCESS,
+                WrongSellCallbackReturnValue()
+            );
         }
         if (!wasLocked) UtilsLib.tExchange(LIQUIDATION_LOCK_SLOT, id, seller, false);
-        require(!isLiquidatable(offer.obligation, id, seller), "seller is liquidatable");
+        require(liquidationLocked(id, seller) || isHealthy(offer.market, id, seller), SellerIsLiquidatable());
 
         // MVP limits.
-        require(buyerAssets <= maxTakeableAssets[offer.obligation.loanToken], "exceeds max takeable");
-        require(_obligationState.totalUnits <= maxTotalUnits[offer.obligation.loanToken], "exceeds max total units");
+        require(buyerAssets <= maxTakeableAssets[offer.market.loanToken], MaxTakeableAssetsExceeded());
+        require(_marketState.totalUnits <= maxTotalUnits[offer.market.loanToken], MaxTotalUnitsExceeded());
 
-        return (buyerAssets, sellerAssets, units);
+        return (buyerAssets, sellerAssets);
     }
 
-    /// @dev Will revert if there are no withdrawable funds.
-    function withdraw(Obligation memory obligation, uint256 units, address onBehalf, address receiver) external {
-        bytes32 id = touchObligation(obligation);
-        ObligationState storage _obligationState = obligationState[id];
-        _checkAuth(onBehalf);
-        _updatePosition(obligation, id, onBehalf);
+    function withdraw(Market memory market, uint256 units, address onBehalf, address receiver) external {
+        require(onBehalf == msg.sender || isAuthorized[onBehalf][msg.sender], Unauthorized());
+        bytes32 id = touchMarket(market);
+        MarketState storage _marketState = marketState[id];
+        _updatePosition(market, id, onBehalf);
 
         Position storage _position = position[id][onBehalf];
         uint128 pendingFeeDecrease;
@@ -1405,120 +2206,126 @@ contract Midnight is IMidnight {
             _position.pendingFee -= pendingFeeDecrease;
         }
         _position.credit -= UtilsLib.toUint128(units);
-        _obligationState.withdrawable -= UtilsLib.toUint128(units);
-        _obligationState.totalUnits -= UtilsLib.toUint128(units);
+        _marketState.withdrawable -= UtilsLib.toUint128(units);
+        _marketState.totalUnits -= UtilsLib.toUint128(units);
 
         emit EventsLib.Withdraw(msg.sender, id, units, onBehalf, receiver, pendingFeeDecrease);
 
-        SafeTransferLib.safeTransfer(obligation.loanToken, receiver, units);
+        SafeTransferLib.safeTransfer(market.loanToken, receiver, units);
     }
 
-    function repay(Obligation memory obligation, uint256 units, address onBehalf, bytes calldata data) external {
-        _checkAuth(onBehalf);
-        bytes32 id = touchObligation(obligation);
+    function repay(Market memory market, uint256 units, address onBehalf, address callback, bytes calldata data)
+        external
+    {
+        require(onBehalf == msg.sender || isAuthorized[onBehalf][msg.sender], Unauthorized());
+        bytes32 id = touchMarket(market);
 
         position[id][onBehalf].debt -= UtilsLib.toUint128(units);
-        obligationState[id].withdrawable += UtilsLib.toUint128(units);
+        marketState[id].withdrawable += UtilsLib.toUint128(units);
 
-        emit EventsLib.Repay(msg.sender, id, units, onBehalf);
+        address payer = callback != address(0) ? callback : msg.sender;
+        emit EventsLib.Repay(msg.sender, id, units, onBehalf, payer);
 
-        if (data.length > 0) {
-            ICallbacks(msg.sender).onRepay(id, obligation, units, onBehalf, data);
+        if (callback != address(0)) {
+            require(
+                IRepayCallback(callback).onRepay(id, market, units, onBehalf, data) == CALLBACK_SUCCESS,
+                WrongRepayCallbackReturnValue()
+            );
         }
-
-        SafeTransferLib.safeTransferFrom(obligation.loanToken, msg.sender, address(this), units);
+        SafeTransferLib.safeTransferFrom(market.loanToken, payer, address(this), units);
     }
 
     /// @dev This function checks authorization to prevent activated collateral poisoning.
-    function supplyCollateral(Obligation memory obligation, uint256 collateralIndex, uint256 assets, address onBehalf)
+    function supplyCollateral(Market memory market, uint256 collateralIndex, uint256 assets, address onBehalf)
         external
     {
-        bytes32 id = touchObligation(obligation);
-        address collateralToken = obligation.collateralParams[collateralIndex].token;
-        _checkAuth(onBehalf);
+        require(onBehalf == msg.sender || isAuthorized[onBehalf][msg.sender], Unauthorized());
+        bytes32 id = touchMarket(market);
+        address collateralToken = market.collateralParams[collateralIndex].token;
 
         Position storage _position = position[id][onBehalf];
         uint256 oldCollateral = _position.collateral[collateralIndex];
         _position.collateral[collateralIndex] = UtilsLib.toUint128(oldCollateral + assets);
 
         if (oldCollateral == 0 && assets > 0) {
-            uint128 newBitmap = _position.activatedCollaterals.setBit(collateralIndex);
-            _position.activatedCollaterals = newBitmap;
-            require(UtilsLib.countBits(newBitmap) <= MAX_COLLATERALS_PER_BORROWER, "too many activated collaterals");
+            uint128 newCollateralBitmap = _position.collateralBitmap.setBit(collateralIndex);
+            _position.collateralBitmap = newCollateralBitmap;
+            require(
+                UtilsLib.countBits(newCollateralBitmap) <= MAX_COLLATERALS_PER_BORROWER, TooManyActivatedCollaterals()
+            );
         }
 
         emit EventsLib.SupplyCollateral(msg.sender, id, collateralToken, assets, onBehalf);
 
         require(
-            _position.collateral[collateralIndex] <= maxCollateralPerUser[collateralToken],
-            "exceeds max collateral per user"
+            _position.collateral[collateralIndex] <= maxCollateralPerUser[collateralToken], CollateralPerUserExceeded()
         );
 
         SafeTransferLib.safeTransferFrom(collateralToken, msg.sender, address(this), assets);
     }
 
-    /// @dev This function does not call any oracle if all the collateral is withdrawn and the borrower has no debt.
+    /// @dev This function does not call any oracle if the borrower has no debt.
     function withdrawCollateral(
-        Obligation memory obligation,
+        Market memory market,
         uint256 collateralIndex,
         uint256 assets,
         address onBehalf,
         address receiver
     ) external {
-        bytes32 id = touchObligation(obligation);
-        address collateralToken = obligation.collateralParams[collateralIndex].token;
-        _checkAuth(onBehalf);
+        require(onBehalf == msg.sender || isAuthorized[onBehalf][msg.sender], Unauthorized());
+        bytes32 id = touchMarket(market);
+        address collateralToken = market.collateralParams[collateralIndex].token;
 
         Position storage _position = position[id][onBehalf];
         uint256 newCollateral = _position.collateral[collateralIndex] - assets;
         _position.collateral[collateralIndex] = UtilsLib.toUint128(newCollateral);
 
         if (newCollateral == 0 && assets > 0) {
-            _position.activatedCollaterals = _position.activatedCollaterals.clearBit(collateralIndex);
+            _position.collateralBitmap = _position.collateralBitmap.clearBit(collateralIndex);
         }
 
-        require(isHealthy(obligation, id, onBehalf), "unhealthy borrower");
+        require(isHealthy(market, id, onBehalf), UnhealthyBorrower());
 
         emit EventsLib.WithdrawCollateral(msg.sender, id, collateralToken, assets, onBehalf, receiver);
 
         SafeTransferLib.safeTransfer(collateralToken, receiver, assets);
     }
 
-    /// @dev At least one of `seizedAssets` or `repaidUnits` should be equal to zero.
-    /// @dev Accounts with nonzero debt are liquidatable if they are unhealthy or if the maturity has passed.
-    /// @dev Before maturity, the liquidation cannot put the borrower back into health (recovery close factor), unless
-    /// the liquidation could leave a collateral with a value that would not be enough to repay rcfThreshold units.
-    /// @dev Recovery close factor means that debtOf - repaidUnits >= maxDebt - repaidUnits*LIF*LLTV, which is
-    /// equivalent to repaidUnits <= (debtOf-maxDebt) / (1 - LIF*LLTV).
-    /// @dev If an account is healthy, the LIF grows linearly from 1 at maturity to maxLif(lltv) at maturity +
-    /// TIME_TO_MAX_LIF.
+    /// @dev See LIQUIDATIONS section for more details.
+    /// @dev At least one of seizedAssets or repaidUnits should be equal to zero.
+    /// @dev Passing both 0 for seizedAssets and repaidUnits allows to realize bad debt with 0 token transferred.
+    /// @dev Liquidations with both 0 for seizedAssets and repaidUnits can be done with a collateral that is not
+    /// activated.
     /// @dev Returns the seized assets and the repaid units.
     function liquidate(
-        Obligation calldata obligation,
+        Market calldata market,
         uint256 collateralIndex,
         uint256 seizedAssets,
         uint256 repaidUnits,
         address borrower,
+        bool postMaturityMode,
+        address receiver,
+        address callback,
         bytes calldata data
     ) external returns (uint256, uint256) {
-        bytes32 id = touchObligation(obligation);
-        ObligationState storage _obligationState = obligationState[id];
+        bytes32 id = touchMarket(market);
+        MarketState storage _marketState = marketState[id];
         Position storage _position = position[id][borrower];
-        require(UtilsLib.atMostOneNonZero(repaidUnits, seizedAssets), "inconsistent input");
+        require(UtilsLib.atMostOneNonZero(repaidUnits, seizedAssets), InconsistentInput());
+        require(_position.debt > 0, NotBorrower()); // to avoid no-op liquidations of non borrower positions.
         require(
-            obligation.liquidatorGate == address(0)
-                || ILiquidatorGate(obligation.liquidatorGate).canLiquidate(msg.sender),
-            "liquidator gated"
+            market.liquidatorGate == address(0) || ILiquidatorGate(market.liquidatorGate).canLiquidate(msg.sender),
+            LiquidatorGatedFromLiquidating()
         );
 
         uint256 maxDebt;
         uint256 liquidatedCollatPrice;
         uint256 originalDebt = _position.debt;
         uint256 badDebt = originalDebt;
-        uint128 bitmap = _position.activatedCollaterals;
-        while (bitmap != 0) {
-            uint256 i = UtilsLib.msb(bitmap);
-            CollateralParams memory _collateralParam = obligation.collateralParams[i];
+        uint128 _collateralBitmap = _position.collateralBitmap;
+        while (_collateralBitmap != 0) {
+            uint256 i = UtilsLib.msb(_collateralBitmap);
+            CollateralParams memory _collateralParam = market.collateralParams[i];
             uint256 price = IOracle(_collateralParam.oracle).price();
             if (i == collateralIndex) liquidatedCollatPrice = price;
             uint256 _collateral = _position.collateral[i];
@@ -1526,40 +2333,37 @@ contract Midnight is IMidnight {
             badDebt = badDebt.zeroFloorSub(
                 _collateral.mulDivUp(price, ORACLE_PRICE_SCALE).mulDivUp(WAD, _collateralParam.maxLif)
             );
-            bitmap = bitmap.clearBit(i);
+            _collateralBitmap = _collateralBitmap.clearBit(i);
         }
 
         require(
-            originalDebt > 0 && !liquidationLocked(id, borrower)
-                && (block.timestamp > obligation.maturity || originalDebt > maxDebt),
-            "not liquidatable"
+            !liquidationLocked(id, borrower)
+                && (postMaturityMode ? block.timestamp > market.maturity : originalDebt > maxDebt),
+            NotLiquidatable()
         );
 
         if (badDebt > 0) {
             // forge-lint: disable-next-item(unsafe-typecast) as badDebt <= _position.debt
             _position.debt -= uint128(badDebt);
-            uint256 oldTotalUnits = _obligationState.totalUnits;
-            uint256 oldLossIndex = _obligationState.lossIndex;
-            _obligationState.lossIndex = UtilsLib.toUint128(
-                type(uint128).max
-                    - (type(uint128).max - oldLossIndex).mulDivDown(oldTotalUnits - badDebt, oldTotalUnits)
+            uint256 _totalUnits = _marketState.totalUnits;
+            uint256 _lossFactor = _marketState.lossFactor;
+            _marketState.lossFactor = UtilsLib.toUint128(
+                type(uint128).max - (type(uint128).max - _lossFactor).mulDivDown(_totalUnits - badDebt, _totalUnits)
             );
-            _obligationState.totalUnits -= UtilsLib.toUint128(badDebt);
-            _obligationState.continuousFeeCredit = oldLossIndex < type(uint128).max
+            _marketState.totalUnits -= UtilsLib.toUint128(badDebt);
+            _marketState.continuousFeeCredit = _lossFactor < type(uint128).max
                 ? UtilsLib.toUint128(
-                    _obligationState.continuousFeeCredit
-                        .mulDivDown(type(uint128).max - _obligationState.lossIndex, type(uint128).max - oldLossIndex)
+                    _marketState.continuousFeeCredit
+                        .mulDivDown(type(uint128).max - _marketState.lossFactor, type(uint128).max - _lossFactor)
                 )
                 : 0;
         }
 
         if (repaidUnits > 0 || seizedAssets > 0) {
-            uint256 _maxLif = obligation.collateralParams[collateralIndex].maxLif;
-            uint256 lif = originalDebt > maxDebt
-                ? _maxLif
-                : UtilsLib.min(
-                    _maxLif, WAD + (_maxLif - WAD) * (block.timestamp - obligation.maturity) / TIME_TO_MAX_LIF
-                );
+            uint256 _maxLif = market.collateralParams[collateralIndex].maxLif;
+            uint256 lif = postMaturityMode
+                ? UtilsLib.min(_maxLif, WAD + (_maxLif - WAD) * (block.timestamp - market.maturity) / TIME_TO_MAX_LIF)
+                : _maxLif;
 
             if (seizedAssets > 0) {
                 repaidUnits = seizedAssets.mulDivUp(liquidatedCollatPrice, ORACLE_PRICE_SCALE).mulDivUp(WAD, lif);
@@ -1567,188 +2371,202 @@ contract Midnight is IMidnight {
                 seizedAssets = repaidUnits.mulDivDown(lif, WAD).mulDivDown(ORACLE_PRICE_SCALE, liquidatedCollatPrice);
             }
 
-            if (block.timestamp <= obligation.maturity) {
-                uint256 lltv = obligation.collateralParams[collateralIndex].lltv;
-                // Rounded up to avoid consecutive max liquidations.
-                // Acknowledged that the position could be slightly healthy after a liquidation.
+            if (!postMaturityMode) {
+                uint256 lltv = market.collateralParams[collateralIndex].lltv;
                 // Note that debt >= maxDebt in this branch.
+                // The imprecision in this computation is at most a few hundreds collateral or loan token assets.
                 uint256 maxRepaid = lltv < WAD
-                    ? (_position.debt - maxDebt).mulDivUp(WAD, WAD - lif.mulDivUp(lltv, WAD))
+                    ? (_position.debt - maxDebt).mulDivUp(WAD * WAD, WAD * WAD - lif * lltv)
                     : type(uint256).max;
                 require(
                     repaidUnits <= maxRepaid
                         || _position.collateral[collateralIndex].mulDivDown(liquidatedCollatPrice, ORACLE_PRICE_SCALE)
-                            .mulDivDown(WAD, lif).zeroFloorSub(maxRepaid) < obligation.rcfThreshold,
-                    "rcf violated"
+                            .mulDivDown(WAD, lif).zeroFloorSub(maxRepaid) < market.rcfThreshold,
+                    RecoveryCloseFactorConditionsViolated()
                 );
             }
 
             uint128 newCollateral = _position.collateral[collateralIndex] - UtilsLib.toUint128(seizedAssets);
             _position.collateral[collateralIndex] = newCollateral;
             if (newCollateral == 0 && seizedAssets > 0) {
-                _position.activatedCollaterals = _position.activatedCollaterals.clearBit(collateralIndex);
+                _position.collateralBitmap = _position.collateralBitmap.clearBit(collateralIndex);
             }
-            _obligationState.withdrawable += UtilsLib.toUint128(repaidUnits);
+            _marketState.withdrawable += UtilsLib.toUint128(repaidUnits);
             _position.debt -= UtilsLib.toUint128(repaidUnits);
         }
+
+        address payer = callback != address(0) ? callback : msg.sender;
 
         emit EventsLib.Liquidate(
             msg.sender,
             id,
-            obligation.collateralParams[collateralIndex].token,
+            market.collateralParams[collateralIndex].token,
             seizedAssets,
             repaidUnits,
             borrower,
+            postMaturityMode,
+            receiver,
+            payer,
             badDebt,
-            _obligationState.lossIndex
+            _marketState.lossFactor,
+            _marketState.continuousFeeCredit
         );
 
-        SafeTransferLib.safeTransfer(obligation.collateralParams[collateralIndex].token, msg.sender, seizedAssets);
+        SafeTransferLib.safeTransfer(market.collateralParams[collateralIndex].token, receiver, seizedAssets);
 
-        if (data.length > 0) {
-            ICallbacks(msg.sender)
-                .onLiquidate(id, obligation, collateralIndex, seizedAssets, repaidUnits, borrower, data);
+        if (callback != address(0)) {
+            require(
+                ILiquidateCallback(callback)
+                    .onLiquidate(
+                        msg.sender,
+                        id,
+                        market,
+                        collateralIndex,
+                        seizedAssets,
+                        repaidUnits,
+                        borrower,
+                        receiver,
+                        data,
+                        badDebt
+                    ) == CALLBACK_SUCCESS,
+                WrongLiquidateCallbackReturnValue()
+            );
         }
 
-        SafeTransferLib.safeTransferFrom(obligation.loanToken, msg.sender, address(this), repaidUnits);
+        SafeTransferLib.safeTransferFrom(market.loanToken, payer, address(this), repaidUnits);
 
         return (seizedAssets, repaidUnits);
     }
 
     /// @dev Passing type(uint256).max cancels all offers in the group (and never reverts).
     function setConsumed(bytes32 group, uint256 amount, address onBehalf) external {
-        _checkAuth(onBehalf);
-        require(amount >= consumed[onBehalf][group], "already consumed");
+        require(onBehalf == msg.sender || isAuthorized[onBehalf][msg.sender], Unauthorized());
+        require(amount >= consumed[onBehalf][group], AlreadyConsumed());
         consumed[onBehalf][group] = amount;
-        emit EventsLib.SetConsumed(msg.sender, onBehalf, group, amount);
+        emit EventsLib.SetConsumed(msg.sender, group, amount, onBehalf);
     }
 
-    /// @dev TODO: is it safe enough?
-    function shuffleSession(address onBehalf) external {
-        _checkAuth(onBehalf);
-        bytes32 newSession = keccak256(abi.encode(session[onBehalf], blockhash(block.number - 1)));
-        session[onBehalf] = newSession;
-        emit EventsLib.ShuffleSession(msg.sender, onBehalf, newSession);
-    }
-
-    /// @dev Authorized addresses can authorize other addresses to act on their behalf so it should be used carefully.
-    function setIsAuthorized(address onBehalf, address authorized, bool newIsAuthorized) external {
-        _checkAuth(onBehalf);
+    /// @dev See AUTHORIZATIONS section above.
+    function setIsAuthorized(address authorized, bool newIsAuthorized, address onBehalf) external {
+        require(onBehalf == msg.sender || isAuthorized[onBehalf][msg.sender], Unauthorized());
         isAuthorized[onBehalf][authorized] = newIsAuthorized;
-        emit EventsLib.SetIsAuthorized(msg.sender, onBehalf, authorized, newIsAuthorized);
+        emit EventsLib.SetIsAuthorized(msg.sender, authorized, newIsAuthorized, onBehalf);
     }
 
-    function flashLoan(address token, uint256 assets, address callback, bytes calldata data) external {
-        emit EventsLib.FlashLoan(msg.sender, token, assets);
-        SafeTransferLib.safeTransfer(token, msg.sender, assets);
-        IFlashLoanCallback(callback).onFlashLoan(token, assets, data);
-        SafeTransferLib.safeTransferFrom(token, msg.sender, address(this), assets);
+    function flashLoan(address[] calldata tokens, uint256[] calldata assets, address callback, bytes calldata data)
+        external
+    {
+        require(tokens.length == assets.length, InconsistentInput());
+        emit EventsLib.FlashLoan(msg.sender, tokens, assets, callback);
+        for (uint256 i = 0; i < tokens.length; i++) {
+            SafeTransferLib.safeTransfer(tokens[i], callback, assets[i]);
+        }
+        require(
+            IFlashLoanCallback(callback).onFlashLoan(msg.sender, tokens, assets, data) == CALLBACK_SUCCESS,
+            WrongFlashLoanCallbackReturnValue()
+        );
+        for (uint256 i = 0; i < tokens.length; i++) {
+            SafeTransferLib.safeTransferFrom(tokens[i], callback, address(this), assets[i]);
+        }
     }
 
-    /// @dev Returns the obligation id and creates the obligation if it doesn't exist yet.
-    function touchObligation(Obligation memory obligation) public returns (bytes32) {
-        bytes32 id = toId(obligation);
-        if (!obligationState[id].created) {
-            require(obligation.collateralParams.length > 0, "no collateralParams");
-            require(obligation.collateralParams.length <= MAX_COLLATERALS, "too many collateralParams");
+    /// @dev Returns the market id and creates the market if it doesn't exist yet.
+    function touchMarket(Market memory market) public returns (bytes32) {
+        bytes32 id = toId(market);
+        if (marketState[id].tickSpacing == 0) {
+            require(market.maturity <= block.timestamp + 100 * 365 days, MaturityTooFar());
+            require(market.collateralParams.length > 0, NoCollateralParams());
+            require(market.collateralParams.length <= MAX_COLLATERALS, TooManyCollateralParams());
             address previousCollateralToken;
-            for (uint256 i = 0; i < obligation.collateralParams.length; i++) {
-                address collateralToken = obligation.collateralParams[i].token;
-                require(collateralToken > previousCollateralToken, "collateralParams not sorted");
-                uint256 lltv = obligation.collateralParams[i].lltv;
-                require(isLltvAllowed(lltv), "lltv not allowed");
+            for (uint256 i = 0; i < market.collateralParams.length; i++) {
+                address collateralToken = market.collateralParams[i].token;
+                require(collateralToken > previousCollateralToken, CollateralParamsNotSorted());
+                uint256 lltv = market.collateralParams[i].lltv;
+                require(isLltvAllowed(lltv), LltvNotAllowed());
                 require(
-                    obligation.collateralParams[i].maxLif == maxLif(lltv, LIQUIDATION_CURSOR_LOW)
-                        || obligation.collateralParams[i].maxLif == maxLif(lltv, LIQUIDATION_CURSOR_HIGH),
-                    "invalid maxLif"
+                    market.collateralParams[i].maxLif == maxLif(lltv, LIQUIDATION_CURSOR_LOW)
+                        || market.collateralParams[i].maxLif == maxLif(lltv, LIQUIDATION_CURSOR_HIGH),
+                    InvalidMaxLif()
                 );
                 previousCollateralToken = collateralToken;
             }
 
-            ObligationState storage _obligationState = obligationState[id];
-            _obligationState.created = true;
-            uint16[7] memory _defaultTradingFees = defaultTradingFees[obligation.loanToken];
-            _obligationState.fee0 = _defaultTradingFees[0];
-            _obligationState.fee1 = _defaultTradingFees[1];
-            _obligationState.fee2 = _defaultTradingFees[2];
-            _obligationState.fee3 = _defaultTradingFees[3];
-            _obligationState.fee4 = _defaultTradingFees[4];
-            _obligationState.fee5 = _defaultTradingFees[5];
-            _obligationState.fee6 = _defaultTradingFees[6];
-            _obligationState.continuousFee = defaultContinuousFee[obligation.loanToken];
-            IdLib.storeInCode(obligation);
+            MarketState storage _marketState = marketState[id];
+            _marketState.tickSpacing = DEFAULT_TICK_SPACING;
+            uint16[7] memory _defaultSettlementFeeCbp = defaultSettlementFeeCbp[market.loanToken];
+            _marketState.settlementFeeCbp0 = _defaultSettlementFeeCbp[0];
+            _marketState.settlementFeeCbp1 = _defaultSettlementFeeCbp[1];
+            _marketState.settlementFeeCbp2 = _defaultSettlementFeeCbp[2];
+            _marketState.settlementFeeCbp3 = _defaultSettlementFeeCbp[3];
+            _marketState.settlementFeeCbp4 = _defaultSettlementFeeCbp[4];
+            _marketState.settlementFeeCbp5 = _defaultSettlementFeeCbp[5];
+            _marketState.settlementFeeCbp6 = _defaultSettlementFeeCbp[6];
+            _marketState.continuousFee = defaultContinuousFee[market.loanToken];
+            IdLib.storeInCode(market, INITIAL_CHAIN_ID);
 
-            emit EventsLib.ObligationCreated(id, obligation);
+            emit EventsLib.MarketCreated(market, id);
         }
         return id;
     }
 
     /// SLASHING AND CONTINUOUS FEE ACCRUAL ///
 
-    /// @dev Expects the id to correspond to the obligation's id.
+    /// @dev Expects the id to correspond to the market's id.
     /// @dev Returns the new credit, new pending fee, and accrued fee after having updated the position.
-    function updatePositionView(Obligation memory obligation, bytes32 id, address user)
+    function updatePositionView(Market memory market, bytes32 id, address user)
         public
         view
         returns (uint128, uint128, uint128)
     {
         Position storage _position = position[id][user];
         uint128 credit = _position.credit;
-        uint128 _lossIndex = _position.lossIndex;
-        uint256 postSlashCredit = _lossIndex < type(uint128).max
-            ? credit.mulDivDown(type(uint128).max - obligationState[id].lossIndex, type(uint128).max - _lossIndex)
+        uint128 _lastLossFactor = _position.lastLossFactor;
+        uint256 postSlashCredit = _lastLossFactor < type(uint128).max
+            ? credit.mulDivDown(type(uint128).max - marketState[id].lossFactor, type(uint128).max - _lastLossFactor)
             : 0;
         uint128 _pendingFee = _position.pendingFee;
-        uint256 postSlashPending = credit > 0 ? _pendingFee - _pendingFee.mulDivUp(credit - postSlashCredit, credit) : 0;
-        uint256 accrualEnd = UtilsLib.min(block.timestamp, obligation.maturity);
+        uint256 postSlashPendingFee =
+            credit > 0 ? _pendingFee - _pendingFee.mulDivUp(credit - postSlashCredit, credit) : 0;
+        uint256 accrualEnd = UtilsLib.min(block.timestamp, market.maturity);
         uint128 _lastAccrual = _position.lastAccrual;
         // forge-lint: disable-next-item(unsafe-typecast) as fee <= pending <= credit which are uint128 position fields
-        uint128 fee = _lastAccrual < obligation.maturity
-            ? uint128(postSlashPending.mulDivDown(accrualEnd - _lastAccrual, obligation.maturity - _lastAccrual))
+        uint128 fee = _lastAccrual < market.maturity
+            ? uint128(postSlashPendingFee.mulDivDown(accrualEnd - _lastAccrual, market.maturity - _lastAccrual))
             : 0;
         // forge-lint: disable-next-item(unsafe-typecast) as credit and pending are <= uint128 position fields
-        return (uint128(postSlashCredit) - fee, uint128(postSlashPending) - fee, fee);
+        return (uint128(postSlashCredit) - fee, uint128(postSlashPendingFee) - fee, fee);
     }
 
     /// @dev Slashes the position and accrues the continuous fee.
-    function updatePosition(Obligation memory obligation, address user) external {
-        bytes32 id = toId(obligation);
-        require(obligationState[id].created, "obligation not created");
-        _updatePosition(obligation, id, user);
+    /// @dev Returns the new credit, new pending fee, and accrued fee after having updated the position.
+    function updatePosition(Market memory market, address user) external returns (uint128, uint128, uint128) {
+        bytes32 id = toId(market);
+        require(marketState[id].tickSpacing > 0, MarketNotCreated());
+        return _updatePosition(market, id, user);
     }
 
-    /// @dev Expects the obligation to be touched.
-    /// @dev Expects the id to correspond to the obligation's id.
-    function _updatePosition(Obligation memory obligation, bytes32 id, address user) internal {
+    /// @dev Expects the market to be touched.
+    /// @dev Expects the id to correspond to the market's id.
+    /// @dev Returns the new credit, new pending fee, and accrued fee after having updated the position.
+    function _updatePosition(Market memory market, bytes32 id, address user)
+        internal
+        returns (uint128, uint128, uint128)
+    {
         Position storage _position = position[id][user];
-        (uint128 newCredit, uint128 newPendingFee, uint128 accruedFee) = updatePositionView(obligation, id, user);
+        (uint128 newCredit, uint128 newPendingFee, uint128 accruedFee) = updatePositionView(market, id, user);
 
         uint128 creditDecrease = _position.credit - newCredit;
         uint128 pendingFeeDecrease = _position.pendingFee - newPendingFee;
 
         _position.credit = newCredit;
-        _position.lossIndex = obligationState[id].lossIndex;
+        _position.lastLossFactor = marketState[id].lossFactor;
         _position.pendingFee = newPendingFee;
         _position.lastAccrual = uint128(block.timestamp);
-        obligationState[id].continuousFeeCredit += UtilsLib.toUint128(accruedFee);
+        marketState[id].continuousFeeCredit += UtilsLib.toUint128(accruedFee);
 
         emit EventsLib.UpdatePosition(id, user, creditDecrease, pendingFeeDecrease, accruedFee);
-    }
 
-    function _checkAuth(address onBehalf) internal view {
-        require(onBehalf == msg.sender || isAuthorized[onBehalf][msg.sender], "unauthorized");
-    }
-
-    function _onlyRoleSetter() internal view {
-        require(msg.sender == roleSetter, "only role setter");
-    }
-
-    function _onlyFeeSetter() internal view {
-        require(msg.sender == feeSetter, "only fee setter");
-    }
-
-    function _onlyFeeClaimer() internal view {
-        require(msg.sender == feeClaimer, "only fee claimer");
+        return (newCredit, newPendingFee, accruedFee);
     }
 
     function hasCredit(bytes32 id, address user) internal view returns (bool) {
@@ -1757,72 +2575,74 @@ contract Midnight is IMidnight {
 
     /// OTHER VIEW FUNCTIONS ///
 
-    function userLossIndex(bytes32 id, address user) external view returns (uint128) {
-        return position[id][user].lossIndex;
+    function lastLossFactor(bytes32 id, address user) external view returns (uint128) {
+        return position[id][user].lastLossFactor;
     }
 
-    function activatedCollaterals(bytes32 id, address user) external view returns (uint128) {
-        return position[id][user].activatedCollaterals;
+    function collateralBitmap(bytes32 id, address user) external view returns (uint128) {
+        return position[id][user].collateralBitmap;
     }
 
     function collateral(bytes32 id, address user, uint256 index) external view returns (uint128) {
         return position[id][user].collateral[index];
     }
 
-    function toId(Obligation memory obligation) public view returns (bytes32) {
-        return IdLib.toId(obligation, block.chainid, address(this));
+    function toId(Market memory market) public view returns (bytes32) {
+        return IdLib.toId(market, INITIAL_CHAIN_ID, address(this));
     }
 
-    /// @dev Reverts if the id is not a valid id of a touched obligation.
-    /// @dev Returns the obligation corresponding to the given id.
-    function toObligation(bytes32 id) external view returns (Obligation memory) {
-        require(obligationState[id].created, "obligation not created");
+    /// @dev Reverts if the id is not a valid id of a touched market.
+    /// @dev Returns the market corresponding to the given id.
+    function toMarket(bytes32 id) external view returns (Market memory) {
+        require(marketState[id].tickSpacing > 0, MarketNotCreated());
         address create2Address = address(uint160(uint256(id)));
-        return abi.decode(create2Address.code, (Obligation));
+        return abi.decode(create2Address.code, (Market));
     }
 
-    function creditOf(bytes32 id, address user) external view returns (uint256) {
+    function creditOf(bytes32 id, address user) external view returns (uint128) {
         return position[id][user].credit;
     }
 
-    function debtOf(bytes32 id, address user) external view returns (uint256) {
+    function debtOf(bytes32 id, address user) external view returns (uint128) {
         return position[id][user].debt;
     }
 
-    function totalUnits(bytes32 id) external view returns (uint256) {
-        return obligationState[id].totalUnits;
+    function totalUnits(bytes32 id) external view returns (uint128) {
+        return marketState[id].totalUnits;
     }
 
-    function lossIndex(bytes32 id) external view returns (uint128) {
-        return obligationState[id].lossIndex;
+    function lossFactor(bytes32 id) external view returns (uint128) {
+        return marketState[id].lossFactor;
     }
 
-    function obligationCreated(bytes32 id) external view returns (bool) {
-        return obligationState[id].created;
+    function tickSpacing(bytes32 id) external view returns (uint8) {
+        return marketState[id].tickSpacing;
     }
 
-    function withdrawable(bytes32 id) external view returns (uint256) {
-        return obligationState[id].withdrawable;
+    function withdrawable(bytes32 id) external view returns (uint128) {
+        return marketState[id].withdrawable;
     }
 
-    function tradingFees(bytes32 id) external view returns (uint16[7] memory) {
+    /// @dev The settlement fee cbp values are 0 until the market is created, then set to the default value.
+    function settlementFeeCbps(bytes32 id) external view returns (uint16[7] memory) {
         return [
-            obligationState[id].fee0,
-            obligationState[id].fee1,
-            obligationState[id].fee2,
-            obligationState[id].fee3,
-            obligationState[id].fee4,
-            obligationState[id].fee5,
-            obligationState[id].fee6
+            marketState[id].settlementFeeCbp0,
+            marketState[id].settlementFeeCbp1,
+            marketState[id].settlementFeeCbp2,
+            marketState[id].settlementFeeCbp3,
+            marketState[id].settlementFeeCbp4,
+            marketState[id].settlementFeeCbp5,
+            marketState[id].settlementFeeCbp6
         ];
     }
 
+    /// @dev The continuous fee is 0 until the market is created, then set to the default value.
     function continuousFee(bytes32 id) external view returns (uint32) {
-        return obligationState[id].continuousFee;
+        return marketState[id].continuousFee;
     }
 
-    function continuousFeeCredit(bytes32 id) external view returns (uint256) {
-        return obligationState[id].continuousFeeCredit;
+    function continuousFeeCredit(bytes32 id) external view returns (uint128) {
+        return marketState[id].continuousFeeCredit;
     }
 
     function pendingFee(bytes32 id, address user) external view returns (uint128) {
@@ -1837,57 +2657,42 @@ contract Midnight is IMidnight {
         return UtilsLib.tGet(LIQUIDATION_LOCK_SLOT, id, user);
     }
 
-    /// @dev A borrower is liquidatable if they have debt, liquidation is not transiently locked, and they are
-    /// past maturity or not healthy.
-    function isLiquidatable(Obligation memory obligation, bytes32 id, address borrower) public view returns (bool) {
-        return position[id][borrower].debt > 0 && !liquidationLocked(id, borrower)
-            && (block.timestamp > obligation.maturity || !isHealthy(obligation, id, borrower));
-    }
-
-    /// @dev This function should be called with the id corresponding to the obligation.
+    /// @dev This function should be called with the id corresponding to the market.
     /// @dev This function does not call any oracle if debt is 0.
-    /// @dev Expects the id to correspond to the obligation's id.
-    function isHealthy(Obligation memory obligation, bytes32 id, address borrower) public view returns (bool) {
+    /// @dev Expects the id to correspond to the market's id.
+    function isHealthy(Market memory market, bytes32 id, address borrower) public view returns (bool) {
         Position storage _position = position[id][borrower];
         uint256 debt = _position.debt;
         uint256 maxDebt;
-        uint128 bitmap = _position.activatedCollaterals;
-        while (maxDebt < debt && bitmap != 0) {
-            uint256 i = UtilsLib.msb(bitmap);
-            CollateralParams memory collateralParam = obligation.collateralParams[i];
-            uint256 price = IOracle(collateralParam.oracle).price();
-            maxDebt += _position.collateral[i].mulDivDown(price, ORACLE_PRICE_SCALE)
-                .mulDivDown(collateralParam.lltv, WAD);
-            bitmap = bitmap.clearBit(i);
+        if (debt > 0) {
+            uint128 _collateralBitmap = _position.collateralBitmap;
+            while (_collateralBitmap != 0) {
+                uint256 i = UtilsLib.msb(_collateralBitmap);
+                CollateralParams memory collateralParam = market.collateralParams[i];
+                uint256 price = IOracle(collateralParam.oracle).price();
+                maxDebt += _position.collateral[i].mulDivDown(price, ORACLE_PRICE_SCALE)
+                    .mulDivDown(collateralParam.lltv, WAD);
+                _collateralBitmap = _collateralBitmap.clearBit(i);
+            }
         }
         return maxDebt >= debt;
     }
 
-    /// @dev Returns the max LIF for the given lltv and cursor.
-    function maxLif(uint256 lltv, uint256 cursor) public pure returns (uint256) {
-        return WAD.mulDivDown(WAD, WAD - cursor.mulDivDown(WAD - lltv, WAD));
-    }
+    /// @dev Returns the settlement fee using piecewise linear interpolation between breakpoints.
+    function settlementFee(bytes32 id, uint256 timeToMaturity) public view returns (uint256) {
+        MarketState storage _marketState = marketState[id];
+        require(_marketState.tickSpacing > 0, MarketNotCreated());
 
-    /// @dev Returns the max trading fee for the given index.
-    function maxTradingFee(uint256 index) public pure returns (uint256) {
-        return [0.000014e18, 0.000014e18, 0.000098e18, 0.000417e18, 0.00125e18, 0.0025e18, 0.005e18][index];
-    }
-
-    /// @dev Returns the trading fee using piecewise linear interpolation between breakpoints.
-    function tradingFee(bytes32 id, uint256 timeToMaturity) public view returns (uint256) {
-        ObligationState storage _obligationState = obligationState[id];
-        require(_obligationState.created, "obligation not created");
-
-        if (timeToMaturity >= 360 days) return _obligationState.fee6 * FEE_STEP;
+        if (timeToMaturity >= 360 days) return _marketState.settlementFeeCbp6 * CBP;
 
         // forgefmt: disable-start
         (uint256 start, uint256 end, uint256 feeLower, uint256 feeUpper) =
-            timeToMaturity < 1 days   ? (  0 days,   1 days, _obligationState.fee0 * FEE_STEP, _obligationState.fee1 * FEE_STEP) :
-            timeToMaturity < 7 days   ? (  1 days,   7 days, _obligationState.fee1 * FEE_STEP, _obligationState.fee2 * FEE_STEP) :
-            timeToMaturity < 30 days  ? (  7 days,  30 days, _obligationState.fee2 * FEE_STEP, _obligationState.fee3 * FEE_STEP) :
-            timeToMaturity < 90 days  ? ( 30 days,  90 days, _obligationState.fee3 * FEE_STEP, _obligationState.fee4 * FEE_STEP) :
-            timeToMaturity < 180 days ? ( 90 days, 180 days, _obligationState.fee4 * FEE_STEP, _obligationState.fee5 * FEE_STEP) :
-                                        (180 days, 360 days, _obligationState.fee5 * FEE_STEP, _obligationState.fee6 * FEE_STEP);
+            timeToMaturity < 1 days   ? (  0 days,   1 days, _marketState.settlementFeeCbp0 * CBP, _marketState.settlementFeeCbp1 * CBP) :
+            timeToMaturity < 7 days   ? (  1 days,   7 days, _marketState.settlementFeeCbp1 * CBP, _marketState.settlementFeeCbp2 * CBP) :
+            timeToMaturity < 30 days  ? (  7 days,  30 days, _marketState.settlementFeeCbp2 * CBP, _marketState.settlementFeeCbp3 * CBP) :
+            timeToMaturity < 90 days  ? ( 30 days,  90 days, _marketState.settlementFeeCbp3 * CBP, _marketState.settlementFeeCbp4 * CBP) :
+            timeToMaturity < 180 days ? ( 90 days, 180 days, _marketState.settlementFeeCbp4 * CBP, _marketState.settlementFeeCbp5 * CBP) :
+                                        (180 days, 360 days, _marketState.settlementFeeCbp5 * CBP, _marketState.settlementFeeCbp6 * CBP);
         // forgefmt: disable-end
 
         return (feeLower * (end - timeToMaturity) + feeUpper * (timeToMaturity - start)) / (end - start);
