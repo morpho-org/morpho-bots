@@ -24,3 +24,11 @@ export const MAX_COLLATERALS_PER_BORROWER = 16
  */
 export const CALLBACK_SUCCESS: Hex =
   '0xee60b2e8d46b15beabf6792dae952096e6cb7b86b90ca90f7c00aa15c812ff1a'
+
+// --- Tx-queue operational tuning (consumed by the nonce queue / daemon) ---
+
+/** Blocks a pending tx may sit unconfirmed before the queue bumps its fee and replaces it. */
+export const STUCK_BLOCKS = 4n
+
+/** Fee-bump attempts the queue makes on a stuck tx before dropping it. */
+export const MAX_BUMP_ATTEMPTS = 3
