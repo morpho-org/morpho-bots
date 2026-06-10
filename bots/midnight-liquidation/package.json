@@ -10,10 +10,13 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@morpho-org/viem-dlc": "catalog:",
     "@repo/abis": "workspace:*",
     "@repo/utils": "workspace:*",
     "executooor-viem": "catalog:",
     "openapi-fetch": "catalog:",
+    "solc": "catalog:",
+    "soltag": "catalog:",
     "viem": "catalog:",
     "zod": "catalog:"
   },

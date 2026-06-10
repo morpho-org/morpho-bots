@@ -1,2 +1,7 @@
 [install]
 minimumReleaseAge = 259200
+
+# Compile the midnight-liquidation bot's soltag `sol``` lens templates during `bun test` (the
+# plugin self-scopes to that bot's files; other workspaces are untouched).
+[test]
+preload = ["./bots/midnight-liquidation/soltag.preload.ts"]
