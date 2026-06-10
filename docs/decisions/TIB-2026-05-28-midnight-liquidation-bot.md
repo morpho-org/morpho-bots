@@ -795,26 +795,31 @@ JSON-line via the v1 `logger.ts`. Stable event keys:
 
 ```
 startup                  { chainId, liquidator, callback, midnight, apiUrl }
-tick.begin               { block }
+daemon.start             { intervalMs }
+block.new                { height }                        // one per new block height (coalesced)
 api.lag                  { latestIndexedBlock, ourBlock, lag }   // warn ≥5, error ≥30
 positions.fetched        { count, markets, durationMs }          // markets = distinct count in the set
 lens.read                { pairs, batches, durationMs }
 lens.id_mismatch         { marketId, borrower }
 lens.skipped             { marketId, borrower, reason }
 plan.built               { marketId, borrower, collateralIndex, kind, seized, repaid }
-simulate.ok              { marketId, borrower, gas, repaid }
-simulate.revert          { marketId, borrower, reason }
-tx.sent                  { marketId, borrower, nonce, txHash, maxFee, priority }
+simulate.ok              { marketId, borrower }
+simulate.unfunded        { marketId, borrower }            // plan valid, Executor unfunded (expected)
+simulate.revert          { marketId, borrower, reason }    // a Midnight error → sizing/eligibility bug
+tx.sent                  { marketId, borrower, nonce, txHash, maxFee, priority }   // Phase 3+ (CRTR-2585)
 tx.bumped                { nonce, oldHash, newHash, attempt, maxFee, priority }
 tx.confirmed             { nonce, txHash, blockNumber, gasUsed, status }
 tx.dropped               { nonce, txHash, reason }
 tx.reverted              { nonce, txHash, reason }
-tick.end                 { block, durationMs, pendingCount, counters }
+tick.end                 { pairs, liquidatable, planned, ok, unfunded, reverted, skipped }
+tick.error               { error }                         // a tick threw; the daemon loop survives
+watcher.error            { error }                         // a block poll (getBlockNumber) failed
+shutdown                 { signal }
+daemon.shutdown          { }
 ```
 
-Counters emitted in `tick.end`: `positions_seen, lens_valid, liquidatable, plans,
-simulated_ok, simulated_revert, sent, bumped, confirmed, reverted, dropped`. No external
-metrics deps; logs are structured enough to ship.
+`tick.end` carries the as-built read-only counters above. No external metrics deps; logs are
+structured enough to ship. (The `tx.*` events land with the signed-send queue, CRTR-2585.)
 
 ## Security
 
