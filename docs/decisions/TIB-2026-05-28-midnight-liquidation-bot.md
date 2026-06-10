@@ -77,11 +77,30 @@ runtime. `soltag` + `solc` are **runtime** deps (the preload compiles on load). 
 `createNonceManager` directly; the manager wiring lands with the signed-send path (CRTR-2585).
 Behavior matches §Tx queue.
 
+**8. The lens reads the `Obligation` on-chain via `toObligation(id)`, not from indexed
+`ObligationCreated`** (supersedes §1's "config comes from the indexed `ObligationCreated`" and
+§Lens design's "market passed into the lens as input / `id == toId(market)` re-check"). The lens
+input element is `(bytes32 id, address borrower, address caller)`; `computeOne` calls
+`MIDNIGHT.toObligation(id)` (reverts `"not created"` for an unknown id → the per-element try/catch
+zeroes the row → `valid=false`) and **returns the full `Obligation`** in `LensOut` so the bot has it
+for the `liquidate` call and reads `maturity`/`rcfThreshold` for sizing. _Why drop the off-chain
+path:_ the id is a cryptographic commitment to the entire ABI-encoded `Obligation`, so the struct is
+static post-creation — an off-chain `toObligation` multicall / `obligation_created` reader plus an
+`id == toId(market)` re-check would be redundant, and reading inside the lens removes the
+unconfirmed rindexer nested-tuple schema dependency entirely. Discovery (`discovery/borrowers.ts`,
+rindexer `update_position`) is unchanged — it already yields the `(id, borrower)` universe. The
+read-only client + `getCode` gate live in `chain/client.ts` (intentionally not under `daemon/` as
+the original module sketch suggested — the daemon arrives in Phase 3, CRTR-2583); the simulate sink
+is `execution/simulate.ts` (`Midnight.liquidate(…, data='0x')` impersonating the Executor; an
+unfunded `TransferFromFailed` revert is the expected read-only outcome). New modules:
+`chain/client.ts`, `execution/simulate.ts`, `daemon/eligibility.ts`.
+
 **Status by phase:** Phase 1 ✅ (config, typed API client, rindexer-backed discovery, dry-run
-orchestrator). Phase 2 ⏳ (sizing ✅, lens authored + compiles ✅; read-only wire-path + Base-fork
-smoke + lens gas calibration remain — CRTR-2582). Phase 3 ⏳ (nonce queue + fee policy ✅; watcher +
-signed sends remain — CRTR-2583/2585). Phase 4 ⏳ (exec encoder ✅; vendored Executor Solidity, real
-swap config, anvil suite remain — CRTR-2586/2588/2589).
+orchestrator). Phase 2 ✅ (sizing, lens, read-only lens+sizing wire-path + simulate sink + `getCode`
+gate — CRTR-2582; only the manual Base-fork smoke + lens gas calibration remain, gated on a Base
+RPC). Phase 3 ⏳ (nonce queue + fee policy ✅; watcher + signed sends remain — CRTR-2583/2585).
+Phase 4 ⏳ (exec encoder ✅; vendored Executor Solidity, real swap config, anvil suite remain —
+CRTR-2586/2588/2589).
 
 ## Context
 

@@ -19,7 +19,35 @@ const BORROWER = getAddress('0x1111111111111111111111111111111111111111')
 const CALLER = getAddress('0x2222222222222222222222222222222222222222')
 const TOKEN = getAddress('0x3333333333333333333333333333333333333333')
 const ORACLE = getAddress('0x4444444444444444444444444444444444444444')
+const ZERO = '0x0000000000000000000000000000000000000000' as const
 const ID: Hex = `0x${'ab'.repeat(32)}`
+
+const OBLIGATION: Obligation = {
+  loanToken: TOKEN,
+  collateralParams: [{ token: TOKEN, lltv: 860000000000000000n, maxLif: 1n, oracle: ORACLE }],
+  maturity: 2000n,
+  rcfThreshold: 1n,
+  enterGate: ZERO,
+  liquidatorGate: ZERO
+}
+
+const OBLIGATION_COMPONENTS = [
+  { name: 'loanToken', type: 'address' },
+  {
+    name: 'collateralParams',
+    type: 'tuple[]',
+    components: [
+      { name: 'token', type: 'address' },
+      { name: 'lltv', type: 'uint256' },
+      { name: 'maxLif', type: 'uint256' },
+      { name: 'oracle', type: 'address' }
+    ]
+  },
+  { name: 'maturity', type: 'uint256' },
+  { name: 'rcfThreshold', type: 'uint256' },
+  { name: 'enterGate', type: 'address' },
+  { name: 'liquidatorGate', type: 'address' }
+] as const
 
 const LENS_OUT_TUPLE = [
   {
@@ -39,7 +67,8 @@ const LENS_OUT_TUPLE = [
       { name: 'bestCollateralAmt', type: 'uint128' },
       { name: 'bestCollateralPrice', type: 'uint256' },
       { name: 'bestCollateralMaxLif', type: 'uint256' },
-      { name: 'bestCollateralLltv', type: 'uint256' }
+      { name: 'bestCollateralLltv', type: 'uint256' },
+      { name: 'obligation', type: 'tuple', components: OBLIGATION_COMPONENTS }
     ]
   }
 ] as const
@@ -57,7 +86,7 @@ describe('MidnightLiquidationLens', () => {
 })
 
 describe('lens codecs', () => {
-  it('decodes a LensOut tuple in field order', () => {
+  it('decodes a LensOut tuple in field order, including the returned obligation', () => {
     const sample: LensOut = {
       valid: true,
       hasDebt: true,
@@ -73,46 +102,19 @@ describe('lens codecs', () => {
       bestCollateralAmt: 12345n,
       bestCollateralPrice: 10n ** 36n,
       bestCollateralMaxLif: 1036269430051813471n,
-      bestCollateralLltv: 860000000000000000n
+      bestCollateralLltv: 860000000000000000n,
+      obligation: OBLIGATION
     }
     const encoded = encodeAbiParameters(LENS_OUT_TUPLE, [sample])
     expect(decodeLensOut(encoded)).toEqual(sample)
   })
 
-  it('round-trips a lens input', () => {
-    const market: Obligation = {
-      loanToken: TOKEN,
-      collateralParams: [{ token: TOKEN, lltv: 860000000000000000n, maxLif: 1n, oracle: ORACLE }],
-      maturity: 2000n,
-      rcfThreshold: 1n,
-      enterGate: '0x0000000000000000000000000000000000000000',
-      liquidatorGate: '0x0000000000000000000000000000000000000000'
-    }
-    const input: LensInput = { market, id: ID, borrower: BORROWER, caller: CALLER }
+  it('round-trips an (id, borrower, caller) lens input', () => {
+    const input: LensInput = { id: ID, borrower: BORROWER, caller: CALLER }
     const encoded = encodeLensInput(input)
 
-    const [decodedMarket, id, borrower, caller] = decodeAbiParameters(
+    const [id, borrower, caller] = decodeAbiParameters(
       [
-        {
-          type: 'tuple',
-          components: [
-            { name: 'loanToken', type: 'address' },
-            {
-              name: 'collateralParams',
-              type: 'tuple[]',
-              components: [
-                { name: 'token', type: 'address' },
-                { name: 'lltv', type: 'uint256' },
-                { name: 'maxLif', type: 'uint256' },
-                { name: 'oracle', type: 'address' }
-              ]
-            },
-            { name: 'maturity', type: 'uint256' },
-            { name: 'rcfThreshold', type: 'uint256' },
-            { name: 'enterGate', type: 'address' },
-            { name: 'liquidatorGate', type: 'address' }
-          ]
-        },
         { name: 'id', type: 'bytes32' },
         { name: 'borrower', type: 'address' },
         { name: 'caller', type: 'address' }
@@ -122,8 +124,6 @@ describe('lens codecs', () => {
     expect(id).toBe(ID)
     expect(isAddressEqual(borrower, BORROWER)).toBe(true)
     expect(isAddressEqual(caller, CALLER)).toBe(true)
-    expect(decodedMarket.maturity).toBe(2000n)
-    expect(decodedMarket.collateralParams[0]?.lltv).toBe(860000000000000000n)
   })
 
   it('keys results by lowercased id:borrower', () => {

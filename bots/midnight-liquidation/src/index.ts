@@ -2,14 +2,17 @@ import { ensureError } from '@repo/utils'
 import { privateKeyToAccount } from 'viem/accounts'
 
 import { createApiClient } from './api/client'
+import { assertContractDeployed, createDeploylessClient } from './chain/client'
 import { loadConfig } from './config'
-import { runDryRunTick } from './daemon/tick'
+import { runTick } from './daemon/tick'
 import { createPostgresQuery, discoverBorrowers } from './discovery/borrowers'
+import { simulateLiquidate } from './execution/simulate'
+import { readMidnightLiquidationLens } from './lens/lens.sol'
 import { createLogger } from './logger'
 
 const TICK_INTERVAL_MS = 60_000
 
-function main() {
+async function main() {
   const config = loadConfig()
   const logger = createLogger(config.logLevel)
   const { address: liquidator } = privateKeyToAccount(config.liquidatorPrivateKey)
@@ -22,17 +25,33 @@ function main() {
     apiUrl: config.midnightApiUrl
   })
 
+  // Read-only client shared by the lens and simulate paths. Validate EXECUTOOOR_ADDRESS holds code
+  // before doing any work — fatal on a typo / not-yet-deployed address (liveness, not identity).
+  const client = createDeploylessClient(config)
+  await assertContractDeployed(client, config.executooorAddress, 'EXECUTOOOR_ADDRESS')
+
   const apiClient = createApiClient(config.midnightApiUrl)
   const query = createPostgresQuery(config.databaseUrl)
   const discover = () => discoverBorrowers(query)
 
-  // Phase-1 dry-run: one tick on boot, then on an interval. The Phase-3 daemon (CRTR-2583) replaces
-  // this with a block-poll loop that coalesces backlog and owns the queue.
+  // Phase-2 read-only loop: one tick on boot, then on an interval. The Phase-3 daemon (CRTR-2583)
+  // replaces this with a block-poll loop that coalesces backlog and owns the signed-send queue.
   const tick = () => {
     logger.info('tick.begin', {})
-    void runDryRunTick({ apiClient, discover, chainId: config.chainId, logger }).catch(error =>
-      logger.error('tick.error', { error: ensureError(error).message })
-    )
+    void runTick({
+      apiClient,
+      discover,
+      chainId: config.chainId,
+      caller: config.executooorAddress,
+      readLens: pairs => readMidnightLiquidationLens(client, config.midnight, pairs),
+      simulate: args =>
+        simulateLiquidate(client, {
+          midnight: config.midnight,
+          executooor: config.executooorAddress,
+          ...args
+        }),
+      logger
+    }).catch(error => logger.error('tick.error', { error: ensureError(error).message }))
   }
   const timer = setInterval(tick, TICK_INTERVAL_MS)
   tick()
@@ -46,12 +65,10 @@ function main() {
   process.on('SIGTERM', () => shutdown('SIGTERM'))
 }
 
-try {
-  main()
-} catch (error) {
-  // Config never loaded, so we cannot honor LOG_LEVEL — emit the failure directly and exit non-zero.
+main().catch(error => {
+  // Config/client never came up, so we cannot honor LOG_LEVEL — emit the failure directly, exit non-zero.
   console.error(
     JSON.stringify({ level: 'error', event: 'startup.error', error: ensureError(error).message })
   )
   process.exitCode = 1
-}
+})
