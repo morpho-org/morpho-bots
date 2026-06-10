@@ -9,39 +9,36 @@ import {
   decodeFunctionData,
   encodeAbiParameters,
   getAddress,
-  isAddressEqual
+  isAddressEqual,
+  zeroAddress
 } from 'viem'
 import { base } from 'viem/chains'
 
-import type { Obligation } from '../../src/execution/encode-call'
+import type { Market } from '../../src/execution/encode-call'
 import type { LiquidationPlan } from '../../src/sizing/plan'
 
 import { classifyRevert, simulateLiquidate } from '../../src/execution/simulate'
 
-// Solady SafeTransferLib.TransferFromFailed() — the unfunded sentinel.
-const TRANSFER_FROM_FAILED = '0x7939f424'
-
 describe('classifyRevert', () => {
-  it('maps the TransferFromFailed selector to unfunded (plan valid, just unfunded)', () => {
-    // An undecodable custom-error selector: viem sets `.raw`/`.signature` to the 4-byte selector.
+  it('maps a decoded Midnight error to revert (plan rejected — a sizing/eligibility bug)', () => {
+    // 0xddeb79ba = NotLiquidatable(), which decodes against MidnightAbi.
     const error = new ContractFunctionRevertedError({
-      abi: [],
-      data: TRANSFER_FROM_FAILED,
+      abi: MidnightAbi,
+      data: '0xddeb79ba',
       functionName: 'liquidate'
     })
-    expect(classifyRevert(error)).toEqual({ status: 'unfunded' })
+    expect(classifyRevert(error)).toEqual({ status: 'revert', reason: 'NotLiquidatable' })
   })
 
-  it('maps a Midnight string revert to revert with its reason (signals a sizing bug)', () => {
+  it('maps an undecodable revert (the loan-token pull) to unfunded', () => {
+    // 0x1eded19c = SafeTransferLib.TransferFromReturnedFalse() — NOT an IMidnight error, so it does
+    // not decode against MidnightAbi: the loan-token pull failed → plan valid, just unfunded.
     const error = new ContractFunctionRevertedError({
-      abi: [],
-      functionName: 'liquidate',
-      message: 'position is not liquidatable'
+      abi: MidnightAbi,
+      data: '0x1eded19c',
+      functionName: 'liquidate'
     })
-    expect(classifyRevert(error)).toEqual({
-      status: 'revert',
-      reason: 'position is not liquidatable'
-    })
+    expect(classifyRevert(error).status).toBe('unfunded')
   })
 
   it('falls back to the error message for a non-contract error', () => {
@@ -57,17 +54,16 @@ const EXECUTOOOR = getAddress('0x2222222222222222222222222222222222222222')
 const BORROWER = getAddress('0x1111111111111111111111111111111111111111')
 const TOKEN = getAddress('0x3333333333333333333333333333333333333333')
 const ORACLE = getAddress('0x4444444444444444444444444444444444444444')
-const ZERO = '0x0000000000000000000000000000000000000000' as const
 
-const OBLIGATION: Obligation = {
+const MARKET: Market = {
   loanToken: TOKEN,
   collateralParams: [
     { token: TOKEN, lltv: 860000000000000000n, maxLif: 1100000000000000000n, oracle: ORACLE }
   ],
   maturity: 2000n,
   rcfThreshold: 1n,
-  enterGate: ZERO,
-  liquidatorGate: ZERO
+  enterGate: zeroAddress,
+  liquidatorGate: zeroAddress
 }
 const PLAN: LiquidationPlan = {
   collateralIndex: 1,
@@ -77,7 +73,7 @@ const PLAN: LiquidationPlan = {
 }
 
 describe('simulateLiquidate', () => {
-  it('forwards the liquidate call (args order, executor account, empty data) and returns ok', async () => {
+  it('forwards the 9-arg liquidate (mode, executor receiver, zero callback, empty data) and returns ok', async () => {
     let from: Address | undefined
     let data: `0x${string}` | undefined
     const client = createPublicClient({
@@ -100,7 +96,7 @@ describe('simulateLiquidate', () => {
     const result = await simulateLiquidate(client, {
       midnight: MIDNIGHT,
       executooor: EXECUTOOOR,
-      obligation: OBLIGATION,
+      market: MARKET,
       borrower: BORROWER,
       plan: PLAN
     })
@@ -109,11 +105,15 @@ describe('simulateLiquidate', () => {
     expect(from && isAddressEqual(from, EXECUTOOOR)).toBe(true)
     const decoded = decodeFunctionData({ abi: MidnightAbi, data: data! })
     expect(decoded.functionName).toBe('liquidate')
-    // args: (obligation, collateralIndex, seizedAssets, repaidUnits, borrower, data)
+    // args: (market, collateralIndex, seizedAssets, repaidUnits, borrower, postMaturityMode,
+    //        receiver, callback, data)
     expect(decoded.args[1]).toBe(BigInt(PLAN.collateralIndex))
     expect(decoded.args[2]).toBe(PLAN.seizedAssets)
     expect(decoded.args[3]).toBe(PLAN.repaidUnits)
     expect(isAddressEqual(decoded.args[4] as Address, BORROWER)).toBe(true)
-    expect(decoded.args[5]).toBe('0x')
+    expect(decoded.args[5]).toBe(PLAN.postMaturityMode)
+    expect(isAddressEqual(decoded.args[6] as Address, EXECUTOOOR)).toBe(true)
+    expect(isAddressEqual(decoded.args[7] as Address, zeroAddress)).toBe(true)
+    expect(decoded.args[8]).toBe('0x')
   })
 })

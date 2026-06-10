@@ -4,7 +4,7 @@ import { assertNever } from '@repo/utils'
 
 import type { MidnightApiClient } from '../api/client'
 import type { BorrowerCandidate } from '../discovery/borrowers'
-import type { Obligation } from '../execution/encode-call'
+import type { Market } from '../execution/encode-call'
 import type { SimulateResult } from '../execution/simulate'
 import type { LensInput, LensOut } from '../lens/lens.sol'
 import type { Logger } from '../logger'
@@ -40,7 +40,7 @@ export async function runTick(deps: {
   caller: Address
   readLens: (pairs: LensInput[]) => Promise<Map<string, LensOut>>
   simulate: (args: {
-    obligation: Obligation
+    market: Market
     borrower: Address
     plan: LiquidationPlan
   }) => Promise<SimulateResult>
@@ -118,7 +118,7 @@ export async function runTick(deps: {
     })
 
     const result = await simulate({
-      obligation: out.obligation,
+      market: out.market,
       borrower: pair.borrower,
       plan: liquidationPlan
     })

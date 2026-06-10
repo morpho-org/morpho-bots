@@ -69,7 +69,7 @@ function lensOut(overrides: Partial<LensOut> = {}): LensOut {
     bestCollateralPrice: 10n ** 36n,
     bestCollateralMaxLif: 1100000000000000000n,
     bestCollateralLltv: 860000000000000000n,
-    obligation: {
+    market: {
       loanToken: TOKEN,
       collateralParams: [
         { token: TOKEN, lltv: 860000000000000000n, maxLif: 1100000000000000000n, oracle: ORACLE }

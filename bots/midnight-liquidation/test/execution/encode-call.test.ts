@@ -11,7 +11,7 @@ import {
   zeroAddress
 } from 'viem'
 
-import type { CollateralParams, Obligation, SwapStep } from '../../src/execution/encode-call'
+import type { CollateralParams, Market, SwapStep } from '../../src/execution/encode-call'
 
 import { encodeLiquidationExec } from '../../src/execution/encode-call'
 
@@ -30,7 +30,7 @@ const collateralParam: CollateralParams = {
   maxLif: 1036269430051813471n,
   oracle: ORACLE
 }
-const obligation: Obligation = {
+const market: Market = {
   loanToken: LOAN,
   collateralParams: [collateralParam],
   maturity: 2000n,
@@ -50,11 +50,12 @@ function encode() {
   return encodeLiquidationExec({
     executor: EXECUTOR,
     midnight: MIDNIGHT,
-    obligation,
+    market,
     collateralIndex: 0,
     seizedAssets: 100n,
     repaidUnits: 0n,
     borrower: BORROWER,
+    postMaturityMode: false,
     swapStep,
     recipient: RECIPIENT
   })
@@ -78,8 +79,11 @@ describe('encodeLiquidationExec', () => {
     expect(liquidate.args[2]).toBe(100n) // seizedAssets
     expect(liquidate.args[3]).toBe(0n) // repaidUnits
     expect(isAddressEqual(liquidate.args[4], BORROWER)).toBe(true)
+    expect(liquidate.args[5]).toBe(false) // postMaturityMode
+    expect(isAddressEqual(liquidate.args[6], EXECUTOR)).toBe(true) // receiver = the Executor
+    expect(isAddressEqual(liquidate.args[7], EXECUTOR)).toBe(true) // callback = the Executor
 
-    // The liquidate `data` is the ABI-encoded swap step.
+    // The liquidate `data` (9th arg) is the ABI-encoded swap step.
     const [decodedStep] = decodeAbiParameters(
       [
         {
@@ -93,7 +97,7 @@ describe('encodeLiquidationExec', () => {
           ]
         }
       ] as const,
-      liquidate.args[5]
+      liquidate.args[8]
     )
     expect(isAddressEqual(decodedStep.router, ROUTER)).toBe(true)
     expect(decodedStep.fee).toBe(3000)
@@ -119,11 +123,12 @@ describe('encodeLiquidationExec', () => {
       encodeLiquidationExec({
         executor: EXECUTOR,
         midnight: MIDNIGHT,
-        obligation,
+        market,
         collateralIndex: 5,
         seizedAssets: 100n,
         repaidUnits: 0n,
         borrower: BORROWER,
+        postMaturityMode: false,
         swapStep,
         recipient: RECIPIENT
       })

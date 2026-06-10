@@ -1,10 +1,10 @@
 name: midnight_liquidation
 description: >-
-  Indexes the Midnight events the liquidation bot needs for borrower discovery on Base.
-  UpdatePosition yields the (market id, borrower) universe (both topics indexed); ObligationCreated
-  carries the full Market config (loan token, per-collateral lltv/maxLif/oracle, maturity,
-  rcfThreshold, gates) so the bot needs no separate /markets fetch. rindexer writes both to Postgres,
-  which the bot reads each tick to enumerate candidate (market, borrower) pairs.
+  Indexes the Midnight UpdatePosition event the liquidation bot needs for borrower discovery on
+  Base: it yields the (market id, borrower) universe (both topics indexed), which rindexer writes to
+  Postgres and the bot reads each tick to enumerate candidate (id, borrower) pairs. The full Market
+  config (loan token, per-collateral lltv/maxLif/oracle, maturity, rcfThreshold, gates) is read
+  on-chain by the lens via toMarket(id), so no market-creation event is indexed here.
 project_type: no-code
 networks:
   - name: base
@@ -24,4 +24,3 @@ contracts:
     abi: ./abis/midnight.abi.json
     include_events:
       - UpdatePosition
-      - ObligationCreated

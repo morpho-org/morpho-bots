@@ -10,8 +10,8 @@ import {
 } from '../src/constants'
 
 describe('protocol constants', () => {
-  it('CALLBACK_SUCCESS is keccak256("MIDNIGHT CALLBACK SUCCESS")', () => {
-    expect(CALLBACK_SUCCESS).toBe(keccak256(stringToBytes('MIDNIGHT CALLBACK SUCCESS')))
+  it('CALLBACK_SUCCESS is keccak256("morpho.midnight.callbackSuccess")', () => {
+    expect(CALLBACK_SUCCESS).toBe(keccak256(stringToBytes('morpho.midnight.callbackSuccess')))
   })
 
   it('WAD is one ether (1e18)', () => {

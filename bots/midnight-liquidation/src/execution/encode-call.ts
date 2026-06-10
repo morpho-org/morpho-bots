@@ -4,10 +4,10 @@ import { MidnightAbi } from '@repo/abis/v2'
 import { ExecutorEncoder, executorAbi } from 'executooor-viem'
 import { encodeAbiParameters, encodeFunctionData, erc20Abi } from 'viem'
 
-// The Midnight `Obligation` (a.k.a. Market) struct passed to `liquidate`. The bot gets it from the
-// lens / indexed ObligationCreated event; we re-pass it verbatim.
+// The Midnight `Market` struct passed to `liquidate`. The bot reads it on-chain from the lens
+// (`toMarket(id)`) and re-passes it verbatim.
 export type CollateralParams = { token: Address; lltv: bigint; maxLif: bigint; oracle: Address }
-export type Obligation = {
+export type Market = {
   loanToken: Address
   collateralParams: readonly CollateralParams[]
   maturity: bigint
@@ -77,38 +77,43 @@ function skimCall(asset: Address, recipient: Address, executor: Address): Hex {
 }
 
 /**
- * Encodes the `Executor.exec_606BaXt(bytes[])` calldata for one liquidation: a single
- * `Midnight.liquidate` (the Executor is `msg.sender`, so it implicitly receives the seized
- * collateral and is the `onLiquidate` callback target) followed by two trailing sweeps that drain
- * BOTH the loan token and the collateral token to the EOA — the full-drain invariant of the shared
- * permissionless singleton. `data` carries only the swap params; the contract derives the final
- * `repaidUnits`/`seizedAssets` and hands them to `onLiquidate`. Pure — no RPC.
+ * Encodes the `Executor.exec_606BaXt(bytes[])` calldata for one liquidation: a single 9-arg
+ * `Midnight.liquidate` with `receiver = callback = the Executor` (so the seized collateral lands on
+ * the Executor before the callback, and `onLiquidate` runs there), followed by two trailing sweeps
+ * that drain BOTH the loan token and the collateral token to the EOA — the full-drain invariant of
+ * the shared permissionless singleton. `data` carries only the swap params; the contract derives the
+ * final `repaidUnits`/`seizedAssets` and hands them to the 10-arg `onLiquidate`, whose return must
+ * equal `CALLBACK_SUCCESS` (the Executor handler is CRTR-2586). Pure — no RPC.
  */
 export function encodeLiquidationExec(params: {
   executor: Address
   midnight: Address
-  obligation: Obligation
+  market: Market
   collateralIndex: number
   seizedAssets: bigint
   repaidUnits: bigint
   borrower: Address
+  postMaturityMode: boolean
   swapStep: SwapStep
   recipient: Address
 }): Hex {
-  const collateral = params.obligation.collateralParams[params.collateralIndex]
+  const collateral = params.market.collateralParams[params.collateralIndex]
   if (!collateral) {
-    throw new Error(`collateralIndex ${params.collateralIndex} out of range for obligation`)
+    throw new Error(`collateralIndex ${params.collateralIndex} out of range for market`)
   }
 
   const liquidateData = encodeFunctionData({
     abi: MidnightAbi,
     functionName: 'liquidate',
     args: [
-      params.obligation,
+      params.market,
       BigInt(params.collateralIndex),
       params.seizedAssets,
       params.repaidUnits,
       params.borrower,
+      params.postMaturityMode,
+      params.executor, // receiver — seized collateral lands on the Executor pre-callback
+      params.executor, // callback — onLiquidate runs the swap and approves Midnight
       encodeSwapStep(params.swapStep)
     ]
   })
@@ -117,7 +122,7 @@ export function encodeLiquidationExec(params: {
     ExecutorEncoder.buildCall(params.midnight, 0n, liquidateData),
     // Trailing sweeps run AFTER liquidate returns (so they don't strip the loan token before
     // Midnight's end-of-call transferFrom). Drain both tokens to the EOA.
-    skimCall(params.obligation.loanToken, params.recipient, params.executor),
+    skimCall(params.market.loanToken, params.recipient, params.executor),
     skimCall(collateral.token, params.recipient, params.executor)
   ]
 

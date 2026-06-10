@@ -15,9 +15,10 @@
 > `midnight-contracts.txt`) and the **live** API. Where this section disagrees with the design
 > below, **this section is authoritative**; the original text is kept for rationale/history.
 >
-> The repo's `docs/context/repos/midnight-contracts.txt` matches the deployed ABI (6-arg
-> `liquidate`); this TIB was drafted against an **older snapshot**, so its inline `…:NNNN` line
-> references won't line up with the current file — trust the deployed-ABI facts in these amendments.
+> **The deployed Base contract is `morpho-org/midnight@main` (9-arg `liquidate`, `Market`/`toMarket`)
+> — see §8, which is authoritative on the ABI.** Both `@repo/abis/v2` (now regenerated from `main`)
+> and `docs/context/repos/midnight-contracts.txt` are OLDER snapshots, so this TIB's inline `…:NNNN`
+> line references point at the old surface and won't line up; trust §8's deployed-`main` facts.
 
 **1. Discovery is a co-located rindexer instance, not a global `/positions` listing.** The live API
 **requires a `user` param** on `/v1/midnight/positions`, so there is no global borrow-position
@@ -77,28 +78,46 @@ runtime. `soltag` + `solc` are **runtime** deps (the preload compiles on load). 
 `createNonceManager` directly; the manager wiring lands with the signed-send path (CRTR-2585).
 Behavior matches §Tx queue.
 
-**8. The lens reads the `Obligation` on-chain via `toObligation(id)`, not from indexed
-`ObligationCreated`** (supersedes §1's "config comes from the indexed `ObligationCreated`" and
-§Lens design's "market passed into the lens as input / `id == toId(market)` re-check"). The lens
-input element is `(bytes32 id, address borrower, address caller)`; `computeOne` calls
-`MIDNIGHT.toObligation(id)` (reverts `"not created"` for an unknown id → the per-element try/catch
-zeroes the row → `valid=false`) and **returns the full `Obligation`** in `LensOut` so the bot has it
-for the `liquidate` call and reads `maturity`/`rcfThreshold` for sizing. _Why drop the off-chain
-path:_ the id is a cryptographic commitment to the entire ABI-encoded `Obligation`, so the struct is
-static post-creation — an off-chain `toObligation` multicall / `obligation_created` reader plus an
-`id == toId(market)` re-check would be redundant, and reading inside the lens removes the
-unconfirmed rindexer nested-tuple schema dependency entirely. Discovery (`discovery/borrowers.ts`,
-rindexer `update_position`) is unchanged — it already yields the `(id, borrower)` universe. The
-read-only client + `getCode` gate live in `chain/client.ts` (intentionally not under `daemon/` as
-the original module sketch suggested — the daemon arrives in Phase 3, CRTR-2583); the simulate sink
-is `execution/simulate.ts` (`Midnight.liquidate(…, data='0x')` impersonating the Executor; an
-unfunded `TransferFromFailed` revert is the expected read-only outcome). New modules:
-`chain/client.ts`, `execution/simulate.ts`, `daemon/eligibility.ts`.
+**8. The deployed Base contract is `morpho-org/midnight@main`, NOT the `@repo/abis/v2` snapshot the
+bot was first built against — this corrects §2/§3/§4.** A live read-only smoke (June 2026, CRTR-2582)
+proved the contract at `0x3726…1854` exposes `Market`/`toMarket`/`collateralBitmap`/`position` and a
+**9-arg** `liquidate`; the snapshot's `Obligation`/`toObligation`/`activatedCollaterals`/
+`isLiquidatable`/`obligationCreated` and 6-arg `liquidate` all revert / are absent (the snapshot
+predated the deployed `main`). `@repo/abis/v2` was **regenerated from the `main` `IMidnight.sol` via
+solc** (committed as `fix(abis)`). Corrections:
+
+- **Lens** reads the `Market` on-chain via `MIDNIGHT.toMarket(id)` (reverts `MarketNotCreated` for an
+  unknown id → per-element try/catch → `valid=false`) and **returns the `Market`** in `LensOut`; the
+  activated bitmap comes from `collateralBitmap(id,user)` (not `activatedCollaterals`). The id is a
+  cryptographic commitment to the encoded `Market`, so an off-chain fetch + `id==toId` re-check is
+  redundant; reading in-lens also drops the unconfirmed rindexer nested-tuple dependency. Discovery
+  (`discovery/borrowers.ts`, rindexer `update_position`) is unchanged — it yields the `(id,borrower)`
+  universe; the market-creation event is no longer indexed (config comes from `toMarket`).
+- **§2 corrected:** `liquidate` is **9-arg** (`market, idx, seized, repaid, borrower, bool
+postMaturityMode, address receiver, address callback, bytes data`). `onLiquidate` is **10-arg** and
+  its return **is** checked — it must equal `CALLBACK_SUCCESS =
+keccak256("morpho.midnight.callbackSuccess") =
+0x7f87788ea698181ea4d28d1576d0ba4fc92c0dbe5bf75b43692af2ce91dbaea2` (the old
+  `keccak256("MIDNIGHT CALLBACK SUCCESS")` was wrong). Seized collateral → `receiver` before the
+  callback; `repaidUnits` pulled from `payer` (= `callback||msg.sender`) after. `encode-call.ts`
+  passes `receiver = callback = the Executor`; `receiver` is unconstrained for `liquidate`
+  (`UnusedReceiverMustBeZero` only guards `take`). The Executor handler (CRTR-2586) must match 10-arg
+  `onLiquidate` and return `CALLBACK_SUCCESS`.
+- **§3/§4 corrected:** `postMaturityMode` IS an explicit `liquidate` arg — the original design held,
+  and `sizing/{lif,rcf,plan}.ts` match the deployed contract (LIF ramp only in post-maturity mode,
+  RCF cap only in normal mode). Liquidatable is mode-selected: `postMaturityMode ? now>maturity :
+!isHealthy`.
+- New read-only modules: `chain/client.ts` (deployless client + `getCode` liveness gate;
+  intentionally not under `daemon/` — the daemon arrives in Phase 3, CRTR-2583),
+  `execution/simulate.ts` (simulates the 9-arg `liquidate` with `callback=0`, impersonating the
+  Executor; `classifyRevert` maps a decoded Midnight error / `Panic` → `revert`, an undecodable
+  loan-pull revert → `unfunded` — the expected read-only outcome), `daemon/eligibility.ts`.
 
 **Status by phase:** Phase 1 ✅ (config, typed API client, rindexer-backed discovery, dry-run
 orchestrator). Phase 2 ✅ (sizing, lens, read-only lens+sizing wire-path + simulate sink + `getCode`
-gate — CRTR-2582; only the manual Base-fork smoke + lens gas calibration remain, gated on a Base
-RPC). Phase 3 ⏳ (nonce queue + fee policy ✅; watcher + signed sends remain — CRTR-2583/2585).
+gate — CRTR-2582; re-pointed at the deployed `main` ABI and validated against Base via a `toMarket`
+smoke; only lens gas calibration remains). Phase 3 ⏳ (nonce queue + fee policy ✅; watcher + signed
+sends remain — CRTR-2583/2585).
 Phase 4 ⏳ (exec encoder ✅; vendored Executor Solidity, real swap config, anvil suite remain —
 CRTR-2586/2588/2589).
 

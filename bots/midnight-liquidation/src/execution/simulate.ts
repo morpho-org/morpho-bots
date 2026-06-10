@@ -1,42 +1,37 @@
-import type { Address, Client, Hex } from 'viem'
+import type { Address, Client } from 'viem'
 
 import { MidnightAbi } from '@repo/abis/v2'
 import { tryCatch } from '@repo/utils'
-import { BaseError, ContractFunctionRevertedError } from 'viem'
+import { BaseError, ContractFunctionRevertedError, zeroAddress } from 'viem'
 import { simulateContract } from 'viem/actions'
 
 import type { LiquidationPlan } from '../sizing/plan'
-import type { Obligation } from './encode-call'
-
-// Solady `SafeTransferLib.TransferFromFailed()` — the revert the loan-token pull throws when the
-// caller (the Executor, impersonated here) holds no funds. In Phase 2 this is the EXPECTED outcome
-// for a genuinely-liquidatable position: everything upstream (gate, liquidatable check, the
-// seized↔repaid derivation, the recovery-close-factor guard) must have passed to reach the pull.
-const TRANSFER_FROM_FAILED_SELECTOR = '0x7939f424'
+import type { Market } from './encode-call'
 
 export type SimulateStatus =
   /** Simulation succeeded outright (rare in Phase 2 — the Executor is unfunded). */
   | 'ok'
   /** Reverted on the loan-token pull only — the plan is structurally valid, just unfunded. */
   | 'unfunded'
-  /** Reverted for some other reason — a Midnight string revert here signals a sizing bug. */
+  /** Reverted with a Midnight error (or Panic) — the plan was rejected; surface as a bug. */
   | 'revert'
 
 export type SimulateResult = { status: SimulateStatus; reason?: string }
 
 /**
- * Read-only Phase-2 sink: simulates `Midnight.liquidate(...)` for one plan with `data = '0x'` (no
- * callback, so it does not depend on the not-yet-built Executor handler) impersonating the Executor
- * as `msg.sender` (the gate is `canLiquidate(msg.sender)`, and the loan-token pull is from
- * `msg.sender`). The result discriminates "plan valid but unfunded" (the expected outcome) from a
- * genuine rejection — see {@link SimulateStatus}. No signer; never broadcasts.
+ * Read-only Phase-2 sink: simulates the deployed 9-arg `Midnight.liquidate(...)` for one plan with
+ * `callback = address(0)` + `data = '0x'` (so it skips `onLiquidate` and does not depend on the
+ * not-yet-built Executor handler), impersonating the Executor as `msg.sender` (the gate is
+ * `canLiquidate(msg.sender)`, and the loan-token pull is from `msg.sender`). The result discriminates
+ * "plan valid but unfunded" (the expected outcome) from a genuine rejection — see
+ * {@link SimulateStatus}. No signer; never broadcasts.
  */
 export async function simulateLiquidate(
   client: Client,
   params: {
     midnight: Address
     executooor: Address
-    obligation: Obligation
+    market: Market
     borrower: Address
     plan: LiquidationPlan
   }
@@ -47,12 +42,15 @@ export async function simulateLiquidate(
       abi: MidnightAbi,
       functionName: 'liquidate',
       args: [
-        params.obligation,
+        params.market,
         BigInt(params.plan.collateralIndex),
         params.plan.seizedAssets,
         params.plan.repaidUnits,
         params.borrower,
-        '0x'
+        params.plan.postMaturityMode,
+        params.executooor, // receiver — seized collateral lands on the Executor pre-callback
+        zeroAddress, // callback — none in Phase 2, so onLiquidate is skipped
+        '0x' // data — unused without a callback
       ],
       account: params.executooor
     })
@@ -60,7 +58,14 @@ export async function simulateLiquidate(
   return error ? classifyRevert(error) : { status: 'ok' }
 }
 
-/** Maps a viem simulate error to a {@link SimulateResult}, isolating the unfunded sentinel. */
+/**
+ * Maps a viem simulate error to a {@link SimulateResult}. A revert that decodes against `MidnightAbi`
+ * to a custom error — or a `Panic` (e.g. an over-seize underflow) — means the plan was rejected
+ * on-chain (not liquidatable / bad sizing / RCF cap): surface it loudly. `Error(string)` and
+ * selectors absent from `IMidnight` come from the final loan-token pull failing (the token's own
+ * revert / Midnight `SafeTransferLib.TransferFromReturnedFalse`, which is not an `IMidnight` error) →
+ * the plan is structurally valid, just unfunded.
+ */
 export function classifyRevert(error: Error): SimulateResult {
   const revert =
     error instanceof BaseError
@@ -69,7 +74,12 @@ export function classifyRevert(error: Error): SimulateResult {
   if (!(revert instanceof ContractFunctionRevertedError)) {
     return { status: 'revert', reason: error.message }
   }
-  const selector = (revert.raw?.slice(0, 10) ?? revert.signature) as Hex | undefined
-  if (selector === TRANSFER_FROM_FAILED_SELECTOR) return { status: 'unfunded' }
-  return { status: 'revert', reason: revert.reason ?? revert.signature ?? revert.shortMessage }
+  const errorName = revert.data?.errorName
+  if (errorName !== undefined && errorName !== 'Error') {
+    return { status: 'revert', reason: errorName }
+  }
+  return {
+    status: 'unfunded',
+    reason: revert.reason ?? revert.signature ?? revert.raw?.slice(0, 10)
+  }
 }
