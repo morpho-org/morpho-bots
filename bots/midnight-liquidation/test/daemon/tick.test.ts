@@ -30,6 +30,7 @@ const TOKEN: Address = getAddress('0x3333333333333333333333333333333333333333')
 const ORACLE: Address = getAddress('0x4444444444444444444444444444444444444444')
 const ZERO = '0x0000000000000000000000000000000000000000' as const
 const MARKET: Hex = `0x${'a'.repeat(64)}`
+const LABEL = lensKey(MARKET, BORROWER)
 
 // A liquidatable reading: valid, gate open, has debt, unlocked, unhealthy, pre-maturity.
 function lensOut(overrides: Partial<LensOut> = {}): LensOut {
@@ -66,7 +67,6 @@ function lensOut(overrides: Partial<LensOut> = {}): LensOut {
 const candidates = (...borrowers: Address[]): BorrowerCandidate[] =>
   borrowers.map(borrower => ({ marketId: MARKET, borrower }))
 
-// readLens stub: returns the same LensOut for every pair (or none, to simulate a missing row).
 function stubReadLens(out: LensOut | null) {
   return async (pairs: LensInput[]) => {
     const map = new Map<string, LensOut>()
@@ -81,9 +81,12 @@ function runWith(opts: {
   borrowers?: Address[]
   synced?: bigint | null
   chainHead?: bigint
+  inflight?: ReadonlySet<string>
 }) {
   const { logger, events } = spyLogger()
   let simulateCalls = 0
+  let submitCalls = 0
+  let onBlockCalls = 0
   const chainHead = opts.chainHead ?? 100n
   const result = runTick({
     discover: async () => candidates(...(opts.borrowers ?? [BORROWER])),
@@ -95,54 +98,85 @@ function runWith(opts: {
       simulateCalls += 1
       return opts.simulateResult ?? { status: 'unfunded' }
     },
+    submit: async () => {
+      submitCalls += 1
+    },
+    pendingOnBlock: async () => {
+      onBlockCalls += 1
+    },
+    inflightLabels: () => opts.inflight ?? new Set(),
     logger
   })
-  return result.then(counters => ({ counters, simulateCalls: () => simulateCalls, events }))
+  return result.then(counters => ({
+    counters,
+    simulateCalls: () => simulateCalls,
+    submitCalls: () => submitCalls,
+    onBlockCalls: () => onBlockCalls,
+    events
+  }))
 }
 
 describe('runTick', () => {
-  it('plans and simulates a liquidatable pair, counting an unfunded result', async () => {
-    const { counters, simulateCalls } = await runWith({ simulateResult: { status: 'unfunded' } })
+  it('plans, simulates, and submits a liquidatable pair (unfunded is still submittable)', async () => {
+    const { counters, simulateCalls, submitCalls, onBlockCalls } = await runWith({
+      simulateResult: { status: 'unfunded' }
+    })
     expect(counters).toEqual({
       pairs: 1,
       liquidatable: 1,
       planned: 1,
       ok: 0,
       unfunded: 1,
-      reverted: 0
+      reverted: 0,
+      submitted: 1
     })
     expect(simulateCalls()).toBe(1)
+    expect(submitCalls()).toBe(1)
+    expect(onBlockCalls()).toBe(1) // pendingOnBlock runs every tick
   })
 
-  it('counts a reverting simulation as reverted', async () => {
-    const { counters } = await runWith({
+  it('submits on a successful simulation', async () => {
+    const { counters, submitCalls } = await runWith({ simulateResult: { status: 'ok' } })
+    expect(counters.ok).toBe(1)
+    expect(counters.submitted).toBe(1)
+    expect(submitCalls()).toBe(1)
+  })
+
+  it('does not submit a reverting plan (a Midnight sizing/eligibility error)', async () => {
+    const { counters, submitCalls } = await runWith({
       simulateResult: { status: 'revert', reason: 'RecoveryCloseFactorConditionsViolated' }
     })
     expect(counters.reverted).toBe(1)
-    expect(counters.unfunded).toBe(0)
+    expect(counters.submitted).toBe(0)
+    expect(submitCalls()).toBe(0)
   })
 
-  it('counts a successful simulation as ok', async () => {
-    const { counters } = await runWith({ simulateResult: { status: 'ok' } })
-    expect(counters.ok).toBe(1)
-  })
-
-  it('skips a non-liquidatable pair without simulating', async () => {
-    const { counters, simulateCalls } = await runWith({ out: lensOut({ healthy: true }) })
-    expect(counters).toMatchObject({ pairs: 1, liquidatable: 0, planned: 0 })
+  it('skips a position already in flight without re-simulating or submitting', async () => {
+    const { counters, simulateCalls, submitCalls } = await runWith({ inflight: new Set([LABEL]) })
+    expect(counters).toMatchObject({ liquidatable: 1, planned: 0, submitted: 0 })
     expect(simulateCalls()).toBe(0)
+    expect(submitCalls()).toBe(0)
+  })
+
+  it('skips a non-liquidatable pair without simulating or submitting', async () => {
+    const { counters, simulateCalls, submitCalls } = await runWith({
+      out: lensOut({ healthy: true })
+    })
+    expect(counters).toMatchObject({ pairs: 1, liquidatable: 0, planned: 0, submitted: 0 })
+    expect(simulateCalls()).toBe(0)
+    expect(submitCalls()).toBe(0)
   })
 
   it('skips a pair the lens did not return', async () => {
-    const { counters, simulateCalls } = await runWith({ out: null })
-    expect(counters).toMatchObject({ pairs: 1, liquidatable: 0 })
-    expect(simulateCalls()).toBe(0)
+    const { counters, submitCalls } = await runWith({ out: null })
+    expect(counters).toMatchObject({ pairs: 1, liquidatable: 0, submitted: 0 })
+    expect(submitCalls()).toBe(0)
   })
 
   it('warns rindexer.lag when our indexer trails the chain head, but still proceeds', async () => {
     const { counters, events } = await runWith({ synced: 10n, chainHead: 100n }) // lag 90 > 30
     expect(events.some(e => e.level === 'warn' && e.event === 'rindexer.lag')).toBe(true)
-    expect(counters.pairs).toBe(1) // proceeded despite the lag
+    expect(counters.submitted).toBe(1) // proceeded despite the lag
   })
 
   it('warns rindexer.lag with reason unknown when the synced head is unavailable, and proceeds', async () => {
@@ -150,6 +184,6 @@ describe('runTick', () => {
     expect(events.some(e => e.event === 'rindexer.lag' && e.fields?.reason === 'unknown')).toBe(
       true
     )
-    expect(counters.pairs).toBe(1)
+    expect(counters.submitted).toBe(1)
   })
 })

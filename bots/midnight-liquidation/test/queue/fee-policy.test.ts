@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 
-import { bumpFees } from '../../src/queue/fee-policy'
+import { bumpFees, initialFees } from '../../src/queue/fee-policy'
 
 describe('bumpFees', () => {
   it('bumps both fees by 12.5% and floors maxFee at baseFee*2 + priority', () => {
@@ -30,5 +30,18 @@ describe('bumpFees', () => {
         maxFeeWei: 1000n
       })
     ).toEqual({ kind: 'drop' })
+  })
+})
+
+describe('initialFees', () => {
+  it('uses a 1-gwei tip and 2×-base-fee headroom under a comfortable ceiling', () => {
+    expect(initialFees(10n ** 9n, 100n * 10n ** 9n)).toEqual({
+      maxPriorityFeePerGas: 10n ** 9n,
+      maxFeePerGas: 2n * 10n ** 9n + 10n ** 9n
+    })
+  })
+
+  it('clamps both fees to the ceiling (an underpriced first send the bump path then recovers)', () => {
+    expect(initialFees(50n, 10n)).toEqual({ maxPriorityFeePerGas: 10n, maxFeePerGas: 10n })
   })
 })

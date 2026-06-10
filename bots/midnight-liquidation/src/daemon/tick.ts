@@ -23,23 +23,25 @@ type TickCounters = {
   ok: number
   unfunded: number
   reverted: number
+  submitted: number
 }
 
 /**
- * One read-only tick: log a rindexer-freshness signal, enumerate the indexed (id, borrower)
- * universe, read the liquidation lens fresh for the whole batch (one deployless `eth_call`), then
- * for each liquidatable position build a plan and sink it to a read-only `simulate` — no signer, no
- * queue. Deps are injected so the tick is unit-testable without a chain or Postgres.
+ * One tick: log a rindexer-freshness signal, enumerate the indexed (id, borrower) universe, read the
+ * liquidation lens fresh for the whole batch (one deployless `eth_call`), and for each liquidatable
+ * position build a plan, simulate it, and — when the plan is structurally valid and the position is
+ * not already in flight — broadcast it via `submit` (Phase 3: a deterministically-reverting dummy).
+ * Finally drive the pending queue's `onBlock`. Deps are injected so the tick is unit-testable
+ * without a chain, Postgres, or signer.
  *
- * There is **no staleness skip**: the lens reads every candidate's state fresh on-chain, so rindexer
- * lag is coverage latency (we may not yet know about brand-new positions), never a correctness
- * issue. We emit `rindexer.lag` for observability and always proceed.
+ * No staleness skip: the lens reads every candidate fresh on-chain, so rindexer lag is coverage
+ * latency, never a correctness issue — we emit `rindexer.lag` for observability and always proceed.
  */
 export async function runTick(deps: {
   discover: () => Promise<BorrowerCandidate[]>
   /** rindexer's indexed head (Postgres); `null`/throw → lag unknown, we proceed. */
   syncedBlock: () => Promise<bigint | null>
-  /** Chain head the daemon just polled — the reference point for the lag signal. */
+  /** Chain head the daemon just polled — lag reference + the queue's `submittedAtBlock`. */
   chainHead: bigint
   /** The Executor singleton — the `liquidate` msg.sender whose gate the lens checks. */
   caller: Address
@@ -49,9 +51,32 @@ export async function runTick(deps: {
     borrower: Address
     plan: LiquidationPlan
   }) => Promise<SimulateResult>
+  /** Broadcasts a plan via the pending queue (builds the tx, derives fees, tracks the nonce). */
+  submit: (args: {
+    market: Market
+    borrower: Address
+    plan: LiquidationPlan
+    blockNumber: bigint
+    label: string
+  }) => Promise<void>
+  /** Confirmations / stuck-detection / fee-bumps for already-pending txs. */
+  pendingOnBlock: (blockNumber: bigint) => Promise<void>
+  /** Labels (`${id}:${borrower}`) already in flight — skipped to avoid re-submitting each block. */
+  inflightLabels: () => ReadonlySet<string>
   logger: Logger
 }): Promise<TickCounters> {
-  const { discover, syncedBlock, chainHead, caller, readLens, simulate, logger } = deps
+  const {
+    discover,
+    syncedBlock,
+    chainHead,
+    caller,
+    readLens,
+    simulate,
+    submit,
+    pendingOnBlock,
+    inflightLabels,
+    logger
+  } = deps
 
   // 1. rindexer-freshness signal — observability only (see the note above; we never skip).
   // tryCatch resolves `data` to null on a thrown query; `syncedBlock` also returns null when the
@@ -83,14 +108,22 @@ export async function runTick(deps: {
     planned: 0,
     ok: 0,
     unfunded: 0,
-    reverted: 0
+    reverted: 0,
+    submitted: 0
   }
 
-  // 4. Compose liquidatability off-chain → plan → read-only simulate.
+  // 4. Compose liquidatability off-chain → plan → simulate → submit. `inflight` is captured once;
+  // discovery yields distinct (id, borrower) pairs, so no label repeats within a single tick.
+  const inflight = inflightLabels()
   for (const pair of pairs) {
-    const out = lensOut.get(lensKey(pair.id, pair.borrower))
+    const label = lensKey(pair.id, pair.borrower)
+    const out = lensOut.get(label)
     if (!out || !isLiquidatable(out)) continue
     counters.liquidatable += 1
+
+    // Backpressure: a tx for this position is already pending — don't re-plan/simulate/submit it
+    // every block while it confirms.
+    if (inflight.has(label)) continue
 
     const liquidationPlan = plan(planInputFromLens(out))
     if (!liquidationPlan) continue
@@ -126,7 +159,23 @@ export async function runTick(deps: {
       default:
         assertNever(result.status)
     }
+
+    // Broadcast a structurally-valid plan (ok | unfunded). A `revert` is a Midnight sizing/
+    // eligibility error — a bot bug, not a fundable plan — so we never broadcast it.
+    if (result.status !== 'revert') {
+      await submit({
+        market: out.market,
+        borrower: pair.borrower,
+        plan: liquidationPlan,
+        blockNumber: chainHead,
+        label
+      })
+      counters.submitted += 1
+    }
   }
+
+  // 5. Confirmations / stuck-detection / fee-bumps for the pending set (incl. prior ticks).
+  await pendingOnBlock(chainHead)
 
   logger.info('tick.end', { ...counters })
   return counters
