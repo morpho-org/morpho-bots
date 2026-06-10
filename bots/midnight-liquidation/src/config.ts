@@ -3,6 +3,7 @@ import type { Address, Chain, Hex } from 'viem'
 import { addressSchema, tryCatch } from '@repo/utils'
 import { readFileSync } from 'node:fs'
 import { getAddress, isAddress, isHex, parseGwei } from 'viem'
+import { base } from 'viem/chains'
 import { z } from 'zod'
 
 import type { LogLevel } from './logger'
@@ -40,13 +41,15 @@ export function parseSwapConfig(raw: unknown): SwapConfig {
 // ---------------------------------------------------------------------------
 // Per-chain Midnight deployment map
 // ---------------------------------------------------------------------------
-export type ChainConfig = { chain: Chain; midnight: Address; deployer: Address }
+export type ChainConfig = { chain: Chain; midnight: Address }
 
-// Real Midnight deployment + CREATE2 deployer addresses (and the set of chains v0 supports) are
-// filled in once confirmed; on-chain validation of them (getCode) lands in Phase 2 (CRTR-2582).
-// Until then the map is intentionally empty, so loadConfig fails loud for every CHAIN_ID — the
-// correct behavior for an unconfigured chain.
-const CHAIN_MAP: Record<number, ChainConfig> = {}
+// Chains v0 supports, with the Midnight deployment address per chain. The deployless lens needs
+// no per-chain deployer — soltag bakes the CREATE2 factory + factoryData into its compiled output
+// (see the lens fetcher, CRTR-2580). On-chain validation of these addresses (getCode) lands in
+// Phase 2 (CRTR-2582). loadConfig fails loud for any CHAIN_ID not present here.
+const CHAIN_MAP: Record<number, ChainConfig> = {
+  [base.id]: { chain: base, midnight: getAddress('0x3726353bCDDba7c29a17D46D8a35D1E8b2E51854') }
+}
 
 // ---------------------------------------------------------------------------
 // Env table
@@ -63,7 +66,6 @@ export type Config = {
   chainId: number
   chain: Chain
   midnight: Address
-  deployer: Address
   rpcUrl: string
   rpcUrlFallback: string | undefined
   liquidatorPrivateKey: Hex
@@ -150,7 +152,6 @@ export function loadConfig(
     chainId,
     chain: chainConfig.chain,
     midnight: chainConfig.midnight,
-    deployer: chainConfig.deployer,
     rpcUrl,
     rpcUrlFallback: env.RPC_URL_FALLBACK?.trim() || undefined,
     liquidatorPrivateKey,

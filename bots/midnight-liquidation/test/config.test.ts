@@ -9,14 +9,13 @@ import type { ChainConfig, Config, SwapConfig } from '../src/config'
 import { loadConfig, parseSwapConfig } from '../src/config'
 
 const MIDNIGHT = '0x1111111111111111111111111111111111111111' as Address
-const DEPLOYER = '0x2222222222222222222222222222222222222222' as Address
 const EXECUTOOOR = '0x3333333333333333333333333333333333333333'
 const COLLATERAL = '0x4444444444444444444444444444444444444444'
 const ROUTER = '0x5555555555555555555555555555555555555555'
 const PRIVATE_KEY = `0x${'a'.repeat(64)}`
 
 const CHAIN_MAP: Record<number, ChainConfig> = {
-  [mainnet.id]: { chain: mainnet, midnight: MIDNIGHT, deployer: DEPLOYER }
+  [mainnet.id]: { chain: mainnet, midnight: MIDNIGHT }
 }
 
 const SWAP_JSON = JSON.stringify({
@@ -43,7 +42,6 @@ describe('loadConfig', () => {
     expect(config.chainId).toBe(mainnet.id)
     expect(config.chain).toBe(mainnet)
     expect(config.midnight).toBe(MIDNIGHT)
-    expect(config.deployer).toBe(DEPLOYER)
     expect(config.rpcUrl).toBe('https://rpc.example')
     expect(config.rpcUrlFallback).toBeUndefined()
     expect(config.executooorAddress).toBe(getAddress(EXECUTOOOR))
@@ -71,6 +69,14 @@ describe('loadConfig', () => {
     expect(config.maxFeeWei).toBe(parseGwei('42'))
     expect(config.cacheDir).toBe('/tmp/cache')
     expect(config.logLevel).toBe('debug')
+  })
+
+  it('resolves the built-in Base chain config from the default map', () => {
+    // No chainMap injected → exercises the real CHAIN_MAP populated with Base.
+    const config = loadConfig(baseEnv({ CHAIN_ID: '8453' }), { readFile: () => SWAP_JSON })
+    expect(config.chainId).toBe(8453)
+    expect(config.chain.id).toBe(8453)
+    expect(config.midnight).toBe(getAddress('0x3726353bCDDba7c29a17D46D8a35D1E8b2E51854'))
   })
 
   it('throws when a required var is missing', () => {
