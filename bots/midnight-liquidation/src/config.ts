@@ -71,6 +71,8 @@ export type Config = {
   liquidatorPrivateKey: Hex
   executooorAddress: Address
   midnightApiUrl: string
+  /** Postgres connection string for the co-located rindexer instance (borrower discovery). */
+  databaseUrl: string
   swapConfig: SwapConfig
   maxFeeWei: bigint
   cacheDir: string
@@ -157,6 +159,7 @@ export function loadConfig(
     liquidatorPrivateKey,
     executooorAddress: getAddress(executooorRaw),
     midnightApiUrl: env.MIDNIGHT_API_URL?.trim() || DEFAULT_API_URL,
+    databaseUrl: required(env, 'DATABASE_URL'),
     swapConfig,
     maxFeeWei: parseGwei(maxFeeGwei),
     cacheDir: env.CACHE_DIR?.trim() || DEFAULT_CACHE_DIR,
