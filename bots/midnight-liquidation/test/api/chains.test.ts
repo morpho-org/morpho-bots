@@ -27,7 +27,9 @@ describe('getChainStatuses', () => {
 
     const result = await getChainStatuses(client)
     expect(result.error).toBeNull()
-    const expected: ChainStatus[] = [{ chainId: 8453, name: 'base', latestIndexedBlock: 47070034n }]
+    const expected: ChainStatus[] = [
+      { chainId: 8453, name: 'base', latestIndexedBlock: 47070034n, activitySyncStatus: 'healthy' }
+    ]
     expect(result.data).toEqual(expected)
   })
 

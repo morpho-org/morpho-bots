@@ -1,10 +1,13 @@
 import { ensureError } from '@repo/utils'
 import { privateKeyToAccount } from 'viem/accounts'
 
+import { createApiClient } from './api/client'
 import { loadConfig } from './config'
+import { runDryRunTick } from './daemon/tick'
+import { createPostgresQuery, discoverBorrowers } from './discovery/borrowers'
 import { createLogger } from './logger'
 
-const HEARTBEAT_MS = 60_000
+const TICK_INTERVAL_MS = 60_000
 
 function main() {
   const config = loadConfig()
@@ -19,13 +22,24 @@ function main() {
     apiUrl: config.midnightApiUrl
   })
 
-  // Placeholder for daemon.start() (Phase 3 — CRTR-2583). Until the block-poll daemon lands,
-  // a debug heartbeat holds the event loop open so the shutdown handlers below stay reachable.
-  const heartbeat = setInterval(() => logger.debug('heartbeat'), HEARTBEAT_MS)
+  const apiClient = createApiClient(config.midnightApiUrl)
+  const query = createPostgresQuery(config.databaseUrl)
+  const discover = () => discoverBorrowers(query)
+
+  // Phase-1 dry-run: one tick on boot, then on an interval. The Phase-3 daemon (CRTR-2583) replaces
+  // this with a block-poll loop that coalesces backlog and owns the queue.
+  const tick = () => {
+    logger.info('tick.begin', {})
+    void runDryRunTick({ apiClient, discover, chainId: config.chainId, logger }).catch(error =>
+      logger.error('tick.error', { error: ensureError(error).message })
+    )
+  }
+  const timer = setInterval(tick, TICK_INTERVAL_MS)
+  tick()
 
   const shutdown = (signal: string) => {
     logger.info('shutdown', { signal })
-    clearInterval(heartbeat)
+    clearInterval(timer)
     process.exit(0)
   }
   process.on('SIGINT', () => shutdown('SIGINT'))

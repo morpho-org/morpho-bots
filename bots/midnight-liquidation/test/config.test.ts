@@ -31,6 +31,7 @@ function baseEnv(overrides: Record<string, string | undefined> = {}) {
     LIQUIDATOR_PRIVATE_KEY: PRIVATE_KEY,
     EXECUTOOOR_ADDRESS: EXECUTOOOR,
     SWAP_CONFIG_PATH: '/swap.json',
+    DATABASE_URL: 'postgresql://u:p@localhost:5432/db',
     ...overrides
   }
 }
@@ -46,6 +47,7 @@ describe('loadConfig', () => {
     expect(config.rpcUrlFallback).toBeUndefined()
     expect(config.executooorAddress).toBe(getAddress(EXECUTOOOR))
     expect(config.midnightApiUrl).toBe('https://api.morpho.dev')
+    expect(config.databaseUrl).toBe('postgresql://u:p@localhost:5432/db')
     expect(config.maxFeeWei).toBe(parseGwei('300'))
     expect(config.cacheDir).toBe('.cache')
     expect(config.logLevel).toBe('info')

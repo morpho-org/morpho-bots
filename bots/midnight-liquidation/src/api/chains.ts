@@ -4,11 +4,14 @@ import type { MidnightApiClient, MidnightApiError } from './client'
 
 import { apiCall } from './client'
 
+export type ActivitySyncStatus = 'healthy' | 'pending' | 'behind' | 'no_activity'
+
 /** Per-chain indexer status, distilled to what the staleness gate needs. */
 export type ChainStatus = {
   chainId: number
   name: string
   latestIndexedBlock: bigint
+  activitySyncStatus: ActivitySyncStatus
 }
 
 /**
@@ -25,7 +28,8 @@ export async function getChainStatuses(
   const statuses = result.data.data.map(chain => ({
     chainId: chain.chain_id,
     name: chain.name,
-    latestIndexedBlock: BigInt(chain.latest_indexed_block.number)
+    latestIndexedBlock: BigInt(chain.latest_indexed_block.number),
+    activitySyncStatus: chain.activity_sync_status.status
   }))
   return { data: statuses, error: null }
 }
