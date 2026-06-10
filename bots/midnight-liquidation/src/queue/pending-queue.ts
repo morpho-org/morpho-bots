@@ -43,6 +43,8 @@ export type PendingQueue = {
   onBlock(blockNumber: bigint): Promise<void>
   readonly size: number
   snapshot(): { nonce: number; txHash: Hex; attempt: number }[]
+  /** Labels (`${id}:${borrower}`) of currently-pending txs — the tick's backpressure set. */
+  inflightLabels(): ReadonlySet<string>
 }
 
 /**
@@ -175,6 +177,9 @@ export function createPendingQueue({
         txHash: entry.txHash,
         attempt: entry.attempt
       }))
+    },
+    inflightLabels() {
+      return new Set([...pending.values()].map(entry => entry.label))
     }
   }
 }

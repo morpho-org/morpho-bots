@@ -38,3 +38,18 @@ export function bumpFees({
   if (newMax > maxFeeWei) return { kind: 'drop' }
   return { kind: 'bump', fees: { maxFeePerGas: newMax, maxPriorityFeePerGas: newPriority } }
 }
+
+/** First-send tip floor: 1 gwei priority. */
+const DEFAULT_PRIORITY_WEI = 10n ** 9n
+
+/**
+ * First-send fees from the current base fee: a 1-gwei priority tip and a 2×-base-fee headroom max,
+ * both clamped to the operator's `maxFeeWei` ceiling. A ceiling below the headroom naturally
+ * underprices the first send — exactly the case the bump/replace path is built to recover. Pure.
+ */
+export function initialFees(baseFee: bigint, maxFeeWei: bigint): Fees {
+  const maxPriorityFeePerGas = DEFAULT_PRIORITY_WEI < maxFeeWei ? DEFAULT_PRIORITY_WEI : maxFeeWei
+  const target = baseFee * 2n + maxPriorityFeePerGas
+  const maxFeePerGas = target < maxFeeWei ? target : maxFeeWei
+  return { maxFeePerGas, maxPriorityFeePerGas }
+}

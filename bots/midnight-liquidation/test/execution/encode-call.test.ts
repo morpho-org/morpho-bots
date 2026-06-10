@@ -13,7 +13,7 @@ import {
 
 import type { CollateralParams, Market, SwapStep } from '../../src/execution/encode-call'
 
-import { encodeLiquidationExec } from '../../src/execution/encode-call'
+import { encodeDummyLiquidate, encodeLiquidationExec } from '../../src/execution/encode-call'
 
 const EXECUTOR = getAddress('0x1111111111111111111111111111111111111111')
 const MIDNIGHT = getAddress('0x2222222222222222222222222222222222222222')
@@ -133,5 +133,26 @@ describe('encodeLiquidationExec', () => {
         recipient: RECIPIENT
       })
     ).toThrow(/out of range/)
+  })
+})
+
+describe('encodeDummyLiquidate', () => {
+  it('encodes a direct 9-arg Midnight.liquidate with receiver=EOA, callback=0, data=0x', () => {
+    const data = encodeDummyLiquidate({
+      market,
+      borrower: BORROWER,
+      eoa: RECIPIENT,
+      plan: { collateralIndex: 1, seizedAssets: 100n, repaidUnits: 0n, postMaturityMode: false }
+    })
+    const decoded = decodeFunctionData({ abi: MidnightAbi, data })
+    if (decoded.functionName !== 'liquidate') throw new Error('expected liquidate')
+    expect(decoded.args[1]).toBe(1n) // collateralIndex
+    expect(decoded.args[2]).toBe(100n) // seizedAssets
+    expect(decoded.args[3]).toBe(0n) // repaidUnits
+    expect(isAddressEqual(decoded.args[4], BORROWER)).toBe(true)
+    expect(decoded.args[5]).toBe(false) // postMaturityMode
+    expect(isAddressEqual(decoded.args[6], RECIPIENT)).toBe(true) // receiver = the EOA
+    expect(isAddressEqual(decoded.args[7], zeroAddress)).toBe(true) // callback = none
+    expect(decoded.args[8]).toBe('0x') // data
   })
 })

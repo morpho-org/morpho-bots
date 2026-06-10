@@ -127,13 +127,27 @@ candidate fresh, so rindexer lag is coverage latency, not a correctness issue), 
 the query errors (`reason: 'unknown'`). rindexer now indexes **only** `UpdatePosition` (the
 market-creation event is not indexed — config comes from `toMarket`), correcting §1's "two events".
 
+**10. Signed sends + the Phase-3 dummy (CRTR-2585).** `chain/signer.ts` builds a plain HTTP
+(+`failover`) wallet client with viem's `createNonceManager`; `SendTx` runs
+`prepareTransactionRequest` (explicit `nonceManager`) to claim + read the nonce, then
+`sendTransaction`. The tick submits a plan when `simulate ∈ {ok, unfunded}` (a `revert` is a
+sizing/eligibility bug → never broadcast) and the position isn't already in `queue.inflightLabels()`,
+then drives `queue.onBlock`. Because the modified Executor (CRTR-2586) + swap config (CRTR-2588)
+don't exist yet, the Phase-3 broadcast is a **dummy**: the 9-arg `Midnight.liquidate` called directly
+from the EOA with `receiver = EOA`, `callback = address(0)`, `data = '0x'` — it reverts
+deterministically (unfunded loan-token pull) and moves no funds, exercising send/track/bump/replace
+end-to-end (`encodeDummyLiquidate`). **Phase-4 note:** tighten the submit gate to `ok`-only — once the
+Executor is funded via the swap, an `unfunded` sim means the swap didn't cover the repay, which
+shouldn't be broadcast. The "verify replacement via a deliberately-underpriced first send" check is a
+manual testnet gate (needs a funded EOA), unit-tested seams aside.
+
 **Status by phase:** Phase 1 ✅ (config, rindexer-backed discovery, dry-run
 orchestrator). Phase 2 ✅ (sizing, lens, read-only lens+sizing wire-path + simulate sink + `getCode`
 gate — CRTR-2582; re-pointed at the deployed `main` ABI and validated against Base via a `toMarket`
-smoke; only lens gas calibration remains). Phase 3 ⏳ (nonce queue + fee policy ✅; watcher + signed
-sends remain — CRTR-2583/2585).
-Phase 4 ⏳ (exec encoder ✅; vendored Executor Solidity, real swap config, anvil suite remain —
-CRTR-2586/2588/2589).
+smoke; only lens gas calibration remains). Phase 3 ✅ (nonce queue + fee policy, block-poll watcher +
+daemon lifecycle, signed sends with the dummy reverting broadcast — CRTR-2583/2584/2585; the
+underpriced-replacement check is a manual testnet gate). Phase 4 ⏳ (exec encoder ✅; vendored Executor
+Solidity, real swap config, anvil suite remain — CRTR-2586/2588/2589).
 
 ## Context
 
@@ -819,15 +833,15 @@ plan.built               { marketId, borrower, collateralIndex, kind, seized, re
 simulate.ok              { marketId, borrower }
 simulate.unfunded        { marketId, borrower }            // plan valid, Executor unfunded (expected)
 simulate.revert          { marketId, borrower, reason }    // a Midnight error → sizing/eligibility bug
-tx.sent                  { marketId, borrower, nonce, txHash, maxFee, priority }   // Phase 3+ (CRTR-2585)
+tx.sent                  { label, nonce, txHash, maxFee, priority }
 tx.bumped                { nonce, oldHash, newHash, attempt, maxFee, priority }
-tx.confirmed             { nonce, txHash, blockNumber, gasUsed, status }
+tx.confirmed             { nonce, txHash, blockNumber }
 tx.dropped               { nonce, txHash, reason }
 tx.reverted              { nonce, txHash, reason }
-tick.end                 { pairs, liquidatable, planned, ok, unfunded, reverted, skipped }
+tick.end                 { pairs, liquidatable, planned, ok, unfunded, reverted, submitted }
 tick.error               { error }                         // a tick threw; the daemon loop survives
 watcher.error            { error }                         // a block poll (getBlockNumber) failed
-shutdown                 { signal }
+shutdown                 { signal, pending }
 daemon.shutdown          { }
 ```
 

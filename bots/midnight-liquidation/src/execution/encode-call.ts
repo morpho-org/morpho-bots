@@ -2,7 +2,9 @@ import type { Address, Hex } from 'viem'
 
 import { MidnightAbi } from '@repo/abis/v2'
 import { ExecutorEncoder, executorAbi } from 'executooor-viem'
-import { encodeAbiParameters, encodeFunctionData, erc20Abi } from 'viem'
+import { encodeAbiParameters, encodeFunctionData, erc20Abi, zeroAddress } from 'viem'
+
+import type { LiquidationPlan } from '../sizing/plan'
 
 // The Midnight `Market` struct passed to `liquidate`. The bot reads it on-chain from the lens
 // (`toMarket(id)`) and re-passes it verbatim.
@@ -127,4 +129,34 @@ export function encodeLiquidationExec(params: {
   ]
 
   return encodeFunctionData({ abi: executorAbi, functionName: 'exec_606BaXt', args: [calls] })
+}
+
+/**
+ * Phase-3 "dummy" calldata: the deployed 9-arg `Midnight.liquidate` called **directly from the EOA**
+ * with `callback = address(0)` (no swap) and `receiver = the EOA`. It reverts deterministically and
+ * moves no funds — the loan-token pull from the unfunded EOA reverts, rolling the whole call back —
+ * so it exercises the send/track/bump/replace queue on a real broadcast without the modified Executor
+ * (CRTR-2586) or swap config (CRTR-2588). Phase 4 replaces this with {@link encodeLiquidationExec}.
+ */
+export function encodeDummyLiquidate(params: {
+  market: Market
+  borrower: Address
+  eoa: Address
+  plan: LiquidationPlan
+}): Hex {
+  return encodeFunctionData({
+    abi: MidnightAbi,
+    functionName: 'liquidate',
+    args: [
+      params.market,
+      BigInt(params.plan.collateralIndex),
+      params.plan.seizedAssets,
+      params.plan.repaidUnits,
+      params.borrower,
+      params.plan.postMaturityMode,
+      params.eoa, // receiver = the EOA (mirrors simulate; keeps the revert on the unfunded loan pull)
+      zeroAddress, // callback = none → no onLiquidate
+      '0x'
+    ]
+  })
 }

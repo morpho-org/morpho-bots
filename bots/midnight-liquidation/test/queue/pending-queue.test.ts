@@ -111,4 +111,13 @@ describe('createPendingQueue', () => {
     await queue.onBlock(5n)
     expect(queue.size).toBe(0)
   })
+
+  it('exposes the labels of currently-pending txs via inflightLabels', async () => {
+    const { queue } = setup()
+    expect(queue.inflightLabels().size).toBe(0)
+    await submitOne(queue)
+    expect([...queue.inflightLabels()]).toEqual(['market:borrower'])
+    await queue.onBlock(1n) // no receipt → still pending
+    expect(queue.inflightLabels().has('market:borrower')).toBe(true)
+  })
 })
