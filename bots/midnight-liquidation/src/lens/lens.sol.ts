@@ -3,24 +3,24 @@ import type { Address, Client, Hex, Transport } from 'viem'
 import { sol } from 'soltag'
 import { decodeAbiParameters, encodeAbiParameters } from 'viem'
 
-import type { Obligation } from '../execution/encode-call'
+import type { Market } from '../execution/encode-call'
 import type { BatchLensTransportType } from './read-deployless-batch-lens'
 
 import { MAX_INITCODE_SIZE, readDeploylessBatchLens } from './read-deployless-batch-lens'
 
 // Single-file soltag lens: reads everything the liquidation decision depends on for a batch of
-// (id, borrower) pairs inside one eth_call against a single block.timestamp. Reads the full
-// Obligation on-chain via Midnight.toObligation(id) — the id is a cryptographic commitment to the
-// struct, so no off-chain market input or `id == toId(market)` re-check is needed — then composes
-// liquidatability + the sizing inputs (maxDebt/badDebt/best-collateral) the way liquidate() does
-// and returns the Obligation so the caller can encode the liquidate call. Compiled to a deployless
-// factory by the soltag bun preload (see ../../soltag.preload.ts); `sol``` throws if not active.
+// (id, borrower) pairs inside one eth_call against a single block.timestamp. Reads the full Market
+// on-chain via Midnight.toMarket(id) — the id is a cryptographic commitment to the struct, so no
+// off-chain market input or `id == toId(market)` re-check is needed — then composes liquidatability
+// + the sizing inputs (maxDebt/badDebt/best-collateral) the way liquidate() does and returns the
+// Market so the caller can encode the liquidate call. Compiled to a deployless factory by the soltag
+// bun preload (see ../../soltag.preload.ts); `sol``` throws if not active.
 export const MidnightLiquidationLens = sol('MidnightLiquidationLens')`
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity ^0.8.19;
 
 struct CollateralParams { address token; uint256 lltv; uint256 maxLif; address oracle; }
-struct Obligation {
+struct Market {
   address loanToken;
   CollateralParams[] collateralParams;
   uint256 maturity;
@@ -30,10 +30,10 @@ struct Obligation {
 }
 
 interface IMidnight {
-  function toObligation(bytes32 id) external view returns (Obligation memory);
+  function toMarket(bytes32 id) external view returns (Market memory);
   function liquidationLocked(bytes32 id, address user) external view returns (bool);
   function debtOf(bytes32 id, address user) external view returns (uint256);
-  function activatedCollaterals(bytes32 id, address user) external view returns (uint128);
+  function collateralBitmap(bytes32 id, address user) external view returns (uint128);
   function collateral(bytes32 id, address user, uint256 index) external view returns (uint128);
 }
 interface IOracle { function price() external view returns (uint256); }
@@ -51,7 +51,7 @@ contract MidnightLiquidationLens {
     uint128 debt; uint128 maxDebt; uint128 badDebt; uint128 activatedBitmap;
     uint8 bestCollateralIdx; uint128 bestCollateralAmt;
     uint256 bestCollateralPrice; uint256 bestCollateralMaxLif; uint256 bestCollateralLltv;
-    Obligation obligation;
+    Market market;
   }
 
   constructor(IMidnight midnight) { MIDNIGHT = midnight; }
@@ -81,14 +81,14 @@ contract MidnightLiquidationLens {
     (bytes32 id, address borrower, address caller) =
       abi.decode(element, (bytes32, address, address));
 
-    // Reverts "not created" for an unknown id — caught by lens()'s per-element try/catch, which
-    // leaves a zeroed (valid=false) row. A successful read is the canonical Obligation for this id.
-    Obligation memory market = MIDNIGHT.toObligation(id);
+    // Reverts MarketNotCreated for an unknown id — caught by lens()'s per-element try/catch, which
+    // leaves a zeroed (valid=false) row. A successful read is the canonical Market for this id.
+    Market memory market = MIDNIGHT.toMarket(id);
 
     LensOut memory o;
     o.blockTimestamp = uint64(block.timestamp);
     o.valid = true;
-    o.obligation = market;
+    o.market = market;
 
     uint256 debt = MIDNIGHT.debtOf(id, borrower);
     o.debt = uint128(debt);
@@ -103,7 +103,7 @@ contract MidnightLiquidationLens {
       catch { o.gateAllows = false; }
     }
 
-    o.activatedBitmap = MIDNIGHT.activatedCollaterals(id, borrower);
+    o.activatedBitmap = MIDNIGHT.collateralBitmap(id, borrower);
     _accumulate(o, market, id, borrower, debt);
     _selectBest(o, market, id, borrower);
     return abi.encode(o);
@@ -113,7 +113,7 @@ contract MidnightLiquidationLens {
   // EVM stack ("stack too deep"). Each slot is re-read in _selectBest — acceptable for a read-only
   // lens. _accumulate mirrors the liquidate() loop exactly (maxDebt down-down; badDebt ceil-ceil,
   // seeded with debt and floored at 0 per slot).
-  function _accumulate(LensOut memory o, Obligation memory market, bytes32 id, address borrower, uint256 debt) private view {
+  function _accumulate(LensOut memory o, Market memory market, bytes32 id, address borrower, uint256 debt) private view {
     uint256 maxDebt;
     uint256 badDebt = debt;
     uint128 work = o.activatedBitmap;
@@ -132,7 +132,7 @@ contract MidnightLiquidationLens {
   }
 
   // Picks the activated slot with the greatest USD value (collateral*price/SCALE).
-  function _selectBest(LensOut memory o, Obligation memory market, bytes32 id, address borrower) private view {
+  function _selectBest(LensOut memory o, Market memory market, bytes32 id, address borrower) private view {
     uint256 bestValue;
     bool haveBest;
     uint128 work = o.activatedBitmap;
@@ -164,7 +164,7 @@ const COLLATERAL_PARAMS_COMPONENTS = [
   { name: 'oracle', type: 'address' }
 ] as const
 
-const OBLIGATION_COMPONENTS = [
+const MARKET_COMPONENTS = [
   { name: 'loanToken', type: 'address' },
   { name: 'collateralParams', type: 'tuple[]', components: COLLATERAL_PARAMS_COMPONENTS },
   { name: 'maturity', type: 'uint256' },
@@ -211,12 +211,12 @@ const LENS_OUT_ABI = [
       { name: 'bestCollateralPrice', type: 'uint256' },
       { name: 'bestCollateralMaxLif', type: 'uint256' },
       { name: 'bestCollateralLltv', type: 'uint256' },
-      { name: 'obligation', type: 'tuple', components: OBLIGATION_COMPONENTS }
+      { name: 'market', type: 'tuple', components: MARKET_COMPONENTS }
     ]
   }
 ] as const
 
-/** What the lens reads for one (id, borrower) pair. The lens fetches the Obligation on-chain from
+/** What the lens reads for one (id, borrower) pair. The lens fetches the Market on-chain from
  * `id`; `caller` is the Executor (the liquidate `msg.sender`), whose `canLiquidate` is checked —
  * not the EOA. */
 export type LensInput = { id: Hex; borrower: Address; caller: Address }
@@ -238,8 +238,8 @@ export type LensOut = {
   bestCollateralPrice: bigint
   bestCollateralMaxLif: bigint
   bestCollateralLltv: bigint
-  /** Full Obligation read on-chain via `toObligation(id)`; pass straight into `liquidate`. */
-  obligation: Obligation
+  /** Full Market read on-chain via `toMarket(id)`; pass straight into `liquidate`. */
+  market: Market
 }
 
 export function encodeLensInput(input: LensInput): Hex {

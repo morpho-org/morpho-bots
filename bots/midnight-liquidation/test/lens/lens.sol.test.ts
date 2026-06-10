@@ -3,7 +3,7 @@ import type { Hex } from 'viem'
 import { describe, expect, it } from 'bun:test'
 import { decodeAbiParameters, encodeAbiParameters, getAddress, isAddressEqual } from 'viem'
 
-import type { Obligation } from '../../src/execution/encode-call'
+import type { Market } from '../../src/execution/encode-call'
 import type { LensInput, LensOut } from '../../src/lens/lens.sol'
 
 import {
@@ -22,7 +22,7 @@ const ORACLE = getAddress('0x4444444444444444444444444444444444444444')
 const ZERO = '0x0000000000000000000000000000000000000000' as const
 const ID: Hex = `0x${'ab'.repeat(32)}`
 
-const OBLIGATION: Obligation = {
+const MARKET: Market = {
   loanToken: TOKEN,
   collateralParams: [{ token: TOKEN, lltv: 860000000000000000n, maxLif: 1n, oracle: ORACLE }],
   maturity: 2000n,
@@ -31,7 +31,7 @@ const OBLIGATION: Obligation = {
   liquidatorGate: ZERO
 }
 
-const OBLIGATION_COMPONENTS = [
+const MARKET_COMPONENTS = [
   { name: 'loanToken', type: 'address' },
   {
     name: 'collateralParams',
@@ -68,7 +68,7 @@ const LENS_OUT_TUPLE = [
       { name: 'bestCollateralPrice', type: 'uint256' },
       { name: 'bestCollateralMaxLif', type: 'uint256' },
       { name: 'bestCollateralLltv', type: 'uint256' },
-      { name: 'obligation', type: 'tuple', components: OBLIGATION_COMPONENTS }
+      { name: 'market', type: 'tuple', components: MARKET_COMPONENTS }
     ]
   }
 ] as const
@@ -103,7 +103,7 @@ describe('lens codecs', () => {
       bestCollateralPrice: 10n ** 36n,
       bestCollateralMaxLif: 1036269430051813471n,
       bestCollateralLltv: 860000000000000000n,
-      obligation: OBLIGATION
+      market: MARKET
     }
     const encoded = encodeAbiParameters(LENS_OUT_TUPLE, [sample])
     expect(decodeLensOut(encoded)).toEqual(sample)

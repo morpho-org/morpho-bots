@@ -20,10 +20,11 @@ export const MAX_COLLATERALS_PER_BORROWER = 16
 
 /**
  * Magic value an `ILiquidateCallback` must return from `onLiquidate`, or the liquidation
- * reverts: `keccak256("MIDNIGHT CALLBACK SUCCESS")` (ConstantsLib.sol:216).
+ * reverts (`WrongLiquidateCallbackReturnValue`): `keccak256("morpho.midnight.callbackSuccess")`
+ * (ConstantsLib, morpho-org/midnight@main — the version deployed on Base).
  */
 export const CALLBACK_SUCCESS: Hex =
-  '0xee60b2e8d46b15beabf6792dae952096e6cb7b86b90ca90f7c00aa15c812ff1a'
+  '0x7f87788ea698181ea4d28d1576d0ba4fc92c0dbe5bf75b43692af2ce91dbaea2'
 
 // --- Tx-queue operational tuning (consumed by the nonce queue / daemon) ---
 
