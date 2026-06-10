@@ -14,10 +14,10 @@ describe('createLogger', () => {
     const log = spyOn(console, 'log').mockImplementation(() => undefined)
     const err = spyOn(console, 'error').mockImplementation(() => undefined)
 
-    logger.debug('tick.begin')
-    logger.info('tick.begin')
-    logger.warn('api.lag')
-    logger.error('simulate.revert')
+    logger.debug('rindexer.lag')
+    logger.info('block.new')
+    logger.warn('rindexer.lag')
+    logger.error('tick.error')
 
     expect(log).toHaveBeenCalledTimes(1) // warn → stdout
     expect(err).toHaveBeenCalledTimes(1) // error → stderr

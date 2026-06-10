@@ -6,7 +6,6 @@
   "type": "module",
   "scripts": {
     "start": "bun src/index.ts",
-    "pull-schemas": "bun scripts/pull-schemas.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -14,7 +13,6 @@
     "@repo/abis": "workspace:*",
     "@repo/utils": "workspace:*",
     "executooor-viem": "catalog:",
-    "openapi-fetch": "catalog:",
     "solc": "catalog:",
     "soltag": "catalog:",
     "viem": "catalog:",
@@ -23,9 +21,6 @@
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
     "@types/bun": "catalog:",
-    "@types/prompts": "catalog:",
-    "openapi-typescript": "catalog:",
-    "prompts": "catalog:",
     "typescript": "catalog:"
   }
 }
