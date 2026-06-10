@@ -10,7 +10,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@repo/abis": "workspace:*",
     "@repo/utils": "workspace:*",
+    "executooor-viem": "catalog:",
     "openapi-fetch": "catalog:",
     "viem": "catalog:",
     "zod": "catalog:"
