@@ -1,13 +1,83 @@
 # TIB-2026-05-28: Midnight liquidation bot — v0
 
-| Field      | Value                            |
-| ---------- | -------------------------------- |
-| **Status** | Proposed                         |
-| **Date**   | 2026-05-28                       |
-| **Author** | @hayden                          |
-| **Scope**  | App: `bots/midnight-liquidation` |
+| Field      | Value                                             |
+| ---------- | ------------------------------------------------- |
+| **Status** | Accepted — in implementation (amended 2026-06-10) |
+| **Date**   | 2026-05-28                                        |
+| **Author** | @hayden                                           |
+| **Scope**  | App: `bots/midnight-liquidation`                  |
 
 ---
+
+## Implementation Amendments (2026-06-10)
+
+> Recorded while implementing Phases 1–4 against the **deployed** contracts (`@repo/abis/v2` /
+> `midnight-contracts.txt`) and the **live** API. Where this section disagrees with the design
+> below, **this section is authoritative**; the original text is kept for rationale/history.
+
+**1. Discovery is a co-located rindexer instance, not a global `/positions` listing.** The live API
+**requires a `user` param** on `/v1/midnight/positions`, so there is no global borrow-position
+listing (contradicts §API client design — Discovery cadence). Borrowers are discovered by a
+**rindexer** instance bundled in the bot's `docker-compose.yml`, indexing two Midnight events on
+Base into Postgres: `UpdatePosition(bytes32 indexed id_, address indexed user, …)` → the
+(market, borrower) universe, and `ObligationCreated(bytes32 id, Obligation obligation)` → the full
+`Market` config. The bot reads the indexed pairs from Postgres each tick (`DATABASE_URL`). A
+`/markets` fetch is still unneeded — but because the config comes from the indexed
+`ObligationCreated`, not from inline position data (position rows carry only
+`market_id`/`maturity`/`debt`/`collaterals`). `/positions` `limit` max is **100** (TIB said 200).
+New modules: `discovery/borrowers.ts`, `daemon/tick.ts`, `rindexer/`, `docker-compose.yml`,
+`Dockerfile`. The API client is retained for per-borrower reads + the staleness gate.
+
+**2. The deployed `liquidate` is 6 args — no `postMaturityMode`/`receiver`/`callback`.**
+`liquidate(Obligation obligation, uint256 collateralIndex, uint256 seizedAssets, uint256
+repaidUnits, address borrower, bytes data)` (interface :948). Seized collateral goes to
+**`msg.sender`** (the Executor) before the callback, so the Executor is implicitly both `receiver`
+and `callback`. If `data.length > 0`, the contract calls **7-arg**
+`onLiquidate(bytes32 id, Obligation obligation, uint256 collateralIndex, uint256 seizedAssets,
+uint256 repaidUnits, address borrower, bytes data)` on `msg.sender` — NOT the 10-arg
+`caller/receiver/badDebt` shape the TIB cited at :933 — and **its return value is not checked** (so
+the handler needs no `CALLBACK_SUCCESS`; that magic value is only for the buy/sell/ratifier
+callbacks). The repay is pulled from `msg.sender` after the callback. `execution/encode-call.ts`
+encodes `liquidate(market, idx, seized, repaid, borrower, abi.encode(swapStep))` + trailing
+dual-token `skim` sweeps; the Executor handler (CRTR-2586) must match the 7-arg `onLiquidate` and
+gate `msg.sender == MIDNIGHT` (supersedes the §Executooor integration shape).
+
+**3. `Midnight.isLiquidatable` exists** (contradicts §Lens design). The lens still composes the
+sizing inputs from the per-slot loop and derives `healthy = maxDebt >= debt` from the **full-loop**
+`maxDebt` (not `isHealthy`'s short-circuited sum) to match the `liquidate()` path.
+
+**4. LIF mode is decided by health, not a `postMaturityMode` flag.** On-chain:
+`lif = (debt > maxDebt) ? maxLif : ramp(now, maturity)`, with the RCF cap gated on `now <= maturity`
+(not a passed flag). The as-built `sizing/plan.ts` is still correct for the call: the only path that
+passes a lif-derived amount (normal/pre-maturity `repaidUnits = maxRepaid`, where `debt > maxDebt`
+so `lif = maxLif`) matches; post-maturity it passes `seizedAssets` and the contract derives the
+rest. `badDebt`/`maxDebt` are **two chained** divisions (ceil-ceil / floor-floor), not fused — the
+lens and sizing both replicate this.
+
+**5. No per-chain `deployer`; Base wired.** `soltag`'s `.with(midnight)` bakes the CREATE2 factory
+(canonical `0x4e59b448…`) + `factoryData` into its output, so the bot configures nothing —
+`CHAIN_MAP` is `{ chain, midnight }` (contradicts §Config). v0 targets **Base (8453)**;
+Midnight = `0x3726353bCDDba7c29a17D46D8a35D1E8b2E51854` (startBlock 46758943, from prime-monorepo
+`packages/web3`). A required `DATABASE_URL` env was added (rindexer Postgres). The API error schema
+is `ErrorResponseDto` (not `MidnightErrorResponseDto`).
+
+**6. `soltag` is a build-time transform needing a bun loader plugin + `solc`.** A `sol`-tagged
+template throws at runtime unless transformed; unplugin's `unplugin.bun()` is unusable under bun
+(returns `undefined` from `onLoad`). The
+bot ships `soltag.preload.ts` — a hand-rolled `Bun.plugin` driving soltag's `transformSolTemplates`
+(optimizer on, scoped to this bot) — wired via `bunfig.toml` `preload` for `bun test` and the Docker
+runtime. `soltag` + `solc` are **runtime** deps (the preload compiles on load). The lens loop is
+**split into two passes** to avoid "stack too deep" (soltag exposes no `viaIR`).
+
+**7. Tx queue** (`queue/pending-queue.ts`) injects a `send` primitive rather than embedding viem's
+`createNonceManager` directly; the manager wiring lands with the signed-send path (CRTR-2585).
+Behavior matches §Tx queue.
+
+**Status by phase:** Phase 1 ✅ (config, typed API client, rindexer-backed discovery, dry-run
+orchestrator). Phase 2 ⏳ (sizing ✅, lens authored + compiles ✅; read-only wire-path + Base-fork
+smoke + lens gas calibration remain — CRTR-2582). Phase 3 ⏳ (nonce queue + fee policy ✅; watcher +
+signed sends remain — CRTR-2583/2585). Phase 4 ⏳ (exec encoder ✅; vendored Executor Solidity, real
+swap config, anvil suite remain — CRTR-2586/2588/2589).
 
 ## Context
 
@@ -79,6 +149,10 @@ Three architectural choices anchor the design:
 ## Proposed Solution
 
 ### Module shape
+
+> ⚠️ **Amended (2026-06-10)** — the as-built module set adds `discovery/`, `daemon/tick.ts`,
+> `rindexer/`, `docker-compose.yml`/`Dockerfile`, and `soltag.preload.ts`. See
+> [Implementation Amendments](#implementation-amendments-2026-06-10) §1, §6.
 
 Solidity lives at the repo root:
 
@@ -160,6 +234,10 @@ covered by integration tests on anvil.
 
 ### API client design
 
+> ⚠️ **Amended (2026-06-10)** — discovery is a co-located rindexer instance; the global `/positions`
+> listing below is infeasible (the live API requires a `user`). See
+> [Implementation Amendments](#implementation-amendments-2026-06-10) §1.
+
 Types are generated from the OpenAPI spec — no hand-rolled DTOs. We use
 [`openapi-typescript`](https://openapi-ts.dev/) (dev-only) to emit a single `generated.ts`
 file from the spec, and [`openapi-fetch`](https://openapi-ts.dev/openapi-fetch/) (~5 KB
@@ -204,6 +282,10 @@ Before trusting a tick's positions, we call `/v1/midnight/chains` and compare
 - lag > 30 → log `error api.lag`, skip the tick
 
 ### Lens design (soltag)
+
+> ⚠️ **Amended (2026-06-10)** — `Midnight.isLiquidatable` exists, and soltag needs a bun
+> loader-plugin (`soltag.preload.ts`) + `solc` to compile. See
+> [Implementation Amendments](#implementation-amendments-2026-06-10) §3, §6.
 
 A single elementwise function — required by viem-dlc's `resolveArrayFunction` (one dynamic
 array in, one dynamic array out):
@@ -297,6 +379,10 @@ We vendor it (one file copy) rather than depend on a new shared package; if a se
 needs it later we promote to `@repo/utils` or upstream into `@morpho-org/viem-dlc`.
 
 ### Sizing math
+
+> ⚠️ **Amended (2026-06-10)** — the deployed `liquidate` decides LIF by health, not a passed
+> `postMaturityMode` flag; the as-built math is still correct. See
+> [Implementation Amendments](#implementation-amendments-2026-06-10) §4.
 
 All pure, mirror the contract verbatim. `now = LensOut.blockTimestamp` (chain time, not host).
 `maxLif` and `lltv` are **per-collateral** — read from `market.collateralParams[collateralIndex]`,
@@ -439,6 +525,10 @@ is processed next (backlog coalesces).
 
 ### Executooor integration
 
+> ⚠️ **Amended (2026-06-10)** — the deployed `liquidate` is 6 args and `onLiquidate` is 7 args with
+> its return unchecked (no `CALLBACK_SUCCESS` for liquidation). See
+> [Implementation Amendments](#implementation-amendments-2026-06-10) §2.
+
 We vendor [`Rubilmax/executooor`](https://github.com/Rubilmax/executooor) Solidity into
 `contracts/executooor/Executor.sol` and apply **two modifications**:
 
@@ -539,6 +629,10 @@ whitelist the singleton Executor. For markets we curate this is straightforward;
 third-party markets it becomes the gate owner's responsibility.
 
 ### Config
+
+> ⚠️ **Amended (2026-06-10)** — no per-chain `deployer` (soltag bakes the factory); Base is wired;
+> a required `DATABASE_URL` was added. See
+> [Implementation Amendments](#implementation-amendments-2026-06-10) §5.
 
 Env vars (fail-loud on missing required):
 
