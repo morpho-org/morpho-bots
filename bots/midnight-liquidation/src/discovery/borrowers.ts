@@ -42,6 +42,29 @@ export async function discoverBorrowers(query: QueryFn): Promise<BorrowerCandida
   return candidates
 }
 
+// Approximates rindexer's indexed head with the max block over UpdatePosition rows — the same table
+// discoverBorrowers reads, so it shares that query's "confirm the exact schema once rindexer has run"
+// caveat (here, the `block_number` metadata column). During quiet periods with no UpdatePosition
+// events this trails the true synced head, so it can over-report lag — fine, since the lag signal is
+// observability-only (the lens reads every candidate fresh; rindexer lag is coverage latency).
+const SYNCED_BLOCK_SQL = `
+  SELECT MAX(block_number) AS head
+  FROM midnight_liquidation_midnight.update_position
+`
+
+/**
+ * Best-effort rindexer indexed head, for the freshness/lag signal. Returns `null` when the table is
+ * empty (or the assumed `block_number` column is absent). Callers treat `null` (and a thrown query)
+ * as "lag unknown" and proceed — see {@link discoverBorrowers}'s schema caveat.
+ */
+export async function rindexerSyncedBlock(query: QueryFn): Promise<bigint | null> {
+  const rows = await query(SYNCED_BLOCK_SQL)
+  const head = rows[0]?.head
+  if (typeof head === 'bigint') return head
+  if (typeof head === 'number' || typeof head === 'string') return BigInt(head)
+  return null
+}
+
 /** Runtime adapter: a {@link QueryFn} backed by Bun's built-in Postgres client. */
 export function createPostgresQuery(databaseUrl: string): QueryFn {
   const db = new SQL(databaseUrl)

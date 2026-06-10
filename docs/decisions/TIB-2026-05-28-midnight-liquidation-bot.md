@@ -113,7 +113,21 @@ keccak256("morpho.midnight.callbackSuccess") =
   Executor; `classifyRevert` maps a decoded Midnight error / `Panic` → `revert`, an undecodable
   loan-pull revert → `unfunded` — the expected read-only outcome), `daemon/eligibility.ts`.
 
-**Status by phase:** Phase 1 ✅ (config, typed API client, rindexer-backed discovery, dry-run
+**9. The Morpho API is removed entirely; freshness is gated locally on rindexer** (supersedes §1's
+"the API client is retained for per-borrower reads + the staleness gate" and the whole §API client
+design). After §8's lens re-point, the API's only remaining caller was the staleness gate
+(`/v1/midnight/chains`) — and it checked _Morpho's hosted indexer_, not our co-located rindexer (the
+data source we actually read). Deleted: `src/api/` (client, positions, pagination, chains, generated
+OpenAPI), `scripts/pull-schemas.ts`, the `openapi-fetch`/`openapi-typescript`/`prompts` deps, and
+`MIDNIGHT_API_URL`. The gate is now a **local rindexer-lag signal** in `runTick`: compare rindexer's
+indexed head (`discovery/borrowers.ts` `rindexerSyncedBlock`, Postgres — a documented-assumption
+`MAX(block_number)` query, same caveat as the borrowers SQL) against the chain head the daemon polls.
+It is **observability-only** — it emits `rindexer.lag` and always proceeds (the lens reads every
+candidate fresh, so rindexer lag is coverage latency, not a correctness issue), and **fails open** if
+the query errors (`reason: 'unknown'`). rindexer now indexes **only** `UpdatePosition` (the
+market-creation event is not indexed — config comes from `toMarket`), correcting §1's "two events".
+
+**Status by phase:** Phase 1 ✅ (config, rindexer-backed discovery, dry-run
 orchestrator). Phase 2 ✅ (sizing, lens, read-only lens+sizing wire-path + simulate sink + `getCode`
 gate — CRTR-2582; re-pointed at the deployed `main` ABI and validated against Base via a `toMarket`
 smoke; only lens gas calibration remains). Phase 3 ⏳ (nonce queue + fee policy ✅; watcher + signed
@@ -678,18 +692,17 @@ third-party markets it becomes the gate owner's responsibility.
 
 Env vars (fail-loud on missing required):
 
-| Var                      | Required | Default                  | Purpose                                  |
-| ------------------------ | -------- | ------------------------ | ---------------------------------------- |
-| `CHAIN_ID`               | yes      | —                        | Must be in chain map                     |
-| `RPC_URL`                | yes      | —                        | Primary RPC                              |
-| `RPC_URL_FALLBACK`       | no       | —                        | Optional `failover` second endpoint      |
-| `LIQUIDATOR_PRIVATE_KEY` | yes      | —                        | EOA hex key                              |
-| `EXECUTOOOR_ADDRESS`     | yes      | —                        | Shared executooor singleton address      |
-| `MIDNIGHT_API_URL`       | no       | `https://api.morpho.dev` | Base URL                                 |
-| `SWAP_CONFIG_PATH`       | yes      | —                        | Per-collateral swap params JSON          |
-| `MAX_FEE_GWEI`           | no       | `300`                    | Hard ceiling for fee bumps               |
-| `CACHE_DIR`              | no       | `.cache`                 | Reserved; viem-dlc `NodeFsStore` if used |
-| `LOG_LEVEL`              | no       | `info`                   |                                          |
+| Var                      | Required | Default  | Purpose                                  |
+| ------------------------ | -------- | -------- | ---------------------------------------- |
+| `CHAIN_ID`               | yes      | —        | Must be in chain map                     |
+| `RPC_URL`                | yes      | —        | Primary RPC                              |
+| `RPC_URL_FALLBACK`       | no       | —        | Optional `failover` second endpoint      |
+| `LIQUIDATOR_PRIVATE_KEY` | yes      | —        | EOA hex key                              |
+| `EXECUTOOOR_ADDRESS`     | yes      | —        | Shared executooor singleton address      |
+| `SWAP_CONFIG_PATH`       | yes      | —        | Per-collateral swap params JSON          |
+| `MAX_FEE_GWEI`           | no       | `300`    | Hard ceiling for fee bumps               |
+| `CACHE_DIR`              | no       | `.cache` | Reserved; viem-dlc `NodeFsStore` if used |
+| `LOG_LEVEL`              | no       | `info`   |                                          |
 
 Chain map in `config.ts`: `{ [chainId]: { chain, midnight: Address, deployer: Address } }` —
 fail loudly when `CHAIN_ID` isn't present. The `deployer` is the stable CREATE2 deployer for
@@ -786,18 +799,18 @@ fallback bot accepts coverage gaps over the complexity of routing.
 - `@repo/abis/v2` (workspace): `MidnightAbi`. Add `ExecutorAbi` once the contract is finalized.
 - `@repo/utils` (workspace): `tryCatch`, `allFulfilled`.
 - In this repo (Solidity, under `contracts/executooor/`): the modified Executor contract.
-- Out-of-repo: the Morpho Midnight API at `MIDNIGHT_API_URL`; the deployed Executor instance
-  at `EXECUTOOOR_ADDRESS`.
+- Out-of-repo: the co-located **rindexer** Postgres (borrower universe, `DATABASE_URL`); the deployed
+  Executor instance at `EXECUTOOOR_ADDRESS`. (The Morpho API was removed — see Amendment §9.)
 
 ## Observability
 
 JSON-line via the v1 `logger.ts`. Stable event keys:
 
 ```
-startup                  { chainId, liquidator, callback, midnight, apiUrl }
+startup                  { chainId, liquidator, callback, midnight }
 daemon.start             { intervalMs }
 block.new                { height }                        // one per new block height (coalesced)
-api.lag                  { latestIndexedBlock, ourBlock, lag }   // warn ≥5, error ≥30
+rindexer.lag             { chainHead, synced, lag } | { reason: 'unknown' }   // observability; warn if lag>30, never skips
 positions.fetched        { count, markets, durationMs }          // markets = distinct count in the set
 lens.read                { pairs, batches, durationMs }
 lens.id_mismatch         { marketId, borrower }

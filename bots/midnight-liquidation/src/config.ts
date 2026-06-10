@@ -55,7 +55,6 @@ const CHAIN_MAP: Record<number, ChainConfig> = {
 // Env table
 // ---------------------------------------------------------------------------
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
-const DEFAULT_API_URL = 'https://api.morpho.dev'
 const DEFAULT_MAX_FEE_GWEI = '300'
 const DEFAULT_CACHE_DIR = '.cache'
 const PRIVATE_KEY_HEX_LENGTH = 66 // '0x' + 32 bytes
@@ -70,7 +69,6 @@ export type Config = {
   rpcUrlFallback: string | undefined
   liquidatorPrivateKey: Hex
   executooorAddress: Address
-  midnightApiUrl: string
   /** Postgres connection string for the co-located rindexer instance (borrower discovery). */
   databaseUrl: string
   swapConfig: SwapConfig
@@ -158,7 +156,6 @@ export function loadConfig(
     rpcUrlFallback: env.RPC_URL_FALLBACK?.trim() || undefined,
     liquidatorPrivateKey,
     executooorAddress: getAddress(executooorRaw),
-    midnightApiUrl: env.MIDNIGHT_API_URL?.trim() || DEFAULT_API_URL,
     databaseUrl: required(env, 'DATABASE_URL'),
     swapConfig,
     maxFeeWei: parseGwei(maxFeeGwei),

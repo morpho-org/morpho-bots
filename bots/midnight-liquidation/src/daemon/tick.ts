@@ -1,8 +1,7 @@
 import type { Address } from 'viem'
 
-import { assertNever } from '@repo/utils'
+import { assertNever, tryCatch } from '@repo/utils'
 
-import type { MidnightApiClient } from '../api/client'
 import type { BorrowerCandidate } from '../discovery/borrowers'
 import type { Market } from '../execution/encode-call'
 import type { SimulateResult } from '../execution/simulate'
@@ -10,10 +9,12 @@ import type { LensInput, LensOut } from '../lens/lens.sol'
 import type { Logger } from '../logger'
 import type { LiquidationPlan } from '../sizing/plan'
 
-import { getChainStatuses } from '../api/chains'
 import { lensKey } from '../lens/lens.sol'
 import { plan } from '../sizing/plan'
 import { isLiquidatable, planInputFromLens } from './eligibility'
+
+/** Blocks our rindexer may trail the chain head before we warn that coverage is degraded. */
+const MAX_RINDEXER_LAG_BLOCKS = 30n
 
 type TickCounters = {
   pairs: number
@@ -22,20 +23,24 @@ type TickCounters = {
   ok: number
   unfunded: number
   reverted: number
-  skipped: boolean
 }
 
 /**
- * One Phase-2 read-only tick: gate on indexer freshness, enumerate the indexed (id, borrower)
+ * One read-only tick: log a rindexer-freshness signal, enumerate the indexed (id, borrower)
  * universe, read the liquidation lens fresh for the whole batch (one deployless `eth_call`), then
- * for each liquidatable position build a plan and sink it to a read-only `simulate` — no signer,
- * no queue. Deps are injected so the tick is unit-testable without a chain or Postgres:
- * `readLens` and `simulate` are the only chain-touching seams (wired in `index.ts`).
+ * for each liquidatable position build a plan and sink it to a read-only `simulate` — no signer, no
+ * queue. Deps are injected so the tick is unit-testable without a chain or Postgres.
+ *
+ * There is **no staleness skip**: the lens reads every candidate's state fresh on-chain, so rindexer
+ * lag is coverage latency (we may not yet know about brand-new positions), never a correctness
+ * issue. We emit `rindexer.lag` for observability and always proceed.
  */
 export async function runTick(deps: {
-  apiClient: MidnightApiClient
   discover: () => Promise<BorrowerCandidate[]>
-  chainId: number
+  /** rindexer's indexed head (Postgres); `null`/throw → lag unknown, we proceed. */
+  syncedBlock: () => Promise<bigint | null>
+  /** Chain head the daemon just polled — the reference point for the lag signal. */
+  chainHead: bigint
   /** The Executor singleton — the `liquidate` msg.sender whose gate the lens checks. */
   caller: Address
   readLens: (pairs: LensInput[]) => Promise<Map<string, LensOut>>
@@ -46,31 +51,18 @@ export async function runTick(deps: {
   }) => Promise<SimulateResult>
   logger: Logger
 }): Promise<TickCounters> {
-  const { apiClient, discover, chainId, caller, readLens, simulate, logger } = deps
-  const empty: TickCounters = {
-    pairs: 0,
-    liquidatable: 0,
-    planned: 0,
-    ok: 0,
-    unfunded: 0,
-    reverted: 0,
-    skipped: true
-  }
+  const { discover, syncedBlock, chainHead, caller, readLens, simulate, logger } = deps
 
-  // 1. Indexer staleness gate (unchanged from Phase 1).
-  const chains = await getChainStatuses(apiClient)
-  if (chains.error) {
-    logger.error('api.lag', { reason: chains.error.kind })
-    return empty
-  }
-  const status = chains.data.find(chain => chain.chainId === chainId)
-  if (!status) {
-    logger.error('api.lag', { reason: 'chain_missing', chainId })
-    return empty
-  }
-  if (status.activitySyncStatus === 'behind' || status.activitySyncStatus === 'no_activity') {
-    logger.warn('api.lag', { chainId, status: status.activitySyncStatus })
-    return empty
+  // 1. rindexer-freshness signal — observability only (see the note above; we never skip).
+  // tryCatch resolves `data` to null on a thrown query; `syncedBlock` also returns null when the
+  // head is unknown — both mean "lag unknown".
+  const { data: synced } = await tryCatch(syncedBlock())
+  if (synced === null) {
+    logger.warn('rindexer.lag', { reason: 'unknown', chainHead })
+  } else {
+    const lag = chainHead > synced ? chainHead - synced : 0n
+    if (lag > MAX_RINDEXER_LAG_BLOCKS) logger.warn('rindexer.lag', { chainHead, synced, lag })
+    else logger.debug('rindexer.lag', { chainHead, synced, lag })
   }
 
   // 2. Discover the (id, borrower) universe → lens inputs (caller = the Executor singleton).
@@ -83,11 +75,7 @@ export async function runTick(deps: {
 
   // 3. Read the lens fresh for the whole batch in one deployless eth_call.
   const lensOut = await readLens(pairs)
-  logger.info('lens.read', {
-    pairs: pairs.length,
-    returned: lensOut.size,
-    indexedBlock: status.latestIndexedBlock
-  })
+  logger.info('lens.read', { pairs: pairs.length, returned: lensOut.size })
 
   const counters: TickCounters = {
     pairs: pairs.length,
@@ -95,8 +83,7 @@ export async function runTick(deps: {
     planned: 0,
     ok: 0,
     unfunded: 0,
-    reverted: 0,
-    skipped: false
+    reverted: 0
   }
 
   // 4. Compose liquidatability off-chain → plan → read-only simulate.
@@ -130,7 +117,7 @@ export async function runTick(deps: {
         break
       case 'unfunded':
         counters.unfunded += 1
-        logger.info('simulate.unfunded', fields)
+        logger.info('simulate.unfunded', { ...fields, reason: result.reason })
         break
       case 'revert':
         counters.reverted += 1

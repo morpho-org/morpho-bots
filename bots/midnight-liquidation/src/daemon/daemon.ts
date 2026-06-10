@@ -18,7 +18,7 @@ type Daemon = {
  */
 export function createDaemon(deps: {
   getBlockNumber: () => Promise<bigint>
-  tick: () => Promise<unknown>
+  tick: (height: bigint) => Promise<unknown>
   intervalMs?: number
   logger: Logger
 }): Daemon {
@@ -33,7 +33,7 @@ export function createDaemon(deps: {
     logger,
     onBlock: async height => {
       logger.info('block.new', { height })
-      const { error } = await tryCatch(tick())
+      const { error } = await tryCatch(tick(height))
       if (error) logger.error('tick.error', { error: error.message })
     }
   })

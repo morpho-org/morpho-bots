@@ -2,12 +2,11 @@ import { ensureError } from '@repo/utils'
 import { privateKeyToAccount } from 'viem/accounts'
 import { getBlockNumber } from 'viem/actions'
 
-import { createApiClient } from './api/client'
 import { assertContractDeployed, createDeploylessClient } from './chain/client'
 import { loadConfig } from './config'
 import { createDaemon } from './daemon/daemon'
 import { runTick } from './daemon/tick'
-import { createPostgresQuery, discoverBorrowers } from './discovery/borrowers'
+import { createPostgresQuery, discoverBorrowers, rindexerSyncedBlock } from './discovery/borrowers'
 import { simulateLiquidate } from './execution/simulate'
 import { readMidnightLiquidationLens } from './lens/lens.sol'
 import { createLogger } from './logger'
@@ -21,8 +20,7 @@ async function main() {
     chainId: config.chainId,
     liquidator,
     callback: config.executooorAddress,
-    midnight: config.midnight,
-    apiUrl: config.midnightApiUrl
+    midnight: config.midnight
   })
 
   // Read-only client shared by the lens and simulate paths. Validate EXECUTOOOR_ADDRESS holds code
@@ -30,18 +28,17 @@ async function main() {
   const client = createDeploylessClient(config)
   await assertContractDeployed(client, config.executooorAddress, 'EXECUTOOOR_ADDRESS')
 
-  const apiClient = createApiClient(config.midnightApiUrl)
   const query = createPostgresQuery(config.databaseUrl)
   const discover = () => discoverBorrowers(query)
 
   // Phase-3 daemon: an HTTP block-poll watcher drives one read-only tick per new block (coalescing
-  // backlog). The signed-send queue + graceful drain land in CRTR-2585; the daemon swallows tick
-  // errors so a single bad tick never kills the loop.
-  const tick = () =>
+  // backlog), passing the polled height as the lag reference. The signed-send queue + graceful drain
+  // land in CRTR-2585; the daemon swallows tick errors so a single bad tick never kills the loop.
+  const tick = (chainHead: bigint) =>
     runTick({
-      apiClient,
       discover,
-      chainId: config.chainId,
+      syncedBlock: () => rindexerSyncedBlock(query),
+      chainHead,
       caller: config.executooorAddress,
       readLens: pairs => readMidnightLiquidationLens(client, config.midnight, pairs),
       simulate: args =>
