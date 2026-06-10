@@ -1,0 +1,58 @@
+# Bundles the bot with a rindexer instance + Postgres for borrower discovery (CRTR-2579).
+# rindexer indexes the Midnight events in rindexer/rindexer.yaml into Postgres; the bot reads the
+# indexed (market, borrower) pairs each tick. The bot's build context is the repo root so the bun
+# workspace (packages/*) resolves — see Dockerfile.
+#
+# NOTE: the rindexer service config (image command, env) follows the rindexer docs but has not been
+# run end-to-end here; verify `docker compose up` against a live RPC before relying on it.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: rindexer
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rindexer}
+      POSTGRES_DB: midnight_liquidation
+    volumes:
+      - rindexer-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U rindexer -d midnight_liquidation']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rindexer:
+    image: ghcr.io/joshstevens19/rindexer:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://rindexer:${POSTGRES_PASSWORD:-rindexer}@postgres:5432/midnight_liquidation
+      RINDEXER_RPC_URL: ${RPC_URL:?set RPC_URL}
+      PROJECT_PATH: /app/project_path
+    volumes:
+      - ./rindexer:/app/project_path
+    command: ['start', 'indexer']
+    restart: unless-stopped
+
+  bot:
+    build:
+      context: ../..
+      dockerfile: bots/midnight-liquidation/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      CHAIN_ID: '8453'
+      RPC_URL: ${RPC_URL:?set RPC_URL}
+      LIQUIDATOR_PRIVATE_KEY: ${LIQUIDATOR_PRIVATE_KEY:?set LIQUIDATOR_PRIVATE_KEY}
+      EXECUTOOOR_ADDRESS: ${EXECUTOOOR_ADDRESS:?set EXECUTOOOR_ADDRESS}
+      SWAP_CONFIG_PATH: /config/swap.json
+      # The bot reads rindexer's indexed events from the same Postgres for borrower discovery.
+      DATABASE_URL: postgresql://rindexer:${POSTGRES_PASSWORD:-rindexer}@postgres:5432/midnight_liquidation
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - ${SWAP_CONFIG_PATH:-./swap.config.json}:/config/swap.json:ro
+    restart: unless-stopped
+
+volumes:
+  rindexer-pg:
