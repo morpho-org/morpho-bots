@@ -19,7 +19,9 @@
       "name": "@morpho-org/midnight-liquidation",
       "version": "0.1.0",
       "dependencies": {
+        "@repo/abis": "workspace:*",
         "@repo/utils": "workspace:*",
+        "executooor-viem": "catalog:",
         "openapi-fetch": "catalog:",
         "viem": "catalog:",
         "zod": "catalog:",
@@ -76,6 +78,7 @@
     "@types/lodash-es": "^4.17.12",
     "@types/prompts": "^2.4.9",
     "date-fns": "^4.1.0",
+    "executooor-viem": "^1.3.3",
     "husky": "^9.1.5",
     "knip": "^5.86.0",
     "lint-staged": "^16.1.2",
@@ -324,6 +327,10 @@
     "environment": ["environment@1.1.0", "", {}, "sha512-xUtoPkMggbz0MPyPiIWr1Kp4aeWJjDZ6SMvURhimjdZgsRuDplF5/s9hcgGhyXMhs+6vpnuoiZ2kFiu3FMnS8Q=="],
 
     "eventemitter3": ["eventemitter3@5.0.4", "", {}, "sha512-mlsTRyGaPBjPedk6Bvw+aqbsXDtoAyAzm5MO7JgU+yVRyMQ5O8bD4Kcci7BS85f93veegeCPkL8R4GLClnjLFw=="],
+
+    "evm-maths": ["evm-maths@7.0.1", "", {}, "sha512-rMFIq/xfsNpR1JGkXPnLP1iXLBCtVr1N4tErzdEcKJoqREpKOZswCwNSljN/Sf1QZjv+KGCamh4E4FQcVaJekA=="],
+
+    "executooor-viem": ["executooor-viem@1.3.3", "", { "peerDependencies": { "evm-maths": "^7.0.0", "viem": "^2.0.0" } }, "sha512-8npMgRIDerwxeyWonqsTSrw28CIU4EDUz2JSXRz5hEIF6pxNbRls6uS2wR2lf74J2fxAgtF6+Ltin5/bMlFiyw=="],
 
     "fast-deep-equal": ["fast-deep-equal@3.1.3", "", {}, "sha512-f3qQ9oQy9j2AhBe/H9VC91wLmKBCCU/gDOnKNAYG5hswO7BLKj09Hc5HYNz9cGI++xlpDCIgDaitVs03ATR84Q=="],
 
