@@ -9,10 +9,12 @@ import type { BatchLensTransportType } from './read-deployless-batch-lens'
 import { MAX_INITCODE_SIZE, readDeploylessBatchLens } from './read-deployless-batch-lens'
 
 // Single-file soltag lens: reads everything the liquidation decision depends on for a batch of
-// (market, borrower) pairs inside one eth_call against a single block.timestamp. Composes
-// liquidatability + the sizing inputs (maxDebt/badDebt/best-collateral) the way liquidate() does,
-// validating `id == Midnight.toId(market)` per element. Compiled to a deployless factory by the
-// soltag bun preload (see ../../soltag.preload.ts); `sol``` throws if that plugin isn't active.
+// (id, borrower) pairs inside one eth_call against a single block.timestamp. Reads the full
+// Obligation on-chain via Midnight.toObligation(id) — the id is a cryptographic commitment to the
+// struct, so no off-chain market input or `id == toId(market)` re-check is needed — then composes
+// liquidatability + the sizing inputs (maxDebt/badDebt/best-collateral) the way liquidate() does
+// and returns the Obligation so the caller can encode the liquidate call. Compiled to a deployless
+// factory by the soltag bun preload (see ../../soltag.preload.ts); `sol``` throws if not active.
 export const MidnightLiquidationLens = sol('MidnightLiquidationLens')`
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity ^0.8.19;
@@ -28,7 +30,7 @@ struct Obligation {
 }
 
 interface IMidnight {
-  function toId(Obligation memory obligation) external view returns (bytes32);
+  function toObligation(bytes32 id) external view returns (Obligation memory);
   function liquidationLocked(bytes32 id, address user) external view returns (bool);
   function debtOf(bytes32 id, address user) external view returns (uint256);
   function activatedCollaterals(bytes32 id, address user) external view returns (uint128);
@@ -49,6 +51,7 @@ contract MidnightLiquidationLens {
     uint128 debt; uint128 maxDebt; uint128 badDebt; uint128 activatedBitmap;
     uint8 bestCollateralIdx; uint128 bestCollateralAmt;
     uint256 bestCollateralPrice; uint256 bestCollateralMaxLif; uint256 bestCollateralLltv;
+    Obligation obligation;
   }
 
   constructor(IMidnight midnight) { MIDNIGHT = midnight; }
@@ -75,12 +78,17 @@ contract MidnightLiquidationLens {
   }
 
   function computeOne(bytes calldata element) external view returns (bytes memory) {
-    (Obligation memory market, bytes32 id, address borrower, address caller) =
-      abi.decode(element, (Obligation, bytes32, address, address));
+    (bytes32 id, address borrower, address caller) =
+      abi.decode(element, (bytes32, address, address));
+
+    // Reverts "not created" for an unknown id — caught by lens()'s per-element try/catch, which
+    // leaves a zeroed (valid=false) row. A successful read is the canonical Obligation for this id.
+    Obligation memory market = MIDNIGHT.toObligation(id);
 
     LensOut memory o;
     o.blockTimestamp = uint64(block.timestamp);
-    o.valid = (id == MIDNIGHT.toId(market));
+    o.valid = true;
+    o.obligation = market;
 
     uint256 debt = MIDNIGHT.debtOf(id, borrower);
     o.debt = uint128(debt);
@@ -156,20 +164,16 @@ const COLLATERAL_PARAMS_COMPONENTS = [
   { name: 'oracle', type: 'address' }
 ] as const
 
-const OBLIGATION_PARAM = {
-  type: 'tuple',
-  components: [
-    { name: 'loanToken', type: 'address' },
-    { name: 'collateralParams', type: 'tuple[]', components: COLLATERAL_PARAMS_COMPONENTS },
-    { name: 'maturity', type: 'uint256' },
-    { name: 'rcfThreshold', type: 'uint256' },
-    { name: 'enterGate', type: 'address' },
-    { name: 'liquidatorGate', type: 'address' }
-  ]
-} as const
+const OBLIGATION_COMPONENTS = [
+  { name: 'loanToken', type: 'address' },
+  { name: 'collateralParams', type: 'tuple[]', components: COLLATERAL_PARAMS_COMPONENTS },
+  { name: 'maturity', type: 'uint256' },
+  { name: 'rcfThreshold', type: 'uint256' },
+  { name: 'enterGate', type: 'address' },
+  { name: 'liquidatorGate', type: 'address' }
+] as const
 
 const LENS_INPUT_ABI = [
-  OBLIGATION_PARAM,
   { name: 'id', type: 'bytes32' },
   { name: 'borrower', type: 'address' },
   { name: 'caller', type: 'address' }
@@ -206,14 +210,16 @@ const LENS_OUT_ABI = [
       { name: 'bestCollateralAmt', type: 'uint128' },
       { name: 'bestCollateralPrice', type: 'uint256' },
       { name: 'bestCollateralMaxLif', type: 'uint256' },
-      { name: 'bestCollateralLltv', type: 'uint256' }
+      { name: 'bestCollateralLltv', type: 'uint256' },
+      { name: 'obligation', type: 'tuple', components: OBLIGATION_COMPONENTS }
     ]
   }
 ] as const
 
-/** What the lens reads for one (market, borrower) pair. `caller` is the Executor (the liquidate
- * `msg.sender`), whose `canLiquidate` is checked — not the EOA. */
-export type LensInput = { market: Obligation; id: Hex; borrower: Address; caller: Address }
+/** What the lens reads for one (id, borrower) pair. The lens fetches the Obligation on-chain from
+ * `id`; `caller` is the Executor (the liquidate `msg.sender`), whose `canLiquidate` is checked —
+ * not the EOA. */
+export type LensInput = { id: Hex; borrower: Address; caller: Address }
 
 /** Decoded `LensOut` (uint8 → number, uint64/128/256 → bigint, per viem). */
 export type LensOut = {
@@ -232,10 +238,12 @@ export type LensOut = {
   bestCollateralPrice: bigint
   bestCollateralMaxLif: bigint
   bestCollateralLltv: bigint
+  /** Full Obligation read on-chain via `toObligation(id)`; pass straight into `liquidate`. */
+  obligation: Obligation
 }
 
 export function encodeLensInput(input: LensInput): Hex {
-  return encodeAbiParameters(LENS_INPUT_ABI, [input.market, input.id, input.borrower, input.caller])
+  return encodeAbiParameters(LENS_INPUT_ABI, [input.id, input.borrower, input.caller])
 }
 
 export function decodeLensOut(output: Hex): LensOut {
@@ -249,9 +257,10 @@ export function lensKey(id: Hex, borrower: Address): string {
 
 /**
  * Reads the liquidation lens for every pair in one deployless, chunked `eth_call` (no signer, no
- * cache — decisions need fresh state). Returns a map keyed by {@link lensKey}. The `client` must use
- * viem-dlc's deployless transport; that wiring lands with the read-only tick (CRTR-2582). The gas
- * coefficients below are placeholders to calibrate on a Base fork before go-live.
+ * cache — decisions need fresh state). The lens fetches each Obligation on-chain from its `id`.
+ * Returns a map keyed by {@link lensKey}. The `client` must use viem-dlc's deployless transport
+ * (built in `chain/client.ts`). The gas coefficients below are placeholders to calibrate on a Base
+ * fork before go-live.
  */
 export async function readMidnightLiquidationLens(
   client: Client<Transport<BatchLensTransportType>>,
