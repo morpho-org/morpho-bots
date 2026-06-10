@@ -174,7 +174,12 @@ All commit messages, PR titles, and Linear ticket titles use the same format:
 | @repo/typescript-config | `ts-config` |
 | @repo/utils             | `utils`     |
 
-**Scopes — Bots:** one scope per bot, added as bots land (first will be `kill-switch`).
+**Scopes — Bots:**
+
+| Bot                       | Scope                  |
+| ------------------------- | ---------------------- |
+| midnight-liquidation      | `midnight-liquidation` |
+| kill-switch (forthcoming) | `kill-switch`          |
 
 **Scopes — Cross-cutting:**
 
