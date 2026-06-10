@@ -1,16 +1,16 @@
 import { ensureError } from '@repo/utils'
 import { privateKeyToAccount } from 'viem/accounts'
+import { getBlockNumber } from 'viem/actions'
 
 import { createApiClient } from './api/client'
 import { assertContractDeployed, createDeploylessClient } from './chain/client'
 import { loadConfig } from './config'
+import { createDaemon } from './daemon/daemon'
 import { runTick } from './daemon/tick'
 import { createPostgresQuery, discoverBorrowers } from './discovery/borrowers'
 import { simulateLiquidate } from './execution/simulate'
 import { readMidnightLiquidationLens } from './lens/lens.sol'
 import { createLogger } from './logger'
-
-const TICK_INTERVAL_MS = 60_000
 
 async function main() {
   const config = loadConfig()
@@ -34,11 +34,11 @@ async function main() {
   const query = createPostgresQuery(config.databaseUrl)
   const discover = () => discoverBorrowers(query)
 
-  // Phase-2 read-only loop: one tick on boot, then on an interval. The Phase-3 daemon (CRTR-2583)
-  // replaces this with a block-poll loop that coalesces backlog and owns the signed-send queue.
-  const tick = () => {
-    logger.info('tick.begin', {})
-    void runTick({
+  // Phase-3 daemon: an HTTP block-poll watcher drives one read-only tick per new block (coalescing
+  // backlog). The signed-send queue + graceful drain land in CRTR-2585; the daemon swallows tick
+  // errors so a single bad tick never kills the loop.
+  const tick = () =>
+    runTick({
       apiClient,
       discover,
       chainId: config.chainId,
@@ -51,15 +51,14 @@ async function main() {
           ...args
         }),
       logger
-    }).catch(error => logger.error('tick.error', { error: ensureError(error).message }))
-  }
-  const timer = setInterval(tick, TICK_INTERVAL_MS)
-  tick()
+    })
+
+  const daemon = createDaemon({ getBlockNumber: () => getBlockNumber(client), tick, logger })
+  daemon.start()
 
   const shutdown = (signal: string) => {
     logger.info('shutdown', { signal })
-    clearInterval(timer)
-    process.exit(0)
+    void daemon.stop().finally(() => process.exit(0))
   }
   process.on('SIGINT', () => shutdown('SIGINT'))
   process.on('SIGTERM', () => shutdown('SIGTERM'))
