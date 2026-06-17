@@ -1,4 +1,5 @@
 export * from './ApprovalRatifierAbi'
+export * from './ExecutorAbi'
 export * from './MidnightAbi'
 export * from './MorphoMarketV1AdapterAbi'
 export * from './MorphoMarketV1AdapterFactoryAbi'
