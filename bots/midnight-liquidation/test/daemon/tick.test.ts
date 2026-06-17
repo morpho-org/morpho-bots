@@ -4,6 +4,7 @@ import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
 
 import type { BorrowerCandidate } from '../../src/discovery/borrowers'
+import type { SwapStep } from '../../src/execution/encode-call'
 import type { SimulateResult } from '../../src/execution/simulate'
 import type { LensInput, LensOut } from '../../src/lens/lens.sol'
 import type { Logger } from '../../src/logger'
@@ -28,9 +29,12 @@ const BORROWER: Address = getAddress('0x1111111111111111111111111111111111111111
 const CALLER: Address = getAddress('0x2222222222222222222222222222222222222222')
 const TOKEN: Address = getAddress('0x3333333333333333333333333333333333333333')
 const ORACLE: Address = getAddress('0x4444444444444444444444444444444444444444')
+const ROUTER: Address = getAddress('0x5555555555555555555555555555555555555555')
 const ZERO = '0x0000000000000000000000000000000000000000' as const
 const MARKET: Hex = `0x${'a'.repeat(64)}`
 const LABEL = lensKey(MARKET, BORROWER)
+
+const SWAP_STEP: SwapStep = { router: ROUTER, fee: 3000, amountOutMinimum: 1n }
 
 // A liquidatable reading: valid, gate open, has debt, unlocked, unhealthy, pre-maturity.
 function lensOut(overrides: Partial<LensOut> = {}): LensOut {
@@ -82,6 +86,7 @@ function runWith(opts: {
   synced?: bigint | null
   chainHead?: bigint
   inflight?: ReadonlySet<string>
+  noSwap?: boolean
 }) {
   const { logger, events } = spyLogger()
   let simulateCalls = 0
@@ -94,9 +99,10 @@ function runWith(opts: {
     chainHead,
     caller: CALLER,
     readLens: stubReadLens(opts.out === undefined ? lensOut() : opts.out),
+    swapStepFor: () => (opts.noSwap ? null : SWAP_STEP),
     simulate: async () => {
       simulateCalls += 1
-      return opts.simulateResult ?? { status: 'unfunded' }
+      return opts.simulateResult ?? { status: 'ok' }
     },
     submit: async () => {
       submitCalls += 1
@@ -117,16 +123,16 @@ function runWith(opts: {
 }
 
 describe('runTick', () => {
-  it('plans, simulates, and submits a liquidatable pair (unfunded is still submittable)', async () => {
+  it('plans, simulates, and submits a liquidatable pair on a successful sim', async () => {
     const { counters, simulateCalls, submitCalls, onBlockCalls } = await runWith({
-      simulateResult: { status: 'unfunded' }
+      simulateResult: { status: 'ok' }
     })
     expect(counters).toEqual({
       pairs: 1,
       liquidatable: 1,
       planned: 1,
-      ok: 0,
-      unfunded: 1,
+      noSwapPath: 0,
+      ok: 1,
       reverted: 0,
       submitted: 1
     })
@@ -135,20 +141,21 @@ describe('runTick', () => {
     expect(onBlockCalls()).toBe(1) // pendingOnBlock runs every tick
   })
 
-  it('submits on a successful simulation', async () => {
-    const { counters, submitCalls } = await runWith({ simulateResult: { status: 'ok' } })
-    expect(counters.ok).toBe(1)
-    expect(counters.submitted).toBe(1)
-    expect(submitCalls()).toBe(1)
-  })
-
-  it('does not submit a reverting plan (a Midnight sizing/eligibility error)', async () => {
+  it('does not submit a reverting plan (not liquidatable / swap slippage / repay shortfall)', async () => {
     const { counters, submitCalls } = await runWith({
-      simulateResult: { status: 'revert', reason: 'RecoveryCloseFactorConditionsViolated' }
+      simulateResult: { status: 'revert', reason: 'amountOutMinimum not met' }
     })
     expect(counters.reverted).toBe(1)
     expect(counters.submitted).toBe(0)
     expect(submitCalls()).toBe(0)
+  })
+
+  it('skips with config.no_swap_path when no swap config covers the collateral', async () => {
+    const { counters, simulateCalls, submitCalls, events } = await runWith({ noSwap: true })
+    expect(counters).toMatchObject({ liquidatable: 1, planned: 1, noSwapPath: 1, submitted: 0 })
+    expect(simulateCalls()).toBe(0) // skipped before simulating
+    expect(submitCalls()).toBe(0)
+    expect(events.some(e => e.event === 'config.no_swap_path')).toBe(true)
   })
 
   it('skips a position already in flight without re-simulating or submitting', async () => {

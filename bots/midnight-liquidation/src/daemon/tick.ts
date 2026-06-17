@@ -3,7 +3,7 @@ import type { Address } from 'viem'
 import { assertNever, tryCatch } from '@repo/utils'
 
 import type { BorrowerCandidate } from '../discovery/borrowers'
-import type { Market } from '../execution/encode-call'
+import type { Market, SwapStep } from '../execution/encode-call'
 import type { SimulateResult } from '../execution/simulate'
 import type { LensInput, LensOut } from '../lens/lens.sol'
 import type { Logger } from '../logger'
@@ -20,8 +20,8 @@ type TickCounters = {
   pairs: number
   liquidatable: number
   planned: number
+  noSwapPath: number
   ok: number
-  unfunded: number
   reverted: number
   submitted: number
 }
@@ -29,10 +29,10 @@ type TickCounters = {
 /**
  * One tick: log a rindexer-freshness signal, enumerate the indexed (id, borrower) universe, read the
  * liquidation lens fresh for the whole batch (one deployless `eth_call`), and for each liquidatable
- * position build a plan, simulate it, and — when the plan is structurally valid and the position is
- * not already in flight — broadcast it via `submit` (Phase 3: a deterministically-reverting dummy).
- * Finally drive the pending queue's `onBlock`. Deps are injected so the tick is unit-testable
- * without a chain, Postgres, or signer.
+ * position build a plan, resolve its swap step, simulate the real `exec_606BaXt`, and — when the
+ * simulation is `ok` and the position is not already in flight — broadcast it via `submit`. Finally
+ * drive the pending queue's `onBlock`. Deps are injected so the tick is unit-testable without a
+ * chain, Postgres, or signer.
  *
  * No staleness skip: the lens reads every candidate fresh on-chain, so rindexer lag is coverage
  * latency, never a correctness issue — we emit `rindexer.lag` for observability and always proceed.
@@ -46,16 +46,23 @@ export async function runTick(deps: {
   /** The Executor singleton — the `liquidate` msg.sender whose gate the lens checks. */
   caller: Address
   readLens: (pairs: LensInput[]) => Promise<Map<string, LensOut>>
+  /**
+   * Builds the per-collateral swap step (router/fee + slippage-bounded `amountOutMinimum`), or `null`
+   * when the operator has no swap config for this collateral → skip with `config.no_swap_path`.
+   */
+  swapStepFor: (plan: LiquidationPlan, out: LensOut) => SwapStep | null
   simulate: (args: {
     market: Market
     borrower: Address
     plan: LiquidationPlan
+    swapStep: SwapStep
   }) => Promise<SimulateResult>
-  /** Broadcasts a plan via the pending queue (builds the tx, derives fees, tracks the nonce). */
+  /** Broadcasts a plan via the pending queue (builds the exec tx, derives fees, tracks the nonce). */
   submit: (args: {
     market: Market
     borrower: Address
     plan: LiquidationPlan
+    swapStep: SwapStep
     blockNumber: bigint
     label: string
   }) => Promise<void>
@@ -71,6 +78,7 @@ export async function runTick(deps: {
     chainHead,
     caller,
     readLens,
+    swapStepFor,
     simulate,
     submit,
     pendingOnBlock,
@@ -106,8 +114,8 @@ export async function runTick(deps: {
     pairs: pairs.length,
     liquidatable: 0,
     planned: 0,
+    noSwapPath: 0,
     ok: 0,
-    unfunded: 0,
     reverted: 0,
     submitted: 0
   }
@@ -137,20 +145,30 @@ export async function runTick(deps: {
       postMaturityMode: liquidationPlan.postMaturityMode
     })
 
+    // The single-hop swap funds the repay. No operator swap config for this collateral → we can't
+    // execute, so skip (a coverage gap the operator closes by adding the pool to SWAP_CONFIG_PATH).
+    const swapStep = swapStepFor(liquidationPlan, out)
+    if (!swapStep) {
+      counters.noSwapPath += 1
+      logger.info('config.no_swap_path', {
+        marketId: pair.id,
+        borrower: pair.borrower,
+        collateralIndex: liquidationPlan.collateralIndex
+      })
+      continue
+    }
+
     const result = await simulate({
       market: out.market,
       borrower: pair.borrower,
-      plan: liquidationPlan
+      plan: liquidationPlan,
+      swapStep
     })
     const fields = { marketId: pair.id, borrower: pair.borrower }
     switch (result.status) {
       case 'ok':
         counters.ok += 1
         logger.info('simulate.ok', fields)
-        break
-      case 'unfunded':
-        counters.unfunded += 1
-        logger.info('simulate.unfunded', { ...fields, reason: result.reason })
         break
       case 'revert':
         counters.reverted += 1
@@ -160,13 +178,14 @@ export async function runTick(deps: {
         assertNever(result.status)
     }
 
-    // Broadcast a structurally-valid plan (ok | unfunded). A `revert` is a Midnight sizing/
-    // eligibility error — a bot bug, not a fundable plan — so we never broadcast it.
-    if (result.status !== 'revert') {
+    // ok-only gate (Amendment §10): broadcast only a fully-simulated, swap-funded liquidation. Any
+    // revert — not-liquidatable, swap slippage, repay shortfall — isn't a fundable plan, so skip it.
+    if (result.status === 'ok') {
       await submit({
         market: out.market,
         borrower: pair.borrower,
         plan: liquidationPlan,
+        swapStep,
         blockNumber: chainHead,
         label
       })

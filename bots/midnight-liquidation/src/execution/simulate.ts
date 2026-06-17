@@ -1,85 +1,40 @@
-import type { Address, Client } from 'viem'
+import type { Address, Client, Hex } from 'viem'
 
-import { MidnightAbi } from '@repo/abis/v2'
 import { tryCatch } from '@repo/utils'
-import { BaseError, ContractFunctionRevertedError, zeroAddress } from 'viem'
-import { simulateContract } from 'viem/actions'
-
-import type { LiquidationPlan } from '../sizing/plan'
-import type { Market } from './encode-call'
+import { BaseError } from 'viem'
+import { call } from 'viem/actions'
 
 export type SimulateStatus =
-  /** Simulation succeeded outright (rare in Phase 2 — the Executor is unfunded). */
+  /** The full `exec_606BaXt` (seize → swap → repay → sweep) succeeds — safe to broadcast. */
   | 'ok'
-  /** Reverted on the loan-token pull only — the plan is structurally valid, just unfunded. */
-  | 'unfunded'
-  /** Reverted with a Midnight error (or Panic) — the plan was rejected; surface as a bug. */
+  /** Reverted in the exec path (not liquidatable, swap slippage, repay shortfall) — do not send. */
   | 'revert'
 
 export type SimulateResult = { status: SimulateStatus; reason?: string }
 
 /**
- * Read-only Phase-2 sink: simulates the deployed 9-arg `Midnight.liquidate(...)` for one plan with
- * `callback = address(0)` + `data = '0x'` (so it skips `onLiquidate` and does not depend on the
- * not-yet-built Executor handler), impersonating the Executor as `msg.sender` (the gate is
- * `canLiquidate(msg.sender)`, and the loan-token pull is from `msg.sender`). The result discriminates
- * "plan valid but unfunded" (the expected outcome) from a genuine rejection — see
- * {@link SimulateStatus}. No signer; never broadcasts.
+ * Simulates the real liquidation — `Executor.exec_606BaXt(...)` from the liquidator EOA, byte-for-byte
+ * what gets broadcast. The Executor self-funds via the in-callback swap, so a success means the seized
+ * collateral covered the repay (incl. `amountOutMinimum` slippage) and both tokens swept clean. Any
+ * revert — not-liquidatable, swap slippage, repay shortfall — means do not broadcast; the tick gates
+ * on `ok` only (TIB Amendment §10). No signer; never sends.
+ *
+ * The full-drain (zero-residual) invariant is enforced **structurally**: `encodeLiquidationExec`
+ * always appends two `skim`s that transfer the Executor's entire loan + collateral balance to the EOA
+ * (unit-tested in encode-call.test.ts), so a successful exec ends at zero balance for standard ERC20s.
+ * The literal post-tx zero-balance assertion lives in the anvil fork suite (CRTR-2589) — viem 2.47 has
+ * no `eth_simulateV1` helper to read post-state balances inline.
  */
-export async function simulateLiquidate(
+export async function simulateLiquidationExec(
   client: Client,
-  params: {
-    midnight: Address
-    executooor: Address
-    market: Market
-    borrower: Address
-    plan: LiquidationPlan
-  }
+  params: { executooor: Address; eoa: Address; data: Hex }
 ): Promise<SimulateResult> {
   const { error } = await tryCatch(
-    simulateContract(client, {
-      address: params.midnight,
-      abi: MidnightAbi,
-      functionName: 'liquidate',
-      args: [
-        params.market,
-        BigInt(params.plan.collateralIndex),
-        params.plan.seizedAssets,
-        params.plan.repaidUnits,
-        params.borrower,
-        params.plan.postMaturityMode,
-        params.executooor, // receiver — seized collateral lands on the Executor pre-callback
-        zeroAddress, // callback — none in Phase 2, so onLiquidate is skipped
-        '0x' // data — unused without a callback
-      ],
-      account: params.executooor
-    })
+    call(client, { account: params.eoa, to: params.executooor, data: params.data })
   )
-  return error ? classifyRevert(error) : { status: 'ok' }
-}
-
-/**
- * Maps a viem simulate error to a {@link SimulateResult}. A revert that decodes against `MidnightAbi`
- * to a custom error — or a `Panic` (e.g. an over-seize underflow) — means the plan was rejected
- * on-chain (not liquidatable / bad sizing / RCF cap): surface it loudly. `Error(string)` and
- * selectors absent from `IMidnight` come from the final loan-token pull failing (the token's own
- * revert / Midnight `SafeTransferLib.TransferFromReturnedFalse`, which is not an `IMidnight` error) →
- * the plan is structurally valid, just unfunded.
- */
-export function classifyRevert(error: Error): SimulateResult {
-  const revert =
-    error instanceof BaseError
-      ? error.walk(cause => cause instanceof ContractFunctionRevertedError)
-      : null
-  if (!(revert instanceof ContractFunctionRevertedError)) {
-    return { status: 'revert', reason: error.message }
-  }
-  const errorName = revert.data?.errorName
-  if (errorName !== undefined && errorName !== 'Error') {
-    return { status: 'revert', reason: errorName }
-  }
+  if (!error) return { status: 'ok' }
   return {
-    status: 'unfunded',
-    reason: revert.reason ?? revert.signature ?? revert.raw?.slice(0, 10)
+    status: 'revert',
+    reason: error instanceof BaseError ? error.shortMessage : error.message
   }
 }

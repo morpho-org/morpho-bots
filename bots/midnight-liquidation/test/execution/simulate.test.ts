@@ -1,119 +1,48 @@
-import type { Address } from 'viem'
+import type { Hex } from 'viem'
 
-import { MidnightAbi } from '@repo/abis/v2'
 import { describe, expect, it } from 'bun:test'
-import {
-  ContractFunctionRevertedError,
-  createPublicClient,
-  custom,
-  decodeFunctionData,
-  encodeAbiParameters,
-  getAddress,
-  isAddressEqual,
-  zeroAddress
-} from 'viem'
+import { createPublicClient, custom, getAddress } from 'viem'
 import { base } from 'viem/chains'
 
-import type { Market } from '../../src/execution/encode-call'
-import type { LiquidationPlan } from '../../src/sizing/plan'
+import { simulateLiquidationExec } from '../../src/execution/simulate'
 
-import { classifyRevert, simulateLiquidate } from '../../src/execution/simulate'
+const EXECUTOR = getAddress('0x1111111111111111111111111111111111111111')
+const EOA = getAddress('0x4444444444444444444444444444444444444444')
+const DATA: Hex = '0xdeadbeef'
 
-describe('classifyRevert', () => {
-  it('maps a decoded Midnight error to revert (plan rejected — a sizing/eligibility bug)', () => {
-    // 0xddeb79ba = NotLiquidatable(), which decodes against MidnightAbi.
-    const error = new ContractFunctionRevertedError({
-      abi: MidnightAbi,
-      data: '0xddeb79ba',
-      functionName: 'liquidate'
-    })
-    expect(classifyRevert(error)).toEqual({ status: 'revert', reason: 'NotLiquidatable' })
-  })
-
-  it('maps an undecodable revert (the loan-token pull) to unfunded', () => {
-    // 0x1eded19c = SafeTransferLib.TransferFromReturnedFalse() — NOT an IMidnight error, so it does
-    // not decode against MidnightAbi: the loan-token pull failed → plan valid, just unfunded.
-    const error = new ContractFunctionRevertedError({
-      abi: MidnightAbi,
-      data: '0x1eded19c',
-      functionName: 'liquidate'
-    })
-    expect(classifyRevert(error).status).toBe('unfunded')
-  })
-
-  it('falls back to the error message for a non-contract error', () => {
-    expect(classifyRevert(new Error('rpc timeout'))).toEqual({
-      status: 'revert',
-      reason: 'rpc timeout'
+// A client whose `eth_call` is driven by `onCall`: returning a hex string models a successful exec,
+// throwing models a revert somewhere in the seize → swap → repay → sweep path.
+function clientThatCalls(onCall: () => string) {
+  return createPublicClient({
+    chain: base,
+    transport: custom({
+      request: async ({ method }) => {
+        if (method === 'eth_chainId') return `0x${base.id.toString(16)}`
+        if (method === 'eth_call') return onCall()
+        throw new Error(`unexpected RPC method ${method}`)
+      }
     })
   })
-})
-
-const MIDNIGHT = getAddress('0x3726353bCDDba7c29a17D46D8a35D1E8b2E51854')
-const EXECUTOOOR = getAddress('0x2222222222222222222222222222222222222222')
-const BORROWER = getAddress('0x1111111111111111111111111111111111111111')
-const TOKEN = getAddress('0x3333333333333333333333333333333333333333')
-const ORACLE = getAddress('0x4444444444444444444444444444444444444444')
-
-const MARKET: Market = {
-  loanToken: TOKEN,
-  collateralParams: [
-    { token: TOKEN, lltv: 860000000000000000n, maxLif: 1100000000000000000n, oracle: ORACLE }
-  ],
-  maturity: 2000n,
-  rcfThreshold: 1n,
-  enterGate: zeroAddress,
-  liquidatorGate: zeroAddress
-}
-const PLAN: LiquidationPlan = {
-  collateralIndex: 1,
-  seizedAssets: 1234n,
-  repaidUnits: 0n,
-  postMaturityMode: false
 }
 
-describe('simulateLiquidate', () => {
-  it('forwards the 9-arg liquidate (mode, executor receiver, zero callback, empty data) and returns ok', async () => {
-    let from: Address | undefined
-    let data: `0x${string}` | undefined
-    const client = createPublicClient({
-      chain: base,
-      transport: custom({
-        request: async ({ method, params }) => {
-          if (method === 'eth_chainId') return `0x${base.id.toString(16)}`
-          if (method === 'eth_call') {
-            const call = (params as [{ from?: Address; data?: `0x${string}` }])[0]
-            from = call.from
-            data = call.data
-            // liquidate returns (uint256, uint256) — hand back a decodable success result.
-            return encodeAbiParameters([{ type: 'uint256' }, { type: 'uint256' }], [0n, 0n])
-          }
-          throw new Error(`unexpected RPC method ${method}`)
-        }
-      })
-    })
+describe('simulateLiquidationExec', () => {
+  it('returns ok when the exec_606BaXt call succeeds', async () => {
+    const client = clientThatCalls(() => '0x')
+    expect(
+      await simulateLiquidationExec(client, { executooor: EXECUTOR, eoa: EOA, data: DATA })
+    ).toEqual({ status: 'ok' })
+  })
 
-    const result = await simulateLiquidate(client, {
-      midnight: MIDNIGHT,
-      executooor: EXECUTOOOR,
-      market: MARKET,
-      borrower: BORROWER,
-      plan: PLAN
+  it('returns revert with a reason when the exec call reverts', async () => {
+    const client = clientThatCalls(() => {
+      throw new Error('execution reverted: NotLiquidatable')
     })
-
-    expect(result).toEqual({ status: 'ok' })
-    expect(from && isAddressEqual(from, EXECUTOOOR)).toBe(true)
-    const decoded = decodeFunctionData({ abi: MidnightAbi, data: data! })
-    expect(decoded.functionName).toBe('liquidate')
-    // args: (market, collateralIndex, seizedAssets, repaidUnits, borrower, postMaturityMode,
-    //        receiver, callback, data)
-    expect(decoded.args[1]).toBe(BigInt(PLAN.collateralIndex))
-    expect(decoded.args[2]).toBe(PLAN.seizedAssets)
-    expect(decoded.args[3]).toBe(PLAN.repaidUnits)
-    expect(isAddressEqual(decoded.args[4] as Address, BORROWER)).toBe(true)
-    expect(decoded.args[5]).toBe(PLAN.postMaturityMode)
-    expect(isAddressEqual(decoded.args[6] as Address, EXECUTOOOR)).toBe(true)
-    expect(isAddressEqual(decoded.args[7] as Address, zeroAddress)).toBe(true)
-    expect(decoded.args[8]).toBe('0x')
+    const result = await simulateLiquidationExec(client, {
+      executooor: EXECUTOR,
+      eoa: EOA,
+      data: DATA
+    })
+    expect(result.status).toBe('revert')
+    expect(result.reason).toBeTruthy()
   })
 })

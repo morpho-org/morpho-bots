@@ -1,5 +1,12 @@
+import type { Address, Hex } from 'viem'
+
 import { ensureError } from '@repo/utils'
 import { getBlockNumber } from 'viem/actions'
+
+import type { Market, SwapStep } from './execution/encode-call'
+import type { SwapConfigEntry } from './execution/swap-step'
+import type { LensOut } from './lens/lens.sol'
+import type { LiquidationPlan } from './sizing/plan'
 
 import { assertContractDeployed, createDeploylessClient } from './chain/client'
 import { createSigner } from './chain/signer'
@@ -7,8 +14,9 @@ import { loadConfig } from './config'
 import { createDaemon } from './daemon/daemon'
 import { runTick } from './daemon/tick'
 import { createPostgresQuery, discoverBorrowers, rindexerSyncedBlock } from './discovery/borrowers'
-import { encodeDummyLiquidate } from './execution/encode-call'
-import { simulateLiquidate } from './execution/simulate'
+import { encodeLiquidationExec } from './execution/encode-call'
+import { simulateLiquidationExec } from './execution/simulate'
+import { buildSwapStep } from './execution/swap-step'
 import { readMidnightLiquidationLens } from './lens/lens.sol'
 import { createLogger } from './logger'
 import { initialFees } from './queue/fee-policy'
@@ -19,7 +27,7 @@ async function main() {
   const logger = createLogger(config.logLevel)
 
   // Signed-send path: a plain wallet client + nonce manager (separate from the deployless read
-  // client). The EOA address doubles as the liquidator + the dummy-liquidate receiver.
+  // client). The EOA is the liquidator and the recipient of both end-of-exec token sweeps.
   const signer = createSigner(config)
   const eoa = signer.account.address
 
@@ -35,6 +43,40 @@ async function main() {
   const client = createDeploylessClient(config)
   await assertContractDeployed(client, config.executooorAddress, 'EXECUTOOOR_ADDRESS')
 
+  // Per-collateral swap routing for this chain, normalized to lowercase token keys for lookup. A
+  // collateral with no entry is skipped at tick time (`config.no_swap_path`) — a coverage gap, not fatal.
+  const swapByCollateral = new Map<string, SwapConfigEntry>()
+  for (const [token, entry] of Object.entries(config.swapConfig[String(config.chainId)] ?? {})) {
+    if (entry) swapByCollateral.set(token.toLowerCase(), entry)
+  }
+  const swapStepFor = (plan: LiquidationPlan, out: LensOut): SwapStep | null => {
+    const collateral = out.market.collateralParams[plan.collateralIndex]
+    if (!collateral) return null
+    const entry = swapByCollateral.get(collateral.token.toLowerCase())
+    return entry ? buildSwapStep(entry, plan, out) : null
+  }
+
+  // The exec calldata for one liquidation — the same bytes the simulate gate checks and the queue
+  // broadcasts, so a sim-ok plan and its broadcast can't drift.
+  const encodeExec = (
+    market: Market,
+    borrower: Address,
+    plan: LiquidationPlan,
+    swapStep: SwapStep
+  ): Hex =>
+    encodeLiquidationExec({
+      executor: config.executooorAddress,
+      midnight: config.midnight,
+      market,
+      collateralIndex: plan.collateralIndex,
+      seizedAssets: plan.seizedAssets,
+      repaidUnits: plan.repaidUnits,
+      borrower,
+      postMaturityMode: plan.postMaturityMode,
+      swapStep,
+      recipient: eoa
+    })
+
   const query = createPostgresQuery(config.databaseUrl)
   const discover = () => discoverBorrowers(query)
   const queue = createPendingQueue({
@@ -45,10 +87,10 @@ async function main() {
     logger
   })
 
-  // Phase-3 daemon: an HTTP block-poll watcher drives one tick per new block (coalescing backlog),
+  // Phase-4 daemon: an HTTP block-poll watcher drives one tick per new block (coalescing backlog),
   // passing the polled height as both the rindexer-lag reference and the queue's submittedAtBlock.
-  // The tick submits structurally-valid plans (Phase 3: a deterministically-reverting dummy that
-  // moves no funds — see encodeDummyLiquidate) and drives the queue's onBlock.
+  // Each liquidatable position resolves its swap step, simulates the real `exec_606BaXt`, and — on a
+  // sim-ok result — broadcasts that same exec via the Executor singleton, then drives queue.onBlock.
   const tick = (chainHead: bigint) =>
     runTick({
       discover,
@@ -56,18 +98,19 @@ async function main() {
       chainHead,
       caller: config.executooorAddress,
       readLens: pairs => readMidnightLiquidationLens(client, config.midnight, pairs),
-      simulate: args =>
-        simulateLiquidate(client, {
-          midnight: config.midnight,
+      swapStepFor,
+      simulate: ({ market, borrower, plan, swapStep }) =>
+        simulateLiquidationExec(client, {
           executooor: config.executooorAddress,
-          ...args
+          eoa,
+          data: encodeExec(market, borrower, plan, swapStep)
         }),
-      submit: async ({ market, borrower, plan, blockNumber, label }) => {
+      submit: async ({ market, borrower, plan, swapStep, blockNumber, label }) => {
         const fees = initialFees(await signer.getBaseFee(), config.maxFeeWei)
         await queue.submit({
           request: {
-            to: config.midnight,
-            data: encodeDummyLiquidate({ market, borrower, eoa, plan })
+            to: config.executooorAddress,
+            data: encodeExec(market, borrower, plan, swapStep)
           },
           label,
           maxFeePerGas: fees.maxFeePerGas,
