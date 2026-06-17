@@ -6,6 +6,7 @@ import { executorAbi } from 'executooor-viem'
 import {
   decodeAbiParameters,
   decodeFunctionData,
+  erc20Abi,
   getAddress,
   isAddressEqual,
   zeroAddress
@@ -13,7 +14,8 @@ import {
 
 import type { CollateralParams, Market, SwapStep } from '../../src/execution/encode-call'
 
-import { encodeDummyLiquidate, encodeLiquidationExec } from '../../src/execution/encode-call'
+import { CALLBACK_SUCCESS } from '../../src/constants'
+import { encodeLiquidationExec } from '../../src/execution/encode-call'
 
 const EXECUTOR = getAddress('0x1111111111111111111111111111111111111111')
 const MIDNIGHT = getAddress('0x2222222222222222222222222222222222222222')
@@ -23,6 +25,31 @@ const ROUTER = getAddress('0x5555555555555555555555555555555555555555')
 const LOAN = getAddress('0x6666666666666666666666666666666666666666')
 const COLLATERAL = getAddress('0x7777777777777777777777777777777777777777')
 const ORACLE = getAddress('0x8888888888888888888888888888888888888888')
+
+// Local copy of the SwapRouter02 `exactInputSingle` shape, for decoding the swap sub-call.
+const EXACT_INPUT_SINGLE_ABI = [
+  {
+    type: 'function',
+    name: 'exactInputSingle',
+    stateMutability: 'payable',
+    inputs: [
+      {
+        name: 'params',
+        type: 'tuple',
+        components: [
+          { name: 'tokenIn', type: 'address' },
+          { name: 'tokenOut', type: 'address' },
+          { name: 'fee', type: 'uint24' },
+          { name: 'recipient', type: 'address' },
+          { name: 'amountIn', type: 'uint256' },
+          { name: 'amountOutMinimum', type: 'uint256' },
+          { name: 'sqrtPriceLimitX96', type: 'uint160' }
+        ]
+      }
+    ],
+    outputs: [{ name: 'amountOut', type: 'uint256' }]
+  }
+] as const
 
 const collateralParam: CollateralParams = {
   token: COLLATERAL,
@@ -40,8 +67,6 @@ const market: Market = {
 }
 const swapStep: SwapStep = {
   router: ROUTER,
-  tokenIn: COLLATERAL,
-  tokenOut: LOAN,
   fee: 3000,
   amountOutMinimum: 12345n
 }
@@ -61,20 +86,32 @@ function encode() {
   })
 }
 
+/** Decodes the outer `exec_606BaXt(bytes[])` call list. */
+function outerCalls(): readonly Hex[] {
+  const top = decodeFunctionData({ abi: executorAbi, data: encode() })
+  if (top.functionName !== 'exec_606BaXt') throw new Error('expected exec_606BaXt')
+  return top.args[0] as readonly Hex[]
+}
+
+/** Decodes the `liquidate(...)` calldata and the `(bytes[] queue, bytes returnData)` callback blob. */
+function decodeLiquidate() {
+  const liquidateCall = decodeFunctionData({ abi: executorAbi, data: outerCalls()[0]! })
+  if (liquidateCall.functionName !== 'call_g0oyU7o') throw new Error('expected call_g0oyU7o')
+  const liquidate = decodeFunctionData({ abi: MidnightAbi, data: liquidateCall.args[3] })
+  if (liquidate.functionName !== 'liquidate') throw new Error('expected liquidate')
+  const [queue, returnData] = decodeAbiParameters(
+    [{ type: 'bytes[]' }, { type: 'bytes' }] as const,
+    liquidate.args[8]
+  )
+  return { context: liquidateCall.args[2], liquidate, queue, returnData }
+}
+
 describe('encodeLiquidationExec', () => {
   it('encodes exec_606BaXt with a liquidate call followed by two token sweeps', () => {
-    const top = decodeFunctionData({ abi: executorAbi, data: encode() })
-    expect(top.functionName).toBe('exec_606BaXt')
-    const calls = top.args[0] as readonly Hex[]
+    const calls = outerCalls()
     expect(calls).toHaveLength(3)
 
-    // Call 0: a plain self-gated call to Midnight carrying the liquidate calldata.
-    const liquidateCall = decodeFunctionData({ abi: executorAbi, data: calls[0]! })
-    if (liquidateCall.functionName !== 'call_g0oyU7o') throw new Error('expected call_g0oyU7o')
-    expect(isAddressEqual(liquidateCall.args[0], MIDNIGHT)).toBe(true)
-
-    const liquidate = decodeFunctionData({ abi: MidnightAbi, data: liquidateCall.args[3] })
-    if (liquidate.functionName !== 'liquidate') throw new Error('expected liquidate')
+    const { liquidate } = decodeLiquidate()
     expect(liquidate.args[1]).toBe(0n) // collateralIndex
     expect(liquidate.args[2]).toBe(100n) // seizedAssets
     expect(liquidate.args[3]).toBe(0n) // repaidUnits
@@ -82,30 +119,80 @@ describe('encodeLiquidationExec', () => {
     expect(liquidate.args[5]).toBe(false) // postMaturityMode
     expect(isAddressEqual(liquidate.args[6], EXECUTOR)).toBe(true) // receiver = the Executor
     expect(isAddressEqual(liquidate.args[7], EXECUTOR)).toBe(true) // callback = the Executor
+  })
 
-    // The liquidate `data` (9th arg) is the ABI-encoded swap step.
-    const [decodedStep] = decodeAbiParameters(
-      [
-        {
-          type: 'tuple',
-          components: [
-            { name: 'router', type: 'address' },
-            { name: 'tokenIn', type: 'address' },
-            { name: 'tokenOut', type: 'address' },
-            { name: 'fee', type: 'uint24' },
-            { name: 'amountOutMinimum', type: 'uint256' }
-          ]
-        }
-      ] as const,
-      liquidate.args[8]
-    )
-    expect(isAddressEqual(decodedStep.router, ROUTER)).toBe(true)
-    expect(decodedStep.fee).toBe(3000)
-    expect(decodedStep.amountOutMinimum).toBe(12345n)
+  it('carries the callback context {sender: MIDNIGHT, dataIndex: 8} on the liquidate call', () => {
+    const { context } = decodeLiquidate()
+    const packed = BigInt(context)
+    // context = dataIndex (high 96 bits) | sender (low 160 bits).
+    expect(packed >> 160n).toBe(8n)
+    expect(packed & ((1n << 160n) - 1n)).toBe(BigInt(MIDNIGHT))
+  })
+
+  it('returns the raw 32-byte CALLBACK_SUCCESS as the callback return blob', () => {
+    const { returnData } = decodeLiquidate()
+    expect(returnData.toLowerCase()).toBe(CALLBACK_SUCCESS.toLowerCase())
+  })
+
+  it('builds the callback queue: zero-first collateral approve, swap, zero-first repay approval', () => {
+    const { queue } = decodeLiquidate()
+    expect(queue).toHaveLength(5)
+
+    // (1) approve(collateral -> router, 0) — plain self-call, no placeholder.
+    const approveZero = decodeFunctionData({ abi: executorAbi, data: queue[0]! })
+    if (approveZero.functionName !== 'call_g0oyU7o') throw new Error('expected call_g0oyU7o')
+    expect(isAddressEqual(approveZero.args[0], COLLATERAL)).toBe(true)
+    const approveZeroInner = decodeFunctionData({ abi: erc20Abi, data: approveZero.args[3] })
+    if (approveZeroInner.functionName !== 'approve') throw new Error('expected approve')
+    expect(isAddressEqual(approveZeroInner.args[0], ROUTER)).toBe(true)
+    expect(approveZeroInner.args[1]).toBe(0n)
+
+    // (2) approve(collateral -> router, <balanceOf>) — placeholder overwrites the amount word (36).
+    const approveSeize = decodeFunctionData({ abi: executorAbi, data: queue[1]! })
+    if (approveSeize.functionName !== 'callWithPlaceholders4845164670')
+      throw new Error('expected placeholder call')
+    expect(isAddressEqual(approveSeize.args[0], COLLATERAL)).toBe(true)
+    expect(approveSeize.args[4][0]!.offset).toBe(36n)
+    expect(isAddressEqual(approveSeize.args[4][0]!.to, COLLATERAL)).toBe(true)
+
+    // (3) exactInputSingle(collateral -> loan, recipient = Executor) — amountIn placeholder (132).
+    const swap = decodeFunctionData({ abi: executorAbi, data: queue[2]! })
+    if (swap.functionName !== 'callWithPlaceholders4845164670')
+      throw new Error('expected placeholder call')
+    expect(isAddressEqual(swap.args[0], ROUTER)).toBe(true)
+    expect(swap.args[4][0]!.offset).toBe(132n)
+    expect(isAddressEqual(swap.args[4][0]!.to, COLLATERAL)).toBe(true)
+    const swapInner = decodeFunctionData({ abi: EXACT_INPUT_SINGLE_ABI, data: swap.args[3] })
+    if (swapInner.functionName !== 'exactInputSingle') throw new Error('expected exactInputSingle')
+    expect(isAddressEqual(swapInner.args[0].tokenIn, COLLATERAL)).toBe(true)
+    expect(isAddressEqual(swapInner.args[0].tokenOut, LOAN)).toBe(true)
+    expect(swapInner.args[0].fee).toBe(3000)
+    expect(isAddressEqual(swapInner.args[0].recipient, EXECUTOR)).toBe(true)
+    expect(swapInner.args[0].amountOutMinimum).toBe(12345n)
+
+    // (4) approve(loan -> MIDNIGHT, 0) — zero-first, plain self-call.
+    const repayApproveZero = decodeFunctionData({ abi: executorAbi, data: queue[3]! })
+    if (repayApproveZero.functionName !== 'call_g0oyU7o') throw new Error('expected call_g0oyU7o')
+    expect(isAddressEqual(repayApproveZero.args[0], LOAN)).toBe(true)
+    const repayZeroInner = decodeFunctionData({ abi: erc20Abi, data: repayApproveZero.args[3] })
+    if (repayZeroInner.functionName !== 'approve') throw new Error('expected approve')
+    expect(isAddressEqual(repayZeroInner.args[0], MIDNIGHT)).toBe(true)
+    expect(repayZeroInner.args[1]).toBe(0n)
+
+    // (5) approve(loan -> MIDNIGHT, <balanceOf>) — placeholder overwrites the amount word (36).
+    const repayApprove = decodeFunctionData({ abi: executorAbi, data: queue[4]! })
+    if (repayApprove.functionName !== 'callWithPlaceholders4845164670')
+      throw new Error('expected placeholder call')
+    expect(isAddressEqual(repayApprove.args[0], LOAN)).toBe(true)
+    expect(repayApprove.args[4][0]!.offset).toBe(36n)
+    expect(isAddressEqual(repayApprove.args[4][0]!.to, LOAN)).toBe(true)
+    const repayInner = decodeFunctionData({ abi: erc20Abi, data: repayApprove.args[3] })
+    if (repayInner.functionName !== 'approve') throw new Error('expected approve')
+    expect(isAddressEqual(repayInner.args[0], MIDNIGHT)).toBe(true)
   })
 
   it('sweeps the loan token then the collateral token to the recipient', () => {
-    const calls = decodeFunctionData({ abi: executorAbi, data: encode() }).args[0] as readonly Hex[]
+    const calls = outerCalls()
 
     const loanSweep = decodeFunctionData({ abi: executorAbi, data: calls[1]! })
     if (loanSweep.functionName !== 'callWithPlaceholders4845164670')
@@ -133,26 +220,5 @@ describe('encodeLiquidationExec', () => {
         recipient: RECIPIENT
       })
     ).toThrow(/out of range/)
-  })
-})
-
-describe('encodeDummyLiquidate', () => {
-  it('encodes a direct 9-arg Midnight.liquidate with receiver=EOA, callback=0, data=0x', () => {
-    const data = encodeDummyLiquidate({
-      market,
-      borrower: BORROWER,
-      eoa: RECIPIENT,
-      plan: { collateralIndex: 1, seizedAssets: 100n, repaidUnits: 0n, postMaturityMode: false }
-    })
-    const decoded = decodeFunctionData({ abi: MidnightAbi, data })
-    if (decoded.functionName !== 'liquidate') throw new Error('expected liquidate')
-    expect(decoded.args[1]).toBe(1n) // collateralIndex
-    expect(decoded.args[2]).toBe(100n) // seizedAssets
-    expect(decoded.args[3]).toBe(0n) // repaidUnits
-    expect(isAddressEqual(decoded.args[4], BORROWER)).toBe(true)
-    expect(decoded.args[5]).toBe(false) // postMaturityMode
-    expect(isAddressEqual(decoded.args[6], RECIPIENT)).toBe(true) // receiver = the EOA
-    expect(isAddressEqual(decoded.args[7], zeroAddress)).toBe(true) // callback = none
-    expect(decoded.args[8]).toBe('0x') // data
   })
 })
