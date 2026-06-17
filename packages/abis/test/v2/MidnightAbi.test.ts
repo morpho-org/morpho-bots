@@ -7,16 +7,16 @@ import { MidnightAbi } from '../../src/v2/MidnightAbi'
 // distinguish a rejected plan ("revert") from an unfunded-but-valid plan ("unfunded"). Pinning them
 // here guards the classifier against an ABI regeneration that renames or drops one of these errors.
 // (All five are zero-arg, so encodeErrorResult returns just the 4-byte selector.)
-const MIDNIGHT_REVERT_SELECTORS: Record<string, `0x${string}`> = {
-  NotLiquidatable: '0xddeb79ba',
-  RecoveryCloseFactorConditionsViolated: '0x1b428e88',
-  InconsistentInput: '0xf0732dd7',
-  NotBorrower: '0xcb1e8f38',
-  LiquidatorGatedFromLiquidating: '0x37a4840b'
-}
+const MIDNIGHT_REVERT_SELECTORS = [
+  ['NotLiquidatable', '0xddeb79ba'],
+  ['RecoveryCloseFactorConditionsViolated', '0x1b428e88'],
+  ['InconsistentInput', '0xf0732dd7'],
+  ['NotBorrower', '0xcb1e8f38'],
+  ['LiquidatorGatedFromLiquidating', '0x37a4840b']
+] as const
 
 describe('MidnightAbi', () => {
-  test.each(Object.entries(MIDNIGHT_REVERT_SELECTORS))(
+  test.each(MIDNIGHT_REVERT_SELECTORS)(
     'error %s resolves to selector %s',
     (errorName, selector) => {
       expect(encodeErrorResult({ abi: MidnightAbi, errorName })).toBe(selector)

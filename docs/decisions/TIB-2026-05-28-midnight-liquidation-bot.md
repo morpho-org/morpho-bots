@@ -141,13 +141,51 @@ Executor is funded via the swap, an `unfunded` sim means the swap didn't cover t
 shouldn't be broadcast. The "verify replacement via a deliberately-underpriced first send" check is a
 manual testnet gate (needs a funded EOA), unit-tested seams aside.
 
+**11. The vendored Executor is fully generic — owner gate stripped, NO Midnight-specific Solidity
+(CRTR-2586).** Supersedes §Executooor integration's "two modifications" design and §8's "the
+Executor handler (CRTR-2586) must match 10-arg `onLiquidate` and return `CALLBACK_SUCCESS`". The
+original premise — "the upstream bare fallback runs queued calls but does not return the magic
+value, so a real handler is mandatory" — is **false**: the upstream fallback decodes its embedded
+blob as `(bytes[] queue, bytes returnData)`, runs the queue, and returns `returnData` **raw**, which
+is exactly how the upstream `ExecutorEncoder` already services magic-value callbacks (Aave,
+Balancer, Morpho Blue flashloans). Encoding `abi.encode(CALLBACK_SUCCESS)` as the trailing bytes
+satisfies Midnight's check. A typed `onLiquidate` handler's remaining benefits (exact-`repaidUnits`
+approval, token cross-checks, a `MIDNIGHT` immutable gate) were bot-self-protection only: with the
+owner gate stripped, **any** between-tx balance or allowance is already claimable/settable by anyone
+via `exec_606BaXt`, so contract-side defenses add no third-party security. The security burden sits
+with each caller, per transaction — the encoder plus the simulate residual check. The vendored
+`contracts/executooor/Executor.sol` is upstream byte-for-byte except the owner gate (immutable, ctor
+arg, `require`) and a pragma relaxation (`0.8.25` → `^0.8.25`, so the repo's solc 0.8.35
+compile-verifies it). No constructor also means the singleton is protocol- and chain-agnostic: one
+deployment serves any Midnight instance. Verification:
+`bots/midnight-liquidation/test/contracts/executor.sol.test.ts` (Cancun compile, solc-ABI parity
+with the new `@repo/abis/v2` `ExecutorAbi`, upstream-minus-constructor surface parity) and
+`packages/abis/test/v2/ExecutorAbi.test.ts` (mined-selector goldens `exec_606BaXt = 0x00000001`,
+`call_g0oyU7o = 0x00000000`; no constructor; payable fallback/receive). **Encoder consequences
+(CRTR-2587 — the as-built `encodeLiquidationExec`/`SwapStep` of §10's "exec encoder ✅" targets the
+dead typed-handler design and must be reworked):** the swap and repay approval ride INSIDE
+`liquidate`'s `data` as the callback queue — `[approve(collateral→router, 0),
+approve(collateral→router, seizedAssets), exactInputSingle (SwapRouter02), approve(loan→MIDNIGHT,
+balanceOf-placeholder)]` with `abi.encode(CALLBACK_SUCCESS)` as the return blob, pushed with
+callback context `{sender: MIDNIGHT, dataIndex: 8}` (`data`'s arg position in the 10-arg
+`onLiquidate` calldata). Two caller-side rules replace the dead contract-side defenses: (a)
+**zero-first approve pairs** — anyone can pre-set a nonzero allowance from the singleton, so a
+single plain `approve` is a standing DoS on approve-from-nonzero-reverting (USDT-style) tokens; (b)
+the Midnight repay approval is **balance-based** (`repaidUnits` is recomputed on-chain and not
+staticcall-readable), over-approving by the profit margin — the residual allowance is inert while
+the zero-balance-between-txs invariant holds, which keeps the simulate residual check load-bearing.
+The same queue trick covers `onFlashLoan` (§Future Considerations' "another mandatory Solidity
+handler" is likewise unnecessary). The pre-deploy audit shrinks from "a shared singleton that moves
+tokens and carries a callback" to "confirm a three-line deletion from upstream".
+
 **Status by phase:** Phase 1 ✅ (config, rindexer-backed discovery, dry-run
 orchestrator). Phase 2 ✅ (sizing, lens, read-only lens+sizing wire-path + simulate sink + `getCode`
 gate — CRTR-2582; re-pointed at the deployed `main` ABI and validated against Base via a `toMarket`
 smoke; only lens gas calibration remains). Phase 3 ✅ (nonce queue + fee policy, block-poll watcher +
 daemon lifecycle, signed sends with the dummy reverting broadcast — CRTR-2583/2584/2585; the
-underpriced-replacement check is a manual testnet gate). Phase 4 ⏳ (exec encoder ✅; vendored Executor
-Solidity, real swap config, anvil suite remain — CRTR-2586/2588/2589).
+underpriced-replacement check is a manual testnet gate). Phase 4 ⏳ (vendored generic Executor +
+`ExecutorAbi` ✅ — CRTR-2586; exec encoder must be reworked to §11's callback-queue shape —
+CRTR-2587; real swap config and anvil suite remain — CRTR-2588/2589).
 
 ## Context
 
