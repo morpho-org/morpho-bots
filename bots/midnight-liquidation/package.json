@@ -5,12 +5,13 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
+    "prestart": "bun run --parallel --workspaces --if-present build",
     "start": "bun src/index.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@morpho-org/viem-dlc": "catalog:",
-    "@repo/abis": "workspace:*",
+    "@repo/contracts": "workspace:*",
     "@repo/utils": "workspace:*",
     "executooor-viem": "catalog:",
     "solc": "catalog:",

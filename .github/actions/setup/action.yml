@@ -1,5 +1,5 @@
 name: 'Setup'
-description: 'Sets up the repository (Bun + Node)'
+description: 'Sets up the repository (Bun + Node) and builds dist-emitting workspace packages'
 inputs:
   install:
     description: 'Whether to install dependencies'
@@ -27,3 +27,7 @@ runs:
       shell: bash
       run: |
         bun install ${{ inputs.frozen-lockfile == 'true' && '--frozen-lockfile' || '' }}
+
+    - name: Build @repo/contracts
+      shell: bash
+      run: bun run --filter @repo/contracts build

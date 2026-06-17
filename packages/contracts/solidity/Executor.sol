@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.25;
 
-import {IExecutor, Placeholder} from "./interfaces/IExecutor.sol";
-
 // Vendored from Rubilmax/executooor `contracts/Executor.sol` with ONE functional modification
 // (TIB-2026-05-28-midnight-liquidation-bot §Executooor integration): the `OWNER` immutable,
 // constructor argument, and `require(msg.sender == OWNER)` in `exec_606BaXt` are removed, making
@@ -14,6 +12,10 @@ import {IExecutor, Placeholder} from "./interfaces/IExecutor.sol";
 // callback's `data` and returns the trailing `bytes` raw (the caller encodes
 // `abi.encode(CALLBACK_SUCCESS)` there).
 //
+// `IExecutor` and the `Placeholder` struct (vendored verbatim from upstream
+// `contracts/interfaces/IExecutor.sol`) are inlined below so this is a single self-contained file
+// under packages/contracts/solidity — no separate interface file to keep in sync.
+//
 // Security model: the burden is entirely on each caller, per transaction. Any caller can execute
 // any call batch, so the contract makes NO custody guarantee — any token or ETH balance it holds
 // between transactions is claimable by the next caller. Every plan must end by sweeping all
@@ -24,6 +26,30 @@ import {IExecutor, Placeholder} from "./interfaces/IExecutor.sol";
 //
 // Requires a Cancun-capable chain and compiler target: `tload`/`tstore` (EIP-1153) and `mcopy`
 // (EIP-5656) are emitted via assembly, so an older EVM target fails at runtime, not compile time.
+
+struct Placeholder {
+    address to;
+    bytes data;
+    uint64 offset;
+    uint64 length;
+    uint64 resOffset;
+}
+
+interface IExecutor {
+    function exec_606BaXt(bytes[] memory data) external payable;
+
+    function call_g0oyU7o(address target, uint256 value, bytes32 context, bytes memory callData) external payable;
+
+    function callWithPlaceholders4845164670(
+        address target,
+        uint256 value,
+        bytes32 context,
+        bytes memory callData,
+        Placeholder[] calldata placeholders
+    ) external payable;
+
+    function transfer(address recipient, uint256 amount) external payable;
+}
 
 uint256 constant FALLBACK_CONTEXT_TLOC = 0;
 

@@ -1,6 +1,6 @@
 import type { Hex } from 'viem'
 
-import { MidnightAbi } from '@repo/abis/v2'
+import { MidnightAbi } from '@repo/contracts'
 import { describe, expect, it } from 'bun:test'
 import { executorAbi } from 'executooor-viem'
 import {

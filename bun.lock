@@ -20,7 +20,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@morpho-org/viem-dlc": "catalog:",
-        "@repo/abis": "workspace:*",
+        "@repo/contracts": "workspace:*",
         "@repo/utils": "workspace:*",
         "executooor-viem": "catalog:",
         "solc": "catalog:",
@@ -34,16 +34,14 @@
         "typescript": "catalog:",
       },
     },
-    "packages/abis": {
-      "name": "@repo/abis",
+    "packages/contracts": {
+      "name": "@repo/contracts",
       "version": "0.0.0",
-      "dependencies": {
-        "@repo/utils": "workspace:*",
-        "viem": "catalog:",
-      },
       "devDependencies": {
         "@repo/typescript-config": "workspace:*",
         "@types/bun": "catalog:",
+        "solc": "catalog:",
+        "soltag": "catalog:",
         "typescript": "catalog:",
       },
     },
@@ -260,7 +258,7 @@
 
     "@oxlint/binding-win32-x64-msvc": ["@oxlint/binding-win32-x64-msvc@1.61.0", "", { "os": "win32", "cpu": "x64" }, "sha512-0xgSiyeqDLDZxXoe9CVJrOx3TUVsfyoOY7cNi03JbItNcC9WCZqrSNdrAbHONxhSPaVh/lzfnDcON1RqSUMhHw=="],
 
-    "@repo/abis": ["@repo/abis@workspace:packages/abis"],
+    "@repo/contracts": ["@repo/contracts@workspace:packages/contracts"],
 
     "@repo/typescript-config": ["@repo/typescript-config@workspace:packages/typescript-config"],
 

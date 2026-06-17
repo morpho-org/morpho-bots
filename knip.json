@@ -6,7 +6,7 @@
     ".": {},
     "packages/typescript-config": {},
     "packages/utils": {},
-    "packages/abis": {},
+    "packages/contracts": {},
     "bots/midnight-liquidation": {}
   }
 }

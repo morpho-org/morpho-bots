@@ -1,6 +1,6 @@
 import type { Address, Hex } from 'viem'
 
-import { MidnightAbi } from '@repo/abis/v2'
+import { MidnightAbi } from '@repo/contracts'
 import { ExecutorEncoder, executorAbi } from 'executooor-viem'
 import { encodeAbiParameters, encodeFunctionData, erc20Abi } from 'viem'
 
