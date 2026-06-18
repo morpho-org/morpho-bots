@@ -1,5 +1,6 @@
 import type { Address, Chain, Hex } from 'viem'
 
+import { Executor } from '@repo/contracts'
 import { addressSchema, tryCatch } from '@repo/utils'
 import { readFileSync } from 'node:fs'
 import { getAddress, isAddress, isHex, parseGwei } from 'viem'
@@ -125,10 +126,17 @@ export function loadConfig(
     throw new Error('LIQUIDATOR_PRIVATE_KEY must be a 0x-prefixed 32-byte hex string')
   }
 
-  const executooorRaw = required(env, 'EXECUTOOOR_ADDRESS')
-  if (!isAddress(executooorRaw, { strict: false })) {
-    throw new Error(`EXECUTOOOR_ADDRESS is not a valid address: ${executooorRaw}`)
+  // The Executor singleton has a deterministic CREATE2 address (soltag bakes the canonical factory +
+  // salt into `Executor.with()`), so EXECUTOOOR_ADDRESS is optional — we default to that derived
+  // address, which the deploy script and the deployless lens also use (one source of truth). Set the
+  // env only to override (e.g. a non-standard deployment).
+  const executooorOverride = env.EXECUTOOOR_ADDRESS?.trim()
+  if (executooorOverride && !isAddress(executooorOverride, { strict: false })) {
+    throw new Error(`EXECUTOOOR_ADDRESS is not a valid address: ${executooorOverride}`)
   }
+  const executooorAddress = executooorOverride
+    ? getAddress(executooorOverride)
+    : getAddress(Executor.with().address)
 
   const logLevel = env.LOG_LEVEL?.trim() || 'info'
   if (!isLogLevel(logLevel)) {
@@ -155,7 +163,7 @@ export function loadConfig(
     rpcUrl,
     rpcUrlFallback: env.RPC_URL_FALLBACK?.trim() || undefined,
     liquidatorPrivateKey,
-    executooorAddress: getAddress(executooorRaw),
+    executooorAddress,
     databaseUrl: required(env, 'DATABASE_URL'),
     swapConfig,
     maxFeeWei: parseGwei(maxFeeGwei),

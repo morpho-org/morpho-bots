@@ -42,12 +42,15 @@ export function createDeploylessClient(
 export async function assertContractDeployed(
   client: Client,
   address: Address,
-  label: string
+  label: string,
+  hint?: string
 ): Promise<void> {
   const code = await getCode(client, { address })
   // viem's getCode maps '0x' → undefined; the explicit '0x' check is belt-and-suspenders against a
   // non-standard transport that returns the bare empty value.
   if (code === undefined || code === '0x') {
-    throw new Error(`${label} (${address}) holds no contract code on this chain`)
+    throw new Error(
+      `${label} (${address}) holds no contract code on this chain${hint ? ` — ${hint}` : ''}`
+    )
   }
 }

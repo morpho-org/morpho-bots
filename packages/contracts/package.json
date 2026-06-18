@@ -13,6 +13,7 @@
   "scripts": {
     "generate": "bun run scripts/codegen.ts && oxfmt src/abis.ts src/contracts.ts",
     "build": "soltag && bun run scripts/build.ts && tsc -p tsconfig.build.json --emitDeclarationOnly",
+    "deploy:executor": "bun run build && bun run scripts/deploy-executor.ts",
     "typecheck": "soltag && tsc --noEmit",
     "format:sol": "forge fmt",
     "format:sol:check": "forge fmt --check"
@@ -22,6 +23,7 @@
     "@types/bun": "catalog:",
     "solc": "catalog:",
     "soltag": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "viem": "catalog:"
   }
 }

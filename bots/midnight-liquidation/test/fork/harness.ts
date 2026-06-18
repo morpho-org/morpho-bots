@@ -94,8 +94,12 @@ export async function deployExecutor(test: TestClient, rpcUrl: string): Promise<
   const wallet = createWalletClient({ account, chain: base, transport: http(rpcUrl) }).extend(
     publicActions
   )
-  const hash = await wallet.deployContract({ abi: Executor.abi, bytecode: Executor.bytecode() })
-  const receipt = await wallet.waitForTransactionReceipt({ hash })
-  if (!receipt.contractAddress) throw new Error('Executor deployment produced no contract address')
-  return receipt.contractAddress
+  // Deploy via the canonical CREATE2 factory (present on the Base fork) so the Executor lands at the
+  // deterministic address the bot derives — the same mechanism as the production deploy script.
+  const { address, factory, factoryData } = Executor.with()
+  const hash = await wallet.sendTransaction({ to: factory, data: factoryData })
+  await wallet.waitForTransactionReceipt({ hash })
+  const code = await wallet.getCode({ address })
+  if (!code || code === '0x') throw new Error(`Executor not deployed at ${address}`)
+  return address
 }

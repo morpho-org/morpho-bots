@@ -1,5 +1,6 @@
 import type { Address } from 'viem'
 
+import { Executor } from '@repo/contracts'
 import { describe, expect, it } from 'bun:test'
 import { getAddress, parseGwei } from 'viem'
 import { mainnet } from 'viem/chains'
@@ -101,6 +102,11 @@ describe('loadConfig', () => {
     const config = loadConfig(baseEnv({ EXECUTOOOR_ADDRESS: lower }), deps)
     expect(config.executooorAddress).toBe(getAddress(lower))
     expect(config.executooorAddress).not.toBe(lower) // proved normalization happened
+  })
+
+  it('defaults to the Executor deterministic CREATE2 address when EXECUTOOOR_ADDRESS is unset', () => {
+    const config = loadConfig(baseEnv({ EXECUTOOOR_ADDRESS: undefined }), deps)
+    expect(config.executooorAddress).toBe(getAddress(Executor.with().address))
   })
 
   it('throws on a too-short private key', () => {

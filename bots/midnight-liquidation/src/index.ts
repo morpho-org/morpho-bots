@@ -41,7 +41,12 @@ async function main() {
   // Read-only client shared by the lens and simulate paths. Validate EXECUTOOOR_ADDRESS holds code
   // before doing any work — fatal on a typo / not-yet-deployed address (liveness, not identity).
   const client = createDeploylessClient(config)
-  await assertContractDeployed(client, config.executooorAddress, 'EXECUTOOOR_ADDRESS')
+  await assertContractDeployed(
+    client,
+    config.executooorAddress,
+    'EXECUTOOOR_ADDRESS',
+    'deploy it with `bun run --filter @repo/contracts deploy:executor`'
+  )
 
   // Per-collateral swap routing for this chain, normalized to lowercase token keys for lookup. A
   // collateral with no entry is skipped at tick time (`config.no_swap_path`) — a coverage gap, not fatal.

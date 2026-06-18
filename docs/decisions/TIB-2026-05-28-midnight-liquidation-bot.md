@@ -251,6 +251,26 @@ seizes the whole slot only if its implied repaid fits within the **post-writeoff
 (`debt - badDebt`), else repays the full debt and lets the contract derive the smaller seize. This
 corrects the original §Sizing "post-maturity → seize 100%, no cap" rule.
 
+**15. Executor is deployed deterministically via the canonical CREATE2 factory; the bot derives the
+address (2026-06-18).** Decided against auto-deploy-on-startup: the Executor is a shared,
+permissionless, fund-moving singleton, so it is deployed deliberately (auditable) rather than silently
+provisioned from the daemon hot path. soltag's `Executor.with()` already returns
+`{ address, factory, factoryData }` against the Foundry/Arachnid deterministic-deployment-proxy
+`0x4e59b44847b379578588920cA78FbF26c0B4956C` (live on Base) with a fixed salt; the no-constructor
+Executor is byte-identical and lands at the **same address on every chain**:
+`0x6d9dEA0Ae96156862A534e5016173d3e001CB7D0`.
+
+- **Deploy command:** `bun run --filter @repo/contracts deploy:executor`
+  (`packages/contracts/scripts/deploy-executor.ts`) — idempotent, fail-loud, chain-agnostic (resolves
+  the chain from the live `eth_chainId`); reuses `Executor.with()` so the deployed address provably
+  matches the bot's derived address and the deployless lens (one salt, one source of truth). Run once
+  per chain with `RPC_URL` + `DEPLOYER_PRIVATE_KEY`.
+- **`EXECUTOOOR_ADDRESS` is now optional** (supersedes the §Config "required" row): the bot defaults
+  to `getAddress(Executor.with().address)`; the env only overrides. The startup
+  `assertContractDeployed` gate now fails loud with the deploy command when no code is found.
+- The anvil fork harness deploys the Executor via the same CREATE2 factory, so the e2e test proves
+  derived == deployed end-to-end.
+
 **Status by phase:** Phase 1 ✅ (config, rindexer-backed discovery, dry-run
 orchestrator). Phase 2 ✅ (sizing, lens, read-only lens+sizing wire-path + simulate sink + `getCode`
 gate — CRTR-2582; re-pointed at the deployed `main` ABI and validated against Base via a `toMarket`
@@ -258,9 +278,10 @@ smoke; only lens gas calibration remains). Phase 3 ✅ (nonce queue + fee policy
 daemon lifecycle, signed sends with the dummy reverting broadcast — CRTR-2583/2584/2585; the
 underpriced-replacement check is a manual testnet gate). Phase 4 ⏳ (vendored generic Executor ✅ — CRTR-2586;
 callback-queue exec encoder reworked ✅ — CRTR-2587; real swap config + `ok`-only gate wired into the
-live tick ✅ — CRTR-2588; anvil fork suite + on-chain residual assertion ✅ — CRTR-2589; Executor
-deploy + testnet go-live remain). See §12–§14 for the `@repo/contracts` migration, the `Take`
-discovery fix, and the anvil suite + the post-maturity sizing fix it caught.
+live tick ✅ — CRTR-2588; anvil fork suite + on-chain residual assertion ✅ — CRTR-2589; deterministic
+CREATE2 deploy command + derived address ✅ — §15; the on-chain mainnet/testnet deploy run + go-live
+broadcast remain). See §12–§15 for the `@repo/contracts` migration, the `Take` discovery fix, the
+anvil suite + the post-maturity sizing fix, and deterministic Executor deployment.
 
 ## Context
 
@@ -816,17 +837,17 @@ third-party markets it becomes the gate owner's responsibility.
 
 Env vars (fail-loud on missing required):
 
-| Var                      | Required | Default  | Purpose                                  |
-| ------------------------ | -------- | -------- | ---------------------------------------- |
-| `CHAIN_ID`               | yes      | —        | Must be in chain map                     |
-| `RPC_URL`                | yes      | —        | Primary RPC                              |
-| `RPC_URL_FALLBACK`       | no       | —        | Optional `failover` second endpoint      |
-| `LIQUIDATOR_PRIVATE_KEY` | yes      | —        | EOA hex key                              |
-| `EXECUTOOOR_ADDRESS`     | yes      | —        | Shared executooor singleton address      |
-| `SWAP_CONFIG_PATH`       | yes      | —        | Per-collateral swap params JSON          |
-| `MAX_FEE_GWEI`           | no       | `300`    | Hard ceiling for fee bumps               |
-| `CACHE_DIR`              | no       | `.cache` | Reserved; viem-dlc `NodeFsStore` if used |
-| `LOG_LEVEL`              | no       | `info`   |                                          |
+| Var                      | Required | Default  | Purpose                                                |
+| ------------------------ | -------- | -------- | ------------------------------------------------------ |
+| `CHAIN_ID`               | yes      | —        | Must be in chain map                                   |
+| `RPC_URL`                | yes      | —        | Primary RPC                                            |
+| `RPC_URL_FALLBACK`       | no       | —        | Optional `failover` second endpoint                    |
+| `LIQUIDATOR_PRIVATE_KEY` | yes      | —        | EOA hex key                                            |
+| `EXECUTOOOR_ADDRESS`     | no       | derived  | Override; default is the derived CREATE2 address (§15) |
+| `SWAP_CONFIG_PATH`       | yes      | —        | Per-collateral swap params JSON                        |
+| `MAX_FEE_GWEI`           | no       | `300`    | Hard ceiling for fee bumps                             |
+| `CACHE_DIR`              | no       | `.cache` | Reserved; viem-dlc `NodeFsStore` if used               |
+| `LOG_LEVEL`              | no       | `info`   |                                                        |
 
 Chain map in `config.ts`: `{ [chainId]: { chain, midnight: Address, deployer: Address } }` —
 fail loudly when `CHAIN_ID` isn't present. The `deployer` is the stable CREATE2 deployer for
