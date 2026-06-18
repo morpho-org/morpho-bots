@@ -1,287 +1,13 @@
 # TIB-2026-05-28: Midnight liquidation bot — v0
 
-| Field      | Value                                             |
-| ---------- | ------------------------------------------------- |
-| **Status** | Accepted — in implementation (amended 2026-06-17) |
-| **Date**   | 2026-05-28                                        |
-| **Author** | @hayden                                           |
-| **Scope**  | App: `bots/midnight-liquidation`                  |
+| Field      | Value                                                               |
+| ---------- | ------------------------------------------------------------------- |
+| **Status** | Accepted — implemented; on-chain deploy + go-live broadcast pending |
+| **Date**   | 2026-05-28                                                          |
+| **Author** | @hayden                                                             |
+| **Scope**  | App: `bots/midnight-liquidation`                                    |
 
 ---
-
-## Implementation Amendments (2026-06-10)
-
-> Recorded while implementing Phases 1–4 against the **deployed** contracts (`@repo/abis/v2` /
-> `midnight-contracts.txt`) and the **live** API. Where this section disagrees with the design
-> below, **this section is authoritative**; the original text is kept for rationale/history.
->
-> **The deployed Base contract is `morpho-org/midnight@main` (9-arg `liquidate`, `Market`/`toMarket`)
-> — see §8, which is authoritative on the ABI.** Both `@repo/abis/v2` (now regenerated from `main`)
-> and `docs/context/repos/midnight-contracts.txt` are OLDER snapshots, so this TIB's inline `…:NNNN`
-> line references point at the old surface and won't line up; trust §8's deployed-`main` facts.
-> **§12 (2026-06-17) supersedes the ABI _location_: `@repo/abis` is deleted — ABIs now live in
-> `@repo/contracts`, soltag-compiled from vendored Solidity.**
-
-**1. Discovery is a co-located rindexer instance, not a global `/positions` listing.** The live API
-**requires a `user` param** on `/v1/midnight/positions`, so there is no global borrow-position
-listing (contradicts §API client design — Discovery cadence). Borrowers are discovered by a
-**rindexer** instance bundled in the bot's `docker-compose.yml`, indexing two Midnight events on
-Base into Postgres: `UpdatePosition(bytes32 indexed id_, address indexed user, …)` → the
-(market, borrower) universe, and `ObligationCreated(bytes32 id, Obligation obligation)` → the full
-`Market` config. The bot reads the indexed pairs from Postgres each tick (`DATABASE_URL`). A
-`/markets` fetch is still unneeded — but because the config comes from the indexed
-`ObligationCreated`, not from inline position data (position rows carry only
-`market_id`/`maturity`/`debt`/`collaterals`). `/positions` `limit` max is **100** (TIB said 200).
-New modules: `discovery/borrowers.ts`, `daemon/tick.ts`, `rindexer/`, `docker-compose.yml`,
-`Dockerfile`. The API client is retained for per-borrower reads + the staleness gate.
-
-**2. The deployed `liquidate` is 6 args — no `postMaturityMode`/`receiver`/`callback`.**
-`liquidate(Obligation obligation, uint256 collateralIndex, uint256 seizedAssets, uint256
-repaidUnits, address borrower, bytes data)` (interface :948). Seized collateral goes to
-**`msg.sender`** (the Executor) before the callback, so the Executor is implicitly both `receiver`
-and `callback`. If `data.length > 0`, the contract calls **7-arg**
-`onLiquidate(bytes32 id, Obligation obligation, uint256 collateralIndex, uint256 seizedAssets,
-uint256 repaidUnits, address borrower, bytes data)` on `msg.sender` — NOT the 10-arg
-`caller/receiver/badDebt` shape the TIB cited at :933 — and **its return value is not checked** (so
-the handler needs no `CALLBACK_SUCCESS`; that magic value is only for the buy/sell/ratifier
-callbacks). The repay is pulled from `msg.sender` after the callback. `execution/encode-call.ts`
-encodes `liquidate(market, idx, seized, repaid, borrower, abi.encode(swapStep))` + trailing
-dual-token `skim` sweeps; the Executor handler (CRTR-2586) must match the 7-arg `onLiquidate` and
-gate `msg.sender == MIDNIGHT` (supersedes the §Executooor integration shape).
-
-**3. `Midnight.isLiquidatable` exists** (contradicts §Lens design). The lens still composes the
-sizing inputs from the per-slot loop and derives `healthy = maxDebt >= debt` from the **full-loop**
-`maxDebt` (not `isHealthy`'s short-circuited sum) to match the `liquidate()` path.
-
-**4. LIF mode is decided by health, not a `postMaturityMode` flag.** On-chain:
-`lif = (debt > maxDebt) ? maxLif : ramp(now, maturity)`, with the RCF cap gated on `now <= maturity`
-(not a passed flag). The as-built `sizing/plan.ts` is still correct for the call: the only path that
-passes a lif-derived amount (normal/pre-maturity `repaidUnits = maxRepaid`, where `debt > maxDebt`
-so `lif = maxLif`) matches; post-maturity it passes `seizedAssets` and the contract derives the
-rest. `badDebt`/`maxDebt` are **two chained** divisions (ceil-ceil / floor-floor), not fused — the
-lens and sizing both replicate this.
-
-**5. No per-chain `deployer`; Base wired.** `soltag`'s `.with(midnight)` bakes the CREATE2 factory
-(canonical `0x4e59b448…`) + `factoryData` into its output, so the bot configures nothing —
-`CHAIN_MAP` is `{ chain, midnight }` (contradicts §Config). v0 targets **Base (8453)**;
-Midnight = `0x3726353bCDDba7c29a17D46D8a35D1E8b2E51854` (startBlock 46758943, from prime-monorepo
-`packages/web3`). A required `DATABASE_URL` env was added (rindexer Postgres). The API error schema
-is `ErrorResponseDto` (not `MidnightErrorResponseDto`).
-
-**6. `soltag` is a build-time transform needing a bun loader plugin + `solc`.** A `sol`-tagged
-template throws at runtime unless transformed; unplugin's `unplugin.bun()` is unusable under bun
-(returns `undefined` from `onLoad`). The
-bot ships `soltag.preload.ts` — a hand-rolled `Bun.plugin` driving soltag's `transformSolTemplates`
-(optimizer on, scoped to this bot) — wired via `bunfig.toml` `preload` for `bun test` and the Docker
-runtime. `soltag` + `solc` are **runtime** deps (the preload compiles on load). The lens loop is
-**split into two passes** to avoid "stack too deep" (soltag exposes no `viaIR`).
-
-**7. Tx queue** (`queue/pending-queue.ts`) injects a `send` primitive rather than embedding viem's
-`createNonceManager` directly; the manager wiring lands with the signed-send path (CRTR-2585).
-Behavior matches §Tx queue.
-
-**8. The deployed Base contract is `morpho-org/midnight@main`, NOT the `@repo/abis/v2` snapshot the
-bot was first built against — this corrects §2/§3/§4.** A live read-only smoke (June 2026, CRTR-2582)
-proved the contract at `0x3726…1854` exposes `Market`/`toMarket`/`collateralBitmap`/`position` and a
-**9-arg** `liquidate`; the snapshot's `Obligation`/`toObligation`/`activatedCollaterals`/
-`isLiquidatable`/`obligationCreated` and 6-arg `liquidate` all revert / are absent (the snapshot
-predated the deployed `main`). `@repo/abis/v2` was **regenerated from the `main` `IMidnight.sol` via
-solc** (committed as `fix(abis)`). Corrections:
-
-- **Lens** reads the `Market` on-chain via `MIDNIGHT.toMarket(id)` (reverts `MarketNotCreated` for an
-  unknown id → per-element try/catch → `valid=false`) and **returns the `Market`** in `LensOut`; the
-  activated bitmap comes from `collateralBitmap(id,user)` (not `activatedCollaterals`). The id is a
-  cryptographic commitment to the encoded `Market`, so an off-chain fetch + `id==toId` re-check is
-  redundant; reading in-lens also drops the unconfirmed rindexer nested-tuple dependency. Discovery
-  (`discovery/borrowers.ts`, rindexer `update_position`) is unchanged — it yields the `(id,borrower)`
-  universe; the market-creation event is no longer indexed (config comes from `toMarket`).
-- **§2 corrected:** `liquidate` is **9-arg** (`market, idx, seized, repaid, borrower, bool
-postMaturityMode, address receiver, address callback, bytes data`). `onLiquidate` is **10-arg** and
-  its return **is** checked — it must equal `CALLBACK_SUCCESS =
-keccak256("morpho.midnight.callbackSuccess") =
-0x7f87788ea698181ea4d28d1576d0ba4fc92c0dbe5bf75b43692af2ce91dbaea2` (the old
-  `keccak256("MIDNIGHT CALLBACK SUCCESS")` was wrong). Seized collateral → `receiver` before the
-  callback; `repaidUnits` pulled from `payer` (= `callback||msg.sender`) after. `encode-call.ts`
-  passes `receiver = callback = the Executor`; `receiver` is unconstrained for `liquidate`
-  (`UnusedReceiverMustBeZero` only guards `take`). The Executor handler (CRTR-2586) must match 10-arg
-  `onLiquidate` and return `CALLBACK_SUCCESS`.
-- **§3/§4 corrected:** `postMaturityMode` IS an explicit `liquidate` arg — the original design held,
-  and `sizing/{lif,rcf,plan}.ts` match the deployed contract (LIF ramp only in post-maturity mode,
-  RCF cap only in normal mode). Liquidatable is mode-selected: `postMaturityMode ? now>maturity :
-!isHealthy`.
-- New read-only modules: `chain/client.ts` (deployless client + `getCode` liveness gate;
-  intentionally not under `daemon/` — the daemon arrives in Phase 3, CRTR-2583),
-  `execution/simulate.ts` (simulates the 9-arg `liquidate` with `callback=0`, impersonating the
-  Executor; `classifyRevert` maps a decoded Midnight error / `Panic` → `revert`, an undecodable
-  loan-pull revert → `unfunded` — the expected read-only outcome), `daemon/eligibility.ts`.
-
-**9. The Morpho API is removed entirely; freshness is gated locally on rindexer** (supersedes §1's
-"the API client is retained for per-borrower reads + the staleness gate" and the whole §API client
-design). After §8's lens re-point, the API's only remaining caller was the staleness gate
-(`/v1/midnight/chains`) — and it checked _Morpho's hosted indexer_, not our co-located rindexer (the
-data source we actually read). Deleted: `src/api/` (client, positions, pagination, chains, generated
-OpenAPI), `scripts/pull-schemas.ts`, the `openapi-fetch`/`openapi-typescript`/`prompts` deps, and
-`MIDNIGHT_API_URL`. The gate is now a **local rindexer-lag signal** in `runTick`: compare rindexer's
-indexed head (`discovery/borrowers.ts` `rindexerSyncedBlock`, Postgres — a documented-assumption
-`MAX(block_number)` query, same caveat as the borrowers SQL) against the chain head the daemon polls.
-It is **observability-only** — it emits `rindexer.lag` and always proceeds (the lens reads every
-candidate fresh, so rindexer lag is coverage latency, not a correctness issue), and **fails open** if
-the query errors (`reason: 'unknown'`). rindexer now indexes **only** `UpdatePosition` (the
-market-creation event is not indexed — config comes from `toMarket`), correcting §1's "two events".
-
-**10. Signed sends + the Phase-3 dummy (CRTR-2585).** `chain/signer.ts` builds a plain HTTP
-(+`failover`) wallet client with viem's `createNonceManager`; `SendTx` runs
-`prepareTransactionRequest` (explicit `nonceManager`) to claim + read the nonce, then
-`sendTransaction`. The tick submits a plan when `simulate ∈ {ok, unfunded}` (a `revert` is a
-sizing/eligibility bug → never broadcast) and the position isn't already in `queue.inflightLabels()`,
-then drives `queue.onBlock`. Because the modified Executor (CRTR-2586) + swap config (CRTR-2588)
-don't exist yet, the Phase-3 broadcast is a **dummy**: the 9-arg `Midnight.liquidate` called directly
-from the EOA with `receiver = EOA`, `callback = address(0)`, `data = '0x'` — it reverts
-deterministically (unfunded loan-token pull) and moves no funds, exercising send/track/bump/replace
-end-to-end (`encodeDummyLiquidate`). **Phase-4 note:** tighten the submit gate to `ok`-only — once the
-Executor is funded via the swap, an `unfunded` sim means the swap didn't cover the repay, which
-shouldn't be broadcast. The "verify replacement via a deliberately-underpriced first send" check is a
-manual testnet gate (needs a funded EOA), unit-tested seams aside.
-
-**11. The vendored Executor is fully generic — owner gate stripped, NO Midnight-specific Solidity
-(CRTR-2586).** Supersedes §Executooor integration's "two modifications" design and §8's "the
-Executor handler (CRTR-2586) must match 10-arg `onLiquidate` and return `CALLBACK_SUCCESS`". The
-original premise — "the upstream bare fallback runs queued calls but does not return the magic
-value, so a real handler is mandatory" — is **false**: the upstream fallback decodes its embedded
-blob as `(bytes[] queue, bytes returnData)`, runs the queue, and returns `returnData` **raw**, which
-is exactly how the upstream `ExecutorEncoder` already services magic-value callbacks (Aave,
-Balancer, Morpho Blue flashloans). Encoding `abi.encode(CALLBACK_SUCCESS)` as the trailing bytes
-satisfies Midnight's check. A typed `onLiquidate` handler's remaining benefits (exact-`repaidUnits`
-approval, token cross-checks, a `MIDNIGHT` immutable gate) were bot-self-protection only: with the
-owner gate stripped, **any** between-tx balance or allowance is already claimable/settable by anyone
-via `exec_606BaXt`, so contract-side defenses add no third-party security. The security burden sits
-with each caller, per transaction — the encoder plus the simulate residual check. The vendored
-`contracts/executooor/Executor.sol` is upstream byte-for-byte except the owner gate (immutable, ctor
-arg, `require`) and a pragma relaxation (`0.8.25` → `^0.8.25`, so the repo's solc 0.8.35
-compile-verifies it). No constructor also means the singleton is protocol- and chain-agnostic: one
-deployment serves any Midnight instance. Verification:
-`bots/midnight-liquidation/test/contracts/executor.sol.test.ts` (Cancun compile, solc-ABI parity
-with the new `@repo/abis/v2` `ExecutorAbi`, upstream-minus-constructor surface parity) and
-`packages/abis/test/v2/ExecutorAbi.test.ts` (mined-selector goldens `exec_606BaXt = 0x00000001`,
-`call_g0oyU7o = 0x00000000`; no constructor; payable fallback/receive). **Encoder consequences
-(CRTR-2587 — the as-built `encodeLiquidationExec`/`SwapStep` of §10's "exec encoder ✅" targets the
-dead typed-handler design and must be reworked):** the swap and repay approval ride INSIDE
-`liquidate`'s `data` as the callback queue — `[approve(collateral→router, 0),
-approve(collateral→router, seizedAssets), exactInputSingle (SwapRouter02), approve(loan→MIDNIGHT,
-balanceOf-placeholder)]` with `abi.encode(CALLBACK_SUCCESS)` as the return blob, pushed with
-callback context `{sender: MIDNIGHT, dataIndex: 8}` (`data`'s arg position in the 10-arg
-`onLiquidate` calldata). Two caller-side rules replace the dead contract-side defenses: (a)
-**zero-first approve pairs** — anyone can pre-set a nonzero allowance from the singleton, so a
-single plain `approve` is a standing DoS on approve-from-nonzero-reverting (USDT-style) tokens; (b)
-the Midnight repay approval is **balance-based** (`repaidUnits` is recomputed on-chain and not
-staticcall-readable), over-approving by the profit margin — the residual allowance is inert while
-the zero-balance-between-txs invariant holds, which keeps the simulate residual check load-bearing.
-The same queue trick covers `onFlashLoan` (§Future Considerations' "another mandatory Solidity
-handler" is likewise unnecessary). The pre-deploy audit shrinks from "a shared singleton that moves
-tokens and carries a callback" to "confirm a three-line deletion from upstream".
-
-**12. `@repo/abis` is deleted; ABIs are soltag-compiled in a new `@repo/contracts` package
-(2026-06-17).** Supersedes every `@repo/abis/v2` reference in this doc (the amendment preamble, §8,
-§11, §Non-Goals, §Dependencies) and the `packages/abis/test/v2/ExecutorAbi.test.ts` verification
-surface §11 cited. The bot's contract artifacts — `MidnightAbi` and the vendored `Executor` — now
-live under `packages/contracts/`, generated at build time by `soltag`'s `sol()`/`solFile()` from the
-vendored Solidity (`solidity/interfaces/IMidnight.sol`, `solidity/Executor.sol`); `foundry.toml` +
-`forge fmt` format the `.sol` sources. `scripts/codegen.ts` emits the `sol`-tagged
-`src/{abis,contracts}.ts`, and `scripts/build.ts` bundles them to literal ABIs (and, for `Executor`,
-bytecode + a deployless factory) and also materializes each interface ABI to `abis/*.json` for
-rindexer. `execution/encode-call.ts` and the lens import `MidnightAbi` from `@repo/contracts`. The
-verification surface moved with it: the mined-selector goldens §11 placed in `packages/abis` are
-gone; `bots/midnight-liquidation/test/contracts/executor.sol.test.ts` (Cancun compile +
-upstream-minus-constructor surface parity) is the surviving Solidity check.
-
-**Phase-4 status (2026-06-17).** §11's "exec encoder must be reworked" and §10's dummy are both
-resolved. The vendored generic Executor (CRTR-2586) and the reworked callback-queue encoder
-(CRTR-2587, `encodeLiquidationExec`) are complete, and `src/index.ts` wires the real
-`encodeLiquidationExec` + per-collateral `buildSwapStep` into the live tick — the Phase-3 dummy is
-gone — loading `SWAP_CONFIG_PATH` and tightening the submit gate to `ok`-only (CRTR-2588).
-**Remaining for go-live:** the literal simulate residual-balance assertion — `simulate.ts` enforces
-the zero-residual invariant structurally (the two unit-tested `skim`s) but defers the post-state
-balance read to the anvil fork suite; that anvil suite itself (CRTR-2589); deploying the Executor
-singleton (`EXECUTOOOR_ADDRESS`); and the testnet broadcast against a real Uniswap-V3 pool, including
-the manual underpriced-replacement check.
-
-**13. Discovery was indexing the wrong event — it's `Take`, not `UpdatePosition` (2026-06-17).**
-Found while setting up the anvil suite (CRTR-2589): the vendored `@repo/contracts` `IMidnight.sol`
-declared **only** `UpdatePosition`, and the deployed Base contract's events were never validated, so
-discovery (`rindexer.yaml` → `src/discovery/borrowers.ts`) indexed `UpdatePosition` — which fires on
-**fee/credit accrual**, not on borrow. Result: a scan of all `UpdatePosition` logs over full history
-yielded 23 positions, **0 with debt** (a production-blind bot). The fix, validated on-chain and
-against the deployed implementation source (protocol-engineer):
-
-- **Re-vendored `IMidnight.sol` from prime-monorepo** (the canonical interface). Function signatures
-  are byte-identical to the prior copy except 3 unused admin setters, so the lens/encoder/sizing are
-  unaffected; the change adds the real event set (`Take`, `SupplyCollateral`, `Repay`, `Withdraw`,
-  `WithdrawCollateral`, `Liquidate`, `MarketCreated`, `FlashLoan`) and drops the stale
-  `UpdatePosition`. This **supersedes** the old vendored header's "keep in sync with the frozen
-  snapshot, NOT prime-monorepo" note — no such snapshot test ever existed, and the canonical copy
-  matches the deployed contract's emitted events (`Take` topic0 = `0x9e0c6d…bc3` confirmed in the
-  Base logs).
-- **Discovery now indexes `Take`** and unions its two indexed addresses (`taker`, `maker`) as the
-  candidate (id, borrower) universe. `take` is the **only** path that creates debt; the debtor is the
-  offer's seller (`taker` when `offerIsBuy` else `maker`), indistinguishable from the indexed topics
-  alone, so both are taken and the lens drops non-debtors (over-inclusion harmless; under-inclusion
-  would miss a liquidation). Re-running discovery via `Take` surfaced the live open positions
-  `UpdatePosition` had missed. The rindexer event ABI is auto-provisioned from the regenerated
-  `MidnightAbi` by the Dockerfile `abi` stage (not committed).
-
-**14. Anvil fork suite landed (CRTR-2589) — and caught a post-maturity over-seize bug (2026-06-17).**
-The suite forks Base at a pinned block, reuses a real open position (warped past maturity), deploys
-the generic Executor, and drives the full real path (lens → plan → swap → `encodeLiquidationExec` →
-`simulate` → signed broadcast) via `@viem/anvil` (`test/fork/`). It exercises:
-
-- **End-to-end liquidation + the full-drain invariant.** Asserts receipt success, the EOA gains the
-  loan token, and the Executor ends holding **zero** of both tokens. This is the **literal
-  zero-residual post-state assertion §12 deferred from CRTR-2588** — now satisfied (the structural
-  `skim`s remain unit-tested; the on-chain residual is checked here).
-- **Queue bump + replacement** against a real node (automining off; advance the block counter past
-  `STUCK_BLOCKS` to trigger the bump; the same-nonce replacement lands), closing the unit-level gap
-  for the nonce-manager/replacement path. The deliberately-underpriced testnet variant stays a manual
-  gate (§10).
-
-**Bug it caught:** `sizing/plan.ts` seized 100% of the slot unconditionally in post-maturity mode.
-When the slot is worth more than the debt (the common case — a solvent borrower who simply missed
-maturity), the implied `repaidUnits` exceeds the debt and the contract reverts `Panic(0x11)` on
-`_position.debt -= repaidUnits` (no clamp; the RCF cap is pre-maturity only). Fixed: post-maturity now
-seizes the whole slot only if its implied repaid fits within the **post-writeoff** debt
-(`debt - badDebt`), else repays the full debt and lets the contract derive the smaller seize. This
-corrects the original §Sizing "post-maturity → seize 100%, no cap" rule.
-
-**15. Executor is deployed deterministically via the canonical CREATE2 factory; the bot derives the
-address (2026-06-18).** Decided against auto-deploy-on-startup: the Executor is a shared,
-permissionless, fund-moving singleton, so it is deployed deliberately (auditable) rather than silently
-provisioned from the daemon hot path. soltag's `Executor.with()` already returns
-`{ address, factory, factoryData }` against the Foundry/Arachnid deterministic-deployment-proxy
-`0x4e59b44847b379578588920cA78FbF26c0B4956C` (live on Base) with a fixed salt; the no-constructor
-Executor is byte-identical and lands at the **same address on every chain**:
-`0x6d9dEA0Ae96156862A534e5016173d3e001CB7D0`.
-
-- **Deploy command:** `bun run --filter @repo/contracts deploy:executor`
-  (`packages/contracts/scripts/deploy-executor.ts`) — idempotent, fail-loud, chain-agnostic (resolves
-  the chain from the live `eth_chainId`); reuses `Executor.with()` so the deployed address provably
-  matches the bot's derived address and the deployless lens (one salt, one source of truth). Run once
-  per chain with `RPC_URL` + `DEPLOYER_PRIVATE_KEY`.
-- **`EXECUTOOOR_ADDRESS` is now optional** (supersedes the §Config "required" row): the bot defaults
-  to `getAddress(Executor.with().address)`; the env only overrides. The startup
-  `assertContractDeployed` gate now fails loud with the deploy command when no code is found.
-- The anvil fork harness deploys the Executor via the same CREATE2 factory, so the e2e test proves
-  derived == deployed end-to-end.
-
-**Status by phase:** Phase 1 ✅ (config, rindexer-backed discovery, dry-run
-orchestrator). Phase 2 ✅ (sizing, lens, read-only lens+sizing wire-path + simulate sink + `getCode`
-gate — CRTR-2582; re-pointed at the deployed `main` ABI and validated against Base via a `toMarket`
-smoke; only lens gas calibration remains). Phase 3 ✅ (nonce queue + fee policy, block-poll watcher +
-daemon lifecycle, signed sends with the dummy reverting broadcast — CRTR-2583/2584/2585; the
-underpriced-replacement check is a manual testnet gate). Phase 4 ⏳ (vendored generic Executor ✅ — CRTR-2586;
-callback-queue exec encoder reworked ✅ — CRTR-2587; real swap config + `ok`-only gate wired into the
-live tick ✅ — CRTR-2588; anvil fork suite + on-chain residual assertion ✅ — CRTR-2589; deterministic
-CREATE2 deploy command + derived address ✅ — §15; the on-chain mainnet/testnet deploy run + go-live
-broadcast remain). See §12–§15 for the `@repo/contracts` migration, the `Take` discovery fix, the
-anvil suite + the post-maturity sizing fix, and deterministic Executor deployment.
 
 ## Context
 
@@ -305,16 +31,22 @@ We build for two readers:
 
 Three architectural choices anchor the design:
 
-- **Discovery via the Morpho Midnight API** (`https://api.morpho.dev/v1/midnight/*`): paginated
-  borrow positions, each carrying its `Market` config inline. The position set implies the
-  market set, so we never fetch `/markets` and never touch `eth_getLogs`.
+- **Discovery via a co-located rindexer instance.** rindexer indexes Midnight's `Take` event on
+  Base into Postgres; the bot reads the indexed `(marketId, borrower)` universe each tick over
+  `DATABASE_URL`. `Take` is the only path that creates debt, so its two indexed addresses
+  (`taker`, `maker`) union to the candidate set and the lens drops non-debtors. We deliberately
+  do **not** depend on a hosted indexer/API on the liquidation path (see Considered
+  Alternatives).
 - **Decisions via a `soltag`-authored lens** read through `@morpho-org/viem-dlc`'s `deployless`
-  transport. Anything the liquidation decision depends on is read fresh from `eth_call`; the API
-  drives discovery and config only.
-- **Execution via a modified [`Rubilmax/executooor`](https://github.com/Rubilmax/executooor)**
-  (vendored under `contracts/executooor/`): the owner gate is stripped to make it a permissionless
-  shared singleton, plus one `onLiquidate` handler that runs the single-hop swap. The two
-  modifications, and the reason the handler is mandatory, live in §Executooor integration.
+  transport. Everything the liquidation decision depends on — including the canonical `Market`,
+  read on-chain via `toMarket(id)` — is read fresh inside one `eth_call` against a single
+  `block.timestamp`. Discovery says who _might_ be liquidatable; the lens says whether it still
+  _is_.
+- **Execution via a vendored, fully generic [`Rubilmax/executooor`](https://github.com/Rubilmax/executooor)**
+  singleton (in `@repo/contracts`): the owner gate is stripped to make it a permissionless shared
+  singleton, and **no protocol-specific Solidity is added**. The swap and the repay approval ride
+  inside the liquidation callback as the Executor's own generic call queue. The single
+  modification, and the reason no typed handler is needed, live in §Executor integration.
 
 ## Goals / Non-Goals
 
@@ -323,7 +55,7 @@ Three architectural choices anchor the design:
 - Long-running daemon, single chain per process, that reliably liquidates **every** position
   that becomes liquidatable while it is running.
 - Correct sizing: maturity-aware LIF curve and pre-maturity RCF cap (with the
-  `rcfThreshold` exemption). Collateral picked by USD value, freshly read in the same eth_call
+  `rcfThreshold` exemption). Collateral picked by USD value, freshly read in the same `eth_call`
   as the liquidatable check.
 - Callback-swap execution from day one. Single-hop only (one Uniswap-V3-style pool); routing
   config is operator-supplied per collateral, the bot does not search paths.
@@ -340,265 +72,265 @@ Three architectural choices anchor the design:
 - Multi-chain in a single process. One process per chain; horizontal scale via deployments.
 - Flashloan-funded liquidations. The Executor is funded by the seized collateral alone via
   the in-line swap; no external borrow.
-- Custom callback Solidity beyond the two modifications in §Executooor integration (strip the
-  owner gate; add one mandatory `onLiquidate` handler). No support for the other Midnight
-  callbacks (`onBuy` / `onSell` / `onRepay` / `onFlashLoan`). Solidity lives at
-  `contracts/executooor/`.
+- **Protocol-specific Solidity in the Executor.** The vendored Executor's only change from
+  upstream is stripping the owner gate (plus a pragma relaxation). The swap and approvals ride
+  inside the liquidate callback as the Executor's generic call queue, so there is no
+  Midnight-specific handler and no `onBuy` / `onSell` / `onRepay` / `onFlashLoan` Solidity.
+  Solidity lives in `@repo/contracts` (`solidity/`).
 - Persisting queue state across daemon restarts. Chain truth wins; we re-derive on startup.
-- Replacing `@repo/utils` or `@repo/abis` patterns. Reuse them as-is.
+- Replacing `@repo/utils` or `@repo/contracts` patterns. Reuse them as-is.
 
 ## Proposed Solution
 
 ### Module shape
 
-> ⚠️ **Amended (2026-06-10)** — the as-built module set adds `discovery/`, `daemon/tick.ts`,
-> `rindexer/`, `docker-compose.yml`/`Dockerfile`, and `soltag.preload.ts`. See
-> [Implementation Amendments](#implementation-amendments-2026-06-10) §1, §6.
-
-Solidity lives at the repo root:
+Solidity lives in the `@repo/contracts` package, soltag-compiled at build time from vendored
+sources:
 
 ```
-contracts/executooor/
-  Executor.sol         // vendored from Rubilmax/executooor: owner gate stripped +
-                       // minimal onLiquidate(...) handler returning CALLBACK_SUCCESS
-  interfaces/          // upstream + ILiquidateCallback / ILiquidatorGate from Midnight
+packages/contracts/
+  solidity/
+    Executor.sol               // vendored Rubilmax/executooor: owner gate stripped
+                               // (permissionless singleton), pragma 0.8.25 → ^0.8.25;
+                               // otherwise byte-for-byte upstream
+    interfaces/IMidnight.sol   // vendored from prime-monorepo (canonical interface + event set)
+  scripts/{codegen,build,deploy-executor}.ts
+  src/{abis,contracts}.ts      // generated: MidnightAbi; Executor (with the .with() factory)
+  abis/Midnight.json           // materialized for rindexer
+  foundry.toml                 // `forge fmt` only — soltag/bun do the compilation
 ```
 
-The bot lives under `bots/midnight-liquidation/src/`:
+The bot lives under `bots/midnight-liquidation/`:
 
 ```
-config.ts            // env + JSON file + per-chain Midnight/deployer map; fail loud
-index.ts             // boot: loadConfig → daemon.start(); SIGTERM handler
-constants.ts         // TIME_TO_MAX_LIF=900, WAD=1e18, ORACLE_PRICE_SCALE=1e36,
-                     // MAX_COLLATERALS_PER_BORROWER=16, CALLBACK_SUCCESS, etc.
+src/
+  config.ts          // env + swap-config JSON + per-chain Midnight map; fail loud
+  index.ts           // boot: loadConfig → wire deps → daemon.start(); SIGTERM/SIGINT
+  constants.ts       // TIME_TO_MAX_LIF=900, WAD=1e18, ORACLE_PRICE_SCALE=1e36, CALLBACK_SUCCESS,
+                     // MAX_COLLATERALS_PER_BORROWER=16, STUCK_BLOCKS=4, MAX_BUMP_ATTEMPTS=3
+  client.ts          // deployless (+ optional failover) read client; getCode liveness gate
+  signer.ts          // wallet client + createNonceManager; send / getReceipt / getBaseFee
+  logger.ts          // JSON-line structured logger (bigints stringified)
 
-daemon/
-  daemon.ts          // start/stop; wires modules; owns lifecycle
-  tick.ts            // pure orchestrator: takes injected deps, runs one tick
-  watcher.ts         // setInterval-driven getBlockNumber poll → coalesced new-block queue
+  daemon/
+    daemon.ts        // start/stop; wires modules; owns lifecycle
+    tick.ts          // pure orchestrator: takes injected deps, runs one tick
+    watcher.ts       // setInterval-driven getBlockNumber poll → coalesced new-block queue
                      // (HTTP only; no WebSocket transport, no eth_subscribe)
+    eligibility.ts   // off-chain liquidatability + lens → plan-input mapping
 
-api/
-  openapi.json       // vendored OpenAPI spec (regenerated via a bun script)
-  generated.ts       // openapi-typescript output (gitignored or checked in; pick one)
-  client.ts          // openapi-fetch client + tryCatch boundary; per-request error normalization
-  pagination.ts      // pure: async-generator over { data, cursor }
-  positions.ts       // listBorrowPositions({ debt_gte }); each row carries its Market config,
-                     // so the distinct markets fall out of the position set (no /markets call)
-  chains.ts          // getIndexerStatus() for staleness gate
+  discovery/
+    borrowers.ts     // reads (marketId, borrower) candidates + rindexer head from Postgres
 
-lens/
-  lens.sol.ts        // single file: soltag template, input/output codecs, inline
-                     // gas constants, and the exported readMidnightLiquidationLens fetcher
-  read-deployless-batch-lens.ts  // vendored from prime-monorepo
-                                 // packages/resolvers/src/rpc/; helper that wraps
-                                 // viem-dlc's policy() + single-array-in/out pattern
+  state/
+    lens.sol.ts      // soltag lens source, codecs, inline gas config, the exported fetcher
+    read-deployless-batch-lens.ts  // vendored viem-dlc helper (array-in/array-out, chunking)
 
-sizing/
-  lif.ts             // pure: lifAt(now, maturity, maxLif, postMaturityMode) → bigint
-  rcf.ts             // pure: maxRepaidPreMaturity + exemption check (normal mode only)
-  plan.ts            // pure: LensOut → LiquidationPlan (picks postMaturityMode)
-  bitmap.ts          // activeBits (shared with lens decoder)
+  sizing/
+    lif.ts           // pure: lifAt({ now, maturity, maxLif, postMaturityMode }) → bigint
+    rcf.ts           // pure: maxRepaidPreMaturity + isRcfExempt (normal mode only)
+    plan.ts          // pure: PlanInput → LiquidationPlan (mode, amounts, bad-debt realization)
+    math.ts          // pure: mulDivUp / mulDivDown / zeroFloorSub
+    bitmap.ts        // activeBits (shared with the lens decoder)
 
-execution/
-  encode-call.ts     // pure: LiquidationPlan + SwapStep + recipient → Executor.exec(bytes[]) calldata
-                     // (single liquidate(callback=executor,receiver=executor) + trailing sweeps)
-  simulate.ts        // tryCatch around simulateContract; returns gas + status
-  build-tx.ts        // pure: plan + swap → signed Transaction request
+  execution/
+    encode-call.ts   // pure: plan + swap → Executor.exec_606BaXt(bytes[]) calldata
+    swap-step.ts     // pure: SwapConfigEntry + plan + lens → SwapStep (amountOutMinimum)
+    simulate.ts      // eth_call the real exec from the EOA; returns ok | revert
 
-queue/
-  pending-queue.ts   // in-memory Map<nonce, Pending>; submit / bump / drop / onBlock
-                     // (nonce assignment delegated to viem's createNonceManager)
-  fee-policy.ts      // pure: EIP-1559 bump ≥12.5%; ceiling enforcement
+  queue/
+    pending-queue.ts // in-memory Map<nonce, Pending>; submit / bump / drop / onBlock; inflightLabels
+    fee-policy.ts    // pure: EIP-1559 bump ≥12.5%; ceiling → drop
+
+bunfig.toml          // preload soltag.preload.ts for `bun test` + the runtime
+soltag.preload.ts    // hand-rolled Bun.plugin driving soltag's transform (compiles the lens on load)
+rindexer.yaml        // rindexer project: index Midnight `Take` on Base
+docker-compose.yml   // Postgres + rindexer + bot
+Dockerfile           // multi-stage: bot; abi (materializes Midnight.json); rindexer
 ```
 
-Pure modules are unit-tested; everything that touches `PublicClient` / `fetch` / `process` is
-covered by integration tests on anvil.
+Pure modules are unit-tested; everything that touches the RPC / Postgres / `process` is covered
+by the anvil fork suite (`test/fork/`).
 
 ### Implementation Phases
 
-- **Phase 1 — API discovery (no chain work).** Land `api/`, `config.ts` v2 envs, and an
-  `index.ts` dry-run that prints "would attempt" liquidations against API filters only. No
-  lens, no signer. Pagination, indexer-lag gate, fail-loud config — all unit-testable. Ships
-  as a stronger v1.
+- **Phase 1 — Discovery + dry-run (no chain decisions).** Land `discovery/` (rindexer indexing
+  `Take`), `config.ts`, and an `index.ts` dry-run that prints "would attempt" liquidations
+  against the candidate set only. No lens, no signer. Discovery SQL and fail-loud config are
+  unit-testable.
 
 - **Phase 2 — Lens + sizing (still read-only).** Author the soltag lens, wire the deployless
-  transport, replace v1 eligibility + sizing with the lens path. Plans are now correct and
-  fresh; `simulateLiquidate` is the sink. End-to-end smoke on a chain with Midnight deployed.
+  transport, replace dry-run eligibility + sizing with the lens path. Plans are now correct and
+  fresh; `simulate` is the sink. End-to-end smoke on Base via a `toMarket` read + the `getCode`
+  liveness gate.
 
 - **Phase 3 — Daemon + nonce queue + signed sends.** Add `daemon/`, `queue/`, signer wiring.
-  Encode a _dummy_ callback target that reverts deterministically (so we exercise the queue
-  and bumping without swapping). Verify replacement via deliberately-underpriced first send.
+  Exercise the queue and bumping with a _dummy_ broadcast (a direct-from-EOA `liquidate` that
+  reverts deterministically on the unfunded loan-token pull) before the swap config exists.
+  Replacement is verified later via a deliberately-underpriced first send.
 
-- **Phase 4 — Callback wiring + swap config.** Plug in the real `EXECUTOOOR_ADDRESS` and the
-  per-collateral swap config. Run on a testnet against a real Uniswap V3 pool. Go-live gate.
+- **Phase 4 — Generic Executor + callback-queue encoder + swap config.** Vendor the generic
+  Executor, rework the encoder so the swap + approvals ride inside the liquidate callback,
+  plug in the per-collateral swap config, tighten the submit gate to `ok`-only, land the anvil
+  fork suite, and add the deterministic CREATE2 deploy command.
 
-### API client design
+**Status:** Phases 1–4 are complete. Remaining for go-live: the on-chain Executor deploy run, the
+testnet broadcast against a real Uniswap-V3 pool (including the manual underpriced-replacement
+check), and lens gas calibration on a Base fork.
 
-> ⚠️ **Amended (2026-06-10)** — discovery is a co-located rindexer instance; the global `/positions`
-> listing below is infeasible (the live API requires a `user`). See
-> [Implementation Amendments](#implementation-amendments-2026-06-10) §1.
+### Discovery design (rindexer)
 
-Types are generated from the OpenAPI spec — no hand-rolled DTOs. We use
-[`openapi-typescript`](https://openapi-ts.dev/) (dev-only) to emit a single `generated.ts`
-file from the spec, and [`openapi-fetch`](https://openapi-ts.dev/openapi-fetch/) (~5 KB
-runtime) as the typed `fetch` wrapper. Both are zero-runtime-magic — `openapi-fetch` is just
-typed `fetch` keyed by path + method, and the generator never produces classes or factories.
+Borrowers are discovered by a **co-located rindexer** instance bundled in the bot's
+`docker-compose.yml`, which runs Postgres, rindexer (`start indexer`), and the bot against the
+same database (`DATABASE_URL`). rindexer indexes Midnight's `Take` event on Base
+(`0x3726353bCDDba7c29a17D46D8a35D1E8b2E51854`, from `startBlock 46758943`) into Postgres. The
+event ABI is materialized from the regenerated `MidnightAbi` by the Dockerfile's `abi` stage
+(`@repo/contracts build` emits `abis/Midnight.json`, copied into the rindexer image) — not
+committed.
 
-**Spec sync.** Port `scripts/pull-schemas.ts` from `apps/markets-v2-app` in `prime-monorepo`.
-It's an interactive CLI (`prompts`-driven). The Morpho API and the Router live under the same
-domain (`api.morpho.dev`), and the Midnight API serves a first-class OpenAPI document, so we
-use the `json` parser mode: fetch the OpenAPI spec straight from the endpoint, same as any
-other upstream. Both `openapi.json` and `generated.ts` are committed.
+**Why `Take`.** `take` is the only Midnight path that creates debt. The debtor is the offer's
+seller (`taker` when `offerIsBuy` else `maker`), indistinguishable from the indexed topics alone,
+so discovery unions **both** indexed addresses as the candidate `(marketId, borrower)` universe:
+over-inclusion is harmless (the lens drops non-debtors), while under-inclusion would miss a
+liquidation. (Indexing any accrual event — e.g. a fee/credit `UpdatePosition` — would surface
+positions with no debt and miss real borrowers; only `take` opens a position.)
 
-Run manually only — never wire into CI or `prebuild`. The build must stay offline so a flaky
-upstream can't break it, and schema updates land as reviewable diffs. Drop-in port: same
-shape, swap `pnpm`-isms for `bun`, point at our `src/api/openapi.json` output path.
+`discovery/borrowers.ts` runs:
 
-**Client.** `api/client.ts` exports a single `createApiClient(baseUrl)` that wires
-`openapi-fetch` against the generated `paths` type (with a `User-Agent` header), plus a thin
-`apiCall<P, M>(client, path, method, params)` helper that `tryCatch`-wraps requests, normalizes
-4xx/5xx into a discriminated error (per the API's `MidnightErrorResponseDto`), and rejects
-non-JSON responses (e.g. HTML 502 pages). No second cache layer — the API's
-`Cache-Control: public, max-age=2, stale-while-revalidate=1` is exactly the freshness we want
-per tick.
+```sql
+SELECT DISTINCT market_id, borrower
+FROM (
+  SELECT id_ AS market_id, taker AS borrower FROM midnight_liquidation_midnight.take
+  UNION
+  SELECT id_ AS market_id, maker AS borrower FROM midnight_liquidation_midnight.take
+) candidates
+```
 
-**Pagination.** A single pure async generator, `paginate(fetchPage)`, wraps the cursor protocol
-shared by `/positions` and `/activities` (both return `{ cursor, data }`), with a hard cap of
-100 pages as a circuit breaker. `positions.ts` and `chains.ts` are thin wrappers that bind the
-typed client into `paginate(…)` and return arrays / single objects. The generated types do all
-the parameter checking; we don't add Zod.
+returning `{ marketId, borrower }[]` (the table name follows rindexer's
+`{project}_{contract}` convention). The candidate's `Market` config is **not** read here — the
+lens fetches it on-chain via `toMarket(id)`, so no market-creation event is indexed and there is
+no inline position data to trust.
 
-**Discovery cadence.** Positions are refreshed every tick via
-`/v1/midnight/positions?type=borrow&debt_gte=1&limit=200`. Each row carries its
-`Market` config inline, so the distinct markets fall out of the position set for free
-— no separate `/markets` fetch and no `MarketIndex` TTL to manage. (A market with zero open
-borrow positions has nothing to liquidate, so it never needs to appear.)
-
-Before trusting a tick's positions, we call `/v1/midnight/chains` and compare
-`latest_indexed_block` against our block-poll cursor:
-
-- lag ≤ 5 → proceed silently
-- lag ≤ 30 → log `warn api.lag`, still proceed
-- lag > 30 → log `error api.lag`, skip the tick
+**rindexer-lag signal.** `borrowers.ts` also exposes `rindexerSyncedBlock`
+(`SELECT MAX(block_number) FROM …take`). Each tick compares it against the chain head the daemon
+polls and emits `rindexer.lag`. It is **observability-only**: the lens reads every candidate
+fresh on-chain, so rindexer lag is coverage latency, not a correctness issue. The tick always
+proceeds, and **fails open** if the query errors (`reason: 'unknown'`). It over-reports lag
+during quiet periods with no `Take` events — acceptable, since it never gates a decision.
 
 ### Lens design (soltag)
-
-> ⚠️ **Amended (2026-06-10)** — `Midnight.isLiquidatable` exists, and soltag needs a bun
-> loader-plugin (`soltag.preload.ts`) + `solc` to compile. See
-> [Implementation Amendments](#implementation-amendments-2026-06-10) §3, §6.
 
 A single elementwise function — required by viem-dlc's `resolveArrayFunction` (one dynamic
 array in, one dynamic array out):
 
 ```solidity
-function lens(bytes[] calldata input) external view returns (bytes[] memory output)
+function lens(Input[] calldata input) external view returns (LensOut[] memory output)
 ```
 
-**Input element** (per pair): `abi.encode(Market market, bytes32 id, address borrower, address caller)`.
+**Input element** (per pair): `struct Input { bytes32 id; address borrower; address caller; }`.
 
-- The lens validates the `(market, id)` pairing by calling `Midnight.toId(market)`
-  (public view, `midnight-contracts.txt:2590`) and comparing against `id` — any mismatch sets
-  `valid: false` (do not revert; would break the whole batch). **Do not re-implement the hash
-  off-chain**: the id is a CREATE2-style double hash
-  (`keccak256(abi.encodePacked(0xff, midnight, chainId, keccak256(abi.encodePacked(SSTORE2_PREFIX, abi.encode(market)))))`,
-  `IdLib.toId`, `:339`) salted by the contract's **`INITIAL_CHAIN_ID`** (captured at
-  construction, _not_ live `block.chainid`), so delegating to `Midnight.toId` is both simpler
-  and immune to a chain-id mismatch.
+- The lens reads the canonical `Market` on-chain via `MIDNIGHT.toMarket(id)`. The id is a
+  cryptographic commitment to the encoded `Market`, so reading the market from the id is both
+  authoritative and removes any need for an off-chain `Market` input or an `id == toId(market)`
+  re-check. An unknown id reverts `MarketNotCreated`, caught by a per-element try/catch that
+  leaves a zeroed (`valid: false`) row — a revert never breaks the whole batch.
 - `caller` is the address whose `canLiquidate` we want checked. **This is the
   `EXECUTOOOR_ADDRESS`, not the EOA** — `Midnight.liquidate` checks
-  `market.liquidatorGate == address(0) || ILiquidatorGate(market.liquidatorGate).canLiquidate(msg.sender)`
-  (`midnight-contracts.txt:2317`), and `msg.sender` will be the executooor singleton (it is the
-  contract that calls `liquidate`). Getting this wrong is the most likely subtle bug if we forget.
+  `market.liquidatorGate == address(0) || ILiquidatorGate(market.liquidatorGate).canLiquidate(msg.sender)`,
+  and `msg.sender` will be the Executor singleton (it is the contract that calls `liquidate`).
+  Getting this wrong is the most likely subtle bug if we forget.
 
-**Output element** (per pair):
-
-There is **no `Midnight.isLiquidatable`** — the lens composes liquidatability from
-`isHealthy(market, id, borrower)` (`:2663`), `liquidationLocked(id, borrower)` (`:2656`), the
-position debt, and `market.maturity`:
+**Output element** (per pair). The lens does **not** call any single `isLiquidatable`;
+liquidatability is composed off-chain from health, lock, debt, and maturity, matching the
+`liquidate()` path:
 
 ```solidity
 struct LensOut {
-  bool    valid;                  // id == Midnight.toId(market)
-  bool    hasDebt;                // position.debt > 0
-  bool    healthy;               // Midnight.isHealthy(market, id, borrower) → maxDebt >= debt
-  bool    locked;                // Midnight.liquidationLocked(id, borrower)
+  bool    valid;                  // toMarket(id) succeeded (id is a created market)
+  bool    hasDebt;                // debtOf(id, borrower) > 0
+  bool    healthy;                // maxDebt >= debt (matches isHealthy's final return)
+  bool    locked;                 // liquidationLocked(id, borrower)
   bool    gateAllows;             // liquidatorGate==0 ? true : canLiquidate(caller) try/catch→false
   uint64  blockTimestamp;         // for LIF eval + the now>maturity test; avoid host clock drift
   uint128 debt;
   uint128 maxDebt;                // Σ collateral_i · price_i · lltv_i (over activated slots)
   uint128 badDebt;                // debt.zeroFloorSub(Σ collateral_i · price_i · WAD / maxLif_i);
                                   //   liquidate() writes this off before sizing — see rcf.ts
-  uint128 activatedBitmap;        // position.collateralBitmap (≤16 bits set)
+  uint128 activatedBitmap;        // collateralBitmap(id, borrower) (≤16 bits set)
   uint8   bestCollateralIdx;      // argmax over activated slots by USD value
-  uint128 bestCollateralAmt;      // position.collateral[bestCollateralIdx]
-  uint256 bestCollateralUsd;      // USD18 value
+  uint128 bestCollateralAmt;      // collateral(id, borrower, bestCollateralIdx)
   uint256 bestCollateralPrice;    // raw oracle price (ORACLE_PRICE_SCALE units)
   uint256 bestCollateralMaxLif;   // market.collateralParams[bestCollateralIdx].maxLif
   uint256 bestCollateralLltv;     // market.collateralParams[bestCollateralIdx].lltv
+  Market  market;                 // the toMarket(id) read — passed straight into liquidate
 }
 
-// Off-chain, liquidatable = hasDebt && !locked && (now > maturity || !healthy).
-//   `!healthy` is exactly the contract's pre-maturity test `debt > maxDebt` (isHealthy returns
-//   maxDebt >= debt); post-maturity needs only now > maturity. Mirrors the requires in
-//   liquidate(...) at midnight-contracts.txt:2315 (debt > 0) + 2339-2342.
+// Off-chain (daemon/eligibility.ts):
+//   liquidatable = valid && gateAllows && hasDebt && !locked
+//                  && (blockTimestamp > market.maturity || !healthy)
+//   `!healthy` is exactly the contract's pre-maturity test `debt > maxDebt`
+//   (isHealthy returns maxDebt >= debt); post-maturity needs only now > maturity.
 //
-// RCF exemption (normal mode only) is computed off-chain from the fields above:
-//   exempt = (bestCollateralAmt × bestCollateralPrice / ORACLE_PRICE_SCALE × WAD / lif)
-//              .zeroFloorSub(maxRepaid) < market.rcfThreshold
-// — i.e. it tests the *liquidated* slot's pre-seizure value (expressed in repaid-units after
-// dividing by LIF, then subtracting maxRepaid), per midnight-contracts.txt:2381-2385. It does
-// not depend on any other slot, so the lens does not return a separate field for it.
+// `healthy` and `badDebt` are derived from the FULL collateral loop, not a short-circuited sum,
+// so they match the liquidate() path exactly. The RCF exemption (normal mode only) is computed
+// off-chain in rcf.ts from `bestCollateral*` + `rcfThreshold`; it depends only on the liquidated
+// slot, so the lens returns no separate field for it.
 ```
 
 This gives us everything to (a) confirm liquidatable fresh, (b) pick the slot, (c) compute
-`seizedAssets` / `repaidUnits` respecting LIF + RCF, (d) pass the `Market` struct straight into
-the `liquidate` call (already have it from the API; the `valid` flag confirms `toId(market) == id`).
+`seizedAssets` / `repaidUnits` respecting LIF + RCF, and (d) pass the on-chain `Market` straight
+into the `liquidate` call.
 
-**Colocated single file.** `lens/lens.sol.ts` contains the entire lens module in one place:
+**Two passes, not one loop.** A single loop carrying `maxDebt` / `badDebt` / the argmax exceeds
+the EVM stack ("stack too deep"), and soltag exposes no `viaIR`. The lens splits into
+`_accumulate` (maxDebt down-down; badDebt ceil-ceil, seeded with debt and floored at 0 per slot;
+health) and `_selectBest` (the USD-value argmax). Each activated slot is re-read in the second
+pass — acceptable for a read-only lens.
 
-1. The Solidity source as a `soltag` tagged template (compiled at build time to a `factory`
-   - `factoryData` pair).
-2. Input + output codecs (`encodeAbiParameters` for the `(Market, id, borrower, caller)` input
-   tuple; struct decoder for `LensOut`).
-3. Inline `BatchGasConfig` — calibrated `{ constant ≈ 50_000, linear ≈ 150_000, quadratic ≈ 0
-}` empirically on a fork, with per-chain overrides; document the calibration method in a
-   comment in the same file.
-4. An exported `readMidnightLiquidationLens(client, pairs): Promise<Map<key, LensOut>>`.
+**Colocated single file.** `state/lens.sol.ts` contains the entire lens module in one place:
 
-The fetcher delegates to the vendored `readDeploylessBatchLens` helper (copied from
-`packages/resolvers/src/rpc/read-deployless-batch-lens.ts` in `prime-monorepo`). That helper:
+1. The Solidity source as a `soltag` tagged template (compiled to a `factory` / `factoryData`
+   pair).
+2. Input + output codecs — the soltag type codegen (`.soltag/types.d.ts`, regenerated by the
+   `soltag` CLI before typecheck) narrows the compiled `.abi`, so viem encodes the inputs and
+   decodes the `LensOut` structs natively; no hand-written ABI fragment or manual
+   `abi.encode/decode`.
+3. Inline `BatchGasConfig` — placeholder `{ constant: 600_000, linear: 30_000, quadratic: 0 }`,
+   to calibrate on a Base fork (including the 16-slot worst-case loop) before go-live.
+4. The exported `readMidnightLiquidationLens(client, midnight, pairs): Promise<Map<key, LensOut>>`.
 
-- Type-checks the lens function shape (single dynamic array in, single dynamic array out — matches our `lens(bytes[]) → bytes[]`).
-- Wraps `viem-dlc`'s `policy(...)` sentinel and `readContract` so the deployless transport
-  recognizes and chunks the call.
-- Returns a `Map<K, V>` keyed by a user-supplied `key(input)` fn and valued by a user-supplied
-  `value(input, output)` fn.
-- Threads per-chain gas overrides via `BatchGasConfig`.
+The fetcher delegates to the vendored `read-deployless-batch-lens.ts` helper (copied from
+`packages/resolvers/src/rpc/` in `prime-monorepo`). That helper type-checks the array-in /
+array-out shape, wraps viem-dlc's `policy(...)` + `readContract` so the deployless transport
+recognizes and chunks the call (`batchSize: MAX_INITCODE_SIZE`, `exfil: 'revert'`), and returns a
+`Map<K, V>` keyed/valued by user-supplied fns. We vendor it (one file copy) rather than depend on
+a new shared package; if a second bot needs it we promote it to `@repo/utils`.
 
-We vendor it (one file copy) rather than depend on a new shared package; if a second bot
-needs it later we promote to `@repo/utils` or upstream into `@morpho-org/viem-dlc`.
+**soltag is a build-time transform.** A `sol`-tagged template throws at runtime unless
+transformed (and unplugin's `unplugin.bun()` is unusable under bun — its `onLoad` returns
+`undefined`). The bot ships `soltag.preload.ts` — a hand-rolled `Bun.plugin` driving soltag's
+`transformSolTemplates` (optimizer on, scoped to this bot) — wired via `bunfig.toml` `preload`
+for `bun test` and the Docker runtime. `soltag` + `solc` are therefore **runtime** deps in the
+bot (the preload compiles the lens on load). The `@repo/contracts` ABIs are compiled at build
+time instead.
 
 ### Sizing math
-
-> ⚠️ **Amended (2026-06-10)** — the deployed `liquidate` decides LIF by health, not a passed
-> `postMaturityMode` flag; the as-built math is still correct. See
-> [Implementation Amendments](#implementation-amendments-2026-06-10) §4.
 
 All pure, mirror the contract verbatim. `now = LensOut.blockTimestamp` (chain time, not host).
 `maxLif` and `lltv` are **per-collateral** — read from `market.collateralParams[collateralIndex]`,
 not from the market. The liquidator chooses `postMaturityMode` (see `plan.ts` below); the LIF
-ramp applies only in that mode (`midnight-contracts.txt:2362-2366`).
+ramp applies only in that mode.
 
-**Debt fidelity.** `liquidate` reads raw `_position.debt` (`:2323`) with no pre-accrual step, and
-`isHealthy` (`:2663`) uses the same field; continuous fees accrue into `credit` / `pendingFee` /
-`continuousFeeCredit` (`updatePositionView`, `:2516-2538`), **never** into `debt`. So the lens
-reading raw `position.debt` is exactly faithful to what `liquidate` computes — no fee field is
-needed in `LensOut`.
+**Debt fidelity.** `liquidate` reads raw `_position.debt` with no pre-accrual step, and
+`isHealthy` uses the same field; continuous fees accrue into `credit` / `pendingFee` /
+`continuousFeeCredit`, **never** into `debt`. So the lens reading raw `debtOf(id, borrower)` is
+exactly faithful to what `liquidate` computes — no fee field is needed in `LensOut`.
 
 ```ts
-// sizing/lif.ts — mirrors midnight-contracts.txt:2364-2366
-function lifAt(now: bigint, maturity: bigint, maxLif: bigint, postMaturityMode: boolean): bigint {
+// sizing/lif.ts
+function lifAt({ now, maturity, maxLif, postMaturityMode }: {
+  now: bigint; maturity: bigint; maxLif: bigint; postMaturityMode: boolean
+}): bigint {
   if (!postMaturityMode) return maxLif                           // normal mode: full incentive
   // post-maturity mode: linear ramp WAD → maxLif over TIME_TO_MAX_LIF
   const lif = WAD + ((maxLif - WAD) * (now - maturity)) / TIME_TO_MAX_LIF
@@ -606,208 +338,207 @@ function lifAt(now: bigint, maturity: bigint, maxLif: bigint, postMaturityMode: 
 }
 
 // sizing/rcf.ts — normal mode only (no cap in post-maturity mode).
-// Mirrors midnight-contracts.txt:2378-2380, with one subtlety: when the position carries bad
-// debt, liquidate() writes it off (`_position.debt -= badDebt`, :2344-2346) BEFORE computing
-// maxRepaid, so the cap is taken against the *post-writeoff* debt. We pass the lens's `badDebt`
-// (= debt.zeroFloorSub(Σ collateral·price·WAD/maxLif), :2326-2334) and subtract it here so our
-// cap matches the contract's exactly:
-//   maxRepaid = ((debt - badDebt) - maxDebt).mulDivUp(WAD*WAD, WAD*WAD - lif*lltv)
-function maxRepaidPreMaturity(
-  debt: bigint, badDebt: bigint, maxDebt: bigint, lif: bigint, lltv: bigint
-): bigint {
+// Subtlety: when the position carries bad debt, liquidate() writes it off
+// (`_position.debt -= badDebt`) BEFORE computing maxRepaid, so the cap is taken against the
+// *post-writeoff* debt. We pass the lens's `badDebt` and subtract it here so our cap matches
+// the contract's exactly: maxRepaid = ((debt - badDebt) - maxDebt).mulDivUp(WAD², WAD² - lif·lltv)
+function maxRepaidPreMaturity({ debt, badDebt, maxDebt, lif, lltv }: {
+  debt: bigint; badDebt: bigint; maxDebt: bigint; lif: bigint; lltv: bigint
+}): bigint {
   if (lltv >= WAD) return MAX_UINT
   const effectiveDebt = debt - badDebt          // = min(debt, Σ collateral·price·WAD/maxLif)
-  // mulDivUp(x, y, d) = ceilDiv(x * y, d). effectiveDebt >= maxDebt (and the denominator stays
-  // positive) because maxLif is derived from lltv as WAD²/(WAD - cursor·(WAD-lltv)), which makes
-  // maxLif·lltv <= WAD² for every allowed lltv < WAD (:997, :2487).
+  // maxLif is derived from lltv as WAD²/(WAD - cursor·(WAD-lltv)), which makes maxLif·lltv <= WAD²
+  // for every allowed lltv < WAD, so the denominator stays positive.
   return mulDivUp(effectiveDebt - maxDebt, WAD * WAD, WAD * WAD - lif * lltv)
 }
 
 // RCF cap is waived for the SAME slot being liquidated when the slot's pre-seizure value
-// (converted to repaid-units by dividing through LIF, then subtracting maxRepaid with a
-// zero floor) is below rcfThreshold. Mirrors midnight-contracts.txt:2381-2385 exactly.
-function isRcfExempt(
-  bestCollateralAmt: bigint,
-  bestCollateralPrice: bigint,   // ORACLE_PRICE_SCALE units
-  lif: bigint,
-  maxRepaid: bigint,
-  rcfThreshold: bigint
-): boolean {
-  const slotInLoanUnits =
-    floorDiv(bestCollateralAmt * bestCollateralPrice, ORACLE_PRICE_SCALE)
+// (converted to repaid-units by dividing through LIF, then subtracting maxRepaid with a zero
+// floor) is below rcfThreshold.
+function isRcfExempt({ collateralAmt, price, lif, maxRepaid, rcfThreshold }: {
+  collateralAmt: bigint; price: bigint; lif: bigint; maxRepaid: bigint; rcfThreshold: bigint
+}): boolean {
+  const slotInLoanUnits = floorDiv(collateralAmt * price, ORACLE_PRICE_SCALE)
   const slotInRepaidUnits = floorDiv(slotInLoanUnits * WAD, lif)
-  const residual = zeroFloorSub(slotInRepaidUnits, maxRepaid)
-  return residual < rcfThreshold
+  return zeroFloorSub(slotInRepaidUnits, maxRepaid) < rcfThreshold
 }
 ```
 
-`sizing/plan.ts` first picks the mode, then the amounts. **Mode policy:** if
-`now > market.maturity` → `postMaturityMode = true` (works regardless of health; gets the
-ramped LIF, no RCF cap); else require unhealthy (`debt > maxDebt`) and use
-`postMaturityMode = false` (full `maxLif`, RCF cap applies). It then chooses between
-`{ seizedAssets, repaidUnits=0 }` and `{ seizedAssets=0, repaidUnits }`:
+`sizing/plan.ts` picks the mode, then the amounts:
 
-- `postMaturityMode` (past maturity) → `seizedAssets = bestCollateralAmt` (100% of slot); no cap.
-- normal mode, no cap binding (or RCF-exempt) → `seizedAssets = bestCollateralAmt` (100% of slot).
-- normal mode with cap binding (and not exempt) → `repaidUnits = maxRepaid`.
-- otherwise (not liquidatable: no debt, locked, or healthy-and-pre-maturity) → skip.
+- **Not liquidatable** (no debt, or locked) → skip.
+- `postMaturityMode = now > market.maturity`. If pre-maturity **and** `healthy` → skip
+  (full `maxLif` and the RCF cap apply only in normal mode; post-maturity gets the ramped LIF and
+  no RCF cap).
+- **Fully underwater** (`badDebt >= debt`) → **bad-debt realization**:
+  `{ seizedAssets: 0, repaidUnits: 0 }`. The contract writes off the bad debt with no token
+  movement; the encoder emits a bare `liquidate` (no callback queue, no swap, no sweeps).
+- **Post-maturity** (no RCF cap) → seize 100% of the best slot **only if** its implied repaid
+  units fit within the post-writeoff debt (`debt - badDebt`); otherwise pass
+  `repaidUnits = debt - badDebt` and let the contract derive the smaller seize. Seizing 100%
+  unconditionally over-repays when the slot is worth more than the debt — the common case of a
+  solvent borrower who simply missed maturity — and the contract reverts `Panic(0x11)` on
+  `_position.debt -= repaidUnits` (no clamp post-maturity).
+- **Normal mode** (pre-maturity, unhealthy) → seize 100% of the slot if that stays within
+  `maxRepaid` **or** the slot is RCF-exempt; otherwise pass `repaidUnits = maxRepaid`.
 
-The `badDebt` correction in `maxRepaidPreMaturity` only matters for the third branch (normal mode,
-cap binding). The post-maturity path takes 100% of the slot with no cap, sidestepping `maxRepaid`
-entirely; and even if the correction were wrong, an over-large `repaidUnits` fails closed in
+The plan emits exactly one nonzero amount; the contract derives the other side. The `badDebt`
+correction in `maxRepaidPreMaturity` matters for the normal-mode cap-binding branch; the
+post-maturity path uses `effectiveDebt` directly. An over-large `repaidUnits` fails closed in
 `simulate()` rather than on-chain — a missed liquidation, never a loss.
 
 ### Tx queue
 
 **Nonce assignment is delegated to viem's `createNonceManager`** (`viem/nonce`, with a `jsonRpc()`
-source, attached to the `privateKeyToAccount`) — no hand-rolled counter. Parallel
-`walletClient.sendTransaction(...)` calls then claim sequential nonces automatically; the manager
-syncs from `getTransactionCount('pending')` on first use and re-syncs whenever an error indicates
-drift. That gives us concurrent-safe assignment, restart safety (pulls from `'pending'`), and
-out-of-band gap detection for free. Our queue does **not** own a `nextNonce` cursor.
+source, attached to the `privateKeyToAccount` in `signer.ts`) — no hand-rolled counter. `signer.ts`
+exposes a small primitive set the queue consumes: `send` (runs `prepareTransactionRequest` —
+explicit `nonceManager` on first send — to claim + read the nonce, then `sendTransaction`),
+`getReceipt`, and `getBaseFee`. Parallel sends claim sequential nonces automatically; the manager
+syncs from `getTransactionCount('pending')` on first use and re-syncs on drift. Our queue does
+**not** own a `nextNonce` cursor.
 
 `queue/pending-queue.ts` owns what viem's manager does not — tracking, confirmation, and
 bump/replace — via an in-memory `Map<nonce, Pending>`. Each `Pending` carries its `nonce`,
-`txHash`, the source `plan`, `submittedAtBlock`, the current `maxFeePerGas` /
-`maxPriorityFeePerGas`, an `attempt` counter, and a `state` of `sent | confirmed | replaced |
-dropped`.
+`txHash`, the source `request`, `label`, `submittedAtBlock`, the current `maxFeePerGas` /
+`maxPriorityFeePerGas`, and an `attempt` counter.
 
-**Submit.** `walletClient.sendTransaction({ ... })` — viem claims the next nonce via the
-manager. We read the assigned nonce from the request (viem exposes it on the returned
-transaction object via `prepareTransactionRequest`) and record the entry. No awaiting needed
-between submits.
+**Submit.** `send(...)` claims the next nonce via the manager and returns the assigned nonce; we
+record the entry. No awaiting needed between submits.
 
-**Fee bump.** Pure `bumpFees({ maxFeePerGas, maxPriorityFeePerGas, baseFee })`:
+**Backpressure.** The queue exposes `inflightLabels()` — the set of `"${marketId}:${borrower}"`
+labels currently pending — and the tick skips any candidate already in flight, so a position with
+a pending tx is not re-planned/re-submitted.
+
+**Fee bump.** Pure `bumpFees({ maxFeePerGas, maxPriorityFeePerGas, baseFee, maxFeeWei })`:
 
 - new priority = max(prev × 1125/1000, prev + 1) // ≥12.5% EIP-1559 floor
 - new max = max(prev × 1125/1000, baseFee × 2 + new priority)
-- both capped at `MAX_FEE_GWEI`; beyond cap → `drop()` rather than chase
+- if the bumped max exceeds `maxFeeWei` → `drop()` rather than chase the spike
 
-**Replacement.** When we bump, we **explicitly pass `nonce: pending.nonce`** to
-`sendTransaction` — bypassing the nonce manager (which only acts when `nonce` is unset). This
-is the one case where we hand-pick the nonce.
+**Replacement.** When we bump, we **explicitly pass `nonce: pending.nonce`** to the send —
+bypassing the nonce manager (which only acts when `nonce` is unset). This is the one case where we
+hand-pick the nonce.
 
-**Stuck detection.** Each polled block, scan `pending` for `currentBlock - submittedAtBlock
-
-> STUCK_BLOCKS (4)`and not yet confirmed. Fetch receipt; null → bump + replace at same
-nonce,`attempt++`. After `MAX_BUMP_ATTEMPTS (3)`, log `tx.dropped` and remove from our map.
+**Stuck detection.** Each polled block, scan `pending` for `currentBlock - submittedAtBlock >
+STUCK_BLOCKS (4)` and not yet confirmed. Fetch receipt; null → bump + replace at the same nonce,
+`attempt++`. After `MAX_BUMP_ATTEMPTS (3)`, log `tx.dropped` and remove from our map.
 
 **Drift / gap awareness.** Viem's nonce manager re-syncs from chain on send errors. If a
 confirmation from a higher nonce arrives while a lower nonce is still pending, we walk
-lower-nonce pending entries, query their receipts, and mark each
-confirmed-elsewhere/replaced/dropped accordingly. No `nextNonce` math on our side.
+lower-nonce pending entries, query their receipts, and mark each confirmed/replaced/dropped
+accordingly. No `nextNonce` math on our side.
 
 **Reorg awareness.** Deliberately none beyond receipt re-confirmation. Acceptable for a
 coverage bot — a re-orged-out tx re-appears as a liquidatable position on the next tick.
 
-**Shutdown (SIGTERM/SIGINT).** Stop the watcher, stop accepting new plans, log a final dump
-of `pending` (hashes + nonces), exit after a 5 s drain window. Pending txs continue on-wire;
-chain truth wins on restart.
+**Shutdown (SIGTERM/SIGINT).** Stop the watcher, stop accepting new plans, log a final `shutdown`
+dump of `pending` (hashes + nonces), and exit. Sends are fire-and-forget — pending txs continue
+on-wire, and chain truth wins on restart (the signer's nonce manager re-syncs from the pending
+chain nonce).
 
 ### Tick loop
 
-`daemon/watcher.ts` runs a `setInterval(getBlockNumber, BLOCK_POLL_MS)` loop (default 2 s)
-against the HTTP RPC; WebSocket transports and `eth_subscribe` are explicitly avoided. On
-each new block height it enqueues an event; if a tick is mid-flight, only the latest height
-is processed next (backlog coalesces).
+`daemon/watcher.ts` runs a `setInterval(getBlockNumber, BLOCK_POLL_MS)` loop (`BLOCK_POLL_MS =
+2_000`, defined in `watcher.ts`) against the HTTP RPC; WebSocket transports and `eth_subscribe`
+are explicitly avoided. On each new block height it enqueues an event; if a tick is mid-flight,
+only the latest height is processed next (backlog coalesces).
 
 `daemon/tick.ts` per new block:
 
-1. Indexer staleness gate (`/v1/midnight/chains`); skip tick if `lag > 30`.
-2. Fetch borrow positions from the API (markets fall out of the position set inline).
-3. Drop `(marketId, borrower)` pairs already non-terminal in the queue (backpressure — keep a
-   small `inflight: Set<\`${marketId}:${borrower}\`>` owned by the daemon).
-4. Call `readLens(pairs)`.
-5. For each `valid && gateAllows && liquidatable` (liquidatable composed off-chain from
-   `hasDebt && !locked && (now > maturity || !healthy)`): `plan()` → `simulate()` →
-   `pendingQueue.submit()`.
-6. `pendingQueue.onBlock(blockNumber)` — confirmations, stuck-detection, bumps.
-7. Emit `tick.end` with counters.
+1. Emit the rindexer-lag signal (`rindexer.lag`); observability-only, fails open, always proceeds.
+2. Discover `(marketId, borrower)` candidates from Postgres → lens inputs
+   `{ id, borrower, caller = Executor }`.
+3. Read the lens for all pairs in one deployless `eth_call` (`lens.read`).
+4. Drop pairs whose label is already in `queue.inflightLabels()` (backpressure).
+5. For each `isLiquidatable(out)`: `plan()` → resolve the per-collateral `buildSwapStep` (skip
+   with `config.no_swap_path` if no route; bad-debt realizations skip swap config) →
+   `simulate()`.
+6. Submit **only** when `simulate` returns `ok` (`ok`-only gate: any revert — slippage, repay
+   shortfall, or not-liquidatable — is an unfundable plan, so it's skipped, never broadcast).
+7. `queue.onBlock(chainHead)` — confirmations, stuck-detection, bumps.
+8. Emit `tick.end` with counters.
 
-### Executooor integration
-
-> ⚠️ **Amended (2026-06-10)** — the deployed `liquidate` is 6 args and `onLiquidate` is 7 args with
-> its return unchecked (no `CALLBACK_SUCCESS` for liquidation). See
-> [Implementation Amendments](#implementation-amendments-2026-06-10) §2.
+### Executor integration
 
 We vendor [`Rubilmax/executooor`](https://github.com/Rubilmax/executooor) Solidity into
-`contracts/executooor/Executor.sol` and apply **two modifications**:
+`@repo/contracts` (`solidity/Executor.sol`) and apply **one functional change**: remove
+`require(msg.sender == OWNER)` from `exec_606BaXt` (and drop the `OWNER` immutable +
+constructor argument), making it a permissionless shared singleton — any EOA can call
+`exec_606BaXt(bytes[])`. The only other diff is a pragma relaxation (`0.8.25` → `^0.8.25`) so the
+repo's solc (0.8.35) compile-verifies the vendored copy. **No constructor** means the singleton is
+protocol- and chain-agnostic: one deployment serves any Midnight instance, at the same CREATE2
+address on every chain. It requires a Cancun-capable chain (transient storage, `mcopy`).
 
-1. Remove the `require(msg.sender == OWNER)` from `exec_606BaXt` — the contract becomes a
-   permissionless shared singleton (any EOA can call `exec(Call[])`), and the `OWNER` immutable
-   - constructor argument are dropped.
-2. Add a minimal `onLiquidate(...)` handler. `Midnight.liquidate` takes an explicit `callback`
-   address and **requires `ILiquidateCallback(callback).onLiquidate(...) == CALLBACK_SUCCESS`**
-   (`midnight-contracts.txt:2417-2433`). The upstream bare fallback runs queued calls but does
-   not return the magic value, so a real handler is mandatory. Its full shape
-   (`midnight-contracts.txt:933`):
+**No typed `onLiquidate` handler is needed.** `Midnight.liquidate` takes a `callback` address and
+requires `ILiquidateCallback(callback).onLiquidate(...) == CALLBACK_SUCCESS`
+(`= keccak256("morpho.midnight.callbackSuccess") =
+0x7f87788ea698181ea4d28d1576d0ba4fc92c0dbe5bf75b43692af2ce91dbaea2`). The upstream Executor's bare
+`fallback` already services magic-value callbacks (Aave / Balancer / Morpho Blue flashloans): it
+decodes its embedded blob as `(bytes[] queue, bytes returnData)`, runs the queue, and returns
+`returnData` **raw** (Solidity's `fallback(bytes) returns (bytes)` applies no ABI wrapping).
+Encoding the raw 32-byte `CALLBACK_SUCCESS` as the trailing bytes satisfies Midnight's check. A
+typed handler's remaining benefits (exact-`repaidUnits` approval, token cross-checks, a `MIDNIGHT`
+immutable gate) were bot-self-protection only — and with the owner gate stripped, **any** between-tx
+balance or allowance on the singleton is already claimable/settable by anyone via `exec_606BaXt`,
+so contract-side defenses add no third-party security. The security burden sits with each caller,
+per transaction (the encoder + the simulate residual check). The pre-deploy audit shrinks to
+"confirm a three-line deletion from upstream."
 
-   ```solidity
-   function onLiquidate(
-     address caller, bytes32 id, Market memory market, uint256 collateralIndex,
-     uint256 seizedAssets, uint256 repaidUnits, address borrower, address receiver,
-     bytes memory data, uint256 badDebt
-   ) external returns (bytes32);
-   ```
+**The liquidation exec.** `execution/encode-call.ts` (`encodeLiquidationExec`) builds
+`Executor.exec_606BaXt(bytes[])` as:
 
-   The handler: (a) `require(msg.sender == MIDNIGHT)` (re-entry gate — this replaces the
-   self-call gate's role for the callback path); (b) decodes `data` into the swap step;
-   (c) approves the router and swaps the `seizedAssets` collateral **argument**
-   (already sitting on this contract, because we pass `receiver = address(this)`) into the loan
-   token — `market.collateralParams[collateralIndex].token` → `market.loanToken`; (d) approves
-   `MIDNIGHT` for the `repaidUnits` **argument** of the loan token so Midnight can pull the
-   repay; (e) returns `CALLBACK_SUCCESS`. Note `seizedAssets` and `repaidUnits` are taken from
-   the callback arguments, not from `data` — when the bot passes `seizedAssets=X, repaidUnits=0`
-   the contract derives the final `repaidUnits` itself (`:2369`) and hands it to the callback,
-   so reading it off the argument is the only correct source. The `call_g0oyU7o` self-call gate
-   (`require(msg.sender == address(this))`) is otherwise unchanged.
+1. A single **9-arg** `Midnight.liquidate(market, collateralIndex, seizedAssets, repaidUnits,
+borrower, postMaturityMode, receiver, callback, data)` with `receiver = callback = the
+Executor`. The seized collateral lands on the Executor **before** the callback; the repay is
+   pulled from the callback (= the Executor) **after** it returns. The call carries the Executor's
+   callback context `{ sender: MIDNIGHT, dataIndex: 8 }` — `data` is the 9th arg (head word 8) of
+   the **10-arg** `onLiquidate(caller, id, market, collateralIndex, seizedAssets, repaidUnits,
+borrower, receiver, data, badDebt)` callback, and the Executor's fallback gates
+   `msg.sender == MIDNIGHT`.
+2. `data` carries `abi.encode(bytes[] queue, bytes returnData)` with `returnData = CALLBACK_SUCCESS`
+   passed **raw** (not `abi.encode`'d — that would prepend an offset word and break the check). The
+   queue, run when Midnight calls back into the Executor:
+   - `approve(collateral → router, 0)` then `approve(collateral → router, balanceOf(executor))`
+     — a **zero-first pair**. Anyone can pre-set a nonzero allowance from the shared singleton, so
+     a single plain `approve` is a standing DoS on approve-from-nonzero-reverting (USDT-style)
+     tokens.
+   - `exactInputSingle` on the `SwapRouter02`-compatible router: collateral → loan token,
+     `amountIn` = the Executor's live collateral balance (the cap-binding branch passes
+     `seizedAssets = 0` and the contract derives the amount on-chain, so neither this nor the
+     repay is known when the calldata is built), `amountOutMinimum` from the lens's fresh USD value
+     × `(10000 - slippageBps) / 10000`.
+   - `approve(loan → MIDNIGHT, 0)` then `approve(loan → MIDNIGHT, balanceOf(executor))` —
+     **balance-based** (over-approving by the profit margin, since the recomputed `repaidUnits`
+     isn't staticcall-readable), zero-first for the same reason. The residual allowance is inert
+     while the full-drain invariant keeps the Executor's balance at zero between txs.
 
-Because `liquidate` sends the seized collateral to `receiver` **before** invoking the callback
-and pulls the loan-token repay from `payer` (= `callback`) **after** it returns
-(`midnight-contracts.txt:2415, 2436`), the swap and the Midnight approval both belong inside
-`onLiquidate`. The outer `exec(Call[])` therefore needs just the `liquidate` call plus trailing
-sweeps:
+   The amounts use self-referential `balanceOf` placeholders: at exec time the Executor staticcalls
+   `token.balanceOf(executor)` and splices the result over the amount word of the sub-call, so the
+   encoder commits to no off-chain amount.
 
-```
-exec([
-  call_g0oyU7o(midnight, 0, 0x00, encodeLiquidate(
-    market, collateralIndex, seizedAssets, repaidUnits, borrower,
-    postMaturityMode,
-    /* receiver */ address(this),     // seized collateral lands here, pre-callback
-    /* callback */ address(this),     // → onLiquidate runs the swap + approves Midnight
-    /* data    */ abi.encode(swapStep) // swap params only; amounts come from callback args
-  )),
-  // Trailing sweeps — run AFTER liquidate() returns, so they don't strip the loan token
-  // before Midnight's end-of-call transferFrom. Drain BOTH tokens so nothing is left behind:
-  call_g0oyU7o(loanToken, 0, 0x00, skim(eoa)),       // swap proceeds minus the repay = profit
-  call_g0oyU7o(collateralToken, 0, 0x00, skim(eoa))  // any collateral the swap didn't consume
-])
-```
+3. Two trailing outer sweeps (`skim` of the loan token then the collateral token to the EOA),
+   running **after** `liquidate` returns — Midnight's end-of-call repay `transferFrom` happens
+   within `liquidate`, so sweeping earlier would strip the loan token before the pull.
 
-**Full drain to the EOA — invariant.** The Executor is a shared, permissionless singleton, so
-it must end every transaction holding **zero** of either token: anything left behind is up for
-grabs by the next caller. The plan therefore ends with a sweep of **both** the loan token and
-the collateral token to the calling EOA. Seizing 100% of a collateral slot and swapping all of
-it into the loan token means the loan-token balance after repay is the bot's profit and the
-collateral balance is normally zero — but we sweep collateral anyway to be defensive against
-swap dust, partial fills, or a slot we under-seize. We use the upstream Executor's
-`skim(token, recipient)`-style self-call helper (transfers the contract's _current_ balance, so
-the encoder needs no balance prediction); both sweeps target the EOA. Belt-and-suspenders: the
-liquidation `simulate()` reads the Executor's post-tx token balances and rejects any plan that
-would leave a non-zero residual, so a missing-sweep regression fails closed in sim rather than
-silently donating funds.
+A **bad-debt realization** plan (`seizedAssets = repaidUnits = 0`) skips all of this: a bare
+`liquidate(receiver = EOA, callback = 0, data = '0x')` with no callback queue and no sweeps —
+Midnight writes off the bad debt without moving tokens.
 
-**TypeScript encoder.** Use [`executooor-viem`](https://www.npmjs.com/package/executooor-viem)
-(the upstream `ExecutorEncoder`) where possible; add a thin Midnight-aware wrapper
-(`execution/encode-call.ts`), `encodeExecForLiquidation(plan, step, recipient) → Hex`, that emits
-the calldata for `Executor.exec_606BaXt(bytes[])` as the outer `(Midnight.liquidate, sweep
-loanToken, sweep collateralToken)` sequence. The single `liquidate` call carries `receiver =
-callback = EXECUTOOOR` and `data = abi.encode(step)`; `recipient` is the calling EOA both trailing
-sweeps target. The swap and the Midnight loan-token approval ride inside the `data` and run in
-`onLiquidate`, not as separate outer calls. Pure module, no RPC. The `step` is the per-collateral
-swap — `router` (UniswapV3 `SwapRouter02` or compat), `tokenIn` (= collateral token), `tokenOut`
-(= loan token), `fee` (500 / 3000 / 10000), and `amountOutMinimum` derived from the lens's fresh
-USD value × `(10000 - slippageBps) / 10000`.
+**Full-drain invariant.** The Executor is shared and permissionless, so it must end every
+transaction holding **zero** of either token — anything left behind is up for grabs by the next
+caller. Seizing 100% of a slot and swapping all of it into the loan token means the loan-token
+balance after repay is the bot's profit and the collateral balance is normally zero, but we sweep
+both anyway against swap dust, partial fills, or an under-seize. Belt-and-suspenders: the
+`simulate()` residual check rejects any plan that would leave a non-zero residual, so a
+missing-sweep regression fails closed in sim rather than silently donating funds. (The structural
+sweeps are unit-tested; the literal on-chain zero-residual post-state is asserted by the anvil
+fork suite.)
+
+**TypeScript encoder.** Uses upstream [`executooor-viem`](https://www.npmjs.com/package/executooor-viem)'s
+`ExecutorEncoder.buildCall` (+ placeholders) for the inner calls, wrapped by the Midnight-aware
+`encodeLiquidationExec(...)`. Pure, no RPC. `tokenIn` (= collateral) and `tokenOut` (= loan token)
+are derived from the `Market` — not carried in `SwapStep` — so they can't drift from the
+`liquidate` args. The `SwapStep` is just `{ router, fee, amountOutMinimum }`.
 
 Per-collateral swap config at `SWAP_CONFIG_PATH`:
 
@@ -819,189 +550,196 @@ Per-collateral swap config at `SWAP_CONFIG_PATH`:
 }
 ```
 
-Missing entry → skip liquidation with `config.no_swap_path` log. The bot signs and broadcasts
-`{ to: EXECUTOOOR_ADDRESS, data: encodeExecForLiquidation(plan, step, eoaAddress) }`, where
-`eoaAddress` is the liquidator EOA that receives both trailing sweeps. The bot **never** calls
+A single file may describe several chains; the bot reads its own chain's entry at swap time. A
+missing entry for a non-bad-debt plan → skip with `config.no_swap_path`. The bot signs and
+broadcasts `{ to: EXECUTOOOR_ADDRESS, data: encodeLiquidationExec(...) }`; it **never** calls
 `Midnight.liquidate` directly.
 
-**Gate whitelisting caveat.** `Midnight.liquidate` checks `canLiquidate(msg.sender)`, which
-is the Executor address (not the EOA). Markets with non-trivial liquidator gates must
-whitelist the singleton Executor. For markets we curate this is straightforward; for
-third-party markets it becomes the gate owner's responsibility.
+**Gate whitelisting caveat.** `Midnight.liquidate` checks `canLiquidate(msg.sender)`, which is the
+Executor address (not the EOA). Markets with non-trivial liquidator gates must whitelist the
+singleton Executor. For markets we curate this is straightforward; for third-party markets it
+becomes the gate owner's responsibility.
 
 ### Config
 
-> ⚠️ **Amended (2026-06-10)** — no per-chain `deployer` (soltag bakes the factory); Base is wired;
-> a required `DATABASE_URL` was added. See
-> [Implementation Amendments](#implementation-amendments-2026-06-10) §5.
-
 Env vars (fail-loud on missing required):
 
-| Var                      | Required | Default  | Purpose                                                |
-| ------------------------ | -------- | -------- | ------------------------------------------------------ |
-| `CHAIN_ID`               | yes      | —        | Must be in chain map                                   |
-| `RPC_URL`                | yes      | —        | Primary RPC                                            |
-| `RPC_URL_FALLBACK`       | no       | —        | Optional `failover` second endpoint                    |
-| `LIQUIDATOR_PRIVATE_KEY` | yes      | —        | EOA hex key                                            |
-| `EXECUTOOOR_ADDRESS`     | no       | derived  | Override; default is the derived CREATE2 address (§15) |
-| `SWAP_CONFIG_PATH`       | yes      | —        | Per-collateral swap params JSON                        |
-| `MAX_FEE_GWEI`           | no       | `300`    | Hard ceiling for fee bumps                             |
-| `CACHE_DIR`              | no       | `.cache` | Reserved; viem-dlc `NodeFsStore` if used               |
-| `LOG_LEVEL`              | no       | `info`   |                                                        |
+| Var                      | Required | Default  | Purpose                                          |
+| ------------------------ | -------- | -------- | ------------------------------------------------ |
+| `CHAIN_ID`               | yes      | —        | Must be in chain map (v0: Base `8453`)           |
+| `RPC_URL`                | yes      | —        | Primary RPC (reads, simulation, sends)           |
+| `RPC_URL_FALLBACK`       | no       | —        | Optional viem-dlc `failover` second endpoint     |
+| `LIQUIDATOR_PRIVATE_KEY` | yes      | —        | EOA hex key (`0x` + 32-byte hex)                 |
+| `EXECUTOOOR_ADDRESS`     | no       | derived  | Override; default is the derived CREATE2 address |
+| `DATABASE_URL`           | yes      | —        | Postgres for the co-located rindexer (discovery) |
+| `SWAP_CONFIG_PATH`       | yes      | —        | Per-collateral swap params JSON                  |
+| `MAX_FEE_GWEI`           | no       | `300`    | Hard ceiling for fee bumps                       |
+| `CACHE_DIR`              | no       | `.cache` | soltag / deployless cache dir                    |
+| `LOG_LEVEL`              | no       | `info`   | `debug` / `info` / `warn` / `error`              |
 
-Chain map in `config.ts`: `{ [chainId]: { chain, midnight: Address, deployer: Address } }` —
-fail loudly when `CHAIN_ID` isn't present. The `deployer` is the stable CREATE2 deployer for
-the deployless lens.
+Chain map in `config.ts`: `{ [chainId]: { chain, midnight: Address } }` — fail loudly when
+`CHAIN_ID` isn't present. v0 wires Base (8453), Midnight =
+`0x3726353bCDDba7c29a17D46D8a35D1E8b2E51854`. The deployless lens needs **no** per-chain deployer:
+soltag bakes the canonical CREATE2 factory + `factoryData` into its compiled output, and the same
+`Executor.with()` baking gives the derived `EXECUTOOOR_ADDRESS`.
 
-Startup validation: parse private key (0x + 32-byte hex), parse JSON swap config, verify
-`EXECUTOOOR_ADDRESS` is a contract (`getCode` non-empty) — fatal on mismatch. Emit a one-line
-`startup` log with chain id, EOA address, executooor address, midnight address.
+Startup validation: parse the private key (`0x` + 32-byte hex), read + zod-validate the swap config
+JSON, default/parse the derived `EXECUTOOOR_ADDRESS`, then `assertContractDeployed` (`getCode`
+non-empty — a liveness gate, not an identity check; fatal with the deploy command when no code is
+found). Emit a one-line `startup` log with `{ chainId, liquidator, callback, midnight }`.
 
 ## Considered Alternatives
 
 ### Alternative 1: Cron / one-shot topology
 
-Run `main()` once per cron tick (every 30–60s), drain queue with a 5-minute internal wait,
-exit. Matches v1's topology and ops surface area.
+Run `main()` once per cron tick (every 30–60s), drain queue with a short internal wait, exit.
 
-**Why rejected:** The daemon is barely more complex (a `setInterval`-polled
-`getBlockNumber` loop wrapping the same tick function) and gives us per-block reactivity at
-no extra cost. Cron would race itself when a queue drain runs long.
+**Why rejected:** The daemon is barely more complex (a `setInterval`-polled `getBlockNumber` loop
+wrapping the same tick function) and gives us per-block reactivity at no extra cost. Cron would
+race itself when a queue drain runs long.
 
-### Alternative 2: Use API for _everything_ including fresh state
+### Alternative 2: Discovery via the hosted Morpho API instead of a co-located rindexer
 
-The API exposes `debt`, `collaterals[]`, oracles, and (eventually) health. Could skip the
-lens entirely.
+Refresh borrow positions from `https://api.morpho.dev/v1/midnight/*` each tick, each row carrying
+its `Market` config inline.
 
-**Why rejected:** The user's framing explicitly requires `eth_call` for any data needed for
-the liquidation decision. The API is documented at 2 s freshness; a position can flip from
-unhealthy → healthy or vice versa within a single block, and we don't want a 502 on the API
-to determine whether we send a transaction. The API is for _discovery_ (who exists), the
-lens is for _decisions_ (is it still true).
+**Why rejected:** The live API **requires a `user` param** on `/positions`, so there is no global
+borrow-position listing to enumerate the borrower universe from. A hosted indexer also adds an
+availability dependency on the liquidation hot path. A co-located rindexer indexing `Take` gives us
+the full universe straight from chain logs with no external dependency, and the lens still reads
+every decision fresh — so indexer lag is only coverage latency, never a correctness issue.
 
-### Alternative 3: Multicall instead of a deployless lens
+### Alternative 3: Trust an indexer's state for the liquidation decision (skip the lens)
 
-Continue v1's two-multicall pattern (one for gate, one for `isHealthy`) and add a third
-for oracle reads. Avoids soltag entirely.
+An indexer (ours or hosted) exposes `debt`, `collaterals[]`, oracles, and health. We could size
+and decide straight off it.
 
-**Why rejected:** Three round-trips per tick at the wrong batch granularity, every value
-fetched independently with no shared `block.timestamp`. The lens reads everything inside one
-`eth_call`, evaluates LIF/RCF math against a single chain time, and returns exactly the
-struct sizing wants. Multicall would force us to evaluate LIF using the host clock or a
-separate `block.timestamp` read — both subtly wrong.
+**Why rejected:** A position can flip unhealthy → healthy (or vice versa) within a single block,
+and we will not let indexer lag or an RPC hiccup determine whether we send a transaction. Discovery
+says _who_ might be liquidatable; the lens, read fresh in one `eth_call` against a single
+`block.timestamp`, says _whether it still is_.
 
-### Alternative 4: Persistent queue state across daemon restarts
+### Alternative 4: Multicall instead of a deployless lens
 
-Persist `pending` to disk via `NodeFsStore` so a restart can recover in-flight transactions.
+Use a two/three-multicall pattern (gate, `isHealthy`, oracle reads) and avoid soltag entirely.
+
+**Why rejected:** Round-trips at the wrong batch granularity, every value fetched independently
+with no shared `block.timestamp`. The lens reads everything inside one `eth_call`, evaluates
+LIF/RCF math against a single chain time, and returns exactly the struct sizing wants. Multicall
+would force LIF evaluation against the host clock or a separate `block.timestamp` read — both
+subtly wrong.
+
+### Alternative 5: Persistent queue state across daemon restarts
+
+Persist `pending` to disk so a restart can recover in-flight transactions.
 
 **Why rejected:** Operationally fragile (stale state + chain divergence), and unnecessary —
 `getTransactionCount('pending')` on init slots us above any in-flight tx, and the next tick
 re-discovers the position if the tx was dropped. Chain is the source of truth.
 
-### Alternative 5: Multi-hop swap routing inside the callback
+### Alternative 6: Multi-hop swap routing inside the callback
 
-Wire the callback to a path-aware router (Uniswap Universal Router, 0x).
+Wire the callback queue to a path-aware router (Uniswap Universal Router, 0x).
 
-**Why rejected:** Explicitly out of scope per the user's "single-hop, no routing" decision.
-Volatile collateral configurations can use a permissive `slippageBps` or be omitted; the
-fallback bot accepts coverage gaps over the complexity of routing.
+**Why rejected:** Explicitly out of scope per the "single-hop, no routing" decision. Volatile
+collateral configurations can use a permissive `slippageBps` or be omitted; the fallback bot
+accepts coverage gaps over the complexity of routing.
 
 ## Assumptions & Constraints
 
-- The Morpho Midnight API at `https://api.morpho.dev/v1/midnight/*` is reachable, public, and
-  meaningfully tracks the chain (lag typically < 5 blocks).
-- The `latest_indexed_block` field on `/v1/midnight/chains` is honest about indexer state.
-- The API returns, for each market, the full `Market` struct and its `id` such that
-  `Midnight.toId(market) == id` (the id is a CREATE2-style hash over the `Market`, salted by the
-  contract's `INITIAL_CHAIN_ID`; the lens re-validates this rather than trusting the API).
-- The modified Executor (`contracts/executooor/Executor.sol` in this repo — owner gate
-  stripped) is deployed at `EXECUTOOOR_ADDRESS` on every supported chain.
+- The co-located rindexer keeps reasonable pace with Base. Its lag is observability-only; the bot
+  proceeds regardless and reads decision state fresh via the lens.
+- Midnight's `Take` event is the only debt-creating path, and its indexed `taker` / `maker` cover
+  every borrower (the lens drops the non-debtor of the pair).
+- `toMarket(id)` returns the canonical `Market` for a created id and reverts for an unknown id (the
+  lens isolates the revert per element). The id is a cryptographic commitment to the `Market`, so
+  the lens never trusts an off-chain market.
+- The generic Executor (`@repo/contracts` `Executor.sol` — owner gate stripped) is deployed at the
+  derived CREATE2 address on every supported chain. The bot fails loud at startup with the deploy
+  command if no code is found there.
 - Markets we care about either have no `liquidatorGate` or have whitelisted the Executor.
-- The deployless transport's `exfil: 'revert'` path is preserved by the operator's RPC
-  provider (Alchemy / Infura preserve revert data; some self-hosted nodes do not — verify
-  before deploy).
+- The deployless transport's `exfil: 'revert'` path is preserved by the operator's RPC provider
+  (Alchemy / Infura preserve revert data; some self-hosted nodes do not — verify before deploy).
 - Single-hop Uniswap-V3-compatible pools exist for each collateral the operator opts into.
-- The operator funds the EOA with native gas, runs one process per chain, and manages the
-  swap config file out-of-band.
+- The operator funds the EOA with native gas, runs one process per chain, and manages the swap
+  config file out-of-band. The chain is Cancun-capable (the Executor uses transient storage and
+  `mcopy`).
 
 ## Dependencies
 
-- `@morpho-org/viem-dlc@0.0.11` (in `workspaces.catalog`): `deployless`, `failover` transports;
-  `policy()`, `factorisedFactoryCall`, `wrapDeploylessFactoryCall`, `resolveArrayFunction`,
-  codec helpers.
-- `soltag@0.0.17` (new — add to `workspaces.catalog`): inline-Solidity tagged template literal
-  for authoring the lens.
-- `openapi-fetch` (new runtime dep, ~5 KB): typed `fetch` client driven by the generated
-  `paths` type.
-- `openapi-typescript` (new dev dep): CLI used by `pull-schemas.ts` to emit
-  `src/api/generated.ts`. Not a runtime dep.
-- `executooor-viem` (new runtime dep): the upstream Rubilmax `ExecutorEncoder` TypeScript
-  helpers. Our Midnight-aware encoder is a thin wrapper.
-- `prompts` (new dev dep): used only by `scripts/pull-schemas.ts` for the interactive CLI.
-- `viem` (catalog): `createPublicClient`, `createWalletClient`, `getBlockNumber` (polled),
-  `simulateContract`, `sendTransaction`, `getTransactionReceipt`, `privateKeyToAccount`, and
+- `@morpho-org/viem-dlc` (catalog): `deployless`, `failover` transports; `policy()`,
+  `resolveArrayFunction`, codec helpers.
+- `soltag` + `solc` (catalog, **runtime**): the soltag preload compiles the lens on load; the
+  `@repo/contracts` package soltag-compiles its ABIs/bytecode at build time.
+- `executooor-viem` (catalog): the upstream `ExecutorEncoder` (`buildCall` + placeholders) and
+  `executorAbi`. Our Midnight-aware encoder is a thin wrapper.
+- `viem` (catalog): `createPublicClient`, `createWalletClient`, `getBlockNumber` (polled), `call`
+  (simulation), `sendTransaction`, `getTransactionReceipt`, `getBlock`, `privateKeyToAccount`, and
   `createNonceManager` + `jsonRpc` (from `viem/nonce`).
-- `@repo/abis/v2` (workspace): `MidnightAbi`. Add `ExecutorAbi` once the contract is finalized.
-- `@repo/utils` (workspace): `tryCatch`, `allFulfilled`.
-- In this repo (Solidity, under `contracts/executooor/`): the modified Executor contract.
-- Out-of-repo: the co-located **rindexer** Postgres (borrower universe, `DATABASE_URL`); the deployed
-  Executor instance at `EXECUTOOOR_ADDRESS`. (The Morpho API was removed — see Amendment §9.)
+- `zod` (catalog): swap-config validation.
+- `@repo/contracts` (workspace): `MidnightAbi` and the vendored `Executor` (with the `.with()`
+  deterministic factory). Soltag-compiled from vendored Solidity; also materializes
+  `abis/Midnight.json` for rindexer.
+- `@repo/utils` (workspace): `tryCatch`, `addressSchema`, `allFulfilled`.
+- Out-of-repo: the co-located **rindexer** Postgres (borrower universe, `DATABASE_URL`); the
+  `rindexer` image (ghcr) that indexes `Take`; the deployed Executor singleton at the derived
+  address.
 
 ## Observability
 
-JSON-line via the v1 `logger.ts`. Stable event keys:
+JSON-line via `logger.ts` (`debug` / `info` / `warn` / `error`; bigints stringified). Stable event
+keys:
 
 ```
-startup                  { chainId, liquidator, callback, midnight }
-daemon.start             { intervalMs }
-block.new                { height }                        // one per new block height (coalesced)
-rindexer.lag             { chainHead, synced, lag } | { reason: 'unknown' }   // observability; warn if lag>30, never skips
-positions.fetched        { count, markets, durationMs }          // markets = distinct count in the set
-lens.read                { pairs, batches, durationMs }
-lens.id_mismatch         { marketId, borrower }
-lens.skipped             { marketId, borrower, reason }
-plan.built               { marketId, borrower, collateralIndex, kind, seized, repaid }
-simulate.ok              { marketId, borrower }
-simulate.unfunded        { marketId, borrower }            // plan valid, Executor unfunded (expected)
-simulate.revert          { marketId, borrower, reason }    // a Midnight error → sizing/eligibility bug
-tx.sent                  { label, nonce, txHash, maxFee, priority }
-tx.bumped                { nonce, oldHash, newHash, attempt, maxFee, priority }
-tx.confirmed             { nonce, txHash, blockNumber }
-tx.dropped               { nonce, txHash, reason }
-tx.reverted              { nonce, txHash, reason }
-tick.end                 { pairs, liquidatable, planned, ok, unfunded, reverted, submitted }
-tick.error               { error }                         // a tick threw; the daemon loop survives
-watcher.error            { error }                         // a block poll (getBlockNumber) failed
-shutdown                 { signal, pending }
-daemon.shutdown          { }
+startup              { chainId, liquidator, callback, midnight }
+daemon.start         { intervalMs }
+daemon.shutdown      { }
+block.new            { height }                            // one per new block height (coalesced)
+rindexer.lag         { chainHead, synced, lag } | { reason: 'unknown', chainHead }
+                                                           //   observability; warn if lag>30, never skips
+lens.read            { pairs, returned }
+plan.built           { marketId, borrower, collateralIndex, seizedAssets, repaidUnits, postMaturityMode }
+config.no_swap_path   { marketId, borrower, collateralIndex }   // no route configured for this collateral
+simulate.ok          { marketId, borrower }
+simulate.revert      { marketId, borrower, reason }        // unfundable plan → never broadcast
+tx.sent              { label, nonce, txHash, maxFee, priority }
+tx.bumped            { nonce, oldHash, newHash, attempt, maxFee, priority }
+tx.confirmed         { nonce, txHash, blockNumber }
+tx.dropped           { nonce, txHash, reason }             // reason: 'max_bump_attempts' | 'fee_ceiling'
+tx.reverted          { nonce, txHash, blockNumber }
+tick.end             { pairs, liquidatable, planned, noSwapPath, ok, reverted, submitted }
+tick.error           { error }                             // a tick threw; the daemon loop survives
+watcher.error        { error }                             // a block poll (getBlockNumber) failed
+shutdown             { signal, pending }
 ```
 
-`tick.end` carries the as-built read-only counters above. No external metrics deps; logs are
-structured enough to ship. (The `tx.*` events land with the signed-send queue, CRTR-2585.)
+No external metrics deps; the logs are structured enough to ship.
 
 ## Security
 
-- **Private key handling.** `LIQUIDATOR_PRIVATE_KEY` read from env once at startup, never
-  logged, never written to disk. No `.env` file checked in (covered by repo `.gitignore`).
-- **Gate target.** `canLiquidate` is checked against `EXECUTOOOR_ADDRESS`, not the EOA. The
-  lens input carries the caller address explicitly so this can't drift between layers.
-- **`id == Midnight.toId(market)` validation.** The lens calls the on-chain `toId` and flags
-  mismatches as `valid: false`. We never call `liquidate` with an API-derived `Market` that
-  hasn't passed this check.
+- **Private key handling.** `LIQUIDATOR_PRIVATE_KEY` read from env once at startup, never logged,
+  never written to disk. No `.env` file checked in (covered by repo `.gitignore`).
+- **Gate target.** `canLiquidate` is checked against `EXECUTOOOR_ADDRESS`, not the EOA. The lens
+  input carries the `caller` address explicitly so this can't drift between layers.
+- **Canonical `Market` from `toMarket(id)`.** We never call `liquidate` with a `Market` we didn't
+  read on-chain from its id; the id is a cryptographic commitment to the struct, so a forged or
+  stale market can't slip in.
 - **Slippage on the swap.** `amountOutMinimum` derived from the lens's fresh USD value via a
-  per-collateral `slippageBps`. Beyond that the swap reverts atomically mid-`liquidate` and
-  the whole liquidate reverts — no loss, just a wasted gas estimate.
+  per-collateral `slippageBps`. Beyond that the swap reverts atomically mid-`liquidate` and the
+  whole liquidate reverts — no loss, just a wasted gas estimate.
 - **Full drain of the shared singleton.** The Executor is permissionless and shared, so any
   residual balance is claimable by the next caller. The dual-token sweep and the `simulate()`
-  residual check that enforce a zero ending balance are described in §Executooor integration; the
-  security property is that a missing-sweep regression fails closed in sim rather than donating
-  funds.
-- **Re-entrancy / callback auth.** Two modifications (drop the owner gate; add `onLiquidate`).
-  The new `onLiquidate` handler **must gate `msg.sender == MIDNIGHT`** — otherwise any caller
-  could invoke it directly and drive the contract's swap/approve logic with arbitrary `data`.
-  The `call_g0oyU7o` self-call gate (`msg.sender == address(this)`) is unchanged. Because the
-  singleton is shared and now carries a callback that moves tokens, the diff warrants a focused
-  audit before deploy — flag it when the modified contract goes to review.
+  residual check enforce a zero ending balance: a missing-sweep regression fails closed in sim
+  rather than donating funds.
+- **Permissionless singleton — caller-side defenses.** The Executor carries no protocol-specific
+  Solidity and no owner gate, so between-tx balances and allowances are claimable/settable by
+  anyone. Each caller defends per-transaction: **zero-first approve pairs** (no standing allowance
+  a prior caller could weaponize, and no DoS on approve-from-nonzero tokens), a **balance-based**
+  repay approval (inert under the zero-balance-between-txs invariant), and the simulate residual
+  check. The callback path is gated on `msg.sender == MIDNIGHT` via the call's context; the
+  `call_g0oyU7o` self-call gate (`msg.sender == address(this)`) is upstream-unchanged. Because the
+  diff from upstream is a three-line deletion, the pre-deploy audit is correspondingly small —
+  flag it when the vendored contract goes to review.
 - **Replay / front-running.** No sensitive payload; the bot's transactions are public by
   construction (we're a fallback, not racing).
 
@@ -1012,80 +750,85 @@ structured enough to ship. (The `tx.*` events land with the signed-send queue, C
 - Multi-chain in one process if ops complexity favors it (probably not).
 - A persisted queue state with replay-safe semantics, if restarts become frequent enough to
   warrant it.
-- A flashloan-funded variant for liquidators without working capital — handled by wrapping the
-  liquidate in `Midnight.flashLoan(address[] tokens, uint256[] assets, address callback, bytes data)`
-  (`midnight-contracts.txt:2456`). This needs a second handler:
-  `onFlashLoan(address caller, address[] tokens, uint256[] assets, bytes data) returns (bytes32)`
-  (`:942`), which — like `onLiquidate` — must gate `msg.sender == MIDNIGHT` and return
-  `CALLBACK_SUCCESS`. Not just queued calls: it's another mandatory Solidity handler.
-- Extracting `api/`, `lens/`, and `queue/` into shared packages (`@repo/midnight-api`,
-  `@repo/viem-dlc-lens`, `@repo/tx-queue`) once a second bot consumes them — explicitly
-  premature today.
+- A flashloan-funded variant for liquidators without working capital — wrap the liquidate in
+  `Midnight.flashLoan(address[] tokens, uint256[] assets, address callback, bytes data)`.
+  `onFlashLoan` — like `onLiquidate` — is serviced by the **same generic callback-queue trick**
+  (the fallback runs the queue and returns `CALLBACK_SUCCESS` raw), so it needs **no** additional
+  Solidity handler, just a second encoder path.
+- Extracting `discovery/`, `state/`, and `queue/` into shared packages once a second bot consumes
+  them (`@repo/viem-dlc-lens`, `@repo/tx-queue`) — explicitly premature today.
 
 ## Open Questions
 
-- **Singleton deployment + gate whitelisting.** Where does the Executor singleton get
-  deployed (canonical address via CREATE2?), and what's the process for getting it
-  whitelisted in third-party `liquidatorGate`s? Acceptable for v2 to scope this to
-  Morpho-curated markets only.
-- **API outage policy.** Should the bot fail open to a lens-only discovery mode behind a flag
-  (e.g., a minimal `eth_getLogs` scan over the last N blocks) when the API is sustained-down?
-  Default for v2: no — accept temporary blindness. Revisit if outages happen.
-- **Lens calibration target.** What do the inline gas constants in `lens/lens.sol.ts` target — Sepolia testnet? Mainnet
-  fork? The coefficients differ by ~10% across opcodes-with-cold-sloads. Decide in phase 2.
-- **Lens gas calibration on bad-debt positions.** Computing `badDebt` reuses the lens's existing
-  collateral loop, so it adds no round-trips — but confirm the `BatchGasConfig` coefficients still
-  hold for positions with all 16 slots activated (the worst-case loop). Decide alongside the
-  calibration target above in phase 2.
+- **Singleton deployment — Resolved.** The Executor is deployed deterministically via the canonical
+  Foundry/Arachnid CREATE2 factory (`0x4e59b44847b379578588920cA78FbF26c0B4956C`) with a fixed
+  salt; the no-constructor bytecode lands at the **same address on every chain**
+  (`0x6d9dEA0Ae96156862A534e5016173d3e001CB7D0`), which the bot derives from `Executor.with()` and
+  the deploy script reuses (one salt, one source of truth). Deploy once per chain with
+  `bun run --filter @repo/contracts deploy:executor` (idempotent, fail-loud, chain-agnostic — it
+  resolves the chain from the live `eth_chainId`; needs `RPC_URL` + `DEPLOYER_PRIVATE_KEY`). Gate
+  whitelisting in third-party `liquidatorGate`s remains the gate owner's responsibility; v0 scopes
+  to Morpho-curated markets.
+- **Discovery outage policy — Obsolete.** There is no hosted API to go down. Discovery is the local
+  rindexer, and decisions read fresh via the lens; rindexer lag is coverage latency only.
+- **Lens calibration target — still open.** The inline gas coefficients
+  (`{ constant: 600_000, linear: 30_000, quadratic: 0 }`) are placeholders. Calibrate on a Base
+  fork — including a position with all 16 slots activated (the worst-case loop) — before go-live.
 
 ## Verification
 
 After each phase:
 
-1. `bun install` succeeds with new catalog entries (`soltag@0.0.17`, viem-dlc kept at
-   `0.0.11`).
-2. `bun run --filter @bots/midnight-liquidation typecheck` → 0 errors.
+1. `bun install` succeeds with catalog entries (`soltag`, `solc`, `executooor-viem`, viem-dlc).
+2. `bun run --filter @morpho-org/midnight-liquidation typecheck` → 0 errors (runs `soltag` first to
+   regenerate the lens type codegen).
 3. `bun lint` → 0 warnings.
 4. `bun test` → all unit tests pass, including:
-   - LIF: normal mode (→ maxLif) vs post-maturity ramp boundaries (at maturity → WAD /
-     mid-curve / past TIME_TO_MAX_LIF → maxLif).
-   - `maxRepaidPreMaturity` matches the contract's `mulDivUp((debt−badDebt)−maxDebt, WAD²,
-WAD²−lif·lltv)` exactly, including the bad-debt writeoff case (`badDebt > 0`); RCF cap with
-     and without the `rcfThreshold` exemption; cap waived in post-maturity mode.
-   - `plan()` mode selection: past maturity → postMaturityMode; pre-maturity healthy → skip.
+   - LIF: normal mode (→ maxLif) vs post-maturity ramp boundaries (at maturity → WAD / mid-curve /
+     past `TIME_TO_MAX_LIF` → maxLif).
+   - `maxRepaidPreMaturity` matches the contract's
+     `mulDivUp((debt−badDebt)−maxDebt, WAD², WAD²−lif·lltv)` exactly, including the bad-debt
+     writeoff case (`badDebt > 0`); RCF cap with and without the `rcfThreshold` exemption; cap
+     waived in post-maturity mode.
+   - `plan()` mode selection: past maturity → postMaturityMode; pre-maturity healthy → skip; the
+     post-maturity over-seize clamp (repay `debt − badDebt` when 100% over-repays); the
+     fully-underwater bad-debt realization (zero/zero plan).
    - `activeBits` bitmap iteration.
-   - Nonce queue: parallel-submit nonce assignment, fee-bump ≥12.5%, gap detection.
-   - API pagination: termination, hard-cap, error propagation.
-   - Lens shapes: encode/decode roundtrip, selector match with
-     `resolveArrayFunction(fragment)`.
+   - Nonce queue: parallel-submit nonce assignment, fee-bump ≥12.5%, gap detection,
+     `inflightLabels` backpressure.
+   - Lens shapes: encode/decode roundtrip, selector match via `resolveArrayFunction(fragment)`.
    - Executor exec-encoder: selector + args golden hex against the Executor ABI, including the
-     two trailing sweep calls (loan + collateral) targeting the recipient EOA.
-5. Integration tests on an anvil fork (once Midnight is deployable there):
-   - Boot anvil with Midnight + Uniswap V3 + a real pool. Create a liquidatable position via
-     `vm.warp` past maturity. Run one tick. Assert receipt status=1, EOA loan-token balance
-     increased, and the Executor holds **zero** loan token and **zero** collateral token after
-     the tx (full-drain invariant).
-   - Underprice the first send; assert the queue bumps and the replacement lands.
-   - Point `MIDNIGHT_API_URL` to a 503 stub; assert the bot logs and skips without crashing.
-6. Per-test vacuity check: flip one assertion in each new unit test file, confirm the test
-   fails, then revert (CONVENTIONS gate).
-7. Smoke run on a chain with Midnight deployed: daemon up for ≥1 h, observe expected
-   `tick.end` cadence, verify no orphaned `pending` entries on graceful SIGTERM.
+     callback queue (zero-first approve pairs, swap, balance-based repay approval) and the two
+     trailing sweep calls (loan + collateral) targeting the recipient EOA.
+   - Discovery SQL: the `taker`/`maker` union and the `MAX(block_number)` lag query.
+5. Anvil fork suite (`test/fork/`): fork Base at a pinned block, reuse a real open position warped
+   past maturity, deploy the Executor via the same CREATE2 factory, and drive the full real path
+   (lens → plan → swap → `encodeLiquidationExec` → `simulate` → signed broadcast). Assert receipt
+   success, the EOA gains the loan token, and the Executor ends holding **zero** of both tokens
+   (the literal zero-residual post-state — the full-drain invariant). Separately: queue
+   bump + replacement against a real node (automining off; advance past `STUCK_BLOCKS`, the
+   same-nonce replacement lands). The deliberately-underpriced replacement stays a manual testnet
+   gate (needs a funded EOA).
+6. Per-test vacuity check: flip one assertion in each new unit test file, confirm the test fails,
+   then revert (CONVENTIONS gate).
+7. Smoke run on Base: daemon up for ≥1 h, observe expected `tick.end` cadence, verify no orphaned
+   `pending` entries on graceful SIGTERM.
 
 ## References
 
-- Morpho Midnight API (unified with the Router under `api.morpho.dev`; serves a first-class
-  OpenAPI document consumed by `pull-schemas.ts`): docs at `https://api.morpho.dev/midnight/docs`
-- Rubilmax executooor (basis for the modified callback singleton):
+- Rubilmax executooor (basis for the generic singleton):
   `https://github.com/Rubilmax/executooor`
 - viem-dlc: `https://github.com/morpho-org/viem-dlc`
 - viem `createNonceManager`: `https://viem.sh/docs/accounts/local/createNonceManager`
 - soltag: `https://github.com/haydenshively/soltag`
-- Midnight contracts source-of-truth in repo: `docs/context/repos/midnight-contracts.txt`
-  (protocol references in this TIB are pinned to commit `5e9ecd58`, generated 2026-06-03;
-  line numbers cited inline are against that file). Key surfaces: `liquidate` `:2300`,
-  `ILiquidateCallback.onLiquidate` `:933`, `isHealthy` `:2663`, `liquidationLocked` `:2656`,
-  `IdLib.toId` `:339` / `Midnight.toId` `:2590`, LIF `:2362-2366`, RCF `:2378-2386`,
-  bad-debt writeoff `:2326-2346`, `maxLif` derivation `:997` / market-creation validation `:2487`,
-  continuous-fee accrual (`updatePositionView`) `:2516-2538`,
-  `Market` / `CollateralParams` structs `:1098-1112`, `ConstantsLib` `:955-972`.
+- **Canonical Midnight interface:** the vendored
+  `packages/contracts/solidity/interfaces/IMidnight.sol`, re-vendored from `prime-monorepo`. It
+  emits the real event set (`Take`, `MarketCreated`, `Repay`, `SupplyCollateral`,
+  `WithdrawCollateral`, `Withdraw`, `Liquidate`, `FlashLoan`) and is byte-faithful to the deployed
+  Base Midnight (`0x3726353bCDDba7c29a17D46D8a35D1E8b2E51854`). The authoritative surface for this
+  TIB: **9-arg** `liquidate`, **10-arg** `onLiquidate` (return checked against
+  `CALLBACK_SUCCESS = 0x7f87…aea2`), `toMarket` / `Market`.
+- `docs/context/repos/midnight-contracts.txt` is a **historical snapshot** (commit `5e9ecd58`,
+  generated 2026-06-03) that predates the deployed `main`. The inline `:NNNN` line numbers cited in
+  a few comments here and in `sizing/plan.ts` point at that snapshot and are approximate; for the
+  authoritative surface, trust the vendored interface above and the deployed contract.
