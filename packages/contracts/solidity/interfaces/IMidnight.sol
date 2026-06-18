@@ -90,6 +90,14 @@ interface IMidnight {
     error WrongRepayCallbackReturnValue();
     error WrongSellCallbackReturnValue();
 
+    event UpdatePosition(
+        bytes32 indexed id_,
+        address indexed user,
+        uint256 creditDecrease,
+        uint256 pendingFeeDecrease,
+        uint256 accruedFee
+    );
+
     function INITIAL_CHAIN_ID() external view returns (uint256);
 
     function claimContinuousFee(Market memory market, uint256 amount, address receiver) external;
@@ -120,8 +128,7 @@ interface IMidnight {
 
     function feeSetter() external view returns (address);
 
-    function flashLoan(address[] memory tokens, uint256[] memory assets, address callback, bytes memory data)
-        external;
+    function flashLoan(address[] memory tokens, uint256[] memory assets, address callback, bytes memory data) external;
 
     function isAuthorized(address authorizer, address authorized) external view returns (bool);
 
@@ -182,8 +189,7 @@ interface IMidnight {
             uint128 collateralBitmap
         );
 
-    function repay(Market memory market, uint256 units, address onBehalf, address callback, bytes memory data)
-        external;
+    function repay(Market memory market, uint256 units, address onBehalf, address callback, bytes memory data) external;
 
     function roleSetter() external view returns (address);
 
@@ -213,8 +219,7 @@ interface IMidnight {
 
     function settlementFeeCbps(bytes32 id) external view returns (uint16[7] memory);
 
-    function supplyCollateral(Market memory market, uint256 collateralIndex, uint256 assets, address onBehalf)
-        external;
+    function supplyCollateral(Market memory market, uint256 collateralIndex, uint256 assets, address onBehalf) external;
 
     function take(
         Offer memory offer,

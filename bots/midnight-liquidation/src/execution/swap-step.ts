@@ -1,7 +1,7 @@
 import type { Address } from 'viem'
 
-import type { LensOut } from '../lens/lens.sol'
 import type { LiquidationPlan } from '../sizing/plan'
+import type { LensOut } from '../state/lens.sol'
 import type { SwapStep } from './encode-call'
 
 import { ORACLE_PRICE_SCALE, WAD } from '../constants'

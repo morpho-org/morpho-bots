@@ -6,11 +6,11 @@ import { getAddress } from 'viem'
 import type { BorrowerCandidate } from '../../src/discovery/borrowers'
 import type { SwapStep } from '../../src/execution/encode-call'
 import type { SimulateResult } from '../../src/execution/simulate'
-import type { LensInput, LensOut } from '../../src/lens/lens.sol'
 import type { Logger } from '../../src/logger'
+import type { LensInput, LensOut } from '../../src/state/lens.sol'
 
 import { runTick } from '../../src/daemon/tick'
-import { lensKey } from '../../src/lens/lens.sol'
+import { lensKey } from '../../src/state/lens.sol'
 
 function spyLogger() {
   const events: { level: string; event: string; fields?: Record<string, unknown> }[] = []

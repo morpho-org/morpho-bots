@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'bun:test'
 import { getAddress, zeroAddress } from 'viem'
 
-import type { LensOut } from '../../src/lens/lens.sol'
 import type { LiquidationPlan } from '../../src/sizing/plan'
+import type { LensOut } from '../../src/state/lens.sol'
 
 import { ORACLE_PRICE_SCALE, WAD } from '../../src/constants'
 import { buildSwapStep, expectedLoanOut } from '../../src/execution/swap-step'

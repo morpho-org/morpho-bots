@@ -5,12 +5,12 @@ import { assertNever, tryCatch } from '@repo/utils'
 import type { BorrowerCandidate } from '../discovery/borrowers'
 import type { Market, SwapStep } from '../execution/encode-call'
 import type { SimulateResult } from '../execution/simulate'
-import type { LensInput, LensOut } from '../lens/lens.sol'
 import type { Logger } from '../logger'
 import type { LiquidationPlan } from '../sizing/plan'
+import type { LensInput, LensOut } from '../state/lens.sol'
 
-import { lensKey } from '../lens/lens.sol'
 import { plan } from '../sizing/plan'
+import { lensKey } from '../state/lens.sol'
 import { isLiquidatable, planInputFromLens } from './eligibility'
 
 /** Blocks our rindexer may trail the chain head before we warn that coverage is degraded. */

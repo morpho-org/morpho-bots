@@ -1,3 +1,6 @@
 .soltag/
+abis/
+cache/
 dist/
+out/
 tsconfig.tsbuildinfo

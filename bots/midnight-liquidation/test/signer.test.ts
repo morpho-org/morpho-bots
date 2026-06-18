@@ -3,7 +3,7 @@ import type { Hex } from 'viem'
 import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test'
 import { base } from 'viem/chains'
 
-import { createSigner } from '../../src/chain/signer'
+import { createSigner } from '../src/signer'
 
 // Throwaway well-known test key (anvil account #0) — never used to hold funds.
 const KEY: Hex = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'

@@ -1,0 +1,13 @@
+# Used by `forge fmt` only — soltag/tsdown handle compilation & ABI extraction.
+# This package never runs `forge build`, `forge test`, or anything else from
+# Foundry. The `[profile.default]` block exists so `forge fmt solidity/` works
+# without forge complaining about a missing `src/` directory.
+
+[profile.default]
+src = "solidity"
+out = "out"
+libs = []
+
+[fmt]
+line_length = 120
+wrap_comments = true

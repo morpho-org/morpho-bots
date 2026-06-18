@@ -1,5 +1,5 @@
 # Bundles the bot with a rindexer instance + Postgres for borrower discovery (CRTR-2579).
-# rindexer indexes the Midnight events in rindexer/rindexer.yaml into Postgres; the bot reads the
+# rindexer indexes the Midnight events in rindexer.yaml into Postgres; the bot reads the
 # indexed (market, borrower) pairs each tick. The bot's build context is the repo root so the bun
 # workspace (packages/*) resolves — see Dockerfile.
 #
@@ -21,7 +21,12 @@ services:
       retries: 10
 
   rindexer:
-    image: ghcr.io/joshstevens19/rindexer:latest
+    # Derived from the upstream rindexer image with rindexer.yaml + the generated event ABI baked in
+    # (see Dockerfile `rindexer` target), so no host bind mount is needed and the ABI isn't committed.
+    build:
+      context: ../..
+      dockerfile: bots/midnight-liquidation/Dockerfile
+      target: rindexer
     depends_on:
       postgres:
         condition: service_healthy
@@ -29,8 +34,6 @@ services:
       DATABASE_URL: postgresql://rindexer:${POSTGRES_PASSWORD:-rindexer}@postgres:5432/midnight_liquidation
       RINDEXER_RPC_URL: ${RPC_URL:?set RPC_URL}
       PROJECT_PATH: /app/project_path
-    volumes:
-      - ./rindexer:/app/project_path
     command: ['start', 'indexer']
     restart: unless-stopped
 
@@ -38,6 +41,7 @@ services:
     build:
       context: ../..
       dockerfile: bots/midnight-liquidation/Dockerfile
+      target: bot
     depends_on:
       postgres:
         condition: service_healthy

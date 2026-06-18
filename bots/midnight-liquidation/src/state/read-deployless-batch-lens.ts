@@ -1,9 +1,5 @@
 import type { Id } from '@repo/utils'
 
-// Vendored from prime-monorepo `packages/resolvers/src/rpc/read-deployless-batch-lens.ts`. Wraps
-// viem-dlc's `policy()` + `readContract` so a single-array-in / single-array-out lens function is
-// read deploylessly and chunked by viem-dlc. Copied (not depended on) per the TIB; promote to a
-// shared package if a second bot needs it.
 import { omit, policy } from '@morpho-org/viem-dlc'
 import {
   type Abi,

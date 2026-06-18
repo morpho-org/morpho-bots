@@ -7,7 +7,7 @@
   "scripts": {
     "prestart": "bun run --parallel --workspaces --if-present build",
     "start": "bun src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "soltag && tsc --noEmit"
   },
   "dependencies": {
     "@morpho-org/viem-dlc": "catalog:",

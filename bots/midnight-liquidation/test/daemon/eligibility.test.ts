@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
 
-import type { LensOut } from '../../src/lens/lens.sol'
+import type { LensOut } from '../../src/state/lens.sol'
 
 import { isLiquidatable, planInputFromLens } from '../../src/daemon/eligibility'
 

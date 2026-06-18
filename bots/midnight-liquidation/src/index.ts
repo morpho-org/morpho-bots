@@ -5,11 +5,10 @@ import { getBlockNumber } from 'viem/actions'
 
 import type { Market, SwapStep } from './execution/encode-call'
 import type { SwapConfigEntry } from './execution/swap-step'
-import type { LensOut } from './lens/lens.sol'
 import type { LiquidationPlan } from './sizing/plan'
+import type { LensOut } from './state/lens.sol'
 
-import { assertContractDeployed, createDeploylessClient } from './chain/client'
-import { createSigner } from './chain/signer'
+import { assertContractDeployed, createDeploylessClient } from './client'
 import { loadConfig } from './config'
 import { createDaemon } from './daemon/daemon'
 import { runTick } from './daemon/tick'
@@ -17,10 +16,11 @@ import { createPostgresQuery, discoverBorrowers, rindexerSyncedBlock } from './d
 import { encodeLiquidationExec } from './execution/encode-call'
 import { simulateLiquidationExec } from './execution/simulate'
 import { buildSwapStep } from './execution/swap-step'
-import { readMidnightLiquidationLens } from './lens/lens.sol'
 import { createLogger } from './logger'
 import { initialFees } from './queue/fee-policy'
 import { createPendingQueue } from './queue/pending-queue'
+import { createSigner } from './signer'
+import { readMidnightLiquidationLens } from './state/lens.sol'
 
 async function main() {
   const config = loadConfig()

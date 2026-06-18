@@ -11,9 +11,11 @@
     }
   },
   "scripts": {
-    "generate": "node scripts/generate-abis.mjs && oxfmt src/abis.ts src/contracts.ts",
-    "build": "soltag && bun run build.ts && tsc -p tsconfig.build.json --emitDeclarationOnly",
-    "typecheck": "soltag && tsc --noEmit"
+    "generate": "bun run scripts/codegen.ts && oxfmt src/abis.ts src/contracts.ts",
+    "build": "soltag && bun run scripts/build.ts && tsc -p tsconfig.build.json --emitDeclarationOnly",
+    "typecheck": "soltag && tsc --noEmit",
+    "format:sol": "forge fmt",
+    "format:sol:check": "forge fmt --check"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",

@@ -4,7 +4,7 @@ import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
 import { base } from 'viem/chains'
 
-import { assertContractDeployed, createDeploylessClient } from '../../src/chain/client'
+import { assertContractDeployed, createDeploylessClient } from '../src/client'
 
 const RPC = 'http://localhost:8545'
 const ADDRESS = getAddress('0x3726353bCDDba7c29a17D46D8a35D1E8b2E51854')

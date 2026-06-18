@@ -4,8 +4,8 @@ import { deployless, failover } from '@morpho-org/viem-dlc/transports'
 import { createPublicClient, http } from 'viem'
 import { getCode } from 'viem/actions'
 
-import type { Config } from '../config'
-import type { BatchLensTransportType } from '../lens/read-deployless-batch-lens'
+import type { Config } from './config'
+import type { BatchLensTransportType } from './state/read-deployless-batch-lens'
 
 // Gas the deployless lens may burn in its single eth_call. Matches the prime-monorepo reference
 // (packages/resolvers/test/measure/clients.ts); the lens itself is read-only so a generous ceiling

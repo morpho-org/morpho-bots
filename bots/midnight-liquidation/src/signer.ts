@@ -12,8 +12,8 @@ import {
 } from 'viem/actions'
 import { createNonceManager, jsonRpc } from 'viem/nonce'
 
-import type { Config } from '../config'
-import type { GetBaseFee, GetReceipt, SendTx } from '../queue/pending-queue'
+import type { Config } from './config'
+import type { GetBaseFee, GetReceipt, SendTx } from './queue/pending-queue'
 
 const RPC_TIMEOUT_MS = 30_000
 
