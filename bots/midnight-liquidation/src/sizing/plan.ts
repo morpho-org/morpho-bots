@@ -47,7 +47,9 @@ function impliedRepaidUnits(seizedAssets: bigint, price: bigint, lif: bigint): b
  * Turns a fresh lens reading into a liquidation plan, or `null` when the position is not
  * liquidatable. Mirrors the mode and amount policy of `liquidate(...)`:
  *
- * - past maturity → post-maturity mode: seize 100% of the best slot at the ramped LIF, no RCF cap;
+ * - past maturity → post-maturity mode: no RCF cap; seize 100% of the best slot if its implied
+ *   repaid units fit within the (post-writeoff) debt, else repay the full debt and let the contract
+ *   derive the smaller seize (avoids over-repaying, which the contract reverts on);
  * - pre-maturity & unhealthy → normal mode: seize 100% of the slot if that stays within the RCF
  *   cap (or the slot is rcf-exempt), otherwise repay exactly `maxRepaid`;
  * - otherwise (no debt, locked, or healthy-and-pre-maturity) → skip.
@@ -75,8 +77,29 @@ export function plan(input: PlanInput): LiquidationPlan | null {
     postMaturityMode
   }
 
-  // Post-maturity mode takes the whole slot with no cap.
-  if (postMaturityMode) return seizeWholeSlot
+  // Post-maturity mode: the RCF cap does not apply, but the contract still subtracts `repaidUnits`
+  // from the (post-writeoff) debt with no clamp, so over-repaying reverts (Panic 0x11 underflow).
+  // Seizing the whole slot is correct only while its implied repaid units fit within the debt — the
+  // underwater case. When the slot is worth more than the debt (the common case: a solvent borrower
+  // who simply missed maturity), repay the full debt instead and let the contract derive the smaller
+  // seize at the LIF bonus. `badDebt` is written off before the repay, so the cap is the post-writeoff
+  // debt (`debt - badDebt`).
+  if (postMaturityMode) {
+    const effectiveDebt = input.debt - input.badDebt
+    if (effectiveDebt === 0n) return null // fully bad debt: nothing left to repay/seize for value
+    const wholeSlotRepaid = impliedRepaidUnits(
+      input.bestCollateralAmt,
+      input.bestCollateralPrice,
+      lif
+    )
+    if (wholeSlotRepaid <= effectiveDebt) return seizeWholeSlot
+    return {
+      collateralIndex: input.bestCollateralIndex,
+      seizedAssets: 0n,
+      repaidUnits: effectiveDebt,
+      postMaturityMode
+    }
+  }
 
   // Normal mode: the RCF cap binds unless seizing the whole slot stays within `maxRepaid`, or the
   // slot is rcf-exempt.

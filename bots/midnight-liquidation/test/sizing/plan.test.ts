@@ -70,7 +70,10 @@ describe('plan', () => {
     })
   })
 
-  it('seizes the whole slot past maturity with no cap, regardless of health', () => {
+  it('repays the full debt past maturity when the slot is worth more than the debt', () => {
+    // Over-collateralized (the common post-maturity case): a 2000-WAD slot against 1000-WAD debt would
+    // imply ~1930 WAD repaid — more than the debt — so seizing it whole would over-repay and revert.
+    // The plan caps at the (post-writeoff) debt and lets the contract derive the smaller seize.
     expect(
       plan(
         baseInput({
@@ -82,7 +85,27 @@ describe('plan', () => {
       )
     ).toEqual({
       collateralIndex: 3,
-      seizedAssets: 2000n * WAD,
+      seizedAssets: 0n,
+      repaidUnits: 1000n * WAD, // debt - badDebt
+      postMaturityMode: true
+    })
+  })
+
+  it('seizes the whole slot past maturity when the slot cannot cover the debt', () => {
+    // Underwater: a 500-WAD slot implies ~482 WAD repaid, within the 1000-WAD debt, so seizing it whole
+    // does not over-repay — take all of it (partial repay).
+    expect(
+      plan(
+        baseInput({
+          blockTimestamp: 3000n,
+          maturity: 2000n,
+          healthy: true,
+          bestCollateralAmt: 500n * WAD
+        })
+      )
+    ).toEqual({
+      collateralIndex: 3,
+      seizedAssets: 500n * WAD,
       repaidUnits: 0n,
       postMaturityMode: true
     })

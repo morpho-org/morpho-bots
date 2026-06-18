@@ -1,10 +1,12 @@
 name: midnight_liquidation
 description: >-
-  Indexes the Midnight UpdatePosition event the liquidation bot needs for borrower discovery on
-  Base: it yields the (market id, borrower) universe (both topics indexed), which rindexer writes to
-  Postgres and the bot reads each tick to enumerate candidate (id, borrower) pairs. The full Market
-  config (loan token, per-collateral lltv/maxLif/oracle, maturity, rcfThreshold, gates) is read
-  on-chain by the lens via toMarket(id), so no market-creation event is indexed here.
+  Indexes the Midnight Take event the liquidation bot needs for borrower discovery on Base. `take`
+  is the only path that creates debt, and the debtor is the offer's seller — `taker` when
+  `offerIsBuy` else `maker` — so the bot unions both indexed addresses as the candidate
+  (market id, borrower) universe and lets the on-chain lens filter to actually-liquidatable positions
+  (over-inclusion is harmless; under-inclusion would miss liquidations). The full Market config
+  (loan token, per-collateral lltv/maxLif/oracle, maturity, rcfThreshold, gates) is read on-chain by
+  the lens via toMarket(id), so no market-creation event is indexed here.
 project_type: no-code
 networks:
   - name: base
@@ -23,4 +25,4 @@ contracts:
         start_block: 46758943
     abi: ./abis/midnight.abi.json
     include_events:
-      - UpdatePosition
+      - Take

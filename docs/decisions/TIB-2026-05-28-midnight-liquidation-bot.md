@@ -2,7 +2,7 @@
 
 | Field      | Value                                             |
 | ---------- | ------------------------------------------------- |
-| **Status** | Accepted — in implementation (amended 2026-06-10) |
+| **Status** | Accepted — in implementation (amended 2026-06-17) |
 | **Date**   | 2026-05-28                                        |
 | **Author** | @hayden                                           |
 | **Scope**  | App: `bots/midnight-liquidation`                  |
@@ -19,6 +19,8 @@
 > — see §8, which is authoritative on the ABI.** Both `@repo/abis/v2` (now regenerated from `main`)
 > and `docs/context/repos/midnight-contracts.txt` are OLDER snapshots, so this TIB's inline `…:NNNN`
 > line references point at the old surface and won't line up; trust §8's deployed-`main` facts.
+> **§12 (2026-06-17) supersedes the ABI _location_: `@repo/abis` is deleted — ABIs now live in
+> `@repo/contracts`, soltag-compiled from vendored Solidity.**
 
 **1. Discovery is a co-located rindexer instance, not a global `/positions` listing.** The live API
 **requires a `user` param** on `/v1/midnight/positions`, so there is no global borrow-position
@@ -178,14 +180,87 @@ The same queue trick covers `onFlashLoan` (§Future Considerations' "another man
 handler" is likewise unnecessary). The pre-deploy audit shrinks from "a shared singleton that moves
 tokens and carries a callback" to "confirm a three-line deletion from upstream".
 
+**12. `@repo/abis` is deleted; ABIs are soltag-compiled in a new `@repo/contracts` package
+(2026-06-17).** Supersedes every `@repo/abis/v2` reference in this doc (the amendment preamble, §8,
+§11, §Non-Goals, §Dependencies) and the `packages/abis/test/v2/ExecutorAbi.test.ts` verification
+surface §11 cited. The bot's contract artifacts — `MidnightAbi` and the vendored `Executor` — now
+live under `packages/contracts/`, generated at build time by `soltag`'s `sol()`/`solFile()` from the
+vendored Solidity (`solidity/interfaces/IMidnight.sol`, `solidity/Executor.sol`); `foundry.toml` +
+`forge fmt` format the `.sol` sources. `scripts/codegen.ts` emits the `sol`-tagged
+`src/{abis,contracts}.ts`, and `scripts/build.ts` bundles them to literal ABIs (and, for `Executor`,
+bytecode + a deployless factory) and also materializes each interface ABI to `abis/*.json` for
+rindexer. `execution/encode-call.ts` and the lens import `MidnightAbi` from `@repo/contracts`. The
+verification surface moved with it: the mined-selector goldens §11 placed in `packages/abis` are
+gone; `bots/midnight-liquidation/test/contracts/executor.sol.test.ts` (Cancun compile +
+upstream-minus-constructor surface parity) is the surviving Solidity check.
+
+**Phase-4 status (2026-06-17).** §11's "exec encoder must be reworked" and §10's dummy are both
+resolved. The vendored generic Executor (CRTR-2586) and the reworked callback-queue encoder
+(CRTR-2587, `encodeLiquidationExec`) are complete, and `src/index.ts` wires the real
+`encodeLiquidationExec` + per-collateral `buildSwapStep` into the live tick — the Phase-3 dummy is
+gone — loading `SWAP_CONFIG_PATH` and tightening the submit gate to `ok`-only (CRTR-2588).
+**Remaining for go-live:** the literal simulate residual-balance assertion — `simulate.ts` enforces
+the zero-residual invariant structurally (the two unit-tested `skim`s) but defers the post-state
+balance read to the anvil fork suite; that anvil suite itself (CRTR-2589); deploying the Executor
+singleton (`EXECUTOOOR_ADDRESS`); and the testnet broadcast against a real Uniswap-V3 pool, including
+the manual underpriced-replacement check.
+
+**13. Discovery was indexing the wrong event — it's `Take`, not `UpdatePosition` (2026-06-17).**
+Found while setting up the anvil suite (CRTR-2589): the vendored `@repo/contracts` `IMidnight.sol`
+declared **only** `UpdatePosition`, and the deployed Base contract's events were never validated, so
+discovery (`rindexer.yaml` → `src/discovery/borrowers.ts`) indexed `UpdatePosition` — which fires on
+**fee/credit accrual**, not on borrow. Result: a scan of all `UpdatePosition` logs over full history
+yielded 23 positions, **0 with debt** (a production-blind bot). The fix, validated on-chain and
+against the deployed implementation source (protocol-engineer):
+
+- **Re-vendored `IMidnight.sol` from prime-monorepo** (the canonical interface). Function signatures
+  are byte-identical to the prior copy except 3 unused admin setters, so the lens/encoder/sizing are
+  unaffected; the change adds the real event set (`Take`, `SupplyCollateral`, `Repay`, `Withdraw`,
+  `WithdrawCollateral`, `Liquidate`, `MarketCreated`, `FlashLoan`) and drops the stale
+  `UpdatePosition`. This **supersedes** the old vendored header's "keep in sync with the frozen
+  snapshot, NOT prime-monorepo" note — no such snapshot test ever existed, and the canonical copy
+  matches the deployed contract's emitted events (`Take` topic0 = `0x9e0c6d…bc3` confirmed in the
+  Base logs).
+- **Discovery now indexes `Take`** and unions its two indexed addresses (`taker`, `maker`) as the
+  candidate (id, borrower) universe. `take` is the **only** path that creates debt; the debtor is the
+  offer's seller (`taker` when `offerIsBuy` else `maker`), indistinguishable from the indexed topics
+  alone, so both are taken and the lens drops non-debtors (over-inclusion harmless; under-inclusion
+  would miss a liquidation). Re-running discovery via `Take` surfaced the live open positions
+  `UpdatePosition` had missed. The rindexer event ABI is auto-provisioned from the regenerated
+  `MidnightAbi` by the Dockerfile `abi` stage (not committed).
+
+**14. Anvil fork suite landed (CRTR-2589) — and caught a post-maturity over-seize bug (2026-06-17).**
+The suite forks Base at a pinned block, reuses a real open position (warped past maturity), deploys
+the generic Executor, and drives the full real path (lens → plan → swap → `encodeLiquidationExec` →
+`simulate` → signed broadcast) via `@viem/anvil` (`test/fork/`). It exercises:
+
+- **End-to-end liquidation + the full-drain invariant.** Asserts receipt success, the EOA gains the
+  loan token, and the Executor ends holding **zero** of both tokens. This is the **literal
+  zero-residual post-state assertion §12 deferred from CRTR-2588** — now satisfied (the structural
+  `skim`s remain unit-tested; the on-chain residual is checked here).
+- **Queue bump + replacement** against a real node (automining off; advance the block counter past
+  `STUCK_BLOCKS` to trigger the bump; the same-nonce replacement lands), closing the unit-level gap
+  for the nonce-manager/replacement path. The deliberately-underpriced testnet variant stays a manual
+  gate (§10).
+
+**Bug it caught:** `sizing/plan.ts` seized 100% of the slot unconditionally in post-maturity mode.
+When the slot is worth more than the debt (the common case — a solvent borrower who simply missed
+maturity), the implied `repaidUnits` exceeds the debt and the contract reverts `Panic(0x11)` on
+`_position.debt -= repaidUnits` (no clamp; the RCF cap is pre-maturity only). Fixed: post-maturity now
+seizes the whole slot only if its implied repaid fits within the **post-writeoff** debt
+(`debt - badDebt`), else repays the full debt and lets the contract derive the smaller seize. This
+corrects the original §Sizing "post-maturity → seize 100%, no cap" rule.
+
 **Status by phase:** Phase 1 ✅ (config, rindexer-backed discovery, dry-run
 orchestrator). Phase 2 ✅ (sizing, lens, read-only lens+sizing wire-path + simulate sink + `getCode`
 gate — CRTR-2582; re-pointed at the deployed `main` ABI and validated against Base via a `toMarket`
 smoke; only lens gas calibration remains). Phase 3 ✅ (nonce queue + fee policy, block-poll watcher +
 daemon lifecycle, signed sends with the dummy reverting broadcast — CRTR-2583/2584/2585; the
-underpriced-replacement check is a manual testnet gate). Phase 4 ⏳ (vendored generic Executor +
-`ExecutorAbi` ✅ — CRTR-2586; exec encoder must be reworked to §11's callback-queue shape —
-CRTR-2587; real swap config and anvil suite remain — CRTR-2588/2589).
+underpriced-replacement check is a manual testnet gate). Phase 4 ⏳ (vendored generic Executor ✅ — CRTR-2586;
+callback-queue exec encoder reworked ✅ — CRTR-2587; real swap config + `ok`-only gate wired into the
+live tick ✅ — CRTR-2588; anvil fork suite + on-chain residual assertion ✅ — CRTR-2589; Executor
+deploy + testnet go-live remain). See §12–§14 for the `@repo/contracts` migration, the `Take`
+discovery fix, and the anvil suite + the post-maturity sizing fix it caught.
 
 ## Context
 
@@ -199,9 +274,6 @@ make sizing meaningfully harder than on Morpho Blue:
 - **Maturity-aware incentive.** In post-maturity mode the liquidation incentive factor (LIF)
   ramps linearly from 1× to the slot's `maxLif` over the 15 minutes following maturity, so the
   same position is worth different amounts at different blocks.
-
-(For the one-paragraph elevator pitch and the rationale behind each pillar below, see the
-companion `docs/midnight-liquidation-bot-exec-summary.md`.)
 
 We build for two readers:
 

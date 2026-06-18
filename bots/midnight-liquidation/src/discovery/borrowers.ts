@@ -10,17 +10,24 @@ export type QueryFn = (sql: string) => Promise<readonly Row[]>
 export type BorrowerCandidate = { marketId: Hex; borrower: Address }
 
 // rindexer's no-code Postgres writes one table per indexed event, under a schema named after the
-// project (`midnight_liquidation`), with event args as snake_case columns (`user` is quoted, being
-// a reserved word). `UpdatePosition` carries both the market id (`id_`) and the position owner.
-// This SQL is the documented assumption — confirm the exact schema/table once rindexer has run a
-// first time and adjust here; it is intentionally the only place the schema is encoded.
+// project + contract (`midnight_liquidation_midnight`), with event args as snake_case columns. We
+// index `Take` — the only path that creates debt — and union its two indexed address columns
+// (`taker`, `maker`) as candidate borrowers: the debtor is the offer's seller (`taker` when
+// `offerIsBuy` else `maker`), which can't be told apart from the indexed topics alone, so we take
+// both and let the lens drop non-debtors (over-inclusion is harmless; under-inclusion would miss a
+// liquidation). This SQL is the documented assumption — confirm the exact schema/table once rindexer
+// has run a first time and adjust here; it is intentionally the only place the schema is encoded.
 const BORROWERS_SQL = `
-  SELECT DISTINCT id_ AS market_id, "user" AS borrower
-  FROM midnight_liquidation_midnight.update_position
+  SELECT DISTINCT market_id, borrower
+  FROM (
+    SELECT id_ AS market_id, taker AS borrower FROM midnight_liquidation_midnight.take
+    UNION
+    SELECT id_ AS market_id, maker AS borrower FROM midnight_liquidation_midnight.take
+  ) candidates
 `
 
 /**
- * Reads the distinct (market, borrower) universe from rindexer's indexed `UpdatePosition` events.
+ * Reads the distinct (market, borrower) universe from rindexer's indexed `Take` events.
  * The DB handle is injected so the parsing is unit-testable without a live Postgres; the runtime
  * adapter is {@link createPostgresQuery}. Rows with a malformed id or address are skipped.
  */
@@ -42,14 +49,14 @@ export async function discoverBorrowers(query: QueryFn): Promise<BorrowerCandida
   return candidates
 }
 
-// Approximates rindexer's indexed head with the max block over UpdatePosition rows — the same table
+// Approximates rindexer's indexed head with the max block over Take rows — the same table
 // discoverBorrowers reads, so it shares that query's "confirm the exact schema once rindexer has run"
-// caveat (here, the `block_number` metadata column). During quiet periods with no UpdatePosition
-// events this trails the true synced head, so it can over-report lag — fine, since the lag signal is
+// caveat (here, the `block_number` metadata column). During quiet periods with no Take events this
+// trails the true synced head, so it can over-report lag — fine, since the lag signal is
 // observability-only (the lens reads every candidate fresh; rindexer lag is coverage latency).
 const SYNCED_BLOCK_SQL = `
   SELECT MAX(block_number) AS head
-  FROM midnight_liquidation_midnight.update_position
+  FROM midnight_liquidation_midnight.take
 `
 
 /**
