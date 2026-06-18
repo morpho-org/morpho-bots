@@ -67,7 +67,7 @@ async function main() {
     market: Market,
     borrower: Address,
     plan: LiquidationPlan,
-    swapStep: SwapStep
+    swapStep: SwapStep | null
   ): Hex =>
     encodeLiquidationExec({
       executor: config.executooorAddress,

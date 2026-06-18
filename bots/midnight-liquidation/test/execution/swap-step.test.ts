@@ -58,15 +58,18 @@ describe('expectedLoanOut', () => {
     expect(expectedLoanOut(plan, out)).toBe(2000n)
   })
 
-  it('values a cap-binding plan (seizedAssets = 0) from repaidUnits × lif', () => {
+  it('values a cap-binding plan (seizedAssets = 0) after contract seize rounding', () => {
     const plan: LiquidationPlan = {
       collateralIndex: 0,
       seizedAssets: 0n,
       repaidUnits: 1000n,
       postMaturityMode: false // normal mode → lif = maxLif (1.1×)
     }
-    // repaidUnits(1000) × maxLif(1.1) / WAD = 1100 loan.
-    expect(expectedLoanOut(plan, out)).toBe(1100n)
+    // Contract seize rounding at price 3: floor(floor(1000 * 1.1) / 3) = 366 collateral,
+    // then the swap minimum is based on floor(366 * 3) = 1098 loan.
+    expect(expectedLoanOut(plan, { ...out, bestCollateralPrice: ORACLE_PRICE_SCALE * 3n })).toBe(
+      1098n
+    )
   })
 })
 
@@ -92,8 +95,11 @@ describe('buildSwapStep', () => {
       repaidUnits: 1000n,
       postMaturityMode: false
     }
-    // 1100 × 9950 / 10000 = 1094 (floor).
-    expect(buildSwapStep(entry, plan, out).amountOutMinimum).toBe(1094n)
+    // 1098 × 9950 / 10000 = 1092 (floor).
+    expect(
+      buildSwapStep(entry, plan, { ...out, bestCollateralPrice: ORACLE_PRICE_SCALE * 3n })
+        .amountOutMinimum
+    ).toBe(1092n)
   })
 
   it('applies no reduction when slippageBps is 0', () => {

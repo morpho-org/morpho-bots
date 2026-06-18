@@ -37,6 +37,10 @@ export type LiquidationPlan = {
   postMaturityMode: boolean
 }
 
+export function isBadDebtRealization(plan: LiquidationPlan): boolean {
+  return plan.seizedAssets === 0n && plan.repaidUnits === 0n
+}
+
 // Repaid units the contract derives when the caller passes `seizedAssets` (midnight-contracts.txt:2369):
 // two chained ceil-divisions, collateral → loan units → repaid units.
 function impliedRepaidUnits(seizedAssets: bigint, price: bigint, lif: bigint): bigint {
@@ -63,6 +67,15 @@ export function plan(input: PlanInput): LiquidationPlan | null {
   const postMaturityMode = input.blockTimestamp > input.maturity
   if (!postMaturityMode && input.healthy) return null
 
+  if (input.badDebt >= input.debt) {
+    return {
+      collateralIndex: input.bestCollateralIndex,
+      seizedAssets: 0n,
+      repaidUnits: 0n,
+      postMaturityMode
+    }
+  }
+
   const lif = lifAt({
     now: input.blockTimestamp,
     maturity: input.maturity,
@@ -86,7 +99,6 @@ export function plan(input: PlanInput): LiquidationPlan | null {
   // debt (`debt - badDebt`).
   if (postMaturityMode) {
     const effectiveDebt = input.debt - input.badDebt
-    if (effectiveDebt === 0n) return null // fully bad debt: nothing left to repay/seize for value
     const wholeSlotRepaid = impliedRepaidUnits(
       input.bestCollateralAmt,
       input.bestCollateralPrice,

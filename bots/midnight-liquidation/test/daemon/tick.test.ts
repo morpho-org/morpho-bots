@@ -158,6 +158,27 @@ describe('runTick', () => {
     expect(events.some(e => e.event === 'config.no_swap_path')).toBe(true)
   })
 
+  it('simulates and submits fully bad-debt realization without swap config', async () => {
+    const { counters, simulateCalls, submitCalls } = await runWith({
+      noSwap: true,
+      out: lensOut({
+        healthy: true,
+        blockTimestamp: 3000n,
+        debt: 1000n,
+        badDebt: 1000n,
+        market: { ...lensOut().market, maturity: 2000n }
+      })
+    })
+    expect(counters).toMatchObject({
+      liquidatable: 1,
+      planned: 1,
+      noSwapPath: 0,
+      submitted: 1
+    })
+    expect(simulateCalls()).toBe(1)
+    expect(submitCalls()).toBe(1)
+  })
+
   it('skips a position already in flight without re-simulating or submitting', async () => {
     const { counters, simulateCalls, submitCalls } = await runWith({ inflight: new Set([LABEL]) })
     expect(counters).toMatchObject({ liquidatable: 1, planned: 0, submitted: 0 })

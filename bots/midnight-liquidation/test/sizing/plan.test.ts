@@ -91,6 +91,25 @@ describe('plan', () => {
     })
   })
 
+  it('realizes fully bad debt with zero seized assets and zero repaid units', () => {
+    expect(
+      plan(
+        baseInput({
+          blockTimestamp: 3000n,
+          maturity: 2000n,
+          healthy: true,
+          debt: 1000n * WAD,
+          badDebt: 1000n * WAD
+        })
+      )
+    ).toEqual({
+      collateralIndex: 3,
+      seizedAssets: 0n,
+      repaidUnits: 0n,
+      postMaturityMode: true
+    })
+  })
+
   it('seizes the whole slot past maturity when the slot cannot cover the debt', () => {
     // Underwater: a 500-WAD slot implies ~482 WAD repaid, within the 1000-WAD debt, so seizing it whole
     // does not over-repay — take all of it (partial repay).

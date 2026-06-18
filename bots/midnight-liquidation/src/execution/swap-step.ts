@@ -6,6 +6,7 @@ import type { SwapStep } from './encode-call'
 
 import { ORACLE_PRICE_SCALE, WAD } from '../constants'
 import { lifAt } from '../sizing/lif'
+import { mulDivDown } from '../sizing/math'
 
 const BPS = 10_000n
 
@@ -19,23 +20,27 @@ export type SwapConfigEntry = { router: Address; fee: number; slippageBps: numbe
  * already in the loan token's native units, which is what Uniswap's `amountOutMinimum` expects.
  *
  * The seized collateral differs by plan branch: the 100%-slot branches pass `seizedAssets` (known
- * up front), while the cap-binding branch passes `seizedAssets = 0` and the contract derives the
- * seized amount from `repaidUnits` on-chain. There the loan-value of the seized collateral is
- * `repaidUnits * lif / WAD` (the inverse of the liquidation discount the contract applies), so we
- * estimate the output from `repaidUnits` instead. Both use floor division, matching the lens's
- * `_mulDivDown` valuation.
+ * up front), while the cap-binding branch passes `seizedAssets = 0` and the contract derives
+ * `seizedAssets` from `repaidUnits` on-chain with two floor divisions. We mirror that derivation
+ * before valuing the collateral so the swap minimum cannot exceed the rounded on-chain seize.
  */
 export function expectedLoanOut(plan: LiquidationPlan, out: LensOut): bigint {
   if (plan.seizedAssets > 0n) {
-    return (plan.seizedAssets * out.bestCollateralPrice) / ORACLE_PRICE_SCALE
+    return mulDivDown(plan.seizedAssets, out.bestCollateralPrice, ORACLE_PRICE_SCALE)
   }
+  if (out.bestCollateralPrice === 0n) return 0n
   const lif = lifAt({
     now: out.blockTimestamp,
     maturity: out.market.maturity,
     maxLif: out.bestCollateralMaxLif,
     postMaturityMode: plan.postMaturityMode
   })
-  return (plan.repaidUnits * lif) / WAD
+  const seizedAssets = mulDivDown(
+    mulDivDown(plan.repaidUnits, lif, WAD),
+    ORACLE_PRICE_SCALE,
+    out.bestCollateralPrice
+  )
+  return mulDivDown(seizedAssets, out.bestCollateralPrice, ORACLE_PRICE_SCALE)
 }
 
 /**

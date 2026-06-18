@@ -2,9 +2,10 @@ import type { Address, Hex } from 'viem'
 
 import { MidnightAbi } from '@repo/contracts'
 import { ExecutorEncoder, executorAbi } from 'executooor-viem'
-import { encodeAbiParameters, encodeFunctionData, erc20Abi } from 'viem'
+import { encodeAbiParameters, encodeFunctionData, erc20Abi, zeroAddress } from 'viem'
 
 import { CALLBACK_SUCCESS } from '../constants'
+import { isBadDebtRealization } from '../sizing/plan'
 
 // The Midnight `Market` struct passed to `liquidate`. The bot reads it on-chain from the lens
 // (`toMarket(id)`) and re-passes it verbatim.
@@ -117,7 +118,7 @@ export function encodeLiquidationExec(params: {
   repaidUnits: bigint
   borrower: Address
   postMaturityMode: boolean
-  swapStep: SwapStep
+  swapStep: SwapStep | null
   recipient: Address
 }): Hex {
   const collateral = params.market.collateralParams[params.collateralIndex]
@@ -128,6 +129,42 @@ export function encodeLiquidationExec(params: {
   const { executor, midnight } = params
   const collateralToken = collateral.token
   const loanToken = params.market.loanToken
+
+  if (
+    isBadDebtRealization({
+      collateralIndex: params.collateralIndex,
+      seizedAssets: params.seizedAssets,
+      repaidUnits: params.repaidUnits,
+      postMaturityMode: params.postMaturityMode
+    })
+  ) {
+    const liquidateData = encodeFunctionData({
+      abi: MidnightAbi,
+      functionName: 'liquidate',
+      args: [
+        params.market,
+        BigInt(params.collateralIndex),
+        0n,
+        0n,
+        params.borrower,
+        params.postMaturityMode,
+        params.recipient,
+        zeroAddress,
+        '0x'
+      ]
+    })
+
+    return encodeFunctionData({
+      abi: executorAbi,
+      functionName: 'exec_606BaXt',
+      args: [[ExecutorEncoder.buildCall(midnight, 0n, liquidateData)]]
+    })
+  }
+
+  if (!params.swapStep) {
+    throw new Error('swapStep is required when liquidation repays or seizes assets')
+  }
+
   const { router, fee, amountOutMinimum } = params.swapStep
 
   // The callback queue the Executor runs when Midnight calls back into `onLiquidate`. The seized
@@ -222,11 +259,9 @@ export function encodeLiquidationExec(params: {
   const calls: Hex[] = [
     // The liquidate call carries the callback context so the Executor's `fallback` authorizes
     // `msg.sender == MIDNIGHT` and reads the queue from `data`. `dataIndex` indexes the head of the
-    // CALLBACK's calldata, not `liquidate`'s: `data` is the 9th arg (head word 8) of the deployed
-    // 10-arg `onLiquidate(caller, id, market, collateralIndex, seizedAssets, repaidUnits, borrower,
-    // receiver, data, badDebt)` — see TIB Amendment §8/§11. (The vendored midnight-contracts.txt
-    // snapshot is stale and shows a 7-arg `onLiquidate` where `data` would be at 6; trust the deployed
-    // `morpho-org/midnight@main` ABI. The fork suite, CRTR-2589, validates this end-to-end.)
+    // CALLBACK's calldata, not `liquidate`'s: `data` is the 9th arg (head word 8) of the 10-arg
+    // `onLiquidate(caller, id, market, collateralIndex, seizedAssets, repaidUnits, borrower,
+    // receiver, data, badDebt)` callback in the vendored Midnight interface.
     ExecutorEncoder.buildCall(midnight, 0n, liquidateData, { sender: midnight, dataIndex: 8n }),
     // Trailing sweeps run AFTER liquidate returns (Midnight's end-of-call repay `transferFrom` happens
     // within `liquidate`), draining BOTH tokens to the EOA — the full-drain invariant.

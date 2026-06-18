@@ -86,6 +86,21 @@ function encode() {
   })
 }
 
+function encodeBadDebtRealization() {
+  return encodeLiquidationExec({
+    executor: EXECUTOR,
+    midnight: MIDNIGHT,
+    market,
+    collateralIndex: 0,
+    seizedAssets: 0n,
+    repaidUnits: 0n,
+    borrower: BORROWER,
+    postMaturityMode: true,
+    swapStep: null,
+    recipient: RECIPIENT
+  })
+}
+
 /** Decodes the outer `exec_606BaXt(bytes[])` call list. */
 function outerCalls(): readonly Hex[] {
   const top = decodeFunctionData({ abi: executorAbi, data: encode() })
@@ -205,6 +220,25 @@ describe('encodeLiquidationExec', () => {
     expect(isAddressEqual(collateralSweep.args[0], COLLATERAL)).toBe(true)
   })
 
+  it('encodes fully bad-debt realization without callback, swap, or sweeps', () => {
+    const top = decodeFunctionData({ abi: executorAbi, data: encodeBadDebtRealization() })
+    if (top.functionName !== 'exec_606BaXt') throw new Error('expected exec_606BaXt')
+    const calls = top.args[0] as readonly Hex[]
+    expect(calls).toHaveLength(1)
+
+    const liquidateCall = decodeFunctionData({ abi: executorAbi, data: calls[0]! })
+    if (liquidateCall.functionName !== 'call_g0oyU7o') throw new Error('expected call_g0oyU7o')
+    expect(BigInt(liquidateCall.args[2])).toBe(0n) // no fallback context needed
+
+    const liquidate = decodeFunctionData({ abi: MidnightAbi, data: liquidateCall.args[3] })
+    if (liquidate.functionName !== 'liquidate') throw new Error('expected liquidate')
+    expect(liquidate.args[2]).toBe(0n) // seizedAssets
+    expect(liquidate.args[3]).toBe(0n) // repaidUnits
+    expect(isAddressEqual(liquidate.args[6], RECIPIENT)).toBe(true)
+    expect(isAddressEqual(liquidate.args[7], zeroAddress)).toBe(true)
+    expect(liquidate.args[8]).toBe('0x')
+  })
+
   it('throws when the collateral index is out of range', () => {
     expect(() =>
       encodeLiquidationExec({
@@ -220,5 +254,22 @@ describe('encodeLiquidationExec', () => {
         recipient: RECIPIENT
       })
     ).toThrow(/out of range/)
+  })
+
+  it('throws when a non-zero liquidation has no swap step', () => {
+    expect(() =>
+      encodeLiquidationExec({
+        executor: EXECUTOR,
+        midnight: MIDNIGHT,
+        market,
+        collateralIndex: 0,
+        seizedAssets: 100n,
+        repaidUnits: 0n,
+        borrower: BORROWER,
+        postMaturityMode: false,
+        swapStep: null,
+        recipient: RECIPIENT
+      })
+    ).toThrow(/swapStep is required/)
   })
 })

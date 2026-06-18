@@ -9,7 +9,7 @@ import type { Logger } from '../logger'
 import type { LiquidationPlan } from '../sizing/plan'
 import type { LensInput, LensOut } from '../state/lens.sol'
 
-import { plan } from '../sizing/plan'
+import { isBadDebtRealization, plan } from '../sizing/plan'
 import { lensKey } from '../state/lens.sol'
 import { isLiquidatable, planInputFromLens } from './eligibility'
 
@@ -55,14 +55,14 @@ export async function runTick(deps: {
     market: Market
     borrower: Address
     plan: LiquidationPlan
-    swapStep: SwapStep
+    swapStep: SwapStep | null
   }) => Promise<SimulateResult>
   /** Broadcasts a plan via the pending queue (builds the exec tx, derives fees, tracks the nonce). */
   submit: (args: {
     market: Market
     borrower: Address
     plan: LiquidationPlan
-    swapStep: SwapStep
+    swapStep: SwapStep | null
     blockNumber: bigint
     label: string
   }) => Promise<void>
@@ -145,17 +145,20 @@ export async function runTick(deps: {
       postMaturityMode: liquidationPlan.postMaturityMode
     })
 
-    // The single-hop swap funds the repay. No operator swap config for this collateral → we can't
-    // execute, so skip (a coverage gap the operator closes by adding the pool to SWAP_CONFIG_PATH).
-    const swapStep = swapStepFor(liquidationPlan, out)
-    if (!swapStep) {
-      counters.noSwapPath += 1
-      logger.info('config.no_swap_path', {
-        marketId: pair.id,
-        borrower: pair.borrower,
-        collateralIndex: liquidationPlan.collateralIndex
-      })
-      continue
+    // The single-hop swap funds repay/seize liquidations. Pure bad-debt realization transfers no
+    // assets, so it deliberately skips swap config and executes as a no-callback `liquidate`.
+    let swapStep: SwapStep | null = null
+    if (!isBadDebtRealization(liquidationPlan)) {
+      swapStep = swapStepFor(liquidationPlan, out)
+      if (!swapStep) {
+        counters.noSwapPath += 1
+        logger.info('config.no_swap_path', {
+          marketId: pair.id,
+          borrower: pair.borrower,
+          collateralIndex: liquidationPlan.collateralIndex
+        })
+        continue
+      }
     }
 
     const result = await simulate({
