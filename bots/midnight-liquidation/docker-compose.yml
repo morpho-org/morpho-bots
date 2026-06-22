@@ -34,6 +34,7 @@ services:
       DATABASE_URL: postgresql://rindexer:${POSTGRES_PASSWORD:-rindexer}@postgres:5432/midnight_liquidation
       RINDEXER_RPC_URL: ${RPC_URL:?set RPC_URL}
       PROJECT_PATH: /app/project_path
+    # Mirrors the baked `CMD ["start","indexer"]` in the Dockerfile `rindexer` stage (keep in sync).
     command: ['start', 'indexer']
     restart: unless-stopped
 

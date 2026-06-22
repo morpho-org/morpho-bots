@@ -34,18 +34,18 @@ operator data.
 
 Environment variables:
 
-| Name                     | Required | Default  | Description                                                |
-| ------------------------ | -------- | -------- | ---------------------------------------------------------- |
-| `CHAIN_ID`               | yes      | -        | Must be `8453` for Base.                                   |
-| `RPC_URL`                | yes      | -        | Base RPC used for reads, simulation, and sends.            |
-| `RPC_URL_FALLBACK`       | no       | -        | Optional fallback RPC.                                     |
-| `LIQUIDATOR_PRIVATE_KEY` | yes      | -        | `0x`-prefixed 32-byte private key for the sender EOA.      |
-| `EXECUTOOOR_ADDRESS`     | no       | derived  | Override for the shared Executor address.                  |
-| `DATABASE_URL`           | yes      | -        | Postgres URL for rindexer's indexed Midnight event tables. |
-| `SWAP_CONFIG_PATH`       | yes      | -        | Path to per-chain, per-collateral swap config JSON.        |
-| `MAX_FEE_GWEI`           | no       | `300`    | Hard max fee cap used by the pending transaction queue.    |
-| `LOG_LEVEL`              | no       | `info`   | One of `debug`, `info`, `warn`, `error`.                   |
-| `CACHE_DIR`              | no       | `.cache` | Soltag/deployless cache directory.                         |
+| Name                     | Required | Default  | Description                                                                                                                                                                                                                  |
+| ------------------------ | -------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CHAIN_ID`               | yes      | -        | Must be `8453` for Base.                                                                                                                                                                                                     |
+| `RPC_URL`                | yes      | -        | Base RPC used for reads, simulation, and sends.                                                                                                                                                                              |
+| `RPC_URL_FALLBACK`       | no       | -        | Optional fallback RPC.                                                                                                                                                                                                       |
+| `LIQUIDATOR_PRIVATE_KEY` | yes      | -        | `0x`-prefixed 32-byte private key for the sender EOA.                                                                                                                                                                        |
+| `EXECUTOOOR_ADDRESS`     | no       | derived  | Override for the shared Executor address.                                                                                                                                                                                    |
+| `DATABASE_URL`           | yes      | -        | Postgres URL for rindexer's indexed Midnight event tables.                                                                                                                                                                   |
+| `SWAP_CONFIG_PATH`       | no       | -        | Path to per-chain, per-collateral swap config JSON. If unset or the file is absent, the bot runs with no routes (identifies borrowers, realizes bad debt, skips routed liquidations). A present-but-malformed file is fatal. |
+| `MAX_FEE_GWEI`           | no       | `300`    | Hard max fee cap used by the pending transaction queue.                                                                                                                                                                      |
+| `LOG_LEVEL`              | no       | `info`   | One of `debug`, `info`, `warn`, `error`.                                                                                                                                                                                     |
+| `CACHE_DIR`              | no       | `.cache` | Soltag/deployless cache directory.                                                                                                                                                                                           |
 
 Example local `.env` shape:
 
@@ -132,6 +132,54 @@ export LOG_LEVEL=debug
 The compose file currently carries an implementation note that the rindexer service wiring should be
 verified end-to-end against a live RPC before relying on it in production.
 
+## Deploying to Railway
+
+The same three components run on the Railway project `bot.liquidation.midnight` (managed Postgres + a
+`rindexer` service + the `bot` daemon). [scripts/deploy-railway.ts](./scripts/deploy-railway.ts)
+provisions and deploys all three idempotently from the [Railway CLI](https://docs.railway.com/guides/cli),
+so it runs the same locally or in CI.
+
+One shared multi-stage [Dockerfile](./Dockerfile) serves both runtimes. Railway always builds the
+Dockerfile's final stage and cannot pass `docker build --target`, so a global `ARG BUILD_TARGET` plus a
+trailing `FROM ${BUILD_TARGET} AS final` stage lets a per-service `BUILD_TARGET` variable select the
+`bot` or `rindexer` stage. `RAILWAY_DOCKERFILE_PATH` points at this Dockerfile and `railway up` runs
+from the repo root so the bun workspace resolves.
+
+Authenticate the CLI first — set `RAILWAY_TOKEN` (a project token scoped to the target project /
+environment, recommended for CI) or run `railway login`. The script bakes in no project identifier, so
+set `RAILWAY_PROJECT_ID` to the project you're deploying to, then provide the secrets via the
+environment and run the script:
+
+```sh
+export RAILWAY_PROJECT_ID=...   # required: the Railway project to deploy to
+export RPC_URL=https://base-mainnet.example
+export LIQUIDATOR_PRIVATE_KEY=0x...
+# Optional: RINDEXER_RPC_URL (defaults to RPC_URL), RAILWAY_ENVIRONMENT (defaults to production).
+bun run --filter @morpho-org/midnight-liquidation deploy:railway
+```
+
+Secrets are read from the script's environment, piped to Railway via stdin (never argv), and never
+logged. The script fails loud if `RPC_URL` or `LIQUIDATOR_PRIVATE_KEY` is missing.
+
+### Swap config (manual step)
+
+There is no host bind mount on Railway, so the bot's swap config lives on a volume mounted at
+`/config`, with `SWAP_CONFIG_PATH=/config/swap.json`. The deploy script creates and attaches the
+volume but does **not** upload the file. The bot boots without it — with no routes it still identifies
+liquidatable borrowers and realizes bad debt, but skips routed liquidations — so there is no
+first-deploy crash to work around. Upload `swap.json` (same shape as the example above) to enable
+routed liquidations.
+
+A Railway volume mounts only into a **running** container, and `volume files` transfers tunnel through
+it, so upload once the bot is up. The command prompts you to pick the volume interactively, or pass
+`--volume <name>` (before the subcommand; find the name via `railway volume list`):
+
+```sh
+railway volume files upload ./swap.config.json /config/swap.json --overwrite
+```
+
+The bot reads the file at startup, so restart/redeploy the bot after uploading to pick up the routes.
+
 ## How It Works
 
 ### Startup
@@ -145,6 +193,7 @@ malformed, or the configured Executor address has no bytecode.
 
 ### Trigger
 
+comment: better name than daemon
 [src/daemon/daemon.ts](./src/daemon/daemon.ts) polls the latest block. On each new block it runs one
 tick. If blocks arrive while a tick is still running, the watcher coalesces work rather than running
 overlapping ticks.
@@ -161,6 +210,8 @@ rindexer lag can delay candidate coverage, but the bot always reads candidate st
 before planning.
 
 ### State Lens
+
+note the caveat for scalability and ideas to fix (TIB)
 
 [src/state/lens.sol.ts](./src/state/lens.sol.ts) defines a deployless Solidity lens. For each
 candidate, it:
@@ -197,6 +248,8 @@ All fixed-point math is integer `bigint` math and mirrors the contract's floor/c
 
 ### Swap Step
 
+ask for review of executooor
+
 [src/execution/swap-step.ts](./src/execution/swap-step.ts) resolves the operator-declared route for
 the selected collateral and computes `amountOutMinimum`.
 
@@ -206,6 +259,8 @@ the contract will actually seize.
 
 If no swap config exists for a non-zero liquidation, the tick logs `config.no_swap_path` and skips
 the candidate. Pure bad-debt realization skips swap config entirely.
+
+only Uniswap for now, follow-up with additional liquidity venues
 
 ### Simulation
 
@@ -245,3 +300,5 @@ signer nonce manager starts from the pending chain nonce.
 - The shared Executor cannot safely custody assets between transactions. Every non-zero execution
   path is built to sweep touched tokens at the end of the same transaction.
 - Fully bad-debt realization can socialize protocol losses without direct liquidation profit.
+
+observability deferred to v1

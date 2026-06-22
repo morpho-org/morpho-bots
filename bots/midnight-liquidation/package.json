@@ -5,6 +5,7 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
+    "deploy:railway": "bun run scripts/deploy-railway.ts",
     "prestart": "bun run --parallel --workspaces --if-present build",
     "start": "bun src/index.ts",
     "typecheck": "soltag && tsc --noEmit"

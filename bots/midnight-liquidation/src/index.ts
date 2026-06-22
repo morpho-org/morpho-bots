@@ -54,6 +54,17 @@ async function main() {
   for (const [token, entry] of Object.entries(config.swapConfig[String(config.chainId)] ?? {})) {
     if (entry) swapByCollateral.set(token.toLowerCase(), entry)
   }
+  // No routes configured for this chain (unset/absent swap config): the bot still runs — it
+  // identifies liquidatable borrowers and realizes pure bad debt — but skips every routed
+  // liquidation (`config.no_swap_path`). Warn loudly so this isn't mistaken for a healthy, fully
+  // armed deployment.
+  if (swapByCollateral.size === 0) {
+    logger.warn('swap_config.no_routes', {
+      chainId: config.chainId,
+      detail:
+        'no swap routes configured — routed liquidations will be skipped (bad-debt realization still runs)'
+    })
+  }
   const swapStepFor = (plan: LiquidationPlan, out: LensOut): SwapStep | null => {
     const collateral = out.market.collateralParams[plan.collateralIndex]
     if (!collateral) return null

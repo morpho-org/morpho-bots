@@ -90,6 +90,19 @@ function isLogLevel(value: string): value is LogLevel {
   return (LOG_LEVELS as readonly string[]).includes(value)
 }
 
+// A genuinely absent swap config file (path set, file not there yet — e.g. a volume not seeded on
+// first deploy) is non-fatal: the bot runs with no routes (skips routed liquidations, still realizes
+// bad debt). Any other read error (permissions, etc.) and any malformed/invalid content stay fatal.
+// Narrows the Node `ENOENT` error code.
+function isFileNotFound(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === 'ENOENT'
+  )
+}
+
 /**
  * Reads the full env table into a typed, validated {@link Config}. Throws on any missing
  * required var, malformed value, or unknown `CHAIN_ID` — the bot must fail loud at startup
@@ -148,12 +161,30 @@ export function loadConfig(
     throw new Error(`MAX_FEE_GWEI must be a positive number, got: ${env.MAX_FEE_GWEI}`)
   }
 
-  const swapConfigPath = required(env, 'SWAP_CONFIG_PATH')
-  const { data: swapConfig, error } = tryCatch(() =>
-    parseSwapConfig(JSON.parse(readFile(swapConfigPath)))
-  )
-  if (error) {
-    throw new Error(`Failed to load SWAP_CONFIG_PATH (${swapConfigPath}): ${error.message}`)
+  // Swap routing is OPTIONAL. With no path set, or a path whose file does not exist yet (e.g. a
+  // volume not seeded on first deploy), the bot still boots: discovery identifies liquidatable
+  // borrowers, routed liquidations are skipped for want of a swap path (`config.no_swap_path`), and
+  // pure bad-debt realization — which needs no swap — is still performed (appropriate: it moves no
+  // operator funds and socializes losses). A file that IS present but malformed/invalid stays fatal
+  // (operator error, not absence). This removes the first-deploy bootstrap deadlock: the bot can't
+  // host the volume upload until it boots, and it couldn't boot without the file.
+  const swapConfigPath = env.SWAP_CONFIG_PATH?.trim()
+  let swapConfig: SwapConfig = {}
+  if (swapConfigPath) {
+    const read = tryCatch(() => readFile(swapConfigPath))
+    if (read.error && !isFileNotFound(read.error)) {
+      throw new Error(`Failed to read SWAP_CONFIG_PATH (${swapConfigPath}): ${read.error.message}`)
+    }
+    const contents = read.data
+    if (contents != null) {
+      const parsed = tryCatch(() => parseSwapConfig(JSON.parse(contents)))
+      if (parsed.error) {
+        throw new Error(
+          `Failed to load SWAP_CONFIG_PATH (${swapConfigPath}): ${parsed.error.message}`
+        )
+      }
+      swapConfig = parsed.data ?? {}
+    }
   }
 
   return {

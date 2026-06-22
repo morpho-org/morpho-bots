@@ -144,6 +144,32 @@ describe('loadConfig', () => {
     const badDeps = { chainMap: CHAIN_MAP, readFile: () => '{ not json' }
     expect(() => loadConfig(baseEnv(), badDeps)).toThrow(/Failed to load SWAP_CONFIG_PATH/)
   })
+
+  it('loads an empty swap config (no routes) when SWAP_CONFIG_PATH is unset', () => {
+    const config = loadConfig(baseEnv({ SWAP_CONFIG_PATH: undefined }), deps)
+    expect(config.swapConfig).toEqual({})
+  })
+
+  it('loads an empty swap config when the file is absent (ENOENT), not fatal', () => {
+    const absentDeps = {
+      chainMap: CHAIN_MAP,
+      readFile: () => {
+        throw Object.assign(new Error('no such file or directory'), { code: 'ENOENT' })
+      }
+    }
+    const config = loadConfig(baseEnv(), absentDeps)
+    expect(config.swapConfig).toEqual({})
+  })
+
+  it('throws on a non-ENOENT read failure (e.g. permissions)', () => {
+    const eaccesDeps = {
+      chainMap: CHAIN_MAP,
+      readFile: () => {
+        throw Object.assign(new Error('permission denied'), { code: 'EACCES' })
+      }
+    }
+    expect(() => loadConfig(baseEnv(), eaccesDeps)).toThrow(/Failed to read SWAP_CONFIG_PATH/)
+  })
 })
 
 describe('parseSwapConfig', () => {

@@ -1,12 +1,27 @@
-# Used by `forge fmt` only — soltag/tsdown handle compilation & ABI extraction.
-# This package never runs `forge build`, `forge test`, or anything else from
-# Foundry. The `[profile.default]` block exists so `forge fmt solidity/` works
-# without forge complaining about a missing `src/` directory.
+# soltag/tsdown handle the real compilation & ABI extraction; `forge build` is
+# NOT part of this package's build. The compiler settings below exist for ONE
+# reason: so that `forge build` + `forge verify-contract` reproduce the exact
+# bytecode soltag deployed, making block-explorer source verification a one-liner
+# (no settings archaeology). They MUST mirror soltag's effective settings:
+#   - solc 0.8.35            -> root package.json `catalog.solc`
+#   - optimizer on, runs=200 -> scripts/build.ts (soltag transform options)
+#   - evm_version = osaka    -> solc 0.8.35's *default* (soltag passes none); keep
+#                               in lockstep with the catalog solc pin if bumped
+#   - bytecode_hash = ipfs   -> solc default
+# Note: forge compiles `solidity/Executor.sol` whereas soltag compiles it as the
+# single source unit `inline.sol`, so the metadata IPFS hash differs — explorer
+# verification lands as a runtime (partial) match. The executable bytecode is
+# byte-identical. The `[profile.default]` block also lets `forge fmt solidity/` run.
 
 [profile.default]
 src = "solidity"
 out = "out"
 libs = []
+solc = "0.8.35"
+optimizer = true
+optimizer_runs = 200
+evm_version = "osaka"
+bytecode_hash = "ipfs"
 
 [fmt]
 line_length = 120
