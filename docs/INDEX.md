@@ -8,6 +8,7 @@ Quick navigation for the curator-bots documentation.
 
 - [Coding Conventions](./CONVENTIONS.md) — code style, patterns, best practices
 - [Documentation Guidance](./GUIDANCE.md) — when to write a TIB, TIB lifecycle, TIB vs Linear
+- [Official Docs Drafts](./official/README.md) — candidate pages for Morpho public documentation
 
 ---
 
