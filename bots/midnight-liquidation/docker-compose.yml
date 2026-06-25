@@ -50,7 +50,7 @@ services:
       CHAIN_ID: '8453'
       RPC_URL: ${RPC_URL:?set RPC_URL}
       LIQUIDATOR_PRIVATE_KEY: ${LIQUIDATOR_PRIVATE_KEY:?set LIQUIDATOR_PRIVATE_KEY}
-      EXECUTOOOR_ADDRESS: ${EXECUTOOOR_ADDRESS:?set EXECUTOOOR_ADDRESS}
+      EXECUTOOOR_ADDRESS: ${EXECUTOOOR_ADDRESS:-}
       SWAP_CONFIG_PATH: /config/swap.json
       # The bot reads rindexer's indexed events from the same Postgres for borrower discovery.
       DATABASE_URL: postgresql://rindexer:${POSTGRES_PASSWORD:-rindexer}@postgres:5432/midnight_liquidation

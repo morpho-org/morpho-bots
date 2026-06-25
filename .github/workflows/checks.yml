@@ -41,6 +41,11 @@ jobs:
       - name: Setup
         uses: ./.github/actions/setup
 
+      - name: Install Foundry (includes anvil)
+        uses: foundry-rs/foundry-toolchain@8789b3e21e6c11b2697f5eb56eddae542f746c10 # v1
+        with:
+          version: v1.4.4
+
       - name: Run unit tests
         run: bun test
         env:

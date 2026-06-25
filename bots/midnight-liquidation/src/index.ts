@@ -26,7 +26,7 @@ async function main() {
   const config = loadConfig()
   const logger = createLogger(config.logLevel)
 
-  // Signed-send path: a plain wallet client + nonce manager (separate from the deployless read
+  // Signed-send path: a plain wallet client + local nonce cursor (separate from the deployless read
   // client). The EOA is the liquidator and the recipient of both end-of-exec token sweeps.
   const signer = createSigner(config)
   const eoa = signer.account.address

@@ -107,6 +107,60 @@ bun run --filter @morpho-org/midnight-liquidation typecheck
 bun test bots/midnight-liquidation/test
 ```
 
+## Seeding Liquidatable Positions
+
+The package includes an operator-only helper for creating real, edge-of-liquidation Midnight
+positions on Base. It is not part of the runner; it imports bot math/lens code to create positions
+that the production bot can discover and liquidate.
+
+The script starts from two funded ETH-only EOAs:
+
+- Wallet A (`PRIVATE_KEY_LENDER`) becomes the maker/lender.
+- Wallet B (`PRIVATE_KEY_BORROWER`) becomes the taker/borrower.
+
+It discovers a real trusted Midnight market for the requested pair, clones its collateral/oracle
+shape, creates one market per position, signs EcrecoverRatifier offers, and sends `take` transactions
+that leave each position healthy at creation but near the liquidation edge. `--dry-run` performs
+discovery, cryptographic self-checks, and capital planning without sending transactions.
+
+Run from `bots/midnight-liquidation`:
+
+```sh
+RPC_URL=https://base-mainnet.example \
+PRIVATE_KEY_LENDER=0x... \
+PRIVATE_KEY_BORROWER=0x... \
+bun run seed:positions \
+  --config ./swap.config.json \
+  --pair WETH/USDC \
+  --count 10 \
+  --drawdown-bps 0 \
+  --dry-run
+```
+
+For a live run, remove `--dry-run` and either answer the confirmation prompt or pass `--yes`.
+Before sending any transaction, the script checks:
+
+- the local `toId` and tick math against the deployed Midnight contract;
+- the requested swap route exists in the same config shape the bot uses;
+- the estimated total spend is below `--max-spend-eth` (default `0.05`);
+- Wallet A and Wallet B each have enough ETH for their own WETH deposits plus gas headroom.
+
+Useful options:
+
+| Option               | Default     | Description                                                               |
+| -------------------- | ----------- | ------------------------------------------------------------------------- |
+| `--config`           | required    | Swap config JSON path. Must include the route the prod bot will use.      |
+| `--pair`             | `WETH/USDC` | Token pair to seed. Supported symbols are defined in the script.          |
+| `--count`            | `100`       | Number of positions/markets to create.                                    |
+| `--drawdown-bps`     | `0`         | Price drop needed before the positions become liquidatable.               |
+| `--notional-usdc`    | `1`         | Target debt size per position.                                            |
+| `--reference-market` | unset       | Optional market id to clone instead of auto-discovery.                    |
+| `--ratifier`         | unset       | Optional EcrecoverRatifier address to use with `--reference-market`.      |
+| `--ladder`           | `false`     | Spread drawdown thresholds from `0` to `--drawdown-bps` across the batch. |
+| `--max-spend-eth`    | `0.05`      | Abort if estimated Wallet A + Wallet B ETH spend exceeds this cap.        |
+| `--dry-run`          | `false`     | Print the plan and send no transactions.                                  |
+| `--yes`              | `false`     | Skip the live-run confirmation prompt.                                    |
+
 ## Running With Docker Compose
 
 [docker-compose.yml](./docker-compose.yml) defines Postgres, rindexer, and the bot. It builds from
@@ -186,7 +240,8 @@ The bot reads the file at startup, so restart/redeploy the bot after uploading t
 
 [src/index.ts](./src/index.ts) loads config, creates two viem clients, and starts the block-poll runner.
 The read client wraps the RPC transport with `deployless` support so the bot can execute its Solidity
-lens via `eth_call`. The signer client is plain HTTP and owns nonce-managed transaction submission.
+lens via `eth_call`. The signer client is plain HTTP and owns transaction submission with a local
+pending-nonce cursor.
 
 Startup fails loudly if required env vars are missing, the chain is unsupported, the swap config is
 malformed, or the configured Executor address has no bytecode.
@@ -281,7 +336,9 @@ logs confirmed or reverted transactions, and fee-bumps stuck transactions until 
 hit the fee ceiling, or exhaust bump attempts.
 
 Queue state is in-memory. On restart, chain truth wins: the bot rediscovers live candidates and the
-signer nonce manager starts from the pending chain nonce.
+signer nonce cursor starts from the pending chain nonce. If the initial raw broadcast fails after a
+nonce is claimed but before a hash is returned, the signer rolls the cursor back and the queue aborts
+that tick instead of counting a hashless transaction as submitted.
 
 ## Important Operational Notes
 
