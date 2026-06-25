@@ -1,8 +1,8 @@
-import type { Anvil } from '@viem/anvil'
+import type { Subprocess } from 'bun'
 import type { Address, Hex } from 'viem'
 
 import { Executor } from '@repo/contracts'
-import { createAnvil } from '@viem/anvil'
+import { ensureError } from '@repo/utils'
 import { createTestClient, createWalletClient, http, parseEther, publicActions } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
@@ -34,38 +34,85 @@ export const LIQUIDATOR = privateKeyToAccount(LIQUIDATOR_KEY).address
 
 // Fail loud (no skip) when the fork RPC isn't configured — the suite cannot run without it. Named
 // per-chain (8453 = Base) so CI can supply it as a secret of the same name; locally, set it in
-// bots/midnight-liquidation/.env.test.local.
-const FORK_URL = process.env.RPC_URL_8453
-if (!FORK_URL) {
-  throw new Error(
-    'RPC_URL_8453 is required for the fork suite — set it in bots/midnight-liquidation/.env.test.local'
-  )
+// bots/midnight-liquidation/.env.test.local. Resolved via a function so the value is typed `string`
+// (a module-level narrowing wouldn't flow into startFork's closure).
+function requireForkUrl(): string {
+  const url = process.env.RPC_URL_8453
+  if (!url) {
+    throw new Error(
+      'RPC_URL_8453 is required for the fork suite — set it in bots/midnight-liquidation/.env.test.local'
+    )
+  }
+  return url
 }
+const FORK_URL = requireForkUrl()
 
 export type TestClient = ReturnType<typeof testClient>
+
+// We spawn `anvil` ourselves rather than via `@viem/anvil`, whose `stop()` is broken for forked
+// instances: when the process is slow to exit (its keep-alive sockets stall the SIGTERM it sends), an
+// internal `stopTimeout` promise escapes as an unhandled "Anvil failed to stop in time" rejection
+// that bun's test runner fails the suite on, and the child is left orphaned (port bound for the next
+// run). A bare `Bun.spawn` gives us `.kill('SIGKILL')` + `.exited`, which terminate deterministically.
+export type ForkHandle = Subprocess
+
+/** Polls the JSON-RPC endpoint until it answers `eth_blockNumber`, so callers see a ready node. */
+async function waitForRpc(url: string, timeoutMs = 30_000): Promise<void> {
+  const deadline = performance.now() + timeoutMs
+  let lastError: Error | undefined
+  while (performance.now() < deadline) {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_blockNumber', params: [] })
+      })
+      if (res.ok) {
+        await res.json()
+        return
+      }
+    } catch (error) {
+      lastError = ensureError(error)
+    }
+    await Bun.sleep(100)
+  }
+  const detail = lastError ? `: ${lastError.message}` : ''
+  throw new Error(`anvil RPC at ${url} not ready within ${timeoutMs}ms${detail}`)
+}
 
 /**
  * Boots an anvil instance forking Base at FORK_BLOCK (chain id pinned to Base so signatures match).
  * `port` is explicit so multiple fork test files can run in one `bun test` process without colliding.
+ * Requires the `anvil` binary on PATH (Foundry locally; foundry-toolchain in CI).
  */
-export async function startFork(port = 8545): Promise<{ anvil: Anvil; rpcUrl: string }> {
-  const anvil = createAnvil({
-    forkUrl: FORK_URL,
-    forkBlockNumber: Number(FORK_BLOCK),
-    chainId: base.id,
-    port,
-    stopTimeout: 15_000
-  })
-  await anvil.start()
-  return { anvil, rpcUrl: `http://${anvil.host}:${anvil.port}` }
+export async function startFork(port = 8545): Promise<{ anvil: ForkHandle; rpcUrl: string }> {
+  const anvil = Bun.spawn(
+    [
+      'anvil',
+      '--fork-url',
+      FORK_URL,
+      '--fork-block-number',
+      String(FORK_BLOCK),
+      '--chain-id',
+      String(base.id),
+      '--port',
+      String(port)
+    ],
+    { stdout: 'ignore', stderr: 'ignore' }
+  )
+  const rpcUrl = `http://127.0.0.1:${port}`
+  await waitForRpc(rpcUrl)
+  return { anvil, rpcUrl }
 }
 
 /**
- * Best-effort teardown. `@viem/anvil`'s `stop()` can hang on lingering keep-alive sockets from the
- * viem clients, so we swallow the timeout — the child process is reaped on bun's exit (execa cleanup).
+ * Teardown: SIGKILL the forked node and await its exit so the port is freed before the next suite and
+ * nothing dangles past `afterAll`. Awaited by callers.
  */
-export async function stopFork(anvil: Anvil | undefined): Promise<void> {
-  await anvil?.stop().catch(() => {})
+export async function stopFork(anvil: ForkHandle | undefined): Promise<void> {
+  if (!anvil) return
+  anvil.kill('SIGKILL')
+  await anvil.exited
 }
 
 /** Anvil cheatcode client (setBalance / setNextBlockTimestamp / mine) + public reads. */

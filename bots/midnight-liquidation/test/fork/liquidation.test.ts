@@ -1,4 +1,3 @@
-import type { Anvil } from '@viem/anvil'
 import type { Address } from 'viem'
 
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
@@ -17,6 +16,7 @@ import { lensKey, readMidnightLiquidationLens } from '../../src/state/lens.sol'
 import {
   CBBTC,
   deployExecutor,
+  type ForkHandle,
   fundEth,
   LIQUIDATOR,
   LIQUIDATOR_KEY,
@@ -38,7 +38,7 @@ import {
 const SLIPPAGE_BPS = 500
 
 describe('fork: end-to-end liquidation against a real Base position', () => {
-  let anvil: Anvil
+  let anvil: ForkHandle
   let test: TestClient
   let executooor: Address
   let cfg: {
@@ -71,10 +71,8 @@ describe('fork: end-to-end liquidation against a real Base position', () => {
     }
   }, 60_000)
 
-  afterAll(() => {
-    // Fire-and-forget: @viem/anvil's stop() can hang on the viem clients' keep-alive sockets, so we
-    // don't block teardown on it (stopFork swallows the rejection; the child is reaped on bun exit).
-    void stopFork(anvil)
+  afterAll(async () => {
+    await stopFork(anvil)
   })
 
   it('drives lens → plan → swap → exec, lands the tx, and fully drains the Executor', async () => {

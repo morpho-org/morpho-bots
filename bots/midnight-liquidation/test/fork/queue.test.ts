@@ -1,5 +1,3 @@
-import type { Anvil } from '@viem/anvil'
-
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
 import { parseGwei } from 'viem'
 import { base } from 'viem/chains'
@@ -9,6 +7,7 @@ import { initialFees } from '../../src/queue/fee-policy'
 import { createPendingQueue } from '../../src/queue/pending-queue'
 import { createSigner } from '../../src/signer'
 import {
+  type ForkHandle,
   fundEth,
   LIQUIDATOR,
   LIQUIDATOR_KEY,
@@ -23,7 +22,7 @@ import {
 const MAX_FEE_WEI = parseGwei('10000')
 
 describe('fork: pending-queue bump + replacement against a real node', () => {
-  let anvil: Anvil
+  let anvil: ForkHandle
   let test: TestClient
   let rpcUrl: string
 
@@ -38,8 +37,8 @@ describe('fork: pending-queue bump + replacement against a real node', () => {
     await fundEth(test, LIQUIDATOR)
   }, 60_000)
 
-  afterAll(() => {
-    void stopFork(anvil)
+  afterAll(async () => {
+    await stopFork(anvil)
   })
 
   it('bumps a stuck tx and the replacement lands at the same nonce', async () => {
