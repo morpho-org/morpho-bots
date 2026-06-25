@@ -13,19 +13,20 @@ Quick navigation for the curator-bots documentation.
 
 ## Bots
 
-| Bot        | Description                                                                                                             | Docs |
-| ---------- | ----------------------------------------------------------------------------------------------------------------------- | ---- |
-| _none yet_ | _Kill Switch Bot is the first planned bot — see [TIB-2026-04-16](./decisions/TIB-2026-04-16-bootstrap-curator-bots.md)_ | —    |
+| Bot                                                   | Description                            | Docs                                                                        |
+| ----------------------------------------------------- | -------------------------------------- | --------------------------------------------------------------------------- |
+| [midnight-liquidation](../bots/midnight-liquidation/) | Liquidates eligible Midnight positions | [README](../bots/midnight-liquidation/README.md)                            |
+| [kill-switch](../bots/kill-switch/docs/decisions/)    | Planned vault kill-switch bot          | [TIB](../bots/kill-switch/docs/decisions/TIB-2026-05-14-kill-switch-bot.md) |
 
 ---
 
 ## Packages
 
-| Package                                                   | Description                     | Docs |
-| --------------------------------------------------------- | ------------------------------- | ---- |
-| [@repo/abis](../packages/abis/)                           | Shared Morpho protocol ABIs     | —    |
-| [@repo/typescript-config](../packages/typescript-config/) | Shared TypeScript configuration | —    |
-| [@repo/utils](../packages/utils/)                         | Shared server-safe utilities    | —    |
+| Package                                                   | Description                               | Docs |
+| --------------------------------------------------------- | ----------------------------------------- | ---- |
+| [@repo/contracts](../packages/contracts/)                 | Shared contract ABIs and Executor sources | —    |
+| [@repo/typescript-config](../packages/typescript-config/) | Shared TypeScript configuration           | —    |
+| [@repo/utils](../packages/utils/)                         | Shared server-safe utilities              | —    |
 
 ---
 

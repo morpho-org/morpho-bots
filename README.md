@@ -35,5 +35,7 @@ bun test            # bun's built-in test runner
 - `docs/decisions/` — TIBs (Technical Intent Briefs)
 - `docs/templates/` — TIB and data-flow doc templates
 
-The first concrete bot (Kill Switch Bot) ships under `bots/` once the scaffold
-work in `Curator Bots Scaffolding` (TIB-2026-04-16) is complete.
+Bot docs:
+
+- `bots/midnight-liquidation/README.md` — how to run the Midnight liquidation bot and how it works
+  end to end

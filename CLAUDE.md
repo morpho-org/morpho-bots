@@ -126,7 +126,7 @@ These files provide important background information about dependencies and rela
 This is a **bun workspaces monorepo** housing off-chain Morpho curator bots:
 
 - `/bots/` — individual bot apps (first: Kill Switch Bot)
-- `/packages/` — shared libraries (`@repo/utils`, `@repo/abis`, `@repo/typescript-config`)
+- `/packages/` — shared libraries (`@repo/utils`, `@repo/contracts`, `@repo/typescript-config`)
 
 **Key technologies**: bun 1.3.12 (runtime + package manager + workspace task runner), Node.js
 24.14.1, TypeScript 6.0, viem for Web3, oxlint + oxfmt for lint/format, knip for dead-code
@@ -170,11 +170,16 @@ All commit messages, PR titles, and Linear ticket titles use the same format:
 
 | Package                 | Scope       |
 | ----------------------- | ----------- |
-| @repo/abis              | `abis`      |
+| @repo/contracts         | `contracts` |
 | @repo/typescript-config | `ts-config` |
 | @repo/utils             | `utils`     |
 
-**Scopes — Bots:** one scope per bot, added as bots land (first will be `kill-switch`).
+**Scopes — Bots:**
+
+| Bot                       | Scope                  |
+| ------------------------- | ---------------------- |
+| midnight-liquidation      | `midnight-liquidation` |
+| kill-switch (forthcoming) | `kill-switch`          |
 
 **Scopes — Cross-cutting:**
 

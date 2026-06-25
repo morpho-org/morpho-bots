@@ -1,0 +1,29 @@
+{
+  "name": "@morpho-org/midnight-liquidation",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "deploy:railway": "bun run scripts/deploy-railway.ts",
+    "seed:positions": "bun run scripts/seed-liquidatable-positions.ts",
+    "prestart": "bun run --parallel --workspaces --if-present build",
+    "start": "bun src/index.ts",
+    "typecheck": "soltag && tsc --noEmit"
+  },
+  "dependencies": {
+    "@morpho-org/viem-dlc": "catalog:",
+    "@repo/contracts": "workspace:*",
+    "@repo/utils": "workspace:*",
+    "executooor-viem": "catalog:",
+    "solc": "catalog:",
+    "soltag": "catalog:",
+    "viem": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@types/bun": "catalog:",
+    "typescript": "catalog:"
+  }
+}

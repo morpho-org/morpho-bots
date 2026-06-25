@@ -1,0 +1,217 @@
+import type { Address, Hex } from 'viem'
+
+import { describe, expect, it } from 'bun:test'
+import { getAddress } from 'viem'
+
+import type { BorrowerCandidate } from '../../src/discovery/borrowers'
+import type { SwapStep } from '../../src/execution/encode-call'
+import type { SimulateResult } from '../../src/execution/simulate'
+import type { Logger } from '../../src/logger'
+import type { LensInput, LensOut } from '../../src/state/lens.sol'
+
+import { runTick } from '../../src/runner/tick'
+import { lensKey } from '../../src/state/lens.sol'
+
+function spyLogger() {
+  const events: { level: string; event: string; fields?: Record<string, unknown> }[] = []
+  const make = (level: string) => (event: string, fields?: Record<string, unknown>) =>
+    events.push({ level, event, fields })
+  const logger: Logger = {
+    debug: make('debug'),
+    info: make('info'),
+    warn: make('warn'),
+    error: make('error')
+  }
+  return { logger, events }
+}
+
+const BORROWER: Address = getAddress('0x1111111111111111111111111111111111111111')
+const CALLER: Address = getAddress('0x2222222222222222222222222222222222222222')
+const TOKEN: Address = getAddress('0x3333333333333333333333333333333333333333')
+const ORACLE: Address = getAddress('0x4444444444444444444444444444444444444444')
+const ROUTER: Address = getAddress('0x5555555555555555555555555555555555555555')
+const ZERO = '0x0000000000000000000000000000000000000000' as const
+const MARKET: Hex = `0x${'a'.repeat(64)}`
+const LABEL = lensKey(MARKET, BORROWER)
+
+const SWAP_STEP: SwapStep = { router: ROUTER, fee: 3000, amountOutMinimum: 1n }
+
+// A liquidatable reading: valid, gate open, has debt, unlocked, unhealthy, pre-maturity.
+function lensOut(overrides: Partial<LensOut> = {}): LensOut {
+  return {
+    valid: true,
+    hasDebt: true,
+    healthy: false,
+    locked: false,
+    gateAllows: true,
+    blockTimestamp: 1000n,
+    debt: 1000n,
+    maxDebt: 900n,
+    badDebt: 0n,
+    activatedBitmap: 1n,
+    bestCollateralIdx: 0,
+    bestCollateralAmt: 5000n,
+    bestCollateralPrice: 10n ** 36n,
+    bestCollateralMaxLif: 1100000000000000000n,
+    bestCollateralLltv: 860000000000000000n,
+    market: {
+      loanToken: TOKEN,
+      collateralParams: [
+        { token: TOKEN, lltv: 860000000000000000n, maxLif: 1100000000000000000n, oracle: ORACLE }
+      ],
+      maturity: 2000n,
+      rcfThreshold: 10n ** 30n,
+      enterGate: ZERO,
+      liquidatorGate: ZERO
+    },
+    ...overrides
+  }
+}
+
+const candidates = (...borrowers: Address[]): BorrowerCandidate[] =>
+  borrowers.map(borrower => ({ marketId: MARKET, borrower }))
+
+function stubReadLens(out: LensOut | null) {
+  return async (pairs: LensInput[]) => {
+    const map = new Map<string, LensOut>()
+    if (out) for (const pair of pairs) map.set(lensKey(pair.id, pair.borrower), out)
+    return map
+  }
+}
+
+function runWith(opts: {
+  out?: LensOut | null
+  simulateResult?: SimulateResult
+  borrowers?: Address[]
+  synced?: bigint | null
+  chainHead?: bigint
+  inflight?: ReadonlySet<string>
+  noSwap?: boolean
+}) {
+  const { logger, events } = spyLogger()
+  let simulateCalls = 0
+  let submitCalls = 0
+  let onBlockCalls = 0
+  const chainHead = opts.chainHead ?? 100n
+  const result = runTick({
+    discover: async () => candidates(...(opts.borrowers ?? [BORROWER])),
+    syncedBlock: async () => (opts.synced === undefined ? chainHead : opts.synced),
+    chainHead,
+    caller: CALLER,
+    readLens: stubReadLens(opts.out === undefined ? lensOut() : opts.out),
+    swapStepFor: () => (opts.noSwap ? null : SWAP_STEP),
+    simulate: async () => {
+      simulateCalls += 1
+      return opts.simulateResult ?? { status: 'ok' }
+    },
+    submit: async () => {
+      submitCalls += 1
+    },
+    pendingOnBlock: async () => {
+      onBlockCalls += 1
+    },
+    inflightLabels: () => opts.inflight ?? new Set(),
+    logger
+  })
+  return result.then(counters => ({
+    counters,
+    simulateCalls: () => simulateCalls,
+    submitCalls: () => submitCalls,
+    onBlockCalls: () => onBlockCalls,
+    events
+  }))
+}
+
+describe('runTick', () => {
+  it('plans, simulates, and submits a liquidatable pair on a successful sim', async () => {
+    const { counters, simulateCalls, submitCalls, onBlockCalls } = await runWith({
+      simulateResult: { status: 'ok' }
+    })
+    expect(counters).toEqual({
+      pairs: 1,
+      liquidatable: 1,
+      planned: 1,
+      noSwapPath: 0,
+      ok: 1,
+      reverted: 0,
+      submitted: 1
+    })
+    expect(simulateCalls()).toBe(1)
+    expect(submitCalls()).toBe(1)
+    expect(onBlockCalls()).toBe(1) // pendingOnBlock runs every tick
+  })
+
+  it('does not submit a reverting plan (not liquidatable / swap slippage / repay shortfall)', async () => {
+    const { counters, submitCalls } = await runWith({
+      simulateResult: { status: 'revert', reason: 'amountOutMinimum not met' }
+    })
+    expect(counters.reverted).toBe(1)
+    expect(counters.submitted).toBe(0)
+    expect(submitCalls()).toBe(0)
+  })
+
+  it('skips with config.no_swap_path when no swap config covers the collateral', async () => {
+    const { counters, simulateCalls, submitCalls, events } = await runWith({ noSwap: true })
+    expect(counters).toMatchObject({ liquidatable: 1, planned: 1, noSwapPath: 1, submitted: 0 })
+    expect(simulateCalls()).toBe(0) // skipped before simulating
+    expect(submitCalls()).toBe(0)
+    expect(events.some(e => e.event === 'config.no_swap_path')).toBe(true)
+  })
+
+  it('simulates and submits fully bad-debt realization without swap config', async () => {
+    const { counters, simulateCalls, submitCalls } = await runWith({
+      noSwap: true,
+      out: lensOut({
+        healthy: true,
+        blockTimestamp: 3000n,
+        debt: 1000n,
+        badDebt: 1000n,
+        market: { ...lensOut().market, maturity: 2000n }
+      })
+    })
+    expect(counters).toMatchObject({
+      liquidatable: 1,
+      planned: 1,
+      noSwapPath: 0,
+      submitted: 1
+    })
+    expect(simulateCalls()).toBe(1)
+    expect(submitCalls()).toBe(1)
+  })
+
+  it('skips a position already in flight without re-simulating or submitting', async () => {
+    const { counters, simulateCalls, submitCalls } = await runWith({ inflight: new Set([LABEL]) })
+    expect(counters).toMatchObject({ liquidatable: 1, planned: 0, submitted: 0 })
+    expect(simulateCalls()).toBe(0)
+    expect(submitCalls()).toBe(0)
+  })
+
+  it('skips a non-liquidatable pair without simulating or submitting', async () => {
+    const { counters, simulateCalls, submitCalls } = await runWith({
+      out: lensOut({ healthy: true })
+    })
+    expect(counters).toMatchObject({ pairs: 1, liquidatable: 0, planned: 0, submitted: 0 })
+    expect(simulateCalls()).toBe(0)
+    expect(submitCalls()).toBe(0)
+  })
+
+  it('skips a pair the lens did not return', async () => {
+    const { counters, submitCalls } = await runWith({ out: null })
+    expect(counters).toMatchObject({ pairs: 1, liquidatable: 0, submitted: 0 })
+    expect(submitCalls()).toBe(0)
+  })
+
+  it('warns rindexer.lag when our indexer trails the chain head, but still proceeds', async () => {
+    const { counters, events } = await runWith({ synced: 10n, chainHead: 100n }) // lag 90 > 30
+    expect(events.some(e => e.level === 'warn' && e.event === 'rindexer.lag')).toBe(true)
+    expect(counters.submitted).toBe(1) // proceeded despite the lag
+  })
+
+  it('warns rindexer.lag with reason unknown when the synced head is unavailable, and proceeds', async () => {
+    const { counters, events } = await runWith({ synced: null })
+    expect(events.some(e => e.event === 'rindexer.lag' && e.fields?.reason === 'unknown')).toBe(
+      true
+    )
+    expect(counters.submitted).toBe(1)
+  })
+})
