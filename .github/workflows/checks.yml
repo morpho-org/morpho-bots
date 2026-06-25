@@ -43,6 +43,10 @@ jobs:
 
       - name: Run unit tests
         run: bun test
+        env:
+          # Base (chain 8453) archive RPC for the midnight-liquidation fork suite, which forks at a
+          # pinned block and fails loud if this is unset. See test/fork/harness.ts.
+          RPC_URL_8453: ${{ secrets.RPC_URL_8453 }}
 
   Dead-Code:
     runs-on: ubuntu-latest

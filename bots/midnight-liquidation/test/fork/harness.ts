@@ -32,11 +32,13 @@ const DEPLOYER_KEY = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b
 
 export const LIQUIDATOR = privateKeyToAccount(LIQUIDATOR_KEY).address
 
-// Fail loud (no skip) when the fork RPC isn't configured — the suite cannot run without it.
-const FORK_URL = process.env.BASE_FORK_RPC_URL
+// Fail loud (no skip) when the fork RPC isn't configured — the suite cannot run without it. Named
+// per-chain (8453 = Base) so CI can supply it as a secret of the same name; locally, set it in
+// bots/midnight-liquidation/.env.test.local.
+const FORK_URL = process.env.RPC_URL_8453
 if (!FORK_URL) {
   throw new Error(
-    'BASE_FORK_RPC_URL is required for the fork suite — set it in bots/midnight-liquidation/.env.test.local'
+    'RPC_URL_8453 is required for the fork suite — set it in bots/midnight-liquidation/.env.test.local'
   )
 }
 
