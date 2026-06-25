@@ -41,7 +41,7 @@ export async function runTick(deps: {
   discover: () => Promise<BorrowerCandidate[]>
   /** rindexer's indexed head (Postgres); `null`/throw → lag unknown, we proceed. */
   syncedBlock: () => Promise<bigint | null>
-  /** Chain head the daemon just polled — lag reference + the queue's `submittedAtBlock`. */
+  /** Chain head the runner just polled — lag reference + the queue's `submittedAtBlock`. */
   chainHead: bigint
   /** The Executor singleton — the `liquidate` msg.sender whose gate the lens checks. */
   caller: Address

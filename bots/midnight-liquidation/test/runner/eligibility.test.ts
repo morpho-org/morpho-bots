@@ -3,7 +3,7 @@ import { getAddress } from 'viem'
 
 import type { LensOut } from '../../src/state/lens.sol'
 
-import { isLiquidatable, planInputFromLens } from '../../src/daemon/eligibility'
+import { isLiquidatable, planInputFromLens } from '../../src/runner/eligibility'
 
 const TOKEN = getAddress('0x3333333333333333333333333333333333333333')
 const ORACLE = getAddress('0x4444444444444444444444444444444444444444')

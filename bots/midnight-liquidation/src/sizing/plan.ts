@@ -1,6 +1,6 @@
 import { ORACLE_PRICE_SCALE, WAD } from '../constants'
 import { lifAt } from './lif'
-import { mulDivUp } from './math'
+import { min, mulDivUp } from './math'
 import { isRcfExempt, maxRepaidPreMaturity } from './rcf'
 
 /**
@@ -54,8 +54,9 @@ function impliedRepaidUnits(seizedAssets: bigint, price: bigint, lif: bigint): b
  * - past maturity → post-maturity mode: no RCF cap; seize 100% of the best slot if its implied
  *   repaid units fit within the (post-writeoff) debt, else repay the full debt and let the contract
  *   derive the smaller seize (avoids over-repaying, which the contract reverts on);
- * - pre-maturity & unhealthy → normal mode: seize 100% of the slot if that stays within the RCF
- *   cap (or the slot is rcf-exempt), otherwise repay exactly `maxRepaid`;
+ * - pre-maturity & unhealthy → normal mode: seize 100% of the slot when its implied repaid units
+ *   fit within the repay bound — the RCF cap (waived when rcf-exempt) clamped to the post-writeoff
+ *   debt — otherwise repay that bound and let the contract derive the smaller seize;
  * - otherwise (no debt, locked, or healthy-and-pre-maturity) → skip.
  *
  * The plan emits exactly one nonzero amount (`atMostOneNonZero`, :2314); the contract derives the
@@ -113,8 +114,12 @@ export function plan(input: PlanInput): LiquidationPlan | null {
     }
   }
 
-  // Normal mode: the RCF cap binds unless seizing the whole slot stays within `maxRepaid`, or the
-  // slot is rcf-exempt.
+  // Normal mode: like post-maturity above, the contract subtracts `repaidUnits` from the
+  // post-writeoff debt with no clamp, so an implied repay above it reverts (Panic 0x11). The repay is
+  // bounded by the RCF cap (waived when the slot is rcf-exempt) AND never exceeds that debt. Seize
+  // the whole slot only when its implied repaid units fit within the bound; otherwise repay the bound
+  // exactly and let the contract derive the smaller seize.
+  const effectiveDebt = input.debt - input.badDebt
   const maxRepaid = maxRepaidPreMaturity({
     debt: input.debt,
     badDebt: input.badDebt,
@@ -127,7 +132,6 @@ export function plan(input: PlanInput): LiquidationPlan | null {
     input.bestCollateralPrice,
     lif
   )
-  const capBinds = wholeSlotRepaid > maxRepaid
   const exempt = isRcfExempt({
     collateralAmt: input.bestCollateralAmt,
     price: input.bestCollateralPrice,
@@ -135,12 +139,13 @@ export function plan(input: PlanInput): LiquidationPlan | null {
     maxRepaid,
     rcfThreshold: input.rcfThreshold
   })
+  const repayCap = exempt ? effectiveDebt : min(maxRepaid, effectiveDebt)
 
-  if (!capBinds || exempt) return seizeWholeSlot
+  if (wholeSlotRepaid <= repayCap) return seizeWholeSlot
   return {
     collateralIndex: input.bestCollateralIndex,
     seizedAssets: 0n,
-    repaidUnits: maxRepaid,
+    repaidUnits: repayCap,
     postMaturityMode
   }
 }

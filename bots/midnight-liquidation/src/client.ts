@@ -10,7 +10,7 @@ import type { BatchLensTransportType } from './state/read-deployless-batch-lens'
 // Gas the deployless lens may burn in its single eth_call. Matches the prime-monorepo reference
 // (packages/resolvers/test/measure/clients.ts); the lens itself is read-only so a generous ceiling
 // is harmless.
-const DEPLOYLESS_GAS_LIMIT = 1_000_000_000
+const DEPLOYLESS_GAS_LIMIT = 550_000_000
 const RPC_TIMEOUT_MS = 30_000
 
 /**

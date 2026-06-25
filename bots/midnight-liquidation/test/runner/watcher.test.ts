@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test'
 
 import type { Logger } from '../../src/logger'
 
-import { createBlockWatcher } from '../../src/daemon/watcher'
+import { createBlockWatcher } from '../../src/runner/watcher'
 
 const NOOP_LOGGER: Logger = {
   debug: () => undefined,

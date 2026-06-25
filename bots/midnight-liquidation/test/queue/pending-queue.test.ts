@@ -1,8 +1,9 @@
 import type { Address, Hex } from 'viem'
 
 import { describe, expect, it } from 'bun:test'
+import { ExecutionRevertedError } from 'viem'
 
-import type { Logger } from '../../src/logger'
+import type { Logger, LogLevel } from '../../src/logger'
 import type {
   GetBaseFee,
   GetReceipt,
@@ -12,6 +13,7 @@ import type {
 } from '../../src/queue/pending-queue'
 
 import { createPendingQueue } from '../../src/queue/pending-queue'
+import { TxSendError } from '../../src/tx-error'
 
 const REQUEST: TxRequest = {
   to: '0x0000000000000000000000000000000000000001' as Address,
@@ -30,21 +32,44 @@ function hashOf(n: number): Hex {
 
 type SendArg = TxRequest & { maxFeePerGas: bigint; maxPriorityFeePerGas: bigint; nonce?: number }
 
-function setup(opts: { getReceipt?: GetReceipt; baseFee?: bigint; maxFeeWei?: bigint } = {}) {
+/** A logger that records every call so tests can assert on emitted events and their fields. */
+function captureLogger() {
+  const events: { level: LogLevel; event: string; fields?: Record<string, unknown> }[] = []
+  const make = (level: LogLevel) => (event: string, fields?: Record<string, unknown>) => {
+    events.push({ level, event, fields })
+  }
+  const logger: Logger = {
+    debug: make('debug'),
+    info: make('info'),
+    warn: make('warn'),
+    error: make('error')
+  }
+  return { logger, events }
+}
+
+function setup(
+  opts: {
+    getReceipt?: GetReceipt
+    baseFee?: bigint
+    maxFeeWei?: bigint
+    send?: SendTx
+    logger?: Logger
+  } = {}
+) {
   const sends: SendArg[] = []
   let counter = 0
-  const send: SendTx = async request => {
+  const defaultSend: SendTx = async request => {
     sends.push(request)
     counter += 1
     return { nonce: request.nonce ?? 7, txHash: hashOf(counter) }
   }
   const getBaseFee: GetBaseFee = async () => opts.baseFee ?? 100n
   const queue = createPendingQueue({
-    send,
+    send: opts.send ?? defaultSend,
     getReceipt: opts.getReceipt ?? (async () => null),
     getBaseFee,
     maxFeeWei: opts.maxFeeWei ?? 10_000_000_000_000n,
-    logger: NOOP_LOGGER
+    logger: opts.logger ?? NOOP_LOGGER
   })
   return { queue, sends }
 }
@@ -60,11 +85,11 @@ function submitOne(queue: PendingQueue, blockNumber = 0n) {
 }
 
 describe('createPendingQueue', () => {
-  it('records a submitted tx with the manager-assigned nonce', async () => {
+  it('records a submitted tx with the signer-assigned nonce', async () => {
     const { queue, sends } = setup()
     await submitOne(queue)
     expect(queue.size).toBe(1)
-    expect(sends[0]?.nonce).toBeUndefined() // first send lets the nonce manager assign
+    expect(sends[0]?.nonce).toBeUndefined() // first send leaves nonce assignment to the signer
     expect(queue.snapshot()[0]).toEqual({ nonce: 7, txHash: hashOf(1), attempt: 0 })
   })
 
@@ -110,6 +135,95 @@ describe('createPendingQueue', () => {
     await submitOne(queue, 0n)
     await queue.onBlock(5n)
     expect(queue.size).toBe(0)
+  })
+
+  it('does not track a tx whose first send fails, and logs tx.submit_failed', async () => {
+    const { logger, events } = captureLogger()
+    const send: SendTx = async () => {
+      throw new Error('rpc down')
+    }
+    const { queue } = setup({ send, logger })
+    await submitOne(queue) // must not throw
+    expect(queue.size).toBe(0)
+    expect(events.find(e => e.event === 'tx.submit_failed')?.level).toBe('warn')
+  })
+
+  it('rethrows a first-send failure after a nonce was claimed but no hash was returned', async () => {
+    const { logger, events } = captureLogger()
+    const send: SendTx = async () => {
+      throw new TxSendError(new Error('rpc timeout after broadcast'), 7)
+    }
+    const { queue } = setup({ send, logger })
+    await expect(submitOne(queue)).rejects.toThrow(/rpc timeout after broadcast/)
+    expect(queue.size).toBe(0)
+    expect(events.find(e => e.event === 'tx.submit_failed')?.fields?.nonce).toBe(7)
+  })
+
+  it('drops a stuck tx when its replacement reverts on-chain (no longer liquidatable)', async () => {
+    const { logger, events } = captureLogger()
+    let calls = 0
+    const send: SendTx = async request => {
+      calls += 1
+      if (calls === 1) return { nonce: request.nonce ?? 7, txHash: hashOf(1) }
+      throw new ExecutionRevertedError({}) // the re-broadcast reverts
+    }
+    const { queue } = setup({ send, logger })
+    await submitOne(queue, 0n)
+    await queue.onBlock(5n) // stuck → replace → reverts → drop
+    expect(queue.size).toBe(0)
+    expect(events.find(e => e.event === 'tx.dropped')?.fields?.reason).toBe('reverts_on_replace')
+  })
+
+  it('retries a stuck tx on transient send failures, then drops it at MAX_BUMP_ATTEMPTS', async () => {
+    const { logger, events } = captureLogger()
+    let calls = 0
+    const send: SendTx = async request => {
+      calls += 1
+      if (calls === 1) return { nonce: request.nonce ?? 7, txHash: hashOf(1) }
+      throw new Error('connection reset') // every replacement is a transient failure
+    }
+    const { queue } = setup({ send, logger })
+    await submitOne(queue, 0n)
+    await queue.onBlock(5n) // attempt 1
+    await queue.onBlock(6n) // attempt 2
+    await queue.onBlock(7n) // attempt 3
+    expect(queue.size).toBe(1)
+    await queue.onBlock(8n) // attempt already 3 → drop
+    expect(queue.size).toBe(0)
+    expect(events.filter(e => e.event === 'tx.replace_failed')).toHaveLength(3)
+    expect(events.find(e => e.event === 'tx.dropped')?.fields?.reason).toBe('max_bump_attempts')
+  })
+
+  it('isolates a per-entry getReceipt failure so the rest of the queue still sweeps', async () => {
+    const { logger, events } = captureLogger()
+    let n = 0
+    const send: SendTx = async request => {
+      n += 1
+      return { nonce: request.nonce ?? n, txHash: hashOf(n) }
+    }
+    const getReceipt: GetReceipt = async txHash => {
+      if (txHash === hashOf(1)) throw new Error('rpc hiccup')
+      return { status: 'success', blockNumber: 9n }
+    }
+    const { queue } = setup({ send, getReceipt, logger })
+    await queue.submit({
+      request: REQUEST,
+      label: 'a',
+      maxFeePerGas: 1000n,
+      maxPriorityFeePerGas: 1000n,
+      blockNumber: 0n
+    })
+    await queue.submit({
+      request: REQUEST,
+      label: 'b',
+      maxFeePerGas: 1000n,
+      maxPriorityFeePerGas: 1000n,
+      blockNumber: 0n
+    })
+    expect(queue.size).toBe(2)
+    await queue.onBlock(1n) // entry #1 getReceipt throws (caught), entry #2 confirms → evicted
+    expect(queue.size).toBe(1) // the throwing entry survives; the other was still swept
+    expect(events.some(e => e.event === 'tx.onblock_error')).toBe(true)
   })
 
   it('exposes the labels of currently-pending txs via inflightLabels', async () => {

@@ -192,8 +192,7 @@ export function lensKey(id: Hex, borrower: Address): string {
  * Reads the liquidation lens for every pair in one deployless, chunked `eth_call` (no signer, no
  * cache — decisions need fresh state). The lens fetches each Market on-chain from its `id`. Returns
  * a map keyed by {@link lensKey}. The `client` must use viem-dlc's deployless transport (built in
- * `client.ts`). The gas coefficients below are placeholders to calibrate on a Base fork before
- * go-live.
+ * `client.ts`).
  */
 export async function readMidnightLiquidationLens(
   client: Client<Transport<BatchLensTransportType>>,
@@ -210,7 +209,7 @@ export async function readMidnightLiquidationLens(
         batchSize: MAX_INITCODE_SIZE,
         exfil: 'revert',
         compress: false,
-        gas: { default: { constant: 600_000, linear: 30_000, quadratic: 0 } }
+        gas: { default: { constant: 1_300_000, linear: 55_000, quadratic: 0 } }
       }
     },
     ({ id, borrower }) => lensKey(id, borrower),

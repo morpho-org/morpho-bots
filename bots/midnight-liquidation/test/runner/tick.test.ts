@@ -9,7 +9,7 @@ import type { SimulateResult } from '../../src/execution/simulate'
 import type { Logger } from '../../src/logger'
 import type { LensInput, LensOut } from '../../src/state/lens.sol'
 
-import { runTick } from '../../src/daemon/tick'
+import { runTick } from '../../src/runner/tick'
 import { lensKey } from '../../src/state/lens.sol'
 
 function spyLogger() {

@@ -2,7 +2,7 @@ import { ensureError } from '@repo/utils'
 
 import type { Logger } from '../logger'
 
-/** Default HTTP block-poll cadence. Operational tuning lives with the daemon, not `constants.ts`. */
+/** Default HTTP block-poll cadence. Operational tuning lives with the runner, not `constants.ts`. */
 export const BLOCK_POLL_MS = 2_000
 
 type BlockWatcher = {
@@ -20,7 +20,7 @@ type BlockWatcher = {
  * latest height and runs `onBlock` for any new height. If a run is in flight, later polls only raise
  * the target height and the in-flight drain picks up the **latest** when it finishes — intermediate
  * heights coalesce away (a coverage bot re-derives its work each block, so skipping is safe).
- * `onBlock` must not throw; the daemon wraps it.
+ * `onBlock` must not throw; the runner wraps it.
  */
 export function createBlockWatcher(deps: {
   getBlockNumber: () => Promise<bigint>

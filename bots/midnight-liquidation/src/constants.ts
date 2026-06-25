@@ -4,7 +4,7 @@ import type { Hex } from 'viem'
 // later phases. They are pinned here at scaffold time and verified against their on-chain
 // derivations in test/constants.test.ts. Values mirror docs/context/repos/midnight-contracts.txt.
 // Operational tuning constants (block-poll cadence, stuck-tx thresholds, fee-bump floor) live
-// with the daemon/queue modules that consume them (Phase 3) rather than here.
+// with the runner/queue modules that consume them (Phase 3) rather than here.
 
 /** 1e18 fixed-point one ("WAD") — the base scalar for Midnight's rate and share math. */
 export const WAD = 10n ** 18n
@@ -26,7 +26,7 @@ export const MAX_COLLATERALS_PER_BORROWER = 16
 export const CALLBACK_SUCCESS: Hex =
   '0x7f87788ea698181ea4d28d1576d0ba4fc92c0dbe5bf75b43692af2ce91dbaea2'
 
-// --- Tx-queue operational tuning (consumed by the nonce queue / daemon) ---
+// --- Tx-queue operational tuning (consumed by the nonce queue / runner) ---
 
 /** Blocks a pending tx may sit unconfirmed before the queue bumps its fee and replaces it. */
 export const STUCK_BLOCKS = 4n

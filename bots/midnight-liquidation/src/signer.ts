@@ -6,14 +6,16 @@ import { createWalletClient, http, TransactionReceiptNotFoundError } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import {
   getBlock,
+  getTransactionCount,
   getTransactionReceipt,
   prepareTransactionRequest,
   sendTransaction
 } from 'viem/actions'
-import { createNonceManager, jsonRpc } from 'viem/nonce'
 
 import type { Config } from './config'
 import type { GetBaseFee, GetReceipt, SendTx } from './queue/pending-queue'
+
+import { TxSendError } from './tx-error'
 
 const RPC_TIMEOUT_MS = 30_000
 
@@ -27,7 +29,7 @@ type Signer = {
 /**
  * Builds the signed-send path the pending queue needs: a plain HTTP (optionally `failover`) wallet
  * client — deliberately NOT the viem-dlc `deployless` transport, which only wraps `eth_call` for the
- * lens — with a viem `createNonceManager` so parallel sends claim sequential nonces. Returns the
+ * lens — with a local pending-nonce cursor so sequential sends claim sequential nonces. Returns the
  * three primitives `createPendingQueue` injects: {@link SendTx}, {@link GetReceipt}, {@link GetBaseFee}.
  */
 export function createSigner(
@@ -42,27 +44,46 @@ export function createSigner(
       ? failover([rpc(config.rpcUrl), rpc(config.rpcUrlFallback)])
       : rpc(config.rpcUrl)
   ) as Transport
-  const account = privateKeyToAccount(config.liquidatorPrivateKey, {
-    nonceManager: createNonceManager({ source: jsonRpc() })
-  })
+  const account = privateKeyToAccount(config.liquidatorPrivateKey)
   const client = createWalletClient({ account, chain: config.chain, transport })
+  let nextNonce: number | undefined
 
-  // First send: omit `nonce` and pass the account's nonceManager so prepare claims the next nonce
-  // (it must be passed explicitly — the action does not read it off the account). Replacement: the
-  // queue passes an explicit `nonce`, which bypasses the manager.
-  const send: SendTx = async req => {
-    const request = await prepareTransactionRequest(client, {
-      account,
-      to: req.to,
-      data: req.data,
-      maxFeePerGas: req.maxFeePerGas,
-      maxPriorityFeePerGas: req.maxPriorityFeePerGas,
-      ...(req.nonce === undefined ? { nonceManager: account.nonceManager } : { nonce: req.nonce })
+  const claimNonce = async (): Promise<number> => {
+    nextNonce ??= await getTransactionCount(client, {
+      address: account.address,
+      blockTag: 'pending'
     })
-    // `request.nonce` is dropped from the returned object when it is 0 (truthiness), so fall back.
-    const nonce = request.nonce ?? req.nonce ?? 0
-    const txHash = await sendTransaction(client, request)
-    return { nonce, txHash }
+    const nonce = nextNonce
+    nextNonce += 1
+    return nonce
+  }
+
+  // First send: claim from the local cursor and pass an explicit nonce into prepare/send. If the
+  // hashless broadcast fails, roll the cursor back so the next tick can retry the same nonce.
+  // Replacement: the queue passes an explicit `nonce`, which does not move the cursor.
+  const send: SendTx = async req => {
+    const nonce = req.nonce ?? (await claimNonce())
+    let request: Awaited<ReturnType<typeof prepareTransactionRequest>>
+    try {
+      request = await prepareTransactionRequest(client, {
+        account,
+        to: req.to,
+        data: req.data,
+        maxFeePerGas: req.maxFeePerGas,
+        maxPriorityFeePerGas: req.maxPriorityFeePerGas,
+        nonce
+      })
+    } catch (error) {
+      if (req.nonce === undefined) nextNonce = Math.min(nextNonce ?? nonce, nonce)
+      throw error
+    }
+    try {
+      const txHash = await sendTransaction(client, request)
+      return { nonce, txHash }
+    } catch (error) {
+      if (req.nonce === undefined) nextNonce = Math.min(nextNonce ?? nonce, nonce)
+      throw new TxSendError(error, nonce)
+    }
   }
 
   const getReceipt: GetReceipt = async txHash => {

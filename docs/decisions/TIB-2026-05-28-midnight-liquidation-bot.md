@@ -52,7 +52,7 @@ Three architectural choices anchor the design:
 
 **Goals**
 
-- Long-running daemon, single chain per process, that reliably liquidates **every** position
+- Long-running runner, single chain per process, that reliably liquidates **every** position
   that becomes liquidatable while it is running.
 - Correct sizing: maturity-aware LIF curve and pre-maturity RCF cap (with the
   `rcfThreshold` exemption). Collateral picked by USD value, freshly read in the same `eth_call`
@@ -77,7 +77,7 @@ Three architectural choices anchor the design:
   inside the liquidate callback as the Executor's generic call queue, so there is no
   Midnight-specific handler and no `onBuy` / `onSell` / `onRepay` / `onFlashLoan` Solidity.
   Solidity lives in `@repo/contracts` (`solidity/`).
-- Persisting queue state across daemon restarts. Chain truth wins; we re-derive on startup.
+- Persisting queue state across runner restarts. Chain truth wins; we re-derive on startup.
 - Replacing `@repo/utils` or `@repo/contracts` patterns. Reuse them as-is.
 
 ## Proposed Solution
@@ -105,15 +105,15 @@ The bot lives under `bots/midnight-liquidation/`:
 ```
 src/
   config.ts          // env + swap-config JSON + per-chain Midnight map; fail loud
-  index.ts           // boot: loadConfig → wire deps → daemon.start(); SIGTERM/SIGINT
+  index.ts           // boot: loadConfig → wire deps → runner.start(); SIGTERM/SIGINT
   constants.ts       // TIME_TO_MAX_LIF=900, WAD=1e18, ORACLE_PRICE_SCALE=1e36, CALLBACK_SUCCESS,
                      // MAX_COLLATERALS_PER_BORROWER=16, STUCK_BLOCKS=4, MAX_BUMP_ATTEMPTS=3
   client.ts          // deployless (+ optional failover) read client; getCode liveness gate
   signer.ts          // wallet client + createNonceManager; send / getReceipt / getBaseFee
   logger.ts          // JSON-line structured logger (bigints stringified)
 
-  daemon/
-    daemon.ts        // start/stop; wires modules; owns lifecycle
+  runner/
+    runner.ts        // start/stop; wires modules; owns lifecycle
     tick.ts          // pure orchestrator: takes injected deps, runs one tick
     watcher.ts       // setInterval-driven getBlockNumber poll → coalesced new-block queue
                      // (HTTP only; no WebSocket transport, no eth_subscribe)
@@ -164,7 +164,7 @@ by the anvil fork suite (`test/fork/`).
   fresh; `simulate` is the sink. End-to-end smoke on Base via a `toMarket` read + the `getCode`
   liveness gate.
 
-- **Phase 3 — Daemon + nonce queue + signed sends.** Add `daemon/`, `queue/`, signer wiring.
+- **Phase 3 — Runner + nonce queue + signed sends.** Add `runner/`, `queue/`, signer wiring.
   Exercise the queue and bumping with a _dummy_ broadcast (a direct-from-EOA `liquidate` that
   reverts deterministically on the unfunded loan-token pull) before the swap config exists.
   Replacement is verified later via a deliberately-underpriced first send.
@@ -212,7 +212,7 @@ lens fetches it on-chain via `toMarket(id)`, so no market-creation event is inde
 no inline position data to trust.
 
 **rindexer-lag signal.** `borrowers.ts` also exposes `rindexerSyncedBlock`
-(`SELECT MAX(block_number) FROM …take`). Each tick compares it against the chain head the daemon
+(`SELECT MAX(block_number) FROM …take`). Each tick compares it against the chain head the runner
 polls and emits `rindexer.lag`. It is **observability-only**: the lens reads every candidate
 fresh on-chain, so rindexer lag is coverage latency, not a correctness issue. The tick always
 proceeds, and **fails open** if the query errors (`reason: 'unknown'`). It over-reports lag
@@ -265,7 +265,7 @@ struct LensOut {
   Market  market;                 // the toMarket(id) read — passed straight into liquidate
 }
 
-// Off-chain (daemon/eligibility.ts):
+// Off-chain (runner/eligibility.ts):
 //   liquidatable = valid && gateAllows && hasDebt && !locked
 //                  && (blockTimestamp > market.maturity || !healthy)
 //   `!healthy` is exactly the contract's pre-maturity test `debt > maxDebt`
@@ -438,12 +438,12 @@ chain nonce).
 
 ### Tick loop
 
-`daemon/watcher.ts` runs a `setInterval(getBlockNumber, BLOCK_POLL_MS)` loop (`BLOCK_POLL_MS =
+`runner/watcher.ts` runs a `setInterval(getBlockNumber, BLOCK_POLL_MS)` loop (`BLOCK_POLL_MS =
 2_000`, defined in `watcher.ts`) against the HTTP RPC; WebSocket transports and `eth_subscribe`
 are explicitly avoided. On each new block height it enqueues an event; if a tick is mid-flight,
 only the latest height is processed next (backlog coalesces).
 
-`daemon/tick.ts` per new block:
+`runner/tick.ts` per new block:
 
 1. Emit the rindexer-lag signal (`rindexer.lag`); observability-only, fails open, always proceeds.
 2. Discover `(marketId, borrower)` candidates from Postgres → lens inputs
@@ -588,13 +588,38 @@ JSON, default/parse the derived `EXECUTOOOR_ADDRESS`, then `assertContractDeploy
 non-empty — a liveness gate, not an identity check; fatal with the deploy command when no code is
 found). Emit a one-line `startup` log with `{ chainId, liquidator, callback, midnight }`.
 
+### Hosting
+
+The bot, its co-located rindexer, and Postgres deploy to **Railway** rather than the internal
+Morpho platform (the AWS + Helm + Argo CD stack that runs the org's production services). The trade
+is iteration speed and ownership against platform integration: Railway needs no cross-team
+coordination to stand up — no SRE ticket, no Helm chart to land, no Argo app to onboard — so a
+single engineer can provision, deploy, and tear down the whole topology, and it stays fully under
+the bot team's control. For a v0 fallback liquidator that must _work_ rather than be _competitive_,
+that autonomy outweighs the shared tooling, secrets management, and observability the internal
+platform would bring for free; promoting the bot onto the internal platform is a natural follow-up
+if it ever becomes load-bearing infrastructure. Railway also serves the reference-implementation
+reader: this bot is open-source, and an outside integrator can stand up a Railway project from the
+committed `Dockerfile` and deploy script far more easily than they could reproduce our internal AWS
+
+- Helm + Argo CD stack — which is ours, not theirs to run.
+
+The Railway topology mirrors the local `docker-compose.yml`: managed Postgres, a rindexer service
+indexing `Take`, and the bot runner, all in one Railway project. The shared multi-stage
+`Dockerfile` is the single build source for both Railway and compose — a `BUILD_TARGET` build-arg
+selects the stage (Railway always builds the final stage and cannot pass `--target`), and the swap
+config rides on a Railway volume the operator uploads out-of-band (no host bind mount). An
+idempotent `scripts/deploy-railway.ts` drives the `railway` CLI, reading secrets from the
+environment and setting them as service variables — never logged, never committed. These deploy
+mechanics live in the deploy script, the `Dockerfile`, and the bot README, not here.
+
 ## Considered Alternatives
 
 ### Alternative 1: Cron / one-shot topology
 
 Run `main()` once per cron tick (every 30–60s), drain queue with a short internal wait, exit.
 
-**Why rejected:** The daemon is barely more complex (a `setInterval`-polled `getBlockNumber` loop
+**Why rejected:** The runner is barely more complex (a `setInterval`-polled `getBlockNumber` loop
 wrapping the same tick function) and gives us per-block reactivity at no extra cost. Cron would
 race itself when a queue drain runs long.
 
@@ -629,7 +654,7 @@ LIF/RCF math against a single chain time, and returns exactly the struct sizing 
 would force LIF evaluation against the host clock or a separate `block.timestamp` read — both
 subtly wrong.
 
-### Alternative 5: Persistent queue state across daemon restarts
+### Alternative 5: Persistent queue state across runner restarts
 
 Persist `pending` to disk so a restart can recover in-flight transactions.
 
@@ -692,8 +717,8 @@ keys:
 
 ```
 startup              { chainId, liquidator, callback, midnight }
-daemon.start         { intervalMs }
-daemon.shutdown      { }
+runner.start         { intervalMs }
+runner.shutdown      { }
 block.new            { height }                            // one per new block height (coalesced)
 rindexer.lag         { chainHead, synced, lag } | { reason: 'unknown', chainHead }
                                                            //   observability; warn if lag>30, never skips
@@ -708,12 +733,15 @@ tx.confirmed         { nonce, txHash, blockNumber }
 tx.dropped           { nonce, txHash, reason }             // reason: 'max_bump_attempts' | 'fee_ceiling'
 tx.reverted          { nonce, txHash, blockNumber }
 tick.end             { pairs, liquidatable, planned, noSwapPath, ok, reverted, submitted }
-tick.error           { error }                             // a tick threw; the daemon loop survives
+tick.error           { error }                             // a tick threw; the runner loop survives
 watcher.error        { error }                             // a block poll (getBlockNumber) failed
 shutdown             { signal, pending }
 ```
 
-No external metrics deps; the logs are structured enough to ship.
+No external metrics deps: `error` goes to stderr, everything else to stdout, and that is the whole
+sink — on Railway the platform captures both streams. The logs are structured enough to ship, but
+nothing ships them yet. Forwarding these logs/traces to BetterStack and wiring Slack notifications
+are deferred to v1 (see Future Considerations).
 
 ## Security
 
@@ -747,16 +775,76 @@ No external metrics deps; the logs are structured enough to ship.
 
 - A profitability gate as a follow-up TIB if operating cost becomes material.
 - Multi-hop routing as a follow-up TIB once volatile collaterals matter to coverage.
+- **Additional liquidity venues beyond Uniswap V3 — fast-follow.** Execution today resolves a single
+  operator-declared Uniswap-V3-style `exactInputSingle` route per collateral (in
+  `execution/swap-step.ts` and `execution/encode-call.ts`). A near-term follow-up is supporting other
+  venues — additional AMMs (Aerodrome, Curve, Balancer) and/or DEX aggregators (0x, 1inch, CoW) — as
+  alternative `SwapStep` route kinds selected from the swap config, widening collateral coverage where
+  Uniswap V3 liquidity is thin. Distinct from the multi-hop item above, which is about path depth on
+  one venue rather than the choice of venue. Each new venue rides the same generic-Executor callback
+  queue, so it is an encoder/config change, not a contract change.
 - Multi-chain in one process if ops complexity favors it (probably not).
 - A persisted queue state with replay-safe semantics, if restarts become frequent enough to
   warrant it.
-- A flashloan-funded variant for liquidators without working capital — wrap the liquidate in
-  `Midnight.flashLoan(address[] tokens, uint256[] assets, address callback, bytes data)`.
-  `onFlashLoan` — like `onLiquidate` — is serviced by the **same generic callback-queue trick**
-  (the fallback runs the queue and returns `CALLBACK_SUCCESS` raw), so it needs **no** additional
-  Solidity handler, just a second encoder path.
-- Extracting `discovery/`, `state/`, and `queue/` into shared packages once a second bot consumes
-  them (`@repo/viem-dlc-lens`, `@repo/tx-queue`) — explicitly premature today.
+- **Richer observability (BetterStack traces + Slack notifications) — deferred to v1.** Today the bot
+  emits only the structured JSON-line logs above to stdout/stderr, which Railway captures; there are
+  no traces, metrics dashboards, or alerting integrations. Two follow-ups: (1) ship the logs/traces to
+  **BetterStack** (the org's telemetry backend) for searchable retention, dashboards, and latency
+  tracing across the discover → lens → simulate → submit path; and (2) wire **Slack notifications**
+  for operationally significant events — confirmed liquidations (`tx.confirmed`) and the failure
+  signals (`tx.reverted`, `tx.dropped`, sustained `tick.error` / `watcher.error`) that today surface
+  only in logs. The stable event keys in Observability are designed to be shipped as-is, so this is an
+  additive forwarding/alerting layer rather than a logging rework.
+- Throughput under a large simultaneous wave of liquidatable accounts. The design is correct and
+  uncapped for a wave — no discovery `LIMIT` in `discovery/borrowers.ts`, one batched/chunked
+  deployless lens read, watcher tick-coalescing in `runner/watcher.ts` (the `draining` guard means
+  slow ticks never overlap), `inflightLabels()` backpressure, and stuck-tx fee-bump — so the limit
+  is throughput/latency, not correctness: a wave clears serially over several blocks rather than
+  instantly. Bottlenecks, in order of impact:
+  - Single liquidator EOA → one serialized nonce stream (`signer.ts` `createNonceManager`): all
+    liquidations broadcast in nonce order from one account; a reverting tx still mines and advances,
+    but an underpriced/stuck tx head-of-line-blocks higher nonces until the queue bumps it
+    (`STUCK_BLOCKS=4`, `MAX_BUMP_ATTEMPTS=3`). This is the fundamental serializer.
+  - Per-position simulate+submit is sequential within a tick — `runner/tick.ts` uses a plain
+    `for … await simulate … await submit` loop (no bounded `Promise.all`), so tick latency grows
+    linearly with liquidatable-position count; simulate is read-only and safe to parallelize.
+  - The pending-queue sweep is sequential too — `queue/pending-queue.ts` `onBlock` awaits
+    `getReceipt` per entry one at a time, linear in pending count.
+  - `maxFeeWei` cap (default 300 gwei): waves often coincide with gas spikes, and bumps past the
+    ceiling drop txs (`fee_ceiling`), throttling throughput under congestion.
+  - Operational: the liquidator EOA must hold enough ETH to fund per-tx gas across the whole wave
+    (the Executor self-funds swap/repay from seized collateral, not the gas).
+    Candidate mitigations — all deferred, none needed for v0 single-position / low-volume operation:
+    parallelize simulate (bounded concurrency), parallelize the queue's `getReceipt` sweep, run
+    multiple liquidator EOAs (biggest win — breaks the single-nonce-stream serialization), and
+    auto-raise `maxFeeWei` during detected waves.
+- RPC-usage scalability — read/`eth_call` volume per block, distinct from the submission-throughput
+  bullet above. Fine at v0, but the every-block full-universe lens read over an unbounded candidate
+  set scales poorly. Concerns, in order of impact:
+  - Full-universe lens read every block over a monotonically-growing set. `runner/tick.ts` reads the
+    lens for the entire candidate set unconditionally every tick (step 3, before any liquidatability
+    check), and `runner/watcher.ts` ticks every block (`BLOCK_POLL_MS = 2_000`). Discovery
+    (`discovery/borrowers.ts` `BORROWERS_SQL`) is a `SELECT DISTINCT market_id, borrower` over every
+    `taker`/`maker` of all `Take` events ever — no `LIMIT`/debt-filter/time-window — so it only grows;
+    repaid/closed positions linger (lens returns `hasDebt=false`) and re-read every block. Compute
+    scales with all-time borrowers, not active debt (each `computeOne` does `toMarket + debtOf +
+liquidationLocked + collateralBitmap + per-slot oracle `price()`), and `toMarket(id)`is
+recomputed per`(id, borrower)`rather than deduped per`marketId`.
+  - Repeated `simulate` with no cooldown. Any liquidatable, not-in-flight position is re-simulated (an
+    `eth_call`) every block (`runner/tick.ts`); a perpetually-liquidatable-but-unsubmittable position
+    burns one every ~2s indefinitely — no backoff/de-dup beyond `inflightLabels()`.
+  - Per-tx RPC amplification. Each submit's `prepareTransactionRequest` (`signer.ts`) does an
+    `eth_estimateGas` on top of the raw send; the queue's `onBlock` (`queue/pending-queue.ts`) does a
+    sequential `getReceipt` per entry every block (+ `getBaseFee`/re-broadcast on bump), so M pending
+    txs = M `eth_getTransactionReceipt`/block until they clear.
+  - Baseline cadence: pure HTTP polling on a fixed ~2s interval, no `eth_subscribe`/WebSocket and no
+    oracle-update trigger, so the full per-tick read cost is paid every block regardless of price
+    movement. (Adjacent, not RPC: the rindexer `DISTINCT`-union also runs every tick.)
+    Candidate mitigations — all deferred, none needed for v0: prune/cooldown the candidate set (drop
+    `hasDebt=false` pairs, back off persistent `simulate` failures); cache immutable markets (`toMarket`
+    by `marketId`) and dedupe within a read; tier the cadence (slow full scan + a per-block hot set, or
+    trigger off oracle updates); size lens chunks to the provider's real `eth_call` cap; batch
+    `getReceipt`.
 
 ## Open Questions
 
@@ -811,7 +899,7 @@ After each phase:
    gate (needs a funded EOA).
 6. Per-test vacuity check: flip one assertion in each new unit test file, confirm the test fails,
    then revert (CONVENTIONS gate).
-7. Smoke run on Base: daemon up for ≥1 h, observe expected `tick.end` cadence, verify no orphaned
+7. Smoke run on Base: runner up for ≥1 h, observe expected `tick.end` cadence, verify no orphaned
    `pending` entries on graceful SIGTERM.
 
 ## References

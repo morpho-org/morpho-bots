@@ -1,6 +1,6 @@
 /**
  * Reproducible, idempotent deployment of the 3-component midnight-liquidation system to the Railway
- * project `bot.liquidation.midnight`: managed Postgres + a `rindexer` service + the `bot` daemon. The
+ * project `bot.liquidation.midnight`: managed Postgres + a `rindexer` service + the `bot` runner. The
  * bot reads borrower candidates from rindexer's Postgres tables, so all three are provisioned here.
  *
  * Runs anywhere with the `railway` CLI installed and authenticated. The target project is supplied
@@ -267,7 +267,7 @@ await setVar('rindexer', databaseUrlRef)
 await setSecret('rindexer', 'RINDEXER_RPC_URL', rindexerRpcUrl)
 await deployService('rindexer')
 
-// --- bot: the liquidation daemon (BUILD_TARGET selects the bun bot stage). Swap config lives on a
+// --- bot: the liquidation runner (BUILD_TARGET selects the bun bot stage). Swap config lives on a
 // volume at /config (uploaded out-of-band — see manual steps below).
 await ensureService('bot')
 await ensureVolume('bot', SWAP_MOUNT_PATH)

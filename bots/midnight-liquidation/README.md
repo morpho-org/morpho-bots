@@ -135,7 +135,7 @@ verified end-to-end against a live RPC before relying on it in production.
 ## Deploying to Railway
 
 The same three components run on the Railway project `bot.liquidation.midnight` (managed Postgres + a
-`rindexer` service + the `bot` daemon). [scripts/deploy-railway.ts](./scripts/deploy-railway.ts)
+`rindexer` service + the `bot` runner). [scripts/deploy-railway.ts](./scripts/deploy-railway.ts)
 provisions and deploys all three idempotently from the [Railway CLI](https://docs.railway.com/guides/cli),
 so it runs the same locally or in CI.
 
@@ -184,7 +184,7 @@ The bot reads the file at startup, so restart/redeploy the bot after uploading t
 
 ### Startup
 
-[src/index.ts](./src/index.ts) loads config, creates two viem clients, and starts the block daemon.
+[src/index.ts](./src/index.ts) loads config, creates two viem clients, and starts the block-poll runner.
 The read client wraps the RPC transport with `deployless` support so the bot can execute its Solidity
 lens via `eth_call`. The signer client is plain HTTP and owns nonce-managed transaction submission.
 
@@ -193,8 +193,7 @@ malformed, or the configured Executor address has no bytecode.
 
 ### Trigger
 
-comment: better name than daemon
-[src/daemon/daemon.ts](./src/daemon/daemon.ts) polls the latest block. On each new block it runs one
+[src/runner/runner.ts](./src/runner/runner.ts) polls the latest block. On each new block it runs one
 tick. If blocks arrive while a tick is still running, the watcher coalesces work rather than running
 overlapping ticks.
 
@@ -211,8 +210,6 @@ before planning.
 
 ### State Lens
 
-note the caveat for scalability and ideas to fix (TIB)
-
 [src/state/lens.sol.ts](./src/state/lens.sol.ts) defines a deployless Solidity lens. For each
 candidate, it:
 
@@ -228,7 +225,7 @@ invalid without failing the whole batch.
 
 ### Eligibility And Math
 
-[src/daemon/eligibility.ts](./src/daemon/eligibility.ts) mirrors Midnight's liquidation gate:
+[src/runner/eligibility.ts](./src/runner/eligibility.ts) mirrors Midnight's liquidation gate:
 
 ```text
 valid && gateAllows && hasDebt && !locked && (block.timestamp > maturity || !healthy)
@@ -248,8 +245,6 @@ All fixed-point math is integer `bigint` math and mirrors the contract's floor/c
 
 ### Swap Step
 
-ask for review of executooor
-
 [src/execution/swap-step.ts](./src/execution/swap-step.ts) resolves the operator-declared route for
 the selected collateral and computes `amountOutMinimum`.
 
@@ -259,8 +254,6 @@ the contract will actually seize.
 
 If no swap config exists for a non-zero liquidation, the tick logs `config.no_swap_path` and skips
 the candidate. Pure bad-debt realization skips swap config entirely.
-
-only Uniswap for now, follow-up with additional liquidity venues
 
 ### Simulation
 
@@ -300,5 +293,3 @@ signer nonce manager starts from the pending chain nonce.
 - The shared Executor cannot safely custody assets between transactions. Every non-zero execution
   path is built to sweep touched tokens at the end of the same transaction.
 - Fully bad-debt realization can socialize protocol losses without direct liquidation profit.
-
-observability deferred to v1

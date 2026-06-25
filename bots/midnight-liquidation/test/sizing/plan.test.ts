@@ -61,11 +61,25 @@ describe('plan', () => {
     expect(plan(baseInput({ bestCollateralAmt: 2000n * WAD, rcfThreshold: WAD }))).toEqual(expected)
   })
 
-  it('seizes the whole slot when the binding cap is waived by the rcf exemption', () => {
+  it('seizes the whole slot when rcf-exempt and the slot fits within the debt', () => {
+    // Exemption waives the RCF cap, so a slot whose implied repaid units (~965 WAD) still fit within
+    // the 1000-WAD debt is seized whole — the cap would otherwise have bound it at ~919 WAD.
+    expect(plan(baseInput({ bestCollateralAmt: 1000n * WAD, rcfThreshold: 2000n * WAD }))).toEqual({
+      collateralIndex: 3,
+      seizedAssets: 1000n * WAD,
+      repaidUnits: 0n,
+      postMaturityMode: false
+    })
+  })
+
+  it('caps an rcf-exempt over-collateralized slot at the debt instead of over-repaying', () => {
+    // Regression: an exempt 2000-WAD slot against 1000-WAD debt implies ~1930 WAD repaid. Seizing it
+    // whole makes the contract derive repaidUnits > debt and revert (Panic 0x11 underflow) — a real
+    // bot run hit exactly this. The plan must instead repay the post-writeoff debt and derive the seize.
     expect(plan(baseInput({ bestCollateralAmt: 2000n * WAD, rcfThreshold: 2000n * WAD }))).toEqual({
       collateralIndex: 3,
-      seizedAssets: 2000n * WAD,
-      repaidUnits: 0n,
+      seizedAssets: 0n,
+      repaidUnits: 1000n * WAD,
       postMaturityMode: false
     })
   })

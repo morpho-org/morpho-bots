@@ -10,8 +10,6 @@ import type { LensOut } from './state/lens.sol'
 
 import { assertContractDeployed, createDeploylessClient } from './client'
 import { loadConfig } from './config'
-import { createDaemon } from './daemon/daemon'
-import { runTick } from './daemon/tick'
 import { createPostgresQuery, discoverBorrowers, rindexerSyncedBlock } from './discovery/borrowers'
 import { encodeLiquidationExec } from './execution/encode-call'
 import { simulateLiquidationExec } from './execution/simulate'
@@ -19,6 +17,8 @@ import { buildSwapStep } from './execution/swap-step'
 import { createLogger } from './logger'
 import { initialFees } from './queue/fee-policy'
 import { createPendingQueue } from './queue/pending-queue'
+import { createRunner } from './runner/runner'
+import { runTick } from './runner/tick'
 import { createSigner } from './signer'
 import { readMidnightLiquidationLens } from './state/lens.sol'
 
@@ -103,7 +103,7 @@ async function main() {
     logger
   })
 
-  // Phase-4 daemon: an HTTP block-poll watcher drives one tick per new block (coalescing backlog),
+  // Phase-4 runner: an HTTP block-poll watcher drives one tick per new block (coalescing backlog),
   // passing the polled height as both the rindexer-lag reference and the queue's submittedAtBlock.
   // Each liquidatable position resolves its swap step, simulates the real `exec_606BaXt`, and — on a
   // sim-ok result — broadcasts that same exec via the Executor singleton, then drives queue.onBlock.
@@ -139,14 +139,14 @@ async function main() {
       logger
     })
 
-  const daemon = createDaemon({ getBlockNumber: () => getBlockNumber(client), tick, logger })
-  daemon.start()
+  const runner = createRunner({ getBlockNumber: () => getBlockNumber(client), tick, logger })
+  runner.start()
 
   // Graceful shutdown: stop the watcher and dump the pending set (hashes + nonces). Sends are
   // fire-and-forget and chain truth wins on restart, so there is nothing to await-drain.
   const shutdown = (signal: string) => {
     logger.info('shutdown', { signal, pending: queue.snapshot() })
-    void daemon.stop().finally(() => process.exit(0))
+    void runner.stop().finally(() => process.exit(0))
   }
   process.on('SIGINT', () => shutdown('SIGINT'))
   process.on('SIGTERM', () => shutdown('SIGTERM'))
