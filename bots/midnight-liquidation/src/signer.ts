@@ -24,35 +24,54 @@ type Signer = {
   send: SendTx
   getReceipt: GetReceipt
   getBaseFee: GetBaseFee
+  syncNonce: SyncNonce
 }
+
+/** Re-derives the local nonce cursor from chain truth (`getTransactionCount('pending')`). */
+type SyncNonce = () => Promise<void>
 
 /**
  * Builds the signed-send path the pending queue needs: a plain HTTP (optionally `failover`) wallet
  * client — deliberately NOT the viem-dlc `deployless` transport, which only wraps `eth_call` for the
- * lens — with a local pending-nonce cursor so sequential sends claim sequential nonces. Returns the
- * three primitives `createPendingQueue` injects: {@link SendTx}, {@link GetReceipt}, {@link GetBaseFee}.
+ * lens — with a local pending-nonce cursor so sequential sends claim sequential nonces. Broadcasts
+ * (and the nonce/receipt/base-fee reads) go to `sendRpcUrl` when set, else `rpcUrl`: a read relay
+ * that can't actually relay sends would otherwise sink every tx. Returns the primitives
+ * `createPendingQueue` injects: {@link SendTx}, {@link GetReceipt}, {@link GetBaseFee}, {@link SyncNonce}.
  */
 export function createSigner(
-  config: Pick<Config, 'chain' | 'rpcUrl' | 'rpcUrlFallback' | 'liquidatorPrivateKey'>
+  config: Pick<
+    Config,
+    'chain' | 'rpcUrl' | 'rpcUrlFallback' | 'sendRpcUrl' | 'liquidatorPrivateKey'
+  >
 ): Signer {
   const rpc = (url: string) => http(url, { timeout: RPC_TIMEOUT_MS })
+  // Sends + the signer's own reads run against the broadcast endpoint (sendRpcUrl ?? rpcUrl). Keeping
+  // the nonce/receipt reads on the same endpoint we broadcast to is deliberate: a split view (read
+  // nonce from A, send to B) is exactly what drifts the cursor out of sync.
+  const sendUrl = config.sendRpcUrl ?? config.rpcUrl
   // viem-dlc's `failover` transport types its options as `unknown`, which isn't assignable to viem's
   // `Transport` (Record options) — the cast is safe (it's a valid runtime transport). The deployless
   // read client sidesteps this by re-wrapping `failover` in `deployless`.
   const transport = (
-    config.rpcUrlFallback
-      ? failover([rpc(config.rpcUrl), rpc(config.rpcUrlFallback)])
-      : rpc(config.rpcUrl)
+    config.rpcUrlFallback ? failover([rpc(sendUrl), rpc(config.rpcUrlFallback)]) : rpc(sendUrl)
   ) as Transport
   const account = privateKeyToAccount(config.liquidatorPrivateKey)
   const client = createWalletClient({ account, chain: config.chain, transport })
   let nextNonce: number | undefined
 
+  const readPendingNonce = (): Promise<number> =>
+    getTransactionCount(client, { address: account.address, blockTag: 'pending' })
+
+  // Reclaim a runaway cursor: a tx that was broadcast but never mined (then dropped from our tracked
+  // set) leaves the cursor above chain truth, so every later send is an unminable future nonce. The
+  // queue calls this when nothing is in flight, collapsing the cursor back to the chain's pending
+  // nonce. With txs genuinely in flight the cursor must stay ahead, so the queue only syncs on empty.
+  const syncNonce: SyncNonce = async () => {
+    nextNonce = await readPendingNonce()
+  }
+
   const claimNonce = async (): Promise<number> => {
-    nextNonce ??= await getTransactionCount(client, {
-      address: account.address,
-      blockTag: 'pending'
-    })
+    nextNonce ??= await readPendingNonce()
     const nonce = nextNonce
     nextNonce += 1
     return nonce
@@ -103,5 +122,5 @@ export function createSigner(
     return block.baseFeePerGas
   }
 
-  return { account, send, getReceipt, getBaseFee }
+  return { account, send, getReceipt, getBaseFee, syncNonce }
 }

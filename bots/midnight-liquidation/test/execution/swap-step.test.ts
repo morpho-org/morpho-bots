@@ -5,7 +5,12 @@ import type { LiquidationPlan } from '../../src/sizing/plan'
 import type { LensOut } from '../../src/state/lens.sol'
 
 import { ORACLE_PRICE_SCALE, WAD } from '../../src/constants'
-import { buildSwapStep, expectedLoanOut } from '../../src/execution/swap-step'
+import {
+  buildSwapStep,
+  coversRepay,
+  expectedLoanOut,
+  repaidAssets
+} from '../../src/execution/swap-step'
 
 const ROUTER = getAddress('0x5555555555555555555555555555555555555555')
 const LOAN = getAddress('0x6666666666666666666666666666666666666666')
@@ -110,5 +115,65 @@ describe('buildSwapStep', () => {
       postMaturityMode: false
     }
     expect(buildSwapStep({ ...entry, slippageBps: 0 }, plan, out).amountOutMinimum).toBe(2000n)
+  })
+
+  it('floors amountOutMinimum at the repay when slippage would dip below it', () => {
+    // No LIF margin (maxLif = WAD): the seize equals the repay in value, so expected = repaidUnits and
+    // the slippage-bounded minimum (995) falls below the repay (1000) Midnight pulls — the floor wins.
+    const plan: LiquidationPlan = {
+      collateralIndex: 0,
+      seizedAssets: 0n,
+      repaidUnits: 1000n,
+      postMaturityMode: false
+    }
+    const noBonus = { ...out, bestCollateralMaxLif: WAD }
+    expect(buildSwapStep(entry, plan, noBonus).amountOutMinimum).toBe(1000n)
+  })
+})
+
+describe('repaidAssets', () => {
+  it('returns repaidUnits directly for a cap-binding plan', () => {
+    const plan: LiquidationPlan = {
+      collateralIndex: 0,
+      seizedAssets: 0n,
+      repaidUnits: 1234n,
+      postMaturityMode: false
+    }
+    expect(repaidAssets(plan, out)).toBe(1234n)
+  })
+
+  it('derives the contract repay with double-ceil for a whole-slot plan', () => {
+    const plan: LiquidationPlan = {
+      collateralIndex: 0,
+      seizedAssets: 1000n,
+      repaidUnits: 0n,
+      postMaturityMode: false
+    }
+    // lif = maxLif = 1.1, price = 2: ceil(ceil(1000*2) * WAD / 1.1·WAD) = ceil(2000/1.1) = 1819.
+    expect(repaidAssets(plan, out)).toBe(1819n)
+  })
+})
+
+describe('coversRepay', () => {
+  it('is true when the LIF-bonused seize value exceeds the repay (cap-binding)', () => {
+    const plan: LiquidationPlan = {
+      collateralIndex: 0,
+      seizedAssets: 0n,
+      repaidUnits: 1000n,
+      postMaturityMode: false
+    }
+    // expected = 1000 × 1.1 = 1100 > 1000.
+    expect(coversRepay(plan, out)).toBe(true)
+  })
+
+  it('is false when there is no LIF margin to cover the repay (maxLif = WAD)', () => {
+    const plan: LiquidationPlan = {
+      collateralIndex: 0,
+      seizedAssets: 0n,
+      repaidUnits: 1000n,
+      postMaturityMode: false
+    }
+    // expected = 1000 × 1.0 = 1000, not strictly greater than the 1000 repay → cannot self-fund.
+    expect(coversRepay(plan, { ...out, bestCollateralMaxLif: WAD })).toBe(false)
   })
 })

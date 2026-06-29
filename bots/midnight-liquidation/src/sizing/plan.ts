@@ -42,8 +42,9 @@ export function isBadDebtRealization(plan: LiquidationPlan): boolean {
 }
 
 // Repaid units the contract derives when the caller passes `seizedAssets` (midnight-contracts.txt:2369):
-// two chained ceil-divisions, collateral → loan units → repaid units.
-function impliedRepaidUnits(seizedAssets: bigint, price: bigint, lif: bigint): bigint {
+// two chained ceil-divisions, collateral → loan units → repaid units. Exported so the swap-step floor
+// can mirror the exact on-chain repay for whole-slot plans without re-deriving it (and drifting).
+export function impliedRepaidUnits(seizedAssets: bigint, price: bigint, lif: bigint): bigint {
   return mulDivUp(mulDivUp(seizedAssets, price, ORACLE_PRICE_SCALE), WAD, lif)
 }
 

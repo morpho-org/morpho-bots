@@ -21,6 +21,7 @@ type TickCounters = {
   liquidatable: number
   planned: number
   noSwapPath: number
+  repayShortfall: number
   ok: number
   reverted: number
   submitted: number
@@ -51,6 +52,13 @@ export async function runTick(deps: {
    * when the operator has no swap config for this collateral → skip with `config.no_swap_path`.
    */
   swapStepFor: (plan: LiquidationPlan, out: LensOut) => SwapStep | null
+  /**
+   * Whether the seized collateral can cover the loan-token repay at the fresh oracle price. `false`
+   * → the liquidation can't self-fund (the post-maturity LIF bonus is below the repay), so skip
+   * before simulating; it recovers as the LIF ramps. Avoids re-simulating a guaranteed revert each
+   * block.
+   */
+  coversRepay: (plan: LiquidationPlan, out: LensOut) => boolean
   simulate: (args: {
     market: Market
     borrower: Address
@@ -79,6 +87,7 @@ export async function runTick(deps: {
     caller,
     readLens,
     swapStepFor,
+    coversRepay,
     simulate,
     submit,
     pendingOnBlock,
@@ -115,6 +124,7 @@ export async function runTick(deps: {
     liquidatable: 0,
     planned: 0,
     noSwapPath: 0,
+    repayShortfall: 0,
     ok: 0,
     reverted: 0,
     submitted: 0
@@ -149,6 +159,20 @@ export async function runTick(deps: {
     // assets, so it deliberately skips swap config and executes as a no-callback `liquidate`.
     let swapStep: SwapStep | null = null
     if (!isBadDebtRealization(liquidationPlan)) {
+      // Repay-shortfall gate: when the seized collateral (at the fresh oracle price) can't cover the
+      // loan-token repay, the swap can never produce enough to satisfy Midnight's end-of-`liquidate`
+      // pull, so the tx is a guaranteed revert. Skip before simulating; it self-heals as the
+      // post-maturity LIF ramps the seize above the repay.
+      if (!coversRepay(liquidationPlan, out)) {
+        counters.repayShortfall += 1
+        logger.info('plan.repay_shortfall', {
+          marketId: pair.id,
+          borrower: pair.borrower,
+          collateralIndex: liquidationPlan.collateralIndex,
+          repaidUnits: liquidationPlan.repaidUnits
+        })
+        continue
+      }
       swapStep = swapStepFor(liquidationPlan, out)
       if (!swapStep) {
         counters.noSwapPath += 1

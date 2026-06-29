@@ -34,18 +34,19 @@ operator data.
 
 Environment variables:
 
-| Name                     | Required | Default  | Description                                                                                                                                                                                                                  |
-| ------------------------ | -------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CHAIN_ID`               | yes      | -        | Must be `8453` for Base.                                                                                                                                                                                                     |
-| `RPC_URL`                | yes      | -        | Base RPC used for reads, simulation, and sends.                                                                                                                                                                              |
-| `RPC_URL_FALLBACK`       | no       | -        | Optional fallback RPC.                                                                                                                                                                                                       |
-| `LIQUIDATOR_PRIVATE_KEY` | yes      | -        | `0x`-prefixed 32-byte private key for the sender EOA.                                                                                                                                                                        |
-| `EXECUTOOOR_ADDRESS`     | no       | derived  | Override for the shared Executor address.                                                                                                                                                                                    |
-| `DATABASE_URL`           | yes      | -        | Postgres URL for rindexer's indexed Midnight event tables.                                                                                                                                                                   |
-| `SWAP_CONFIG_PATH`       | no       | -        | Path to per-chain, per-collateral swap config JSON. If unset or the file is absent, the bot runs with no routes (identifies borrowers, realizes bad debt, skips routed liquidations). A present-but-malformed file is fatal. |
-| `MAX_FEE_GWEI`           | no       | `300`    | Hard max fee cap used by the pending transaction queue.                                                                                                                                                                      |
-| `LOG_LEVEL`              | no       | `info`   | One of `debug`, `info`, `warn`, `error`.                                                                                                                                                                                     |
-| `CACHE_DIR`              | no       | `.cache` | Soltag/deployless cache directory.                                                                                                                                                                                           |
+| Name                     | Required | Default   | Description                                                                                                                                                                                                                  |
+| ------------------------ | -------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CHAIN_ID`               | yes      | -         | Must be `8453` for Base.                                                                                                                                                                                                     |
+| `RPC_URL`                | yes      | -         | Base RPC used for reads, simulation, and (unless `SEND_RPC_URL` is set) sends.                                                                                                                                               |
+| `RPC_URL_FALLBACK`       | no       | -         | Optional fallback RPC for the signer's transport.                                                                                                                                                                            |
+| `SEND_RPC_URL`           | no       | `RPC_URL` | Dedicated broadcast endpoint for `eth_sendRawTransaction` and the signer's nonce/receipt reads. Set this when `RPC_URL` is a read-only relay that acks sends without relaying them to the sequencer (txs would never mine).  |
+| `LIQUIDATOR_PRIVATE_KEY` | yes      | -         | `0x`-prefixed 32-byte private key for the sender EOA.                                                                                                                                                                        |
+| `EXECUTOOOR_ADDRESS`     | no       | derived   | Override for the shared Executor address.                                                                                                                                                                                    |
+| `DATABASE_URL`           | yes      | -         | Postgres URL for rindexer's indexed Midnight event tables.                                                                                                                                                                   |
+| `SWAP_CONFIG_PATH`       | no       | -         | Path to per-chain, per-collateral swap config JSON. If unset or the file is absent, the bot runs with no routes (identifies borrowers, realizes bad debt, skips routed liquidations). A present-but-malformed file is fatal. |
+| `MAX_FEE_GWEI`           | no       | `300`     | Hard max fee cap used by the pending transaction queue.                                                                                                                                                                      |
+| `LOG_LEVEL`              | no       | `info`    | One of `debug`, `info`, `warn`, `error`.                                                                                                                                                                                     |
+| `CACHE_DIR`              | no       | `.cache`  | Soltag/deployless cache directory.                                                                                                                                                                                           |
 
 Example local `.env` shape:
 
@@ -306,6 +307,15 @@ the selected collateral and computes `amountOutMinimum`.
 For `repaidUnits` plans, the bot first mirrors Midnight's rounded on-chain `seizedAssets` derivation
 and then values that rounded collateral amount. This avoids asking Uniswap for more loan token than
 the contract will actually seize.
+
+`amountOutMinimum` is floored at the loan-token repay Midnight pulls at the end of `liquidate`: a
+slippage bound below the repay would let the swap fill short and revert the repay with
+`ERC20: transfer amount exceeds allowance`, so the bound is `max(slippage-bounded expected, repay)`.
+Before that, the tick gates each non-bad-debt candidate on `coversRepay` — whether the seized
+collateral, valued at the fresh oracle price, exceeds the repay. When it doesn't (the post-maturity
+LIF bonus has not yet ramped above the repay, e.g. just past maturity), the liquidation can't
+self-fund however the swap fills, so the tick logs `plan.repay_shortfall` and skips it; it recovers
+on its own as the LIF ramps. (The `tick.end` counter for these is `repayShortfall`.)
 
 If no swap config exists for a non-zero liquidation, the tick logs `config.no_swap_path` and skips
 the candidate. Pure bad-debt realization skips swap config entirely.

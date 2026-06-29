@@ -87,6 +87,7 @@ function runWith(opts: {
   chainHead?: bigint
   inflight?: ReadonlySet<string>
   noSwap?: boolean
+  noRepay?: boolean
 }) {
   const { logger, events } = spyLogger()
   let simulateCalls = 0
@@ -100,6 +101,7 @@ function runWith(opts: {
     caller: CALLER,
     readLens: stubReadLens(opts.out === undefined ? lensOut() : opts.out),
     swapStepFor: () => (opts.noSwap ? null : SWAP_STEP),
+    coversRepay: () => !opts.noRepay,
     simulate: async () => {
       simulateCalls += 1
       return opts.simulateResult ?? { status: 'ok' }
@@ -132,6 +134,7 @@ describe('runTick', () => {
       liquidatable: 1,
       planned: 1,
       noSwapPath: 0,
+      repayShortfall: 0,
       ok: 1,
       reverted: 0,
       submitted: 1
@@ -156,6 +159,20 @@ describe('runTick', () => {
     expect(simulateCalls()).toBe(0) // skipped before simulating
     expect(submitCalls()).toBe(0)
     expect(events.some(e => e.event === 'config.no_swap_path')).toBe(true)
+  })
+
+  it('skips with plan.repay_shortfall when the seize cannot cover the repay, before simulating', async () => {
+    const { counters, simulateCalls, submitCalls, events } = await runWith({ noRepay: true })
+    expect(counters).toMatchObject({
+      liquidatable: 1,
+      planned: 1,
+      repayShortfall: 1,
+      noSwapPath: 0,
+      submitted: 0
+    })
+    expect(simulateCalls()).toBe(0) // gated before simulating
+    expect(submitCalls()).toBe(0)
+    expect(events.some(e => e.event === 'plan.repay_shortfall')).toBe(true)
   })
 
   it('simulates and submits fully bad-debt realization without swap config', async () => {

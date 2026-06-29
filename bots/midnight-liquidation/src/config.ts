@@ -68,6 +68,13 @@ export type Config = {
   midnight: Address
   rpcUrl: string
   rpcUrlFallback: string | undefined
+  /**
+   * Optional dedicated broadcast endpoint for `eth_sendRawTransaction` (and the signer's
+   * nonce/receipt/base-fee reads). When set, the signer sends here instead of `rpcUrl` — needed
+   * because read-optimized relays (e.g. `rpc.morpho.dev/realtime`) ack sends without relaying them
+   * to the sequencer, so txs never mine. Unset → the signer falls back to `rpcUrl` (legacy behavior).
+   */
+  sendRpcUrl: string | undefined
   liquidatorPrivateKey: Hex
   executooorAddress: Address
   /** Postgres connection string for the co-located rindexer instance (borrower discovery). */
@@ -193,6 +200,7 @@ export function loadConfig(
     midnight: chainConfig.midnight,
     rpcUrl,
     rpcUrlFallback: env.RPC_URL_FALLBACK?.trim() || undefined,
+    sendRpcUrl: env.SEND_RPC_URL?.trim() || undefined,
     liquidatorPrivateKey,
     executooorAddress,
     databaseUrl: required(env, 'DATABASE_URL'),

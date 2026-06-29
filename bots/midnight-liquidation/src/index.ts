@@ -13,7 +13,7 @@ import { loadConfig } from './config'
 import { createPostgresQuery, discoverBorrowers, rindexerSyncedBlock } from './discovery/borrowers'
 import { encodeLiquidationExec } from './execution/encode-call'
 import { simulateLiquidationExec } from './execution/simulate'
-import { buildSwapStep } from './execution/swap-step'
+import { buildSwapStep, coversRepay } from './execution/swap-step'
 import { createLogger } from './logger'
 import { initialFees } from './queue/fee-policy'
 import { createPendingQueue } from './queue/pending-queue'
@@ -99,6 +99,7 @@ async function main() {
     send: signer.send,
     getReceipt: signer.getReceipt,
     getBaseFee: signer.getBaseFee,
+    syncNonce: signer.syncNonce,
     maxFeeWei: config.maxFeeWei,
     logger
   })
@@ -115,6 +116,7 @@ async function main() {
       caller: config.executooorAddress,
       readLens: pairs => readMidnightLiquidationLens(client, config.midnight, pairs),
       swapStepFor,
+      coversRepay,
       simulate: ({ market, borrower, plan, swapStep }) =>
         simulateLiquidationExec(client, {
           executooor: config.executooorAddress,

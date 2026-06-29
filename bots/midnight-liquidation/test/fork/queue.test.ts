@@ -46,6 +46,7 @@ describe('fork: pending-queue bump + replacement against a real node', () => {
       chain: base,
       rpcUrl,
       rpcUrlFallback: undefined,
+      sendRpcUrl: undefined,
       liquidatorPrivateKey: LIQUIDATOR_KEY
     }
     const signer = createSigner(cfg)
@@ -53,6 +54,7 @@ describe('fork: pending-queue bump + replacement against a real node', () => {
       send: signer.send,
       getReceipt: signer.getReceipt,
       getBaseFee: signer.getBaseFee,
+      syncNonce: signer.syncNonce,
       maxFeeWei: MAX_FEE_WEI,
       logger: createLogger('error')
     })
