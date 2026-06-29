@@ -51,7 +51,14 @@ describe('loadConfig', () => {
     expect(config.maxFeeWei).toBe(parseGwei('300'))
     expect(config.cacheDir).toBe('.cache')
     expect(config.logLevel).toBe('info')
-    expect(config.swapConfig[String(mainnet.id)]?.[COLLATERAL]?.router).toBe(getAddress(ROUTER))
+    const entry = config.swapConfig[String(mainnet.id)]?.[COLLATERAL]
+    expect(entry?.venue).toBe('uniswap-v3') // legacy entry (no `venue`) defaults to uniswap-v3
+    if (entry?.venue === 'uniswap-v3') expect(entry.router).toBe(getAddress(ROUTER))
+    // Quoting tunables apply their defaults.
+    expect(config.quoting.quoteTimeoutMs).toBe(2500)
+    expect(config.quoting.httpRps).toBe(2)
+    expect(config.quoting.maxRouteImpactBps).toBe(500)
+    expect(config.quoting.backoffBaseBlocks).toBe(2n)
   })
 
   it('honors optional overrides', () => {
@@ -170,18 +177,66 @@ describe('loadConfig', () => {
     }
     expect(() => loadConfig(baseEnv(), eaccesDeps)).toThrow(/Failed to read SWAP_CONFIG_PATH/)
   })
+
+  it('throws when a referenced venue needs an API key that is not set', () => {
+    const zeroxJson = JSON.stringify({
+      [mainnet.id]: { [COLLATERAL]: { venue: '0x', slippageBps: 50 } }
+    })
+    expect(() => loadConfig(baseEnv(), { chainMap: CHAIN_MAP, readFile: () => zeroxJson })).toThrow(
+      /venue '0x'.*ZEROX_API_KEY is not set/
+    )
+  })
+
+  it('boots when the referenced venue API key is present', () => {
+    const zeroxJson = JSON.stringify({
+      [mainnet.id]: { [COLLATERAL]: { venue: '0x', slippageBps: 50 } }
+    })
+    const config = loadConfig(baseEnv({ ZEROX_API_KEY: 'key-123' }), {
+      chainMap: CHAIN_MAP,
+      readFile: () => zeroxJson
+    })
+    expect(config.swapConfig[String(mainnet.id)]?.[COLLATERAL]?.venue).toBe('0x')
+  })
+
+  it('parses quoting tunables from env, overriding defaults', () => {
+    const config = loadConfig(baseEnv({ HTTP_RPS: '1', MAX_ROUTE_IMPACT_BPS: '250' }), deps)
+    expect(config.quoting.httpRps).toBe(1)
+    expect(config.quoting.maxRouteImpactBps).toBe(250)
+  })
+
+  it('throws on an out-of-range MAX_ROUTE_IMPACT_BPS', () => {
+    expect(() => loadConfig(baseEnv({ MAX_ROUTE_IMPACT_BPS: '20000' }), deps)).toThrow(
+      /MAX_ROUTE_IMPACT_BPS must be <= 10000/
+    )
+  })
 })
 
 describe('parseSwapConfig', () => {
-  it('parses a valid config and checksums router addresses', () => {
+  it('parses a legacy (no-venue) config, defaulting venue to uniswap-v3 and checksumming the router', () => {
     const parsed: SwapConfig = parseSwapConfig({
       [mainnet.id]: { [COLLATERAL]: { router: ROUTER, fee: 3000, slippageBps: 100 } }
     })
     expect(parsed[String(mainnet.id)]?.[COLLATERAL]).toEqual({
+      venue: 'uniswap-v3',
       router: getAddress(ROUTER),
       fee: 3000,
       slippageBps: 100
     })
+  })
+
+  it('parses an explicit 0x venue entry (no router/fee)', () => {
+    const parsed = parseSwapConfig({
+      [mainnet.id]: { [COLLATERAL]: { venue: '0x', slippageBps: 100 } }
+    })
+    expect(parsed[String(mainnet.id)]?.[COLLATERAL]).toEqual({ venue: '0x', slippageBps: 100 })
+  })
+
+  it('rejects a 0x entry carrying uniswap-only fields (strict union arm)', () => {
+    expect(() =>
+      parseSwapConfig({
+        [mainnet.id]: { [COLLATERAL]: { venue: '0x', router: ROUTER, fee: 500, slippageBps: 50 } }
+      })
+    ).toThrow()
   })
 
   it('rejects a slippage above 100%', () => {

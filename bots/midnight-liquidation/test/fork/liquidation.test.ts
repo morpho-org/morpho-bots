@@ -7,8 +7,9 @@ import { base } from 'viem/chains'
 import { assertContractDeployed, createDeploylessClient } from '../../src/client'
 import { encodeLiquidationExec } from '../../src/execution/encode-call'
 import { simulateLiquidationExec } from '../../src/execution/simulate'
-import { buildSwapStep } from '../../src/execution/swap-step'
+import { expectedLoanOut, predictSeizedAssets } from '../../src/execution/swap-step'
 import { initialFees } from '../../src/queue/fee-policy'
+import { quoteUniswapV3 } from '../../src/quotes/venues/uniswap-v3'
 import { isLiquidatable, planInputFromLens } from '../../src/runner/eligibility'
 import { createSigner } from '../../src/signer'
 import { plan } from '../../src/sizing/plan'
@@ -100,11 +101,20 @@ describe('fork: end-to-end liquidation against a real Base position', () => {
     expect(liquidationPlan.seizedAssets).toBe(0n)
     expect(liquidationPlan.repaidUnits).toBeGreaterThan(0n)
 
-    // 4. Single-hop swap step (cbBTC → USDC via the operator pool) + the real exec calldata.
-    const swapStep = buildSwapStep(
-      { router: SWAP_ROUTER_02, fee: POOL_FEE, slippageBps: SLIPPAGE_BPS },
-      liquidationPlan,
-      out
+    // 4. Single-hop Uniswap-V3 swap (cbBTC → USDC via the operator pool) + the real exec calldata.
+    const collateral = out.market.collateralParams[liquidationPlan.collateralIndex]
+    if (!collateral) throw new Error('collateral param missing')
+    const swap = quoteUniswapV3(
+      { router: SWAP_ROUTER_02, fee: POOL_FEE },
+      {
+        chainId: base.id,
+        tokenIn: collateral.token,
+        tokenOut: out.market.loanToken,
+        amountIn: predictSeizedAssets(liquidationPlan, out),
+        slippageBps: SLIPPAGE_BPS,
+        executor: executooor,
+        referenceAmountOut: expectedLoanOut(liquidationPlan, out)
+      }
     )
     const data = encodeLiquidationExec({
       executor: executooor,
@@ -115,7 +125,7 @@ describe('fork: end-to-end liquidation against a real Base position', () => {
       repaidUnits: liquidationPlan.repaidUnits,
       borrower: POSITION.borrower,
       postMaturityMode: liquidationPlan.postMaturityMode,
-      swapStep,
+      swap,
       recipient: LIQUIDATOR
     })
 

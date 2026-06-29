@@ -5,9 +5,8 @@ import type { LiquidationPlan } from '../../src/sizing/plan'
 import type { LensOut } from '../../src/state/lens.sol'
 
 import { ORACLE_PRICE_SCALE, WAD } from '../../src/constants'
-import { buildSwapStep, expectedLoanOut } from '../../src/execution/swap-step'
+import { expectedLoanOut, predictSeizedAssets } from '../../src/execution/swap-step'
 
-const ROUTER = getAddress('0x5555555555555555555555555555555555555555')
 const LOAN = getAddress('0x6666666666666666666666666666666666666666')
 const COLLATERAL = getAddress('0x7777777777777777777777777777777777777777')
 const ORACLE = getAddress('0x8888888888888888888888888888888888888888')
@@ -44,7 +43,40 @@ const out: LensOut = {
   }
 }
 
-const entry = { router: ROUTER, fee: 3000, slippageBps: 50 } // 0.5%
+describe('predictSeizedAssets', () => {
+  it('returns the exact seizedAssets for a 100%-slot plan', () => {
+    const plan: LiquidationPlan = {
+      collateralIndex: 0,
+      seizedAssets: 1000n,
+      repaidUnits: 0n,
+      postMaturityMode: false
+    }
+    expect(predictSeizedAssets(plan, out)).toBe(1000n)
+  })
+
+  it('mirrors the contract seize derivation for a cap-binding plan (seizedAssets = 0)', () => {
+    const plan: LiquidationPlan = {
+      collateralIndex: 0,
+      seizedAssets: 0n,
+      repaidUnits: 1000n,
+      postMaturityMode: false // normal mode → lif = maxLif (1.1×)
+    }
+    // floor(floor(1000 * 1.1) / 3) = floor(1100 / 3) = 366 collateral at price 3.
+    expect(
+      predictSeizedAssets(plan, { ...out, bestCollateralPrice: ORACLE_PRICE_SCALE * 3n })
+    ).toBe(366n)
+  })
+
+  it('returns 0 when the oracle price is 0 (avoids a divide-by-zero)', () => {
+    const plan: LiquidationPlan = {
+      collateralIndex: 0,
+      seizedAssets: 0n,
+      repaidUnits: 1000n,
+      postMaturityMode: false
+    }
+    expect(predictSeizedAssets(plan, { ...out, bestCollateralPrice: 0n })).toBe(0n)
+  })
+})
 
 describe('expectedLoanOut', () => {
   it('values a 100%-slot plan (seizedAssets > 0) at the oracle price', () => {
@@ -70,45 +102,5 @@ describe('expectedLoanOut', () => {
     expect(expectedLoanOut(plan, { ...out, bestCollateralPrice: ORACLE_PRICE_SCALE * 3n })).toBe(
       1098n
     )
-  })
-})
-
-describe('buildSwapStep', () => {
-  it('passes router + fee through and bounds amountOutMinimum by slippageBps (100%-slot)', () => {
-    const plan: LiquidationPlan = {
-      collateralIndex: 0,
-      seizedAssets: 1000n,
-      repaidUnits: 0n,
-      postMaturityMode: false
-    }
-    const step = buildSwapStep(entry, plan, out)
-    expect(step.router).toBe(ROUTER)
-    expect(step.fee).toBe(3000)
-    // 2000 × (10000 - 50) / 10000 = 1990.
-    expect(step.amountOutMinimum).toBe(1990n)
-  })
-
-  it('bounds amountOutMinimum for a cap-binding plan', () => {
-    const plan: LiquidationPlan = {
-      collateralIndex: 0,
-      seizedAssets: 0n,
-      repaidUnits: 1000n,
-      postMaturityMode: false
-    }
-    // 1098 × 9950 / 10000 = 1092 (floor).
-    expect(
-      buildSwapStep(entry, plan, { ...out, bestCollateralPrice: ORACLE_PRICE_SCALE * 3n })
-        .amountOutMinimum
-    ).toBe(1092n)
-  })
-
-  it('applies no reduction when slippageBps is 0', () => {
-    const plan: LiquidationPlan = {
-      collateralIndex: 0,
-      seizedAssets: 1000n,
-      repaidUnits: 0n,
-      postMaturityMode: false
-    }
-    expect(buildSwapStep({ ...entry, slippageBps: 0 }, plan, out).amountOutMinimum).toBe(2000n)
   })
 })

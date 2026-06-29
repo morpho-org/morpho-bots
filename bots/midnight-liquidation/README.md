@@ -12,7 +12,10 @@ This package is operational code, but it is still intentionally narrow:
 
 - Supported chain: Base (`CHAIN_ID=8453`).
 - Discovery is backed by a co-located rindexer/Postgres instance indexing Midnight `Take` events.
-- Execution supports single-hop Uniswap V3 `exactInputSingle` routes declared per collateral token.
+- Execution routes the seized collateral through a per-collateral venue: direct single-hop Uniswap V3
+  `exactInputSingle`, or the 0x / 1inch swap aggregators (one executable quote per liquidatable
+  position). Venue is chosen per collateral in the swap config; a missing `venue` defaults to
+  `uniswap-v3`.
 - For positions with multiple active collaterals, the current planner evaluates the highest-value
   collateral slot only.
 
@@ -34,18 +37,28 @@ operator data.
 
 Environment variables:
 
-| Name                     | Required | Default  | Description                                                                                                                                                                                                                  |
-| ------------------------ | -------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CHAIN_ID`               | yes      | -        | Must be `8453` for Base.                                                                                                                                                                                                     |
-| `RPC_URL`                | yes      | -        | Base RPC used for reads, simulation, and sends.                                                                                                                                                                              |
-| `RPC_URL_FALLBACK`       | no       | -        | Optional fallback RPC.                                                                                                                                                                                                       |
-| `LIQUIDATOR_PRIVATE_KEY` | yes      | -        | `0x`-prefixed 32-byte private key for the sender EOA.                                                                                                                                                                        |
-| `EXECUTOOOR_ADDRESS`     | no       | derived  | Override for the shared Executor address.                                                                                                                                                                                    |
-| `DATABASE_URL`           | yes      | -        | Postgres URL for rindexer's indexed Midnight event tables.                                                                                                                                                                   |
-| `SWAP_CONFIG_PATH`       | no       | -        | Path to per-chain, per-collateral swap config JSON. If unset or the file is absent, the bot runs with no routes (identifies borrowers, realizes bad debt, skips routed liquidations). A present-but-malformed file is fatal. |
-| `MAX_FEE_GWEI`           | no       | `300`    | Hard max fee cap used by the pending transaction queue.                                                                                                                                                                      |
-| `LOG_LEVEL`              | no       | `info`   | One of `debug`, `info`, `warn`, `error`.                                                                                                                                                                                     |
-| `CACHE_DIR`              | no       | `.cache` | Soltag/deployless cache directory.                                                                                                                                                                                           |
+| Name                                         | Required | Default    | Description                                                                                                                                                                                                                  |
+| -------------------------------------------- | -------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CHAIN_ID`                                   | yes      | -          | Must be `8453` for Base.                                                                                                                                                                                                     |
+| `RPC_URL`                                    | yes      | -          | Base RPC used for reads, simulation, and sends.                                                                                                                                                                              |
+| `RPC_URL_FALLBACK`                           | no       | -          | Optional fallback RPC.                                                                                                                                                                                                       |
+| `LIQUIDATOR_PRIVATE_KEY`                     | yes      | -          | `0x`-prefixed 32-byte private key for the sender EOA.                                                                                                                                                                        |
+| `EXECUTOOOR_ADDRESS`                         | no       | derived    | Override for the shared Executor address.                                                                                                                                                                                    |
+| `DATABASE_URL`                               | yes      | -          | Postgres URL for rindexer's indexed Midnight event tables.                                                                                                                                                                   |
+| `SWAP_CONFIG_PATH`                           | no       | -          | Path to per-chain, per-collateral swap config JSON. If unset or the file is absent, the bot runs with no routes (identifies borrowers, realizes bad debt, skips routed liquidations). A present-but-malformed file is fatal. |
+| `MAX_FEE_GWEI`                               | no       | `300`      | Hard max fee cap used by the pending transaction queue.                                                                                                                                                                      |
+| `LOG_LEVEL`                                  | no       | `info`     | One of `debug`, `info`, `warn`, `error`.                                                                                                                                                                                     |
+| `CACHE_DIR`                                  | no       | `.cache`   | Soltag/deployless cache directory.                                                                                                                                                                                           |
+| `ZEROX_API_KEY`                              | cond.    | -          | Required if any collateral uses the `0x` venue. Read at point of use; never stored on config or logged.                                                                                                                      |
+| `ONEINCH_API_KEY`                            | cond.    | -          | Required if any collateral uses the `1inch` venue. Read at point of use; never stored on config or logged.                                                                                                                   |
+| `QUOTE_TIMEOUT_MS`                           | no       | `2500`     | Per-quote HTTP deadline (the quote runs inside the per-block tick).                                                                                                                                                          |
+| `HTTP_RPS` / `HTTP_BURST`                    | no       | `2` / `5`  | Per-venue token-bucket refill rate and burst. The 1inch free tier is 1 RPS — set `HTTP_RPS=1` if you only use 1inch.                                                                                                         |
+| `HTTP_MAX_RETRIES`                           | no       | `2`        | Retries on 429/5xx/network (honoring `Retry-After`) before a quote fails.                                                                                                                                                    |
+| `MAX_ROUTE_IMPACT_BPS`                       | no       | `500`      | Reject an aggregator route whose quoted output is more than this far below the oracle reference (route-quality guard).                                                                                                       |
+| `BACKOFF_BASE_BLOCKS` / `BACKOFF_MAX_BLOCKS` | no       | `2` / `64` | Exponential per-position cooldown (in blocks) after a failed quote/simulate, bounding API + RPC usage under a backlog.                                                                                                       |
+
+The bot **refuses to start** if a collateral references a venue whose API key env var is unset
+(fail-loud). Uniswap-direct needs no key, so a key-free deployment still boots.
 
 Example local `.env` shape:
 
@@ -66,17 +79,30 @@ Example `swap.config.json`:
 {
   "8453": {
     "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf": {
+      "venue": "uniswap-v3",
       "router": "0x2626664c2603336E57B271c5C0b26F421741e481",
       "fee": 100,
       "slippageBps": 50
-    }
+    },
+    "0x4200000000000000000000000000000000000006": { "venue": "0x", "slippageBps": 100 },
+    "0xc1CBa3fCea344f92D9239c08C0568f6F2F0ee452": { "venue": "1inch", "slippageBps": 100 }
   }
 }
 ```
 
-Keys under `8453` are collateral token addresses. `router` must be a `SwapRouter02`-compatible
-router, `fee` is the Uniswap V3 pool fee tier, and `slippageBps` is the maximum oracle-to-DEX output
-discount admitted by the bot.
+Keys under `8453` are collateral token addresses; each value selects a venue:
+
+- `uniswap-v3` — direct single-hop. `router` must be a `SwapRouter02`-compatible router and `fee` is
+  the Uniswap V3 pool fee tier. (Omitting `venue` defaults to `uniswap-v3` for backward compatibility.)
+- `0x` / `1inch` — swap aggregators. No `router`/`fee`; the executable route comes from the venue API
+  (the API key is supplied via env, never here). Optional `baseUrl` overrides the API host.
+
+`slippageBps` is the maximum oracle-to-DEX output discount the bot tolerates. For aggregators it is
+passed to the venue (which bakes the on-chain min-out into its calldata); the bot additionally rejects
+any quoted route more than `MAX_ROUTE_IMPACT_BPS` below the oracle reference. Note 1inch caps its
+`slippage` at 50% — a `1inch` collateral with `slippageBps > 5000` will have its quotes rejected by
+the API (treated as a no-route failure, then backed off). **API keys must never appear in this file**
+— they come from `ZEROX_API_KEY` / `ONEINCH_API_KEY`.
 
 ## Running Locally
 
@@ -298,17 +324,33 @@ valid && gateAllows && hasDebt && !locked && (block.timestamp > maturity || !hea
 
 All fixed-point math is integer `bigint` math and mirrors the contract's floor/ceil directions.
 
-### Swap Step
+### Quoting
 
-[src/execution/swap-step.ts](./src/execution/swap-step.ts) resolves the operator-declared route for
-the selected collateral and computes `amountOutMinimum`.
+For each liquidatable, non-bad-debt position, [src/quotes/index.ts](./src/quotes/index.ts) resolves
+the operator's configured venue for the selected collateral and produces a single venue-agnostic
+`Swap` (spender, target, calldata, and how the input amount is bound). It fetches **one** executable
+quote per position — quotes are spent only on liquidatable positions, never the full candidate set:
 
-For `repaidUnits` plans, the bot first mirrors Midnight's rounded on-chain `seizedAssets` derivation
-and then values that rounded collateral amount. This avoids asking Uniswap for more loan token than
-the contract will actually seize.
+- `uniswap-v3` ([venues/uniswap-v3.ts](./src/quotes/venues/uniswap-v3.ts)) builds `exactInputSingle`
+  locally (no API) with the input amount spliced from the Executor's live balance at exec time;
+- `0x` / `1inch` ([venues/zerox.ts](./src/quotes/venues/zerox.ts),
+  [venues/oneinch.ts](./src/quotes/venues/oneinch.ts)) make one rate-limited API call and return
+  route-bound calldata committing a fixed sell amount, with the taker/recipient set to the Executor.
 
-If no swap config exists for a non-zero liquidation, the tick logs `config.no_swap_path` and skips
-the candidate. Pure bad-debt realization skips swap config entirely.
+The sell amount is the predicted seized collateral ([src/execution/swap-step.ts](./src/execution/swap-step.ts)):
+for `repaidUnits` plans the bot first mirrors Midnight's rounded on-chain `seizedAssets` derivation.
+Any drift between that prediction and the on-chain seize (e.g. oracle price moving between blocks)
+fails closed in `simulate()` — a missed liquidation, never a loss.
+
+The bot computes the oracle-priced reference output for free (no extra API call) and rejects any
+aggregator route more than `MAX_ROUTE_IMPACT_BPS` below it (`quote.bad_route`). Quote failures (no
+route, timeout, rate-limited, API error) log `quote.failed` and back the position off
+([src/queue/backoff.ts](./src/queue/backoff.ts)) — an exponential per-position cooldown that bounds
+API + RPC usage when many positions fail (the rate-limit defense). A successful submit clears the
+backoff.
+
+If no venue is configured for a non-zero liquidation, the tick logs `config.no_swap_path` and skips
+the candidate (no backoff). Pure bad-debt realization skips quoting entirely.
 
 ### Simulation
 
@@ -345,6 +387,10 @@ that tick instead of counting a hashless transaction as submitted.
 - The liquidator gate checks the Executor address, not the EOA, because `liquidate` is called by the
   Executor.
 - Swap routes are allowlisted by config. Missing routes are skipped rather than guessed.
+- Aggregator venues (`0x`, `1inch`) add a third-party API dependency on the execution path. If a
+  venue is down, rate-limited, or returns no route, that liquidation is skipped (never falls back to
+  another venue silently) and the position is backed off; there is no risk of an unsafe broadcast
+  because `simulate()` still gates every send. API keys come from env only and are never logged.
 - The bot is not a private-orderflow or MEV protection system. It broadcasts ordinary EOA
   transactions.
 - The shared Executor cannot safely custody assets between transactions. Every non-zero execution
