@@ -310,6 +310,10 @@ future readers don't mistake the as-built state for drift:
 
 The kill-switch architecture TIB ([TIB-2026-05-14](../../bots/kill-switch/docs/decisions/TIB-2026-05-14-kill-switch-bot.md)) adds **anvil fork integration tests** — a new CI Integration job plus Foundry (`anvil`) as a dev/CI system dependency — which this TIB deferred under "no Playwright/anvil E2E (no surface in a bot repo)." A safety-critical kill switch is that surface. The **single-runner decision is unchanged**: fork tests run under `bun test` via `@morpho-org/test`'s framework-agnostic `spawnAnvil` (the Vitest fixtures are intentionally not used), so no second test runner is introduced.
 
+### 2026-06-29 — kill-switch bot cancelled
+
+The Kill Switch Bot project is cancelled; we are no longer building it. Its architecture TIB ([TIB-2026-05-14](../../bots/kill-switch/docs/decisions/TIB-2026-05-14-kill-switch-bot.md)) was never accepted and is now marked **Withdrawn**. The forward-looking references to the Kill Switch Bot elsewhere in this TIB — as the planned first bot and as the trigger for the public cut-over — are left intact as the historical record of the decision at the time and no longer reflect current plans.
+
 <!--
 TIB conventions:
 - Once accepted, do not substantively edit this TIB. If the decision needs to change,

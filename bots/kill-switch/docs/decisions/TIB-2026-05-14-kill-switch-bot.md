@@ -2,12 +2,17 @@
 
 | Field      | Value              |
 | ---------- | ------------------ |
-| **Status** | Proposed           |
+| **Status** | Withdrawn          |
 | **Date**   | 2026-05-14         |
 | **Author** | @cashd             |
 | **Scope**  | Bot: `kill-switch` |
 
 ---
+
+> **Withdrawn 2026-06-29.** The kill-switch bot project has been cancelled and is no
+> longer being built. This TIB was never accepted; it is kept as a historical record
+> and no longer reflects current plans. See the
+> [Addenda in TIB-2026-04-16](../../../../docs/decisions/TIB-2026-04-16-bootstrap-curator-bots.md#addenda).
 
 ## Context
 

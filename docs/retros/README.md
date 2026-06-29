@@ -4,7 +4,7 @@ Project- and initiative-level retrospectives for `curator-bots`. One file per re
 
 ## Naming
 
-`YYYY-MM-<project-slug>.md` — for example, `2026-05-kill-switch-bot.md`.
+`YYYY-MM-<project-slug>.md` — for example, `2026-04-bootstrap-curator-bots.md`.
 
 ## Adding a Retro
 
