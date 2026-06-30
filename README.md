@@ -46,4 +46,4 @@ Bot docs:
 
 ## License
 
-[MIT](./LICENSE) © 2025 Morpho Association
+[Apache-2.0](./LICENSE) © 2026 Morpho Association
