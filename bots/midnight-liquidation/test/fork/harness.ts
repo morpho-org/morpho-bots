@@ -7,7 +7,7 @@ import { createTestClient, createWalletClient, http, parseEther, publicActions }
 import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
 
-// A real, currently-open Base Midnight position (discovered 2026-06-17, CRTR-2589). The fork is
+// A real, currently-open Base Midnight position (discovered 2026-06-17). The fork is
 // pinned at FORK_BLOCK so the position state, the cbBTC oracle, and the cbBTC/USDC pool are all
 // deterministic; the suite warps past `maturity` to make it post-maturity liquidatable.
 const FORK_BLOCK = 47_482_000n

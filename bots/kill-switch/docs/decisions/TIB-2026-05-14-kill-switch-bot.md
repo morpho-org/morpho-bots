@@ -649,8 +649,7 @@ These do not block acceptance — they're the discussion-call agenda.
 - [docs/CONVENTIONS.md](../../../../docs/CONVENTIONS.md) — RPC efficiency rules, structured log expectations, env-var access, test conventions.
 - [docs/GUIDANCE.md](../../../../docs/GUIDANCE.md) — TIB process this document is travelling through.
 - [docs/context/repos/morpho-vaults-v2.txt](../../../../docs/context/repos/morpho-vaults-v2.txt) — context on the V2 vault surface this TIB explicitly defers.
-- [Linear project: Kill Switch Bot](https://linear.app/morpho-labs/project/kill-switch-bot-0250d77e9ef3) — product goals, trigger criteria (oracle staleness, deviation, reverting), non-goals (MEV resistance).
-- [Linear CRTR-2405](https://linear.app/morpho-labs/issue/CRTR-2405/docskill-switch-write-architecture-tib-for-vaults-v1-bot-framework) — the ticket tracking this TIB.
+- Kill Switch Bot product spec — product goals, trigger criteria (oracle staleness, deviation, reverting), non-goals (MEV resistance).
 - [Multicall3](https://www.multicall3.com/) — deployment registry the read path depends on; `aggregate3` documentation.
 - Granola — discussion call recording _to be linked after the call_.
 

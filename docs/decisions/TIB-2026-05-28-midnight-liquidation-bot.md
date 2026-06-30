@@ -26,8 +26,8 @@ We build for two readers:
 
 1. **Integrators** copying it as a reference implementation — the health, liquidatability, and
    LIF + RCF sizing logic must read as documentation.
-2. **Ourselves** running it as a fallback that catches positions the competitive ecosystem
-   misses. It must _work_, not be _competitive_.
+2. **Ourselves** running it as a safety-net liquidator that values reliability over latency — it
+   must _work_ correctly and predictably, not win races.
 
 Three architectural choices anchor the design:
 
@@ -590,19 +590,17 @@ found). Emit a one-line `startup` log with `{ chainId, liquidator, callback, mid
 
 ### Hosting
 
-The bot, its co-located rindexer, and Postgres deploy to **Railway** rather than the internal
-Morpho platform (the AWS + Helm + Argo CD stack that runs the org's production services). The trade
-is iteration speed and ownership against platform integration: Railway needs no cross-team
-coordination to stand up — no SRE ticket, no Helm chart to land, no Argo app to onboard — so a
+The bot, its co-located rindexer, and Postgres deploy to **Railway**, a managed platform, rather
+than a heavier internally-operated orchestration stack. The trade is iteration speed and ownership
+against deeper platform integration: Railway needs no cross-team coordination to stand up, so a
 single engineer can provision, deploy, and tear down the whole topology, and it stays fully under
-the bot team's control. For a v0 fallback liquidator that must _work_ rather than be _competitive_,
-that autonomy outweighs the shared tooling, secrets management, and observability the internal
-platform would bring for free; promoting the bot onto the internal platform is a natural follow-up
-if it ever becomes load-bearing infrastructure. Railway also serves the reference-implementation
-reader: this bot is open-source, and an outside integrator can stand up a Railway project from the
-committed `Dockerfile` and deploy script far more easily than they could reproduce our internal AWS
-
-- Helm + Argo CD stack — which is ours, not theirs to run.
+the bot team's control. For a v0 safety-net liquidator that must _work_ reliably, that autonomy
+outweighs the shared tooling, secrets management, and observability a fuller platform would bring;
+promoting the bot onto a more managed platform is a natural follow-up if it ever becomes
+load-bearing infrastructure. Railway also serves the reference-implementation reader: this bot is
+open-source, and an outside integrator can stand up a Railway project from the committed
+`Dockerfile` and deploy script far more easily than they could reproduce a bespoke internal
+deployment stack.
 
 The Railway topology mirrors the local `docker-compose.yml`: managed Postgres, a rindexer service
 indexing `Take`, and the bot runner, all in one Railway project. The shared multi-stage
@@ -623,14 +621,14 @@ Run `main()` once per cron tick (every 30–60s), drain queue with a short inter
 wrapping the same tick function) and gives us per-block reactivity at no extra cost. Cron would
 race itself when a queue drain runs long.
 
-### Alternative 2: Discovery via the hosted Morpho API instead of a co-located rindexer
+### Alternative 2: Discovery via a hosted Morpho API instead of a co-located rindexer
 
-Refresh borrow positions from `https://api.morpho.dev/v1/midnight/*` each tick, each row carrying
-its `Market` config inline.
+Refresh borrow positions from a hosted Morpho API each tick, each row carrying its `Market` config
+inline.
 
-**Why rejected:** The live API **requires a `user` param** on `/positions`, so there is no global
-borrow-position listing to enumerate the borrower universe from. A hosted indexer also adds an
-availability dependency on the liquidation hot path. A co-located rindexer indexing `Take` gives us
+**Why rejected:** The hosted position endpoint is **per-user** — it requires a `user` parameter, so
+there is no global borrow-position listing to enumerate the borrower universe from. A hosted indexer
+also adds an availability dependency on the liquidation hot path. A co-located rindexer indexing `Take` gives us
 the full universe straight from chain logs with no external dependency, and the lens still reads
 every decision fresh — so indexer lag is only coverage latency, never a correctness issue.
 

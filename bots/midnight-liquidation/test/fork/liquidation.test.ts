@@ -143,8 +143,7 @@ describe('fork: end-to-end liquidation against a real Base position', () => {
     expect(receipt.status).toBe('success')
 
     // 7. The EOA gained USDC (the liquidation profit) and the shared singleton ends fully drained —
-    //    the full-drain / zero-residual invariant (the literal post-state check deferred here from
-    //    CRTR-2588).
+    //    the full-drain / zero-residual invariant (the literal post-state check deferred here).
     const usdcAfter = await test.readContract({
       address: USDC,
       abi: erc20Abi,
