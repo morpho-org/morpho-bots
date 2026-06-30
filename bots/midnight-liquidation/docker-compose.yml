@@ -1,4 +1,4 @@
-# Bundles the bot with a rindexer instance + Postgres for borrower discovery (CRTR-2579).
+# Bundles the bot with a rindexer instance + Postgres for borrower discovery.
 # rindexer indexes the Midnight events in rindexer.yaml into Postgres; the bot reads the
 # indexed (market, borrower) pairs each tick. The bot's build context is the repo root so the bun
 # workspace (packages/*) resolves — see Dockerfile.

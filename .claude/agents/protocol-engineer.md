@@ -135,10 +135,7 @@ role-based access, timelock patterns, custom accounting).
 ### Bots and their protocol focus
 
 Individual bots land under `/bots/`. Each bot lists its own protocol focus in its `CLAUDE.md` or
-`README.md`. First planned bot:
-
-- **kill-switch** (`bots/kill-switch`): sentinel-role circuit breaker for Vault v2 — deallocates to
-  idle and decreases caps on configured risk triggers.
+`README.md`.
 
 ## What you provide
 

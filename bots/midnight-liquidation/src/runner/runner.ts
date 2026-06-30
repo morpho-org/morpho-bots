@@ -15,7 +15,7 @@ type Runner = {
 /**
  * Long-running lifecycle: a block-poll watcher drives `tick` once per new block height. Owns
  * start/stop, logs `block.new` per height, and swallows tick errors so one bad tick never kills the
- * loop. `stop()` is idempotent; the Phase-3 signed-send queue drain (CRTR-2585) hooks in here.
+ * loop. `stop()` is idempotent; the Phase-3 signed-send queue drain hooks in here.
  */
 export function createRunner(deps: {
   getBlockNumber: () => Promise<bigint>
@@ -53,7 +53,7 @@ export function createRunner(deps: {
       if (stopped) return Promise.resolve()
       stopped = true
       watcher.stop()
-      // CRTR-2585 adds a bounded drain of the pending-tx queue here before the process exits.
+      // Phase 3 adds a bounded drain of the pending-tx queue here before the process exits.
       logger.info('runner.shutdown', {})
       return Promise.resolve()
     }

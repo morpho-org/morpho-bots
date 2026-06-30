@@ -13,10 +13,9 @@ Quick navigation for the curator-bots documentation.
 
 ## Bots
 
-| Bot                                                   | Description                            | Docs                                                                        |
-| ----------------------------------------------------- | -------------------------------------- | --------------------------------------------------------------------------- |
-| [midnight-liquidation](../bots/midnight-liquidation/) | Liquidates eligible Midnight positions | [README](../bots/midnight-liquidation/README.md)                            |
-| [kill-switch](../bots/kill-switch/docs/decisions/)    | Planned vault kill-switch bot          | [TIB](../bots/kill-switch/docs/decisions/TIB-2026-05-14-kill-switch-bot.md) |
+| Bot                                                   | Description                            | Docs                                             |
+| ----------------------------------------------------- | -------------------------------------- | ------------------------------------------------ |
+| [midnight-liquidation](../bots/midnight-liquidation/) | Liquidates eligible Midnight positions | [README](../bots/midnight-liquidation/README.md) |
 
 ---
 

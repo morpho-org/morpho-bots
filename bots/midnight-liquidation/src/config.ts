@@ -46,8 +46,8 @@ export type ChainConfig = { chain: Chain; midnight: Address }
 
 // Chains v0 supports, with the Midnight deployment address per chain. The deployless lens needs
 // no per-chain deployer — soltag bakes the CREATE2 factory + factoryData into its compiled output
-// (see the lens fetcher, CRTR-2580). On-chain validation of these addresses (getCode) lands in
-// Phase 2 (CRTR-2582). loadConfig fails loud for any CHAIN_ID not present here.
+// (see the lens fetcher). On-chain validation of these addresses (getCode) lands in Phase 2.
+// loadConfig fails loud for any CHAIN_ID not present here.
 const CHAIN_MAP: Record<number, ChainConfig> = {
   [base.id]: { chain: base, midnight: getAddress('0x3726353bCDDba7c29a17D46D8a35D1E8b2E51854') }
 }

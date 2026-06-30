@@ -125,7 +125,7 @@ These files provide important background information about dependencies and rela
 
 This is a **bun workspaces monorepo** housing off-chain Morpho curator bots:
 
-- `/bots/` — individual bot apps (first: Kill Switch Bot)
+- `/bots/` — individual bot apps (one per bot)
 - `/packages/` — shared libraries (`@repo/utils`, `@repo/contracts`, `@repo/typescript-config`)
 
 **Key technologies**: bun 1.3.12 (runtime + package manager + workspace task runner), Node.js
@@ -176,10 +176,9 @@ All commit messages, PR titles, and Linear ticket titles use the same format:
 
 **Scopes — Bots:**
 
-| Bot                       | Scope                  |
-| ------------------------- | ---------------------- |
-| midnight-liquidation      | `midnight-liquidation` |
-| kill-switch (forthcoming) | `kill-switch`          |
+| Bot                  | Scope                  |
+| -------------------- | ---------------------- |
+| midnight-liquidation | `midnight-liquidation` |
 
 **Scopes — Cross-cutting:**
 

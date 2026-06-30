@@ -22,7 +22,7 @@ export type SimulateResult = { status: SimulateStatus; reason?: string }
  * The full-drain (zero-residual) invariant is enforced **structurally**: `encodeLiquidationExec`
  * always appends two `skim`s that transfer the Executor's entire loan + collateral balance to the EOA
  * (unit-tested in encode-call.test.ts), so a successful exec ends at zero balance for standard ERC20s.
- * The literal post-tx zero-balance assertion lives in the anvil fork suite (CRTR-2589) — viem 2.47 has
+ * The literal post-tx zero-balance assertion lives in the anvil fork suite — viem 2.47 has
  * no `eth_simulateV1` helper to read post-state balances inline.
  */
 export async function simulateLiquidationExec(

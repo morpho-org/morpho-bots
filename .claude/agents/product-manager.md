@@ -52,13 +52,9 @@ Bots in this repo are run by **curator operators**:
 
 ### Bots overview
 
-Individual bots land under `/bots/` as they ship. First planned bot:
-
-- **kill-switch** (`bots/kill-switch`): a sentinel-role circuit breaker for Vault v2 — deallocates
-  to idle and decreases caps on configured risk triggers.
-
-Other likely future bots: reallocators, liquidation monitors, rate setters. Check `/bots/` and
-Linear's Curator team backlog for the current state.
+Individual bots land under `/bots/` as they ship. Likely bots: reallocators, liquidation
+monitors, rate setters. Check `/bots/` and Linear's Curator team backlog for the current
+state.
 
 ## Product principles
 

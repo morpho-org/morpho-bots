@@ -216,7 +216,7 @@ Bring over `turbo.json` (trimmed from source's 14 tasks to ~10), wire root `pack
 
 ## Dependencies
 
-- **Source snapshot:** `morpho-apps` as of 2026-04-16 (local path: `/Users/cashd/workspace/morpho/prime-monorepo-0/` — the folder retains the pre-rename name on disk). If source files change materially during this migration, re-read before porting.
+- **Source snapshot:** `morpho-apps` as of 2026-04-16 (a local working copy; the on-disk folder retains the pre-rename name). If source files change materially during this migration, re-read before porting.
 - **Runtime:** bun 1.3.12 (repo-pinned), Node 24.14.1 (via `.nvmrc`).
 - **Core tooling** (dev deps): oxlint (latest), oxfmt 0.35+, knip 5.x, husky 9+, lint-staged 15+, typescript 6.0.2. No turbo, no separate test runner — tests use bun's built-in `bun test`.
 - **Catalog versions** (runtime): viem (matching source's 2.47.x), `@morpho-org/morpho-ts@2.5.0`, date-fns, lodash-es, `@internationalized/date`.
@@ -240,13 +240,13 @@ Bring over `turbo.json` (trimmed from source's 14 tasks to ~10), wire root `pack
 - **Agent drift from `morpho-apps`.** The Source → target mapping is the contract between the two repos. Plan a quarterly cross-repo review; write a TIB when divergence is intentional.
 - **Revisit turbo.** If workspace count grows past ~5 or CI job time gets painful, reconsider turbo as the task runner. Adding it back is a `turbo.json` + one dev dep.
 - **Commit-msg validator.** The Phase 6 bash regex is lightweight but brittle. Revisit `@commitlint/cli` + `@commitlint/config-conventional` in ~6 months if the regex hits edge cases.
-- **Repo + folder rename.** The GitHub repo is `curator-bots`; the local working directory `/Users/cashd/workspace/morpho/morpho-bots/` renames to `curator-bots` at author convenience. The `morpho-apps` source repo also still sits under `prime-monorepo-0/` on disk — renaming that folder is author-convenience too.
+- **Repo + folder rename.** The GitHub repo is `curator-bots`; the local working directory renames to `curator-bots` at author convenience. The `morpho-apps` source repo also still sits under its pre-rename folder name on disk — renaming that folder is author-convenience too.
 - **Linear + PR automation.** Source has PR label / Slack / team-label workflows not ported here. Worth porting once team collaborators exist; premature for a solo-owner repo.
 
 ## References
 
 - **Target repo:** https://github.com/morpho-org/curator-bots (private today; going public after the first bot ships)
-- **Source repo:** `morpho-apps` — local snapshot at `/Users/cashd/workspace/morpho/prime-monorepo-0/` (on-disk folder retains the pre-rename name).
+- **Source repo:** `morpho-apps` — a local snapshot (on-disk folder retains the pre-rename name).
 - **Source files authoritative for the migration:**
   - `morpho-apps/CLAUDE.md`
   - `morpho-apps/.mcp.json`
@@ -270,7 +270,7 @@ Bring over `turbo.json` (trimmed from source's 14 tasks to ~10), wire root `pack
 
 ## Addenda
 
-### 2026-04-28 — Phase 5 execution refinements (CRTR-2283)
+### 2026-04-28 — Phase 5 execution refinements
 
 The core Phase 5 decision (port `@repo/utils` server-safe + `@repo/abis` verbatim) stands. The
 following execution-time refinements were applied during the port and are recorded here so
@@ -306,9 +306,13 @@ future readers don't mistake the as-built state for drift:
   because `bun:test` lacks `vi.advanceTimersByTimeAsync`; the inline comment explains the
   limitation. All other vitest specs were straightforward to convert.
 
-### 2026-05-29 — kill-switch adds anvil fork tests (CRTR-2405)
+### 2026-05-29 — kill-switch adds anvil fork tests
 
 The kill-switch architecture TIB ([TIB-2026-05-14](../../bots/kill-switch/docs/decisions/TIB-2026-05-14-kill-switch-bot.md)) adds **anvil fork integration tests** — a new CI Integration job plus Foundry (`anvil`) as a dev/CI system dependency — which this TIB deferred under "no Playwright/anvil E2E (no surface in a bot repo)." A safety-critical kill switch is that surface. The **single-runner decision is unchanged**: fork tests run under `bun test` via `@morpho-org/test`'s framework-agnostic `spawnAnvil` (the Vitest fixtures are intentionally not used), so no second test runner is introduced.
+
+### 2026-06-29 — kill-switch bot cancelled
+
+The Kill Switch Bot project is cancelled; we are no longer building it. Its architecture TIB ([TIB-2026-05-14](../../bots/kill-switch/docs/decisions/TIB-2026-05-14-kill-switch-bot.md)) was never accepted and is now marked **Withdrawn**. The forward-looking references to the Kill Switch Bot elsewhere in this TIB — as the planned first bot and as the trigger for the public cut-over — are left intact as the historical record of the decision at the time and no longer reflect current plans.
 
 <!--
 TIB conventions:
