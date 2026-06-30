@@ -101,18 +101,25 @@ const DEFAULT_HTTP_RPS = 2 // per-venue token-bucket refill; 1inch free tier is 
 const DEFAULT_HTTP_BURST = 5
 const DEFAULT_HTTP_MAX_RETRIES = 2
 const DEFAULT_MAX_ROUTE_IMPACT_BPS = 500 // reject an aggregator route >5% below the oracle reference
+const DEFAULT_SEIZE_CAP_MARGIN_BPS = 30 // shave the repay cap when sizing a cap-binding seize — one-block oracle-drift headroom; calibratable
 const DEFAULT_BACKOFF_BASE_BLOCKS = 2n
 const DEFAULT_BACKOFF_MAX_BLOCKS = 64n
 
 type Env = Record<string, string | undefined>
 
-/** Off-chain quoting + failure-backoff tunables (the multi-venue swap layer). */
+/**
+ * Off-chain quoting + failure-backoff tunables (the multi-venue swap layer), plus the seize-sizing
+ * safety margin (`seizeCapMarginBps`). The margin is a *sizing* knob, not an HTTP/route one, but it
+ * lives here because the tick already threads `config.quoting.*` into both quoting and planning.
+ */
 export type QuotingConfig = {
   quoteTimeoutMs: number
   httpRps: number
   httpBurst: number
   httpMaxRetries: number
   maxRouteImpactBps: number
+  /** Headroom (bps) shaved off the on-chain repay cap when sizing a cap-binding seize-exact plan. */
+  seizeCapMarginBps: number
   backoffBaseBlocks: bigint
   backoffMaxBlocks: bigint
 }
@@ -293,6 +300,10 @@ export function loadConfig(
     httpBurst: intEnv(env, 'HTTP_BURST', DEFAULT_HTTP_BURST, { min: 1 }),
     httpMaxRetries: intEnv(env, 'HTTP_MAX_RETRIES', DEFAULT_HTTP_MAX_RETRIES, { min: 0 }),
     maxRouteImpactBps: intEnv(env, 'MAX_ROUTE_IMPACT_BPS', DEFAULT_MAX_ROUTE_IMPACT_BPS, {
+      min: 0,
+      max: 10_000
+    }),
+    seizeCapMarginBps: intEnv(env, 'SEIZE_CAP_MARGIN_BPS', DEFAULT_SEIZE_CAP_MARGIN_BPS, {
       min: 0,
       max: 10_000
     }),

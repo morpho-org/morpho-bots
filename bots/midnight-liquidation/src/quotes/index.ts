@@ -11,7 +11,7 @@ import type { RateLimitedClient } from './http-client'
 import type { QuoteOutcome, QuoteParameters, Swap } from './types'
 
 import { BPS } from '../constants'
-import { expectedLoanOut, predictSeizedAssets } from '../execution/swap-step'
+import { expectedLoanOut } from '../execution/swap-step'
 import { QuoteError } from './types'
 import { quoteOneInch } from './venues/oneinch'
 import { quoteUniswapV3 } from './venues/uniswap-v3'
@@ -68,7 +68,9 @@ export function composeQuoting(deps: {
         chainId,
         tokenIn: collateral.token,
         tokenOut: out.market.loanToken,
-        amountIn: predictSeizedAssets(plan, out),
+        // Seize-exact: the contract transfers exactly `plan.seizedAssets` to the Executor before the
+        // callback, so this is exactly the collateral the swap will sell — no prediction needed.
+        amountIn: plan.seizedAssets,
         slippageBps: entry.slippageBps,
         executor,
         referenceAmountOut

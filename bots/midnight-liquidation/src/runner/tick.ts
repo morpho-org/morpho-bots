@@ -49,6 +49,8 @@ export async function runTick(deps: {
   chainHead: bigint
   /** The Executor singleton — the `liquidate` msg.sender whose gate the lens checks. */
   caller: Address
+  /** Headroom (bps) shaved off a cap-binding seize for one-block oracle-drift; passed to `plan()`. */
+  seizeCapMarginBps: number
   readLens: (pairs: LensInput[]) => Promise<Map<string, LensOut>>
   /**
    * Fetches ONE executable swap for a liquidatable position from its configured venue (Uniswap is
@@ -84,6 +86,7 @@ export async function runTick(deps: {
     syncedBlock,
     chainHead,
     caller,
+    seizeCapMarginBps,
     readLens,
     quoteFor,
     simulate,
@@ -143,7 +146,7 @@ export async function runTick(deps: {
     // every block while it confirms.
     if (inflight.has(label)) continue
 
-    const liquidationPlan = plan(planInputFromLens(out))
+    const liquidationPlan = plan(planInputFromLens(out), { seizeCapMarginBps })
     if (!liquidationPlan) continue
     counters.planned += 1
     logger.info('plan.built', {

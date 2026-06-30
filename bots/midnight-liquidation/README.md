@@ -55,6 +55,7 @@ Environment variables:
 | `HTTP_RPS` / `HTTP_BURST`                    | no       | `2` / `5`  | Per-venue token-bucket refill rate and burst. The 1inch free tier is 1 RPS — set `HTTP_RPS=1` if you only use 1inch.                                                                                                         |
 | `HTTP_MAX_RETRIES`                           | no       | `2`        | Retries on 429/5xx/network (honoring `Retry-After`) before a quote fails.                                                                                                                                                    |
 | `MAX_ROUTE_IMPACT_BPS`                       | no       | `500`      | Reject an aggregator route whose quoted output is more than this far below the oracle reference (route-quality guard).                                                                                                       |
+| `SEIZE_CAP_MARGIN_BPS`                       | no       | `30`       | Headroom shaved off the on-chain repay cap when sizing a cap-binding seize, so a one-block oracle move can't trip the contract's RCF/debt check. `0` sizes right at the cap.                                                 |
 | `BACKOFF_BASE_BLOCKS` / `BACKOFF_MAX_BLOCKS` | no       | `2` / `64` | Exponential per-position cooldown (in blocks) after a failed quote/simulate, bounding API + RPC usage under a backlog.                                                                                                       |
 
 The bot **refuses to start** if a collateral references a venue whose API key env var is unset
@@ -317,8 +318,12 @@ valid && gateAllows && hasDebt && !locked && (block.timestamp > maturity || !hea
 - Pre-maturity unhealthy positions use normal mode with `maxLif` and the Recovery Close Factor cap.
 - Post-maturity positions use post-maturity mode, where LIF ramps from `1e18` to `maxLif` over 15
   minutes and the RCF cap is disabled.
-- If seizing the whole selected slot would over-repay, the bot passes `repaidUnits` and lets Midnight
-  derive `seizedAssets`.
+- Every non-bad-debt plan is **seize-exact**: it pins `seizedAssets` (with `repaidUnits = 0`) and lets
+  Midnight ceil-derive `repaidUnits`. Midnight transfers exactly `seizedAssets` to the Executor before
+  the swap callback, so every venue sells exactly the held balance — no sell-side drift.
+- If seizing the whole selected slot would over-repay, the bot seizes the largest amount whose
+  contract-derived repaid stays within the cap (`maxSeizeForCap`), shaved by `SEIZE_CAP_MARGIN_BPS` for
+  one-block oracle-drift headroom.
 - If the position is fully bad debt, the bot emits a zero/zero plan so Midnight can realize the bad
   debt without moving tokens.
 
@@ -337,10 +342,13 @@ quote per position — quotes are spent only on liquidatable positions, never th
   [venues/oneinch.ts](./src/quotes/venues/oneinch.ts)) make one rate-limited API call and return
   route-bound calldata committing a fixed sell amount, with the taker/recipient set to the Executor.
 
-The sell amount is the predicted seized collateral ([src/execution/swap-step.ts](./src/execution/swap-step.ts)):
-for `repaidUnits` plans the bot first mirrors Midnight's rounded on-chain `seizedAssets` derivation.
-Any drift between that prediction and the on-chain seize (e.g. oracle price moving between blocks)
-fails closed in `simulate()` — a missed liquidation, never a loss.
+The sell amount is the plan's pinned `seizedAssets`: Midnight transfers exactly that to the Executor
+before the callback, so an aggregator's fixed sell amount and a Uniswap balance-splice both act on
+exactly the seized balance — no sell-side drift on any venue. The oracle-priced reference output
+([src/execution/swap-step.ts](./src/execution/swap-step.ts)) values that same `seizedAssets`. Residual
+drift is confined to the on-chain repay-cap check re-derived at the exec-block oracle price; it fails
+closed in `simulate()` — a missed liquidation, never a loss — and the `SEIZE_CAP_MARGIN_BPS` headroom
+keeps ordinary one-block moves from tripping it.
 
 The bot computes the oracle-priced reference output for free (no extra API call) and rejects any
 aggregator route more than `MAX_ROUTE_IMPACT_BPS` below it (`quote.bad_route`). Quote failures (no

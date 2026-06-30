@@ -143,6 +143,7 @@ async function main() {
       syncedBlock: () => rindexerSyncedBlock(query),
       chainHead,
       caller: config.executooorAddress,
+      seizeCapMarginBps: config.quoting.seizeCapMarginBps,
       readLens: pairs => readMidnightLiquidationLens(client, config.midnight, pairs),
       quoteFor,
       simulate: ({ market, borrower, plan, swap }) =>

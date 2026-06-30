@@ -16,7 +16,7 @@ export type QuoteParameters = {
   chainId: number
   tokenIn: Address // seized collateral
   tokenOut: Address // loan token
-  amountIn: bigint // predicted seized collateral the Executor will hold (see predictSeizedAssets)
+  amountIn: bigint // the seized collateral the Executor will hold — exactly `plan.seizedAssets` (seize-exact)
   slippageBps: number
   executor: Address
   /** Oracle-priced expected output (no DEX slippage) — the no-route-quality reference. */

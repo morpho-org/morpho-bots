@@ -58,6 +58,7 @@ describe('loadConfig', () => {
     expect(config.quoting.quoteTimeoutMs).toBe(2500)
     expect(config.quoting.httpRps).toBe(2)
     expect(config.quoting.maxRouteImpactBps).toBe(500)
+    expect(config.quoting.seizeCapMarginBps).toBe(30)
     expect(config.quoting.backoffBaseBlocks).toBe(2n)
   })
 
@@ -199,14 +200,24 @@ describe('loadConfig', () => {
   })
 
   it('parses quoting tunables from env, overriding defaults', () => {
-    const config = loadConfig(baseEnv({ HTTP_RPS: '1', MAX_ROUTE_IMPACT_BPS: '250' }), deps)
+    const config = loadConfig(
+      baseEnv({ HTTP_RPS: '1', MAX_ROUTE_IMPACT_BPS: '250', SEIZE_CAP_MARGIN_BPS: '75' }),
+      deps
+    )
     expect(config.quoting.httpRps).toBe(1)
     expect(config.quoting.maxRouteImpactBps).toBe(250)
+    expect(config.quoting.seizeCapMarginBps).toBe(75)
   })
 
   it('throws on an out-of-range MAX_ROUTE_IMPACT_BPS', () => {
     expect(() => loadConfig(baseEnv({ MAX_ROUTE_IMPACT_BPS: '20000' }), deps)).toThrow(
       /MAX_ROUTE_IMPACT_BPS must be <= 10000/
+    )
+  })
+
+  it('throws on an out-of-range SEIZE_CAP_MARGIN_BPS', () => {
+    expect(() => loadConfig(baseEnv({ SEIZE_CAP_MARGIN_BPS: '20000' }), deps)).toThrow(
+      /SEIZE_CAP_MARGIN_BPS must be <= 10000/
     )
   })
 })

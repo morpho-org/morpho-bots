@@ -1,11 +1,11 @@
 # TIB-2026-06-29: Midnight liquidation bot — multi-venue swap support
 
-| Field      | Value                                   |
-| ---------- | --------------------------------------- |
-| **Status** | Proposed — implemented; awaiting review |
-| **Date**   | 2026-06-29                              |
-| **Author** | @hayden                                 |
-| **Scope**  | App: `bots/midnight-liquidation`        |
+| Field      | Value                                                                           |
+| ---------- | ------------------------------------------------------------------------------- |
+| **Status** | Proposed — implemented; awaiting review; amended CRTR-2673 (seize-exact sizing) |
+| **Date**   | 2026-06-29                                                                      |
+| **Author** | @hayden                                                                         |
+| **Scope**  | App: `bots/midnight-liquidation`                                                |
 
 ---
 
@@ -376,6 +376,65 @@ stdout/stderr as in v0.
   choice (this TIB) and path depth are orthogonal.
 - **A best-execution venue selector** (quote multiple venues, pick the best output) if coverage ever
   turns into a competitiveness goal — explicitly out of scope while the bot is a fallback.
+
+## Amendment — seize-exact sizing (CRTR-2673)
+
+**Problem.** The original design sized the cap-binding branch as _repaid-binding_: `plan()` emitted
+`{ seizedAssets: 0, repaidUnits: cap }` and the contract derived the seize on-chain. But aggregator
+venues (0x / 1inch) commit a **fixed sell amount off-chain** — quoted against `predictSeizedAssets`,
+a read-time mirror of the contract's floor-floor seize derivation. When the on-chain seize drifts
+from that prediction (oracle price moving between the read- and exec-block, the post-maturity LIF
+ramp, or a rounding step), the Executor's actual collateral balance ≠ the aggregator's committed
+sell amount and the swap's `transferFrom` reverts — a missed liquidation (fail-closed in
+`simulate()`). Uniswap-direct was immune: its `balance`-splice sells the actual held balance, so a
+fixed off-chain commitment never existed there.
+
+**Decision.** Standardize **every** non-bad-debt plan to be **seize-exact**: pin `seizedAssets = S`
+with `repaidUnits = 0`, across all venues and all scenarios (full-slot and cap-binding, normal and
+post-maturity). The Midnight `liquidate` contract transfers `seizedAssets` to the receiver (the
+Executor) at midnight-contracts.txt:2415 — **before** the `onLiquidate` callback at :2417 — so
+pinning the seize means the Executor holds exactly `S` when the swap runs, and every venue
+(aggregator fixed-amount or Uniswap balance-splice) sells exactly that. The sell-side drift
+disappears for all venues, not just the cap-binding aggregator case.
+
+**Why standardize, not special-case aggregators** (the issue's literal scope). Making the binding
+venue-conditional would force the quoting layer to rewrite the plan downstream per-venue, coupling
+the quote to the encoded `liquidate` args. Standardizing keeps the plan the single source of truth:
+the encoder (`encode-call.ts`) and the venue adapters (`quotes/venues/*`) are **unchanged** — the
+`'balance'` vs `'fixed'` split is about per-venue splice-ability and is orthogonal to the binding —
+and the off-chain seize-prediction mirror (`predictSeizedAssets`) is **deleted**, its floor-floor
+math relocated into the planner as `maxSeizeForCap`. Net: less code, not more.
+
+**`maxSeizeForCap`.** The cap-binding branch now seizes the largest `S` whose contract-derived
+repaid stays within the cap — the closed form
+`S = floorDiv(floorDiv(cap·lif, WAD)·SCALE, price)`, identical to the contract's own repaid→seize
+derivation at :2371. It is provably exact, with no search or correction step: `impliedRepaidUnits(S)
+≤ cap` always holds, and `S` is the largest such seize (verified by formal proof plus a 7.4M-case
+brute-force sweep with zero violations).
+
+**Safety margin.** Pinning `seizedAssets` makes the on-chain RCF check (normal mode, :2381) and the
+debt-underflow guard (post-maturity, :2395) re-derive `repaidUnits` at the **exec-block** oracle
+price. An oracle price increase between read and exec can lift the derived repaid over the cap and
+revert (fail-closed). LIF drift is safe-direction (the post-maturity LIF only ramps up → derived
+repaid only falls). To avoid avoidable `simulate()` failures in volatile markets, the cap-binding
+seize is sized against `cap·(1 - seizeCapMarginBps)`. New config tunable `SEIZE_CAP_MARGIN_BPS`
+(default 30 bps / 0.30%, env-overridable, calibratable). The path cannot be drift-free: the
+aggregator route and its min-out are committed off-chain at the read block, so eliminating drift
+would require an on-chain helper — which (a) reverses the generic-Executor decision
+([TIB-2026-05-28](./TIB-2026-05-28-midnight-liquidation-bot.md) Amendment 11; see
+[[executor-singleton-generic]]) and (b) still cannot re-price an aggregator route on-chain.
+
+**Dust trade-off (accepted).** Seize-exact hits an arbitrary repaid target only to integer-seize
+granularity, so in full-close scenarios (post-maturity, or normal-mode rcf-exempt) it may leave a
+few wei of residual debt that the old repaid-binding zeroed exactly. A new `S == 0 → null` guard in
+`plan()` turns such a residual into a permanent cheap skip — never a `{0, 0}` plan, which would be
+mis-routed as a bad-debt write-off. Normal-mode RCF-capped positions are unaffected: they
+intentionally liquidate over multiple txs anyway.
+
+**Validation.** `maxSeizeForCap` property + fixed-vector tests; `plan()` cap-binding tests updated
+to seize-exact + margin + the `S == 0` guard; the anvil fork e2e exercises the seize-exact
+cap-binding post-maturity path end-to-end (lands on the real contract, full-drain holds) — the
+successful exec is the on-chain proof that the derived repaid stayed within the cap.
 
 ## References
 

@@ -115,6 +115,7 @@ function runWith(opts: {
     syncedBlock: async () => (opts.synced === undefined ? chainHead : opts.synced),
     chainHead,
     caller: CALLER,
+    seizeCapMarginBps: 0,
     readLens: stubReadLens(opts.out === undefined ? lensOut() : opts.out),
     quoteFor: async () => {
       quoteCalls += 1
