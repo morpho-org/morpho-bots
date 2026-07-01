@@ -1,8 +1,8 @@
 # Blue Liquidation Bot
 
-A non-competitive, ecosystem-backstop liquidator for **Morpho Blue** on Base. It watches indexed
-borrowers, reads fresh accrued state, sizes seize-exact liquidations, simulates the final Executor
-call, and broadcasts only simulation-ok plans.
+A non-competitive, ecosystem-backstop liquidator for **Morpho Blue** on Base and Robinhood. It
+watches indexed borrowers, reads fresh accrued state, sizes seize-exact liquidations, simulates the
+final Executor call, and broadcasts only simulation-ok plans.
 
 Design: [TIB-2026-06-30-blue-liquidation-bot](../../docs/decisions/TIB-2026-06-30-blue-liquidation-bot.md).
 
@@ -13,17 +13,18 @@ IRM accrual sim → oracle → health → decode) is **validated against 256 liv
 `probe:lens`, and the lens gas model is **measured** (see `state/lens.sol.ts`). The end-to-end
 _liquidate-broadcast_ fork suite is written but **fixture-gated** — it needs a live-unhealthy Base
 position (none exist while the market is healthy), `RPC_URL_8453`, and
-`BLUE_LIQUIDATION_FORK_FIXTURE` (see [Testing](#testing)). The rindexer tuple-column names are
+`BLUE_LIQUIDATION_FORK_FIXTURE` (see [Testing](#testing)). The rindexer `borrow` table columns are
 confirmed at boot by the `discovery.schema` startup log.
 
 ## Prerequisites
 
 - **bun** `1.3.12`, **Node** `24.14.1` (`.nvmrc`).
-- A **Base RPC** that both reads and _relays_ transactions — **not** `rpc.morpho.dev/realtime`, which
+- A chain RPC that both reads and _relays_ transactions — **not** `rpc.morpho.dev/realtime`, which
   acknowledges sends but never broadcasts them.
 - A **funded EOA** (native gas) — the liquidator and the recipient of both end-of-exec token sweeps.
-- The generic **Executor** singleton deployed on Base (`bun run --filter @repo/contracts deploy:executor`).
-  The bot derives its CREATE2 address and refuses to start if it holds no code.
+- The generic **Executor** singleton deployed on each chain the bot runs on
+  (`bun run --filter @repo/contracts deploy:executor`). The bot derives its CREATE2 address and
+  refuses to start if it holds no code.
 - **Postgres** + a **rindexer** instance for borrower discovery (bundled in `docker-compose.yml`).
 - Optional: **0x** / **1inch** API keys, only if a collateral routes through them.
 
@@ -33,7 +34,7 @@ Env vars (fail-loud on a missing required var, an unknown chain, or a malformed 
 
 | Var                                                                 | Required | Default         | Purpose                                                |
 | ------------------------------------------------------------------- | -------- | --------------- | ------------------------------------------------------ |
-| `CHAIN_ID`                                                          | yes      | —               | Must be in the chain map (v0: Base `8453`)             |
+| `CHAIN_ID`                                                          | yes      | —               | Must be in the chain map (`8453`, `4663`)              |
 | `RPC_URL`                                                           | yes      | —               | Primary RPC (reads, simulation, sends)                 |
 | `RPC_URL_FALLBACK`                                                  | no       | —               | Optional viem-dlc `failover` endpoint                  |
 | `LIQUIDATOR_PRIVATE_KEY`                                            | yes      | —               | EOA hex key (`0x` + 32-byte hex)                       |
@@ -47,7 +48,9 @@ Env vars (fail-loud on a missing required var, an unknown chain, or a malformed 
 | `BACKOFF_BASE_BLOCKS` / `BACKOFF_MAX_BLOCKS`                        | no       | `2` / `64`      | Per-position failure backoff                           |
 | `LOG_LEVEL`                                                         | no       | `info`          | `debug` \| `info` \| `warn` \| `error`                 |
 
-`RINDEXER_RPC_URL` (defaults to `RPC_URL` in Docker/Railway) is consumed by rindexer, not the bot.
+For Compose/Railway, operator-facing RPC env vars are chain-id suffixed: `RPC_URL_8453`,
+`RPC_URL_4663`, and optional `RINDEXER_RPC_URL_<chainId>` overrides. Inside each bot container the
+runtime env remains unsuffixed (`RPC_URL`) because each service runs exactly one chain.
 
 ### Swap config
 
@@ -100,34 +103,40 @@ Docker Compose below.
 
 ```sh
 cd bots/blue-liquidation
-RPC_URL=https://… LIQUIDATOR_PRIVATE_KEY=0x… docker compose up --build
+RPC_URL_8453=https://… LIQUIDATOR_PRIVATE_KEY=0x… docker compose up --build
 ```
 
-Brings up Postgres, rindexer (indexing `CreateMarket` + `Borrow` on Base), and the bot against one
-`DATABASE_URL`. The build context is the repo root so the bun workspace resolves. The rindexer image
-bakes in the generated `Morpho.json` ABI, so it is not committed.
+Brings up Postgres, one shared rindexer (indexing `Borrow` on Base and Robinhood), and one bot per
+chain against the same `DATABASE_URL`. `RPC_URL_4663` is optional locally because Compose defaults
+Robinhood to its public RPC. The build context is the repo root so the bun workspace resolves. The
+rindexer image bakes in the generated `Morpho.json` ABI, so it is not committed.
 
 ## Deploying to Railway
 
 ```sh
-RAILWAY_PROJECT_ID=… RPC_URL=https://… LIQUIDATOR_PRIVATE_KEY=0x… \
+RAILWAY_PROJECT_ID=… RPC_URL_8453=https://… RPC_URL_4663=https://… LIQUIDATOR_PRIVATE_KEY=0x… \
   bun run --filter @morpho-org/blue-liquidation deploy:railway
-# Optional: RINDEXER_RPC_URL (defaults to RPC_URL), ZEROX_API_KEY / ONEINCH_API_KEY,
+# Optional: RINDEXER_RPC_URL_<chainId> (defaults to RPC_URL_<chainId>),
+# ZEROX_API_KEY[_<chainId>] / ONEINCH_API_KEY[_<chainId>],
 # RAILWAY_ENVIRONMENT (defaults to production).
 ```
 
-Idempotent: provisions managed Postgres + a `rindexer` service + the `bot` runner, reusing existing
-services/vars. Secrets are piped via stdin (never argv, never logged).
+Idempotent: provisions managed Postgres + one shared `rindexer` service + per-chain `bot-<chainId>`
+runners, reusing existing services/vars. Secrets are piped via stdin (never argv, never logged).
+After `bot-8453` is confirmed healthy, the script attempts to remove the legacy single-chain `bot`
+service to avoid running two Base liquidators.
 
 ### Swap config (manual step)
 
-The swap config rides on a `/config` Railway volume, uploaded out-of-band once the bot is up:
+Each chain bot has its own `/config` Railway volume. Upload swap config out-of-band once the target
+bot is up:
 
 ```sh
 railway volume files upload ./swap.config.json /config/swap.json --overwrite
 ```
 
-Restart the bot afterward to pick up routes. Until then it runs but skips routed liquidations.
+Select the target bot service/volume when prompted (for example `bot-8453`). Restart that bot
+afterward to pick up routes. Until then it runs but skips routed liquidations.
 
 ## How It Works
 
@@ -145,17 +154,21 @@ backlog. A coverage bot re-derives its work each block, so a skipped intermediat
 
 ### Discovery
 
-A co-located rindexer indexes two Morpho events on the canonical singleton
-`0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb`:
+A co-located rindexer indexes the Morpho `Borrow` event for each configured chain. Base uses the
+canonical singleton `0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb`; Robinhood uses its own singleton
+`0x9D53d5E3bd5E8d4Cbfa6DB1ca238AEA02E651010`.
 
-- **`Borrow`** → the `(marketId, onBehalf)` candidate universe (`onBehalf` is the borrower).
-- **`CreateMarket`** → the `id → MarketParams` registry. **Required**: `MarketParams` (loanToken,
-  collateralToken, oracle, irm, lltv) are not retrievable from the singleton.
+`Borrow` yields the `(marketId, onBehalf)` candidate universe (`onBehalf` is the borrower). One
+rindexer process writes all networks into one `blue_liquidation_morpho.borrow` table, and each bot
+filters by rindexer's `network` column.
 
-`discovery/borrowers.ts` joins `Borrow` to `CreateMarket` and returns `{ marketParams, borrower }[]`.
-Over-inclusion is harmless (the lens drops repaid/healthy positions); under-inclusion would miss a
-liquidation, so v0 does not prune with `Repay`/`WithdrawCollateral` at the SQL layer. rindexer lag is
-emitted as `rindexer.lag` for observability only — the lens reads every candidate fresh.
+`CreateMarket` is deliberately not indexed: no-code rindexer cannot decode the nested `MarketParams`
+struct, and the singleton exposes `idToMarketParams(id)`. `discovery/borrowers.ts` reads distinct
+`(id, borrower)` pairs for this chain, resolves each id to `MarketParams` on-chain, and returns
+`{ marketParams, borrower }[]`. Over-inclusion is harmless (the lens drops repaid/healthy positions);
+under-inclusion would miss a liquidation, so v0 does not prune with `Repay`/`WithdrawCollateral` at
+the SQL layer. rindexer lag is emitted as `rindexer.lag` for observability only — the lens reads every
+candidate fresh.
 
 ### State lens
 
@@ -239,14 +252,13 @@ the nonce from `getTransactionCount('pending')`.
   ~750k deployless-CREATE constant, fit on an anvil fork of Base against real discovered pairs (method
   documented at the config). Re-measure the same way if the lens body changes materially. Any residual
   under-budget is self-correcting (viem-dlc's chunker halve-and-retries an over-cap batch).
-- **rindexer schema**: the `CreateMarket` tuple column names in `discovery/borrowers.ts` are a
-  best-effort flattening. At boot the bot logs `discovery.schema` with the **actual** rindexer column
-  names + row counts for the `borrow` and `create_market` tables, and `discovery.startup` with the
-  candidate count + a parsed `MarketParams` sample (or `discovery.startup_error` with the DB message).
-  On Railway, grep those first: if `discovery.schema` shows different column names than the join
-  selects, or `discovery.startup` shows `candidates: 0` while `syncedBlock` is well past the deploy
-  block, the flattening guess was wrong — fix the `SELECT` in `borrowers.ts` (the one place the schema
-  is encoded) to match the logged names. rindexer may not have migrated tables on the first boot
-  (`present: false`); the per-block tick retries, so this is informational, not fatal.
+- **rindexer schema**: at boot the bot logs `discovery.schema` with the **actual** rindexer column
+  names + row count for the `borrow` table, and `discovery.startup` with this network's candidate
+  count, synced block, and a parsed `MarketParams` sample (or `discovery.startup_error` with the DB
+  message). On Railway, grep those first: if `discovery.schema` shows different column names than the
+  `SELECT` in `borrowers.ts`, or `discovery.startup` shows `candidates: 0` while `syncedBlock` is well
+  past the deploy block, fix `borrowers.ts` (the one place the schema is encoded) to match the logged
+  names. rindexer may not have migrated tables on the first boot (`present: false`); the per-block
+  tick retries, so this is informational, not fatal.
 - **Coverage grows monotonically** (all markets, no SQL pruning in v0); the lens re-reads healthy rows
   every block. SQL-layer pruning via `Repay`/`WithdrawCollateral` is a scale follow-up.
