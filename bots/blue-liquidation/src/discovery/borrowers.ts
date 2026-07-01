@@ -3,10 +3,13 @@ import type { Address, Hex } from 'viem'
 import { SQL } from 'bun'
 import { getAddress, isAddress } from 'viem'
 
+import type { Network } from '../config'
 import type { MarketParams } from '../market'
 
 export type Row = Record<string, unknown>
-export type QueryFn = (sql: string) => Promise<readonly Row[]>
+// Bound params (`$1`, `$2`, …) are passed separately from the SQL so values (e.g. the network name)
+// are never string-interpolated — see BORROWER_IDS_SQL. Bun's `SQL.unsafe(sql, values)` supports this.
+export type QueryFn = (sql: string, params?: readonly unknown[]) => Promise<readonly Row[]>
 
 /** A discovered (market id, borrower) pair from the indexed Borrow events, before params are resolved. */
 type BorrowerId = { id: Hex; borrower: Address }
@@ -29,11 +32,20 @@ export type BorrowerCandidate = { marketParams: MarketParams; borrower: Address 
 // The indexed bytes32 `id` is stored as `bytea` (Bun's SQL client returns it as a Uint8Array); the
 // address `on_behalf` is a `character(42)` `0x…` string. The startup diagnostic logs the actual
 // `borrow` columns for quick verification if discovery ever yields zero candidates while synced.
+//
+// MULTI-CHAIN — a single rindexer process indexes every chain into this one `borrow` table,
+// discriminated by rindexer's standard `network` column. `WHERE b.network = $1` restricts this bot's
+// candidate universe to ITS chain. This SQL filter is the CORRECTNESS BOUNDARY: the per-chain on-chain
+// reads (idToMarketParams + the lens re-deriving `id` against this chain's own singleton) are only a
+// backstop that would drop a foreign-chain id — a future refactor must NOT drop the `network` filter
+// on the assumption that the on-chain reads alone suffice (they'd waste an RPC slot per foreign row,
+// and a market id that legitimately exists on both chains would otherwise be mis-attributed here).
 const BORROWER_IDS_SQL = `
   SELECT DISTINCT
     b.id        AS id,
     b.on_behalf AS borrower
   FROM blue_liquidation_morpho.borrow b
+  WHERE b.network = $1
 `
 
 function asAddress(value: unknown): Address | null {
@@ -55,13 +67,13 @@ function asId(value: unknown): Hex | null {
 }
 
 /**
- * Reads the distinct (market id, borrower) universe from rindexer's indexed `Borrow` events. The DB
- * handle is injected so parsing is unit-testable without a live Postgres; the runtime adapter is
- * {@link createPostgresQuery}. Rows with a malformed id or borrower are skipped rather than failing
- * the whole discovery.
+ * Reads the distinct (market id, borrower) universe from rindexer's indexed `Borrow` events for the
+ * given `network` (the rindexer network name, e.g. `'base'`). The DB handle is injected so parsing is
+ * unit-testable without a live Postgres; the runtime adapter is {@link createPostgresQuery}. Rows
+ * with a malformed id or borrower are skipped rather than failing the whole discovery.
  */
-export async function discoverBorrowerIds(query: QueryFn): Promise<BorrowerId[]> {
-  const rows = await query(BORROWER_IDS_SQL)
+export async function discoverBorrowerIds(query: QueryFn, network: Network): Promise<BorrowerId[]> {
+  const rows = await query(BORROWER_IDS_SQL, [network])
   const out: BorrowerId[] = []
   for (const row of rows) {
     const id = asId(row.id)
@@ -72,16 +84,18 @@ export async function discoverBorrowerIds(query: QueryFn): Promise<BorrowerId[]>
 }
 
 /**
- * The full discovery step: the distinct (id, borrower) universe from `Borrow`, with each market's
- * immutable {@link MarketParams} resolved on-chain via `resolveParams` (backed by `idToMarketParams(id)`
- * — see ../state/market-params.ts). A pair whose id doesn't resolve to a market is dropped.
- * `resolveParams` is injected so this composes cleanly and stays unit-testable without a chain.
+ * The full discovery step for one `network`: the distinct (id, borrower) universe from `Borrow`, with
+ * each market's immutable {@link MarketParams} resolved on-chain via `resolveParams` (backed by
+ * `idToMarketParams(id)` — see ../state/market-params.ts). A pair whose id doesn't resolve to a market
+ * is dropped. `resolveParams` is injected so this composes cleanly and stays unit-testable without a
+ * chain.
  */
 export async function discoverCandidates(
   query: QueryFn,
-  resolveParams: (ids: readonly Hex[]) => Promise<Map<Hex, MarketParams>>
+  resolveParams: (ids: readonly Hex[]) => Promise<Map<Hex, MarketParams>>,
+  network: Network
 ): Promise<BorrowerCandidate[]> {
-  const idPairs = await discoverBorrowerIds(query)
+  const idPairs = await discoverBorrowerIds(query, network)
   const paramsById = await resolveParams(idPairs.map(pair => pair.id))
   const candidates: BorrowerCandidate[] = []
   for (const { id, borrower } of idPairs) {
@@ -92,24 +106,32 @@ export async function discoverCandidates(
 }
 
 // rindexer's authoritative indexed head: its internal progress table tracks the last block synced
-// per network (`rindexer_internal.<project>_<contract>_<event>`, one row per network, column
-// `last_synced_block`), and advances with the chain tip during live indexing regardless of event
-// activity. We read the Borrow progress row (the only event indexed). We deliberately do NOT read
-// MAX(block_number) over the event rows — that only moves when a new event is indexed, so during
-// quiet periods it freezes while the chain marches on, making the bot over-report lag.
+// per network (`rindexer_internal.<project>_<contract>_<event>`, one row per network, columns
+// `network` + `last_synced_block`), and advances with the chain tip during live indexing regardless
+// of event activity. We read THIS chain's Borrow progress row (the only event indexed) via
+// `WHERE network = $1` — a single row per network, so no aggregate is needed. We deliberately do NOT
+// read MAX(block_number) over the event rows — that only moves when a new event is indexed, so during
+// quiet periods it freezes while the chain marches on, making the bot over-report lag. (Filtering by
+// network is required in multi-chain mode: an unfiltered MAX would report the FURTHEST-ahead chain's
+// head to every bot.)
 const SYNCED_BLOCK_SQL = `
-  SELECT MAX(last_synced_block) AS head
+  SELECT last_synced_block AS head
   FROM rindexer_internal.blue_liquidation_morpho_borrow
+  WHERE network = $1
 `
 
 /**
- * Best-effort rindexer indexed head, for the freshness/lag signal. Reads rindexer's internal
- * progress table (see {@link SYNCED_BLOCK_SQL}). Returns `null` when the table is empty (rindexer
- * has not yet recorded progress). Callers treat `null` (and a thrown query) as "lag unknown" and
- * proceed — the lens reads every candidate fresh on-chain, so this signal is observability-only.
+ * Best-effort rindexer indexed head for the given `network`, for the freshness/lag signal. Reads
+ * rindexer's internal progress table (see {@link SYNCED_BLOCK_SQL}). Returns `null` when the table
+ * has no row for this network yet (rindexer has not recorded progress). Callers treat `null` (and a
+ * thrown query) as "lag unknown" and proceed — the lens reads every candidate fresh on-chain, so this
+ * signal is observability-only.
  */
-export async function rindexerSyncedBlock(query: QueryFn): Promise<bigint | null> {
-  const rows = await query(SYNCED_BLOCK_SQL)
+export async function rindexerSyncedBlock(
+  query: QueryFn,
+  network: Network
+): Promise<bigint | null> {
+  const rows = await query(SYNCED_BLOCK_SQL, [network])
   const head = rows[0]?.head
   if (typeof head === 'bigint') return head
   if (typeof head === 'number' || typeof head === 'string') return BigInt(head)
@@ -174,8 +196,10 @@ export async function discoveryDiagnostics(query: QueryFn): Promise<DiscoveryDia
   }
 }
 
-/** Runtime adapter: a {@link QueryFn} backed by Bun's built-in Postgres client. */
+/** Runtime adapter: a {@link QueryFn} backed by Bun's built-in Postgres client. Bound params are
+ * forwarded to `SQL.unsafe(sql, values)` so values (e.g. the network name) go over the wire as
+ * parameters, never string-interpolated. */
 export function createPostgresQuery(databaseUrl: string): QueryFn {
   const db = new SQL(databaseUrl)
-  return async sql => db.unsafe(sql)
+  return async (sql, params) => db.unsafe(sql, params as never)
 }

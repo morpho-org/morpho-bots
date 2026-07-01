@@ -15,5 +15,11 @@
     "0x97bE14Dd8f994A5364573BC035D85309E7CB34de": { "venue": "1inch", "slippageBps": 150 },
     "0xc1CBa3fCea344f92D9239c08C0568f6F2F0ee452": { "venue": "1inch", "slippageBps": 100 },
     "0x940181a94A35A4569E4529A3CDfB74e38FD98631": { "venue": "1inch", "slippageBps": 200 }
+  },
+  "4663": {
+    "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34": { "venue": "0x", "slippageBps": 100 },
+    "0x40858070814a57FdF33a613ae84fE0a8b4a874f7": { "venue": "0x", "slippageBps": 100 },
+    "0xde770c84FE66E063336b31737cFE9790f18c4087": { "venue": "0x", "slippageBps": 100 },
+    "0x1149B3D6aFFF8377D6E9bB028cD1831fAd63EBB4": { "venue": "0x", "slippageBps": 100 }
   }
 }

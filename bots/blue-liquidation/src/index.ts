@@ -42,6 +42,7 @@ async function main() {
 
   logger.info('startup', {
     chainId: config.chainId,
+    network: config.network,
     liquidator: eoa,
     callback: config.executooorAddress,
     morpho: config.morpho
@@ -132,7 +133,7 @@ async function main() {
   // recovered on-chain via idToMarketParams(id) and cached (params never change per id), so
   // steady-state ticks make no extra RPC calls once every market has been seen once.
   const resolveParams = createMarketParamsResolver(multicallIdToMarketParams(client, config.morpho))
-  const discover = () => discoverCandidates(query, resolveParams)
+  const discover = () => discoverCandidates(query, resolveParams, config.network)
 
   // Startup discovery self-check (non-fatal): surface the rindexer schema + first discovery result so
   // a column-name mismatch or a not-yet-migrated table is diagnosable from Railway logs at boot,
@@ -144,16 +145,20 @@ async function main() {
       logger.warn('discovery.startup_error', { detail: ensureError(diag.error).message })
     } else {
       logger.info('discovery.schema', {
+        network: config.network,
         // The ACTUAL rindexer `borrow` column names — compare against what BORROWER_IDS_SQL selects
         // if discovery yields zero candidates while rindexer is synced.
         borrow: diag.data.borrow
       })
-      const probe = await tryCatch(Promise.all([discover(), rindexerSyncedBlock(query)]))
+      const probe = await tryCatch(
+        Promise.all([discover(), rindexerSyncedBlock(query, config.network)])
+      )
       if (probe.error) {
         logger.warn('discovery.startup_error', { detail: ensureError(probe.error).message })
       } else {
         const [candidates, syncedBlock] = probe.data
         logger.info('discovery.startup', {
+          network: config.network,
           candidates: candidates.length,
           syncedBlock,
           // A sample so the join's parsed MarketParams can be eyeballed (non-zero addresses/lltv).
@@ -178,7 +183,7 @@ async function main() {
   const tick = (chainHead: bigint) =>
     runTick({
       discover,
-      syncedBlock: () => rindexerSyncedBlock(query),
+      syncedBlock: () => rindexerSyncedBlock(query, config.network),
       chainHead,
       readLens: pairs => readBlueLiquidationLens(client, config.morpho, pairs),
       quoteFor,

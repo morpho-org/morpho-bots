@@ -21,6 +21,11 @@ const BORROWER = '0x2222222222222222222222222222222222222222'
 const ID_BYTES = new Uint8Array(32).fill(0xab)
 const ID_HEX: Hex = `0x${'ab'.repeat(32)}`
 
+// A distinct Robinhood-network borrower, used to prove the network filter partitions the universe.
+const ID_BYTES_RH = new Uint8Array(32).fill(0xcd)
+const ID_HEX_RH: Hex = `0x${'cd'.repeat(32)}`
+const BORROWER_RH = '0x3333333333333333333333333333333333333333'
+
 const PARAMS: MarketParams = {
   loanToken: getAddress(LOAN),
   collateralToken: getAddress(COLL),
@@ -29,19 +34,35 @@ const PARAMS: MarketParams = {
   lltv: 860000000000000000n
 }
 
+// A fake rindexer `borrow` table spanning two chains. The fake honors the bound `$1` network param
+// exactly as Postgres would (`WHERE b.network = $1`), so tests using it prove the SQL genuinely
+// partitions by network — not merely that the filter text appears in the query string.
+const ROWS_BY_NETWORK: Record<string, { id: Uint8Array; borrower: string }[]> = {
+  base: [{ id: ID_BYTES, borrower: BORROWER }],
+  robinhood: [{ id: ID_BYTES_RH, borrower: BORROWER_RH }]
+}
+const partitionedQuery: QueryFn = async (_sql, params) => {
+  const network = typeof params?.[0] === 'string' ? params[0] : ''
+  return ROWS_BY_NETWORK[network] ?? []
+}
+
 describe('discoverBorrowerIds', () => {
   it('parses the bytea id to lowercase 0x-hex and checksums the borrower', async () => {
     const query: QueryFn = async () => [{ id: ID_BYTES, borrower: BORROWER }]
-    expect(await discoverBorrowerIds(query)).toEqual([
+    expect(await discoverBorrowerIds(query, 'base')).toEqual([
       { id: ID_HEX, borrower: getAddress(BORROWER) }
     ])
   })
 
   it('also accepts the id as a hex string (with or without 0x)', async () => {
-    const with0x = await discoverBorrowerIds(async () => [{ id: ID_HEX, borrower: BORROWER }])
-    const without = await discoverBorrowerIds(async () => [
-      { id: 'ab'.repeat(32), borrower: BORROWER }
-    ])
+    const with0x = await discoverBorrowerIds(
+      async () => [{ id: ID_HEX, borrower: BORROWER }],
+      'base'
+    )
+    const without = await discoverBorrowerIds(
+      async () => [{ id: 'ab'.repeat(32), borrower: BORROWER }],
+      'base'
+    )
     expect(with0x[0]!.id).toBe(ID_HEX)
     expect(without[0]!.id).toBe(ID_HEX)
   })
@@ -54,20 +75,37 @@ describe('discoverBorrowerIds', () => {
       { id: ID_BYTES, borrower: 'not-an-address' },
       { id: ID_BYTES, borrower: null }
     ]
-    expect(await discoverBorrowerIds(query)).toHaveLength(1)
+    expect(await discoverBorrowerIds(query, 'base')).toHaveLength(1)
   })
 
-  it('selects distinct (id, on_behalf) from the borrow table and does NOT join create_market', async () => {
+  // The load-bearing multi-chain test: a Base-network query must return ONLY Base rows and never a
+  // Robinhood row (and vice versa). This exercises the real filtering behavior, so a broken/dropped
+  // `WHERE b.network = $1` fails it — unlike a string-contains check on the query text.
+  it('partitions the candidate universe by the bound network param', async () => {
+    const onBase = await discoverBorrowerIds(partitionedQuery, 'base')
+    const onRobinhood = await discoverBorrowerIds(partitionedQuery, 'robinhood')
+    expect(onBase).toEqual([{ id: ID_HEX, borrower: getAddress(BORROWER) }])
+    expect(onRobinhood).toEqual([{ id: ID_HEX_RH, borrower: getAddress(BORROWER_RH) }])
+    expect(onBase.some(pair => pair.borrower === getAddress(BORROWER_RH))).toBe(false)
+    expect(onRobinhood.some(pair => pair.borrower === getAddress(BORROWER))).toBe(false)
+  })
+
+  it('filters by network via a bound param and does NOT join create_market', async () => {
     let captured = ''
-    const query: QueryFn = async sql => {
+    let capturedParams: readonly unknown[] | undefined
+    const query: QueryFn = async (sql, params) => {
       captured = sql
+      capturedParams = params
       return []
     }
-    await discoverBorrowerIds(query)
+    await discoverBorrowerIds(query, 'base')
     expect(captured).toContain('blue_liquidation_morpho.borrow')
     expect(captured).toContain('DISTINCT')
     expect(captured).toContain('b.id')
     expect(captured).toContain('b.on_behalf')
+    // The network is a bound param ($1), never string-interpolated into the SQL.
+    expect(captured).toContain('b.network = $1')
+    expect(capturedParams).toEqual(['base'])
     // CreateMarket is no longer indexed — params come from idToMarketParams(id), not a join.
     expect(captured).not.toContain('create_market')
     expect(captured).not.toContain('JOIN')
@@ -78,7 +116,7 @@ describe('discoverCandidates', () => {
   it('resolves each discovered id to its params and returns (marketParams, borrower)', async () => {
     const query: QueryFn = async () => [{ id: ID_BYTES, borrower: BORROWER }]
     const resolveParams = async (ids: readonly Hex[]) => new Map(ids.map(id => [id, PARAMS]))
-    expect(await discoverCandidates(query, resolveParams)).toEqual([
+    expect(await discoverCandidates(query, resolveParams, 'base')).toEqual([
       { marketParams: PARAMS, borrower: getAddress(BORROWER) }
     ])
   })
@@ -86,7 +124,7 @@ describe('discoverCandidates', () => {
   it('drops a pair whose id does not resolve to a market', async () => {
     const query: QueryFn = async () => [{ id: ID_BYTES, borrower: BORROWER }]
     const resolveParams = async () => new Map<Hex, MarketParams>() // resolves nothing
-    expect(await discoverCandidates(query, resolveParams)).toEqual([])
+    expect(await discoverCandidates(query, resolveParams, 'base')).toEqual([])
   })
 
   it('passes the discovered ids to the resolver', async () => {
@@ -96,32 +134,44 @@ describe('discoverCandidates', () => {
       seen = ids
       return new Map(ids.map(id => [id, PARAMS]))
     }
-    await discoverCandidates(query, resolveParams)
+    await discoverCandidates(query, resolveParams, 'base')
     expect(seen).toEqual([ID_HEX])
+  })
+
+  it('only surfaces the requested network (composes the partitioning filter)', async () => {
+    const resolveParams = async (ids: readonly Hex[]) => new Map(ids.map(id => [id, PARAMS]))
+    const onRobinhood = await discoverCandidates(partitionedQuery, resolveParams, 'robinhood')
+    expect(onRobinhood).toEqual([{ marketParams: PARAMS, borrower: getAddress(BORROWER_RH) }])
   })
 })
 
 describe('rindexerSyncedBlock', () => {
   it('returns the head as a bigint (number, string, or bigint columns)', async () => {
-    expect(await rindexerSyncedBlock(async () => [{ head: 12345 }])).toBe(12345n)
-    expect(await rindexerSyncedBlock(async () => [{ head: '12345' }])).toBe(12345n)
-    expect(await rindexerSyncedBlock(async () => [{ head: 12345n }])).toBe(12345n)
+    expect(await rindexerSyncedBlock(async () => [{ head: 12345 }], 'base')).toBe(12345n)
+    expect(await rindexerSyncedBlock(async () => [{ head: '12345' }], 'base')).toBe(12345n)
+    expect(await rindexerSyncedBlock(async () => [{ head: 12345n }], 'base')).toBe(12345n)
   })
 
   it('returns null when the table is empty or the head is missing', async () => {
-    expect(await rindexerSyncedBlock(async () => [])).toBeNull()
-    expect(await rindexerSyncedBlock(async () => [{ head: null }])).toBeNull()
+    expect(await rindexerSyncedBlock(async () => [], 'base')).toBeNull()
+    expect(await rindexerSyncedBlock(async () => [{ head: null }], 'base')).toBeNull()
   })
 
-  it("reads rindexer's internal progress table, not MAX(block_number) over event rows", async () => {
+  it("reads this network's row from rindexer's progress table, not MAX(block_number)", async () => {
     let captured = ''
-    const query: QueryFn = async sql => {
+    let capturedParams: readonly unknown[] | undefined
+    const query: QueryFn = async (sql, params) => {
       captured = sql
+      capturedParams = params
       return [{ head: 1n }]
     }
-    await rindexerSyncedBlock(query)
+    await rindexerSyncedBlock(query, 'robinhood')
     expect(captured).toContain('rindexer_internal.blue_liquidation_morpho_borrow')
     expect(captured).toContain('last_synced_block')
+    expect(captured).toContain('network = $1')
+    expect(capturedParams).toEqual(['robinhood'])
+    // Not an unfiltered aggregate — that would report the furthest-ahead chain's head to every bot.
+    expect(captured).not.toContain('MAX')
     expect(captured).not.toContain('block_number')
   })
 })

@@ -32,12 +32,23 @@ describe('loadConfig', () => {
   it('loads a valid Base config with the canonical Morpho singleton', () => {
     const config = loadConfig(baseEnv())
     expect(config.chainId).toBe(base.id)
+    expect(config.network).toBe('base')
     expect(config.morpho).toBe(MORPHO)
     expect(config.chain.id).toBe(base.id)
     expect(config.rpcUrl).toBe('https://base.example')
     // Executor address is derived from the deterministic CREATE2 factory when not overridden.
     expect(config.executooorAddress).toMatch(/^0x[0-9a-fA-F]{40}$/)
     expect(config.swapConfig).toEqual({})
+  })
+
+  it('resolves the Robinhood chain with its own (non-canonical) Morpho singleton and network', () => {
+    const config = loadConfig(baseEnv({ CHAIN_ID: '4663' }))
+    expect(config.chainId).toBe(4663)
+    expect(config.chain.id).toBe(4663)
+    expect(config.network).toBe('robinhood')
+    // Robinhood's singleton is at a DIFFERENT address than Base's canonical 0xBBBB…
+    expect(config.morpho).toBe(getAddress('0x9D53d5E3bd5E8d4Cbfa6DB1ca238AEA02E651010'))
+    expect(config.morpho).not.toBe(MORPHO)
   })
 
   it('fails loud on each missing required var', () => {
@@ -55,7 +66,7 @@ describe('loadConfig', () => {
 
   it('honors an injected chain map (so a new chain is wired in one place)', () => {
     const chainMap: Record<number, ChainConfig> = {
-      [base.id]: { chain: base, morpho: MORPHO }
+      [base.id]: { chain: base, morpho: MORPHO, network: 'base' }
     }
     expect(loadConfig(baseEnv(), { chainMap }).morpho).toBe(MORPHO)
     // A chain absent from the injected map is rejected even if it is a real chain id.

@@ -1,7 +1,9 @@
 /**
- * Reproducible, idempotent deployment of the 3-component blue-liquidation system to a Railway
- * project: managed Postgres + a `rindexer` service + the `bot` runner. The bot reads borrower
- * candidates from rindexer's Postgres tables, so all three are provisioned here.
+ * Reproducible, idempotent deployment of the multi-chain blue-liquidation system to a Railway
+ * project: managed Postgres + ONE shared `rindexer` service (indexing every chain's Borrow events
+ * into one database) + one `bot-<chainId>` runner per chain (see CHAINS below). Each bot reads
+ * borrower candidates from rindexer's Postgres tables (filtered to its own chain's `network`), so all
+ * are provisioned here.
  *
  * Runs anywhere with the `railway` CLI installed and authenticated. The target project is supplied
  * entirely via env vars — no project identifier is baked into this (open-source) file:
@@ -10,17 +12,25 @@
  *     every command is then implicitly scoped to it.
  *   - Local: an interactive `railway login` session; the script links the project by id.
  *
- *   RAILWAY_PROJECT_ID=… RPC_URL=… LIQUIDATOR_PRIVATE_KEY=0x… \
+ * Per-chain env vars are chainId-suffixed (endpoints/keys differ per chain):
+ *   - RPC_URL_<chainId>            (required per chain) — the bot's RPC (reads, simulate, sends)
+ *   - RINDEXER_RPC_URL_<chainId>   (optional; defaults to RPC_URL_<chainId>) — that network's indexer RPC
+ *   - LIQUIDATOR_PRIVATE_KEY_<chainId> (per chain) OR a shared LIQUIDATOR_PRIVATE_KEY fallback
+ *   - ZEROX_API_KEY[_<chainId>] / ONEINCH_API_KEY[_<chainId>] (optional; only if a collateral routes there)
+ *
+ *   RAILWAY_PROJECT_ID=… RPC_URL_8453=… RPC_URL_4663=… LIQUIDATOR_PRIVATE_KEY=0x… \
  *     bun run --filter @morpho-org/blue-liquidation deploy:railway
  *
  * The build context MUST be the repo root so the bun workspace (packages/*) resolves — the script
  * runs `railway up` with cwd set to the repo root (mirrors the Dockerfile header + compose context).
  *
- * Idempotent: existing services / volume / variables are reused; each run redeploys both services.
+ * Idempotent: existing services / volume / variables are reused; each run redeploys the rindexer and
+ * every bot. Cutover: the pre-multichain `bot` service is removed once its replacement `bot-8453` is
+ * confirmed healthy (leaving it would run a second, stale Base liquidator with a funded key).
  *
- * Secret hygiene: secrets (RPC_URL, RINDEXER_RPC_URL, LIQUIDATOR_PRIVATE_KEY, aggregator keys) are
- * piped to `railway variable set --stdin` so their values never appear in argv; on failure we surface
- * only the variable key, never its value; variable values are never logged.
+ * Secret hygiene: secrets (per-chain RPC_URL/RINDEXER_RPC_URL, LIQUIDATOR_PRIVATE_KEY, aggregator
+ * keys) are piped to `railway variable set --stdin` so their values never appear in argv; on failure
+ * we surface only the variable key, never its value; variable values are never logged.
  */
 import { delay, tryCatch } from '@repo/utils'
 import { $ } from 'bun'
@@ -174,6 +184,25 @@ async function ensureService(name: string): Promise<void> {
   if (error) throw new Error(`Failed to create service ${name}: ${stderrOf(error)}`)
 }
 
+// Delete a service if it exists (used to retire the pre-multichain `bot` service after cutover). A
+// failure is a warning, not fatal — the deploy already succeeded; surface it so an operator removes
+// the stale service manually. `--yes` skips the confirmation prompt (non-TTY safe).
+async function removeService(name: string): Promise<void> {
+  if (!(await listServices()).some(service => service.name === name)) return
+  console.log(`Removing legacy service ${name}…`)
+  const { error } = await tryCatch(
+    Promise.resolve(
+      $`railway service delete --service ${name} --environment ${ENVIRONMENT} --yes --json`.quiet()
+    )
+  )
+  if (error)
+    console.warn(
+      `Could not remove legacy service ${name}: ${stderrOf(error)}\n` +
+        `  Remove it manually — otherwise it runs a second, stale Base liquidator with a funded key.`
+    )
+  else console.log(`Removed legacy service ${name}.`)
+}
+
 async function ensureVolume(service: string, mountPath: string): Promise<void> {
   const { data } = await tryCatch(Promise.resolve($`railway volume list --json`.quiet().text()))
   if (typeof data === 'string' && parseVolumeMountPaths(data).includes(mountPath)) {
@@ -264,14 +293,47 @@ async function waitForDeploy(
 
 await assertCli()
 
-// Secrets / config from this process's env (fail loud before mutating any Railway state).
-const rpcUrl = required(Bun.env, 'RPC_URL')
-const rindexerRpcUrl = Bun.env.RINDEXER_RPC_URL?.trim() || rpcUrl
-const liquidatorPrivateKey = required(Bun.env, 'LIQUIDATOR_PRIVATE_KEY')
-assertPrivateKey(liquidatorPrivateKey)
-// Aggregator keys are optional (only needed if the swap config routes a collateral through them).
-const zeroxApiKey = Bun.env.ZEROX_API_KEY?.trim()
-const oneInchApiKey = Bun.env.ONEINCH_API_KEY?.trim()
+// The chains this deploy targets: one `bot-<chainId>` service each, all sharing the one rindexer +
+// Postgres. `network` must match the rindexer.yaml network name and the bot's chain map. Add a chain
+// here + in rindexer.yaml + in src/config.ts to extend coverage.
+type ChainDeploy = { chainId: number; network: string; service: string }
+const CHAINS: ChainDeploy[] = [
+  { chainId: 8453, network: 'base', service: 'bot-8453' },
+  { chainId: 4663, network: 'robinhood', service: 'bot-4663' }
+]
+// The pre-multichain single-chain service name, retired after `bot-8453` is confirmed healthy.
+const LEGACY_BOT_SERVICE = 'bot'
+
+// Read a chainId-suffixed env var (e.g. RPC_URL_8453). RPC endpoints differ per chain so these are
+// effectively required per chain; the private key may instead fall back to a shared unsuffixed key.
+function suffixed(name: string, chainId: number): string | undefined {
+  return Bun.env[`${name}_${chainId}`]?.trim() || undefined
+}
+function requiredSuffixed(name: string, chainId: number): string {
+  const value = suffixed(name, chainId)
+  if (!value) throw new Error(`Missing required env var: ${name}_${chainId}`)
+  return value
+}
+
+// Per-chain secrets/config, read + validated up front so we fail loud before mutating Railway state.
+const chainSecrets = CHAINS.map(chain => {
+  const rpcUrl = requiredSuffixed('RPC_URL', chain.chainId)
+  // rindexer indexes each network from its own RPC; default to the bot's RPC for that chain.
+  const rindexerRpcUrl = suffixed('RINDEXER_RPC_URL', chain.chainId) ?? rpcUrl
+  // A single funded key may be reused across chains (unsuffixed fallback), or set one per chain.
+  const liquidatorPrivateKey =
+    suffixed('LIQUIDATOR_PRIVATE_KEY', chain.chainId) ?? Bun.env.LIQUIDATOR_PRIVATE_KEY?.trim()
+  if (!liquidatorPrivateKey)
+    throw new Error(
+      `Missing required env var: LIQUIDATOR_PRIVATE_KEY_${chain.chainId} (or a shared LIQUIDATOR_PRIVATE_KEY)`
+    )
+  assertPrivateKey(liquidatorPrivateKey)
+  // Aggregator keys are optional (only if the chain's swap config routes a collateral through them).
+  const zeroxApiKey = suffixed('ZEROX_API_KEY', chain.chainId) ?? Bun.env.ZEROX_API_KEY?.trim()
+  const oneInchApiKey =
+    suffixed('ONEINCH_API_KEY', chain.chainId) ?? Bun.env.ONEINCH_API_KEY?.trim()
+  return { ...chain, rpcUrl, rindexerRpcUrl, liquidatorPrivateKey, zeroxApiKey, oneInchApiKey }
+})
 
 await ensureContext()
 const postgresName = await ensurePostgres()
@@ -279,59 +341,75 @@ const postgresName = await ensurePostgres()
 // it) and Railway resolves it to the Postgres connection string at runtime.
 const databaseUrlRef = 'DATABASE_URL=${{' + postgresName + '.DATABASE_URL}}'
 
-// --- rindexer: indexes Morpho Blue CreateMarket + Borrow events into Postgres (BUILD_TARGET selects
-// the rindexer stage).
+// --- rindexer: ONE shared process indexing every chain's Borrow events into Postgres (BUILD_TARGET
+// selects the rindexer stage). Each network reads its own RPC via RINDEXER_RPC_URL_<chainId>, matching
+// the `${RINDEXER_RPC_URL_<chainId>}` interpolations in rindexer.yaml.
 await ensureService('rindexer')
 await setVar('rindexer', `RAILWAY_DOCKERFILE_PATH=${DOCKERFILE_PATH}`)
 await setVar('rindexer', 'BUILD_TARGET=rindexer')
 await setVar('rindexer', 'PROJECT_PATH=/app/project_path')
 await setVar('rindexer', databaseUrlRef)
-await setSecret('rindexer', 'RINDEXER_RPC_URL', rindexerRpcUrl)
+for (const chain of chainSecrets) {
+  await setSecret('rindexer', `RINDEXER_RPC_URL_${chain.chainId}`, chain.rindexerRpcUrl)
+}
 await deployService('rindexer')
 
-// --- bot: the liquidation runner (BUILD_TARGET selects the bun bot stage). Swap config lives on a
-// volume at /config (uploaded out-of-band — see manual steps below).
-await ensureService('bot')
-await ensureVolume('bot', SWAP_MOUNT_PATH)
-await setVar('bot', 'CHAIN_ID=8453')
-await setVar('bot', `RAILWAY_DOCKERFILE_PATH=${DOCKERFILE_PATH}`)
-await setVar('bot', 'BUILD_TARGET=bot')
-await setVar('bot', `SWAP_CONFIG_PATH=${SWAP_CONFIG_PATH}`)
-await setVar('bot', 'LOG_LEVEL=info')
-await setVar('bot', databaseUrlRef)
-await setSecret('bot', 'RPC_URL', rpcUrl)
-await setSecret('bot', 'LIQUIDATOR_PRIVATE_KEY', liquidatorPrivateKey)
-if (zeroxApiKey) await setSecret('bot', 'ZEROX_API_KEY', zeroxApiKey)
-if (oneInchApiKey) await setSecret('bot', 'ONEINCH_API_KEY', oneInchApiKey)
-await deployService('bot')
+// --- bot-<chainId>: one liquidation runner per chain (BUILD_TARGET selects the bun bot stage), all
+// sharing the one rindexer + Postgres. The in-container var names stay RPC_URL / LIQUIDATOR_PRIVATE_KEY
+// (the chainId suffix is only an operator-side convention). Swap config lives on a per-service /config
+// volume (uploaded out-of-band — see manual steps below).
+for (const chain of chainSecrets) {
+  await ensureService(chain.service)
+  await ensureVolume(chain.service, SWAP_MOUNT_PATH)
+  await setVar(chain.service, `CHAIN_ID=${chain.chainId}`)
+  await setVar(chain.service, `RAILWAY_DOCKERFILE_PATH=${DOCKERFILE_PATH}`)
+  await setVar(chain.service, 'BUILD_TARGET=bot')
+  await setVar(chain.service, `SWAP_CONFIG_PATH=${SWAP_CONFIG_PATH}`)
+  await setVar(chain.service, 'LOG_LEVEL=info')
+  await setVar(chain.service, databaseUrlRef)
+  await setSecret(chain.service, 'RPC_URL', chain.rpcUrl)
+  await setSecret(chain.service, 'LIQUIDATOR_PRIVATE_KEY', chain.liquidatorPrivateKey)
+  if (chain.zeroxApiKey) await setSecret(chain.service, 'ZEROX_API_KEY', chain.zeroxApiKey)
+  if (chain.oneInchApiKey) await setSecret(chain.service, 'ONEINCH_API_KEY', chain.oneInchApiKey)
+  await deployService(chain.service)
+}
 
 const rindexerStatus = await waitForDeploy('rindexer')
-const botStatus = await waitForDeploy('bot')
+const botStatuses = new Map<string, string>()
+for (const chain of chainSecrets) botStatuses.set(chain.service, await waitForDeploy(chain.service))
+
+// Cutover: retire the pre-multichain `bot` service ONLY once its replacement `bot-8453` is healthy,
+// so the Base liquidator is never left without a running instance. Leaving `bot` up would run a
+// second, stale Base liquidator with a funded key alongside bot-8453 (nonce contention/double-submits).
+const baseService = CHAINS.find(chain => chain.chainId === 8453)?.service
+if (baseService && botStatuses.get(baseService) === 'SUCCESS') {
+  await removeService(LEGACY_BOT_SERVICE)
+} else {
+  console.warn(
+    `Skipping '${LEGACY_BOT_SERVICE}' removal — bot-8453 not confirmed SUCCESS. Remove it manually ` +
+      `once bot-8453 is healthy to avoid a stale second Base liquidator.`
+  )
+}
 
 console.log('')
 console.log('=== Deployment status ===')
 console.log(`  rindexer: ${rindexerStatus}`)
-console.log(`  bot:      ${botStatus}`)
+for (const [service, status] of botStatuses) console.log(`  ${service}: ${status}`)
 console.log('')
 console.log('=== Manual steps ===')
-console.log(`  1. Upload swap.json into the bot's ${SWAP_MOUNT_PATH} volume to enable routed`)
-console.log('     liquidations (the bot boots without it — no routes: it identifies borrowers but')
-console.log(
-  '     skips every routed liquidation). The volume mounts only into a running container,'
-)
-console.log('     so do this once the bot is up:')
+console.log(`  1. For each chain that should ROUTE liquidations, upload swap.json into that bot's`)
+console.log(`     ${SWAP_MOUNT_PATH} volume (the bot boots without it — no routes: it identifies`)
+console.log('     borrowers but skips every routed liquidation). The volume mounts only into a')
+console.log('     running container, so do this once the bot is up, e.g. for Base:')
 console.log(`       railway volume files upload ./swap.config.json ${SWAP_CONFIG_PATH} --overwrite`)
 console.log('     (prompts for the volume; or pass --volume <name> before the subcommand. Shape:')
 console.log(
-  '     bots/blue-liquidation/configs/example.json.) Restart the bot afterward to pick up routes.'
+  '     bots/blue-liquidation/configs/example.json.) Restart that bot afterward to pick up routes.'
 )
-console.log('  2. The bot still needs a funded key + a real RPC before it can broadcast.')
+console.log('     Robinhood (bot-4663) launches DETECTION-ONLY — no swap route configured yet.')
+console.log('  2. Each bot needs a funded key + a real RPC before it can broadcast; Robinhood also')
+console.log('     needs the Executor deployed (bun run --filter @repo/contracts deploy:executor).')
 
 // FAILED/TIMEOUT signal a real build or platform problem; a bot CRASH pre-config is expected.
-process.exitCode =
-  rindexerStatus === 'FAILED' ||
-  rindexerStatus === 'TIMEOUT' ||
-  botStatus === 'FAILED' ||
-  botStatus === 'TIMEOUT'
-    ? 1
-    : 0
+const badStatus = (status: string) => status === 'FAILED' || status === 'TIMEOUT'
+process.exitCode = badStatus(rindexerStatus) || [...botStatuses.values()].some(badStatus) ? 1 : 0

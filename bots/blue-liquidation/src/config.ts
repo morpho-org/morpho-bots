@@ -3,7 +3,7 @@ import type { Address, Chain, Hex } from 'viem'
 import { Executor } from '@repo/contracts'
 import { addressSchema, tryCatch } from '@repo/utils'
 import { readFileSync } from 'node:fs'
-import { getAddress, isAddress, isHex, parseGwei } from 'viem'
+import { defineChain, getAddress, isAddress, isHex, parseGwei } from 'viem'
 import { base } from 'viem/chains'
 import { z } from 'zod'
 
@@ -77,17 +77,47 @@ export function parseSwapConfig(raw: unknown): SwapConfig {
 // ---------------------------------------------------------------------------
 // Per-chain Morpho Blue deployment map
 // ---------------------------------------------------------------------------
-export type ChainConfig = { chain: Chain; morpho: Address }
+// Robinhood (chainId 4663, an Arbitrum Orbit chain) is not in `viem/chains`, so define it here. The
+// bot always reads its RPC from `RPC_URL` (config.rpcUrl), so `rpcUrls.default` is a cosmetic
+// fallback only; it points at the canonical public mainnet RPC per Robinhood's docs. Its Morpho Blue
+// singleton lives at a DIFFERENT address than Base's canonical one — hence the per-chain `morpho`.
+const robinhood = defineChain({
+  id: 4663,
+  name: 'Robinhood',
+  nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+  rpcUrls: { default: { http: ['https://rpc.mainnet.chain.robinhood.com'] } },
+  contracts: { multicall3: { address: '0xcA11bde05977b3631167028862bE2a173976CA11' } }
+})
 
-// Chains v0 supports, with the Morpho Blue singleton address per chain. The singleton is deployed
-// at the SAME canonical address on every chain, but we still map it per chain so the chain map is
-// the one place a new chain is wired (add its `chain` + `morpho` here). The deployless lens needs
-// no per-chain deployer — soltag bakes the CREATE2 factory + factoryData into its compiled output
-// (see the lens fetcher). On-chain validation of these addresses (getCode) lands at startup.
-// loadConfig fails loud for any CHAIN_ID not present here.
-const MORPHO_SINGLETON = getAddress('0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb')
+// The rindexer network name for a chain — the value rindexer writes into the shared Postgres table's
+// `network` column and the discriminator the bot filters discovery on (see discovery/borrowers.ts).
+// A closed union (not `string`) so a typo in the chain map vs. rindexer.yaml is a compile error, not
+// a silent empty-discovery at runtime.
+const NETWORKS = ['base', 'robinhood'] as const
+export type Network = (typeof NETWORKS)[number]
+
+export type ChainConfig = { chain: Chain; morpho: Address; network: Network }
+
+// Chains this bot supports, with the Morpho Blue singleton address and rindexer network name per
+// chain. The chain map is the one place a new chain is wired (add its `chain` + `morpho` + `network`
+// here, plus a matching entry in rindexer.yaml). Unlike Midnight, the Blue singleton is NOT at the
+// same address on every chain (Base uses the canonical 0xBBBB…; Robinhood uses 0x9D53…), so `morpho`
+// is genuinely per-chain. The deployless lens needs no per-chain deployer — soltag bakes the CREATE2
+// factory + factoryData into its compiled output (see the lens fetcher), but that factory must exist
+// on-chain (canonical 0x4e59… is present on both Base and Robinhood). On-chain validation of the
+// Morpho + Executor addresses (getCode) lands at startup. loadConfig fails loud for any CHAIN_ID not
+// present here.
 const CHAIN_MAP: Record<number, ChainConfig> = {
-  [base.id]: { chain: base, morpho: MORPHO_SINGLETON }
+  [base.id]: {
+    chain: base,
+    morpho: getAddress('0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb'),
+    network: 'base'
+  },
+  [robinhood.id]: {
+    chain: robinhood,
+    morpho: getAddress('0x9D53d5E3bd5E8d4Cbfa6DB1ca238AEA02E651010'),
+    network: 'robinhood'
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -123,6 +153,8 @@ export type QuotingConfig = {
 export type Config = {
   chainId: number
   chain: Chain
+  /** rindexer network name for this chain; the discovery SQL filters candidates on it. */
+  network: Network
   morpho: Address
   rpcUrl: string
   rpcUrlFallback: string | undefined
@@ -305,6 +337,7 @@ export function loadConfig(
   return {
     chainId,
     chain: chainConfig.chain,
+    network: chainConfig.network,
     morpho: chainConfig.morpho,
     rpcUrl,
     rpcUrlFallback: env.RPC_URL_FALLBACK?.trim() || undefined,
