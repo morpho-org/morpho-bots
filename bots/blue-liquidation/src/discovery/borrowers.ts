@@ -30,18 +30,19 @@ export type BorrowerCandidate = { marketParams: MarketParams; borrower: Address 
 // Buffer, so we never compare it as a hex string — we join `bytea = bytea` directly in SQL, which
 // sidesteps the Buffer/hex mismatch entirely (no `id` column is selected out). (2) address args are
 // `character(42)` plain `0x…` strings; uint256 args (`lltv`) come back as a numeric string. The
-// nested `marketParams` tuple is flattened by rindexer into per-field columns; the field names below
-// (`loan_token`, `collateral_token`, `oracle`, `irm`, `lltv`) are the expected snake_case flattening
-// — if a live run reveals a `market_params_`-prefixed form, this is the single line to adjust, and
-// the aliased SELECT keeps `parseCandidate` below unchanged.
+// nested `marketParams` tuple is flattened by rindexer into per-field columns, CONFIRMED by the live
+// blue-liquidation rindexer run to carry a `market_params_` prefix (`market_params_loan_token`,
+// `market_params_collateral_token`, `market_params_oracle`, `market_params_irm`, `market_params_lltv`)
+// — surfaced by the `discovery.schema` startup diagnostic. The SELECT aliases each back to the bare
+// field name (`loan_token`, …), so `parseCandidate` below is unchanged.
 const BORROWERS_SQL = `
   SELECT DISTINCT
-    b.on_behalf        AS borrower,
-    cm.loan_token      AS loan_token,
-    cm.collateral_token AS collateral_token,
-    cm.oracle          AS oracle,
-    cm.irm             AS irm,
-    cm.lltv            AS lltv
+    b.on_behalf                       AS borrower,
+    cm.market_params_loan_token       AS loan_token,
+    cm.market_params_collateral_token AS collateral_token,
+    cm.market_params_oracle           AS oracle,
+    cm.market_params_irm              AS irm,
+    cm.market_params_lltv             AS lltv
   FROM blue_liquidation_morpho.borrow b
   JOIN blue_liquidation_morpho.create_market cm ON b.id = cm.id
 `
@@ -148,7 +149,14 @@ async function probeTable(query: QueryFn, table: string): Promise<TableDiagnosti
   if (columns.length === 0) return { present: false, columns: [], rowCount: null }
   const countRows = await query(`SELECT count(*)::bigint AS n FROM ${SCHEMA}.${table}`)
   const raw = countRows[0]?.n
-  const rowCount = typeof raw === 'bigint' || typeof raw === 'number' ? Number(raw) : null
+  // Bun's Postgres client returns a `bigint` column as a decimal string (to avoid precision loss),
+  // so accept string too — else the count silently reports null even when the table has rows.
+  const rowCount =
+    typeof raw === 'bigint' || typeof raw === 'number'
+      ? Number(raw)
+      : typeof raw === 'string' && /^\d+$/.test(raw)
+        ? Number(raw)
+        : null
   return { present: true, columns, rowCount }
 }
 

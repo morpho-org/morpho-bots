@@ -78,6 +78,11 @@ describe('discoverBorrowers', () => {
     expect(captured).toContain('blue_liquidation_morpho.borrow')
     expect(captured).toContain('blue_liquidation_morpho.create_market')
     expect(captured).toContain('JOIN')
+    // rindexer flattens the nested MarketParams tuple with a `market_params_` prefix (confirmed by the
+    // live run's discovery.schema dump); the join must select the prefixed columns, not the bare names.
+    expect(captured).toContain('cm.market_params_loan_token')
+    expect(captured).toContain('cm.market_params_lltv')
+    expect(captured).toContain('b.on_behalf')
   })
 })
 
@@ -140,6 +145,16 @@ describe('discoveryDiagnostics', () => {
       columns: ['id', 'loan_token', 'collateral_token'],
       rowCount: 7
     })
+  })
+
+  it('parses a string row count (Bun returns count(*)::bigint as a decimal string)', async () => {
+    const query: QueryFn = async sql => {
+      if (sql.includes('information_schema.columns')) return [{ column_name: 'id' }]
+      return [{ n: '42' }] // bigint column comes back as a string, not a JS bigint
+    }
+    const diag = await discoveryDiagnostics(query)
+    expect(diag.borrow.rowCount).toBe(42)
+    expect(diag.createMarket.rowCount).toBe(42)
   })
 
   it('reports a not-yet-migrated table as absent (present:false) without throwing', async () => {

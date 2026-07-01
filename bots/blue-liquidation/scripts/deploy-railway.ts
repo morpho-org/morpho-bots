@@ -217,14 +217,32 @@ async function setSecret(service: string, key: string, value: string): Promise<v
 
 async function deployService(service: string): Promise<void> {
   console.log(`Deploying ${service} from repo root…`)
+  // Pass -p/-e explicitly: `railway link` doesn't reliably carry the environment into this non-TTY
+  // subprocess, so `railway up` otherwise errors "No environment specified". Self-contained > ambient.
   const { error } = await tryCatch(
-    Promise.resolve($`railway up -s ${service} -d`.cwd(REPO_ROOT).quiet())
+    Promise.resolve(
+      $`railway up -s ${service} -e ${ENVIRONMENT} -p ${PROJECT_ID} -d`.cwd(REPO_ROOT).quiet()
+    )
   )
   if (error) throw new Error(`Failed to start deploy for ${service}: ${stderrOf(error)}`)
 }
 
 async function latestStatus(service: string): Promise<string> {
-  const args = ['railway', 'deployment', 'list', '-s', service, '--limit', '1', '--json']
+  // -e/-p explicit for the same reason as deployService: don't depend on ambient link state.
+  const args = [
+    'railway',
+    'deployment',
+    'list',
+    '-s',
+    service,
+    '-e',
+    ENVIRONMENT,
+    '-p',
+    PROJECT_ID,
+    '--limit',
+    '1',
+    '--json'
+  ]
   const { data, error } = await tryCatch(Promise.resolve($`${args}`.quiet().text()))
   return error || typeof data !== 'string' ? 'UNKNOWN' : parseLatestStatus(data)
 }
