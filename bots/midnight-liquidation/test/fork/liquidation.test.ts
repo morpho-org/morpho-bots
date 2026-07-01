@@ -7,8 +7,9 @@ import { base } from 'viem/chains'
 import { assertContractDeployed, createDeploylessClient } from '../../src/client'
 import { encodeLiquidationExec } from '../../src/execution/encode-call'
 import { simulateLiquidationExec } from '../../src/execution/simulate'
-import { buildSwapStep } from '../../src/execution/swap-step'
+import { expectedLoanOut } from '../../src/execution/swap-step'
 import { initialFees } from '../../src/queue/fee-policy'
+import { quoteUniswapV3 } from '../../src/quotes/venues/uniswap-v3'
 import { isLiquidatable, planInputFromLens } from '../../src/runner/eligibility'
 import { createSigner } from '../../src/signer'
 import { plan } from '../../src/sizing/plan'
@@ -91,20 +92,31 @@ describe('fork: end-to-end liquidation against a real Base position', () => {
     expect(isLiquidatable(out)).toBe(true)
 
     // 3. Plan: this position is over-collateralized post-maturity (slot ~$6.5 vs ~$0.68 debt), so the
-    //    plan repays the full debt and lets the contract derive the (smaller) seize — seizing the whole
-    //    slot would over-repay and revert.
+    //    cap binds. Seize-exact pins the largest seize whose contract-derived repaid stays within the
+    //    debt (seizing the whole slot would over-repay and revert), and lets the contract ceil-derive
+    //    `repaidUnits`. The successful exec below is the on-chain proof that the derived repaid stayed
+    //    within the cap (no RCF / debt-underflow revert).
     const liquidationPlan = plan(planInputFromLens(out))
     expect(liquidationPlan).not.toBeNull()
     if (!liquidationPlan) throw new Error('plan returned null')
     expect(liquidationPlan.postMaturityMode).toBe(true)
-    expect(liquidationPlan.seizedAssets).toBe(0n)
-    expect(liquidationPlan.repaidUnits).toBeGreaterThan(0n)
+    expect(liquidationPlan.seizedAssets).toBeGreaterThan(0n)
+    expect(liquidationPlan.repaidUnits).toBe(0n)
 
-    // 4. Single-hop swap step (cbBTC → USDC via the operator pool) + the real exec calldata.
-    const swapStep = buildSwapStep(
-      { router: SWAP_ROUTER_02, fee: POOL_FEE, slippageBps: SLIPPAGE_BPS },
-      liquidationPlan,
-      out
+    // 4. Single-hop Uniswap-V3 swap (cbBTC → USDC via the operator pool) + the real exec calldata.
+    const collateral = out.market.collateralParams[liquidationPlan.collateralIndex]
+    if (!collateral) throw new Error('collateral param missing')
+    const swap = quoteUniswapV3(
+      { router: SWAP_ROUTER_02, fee: POOL_FEE },
+      {
+        chainId: base.id,
+        tokenIn: collateral.token,
+        tokenOut: out.market.loanToken,
+        amountIn: liquidationPlan.seizedAssets,
+        slippageBps: SLIPPAGE_BPS,
+        executor: executooor,
+        referenceAmountOut: expectedLoanOut(liquidationPlan, out)
+      }
     )
     const data = encodeLiquidationExec({
       executor: executooor,
@@ -115,7 +127,7 @@ describe('fork: end-to-end liquidation against a real Base position', () => {
       repaidUnits: liquidationPlan.repaidUnits,
       borrower: POSITION.borrower,
       postMaturityMode: liquidationPlan.postMaturityMode,
-      swapStep,
+      swap,
       recipient: LIQUIDATOR
     })
 

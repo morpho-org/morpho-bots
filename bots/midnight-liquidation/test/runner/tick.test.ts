@@ -4,11 +4,12 @@ import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
 
 import type { BorrowerCandidate } from '../../src/discovery/borrowers'
-import type { SwapStep } from '../../src/execution/encode-call'
 import type { SimulateResult } from '../../src/execution/simulate'
 import type { Logger } from '../../src/logger'
+import type { QuoteOutcome, Swap } from '../../src/quotes/types'
 import type { LensInput, LensOut } from '../../src/state/lens.sol'
 
+import { createBackoff } from '../../src/queue/backoff'
 import { runTick } from '../../src/runner/tick'
 import { lensKey } from '../../src/state/lens.sol'
 
@@ -34,7 +35,15 @@ const ZERO = '0x0000000000000000000000000000000000000000' as const
 const MARKET: Hex = `0x${'a'.repeat(64)}`
 const LABEL = lensKey(MARKET, BORROWER)
 
-const SWAP_STEP: SwapStep = { router: ROUTER, fee: 3000, amountOutMinimum: 1n }
+const SWAP: Swap = {
+  spender: ROUTER,
+  target: ROUTER,
+  value: 0n,
+  callData: '0xabcdef',
+  amountIn: { source: 'balance', offset: 132n },
+  expectedAmountOut: 2000n,
+  amountOutMinimum: 1n
+}
 
 // A liquidatable reading: valid, gate open, has debt, unlocked, unhealthy, pre-maturity.
 function lensOut(overrides: Partial<LensOut> = {}): LensOut {
@@ -82,24 +91,36 @@ function stubReadLens(out: LensOut | null) {
 function runWith(opts: {
   out?: LensOut | null
   simulateResult?: SimulateResult
+  quoteOutcome?: QuoteOutcome
   borrowers?: Address[]
   synced?: bigint | null
   chainHead?: bigint
   inflight?: ReadonlySet<string>
   noSwap?: boolean
+  seedBackoffAt?: bigint
 }) {
   const { logger, events } = spyLogger()
   let simulateCalls = 0
   let submitCalls = 0
   let onBlockCalls = 0
+  let quoteCalls = 0
   const chainHead = opts.chainHead ?? 100n
+  const backoff = createBackoff({ baseBlocks: 2n, maxBlocks: 64n })
+  if (opts.seedBackoffAt !== undefined) backoff.record(LABEL, opts.seedBackoffAt)
+  const defaultOutcome: QuoteOutcome = opts.noSwap
+    ? { kind: 'no_config' }
+    : { kind: 'swap', swap: SWAP }
   const result = runTick({
     discover: async () => candidates(...(opts.borrowers ?? [BORROWER])),
     syncedBlock: async () => (opts.synced === undefined ? chainHead : opts.synced),
     chainHead,
     caller: CALLER,
+    seizeCapMarginBps: 0,
     readLens: stubReadLens(opts.out === undefined ? lensOut() : opts.out),
-    swapStepFor: () => (opts.noSwap ? null : SWAP_STEP),
+    quoteFor: async () => {
+      quoteCalls += 1
+      return opts.quoteOutcome ?? defaultOutcome
+    },
     simulate: async () => {
       simulateCalls += 1
       return opts.simulateResult ?? { status: 'ok' }
@@ -107,6 +128,7 @@ function runWith(opts: {
     submit: async () => {
       submitCalls += 1
     },
+    backoff,
     pendingOnBlock: async () => {
       onBlockCalls += 1
     },
@@ -115,15 +137,17 @@ function runWith(opts: {
   })
   return result.then(counters => ({
     counters,
+    backoff,
     simulateCalls: () => simulateCalls,
     submitCalls: () => submitCalls,
     onBlockCalls: () => onBlockCalls,
+    quoteCalls: () => quoteCalls,
     events
   }))
 }
 
 describe('runTick', () => {
-  it('plans, simulates, and submits a liquidatable pair on a successful sim', async () => {
+  it('plans, quotes, simulates, and submits a liquidatable pair on a successful sim', async () => {
     const { counters, simulateCalls, submitCalls, onBlockCalls } = await runWith({
       simulateResult: { status: 'ok' }
     })
@@ -132,6 +156,8 @@ describe('runTick', () => {
       liquidatable: 1,
       planned: 1,
       noSwapPath: 0,
+      quoteFailed: 0,
+      backoffSkipped: 0,
       ok: 1,
       reverted: 0,
       submitted: 1
@@ -141,26 +167,62 @@ describe('runTick', () => {
     expect(onBlockCalls()).toBe(1) // pendingOnBlock runs every tick
   })
 
-  it('does not submit a reverting plan (not liquidatable / swap slippage / repay shortfall)', async () => {
-    const { counters, submitCalls } = await runWith({
+  it('does not submit a reverting plan and backs the position off', async () => {
+    const { counters, submitCalls, backoff } = await runWith({
       simulateResult: { status: 'revert', reason: 'amountOutMinimum not met' }
     })
     expect(counters.reverted).toBe(1)
     expect(counters.submitted).toBe(0)
     expect(submitCalls()).toBe(0)
+    expect(backoff.shouldSkip(LABEL, 100n)).toBe(true)
   })
 
-  it('skips with config.no_swap_path when no swap config covers the collateral', async () => {
-    const { counters, simulateCalls, submitCalls, events } = await runWith({ noSwap: true })
-    expect(counters).toMatchObject({ liquidatable: 1, planned: 1, noSwapPath: 1, submitted: 0 })
+  it('skips with config.no_swap_path when no swap config covers the collateral (no backoff)', async () => {
+    const { counters, simulateCalls, submitCalls, events, backoff } = await runWith({
+      noSwap: true
+    })
+    expect(counters).toMatchObject({
+      liquidatable: 1,
+      planned: 1,
+      noSwapPath: 1,
+      quoteFailed: 0,
+      submitted: 0
+    })
     expect(simulateCalls()).toBe(0) // skipped before simulating
     expect(submitCalls()).toBe(0)
     expect(events.some(e => e.event === 'config.no_swap_path')).toBe(true)
+    expect(backoff.shouldSkip(LABEL, 100n)).toBe(false) // unconfigured ≠ failure
   })
 
-  it('simulates and submits fully bad-debt realization without swap config', async () => {
-    const { counters, simulateCalls, submitCalls } = await runWith({
-      noSwap: true,
+  it('counts a failed quote, backs the position off, and never simulates', async () => {
+    const { counters, simulateCalls, submitCalls, backoff } = await runWith({
+      quoteOutcome: { kind: 'failed', reason: 'no_route' }
+    })
+    expect(counters).toMatchObject({ liquidatable: 1, planned: 1, quoteFailed: 1, submitted: 0 })
+    expect(simulateCalls()).toBe(0)
+    expect(submitCalls()).toBe(0)
+    expect(backoff.shouldSkip(LABEL, 100n)).toBe(true)
+  })
+
+  it('suppresses a backed-off position without quoting or simulating', async () => {
+    // Seeded a failure at block 100 (cooldown until 102); this tick at 101 must skip.
+    const { counters, quoteCalls, simulateCalls } = await runWith({
+      chainHead: 101n,
+      seedBackoffAt: 100n
+    })
+    expect(counters).toMatchObject({ liquidatable: 1, backoffSkipped: 1, submitted: 0 })
+    expect(quoteCalls()).toBe(0)
+    expect(simulateCalls()).toBe(0)
+  })
+
+  it('clears backoff on a successful submit', async () => {
+    const { backoff } = await runWith({ seedBackoffAt: 1n, simulateResult: { status: 'ok' } })
+    // Seeded at block 1 (cooldown until 3) so it didn't suppress this tick at 100; the submit clears it.
+    expect(backoff.shouldSkip(LABEL, 1n)).toBe(false)
+  })
+
+  it('simulates and submits fully bad-debt realization without quoting', async () => {
+    const { counters, simulateCalls, submitCalls, quoteCalls } = await runWith({
       out: lensOut({
         healthy: true,
         blockTimestamp: 3000n,
@@ -173,15 +235,20 @@ describe('runTick', () => {
       liquidatable: 1,
       planned: 1,
       noSwapPath: 0,
+      quoteFailed: 0,
       submitted: 1
     })
+    expect(quoteCalls()).toBe(0) // bad-debt realization never quotes
     expect(simulateCalls()).toBe(1)
     expect(submitCalls()).toBe(1)
   })
 
-  it('skips a position already in flight without re-simulating or submitting', async () => {
-    const { counters, simulateCalls, submitCalls } = await runWith({ inflight: new Set([LABEL]) })
+  it('skips a position already in flight without re-quoting, simulating, or submitting', async () => {
+    const { counters, quoteCalls, simulateCalls, submitCalls } = await runWith({
+      inflight: new Set([LABEL])
+    })
     expect(counters).toMatchObject({ liquidatable: 1, planned: 0, submitted: 0 })
+    expect(quoteCalls()).toBe(0)
     expect(simulateCalls()).toBe(0)
     expect(submitCalls()).toBe(0)
   })

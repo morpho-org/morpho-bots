@@ -675,6 +675,13 @@ async function main() {
       `no swap route for ${collateral.symbol} (${collateral.address}) in ${args.config} — the prod bot also needs it to liquidate`
     )
   }
+  // The seed tool acquires the collateral by swapping WETH directly through a Uniswap-V3 router, so it
+  // needs a uniswap-v3 route (router + fee). Aggregator venues have no static router for this script.
+  if (route.venue !== 'uniswap-v3') {
+    throw new Error(
+      `seed tool supports only uniswap-v3 routes; ${collateral.symbol} is configured for venue '${route.venue}'`
+    )
+  }
 
   const { cp, ratifier } = await resolveReference({ publicClient, args, collateral, loan, logger })
   await assertContractDeployed(publicClient, ratifier, 'EcrecoverRatifier')
