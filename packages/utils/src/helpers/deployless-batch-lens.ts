@@ -1,5 +1,3 @@
-import type { Id } from '@repo/utils'
-
 import { omit, policy } from '@morpho-org/viem-dlc'
 import {
   type Abi,
@@ -17,6 +15,14 @@ import {
 import { readContract } from 'viem/actions'
 import { formatAbiItem } from 'viem/utils'
 
+import type { Id } from '../types/index'
+
+// Runs an array-in/array-out "lens" contract deploylessly (viem-dlc's `deployless` transport), in one
+// chunked `eth_call`, and returns a Map keyed by a caller-supplied key. Promoted here from the
+// midnight-liquidation bot when the second liquidation bot (blue-liquidation) needed the same
+// primitive — the midnight v0 TIB named "if a second bot needs it, promote it to @repo/utils" as the
+// trigger. Both bots' `state/lens.sol.ts` fetchers delegate here.
+
 export const MAX_INITCODE_SIZE = 49_152
 
 export type BatchLensTransportParameters = {
@@ -33,7 +39,7 @@ export type BatchLensTransportParameters = {
 export type BatchLensTransportType = Id<keyof BatchLensTransportParameters>
 
 // (Upstream exports a `BatchLensClientParameters` helper here for callers that surface ttl/delta;
-// our fetcher doesn't, so it's omitted to keep the dead-code gate happy.)
+// our fetchers don't, so it's omitted to keep the dead-code gate happy.)
 
 type Batch = NonNullable<Parameters<typeof policy>[0]['batch']>
 type BatchGas = NonNullable<Batch['gas']>

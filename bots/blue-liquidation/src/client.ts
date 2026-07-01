@@ -7,18 +7,17 @@ import { getCode } from 'viem/actions'
 
 import type { Config } from './config'
 
-// Gas the deployless lens may burn in its single eth_call. Matches the prime-monorepo reference
-// (packages/resolvers/test/measure/clients.ts); the lens itself is read-only so a generous ceiling
-// is harmless.
+// Gas the deployless lens may burn in its single eth_call. The lens is read-only, so a generous
+// ceiling is harmless. Matches the sibling midnight bot's setting.
 const DEPLOYLESS_GAS_LIMIT = 550_000_000
 const RPC_TIMEOUT_MS = 30_000
 
 /**
  * Builds the read-only viem client the lens and simulate paths share: an HTTP transport (a viem-dlc
  * `failover` pair when `RPC_URL_FALLBACK` is set, else a single endpoint) wrapped in viem-dlc's
- * `deployless` transport so {@link readMidnightLiquidationLens} can run the lens deploylessly. Plain
- * reads (`getCode`, `simulateContract`) pass straight through to the base transport. The return is
- * typed against {@link BatchLensTransportType} so the lens fetcher accepts it without a cast.
+ * `deployless` transport so {@link readBlueLiquidationLens} can run the lens deploylessly. Plain
+ * reads (`getCode`, `call`) pass straight through to the base transport. The return is typed against
+ * {@link BatchLensTransportType} so the lens fetcher accepts it without a cast.
  */
 export function createDeploylessClient(
   config: Pick<Config, 'chain' | 'rpcUrl' | 'rpcUrlFallback'>
@@ -37,7 +36,7 @@ export function createDeploylessClient(
  * Fatal startup liveness gate: throws unless `address` holds non-empty bytecode on this chain. This
  * proves the address is *something* on-chain (catching a typo or a not-yet-deployed address) — it
  * is NOT an identity check: a 7702-delegated EOA or a proxy also returns non-empty code. Confirming
- * it is the expected Executor is the operator's responsibility.
+ * it is the expected contract is the operator's responsibility.
  */
 export async function assertContractDeployed(
   client: Client,

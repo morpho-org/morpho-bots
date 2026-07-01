@@ -1,0 +1,33 @@
+name: blue_liquidation
+description: >-
+  Indexes the two Morpho Blue events the liquidation bot needs for borrower discovery on Base.
+  `Borrow` is the only path that creates debt and its indexed `onBehalf` is the position owner, so
+  the bot takes the distinct (market id, onBehalf) set as the candidate universe and lets the
+  on-chain lens filter to actually-liquidatable positions (over-inclusion is harmless; under-inclusion
+  would miss liquidations). `CreateMarket` is the id → MarketParams registry: MarketParams
+  (loanToken, collateralToken, oracle, irm, lltv) are NOT retrievable from the singleton, so the bot
+  joins each candidate's market id to its CreateMarket row to recover the params the lens needs. The
+  lens re-derives id = keccak256(abi.encode(params)) on-chain, so a stale/forged param set is rejected.
+project_type: no-code
+networks:
+  - name: base
+    chain_id: 8453
+    rpc: ${RINDEXER_RPC_URL}
+
+storage:
+  postgres:
+    enabled: true
+
+contracts:
+  - name: Morpho
+    details:
+      - network: base
+        address: '0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb'
+        # Morpho Blue singleton deployment block on Base — VERIFIED via getCode (no code at
+        # 13977147, code at 13977148), so this indexes from the singleton's first block: no early
+        # markets/borrowers are missed.
+        start_block: 13977148
+    abi: ./abis/morpho.abi.json
+    include_events:
+      - CreateMarket
+      - Borrow

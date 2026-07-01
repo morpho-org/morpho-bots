@@ -21,6 +21,7 @@
   "dependencies": {
     "@internationalized/date": "catalog:",
     "@morpho-org/morpho-ts": "catalog:",
+    "@morpho-org/viem-dlc": "catalog:",
     "date-fns": "catalog:",
     "lodash-es": "catalog:",
     "viem": "catalog:",
