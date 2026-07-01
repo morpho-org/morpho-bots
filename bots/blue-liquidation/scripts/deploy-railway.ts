@@ -99,7 +99,11 @@ function parseServices(raw: string): RailwayService[] {
     .filter(service => service.name)
 }
 
-function parseVolumeMountPaths(raw: string): string[] {
+// Each volume carries the service it is attached to (`serviceName`, null when orphaned by a deleted
+// service). We key on (serviceName, mountPath) because `railway volume list` is environment-wide:
+// matching mountPath alone would treat another service's — or an orphaned — `/config` volume as this
+// service's, and skip creating one. Returns [] on any parse failure (treated as "no volumes").
+function parseVolumeMounts(raw: string): { serviceName: string; mountPath: string }[] {
   const { data } = tryCatch(() => JSON.parse(raw) as unknown)
   const rows = Array.isArray(data)
     ? data
@@ -108,8 +112,11 @@ function parseVolumeMountPaths(raw: string): string[] {
       : []
   return rows
     .filter(isRecord)
-    .map(row => str(row.mountPath) || str(row.mount_path))
-    .filter(Boolean)
+    .map(row => ({
+      serviceName: str(row.serviceName) || str(row.service_name),
+      mountPath: str(row.mountPath) || str(row.mount_path)
+    }))
+    .filter(mount => mount.mountPath)
 }
 
 function parseLatestStatus(raw: string): string {
@@ -205,8 +212,12 @@ async function removeService(name: string): Promise<void> {
 
 async function ensureVolume(service: string, mountPath: string): Promise<void> {
   const { data } = await tryCatch(Promise.resolve($`railway volume list --json`.quiet().text()))
-  if (typeof data === 'string' && parseVolumeMountPaths(data).includes(mountPath)) {
-    console.log(`Volume at ${mountPath} already exists.`)
+  const mounts = typeof data === 'string' ? parseVolumeMounts(data) : []
+  // Match this service's own volume — NOT merely a same-mount volume elsewhere in the environment.
+  // Volumes are per-service, so each bot needs its own `/config`; keying on mountPath alone made every
+  // bot after the first (and after a legacy service left an orphaned `/config`) skip provisioning.
+  if (mounts.some(mount => mount.serviceName === service && mount.mountPath === mountPath)) {
+    console.log(`Volume at ${mountPath} already on ${service}.`)
     return
   }
   // `railway volume add` attaches to the *linked* service; its own --service flag is broken in CLI
