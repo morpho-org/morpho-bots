@@ -25,6 +25,7 @@ import {
   LIQUIDATOR_KEY,
   MORPHO,
   SWAP_ROUTER_02,
+  loadForkFixtureFromEnv,
   startFork,
   stopFork,
   testClient,
@@ -36,12 +37,10 @@ import {
 // broken path.
 const SLIPPAGE_BPS = 500
 
-// FILL THIS IN to run the suite: a real, currently-unhealthy (or warp-into-unhealthy) Base Morpho
-// Blue position, pinned at a deterministic fork block, with a deep Uniswap pool for its collateral.
-// See ForkFixture in harness.ts. Left null so `bun test` skips this suite cleanly rather than failing.
-// `null as` (not a plain annotation) so TS keeps the union type at read sites — a plain
-// `const FIXTURE: ForkFixture | null = null` narrows to `null` and the post-guard body becomes `never`.
-const FIXTURE = null as ForkFixture | null
+// A real, currently-unhealthy (or warp-into-unhealthy) Base Morpho Blue position, pinned at a
+// deterministic fork block, with a deep Uniswap pool for its collateral. The suite skips by default
+// and runs when `RPC_URL_8453` plus `BLUE_LIQUIDATION_FORK_FIXTURE` are set.
+const FIXTURE: ForkFixture | null = loadForkFixtureFromEnv()
 
 describe.skipIf(!FORK_URL || !FIXTURE)(
   'fork: end-to-end liquidation against a real Base Morpho Blue position',
@@ -153,8 +152,7 @@ describe.skipIf(!FORK_URL || !FIXTURE)(
       const receipt = await test.waitForTransactionReceipt({ hash: txHash })
       expect(receipt.status).toBe('success')
 
-      // 7. The EOA gained the loan token (the liquidation profit) and the shared singleton ends fully
-      //    drained — the full-drain / zero-residual invariant.
+      // 7. The EOA gained the loan token, and the Executor ends with neither token.
       const loanAfter = await test.readContract({
         address: out.params.loanToken,
         abi: erc20Abi,

@@ -54,13 +54,9 @@ function skimCall(asset: Address, recipient: Address, executor: Address): Hex {
  * the seized collateral to the Executor, then calls `Executor.onMorphoLiquidate(repaidAssets, data)`,
  * then pulls `repaidAssets` of the loan token via `safeTransferFrom` after.
  *
- * The Executor has no `onMorphoLiquidate` Solidity — the swap + repay approval ride INSIDE `data` as
- * the Executor's own callback queue (a `(bytes[] queue, bytes returnData)` blob its `fallback`
- * decodes, runs, and returns raw). Blue IGNORES the callback's return, so `returnData` is empty `0x`
- * (no magic-value trick — the Blue delta from midnight). This is exactly what executooor-viem's
- * `morphoBlueLiquidate` builds; we replicate it with the static `buildCall` primitive to keep this a
- * pure, RPC-free encoder. Two trailing sweeps drain BOTH tokens to the EOA — the full-drain invariant
- * of the shared permissionless singleton. Pure — no RPC.
+ * The swap and repay approval ride inside `data` as the Executor callback queue: a
+ * `(bytes[] queue, bytes returnData)` blob its `fallback` decodes and runs. Blue ignores the callback
+ * return, so `returnData` is empty `0x`. Two trailing sweeps drain both tokens to the EOA.
  *
  * Every plan is seize-exact with `seizedAssets > 0` (Blue forbids a `(0,0)` liquidate; the degenerate
  * collateral-less residual is skipped upstream in `plan()`), so a swap is always required.
@@ -113,11 +109,8 @@ export function encodeLiquidationExec(params: {
     ),
     // (3) swap seized collateral → loan token, output back to the Executor.
     swapCall,
-    // (4) zero then (5) set Blue's repay allowance. Balance-based (over-approving by the LIF margin)
-    //     because `repaidAssets` is recomputed on-chain and not staticcall-readable; the residual
-    //     allowance is inert while the full-drain invariant keeps the Executor's balance at zero
-    //     between txs. Zero-first like the collateral pair, so the next liquidation's approve does not
-    //     revert on an approve-from-nonzero (USDT-style) loan token.
+    // (4) zero then (5) set Blue's repay allowance. Balance-based because `repaidAssets` is
+    //     recomputed on-chain. Zero-first handles approve-from-nonzero tokens.
     ExecutorEncoder.buildCall(
       loanToken,
       0n,
@@ -132,9 +125,7 @@ export function encodeLiquidationExec(params: {
     )
   ]
 
-  // The Executor's `fallback` decodes this blob as `(bytes[] queue, bytes returnData)`, runs the
-  // queue, and returns `returnData` RAW. Blue ignores `onMorphoLiquidate`'s return value, so
-  // `returnData` is empty `0x` — matching executooor-viem's `morphoBlueLiquidate`.
+  // Blue ignores `onMorphoLiquidate`'s return value, so callback return data is empty.
   const callbackData = encodeAbiParameters(
     [{ type: 'bytes[]' }, { type: 'bytes' }],
     [callbackQueue, '0x']
@@ -154,8 +145,7 @@ export function encodeLiquidationExec(params: {
       sender: morpho,
       dataIndex: CALLBACK_DATA_INDEX
     }),
-    // Trailing sweeps run AFTER liquidate returns (Blue's end-of-call repay `transferFrom` happens
-    // within `liquidate`), draining BOTH tokens to the EOA — the full-drain invariant.
+    // Trailing sweeps run after Blue pulls the repay token inside `liquidate`.
     skimCall(loanToken, params.recipient, executor),
     skimCall(collateralToken, params.recipient, executor)
   ]

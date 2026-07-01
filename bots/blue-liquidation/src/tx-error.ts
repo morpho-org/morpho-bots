@@ -47,8 +47,7 @@ function revertData(error: BaseError): Hex | undefined {
 // Morpho Blue reverts with standard `Error(string)` (its ErrorsLib strings, e.g. "market not
 // created", "healthy position") and, on an over-seize / over-repay underflow, with `Panic(uint256)`
 // (code 0x11). It has NO custom ABI errors, so decoding these two standard shapes covers every
-// on-chain failure reason. (This is the Blue delta from the midnight bot, which decoded a custom
-// error ABI here.)
+// on-chain failure reason.
 const SOLIDITY_ERRORS = [
   { type: 'error', name: 'Error', inputs: [{ type: 'string' }] },
   { type: 'error', name: 'Panic', inputs: [{ type: 'uint256' }] }

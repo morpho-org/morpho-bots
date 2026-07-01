@@ -2,7 +2,7 @@
 
 | Field      | Value                        |
 | ---------- | ---------------------------- |
-| **Status** | Proposed                     |
+| **Status** | Implemented                  |
 | **Date**   | 2026-06-30                   |
 | **Author** | @hayden                      |
 | **Scope**  | App: `bots/blue-liquidation` |
@@ -14,37 +14,32 @@
 Morpho Blue is a single-collateral, permissionless, immutable lending primitive. A position
 `(marketId, borrower)` is liquidatable when `borrowShares > 0` **and** it is unhealthy —
 `_isHealthy` returns false, i.e. `maxBorrow < borrowed`. There is no maturity, no per-market
-liquidator gate, and at most one collateral asset per market. Compared to Morpho Midnight
-([TIB-2026-05-28](./TIB-2026-05-28-midnight-liquidation-bot.md)) the decision surface is **smaller**
-in most dimensions and **larger** in exactly one:
+liquidator gate, and at most one collateral asset per market. The decision surface is:
 
 - **Single collateral.** No 128-slot bitmap, no per-slot argmax, no per-collateral oracle/LIF. One
   collateral, one oracle, one LLTV per market.
 - **No maturity, no RCF cap, no liquidator gate.** The liquidation incentive factor (LIF) is a pure
-  function of LLTV; there is no time ramp and no recovery-close-factor cap. Because Blue liquidation
-  is permissionless, the entire `caller` / `canLiquidate` machinery from the Midnight design is
-  **gone** — any address may liquidate any unhealthy position.
-- **Continuous accrual (the one thing that is harder).** Blue debt accrues every block via the
+  function of LLTV; there is no time ramp and no recovery-close-factor cap. Any address may liquidate
+  any unhealthy position.
+- **Continuous accrual.** Blue debt accrues every block via the
   market's interest rate model (IRM). A borrower's stored `borrowShares` converts to _more_ loan
   assets over time even with a flat oracle price, so the health check must run against **accrued**
   market state, not the last-written storage. The lens must replicate accrual
-  (`IIrm.borrowRateView` + Taylor compounding) exactly, matching `MorphoBalancesLib`. Midnight's lens
-  never needed this.
+  (`IIrm.borrowRateView` + Taylor compounding) exactly, matching `MorphoBalancesLib`.
 - **`MarketParams` are off-chain.** The Morpho singleton exposes only the mutable `Market` struct via
   `market(Id)`; it does **not** return `MarketParams` (`loanToken, collateralToken, oracle, irm,
 lltv`). Those are emitted once by `CreateMarket` and must be indexed. Since `Id ==
 keccak256(abi.encode(marketParams))` is a cryptographic commitment, the lens re-derives the id from
-  the supplied params and rejects any mismatch — the Blue analog of Midnight trusting `toMarket(id)`.
+  the supplied params and rejects any mismatch.
 
-We build for two readers, unchanged from the Midnight bot:
+We build for two readers:
 
 1. **Integrators** copying it as a reference implementation — the accrual, health, LIF, and sizing
    logic must read as documentation.
 2. **Ourselves** running it as a safety-net liquidator that values reliability over latency — it must
    _work_ correctly and predictably, not win races.
 
-Three architectural choices anchor the design, mirroring the Midnight bot so the two share patterns,
-`@repo/*` packages, and ops:
+Three architectural choices anchor the design:
 
 - **Discovery via a co-located rindexer instance.** rindexer indexes Morpho's `CreateMarket` (→ the
   `Id → MarketParams` registry) and `Borrow` (→ the `(marketId, borrower)` candidate universe;
@@ -102,11 +97,9 @@ Three architectural choices anchor the design, mirroring the Midnight bot so the
 
 ## Current Solution
 
-There is no Morpho Blue liquidator in the repo today. The `midnight-liquidation` bot is the closest
-analog and the architectural template for this one; its v0 and multi-venue TIBs are the reference for
-the runner, lens, queue, Executor, venue abstraction, and Railway topology reused here. Morpho Blue
-ABIs/interface are **not yet vendored** — `@repo/contracts` today ships only `IMidnight.sol` and the
-generic `Executor.sol`.
+Before this change, the repo had no Morpho Blue liquidator. Morpho Blue ABIs/interface were also not
+vendored; `@repo/contracts` shipped the generic `Executor.sol` plus the interfaces needed by existing
+bots.
 
 ## Proposed Solution
 
@@ -123,17 +116,15 @@ packages/contracts/
                                  //      CreateMarket, Borrow, Repay, SupplyCollateral,
                                  //      WithdrawCollateral, Liquidate)
   scripts/{codegen,build,deploy-executor}.ts  // REUSED: existing generate/build/deploy pipeline
-  src/{abis,contracts}.ts        // generated: MidnightAbi + NEW MorphoAbi; Executor (.with() factory)
+  src/{abis,contracts}.ts        // generated ABIs + Executor (.with() factory)
   abis/Morpho.json               // NEW: materialized for rindexer (built, not committed)
   foundry.toml                   // `forge fmt` only — soltag/bun do the compilation
 ```
 
-Adding `MorphoAbi` via a vendored `interfaces/IMorpho.sol` is the exact pattern `@repo/contracts`
-already uses for `MidnightAbi` (`src/abis.ts` `sol('IMidnight')`); the codegen/build/deploy scripts
-are reused, not re-created.
+Adding `MorphoAbi` via a vendored `interfaces/IMorpho.sol` uses the existing `@repo/contracts`
+codegen/build/deploy pipeline.
 
-The bot lives under `bots/blue-liquidation/`, mirroring `midnight-liquidation` — the diffs from that
-layout are called out inline:
+The bot lives under `bots/blue-liquidation/`:
 
 ```
 src/
@@ -155,21 +146,18 @@ src/
 
   discovery/
     borrowers.ts     // reads (marketId, borrower) candidates joined to MarketParams; + rindexer head
-                     //   DIFF vs midnight: joins Borrow.onBehalf against the CreateMarket registry
 
   state/
     lens.sol.ts      // soltag lens: accrual sim + health for a batch; codecs; fetcher
-                     //   DIFF vs midnight: replicates IRM accrual + id-commitment check; no bitmap
-                     //   deployless batch helper: HOISTED to @repo/utils (see below), not re-vendored
+                     //   deployless batch helper lives in @repo/utils
 
   sizing/
     lif.ts           // pure: lifFromLltv(lltv) → bigint  (no maturity ramp)
     plan.ts          // pure: PlanInput → LiquidationPlan (seize-exact: min(collateral, seizeForFullDebt))
     math.ts          // pure: mulDivUp / mulDivDown / wMulDown / wDivDown / wDivUp / wTaylorCompounded /
                      //   toAssetsUp / toAssetsDown / toSharesUp / toSharesDown (virtual offsets)
-                     //   DIFF vs midnight: no rcf.ts, no bitmap.ts
 
-  quotes/            // multi-venue, from day one (ported from midnight's multi-venue TIB)
+  quotes/            // multi-venue quoting and swap calldata
     types.ts         // Swap (the one currency), Venue, QuoteParameters, VenueAdapter
     http-client.ts   // per-venue token-bucket rate-limited fetch + retries + key injection
     venues/{uniswap-v3,zerox,oneinch}.ts
@@ -221,8 +209,7 @@ canonical singleton `0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb`:
   needs `(loanToken, collateralToken, oracle, irm, lltv)` to read state and size.
 - **`Borrow(Id indexed id, address caller, address indexed onBehalf, address indexed receiver, ...)`**
   → the `(marketId, borrower)` candidate universe. `onBehalf` (indexed) is the position owner and the
-  only borrower-creating field; `Borrow` is Blue's analog of Midnight's `Take` — the sole
-  debt-opening path, so its `onBehalf` set is the complete borrower universe.
+  only borrower-creating field, so its `onBehalf` set is the complete borrower universe.
 
 `discovery/borrowers.ts` returns `{ marketParams, borrower }[]` by selecting distinct
 `(id, onBehalf)` from the indexed `Borrow` table and joining each `id` to the `CreateMarket`
@@ -231,9 +218,9 @@ under-inclusion would miss a liquidation, so we do not prune with `Repay`/`Withd
 SQL layer in v0 (a future optimization). We do **not** trust any indexed position/collateral amount —
 the lens reads it fresh.
 
-**rindexer-lag signal.** As in Midnight, `borrowers.ts` exposes `rindexerSyncedBlock`; each tick
-compares it to the chain head and emits `rindexer.lag`. Observability-only, fails open — the lens
-reads every candidate fresh, so lag is coverage latency, never a correctness issue.
+**rindexer-lag signal.** `borrowers.ts` exposes `rindexerSyncedBlock`; each tick compares it to the
+chain head and emits `rindexer.lag`. Observability-only, fails open — the lens reads every candidate
+fresh, so lag is coverage latency, never a correctness issue.
 
 ### Lens design (soltag)
 
@@ -291,14 +278,11 @@ struct LensOut {
 ```
 
 The lens returns accrued totals (not a pre-computed seize) so the pure planner can derive both sizing
-sides against a single, consistent chain time. Colocated single file, as in Midnight: soltag source
-tagged template + input/output codecs + inline `BatchGasConfig` (placeholder, calibrate on a Base
-fork) + the exported `readBlueLiquidationLens(client, morpho, pairs)`. The fetcher delegates to the
-array-in/array-out deployless batch helper — which this bot **hoists to `@repo/utils`** rather than
-re-vendoring: the Midnight v0 TIB vendored it into the bot and named "if a second bot needs it we
-promote it to `@repo/utils`" as the trigger, and this is that second bot, so we promote it (and
-repoint the Midnight bot's import) instead of copying it a second time. soltag is a build-time
-transform preloaded via `bunfig.toml`; `soltag` + `solc` are runtime deps.
+sides against a single, consistent chain time. The single file contains the soltag source tagged
+template, input/output codecs, inline `BatchGasConfig`, and exported
+`readBlueLiquidationLens(client, morpho, pairs)`. The fetcher delegates to the shared array-in /
+array-out deployless batch helper in `@repo/utils`. soltag is a build-time transform preloaded via
+`bunfig.toml`; `soltag` + `solc` are runtime deps.
 
 ### Sizing math
 
@@ -316,9 +300,8 @@ function lifFromLltv(lltv: bigint): bigint {
 ```
 
 **Seize-exact everywhere** (`sizing/plan.ts`). We pin `seizedAssets` and let Blue derive
-`repaidShares` — the same choice the Midnight multi-venue TIB made, and the reason an aggregator's
-fixed sell amount is correct on every branch (the Executor holds exactly the seize when the callback
-runs). The single rule:
+`repaidShares`, so an aggregator's fixed sell amount is correct on every branch (the Executor holds
+exactly the seize when the callback runs). The single rule:
 
 ```
 repaidAssetsFull = borrowShares.toAssetsDown(accruedTotalBorrowAssets, totalBorrowShares)
@@ -339,25 +322,23 @@ because they answer different questions; this is not an inconsistency.
   `repaidShares ≤ borrowShares` — the inbound double-floor in `seizeForFullDebt` should dominate the
   contract's ceil-derivation so `position.borrowShares -= repaidShares` cannot underflow. This is the
   **load-bearing correctness claim** of the sizing rule; it must be _proved_ against the contract
-  derivation and brute-force-swept before go-live (Open Questions / Verification), exactly as the
-  Midnight multi-venue TIB proved its analogous `maxSeizeForCap` bound. A full close may leave a few
-  wei of residual debt — the same accepted trade-off as Midnight's seize-exact full-close.
+  derivation and brute-force-swept before go-live (Open Questions / Verification). A full close may
+  leave a few wei of residual debt, which is acceptable for a backstop liquidator.
 - **Collateral binds** (`seizeForFullDebt ≥ collateral`, underwater): pin
   `seizedAssets = collateral`. Blue seizes 100% and derives `repaidShares`. `liquidate`'s bad-debt
   block then fires precisely when `position[id][borrower].collateral == 0 && borrowShares > 0` after
   the seize — writing the residual off against `totalSupplyAssets`/`totalSupplyShares` (loss
   socialized across suppliers). Pinning `seizedAssets = collateral` is exactly what drives
-  `position.collateral` to 0, so it is the full-collateral seize that _triggers_ socialization; Blue
-  has no zero/zero "bad-debt realization" call (unlike Midnight), so this is the same code path, not a
-  special case. The `collateral == 0 && borrowShares > 0` trigger is asserted in the fork suite.
+  `position.collateral` to 0, so it is the full-collateral seize that _triggers_ socialization. The
+  `collateral == 0 && borrowShares > 0` trigger is asserted in the fork suite.
 - **Degenerate** (`borrowShares > 0` but `collateral == 0`): nothing to seize; skip. Clearing pure
   residual bad debt would require an uncompensated loan-token repay, which a backstop bot does not do.
 
-An over-large derived repay fails closed in `simulate()` — a missed liquidation, never a loss.
+An over-large derived repay reverts in `simulate()`, so it is not broadcast.
 
-### Multi-venue swaps (ported from the Midnight multi-venue TIB)
+### Multi-venue swaps
 
-The venue abstraction is reused verbatim. One currency — **`Swap`** (`src/quotes/types.ts`,
+One currency — **`Swap`** (`src/quotes/types.ts`,
 `{ spender, target, value, callData, amountIn: {source:'balance',offset} | {source:'fixed',value},
 expectedAmountOut, amountOutMinimum }`) — flows from a venue adapter into a venue-agnostic encoder
 that branches only on `amountIn.source`:
@@ -373,11 +354,11 @@ so `expectedLoanOut = mulDivDown(seizedAssets, collateralPrice, ORACLE_PRICE_SCA
 (`execution/swap-step.ts`) is computed with no extra API call — it feeds both the uniswap
 `amountOutMinimum` (`expectedLoanOut·(10000 - slippageBps)/10000`) and the route-quality guard.
 
-**Rate-limiting** is unchanged from Midnight's design: quotes are restricted to the small
-_liquidatable_ set (one quote per liquidatable position, O(liquidatable) not O(candidates)); a free
-oracle route-quality pre-check rejects any quote more than `MAX_ROUTE_IMPACT_BPS` below the oracle
-reference; a per-`(id, borrower)` exponential `backoff` suppresses repeated quote/route/simulate
-failures; and a shared per-venue token-bucket HTTP client bounds API usage. Config is a Zod
+**Rate-limiting.** Quotes are restricted to the small _liquidatable_ set (one quote per liquidatable
+position, O(liquidatable) not O(candidates)); a free oracle route-quality pre-check rejects any quote
+more than `MAX_ROUTE_IMPACT_BPS` below the oracle reference; a per-`(id, borrower)` exponential
+`backoff` suppresses repeated quote/route/simulate failures; and a shared per-venue token-bucket HTTP
+client bounds API usage. Config is a Zod
 discriminated union on `venue` (missing `venue` defaults to `uniswap-v3`); API keys come from
 `ZEROX_API_KEY` / `ONEINCH_API_KEY` at point of use, never stored on `Config` or logged.
 
@@ -385,10 +366,9 @@ discriminated union on `venue` (missing `venue` defaults to `uniswap-v3`); API k
 
 We reuse the vendored generic `Rubilmax/executooor` singleton in `@repo/contracts` **unchanged** (its
 only diff from upstream is the stripped owner gate + a pragma relaxation). No Blue-specific Solidity
-is added. Because the executooor was originally written for Morpho Blue, `onMorphoLiquidate` is its
-native, canonical callback and `executooor-viem`'s `ExecutorEncoder` ships a `morphoBlueLiquidate`
-builder — so this is _more_ native than the Midnight path (no raw magic-value return trick: Morpho
-ignores the callback's return and simply pulls the repayment afterward).
+is added. `onMorphoLiquidate` is the Executor's native callback and `executooor-viem`'s
+`ExecutorEncoder` ships a `morphoBlueLiquidate` builder. Morpho ignores the callback's return and
+pulls the repayment afterward.
 
 `execution/encode-call.ts` builds `Executor.exec_606BaXt(bytes[])`:
 
@@ -406,15 +386,13 @@ ignores the callback's return and simply pulls the repayment afterward).
 3. Two trailing `skim` sweeps (loan token then collateral) to the EOA, running **after** `liquidate`
    returns so Blue's end-of-call repay pull is not stripped early.
 
-**Full-drain invariant** and **caller-side defenses** are preserved exactly as in the Midnight TIB:
-the shared singleton must end every tx holding zero of either token; the dual sweep plus the
-`simulate()` residual check enforce this. **The `liquidatorGate` / whitelisting subsection from the
-Midnight TIB is dropped entirely** — Blue liquidation is permissionless, so there is no gate to check
-against the Executor and no per-market authorization to arrange.
+The shared singleton must end every tx holding zero of either token; the dual sweep plus simulation
+coverage enforce this. Blue liquidation is permissionless, so there is no gate to check against the
+Executor and no per-market authorization to arrange.
 
 ### Config
 
-Env vars (fail-loud on missing required) — mirrors Midnight plus the multi-venue keys:
+Env vars (fail-loud on missing required):
 
 | Var                                 | Required | Default | Purpose                                            |
 | ----------------------------------- | -------- | ------- | -------------------------------------------------- |
@@ -428,7 +406,7 @@ Env vars (fail-loud on missing required) — mirrors Midnight plus the multi-ven
 | `MAX_FEE_GWEI`                      | no       | `300`   | Hard ceiling for fee bumps                         |
 | `ZEROX_API_KEY` / `ONEINCH_API_KEY` | cond.    | —       | Required iff a collateral uses that venue          |
 | `MAX_ROUTE_IMPACT_BPS`              | no       | `500`   | Reject aggregator routes this far below oracle ref |
-| `LOG_LEVEL` / `CACHE_DIR`           | no       | —       | As Midnight                                        |
+| `LOG_LEVEL` / `CACHE_DIR`           | no       | —       | Logging and local cache controls                   |
 
 Chain map in `config.ts`: `{ [chainId]: { chain, morpho: Address } }`, fail loud when `CHAIN_ID` is
 absent. v0 wires Base (8453), Morpho = `0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb` (the canonical
@@ -439,8 +417,8 @@ for **both** the Executor and the Morpho singleton, and validate venue-key prese
 
 ### Hosting
 
-Identical to Midnight: the bot, its co-located rindexer, and Postgres deploy to **Railway** in one
-project. A shared multi-stage `Dockerfile` (a `BUILD_TARGET` build-arg selects the `bot` or
+The bot, its co-located rindexer, and Postgres deploy to **Railway** in one project. A shared
+multi-stage `Dockerfile` (a `BUILD_TARGET` build-arg selects the `bot` or
 `rindexer` stage; the `abi` stage materializes `Morpho.json`) builds for both Railway and
 `docker-compose`. An idempotent `scripts/deploy-railway.ts` drives the Railway CLI, piping secrets via
 stdin (never argv, never logged). The swap config rides on a `/config` Railway volume the operator
@@ -451,7 +429,7 @@ mechanics live in the script, `Dockerfile`, and README.
 
 ### Alternative 1: Sourcing `MarketParams` from the singleton instead of indexing `CreateMarket`
 
-Read the market definition on-chain from its id, as the Midnight lens does via `toMarket(id)`.
+Read the market definition on-chain from its id.
 
 **Why rejected:** impossible on Blue — the singleton stores only the mutable `Market` and never the
 immutable `MarketParams`, and the id is a keccak hash (not invertible). `CreateMarket` is the only
@@ -471,19 +449,18 @@ negatives at the boundary. The lens replicates `MorphoBalancesLib.expectedMarket
 
 Refresh borrower positions from Morpho's hosted API/subgraph each tick.
 
-**Why rejected:** adds an availability dependency on the liquidation hot path, and (as on Midnight)
-we will not let indexer lag determine whether we send. A co-located rindexer gives the full universe
-from chain logs with no external dependency; the lens reads every decision fresh, so lag is coverage
-latency only. Blue's hosted infra is good, but the hot-path independence is the point.
+**Why rejected:** adds an availability dependency on the liquidation hot path, and indexer lag should
+not determine whether we send. A co-located rindexer gives the full universe from chain logs with no
+external dependency; the lens reads every decision fresh, so lag is coverage latency only. Blue's
+hosted infra is good, but the hot-path independence is the point.
 
 ### Alternative 4: Trust indexer state for the liquidation decision (skip the lens)
 
 Size and decide straight off indexed `borrowShares`/`collateral`/health.
 
-**Why rejected:** even stronger than on Midnight — Blue accrues continuously, so a position's health
-changes _every block_ independent of any transaction. Discovery says _who_ might be liquidatable; the
-lens, read fresh in one `eth_call` against a single `block.timestamp` (accrual + oracle + position),
-says _whether it still is_.
+**Why rejected:** Blue accrues continuously, so a position's health changes _every block_ independent
+of any transaction. Discovery says _who_ might be liquidatable; the lens, read fresh in one `eth_call`
+against a single `block.timestamp` (accrual + oracle + position), says _whether it still is_.
 
 ### Alternative 5: Multicall instead of a deployless lens
 
@@ -505,10 +482,8 @@ the cost of a few wei of residual debt on a full close — an accepted backstop 
 
 ### Alternative 7: Cron / one-shot topology; Alternative 8: Persistent queue state; Alternative 9: Multi-hop routing
 
-Rejected for the same reasons as the Midnight v0 TIB (per-block reactivity at near-zero extra cost;
-chain-truth-wins on restart makes persistence fragile and unnecessary; single-hop is an explicit
-scope bound). See [TIB-2026-05-28](./TIB-2026-05-28-midnight-liquidation-bot.md) §Considered
-Alternatives.
+Rejected because per-block reactivity is cheap, chain-truth-wins on restart makes persistence
+fragile and unnecessary, and single-hop routing is an explicit v0 scope bound.
 
 ## Assumptions & Constraints
 
@@ -541,29 +516,27 @@ Alternatives.
 - `@repo/contracts` (workspace): **new** `MorphoAbi` + vendored `IMorpho.sol`; the reused generic
   `Executor` (`.with()` factory); materialized `abis/Morpho.json` for rindexer.
 - `@repo/utils` (workspace): `tryCatch`, `addressSchema`, `allFulfilled`, `delay`,
-  `parseJsonResponse`, **plus the deployless batch-lens helper promoted here** from the Midnight bot
-  (its stated "second bot needs it" trigger), with the Midnight import repointed in the same change.
+  `parseJsonResponse`, plus the shared deployless batch-lens helper used by the lens fetcher.
 - Out-of-repo: the co-located rindexer Postgres + `rindexer` image (indexing `CreateMarket` +
   `Borrow`); the deployed Executor singleton; the Morpho singleton; the 0x + 1inch APIs.
 
 ## Observability
 
-JSON-line via `logger.ts`, mirroring Midnight's stable keys (`startup`, `runner.start/shutdown`,
-`block.new`, `rindexer.lag`, `lens.read`, `plan.built`, `simulate.ok/revert`,
-`tx.sent/bumped/confirmed/dropped/reverted`, `tick.end`, `tick.error`, `watcher.error`, `shutdown`)
-plus the multi-venue keys (`quoting.startup`, `quote.failed`, `quote.bad_route`, `backoff.skip`,
-`config.no_swap_path`). `tick.end` counters: `pairs, liquidatable, planned, noSwapPath, quoteFailed,
-badRoute, backoffSkipped, ok, reverted, submitted`. Logs go to stdout/stderr (Railway captures both);
-BetterStack forwarding + Slack alerting are deferred to v1, and the keys are designed to ship as-is.
+JSON-line via `logger.ts`: `startup`, `runner.start/shutdown`, `block.new`, `rindexer.lag`,
+`lens.read`, `plan.built`, `simulate.ok/revert`, `tx.sent/bumped/confirmed/dropped/reverted`,
+`tick.end`, `tick.error`, `watcher.error`, `shutdown`, plus quoting keys (`quoting.startup`,
+`quote.failed`, `quote.bad_route`, `backoff.skip`, `config.no_swap_path`). `tick.end` counters:
+`pairs, liquidatable, planned, noSwapPath, quoteFailed, badRoute, backoffSkipped, ok, reverted,
+submitted`. Logs go to stdout/stderr (Railway captures both); BetterStack forwarding + Slack
+alerting are deferred to v1, and the keys are designed to ship as-is.
 
 ## Security
 
 - **Private key** read from env once at startup; never logged or written to disk.
-- **No liquidator gate** — Blue is permissionless, so the Midnight gate-target concern is gone; there
-  is no `canLiquidate` check whose subject could drift between layers.
+- **No liquidator gate** — Blue is permissionless, so there is no `canLiquidate` check whose subject
+  could drift between layers.
 - **Committed `MarketParams`.** The lens re-derives `id == keccak256(abi.encode(params))`, so a forged
-  or stale market definition can't slip into a `liquidate` call — the Blue analog of Midnight's
-  `toMarket(id)` trust, moved into the lens because params are indexed off-chain.
+  or stale market definition can't slip into a `liquidate` call.
 - **Swap slippage.** `amountOutMinimum` from the fresh oracle value via per-collateral `slippageBps`,
   plus the free `MAX_ROUTE_IMPACT_BPS` route-quality guard; a bad swap reverts atomically inside
   `liquidate` and the whole tx reverts — no loss.
@@ -575,20 +548,19 @@ BetterStack forwarding + Slack alerting are deferred to v1, and the keys are des
 - **API-key hygiene.** Keys are env-only, read at point of use, never on `Config` (which is logged)
   and never in `swap.json`; the HTTP client strips query/headers from error logs.
 - **Broadcast path.** Send through a normal RPC that relays — **not** `rpc.morpho.dev/realtime`,
-  which acknowledges sends but never relays them (it stranded the Midnight bot's nonce cursor).
+  which acknowledges sends but never relays them.
 
 ## Future Considerations
 
 - A profitability gate; MEV-aware venue selection; multi-hop / path-depth routing; additional venues
-  (Odos, Universal Router) — all deferred, as on Midnight.
+  (Odos, Universal Router).
 - **SQL-layer candidate pruning.** v0 indexes only `CreateMarket` + `Borrow` and never prunes;
   indexing `Repay`/`WithdrawCollateral`/`Liquidate` to expire closed positions is a scale follow-up.
-  This matters more for Blue than Midnight because coverage is _all_ markets on the chain — the
-  candidate set grows monotonically, the lens re-reads `hasDebt=false` rows every block, and immutable
-  `MarketParams` can be cached per `Id` and the market read deduped per `Id`.
+  The candidate set grows monotonically, the lens re-reads `hasDebt=false` rows every block, and
+  immutable `MarketParams` can be cached per `Id` and the market read deduped per `Id`.
 - Richer observability (BetterStack traces + Slack alerts) — deferred to v1.
 - Throughput under a large liquidation wave (single-EOA nonce serialization; sequential
-  simulate/receipt loops) and RPC-usage scaling — same mitigations catalogued in the Midnight v0 TIB.
+  simulate/receipt loops) and RPC-usage scaling.
 - Multi-chain: the chain map is deliberately multi-chain-ready; Ethereum mainnet (largest Blue TVL)
   and other Blue chains are a config + deploy follow-on, one process per chain.
 - Pre-liquidation support (Morpho's `PreLiquidation` contracts) as a distinct future mechanism.
@@ -598,9 +570,9 @@ BetterStack forwarding + Slack alerting are deferred to v1, and the keys are des
 - **Seize-exact underflow safety — must prove before go-live.** The debt-binds rule pins
   `seizedAssets = seizeForFullDebt` and relies on Blue's ceil-derivation yielding
   `repaidShares ≤ borrowShares` (no `position.borrowShares` underflow). Prove this against the exact
-  `Morpho.sol` `seizedAssets → repaidShares` derivation and brute-force-sweep it, as the Midnight
-  multi-venue TIB did for `maxSeizeForCap`. If it does not hold universally, fall back to repay-exact
-  (`repaidShares = borrowShares`) on the debt-binds branch and accept aggregator seize drift there.
+  `Morpho.sol` `seizedAssets → repaidShares` derivation and brute-force-sweep it. If it does not hold
+  universally, fall back to repay-exact (`repaidShares = borrowShares`) on the debt-binds branch and
+  accept aggregator seize drift there.
 - **Lens gas calibration — open.** The inline `BatchGasConfig` coefficients are placeholders;
   calibrate on a Base fork, including a market on the standard AdaptiveCurveIRM (the accrual sim is
   the dominant per-element cost), before go-live.
@@ -608,7 +580,7 @@ BetterStack forwarding + Slack alerting are deferred to v1, and the keys are des
   IRM works; verify the standard AdaptiveCurveIRM on a fork and confirm behavior for `irm ==
 address(0)` markets.
 - **Executor deployment — likely resolved.** Reuse `@repo/contracts`' deterministic CREATE2 deploy
-  script; the same singleton address serves Blue and Midnight on the same chain.
+  script.
 
 ## Verification
 
@@ -634,10 +606,10 @@ address(0)` markets.
 
 ## References
 
-- [TIB-2026-05-28: Midnight liquidation bot — v0](./TIB-2026-05-28-midnight-liquidation-bot.md) — the
-  reference architecture (runner, deployless lens, generic Executor, nonce queue, Railway topology).
+- [TIB-2026-05-28: Midnight liquidation bot — v0](./TIB-2026-05-28-midnight-liquidation-bot.md) —
+  related liquidation-runner decision.
 - [TIB-2026-06-29: Midnight liquidation bot — multi-venue swap support](./TIB-2026-06-29-midnight-multi-venue-swaps.md)
-  — the `Swap` currency, venue-agnostic encoder, seize-exact sizing, and rate-limiting reused here.
+  — related multi-venue swap decision.
 - Morpho Blue: `https://github.com/morpho-org/morpho-blue` — `src/Morpho.sol` (555 lines),
   `src/libraries/ConstantsLib.sol` (LIF constants), `src/libraries/periphery/MorphoBalancesLib.sol`
   (accrual simulation).

@@ -1,18 +1,25 @@
 name: blue_liquidation
 description: >-
-  Indexes the two Morpho Blue events the liquidation bot needs for borrower discovery on Base.
-  `Borrow` is the only path that creates debt and its indexed `onBehalf` is the position owner, so
-  the bot takes the distinct (market id, onBehalf) set as the candidate universe and lets the
+  Indexes the single Morpho Blue event the liquidation bot needs for borrower discovery on Base:
+  `Borrow`. It is the only path that creates debt and its indexed `onBehalf` is the position owner,
+  so the bot takes the distinct (market id, onBehalf) set as the candidate universe and lets the
   on-chain lens filter to actually-liquidatable positions (over-inclusion is harmless; under-inclusion
-  would miss liquidations). `CreateMarket` is the id → MarketParams registry: MarketParams
-  (loanToken, collateralToken, oracle, irm, lltv) are NOT retrievable from the singleton, so the bot
-  joins each candidate's market id to its CreateMarket row to recover the params the lens needs. The
-  lens re-derives id = keccak256(abi.encode(params)) on-chain, so a stale/forged param set is rejected.
+  would miss liquidations). MarketParams (loanToken, collateralToken, oracle, irm, lltv) are recovered
+  ON-CHAIN via `idToMarketParams(id)` on the singleton — NOT indexed. `CreateMarket` is deliberately
+  NOT indexed: no-code rindexer cannot decode the nested `MarketParams` struct it carries (it panics
+  with "CustomStruct ... not supported"), and since the singleton exposes `idToMarketParams` the event
+  is unnecessary anyway.
 project_type: no-code
 networks:
   - name: base
     chain_id: 8453
     rpc: ${RINDEXER_RPC_URL}
+    # Cap per-request getLogs range. Sized for the Morpho eRPC `/cache` endpoint (wide-range friendly)
+    # during the historical backfill — without it rindexer probes, hits the endpoint's max-range error,
+    # and falls back to tiny 5000-block chunks, making the ~34M-block backfill glacial. For steady-state
+    # live indexing on `/realtime` (small ranges near the tip) this cap never binds, so it is safe to
+    # leave set across the /cache→/realtime switch.
+    max_block_range: 150000
 
 storage:
   postgres:
@@ -29,5 +36,4 @@ contracts:
         start_block: 13977148
     abi: ./abis/morpho.abi.json
     include_events:
-      - CreateMarket
       - Borrow

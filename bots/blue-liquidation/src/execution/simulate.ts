@@ -15,14 +15,8 @@ export type SimulateResult = { status: SimulateStatus; reason?: string }
 /**
  * Simulates the real liquidation — `Executor.exec_606BaXt(...)` from the liquidator EOA, byte-for-byte
  * what gets broadcast. The Executor self-funds via the in-callback swap, so a success means the seized
- * collateral covered the repay (incl. `amountOutMinimum` slippage) and both tokens swept clean. Any
- * revert — not-liquidatable, swap slippage, repay shortfall, an over-large derived repay — means do
- * not broadcast; the tick gates on `ok` only. No signer; never sends.
- *
- * The full-drain (zero-residual) invariant is enforced **structurally**: `encodeLiquidationExec`
- * always appends two `skim`s that transfer the Executor's entire loan + collateral balance to the EOA
- * (unit-tested in encode-call.test.ts), so a successful exec ends at zero balance for standard ERC20s.
- * The literal post-tx zero-balance assertion lives in the anvil fork suite.
+ * collateral covered the repay, including the swap's encoded min-out. Any revert means do not
+ * broadcast; the tick gates on `ok` only. No signer; never sends.
  */
 export async function simulateLiquidationExec(
   client: Client,

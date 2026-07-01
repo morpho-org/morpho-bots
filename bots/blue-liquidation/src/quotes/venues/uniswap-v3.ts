@@ -42,10 +42,9 @@ export const SWAP_AMOUNT_IN_OFFSET = 132n
 /**
  * Builds the Uniswap-V3 single-hop {@link Swap} locally — no API, no key. `amountIn` is left at `0n`
  * and bound to the Executor's live collateral balance at exec time (`source: 'balance'`). The seize
- * is pinned (seize-exact), so this balance equals `plan.seizedAssets`; splicing the live balance is
- * still correct and robust to any dust. The `amountOutMinimum` is the operator's slippage tolerance
- * applied to the lens's fresh oracle price; it fails closed — if the pool can't fill it the swap
- * reverts mid-`liquidate` and the whole tx rolls back (a missed liquidation, never a loss).
+ * is pinned, so this balance equals `plan.seizedAssets`; splicing the live balance is still correct
+ * and robust to any dust. The `amountOutMinimum` is the operator's slippage tolerance applied to the
+ * lens's fresh oracle price.
  */
 export function quoteUniswapV3(entry: UniswapV3Entry, params: QuoteParameters): Swap {
   const amountOutMinimum = (params.referenceAmountOut * (BPS - BigInt(params.slippageBps))) / BPS

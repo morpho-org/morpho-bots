@@ -42,7 +42,7 @@ _None yet — copy [`templates/DATA-FLOW.md`](./templates/DATA-FLOW.md) into a b
 
 ## TIBs (Bot-scoped)
 
-- [TIB-2026-06-30: Blue liquidation bot — v0](./decisions/TIB-2026-06-30-blue-liquidation-bot.md) — Morpho Blue ecosystem-backstop liquidator (rindexer discovery, accrual-aware soltag lens, multi-venue swaps, generic Executor, Railway) — proposed
+- [TIB-2026-06-30: Blue liquidation bot — v0](./decisions/TIB-2026-06-30-blue-liquidation-bot.md) — Morpho Blue ecosystem-backstop liquidator (rindexer discovery, accrual-aware soltag lens, multi-venue swaps, generic Executor, Railway) — implemented
 
 _Bot-scoped TIBs move under `bots/<bot>/docs/decisions/` once a bot lands; proposal TIBs for
 not-yet-built bots sit in `docs/decisions/` alongside their siblings._

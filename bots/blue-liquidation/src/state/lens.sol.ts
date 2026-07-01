@@ -18,13 +18,10 @@ import { marketId } from '../market'
 // the `soltag` CLI before typecheck) narrows the compiled `.abi`, so viem encodes the inputs and
 // decodes the structs natively; no hand-written ABI fragment or manual abi.encode/decode is needed.
 //
-// DIFF vs the midnight lens: Blue debt accrues continuously, so the lens must SIMULATE interest
-// accrual (`IIrm.borrowRateView` + Taylor compounding, exactly `MorphoBalancesLib.expectedMarketBalances`)
-// before the health check — otherwise a position that crossed into liquidatable purely from accrual
-// reads as healthy. And Blue's `MarketParams` are NOT on the singleton, so the lens re-derives
-// `id = keccak256(abi.encode(params))` from the SUPPLIED params and reads state at that id: a forged
-// param set derives an id with no market and is rejected (valid=false). This is the Blue analog of
-// midnight trusting `toMarket(id)`. Single collateral per market — no bitmap / argmax.
+// Blue debt accrues continuously, so the lens simulates interest accrual before the health check.
+// MarketParams are recovered on-chain via idToMarketParams(id) (see ./market-params.ts); the lens
+// re-derives the id from the supplied params on-chain, so mismatched params read an uncreated market
+// and return valid=false.
 //
 // Compiled to a deployless factory by the soltag bun preload (see ../../soltag.preload.ts); `sol```
 // throws if not active.

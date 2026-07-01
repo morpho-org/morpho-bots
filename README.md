@@ -43,6 +43,8 @@ Bot docs:
 
 - `bots/midnight-liquidation/README.md` — how to run the Midnight liquidation bot and how it works
   end to end
+- `bots/blue-liquidation/README.md` — how to run the Morpho Blue liquidation bot and how it works
+  end to end
 
 ## License
 

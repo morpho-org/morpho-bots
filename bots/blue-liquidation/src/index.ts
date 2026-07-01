@@ -13,7 +13,7 @@ import { assertContractDeployed, createDeploylessClient } from './client'
 import { loadConfig } from './config'
 import {
   createPostgresQuery,
-  discoverBorrowers,
+  discoverCandidates,
   discoveryDiagnostics,
   rindexerSyncedBlock
 } from './discovery/borrowers'
@@ -29,6 +29,7 @@ import { createRunner } from './runner/runner'
 import { runTick } from './runner/tick'
 import { createSigner } from './signer'
 import { readBlueLiquidationLens } from './state/lens.sol'
+import { createMarketParamsResolver, multicallIdToMarketParams } from './state/market-params'
 
 async function main() {
   const config = loadConfig()
@@ -127,7 +128,11 @@ async function main() {
     })
 
   const query = createPostgresQuery(config.databaseUrl)
-  const discover = () => discoverBorrowers(query)
+  // Discovery is (id, borrower) from the indexed Borrow events; the market's immutable params are
+  // recovered on-chain via idToMarketParams(id) and cached (params never change per id), so
+  // steady-state ticks make no extra RPC calls once every market has been seen once.
+  const resolveParams = createMarketParamsResolver(multicallIdToMarketParams(client, config.morpho))
+  const discover = () => discoverCandidates(query, resolveParams)
 
   // Startup discovery self-check (non-fatal): surface the rindexer schema + first discovery result so
   // a column-name mismatch or a not-yet-migrated table is diagnosable from Railway logs at boot,
@@ -139,10 +144,9 @@ async function main() {
       logger.warn('discovery.startup_error', { detail: ensureError(diag.error).message })
     } else {
       logger.info('discovery.schema', {
-        // The ACTUAL rindexer column names — compare against what BORROWERS_SQL selects if discovery
-        // yields zero candidates while rindexer is synced.
-        borrow: diag.data.borrow,
-        createMarket: diag.data.createMarket
+        // The ACTUAL rindexer `borrow` column names — compare against what BORROWER_IDS_SQL selects
+        // if discovery yields zero candidates while rindexer is synced.
+        borrow: diag.data.borrow
       })
       const probe = await tryCatch(Promise.all([discover(), rindexerSyncedBlock(query)]))
       if (probe.error) {

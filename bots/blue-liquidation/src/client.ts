@@ -8,7 +8,7 @@ import { getCode } from 'viem/actions'
 import type { Config } from './config'
 
 // Gas the deployless lens may burn in its single eth_call. The lens is read-only, so a generous
-// ceiling is harmless. Matches the sibling midnight bot's setting.
+// ceiling is harmless.
 const DEPLOYLESS_GAS_LIMIT = 550_000_000
 const RPC_TIMEOUT_MS = 30_000
 

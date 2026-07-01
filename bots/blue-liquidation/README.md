@@ -1,21 +1,20 @@
 # Blue Liquidation Bot
 
-A non-competitive, ecosystem-backstop liquidator for **Morpho Blue** on Base. It reliably clears
-every position that becomes liquidatable while it runs, and reads as a reference implementation of
-Blue's accrual, health, LIF, and seize-exact sizing math. It is the sibling of
-[`midnight-liquidation`](../midnight-liquidation/) and shares its `@repo/*` packages, deployless-lens
-pattern, generic Executor, nonce queue, and Railway topology.
+A non-competitive, ecosystem-backstop liquidator for **Morpho Blue** on Base. It watches indexed
+borrowers, reads fresh accrued state, sizes seize-exact liquidations, simulates the final Executor
+call, and broadcasts only simulation-ok plans.
 
 Design: [TIB-2026-06-30-blue-liquidation-bot](../../docs/decisions/TIB-2026-06-30-blue-liquidation-bot.md).
 
 ## Status
 
-v0. Unit-tested end to end. The production read path (lens compile → deployless deploy → IRM accrual
-sim → oracle → health → decode) is **validated against 256 live Base positions** via `probe:lens`,
-and the lens gas model is **measured** (see `state/lens.sol.ts`). The end-to-end _liquidate-broadcast_
-fork suite is written but **fixture-gated** — it needs a live-unhealthy Base position (none exist
-while the market is healthy) plus `RPC_URL_8453` (see [Testing](#testing)). The rindexer tuple-column
-names are confirmed at boot by the `discovery.schema` startup log.
+v0. Unit-tested across the core modules. The production read path (lens compile → deployless deploy →
+IRM accrual sim → oracle → health → decode) is **validated against 256 live Base positions** via
+`probe:lens`, and the lens gas model is **measured** (see `state/lens.sol.ts`). The end-to-end
+_liquidate-broadcast_ fork suite is written but **fixture-gated** — it needs a live-unhealthy Base
+position (none exist while the market is healthy), `RPC_URL_8453`, and
+`BLUE_LIQUIDATION_FORK_FIXTURE` (see [Testing](#testing)). The rindexer tuple-column names are
+confirmed at boot by the `discovery.schema` startup log.
 
 ## Prerequisites
 
@@ -78,8 +77,8 @@ market that uses it. The one caveat is the direct `uniswap-v3` venue: it swaps t
 `(collateral, fee)` pool, so it assumes a direct collateral→loan pool at that fee exists for every
 market using that collateral — if a collateral is borrowed against different loan tokens and lacks a
 direct pool for one, route it through an aggregator instead (pair-keyed routing would be the fix if a
-direct-DEX-only deployment ever needed it). `simulate()` fails such a route closed, so a mis-keyed
-uniswap entry is a missed liquidation, never a loss. `configs/example.json` covers the top live Base collaterals (by active positions): cbBTC
+direct-DEX-only deployment ever needed it). `simulate()` rejects mis-keyed routes before broadcast.
+`configs/example.json` covers the top live Base collaterals (by active positions): cbBTC
 (`0xcbB7C0…33Bf`), WETH (`0x4200…0006`), cbXRP (`0xcb5852…a4af`), SOL (`0x311935…9cf82`), cbETH
 (`0x2Ae3F1…Dec22`), cbDOGE (`0xcbD06E…eb510`), cbADA (`0xcbADA7…7b8c`), JitoSOL (`0x97bE14…C34de`),
 wstETH (`0xc1CBa3…e452`), AERO (`0x940181…D98631`) — edit to taste (the file is illustrative; verify
@@ -166,8 +165,7 @@ batch inside one deployless `eth_call` against a single `block.timestamp`. Per e
 1. re-derives `id = keccak256(abi.encode(params))` and reads `market(id)` / `position(id, borrower)` —
    a forged param set derives an id with no market and is rejected (`valid = false`);
 2. **simulates interest accrual** to `block.timestamp` (`IIrm.borrowRateView` + Taylor compounding,
-   exactly `MorphoBalancesLib.expectedMarketBalances`) — the key Blue delta, since debt accrues every
-   block;
+   exactly `MorphoBalancesLib.expectedMarketBalances`);
 3. reads `oracle.price()`, then computes `healthy = maxBorrow >= borrowed` with the contract's exact
    rounding (`toAssetsUp` for debt, `mulDivDown`/`wMulDown` for `maxBorrow`, virtual shares/assets).
 
@@ -201,10 +199,8 @@ set; a per-`(id, borrower)` exponential backoff suppresses repeated failures.
 ### Simulation
 
 The exact `Executor.exec_606BaXt(...)` bytes are `eth_call`-simulated from the EOA. Only an `ok`
-result is broadcast (`simulate.ok` gate) — any revert (not liquidatable, swap slippage, repay
-shortfall, oracle-drift underflow) fails closed: a missed liquidation, never a loss. The exec is
-`liquidate` + an in-callback swap/approval queue (via the native `onMorphoLiquidate`) + two trailing
-`skim` sweeps that drain both tokens to the EOA (the full-drain invariant of the shared singleton).
+result is broadcast (`simulate.ok` gate). The exec is `liquidate` + an in-callback swap/approval
+queue (via `onMorphoLiquidate`) + two trailing `skim` sweeps that drain both tokens to the EOA.
 
 ### Broadcast and pending queue
 
@@ -224,11 +220,11 @@ the nonce from `getTransactionCount('pending')`.
   position — emits a ready-to-paste `FIXTURE` for the fork suite. Run it any time to confirm the read
   path against production (last run: 256/256 returned, all valid, 0 liquidatable — a healthy market).
 - **Fork suite** (`test/fork/`) — end-to-end against a real Base position. It **skips** unless
-  `RPC_URL_8453` is set _and_ a `FIXTURE` (a discovered unhealthy position + fork block + pool fee) is
-  filled into `test/fork/liquidation.test.ts` (use `probe:lens` to find one). With both, it drives
-  lens → plan → swap → exec, asserts the tx lands, the EOA gains the loan token, and the Executor ends
-  holding zero of both tokens.
-  - Two fork assertions the TIB enumerates are **deferred to go-live**: (1) an underwater fixture
+  `RPC_URL_8453` is set _and_ `BLUE_LIQUIDATION_FORK_FIXTURE` contains a discovered unhealthy position
+  - fork block + pool fee (use `probe:lens` to find one). Integer fields should be decimal strings.
+    With both, it drives lens → plan → swap → exec, asserts the tx lands, the EOA gains the loan token,
+    and the Executor ends holding zero of both tokens.
+  * Two fork assertions the TIB enumerates are **deferred to go-live**: (1) an underwater fixture
     asserting the collateral-binds path drives `position.collateral` to 0 and socializes the residual
     (supplier `totalSupplyAssets` drops), and (2) queue bump + replacement against a real node. The
     collateral-binds safety property is meanwhile covered by the `plan.test.ts` underflow sweep and the

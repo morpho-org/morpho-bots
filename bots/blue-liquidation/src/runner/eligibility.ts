@@ -4,9 +4,7 @@ import type { LensOut } from '../state/lens.sol'
 /**
  * Off-chain liquidatability, composed from a fresh lens reading. Blue liquidation is permissionless
  * and time-independent, so the gate is simply `debt > 0 && unhealthy`, plus the on-chain `valid`
- * check the lens already performed (the market exists at `keccak256(abi.encode(params))`). No
- * liquidator gate, no lock, no maturity — the entire `caller`/`canLiquidate` machinery of the
- * Midnight bot is gone.
+ * check the lens already performed (the market exists at `keccak256(abi.encode(params))`).
  */
 export function isLiquidatable(out: LensOut): boolean {
   return out.valid && out.hasDebt && !out.healthy

@@ -188,7 +188,7 @@ describe('encodeLiquidationExec', () => {
 
     // Sub-call 0: the liquidate to Morpho.
     expect(decodeSubCall(calls[0]!).target).toBe(MORPHO)
-    // Sub-calls 1 & 2: the dual-token full-drain sweeps to the EOA (loan then collateral).
+    // Sub-calls 1 & 2: sweep loan then collateral to the EOA.
     expect(decodeSubCall(calls[1]!).target).toBe(MARKET.loanToken)
     expect(decodeSubCall(calls[2]!).target).toBe(MARKET.collateralToken)
   })

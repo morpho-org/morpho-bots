@@ -36,14 +36,11 @@ export type LiquidationPlan = { seizedAssets: bigint }
  *   seizeForFullDebt = mulDivDown(wMulDown(repaidAssetsFull, lif), ORACLE_PRICE_SCALE, collateralPrice)
  *   seizedAssets     = min(collateral, seizeForFullDebt)
  *
- * Pinning `seizedAssets` (with `repaidShares = 0`) is what keeps an aggregator's fixed sell amount
- * correct — the Executor holds exactly the seize when the callback runs. Blue then ceil-derives
- * `repaidShares` from the pinned seize; the inbound double-floor guarantees `repaidShares ≤
- * borrowShares` (proved in `plan.test.ts`), so the on-chain `borrowShares -= repaidShares` cannot
- * underflow. When collateral binds (underwater), seizing 100% drives `position.collateral` to 0 and
- * Blue socializes the residual as bad debt in the same call — no separate call needed. A one-block
- * oracle move that lifts the exec-time derived repaid above the debt simply reverts, caught by
- * `simulate()` (fail closed, never a loss).
+ * Pinning `seizedAssets` keeps an aggregator's fixed sell amount correct. Blue ceil-derives
+ * `repaidShares`; the double-floor input guarantees `repaidShares <= borrowShares` (proved in
+ * `plan.test.ts`). When collateral binds, seizing all collateral socializes the residual as bad debt
+ * in the same call. If a later oracle move makes the derived repay too large, simulation catches the
+ * revert before broadcast.
  */
 export function plan(input: PlanInput): LiquidationPlan | null {
   if (!input.hasDebt || input.healthy) return null

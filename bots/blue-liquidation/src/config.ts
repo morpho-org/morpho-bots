@@ -109,12 +109,7 @@ const DEFAULT_BACKOFF_MAX_BLOCKS = 64n
 
 type Env = Record<string, string | undefined>
 
-/**
- * Off-chain quoting + failure-backoff tunables (the multi-venue swap layer). Blue sizing is
- * seize-exact with no RCF/repay cap (see `sizing/plan.ts`), so — unlike Midnight — there is no
- * cap-margin knob here: a one-block oracle move that lifts the contract-derived repaid above the
- * borrow shares simply reverts, and that revert is caught by `simulate()` (fail closed).
- */
+/** Off-chain quoting and per-position failure-backoff tunables. */
 export type QuotingConfig = {
   quoteTimeoutMs: number
   httpRps: number

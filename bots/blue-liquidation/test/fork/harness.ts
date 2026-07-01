@@ -3,7 +3,15 @@ import type { Address } from 'viem'
 
 import { Executor } from '@repo/contracts'
 import { ensureError } from '@repo/utils'
-import { createTestClient, createWalletClient, http, parseEther, publicActions } from 'viem'
+import {
+  createTestClient,
+  createWalletClient,
+  getAddress,
+  http,
+  isAddress,
+  parseEther,
+  publicActions
+} from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
 
@@ -13,11 +21,9 @@ export const MORPHO = '0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb' as Address
 export const SWAP_ROUTER_02 = '0x2626664c2603336E57B271c5C0b26F421741e481' as Address // Base Uniswap SwapRouter02
 
 /**
- * A real, currently-unhealthy Base Morpho Blue position to drive the end-to-end fork test. This must
- * be DISCOVERED and filled in before the suite runs (as the sibling midnight bot did): pick a live
- * position whose health has crossed (or warp forward with `warpBy` to accrue it past the boundary),
- * pin the fork at a block where its oracle + the collateral's Uniswap pool are deterministic, and set
- * `RPC_URL_8453` to a Base archive RPC. Until then the suite skips (never fails `bun test`).
+ * A real, currently-unhealthy Base Morpho Blue position to drive the end-to-end fork test. Pick a
+ * live position whose health has crossed (or warp forward with `warpBy`), pin a deterministic fork
+ * block, and set `RPC_URL_8453` to a Base archive RPC. Until then the suite skips.
  */
 export type ForkFixture = {
   forkBlock: bigint
@@ -27,6 +33,78 @@ export type ForkFixture = {
   poolFee: number
   /** Optional seconds to warp forward to accrue interest and push a borderline position unhealthy. */
   warpBySeconds?: bigint
+}
+
+type RawForkFixture = {
+  forkBlock?: unknown
+  marketParams?: {
+    loanToken?: unknown
+    collateralToken?: unknown
+    oracle?: unknown
+    irm?: unknown
+    lltv?: unknown
+  }
+  borrower?: unknown
+  poolFee?: unknown
+  warpBySeconds?: unknown
+}
+
+function parseUint(value: unknown, field: string): bigint {
+  if (typeof value === 'bigint') return value
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 0) return BigInt(value)
+  if (typeof value === 'string' && /^\d+$/.test(value)) return BigInt(value)
+  throw new Error(`${field} must be a non-negative integer string`)
+}
+
+function parseAddress(value: unknown, field: string): Address {
+  if (typeof value === 'string' && isAddress(value, { strict: false })) return getAddress(value)
+  throw new Error(`${field} must be an address`)
+}
+
+function parsePoolFee(value: unknown): number {
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) return value
+  if (typeof value === 'string' && /^\d+$/.test(value)) return Number(value)
+  throw new Error('poolFee must be a positive integer')
+}
+
+function parseForkFixture(raw: unknown): ForkFixture {
+  if (typeof raw !== 'object' || raw === null) throw new Error('fixture must be a JSON object')
+  const fixture = raw as RawForkFixture
+  const marketParams = fixture.marketParams
+  if (typeof marketParams !== 'object' || marketParams === null) {
+    throw new Error('marketParams must be a JSON object')
+  }
+  return {
+    forkBlock: parseUint(fixture.forkBlock, 'forkBlock'),
+    marketParams: {
+      loanToken: parseAddress(marketParams.loanToken, 'marketParams.loanToken'),
+      collateralToken: parseAddress(marketParams.collateralToken, 'marketParams.collateralToken'),
+      oracle: parseAddress(marketParams.oracle, 'marketParams.oracle'),
+      irm: parseAddress(marketParams.irm, 'marketParams.irm'),
+      lltv: parseUint(marketParams.lltv, 'marketParams.lltv')
+    },
+    borrower: parseAddress(fixture.borrower, 'borrower'),
+    poolFee: parsePoolFee(fixture.poolFee),
+    ...(fixture.warpBySeconds === undefined
+      ? {}
+      : { warpBySeconds: parseUint(fixture.warpBySeconds, 'warpBySeconds') })
+  }
+}
+
+/**
+ * Reads a fork fixture from `BLUE_LIQUIDATION_FORK_FIXTURE`, when provided. Integer fields should be
+ * decimal strings so the fixture round-trips through JSON without precision loss.
+ */
+export function loadForkFixtureFromEnv(env = process.env): ForkFixture | null {
+  const raw = env.BLUE_LIQUIDATION_FORK_FIXTURE?.trim()
+  if (!raw) return null
+  try {
+    return parseForkFixture(JSON.parse(raw))
+  } catch (error) {
+    throw new Error(`Invalid BLUE_LIQUIDATION_FORK_FIXTURE: ${ensureError(error).message}`, {
+      cause: error
+    })
+  }
 }
 
 /** The fork RPC, required only to RUN the suite. Absent → the suite skips (see liquidation.test.ts). */
