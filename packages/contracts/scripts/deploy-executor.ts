@@ -74,7 +74,16 @@ const hash = await walletClient.sendTransaction({ to: factory, data: factoryData
 const receipt = await publicClient.waitForTransactionReceipt({ hash })
 if (receipt.status !== 'success') throw new Error(`Deploy tx reverted (${hash})`)
 
-const deployed = await publicClient.getCode({ address })
-if (!deployed || deployed === '0x') throw new Error(`Deploy tx mined but no code at ${address}`)
+// The tx is confirmed successful, so the code IS deposited — but some RPCs (e.g. Alchemy on newer
+// Orbit chains) serve `getCode` with brief read-after-write lag right after the receipt, returning
+// `0x` for a moment. Poll a few times before declaring failure so a healthy deploy isn't reported
+// as a false negative.
+let deployed = await publicClient.getCode({ address })
+for (let attempt = 0; (!deployed || deployed === '0x') && attempt < 5; attempt++) {
+  await new Promise(resolve => setTimeout(resolve, 1000))
+  deployed = await publicClient.getCode({ address })
+}
+if (!deployed || deployed === '0x')
+  throw new Error(`Deploy tx ${hash} succeeded but no code at ${address} after retries`)
 
 console.log(`Executor deployed at ${address} (tx ${hash})`)
