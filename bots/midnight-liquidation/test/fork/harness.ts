@@ -7,22 +7,37 @@ import { createTestClient, createWalletClient, http, parseEther, publicActions }
 import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
 
-// A real, currently-open Base Midnight position (discovered 2026-06-17). The fork is
-// pinned at FORK_BLOCK so the position state, the cbBTC oracle, and the cbBTC/USDC pool are all
-// deterministic; the suite warps past `maturity` to make it post-maturity liquidatable.
-const FORK_BLOCK = 47_482_000n
-export const MIDNIGHT = '0x3726353bCDDba7c29a17D46D8a35D1E8b2E51854' as Address
-export const POSITION = {
-  id: '0xb5d2fb559c07b73e69291a0c65dd32e6953c2cf2fb8ec5d6002e374ca8f89df5' as Hex,
-  borrower: '0x6bA008e3F6eC55Dc6412e459Ac67949c6D1620c5' as Address,
-  maturity: 1_781_881_200n
-} as const
+// The 0xAdedD8ab… deployment is fresh, so it has no organic debt positions to pin. Instead the suite
+// MINTS its own liquidatable WETH/USDC position inside the fork via `seedLiquidatablePosition`
+// (test/fork/seed.ts): it clones a real curator-trusted WETH/USDC oracle + params, opens a healthy
+// position through the real `take` order-book path (exercising the new 336b924a offer typehashes
+// end-to-end), then the suite warps past `maturity` to make it post-maturity liquidatable. FORK_BLOCK
+// is a fixed block shortly after the deploy so the WETH oracle price and the WETH/USDC pool are
+// deterministic; RPC_URL_8453 must be an archive endpoint that serves it (CI secret; locally set it in
+// .env.test.local — bun does NOT load .env.local under NODE_ENV=test).
+const FORK_BLOCK = 48_300_000n
+export const MIDNIGHT = '0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A' as Address
 
-// Base token + Uniswap-V3 venue addresses for this position's market.
+// Base token + Uniswap-V3 venue addresses for the seeded market.
 export const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' as Address // loan token
-export const CBBTC = '0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf' as Address // collateral token
+export const WETH = '0x4200000000000000000000000000000000000006' as Address // collateral token
 export const SWAP_ROUTER_02 = '0x2626664c2603336E57B271c5C0b26F421741e481' as Address
-export const POOL_FEE = 100
+export const POOL_FEE = 500
+
+// Seeding inputs for `seedLiquidatablePosition` (test/fork/seed.ts). The oracle + lltv + cursor are a
+// real curator-trusted WETH/USDC market cloned from the Midnight API; the cursor is not yet enabled on
+// the fresh deploy, so the seeder enables it by impersonating the configurator on the fork.
+export const WETH_USDC_ORACLE = '0xFEa2D58cEfCb9fcb597723c6bAE66fFE4193aFE4' as Address
+export const LLTV = 860000000000000000n // 0.86 WAD (enabled on-chain)
+export const LIQUIDATION_CURSOR = 250000000000000000n // 0.25 WAD (enabled by the seeder via configurator)
+export const CONFIGURATOR = '0xcBa28b38103307Ec8dA98377ffF9816C164f9AFa' as Address
+export const ECRECOVER_RATIFIER = '0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E' as Address
+
+// Throwaway anvil dev keys #2 (maker/lender, buys units + pays USDC) and #3 (borrower/taker, supplies
+// WETH collateral + takes on the debt). Funded via setBalance/wrap/swap on the fork.
+export const MAKER_KEY = '0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdd4d1a1' as Hex
+export const BORROWER_KEY =
+  '0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6' as Hex
 
 // Well-known anvil dev keys (throwaway; funded via setBalance on the fork). #0 is the liquidator EOA
 // the bot signs with; #1 deploys the Executor singleton (it has no owner, so the deployer is moot).
@@ -95,6 +110,10 @@ export async function startFork(port = 8545): Promise<{ anvil: ForkHandle; rpcUr
       String(FORK_BLOCK),
       '--chain-id',
       String(base.id),
+      // The deployed Midnight is compiled for the `osaka` EVM and uses the CLZ opcode (EIP-7939) in
+      // liquidate; anvil's default hardfork lacks CLZ, so it would revert with empty data. Pin osaka.
+      '--hardfork',
+      'osaka',
       '--port',
       String(port)
     ],
@@ -134,18 +153,23 @@ export async function warpTo(test: TestClient, timestamp: bigint): Promise<void>
 }
 
 /**
- * Deploys the vendored generic Executor singleton from its init bytecode and returns its address
- * (used as the bot's EXECUTOOOR_ADDRESS). Funds the throwaway deployer first.
+ * Ensures the vendored generic Executor singleton exists at its deterministic CREATE2 address on the
+ * fork and returns it (the bot's EXECUTOOOR_ADDRESS). Idempotent: since the Executor is a real
+ * singleton already deployed on Base, at a recent FORK_BLOCK it is already present, so we skip the
+ * deploy (redeploying to the same CREATE2 address reverts). Only forks pinned before its mainnet
+ * deployment need the deploy path.
  */
 export async function deployExecutor(test: TestClient, rpcUrl: string): Promise<Address> {
   const account = privateKeyToAccount(DEPLOYER_KEY)
-  await test.setBalance({ address: account.address, value: parseEther('100') })
   const wallet = createWalletClient({ account, chain: base, transport: http(rpcUrl) }).extend(
     publicActions
   )
   // Deploy via the canonical CREATE2 factory (present on the Base fork) so the Executor lands at the
   // deterministic address the bot derives — the same mechanism as the production deploy script.
   const { address, factory, factoryData } = Executor.with()
+  const existing = await wallet.getCode({ address })
+  if (existing && existing !== '0x') return address
+  await test.setBalance({ address: account.address, value: parseEther('100') })
   const hash = await wallet.sendTransaction({ to: factory, data: factoryData })
   await wallet.waitForTransactionReceipt({ hash })
   const code = await wallet.getCode({ address })

@@ -7,7 +7,7 @@ import { base } from 'viem/chains'
 import { assertContractDeployed, createDeploylessClient } from '../src/client'
 
 const RPC = 'http://localhost:8545'
-const ADDRESS = getAddress('0x3726353bCDDba7c29a17D46D8a35D1E8b2E51854')
+const ADDRESS = getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A')
 
 // Minimal client whose eth_getCode returns `code` — enough to drive getCode without a network.
 function stubClient(code: string): Client {

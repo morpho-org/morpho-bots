@@ -11,8 +11,15 @@ import { isBadDebtRealization } from '../sizing/plan'
 
 // The Midnight `Market` struct passed to `liquidate`. The bot reads it on-chain from the lens
 // (`toMarket(id)`) and re-passes it verbatim.
-export type CollateralParams = { token: Address; lltv: bigint; maxLif: bigint; oracle: Address }
+export type CollateralParams = {
+  token: Address
+  lltv: bigint
+  liquidationCursor: bigint
+  oracle: Address
+}
 export type Market = {
+  chainId: bigint
+  midnight: Address
   loanToken: Address
   collateralParams: readonly CollateralParams[]
   maturity: bigint

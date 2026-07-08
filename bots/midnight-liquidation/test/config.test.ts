@@ -84,7 +84,7 @@ describe('loadConfig', () => {
     const config = loadConfig(baseEnv({ CHAIN_ID: '8453' }), { readFile: () => SWAP_JSON })
     expect(config.chainId).toBe(8453)
     expect(config.chain.id).toBe(8453)
-    expect(config.midnight).toBe(getAddress('0x3726353bCDDba7c29a17D46D8a35D1E8b2E51854'))
+    expect(config.midnight).toBe(getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A'))
   })
 
   it('throws when a required var is missing', () => {

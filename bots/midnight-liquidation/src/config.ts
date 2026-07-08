@@ -84,7 +84,7 @@ export type ChainConfig = { chain: Chain; midnight: Address }
 // (see the lens fetcher). On-chain validation of these addresses (getCode) lands in Phase 2.
 // loadConfig fails loud for any CHAIN_ID not present here.
 const CHAIN_MAP: Record<number, ChainConfig> = {
-  [base.id]: { chain: base, midnight: getAddress('0x3726353bCDDba7c29a17D46D8a35D1E8b2E51854') }
+  [base.id]: { chain: base, midnight: getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A') }
 }
 
 // ---------------------------------------------------------------------------

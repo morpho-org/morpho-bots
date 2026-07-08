@@ -15,8 +15,8 @@ export const WAD = 10n ** 18n
 /** Oracle price scale (1e36 = WAD²): collateralUsd = amount * price / ORACLE_PRICE_SCALE. */
 export const ORACLE_PRICE_SCALE = 10n ** 36n
 
-/** Seconds over which the post-maturity LIF ramps from WAD up to maxLif (15 minutes). */
-export const TIME_TO_MAX_LIF = 900n
+/** Seconds over which the post-maturity LIF ramps from WAD up to maxLif (60 minutes). */
+export const TIME_TO_MAX_LIF = 3600n
 
 /** Maximum collateral slots a single borrower can activate at once (Midnight ConstantsLib). */
 export const MAX_COLLATERALS_PER_BORROWER = 16

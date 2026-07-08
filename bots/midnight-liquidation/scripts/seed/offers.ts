@@ -1,9 +1,10 @@
 // Offer construction + EcrecoverRatifier ratification for the position-seeding operator script.
 // Ports `HashLib`, `IdLib.toId`, and `EcrecoverRatifier.isRatified`
-// (docs/context/repos/midnight-contracts.txt). The non-standard EIP-712 domain (chainId +
-// ratifier address only, no name/version) and the raw-root message mean we hand-roll the digest
-// rather than using viem `signTypedData`. The seeding script cross-checks this against a real
-// on-chain `take` (recompute the offer's digest, recover its maker) before sending anything.
+// (morpho-org/midnight @ 336b924a — the version deployed on Base as 0xAdedD8ab…). The non-standard
+// EIP-712 domain (chainId + ratifier address only, no name/version) and the raw-root message mean we
+// hand-roll the digest rather than using viem `signTypedData`. The seeding script cross-checks this
+// against a real on-chain `take` (recompute the offer's digest, recover its maker) before sending
+// anything.
 
 import type { Address, Hex } from 'viem'
 
@@ -12,7 +13,7 @@ import { sign } from 'viem/accounts'
 
 import type { CollateralParams, Market } from '../../src/execution/encode-call'
 
-/** The Midnight `Offer` struct (IMidnight.sol:32-47), field order load-bearing for `hashOffer`. */
+/** The Midnight `Offer` struct (IMidnight.sol @ 336b924a), field order load-bearing for `hashOffer`. */
 export type Offer = {
   market: Market
   buy: boolean
@@ -28,24 +29,28 @@ export type Offer = {
   reduceOnly: boolean
   maxUnits: bigint
   maxAssets: bigint
+  continuousFeeCap: bigint
 }
 
 type Signature = { v: number; r: Hex; s: Hex }
 
-// Typehashes pinned from HashLib (contracts.txt:742-746) and the height-0 OfferTree typehash
-// (contracts.txt:758). EIP-712 domain typehash = keccak256("EIP712Domain(uint256 chainId,address
-// verifyingContract)") (contracts.txt:383).
-const COLLATERAL_PARAMS_TYPEHASH =
-  '0xaf44a88eb50ebdbbebd980e5a23045c44f61ece5f80ab708a1bbe8718102e6af' as const
-const MARKET_TYPEHASH =
-  '0x358117e98511cc3df97175dca58053b06675b43ad090b0553f8a1eff008b6e2e' as const
-const OFFER_TYPEHASH = '0x980a4cfc9766df84667f316d76e10cefc8caf04fb4cd4a9fca00a8e7b34f619c' as const
-const OFFER_TREE_TYPEHASH_HEIGHT0 =
-  '0x2b9ee710e1977dfc5778fe18c905ccc1d9e144baf3ba83be732d4da65ecb73e3' as const
+// Typehashes pinned from HashLib @ morpho-org/midnight 336b924a (the deployed commit; COLLATERAL_PARAMS
+// /MARKET/OFFER typehash constants + the height-0 OfferTree typehash from HashLib.offerTreeTypeHash(0)).
+// COLLATERAL_PARAMS/MARKET are unchanged from 3836155f (those structs did not change); OFFER and the
+// OfferTree height-0 typehash changed because this deployment narrowed Offer.maxUnits/maxAssets to
+// uint128. EIP-712 domain typehash = keccak256("EIP712Domain(uint256 chainId,address verifyingContract)").
+export const COLLATERAL_PARAMS_TYPEHASH =
+  '0x39ed3f928d24fd00574b1a02aba9c2483abcf5d9a3a366118c9a5aa29885b841' as const
+export const MARKET_TYPEHASH =
+  '0x510b3862f3816a109c9340b76972e8a30984246be06e034ae12ed2934220391a' as const
+export const OFFER_TYPEHASH =
+  '0x9905214264a9fb7b6cc1b0e33db7a04687c6e4185a84755d29914314aa9d8906' as const
+export const OFFER_TREE_TYPEHASH_HEIGHT0 =
+  '0x270da1ebafc0f24637af3612fb8c3a1d828fcb56d3637c24e86dd006b12ca7f9' as const
 const EIP712_DOMAIN_TYPEHASH =
   '0x47e79534a245952e8b16893a336b85a3d9ea9fa8c573f3d803afb92a79469218' as const
 
-// SSTORE2 deploy prefix (IdLib, contracts.txt:337) prepended to `abi.encode(market)` before hashing.
+// SSTORE2 deploy prefix (IdLib.SSTORE2_PREFIX @ 3836155f) prepended to `abi.encode(market)` before hashing.
 const SSTORE2_PREFIX = '0x600b380380600b5f395ff3' as const
 
 const COLLATERAL_PARAMS_TUPLE = {
@@ -53,7 +58,7 @@ const COLLATERAL_PARAMS_TUPLE = {
   components: [
     { name: 'token', type: 'address' },
     { name: 'lltv', type: 'uint256' },
-    { name: 'maxLif', type: 'uint256' },
+    { name: 'liquidationCursor', type: 'uint256' },
     { name: 'oracle', type: 'address' }
   ]
 } as const
@@ -61,6 +66,8 @@ const COLLATERAL_PARAMS_TUPLE = {
 const MARKET_TUPLE = {
   type: 'tuple',
   components: [
+    { name: 'chainId', type: 'uint256' },
+    { name: 'midnight', type: 'address' },
     { name: 'loanToken', type: 'address' },
     { name: 'collateralParams', type: 'tuple[]', components: COLLATERAL_PARAMS_TUPLE.components },
     { name: 'maturity', type: 'uint256' },
@@ -70,7 +77,7 @@ const MARKET_TUPLE = {
   ]
 } as const
 
-/** EIP-712 hashStruct of a CollateralParams (HashLib.hashCollateralParams, :810-820). */
+/** EIP-712 hashStruct of a CollateralParams (HashLib.hashCollateralParams @ 3836155f). */
 function hashCollateralParams(cp: CollateralParams) {
   return keccak256(
     encodeAbiParameters(
@@ -81,27 +88,31 @@ function hashCollateralParams(cp: CollateralParams) {
         { type: 'uint256' },
         { type: 'address' }
       ],
-      [COLLATERAL_PARAMS_TYPEHASH, cp.token, cp.lltv, cp.maxLif, cp.oracle]
+      [COLLATERAL_PARAMS_TYPEHASH, cp.token, cp.lltv, cp.liquidationCursor, cp.oracle]
     )
   )
 }
 
-/** EIP-712 hashStruct of a Market (HashLib.hashMarket, :823-849). */
+/** EIP-712 hashStruct of a Market (HashLib.hashMarket @ 3836155f). */
 function hashMarket(market: Market) {
   const collateralParamsHash = keccak256(concat(market.collateralParams.map(hashCollateralParams)))
   return keccak256(
     encodeAbiParameters(
       [
-        { type: 'bytes32' },
-        { type: 'address' },
-        { type: 'bytes32' },
-        { type: 'uint256' },
-        { type: 'uint256' },
-        { type: 'address' },
-        { type: 'address' }
+        { type: 'bytes32' }, // MARKET_TYPEHASH
+        { type: 'uint256' }, // chainId
+        { type: 'address' }, // midnight
+        { type: 'address' }, // loanToken
+        { type: 'bytes32' }, // hashed collateralParams
+        { type: 'uint256' }, // maturity
+        { type: 'uint256' }, // rcfThreshold
+        { type: 'address' }, // enterGate
+        { type: 'address' } // liquidatorGate
       ],
       [
         MARKET_TYPEHASH,
+        market.chainId,
+        market.midnight,
         market.loanToken,
         collateralParamsHash,
         market.maturity,
@@ -113,7 +124,7 @@ function hashMarket(market: Market) {
   )
 }
 
-/** EIP-712 hashStruct of an Offer (HashLib.hashOffer, :852-872) — all 14 fields, exact order. */
+/** EIP-712 hashStruct of an Offer (HashLib.hashOffer @ 3836155f) — all 15 fields, exact order. */
 export function hashOffer(offer: Offer) {
   return keccak256(
     encodeAbiParameters(
@@ -131,8 +142,9 @@ export function hashOffer(offer: Offer) {
         { type: 'address' }, // receiverIfMakerIsSeller
         { type: 'address' }, // ratifier
         { type: 'bool' }, // reduceOnly
-        { type: 'uint256' }, // maxUnits
-        { type: 'uint256' } // maxAssets
+        { type: 'uint128' }, // maxUnits
+        { type: 'uint128' }, // maxAssets
+        { type: 'uint256' } // continuousFeeCap
       ],
       [
         OFFER_TYPEHASH,
@@ -149,7 +161,8 @@ export function hashOffer(offer: Offer) {
         offer.ratifier,
         offer.reduceOnly,
         offer.maxUnits,
-        offer.maxAssets
+        offer.maxAssets,
+        offer.continuousFeeCap
       ]
     )
   )
@@ -186,23 +199,19 @@ export function isLeaf({
   return current === root
 }
 
-/** Deterministic market id (IdLib.toId, :339-345). `chainId` is the contract's INITIAL_CHAIN_ID. */
-export function toId({
-  market,
-  chainId,
-  midnight
-}: {
-  market: Market
-  chainId: number
-  midnight: Address
-}) {
+/**
+ * Deterministic market id (IdLib.toId @ 3836155f): CREATE2 address of the market's SSTORE2 creation
+ * code, with deployer = `market.midnight` and a fixed salt of 0. (The prior version salted with the
+ * chainId; the current one folds chain identity into the hashed `Market.chainId` field instead.)
+ */
+export function toId(market: Market) {
   const creationCodeHash = keccak256(
     concat([SSTORE2_PREFIX, encodeAbiParameters([MARKET_TUPLE], [market])])
   )
   return keccak256(
     encodePacked(
       ['uint8', 'address', 'uint256', 'bytes32'],
-      [0xff, midnight, BigInt(chainId), creationCodeHash]
+      [0xff, market.midnight, 0n, creationCodeHash]
     )
   )
 }

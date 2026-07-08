@@ -22,8 +22,8 @@ describe('protocol constants', () => {
     expect(ORACLE_PRICE_SCALE).toBe(WAD * WAD)
   })
 
-  it('TIME_TO_MAX_LIF is 15 minutes expressed in seconds', () => {
-    expect(TIME_TO_MAX_LIF).toBe(15n * 60n)
+  it('TIME_TO_MAX_LIF is 60 minutes expressed in seconds', () => {
+    expect(TIME_TO_MAX_LIF).toBe(60n * 60n)
   })
 
   it('MAX_COLLATERALS_PER_BORROWER matches the Midnight constant', () => {
