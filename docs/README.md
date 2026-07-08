@@ -13,6 +13,7 @@ This directory holds architectural decision records (TIBs), retrospectives, and 
   `decisions/TIB-YYYY-MM-DD-short-slug.md` and fill in.
 - [`templates/DATA-FLOW.md`](./templates/DATA-FLOW.md) — template for per-bot or per-package data
   flow documentation. Copy next to the module it describes.
+- [`official/`](./official/) — candidate pages for Morpho public documentation.
 - [`decisions/`](./decisions/) — accepted and proposed TIBs, one file per decision.
 - `retros/` _(added on first retro)_ — retrospectives on completed work, one file per retro.
 

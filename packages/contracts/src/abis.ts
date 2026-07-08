@@ -7,3 +7,7 @@ import { sol, solFile } from 'soltag'
 export const MidnightAbi = sol('IMidnight')`
   ${solFile('../solidity/interfaces/IMidnight.sol', { raw: true })}
 `.abi
+
+export const MorphoAbi = sol('IMorpho')`
+  ${solFile('../solidity/interfaces/IMorpho.sol', { raw: true })}
+`.abi

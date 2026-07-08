@@ -1,22 +1,25 @@
 import type { Address, Hex } from 'viem'
 
 import { ensureError } from '@repo/utils'
+import { getAddress } from 'viem'
 import { getBlockNumber } from 'viem/actions'
 
-import type { Market, SwapStep } from './execution/encode-call'
-import type { SwapConfigEntry } from './execution/swap-step'
+import type { SwapConfigEntry } from './config'
+import type { Market } from './execution/encode-call'
+import type { Swap, Venue } from './quotes/types'
 import type { LiquidationPlan } from './sizing/plan'
-import type { LensOut } from './state/lens.sol'
 
 import { assertContractDeployed, createDeploylessClient } from './client'
 import { loadConfig } from './config'
 import { createPostgresQuery, discoverBorrowers, rindexerSyncedBlock } from './discovery/borrowers'
 import { encodeLiquidationExec } from './execution/encode-call'
 import { simulateLiquidationExec } from './execution/simulate'
-import { buildSwapStep, coversRepay } from './execution/swap-step'
 import { createLogger } from './logger'
+import { createBackoff } from './queue/backoff'
 import { initialFees } from './queue/fee-policy'
 import { createPendingQueue } from './queue/pending-queue'
+import { composeQuoting } from './quotes'
+import { createRateLimitedClient } from './quotes/http-client'
 import { createRunner } from './runner/runner'
 import { runTick } from './runner/tick'
 import { createSigner } from './signer'
@@ -48,29 +51,56 @@ async function main() {
     'deploy it with `bun run --filter @repo/contracts deploy:executor`'
   )
 
-  // Per-collateral swap routing for this chain, normalized to lowercase token keys for lookup. A
-  // collateral with no entry is skipped at tick time (`config.no_swap_path`) — a coverage gap, not fatal.
+  // Per-collateral swap routing for this chain, keyed by EIP-55-checksummed collateral address (the
+  // config schema and the lens both return checksummed addresses). A collateral with no entry is
+  // skipped at tick time (`config.no_swap_path`) — a coverage gap, not fatal.
   const swapByCollateral = new Map<string, SwapConfigEntry>()
   for (const [token, entry] of Object.entries(config.swapConfig[String(config.chainId)] ?? {})) {
-    if (entry) swapByCollateral.set(token.toLowerCase(), entry)
+    if (entry) swapByCollateral.set(getAddress(token), entry)
   }
   // No routes configured for this chain (unset/absent swap config): the bot still runs — it
   // identifies liquidatable borrowers and realizes pure bad debt — but skips every routed
   // liquidation (`config.no_swap_path`). Warn loudly so this isn't mistaken for a healthy, fully
-  // armed deployment.
+  // armed deployment. Otherwise log the chosen venue per collateral.
   if (swapByCollateral.size === 0) {
     logger.warn('swap_config.no_routes', {
       chainId: config.chainId,
       detail:
         'no swap routes configured — routed liquidations will be skipped (bad-debt realization still runs)'
     })
+  } else {
+    logger.info('quoting.startup', {
+      chainId: config.chainId,
+      venues: Object.fromEntries(
+        [...swapByCollateral].map(([token, entry]) => [token, entry.venue])
+      )
+    })
   }
-  const swapStepFor = (plan: LiquidationPlan, out: LensOut): SwapStep | null => {
-    const collateral = out.market.collateralParams[plan.collateralIndex]
-    if (!collateral) return null
-    const entry = swapByCollateral.get(collateral.token.toLowerCase())
-    return entry ? buildSwapStep(entry, plan, out) : null
-  }
+
+  // Rate-limited HTTP client for aggregator quotes. API keys are read from env HERE, at the point of
+  // use, and live only in this closure — never on the (logged) Config object.
+  const apiKeys: Partial<Record<Venue, string>> = {}
+  if (Bun.env.ZEROX_API_KEY) apiKeys['0x'] = Bun.env.ZEROX_API_KEY
+  if (Bun.env.ONEINCH_API_KEY) apiKeys['1inch'] = Bun.env.ONEINCH_API_KEY
+  const httpClient = createRateLimitedClient({
+    apiKeys,
+    rps: config.quoting.httpRps,
+    burst: config.quoting.httpBurst,
+    maxRetries: config.quoting.httpMaxRetries,
+    timeoutMs: config.quoting.quoteTimeoutMs
+  })
+  const { quoteFor } = composeQuoting({
+    httpClient,
+    chainId: config.chainId,
+    executor: config.executooorAddress,
+    swapByCollateral,
+    maxRouteImpactBps: config.quoting.maxRouteImpactBps,
+    logger
+  })
+  const backoff = createBackoff({
+    baseBlocks: config.quoting.backoffBaseBlocks,
+    maxBlocks: config.quoting.backoffMaxBlocks
+  })
 
   // The exec calldata for one liquidation — the same bytes the simulate gate checks and the queue
   // broadcasts, so a sim-ok plan and its broadcast can't drift.
@@ -78,7 +108,7 @@ async function main() {
     market: Market,
     borrower: Address,
     plan: LiquidationPlan,
-    swapStep: SwapStep | null
+    swap: Swap | null
   ): Hex =>
     encodeLiquidationExec({
       executor: config.executooorAddress,
@@ -89,7 +119,7 @@ async function main() {
       repaidUnits: plan.repaidUnits,
       borrower,
       postMaturityMode: plan.postMaturityMode,
-      swapStep,
+      swap,
       recipient: eoa
     })
 
@@ -114,21 +144,21 @@ async function main() {
       syncedBlock: () => rindexerSyncedBlock(query),
       chainHead,
       caller: config.executooorAddress,
+      seizeCapMarginBps: config.quoting.seizeCapMarginBps,
       readLens: pairs => readMidnightLiquidationLens(client, config.midnight, pairs),
-      swapStepFor,
-      coversRepay,
-      simulate: ({ market, borrower, plan, swapStep }) =>
+      quoteFor,
+      simulate: ({ market, borrower, plan, swap }) =>
         simulateLiquidationExec(client, {
           executooor: config.executooorAddress,
           eoa,
-          data: encodeExec(market, borrower, plan, swapStep)
+          data: encodeExec(market, borrower, plan, swap)
         }),
-      submit: async ({ market, borrower, plan, swapStep, blockNumber, label }) => {
+      submit: async ({ market, borrower, plan, swap, blockNumber, label }) => {
         const fees = initialFees(await signer.getBaseFee(), config.maxFeeWei)
         await queue.submit({
           request: {
             to: config.executooorAddress,
-            data: encodeExec(market, borrower, plan, swapStep)
+            data: encodeExec(market, borrower, plan, swap)
           },
           label,
           maxFeePerGas: fees.maxFeePerGas,
@@ -136,6 +166,7 @@ async function main() {
           blockNumber
         })
       },
+      backoff,
       pendingOnBlock: blockNumber => queue.onBlock(blockNumber),
       inflightLabels: () => queue.inflightLabels(),
       logger

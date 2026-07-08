@@ -8,15 +8,16 @@ Quick navigation for the curator-bots documentation.
 
 - [Coding Conventions](./CONVENTIONS.md) — code style, patterns, best practices
 - [Documentation Guidance](./GUIDANCE.md) — when to write a TIB, TIB lifecycle, TIB vs Linear
+- [Official Docs Drafts](./official/README.md) — candidate pages for Morpho public documentation
 
 ---
 
 ## Bots
 
-| Bot                                                   | Description                            | Docs                                                                        |
-| ----------------------------------------------------- | -------------------------------------- | --------------------------------------------------------------------------- |
-| [midnight-liquidation](../bots/midnight-liquidation/) | Liquidates eligible Midnight positions | [README](../bots/midnight-liquidation/README.md)                            |
-| [kill-switch](../bots/kill-switch/docs/decisions/)    | Planned vault kill-switch bot          | [TIB](../bots/kill-switch/docs/decisions/TIB-2026-05-14-kill-switch-bot.md) |
+| Bot                                                   | Description                               | Docs                                             |
+| ----------------------------------------------------- | ----------------------------------------- | ------------------------------------------------ |
+| [midnight-liquidation](../bots/midnight-liquidation/) | Liquidates eligible Midnight positions    | [README](../bots/midnight-liquidation/README.md) |
+| [blue-liquidation](../bots/blue-liquidation/)         | Liquidates eligible Morpho Blue positions | [README](../bots/blue-liquidation/README.md)     |
 
 ---
 
@@ -42,7 +43,10 @@ _None yet — copy [`templates/DATA-FLOW.md`](./templates/DATA-FLOW.md) into a b
 
 ## TIBs (Bot-scoped)
 
-_None yet — bot-scoped TIBs live under `bots/<bot>/docs/decisions/` once a bot lands._
+- [TIB-2026-06-30: Blue liquidation bot — v0](./decisions/TIB-2026-06-30-blue-liquidation-bot.md) — Morpho Blue ecosystem-backstop liquidator (rindexer discovery, accrual-aware soltag lens, multi-venue swaps, generic Executor, Railway) — implemented
+
+_Bot-scoped TIBs move under `bots/<bot>/docs/decisions/` once a bot lands; proposal TIBs for
+not-yet-built bots sit in `docs/decisions/` alongside their siblings._
 
 ---
 

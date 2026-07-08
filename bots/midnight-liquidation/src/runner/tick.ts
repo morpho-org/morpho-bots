@@ -3,9 +3,11 @@ import type { Address } from 'viem'
 import { assertNever, tryCatch } from '@repo/utils'
 
 import type { BorrowerCandidate } from '../discovery/borrowers'
-import type { Market, SwapStep } from '../execution/encode-call'
+import type { Market } from '../execution/encode-call'
 import type { SimulateResult } from '../execution/simulate'
 import type { Logger } from '../logger'
+import type { Backoff } from '../queue/backoff'
+import type { QuoteOutcome, Swap } from '../quotes/types'
 import type { LiquidationPlan } from '../sizing/plan'
 import type { LensInput, LensOut } from '../state/lens.sol'
 
@@ -21,7 +23,8 @@ type TickCounters = {
   liquidatable: number
   planned: number
   noSwapPath: number
-  repayShortfall: number
+  quoteFailed: number
+  backoffSkipped: number
   ok: number
   reverted: number
   submitted: number
@@ -46,34 +49,32 @@ export async function runTick(deps: {
   chainHead: bigint
   /** The Executor singleton — the `liquidate` msg.sender whose gate the lens checks. */
   caller: Address
+  /** Headroom (bps) shaved off a cap-binding seize for one-block oracle-drift; passed to `plan()`. */
+  seizeCapMarginBps: number
   readLens: (pairs: LensInput[]) => Promise<Map<string, LensOut>>
   /**
-   * Builds the per-collateral swap step (router/fee + slippage-bounded `amountOutMinimum`), or `null`
-   * when the operator has no swap config for this collateral → skip with `config.no_swap_path`.
+   * Fetches ONE executable swap for a liquidatable position from its configured venue (Uniswap is
+   * local; aggregators make a single API call). `no_config` → skip with `config.no_swap_path` (no
+   * backoff); `failed` → skip and back the position off.
    */
-  swapStepFor: (plan: LiquidationPlan, out: LensOut) => SwapStep | null
-  /**
-   * Whether the seized collateral can cover the loan-token repay at the fresh oracle price. `false`
-   * → the liquidation can't self-fund (the post-maturity LIF bonus is below the repay), so skip
-   * before simulating; it recovers as the LIF ramps. Avoids re-simulating a guaranteed revert each
-   * block.
-   */
-  coversRepay: (plan: LiquidationPlan, out: LensOut) => boolean
+  quoteFor: (plan: LiquidationPlan, out: LensOut) => Promise<QuoteOutcome>
   simulate: (args: {
     market: Market
     borrower: Address
     plan: LiquidationPlan
-    swapStep: SwapStep | null
+    swap: Swap | null
   }) => Promise<SimulateResult>
   /** Broadcasts a plan via the pending queue (builds the exec tx, derives fees, tracks the nonce). */
   submit: (args: {
     market: Market
     borrower: Address
     plan: LiquidationPlan
-    swapStep: SwapStep | null
+    swap: Swap | null
     blockNumber: bigint
     label: string
   }) => Promise<void>
+  /** Per-position exponential backoff suppressing repeated quote/simulate failures (rate-limit defense). */
+  backoff: Backoff
   /** Confirmations / stuck-detection / fee-bumps for already-pending txs. */
   pendingOnBlock: (blockNumber: bigint) => Promise<void>
   /** Labels (`${id}:${borrower}`) already in flight — skipped to avoid re-submitting each block. */
@@ -85,11 +86,12 @@ export async function runTick(deps: {
     syncedBlock,
     chainHead,
     caller,
+    seizeCapMarginBps,
     readLens,
-    swapStepFor,
-    coversRepay,
+    quoteFor,
     simulate,
     submit,
+    backoff,
     pendingOnBlock,
     inflightLabels,
     logger
@@ -124,7 +126,8 @@ export async function runTick(deps: {
     liquidatable: 0,
     planned: 0,
     noSwapPath: 0,
-    repayShortfall: 0,
+    quoteFailed: 0,
+    backoffSkipped: 0,
     ok: 0,
     reverted: 0,
     submitted: 0
@@ -143,7 +146,7 @@ export async function runTick(deps: {
     // every block while it confirms.
     if (inflight.has(label)) continue
 
-    const liquidationPlan = plan(planInputFromLens(out))
+    const liquidationPlan = plan(planInputFromLens(out), { seizeCapMarginBps })
     if (!liquidationPlan) continue
     counters.planned += 1
     logger.info('plan.built', {
@@ -155,26 +158,18 @@ export async function runTick(deps: {
       postMaturityMode: liquidationPlan.postMaturityMode
     })
 
-    // The single-hop swap funds repay/seize liquidations. Pure bad-debt realization transfers no
-    // assets, so it deliberately skips swap config and executes as a no-callback `liquidate`.
-    let swapStep: SwapStep | null = null
+    // The swap funds repay/seize liquidations. Pure bad-debt realization transfers no assets, so it
+    // deliberately skips quoting and executes as a no-callback `liquidate`.
+    let swap: Swap | null = null
     if (!isBadDebtRealization(liquidationPlan)) {
-      // Repay-shortfall gate: when the seized collateral (at the fresh oracle price) can't cover the
-      // loan-token repay, the swap can never produce enough to satisfy Midnight's end-of-`liquidate`
-      // pull, so the tx is a guaranteed revert. Skip before simulating; it self-heals as the
-      // post-maturity LIF ramps the seize above the repay.
-      if (!coversRepay(liquidationPlan, out)) {
-        counters.repayShortfall += 1
-        logger.info('plan.repay_shortfall', {
-          marketId: pair.id,
-          borrower: pair.borrower,
-          collateralIndex: liquidationPlan.collateralIndex,
-          repaidUnits: liquidationPlan.repaidUnits
-        })
+      // Suppress positions that keep failing to quote/simulate — bounds API + RPC usage under a
+      // backlog, since executable quotes are spent only on positions not currently backed off.
+      if (backoff.shouldSkip(label, chainHead)) {
+        counters.backoffSkipped += 1
         continue
       }
-      swapStep = swapStepFor(liquidationPlan, out)
-      if (!swapStep) {
+      const outcome = await quoteFor(liquidationPlan, out)
+      if (outcome.kind === 'no_config') {
         counters.noSwapPath += 1
         logger.info('config.no_swap_path', {
           marketId: pair.id,
@@ -183,13 +178,19 @@ export async function runTick(deps: {
         })
         continue
       }
+      if (outcome.kind === 'failed') {
+        counters.quoteFailed += 1
+        backoff.record(label, chainHead)
+        continue
+      }
+      swap = outcome.swap
     }
 
     const result = await simulate({
       market: out.market,
       borrower: pair.borrower,
       plan: liquidationPlan,
-      swapStep
+      swap
     })
     const fields = { marketId: pair.id, borrower: pair.borrower }
     switch (result.status) {
@@ -199,6 +200,9 @@ export async function runTick(deps: {
         break
       case 'revert':
         counters.reverted += 1
+        // Back off: a sim revert (stale quote, transient unliquidatability) shouldn't re-quote +
+        // re-simulate this position every block.
+        backoff.record(label, chainHead)
         logger.warn('simulate.revert', { ...fields, reason: result.reason })
         break
       default:
@@ -212,10 +216,11 @@ export async function runTick(deps: {
         market: out.market,
         borrower: pair.borrower,
         plan: liquidationPlan,
-        swapStep,
+        swap,
         blockNumber: chainHead,
         label
       })
+      backoff.clear(label)
       counters.submitted += 1
     }
   }

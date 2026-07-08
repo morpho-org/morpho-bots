@@ -1,19 +1,22 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Copyright (c) 2025 Morpho Association
+// Copyright (c) 2026 Morpho Association
 //
-// VENDORED verbatim from prime-monorepo packages/contracts/solidity/interfaces/IMidnight.sol (the
-// canonical morpho-org/midnight interface). The deployed Base Midnight
-// (0x3726353bCDDba7c29a17D46D8a35D1E8b2E51854) emits exactly these events (verified on-chain) and
-// exposes these function signatures (identical to the prior vendored copy except 3 unused admin
-// setters). The prior copy declared ONLY `UpdatePosition`, which is a fee/credit-accrual event — not
-// the borrow event — so event-based borrower discovery was broken; see TIB Amendment §13. (This
-// supersedes the prior header's "keep in sync with the frozen snapshot, NOT prime-monorepo" note: no
-// such snapshot test exists, and the canonical copy matches the deployed contract's emitted events.)
-// Structs are file-level so the generated ABI carries internalType "struct Market" (not
-// "struct IMidnight.Market"). Regenerate the ABI with `bun run --filter @repo/contracts build`.
+// VENDORED from morpho-org/midnight @ commit 336b924a — the exact version deployed on Base as
+// 0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A (start block 48286884), confirmed by matching on-chain
+// function selectors. Body is `src/interfaces/IMidnight.sol` verbatim, with the events from
+// `src/libraries/EventsLib.sol` inlined into the interface (upstream keeps them in EventsLib; we inline
+// so the generated ABI carries them — rindexer indexes `Take` for borrower discovery). Structs are
+// file-level so the ABI carries internalType "struct Market". This deployment supersedes the prior
+// vendored copy (0x2F7a…, commit 3836155f): `Offer.maxUnits/maxAssets` narrowed uint256 -> uint128
+// (this is the "LATER commit" the old header flagged as not-yet-deployed), and the `consumed` getter +
+// `setConsumed` narrow to uint128 to match. The `Take`/`SetConsumed` EVENTS keep uint256 (unchanged).
+// `Market`, `CollateralParams`, and the `liquidate` signature are byte-for-byte identical to 3836155f.
+// Regenerate the ABI with `bun run --filter @repo/contracts build`.
 pragma solidity >=0.5.0;
 
 struct Market {
+    uint256 chainId;
+    address midnight;
     address loanToken;
     CollateralParams[] collateralParams;
     uint256 maturity;
@@ -25,7 +28,7 @@ struct Market {
 struct CollateralParams {
     address token;
     uint256 lltv;
-    uint256 maxLif;
+    uint256 liquidationCursor;
     address oracle;
 }
 
@@ -42,8 +45,9 @@ struct Offer {
     address receiverIfMakerIsSeller;
     address ratifier;
     bool reduceOnly;
-    uint256 maxUnits;
-    uint256 maxAssets; // buyerAssets if offer.buy else sellerAssets
+    uint128 maxUnits;
+    uint128 maxAssets; // buyerAssets if offer.buy else sellerAssets
+    uint256 continuousFeeCap;
 }
 
 /// @dev Settlement fee cbp values and the continuous fee are 0 until the market is created, then set to the default
@@ -76,25 +80,43 @@ struct Position {
 
 interface IMidnight {
     /// EVENTS ///
-    // Mirrors the events emitted by EventsLib in the protocol source so the
-    // generated MidnightAbi exposes them for log decoding (the app consumes
-    // them via getAbiItem(MidnightAbi, '<EventName>') in @repo/resolvers).
+    event Constructor(address indexed configurator);
+    event SetConfigurator(address indexed configurator);
+    event SetFeeSetter(address indexed feeSetter);
+    event SetTickSpacingSetter(address indexed tickSpacingSetter);
+    event EnableLltv(uint256 lltv);
+    event EnableLiquidationCursor(uint256 liquidationCursor);
+    event SetMarketTickSpacing(bytes32 indexed id_, uint256 newTickSpacing);
+    event SetMarketSettlementFee(bytes32 indexed id_, uint256 indexed index, uint256 newSettlementFee);
+    event SetDefaultSettlementFee(address indexed loanToken, uint256 indexed index, uint256 newSettlementFee);
+    event SetFeeClaimer(address indexed feeClaimer);
+    event SetMarketContinuousFee(bytes32 indexed id_, uint256 newContinuousFee);
+    event SetDefaultContinuousFee(address indexed loanToken, uint256 newContinuousFee);
+    event UpdatePosition(
+        bytes32 indexed id_,
+        address indexed user,
+        uint256 creditDecrease,
+        uint256 pendingFeeDecrease,
+        uint256 accruedFee
+    );
     event MarketCreated(Market market, bytes32 indexed id_);
     event Take(
         address caller,
+        bytes32 offerHash,
         bytes32 indexed id_,
+        bool offerIsBuy,
+        address indexed maker,
+        bytes32 group,
+        address ratifier,
+        bytes ratifierData,
         uint256 units,
         address indexed taker,
-        address indexed maker,
-        bool offerIsBuy,
-        bytes32 group,
         uint256 buyerAssets,
         uint256 sellerAssets,
         uint256 consumed,
         uint256 buyerPendingFeeIncrease,
         uint256 sellerPendingFeeDecrease,
-        uint256 buyerCreditIncrease,
-        uint256 sellerCreditDecrease,
+        int256 totalUnitsDelta,
         address receiver,
         address payer
     );
@@ -106,9 +128,7 @@ interface IMidnight {
         address indexed receiver,
         uint256 pendingFeeDecrease
     );
-    event Repay(
-        address indexed caller, bytes32 indexed id_, uint256 units, address indexed onBehalf, address payer
-    );
+    event Repay(address indexed caller, bytes32 indexed id_, uint256 units, address indexed onBehalf, address payer);
     event SupplyCollateral(
         address caller, bytes32 indexed id_, address indexed collateral, uint256 assets, address indexed onBehalf
     );
@@ -134,72 +154,88 @@ interface IMidnight {
         uint256 latestLossFactor,
         uint256 latestContinuousFeeCredit
     );
+    event SetConsumed(address indexed caller, bytes32 indexed group, uint256 amount, address indexed onBehalf);
     event FlashLoan(address indexed caller, address[] tokens, uint256[] assets, address indexed callback);
+    event SetIsAuthorized(
+        address indexed caller, address indexed authorized, bool newIsAuthorized, address indexed onBehalf
+    );
+    event ClaimContinuousFee(address indexed caller, bytes32 indexed id_, uint256 amount, address indexed receiver);
+    event ClaimSettlementFee(address indexed caller, address indexed token, uint256 amount, address indexed receiver);
 
     /// ERRORS ///
     error AlreadyConsumed();
     error BuyerGatedFromIncreasingCredit();
     error CannotIncreaseDebtPostMaturity();
+    error CastOverflow();
     error CollateralParamsNotSorted();
-    error CollateralPerUserExceeded();
     error ConsumedAssets();
     error ConsumedUnits();
-    error ContinuousFeeTooHigh();
+    error ContinuousFeeAboveMax();
+    error ContinuousFeeAboveOfferCap();
     error FeeNotMultipleOfFeeCbp();
     error InconsistentInput();
-    error WrongBuyCallbackReturnValue();
-    error WrongSellCallbackReturnValue();
-    error WrongRepayCallbackReturnValue();
-    error WrongLiquidateCallbackReturnValue();
-    error WrongFlashLoanCallbackReturnValue();
+    error InvalidChainId();
     error InvalidFeeIndex();
+    error InvalidLiquidationCursor();
+    error InvalidLltv();
     error InvalidMaxLif();
+    error InvalidMidnight();
+    error InvalidOfferCaps();
     error InvalidTickSpacing();
+    error LiquidationCursorNotEnabled();
     error LiquidatorGatedFromLiquidating();
-    error LltvNotAllowed();
+    error LltvNotEnabled();
     error MakerCreditOrDebtIncreased();
+    error MarketLossFactorMaxedOut();
+    error MarketNotCreated();
     error MaturityTooFar();
-    error MaxTakeableAssetsExceeded();
-    error MaxTotalUnitsExceeded();
-    error MultipleNonZero();
+    error MaxLifTooHigh();
+    error NoCode();
     error NoCollateralParams();
     error NotBorrower();
     error NotLiquidatable();
-    error MarketLossFactorMaxedOut();
-    error MarketNotCreated();
     error OfferExpired();
     error OfferNotStarted();
     error OnlyFeeClaimer();
     error OnlyFeeSetter();
-    error OnlyRoleSetter();
+    error OnlyConfigurator();
     error OnlyTickSpacingSetter();
-    error RatifierFail();
+    error RatifierFailed();
     error RatifierUnauthorized();
     error RecoveryCloseFactorConditionsViolated();
+    error SStore2DeploymentFailed();
     error SelfTake();
     error SellerGatedFromIncreasingDebt();
     error SellerIsLiquidatable();
+    error SettlementFeeAboveMax();
     error TakerUnauthorized();
     error TickNotAccessible();
+    error TickOutOfRange();
     error TooManyActivatedCollaterals();
     error TooManyCollateralParams();
-    error SettlementFeeTooHigh();
+    error TransferFromReturnedFalse();
+    error TransferReturnedFalse();
     error Unauthorized();
     error UnhealthyBorrower();
+    error UnusedReceiverMustBeZero();
+    error WrongBuyCallbackReturnValue();
+    error WrongFlashLoanCallbackReturnValue();
+    error WrongLiquidateCallbackReturnValue();
+    error WrongRepayCallbackReturnValue();
+    error WrongSellCallbackReturnValue();
 
     // forgefmt: disable-start
-    /// IMMUTABLES ///
-    function INITIAL_CHAIN_ID() external view returns (uint256);
-
     /// STORAGE GETTERS ///
     function position(bytes32 id, address user) external view returns (uint128 credit, uint128 pendingFee, uint128 lastLossFactor, uint128 lastAccrual, uint128 debt, uint128 collateralBitmap);
     function marketState(bytes32 id) external view returns (uint128 totalUnits, uint128 lossFactor, uint128 withdrawable, uint128 continuousFeeCredit, uint16 settlementFeeCbp0, uint16 settlementFeeCbp1, uint16 settlementFeeCbp2, uint16 settlementFeeCbp3, uint16 settlementFeeCbp4, uint16 settlementFeeCbp5, uint16 settlementFeeCbp6, uint32 continuousFee, uint8 tickSpacing);
-    function consumed(address user, bytes32 group) external view returns (uint256);
+    function consumed(address user, bytes32 group) external view returns (uint128);
     function isAuthorized(address authorizer, address authorized) external view returns (bool);
     function defaultSettlementFeeCbp(address loanToken, uint256 index) external view returns (uint16);
     function defaultContinuousFee(address loanToken) external view returns (uint32);
     function claimableSettlementFee(address token) external view returns (uint256);
-    function roleSetter() external view returns (address);
+    function isLltvEnabled(uint256 lltv) external view returns (bool);
+    function isLiquidationCursorEnabled(uint256 liquidationCursor) external view returns (bool);
+    function configurator() external view returns (address);
     function feeSetter() external view returns (address);
     function feeClaimer() external view returns (address);
     function tickSpacingSetter() external view returns (address);
@@ -208,45 +244,43 @@ interface IMidnight {
     function multicall(bytes[] memory calls) external;
 
     /// ADMIN FUNCTIONS ///
-    function setRoleSetter(address newRoleSetter) external;
+    function setConfigurator(address newConfigurator) external;
     function setFeeSetter(address newFeeSetter) external;
     function setFeeClaimer(address newFeeClaimer) external;
     function setTickSpacingSetter(address newTickSpacingSetter) external;
+    function enableLltv(uint256 lltv) external;
+    function enableLiquidationCursor(uint256 liquidationCursor) external;
     function setMarketTickSpacing(bytes32 id, uint256 newTickSpacing) external;
     function setMarketSettlementFee(bytes32 id, uint256 index, uint256 newSettlementFee) external;
     function setDefaultSettlementFee(address loanToken, uint256 index, uint256 newSettlementFee) external;
     function setMarketContinuousFee(bytes32 id, uint256 newContinuousFee) external;
     function setDefaultContinuousFee(address loanToken, uint256 newContinuousFee) external;
-    function setMaxTotalUnits(address token, uint128 newMaxTotalUnits) external;
-    function setMaxTakeableAssets(address token, uint256 newMaxTakeableAssets) external;
-    function setMaxCollateralPerUser(address token, uint256 newMaxCollateralPerUser) external;
     function claimSettlementFee(address token, uint256 amount, address receiver) external;
     function claimContinuousFee(Market memory market, uint256 amount, address receiver) external;
 
     /// ENTRY-POINTS ///
-    function take(Offer memory offer, bytes memory ratifierData, uint256 units, address taker, address receiverIfTakerIsSeller, address takerCallback, bytes memory takerCallbackData) external returns (uint256, uint256);
+    function take(Offer memory offer, bytes memory ratifierData, uint256 units, address taker, address receiverIfTakerIsSeller, address takerCallback, bytes memory takerCallbackData) external returns (uint256 buyerAssets, uint256 sellerAssets);
     function withdraw(Market memory market, uint256 units, address onBehalf, address receiver) external;
     function repay(Market memory market, uint256 units, address onBehalf, address callback, bytes memory data) external;
     function supplyCollateral(Market memory market, uint256 collateralIndex, uint256 assets, address onBehalf) external;
     function withdrawCollateral(Market memory market, uint256 collateralIndex, uint256 assets, address onBehalf, address receiver) external;
-    function liquidate(Market memory market, uint256 collateralIndex, uint256 seizedAssets, uint256 repaidUnits, address borrower, bool postMaturityMode, address receiver, address callback, bytes memory data) external returns (uint256, uint256);
-    function setConsumed(bytes32 group, uint256 amount, address onBehalf) external;
+    function liquidate(Market memory market, uint256 collateralIndex, uint256 seizedAssets, uint256 repaidUnits, address borrower, bool postMaturityMode, address receiver, address callback, bytes memory data) external returns (uint256 outputSeizedAssets, uint256 outputRepaidUnits);
+    function setConsumed(bytes32 group, uint128 amount, address onBehalf) external;
     function setIsAuthorized(address authorized, bool newIsAuthorized, address onBehalf) external;
     function flashLoan(address[] memory tokens, uint256[] memory assets, address callback, bytes memory data) external;
     function touchMarket(Market memory market) external returns (bytes32);
 
     /// SLASHING AND CONTINUOUS FEE ACCRUAL ///
-    function updatePositionView(Market memory market, bytes32 id, address user) external view returns (uint128, uint128, uint128);
-    function updatePosition(Market memory market, address user) external returns (uint128, uint128, uint128);
+    function updatePositionView(Market memory market, bytes32 id, address user) external view returns (uint128 newCredit, uint128 newPendingFee, uint128 accruedFee);
+    function updatePosition(Market memory market, address user) external returns (uint128 newCredit, uint128 newPendingFee, uint128 accruedFee);
 
     /// OTHER VIEW FUNCTIONS ///
     function lastLossFactor(bytes32 id, address user) external view returns (uint128);
     function collateralBitmap(bytes32 id, address user) external view returns (uint128);
     function collateral(bytes32 id, address user, uint256 index) external view returns (uint128);
-    function toId(Market memory market) external view returns (bytes32);
     function toMarket(bytes32 id) external view returns (Market memory);
-    function creditOf(bytes32 id, address user) external view returns (uint128);
-    function debtOf(bytes32 id, address user) external view returns (uint128);
+    function credit(bytes32 id, address user) external view returns (uint128);
+    function debt(bytes32 id, address user) external view returns (uint128);
     function totalUnits(bytes32 id) external view returns (uint128);
     function lossFactor(bytes32 id) external view returns (uint128);
     function tickSpacing(bytes32 id) external view returns (uint8);

@@ -1,11 +1,10 @@
+import type { BatchLensTransportType } from '@repo/utils'
 import type { Address, Client, Hex, Transport } from 'viem'
 
+import { MAX_INITCODE_SIZE, readDeploylessBatchLens } from '@repo/utils'
 import { sol } from 'soltag'
 
 import type { Market } from '../execution/encode-call'
-import type { BatchLensTransportType } from './read-deployless-batch-lens'
-
-import { MAX_INITCODE_SIZE, readDeploylessBatchLens } from './read-deployless-batch-lens'
 
 // Single-file soltag lens: reads everything the liquidation decision depends on for a batch of
 // (id, borrower) pairs inside one eth_call against a single block.timestamp. Takes an `Input[]` and
@@ -21,8 +20,10 @@ export const MidnightLiquidationLens = sol('MidnightLiquidationLens')`
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity ^0.8.19;
 
-struct CollateralParams { address token; uint256 lltv; uint256 maxLif; address oracle; }
+struct CollateralParams { address token; uint256 lltv; uint256 liquidationCursor; address oracle; }
 struct Market {
+  uint256 chainId;
+  address midnight;
   address loanToken;
   CollateralParams[] collateralParams;
   uint256 maturity;
@@ -34,7 +35,7 @@ struct Market {
 interface IMidnight {
   function toMarket(bytes32 id) external view returns (Market memory);
   function liquidationLocked(bytes32 id, address user) external view returns (bool);
-  function debtOf(bytes32 id, address user) external view returns (uint256);
+  function debt(bytes32 id, address user) external view returns (uint128);
   function collateralBitmap(bytes32 id, address user) external view returns (uint128);
   function collateral(bytes32 id, address user, uint256 index) external view returns (uint128);
 }
@@ -64,6 +65,13 @@ contract MidnightLiquidationLens {
 
   function _mulDivDown(uint256 x, uint256 y, uint256 d) internal pure returns (uint256) { return (x * y) / d; }
   function _mulDivUp(uint256 x, uint256 y, uint256 d) internal pure returns (uint256) { return (x * y + (d - 1)) / d; }
+  // Derives maxLif from (lltv, liquidationCursor), mirroring ConstantsLib.maxLif @ 336b924a exactly
+  // (mulDivDown on both divisions): maxLif = WAD / (WAD - cursor*(WAD-lltv)/WAD). The on-chain
+  // Market now stores liquidationCursor instead of the pre-derived maxLif (no backticks here: they
+  // would terminate the sol tagged-template).
+  function _maxLif(uint256 lltv, uint256 liquidationCursor) internal pure returns (uint256) {
+    return _mulDivDown(WAD, WAD, WAD - _mulDivDown(liquidationCursor, WAD - lltv, WAD));
+  }
   function _zeroFloorSub(uint256 x, uint256 y) internal pure returns (uint256) { return x > y ? x - y : 0; }
   function _msb(uint128 bitmap) internal pure returns (uint256 res) { while (bitmap >> (res + 1) != 0) { res++; } }
   function _clearBit(uint128 bitmap, uint256 bit) internal pure returns (uint128) { return uint128(bitmap & ~(uint128(1) << bit)); }
@@ -91,7 +99,7 @@ contract MidnightLiquidationLens {
     o.valid = true;
     o.market = market;
 
-    uint256 debt = MIDNIGHT.debtOf(e.id, e.borrower);
+    uint256 debt = uint256(MIDNIGHT.debt(e.id, e.borrower));
     o.debt = uint128(debt);
     o.hasDebt = debt > 0;
     o.locked = MIDNIGHT.liquidationLocked(e.id, e.borrower);
@@ -123,7 +131,7 @@ contract MidnightLiquidationLens {
       uint256 amt = uint256(MIDNIGHT.collateral(id, borrower, idx));
       uint256 price = IOracle(cp.oracle).price();
       maxDebt += _mulDivDown(_mulDivDown(amt, price, ORACLE_PRICE_SCALE), cp.lltv, WAD);
-      badDebt = _zeroFloorSub(badDebt, _mulDivUp(_mulDivUp(amt, price, ORACLE_PRICE_SCALE), WAD, cp.maxLif));
+      badDebt = _zeroFloorSub(badDebt, _mulDivUp(_mulDivUp(amt, price, ORACLE_PRICE_SCALE), WAD, _maxLif(cp.lltv, cp.liquidationCursor)));
       work = _clearBit(work, idx);
     }
     o.maxDebt = uint128(maxDebt);
@@ -148,7 +156,7 @@ contract MidnightLiquidationLens {
         o.bestCollateralIdx = uint8(idx);
         o.bestCollateralAmt = uint128(amt);
         o.bestCollateralPrice = price;
-        o.bestCollateralMaxLif = cp.maxLif;
+        o.bestCollateralMaxLif = _maxLif(cp.lltv, cp.liquidationCursor);
         o.bestCollateralLltv = cp.lltv;
       }
       work = _clearBit(work, idx);

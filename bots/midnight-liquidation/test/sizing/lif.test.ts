@@ -15,18 +15,18 @@ describe('lifAt', () => {
 
   it('ramps linearly from just above WAD at maturity+1s', () => {
     expect(lifAt({ now: 1001n, maturity: 1000n, maxLif: MAX_LIF, postMaturityMode: true })).toBe(
-      1000040299366724237n
+      1000010074841681059n
     )
   })
 
-  it('reaches the midpoint of the ramp at maturity+450s', () => {
-    expect(lifAt({ now: 1450n, maturity: 1000n, maxLif: MAX_LIF, postMaturityMode: true })).toBe(
+  it('reaches the midpoint of the ramp at maturity+1800s', () => {
+    expect(lifAt({ now: 2800n, maturity: 1000n, maxLif: MAX_LIF, postMaturityMode: true })).toBe(
       1018134715025906735n
     )
   })
 
-  it('equals maxLif exactly at the end of the ramp (maturity+900s)', () => {
-    expect(lifAt({ now: 1900n, maturity: 1000n, maxLif: MAX_LIF, postMaturityMode: true })).toBe(
+  it('equals maxLif exactly at the end of the ramp (maturity+3600s)', () => {
+    expect(lifAt({ now: 4600n, maturity: 1000n, maxLif: MAX_LIF, postMaturityMode: true })).toBe(
       MAX_LIF
     )
   })

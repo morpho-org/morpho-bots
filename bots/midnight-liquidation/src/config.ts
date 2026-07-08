@@ -8,20 +8,55 @@ import { base } from 'viem/chains'
 import { z } from 'zod'
 
 import type { LogLevel } from './logger'
+import type { Venue } from './quotes/types'
 
 // ---------------------------------------------------------------------------
 // Per-collateral swap routing config (the JSON file at SWAP_CONFIG_PATH)
 // ---------------------------------------------------------------------------
-// Shape: { "<chainId>": { "<collateralToken>": { router, fee, slippageBps } } }. A single file
-// may describe several chains; the bot reads its own chain's entry at swap time (Phase 4).
+// Shape: { "<chainId>": { "<collateralToken>": <venue entry> } }, where the entry is a
+// discriminated union on `venue`:
+//   - { venue: 'uniswap-v3', router, fee, slippageBps }  (direct, no API key)
+//   - { venue: '0x',    baseUrl?, slippageBps }           (needs ZEROX_API_KEY)
+//   - { venue: '1inch', baseUrl?, slippageBps }           (needs ONEINCH_API_KEY)
+// A single file may describe several chains; the bot reads its own chain's entry at swap time.
+// API keys NEVER live here — they come from env (validated for presence in loadConfig).
 
-const swapParamsSchema = z
+const slippageBps = z.number().int().min(0).max(10_000)
+
+const uniswapV3Venue = z
   .object({
+    venue: z.literal('uniswap-v3'),
     router: addressSchema,
     fee: z.number().int().positive(),
-    slippageBps: z.number().int().min(0).max(10_000)
+    slippageBps
   })
   .strict()
+const zeroxVenue = z
+  .object({ venue: z.literal('0x'), baseUrl: z.string().url().optional(), slippageBps })
+  .strict()
+const oneInchVenue = z
+  .object({ venue: z.literal('1inch'), baseUrl: z.string().url().optional(), slippageBps })
+  .strict()
+
+// A pre-venue entry ({ router, fee, slippageBps }, no `venue`) defaults to uniswap-v3, so existing
+// configs keep parsing byte-identically.
+const swapParamsSchema = z.preprocess(
+  value =>
+    value && typeof value === 'object' && !Array.isArray(value) && !('venue' in value)
+      ? { venue: 'uniswap-v3', ...value }
+      : value,
+  z.discriminatedUnion('venue', [uniswapV3Venue, zeroxVenue, oneInchVenue])
+)
+
+export type SwapConfigEntry = z.infer<typeof swapParamsSchema>
+
+// Which env var supplies each venue's API key (null = no key needed). Validated for presence at
+// startup for every venue the operator actually references on this chain.
+const VENUE_API_KEY_ENV: Record<Venue, string | null> = {
+  'uniswap-v3': null,
+  '0x': 'ZEROX_API_KEY',
+  '1inch': 'ONEINCH_API_KEY'
+}
 
 const swapConfigSchema = z.record(
   z.string().regex(/^\d+$/, 'Swap config keys must be numeric chain ids'),
@@ -46,10 +81,10 @@ export type ChainConfig = { chain: Chain; midnight: Address }
 
 // Chains v0 supports, with the Midnight deployment address per chain. The deployless lens needs
 // no per-chain deployer — soltag bakes the CREATE2 factory + factoryData into its compiled output
-// (see the lens fetcher, CRTR-2580). On-chain validation of these addresses (getCode) lands in
-// Phase 2 (CRTR-2582). loadConfig fails loud for any CHAIN_ID not present here.
+// (see the lens fetcher). On-chain validation of these addresses (getCode) lands in Phase 2.
+// loadConfig fails loud for any CHAIN_ID not present here.
 const CHAIN_MAP: Record<number, ChainConfig> = {
-  [base.id]: { chain: base, midnight: getAddress('0x3726353bCDDba7c29a17D46D8a35D1E8b2E51854') }
+  [base.id]: { chain: base, midnight: getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A') }
 }
 
 // ---------------------------------------------------------------------------
@@ -60,7 +95,34 @@ const DEFAULT_MAX_FEE_GWEI = '300'
 const DEFAULT_CACHE_DIR = '.cache'
 const PRIVATE_KEY_HEX_LENGTH = 66 // '0x' + 32 bytes
 
+// Quoting tunables, all optional with safe defaults so existing deployments are unaffected.
+const DEFAULT_QUOTE_TIMEOUT_MS = 2500
+const DEFAULT_HTTP_RPS = 2 // per-venue token-bucket refill; 1inch free tier is 1 RPS — set HTTP_RPS=1
+const DEFAULT_HTTP_BURST = 5
+const DEFAULT_HTTP_MAX_RETRIES = 2
+const DEFAULT_MAX_ROUTE_IMPACT_BPS = 500 // reject an aggregator route >5% below the oracle reference
+const DEFAULT_SEIZE_CAP_MARGIN_BPS = 30 // shave the repay cap when sizing a cap-binding seize — one-block oracle-drift headroom; calibratable
+const DEFAULT_BACKOFF_BASE_BLOCKS = 2n
+const DEFAULT_BACKOFF_MAX_BLOCKS = 64n
+
 type Env = Record<string, string | undefined>
+
+/**
+ * Off-chain quoting + failure-backoff tunables (the multi-venue swap layer), plus the seize-sizing
+ * safety margin (`seizeCapMarginBps`). The margin is a *sizing* knob, not an HTTP/route one, but it
+ * lives here because the tick already threads `config.quoting.*` into both quoting and planning.
+ */
+export type QuotingConfig = {
+  quoteTimeoutMs: number
+  httpRps: number
+  httpBurst: number
+  httpMaxRetries: number
+  maxRouteImpactBps: number
+  /** Headroom (bps) shaved off the on-chain repay cap when sizing a cap-binding seize-exact plan. */
+  seizeCapMarginBps: number
+  backoffBaseBlocks: bigint
+  backoffMaxBlocks: bigint
+}
 
 export type Config = {
   chainId: number
@@ -80,6 +142,7 @@ export type Config = {
   /** Postgres connection string for the co-located rindexer instance (borrower discovery). */
   databaseUrl: string
   swapConfig: SwapConfig
+  quoting: QuotingConfig
   maxFeeWei: bigint
   cacheDir: string
   logLevel: LogLevel
@@ -91,6 +154,38 @@ function required(env: Env, name: string): string {
     throw new Error(`Missing required env var: ${name}`)
   }
   return value
+}
+
+// Parses an optional non-negative integer env var, with a default and optional min/max bounds.
+function intEnv(
+  env: Env,
+  name: string,
+  def: number,
+  bounds: { min?: number; max?: number } = {}
+): number {
+  const raw = env[name]?.trim()
+  if (!raw) return def
+  if (!/^\d+$/.test(raw)) {
+    throw new Error(`${name} must be a non-negative integer, got: ${env[name]}`)
+  }
+  const value = Number(raw)
+  if (bounds.min !== undefined && value < bounds.min) {
+    throw new Error(`${name} must be >= ${bounds.min}, got: ${env[name]}`)
+  }
+  if (bounds.max !== undefined && value > bounds.max) {
+    throw new Error(`${name} must be <= ${bounds.max}, got: ${env[name]}`)
+  }
+  return value
+}
+
+// Parses an optional non-negative integer env var into a bigint, with a default.
+function bigintEnv(env: Env, name: string, def: bigint): bigint {
+  const raw = env[name]?.trim()
+  if (!raw) return def
+  if (!/^\d+$/.test(raw)) {
+    throw new Error(`${name} must be a non-negative integer, got: ${env[name]}`)
+  }
+  return BigInt(raw)
 }
 
 function isLogLevel(value: string): value is LogLevel {
@@ -194,6 +289,35 @@ export function loadConfig(
     }
   }
 
+  // Fail loud if a venue referenced on THIS chain needs an API key that isn't set — half-configured
+  // is worse than not configured. Uniswap-direct needs no key, so a key-free deployment still boots.
+  for (const entry of Object.values(swapConfig[String(chainId)] ?? {})) {
+    if (!entry) continue
+    const keyEnv = VENUE_API_KEY_ENV[entry.venue]
+    if (keyEnv && !env[keyEnv]?.trim()) {
+      throw new Error(
+        `Swap config uses venue '${entry.venue}' for chain ${chainId} but ${keyEnv} is not set`
+      )
+    }
+  }
+
+  const quoting: QuotingConfig = {
+    quoteTimeoutMs: intEnv(env, 'QUOTE_TIMEOUT_MS', DEFAULT_QUOTE_TIMEOUT_MS, { min: 1 }),
+    httpRps: intEnv(env, 'HTTP_RPS', DEFAULT_HTTP_RPS, { min: 1 }),
+    httpBurst: intEnv(env, 'HTTP_BURST', DEFAULT_HTTP_BURST, { min: 1 }),
+    httpMaxRetries: intEnv(env, 'HTTP_MAX_RETRIES', DEFAULT_HTTP_MAX_RETRIES, { min: 0 }),
+    maxRouteImpactBps: intEnv(env, 'MAX_ROUTE_IMPACT_BPS', DEFAULT_MAX_ROUTE_IMPACT_BPS, {
+      min: 0,
+      max: 10_000
+    }),
+    seizeCapMarginBps: intEnv(env, 'SEIZE_CAP_MARGIN_BPS', DEFAULT_SEIZE_CAP_MARGIN_BPS, {
+      min: 0,
+      max: 10_000
+    }),
+    backoffBaseBlocks: bigintEnv(env, 'BACKOFF_BASE_BLOCKS', DEFAULT_BACKOFF_BASE_BLOCKS),
+    backoffMaxBlocks: bigintEnv(env, 'BACKOFF_MAX_BLOCKS', DEFAULT_BACKOFF_MAX_BLOCKS)
+  }
+
   return {
     chainId,
     chain: chainConfig.chain,
@@ -205,6 +329,7 @@ export function loadConfig(
     executooorAddress,
     databaseUrl: required(env, 'DATABASE_URL'),
     swapConfig,
+    quoting,
     maxFeeWei: parseGwei(maxFeeGwei),
     cacheDir: env.CACHE_DIR?.trim() || DEFAULT_CACHE_DIR,
     logLevel

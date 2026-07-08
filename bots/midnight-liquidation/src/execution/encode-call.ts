@@ -4,13 +4,22 @@ import { MidnightAbi } from '@repo/contracts'
 import { ExecutorEncoder, executorAbi } from 'executooor-viem'
 import { encodeAbiParameters, encodeFunctionData, erc20Abi, zeroAddress } from 'viem'
 
+import type { Swap } from '../quotes/types'
+
 import { CALLBACK_SUCCESS } from '../constants'
 import { isBadDebtRealization } from '../sizing/plan'
 
 // The Midnight `Market` struct passed to `liquidate`. The bot reads it on-chain from the lens
 // (`toMarket(id)`) and re-passes it verbatim.
-export type CollateralParams = { token: Address; lltv: bigint; maxLif: bigint; oracle: Address }
+export type CollateralParams = {
+  token: Address
+  lltv: bigint
+  liquidationCursor: bigint
+  oracle: Address
+}
 export type Market = {
+  chainId: bigint
+  midnight: Address
   loanToken: Address
   collateralParams: readonly CollateralParams[]
   maturity: bigint
@@ -19,52 +28,9 @@ export type Market = {
   liquidatorGate: Address
 }
 
-/**
- * The operator-derived single-hop swap params for one collateral. `tokenIn` (the seized collateral)
- * and `tokenOut` (the loan token) are NOT carried here — the encoder derives them from the market so
- * they can't drift from the `liquidate` args. `fee` is the Uniswap-V3 pool fee tier; `router` is a
- * `SwapRouter02`-compatible router; `amountOutMinimum` is the slippage bound (derived upstream from
- * the lens's fresh USD value × `slippageBps`).
- */
-export type SwapStep = {
-  router: Address
-  fee: number
-  amountOutMinimum: bigint
-}
-
-// Uniswap `SwapRouter02` (`IV3SwapRouter`) `exactInputSingle`. NOTE: SwapRouter02 dropped the
-// `deadline` field present in the original `SwapRouter`. Every field is static, so the params tuple
-// is encoded inline (no offset pointer) and `amountIn` lands at calldata byte offset 4 + 4*32 = 132.
-const EXACT_INPUT_SINGLE_ABI = [
-  {
-    type: 'function',
-    name: 'exactInputSingle',
-    stateMutability: 'payable',
-    inputs: [
-      {
-        name: 'params',
-        type: 'tuple',
-        components: [
-          { name: 'tokenIn', type: 'address' },
-          { name: 'tokenOut', type: 'address' },
-          { name: 'fee', type: 'uint24' },
-          { name: 'recipient', type: 'address' },
-          { name: 'amountIn', type: 'uint256' },
-          { name: 'amountOutMinimum', type: 'uint256' },
-          { name: 'sqrtPriceLimitX96', type: 'uint160' }
-        ]
-      }
-    ],
-    outputs: [{ name: 'amountOut', type: 'uint256' }]
-  }
-] as const
-
 // `approve(spender, amount)` / `transfer(recipient, amount)`: the amount word sits at byte offset
 // 4 (selector) + 32 (the address word).
 const ERC20_AMOUNT_OFFSET = 36n
-// `exactInputSingle((...))`: the static tuple is inline, so `amountIn` (field index 4) is at byte
-// offset 4 (selector) + 4*32.
-const SWAP_AMOUNT_IN_OFFSET = 132n
 
 /**
  * A self-referential placeholder: at exec time the Executor staticcalls `asset.balanceOf(executor)`
@@ -118,7 +84,7 @@ export function encodeLiquidationExec(params: {
   repaidUnits: bigint
   borrower: Address
   postMaturityMode: boolean
-  swapStep: SwapStep | null
+  swap: Swap | null
   recipient: Address
 }): Hex {
   const collateral = params.market.collateralParams[params.collateralIndex]
@@ -161,55 +127,49 @@ export function encodeLiquidationExec(params: {
     })
   }
 
-  if (!params.swapStep) {
-    throw new Error('swapStep is required when liquidation repays or seizes assets')
+  if (!params.swap) {
+    throw new Error('swap is required when liquidation repays or seizes assets')
   }
 
-  const { router, fee, amountOutMinimum } = params.swapStep
+  const swap = params.swap
+
+  // The swap call is venue-agnostic opaque calldata produced by the venue adapter; the encoder only
+  // decides how its input amount is bound. `'balance'` (Uniswap exactInputSingle) splices the
+  // Executor's live collateral balance at the venue-supplied offset, tolerating the cap-binding
+  // branch's on-chain seize derivation. `'fixed'` (aggregator) calldata is route-bound to a sell
+  // amount committed off-chain and must NOT be spliced; any drift between that and the Executor's
+  // actual balance fails closed in `simulate()`.
+  const swapCall =
+    swap.amountIn.source === 'balance'
+      ? ExecutorEncoder.buildCall(swap.target, swap.value, swap.callData, undefined, [
+          balanceOfPlaceholder(collateralToken, executor, swap.amountIn.offset)
+        ])
+      : ExecutorEncoder.buildCall(swap.target, swap.value, swap.callData)
 
   // The callback queue the Executor runs when Midnight calls back into `onLiquidate`. The seized
   // collateral is already on the Executor (receiver = the Executor); this swaps it to the loan token
-  // and approves Midnight to pull the repay. Amounts come from the Executor's live `balanceOf`
-  // because the contract derives the seized collateral (cap-binding branch) and the recomputed
-  // `repaidUnits` on-chain — neither is known when this calldata is built.
+  // and approves Midnight to pull the repay. The two approval amounts come from the Executor's live
+  // `balanceOf` because the contract derives the seized collateral (cap-binding branch) and the
+  // recomputed `repaidUnits` on-chain — neither is known when this calldata is built.
   const callbackQueue: Hex[] = [
-    // (1) zero then (2) set the router allowance for the seized collateral. The pair guards
+    // (1) zero then (2) set the swap spender's allowance for the seized collateral. The pair guards
     //     approve-from-nonzero-reverting (USDT-style) tokens against a residual allowance any prior
-    //     caller could have left on this shared singleton.
+    //     caller could have left on this shared singleton. Over-approving the live balance is
+    //     harmless — an aggregator pulls only its fixed sell amount, and the residual is swept.
     ExecutorEncoder.buildCall(
       collateralToken,
       0n,
-      encodeFunctionData({ abi: erc20Abi, functionName: 'approve', args: [router, 0n] })
+      encodeFunctionData({ abi: erc20Abi, functionName: 'approve', args: [swap.spender, 0n] })
     ),
     ExecutorEncoder.buildCall(
       collateralToken,
       0n,
-      encodeFunctionData({ abi: erc20Abi, functionName: 'approve', args: [router, 0n] }),
+      encodeFunctionData({ abi: erc20Abi, functionName: 'approve', args: [swap.spender, 0n] }),
       undefined,
       [balanceOfPlaceholder(collateralToken, executor, ERC20_AMOUNT_OFFSET)]
     ),
-    // (3) swap all seized collateral → loan token, output back to the Executor.
-    ExecutorEncoder.buildCall(
-      router,
-      0n,
-      encodeFunctionData({
-        abi: EXACT_INPUT_SINGLE_ABI,
-        functionName: 'exactInputSingle',
-        args: [
-          {
-            tokenIn: collateralToken,
-            tokenOut: loanToken,
-            fee,
-            recipient: executor,
-            amountIn: 0n, // overwritten with the Executor's live collateral balance by the placeholder
-            amountOutMinimum,
-            sqrtPriceLimitX96: 0n
-          }
-        ]
-      }),
-      undefined,
-      [balanceOfPlaceholder(collateralToken, executor, SWAP_AMOUNT_IN_OFFSET)]
-    ),
+    // (3) swap seized collateral → loan token, output back to the Executor.
+    swapCall,
     // (4) zero then (5) set Midnight's repay allowance. Balance-based (over-approving by the profit
     //     margin) because `repaidUnits` is recomputed on-chain and not staticcall-readable; the
     //     residual allowance is inert while the full-drain invariant keeps the Executor's balance at

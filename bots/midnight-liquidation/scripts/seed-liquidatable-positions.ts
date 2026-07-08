@@ -57,12 +57,13 @@ import { parseSwapConfig } from '../src/config'
 import { createLogger } from '../src/logger'
 import { mulDivDown, mulDivUp } from '../src/sizing/math'
 import { lensKey, readMidnightLiquidationLens } from '../src/state/lens.sol'
+import { ORACLE_ABI, SWAP_ROUTER_ABI, WETH_ABI } from './seed/abis'
 import { encodeRatifierData, hashOffer, isLeaf, signOfferTree, toId } from './seed/offers'
 import { DEFAULT_TICK_SPACING, priceToTick, tickToPrice } from './seed/price-tick'
 import { priceDropToLiquidateBps, sizePosition } from './seed/sizing'
 
 const CHAIN_ID = 8453
-const MIDNIGHT = getAddress('0x3726353bCDDba7c29a17D46D8a35D1E8b2E51854')
+const MIDNIGHT = getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A')
 const PRIVATE_KEY_HEX_LENGTH = 66
 const WAD = 10n ** 18n
 const ORACLE_PRICE_SCALE = 10n ** 36n
@@ -101,45 +102,6 @@ const TOKENS: Record<string, { address: Address; decimals: number }> = {
   cbBTC: { address: getAddress('0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf'), decimals: 8 }
 }
 
-const WETH_ABI = [
-  { type: 'function', name: 'deposit', stateMutability: 'payable', inputs: [], outputs: [] }
-] as const
-
-const ORACLE_ABI = [
-  {
-    type: 'function',
-    name: 'price',
-    stateMutability: 'view',
-    inputs: [],
-    outputs: [{ type: 'uint256' }]
-  }
-] as const
-
-// Uniswap `SwapRouter02` exactInputSingle (no `deadline`); same shape the bot's swap encoder uses.
-const SWAP_ROUTER_ABI = [
-  {
-    type: 'function',
-    name: 'exactInputSingle',
-    stateMutability: 'payable',
-    inputs: [
-      {
-        name: 'params',
-        type: 'tuple',
-        components: [
-          { name: 'tokenIn', type: 'address' },
-          { name: 'tokenOut', type: 'address' },
-          { name: 'fee', type: 'uint24' },
-          { name: 'recipient', type: 'address' },
-          { name: 'amountIn', type: 'uint256' },
-          { name: 'amountOutMinimum', type: 'uint256' },
-          { name: 'sqrtPriceLimitX96', type: 'uint160' }
-        ]
-      }
-    ],
-    outputs: [{ name: 'amountOut', type: 'uint256' }]
-  }
-] as const
-
 const TAKE_EVENT = MidnightAbi.find(x => x.type === 'event' && x.name === 'Take') as
   | AbiEvent
   | undefined
@@ -154,6 +116,7 @@ type Args = {
   ratifier: Address | undefined
   ladder: boolean
   maxSpendEth: string
+  maturitySeconds: bigint
   dryRun: boolean
   yes: boolean
 }
@@ -184,6 +147,7 @@ function parseCliArgs(): Args {
       ratifier: { type: 'string' },
       ladder: { type: 'boolean', default: false },
       'max-spend-eth': { type: 'string', default: '0.05' },
+      'maturity-seconds': { type: 'string' },
       'dry-run': { type: 'boolean', default: false },
       yes: { type: 'boolean', default: false }
     }
@@ -196,6 +160,14 @@ function parseCliArgs(): Args {
   if (!Number.isInteger(drawdownBps) || drawdownBps < 0 || drawdownBps >= 10_000) {
     throw new Error('--drawdown-bps must be an integer in [0, 9999]')
   }
+  // Seconds from now until each seeded position's maturity. Default is the far-future horizon (keeps
+  // positions pre-maturity so a real WETH downtick is the trigger). A near-term value is useful for the
+  // fork test, which warps just past maturity to liquidate in post-maturity mode.
+  const maturityRaw = values['maturity-seconds']
+  if (maturityRaw !== undefined && !/^\d+$/.test(maturityRaw)) {
+    throw new Error('--maturity-seconds must be a non-negative integer')
+  }
+  const maturitySeconds = maturityRaw ? BigInt(maturityRaw) : MATURITY_HORIZON_SECONDS
   return {
     count,
     config: values.config,
@@ -206,6 +178,7 @@ function parseCliArgs(): Args {
     ratifier: values.ratifier ? getAddress(values.ratifier) : undefined,
     ladder: values.ladder ?? false,
     maxSpendEth: values['max-spend-eth'] ?? '0.05',
+    maturitySeconds,
     dryRun: values['dry-run'] ?? false,
     yes: values.yes ?? false
   }
@@ -275,7 +248,7 @@ type ApiOracle = {
   loan_assets: ApiAsset[]
   trusted_by: unknown[]
 }
-type ApiCollateral = { token: Address; lltv: string; max_lif: string; oracle: Address }
+type ApiCollateral = { token: Address; lltv: string; liquidation_cursor: string; oracle: Address }
 type ApiMarket = {
   chain_id: number
   market_id: Hex
@@ -330,12 +303,12 @@ async function findTrustedMarket({
       marketId: m.market_id,
       oracle: c.oracle,
       lltv: c.lltv,
-      maxLif: c.max_lif
+      liquidationCursor: c.liquidation_cursor
     })
     return {
       token: getAddress(c.token),
       lltv: BigInt(c.lltv),
-      maxLif: BigInt(c.max_lif),
+      liquidationCursor: BigInt(c.liquidation_cursor),
       oracle: getAddress(c.oracle)
     }
   }
@@ -469,7 +442,7 @@ async function buildPositions({
   keyA: Hex
 }): Promise<Position[]> {
   const debtTargetUnits = parseUnits(args.notionalUsdc, loan.decimals)
-  const maturity = now + MATURITY_HORIZON_SECONDS
+  const maturity = now + args.maturitySeconds
   const positions: Position[] = []
   for (let i = 0; i < args.count; i++) {
     const drawdownBps =
@@ -483,6 +456,8 @@ async function buildPositions({
       drawdownBps
     })
     const market: Market = {
+      chainId: BigInt(CHAIN_ID),
+      midnight: MIDNIGHT,
       loanToken: loan.address,
       collateralParams: [cp],
       maturity,
@@ -490,7 +465,7 @@ async function buildPositions({
       enterGate: zeroAddress,
       liquidatorGate: zeroAddress
     }
-    const id = toId({ market, chainId: CHAIN_ID, midnight: MIDNIGHT })
+    const id = toId(market)
     const offer: Offer = {
       market,
       buy: true,
@@ -505,7 +480,10 @@ async function buildPositions({
       ratifier,
       reduceOnly: false,
       maxUnits: units,
-      maxAssets: 0n
+      maxAssets: 0n,
+      // Uncapped (max uint32): the take reverts if the market's continuousFee exceeds this; USDC's
+      // default continuousFee is 0, but max uint32 keeps the seed robust to a nonzero default.
+      continuousFeeCap: 4294967295n
     }
     const root = hashOffer(offer)
     const signature = await signOfferTree({ root, privateKey: keyA, ratifier, chainId: CHAIN_ID })
@@ -558,7 +536,7 @@ function printPlan({
     '',
     '================  LIVE BASE MAINNET — REAL FUNDS  ================',
     `pair                : ${args.pair}    positions: ${positions.length}${args.ladder ? '  (laddered drawdown)' : ''}`,
-    `oracle / lltv/maxLif: ${cp.oracle}  lltv=${formatUnits(cp.lltv, 18)} maxLif=${formatUnits(cp.maxLif, 18)}`,
+    `oracle/lltv/cursor  : ${cp.oracle}  lltv=${formatUnits(cp.lltv, 18)} liquidationCursor=${formatUnits(cp.liquidationCursor, 18)}`,
     `ratifier            : ${ratifier}`,
     `WETH oracle price   : ${formatUnits(price, 18)} (USDC per WETH, 1e36-scaled)`,
     `offer price / drawdn: ${formatUnits(offerPrice, 18)}  drawdown=${args.drawdownBps}bps (price-drop to liquidate)`,
@@ -675,6 +653,13 @@ async function main() {
       `no swap route for ${collateral.symbol} (${collateral.address}) in ${args.config} — the prod bot also needs it to liquidate`
     )
   }
+  // The seed tool acquires the collateral by swapping WETH directly through a Uniswap-V3 router, so it
+  // needs a uniswap-v3 route (router + fee). Aggregator venues have no static router for this script.
+  if (route.venue !== 'uniswap-v3') {
+    throw new Error(
+      `seed tool supports only uniswap-v3 routes; ${collateral.symbol} is configured for venue '${route.venue}'`
+    )
+  }
 
   const { cp, ratifier } = await resolveReference({ publicClient, args, collateral, loan, logger })
   await assertContractDeployed(publicClient, ratifier, 'EcrecoverRatifier')
@@ -709,17 +694,29 @@ async function main() {
     keyA
   })
 
-  // Validate the toId port against the chain before spending: a mismatch means our ids are wrong.
-  const onchainId0 = await publicClient.readContract({
-    address: MIDNIGHT,
-    abi: MidnightAbi,
-    functionName: 'toId',
-    args: [positions[0]!.market]
-  })
-  if (onchainId0.toLowerCase() !== positions[0]!.id.toLowerCase()) {
-    throw new Error(`toId cross-check failed: local ${positions[0]!.id} != on-chain ${onchainId0}`)
+  // Validate the toId port before spending. The contract no longer exposes `toId`, so instead
+  // reconstruct a real, known market from `toMarket(referenceMarket)` and assert our local `toId`
+  // re-derives its id. A match proves MARKET_TUPLE + the id hashing (incl. the new chainId/midnight
+  // fields and liquidationCursor) are correct, hence the seeded positions' ids are too.
+  if (args.referenceMarket) {
+    const refMarket = (await publicClient.readContract({
+      address: MIDNIGHT,
+      abi: MidnightAbi,
+      functionName: 'toMarket',
+      args: [args.referenceMarket]
+    })) as Market
+    const derived = toId(refMarket)
+    if (derived.toLowerCase() !== args.referenceMarket.toLowerCase()) {
+      throw new Error(
+        `toId cross-check failed: derived ${derived} != reference ${args.referenceMarket}`
+      )
+    }
+    logger.info('seed.selfcheck_ok', { toId: true, tickRoundTrip: true })
+  } else {
+    logger.warn('seed.selfcheck_skipped', {
+      detail: 'no --reference-market; toId port not cross-checked against a known id'
+    })
   }
-  logger.info('seed.selfcheck_ok', { toId: true, tickRoundTrip: true })
 
   const usdcForA = positions.reduce((sum, p) => sum + p.buyerAssets, 0n)
   const wethForB = positions.reduce((sum, p) => sum + p.collateral, 0n)

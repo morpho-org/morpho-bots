@@ -10,7 +10,7 @@ import {
   readMidnightLiquidationLens
 } from '../../src/state/lens.sol'
 
-const MIDNIGHT = getAddress('0x3726353bCDDba7c29a17D46D8a35D1E8b2E51854')
+const MIDNIGHT = getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A')
 const BORROWER = getAddress('0x1111111111111111111111111111111111111111')
 const TOKEN = getAddress('0x3333333333333333333333333333333333333333')
 const ORACLE = getAddress('0x4444444444444444444444444444444444444444')
@@ -18,8 +18,17 @@ const ZERO = '0x0000000000000000000000000000000000000000' as const
 const ID = `0x${'ab'.repeat(32)}` as const
 
 const MARKET: Market = {
+  chainId: 8453n,
+  midnight: MIDNIGHT,
   loanToken: TOKEN,
-  collateralParams: [{ token: TOKEN, lltv: 860000000000000000n, maxLif: 1n, oracle: ORACLE }],
+  collateralParams: [
+    {
+      token: TOKEN,
+      lltv: 860000000000000000n,
+      liquidationCursor: 250000000000000000n,
+      oracle: ORACLE
+    }
+  ],
   maturity: 2000n,
   rcfThreshold: 1n,
   enterGate: ZERO,
