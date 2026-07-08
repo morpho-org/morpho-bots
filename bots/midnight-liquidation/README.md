@@ -316,7 +316,9 @@ valid && gateAllows && hasDebt && !locked && (block.timestamp > maturity || !hea
 [src/sizing/plan.ts](./src/sizing/plan.ts) turns a lens result into a `LiquidationPlan`:
 
 - Pre-maturity unhealthy positions use normal mode with `maxLif` and the Recovery Close Factor cap.
-- Post-maturity positions use post-maturity mode, where LIF ramps from `1e18` to `maxLif` over 15
+  `maxLif` is derived from the collateral's `liquidationCursor` and `lltv` (`ConstantsLib.maxLif`);
+  the lens computes it on-chain and returns it as `bestCollateralMaxLif`.
+- Post-maturity positions use post-maturity mode, where LIF ramps from `1e18` to `maxLif` over 60
   minutes and the RCF cap is disabled.
 - Every non-bad-debt plan is **seize-exact**: it pins `seizedAssets` (with `repaidUnits = 0`) and lets
   Midnight ceil-derive `repaidUnits`. Midnight transfers exactly `seizedAssets` to the Executor before

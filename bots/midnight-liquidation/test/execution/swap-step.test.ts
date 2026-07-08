@@ -32,9 +32,16 @@ const out: LensOut = {
   bestCollateralMaxLif: MAX_LIF,
   bestCollateralLltv: (WAD * 86n) / 100n,
   market: {
+    chainId: 8453n,
+    midnight: zeroAddress,
     loanToken: LOAN,
     collateralParams: [
-      { token: COLLATERAL, lltv: (WAD * 86n) / 100n, maxLif: MAX_LIF, oracle: ORACLE }
+      {
+        token: COLLATERAL,
+        lltv: (WAD * 86n) / 100n,
+        liquidationCursor: (WAD * 25n) / 100n,
+        oracle: ORACLE
+      }
     ],
     maturity: 2000n, // pre-maturity at blockTimestamp 1500 → normal mode
     rcfThreshold: WAD,

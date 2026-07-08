@@ -32,10 +32,12 @@ const AGG_TARGET = getAddress('0xaAaAaAaaAaAaAaaAaAAAAAAAAaaaAaAaAaaAaaAa')
 const collateralParam: CollateralParams = {
   token: COLLATERAL,
   lltv: 860000000000000000n,
-  maxLif: 1036269430051813471n,
+  liquidationCursor: 250000000000000000n,
   oracle: ORACLE
 }
 const market: Market = {
+  chainId: 8453n,
+  midnight: MIDNIGHT,
   loanToken: LOAN,
   collateralParams: [collateralParam],
   maturity: 2000n,
@@ -270,5 +272,29 @@ describe('encodeLiquidationExec', () => {
         recipient: RECIPIENT
       })
     ).toThrow(/swap is required/)
+  })
+})
+
+// Guards against silent TS/ABI struct drift: the Market/CollateralParams shape is hand-maintained in
+// four places (vendored IMidnight.sol, the lens inline Solidity, this TS type, and offers.ts tuples).
+// If the ABI's `liquidate` market arg and the TS `Market` fixture fall out of field-order sync, the
+// encoding is malformed — so pin them to each other here.
+describe('Market ABI/type drift guard', () => {
+  type AbiParam = { name: string; components?: readonly AbiParam[] }
+  const abi = MidnightAbi as readonly {
+    type: string
+    name?: string
+    inputs?: readonly AbiParam[]
+  }[]
+
+  it('TS Market/CollateralParams field order matches MidnightAbi.liquidate', () => {
+    const liquidate = abi.find(e => e.type === 'function' && e.name === 'liquidate')
+    const marketArg = liquidate?.inputs?.[0]
+    if (!marketArg?.components) throw new Error('liquidate market arg not found in MidnightAbi')
+    expect(Object.keys(market)).toEqual(marketArg.components.map(c => c.name))
+
+    const cpArg = marketArg.components.find(c => c.name === 'collateralParams')
+    if (!cpArg?.components) throw new Error('collateralParams not found in MidnightAbi')
+    expect(Object.keys(collateralParam)).toEqual(cpArg.components.map(c => c.name))
   })
 })

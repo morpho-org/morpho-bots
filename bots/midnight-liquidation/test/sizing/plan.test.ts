@@ -92,11 +92,11 @@ describe('plan', () => {
     // Over-collateralized (the common post-maturity case): a 2000-WAD slot against 1000-WAD debt would
     // imply ~1930 WAD repaid — more than the debt — so seizing it whole would over-repay and revert.
     // Seize-exact pins the largest seize whose derived repaid stays within the (post-writeoff) debt.
-    // dt = 1000s > TIME_TO_MAX_LIF (900s), so the post-maturity LIF is clamped to maxLif.
+    // dt = 4000s > TIME_TO_MAX_LIF (3600s), so the post-maturity LIF is clamped to maxLif.
     expect(
       plan(
         baseInput({
-          blockTimestamp: 3000n,
+          blockTimestamp: 6000n,
           maturity: 2000n,
           healthy: true,
           bestCollateralAmt: 2000n * WAD
