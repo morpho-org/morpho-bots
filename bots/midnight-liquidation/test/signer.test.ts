@@ -13,6 +13,7 @@ const CONFIG = {
   chain: base,
   rpcUrl: 'http://localhost:8545',
   rpcUrlFallback: undefined,
+  sendRpcUrl: undefined,
   liquidatorPrivateKey: KEY
 } as const
 
@@ -22,16 +23,20 @@ const PROBE: Hex = `0x${'cd'.repeat(32)}`
 type RpcBody = { id: number; method: string; params?: unknown[] }
 type RpcResult = unknown
 
-// Canned JSON-RPC: maps method → result/function. Any unmocked method throws (surfaces a missing stub).
+// Canned JSON-RPC: maps method → result/function. Any unmocked method throws (surfaces a missing
+// stub). Returns the captured request URLs so tests can assert which endpoint was hit.
 function mockRpc(results: Record<string, RpcResult>) {
-  const handler = async (_url: unknown, init?: { body?: string }): Promise<Response> => {
+  const urls: string[] = []
+  const handler = async (url: unknown, init?: { body?: string }): Promise<Response> => {
+    urls.push(String(url))
     const body = JSON.parse(init?.body ?? '{}') as RpcBody
     if (!(body.method in results)) throw new Error(`unmocked RPC method ${body.method}`)
     const value = results[body.method]
     const result = typeof value === 'function' ? await value(body) : value
     return Response.json({ jsonrpc: '2.0', id: body.id, result })
   }
-  return spyOn(globalThis, 'fetch').mockImplementation(handler as unknown as typeof fetch)
+  spyOn(globalThis, 'fetch').mockImplementation(handler as unknown as typeof fetch)
+  return { urls }
 }
 
 describe('createSigner', () => {
@@ -53,6 +58,50 @@ describe('createSigner', () => {
       maxPriorityFeePerGas: 1_000_000n
     })
     expect(result).toEqual({ nonce: 5, txHash: TXHASH })
+  })
+
+  it('claims sequential nonces, and syncNonce re-reads the chain pending nonce over the cursor', async () => {
+    let pendingNonce = '0x5'
+    mockRpc({
+      eth_chainId: `0x${base.id.toString(16)}`,
+      eth_getTransactionCount: () => pendingNonce,
+      eth_estimateGas: '0x5208',
+      eth_getBlockByNumber: { baseFeePerGas: '0x7' },
+      eth_sendRawTransaction: TXHASH
+    })
+    const { send, syncNonce } = createSigner(CONFIG)
+    const req = {
+      to: `0x${'11'.repeat(20)}` as const,
+      data: '0x' as Hex,
+      maxFeePerGas: 1_000_000_000n,
+      maxPriorityFeePerGas: 1_000_000n
+    }
+    expect((await send(req)).nonce).toBe(5) // first claim reads chain (5), cursor → 6
+    expect((await send(req)).nonce).toBe(6) // second claim uses the local cursor, no re-read
+    // A vanished/dropped tx left the chain pending nonce back at 5; without sync the cursor hands out
+    // 7 (a future-nonce gap). syncNonce collapses it back to chain truth.
+    await syncNonce()
+    expect((await send(req)).nonce).toBe(5)
+  })
+
+  it('broadcasts to sendRpcUrl when set, never touching rpcUrl', async () => {
+    const { urls } = mockRpc({
+      eth_chainId: `0x${base.id.toString(16)}`,
+      eth_getTransactionCount: '0x5',
+      eth_estimateGas: '0x5208',
+      eth_getBlockByNumber: { baseFeePerGas: '0x7' },
+      eth_sendRawTransaction: TXHASH
+    })
+    const { send } = createSigner({ ...CONFIG, sendRpcUrl: 'http://send.example' })
+    await send({
+      to: `0x${'11'.repeat(20)}`,
+      data: '0x',
+      maxFeePerGas: 1_000_000_000n,
+      maxPriorityFeePerGas: 1_000_000n
+    })
+    expect(urls.length).toBeGreaterThan(0)
+    expect(urls.every(u => u.startsWith('http://send.example'))).toBe(true)
+    expect(urls.some(u => u.startsWith('http://localhost:8545'))).toBe(false)
   })
 
   it('rolls back the local nonce cursor when raw broadcast fails before returning a hash', async () => {

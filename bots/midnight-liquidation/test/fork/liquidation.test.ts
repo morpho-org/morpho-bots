@@ -47,6 +47,7 @@ describe('fork: end-to-end liquidation against a real Base position', () => {
     chain: typeof base
     rpcUrl: string
     rpcUrlFallback: undefined
+    sendRpcUrl: undefined
     liquidatorPrivateKey: typeof LIQUIDATOR_KEY
     midnight: Address
     executooorAddress: Address
@@ -70,6 +71,7 @@ describe('fork: end-to-end liquidation against a real Base position', () => {
       chain: base,
       rpcUrl: fork.rpcUrl,
       rpcUrlFallback: undefined,
+      sendRpcUrl: undefined,
       liquidatorPrivateKey: LIQUIDATOR_KEY,
       midnight: MIDNIGHT,
       executooorAddress: executooor,

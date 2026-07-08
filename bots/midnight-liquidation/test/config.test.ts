@@ -46,6 +46,7 @@ describe('loadConfig', () => {
     expect(config.midnight).toBe(MIDNIGHT)
     expect(config.rpcUrl).toBe('https://rpc.example')
     expect(config.rpcUrlFallback).toBeUndefined()
+    expect(config.sendRpcUrl).toBeUndefined()
     expect(config.executooorAddress).toBe(getAddress(EXECUTOOOR))
     expect(config.databaseUrl).toBe('postgresql://u:p@localhost:5432/db')
     expect(config.maxFeeWei).toBe(parseGwei('300'))
@@ -66,6 +67,7 @@ describe('loadConfig', () => {
     const config = loadConfig(
       baseEnv({
         RPC_URL_FALLBACK: 'https://rpc.fallback',
+        SEND_RPC_URL: 'https://rpc.send',
         MAX_FEE_GWEI: '42',
         CACHE_DIR: '/tmp/cache',
         LOG_LEVEL: 'debug'
@@ -74,6 +76,7 @@ describe('loadConfig', () => {
     )
 
     expect(config.rpcUrlFallback).toBe('https://rpc.fallback')
+    expect(config.sendRpcUrl).toBe('https://rpc.send')
     expect(config.maxFeeWei).toBe(parseGwei('42'))
     expect(config.cacheDir).toBe('/tmp/cache')
     expect(config.logLevel).toBe('debug')

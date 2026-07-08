@@ -37,6 +37,16 @@ export const STUCK_BLOCKS = 4n
 /** Fee-bump attempts the queue makes on a stuck tx before dropping it. */
 export const MAX_BUMP_ATTEMPTS = 3
 
+/**
+ * Blocks a position stays in the queue's backpressure set AFTER its tx settles (confirm/revert/drop),
+ * suppressing re-submission. A liquidation confirms on the send RPC before the (possibly lagging)
+ * read RPC reflects the cleared position, so without this cooldown the tick re-plans an
+ * already-liquidated borrower and broadcasts a doomed `NotBorrower` re-send. Sized well above the
+ * observed read/confirm head skew; the bot's liquidations are terminal, so a brief suppression of an
+ * already-acted position is harmless.
+ */
+export const SETTLED_COOLDOWN_BLOCKS = 20n
+
 // --- Swap-venue constants (consumed by the quoting layer) ---
 
 /** Basis-point denominator (100% = 10_000 bps) for slippage / route-quality math. */

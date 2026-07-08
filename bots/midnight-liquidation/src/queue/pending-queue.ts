@@ -4,7 +4,7 @@ import { tryCatch } from '@repo/utils'
 
 import type { Logger } from '../logger'
 
-import { MAX_BUMP_ATTEMPTS, STUCK_BLOCKS } from '../constants'
+import { MAX_BUMP_ATTEMPTS, SETTLED_COOLDOWN_BLOCKS, STUCK_BLOCKS } from '../constants'
 import { isExecutionRevert, revertReason, TxSendError } from '../tx-error'
 import { bumpFees } from './fee-policy'
 
@@ -23,6 +23,8 @@ export type SendTx = (
 export type TxReceiptLite = { status: 'success' | 'reverted'; blockNumber: bigint }
 export type GetReceipt = (txHash: Hex) => Promise<TxReceiptLite | null>
 export type GetBaseFee = () => Promise<bigint>
+/** Re-derives the signer's nonce cursor from chain truth; called when nothing is in flight. */
+export type SyncNonce = () => Promise<void>
 
 type Pending = {
   nonce: number
@@ -46,29 +48,49 @@ export type PendingQueue = {
   onBlock(blockNumber: bigint): Promise<void>
   readonly size: number
   snapshot(): { nonce: number; txHash: Hex; attempt: number }[]
-  /** Labels (`${id}:${borrower}`) of currently-pending txs — the tick's backpressure set. */
+  /**
+   * Labels (`${id}:${borrower}`) the tick must NOT re-submit — its backpressure set. Covers both
+   * currently-pending txs AND positions whose tx settled within the last
+   * {@link SETTLED_COOLDOWN_BLOCKS}. The cooldown is essential: a tx confirms on the send RPC before
+   * the (laggy) read RPC reflects the cleared position, so without it the tick re-fires an
+   * already-liquidated borrower and lands a doomed `NotBorrower` revert.
+   */
   inflightLabels(): ReadonlySet<string>
 }
 
 /**
  * In-memory pending-tx tracker. Nonce assignment is delegated to the injected `send`; the queue owns
  * confirmation, stuck-detection, and fee-bump/replace. State is not persisted — chain truth wins, so
- * a restart re-derives from `getTransactionCount('pending')`.
+ * a restart re-derives from `getTransactionCount('pending')`. Whenever the tracked set is empty, the
+ * next first-send re-syncs the cursor via `syncNonce` so a dropped (never-mined) tx can't strand the
+ * cursor above chain truth and turn every later send into an unminable future nonce.
  */
 export function createPendingQueue({
   send,
   getReceipt,
   getBaseFee,
+  syncNonce,
   maxFeeWei,
   logger
 }: {
   send: SendTx
   getReceipt: GetReceipt
   getBaseFee: GetBaseFee
+  syncNonce: SyncNonce
   maxFeeWei: bigint
   logger: Logger
 }): PendingQueue {
   const pending = new Map<number, Pending>()
+  // label → block height at which its tx left `pending` (confirm/revert/drop). Keeps the label in the
+  // backpressure set for SETTLED_COOLDOWN_BLOCKS so a just-acted position isn't re-submitted while
+  // the read RPC still lags the confirmation. Pruned each `onBlock`.
+  const settledAt = new Map<string, bigint>()
+
+  // Remove a finished tx from `pending` and start its re-submission cooldown.
+  function settle(entry: Pending, blockNumber: bigint): void {
+    pending.delete(entry.nonce)
+    settledAt.set(entry.label, blockNumber)
+  }
 
   async function submit(args: {
     request: TxRequest
@@ -77,6 +99,16 @@ export function createPendingQueue({
     maxPriorityFeePerGas: bigint
     blockNumber: bigint
   }): Promise<void> {
+    // Nothing in flight → reconcile the cursor with chain before claiming a nonce. A failed sync
+    // would leave a stale (possibly runaway) cursor, so skip the send this tick rather than risk a
+    // future-nonce broadcast; the next tick retries from fresh state.
+    if (pending.size === 0) {
+      const synced = await tryCatch(syncNonce())
+      if (synced.error) {
+        logger.warn('nonce.sync_failed', { label: args.label, reason: revertReason(synced.error) })
+        return
+      }
+    }
     const sent = await tryCatch(
       send({
         ...args.request,
@@ -120,7 +152,7 @@ export function createPendingQueue({
 
   async function replaceStuck(entry: Pending, blockNumber: bigint, baseFee: bigint): Promise<void> {
     if (entry.attempt >= MAX_BUMP_ATTEMPTS) {
-      pending.delete(entry.nonce)
+      settle(entry, blockNumber)
       logger.warn('tx.dropped', {
         nonce: entry.nonce,
         txHash: entry.txHash,
@@ -135,7 +167,7 @@ export function createPendingQueue({
       maxFeeWei
     })
     if (result.kind === 'drop') {
-      pending.delete(entry.nonce)
+      settle(entry, blockNumber)
       logger.warn('tx.dropped', { nonce: entry.nonce, txHash: entry.txHash, reason: 'fee_ceiling' })
       return
     }
@@ -145,7 +177,7 @@ export function createPendingQueue({
       // cleared while our tx was in flight) — bumping it forever is futile, so drop it. A transient
       // RPC error instead counts as a spent attempt, so MAX_BUMP_ATTEMPTS still bounds the retries.
       if (isExecutionRevert(replaced.error)) {
-        pending.delete(entry.nonce)
+        settle(entry, blockNumber)
         logger.warn('tx.dropped', {
           nonce: entry.nonce,
           txHash: entry.txHash,
@@ -188,7 +220,7 @@ export function createPendingQueue({
       try {
         const receipt = await getReceipt(entry.txHash)
         if (receipt) {
-          pending.delete(entry.nonce)
+          settle(entry, blockNumber)
           if (receipt.status === 'success') {
             logger.info('tx.confirmed', {
               nonce: entry.nonce,
@@ -216,6 +248,11 @@ export function createPendingQueue({
         })
       }
     }
+    // Expire cooldowns so a position the bot acted on long ago is eligible again. By now the read RPC
+    // has caught up, so an expired label only re-submits if it is genuinely still liquidatable.
+    for (const [label, settledBlock] of settledAt) {
+      if (blockNumber - settledBlock > SETTLED_COOLDOWN_BLOCKS) settledAt.delete(label)
+    }
   }
 
   return {
@@ -232,7 +269,7 @@ export function createPendingQueue({
       }))
     },
     inflightLabels() {
-      return new Set([...pending.values()].map(entry => entry.label))
+      return new Set([...[...pending.values()].map(entry => entry.label), ...settledAt.keys()])
     }
   }
 }

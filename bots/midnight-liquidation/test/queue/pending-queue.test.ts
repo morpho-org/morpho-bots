@@ -9,9 +9,11 @@ import type {
   GetReceipt,
   PendingQueue,
   SendTx,
+  SyncNonce,
   TxRequest
 } from '../../src/queue/pending-queue'
 
+import { SETTLED_COOLDOWN_BLOCKS } from '../../src/constants'
 import { createPendingQueue } from '../../src/queue/pending-queue'
 import { TxSendError } from '../../src/tx-error'
 
@@ -53,6 +55,7 @@ function setup(
     baseFee?: bigint
     maxFeeWei?: bigint
     send?: SendTx
+    syncNonce?: SyncNonce
     logger?: Logger
   } = {}
 ) {
@@ -63,15 +66,26 @@ function setup(
     counter += 1
     return { nonce: request.nonce ?? 7, txHash: hashOf(counter) }
   }
+  let syncNonceCalls = 0
+  const defaultSyncNonce: SyncNonce = async () => {
+    syncNonceCalls += 1
+  }
   const getBaseFee: GetBaseFee = async () => opts.baseFee ?? 100n
   const queue = createPendingQueue({
     send: opts.send ?? defaultSend,
     getReceipt: opts.getReceipt ?? (async () => null),
     getBaseFee,
+    syncNonce: opts.syncNonce ?? defaultSyncNonce,
     maxFeeWei: opts.maxFeeWei ?? 10_000_000_000_000n,
     logger: opts.logger ?? NOOP_LOGGER
   })
-  return { queue, sends }
+  return {
+    queue,
+    sends,
+    get syncNonceCalls() {
+      return syncNonceCalls
+    }
+  }
 }
 
 function submitOne(queue: PendingQueue, blockNumber = 0n) {
@@ -226,12 +240,101 @@ describe('createPendingQueue', () => {
     expect(events.some(e => e.event === 'tx.onblock_error')).toBe(true)
   })
 
+  it('re-syncs the nonce before a first send when the queue is empty', async () => {
+    const ctx = setup()
+    await submitOne(ctx.queue)
+    expect(ctx.syncNonceCalls).toBe(1) // empty queue → reconcile cursor with chain first
+  })
+
+  it('does not re-sync the nonce while a tx is already in flight', async () => {
+    let n = 6
+    const send: SendTx = async request => {
+      n += 1
+      return { nonce: request.nonce ?? n, txHash: hashOf(n) } // distinct nonces → both tracked
+    }
+    const ctx = setup({ send })
+    await ctx.queue.submit({
+      request: REQUEST,
+      label: 'a',
+      maxFeePerGas: 1000n,
+      maxPriorityFeePerGas: 1000n,
+      blockNumber: 0n
+    })
+    await ctx.queue.submit({
+      request: REQUEST,
+      label: 'b',
+      maxFeePerGas: 1000n,
+      maxPriorityFeePerGas: 1000n,
+      blockNumber: 0n
+    })
+    // First submit synced (queue was empty); the second must NOT — the cursor is legitimately ahead
+    // by the in-flight tx, and re-reading chain would hand out a colliding nonce.
+    expect(ctx.syncNonceCalls).toBe(1)
+    expect(ctx.queue.size).toBe(2)
+  })
+
+  it('re-syncs again once the queue has drained', async () => {
+    const ctx = setup({ getReceipt: async () => ({ status: 'success', blockNumber: 1n }) })
+    await submitOne(ctx.queue) // sync #1
+    await ctx.queue.onBlock(1n) // tx confirms → queue empties
+    expect(ctx.queue.size).toBe(0)
+    await submitOne(ctx.queue) // empty again → sync #2
+    expect(ctx.syncNonceCalls).toBe(2)
+  })
+
+  it('skips the send and logs nonce.sync_failed when the nonce re-sync throws', async () => {
+    const { logger, events } = captureLogger()
+    const ctx = setup({
+      syncNonce: async () => {
+        throw new Error('rpc down')
+      },
+      logger
+    })
+    await submitOne(ctx.queue) // must not throw
+    expect(ctx.queue.size).toBe(0) // nothing broadcast on a stale cursor
+    expect(ctx.sends).toHaveLength(0)
+    expect(events.find(e => e.event === 'nonce.sync_failed')?.level).toBe('warn')
+  })
+
   it('exposes the labels of currently-pending txs via inflightLabels', async () => {
     const { queue } = setup()
     expect(queue.inflightLabels().size).toBe(0)
     await submitOne(queue)
     expect([...queue.inflightLabels()]).toEqual(['market:borrower'])
     await queue.onBlock(1n) // no receipt → still pending
+    expect(queue.inflightLabels().has('market:borrower')).toBe(true)
+  })
+
+  it('keeps a confirmed label in the backpressure set for the cooldown, then releases it', async () => {
+    const { queue } = setup({ getReceipt: async () => ({ status: 'success', blockNumber: 10n }) })
+    await submitOne(queue, 0n)
+    await queue.onBlock(1n) // confirms → leaves `pending`, enters cooldown
+    expect(queue.size).toBe(0)
+    // Still suppressed: the read RPC may not yet reflect the cleared position, so re-submitting now
+    // would land a NotBorrower revert.
+    expect(queue.inflightLabels().has('market:borrower')).toBe(true)
+    await queue.onBlock(1n + SETTLED_COOLDOWN_BLOCKS) // not yet expired (delta == cooldown)
+    expect(queue.inflightLabels().has('market:borrower')).toBe(true)
+    await queue.onBlock(2n + SETTLED_COOLDOWN_BLOCKS) // delta > cooldown → released
+    expect(queue.inflightLabels().has('market:borrower')).toBe(false)
+  })
+
+  it('also cools down a reverted label', async () => {
+    const { queue } = setup({ getReceipt: async () => ({ status: 'reverted', blockNumber: 10n }) })
+    await submitOne(queue, 0n)
+    await queue.onBlock(1n)
+    expect(queue.size).toBe(0)
+    expect(queue.inflightLabels().has('market:borrower')).toBe(true)
+  })
+
+  it('also cools down a dropped (max-bump) label', async () => {
+    const { queue } = setup()
+    await submitOne(queue, 0n)
+    await queue.onBlock(5n) // attempt 1
+    await queue.onBlock(10n) // attempt 2
+    await queue.onBlock(15n) // attempt 3
+    await queue.onBlock(20n) // attempt already 3 → drop → cooldown
+    expect(queue.size).toBe(0)
     expect(queue.inflightLabels().has('market:borrower')).toBe(true)
   })
 })

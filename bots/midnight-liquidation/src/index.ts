@@ -129,6 +129,7 @@ async function main() {
     send: signer.send,
     getReceipt: signer.getReceipt,
     getBaseFee: signer.getBaseFee,
+    syncNonce: signer.syncNonce,
     maxFeeWei: config.maxFeeWei,
     logger
   })
