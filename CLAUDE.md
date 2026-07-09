@@ -170,6 +170,7 @@ All commit messages, PR titles, and Linear ticket titles use the same format:
 
 | Package                 | Scope       |
 | ----------------------- | ----------- |
+| @repo/bot-kit           | `bot-kit`   |
 | @repo/contracts         | `contracts` |
 | @repo/swaps             | `swaps`     |
 | @repo/typescript-config | `ts-config` |
