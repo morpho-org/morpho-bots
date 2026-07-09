@@ -6,7 +6,6 @@ import {
   dateToUnixTimestamp,
   days,
   formatDuration,
-  formatDurationShort,
   formatSecondsToUtcDate,
   fullUtcDateLabel,
   hours,
@@ -365,15 +364,6 @@ describe('formatDuration', () => {
       expect(formatDuration(0, { granular: true })).toBeNull()
       expect(formatDuration(-100, { format: 'long', granular: true })).toBeNull()
     })
-  })
-})
-
-describe('formatDurationShort (deprecated alias)', () => {
-  it('delegates to formatDuration short', () => {
-    expect(formatDurationShort(89 * 86400)).toBe('89d')
-    expect(formatDurationShort(1 * 3600)).toBe('1h')
-    expect(formatDurationShort(30 * 60)).toBe('30m')
-    expect(formatDurationShort(0)).toBeNull()
   })
 })
 

@@ -214,9 +214,6 @@ export function formatDuration(
   return formatUnit(m, 'minute', format)
 }
 
-/** @deprecated Use `formatDuration(seconds)` */
-export const formatDurationShort = (seconds: number) => formatDuration(seconds)
-
 export function dateLabelForUnixTimestamp(timestamp: number): string {
   return new Date(toJsTimestamp(timestamp)).toLocaleDateString('en-US', {
     year: 'numeric',

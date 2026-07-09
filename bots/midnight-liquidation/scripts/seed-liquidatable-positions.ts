@@ -31,7 +31,7 @@ import type { AbiEvent, Address, Hex, PublicClient, WalletClient } from 'viem'
 import { assertContractDeployed, createDeploylessClient, createLogger } from '@repo/bot-kit'
 import { MidnightAbi } from '@repo/contracts'
 import { parseSwapConfig } from '@repo/swaps'
-import { tryCatch } from '@repo/utils'
+import { delay as sleep, tryCatch } from '@repo/utils'
 import { readFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
 import {
@@ -96,7 +96,6 @@ const MIDNIGHT_API = 'https://api.morpho.org/v0/midnight'
 // treating a revert as real — a genuine revert persists across retries and still aborts the run.
 const SIMULATE_RETRIES = 8
 const RETRY_DELAY_MS = 3000
-const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
 const TOKENS: Record<string, { address: Address; decimals: number }> = {
   WETH: { address: getAddress('0x4200000000000000000000000000000000000006'), decimals: 18 },
