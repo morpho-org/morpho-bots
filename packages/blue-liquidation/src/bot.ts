@@ -19,9 +19,9 @@ import { getBlockNumber } from 'viem/actions'
 
 import type { Env } from './config'
 import type { MarketParams } from './market'
-import type { TickCounters } from './runner/tick'
 import type { LiquidationPlan } from './sizing/plan'
 import type { MarketParamsCache } from './state/market-params'
+import type { TickCounters } from './tick/tick'
 
 import { loadConfig } from './config'
 import {
@@ -32,12 +32,12 @@ import {
 } from './discovery/borrowers'
 import { encodeLiquidationExec } from './execution/encode-call'
 import { composeQuoting } from './quotes'
-import { runTick } from './runner/tick'
 import { readBlueLiquidationLens } from './state/lens.sol'
 import { createMarketParamsResolver, multicallIdToMarketParams } from './state/market-params'
+import { runTick } from './tick/tick'
 
 export type { Config, Env } from './config'
-export type { TickCounters } from './runner/tick'
+export type { TickCounters } from './tick/tick'
 export { loadConfig } from './config'
 
 /** Bumped when the persisted-state shape changes; a mismatched file is discarded, not migrated. */

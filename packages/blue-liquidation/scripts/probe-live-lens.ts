@@ -24,9 +24,9 @@ import type { MarketParams } from '../src/market'
 import type { LensInput, LensOut } from '../src/state/lens.sol'
 
 import { marketId } from '../src/market'
-import { isLiquidatable } from '../src/runner/eligibility'
 import { plan } from '../src/sizing/plan'
 import { lensKey, readBlueLiquidationLens } from '../src/state/lens.sol'
+import { isLiquidatable } from '../src/tick/eligibility'
 
 const MORPHO: Address = '0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb'
 const LOGS_CHUNK = 4_000n

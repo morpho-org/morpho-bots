@@ -14,9 +14,9 @@ import { base } from 'viem/chains'
 
 import { encodeLiquidationExec } from '../../src/execution/encode-call'
 import { expectedLoanOut } from '../../src/execution/swap-step'
-import { isLiquidatable, planInputFromLens } from '../../src/runner/eligibility'
 import { plan } from '../../src/sizing/plan'
 import { lensKey, readMidnightLiquidationLens } from '../../src/state/lens.sol'
+import { isLiquidatable, planInputFromLens } from '../../src/tick/eligibility'
 import {
   WETH,
   deployExecutor,

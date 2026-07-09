@@ -20,8 +20,8 @@ import { getBlockNumber, readContract } from 'viem/actions'
 import type { Env } from './config'
 import type { ListedMarketsState } from './discovery/markets'
 import type { Market } from './execution/encode-call'
-import type { TickCounters } from './runner/tick'
 import type { LiquidationPlan } from './sizing/plan'
+import type { TickCounters } from './tick/tick'
 
 import { loadConfig } from './config'
 import { LISTED_MARKETS_MAX_AGE_MS, SETTLED_COOLDOWN_BLOCKS } from './constants'
@@ -33,12 +33,12 @@ import {
 import { createListedMarketFilter } from './discovery/markets'
 import { encodeLiquidationExec } from './execution/encode-call'
 import { composeQuoting } from './quotes'
-import { runTick } from './runner/tick'
 import { readMidnightLiquidationLens } from './state/lens.sol'
+import { runTick } from './tick/tick'
 import { revertReason } from './tx-error'
 
 export type { Config, Env } from './config'
-export type { TickCounters } from './runner/tick'
+export type { TickCounters } from './tick/tick'
 export { loadConfig } from './config'
 
 /** Bumped when the persisted-state shape changes; a mismatched file is discarded, not migrated. */

@@ -29,9 +29,9 @@ import {
 } from './discovery/borrowers'
 import { encodeLiquidationExec } from './execution/encode-call'
 import { composeQuoting } from './quotes'
-import { runTick } from './runner/tick'
 import { readBlueLiquidationLens } from './state/lens.sol'
 import { createMarketParamsResolver, multicallIdToMarketParams } from './state/market-params'
+import { runTick } from './tick/tick'
 
 async function main() {
   const config = loadConfig()

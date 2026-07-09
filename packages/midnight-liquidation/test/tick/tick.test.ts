@@ -1,19 +1,16 @@
 import type { Logger, SimulateResult } from '@repo/bot-kit'
 import type { QuoteOutcome, Swap } from '@repo/swaps'
-import type { Address } from 'viem'
+import type { Address, Hex } from 'viem'
 
 import { createBackoff } from '@repo/bot-kit'
 import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
 
 import type { BorrowerCandidate } from '../../src/discovery/borrowers'
-import type { MarketParams } from '../../src/market'
 import type { LensInput, LensOut } from '../../src/state/lens.sol'
 
-import { ORACLE_PRICE_SCALE, WAD } from '../../src/constants'
-import { marketId } from '../../src/market'
-import { runTick } from '../../src/runner/tick'
 import { lensKey } from '../../src/state/lens.sol'
+import { runTick } from '../../src/tick/tick'
 
 function spyLogger() {
   const events: { level: string; event: string; fields?: Record<string, unknown> }[] = []
@@ -29,20 +26,13 @@ function spyLogger() {
 }
 
 const BORROWER: Address = getAddress('0x1111111111111111111111111111111111111111')
-const LOAN: Address = getAddress('0x3333333333333333333333333333333333333333')
-const COLL: Address = getAddress('0x4444444444444444444444444444444444444444')
-const ORACLE: Address = getAddress('0x5555555555555555555555555555555555555555')
-const IRM: Address = getAddress('0x46415998764C29aB2a25CbeA6254146D50D22687')
-const ROUTER: Address = getAddress('0x6666666666666666666666666666666666666666')
-
-const PARAMS: MarketParams = {
-  loanToken: LOAN,
-  collateralToken: COLL,
-  oracle: ORACLE,
-  irm: IRM,
-  lltv: 86n * 10n ** 16n
-}
-const LABEL = lensKey(marketId(PARAMS), BORROWER)
+const CALLER: Address = getAddress('0x2222222222222222222222222222222222222222')
+const TOKEN: Address = getAddress('0x3333333333333333333333333333333333333333')
+const ORACLE: Address = getAddress('0x4444444444444444444444444444444444444444')
+const ROUTER: Address = getAddress('0x5555555555555555555555555555555555555555')
+const ZERO = '0x0000000000000000000000000000000000000000' as const
+const MARKET: Hex = `0x${'a'.repeat(64)}`
+const LABEL = lensKey(MARKET, BORROWER)
 
 const SWAP: Swap = {
   spender: ROUTER,
@@ -50,35 +40,56 @@ const SWAP: Swap = {
   value: 0n,
   callData: '0xabcdef',
   amountIn: { source: 'balance', offset: 132n },
-  expectedAmountOut: 2000n * WAD,
+  expectedAmountOut: 2000n,
   amountOutMinimum: 1n
 }
 
-// A liquidatable reading: valid, has debt, unhealthy, ample collateral (debt-binds → seize > 0).
+// A liquidatable reading: valid, gate open, has debt, unlocked, unhealthy, pre-maturity.
 function lensOut(overrides: Partial<LensOut> = {}): LensOut {
   return {
-    params: PARAMS,
     valid: true,
     hasDebt: true,
     healthy: false,
+    locked: false,
+    gateAllows: true,
     blockTimestamp: 1000n,
-    borrowShares: 1000n * WAD * 10n ** 6n,
-    collateral: 5000n * WAD,
-    accruedTotalBorrowAssets: 5000n * WAD,
-    totalBorrowShares: 5000n * WAD * 10n ** 6n,
-    collateralPrice: ORACLE_PRICE_SCALE,
-    lltv: PARAMS.lltv,
+    debt: 1000n,
+    maxDebt: 900n,
+    badDebt: 0n,
+    activatedBitmap: 1n,
+    bestCollateralIdx: 0,
+    bestCollateralAmt: 5000n,
+    bestCollateralPrice: 10n ** 36n,
+    bestCollateralMaxLif: 1100000000000000000n,
+    bestCollateralLltv: 860000000000000000n,
+    market: {
+      chainId: 8453n,
+      midnight: ZERO,
+      loanToken: TOKEN,
+      collateralParams: [
+        {
+          token: TOKEN,
+          lltv: 860000000000000000n,
+          liquidationCursor: 250000000000000000n,
+          oracle: ORACLE
+        }
+      ],
+      maturity: 2000n,
+      rcfThreshold: 10n ** 30n,
+      enterGate: ZERO,
+      liquidatorGate: ZERO
+    },
     ...overrides
   }
 }
 
 const candidates = (...borrowers: Address[]): BorrowerCandidate[] =>
-  borrowers.map(borrower => ({ marketParams: PARAMS, borrower }))
+  borrowers.map(borrower => ({ marketId: MARKET, borrower }))
 
 function stubReadLens(out: LensOut | null) {
   return async (pairs: LensInput[]) => {
     const map = new Map<string, LensOut>()
-    if (out) for (const pair of pairs) map.set(lensKey(marketId(pair.params), pair.borrower), out)
+    if (out) for (const pair of pairs) map.set(lensKey(pair.id, pair.borrower), out)
     return map
   }
 }
@@ -88,7 +99,7 @@ function runWith(opts: {
   simulateResult?: SimulateResult
   quoteOutcome?: QuoteOutcome
   borrowers?: Address[]
-  synced?: bigint | null
+  discoverError?: Error
   chainHead?: bigint
   inflight?: ReadonlySet<string>
   noSwap?: boolean
@@ -106,9 +117,13 @@ function runWith(opts: {
     ? { kind: 'no_config' }
     : { kind: 'swap', swap: SWAP }
   const result = runTick({
-    discover: async () => candidates(...(opts.borrowers ?? [BORROWER])),
-    syncedBlock: async () => (opts.synced === undefined ? chainHead : opts.synced),
+    discover: async () => {
+      if (opts.discoverError) throw opts.discoverError
+      return candidates(...(opts.borrowers ?? [BORROWER]))
+    },
     chainHead,
+    caller: CALLER,
+    seizeCapMarginBps: 0,
     readLens: stubReadLens(opts.out === undefined ? lensOut() : opts.out),
     quoteFor: async () => {
       quoteCalls += 1
@@ -214,6 +229,28 @@ describe('runTick', () => {
     expect(backoff.shouldSkip(LABEL, 1n)).toBe(false)
   })
 
+  it('simulates and submits fully bad-debt realization without quoting', async () => {
+    const { counters, simulateCalls, submitCalls, quoteCalls } = await runWith({
+      out: lensOut({
+        healthy: true,
+        blockTimestamp: 3000n,
+        debt: 1000n,
+        badDebt: 1000n,
+        market: { ...lensOut().market, maturity: 2000n }
+      })
+    })
+    expect(counters).toMatchObject({
+      liquidatable: 1,
+      planned: 1,
+      noSwapPath: 0,
+      quoteFailed: 0,
+      submitted: 1
+    })
+    expect(quoteCalls()).toBe(0) // bad-debt realization never quotes
+    expect(simulateCalls()).toBe(1)
+    expect(submitCalls()).toBe(1)
+  })
+
   it('skips a position already in flight without re-quoting, simulating, or submitting', async () => {
     const { counters, quoteCalls, simulateCalls, submitCalls } = await runWith({
       inflight: new Set([LABEL])
@@ -224,7 +261,7 @@ describe('runTick', () => {
     expect(submitCalls()).toBe(0)
   })
 
-  it('skips a non-liquidatable (healthy) pair without simulating or submitting', async () => {
+  it('skips a non-liquidatable pair without simulating or submitting', async () => {
     const { counters, simulateCalls, submitCalls } = await runWith({
       out: lensOut({ healthy: true })
     })
@@ -239,26 +276,13 @@ describe('runTick', () => {
     expect(submitCalls()).toBe(0)
   })
 
-  it('skips a degenerate collateral-less position (plan returns null)', async () => {
-    const { counters, quoteCalls, submitCalls } = await runWith({
-      out: lensOut({ collateral: 0n })
+  it('tolerates a discovery failure: logs discover.error, submits nothing, still drives the queue', async () => {
+    const { counters, events, submitCalls, onBlockCalls } = await runWith({
+      discoverError: new Error('boom')
     })
-    expect(counters).toMatchObject({ liquidatable: 1, planned: 0, submitted: 0 })
-    expect(quoteCalls()).toBe(0)
+    expect(counters).toMatchObject({ pairs: 0, liquidatable: 0, submitted: 0 })
+    expect(events.some(e => e.level === 'warn' && e.event === 'discover.error')).toBe(true)
     expect(submitCalls()).toBe(0)
-  })
-
-  it('warns rindexer.lag when our indexer trails the chain head, but still proceeds', async () => {
-    const { counters, events } = await runWith({ synced: 10n, chainHead: 100n }) // lag 90 > 30
-    expect(events.some(e => e.level === 'warn' && e.event === 'rindexer.lag')).toBe(true)
-    expect(counters.submitted).toBe(1) // proceeded despite the lag
-  })
-
-  it('warns rindexer.lag with reason unknown when the synced head is unavailable, and proceeds', async () => {
-    const { counters, events } = await runWith({ synced: null })
-    expect(events.some(e => e.event === 'rindexer.lag' && e.fields?.reason === 'unknown')).toBe(
-      true
-    )
-    expect(counters.submitted).toBe(1)
+    expect(onBlockCalls()).toBe(1) // pendingOnBlock still runs despite discovery failing
   })
 })
