@@ -87,7 +87,8 @@ function fakeSelector(order: VenueQuoteEstimate[], onRefresh?: () => Promise<voi
       if (onRefresh) await onRefresh()
     },
     select: () => order,
-    snapshot: () => []
+    snapshot: () => [],
+    dump: () => ({ pairs: [], decimals: [] })
   }
   return { selector, refreshed }
 }

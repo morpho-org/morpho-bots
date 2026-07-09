@@ -31,7 +31,8 @@ export type GetBaseFee = () => Promise<bigint>
 /** Re-derives the signer's nonce cursor from chain truth; called when nothing is in flight. */
 export type SyncNonce = () => Promise<void>
 
-type Pending = {
+/** One tracked tx — the queue's full per-nonce record, exported so persisted state can carry it. */
+export type Pending = {
   nonce: number
   txHash: Hex
   request: TxRequest
@@ -40,6 +41,17 @@ type Pending = {
   maxFeePerGas: bigint
   maxPriorityFeePerGas: bigint
   attempt: number
+}
+
+/**
+ * Restorable queue state: what `dump()` emits and `initialState` accepts. All fields survive the
+ * bigint-safe `stringify`/`parse` round-trip from `@repo/utils`, so a one-shot process can persist
+ * the queue between invocations. Restored state is a HINT — the next `onBlock` reconciles every
+ * entry against chain truth (receipts), so a stale or lost file degrades to restart semantics.
+ */
+export type PendingQueueState = {
+  pending: Pending[]
+  settledAt: [label: string, settledBlock: bigint][]
 }
 
 export type PendingQueue = {
@@ -53,6 +65,8 @@ export type PendingQueue = {
   onBlock(blockNumber: bigint): Promise<void>
   readonly size: number
   snapshot(): { nonce: number; txHash: Hex; attempt: number }[]
+  /** Restorable snapshot of the full queue state (unlike `snapshot()`, which is logs-only). */
+  dump(): PendingQueueState
   /**
    * Labels (`${id}:${borrower}`) the tick must NOT re-submit — its backpressure set. Covers
    * currently-pending txs AND, when `settledCooldownBlocks` is set, positions whose tx settled
@@ -65,10 +79,12 @@ export type PendingQueue = {
 
 /**
  * In-memory pending-tx tracker. Nonce assignment is delegated to the injected `send`; the queue owns
- * confirmation, stuck-detection, and fee-bump/replace. State is not persisted — chain truth wins, so
- * a restart re-derives from `getTransactionCount('pending')`. When `syncNonce` is provided and the
- * tracked set is empty, the next first-send re-syncs the cursor so a dropped (never-mined) tx can't
- * strand the cursor above chain truth and turn every later send into an unminable future nonce.
+ * confirmation, stuck-detection, and fee-bump/replace. The queue itself never touches disk: chain
+ * truth wins, and a fresh instance re-derives from `getTransactionCount('pending')`. A caller that
+ * outlives the process (one-shot ticks) may thread `dump()` output back in via `initialState` so
+ * stuck-tx detection and fee-bumping survive restarts. When `syncNonce` is provided and the tracked
+ * set is empty, the next first-send re-syncs the cursor so a dropped (never-mined) tx can't strand
+ * the cursor above chain truth and turn every later send into an unminable future nonce.
  */
 export function createPendingQueue({
   send,
@@ -77,6 +93,7 @@ export function createPendingQueue({
   syncNonce,
   maxFeeWei,
   logger,
+  initialState,
   settledCooldownBlocks = 0n,
   stuckBlocks = STUCK_BLOCKS,
   maxBumpAttempts = MAX_BUMP_ATTEMPTS,
@@ -89,6 +106,8 @@ export function createPendingQueue({
   syncNonce?: SyncNonce
   maxFeeWei: bigint
   logger: Logger
+  /** Seeds the queue from a prior `dump()` — a hint, reconciled against receipts on `onBlock`. */
+  initialState?: PendingQueueState
   /** Blocks a settled label stays in the backpressure set; 0n (default) disables the cooldown. */
   settledCooldownBlocks?: bigint
   stuckBlocks?: bigint
@@ -96,11 +115,14 @@ export function createPendingQueue({
   /** Formats send/replace failures for logs; default decodes standard `Error`/`Panic` reverts. */
   revertReason?: (error: unknown) => string
 }): PendingQueue {
-  const pending = new Map<number, Pending>()
+  // Entries are copied on restore so a caller-held `initialState` can't alias live queue mutations.
+  const pending = new Map<number, Pending>(
+    (initialState?.pending ?? []).map(entry => [entry.nonce, { ...entry }])
+  )
   // label → block height at which its tx left `pending` (confirm/revert/drop). Keeps the label in the
   // backpressure set for `settledCooldownBlocks` so a just-acted position isn't re-submitted while
   // the read RPC still lags the confirmation. Pruned each `onBlock`. Unused when the cooldown is 0n.
-  const settledAt = new Map<string, bigint>()
+  const settledAt = new Map<string, bigint>(initialState?.settledAt ?? [])
 
   // Remove a finished tx from `pending` and, when the cooldown is enabled, start its re-submission
   // cooldown.
@@ -284,6 +306,12 @@ export function createPendingQueue({
         txHash: entry.txHash,
         attempt: entry.attempt
       }))
+    },
+    dump() {
+      return {
+        pending: [...pending.values()].map(entry => ({ ...entry })),
+        settledAt: [...settledAt]
+      }
     },
     inflightLabels() {
       const labels = new Set(settledAt.keys())

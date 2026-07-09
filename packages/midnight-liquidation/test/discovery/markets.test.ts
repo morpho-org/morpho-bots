@@ -1,7 +1,10 @@
 import type { Logger } from '@repo/bot-kit'
 import type { Hex } from 'viem'
 
+import { parse, stringify } from '@repo/utils'
 import { describe, expect, it } from 'bun:test'
+
+import type { ListedMarketsState } from '../../src/discovery/markets'
 
 import { createListedMarketFilter } from '../../src/discovery/markets'
 
@@ -113,5 +116,34 @@ describe('createListedMarketFilter', () => {
     await filter.refresh()
     expect(attempts).toBe(2)
     expect(filter.isListed(LISTED)).toBe(true)
+  })
+
+  it('round-trips the whitelist and serves a restored set without fetching', async () => {
+    const a = createListedMarketFilter({
+      apiUrl: API_URL,
+      chainId: 8453,
+      logger: NOOP_LOGGER,
+      fetchImpl: async () => jsonResponse({ data: [market(LISTED)] }),
+      now: () => 111
+    })
+    await a.refresh()
+
+    const state = parse<ListedMarketsState>(stringify(a.dump()), 'throw')
+    expect(state).toEqual({ marketIds: [LISTED], updatedAt: 111 })
+
+    // The restored filter never fetches — isListed and updatedAt come straight from the state, and
+    // the caller decides (via updatedAt) when a refresh is due.
+    const b = createListedMarketFilter({
+      apiUrl: API_URL,
+      chainId: 8453,
+      logger: NOOP_LOGGER,
+      fetchImpl: async () => {
+        throw new Error('offline')
+      },
+      initialState: state
+    })
+    expect(b.isListed(LISTED)).toBe(true)
+    expect(b.isListed(UNLISTED)).toBe(false)
+    expect(b.snapshot()).toEqual({ markets: 1, updatedAt: 111 })
   })
 })

@@ -2,8 +2,10 @@
  * Per-position exponential backoff, keyed by the `${id}:${borrower}` label. The primary API
  * rate-limit defense: a position that repeatedly fails to quote or simulate (illiquid pair, no route,
  * a persistent bad-debt edge case) stops being re-quoted/re-simulated every block, so API and RPC
- * usage stay bounded even under a backlog. In-memory only — like the pending queue, chain truth wins
- * on restart, so there is nothing to persist.
+ * usage stay bounded even under a backlog. The backoff itself never touches disk; a caller that
+ * outlives the process (one-shot ticks) may thread `dump()` output back in via `initialState` —
+ * attempt counts included, so a chronically failing position keeps escalating instead of resetting
+ * to attempt 1 every invocation (which would collapse the rate-limit defense).
  */
 export type Backoff = {
   /** True if the position is currently backed off (recorded a failure and the cooldown hasn't elapsed). */
@@ -14,14 +16,30 @@ export type Backoff = {
   clear: (label: string) => void
   /** Number of positions currently tracked. */
   readonly size: number
+  /** Restorable snapshot of every tracked position (attempt counts and cooldown heights). */
+  dump(): BackoffState
 }
+
+/**
+ * Restorable backoff state: what `dump()` emits and `initialState` accepts. Survives the bigint-safe
+ * `stringify`/`parse` round-trip from `@repo/utils`.
+ */
+export type BackoffState = [label: string, entry: { attempts: number; until: bigint }][]
 
 /** Cap the exponent so the shift can't blow up for a chronically failing position. */
 const MAX_SHIFT = 32
 
-export function createBackoff(opts: { baseBlocks: bigint; maxBlocks: bigint }): Backoff {
+export function createBackoff(opts: {
+  baseBlocks: bigint
+  maxBlocks: bigint
+  /** Seeds the backoff from a prior `dump()`. */
+  initialState?: BackoffState
+}): Backoff {
   const { baseBlocks, maxBlocks } = opts
-  const entries = new Map<string, { attempts: number; until: bigint }>()
+  // Entries are copied on restore so a caller-held `initialState` can't alias live mutations.
+  const entries = new Map(
+    (opts.initialState ?? []).map(([label, entry]) => [label, { ...entry }] as const)
+  )
 
   return {
     // We deliberately do NOT evict on expiry here: the attempt count must survive past the cooldown
@@ -44,6 +62,9 @@ export function createBackoff(opts: { baseBlocks: bigint; maxBlocks: bigint }): 
     },
     get size() {
       return entries.size
+    },
+    dump() {
+      return [...entries].map(([label, entry]) => [label, { ...entry }] as const) as BackoffState
     }
   }
 }
