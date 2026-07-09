@@ -5,13 +5,33 @@ import { parseSwapConfig, VENUE_API_KEY_ENV } from '../src/config'
 describe('parseSwapConfig', () => {
   const COLL = '0x4200000000000000000000000000000000000006'
 
-  it('defaults a venue-less entry to uniswap-v3 (back-compat)', () => {
+  it('defaults a venue-less entry to uniswap-v3 (back-compat) and checksums the router', () => {
     const parsed = parseSwapConfig({
       '8453': {
-        [COLL]: { router: '0x2626664c2603336E57B271c5C0b26F421741e481', fee: 500, slippageBps: 100 }
+        [COLL]: { router: '0x2626664c2603336e57b271c5c0b26f421741e481', fee: 500, slippageBps: 100 }
       }
     })
-    expect(parsed['8453']?.[COLL]).toMatchObject({ venue: 'uniswap-v3', fee: 500 })
+    expect(parsed['8453']?.[COLL]).toEqual({
+      venue: 'uniswap-v3',
+      router: '0x2626664c2603336E57B271c5C0b26F421741e481',
+      fee: 500,
+      slippageBps: 100
+    })
+  })
+
+  it('rejects an aggregator entry carrying uniswap-only fields (strict union arm)', () => {
+    expect(() =>
+      parseSwapConfig({
+        '8453': {
+          [COLL]: {
+            venue: '0x',
+            router: '0x2626664c2603336E57B271c5C0b26F421741e481',
+            fee: 500,
+            slippageBps: 50
+          }
+        }
+      })
+    ).toThrow()
   })
 
   it('parses aggregator entries (0x, 1inch) with optional baseUrl', () => {

@@ -19,14 +19,14 @@
       "name": "@morpho-org/blue-liquidation",
       "version": "0.1.0",
       "dependencies": {
-        "@morpho-org/viem-dlc": "catalog:",
+        "@repo/bot-kit": "workspace:*",
         "@repo/contracts": "workspace:*",
+        "@repo/swaps": "workspace:*",
         "@repo/utils": "workspace:*",
         "executooor-viem": "catalog:",
         "solc": "catalog:",
         "soltag": "catalog:",
         "viem": "catalog:",
-        "zod": "catalog:",
       },
       "devDependencies": {
         "@repo/typescript-config": "workspace:*",
@@ -38,14 +38,14 @@
       "name": "@morpho-org/midnight-liquidation",
       "version": "0.1.0",
       "dependencies": {
-        "@morpho-org/viem-dlc": "catalog:",
+        "@repo/bot-kit": "workspace:*",
         "@repo/contracts": "workspace:*",
+        "@repo/swaps": "workspace:*",
         "@repo/utils": "workspace:*",
         "executooor-viem": "catalog:",
         "solc": "catalog:",
         "soltag": "catalog:",
         "viem": "catalog:",
-        "zod": "catalog:",
       },
       "devDependencies": {
         "@repo/typescript-config": "workspace:*",

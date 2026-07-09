@@ -1,10 +1,9 @@
+import type { Swap } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
 import { MidnightAbi } from '@repo/contracts'
 import { ExecutorEncoder, executorAbi } from 'executooor-viem'
 import { encodeAbiParameters, encodeFunctionData, erc20Abi, zeroAddress } from 'viem'
-
-import type { Swap } from '../quotes/types'
 
 import { CALLBACK_SUCCESS } from '../constants'
 import { isBadDebtRealization } from '../sizing/plan'

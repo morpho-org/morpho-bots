@@ -2,7 +2,6 @@ import { describe, expect, it } from 'bun:test'
 
 import { VIRTUAL_ASSETS, VIRTUAL_SHARES, WAD } from '../../src/constants'
 import {
-  min,
   mulDivDown,
   mulDivUp,
   toAssetsDown,
@@ -14,23 +13,6 @@ import {
   wMulDown,
   wTaylorCompounded
 } from '../../src/sizing/math'
-
-describe('mulDiv', () => {
-  it('floors and ceils around a fractional result', () => {
-    expect(mulDivDown(7n, 3n, 2n)).toBe(10n) // 21/2 = 10.5 -> 10
-    expect(mulDivUp(7n, 3n, 2n)).toBe(11n) // 21/2 = 10.5 -> 11
-  })
-
-  it('agrees on an exact division', () => {
-    expect(mulDivDown(6n, 2n, 3n)).toBe(4n)
-    expect(mulDivUp(6n, 2n, 3n)).toBe(4n)
-  })
-
-  it('throws on a zero denominator (matches the EVM revert)', () => {
-    expect(() => mulDivDown(1n, 1n, 0n)).toThrow()
-    expect(() => mulDivUp(1n, 1n, 0n)).toThrow()
-  })
-})
 
 describe('wad math', () => {
   it('wMulDown / wDivDown / wDivUp scale by WAD with the right rounding', () => {
@@ -72,13 +54,5 @@ describe('shares math (virtual offsets)', () => {
       mulDivDown(1n, tba + VIRTUAL_ASSETS, tbs + VIRTUAL_SHARES)
     )
     expect(toAssetsUp(1n, tba, tbs)).toBe(mulDivUp(1n, tba + VIRTUAL_ASSETS, tbs + VIRTUAL_SHARES))
-  })
-})
-
-describe('min', () => {
-  it('returns the lesser', () => {
-    expect(min(3n, 5n)).toBe(3n)
-    expect(min(5n, 3n)).toBe(3n)
-    expect(min(4n, 4n)).toBe(4n)
   })
 })

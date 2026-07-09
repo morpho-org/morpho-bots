@@ -5,9 +5,9 @@ import { describe, expect, it } from 'bun:test'
 import { getAddress, parseGwei } from 'viem'
 import { mainnet } from 'viem/chains'
 
-import type { ChainConfig, Config, SwapConfig } from '../src/config'
+import type { ChainConfig, Config } from '../src/config'
 
-import { loadConfig, parseSwapConfig } from '../src/config'
+import { loadConfig } from '../src/config'
 
 const MIDNIGHT = '0x1111111111111111111111111111111111111111' as Address
 const EXECUTOOOR = '0x3333333333333333333333333333333333333333'
@@ -222,64 +222,5 @@ describe('loadConfig', () => {
     expect(() => loadConfig(baseEnv({ SEIZE_CAP_MARGIN_BPS: '20000' }), deps)).toThrow(
       /SEIZE_CAP_MARGIN_BPS must be <= 10000/
     )
-  })
-})
-
-describe('parseSwapConfig', () => {
-  it('parses a legacy (no-venue) config, defaulting venue to uniswap-v3 and checksumming the router', () => {
-    const parsed: SwapConfig = parseSwapConfig({
-      [mainnet.id]: { [COLLATERAL]: { router: ROUTER, fee: 3000, slippageBps: 100 } }
-    })
-    expect(parsed[String(mainnet.id)]?.[COLLATERAL]).toEqual({
-      venue: 'uniswap-v3',
-      router: getAddress(ROUTER),
-      fee: 3000,
-      slippageBps: 100
-    })
-  })
-
-  it('parses an explicit 0x venue entry (no router/fee)', () => {
-    const parsed = parseSwapConfig({
-      [mainnet.id]: { [COLLATERAL]: { venue: '0x', slippageBps: 100 } }
-    })
-    expect(parsed[String(mainnet.id)]?.[COLLATERAL]).toEqual({ venue: '0x', slippageBps: 100 })
-  })
-
-  it('rejects a 0x entry carrying uniswap-only fields (strict union arm)', () => {
-    expect(() =>
-      parseSwapConfig({
-        [mainnet.id]: { [COLLATERAL]: { venue: '0x', router: ROUTER, fee: 500, slippageBps: 50 } }
-      })
-    ).toThrow()
-  })
-
-  it('rejects a slippage above 100%', () => {
-    expect(() =>
-      parseSwapConfig({
-        [mainnet.id]: { [COLLATERAL]: { router: ROUTER, fee: 500, slippageBps: 10001 } }
-      })
-    ).toThrow()
-  })
-
-  it('rejects an unknown extra field', () => {
-    expect(() =>
-      parseSwapConfig({
-        [mainnet.id]: { [COLLATERAL]: { router: ROUTER, fee: 500, slippageBps: 50, extra: true } }
-      })
-    ).toThrow()
-  })
-
-  it('rejects a non-address collateral key', () => {
-    expect(() =>
-      parseSwapConfig({
-        [mainnet.id]: { 'not-a-token': { router: ROUTER, fee: 500, slippageBps: 50 } }
-      })
-    ).toThrow()
-  })
-
-  it('rejects a non-numeric chain id key', () => {
-    expect(() =>
-      parseSwapConfig({ base: { [COLLATERAL]: { router: ROUTER, fee: 500, slippageBps: 50 } } })
-    ).toThrow()
   })
 })

@@ -126,7 +126,7 @@ These files provide important background information about dependencies and rela
 This is a **bun workspaces monorepo** housing off-chain Morpho curator bots:
 
 - `/bots/` — individual bot apps (one per bot)
-- `/packages/` — shared libraries (`@repo/utils`, `@repo/contracts`, `@repo/typescript-config`)
+- `/packages/` — shared libraries (`@repo/utils`, `@repo/bot-kit`, `@repo/swaps`, `@repo/contracts`, `@repo/typescript-config`)
 
 **Key technologies**: bun 1.3.12 (runtime + package manager + workspace task runner), Node.js
 24.14.1, TypeScript 6.0, viem for Web3, oxlint + oxfmt for lint/format, knip for dead-code
@@ -180,6 +180,7 @@ All commit messages, PR titles, and Linear ticket titles use the same format:
 
 | Bot                  | Scope                  |
 | -------------------- | ---------------------- |
+| blue-liquidation     | `blue-liquidation`     |
 | midnight-liquidation | `midnight-liquidation` |
 
 **Scopes — Cross-cutting:**

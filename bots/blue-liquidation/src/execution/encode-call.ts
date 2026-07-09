@@ -1,3 +1,4 @@
+import type { Swap } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
 import { MorphoAbi } from '@repo/contracts'
@@ -5,7 +6,6 @@ import { ExecutorEncoder, executorAbi } from 'executooor-viem'
 import { encodeAbiParameters, encodeFunctionData, erc20Abi } from 'viem'
 
 import type { MarketParams } from '../market'
-import type { Swap } from '../quotes/types'
 
 // `approve(spender, amount)` / `transfer(recipient, amount)`: the amount word sits at byte offset
 // 4 (selector) + 32 (the address word).

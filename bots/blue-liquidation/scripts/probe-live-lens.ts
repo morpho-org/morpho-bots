@@ -13,6 +13,7 @@
  */
 import type { Address, Hex } from 'viem'
 
+import { createDeploylessClient } from '@repo/bot-kit'
 import { MorphoAbi } from '@repo/contracts'
 import { ensureError } from '@repo/utils'
 import { getAbiItem } from 'viem'
@@ -22,7 +23,6 @@ import { base } from 'viem/chains'
 import type { MarketParams } from '../src/market'
 import type { LensInput, LensOut } from '../src/state/lens.sol'
 
-import { createDeploylessClient } from '../src/client'
 import { marketId } from '../src/market'
 import { isLiquidatable } from '../src/runner/eligibility'
 import { plan } from '../src/sizing/plan'

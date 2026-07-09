@@ -1,20 +1,23 @@
 import type { Address } from 'viem'
 
+import {
+  assertContractDeployed,
+  createDeploylessClient,
+  createSigner,
+  initialFees,
+  simulateLiquidationExec
+} from '@repo/bot-kit'
+import { quoteUniswapV3 } from '@repo/swaps'
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
 import { erc20Abi, parseGwei } from 'viem'
 import { base } from 'viem/chains'
 
 import type { ForkFixture, ForkHandle, TestClient } from './harness'
 
-import { assertContractDeployed, createDeploylessClient } from '../../src/client'
 import { encodeLiquidationExec } from '../../src/execution/encode-call'
-import { simulateLiquidationExec } from '../../src/execution/simulate'
 import { expectedLoanOut } from '../../src/execution/swap-step'
 import { marketId } from '../../src/market'
-import { initialFees } from '../../src/queue/fee-policy'
-import { quoteUniswapV3 } from '../../src/quotes/venues/uniswap-v3'
 import { isLiquidatable, planInputFromLens } from '../../src/runner/eligibility'
-import { createSigner } from '../../src/signer'
 import { plan } from '../../src/sizing/plan'
 import { lensKey, readBlueLiquidationLens } from '../../src/state/lens.sol'
 import {
@@ -52,7 +55,7 @@ describe.skipIf(!FORK_URL || !FIXTURE)(
       chain: typeof base
       rpcUrl: string
       rpcUrlFallback: undefined
-      liquidatorPrivateKey: typeof LIQUIDATOR_KEY
+      privateKey: typeof LIQUIDATOR_KEY
       morpho: Address
       executooorAddress: Address
       maxFeeWei: bigint
@@ -71,7 +74,7 @@ describe.skipIf(!FORK_URL || !FIXTURE)(
         chain: base,
         rpcUrl: fork.rpcUrl,
         rpcUrlFallback: undefined,
-        liquidatorPrivateKey: LIQUIDATOR_KEY,
+        privateKey: LIQUIDATOR_KEY,
         morpho: MORPHO,
         executooorAddress: executooor,
         maxFeeWei: parseGwei('300')

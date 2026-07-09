@@ -2,9 +2,9 @@ import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
 import { base } from 'viem/chains'
 
-import type { ChainConfig } from '../src/config'
+import type { ChainConfig, Config, QuotingConfig } from '../src/config'
 
-import { loadConfig, parseSwapConfig } from '../src/config'
+import { loadConfig } from '../src/config'
 
 const MORPHO = getAddress('0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb')
 const KEY = `0x${'1'.repeat(64)}`
@@ -64,6 +64,14 @@ describe('loadConfig', () => {
     expect(() => loadConfig(baseEnv({ CHAIN_ID: '1' }))).toThrow(/Unsupported CHAIN_ID/)
   })
 
+  it('parses quoting tunables with safe defaults', () => {
+    const config: Config = loadConfig(baseEnv())
+    const quoting: QuotingConfig = config.quoting
+    expect(quoting.maxRouteImpactBps).toBe(500)
+    expect(quoting.httpRps).toBe(2)
+    expect(quoting.backoffBaseBlocks).toBe(2n)
+  })
+
   it('honors an injected chain map (so a new chain is wired in one place)', () => {
     const chainMap: Record<number, ChainConfig> = {
       [base.id]: { chain: base, morpho: MORPHO, network: 'base' }
@@ -114,25 +122,5 @@ describe('loadConfig', () => {
         readFile: () => JSON.stringify(swap)
       })
     ).toThrow(/ONEINCH_API_KEY/)
-  })
-})
-
-describe('parseSwapConfig', () => {
-  const COLL = '0x4200000000000000000000000000000000000006'
-
-  it('defaults a venue-less entry to uniswap-v3 (back-compat)', () => {
-    const parsed = parseSwapConfig({
-      '8453': {
-        [COLL]: { router: '0x2626664c2603336E57B271c5C0b26F421741e481', fee: 500, slippageBps: 100 }
-      }
-    })
-    expect(parsed['8453']?.[COLL]).toMatchObject({ venue: 'uniswap-v3', fee: 500 })
-  })
-
-  it('rejects a non-numeric chain-id key and an out-of-range slippage', () => {
-    expect(() => parseSwapConfig({ base: {} })).toThrow()
-    expect(() =>
-      parseSwapConfig({ '8453': { [COLL]: { venue: '0x', slippageBps: 20_000 } } })
-    ).toThrow()
   })
 })

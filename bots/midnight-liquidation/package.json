@@ -12,14 +12,14 @@
     "typecheck": "soltag && tsc --noEmit"
   },
   "dependencies": {
-    "@morpho-org/viem-dlc": "catalog:",
+    "@repo/bot-kit": "workspace:*",
     "@repo/contracts": "workspace:*",
+    "@repo/swaps": "workspace:*",
     "@repo/utils": "workspace:*",
     "executooor-viem": "catalog:",
     "solc": "catalog:",
     "soltag": "catalog:",
-    "viem": "catalog:",
-    "zod": "catalog:"
+    "viem": "catalog:"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",

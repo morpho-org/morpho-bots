@@ -1,3 +1,4 @@
+import type { Swap } from '@repo/swaps'
 import type { Hex } from 'viem'
 
 import { MidnightAbi } from '@repo/contracts'
@@ -13,7 +14,6 @@ import {
 } from 'viem'
 
 import type { CollateralParams, Market } from '../../src/execution/encode-call'
-import type { Swap } from '../../src/quotes/types'
 
 import { CALLBACK_SUCCESS } from '../../src/constants'
 import { encodeLiquidationExec } from '../../src/execution/encode-call'
