@@ -19,14 +19,7 @@
       "name": "@morpho-org/blue-liquidation",
       "version": "0.1.0",
       "dependencies": {
-        "@repo/bot-kit": "workspace:*",
-        "@repo/contracts": "workspace:*",
-        "@repo/swaps": "workspace:*",
         "@repo/utils": "workspace:*",
-        "executooor-viem": "catalog:",
-        "solc": "catalog:",
-        "soltag": "catalog:",
-        "viem": "catalog:",
       },
       "devDependencies": {
         "@repo/typescript-config": "workspace:*",
@@ -38,14 +31,7 @@
       "name": "@morpho-org/midnight-liquidation",
       "version": "0.1.0",
       "dependencies": {
-        "@repo/bot-kit": "workspace:*",
-        "@repo/contracts": "workspace:*",
-        "@repo/swaps": "workspace:*",
         "@repo/utils": "workspace:*",
-        "executooor-viem": "catalog:",
-        "solc": "catalog:",
-        "soltag": "catalog:",
-        "viem": "catalog:",
       },
       "devDependencies": {
         "@repo/typescript-config": "workspace:*",
@@ -53,12 +39,17 @@
         "typescript": "catalog:",
       },
     },
-    "packages/bot-kit": {
-      "name": "@repo/bot-kit",
-      "version": "0.0.0",
+    "packages/blue-liquidation": {
+      "name": "@repo/blue-liquidation",
+      "version": "0.1.0",
       "dependencies": {
-        "@morpho-org/viem-dlc": "catalog:",
+        "@repo/bot-kit": "workspace:*",
+        "@repo/contracts": "workspace:*",
+        "@repo/swaps": "workspace:*",
         "@repo/utils": "workspace:*",
+        "executooor-viem": "catalog:",
+        "solc": "catalog:",
+        "soltag": "catalog:",
         "viem": "catalog:",
       },
       "devDependencies": {
@@ -91,6 +82,25 @@
         "soltag": "catalog:",
         "typescript": "catalog:",
         "viem": "catalog:",
+      },
+    },
+    "packages/midnight-liquidation": {
+      "name": "@repo/midnight-liquidation",
+      "version": "0.1.0",
+      "dependencies": {
+        "@repo/bot-kit": "workspace:*",
+        "@repo/contracts": "workspace:*",
+        "@repo/swaps": "workspace:*",
+        "@repo/utils": "workspace:*",
+        "executooor-viem": "catalog:",
+        "solc": "catalog:",
+        "soltag": "catalog:",
+        "viem": "catalog:",
+      },
+      "devDependencies": {
+        "@repo/typescript-config": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
       },
     },
     "packages/swaps": {
@@ -323,9 +333,13 @@
 
     "@oxlint/binding-win32-x64-msvc": ["@oxlint/binding-win32-x64-msvc@1.61.0", "", { "os": "win32", "cpu": "x64" }, "sha512-0xgSiyeqDLDZxXoe9CVJrOx3TUVsfyoOY7cNi03JbItNcC9WCZqrSNdrAbHONxhSPaVh/lzfnDcON1RqSUMhHw=="],
 
+    "@repo/blue-liquidation": ["@repo/blue-liquidation@workspace:packages/blue-liquidation"],
+
     "@repo/bot-kit": ["@repo/bot-kit@workspace:packages/bot-kit"],
 
     "@repo/contracts": ["@repo/contracts@workspace:packages/contracts"],
+
+    "@repo/midnight-liquidation": ["@repo/midnight-liquidation@workspace:packages/midnight-liquidation"],
 
     "@repo/swaps": ["@repo/swaps@workspace:packages/swaps"],
 

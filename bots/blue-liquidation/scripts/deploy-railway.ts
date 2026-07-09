@@ -415,7 +415,7 @@ console.log('     running container, so do this once the bot is up, e.g. for Bas
 console.log(`       railway volume files upload ./swap.config.json ${SWAP_CONFIG_PATH} --overwrite`)
 console.log('     (prompts for the volume; or pass --volume <name> before the subcommand. Shape:')
 console.log(
-  '     bots/blue-liquidation/configs/example.json.) Restart that bot afterward to pick up routes.'
+  '     packages/blue-liquidation/configs/example.json.) Restart that bot afterward to pick up routes.'
 )
 console.log('     Robinhood (bot-4663) launches DETECTION-ONLY — no swap route configured yet.')
 console.log('  2. Each bot needs a funded key + a real RPC before it can broadcast; Robinhood also')

@@ -9,7 +9,7 @@
  *      `ForkFixture` you can paste into `test/fork/liquidation.test.ts` to run the end-to-end suite.
  *
  * Usage (needs a Base RPC; no anvil required):
- *   RPC_URL=https://… bun run bots/blue-liquidation/scripts/probe-live-lens.ts
+ *   RPC_URL=https://… bun run packages/blue-liquidation/scripts/probe-live-lens.ts
  */
 import type { Address, Hex } from 'viem'
 

@@ -13,6 +13,7 @@ COPY packages ./packages
 COPY bots ./bots
 RUN bun install --frozen-lockfile
 
-# Run the bot from its package dir (`start` builds workspaces via `prestart`, then runs src/index.ts).
+# Run the bot via its wrapper dir (`start` delegates to packages/midnight-liquidation, whose
+# `prestart` builds workspaces before running src/index.ts).
 WORKDIR /repo/bots/midnight-liquidation
 CMD ["bun", "run", "start"]
