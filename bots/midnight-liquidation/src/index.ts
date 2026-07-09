@@ -22,7 +22,11 @@ import type { LiquidationPlan } from './sizing/plan'
 
 import { loadConfig } from './config'
 import { SETTLED_COOLDOWN_BLOCKS } from './constants'
-import { createPostgresQuery, discoverBorrowers, rindexerSyncedBlock } from './discovery/borrowers'
+import {
+  createApiCandidateSource,
+  discoverBorrowers,
+  MAX_DISCOVERY_PAGES
+} from './discovery/borrowers'
 import { encodeLiquidationExec } from './execution/encode-call'
 import { composeQuoting } from './quotes'
 import { runTick } from './runner/tick'
@@ -133,8 +137,15 @@ async function main() {
       recipient: eoa
     })
 
-  const query = createPostgresQuery(config.databaseUrl)
-  const discover = () => discoverBorrowers(query)
+  // Borrower discovery: poll the markets liquidation-candidates endpoint (cursor-paginated,
+  // over-inclusive). The lens re-reads every returned pair fresh on-chain, so this is a coverage
+  // source, never the source of truth.
+  const fetchPage = createApiCandidateSource({
+    url: config.discovery.apiUrl,
+    chainId: config.chainId,
+    healthFactorLte: config.discovery.healthFactorLte
+  })
+  const discover = () => discoverBorrowers(fetchPage, { logger, maxPages: MAX_DISCOVERY_PAGES })
   const queue = createPendingQueue({
     send: signer.send,
     getReceipt: signer.getReceipt,
@@ -147,13 +158,12 @@ async function main() {
   })
 
   // Phase-4 runner: an HTTP block-poll watcher drives one tick per new block (coalescing backlog),
-  // passing the polled height as both the rindexer-lag reference and the queue's submittedAtBlock.
-  // Each liquidatable position resolves its swap step, simulates the real `exec_606BaXt`, and — on a
-  // sim-ok result — broadcasts that same exec via the Executor singleton, then drives queue.onBlock.
+  // passing the polled height as the queue's submittedAtBlock. Each liquidatable position resolves its
+  // swap step, simulates the real `exec_606BaXt`, and — on a sim-ok result — broadcasts that same exec
+  // via the Executor singleton, then drives queue.onBlock.
   const tick = (chainHead: bigint) =>
     runTick({
       discover,
-      syncedBlock: () => rindexerSyncedBlock(query),
       chainHead,
       caller: config.executooorAddress,
       seizeCapMarginBps: config.quoting.seizeCapMarginBps,

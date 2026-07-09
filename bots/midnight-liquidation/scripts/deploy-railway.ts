@@ -1,7 +1,8 @@
 /**
- * Reproducible, idempotent deployment of the 3-component midnight-liquidation system to the Railway
- * project `bot.liquidation.midnight`: managed Postgres + a `rindexer` service + the `bot` runner. The
- * bot reads borrower candidates from rindexer's Postgres tables, so all three are provisioned here.
+ * Reproducible, idempotent deployment of the midnight-liquidation bot to the Railway project
+ * `bot.liquidation.midnight`. Borrower candidates come from the markets liquidation-candidates API
+ * (LIQUIDATION_CANDIDATES_API_URL, public by default), so the bot runs as a single service — no
+ * indexer or database to provision.
  *
  * Runs anywhere with the `railway` CLI installed and authenticated. The target project is supplied
  * entirely via env vars — no project identifier is baked into this (open-source) file:
@@ -14,13 +15,15 @@
  *     bun run --filter @morpho-org/midnight-liquidation deploy:railway
  *
  * The build context MUST be the repo root so the bun workspace (packages/*) resolves — the script
- * runs `railway up` with cwd set to the repo root (mirrors the Dockerfile header + compose context).
+ * runs `railway up` with cwd set to the repo root (mirrors the Dockerfile header + compose context),
+ * and passes `-p/-e` explicitly so the deploy targets this project/environment regardless of whatever
+ * the repo-root directory happens to be linked to (a sibling bot's deploy leaves it linked elsewhere).
  *
  * Idempotent: existing services / volume / variables are reused; each run redeploys both services.
  *
- * Secret hygiene: secrets (RPC_URL, RINDEXER_RPC_URL, LIQUIDATOR_PRIVATE_KEY) are piped to
- * `railway variable set --stdin` so their values never appear in argv; on failure we surface only the
- * variable key, never its value; variable values are never logged.
+ * Secret hygiene: secrets (RPC_URL, LIQUIDATOR_PRIVATE_KEY) are piped to `railway variable set
+ * --stdin` so their values never appear in argv; on failure we surface only the variable key, never
+ * its value; variable values are never logged.
  */
 import { delay, tryCatch } from '@repo/utils'
 import { $ } from 'bun'
@@ -144,26 +147,6 @@ async function listServices(): Promise<RailwayService[]> {
   return error || typeof data !== 'string' ? [] : parseServices(data)
 }
 
-async function ensurePostgres(): Promise<string> {
-  const isPostgres = (service: RailwayService) => /postgres/i.test(service.name)
-  let postgres = (await listServices()).find(isPostgres)
-  if (!postgres) {
-    console.log('Adding managed Postgres…')
-    // `railway add --database` can exit non-zero even after the managed Postgres is provisioned (it
-    // writes selection echoes to stderr and the service shows up moments later). Don't trust the exit
-    // code alone — re-list and only treat the failure as fatal if Postgres is still absent.
-    const { error } = await tryCatch(
-      Promise.resolve($`railway add --database postgres --json`.quiet())
-    )
-    postgres = (await listServices()).find(isPostgres)
-    if (!postgres && error) throw new Error(`Failed to add Postgres: ${stderrOf(error)}`)
-  }
-  if (!postgres)
-    throw new Error('Postgres service not found after `railway add --database postgres`.')
-  console.log(`Postgres service: ${postgres.name}`)
-  return postgres.name
-}
-
 async function ensureService(name: string): Promise<void> {
   if ((await listServices()).some(service => service.name === name)) {
     console.log(`Service ${name} already exists.`)
@@ -217,8 +200,15 @@ async function setSecret(service: string, key: string, value: string): Promise<v
 
 async function deployService(service: string): Promise<void> {
   console.log(`Deploying ${service} from repo root…`)
+  // `railway up` runs with cwd = REPO_ROOT (build context), but the script only ever links the
+  // *package* dir (ensureContext, which is where bun runs it). Railway links are per-directory, so
+  // without explicit flags `up` would inherit whatever REPO_ROOT happens to be linked to — e.g. a
+  // sibling bot's project after its last deploy, which fails with "No environment specified" or, worse,
+  // targets the wrong project. Scope the deploy explicitly so it never depends on ambient link state.
   const { error } = await tryCatch(
-    Promise.resolve($`railway up -s ${service} -d`.cwd(REPO_ROOT).quiet())
+    Promise.resolve(
+      $`railway up -s ${service} -p ${PROJECT_ID} -e ${ENVIRONMENT} -d`.cwd(REPO_ROOT).quiet()
+    )
   )
   if (error) throw new Error(`Failed to start deploy for ${service}: ${stderrOf(error)}`)
 }
@@ -248,46 +238,29 @@ await assertCli()
 
 // Secrets / config from this process's env (fail loud before mutating any Railway state).
 const rpcUrl = required(Bun.env, 'RPC_URL')
-const rindexerRpcUrl = Bun.env.RINDEXER_RPC_URL?.trim() || rpcUrl
 const liquidatorPrivateKey = required(Bun.env, 'LIQUIDATOR_PRIVATE_KEY')
 assertPrivateKey(liquidatorPrivateKey)
 
 await ensureContext()
-const postgresName = await ensurePostgres()
-// Railway reference variable; `${{ }}` is a literal here (single-quoted, so JS does not interpolate
-// it) and Railway resolves it to the Postgres connection string at runtime.
-const databaseUrlRef = 'DATABASE_URL=${{' + postgresName + '.DATABASE_URL}}'
 
-// --- rindexer: indexes Midnight Take events into Postgres (BUILD_TARGET selects the rindexer stage).
-await ensureService('rindexer')
-await setVar('rindexer', `RAILWAY_DOCKERFILE_PATH=${DOCKERFILE_PATH}`)
-await setVar('rindexer', 'BUILD_TARGET=rindexer')
-await setVar('rindexer', 'PROJECT_PATH=/app/project_path')
-await setVar('rindexer', databaseUrlRef)
-await setSecret('rindexer', 'RINDEXER_RPC_URL', rindexerRpcUrl)
-await deployService('rindexer')
-
-// --- bot: the liquidation runner (BUILD_TARGET selects the bun bot stage). Swap config lives on a
-// volume at /config (uploaded out-of-band — see manual steps below).
+// --- bot: the liquidation runner. Borrower discovery polls the markets liquidation-candidates API
+// (LIQUIDATION_CANDIDATES_API_URL defaults to the public endpoint), so there is nothing else to
+// provision. Swap config lives on a volume at /config (uploaded out-of-band — see manual steps below).
 await ensureService('bot')
 await ensureVolume('bot', SWAP_MOUNT_PATH)
 await setVar('bot', 'CHAIN_ID=8453')
 await setVar('bot', `RAILWAY_DOCKERFILE_PATH=${DOCKERFILE_PATH}`)
-await setVar('bot', 'BUILD_TARGET=bot')
 await setVar('bot', `SWAP_CONFIG_PATH=${SWAP_CONFIG_PATH}`)
 await setVar('bot', 'LOG_LEVEL=info')
-await setVar('bot', databaseUrlRef)
 await setSecret('bot', 'RPC_URL', rpcUrl)
 await setSecret('bot', 'LIQUIDATOR_PRIVATE_KEY', liquidatorPrivateKey)
 await deployService('bot')
 
-const rindexerStatus = await waitForDeploy('rindexer')
 const botStatus = await waitForDeploy('bot')
 
 console.log('')
 console.log('=== Deployment status ===')
-console.log(`  rindexer: ${rindexerStatus}`)
-console.log(`  bot:      ${botStatus}`)
+console.log(`  bot: ${botStatus}`)
 console.log('')
 console.log('=== Manual steps ===')
 console.log(`  1. Upload swap.json into the bot's ${SWAP_MOUNT_PATH} volume to enable routed`)
@@ -302,10 +275,4 @@ console.log(
 console.log('  2. The bot still needs a funded key + a real RPC before it can broadcast.')
 
 // FAILED/TIMEOUT signal a real build or platform problem; a bot CRASH pre-config is expected.
-process.exitCode =
-  rindexerStatus === 'FAILED' ||
-  rindexerStatus === 'TIMEOUT' ||
-  botStatus === 'FAILED' ||
-  botStatus === 'TIMEOUT'
-    ? 1
-    : 0
+process.exitCode = botStatus === 'FAILED' || botStatus === 'TIMEOUT' ? 1 : 0

@@ -33,6 +33,12 @@ const DEFAULT_MAX_FEE_GWEI = '300'
 const DEFAULT_CACHE_DIR = '.cache'
 const PRIVATE_KEY_HEX_LENGTH = 66 // '0x' + 32 bytes
 
+// Borrower-candidate discovery defaults (the markets liquidation-candidates endpoint). The URL is a
+// public, unauthenticated endpoint, so it is safe to default in code (override via env per-env). The
+// health-factor cutoff is intentionally tight — matured positions are always included regardless.
+const DEFAULT_CANDIDATES_API_URL = 'https://api.morpho.dev/markets/midnight/liquidation-candidates'
+const DEFAULT_HEALTH_FACTOR_LTE = 1.02
+
 // Quoting tunables, all optional with safe defaults so existing deployments are unaffected.
 const DEFAULT_QUOTE_TIMEOUT_MS = 2500
 const DEFAULT_HTTP_RPS = 2 // per-venue token-bucket refill; 1inch free tier is 1 RPS — set HTTP_RPS=1
@@ -62,6 +68,22 @@ export type QuotingConfig = {
   backoffMaxBlocks: bigint
 }
 
+/**
+ * Borrower-candidate discovery: the markets liquidation-candidates endpoint and its health-factor
+ * cutoff. Discovery is over-inclusive by design — the on-chain lens is the source of truth — so these
+ * only tune coverage/volume, never correctness.
+ */
+export type DiscoveryConfig = {
+  /** Fully-qualified liquidation-candidates endpoint. Validated as a URL at load (fail-loud). */
+  apiUrl: string
+  /**
+   * Health-factor cutoff sent as `health_factor_lte`: positions with HF at or below this — plus every
+   * matured position (`include_matured`) — are returned. Floored at 1.0 so a misconfig can't drop
+   * soon-to-be-liquidatable positions from the HF-triggered set.
+   */
+  healthFactorLte: number
+}
+
 export type Config = {
   chainId: number
   chain: Chain
@@ -77,8 +99,8 @@ export type Config = {
   sendRpcUrl: string | undefined
   liquidatorPrivateKey: Hex
   executooorAddress: Address
-  /** Postgres connection string for the co-located rindexer instance (borrower discovery). */
-  databaseUrl: string
+  /** Borrower-candidate discovery (the markets liquidation-candidates endpoint). */
+  discovery: DiscoveryConfig
   swapConfig: SwapConfig
   quoting: QuotingConfig
   maxFeeWei: bigint
@@ -124,6 +146,21 @@ function bigintEnv(env: Env, name: string, def: bigint): bigint {
     throw new Error(`${name} must be a non-negative integer, got: ${env[name]}`)
   }
   return BigInt(raw)
+}
+
+// Parses an optional positive decimal env var, with a default and optional min bound. Decimal form
+// only (same regex as MAX_FEE_GWEI) — rejects hex/exponent so it agrees with the other validators.
+function numberEnv(env: Env, name: string, def: number, bounds: { min?: number } = {}): number {
+  const raw = env[name]?.trim()
+  if (!raw) return def
+  if (!/^\d+(\.\d+)?$/.test(raw) || Number(raw) <= 0) {
+    throw new Error(`${name} must be a positive number, got: ${env[name]}`)
+  }
+  const value = Number(raw)
+  if (bounds.min !== undefined && value < bounds.min) {
+    throw new Error(`${name} must be >= ${bounds.min}, got: ${env[name]}`)
+  }
+  return value
 }
 
 function isLogLevel(value: string): value is LogLevel {
@@ -256,6 +293,17 @@ export function loadConfig(
     backoffMaxBlocks: bigintEnv(env, 'BACKOFF_MAX_BLOCKS', DEFAULT_BACKOFF_MAX_BLOCKS)
   }
 
+  // Borrower-candidate discovery endpoint. Default to the public markets API; fail loud at startup on
+  // a malformed override rather than at the first tick's fetch.
+  const apiUrl = env.LIQUIDATION_CANDIDATES_API_URL?.trim() || DEFAULT_CANDIDATES_API_URL
+  if (tryCatch(() => new URL(apiUrl)).error) {
+    throw new Error(`LIQUIDATION_CANDIDATES_API_URL is not a valid URL: ${apiUrl}`)
+  }
+  const discovery: DiscoveryConfig = {
+    apiUrl,
+    healthFactorLte: numberEnv(env, 'HEALTH_FACTOR_LTE', DEFAULT_HEALTH_FACTOR_LTE, { min: 1 })
+  }
+
   return {
     chainId,
     chain: chainConfig.chain,
@@ -265,7 +313,7 @@ export function loadConfig(
     sendRpcUrl: env.SEND_RPC_URL?.trim() || undefined,
     liquidatorPrivateKey,
     executooorAddress,
-    databaseUrl: required(env, 'DATABASE_URL'),
+    discovery,
     swapConfig,
     quoting,
     maxFeeWei: parseGwei(maxFeeGwei),

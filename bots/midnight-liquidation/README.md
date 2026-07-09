@@ -11,7 +11,8 @@ succeeds.
 This package is operational code, but it is still intentionally narrow:
 
 - Supported chain: Base (`CHAIN_ID=8453`).
-- Discovery is backed by a co-located rindexer/Postgres instance indexing Midnight `Take` events.
+- Discovery is backed by the markets liquidation-candidates HTTP API — an over-inclusive candidate
+  feed the bot re-reads on-chain before acting.
 - Execution routes the seized collateral through a per-collateral venue: direct single-hop Uniswap V3
   `exactInputSingle`, or the 0x / 1inch swap aggregators (one executable quote per liquidatable
   position). Venue is chosen per collateral in the swap config; a missing `venue` defaults to
@@ -27,7 +28,8 @@ This package is operational code, but it is still intentionally narrow:
 - A funded liquidator EOA private key.
 - A deployed permissionless Executor contract. If `EXECUTOOOR_ADDRESS` is unset, the bot uses the
   deterministic address derived by `@repo/contracts`; startup still requires code to exist there.
-- A Postgres database populated by rindexer.
+- Network access to the markets liquidation-candidates API (public by default; override with
+  `LIQUIDATION_CANDIDATES_API_URL`).
 - A swap config JSON file for the collateral tokens the bot is allowed to liquidate.
 
 Never commit `.env` files, private keys, RPC credentials, or swap config containing sensitive
@@ -45,7 +47,8 @@ Environment variables:
 | `SEND_RPC_URL`                               | no       | `RPC_URL`  | Dedicated broadcast endpoint for `eth_sendRawTransaction` and the signer's nonce/receipt reads. Set this when `RPC_URL` is a read-only relay that acks sends without relaying them to the sequencer (txs would never mine).  |
 | `LIQUIDATOR_PRIVATE_KEY`                     | yes      | -          | `0x`-prefixed 32-byte private key for the sender EOA.                                                                                                                                                                        |
 | `EXECUTOOOR_ADDRESS`                         | no       | derived    | Override for the shared Executor address.                                                                                                                                                                                    |
-| `DATABASE_URL`                               | yes      | -          | Postgres URL for rindexer's indexed Midnight event tables.                                                                                                                                                                   |
+| `LIQUIDATION_CANDIDATES_API_URL`             | no       | public     | Liquidation-candidates endpoint polled for borrower discovery. Defaults to the public Morpho markets API; validated as a URL at startup (fail-loud).                                                                         |
+| `HEALTH_FACTOR_LTE`                          | no       | `1.02`     | Health-factor cutoff sent to discovery (`health_factor_lte`); matured positions are always included regardless. Floored at `1.0`. Over-inclusive by design — the on-chain lens is the source of truth.                       |
 | `SWAP_CONFIG_PATH`                           | no       | -          | Path to per-chain, per-collateral swap config JSON. If unset or the file is absent, the bot runs with no routes (identifies borrowers, realizes bad debt, skips routed liquidations). A present-but-malformed file is fatal. |
 | `MAX_FEE_GWEI`                               | no       | `300`      | Hard max fee cap used by the pending transaction queue.                                                                                                                                                                      |
 | `LOG_LEVEL`                                  | no       | `info`     | One of `debug`, `info`, `warn`, `error`.                                                                                                                                                                                     |
@@ -69,7 +72,6 @@ CHAIN_ID=8453
 RPC_URL=https://base-mainnet.example
 RPC_URL_FALLBACK=https://base-mainnet-fallback.example
 LIQUIDATOR_PRIVATE_KEY=0x...
-DATABASE_URL=postgresql://rindexer:rindexer@localhost:5432/midnight_liquidation
 SWAP_CONFIG_PATH=./bots/midnight-liquidation/swap.config.json
 MAX_FEE_GWEI=300
 LOG_LEVEL=info
@@ -115,11 +117,8 @@ nvm use
 bun install
 ```
 
-Start Postgres and rindexer so `DATABASE_URL` points at a database with the
-`midnight_liquidation_midnight.take` table populated. The rindexer project config is
-[rindexer.yaml](./rindexer.yaml).
-
-Then start the bot:
+Discovery hits the public liquidation-candidates API by default, so no local indexer or database is
+needed. Start the bot:
 
 ```sh
 set -a
@@ -191,8 +190,9 @@ Useful options:
 
 ## Running With Docker Compose
 
-[docker-compose.yml](./docker-compose.yml) defines Postgres, rindexer, and the bot. It builds from
-the repo root so workspace packages resolve correctly.
+[docker-compose.yml](./docker-compose.yml) defines a single `bot` service (discovery is the remote
+API, so there is no database or indexer). It builds from the repo root so workspace packages resolve
+correctly.
 
 From `bots/midnight-liquidation`:
 
@@ -206,26 +206,19 @@ docker compose up --build
 Optional variables:
 
 ```sh
-export POSTGRES_PASSWORD=...
 export EXECUTOOOR_ADDRESS=0x...
 export LOG_LEVEL=debug
 ```
 
-The compose file currently carries an implementation note that the rindexer service wiring should be
-verified end-to-end against a live RPC before relying on it in production.
-
 ## Deploying to Railway
 
-The same three components run on the Railway project `bot.liquidation.midnight` (managed Postgres + a
-`rindexer` service + the `bot` runner). [scripts/deploy-railway.ts](./scripts/deploy-railway.ts)
-provisions and deploys all three idempotently from the [Railway CLI](https://docs.railway.com/guides/cli),
-so it runs the same locally or in CI.
+The bot runs as a single service on the Railway project `bot.liquidation.midnight` (discovery is the
+remote API — no Postgres or indexer service). [scripts/deploy-railway.ts](./scripts/deploy-railway.ts)
+provisions and deploys it idempotently from the [Railway CLI](https://docs.railway.com/guides/cli), so
+it runs the same locally or in CI.
 
-One shared multi-stage [Dockerfile](./Dockerfile) serves both runtimes. Railway always builds the
-Dockerfile's final stage and cannot pass `docker build --target`, so a global `ARG BUILD_TARGET` plus a
-trailing `FROM ${BUILD_TARGET} AS final` stage lets a per-service `BUILD_TARGET` variable select the
-`bot` or `rindexer` stage. `RAILWAY_DOCKERFILE_PATH` points at this Dockerfile and `railway up` runs
-from the repo root so the bun workspace resolves.
+The [Dockerfile](./Dockerfile) is a single-stage bun image; `RAILWAY_DOCKERFILE_PATH` points Railway at
+it and `railway up` runs from the repo root so the bun workspace resolves.
 
 Authenticate the CLI first — set `RAILWAY_TOKEN` (a project token scoped to the target project /
 environment, recommended for CI) or run `railway login`. The script bakes in no project identifier, so
@@ -236,7 +229,7 @@ environment and run the script:
 export RAILWAY_PROJECT_ID=...   # required: the Railway project to deploy to
 export RPC_URL=https://base-mainnet.example
 export LIQUIDATOR_PRIVATE_KEY=0x...
-# Optional: RINDEXER_RPC_URL (defaults to RPC_URL), RAILWAY_ENVIRONMENT (defaults to production).
+# Optional: RAILWAY_ENVIRONMENT (defaults to production).
 bun run --filter @morpho-org/midnight-liquidation deploy:railway
 ```
 
@@ -282,14 +275,16 @@ overlapping ticks.
 
 ### Discovery
 
-[src/discovery/borrowers.ts](./src/discovery/borrowers.ts) reads candidate `(marketId, borrower)`
-pairs from rindexer's Postgres tables. The current query unions the indexed `taker` and `maker`
-addresses from Midnight `Take` events. That intentionally over-includes; the on-chain lens filters
-out addresses with no debt or non-liquidatable state.
+[src/discovery/borrowers.ts](./src/discovery/borrowers.ts) polls the markets liquidation-candidates
+endpoint for candidate `(marketId, borrower)` pairs, following the cursor across every page
+(`include_matured=true`, `health_factor_lte` from `HEALTH_FACTOR_LTE`). The feed is over-inclusive by
+design — it does not evaluate the liquidation lock or liquidator gate — so the on-chain lens re-reads
+every pair and filters out non-liquidatable state before planning.
 
-The tick also reads rindexer's indexed head and logs `rindexer.lag`. Lag is observability-only:
-rindexer lag can delay candidate coverage, but the bot always reads candidate state fresh on-chain
-before planning.
+Discovery failure is tolerated: a transient API error logs `discover.error` and the tick proceeds with
+zero new candidates so the pending queue (confirmations / fee bumps) is still driven that block. A
+runaway paginated response is capped at `MAX_DISCOVERY_PAGES` and logs `discover.max_pages` rather than
+silently truncating (which would be under-inclusion — a liquidation missed).
 
 ### State Lens
 

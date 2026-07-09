@@ -1,63 +1,19 @@
-# Bundles the bot with a rindexer instance + Postgres for borrower discovery.
-# rindexer indexes the Midnight events in rindexer.yaml into Postgres; the bot reads the
-# indexed (market, borrower) pairs each tick. The bot's build context is the repo root so the bun
-# workspace (packages/*) resolves — see Dockerfile.
-#
-# NOTE: the rindexer service config (image command, env) follows the rindexer docs but has not been
-# run end-to-end here; verify `docker compose up` against a live RPC before relying on it.
+# Runs the midnight-liquidation bot. Borrower candidates come from the markets liquidation-candidates
+# HTTP API (LIQUIDATION_CANDIDATES_API_URL, public by default), so there is no indexer or database to
+# run. The bot's build context is the repo root so the bun workspace (packages/*) resolves — see
+# Dockerfile.
 services:
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: rindexer
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rindexer}
-      POSTGRES_DB: midnight_liquidation
-    volumes:
-      - rindexer-pg:/var/lib/postgresql/data
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U rindexer -d midnight_liquidation']
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  rindexer:
-    # Derived from the upstream rindexer image with rindexer.yaml + the generated event ABI baked in
-    # (see Dockerfile `rindexer` target), so no host bind mount is needed and the ABI isn't committed.
-    build:
-      context: ../..
-      dockerfile: bots/midnight-liquidation/Dockerfile
-      target: rindexer
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: postgresql://rindexer:${POSTGRES_PASSWORD:-rindexer}@postgres:5432/midnight_liquidation
-      RINDEXER_RPC_URL: ${RPC_URL:?set RPC_URL}
-      PROJECT_PATH: /app/project_path
-    # Mirrors the baked `CMD ["start","indexer"]` in the Dockerfile `rindexer` stage (keep in sync).
-    command: ['start', 'indexer']
-    restart: unless-stopped
-
   bot:
     build:
       context: ../..
       dockerfile: bots/midnight-liquidation/Dockerfile
-      target: bot
-    depends_on:
-      postgres:
-        condition: service_healthy
     environment:
       CHAIN_ID: '8453'
       RPC_URL: ${RPC_URL:?set RPC_URL}
       LIQUIDATOR_PRIVATE_KEY: ${LIQUIDATOR_PRIVATE_KEY:?set LIQUIDATOR_PRIVATE_KEY}
       EXECUTOOOR_ADDRESS: ${EXECUTOOOR_ADDRESS:-}
       SWAP_CONFIG_PATH: /config/swap.json
-      # The bot reads rindexer's indexed events from the same Postgres for borrower discovery.
-      DATABASE_URL: postgresql://rindexer:${POSTGRES_PASSWORD:-rindexer}@postgres:5432/midnight_liquidation
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - ${SWAP_CONFIG_PATH:-./swap.config.json}:/config/swap.json:ro
     restart: unless-stopped
-
-volumes:
-  rindexer-pg:

@@ -13,9 +13,6 @@ import { isBadDebtRealization, plan } from '../sizing/plan'
 import { lensKey } from '../state/lens.sol'
 import { isLiquidatable, planInputFromLens } from './eligibility'
 
-/** Blocks our rindexer may trail the chain head before we warn that coverage is degraded. */
-const MAX_RINDEXER_LAG_BLOCKS = 30n
-
 type TickCounters = {
   pairs: number
   liquidatable: number
@@ -29,21 +26,21 @@ type TickCounters = {
 }
 
 /**
- * One tick: log a rindexer-freshness signal, enumerate the indexed (id, borrower) universe, read the
+ * One tick: enumerate the over-inclusive (id, borrower) candidate universe from discovery, read the
  * liquidation lens fresh for the whole batch (one deployless `eth_call`), and for each liquidatable
  * position build a plan, resolve its swap step, simulate the real `exec_606BaXt`, and — when the
  * simulation is `ok` and the position is not already in flight — broadcast it via `submit`. Finally
  * drive the pending queue's `onBlock`. Deps are injected so the tick is unit-testable without a
- * chain, Postgres, or signer.
+ * chain, a discovery endpoint, or a signer.
  *
- * No staleness skip: the lens reads every candidate fresh on-chain, so rindexer lag is coverage
- * latency, never a correctness issue — we emit `rindexer.lag` for observability and always proceed.
+ * Discovery failure is tolerated: a transient error is logged (`discover.error`) and the tick proceeds
+ * with zero new candidates so the pending queue (confirmations / fee bumps) is still driven that
+ * block. The lens reads every candidate fresh on-chain, so discovery is a coverage source, never a
+ * correctness dependency.
  */
 export async function runTick(deps: {
   discover: () => Promise<BorrowerCandidate[]>
-  /** rindexer's indexed head (Postgres); `null`/throw → lag unknown, we proceed. */
-  syncedBlock: () => Promise<bigint | null>
-  /** Chain head the runner just polled — lag reference + the queue's `submittedAtBlock`. */
+  /** Chain head the runner just polled — the queue's `submittedAtBlock`. */
   chainHead: bigint
   /** The Executor singleton — the `liquidate` msg.sender whose gate the lens checks. */
   caller: Address
@@ -81,7 +78,6 @@ export async function runTick(deps: {
 }): Promise<TickCounters> {
   const {
     discover,
-    syncedBlock,
     chainHead,
     caller,
     seizeCapMarginBps,
@@ -95,27 +91,18 @@ export async function runTick(deps: {
     logger
   } = deps
 
-  // 1. rindexer-freshness signal — observability only (see the note above; we never skip).
-  // tryCatch resolves `data` to null on a thrown query; `syncedBlock` also returns null when the
-  // head is unknown — both mean "lag unknown".
-  const { data: synced } = await tryCatch(syncedBlock())
-  if (synced === null) {
-    logger.warn('rindexer.lag', { reason: 'unknown', chainHead })
-  } else {
-    const lag = chainHead > synced ? chainHead - synced : 0n
-    if (lag > MAX_RINDEXER_LAG_BLOCKS) logger.warn('rindexer.lag', { chainHead, synced, lag })
-    else logger.debug('rindexer.lag', { chainHead, synced, lag })
-  }
-
-  // 2. Discover the (id, borrower) universe → lens inputs (caller = the Executor singleton).
-  const candidates = await discover()
-  const pairs: LensInput[] = candidates.map(candidate => ({
+  // 1. Discover the over-inclusive (id, borrower) universe → lens inputs (caller = the Executor
+  // singleton). A transient discovery failure is non-fatal: log it and proceed with zero candidates
+  // so the pending queue (confirmations / fee bumps) below is still driven this block.
+  const { data: candidates, error: discoverError } = await tryCatch(discover())
+  if (discoverError) logger.warn('discover.error', { error: discoverError.message })
+  const pairs: LensInput[] = (candidates ?? []).map(candidate => ({
     id: candidate.marketId,
     borrower: candidate.borrower,
     caller
   }))
 
-  // 3. Read the lens fresh for the whole batch in one deployless eth_call.
+  // 2. Read the lens fresh for the whole batch in one deployless eth_call.
   const lensOut = await readLens(pairs)
   logger.info('lens.read', { pairs: pairs.length, returned: lensOut.size })
 
@@ -131,7 +118,7 @@ export async function runTick(deps: {
     submitted: 0
   }
 
-  // 4. Compose liquidatability off-chain → plan → simulate → submit. `inflight` is captured once;
+  // 3. Compose liquidatability off-chain → plan → simulate → submit. `inflight` is captured once;
   // discovery yields distinct (id, borrower) pairs, so no label repeats within a single tick.
   const inflight = inflightLabels()
   for (const pair of pairs) {
@@ -223,7 +210,7 @@ export async function runTick(deps: {
     }
   }
 
-  // 5. Confirmations / stuck-detection / fee-bumps for the pending set (incl. prior ticks).
+  // 4. Confirmations / stuck-detection / fee-bumps for the pending set (incl. prior ticks).
   await pendingOnBlock(chainHead)
 
   logger.info('tick.end', { ...counters })

@@ -1,88 +1,199 @@
+import type { Logger } from '@repo/bot-kit'
 import type { Address, Hex } from 'viem'
 
-import { SQL } from 'bun'
+import { delay, ensureError, parseJsonResponse, tryCatch } from '@repo/utils'
 import { getAddress, isAddress, isHex } from 'viem'
 
-export type Row = Record<string, unknown>
-export type QueryFn = (sql: string) => Promise<readonly Row[]>
-
-/** A candidate position to evaluate: a (market, borrower) pair seen in the indexed events. */
+/** A candidate position to evaluate: a (market, borrower) pair the API flagged as at-risk. */
 export type BorrowerCandidate = { marketId: Hex; borrower: Address }
 
-// rindexer's no-code Postgres writes one table per indexed event, under a schema named after the
-// project + contract (`midnight_liquidation_midnight`), with event args as snake_case columns. We
-// index `Take` — the only path that creates debt — and union its two indexed address columns
-// (`taker`, `maker`) as candidate borrowers: the debtor is the offer's seller (`taker` when
-// `offerIsBuy` else `maker`), which can't be told apart from the indexed topics alone, so we take
-// both and let the lens drop non-debtors (over-inclusion is harmless; under-inclusion would miss a
-// liquidation).
-//
-// Column types, confirmed against a live rindexer run: `id_` (the bytes32 market id) is stored as
-// `bytea`, which Bun's SQL client returns as a Buffer — not the `0x` hex string the parser/lens
-// expect — so we cast it in SQL with `'0x' || encode(id_, 'hex')`. Without this every row fails the
-// `typeof === 'string'` guard below and discovery silently yields zero candidates. `taker`/`maker`
-// are `character(42)` (no padding at 42 chars), already plain `0x…` strings. This is intentionally
-// the only place the schema is encoded.
-const BORROWERS_SQL = `
-  SELECT DISTINCT market_id, borrower
-  FROM (
-    SELECT '0x' || encode(id_, 'hex') AS market_id, taker AS borrower FROM midnight_liquidation_midnight.take
-    UNION
-    SELECT '0x' || encode(id_, 'hex') AS market_id, maker AS borrower FROM midnight_liquidation_midnight.take
-  ) candidates
-`
+/** One page of the cursor-paginated liquidation-candidates response: the raw rows plus the cursor. */
+export type CandidatePage = { cursor: string | null; data: readonly unknown[] }
 
 /**
- * Reads the distinct (market, borrower) universe from rindexer's indexed `Take` events.
- * The DB handle is injected so the parsing is unit-testable without a live Postgres; the runtime
- * adapter is {@link createPostgresQuery}. Rows with a malformed id or address are skipped.
+ * Fetches one page of candidates given the previous page's cursor (`null` for the first page). It is
+ * injected into {@link discoverBorrowers} so the pagination + row parsing is unit-testable without a
+ * network; the runtime adapter that actually calls the endpoint is {@link createApiCandidateSource}.
  */
-export async function discoverBorrowers(query: QueryFn): Promise<BorrowerCandidate[]> {
-  const rows = await query(BORROWERS_SQL)
-  const candidates: BorrowerCandidate[] = []
-  for (const row of rows) {
-    const marketId = row.market_id
-    const borrower = row.borrower
-    if (
-      typeof marketId === 'string' &&
-      isHex(marketId) &&
-      typeof borrower === 'string' &&
-      isAddress(borrower, { strict: false })
-    ) {
-      candidates.push({ marketId, borrower: getAddress(borrower) })
-    }
-  }
-  return candidates
+export type FetchCandidatePage = (cursor: string | null) => Promise<CandidatePage>
+
+// Per-request tuning for the candidates endpoint. Mirrors the retry conventions in
+// `@repo/swaps` http-client (429/5xx/network with Retry-After), but this endpoint is unauthenticated
+// and not venue-keyed, so it is a small self-contained client rather than the venue rate-limiter.
+const REQUEST_TIMEOUT_MS = 5_000
+const MAX_REQUEST_RETRIES = 3
+/** The endpoint's maximum page size — fewer round-trips than the default 20. */
+const PAGE_LIMIT = 100
+
+/**
+ * Hard cap on pages followed in one discovery pass — a runaway-cursor backstop, NOT an expected
+ * limit. {@link PAGE_LIMIT} × this = 10,000 candidates, far above any realistic Midnight universe.
+ * Hitting it is logged loud (`discover.max_pages`) because silently truncating a paginated candidate
+ * set is *under-inclusion* — a liquidatable position we would then never see (over-inclusion is
+ * harmless; the on-chain lens filters non-liquidatable pairs).
+ */
+export const MAX_DISCOVERY_PAGES = 100
+
+/**
+ * Assembles the fully-qualified request URL for one page. Pure (no fetch) so the query-param contract
+ * is unit-tested directly. `include_matured=true` is always sent: a matured market is liquidatable
+ * regardless of health factor and the bot's on-chain gate liquidates on maturity, so those positions
+ * must be in the candidate set even when their health factor sits above `healthFactorLte`.
+ */
+export function buildCandidatesUrl(params: {
+  baseUrl: string
+  chainId: number
+  healthFactorLte: number
+  limit?: number
+  cursor?: string | null
+}): string {
+  const url = new URL(params.baseUrl)
+  url.searchParams.set('chain_ids', String(params.chainId))
+  url.searchParams.set('health_factor_lte', String(params.healthFactorLte))
+  url.searchParams.set('include_matured', 'true')
+  url.searchParams.set('limit', String(params.limit ?? PAGE_LIMIT))
+  if (params.cursor) url.searchParams.set('cursor', params.cursor)
+  return url.toString()
 }
 
-// rindexer's authoritative indexed head: its internal progress table tracks the last block synced
-// per network (`rindexer_internal.<project>_<contract>_<event>`, one row per network, column
-// `last_synced_block`), and advances with the chain tip during live indexing regardless of event
-// activity. We deliberately do NOT read MAX(block_number) over the Take rows here — that only moves
-// when a new Take is indexed, so during quiet periods it freezes at the last event's block while the
-// chain marches on, making the bot over-report lag by thousands of blocks (it looks "stuck" the
-// moment historical indexing completes). MAX over the rows is network-agnostic (only `base` here).
-const SYNCED_BLOCK_SQL = `
-  SELECT MAX(last_synced_block) AS head
-  FROM rindexer_internal.midnight_liquidation_midnight_take
-`
-
-/**
- * Best-effort rindexer indexed head, for the freshness/lag signal. Reads rindexer's internal
- * progress table (see {@link SYNCED_BLOCK_SQL}). Returns `null` when the table is empty (rindexer
- * has not yet recorded progress). Callers treat `null` (and a thrown query) as "lag unknown" and
- * proceed — the lens reads every candidate fresh on-chain, so this signal is observability-only.
- */
-export async function rindexerSyncedBlock(query: QueryFn): Promise<bigint | null> {
-  const rows = await query(SYNCED_BLOCK_SQL)
-  const head = rows[0]?.head
-  if (typeof head === 'bigint') return head
-  if (typeof head === 'number' || typeof head === 'string') return BigInt(head)
+// Validates and normalizes one raw response row into a candidate, or `null` if malformed. Only
+// `market_id` + `borrower` feed the pipeline — the lens re-derives everything else (debt, health,
+// gates, maturity) fresh on-chain — so the rest of the row is intentionally ignored.
+function parseCandidate(row: unknown): BorrowerCandidate | null {
+  if (typeof row !== 'object' || row === null) return null
+  const { market_id: marketId, borrower } = row as { market_id?: unknown; borrower?: unknown }
+  if (
+    typeof marketId === 'string' &&
+    isHex(marketId) &&
+    typeof borrower === 'string' &&
+    isAddress(borrower, { strict: false })
+  ) {
+    return { marketId, borrower: getAddress(borrower) }
+  }
   return null
 }
 
-/** Runtime adapter: a {@link QueryFn} backed by Bun's built-in Postgres client. */
-export function createPostgresQuery(databaseUrl: string): QueryFn {
-  const db = new SQL(databaseUrl)
-  return async sql => db.unsafe(sql)
+/**
+ * Reads the full over-inclusive (market, borrower) candidate universe from the liquidation-candidates
+ * endpoint, following the cursor across every page. The page fetcher is injected so this parsing is
+ * unit-testable without a live endpoint; the runtime adapter is {@link createApiCandidateSource}.
+ * Malformed rows are skipped and (market, borrower) pairs are de-duplicated across pages. Over-
+ * inclusion is harmless — the on-chain lens drops non-liquidatable pairs — but a truncated page walk
+ * would be under-inclusion, so the {@link MAX_DISCOVERY_PAGES} backstop logs loud rather than
+ * silently stopping.
+ */
+export async function discoverBorrowers(
+  fetchPage: FetchCandidatePage,
+  deps: { logger: Logger; maxPages?: number }
+): Promise<BorrowerCandidate[]> {
+  const maxPages = deps.maxPages ?? MAX_DISCOVERY_PAGES
+  const seen = new Set<string>()
+  const candidates: BorrowerCandidate[] = []
+  let cursor: string | null = null
+  let pages = 0
+
+  do {
+    const page = await fetchPage(cursor)
+    pages += 1
+    for (const row of page.data) {
+      const candidate = parseCandidate(row)
+      if (!candidate) continue
+      const key = `${candidate.marketId}:${candidate.borrower}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      candidates.push(candidate)
+    }
+    cursor = page.cursor
+    if (cursor && pages >= maxPages) {
+      deps.logger.warn('discover.max_pages', { pages, cap: maxPages, collected: candidates.length })
+      break
+    }
+  } while (cursor)
+
+  return candidates
+}
+
+/** Minimal `fetch` shape the source calls — the global `fetch` satisfies it; test fakes need not. */
+type FetchLike = (url: string, init?: RequestInit) => Promise<Response>
+
+function backoffMs(attempt: number): number {
+  return 200 * 2 ** attempt
+}
+
+function retryAfterMs(header: string | null): number | undefined {
+  if (!header) return undefined
+  const seconds = Number(header)
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : undefined
+}
+
+/**
+ * Runtime adapter: a {@link FetchCandidatePage} backed by the liquidation-candidates HTTP endpoint.
+ * Retries 429/5xx/network up to {@link MAX_REQUEST_RETRIES}, honoring `Retry-After`; per-request
+ * deadline is {@link REQUEST_TIMEOUT_MS}. Calls `fetch` directly (not `fetchJsonResponse`) because it
+ * needs the raw `Response` to read `status` + the `Retry-After` header for backoff. A non-retryable
+ * failure throws; the tick catches it (logs `discover.error`) and proceeds so the pending queue is
+ * still driven that block. `fetchImpl`/`sleep` are injectable for tests.
+ */
+export function createApiCandidateSource(deps: {
+  url: string
+  chainId: number
+  healthFactorLte: number
+  limit?: number
+  fetchImpl?: FetchLike
+  sleep?: (ms: number) => Promise<void>
+}): FetchCandidatePage {
+  const fetchImpl = deps.fetchImpl ?? fetch
+  const sleep = deps.sleep ?? delay
+
+  return async cursor => {
+    const url = buildCandidatesUrl({
+      baseUrl: deps.url,
+      chainId: deps.chainId,
+      healthFactorLte: deps.healthFactorLte,
+      limit: deps.limit,
+      cursor
+    })
+
+    for (let attempt = 0; ; attempt++) {
+      const { data: response, error: networkError } = await tryCatch(
+        fetchImpl(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
+      )
+
+      if (networkError) {
+        if (attempt < MAX_REQUEST_RETRIES) {
+          await sleep(backoffMs(attempt))
+          continue
+        }
+        throw new Error(
+          `liquidation-candidates request failed: ${ensureError(networkError).message}`
+        )
+      }
+
+      if (response.status === 429 || response.status >= 500) {
+        if (attempt < MAX_REQUEST_RETRIES) {
+          await sleep(retryAfterMs(response.headers.get('retry-after')) ?? backoffMs(attempt))
+          continue
+        }
+        throw new Error(`liquidation-candidates HTTP ${response.status}`)
+      }
+
+      const { data, error: parseError } = await parseJsonResponse<{
+        cursor?: unknown
+        data?: unknown
+      }>(response)
+      // A non-429 4xx (e.g. 400 INVALID_CURSOR / bad params) is a request-level rejection — not worth
+      // retrying with the same URL. Surface it so the tick logs and moves on.
+      if (!response.ok) throw new Error(`liquidation-candidates HTTP ${response.status}`)
+      if (parseError || !data) {
+        throw new Error(
+          `liquidation-candidates parse error: ${parseError?.message ?? 'empty body'}`
+        )
+      }
+
+      const nextCursor =
+        typeof data.cursor === 'string' && data.cursor.length > 0 ? data.cursor : null
+      const rows = Array.isArray(data.data) ? data.data : []
+      return { cursor: nextCursor, data: rows }
+    }
+  }
 }

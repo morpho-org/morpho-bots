@@ -32,7 +32,6 @@ function baseEnv(overrides: Record<string, string | undefined> = {}) {
     LIQUIDATOR_PRIVATE_KEY: PRIVATE_KEY,
     EXECUTOOOR_ADDRESS: EXECUTOOOR,
     SWAP_CONFIG_PATH: '/swap.json',
-    DATABASE_URL: 'postgresql://u:p@localhost:5432/db',
     ...overrides
   }
 }
@@ -48,7 +47,10 @@ describe('loadConfig', () => {
     expect(config.rpcUrlFallback).toBeUndefined()
     expect(config.sendRpcUrl).toBeUndefined()
     expect(config.executooorAddress).toBe(getAddress(EXECUTOOOR))
-    expect(config.databaseUrl).toBe('postgresql://u:p@localhost:5432/db')
+    expect(config.discovery.apiUrl).toBe(
+      'https://api.morpho.dev/markets/midnight/liquidation-candidates'
+    )
+    expect(config.discovery.healthFactorLte).toBe(1.02)
     expect(config.maxFeeWei).toBe(parseGwei('300'))
     expect(config.cacheDir).toBe('.cache')
     expect(config.logLevel).toBe('info')
@@ -221,6 +223,30 @@ describe('loadConfig', () => {
   it('throws on an out-of-range SEIZE_CAP_MARGIN_BPS', () => {
     expect(() => loadConfig(baseEnv({ SEIZE_CAP_MARGIN_BPS: '20000' }), deps)).toThrow(
       /SEIZE_CAP_MARGIN_BPS must be <= 10000/
+    )
+  })
+
+  it('overrides the discovery endpoint and health-factor cutoff from env', () => {
+    const config = loadConfig(
+      baseEnv({
+        LIQUIDATION_CANDIDATES_API_URL: 'https://custom.example/candidates',
+        HEALTH_FACTOR_LTE: '1.1'
+      }),
+      deps
+    )
+    expect(config.discovery.apiUrl).toBe('https://custom.example/candidates')
+    expect(config.discovery.healthFactorLte).toBe(1.1)
+  })
+
+  it('throws on a malformed LIQUIDATION_CANDIDATES_API_URL (fail loud at startup)', () => {
+    expect(() =>
+      loadConfig(baseEnv({ LIQUIDATION_CANDIDATES_API_URL: 'not a url' }), deps)
+    ).toThrow(/LIQUIDATION_CANDIDATES_API_URL is not a valid URL/)
+  })
+
+  it('throws on a HEALTH_FACTOR_LTE below the 1.0 floor', () => {
+    expect(() => loadConfig(baseEnv({ HEALTH_FACTOR_LTE: '0.9' }), deps)).toThrow(
+      /HEALTH_FACTOR_LTE must be >= 1/
     )
   })
 })
