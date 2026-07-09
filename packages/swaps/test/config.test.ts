@@ -1,0 +1,56 @@
+import { describe, expect, it } from 'bun:test'
+
+import { parseSwapConfig, VENUE_API_KEY_ENV } from '../src/config'
+
+describe('parseSwapConfig', () => {
+  const COLL = '0x4200000000000000000000000000000000000006'
+
+  it('defaults a venue-less entry to uniswap-v3 (back-compat)', () => {
+    const parsed = parseSwapConfig({
+      '8453': {
+        [COLL]: { router: '0x2626664c2603336E57B271c5C0b26F421741e481', fee: 500, slippageBps: 100 }
+      }
+    })
+    expect(parsed['8453']?.[COLL]).toMatchObject({ venue: 'uniswap-v3', fee: 500 })
+  })
+
+  it('parses aggregator entries (0x, 1inch) with optional baseUrl', () => {
+    const parsed = parseSwapConfig({
+      '8453': {
+        [COLL]: { venue: '0x', slippageBps: 100 }
+      },
+      '4663': {
+        [COLL]: { venue: '1inch', baseUrl: 'https://proxy.example', slippageBps: 50 }
+      }
+    })
+    expect(parsed['8453']?.[COLL]).toMatchObject({ venue: '0x' })
+    expect(parsed['4663']?.[COLL]).toMatchObject({
+      venue: '1inch',
+      baseUrl: 'https://proxy.example'
+    })
+  })
+
+  it('rejects a non-numeric chain-id key and an out-of-range slippage', () => {
+    expect(() => parseSwapConfig({ base: {} })).toThrow()
+    expect(() =>
+      parseSwapConfig({ '8453': { [COLL]: { venue: '0x', slippageBps: 20_000 } } })
+    ).toThrow()
+  })
+
+  it('rejects an invalid collateral address key and unknown entry fields', () => {
+    expect(() =>
+      parseSwapConfig({ '8453': { 'not-an-address': { venue: '0x', slippageBps: 1 } } })
+    ).toThrow()
+    expect(() =>
+      parseSwapConfig({ '8453': { [COLL]: { venue: '0x', slippageBps: 1, extra: true } } })
+    ).toThrow()
+  })
+})
+
+describe('VENUE_API_KEY_ENV', () => {
+  it('requires keys for aggregators only', () => {
+    expect(VENUE_API_KEY_ENV['uniswap-v3']).toBeNull()
+    expect(VENUE_API_KEY_ENV['0x']).toBe('ZEROX_API_KEY')
+    expect(VENUE_API_KEY_ENV['1inch']).toBe('ONEINCH_API_KEY')
+  })
+})

@@ -65,6 +65,20 @@
         "viem": "catalog:",
       },
     },
+    "packages/swaps": {
+      "name": "@repo/swaps",
+      "version": "0.0.0",
+      "dependencies": {
+        "@repo/utils": "workspace:*",
+        "viem": "catalog:",
+        "zod": "catalog:",
+      },
+      "devDependencies": {
+        "@repo/typescript-config": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "packages/typescript-config": {
       "name": "@repo/typescript-config",
       "version": "0.0.0",
@@ -282,6 +296,8 @@
     "@oxlint/binding-win32-x64-msvc": ["@oxlint/binding-win32-x64-msvc@1.61.0", "", { "os": "win32", "cpu": "x64" }, "sha512-0xgSiyeqDLDZxXoe9CVJrOx3TUVsfyoOY7cNi03JbItNcC9WCZqrSNdrAbHONxhSPaVh/lzfnDcON1RqSUMhHw=="],
 
     "@repo/contracts": ["@repo/contracts@workspace:packages/contracts"],
+
+    "@repo/swaps": ["@repo/swaps@workspace:packages/swaps"],
 
     "@repo/typescript-config": ["@repo/typescript-config@workspace:packages/typescript-config"],
 
