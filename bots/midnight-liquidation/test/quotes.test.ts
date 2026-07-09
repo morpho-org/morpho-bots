@@ -1,5 +1,5 @@
 import type { Logger } from '@repo/bot-kit'
-import type { RateLimitedClient, SwapConfigEntry } from '@repo/swaps'
+import type { RateLimitedClient, VenuePair, VenueQuoteEstimate, VenueSelector } from '@repo/swaps'
 
 import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
@@ -11,17 +11,17 @@ import type { LensOut } from '../src/state/lens.sol'
 import { ORACLE_PRICE_SCALE, WAD } from '../src/constants'
 import { composeQuoting } from '../src/quotes'
 
-// The Midnight-shaped adapter over @repo/swaps' composeQuoting: these cases pin the LENS PROJECTION
-// (out.market.collateralParams[plan.collateralIndex] → QuoteRequest) and the missing-slot
-// short-circuit; the venue/floor behavior itself is tested in the package.
+// The Midnight-shaped adapter over @repo/swaps' composeMultiVenueQuoting: these cases pin the LENS
+// PROJECTION (out.market.collateralParams[plan.collateralIndex] → QuoteRequest), the missing-slot and
+// excluded-collateral short-circuits, and that a probe is refreshed for the pair before quoting.
 
 const NOOP_LOGGER: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
 
-const ROUTER = getAddress('0x5555555555555555555555555555555555555555')
 const LOAN = getAddress('0x6666666666666666666666666666666666666666')
 const COLLATERAL = getAddress('0x7777777777777777777777777777777777777777')
 const ORACLE = getAddress('0x8888888888888888888888888888888888888888')
 const EXECUTOR = getAddress('0x1111111111111111111111111111111111111111')
+const TARGET = getAddress('0x5555555555555555555555555555555555555555')
 const ZERO = getAddress('0x0000000000000000000000000000000000000000')
 
 const MARKET: Market = {
@@ -42,7 +42,7 @@ const MARKET: Market = {
   liquidatorGate: ZERO
 }
 
-// price = 1e36 → expectedLoanOut = seizedAssets = 1000 (the route-quality reference).
+// price = ORACLE_PRICE_SCALE → expectedLoanOut = seizedAssets = 1000 (the route-quality reference).
 const PLAN: LiquidationPlan = {
   collateralIndex: 0,
   seizedAssets: 1000n,
@@ -69,42 +69,88 @@ const OUT: LensOut = {
   market: MARKET
 }
 
-const NOOP_HTTP: RateLimitedClient = { getJson: async <T>() => ({}) as T }
+// A 0x firm-quote body whose buyAmount is at/above the route-quality floor.
+const OK_ZEROX_BODY = {
+  liquidityAvailable: true,
+  buyAmount: '1000',
+  minBuyAmount: '995',
+  transaction: { to: TARGET, data: '0xabc', value: '0' }
+}
+const httpStub: RateLimitedClient = { getJson: async <T>() => OK_ZEROX_BODY as T }
 
-function compose(entry: SwapConfigEntry | null) {
-  const swapByCollateral = new Map<string, SwapConfigEntry>()
-  if (entry) swapByCollateral.set(getAddress(COLLATERAL), entry)
+// A selector stub: records which pairs were refreshed and returns a fixed best-first order.
+function fakeSelector(order: VenueQuoteEstimate[], onRefresh?: () => Promise<void>) {
+  const refreshed: VenuePair[] = []
+  const selector: VenueSelector = {
+    refresh: async pair => {
+      refreshed.push(pair)
+      if (onRefresh) await onRefresh()
+    },
+    select: () => order,
+    snapshot: () => []
+  }
+  return { selector, refreshed }
+}
+
+function compose(
+  selector: VenueSelector,
+  overrides: { venues?: ('0x' | '1inch')[]; excludeCollaterals?: `0x${string}`[] } = {}
+) {
   return composeQuoting({
-    httpClient: NOOP_HTTP,
+    httpClient: httpStub,
+    selector,
     chainId: 8453,
     executor: EXECUTOR,
-    swapByCollateral,
+    venues: overrides.venues ?? ['0x'],
+    slippageBps: 100,
+    baseUrls: {},
     maxRouteImpactBps: 500,
+    excludeCollaterals: overrides.excludeCollaterals ?? [],
     logger: NOOP_LOGGER
   })
 }
 
 describe('composeQuoting (Midnight lens-projection adapter)', () => {
   it('returns no_config when the plan indexes a missing collateral slot', async () => {
-    const { quoteFor } = compose({ venue: 'uniswap-v3', router: ROUTER, fee: 3000, slippageBps: 0 })
-    const outOfRange = { ...PLAN, collateralIndex: 5 }
-    expect(await quoteFor(outOfRange, OUT)).toEqual({ kind: 'no_config' })
+    const { selector, refreshed } = fakeSelector([{ venue: '0x', expectedOut: 1000n }])
+    const { quoteFor } = compose(selector)
+    expect(await quoteFor({ ...PLAN, collateralIndex: 5 }, OUT)).toEqual({ kind: 'no_config' })
+    expect(refreshed).toHaveLength(0) // never probed for a slot it can't route
   })
 
-  it('returns no_config when the indexed collateral has no configured venue', async () => {
-    const { quoteFor } = compose(null)
+  it('returns no_config (and never probes) for an excluded collateral', async () => {
+    const { selector, refreshed } = fakeSelector([{ venue: '0x', expectedOut: 1000n }])
+    const { quoteFor } = compose(selector, { excludeCollaterals: [COLLATERAL] })
     expect(await quoteFor(PLAN, OUT)).toEqual({ kind: 'no_config' })
+    expect(refreshed).toHaveLength(0)
   })
 
-  it('projects the indexed collateral + oracle reference into an executable swap', async () => {
-    const { quoteFor } = compose({ venue: 'uniswap-v3', router: ROUTER, fee: 3000, slippageBps: 0 })
+  it('refreshes the pair probe, then projects into an executable swap from the ranked venue', async () => {
+    const { selector, refreshed } = fakeSelector([{ venue: '0x', expectedOut: 1000n }])
+    const { quoteFor } = compose(selector)
     const outcome = await quoteFor(PLAN, OUT)
+
+    expect(refreshed).toEqual([{ collateral: COLLATERAL, loan: LOAN }])
     expect(outcome.kind).toBe('swap')
     if (outcome.kind === 'swap') {
-      expect(outcome.swap.spender).toBe(ROUTER)
-      // slippageBps 0 → the min-out IS the oracle reference (seizedAssets at price 1e36) — proving
-      // expectedLoanOut(plan, out) was passed as referenceAmountOut.
-      expect(outcome.swap.amountOutMinimum).toBe(1000n)
+      expect(outcome.swap.target).toBe(TARGET)
+      expect(outcome.swap.expectedAmountOut).toBe(1000n)
     }
+  })
+
+  it('still quotes (cold-default) when the probe refresh throws', async () => {
+    // Cold cache (select → []) + a refresh that rejects → the firm-quote step falls back to the
+    // deterministic enabled-venue order rather than failing the position.
+    const { selector } = fakeSelector([], async () => {
+      throw new Error('probe boom')
+    })
+    const { quoteFor } = compose(selector)
+    expect((await quoteFor(PLAN, OUT)).kind).toBe('swap')
+  })
+
+  it('returns no_config when no venues are enabled (bad-debt-only posture)', async () => {
+    const { selector } = fakeSelector([])
+    const { quoteFor } = compose(selector, { venues: [] })
+    expect(await quoteFor(PLAN, OUT)).toEqual({ kind: 'no_config' })
   })
 })

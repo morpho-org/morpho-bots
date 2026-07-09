@@ -12,8 +12,10 @@ services:
       RPC_URL: ${RPC_URL:?set RPC_URL}
       LIQUIDATOR_PRIVATE_KEY: ${LIQUIDATOR_PRIVATE_KEY:?set LIQUIDATOR_PRIVATE_KEY}
       EXECUTOOOR_ADDRESS: ${EXECUTOOOR_ADDRESS:-}
-      SWAP_CONFIG_PATH: /config/swap.json
+      # Venues are enabled by the presence of their API key. With neither set, the bot refuses to
+      # start unless ALLOW_BAD_DEBT_ONLY=true (then it runs bad-debt-only).
+      ZEROX_API_KEY: ${ZEROX_API_KEY:-}
+      ONEINCH_API_KEY: ${ONEINCH_API_KEY:-}
+      ALLOW_BAD_DEBT_ONLY: ${ALLOW_BAD_DEBT_ONLY:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
-    volumes:
-      - ${SWAP_CONFIG_PATH:-./swap.config.json}:/config/swap.json:ro
     restart: unless-stopped

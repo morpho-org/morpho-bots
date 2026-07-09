@@ -11,12 +11,17 @@ succeeds.
 This package is operational code, but it is still intentionally narrow:
 
 - Supported chain: Base (`CHAIN_ID=8453`).
+- The markets the bot may touch come from the Midnight markets API (`listed=true`) as a **whitelist**:
+  only listed markets are discovered, probed, and liquidated (fail-closed). There is no hand-maintained
+  collateral list.
 - Discovery is backed by the markets liquidation-candidates HTTP API — an over-inclusive candidate
-  feed the bot re-reads on-chain before acting.
-- Execution routes the seized collateral through a per-collateral venue: direct single-hop Uniswap V3
-  `exactInputSingle`, or the 0x / 1inch swap aggregators (one executable quote per liquidatable
-  position). Venue is chosen per collateral in the swap config; a missing `venue` defaults to
-  `uniswap-v3`.
+  feed the bot filters to the whitelist and re-reads on-chain before acting.
+- Execution tries **all enabled venues and uses the best** (0x / 1inch swap aggregators). Venues are
+  enabled by the presence of their API key — there is no per-collateral routing file. The best venue
+  per collateral→loan pair and size is picked from a cached, rate-limited, log-scaled indicative probe;
+  the position itself is then firm-quoted once against the chosen venue, falling through to the
+  runner-up venue on failure (coverage-first). Uniswap-direct is not a candidate here — aggregators
+  route through Uniswap pools anyway, and a direct Uniswap route can't be ranked on real output.
 - For positions with multiple active collaterals, the current planner evaluates the highest-value
   collateral slot only.
 
@@ -28,42 +33,51 @@ This package is operational code, but it is still intentionally narrow:
 - A funded liquidator EOA private key.
 - A deployed permissionless Executor contract. If `EXECUTOOOR_ADDRESS` is unset, the bot uses the
   deterministic address derived by `@repo/contracts`; startup still requires code to exist there.
-- Network access to the markets liquidation-candidates API (public by default; override with
-  `LIQUIDATION_CANDIDATES_API_URL`).
-- A swap config JSON file for the collateral tokens the bot is allowed to liquidate.
+- Network access to the markets liquidation-candidates API and the Midnight markets API (both public
+  by default; override with `LIQUIDATION_CANDIDATES_API_URL` / `MARKETS_API_URL`).
+- At least one venue API key (`ZEROX_API_KEY` and/or `ONEINCH_API_KEY`) to actually swap-liquidate.
+  With no key set the bot can only discover positions and realize bad debt, and refuses to start
+  unless `ALLOW_BAD_DEBT_ONLY=true` is set.
 
-Never commit `.env` files, private keys, RPC credentials, or swap config containing sensitive
-operator data.
+Never commit `.env` files, private keys, or RPC credentials.
 
 ## Configuration
 
 Environment variables:
 
-| Name                                         | Required | Default    | Description                                                                                                                                                                                                                  |
-| -------------------------------------------- | -------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CHAIN_ID`                                   | yes      | -          | Must be `8453` for Base.                                                                                                                                                                                                     |
-| `RPC_URL`                                    | yes      | -          | Base RPC used for reads, simulation, and (unless `SEND_RPC_URL` is set) sends.                                                                                                                                               |
-| `RPC_URL_FALLBACK`                           | no       | -          | Optional fallback RPC for the signer's transport.                                                                                                                                                                            |
-| `SEND_RPC_URL`                               | no       | `RPC_URL`  | Dedicated broadcast endpoint for `eth_sendRawTransaction` and the signer's nonce/receipt reads. Set this when `RPC_URL` is a read-only relay that acks sends without relaying them to the sequencer (txs would never mine).  |
-| `LIQUIDATOR_PRIVATE_KEY`                     | yes      | -          | `0x`-prefixed 32-byte private key for the sender EOA.                                                                                                                                                                        |
-| `EXECUTOOOR_ADDRESS`                         | no       | derived    | Override for the shared Executor address.                                                                                                                                                                                    |
-| `LIQUIDATION_CANDIDATES_API_URL`             | no       | public     | Liquidation-candidates endpoint polled for borrower discovery. Defaults to the public Morpho markets API; validated as a URL at startup (fail-loud).                                                                         |
-| `HEALTH_FACTOR_LTE`                          | no       | `1.02`     | Health-factor cutoff sent to discovery (`health_factor_lte`); matured positions are always included regardless. Floored at `1.0`. Over-inclusive by design — the on-chain lens is the source of truth.                       |
-| `SWAP_CONFIG_PATH`                           | no       | -          | Path to per-chain, per-collateral swap config JSON. If unset or the file is absent, the bot runs with no routes (identifies borrowers, realizes bad debt, skips routed liquidations). A present-but-malformed file is fatal. |
-| `MAX_FEE_GWEI`                               | no       | `300`      | Hard max fee cap used by the pending transaction queue.                                                                                                                                                                      |
-| `LOG_LEVEL`                                  | no       | `info`     | One of `debug`, `info`, `warn`, `error`.                                                                                                                                                                                     |
-| `CACHE_DIR`                                  | no       | `.cache`   | Soltag/deployless cache directory.                                                                                                                                                                                           |
-| `ZEROX_API_KEY`                              | cond.    | -          | Required if any collateral uses the `0x` venue. Read at point of use; never stored on config or logged.                                                                                                                      |
-| `ONEINCH_API_KEY`                            | cond.    | -          | Required if any collateral uses the `1inch` venue. Read at point of use; never stored on config or logged.                                                                                                                   |
-| `QUOTE_TIMEOUT_MS`                           | no       | `2500`     | Per-quote HTTP deadline (the quote runs inside the per-block tick).                                                                                                                                                          |
-| `HTTP_RPS` / `HTTP_BURST`                    | no       | `2` / `5`  | Per-venue token-bucket refill rate and burst. The 1inch free tier is 1 RPS — set `HTTP_RPS=1` if you only use 1inch.                                                                                                         |
-| `HTTP_MAX_RETRIES`                           | no       | `2`        | Retries on 429/5xx/network (honoring `Retry-After`) before a quote fails.                                                                                                                                                    |
-| `MAX_ROUTE_IMPACT_BPS`                       | no       | `500`      | Reject an aggregator route whose quoted output is more than this far below the oracle reference (route-quality guard).                                                                                                       |
-| `SEIZE_CAP_MARGIN_BPS`                       | no       | `30`       | Headroom shaved off the on-chain repay cap when sizing a cap-binding seize, so a one-block oracle move can't trip the contract's RCF/debt check. `0` sizes right at the cap.                                                 |
-| `BACKOFF_BASE_BLOCKS` / `BACKOFF_MAX_BLOCKS` | no       | `2` / `64` | Exponential per-position cooldown (in blocks) after a failed quote/simulate, bounding API + RPC usage under a backlog.                                                                                                       |
+| Name                                         | Required | Default             | Description                                                                                                                                                                                                                 |
+| -------------------------------------------- | -------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CHAIN_ID`                                   | yes      | -                   | Must be `8453` for Base.                                                                                                                                                                                                    |
+| `RPC_URL`                                    | yes      | -                   | Base RPC used for reads, simulation, and (unless `SEND_RPC_URL` is set) sends.                                                                                                                                              |
+| `RPC_URL_FALLBACK`                           | no       | -                   | Optional fallback RPC for the signer's transport.                                                                                                                                                                           |
+| `SEND_RPC_URL`                               | no       | `RPC_URL`           | Dedicated broadcast endpoint for `eth_sendRawTransaction` and the signer's nonce/receipt reads. Set this when `RPC_URL` is a read-only relay that acks sends without relaying them to the sequencer (txs would never mine). |
+| `LIQUIDATOR_PRIVATE_KEY`                     | yes      | -                   | `0x`-prefixed 32-byte private key for the sender EOA.                                                                                                                                                                       |
+| `EXECUTOOOR_ADDRESS`                         | no       | derived             | Override for the shared Executor address.                                                                                                                                                                                   |
+| `LIQUIDATION_CANDIDATES_API_URL`             | no       | public              | Liquidation-candidates endpoint polled for borrower discovery. Defaults to the public Morpho markets API; validated as a URL at startup (fail-loud).                                                                        |
+| `HEALTH_FACTOR_LTE`                          | no       | `1.02`              | Health-factor cutoff sent to discovery (`health_factor_lte`); matured positions are always included regardless. Floored at `1.0`. Over-inclusive by design — the on-chain lens is the source of truth.                      |
+| `MARKETS_API_URL`                            | no       | public              | Midnight markets endpoint used as the market whitelist (`listed=true`). Defaults to the public Morpho markets API; validated as a URL at startup.                                                                           |
+| `MARKETS_REFRESH_MS`                         | no       | `60000`             | How often the whitelist is refreshed. The endpoint is Morpho's own (not rate-limited); last-known-good is served on a transient failure.                                                                                    |
+| `ZEROX_API_KEY`                              | cond.    | -                   | Enables the `0x` venue when set. Read at point of use; never stored on config or logged.                                                                                                                                    |
+| `ONEINCH_API_KEY`                            | cond.    | -                   | Enables the `1inch` venue when set. Read at point of use; never stored on config or logged.                                                                                                                                 |
+| `ALLOW_BAD_DEBT_ONLY`                        | no       | `false`             | When no venue API key is set, the bot refuses to start unless this is `true` (then it runs bad-debt-only: discovers positions, realizes bad debt, never swap-liquidates).                                                   |
+| `SLIPPAGE_BPS`                               | no       | `100`               | Global max oracle-to-DEX output discount passed to every venue (bakes the on-chain min-out into calldata). Replaces the old per-collateral `slippageBps`.                                                                   |
+| `ZEROX_BASE_URL` / `ONEINCH_BASE_URL`        | no       | public              | Optional venue API host overrides.                                                                                                                                                                                          |
+| `EXCLUDE_COLLATERALS`                        | no       | -                   | Comma-separated collateral addresses the bot must never seize/hold — skipped (no quote) even in a listed market.                                                                                                            |
+| `MAX_FEE_GWEI`                               | no       | `300`               | Hard max fee cap used by the pending transaction queue.                                                                                                                                                                     |
+| `LOG_LEVEL`                                  | no       | `info`              | One of `debug`, `info`, `warn`, `error`.                                                                                                                                                                                    |
+| `CACHE_DIR`                                  | no       | `.cache`            | Soltag/deployless cache directory.                                                                                                                                                                                          |
+| `QUOTE_TIMEOUT_MS`                           | no       | `2500`              | Per-quote HTTP deadline (the firm quote runs inside the per-block tick).                                                                                                                                                    |
+| `HTTP_RPS` / `HTTP_BURST`                    | no       | `2` / `5`           | Per-venue token-bucket refill rate and burst for FIRM quotes. The 1inch free tier is 1 RPS — set `HTTP_RPS=1` if you only use 1inch.                                                                                        |
+| `PROBE_HTTP_RPS`                             | no       | `1`                 | Per-venue token-bucket rate for BACKGROUND probes, on a separate client so probe bursts never queue ahead of a live firm quote.                                                                                             |
+| `PROBE_STALE_MS`                             | no       | `600000`            | Probe-cache TTL per pair. A pair is re-probed only when a liquidatable position touches it after the cache goes stale — no probe traffic on quiet markets.                                                                  |
+| `PROBE_LADDER`                               | no       | `0.01,0.1,1,10,100` | Comma-separated log-scaled probe sizes in whole collateral tokens; converted per-collateral to base units. Venue rankings are cached per size bucket.                                                                       |
+| `HTTP_MAX_RETRIES`                           | no       | `2`                 | Retries on 429/5xx/network (honoring `Retry-After`) before a quote fails.                                                                                                                                                   |
+| `MAX_ROUTE_IMPACT_BPS`                       | no       | `500`               | Reject a venue's quoted output more than this far below the oracle reference (route-quality guard).                                                                                                                         |
+| `SEIZE_CAP_MARGIN_BPS`                       | no       | `30`                | Headroom shaved off the on-chain repay cap when sizing a cap-binding seize, so a one-block oracle move can't trip the contract's RCF/debt check. `0` sizes right at the cap.                                                |
+| `BACKOFF_BASE_BLOCKS` / `BACKOFF_MAX_BLOCKS` | no       | `2` / `64`          | Exponential per-position cooldown (in blocks) after a failed quote/simulate, bounding API + RPC usage under a backlog.                                                                                                      |
 
-The bot **refuses to start** if a collateral references a venue whose API key env var is unset
-(fail-loud). Uniswap-direct needs no key, so a key-free deployment still boots.
+The bot **refuses to start** if no venue API key is present, unless `ALLOW_BAD_DEBT_ONLY=true` — a
+rotated or forgotten key must not silently disable liquidations.
 
 Example local `.env` shape:
 
@@ -72,41 +86,35 @@ CHAIN_ID=8453
 RPC_URL=https://base-mainnet.example
 RPC_URL_FALLBACK=https://base-mainnet-fallback.example
 LIQUIDATOR_PRIVATE_KEY=0x...
-SWAP_CONFIG_PATH=./bots/midnight-liquidation/swap.config.json
+ZEROX_API_KEY=...
+ONEINCH_API_KEY=...
 MAX_FEE_GWEI=300
 LOG_LEVEL=info
 ```
 
-Example `swap.config.json`:
+### Markets, venues, and probing
 
-```json
-{
-  "8453": {
-    "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf": {
-      "venue": "uniswap-v3",
-      "router": "0x2626664c2603336E57B271c5C0b26F421741e481",
-      "fee": 100,
-      "slippageBps": 50
-    },
-    "0x4200000000000000000000000000000000000006": { "venue": "0x", "slippageBps": 100 },
-    "0xc1CBa3fCea344f92D9239c08C0568f6F2F0ee452": { "venue": "1inch", "slippageBps": 100 }
-  }
-}
-```
+There is no swap config file. Instead:
 
-Keys under `8453` are collateral token addresses; each value selects a venue:
+- **Which markets** the bot touches comes from the Midnight markets API (`MARKETS_API_URL`) with
+  `listed=true`: it is a hard **whitelist** — a market not in the listed set is never discovered,
+  probed, or liquidated (fail-closed). This shapes only what the bot acts on; the on-chain lens remains
+  the correctness boundary, and a delisted-but-underwater position simply falls out of scope.
+- **Which venue** clears a given liquidation is chosen automatically. Both aggregators are enabled by
+  the mere presence of their API key. For each collateral→loan pair, a background job requests
+  indicative quotes from every enabled venue at the `PROBE_LADDER` sizes and caches a best-first
+  ranking per size bucket. This probe is **gated** to pairs that have a liquidatable position and
+  cached for `PROBE_STALE_MS`, and runs on its own `PROBE_HTTP_RPS` budget — so venues' tight rate
+  limits (~1 req/sec) are respected and quiet markets cost nothing.
+- **When a position is liquidatable**, the bot firm-quotes once against the pre-chosen best venue,
+  applies the `MAX_ROUTE_IMPACT_BPS` oracle route-quality guard, and falls through to the runner-up
+  venue only on failure — never fanning out firm quotes across venues at once. A pair not yet probed
+  (e.g. newly listed) falls back to a deterministic default venue for that one quote.
 
-- `uniswap-v3` — direct single-hop. `router` must be a `SwapRouter02`-compatible router and `fee` is
-  the Uniswap V3 pool fee tier. (Omitting `venue` defaults to `uniswap-v3` for backward compatibility.)
-- `0x` / `1inch` — swap aggregators. No `router`/`fee`; the executable route comes from the venue API
-  (the API key is supplied via env, never here). Optional `baseUrl` overrides the API host.
-
-`slippageBps` is the maximum oracle-to-DEX output discount the bot tolerates. For aggregators it is
-passed to the venue (which bakes the on-chain min-out into its calldata); the bot additionally rejects
-any quoted route more than `MAX_ROUTE_IMPACT_BPS` below the oracle reference. Note 1inch caps its
-`slippage` at 50% — a `1inch` collateral with `slippageBps > 5000` will have its quotes rejected by
-the API (treated as a no-route failure, then backed off). **API keys must never appear in this file**
-— they come from `ZEROX_API_KEY` / `ONEINCH_API_KEY`.
+`SLIPPAGE_BPS` is the global max oracle-to-DEX output discount passed to every venue (which bakes the
+on-chain min-out into its calldata); the bot additionally rejects any quoted route more than
+`MAX_ROUTE_IMPACT_BPS` below the oracle reference. API keys come from `ZEROX_API_KEY` /
+`ONEINCH_API_KEY` and are never logged.
 
 ## Running Locally
 
@@ -199,7 +207,7 @@ From `bots/midnight-liquidation`:
 ```sh
 export RPC_URL=https://base-mainnet.example
 export LIQUIDATOR_PRIVATE_KEY=0x...
-export SWAP_CONFIG_PATH=/absolute/path/to/swap.config.json
+export ZEROX_API_KEY=...   # and/or ONEINCH_API_KEY
 docker compose up --build
 ```
 
@@ -236,24 +244,12 @@ bun run --filter @morpho-org/midnight-liquidation deploy:railway
 Secrets are read from the script's environment, piped to Railway via stdin (never argv), and never
 logged. The script fails loud if `RPC_URL` or `LIQUIDATOR_PRIVATE_KEY` is missing.
 
-### Swap config (manual step)
+### Venue API keys (manual step)
 
-There is no host bind mount on Railway, so the bot's swap config lives on a volume mounted at
-`/config`, with `SWAP_CONFIG_PATH=/config/swap.json`. The deploy script creates and attaches the
-volume but does **not** upload the file. The bot boots without it — with no routes it still identifies
-liquidatable borrowers and realizes bad debt, but skips routed liquidations — so there is no
-first-deploy crash to work around. Upload `swap.json` (same shape as the example above) to enable
-routed liquidations.
-
-A Railway volume mounts only into a **running** container, and `volume files` transfers tunnel through
-it, so upload once the bot is up. The command prompts you to pick the volume interactively, or pass
-`--volume <name>` (before the subcommand; find the name via `railway volume list`):
-
-```sh
-railway volume files upload ./swap.config.json /config/swap.json --overwrite
-```
-
-The bot reads the file at startup, so restart/redeploy the bot after uploading to pick up the routes.
+There is no swap config file to upload anymore — venues are enabled purely by the presence of their
+API key. Set `ZEROX_API_KEY` and/or `ONEINCH_API_KEY` in the Railway service environment (the deploy
+script pushes `RPC_URL` + `LIQUIDATOR_PRIVATE_KEY` only, so add the venue keys yourself). With no key
+set, the service will refuse to start unless `ALLOW_BAD_DEBT_ONLY=true`.
 
 ## How It Works
 
@@ -264,8 +260,8 @@ The read client wraps the RPC transport with `deployless` support so the bot can
 lens via `eth_call`. The signer client is plain HTTP and owns transaction submission with a local
 pending-nonce cursor.
 
-Startup fails loudly if required env vars are missing, the chain is unsupported, the swap config is
-malformed, or the configured Executor address has no bytecode.
+Startup fails loudly if required env vars are missing, the chain is unsupported, no venue API key is
+set without `ALLOW_BAD_DEBT_ONLY=true`, or the configured Executor address has no bytecode.
 
 ### Trigger
 
@@ -280,6 +276,13 @@ endpoint for candidate `(marketId, borrower)` pairs, following the cursor across
 (`include_matured=true`, `health_factor_lte` from `HEALTH_FACTOR_LTE`). The feed is over-inclusive by
 design — it does not evaluate the liquidation lock or liquidator gate — so the on-chain lens re-reads
 every pair and filters out non-liquidatable state before planning.
+
+Candidates are then filtered to the **market whitelist**
+([src/discovery/markets.ts](./src/discovery/markets.ts)): the Midnight markets API (`listed=true`),
+refreshed every `MARKETS_REFRESH_MS` and served last-known-good on a transient failure. A candidate
+whose market is not listed is dropped before the lens read (fail-closed) — the whitelist is the only
+gate on _which_ markets the bot acts on; the lens remains the correctness gate on _whether_ a position
+is liquidatable.
 
 Discovery failure is tolerated: a transient API error logs `discover.error` and the tick proceeds with
 zero new candidates so the pending queue (confirmations / fee bumps) is still driven that block. A
@@ -329,34 +332,39 @@ All fixed-point math is integer `bigint` math and mirrors the contract's floor/c
 
 ### Quoting
 
-For each liquidatable, non-bad-debt position, [src/quotes/index.ts](./src/quotes/index.ts) resolves
-the operator's configured venue for the selected collateral and produces a single venue-agnostic
-`Swap` (spender, target, calldata, and how the input amount is bound). It fetches **one** executable
-quote per position — quotes are spent only on liquidatable positions, never the full candidate set:
+For each liquidatable, non-bad-debt position, [src/quotes.ts](./src/quotes.ts) projects the lens
+output into a quote request and hands it to `@repo/swaps`' multi-venue quoting. Venue selection is
+driven by a cached, rate-limited probe rather than a per-collateral config file:
 
-- `uniswap-v3` ([venues/uniswap-v3.ts](./src/quotes/venues/uniswap-v3.ts)) builds `exactInputSingle`
-  locally (no API) with the input amount spliced from the Executor's live balance at exec time;
-- `0x` / `1inch` ([venues/zerox.ts](./src/quotes/venues/zerox.ts),
-  [venues/oneinch.ts](./src/quotes/venues/oneinch.ts)) make one rate-limited API call and return
-  route-bound calldata committing a fixed sell amount, with the taker/recipient set to the Executor.
+- A background probe (the `@repo/swaps` venue selector) requests **indicative** quotes from every
+  enabled venue (`0x`, `1inch`) at the `PROBE_LADDER` sizes for each collateral→loan pair, and caches a
+  best-first ranking per size bucket. It is gated to pairs that have a liquidatable position, cached
+  for `PROBE_STALE_MS`, and runs on a separate `PROBE_HTTP_RPS` client so it can never delay a live
+  firm quote — respecting venues' ~1 req/sec limits and spending nothing on quiet markets.
+- When a position is liquidatable, the bot firm-quotes **once** against the top-ranked venue for that
+  pair+size (a single rate-limited API call returning route-bound calldata, taker/recipient = the
+  Executor), applies the oracle route-quality guard, and falls through to the runner-up venue only on
+  failure (`select.ok` / `quote.route_quality_failed`). A not-yet-probed pair uses a deterministic
+  default venue for that one quote (`select.cold_default`). Firm quotes are spent only on liquidatable
+  positions, never the full candidate set.
 
 The sell amount is the plan's pinned `seizedAssets`: Midnight transfers exactly that to the Executor
-before the callback, so an aggregator's fixed sell amount and a Uniswap balance-splice both act on
-exactly the seized balance — no sell-side drift on any venue. The oracle-priced reference output
+before the callback, so the venue's fixed sell amount acts on exactly the seized balance — no
+sell-side drift. The oracle-priced reference output
 ([src/execution/swap-step.ts](./src/execution/swap-step.ts)) values that same `seizedAssets`. Residual
 drift is confined to the on-chain repay-cap check re-derived at the exec-block oracle price; it fails
 closed in `simulate()` — a missed liquidation, never a loss — and the `SEIZE_CAP_MARGIN_BPS` headroom
 keeps ordinary one-block moves from tripping it.
 
-The bot computes the oracle-priced reference output for free (no extra API call) and rejects any
-aggregator route more than `MAX_ROUTE_IMPACT_BPS` below it (`quote.bad_route`). Quote failures (no
-route, timeout, rate-limited, API error) log `quote.failed` and back the position off
-([src/queue/backoff.ts](./src/queue/backoff.ts)) — an exponential per-position cooldown that bounds
-API + RPC usage when many positions fail (the rate-limit defense). A successful submit clears the
-backoff.
+The bot computes the oracle-priced reference output for free (no extra API call) and rejects any venue
+route more than `MAX_ROUTE_IMPACT_BPS` below it (`quote.route_quality_failed`). Quote failures (no
+route, timeout, rate-limited, API error) log `quote.failed`; once every ranked venue is exhausted the
+position is backed off — an exponential per-position cooldown that bounds API + RPC usage when many
+positions fail (the rate-limit defense). A successful submit clears the backoff.
 
-If no venue is configured for a non-zero liquidation, the tick logs `config.no_swap_path` and skips
-the candidate (no backoff). Pure bad-debt realization skips quoting entirely.
+If no venue is enabled (bad-debt-only mode) or the collateral is on `EXCLUDE_COLLATERALS`, the tick
+logs `config.no_swap_path` and skips the candidate (no API call, no backoff). Pure bad-debt
+realization skips quoting entirely.
 
 ### Simulation
 
@@ -392,11 +400,14 @@ that tick instead of counting a hashless transaction as submitted.
 
 - The liquidator gate checks the Executor address, not the EOA, because `liquidate` is called by the
   Executor.
-- Swap routes are allowlisted by config. Missing routes are skipped rather than guessed.
-- Aggregator venues (`0x`, `1inch`) add a third-party API dependency on the execution path. If a
-  venue is down, rate-limited, or returns no route, that liquidation is skipped (never falls back to
-  another venue silently) and the position is backed off; there is no risk of an unsafe broadcast
-  because `simulate()` still gates every send. API keys come from env only and are never logged.
+- Markets are allowlisted by the `listed=true` whitelist. A non-listed market is skipped rather than
+  guessed; a collateral on `EXCLUDE_COLLATERALS` is never seized.
+- Aggregator venues (`0x`, `1inch`) add a third-party API dependency on the execution path. Dropping
+  Uniswap-direct means at least one venue API key is required to swap-liquidate at all. If a venue is
+  down, rate-limited, or returns no route, the bot falls through to the runner-up enabled venue; only
+  when every enabled venue fails is the position backed off. `simulate()` still gates every send, so a
+  stale probe or wrong venue pick is a missed liquidation, never an unsafe broadcast. API keys come
+  from env only and are never logged.
 - The bot is not a private-orderflow or MEV protection system. It broadcasts ordinary EOA
   transactions.
 - The shared Executor cannot safely custody assets between transactions. Every non-zero execution

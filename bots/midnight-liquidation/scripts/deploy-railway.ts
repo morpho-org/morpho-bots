@@ -34,8 +34,6 @@ import { resolve } from 'node:path'
 const PROJECT_ID = required(Bun.env, 'RAILWAY_PROJECT_ID')
 const ENVIRONMENT = Bun.env.RAILWAY_ENVIRONMENT?.trim() || 'production'
 const DOCKERFILE_PATH = 'bots/midnight-liquidation/Dockerfile'
-const SWAP_MOUNT_PATH = '/config'
-const SWAP_CONFIG_PATH = '/config/swap.json'
 // Repo root is three levels up from this file (scripts → midnight-liquidation → bots → repo root).
 const REPO_ROOT = resolve(import.meta.dir, '..', '..', '..')
 
@@ -92,19 +90,6 @@ function parseServices(raw: string): RailwayService[] {
     .filter(service => service.name)
 }
 
-function parseVolumeMountPaths(raw: string): string[] {
-  const { data } = tryCatch(() => JSON.parse(raw) as unknown)
-  const rows = Array.isArray(data)
-    ? data
-    : isRecord(data) && Array.isArray(data.volumes)
-      ? data.volumes
-      : []
-  return rows
-    .filter(isRecord)
-    .map(row => str(row.mountPath) || str(row.mount_path))
-    .filter(Boolean)
-}
-
 function parseLatestStatus(raw: string): string {
   const { data } = tryCatch(() => JSON.parse(raw) as unknown)
   const rows = Array.isArray(data)
@@ -155,26 +140,6 @@ async function ensureService(name: string): Promise<void> {
   console.log(`Creating service ${name}…`)
   const { error } = await tryCatch(Promise.resolve($`railway add --service ${name} --json`.quiet()))
   if (error) throw new Error(`Failed to create service ${name}: ${stderrOf(error)}`)
-}
-
-async function ensureVolume(service: string, mountPath: string): Promise<void> {
-  const { data } = await tryCatch(Promise.resolve($`railway volume list --json`.quiet().text()))
-  if (typeof data === 'string' && parseVolumeMountPaths(data).includes(mountPath)) {
-    console.log(`Volume at ${mountPath} already exists.`)
-    return
-  }
-  // `railway volume add` attaches to the *linked* service; its own --service flag is broken in CLI
-  // 5.x (panics), so link the target service first, then add without -s.
-  const link = await tryCatch(
-    Promise.resolve($`railway link -p ${PROJECT_ID} -e ${ENVIRONMENT} -s ${service}`.quiet())
-  )
-  if (link.error)
-    throw new Error(`Failed to link ${service} for volume add: ${stderrOf(link.error)}`)
-  const { error } = await tryCatch(
-    Promise.resolve($`railway volume add -m ${mountPath} --json`.quiet())
-  )
-  if (error) throw new Error(`Failed to add volume ${mountPath} to ${service}: ${stderrOf(error)}`)
-  console.log(`Added volume at ${mountPath} to ${service}.`)
 }
 
 // Non-secret variable. `kv` is a single "KEY=VALUE" arg; only the key is logged.
@@ -241,19 +206,32 @@ const rpcUrl = required(Bun.env, 'RPC_URL')
 const liquidatorPrivateKey = required(Bun.env, 'LIQUIDATOR_PRIVATE_KEY')
 assertPrivateKey(liquidatorPrivateKey)
 
+// Venues are enabled by the presence of their API key. The bot hard-fails at boot with no key unless
+// ALLOW_BAD_DEBT_ONLY=true — so require the operator to pass a venue key (pushed as a secret) or
+// explicitly opt into bad-debt-only here, rather than deploying a service that crash-loops.
+const zeroxKey = Bun.env.ZEROX_API_KEY?.trim()
+const oneinchKey = Bun.env.ONEINCH_API_KEY?.trim()
+const allowBadDebtOnly = Bun.env.ALLOW_BAD_DEBT_ONLY?.trim().toLowerCase() === 'true'
+if (!zeroxKey && !oneinchKey && !allowBadDebtOnly) {
+  throw new Error(
+    'Set ZEROX_API_KEY and/or ONEINCH_API_KEY, or ALLOW_BAD_DEBT_ONLY=true to deploy bad-debt-only.'
+  )
+}
+
 await ensureContext()
 
 // --- bot: the liquidation runner. Borrower discovery polls the markets liquidation-candidates API
-// (LIQUIDATION_CANDIDATES_API_URL defaults to the public endpoint), so there is nothing else to
-// provision. Swap config lives on a volume at /config (uploaded out-of-band — see manual steps below).
+// and the markets whitelist comes from the Midnight markets API (both public by default), so there is
+// nothing else to provision — no swap-config file/volume anymore.
 await ensureService('bot')
-await ensureVolume('bot', SWAP_MOUNT_PATH)
 await setVar('bot', 'CHAIN_ID=8453')
 await setVar('bot', `RAILWAY_DOCKERFILE_PATH=${DOCKERFILE_PATH}`)
-await setVar('bot', `SWAP_CONFIG_PATH=${SWAP_CONFIG_PATH}`)
 await setVar('bot', 'LOG_LEVEL=info')
 await setSecret('bot', 'RPC_URL', rpcUrl)
 await setSecret('bot', 'LIQUIDATOR_PRIVATE_KEY', liquidatorPrivateKey)
+if (zeroxKey) await setSecret('bot', 'ZEROX_API_KEY', zeroxKey)
+if (oneinchKey) await setSecret('bot', 'ONEINCH_API_KEY', oneinchKey)
+if (allowBadDebtOnly) await setVar('bot', 'ALLOW_BAD_DEBT_ONLY=true')
 await deployService('bot')
 
 const botStatus = await waitForDeploy('bot')
@@ -263,16 +241,11 @@ console.log('=== Deployment status ===')
 console.log(`  bot: ${botStatus}`)
 console.log('')
 console.log('=== Manual steps ===')
-console.log(`  1. Upload swap.json into the bot's ${SWAP_MOUNT_PATH} volume to enable routed`)
-console.log('     liquidations (the bot boots without it — no routes: it identifies borrowers and')
-console.log('     realizes bad debt but skips routed liquidations). The volume mounts only into a')
-console.log('     running container, so do this once the bot is up:')
-console.log(`       railway volume files upload ./swap.config.json ${SWAP_CONFIG_PATH} --overwrite`)
-console.log('     (prompts for the volume; or pass --volume <name> before the subcommand. Shape:')
-console.log(
-  '     bots/midnight-liquidation/README.md.) Restart the bot afterward to pick up routes.'
-)
-console.log('  2. The bot still needs a funded key + a real RPC before it can broadcast.')
+console.log('  1. The bot needs a funded liquidator key + a real RPC before it can broadcast.')
+if (!zeroxKey && !oneinchKey) {
+  console.log('  2. Deployed in bad-debt-only mode (no venue key). Add ZEROX_API_KEY and/or')
+  console.log('     ONEINCH_API_KEY and drop ALLOW_BAD_DEBT_ONLY to enable swap-liquidations.')
+}
 
 // FAILED/TIMEOUT signal a real build or platform problem; a bot CRASH pre-config is expected.
 process.exitCode = botStatus === 'FAILED' || botStatus === 'TIMEOUT' ? 1 : 0

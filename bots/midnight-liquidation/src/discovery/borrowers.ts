@@ -1,7 +1,14 @@
 import type { Logger } from '@repo/bot-kit'
 import type { Address, Hex } from 'viem'
 
-import { delay, ensureError, parseJsonResponse, tryCatch } from '@repo/utils'
+import {
+  backoffMs,
+  delay,
+  ensureError,
+  parseJsonResponse,
+  retryAfterMs,
+  tryCatch
+} from '@repo/utils'
 import { getAddress, isAddress, isHex } from 'viem'
 
 /** A candidate position to evaluate: a (market, borrower) pair the API flagged as at-risk. */
@@ -115,16 +122,6 @@ export async function discoverBorrowers(
 
 /** Minimal `fetch` shape the source calls — the global `fetch` satisfies it; test fakes need not. */
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>
-
-function backoffMs(attempt: number): number {
-  return 200 * 2 ** attempt
-}
-
-function retryAfterMs(header: string | null): number | undefined {
-  if (!header) return undefined
-  const seconds = Number(header)
-  return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : undefined
-}
 
 /**
  * Runtime adapter: a {@link FetchCandidatePage} backed by the liquidation-candidates HTTP endpoint.

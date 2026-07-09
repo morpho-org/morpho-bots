@@ -1,7 +1,7 @@
 import { getAddress, isHex } from 'viem'
 
 import type { RateLimitedClient } from '../http-client'
-import type { QuoteParameters, Swap } from '../types'
+import type { PriceParameters, PriceQuote, QuoteParameters, Swap } from '../types'
 
 import { BPS, ONEINCH_BASE_URL, ONEINCH_ROUTER } from '../constants'
 import { QuoteError } from '../types'
@@ -63,4 +63,27 @@ export async function quoteOneInch(
     expectedAmountOut,
     amountOutMinimum: (expectedAmountOut * (BPS - BigInt(params.slippageBps))) / BPS
   }
+}
+
+/**
+ * Indicative 1inch price via the Classic Swap `/quote` endpoint: same routing as `/swap` but returns
+ * only `dstAmount` (no `tx`, no taker), so it is the cheap probe used to rank venues by output.
+ */
+export async function priceOneInch(
+  client: RateLimitedClient,
+  entry: OneInchEntry,
+  params: PriceParameters
+): Promise<PriceQuote> {
+  const json = await client.getJson<{ dstAmount?: string }>({
+    venue: '1inch',
+    url: `${entry.baseUrl ?? ONEINCH_BASE_URL}/swap/v6.1/${params.chainId}/quote`,
+    searchParams: {
+      src: params.tokenIn,
+      dst: params.tokenOut,
+      amount: params.amountIn.toString()
+    }
+  })
+
+  if (!json.dstAmount) throw new QuoteError('no_route', '1inch: no route for this pair/size')
+  return { expectedAmountOut: BigInt(json.dstAmount) }
 }

@@ -6,7 +6,7 @@ import type { QuoteParameters } from '../../src/types'
 
 import { ONEINCH_ROUTER } from '../../src/constants'
 import { QuoteError } from '../../src/types'
-import { quoteOneInch } from '../../src/venues/oneinch'
+import { priceOneInch, quoteOneInch } from '../../src/venues/oneinch'
 
 const TARGET = getAddress('0xaAaAaAaaAaAaAaaAaAAAAAAAAaaaAaAaAaaAaaAa')
 const COLLATERAL = getAddress('0x7777777777777777777777777777777777777777')
@@ -75,5 +75,26 @@ describe('quoteOneInch', () => {
       e instanceof QuoteError ? e.reason : 'other'
     )
     expect(reason).toBe('api_error')
+  })
+})
+
+describe('priceOneInch', () => {
+  const priceParams = { chainId: 8453, tokenIn: COLLATERAL, tokenOut: LOAN, amountIn: 100n }
+
+  it('hits the indicative /quote endpoint (no from) and returns dstAmount', async () => {
+    const { client, calls } = fakeClient({ dstAmount: '2000' })
+    const quote = await priceOneInch(client, {}, priceParams)
+
+    expect(quote.expectedAmountOut).toBe(2000n)
+    expect(calls[0]?.searchParams).toMatchObject({ src: COLLATERAL, dst: LOAN, amount: '100' })
+    expect(calls[0]?.searchParams?.from).toBeUndefined()
+  })
+
+  it('throws no_route when there is no dstAmount', async () => {
+    const { client } = fakeClient({})
+    const reason = await priceOneInch(client, {}, priceParams).catch(e =>
+      e instanceof QuoteError ? e.reason : 'other'
+    )
+    expect(reason).toBe('no_route')
   })
 })
