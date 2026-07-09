@@ -36,6 +36,15 @@ export const CALLBACK_SUCCESS: Hex =
 export const SETTLED_COOLDOWN_BLOCKS = 20n
 
 /**
+ * Max age of the listed-markets whitelist before it is treated as EMPTY (fail-closed). The
+ * whitelist normally refreshes every `markets.refreshMs` (default 60s) with last-known-good
+ * surviving transient API failures; this ceiling bounds how long a stale set — e.g. one restored
+ * from a state file written before an outage — may keep a since-delisted market in scope. Sized
+ * well above the refresh interval so ordinary API blips never trip it.
+ */
+export const LISTED_MARKETS_MAX_AGE_MS = 10 * 60_000
+
+/**
  * Basis-point denominator (100% = 10_000 bps) for the sizing layer's `seizeCapMarginBps` math.
  * `@repo/swaps` carries its own copy for slippage/route-quality math — kept separate so protocol
  * sizing never depends on the swap-quoting package.

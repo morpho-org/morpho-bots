@@ -74,7 +74,7 @@ const DEFAULT_MAX_ROUTE_IMPACT_BPS = 500 // reject an aggregator route >5% below
 const DEFAULT_BACKOFF_BASE_BLOCKS = 2n
 const DEFAULT_BACKOFF_MAX_BLOCKS = 64n
 
-type Env = Record<string, string | undefined>
+export type Env = Record<string, string | undefined>
 
 /** Off-chain quoting and per-position failure-backoff tunables. */
 export type QuotingConfig = {

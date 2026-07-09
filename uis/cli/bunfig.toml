@@ -1,0 +1,13 @@
+# Compile the bot cores' soltag `sol``` lens templates when the CLI runs (`bun src/main.ts …`) and
+# for `bun test` from this directory. Each plugin self-scopes to its own package's files, so both can
+# be preloaded. Mirrors the root bunfig's [test] preload list — keep the two in sync.
+preload = [
+  "../../packages/midnight-liquidation/soltag.preload.ts",
+  "../../packages/blue-liquidation/soltag.preload.ts"
+]
+
+[test]
+preload = [
+  "../../packages/midnight-liquidation/soltag.preload.ts",
+  "../../packages/blue-liquidation/soltag.preload.ts"
+]
