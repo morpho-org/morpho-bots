@@ -12,26 +12,22 @@ import { loadConfig } from '../src/config'
 const MIDNIGHT = '0x1111111111111111111111111111111111111111' as Address
 const EXECUTOOOR = '0x3333333333333333333333333333333333333333'
 const COLLATERAL = '0x4444444444444444444444444444444444444444'
-const ROUTER = '0x5555555555555555555555555555555555555555'
 const PRIVATE_KEY = `0x${'a'.repeat(64)}`
 
 const CHAIN_MAP: Record<number, ChainConfig> = {
   [mainnet.id]: { chain: mainnet, midnight: MIDNIGHT }
 }
 
-const SWAP_JSON = JSON.stringify({
-  [mainnet.id]: { [COLLATERAL]: { router: ROUTER, fee: 500, slippageBps: 50 } }
-})
+const deps = { chainMap: CHAIN_MAP }
 
-const deps = { chainMap: CHAIN_MAP, readFile: () => SWAP_JSON }
-
+// A venue API key is present by default so most cases exercise the armed (not bad-debt-only) posture.
 function baseEnv(overrides: Record<string, string | undefined> = {}) {
   return {
     CHAIN_ID: String(mainnet.id),
     RPC_URL: 'https://rpc.example',
     LIQUIDATOR_PRIVATE_KEY: PRIVATE_KEY,
     EXECUTOOOR_ADDRESS: EXECUTOOOR,
-    SWAP_CONFIG_PATH: '/swap.json',
+    ZEROX_API_KEY: 'zerox-key',
     ...overrides
   }
 }
@@ -48,15 +44,27 @@ describe('loadConfig', () => {
     expect(config.sendRpcUrl).toBeUndefined()
     expect(config.executooorAddress).toBe(getAddress(EXECUTOOOR))
     expect(config.discovery.apiUrl).toBe(
-      'https://api.morpho.dev/markets/midnight/liquidation-candidates'
+      'https://api.morpho.org/markets/midnight/liquidation-candidates'
     )
     expect(config.discovery.healthFactorLte).toBe(1.02)
     expect(config.maxFeeWei).toBe(parseGwei('300'))
     expect(config.cacheDir).toBe('.cache')
     expect(config.logLevel).toBe('info')
-    const entry = config.swapConfig[String(mainnet.id)]?.[COLLATERAL]
-    expect(entry?.venue).toBe('uniswap-v3') // legacy entry (no `venue`) defaults to uniswap-v3
-    if (entry?.venue === 'uniswap-v3') expect(entry.router).toBe(getAddress(ROUTER))
+
+    // Venue enablement is inferred from the present API key; global routing knobs take their defaults.
+    expect(config.venues.enabled).toEqual(['0x'])
+    expect(config.venues.slippageBps).toBe(100)
+    expect(config.venues.allowBadDebtOnly).toBe(false)
+    expect(config.venues.excludeCollaterals).toEqual([])
+    expect(config.venues.zeroxBaseUrl).toBeUndefined()
+
+    // Market whitelist + probe defaults.
+    expect(config.markets.apiUrl).toBe('https://api.morpho.org/v0/midnight/markets')
+    expect(config.markets.refreshMs).toBe(60_000)
+    expect(config.probe.staleMs).toBe(600_000)
+    expect(config.probe.httpRps).toBe(1)
+    expect(config.probe.ladderWholeTokens).toEqual(['0.01', '0.1', '1', '10', '100'])
+
     // Quoting tunables apply their defaults.
     expect(config.quoting.quoteTimeoutMs).toBe(2500)
     expect(config.quoting.httpRps).toBe(2)
@@ -86,7 +94,7 @@ describe('loadConfig', () => {
 
   it('resolves the built-in Base chain config from the default map', () => {
     // No chainMap injected → exercises the real CHAIN_MAP populated with Base.
-    const config = loadConfig(baseEnv({ CHAIN_ID: '8453' }), { readFile: () => SWAP_JSON })
+    const config = loadConfig(baseEnv({ CHAIN_ID: '8453' }))
     expect(config.chainId).toBe(8453)
     expect(config.chain.id).toBe(8453)
     expect(config.midnight).toBe(getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A'))
@@ -153,56 +161,93 @@ describe('loadConfig', () => {
     )
   })
 
-  it('throws when the swap config file is malformed', () => {
-    const badDeps = { chainMap: CHAIN_MAP, readFile: () => '{ not json' }
-    expect(() => loadConfig(baseEnv(), badDeps)).toThrow(/Failed to load SWAP_CONFIG_PATH/)
+  // --- Venue enablement -----------------------------------------------------
+
+  it('enables 1inch when only ONEINCH_API_KEY is set', () => {
+    const config = loadConfig(baseEnv({ ZEROX_API_KEY: undefined, ONEINCH_API_KEY: 'k' }), deps)
+    expect(config.venues.enabled).toEqual(['1inch'])
   })
 
-  it('loads an empty swap config (no routes) when SWAP_CONFIG_PATH is unset', () => {
-    const config = loadConfig(baseEnv({ SWAP_CONFIG_PATH: undefined }), deps)
-    expect(config.swapConfig).toEqual({})
+  it('enables both venues when both keys are set', () => {
+    const config = loadConfig(baseEnv({ ONEINCH_API_KEY: 'k' }), deps)
+    expect(config.venues.enabled).toEqual(['0x', '1inch'])
   })
 
-  it('loads an empty swap config when the file is absent (ENOENT), not fatal', () => {
-    const absentDeps = {
-      chainMap: CHAIN_MAP,
-      readFile: () => {
-        throw Object.assign(new Error('no such file or directory'), { code: 'ENOENT' })
-      }
-    }
-    const config = loadConfig(baseEnv(), absentDeps)
-    expect(config.swapConfig).toEqual({})
-  })
-
-  it('throws on a non-ENOENT read failure (e.g. permissions)', () => {
-    const eaccesDeps = {
-      chainMap: CHAIN_MAP,
-      readFile: () => {
-        throw Object.assign(new Error('permission denied'), { code: 'EACCES' })
-      }
-    }
-    expect(() => loadConfig(baseEnv(), eaccesDeps)).toThrow(/Failed to read SWAP_CONFIG_PATH/)
-  })
-
-  it('throws when a referenced venue needs an API key that is not set', () => {
-    const zeroxJson = JSON.stringify({
-      [mainnet.id]: { [COLLATERAL]: { venue: '0x', slippageBps: 50 } }
-    })
-    expect(() => loadConfig(baseEnv(), { chainMap: CHAIN_MAP, readFile: () => zeroxJson })).toThrow(
-      /venue '0x'.*ZEROX_API_KEY is not set/
+  it('throws when no venue API key is set and bad-debt-only is not opted into', () => {
+    expect(() => loadConfig(baseEnv({ ZEROX_API_KEY: undefined }), deps)).toThrow(
+      /No venue API keys set/
     )
   })
 
-  it('boots when the referenced venue API key is present', () => {
-    const zeroxJson = JSON.stringify({
-      [mainnet.id]: { [COLLATERAL]: { venue: '0x', slippageBps: 50 } }
-    })
-    const config = loadConfig(baseEnv({ ZEROX_API_KEY: 'key-123' }), {
-      chainMap: CHAIN_MAP,
-      readFile: () => zeroxJson
-    })
-    expect(config.swapConfig[String(mainnet.id)]?.[COLLATERAL]?.venue).toBe('0x')
+  it('boots in bad-debt-only mode (no enabled venues) when ALLOW_BAD_DEBT_ONLY=true', () => {
+    const config = loadConfig(
+      baseEnv({ ZEROX_API_KEY: undefined, ALLOW_BAD_DEBT_ONLY: 'true' }),
+      deps
+    )
+    expect(config.venues.enabled).toEqual([])
+    expect(config.venues.allowBadDebtOnly).toBe(true)
   })
+
+  it('throws on a non-boolean ALLOW_BAD_DEBT_ONLY', () => {
+    expect(() => loadConfig(baseEnv({ ALLOW_BAD_DEBT_ONLY: 'yes' }), deps)).toThrow(
+      /ALLOW_BAD_DEBT_ONLY must be "true" or "false"/
+    )
+  })
+
+  it('parses SLIPPAGE_BPS and rejects an out-of-range value', () => {
+    expect(loadConfig(baseEnv({ SLIPPAGE_BPS: '250' }), deps).venues.slippageBps).toBe(250)
+    expect(() => loadConfig(baseEnv({ SLIPPAGE_BPS: '20000' }), deps)).toThrow(
+      /SLIPPAGE_BPS must be <= 10000/
+    )
+  })
+
+  it('parses EXCLUDE_COLLATERALS into checksummed addresses and rejects a malformed entry', () => {
+    const config = loadConfig(baseEnv({ EXCLUDE_COLLATERALS: `${COLLATERAL}, ${MIDNIGHT}` }), deps)
+    expect(config.venues.excludeCollaterals).toEqual([getAddress(COLLATERAL), getAddress(MIDNIGHT)])
+    expect(() => loadConfig(baseEnv({ EXCLUDE_COLLATERALS: 'nope' }), deps)).toThrow(
+      /EXCLUDE_COLLATERALS contains an invalid address/
+    )
+  })
+
+  it('rejects a malformed ZEROX_BASE_URL', () => {
+    expect(() => loadConfig(baseEnv({ ZEROX_BASE_URL: 'not a url' }), deps)).toThrow(
+      /ZEROX_BASE_URL is not a valid URL/
+    )
+  })
+
+  // --- Markets whitelist + probe --------------------------------------------
+
+  it('overrides the markets API URL and refresh interval from env', () => {
+    const config = loadConfig(
+      baseEnv({ MARKETS_API_URL: 'https://custom.example/markets', MARKETS_REFRESH_MS: '5000' }),
+      deps
+    )
+    expect(config.markets.apiUrl).toBe('https://custom.example/markets')
+    expect(config.markets.refreshMs).toBe(5000)
+  })
+
+  it('throws on a malformed MARKETS_API_URL', () => {
+    expect(() => loadConfig(baseEnv({ MARKETS_API_URL: 'not a url' }), deps)).toThrow(
+      /MARKETS_API_URL is not a valid URL/
+    )
+  })
+
+  it('parses PROBE_LADDER into raw string sizes and rejects a malformed element', () => {
+    expect(
+      loadConfig(baseEnv({ PROBE_LADDER: '0.5, 5, 50' }), deps).probe.ladderWholeTokens
+    ).toEqual(['0.5', '5', '50'])
+    expect(() => loadConfig(baseEnv({ PROBE_LADDER: '1,0,10' }), deps)).toThrow(
+      /PROBE_LADDER must be comma-separated positive numbers/
+    )
+  })
+
+  it('parses probe cadence knobs from env', () => {
+    const config = loadConfig(baseEnv({ PROBE_STALE_MS: '30000', PROBE_HTTP_RPS: '2' }), deps)
+    expect(config.probe.staleMs).toBe(30_000)
+    expect(config.probe.httpRps).toBe(2)
+  })
+
+  // --- Quoting + discovery (unchanged) --------------------------------------
 
   it('parses quoting tunables from env, overriding defaults', () => {
     const config = loadConfig(
@@ -217,12 +262,6 @@ describe('loadConfig', () => {
   it('throws on an out-of-range MAX_ROUTE_IMPACT_BPS', () => {
     expect(() => loadConfig(baseEnv({ MAX_ROUTE_IMPACT_BPS: '20000' }), deps)).toThrow(
       /MAX_ROUTE_IMPACT_BPS must be <= 10000/
-    )
-  })
-
-  it('throws on an out-of-range SEIZE_CAP_MARGIN_BPS', () => {
-    expect(() => loadConfig(baseEnv({ SEIZE_CAP_MARGIN_BPS: '20000' }), deps)).toThrow(
-      /SEIZE_CAP_MARGIN_BPS must be <= 10000/
     )
   })
 

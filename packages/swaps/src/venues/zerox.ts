@@ -1,7 +1,7 @@
 import { getAddress, isHex } from 'viem'
 
 import type { RateLimitedClient } from '../http-client'
-import type { QuoteParameters, Swap } from '../types'
+import type { PriceParameters, PriceQuote, QuoteParameters, Swap } from '../types'
 
 import { ZEROX_ALLOWANCE_HOLDER, ZEROX_BASE_URL } from '../constants'
 import { QuoteError } from '../types'
@@ -63,4 +63,31 @@ export async function quoteZerox(
     expectedAmountOut: BigInt(json.buyAmount ?? '0'),
     amountOutMinimum: BigInt(json.minBuyAmount ?? '0')
   }
+}
+
+/**
+ * Indicative 0x price via the AllowanceHolder `/price` endpoint: same routing as `/quote` but no
+ * taker/allowance and no executable calldata, so it is the cheap probe used to rank venues by output.
+ * Returns only the buy amount (no min-out, no `transaction`).
+ */
+export async function priceZerox(
+  client: RateLimitedClient,
+  entry: ZeroxEntry,
+  params: PriceParameters
+): Promise<PriceQuote> {
+  const json = await client.getJson<{ liquidityAvailable?: boolean; buyAmount?: string }>({
+    venue: '0x',
+    url: `${entry.baseUrl ?? ZEROX_BASE_URL}/swap/allowance-holder/price`,
+    searchParams: {
+      chainId: String(params.chainId),
+      sellToken: params.tokenIn,
+      buyToken: params.tokenOut,
+      sellAmount: params.amountIn.toString()
+    }
+  })
+
+  if (json.liquidityAvailable === false || !json.buyAmount) {
+    throw new QuoteError('no_route', '0x: no liquidity available for this pair/size')
+  }
+  return { expectedAmountOut: BigInt(json.buyAmount) }
 }

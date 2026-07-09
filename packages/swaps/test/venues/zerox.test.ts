@@ -6,7 +6,7 @@ import type { QuoteParameters } from '../../src/types'
 
 import { ZEROX_ALLOWANCE_HOLDER } from '../../src/constants'
 import { QuoteError } from '../../src/types'
-import { quoteZerox } from '../../src/venues/zerox'
+import { priceZerox, quoteZerox } from '../../src/venues/zerox'
 
 const TARGET = getAddress('0xaAaAaAaaAaAaAaaAaAAAAAAAAaaaAaAaAaaAaaAa')
 const SPENDER = getAddress('0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB')
@@ -83,6 +83,32 @@ describe('quoteZerox', () => {
   it('throws no_route when liquidity is unavailable', async () => {
     const { client } = fakeClient({ liquidityAvailable: false })
     const reason = await quoteZerox(client, {}, params).catch(e =>
+      e instanceof QuoteError ? e.reason : 'other'
+    )
+    expect(reason).toBe('no_route')
+  })
+})
+
+describe('priceZerox', () => {
+  const priceParams = { chainId: 8453, tokenIn: COLLATERAL, tokenOut: LOAN, amountIn: 100n }
+
+  it('hits the indicative /price endpoint (no taker) and returns the buy amount', async () => {
+    const { client, calls } = fakeClient({ liquidityAvailable: true, buyAmount: '2000' })
+    const quote = await priceZerox(client, {}, priceParams)
+
+    expect(quote.expectedAmountOut).toBe(2000n)
+    expect(calls[0]?.url).toContain('/swap/allowance-holder/price')
+    expect(calls[0]?.searchParams).toMatchObject({
+      sellToken: COLLATERAL,
+      buyToken: LOAN,
+      sellAmount: '100'
+    })
+    expect(calls[0]?.searchParams?.taker).toBeUndefined()
+  })
+
+  it('throws no_route when liquidity is unavailable', async () => {
+    const { client } = fakeClient({ liquidityAvailable: false })
+    const reason = await priceZerox(client, {}, priceParams).catch(e =>
       e instanceof QuoteError ? e.reason : 'other'
     )
     expect(reason).toBe('no_route')

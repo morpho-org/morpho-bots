@@ -47,6 +47,22 @@ export type Swap = {
   amountOutMinimum: bigint
 }
 
+/**
+ * Input to a venue's *indicative* price probe. A lighter cousin of {@link QuoteParameters}: no
+ * `executor`/`slippageBps`/`referenceAmountOut`, because a probe only measures how much a venue would
+ * pay out for a given sell size — it never mints executable calldata, needs no taker, and is compared
+ * across venues to rank them (see the venue selector), not sanity-checked against the oracle.
+ */
+export type PriceParameters = {
+  chainId: number
+  tokenIn: Address // sell token (collateral)
+  tokenOut: Address // buy token (loan)
+  amountIn: bigint // the sell size to price
+}
+
+/** A venue's indicative output for a {@link PriceParameters} probe — raw integer `tokenOut` units. */
+export type PriceQuote = { expectedAmountOut: bigint }
+
 /** Why an executable quote could not be produced (for logging + backoff). */
 export type QuoteFailureReason = 'timeout' | 'rate_limited' | 'no_route' | 'api_error' | 'bad_route'
 

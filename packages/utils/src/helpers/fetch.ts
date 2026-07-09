@@ -2,6 +2,18 @@ import type { Result } from '../types/index'
 
 import { tryCatch } from './tryCatch'
 
+/** Exponential backoff (ms) for retry attempt `n` (0-indexed): 200·2ⁿ → 200, 400, 800, … */
+export function backoffMs(attempt: number): number {
+  return 200 * 2 ** attempt
+}
+
+/** Parses a `Retry-After` header (delta-seconds) into ms; `undefined` if absent or malformed. */
+export function retryAfterMs(header: string | null): number | undefined {
+  if (!header) return undefined
+  const seconds = Number(header)
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : undefined
+}
+
 /**
  * Safely parse a `Response` as JSON. When parsing fails, reads the body as text to detect HTML
  * error pages (e.g. Cloudflare 502/429) and extracts the `<title>` or a body snippet so that

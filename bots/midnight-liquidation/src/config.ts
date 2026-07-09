@@ -1,16 +1,17 @@
 import type { LogLevel } from '@repo/bot-kit'
-import type { SwapConfig } from '@repo/swaps'
+import type { Venue } from '@repo/swaps'
 import type { Address, Chain, Hex } from 'viem'
 
 import { Executor } from '@repo/contracts'
-import { parseSwapConfig, VENUE_API_KEY_ENV } from '@repo/swaps'
 import { tryCatch } from '@repo/utils'
-import { readFileSync } from 'node:fs'
 import { getAddress, isAddress, isHex, parseGwei } from 'viem'
 import { base } from 'viem/chains'
 
-// The per-collateral swap routing config (SWAP_CONFIG_PATH JSON) — schemas, `parseSwapConfig`, and
-// `VENUE_API_KEY_ENV` — lives in `@repo/swaps`; this module only reads/validates the file and env.
+// Swap venues are no longer a per-collateral config file: markets come from the Midnight markets API
+// (the whitelist), and the enabled venues are inferred from which venue API keys are present in env.
+// The 0x/1inch quoting adapters + the venue selector live in `@repo/swaps`.
+const ZEROX_API_KEY_ENV = 'ZEROX_API_KEY'
+const ONEINCH_API_KEY_ENV = 'ONEINCH_API_KEY'
 
 // ---------------------------------------------------------------------------
 // Per-chain Midnight deployment map
@@ -36,7 +37,7 @@ const PRIVATE_KEY_HEX_LENGTH = 66 // '0x' + 32 bytes
 // Borrower-candidate discovery defaults (the markets liquidation-candidates endpoint). The URL is a
 // public, unauthenticated endpoint, so it is safe to default in code (override via env per-env). The
 // health-factor cutoff is intentionally tight — matured positions are always included regardless.
-const DEFAULT_CANDIDATES_API_URL = 'https://api.morpho.dev/markets/midnight/liquidation-candidates'
+const DEFAULT_CANDIDATES_API_URL = 'https://api.morpho.org/markets/midnight/liquidation-candidates'
 const DEFAULT_HEALTH_FACTOR_LTE = 1.02
 
 // Quoting tunables, all optional with safe defaults so existing deployments are unaffected.
@@ -48,6 +49,18 @@ const DEFAULT_MAX_ROUTE_IMPACT_BPS = 500 // reject an aggregator route >5% below
 const DEFAULT_SEIZE_CAP_MARGIN_BPS = 30 // shave the repay cap when sizing a cap-binding seize — one-block oracle-drift headroom; calibratable
 const DEFAULT_BACKOFF_BASE_BLOCKS = 2n
 const DEFAULT_BACKOFF_MAX_BLOCKS = 64n
+
+// Market whitelist + venue-probing defaults. The markets API is Morpho's own (not a rate-limited
+// venue), so it can be refreshed briskly. The probe uses an ISOLATED rps budget (see index.ts) so its
+// bursts never queue ahead of a time-sensitive firm quote; log-scaled ladder sizes are whole
+// collateral tokens (converted per-collateral to base units). `PROBE_STALE_MS` caps probe cadence per
+// pair; a pair is re-probed only when a liquidatable position touches it after the cache goes stale.
+const DEFAULT_MARKETS_API_URL = 'https://api.morpho.org/v0/midnight/markets'
+const DEFAULT_MARKETS_REFRESH_MS = 60_000
+const DEFAULT_SLIPPAGE_BPS = 100
+const DEFAULT_PROBE_STALE_MS = 600_000
+const DEFAULT_PROBE_HTTP_RPS = 1
+const DEFAULT_PROBE_LADDER = ['0.01', '0.1', '1', '10', '100']
 
 type Env = Record<string, string | undefined>
 
@@ -84,6 +97,43 @@ export type DiscoveryConfig = {
   healthFactorLte: number
 }
 
+/**
+ * Enabled swap venues + global routing knobs. Venues are enabled by the PRESENCE of their API key in
+ * env (secrets themselves are read at the point of use in index.ts, never stored here). `slippageBps`
+ * is global now that routing is not per-collateral; `baseUrl` overrides are optional per-venue hosts.
+ * `allowBadDebtOnly` gates the degraded no-venue posture (discover + realize bad debt, never swap).
+ */
+export type VenueConfig = {
+  enabled: Venue[]
+  slippageBps: number
+  allowBadDebtOnly: boolean
+  zeroxBaseUrl: string | undefined
+  oneinchBaseUrl: string | undefined
+  /** Collaterals the operator refuses to seize/hold — skipped (no quote) even in a listed market. */
+  excludeCollaterals: Address[]
+}
+
+/**
+ * The Midnight markets API used as the market WHITELIST: only listed markets are discovered, probed,
+ * and liquidated. Over-inclusion is impossible (fail-closed); the on-chain lens remains the
+ * correctness boundary. `refreshMs` caps how often the (cheap, non-rate-limited) endpoint is polled.
+ */
+export type MarketsConfig = {
+  apiUrl: string
+  refreshMs: number
+}
+
+/**
+ * Venue-probing knobs. The probe fetches indicative quotes across enabled venues at each log-scaled
+ * `ladderWholeTokens` size, caches the best-first ranking per pair for `staleMs`, and runs on its own
+ * `httpRps` budget (isolated from firm quotes). Sizes stay as raw strings until converted per-collateral.
+ */
+export type ProbeConfig = {
+  staleMs: number
+  httpRps: number
+  ladderWholeTokens: string[]
+}
+
 export type Config = {
   chainId: number
   chain: Chain
@@ -101,7 +151,12 @@ export type Config = {
   executooorAddress: Address
   /** Borrower-candidate discovery (the markets liquidation-candidates endpoint). */
   discovery: DiscoveryConfig
-  swapConfig: SwapConfig
+  /** Market whitelist (the Midnight markets API). */
+  markets: MarketsConfig
+  /** Enabled venues + global routing knobs. */
+  venues: VenueConfig
+  /** Venue-probing knobs. */
+  probe: ProbeConfig
   quoting: QuotingConfig
   maxFeeWei: bigint
   cacheDir: string
@@ -167,17 +222,48 @@ function isLogLevel(value: string): value is LogLevel {
   return (LOG_LEVELS as readonly string[]).includes(value)
 }
 
-// A genuinely absent swap config file (path set, file not there yet — e.g. a volume not seeded on
-// first deploy) is non-fatal: the bot runs with no routes (skips routed liquidations, still realizes
-// bad debt). Any other read error (permissions, etc.) and any malformed/invalid content stay fatal.
-// Narrows the Node `ENOENT` error code.
-function isFileNotFound(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    (error as { code?: unknown }).code === 'ENOENT'
-  )
+// Parses an optional boolean env var (`true`/`false`, case-insensitive), with a default. Any other
+// non-empty value is operator error and fails loud.
+function boolEnv(env: Env, name: string, def: boolean): boolean {
+  const raw = env[name]?.trim().toLowerCase()
+  if (!raw) return def
+  if (raw !== 'true' && raw !== 'false') {
+    throw new Error(`${name} must be "true" or "false", got: ${env[name]}`)
+  }
+  return raw === 'true'
+}
+
+// Parses an optional comma-separated list of positive decimals (whole-token probe sizes) into raw
+// string tokens, with a default. Fails loud on any empty/non-positive/malformed element rather than
+// silently dropping it (a missing ladder point would skew the size buckets). Strings are kept raw so
+// the selector converts them with `safeParseUnits` per-collateral (no lossy Number round-trip).
+function ladderEnv(env: Env, name: string, def: string[]): string[] {
+  const raw = env[name]?.trim()
+  if (!raw) return def
+  const sizes = raw.split(',').map(part => part.trim())
+  for (const size of sizes) {
+    if (!/^\d+(\.\d+)?$/.test(size) || Number(size) <= 0) {
+      throw new Error(`${name} must be comma-separated positive numbers, got: ${env[name]}`)
+    }
+  }
+  return sizes
+}
+
+// Parses an optional comma-separated list of addresses into checksummed `Address`es, with `[]` as the
+// default. Fails loud on any malformed element (operator error).
+function addressListEnv(env: Env, name: string): Address[] {
+  const raw = env[name]?.trim()
+  if (!raw) return []
+  return raw
+    .split(',')
+    .map(part => part.trim())
+    .filter(part => part.length > 0)
+    .map(part => {
+      if (!isAddress(part, { strict: false })) {
+        throw new Error(`${name} contains an invalid address: ${part}`)
+      }
+      return getAddress(part)
+    })
 }
 
 /**
@@ -188,15 +274,13 @@ function isFileNotFound(error: unknown): boolean {
  */
 export function loadConfig(
   env: Env = Bun.env,
-  deps: { chainMap?: Record<number, ChainConfig>; readFile?: (path: string) => string } = {}
+  deps: { chainMap?: Record<number, ChainConfig> } = {}
 ): Config {
   const chainMap = deps.chainMap ?? CHAIN_MAP
-  const readFile = deps.readFile ?? (path => readFileSync(path, 'utf8'))
 
   const chainIdRaw = required(env, 'CHAIN_ID')
   if (!/^\d+$/.test(chainIdRaw)) {
-    // Plain decimal only — reject hex (Number('0x1')) and exponent (Number('1e3')) forms so this
-    // agrees with the swap-config chain-id key validation below.
+    // Plain decimal only — reject hex (Number('0x1')) and exponent (Number('1e3')) forms.
     throw new Error(`CHAIN_ID must be a positive integer, got: ${chainIdRaw}`)
   }
   const chainId = Number(chainIdRaw)
@@ -238,42 +322,51 @@ export function loadConfig(
     throw new Error(`MAX_FEE_GWEI must be a positive number, got: ${env.MAX_FEE_GWEI}`)
   }
 
-  // Swap routing is OPTIONAL. With no path set, or a path whose file does not exist yet (e.g. a
-  // volume not seeded on first deploy), the bot still boots: discovery identifies liquidatable
-  // borrowers, routed liquidations are skipped for want of a swap path (`config.no_swap_path`), and
-  // pure bad-debt realization — which needs no swap — is still performed (appropriate: it moves no
-  // operator funds and socializes losses). A file that IS present but malformed/invalid stays fatal
-  // (operator error, not absence). This removes the first-deploy bootstrap deadlock: the bot can't
-  // host the volume upload until it boots, and it couldn't boot without the file.
-  const swapConfigPath = env.SWAP_CONFIG_PATH?.trim()
-  let swapConfig: SwapConfig = {}
-  if (swapConfigPath) {
-    const read = tryCatch(() => readFile(swapConfigPath))
-    if (read.error && !isFileNotFound(read.error)) {
-      throw new Error(`Failed to read SWAP_CONFIG_PATH (${swapConfigPath}): ${read.error.message}`)
-    }
-    const contents = read.data
-    if (contents != null) {
-      const parsed = tryCatch(() => parseSwapConfig(JSON.parse(contents)))
-      if (parsed.error) {
-        throw new Error(
-          `Failed to load SWAP_CONFIG_PATH (${swapConfigPath}): ${parsed.error.message}`
-        )
-      }
-      swapConfig = parsed.data ?? {}
-    }
+  // Enabled venues are inferred from which venue API keys are present — there is no per-collateral
+  // routing file anymore. With no key present the bot can only discover positions and realize pure
+  // bad debt (which needs no swap), never actually swap-liquidate — so that degraded posture must be
+  // opted into explicitly (`ALLOW_BAD_DEBT_ONLY=true`); otherwise fail loud rather than silently run
+  // half-armed (a rotated/forgotten key must not quietly disable liquidations).
+  const allowBadDebtOnly = boolEnv(env, 'ALLOW_BAD_DEBT_ONLY', false)
+  const enabledVenues: Venue[] = []
+  if (env[ZEROX_API_KEY_ENV]?.trim()) enabledVenues.push('0x')
+  if (env[ONEINCH_API_KEY_ENV]?.trim()) enabledVenues.push('1inch')
+  if (enabledVenues.length === 0 && !allowBadDebtOnly) {
+    throw new Error(
+      `No venue API keys set (${ZEROX_API_KEY_ENV} / ${ONEINCH_API_KEY_ENV}). Set at least one, or set ALLOW_BAD_DEBT_ONLY=true to run in bad-debt-only mode.`
+    )
+  }
+  const zeroxBaseUrl = env.ZEROX_BASE_URL?.trim() || undefined
+  if (zeroxBaseUrl && tryCatch(() => new URL(zeroxBaseUrl)).error) {
+    throw new Error(`ZEROX_BASE_URL is not a valid URL: ${zeroxBaseUrl}`)
+  }
+  const oneinchBaseUrl = env.ONEINCH_BASE_URL?.trim() || undefined
+  if (oneinchBaseUrl && tryCatch(() => new URL(oneinchBaseUrl)).error) {
+    throw new Error(`ONEINCH_BASE_URL is not a valid URL: ${oneinchBaseUrl}`)
+  }
+  const venues: VenueConfig = {
+    enabled: enabledVenues,
+    slippageBps: intEnv(env, 'SLIPPAGE_BPS', DEFAULT_SLIPPAGE_BPS, { min: 0, max: 10_000 }),
+    allowBadDebtOnly,
+    zeroxBaseUrl,
+    oneinchBaseUrl,
+    excludeCollaterals: addressListEnv(env, 'EXCLUDE_COLLATERALS')
   }
 
-  // Fail loud if a venue referenced on THIS chain needs an API key that isn't set — half-configured
-  // is worse than not configured. Uniswap-direct needs no key, so a key-free deployment still boots.
-  for (const entry of Object.values(swapConfig[String(chainId)] ?? {})) {
-    if (!entry) continue
-    const keyEnv = VENUE_API_KEY_ENV[entry.venue]
-    if (keyEnv && !env[keyEnv]?.trim()) {
-      throw new Error(
-        `Swap config uses venue '${entry.venue}' for chain ${chainId} but ${keyEnv} is not set`
-      )
-    }
+  // Market whitelist endpoint. Default to the public markets API; fail loud on a malformed override.
+  const marketsApiUrl = env.MARKETS_API_URL?.trim() || DEFAULT_MARKETS_API_URL
+  if (tryCatch(() => new URL(marketsApiUrl)).error) {
+    throw new Error(`MARKETS_API_URL is not a valid URL: ${marketsApiUrl}`)
+  }
+  const markets: MarketsConfig = {
+    apiUrl: marketsApiUrl,
+    refreshMs: intEnv(env, 'MARKETS_REFRESH_MS', DEFAULT_MARKETS_REFRESH_MS, { min: 1 })
+  }
+
+  const probe: ProbeConfig = {
+    staleMs: intEnv(env, 'PROBE_STALE_MS', DEFAULT_PROBE_STALE_MS, { min: 1 }),
+    httpRps: intEnv(env, 'PROBE_HTTP_RPS', DEFAULT_PROBE_HTTP_RPS, { min: 1 }),
+    ladderWholeTokens: ladderEnv(env, 'PROBE_LADDER', DEFAULT_PROBE_LADDER)
   }
 
   const quoting: QuotingConfig = {
@@ -314,7 +407,9 @@ export function loadConfig(
     liquidatorPrivateKey,
     executooorAddress,
     discovery,
-    swapConfig,
+    markets,
+    venues,
+    probe,
     quoting,
     maxFeeWei: parseGwei(maxFeeGwei),
     cacheDir: env.CACHE_DIR?.trim() || DEFAULT_CACHE_DIR,

@@ -17,10 +17,12 @@
  * offer/ratifier path before the other N-1 are touched). `--dry-run` runs discovery + all
  * cryptographic self-checks + prints the capital plan, and sends nothing.
  *
- * Run from the bot directory (so the bunfig soltag preload compiles the lens):
+ * Run from the bot directory (so the bunfig soltag preload compiles the lens). `--config` is this
+ * tool's OWN swap-route file (it needs a WETH route to fund the seed swaps); it is unrelated to the
+ * bot's runtime, which no longer uses a swap-config file:
  *   RPC_URL=... PRIVATE_KEY_LENDER=0x... PRIVATE_KEY_BORROWER=0x... \
  *     bun scripts/seed-liquidatable-positions.ts \
- *       --config configs/example.json --pair WETH/USDC --count 100 --drawdown-bps 0 --dry-run
+ *       --config ./swap.config.json --pair WETH/USDC --count 100 --drawdown-bps 0 --dry-run
  *
  * Never prints secrets (keys, full RPC URL).
  */
@@ -51,6 +53,7 @@ import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
 import { createNonceManager, jsonRpc } from 'viem/nonce'
 
+import type { ApiMarket } from '../src/discovery/markets'
 import type { CollateralParams, Market } from '../src/execution/encode-call'
 import type { Offer } from './seed/offers'
 
@@ -246,13 +249,6 @@ type ApiOracle = {
   collateral_assets: ApiAsset[]
   loan_assets: ApiAsset[]
   trusted_by: unknown[]
-}
-type ApiCollateral = { token: Address; lltv: string; liquidation_cursor: string; oracle: Address }
-type ApiMarket = {
-  chain_id: number
-  market_id: Hex
-  loan_token: Address
-  collaterals: ApiCollateral[]
 }
 
 async function fetchMidnight<T>(path: string): Promise<T> {
