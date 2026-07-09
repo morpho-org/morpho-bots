@@ -60,7 +60,7 @@ function asId(value: unknown): Hex | null {
     return value.length === 32 ? `0x${Buffer.from(value).toString('hex')}` : null
   }
   if (typeof value === 'string') {
-    const hex = value.startsWith('0x') || value.startsWith('0X') ? value : `0x${value}`
+    const hex = value.startsWith('0x') ? value : `0x${value}`
     return /^0x[0-9a-fA-F]{64}$/.test(hex) ? (hex.toLowerCase() as Hex) : null
   }
   return null

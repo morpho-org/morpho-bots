@@ -31,7 +31,6 @@ const CHAIN_MAP: Record<number, ChainConfig> = {
 // ---------------------------------------------------------------------------
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
 const DEFAULT_MAX_FEE_GWEI = '300'
-const DEFAULT_CACHE_DIR = '.cache'
 const PRIVATE_KEY_HEX_LENGTH = 66 // '0x' + 32 bytes
 
 // Borrower-candidate discovery defaults (the markets liquidation-candidates endpoint). The URL is a
@@ -101,12 +100,10 @@ export type DiscoveryConfig = {
  * Enabled swap venues + global routing knobs. Venues are enabled by the PRESENCE of their API key in
  * env (secrets themselves are read at the point of use in index.ts, never stored here). `slippageBps`
  * is global now that routing is not per-collateral; `baseUrl` overrides are optional per-venue hosts.
- * `allowBadDebtOnly` gates the degraded no-venue posture (discover + realize bad debt, never swap).
  */
 export type VenueConfig = {
   enabled: Venue[]
   slippageBps: number
-  allowBadDebtOnly: boolean
   zeroxBaseUrl: string | undefined
   oneinchBaseUrl: string | undefined
   /** Collaterals the operator refuses to seize/hold — skipped (no quote) even in a listed market. */
@@ -159,7 +156,6 @@ export type Config = {
   probe: ProbeConfig
   quoting: QuotingConfig
   maxFeeWei: bigint
-  cacheDir: string
   logLevel: LogLevel
 }
 
@@ -270,7 +266,7 @@ function addressListEnv(env: Env, name: string): Address[] {
  * Reads the full env table into a typed, validated {@link Config}. Throws on any missing
  * required var, malformed value, or unknown `CHAIN_ID` — the bot must fail loud at startup
  * rather than run half-configured. On-chain checks (e.g. that `EXECUTOOOR_ADDRESS` holds code)
- * are deferred to Phase 2 once a public client exists.
+ * run separately at startup in `index.ts` once a public client exists.
  */
 export function loadConfig(
   env: Env = Bun.env,
@@ -347,7 +343,6 @@ export function loadConfig(
   const venues: VenueConfig = {
     enabled: enabledVenues,
     slippageBps: intEnv(env, 'SLIPPAGE_BPS', DEFAULT_SLIPPAGE_BPS, { min: 0, max: 10_000 }),
-    allowBadDebtOnly,
     zeroxBaseUrl,
     oneinchBaseUrl,
     excludeCollaterals: addressListEnv(env, 'EXCLUDE_COLLATERALS')
@@ -412,7 +407,6 @@ export function loadConfig(
     probe,
     quoting,
     maxFeeWei: parseGwei(maxFeeGwei),
-    cacheDir: env.CACHE_DIR?.trim() || DEFAULT_CACHE_DIR,
     logLevel
   }
 }

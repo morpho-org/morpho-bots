@@ -286,7 +286,9 @@ export function createPendingQueue({
       }))
     },
     inflightLabels() {
-      return new Set([...[...pending.values()].map(entry => entry.label), ...settledAt.keys()])
+      const labels = new Set(settledAt.keys())
+      for (const { label } of pending.values()) labels.add(label)
+      return labels
     }
   }
 }

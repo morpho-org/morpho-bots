@@ -48,13 +48,11 @@ describe('loadConfig', () => {
     )
     expect(config.discovery.healthFactorLte).toBe(1.02)
     expect(config.maxFeeWei).toBe(parseGwei('300'))
-    expect(config.cacheDir).toBe('.cache')
     expect(config.logLevel).toBe('info')
 
     // Venue enablement is inferred from the present API key; global routing knobs take their defaults.
     expect(config.venues.enabled).toEqual(['0x'])
     expect(config.venues.slippageBps).toBe(100)
-    expect(config.venues.allowBadDebtOnly).toBe(false)
     expect(config.venues.excludeCollaterals).toEqual([])
     expect(config.venues.zeroxBaseUrl).toBeUndefined()
 
@@ -79,7 +77,6 @@ describe('loadConfig', () => {
         RPC_URL_FALLBACK: 'https://rpc.fallback',
         SEND_RPC_URL: 'https://rpc.send',
         MAX_FEE_GWEI: '42',
-        CACHE_DIR: '/tmp/cache',
         LOG_LEVEL: 'debug'
       }),
       deps
@@ -88,7 +85,6 @@ describe('loadConfig', () => {
     expect(config.rpcUrlFallback).toBe('https://rpc.fallback')
     expect(config.sendRpcUrl).toBe('https://rpc.send')
     expect(config.maxFeeWei).toBe(parseGwei('42'))
-    expect(config.cacheDir).toBe('/tmp/cache')
     expect(config.logLevel).toBe('debug')
   })
 
@@ -185,7 +181,6 @@ describe('loadConfig', () => {
       deps
     )
     expect(config.venues.enabled).toEqual([])
-    expect(config.venues.allowBadDebtOnly).toBe(true)
   })
 
   it('throws on a non-boolean ALLOW_BAD_DEBT_ONLY', () => {

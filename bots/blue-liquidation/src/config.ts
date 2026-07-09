@@ -63,7 +63,6 @@ const CHAIN_MAP: Record<number, ChainConfig> = {
 // ---------------------------------------------------------------------------
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
 const DEFAULT_MAX_FEE_GWEI = '300'
-const DEFAULT_CACHE_DIR = '.cache'
 const PRIVATE_KEY_HEX_LENGTH = 66 // '0x' + 32 bytes
 
 // Quoting tunables, all optional with safe defaults so existing deployments are unaffected.
@@ -103,7 +102,6 @@ export type Config = {
   swapConfig: SwapConfig
   quoting: QuotingConfig
   maxFeeWei: bigint
-  cacheDir: string
   logLevel: LogLevel
 }
 
@@ -156,12 +154,7 @@ function isLogLevel(value: string): value is LogLevel {
 // read error (permissions, etc.) and any malformed/invalid content stay fatal. Narrows the Node
 // `ENOENT` error code.
 function isFileNotFound(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    (error as { code?: unknown }).code === 'ENOENT'
-  )
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT'
 }
 
 /**
@@ -285,7 +278,6 @@ export function loadConfig(
     swapConfig,
     quoting,
     maxFeeWei: parseGwei(maxFeeGwei),
-    cacheDir: env.CACHE_DIR?.trim() || DEFAULT_CACHE_DIR,
     logLevel
   }
 }

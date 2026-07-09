@@ -1,13 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import { keccak256, parseEther, stringToBytes } from 'viem'
 
-import {
-  CALLBACK_SUCCESS,
-  MAX_COLLATERALS_PER_BORROWER,
-  ORACLE_PRICE_SCALE,
-  TIME_TO_MAX_LIF,
-  WAD
-} from '../src/constants'
+import { CALLBACK_SUCCESS, ORACLE_PRICE_SCALE, TIME_TO_MAX_LIF, WAD } from '../src/constants'
 
 describe('protocol constants', () => {
   it('CALLBACK_SUCCESS is keccak256("morpho.midnight.callbackSuccess")', () => {
@@ -24,9 +18,5 @@ describe('protocol constants', () => {
 
   it('TIME_TO_MAX_LIF is 60 minutes expressed in seconds', () => {
     expect(TIME_TO_MAX_LIF).toBe(60n * 60n)
-  })
-
-  it('MAX_COLLATERALS_PER_BORROWER matches the Midnight constant', () => {
-    expect(MAX_COLLATERALS_PER_BORROWER).toBe(16)
   })
 })

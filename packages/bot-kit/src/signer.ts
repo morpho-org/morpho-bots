@@ -1,8 +1,7 @@
 import type { Account, Chain, Hex, Transport } from 'viem'
 
-import { failover } from '@morpho-org/viem-dlc/transports'
 import { tryCatch } from '@repo/utils'
-import { createWalletClient, http, TransactionReceiptNotFoundError } from 'viem'
+import { createWalletClient, TransactionReceiptNotFoundError } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import {
   getBlock,
@@ -14,9 +13,8 @@ import {
 
 import type { GetBaseFee, GetReceipt, SendTx, SyncNonce } from './queue/pending-queue'
 
+import { createHttpTransport } from './transport'
 import { TxSendError } from './tx-error'
-
-const RPC_TIMEOUT_MS = 30_000
 
 /** The signed-send primitives {@link createSigner} returns and `createPendingQueue` injects. */
 export type Signer = {
@@ -43,17 +41,14 @@ export function createSigner(options: {
   sendRpcUrl?: string | undefined
   privateKey: Hex
 }): Signer {
-  const rpc = (url: string) => http(url, { timeout: RPC_TIMEOUT_MS })
   // Sends + the signer's own reads run against the broadcast endpoint (sendRpcUrl ?? rpcUrl). Keeping
   // the nonce/receipt reads on the same endpoint we broadcast to is deliberate: a split view (read
   // nonce from A, send to B) is exactly what drifts the cursor out of sync.
   const sendUrl = options.sendRpcUrl ?? options.rpcUrl
   // viem-dlc's `failover` transport types its options as `unknown`, which isn't assignable to viem's
   // `Transport` (Record options) — the cast is safe (it's a valid runtime transport). The deployless
-  // read client sidesteps this by re-wrapping `failover` in `deployless`.
-  const transport = (
-    options.rpcUrlFallback ? failover([rpc(sendUrl), rpc(options.rpcUrlFallback)]) : rpc(sendUrl)
-  ) as Transport
+  // read client sidesteps this by re-wrapping the base transport in `deployless`.
+  const transport = createHttpTransport(sendUrl, options.rpcUrlFallback) as Transport
   const account = privateKeyToAccount(options.privateKey)
   const client = createWalletClient({ account, chain: options.chain, transport })
   let nextNonce: number | undefined
