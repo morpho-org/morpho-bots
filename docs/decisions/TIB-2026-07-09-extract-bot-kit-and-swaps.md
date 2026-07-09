@@ -2,7 +2,7 @@
 
 | Field      | Value                                                                           |
 | ---------- | ------------------------------------------------------------------------------- |
-| **Status** | Proposed — implemented; bot migration pending                                   |
+| **Status** | Accepted — implemented; both bots migrated                                      |
 | **Date**   | 2026-07-09                                                                      |
 | **Author** | @hayden                                                                         |
 | **Scope**  | Repo-wide (new packages + `bots/blue-liquidation`, `bots/midnight-liquidation`) |
@@ -46,8 +46,8 @@ client to `@repo/utils` when a second bot needs it") — the second bot arrived.
   diverge, so it is deliberately not extracted.
 - **Deploy infra.** `Dockerfile` / `docker-compose.yml` / `scripts/deploy-railway.ts` (~230 diff
   lines of copy-paste) are deferred to a follow-up.
-- **Migrating the bots in this change.** The packages land first; both bots switch over in a
-  follow-up PR.
+- **Migrating the bots in the package-scaffold PRs.** The packages land first; both bots switch
+  over in the final PR of the same stack (landed).
 
 ## Current Solution
 

@@ -3,17 +3,13 @@
 // Division by zero throws (native bigint), matching the EVM's divide-by-zero revert. This is the full
 // library the lens and planner reason about; it also reads as documentation of Blue's share math.
 
+import { mulDivDown, mulDivUp } from '@repo/utils'
+
 import { VIRTUAL_ASSETS, VIRTUAL_SHARES, WAD } from '../constants'
 
-/** Floor of `x * y / d` (MathLib.mulDivDown). */
-export function mulDivDown(x: bigint, y: bigint, d: bigint): bigint {
-  return (x * y) / d
-}
-
-/** Ceil of `x * y / d` (MathLib.mulDivUp). */
-export function mulDivUp(x: bigint, y: bigint, d: bigint): bigint {
-  return (x * y + (d - 1n)) / d
-}
+// The generic fixed-point primitives (MathLib.mulDivDown/mulDivUp, UtilsLib.min) live in
+// @repo/utils; re-exported here so this module stays the one documented surface for Blue's math.
+export { mulDivDown, mulDivUp, bigintMin as min } from '@repo/utils'
 
 /** Floor of `x * y / WAD` (MathLib.wMulDown). */
 export function wMulDown(x: bigint, y: bigint): bigint {
@@ -60,9 +56,4 @@ export function toAssetsDown(shares: bigint, totalAssets: bigint, totalShares: b
 /** shares → assets, rounding up (SharesMathLib.toAssetsUp). */
 export function toAssetsUp(shares: bigint, totalAssets: bigint, totalShares: bigint): bigint {
   return mulDivUp(shares, totalAssets + VIRTUAL_ASSETS, totalShares + VIRTUAL_SHARES)
-}
-
-/** Lesser of two bigints (UtilsLib.min). */
-export function min(x: bigint, y: bigint): bigint {
-  return y < x ? y : x
 }

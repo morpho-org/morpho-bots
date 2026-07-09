@@ -1,78 +1,16 @@
+import type { LogLevel } from '@repo/bot-kit'
+import type { SwapConfig } from '@repo/swaps'
 import type { Address, Chain, Hex } from 'viem'
 
 import { Executor } from '@repo/contracts'
-import { addressSchema, tryCatch } from '@repo/utils'
+import { parseSwapConfig, VENUE_API_KEY_ENV } from '@repo/swaps'
+import { tryCatch } from '@repo/utils'
 import { readFileSync } from 'node:fs'
 import { getAddress, isAddress, isHex, parseGwei } from 'viem'
 import { base } from 'viem/chains'
-import { z } from 'zod'
 
-import type { LogLevel } from './logger'
-import type { Venue } from './quotes/types'
-
-// ---------------------------------------------------------------------------
-// Per-collateral swap routing config (the JSON file at SWAP_CONFIG_PATH)
-// ---------------------------------------------------------------------------
-// Shape: { "<chainId>": { "<collateralToken>": <venue entry> } }, where the entry is a
-// discriminated union on `venue`:
-//   - { venue: 'uniswap-v3', router, fee, slippageBps }  (direct, no API key)
-//   - { venue: '0x',    baseUrl?, slippageBps }           (needs ZEROX_API_KEY)
-//   - { venue: '1inch', baseUrl?, slippageBps }           (needs ONEINCH_API_KEY)
-// A single file may describe several chains; the bot reads its own chain's entry at swap time.
-// API keys NEVER live here — they come from env (validated for presence in loadConfig).
-
-const slippageBps = z.number().int().min(0).max(10_000)
-
-const uniswapV3Venue = z
-  .object({
-    venue: z.literal('uniswap-v3'),
-    router: addressSchema,
-    fee: z.number().int().positive(),
-    slippageBps
-  })
-  .strict()
-const zeroxVenue = z
-  .object({ venue: z.literal('0x'), baseUrl: z.string().url().optional(), slippageBps })
-  .strict()
-const oneInchVenue = z
-  .object({ venue: z.literal('1inch'), baseUrl: z.string().url().optional(), slippageBps })
-  .strict()
-
-// A pre-venue entry ({ router, fee, slippageBps }, no `venue`) defaults to uniswap-v3, so existing
-// configs keep parsing byte-identically.
-const swapParamsSchema = z.preprocess(
-  value =>
-    value && typeof value === 'object' && !Array.isArray(value) && !('venue' in value)
-      ? { venue: 'uniswap-v3', ...value }
-      : value,
-  z.discriminatedUnion('venue', [uniswapV3Venue, zeroxVenue, oneInchVenue])
-)
-
-export type SwapConfigEntry = z.infer<typeof swapParamsSchema>
-
-// Which env var supplies each venue's API key (null = no key needed). Validated for presence at
-// startup for every venue the operator actually references on this chain.
-const VENUE_API_KEY_ENV: Record<Venue, string | null> = {
-  'uniswap-v3': null,
-  '0x': 'ZEROX_API_KEY',
-  '1inch': 'ONEINCH_API_KEY'
-}
-
-const swapConfigSchema = z.record(
-  z.string().regex(/^\d+$/, 'Swap config keys must be numeric chain ids'),
-  z.record(
-    z
-      .string()
-      .refine(value => isAddress(value, { strict: false }), 'Invalid collateral token address'),
-    swapParamsSchema
-  )
-)
-
-export type SwapConfig = z.infer<typeof swapConfigSchema>
-
-export function parseSwapConfig(raw: unknown): SwapConfig {
-  return swapConfigSchema.parse(raw)
-}
+// The per-collateral swap routing config (SWAP_CONFIG_PATH JSON) — schemas, `parseSwapConfig`, and
+// `VENUE_API_KEY_ENV` — lives in `@repo/swaps`; this module only reads/validates the file and env.
 
 // ---------------------------------------------------------------------------
 // Per-chain Midnight deployment map

@@ -26,7 +26,9 @@
  */
 import type { AbiEvent, Address, Hex, PublicClient, WalletClient } from 'viem'
 
+import { assertContractDeployed, createDeploylessClient, createLogger } from '@repo/bot-kit'
 import { MidnightAbi } from '@repo/contracts'
+import { parseSwapConfig } from '@repo/swaps'
 import { tryCatch } from '@repo/utils'
 import { readFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
@@ -52,9 +54,6 @@ import { createNonceManager, jsonRpc } from 'viem/nonce'
 import type { CollateralParams, Market } from '../src/execution/encode-call'
 import type { Offer } from './seed/offers'
 
-import { createDeploylessClient, assertContractDeployed } from '../src/client'
-import { parseSwapConfig } from '../src/config'
-import { createLogger } from '../src/logger'
 import { mulDivDown, mulDivUp } from '../src/sizing/math'
 import { lensKey, readMidnightLiquidationLens } from '../src/state/lens.sol'
 import { ORACLE_ABI, SWAP_ROUTER_ABI, WETH_ABI } from './seed/abis'

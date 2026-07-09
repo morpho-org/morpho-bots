@@ -1,13 +1,11 @@
+import type { Backoff, Logger, SimulateResult } from '@repo/bot-kit'
+import type { QuoteOutcome, Swap } from '@repo/swaps'
 import type { Address } from 'viem'
 
 import { assertNever, tryCatch } from '@repo/utils'
 
 import type { BorrowerCandidate } from '../discovery/borrowers'
 import type { Market } from '../execution/encode-call'
-import type { SimulateResult } from '../execution/simulate'
-import type { Logger } from '../logger'
-import type { Backoff } from '../queue/backoff'
-import type { QuoteOutcome, Swap } from '../quotes/types'
 import type { LiquidationPlan } from '../sizing/plan'
 import type { LensInput, LensOut } from '../state/lens.sol'
 

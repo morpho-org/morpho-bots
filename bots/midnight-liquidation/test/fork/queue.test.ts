@@ -1,11 +1,8 @@
+import { createLogger, createPendingQueue, createSigner, initialFees } from '@repo/bot-kit'
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
 import { parseGwei } from 'viem'
 import { base } from 'viem/chains'
 
-import { createLogger } from '../../src/logger'
-import { initialFees } from '../../src/queue/fee-policy'
-import { createPendingQueue } from '../../src/queue/pending-queue'
-import { createSigner } from '../../src/signer'
 import {
   type ForkHandle,
   fundEth,
@@ -47,7 +44,7 @@ describe('fork: pending-queue bump + replacement against a real node', () => {
       rpcUrl,
       rpcUrlFallback: undefined,
       sendRpcUrl: undefined,
-      liquidatorPrivateKey: LIQUIDATOR_KEY
+      privateKey: LIQUIDATOR_KEY
     }
     const signer = createSigner(cfg)
     const queue = createPendingQueue({

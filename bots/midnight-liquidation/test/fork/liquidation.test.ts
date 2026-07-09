@@ -1,17 +1,20 @@
 import type { Address } from 'viem'
 
+import {
+  assertContractDeployed,
+  createDeploylessClient,
+  createSigner,
+  initialFees,
+  simulateLiquidationExec
+} from '@repo/bot-kit'
+import { quoteUniswapV3 } from '@repo/swaps'
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
 import { erc20Abi, parseGwei } from 'viem'
 import { base } from 'viem/chains'
 
-import { assertContractDeployed, createDeploylessClient } from '../../src/client'
 import { encodeLiquidationExec } from '../../src/execution/encode-call'
-import { simulateLiquidationExec } from '../../src/execution/simulate'
 import { expectedLoanOut } from '../../src/execution/swap-step'
-import { initialFees } from '../../src/queue/fee-policy'
-import { quoteUniswapV3 } from '../../src/quotes/venues/uniswap-v3'
 import { isLiquidatable, planInputFromLens } from '../../src/runner/eligibility'
-import { createSigner } from '../../src/signer'
 import { plan } from '../../src/sizing/plan'
 import { lensKey, readMidnightLiquidationLens } from '../../src/state/lens.sol'
 import {
@@ -48,7 +51,7 @@ describe('fork: end-to-end liquidation against a real Base position', () => {
     rpcUrl: string
     rpcUrlFallback: undefined
     sendRpcUrl: undefined
-    liquidatorPrivateKey: typeof LIQUIDATOR_KEY
+    privateKey: typeof LIQUIDATOR_KEY
     midnight: Address
     executooorAddress: Address
     maxFeeWei: bigint
@@ -72,7 +75,7 @@ describe('fork: end-to-end liquidation against a real Base position', () => {
       rpcUrl: fork.rpcUrl,
       rpcUrlFallback: undefined,
       sendRpcUrl: undefined,
-      liquidatorPrivateKey: LIQUIDATOR_KEY,
+      privateKey: LIQUIDATOR_KEY,
       midnight: MIDNIGHT,
       executooorAddress: executooor,
       maxFeeWei: parseGwei('300')

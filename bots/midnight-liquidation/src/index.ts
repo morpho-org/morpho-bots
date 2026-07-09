@@ -1,29 +1,33 @@
+import type { SwapConfigEntry, Swap, Venue } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
+import {
+  assertContractDeployed,
+  createBackoff,
+  createDeploylessClient,
+  createLogger,
+  createPendingQueue,
+  createRunner,
+  createSigner,
+  initialFees,
+  simulateLiquidationExec
+} from '@repo/bot-kit'
+import { createRateLimitedClient } from '@repo/swaps'
 import { ensureError } from '@repo/utils'
 import { getAddress } from 'viem'
 import { getBlockNumber } from 'viem/actions'
 
-import type { SwapConfigEntry } from './config'
 import type { Market } from './execution/encode-call'
-import type { Swap, Venue } from './quotes/types'
 import type { LiquidationPlan } from './sizing/plan'
 
-import { assertContractDeployed, createDeploylessClient } from './client'
 import { loadConfig } from './config'
+import { SETTLED_COOLDOWN_BLOCKS } from './constants'
 import { createPostgresQuery, discoverBorrowers, rindexerSyncedBlock } from './discovery/borrowers'
 import { encodeLiquidationExec } from './execution/encode-call'
-import { simulateLiquidationExec } from './execution/simulate'
-import { createLogger } from './logger'
-import { createBackoff } from './queue/backoff'
-import { initialFees } from './queue/fee-policy'
-import { createPendingQueue } from './queue/pending-queue'
 import { composeQuoting } from './quotes'
-import { createRateLimitedClient } from './quotes/http-client'
-import { createRunner } from './runner/runner'
 import { runTick } from './runner/tick'
-import { createSigner } from './signer'
 import { readMidnightLiquidationLens } from './state/lens.sol'
+import { revertReason } from './tx-error'
 
 async function main() {
   const config = loadConfig()
@@ -31,7 +35,13 @@ async function main() {
 
   // Signed-send path: a plain wallet client + local nonce cursor (separate from the deployless read
   // client). The EOA is the liquidator and the recipient of both end-of-exec token sweeps.
-  const signer = createSigner(config)
+  const signer = createSigner({
+    chain: config.chain,
+    rpcUrl: config.rpcUrl,
+    rpcUrlFallback: config.rpcUrlFallback,
+    sendRpcUrl: config.sendRpcUrl,
+    privateKey: config.liquidatorPrivateKey
+  })
   const eoa = signer.account.address
 
   logger.info('startup', {
@@ -131,7 +141,9 @@ async function main() {
     getBaseFee: signer.getBaseFee,
     syncNonce: signer.syncNonce,
     maxFeeWei: config.maxFeeWei,
-    logger
+    logger,
+    settledCooldownBlocks: SETTLED_COOLDOWN_BLOCKS,
+    revertReason
   })
 
   // Phase-4 runner: an HTTP block-poll watcher drives one tick per new block (coalescing backlog),
@@ -172,7 +184,12 @@ async function main() {
       logger
     })
 
-  const runner = createRunner({ getBlockNumber: () => getBlockNumber(client), tick, logger })
+  const runner = createRunner({
+    getBlockNumber: () => getBlockNumber(client),
+    tick,
+    logger,
+    revertReason
+  })
   runner.start()
 
   // Graceful shutdown: stop the watcher and dump the pending set (hashes + nonces). Sends are

@@ -1,15 +1,25 @@
+import type { SwapConfigEntry, Swap, Venue } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
+import {
+  assertContractDeployed,
+  createBackoff,
+  createDeploylessClient,
+  createLogger,
+  createPendingQueue,
+  createRunner,
+  createSigner,
+  initialFees,
+  simulateLiquidationExec
+} from '@repo/bot-kit'
+import { createRateLimitedClient } from '@repo/swaps'
 import { ensureError, tryCatch } from '@repo/utils'
 import { getAddress } from 'viem'
 import { getBlockNumber } from 'viem/actions'
 
-import type { SwapConfigEntry } from './config'
 import type { MarketParams } from './market'
-import type { Swap, Venue } from './quotes/types'
 import type { LiquidationPlan } from './sizing/plan'
 
-import { assertContractDeployed, createDeploylessClient } from './client'
 import { loadConfig } from './config'
 import {
   createPostgresQuery,
@@ -18,16 +28,8 @@ import {
   rindexerSyncedBlock
 } from './discovery/borrowers'
 import { encodeLiquidationExec } from './execution/encode-call'
-import { simulateLiquidationExec } from './execution/simulate'
-import { createLogger } from './logger'
-import { createBackoff } from './queue/backoff'
-import { initialFees } from './queue/fee-policy'
-import { createPendingQueue } from './queue/pending-queue'
 import { composeQuoting } from './quotes'
-import { createRateLimitedClient } from './quotes/http-client'
-import { createRunner } from './runner/runner'
 import { runTick } from './runner/tick'
-import { createSigner } from './signer'
 import { readBlueLiquidationLens } from './state/lens.sol'
 import { createMarketParamsResolver, multicallIdToMarketParams } from './state/market-params'
 
@@ -37,7 +39,12 @@ async function main() {
 
   // Signed-send path: a plain wallet client + local nonce cursor (separate from the deployless read
   // client). The EOA is the liquidator and the recipient of both end-of-exec token sweeps.
-  const signer = createSigner(config)
+  const signer = createSigner({
+    chain: config.chain,
+    rpcUrl: config.rpcUrl,
+    rpcUrlFallback: config.rpcUrlFallback,
+    privateKey: config.liquidatorPrivateKey
+  })
   const eoa = signer.account.address
 
   logger.info('startup', {

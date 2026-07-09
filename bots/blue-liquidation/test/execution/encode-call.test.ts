@@ -1,10 +1,10 @@
+import type { Swap } from '@repo/swaps'
 import type { Hex } from 'viem'
 
 import { describe, expect, it } from 'bun:test'
 import { decodeAbiParameters, decodeFunctionData, getAddress } from 'viem'
 
 import type { MarketParams } from '../../src/market'
-import type { Swap } from '../../src/quotes/types'
 
 import { WAD } from '../../src/constants'
 import { encodeLiquidationExec } from '../../src/execution/encode-call'

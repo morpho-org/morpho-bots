@@ -1,18 +1,17 @@
+import type { Logger, SimulateResult } from '@repo/bot-kit'
+import type { QuoteOutcome, Swap } from '@repo/swaps'
 import type { Address } from 'viem'
 
+import { createBackoff } from '@repo/bot-kit'
 import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
 
 import type { BorrowerCandidate } from '../../src/discovery/borrowers'
-import type { SimulateResult } from '../../src/execution/simulate'
-import type { Logger } from '../../src/logger'
 import type { MarketParams } from '../../src/market'
-import type { QuoteOutcome, Swap } from '../../src/quotes/types'
 import type { LensInput, LensOut } from '../../src/state/lens.sol'
 
 import { ORACLE_PRICE_SCALE, WAD } from '../../src/constants'
 import { marketId } from '../../src/market'
-import { createBackoff } from '../../src/queue/backoff'
 import { runTick } from '../../src/runner/tick'
 import { lensKey } from '../../src/state/lens.sol'
 
