@@ -67,6 +67,20 @@
         "typescript": "catalog:",
       },
     },
+    "packages/bot-kit": {
+      "name": "@repo/bot-kit",
+      "version": "0.0.0",
+      "dependencies": {
+        "@morpho-org/viem-dlc": "catalog:",
+        "@repo/utils": "workspace:*",
+        "viem": "catalog:",
+      },
+      "devDependencies": {
+        "@repo/typescript-config": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "packages/contracts": {
       "name": "@repo/contracts",
       "version": "0.0.0",
