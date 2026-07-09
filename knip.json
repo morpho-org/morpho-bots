@@ -8,6 +8,7 @@
     "packages/typescript-config": {},
     "packages/utils": {},
     "packages/contracts": {},
+    "packages/bot-kit": {},
     "packages/swaps": {},
     "bots/midnight-liquidation": {},
     "bots/blue-liquidation": {}

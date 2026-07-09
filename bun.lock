@@ -53,6 +53,20 @@
         "typescript": "catalog:",
       },
     },
+    "packages/bot-kit": {
+      "name": "@repo/bot-kit",
+      "version": "0.0.0",
+      "dependencies": {
+        "@morpho-org/viem-dlc": "catalog:",
+        "@repo/utils": "workspace:*",
+        "viem": "catalog:",
+      },
+      "devDependencies": {
+        "@repo/typescript-config": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "packages/contracts": {
       "name": "@repo/contracts",
       "version": "0.0.0",
@@ -294,6 +308,8 @@
     "@oxlint/binding-win32-ia32-msvc": ["@oxlint/binding-win32-ia32-msvc@1.61.0", "", { "os": "win32", "cpu": "ia32" }, "sha512-0ySj4/4zd2XjePs3XAQq7IigIstN4LPQZgCyigX5/ERMLjdWAJfnxcTsrtxZxuij8guJW8foXuHmhGxW0H4dDA=="],
 
     "@oxlint/binding-win32-x64-msvc": ["@oxlint/binding-win32-x64-msvc@1.61.0", "", { "os": "win32", "cpu": "x64" }, "sha512-0xgSiyeqDLDZxXoe9CVJrOx3TUVsfyoOY7cNi03JbItNcC9WCZqrSNdrAbHONxhSPaVh/lzfnDcON1RqSUMhHw=="],
+
+    "@repo/bot-kit": ["@repo/bot-kit@workspace:packages/bot-kit"],
 
     "@repo/contracts": ["@repo/contracts@workspace:packages/contracts"],
 
