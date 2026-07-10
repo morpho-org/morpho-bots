@@ -93,6 +93,8 @@ function runWith(opts: {
   inflight?: ReadonlySet<string>
   noSwap?: boolean
   seedBackoffAt?: bigint
+  /** What the injected `submit` reports; `false` models a silently-failed (hashless) send. */
+  submitted?: boolean
 }) {
   const { logger, events } = spyLogger()
   let simulateCalls = 0
@@ -120,6 +122,7 @@ function runWith(opts: {
     },
     submit: async () => {
       submitCalls += 1
+      return { submitted: opts.submitted ?? true }
     },
     backoff,
     pendingOnBlock: async () => {
@@ -212,6 +215,16 @@ describe('runTick', () => {
     const { backoff } = await runWith({ seedBackoffAt: 1n, simulateResult: { status: 'ok' } })
     // Seeded at block 1 (cooldown until 3) so it didn't suppress this tick at 100; the submit clears it.
     expect(backoff.shouldSkip(LABEL, 1n)).toBe(false)
+  })
+
+  it('keeps backoff when the submit did not enter the pending set', async () => {
+    const { backoff } = await runWith({
+      seedBackoffAt: 1n,
+      simulateResult: { status: 'ok' },
+      submitted: false
+    })
+    // A hashless send resolves submitted:false, so the seeded backoff must survive rather than clear.
+    expect(backoff.shouldSkip(LABEL, 1n)).toBe(true)
   })
 
   it('skips a position already in flight without re-quoting, simulating, or submitting', async () => {

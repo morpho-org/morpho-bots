@@ -59,7 +59,11 @@ export async function runTick(deps: {
     plan: LiquidationPlan
     swap: Swap
   }) => Promise<SimulateResult>
-  /** Broadcasts a plan via the pending queue (builds the exec tx, derives fees, tracks the nonce). */
+  /**
+   * Broadcasts a plan via the pending queue (builds the exec tx, derives fees, tracks the nonce).
+   * `submitted` reports whether the tx actually entered the pending set, so the caller clears
+   * backoff only on a real send — not on a silently-failed one.
+   */
   submit: (args: {
     market: MarketParams
     borrower: Address
@@ -67,7 +71,7 @@ export async function runTick(deps: {
     swap: Swap
     blockNumber: bigint
     label: string
-  }) => Promise<void>
+  }) => Promise<{ submitted: boolean }>
   /** Per-position exponential backoff suppressing repeated quote/simulate failures (rate-limit defense). */
   backoff: Backoff
   /** Confirmations / stuck-detection / fee-bumps for already-pending txs. */
@@ -194,7 +198,7 @@ export async function runTick(deps: {
     // ok-only gate: broadcast only a fully-simulated, swap-funded liquidation. Any revert — not
     // liquidatable, swap slippage, repay shortfall — isn't a fundable plan, so skip it.
     if (result.status === 'ok') {
-      await submit({
+      const { submitted } = await submit({
         market: out.params,
         borrower: pair.borrower,
         plan: liquidationPlan,
@@ -202,7 +206,9 @@ export async function runTick(deps: {
         blockNumber: chainHead,
         label
       })
-      backoff.clear(label)
+      // Clear backoff only when the tx actually entered the pending set — a silently-failed send
+      // (hashless) must keep the position backed off rather than reset its attempt count.
+      if (submitted) backoff.clear(label)
       counters.submitted += 1
     }
   }
