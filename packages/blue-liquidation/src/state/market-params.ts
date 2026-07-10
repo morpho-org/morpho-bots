@@ -55,16 +55,24 @@ export function multicallIdToMarketParams(client: Client, morpho: Address): Mark
   }
 }
 
+/** Restorable resolver cache: what `dump()` emits and `initialEntries` accepts. */
+export type MarketParamsCache = [id: Hex, params: MarketParams][]
+
 /**
  * Wraps a {@link MarketParamsResolver} with an unbounded in-memory cache. `MarketParams` are immutable
  * per id (the id IS `keccak256(abi.encode(params))`), so a resolved entry is valid forever — after the
  * first sight of a market, its params never need re-fetching. Each call fetches only the ids not yet
  * cached (deduped), so steady-state discovery makes zero on-chain calls once every market is known and
- * only pays for genuinely new markets. Returns a map limited to the requested ids.
+ * only pays for genuinely new markets. Returns a map limited to the requested ids. `initialEntries`
+ * seeds the cache (safe to trust indefinitely — params are immutable per id) and `dump()` exports it,
+ * so one-shot processes skip the warm-up multicall for every already-seen market.
  */
-export function createMarketParamsResolver(fetch: MarketParamsResolver): MarketParamsResolver {
-  const cache = new Map<Hex, MarketParams>()
-  return async ids => {
+export function createMarketParamsResolver(
+  fetch: MarketParamsResolver,
+  initialEntries?: MarketParamsCache
+): MarketParamsResolver & { dump(): MarketParamsCache } {
+  const cache = new Map<Hex, MarketParams>(initialEntries ?? [])
+  const resolve: MarketParamsResolver = async ids => {
     const unique = [...new Set(ids)]
     // Only cache HITS are stored, so an id that never resolves (e.g. a non-market) is a miss every
     // tick — harmless (one `allowFailure` multicall slot), never memoized as a false negative.
@@ -80,4 +88,5 @@ export function createMarketParamsResolver(fetch: MarketParamsResolver): MarketP
     }
     return out
   }
+  return Object.assign(resolve, { dump: (): MarketParamsCache => [...cache.entries()] })
 }

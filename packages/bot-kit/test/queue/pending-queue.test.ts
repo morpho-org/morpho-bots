@@ -1,5 +1,6 @@
 import type { Address, Hex } from 'viem'
 
+import { parse, stringify } from '@repo/utils'
 import { describe, expect, it } from 'bun:test'
 import { ExecutionRevertedError } from 'viem'
 
@@ -8,6 +9,7 @@ import type {
   GetBaseFee,
   GetReceipt,
   PendingQueue,
+  PendingQueueState,
   SendTx,
   SyncNonce,
   TxRequest
@@ -62,6 +64,7 @@ function setup(
     /** `0n` (or passing nothing via `withCooldown: false`) disables the cooldown. */
     withCooldown?: boolean
     logger?: Logger
+    initialState?: PendingQueueState
   } = {}
 ) {
   const sends: SendArg[] = []
@@ -82,6 +85,7 @@ function setup(
     getBaseFee,
     ...(opts.syncNonce === null ? {} : { syncNonce: opts.syncNonce ?? defaultSyncNonce }),
     ...(opts.withCooldown === false ? {} : { settledCooldownBlocks: SETTLED_COOLDOWN_BLOCKS }),
+    ...(opts.initialState ? { initialState: opts.initialState } : {}),
     maxFeeWei: opts.maxFeeWei ?? 10_000_000_000_000n,
     logger: opts.logger ?? NOOP_LOGGER
   })
@@ -360,5 +364,51 @@ describe('createPendingQueue', () => {
     await queue.onBlock(1n) // confirms → with no cooldown the label leaves the set right away
     expect(queue.size).toBe(0)
     expect(queue.inflightLabels().size).toBe(0)
+  })
+})
+
+describe('dump / restore', () => {
+  it('round-trips the full queue state through bigint-safe JSON and keeps bumping', async () => {
+    const a = setup()
+    await submitOne(a.queue, 0n)
+    const dumped = a.queue.dump()
+    const restored = parse<PendingQueueState>(stringify(dumped), 'throw')
+    expect(restored).toEqual(dumped) // bigint fields survive the JSON round trip
+
+    const b = setup({ initialState: restored })
+    expect(b.queue.size).toBe(1)
+    expect(b.queue.snapshot()).toEqual(a.queue.snapshot())
+    expect([...b.queue.inflightLabels()]).toEqual(['market:borrower'])
+
+    // The restored submittedAtBlock drives stuck detection: past stuckBlocks, the new instance
+    // replaces the tx at the SAME nonce — fee bumping survives the process boundary.
+    await b.queue.onBlock(5n)
+    expect(b.sends).toHaveLength(1)
+    expect(b.sends[0]?.nonce).toBe(7)
+    expect(b.queue.snapshot()[0]).toEqual({ nonce: 7, txHash: hashOf(1), attempt: 1 })
+  })
+
+  it('keeps a restored settled-cooldown label suppressed until it expires', async () => {
+    const a = setup({ getReceipt: async () => ({ status: 'success', blockNumber: 1n }) })
+    await submitOne(a.queue, 0n)
+    await a.queue.onBlock(1n) // confirms → label enters the cooldown set at block 1
+
+    const restored = parse<PendingQueueState>(stringify(a.queue.dump()), 'throw')
+    const b = setup({ initialState: restored })
+    expect(b.queue.inflightLabels().has('market:borrower')).toBe(true)
+
+    await b.queue.onBlock(1n + SETTLED_COOLDOWN_BLOCKS) // age == cooldown → still suppressed
+    expect(b.queue.inflightLabels().has('market:borrower')).toBe(true)
+    await b.queue.onBlock(2n + SETTLED_COOLDOWN_BLOCKS) // age > cooldown → released
+    expect(b.queue.inflightLabels().has('market:borrower')).toBe(false)
+  })
+
+  it('copies restored entries so the caller-held state cannot alias live mutations', async () => {
+    const a = setup()
+    await submitOne(a.queue, 0n)
+    const state = a.queue.dump()
+    const b = setup({ initialState: state })
+    await b.queue.onBlock(5n) // bumps: mutates the live entry's attempt/fees
+    expect(state.pending[0]?.attempt).toBe(0) // the dumped state is untouched
   })
 })

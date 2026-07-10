@@ -1,8 +1,9 @@
+import { parse, stringify } from '@repo/utils'
 import { describe, expect, it } from 'bun:test'
 import { getAddress, type Hex } from 'viem'
 
 import type { MarketParams } from '../../src/market'
-import type { MarketParamsResolver } from '../../src/state/market-params'
+import type { MarketParamsCache, MarketParamsResolver } from '../../src/state/market-params'
 
 import { createMarketParamsResolver } from '../../src/state/market-params'
 
@@ -71,5 +72,23 @@ describe('createMarketParamsResolver', () => {
     expect(out.has(ID_A)).toBe(true)
     expect(out.has(ID_B)).toBe(false)
     expect(out.size).toBe(1)
+  })
+
+  it('seeds from a dumped cache and skips the warm-up fetch for known markets', async () => {
+    const first = recordingFetch({ [ID_A]: PARAMS_A })
+    const a = createMarketParamsResolver(first.fetch)
+    await a([ID_A])
+
+    const state = parse<MarketParamsCache>(stringify(a.dump()), 'throw')
+    expect(state).toEqual([[ID_A, PARAMS_A]]) // bigint lltv survives the JSON round trip
+
+    const second = recordingFetch({ [ID_A]: PARAMS_A, [ID_B]: PARAMS_B })
+    const b = createMarketParamsResolver(second.fetch, state)
+    const out = await b([ID_A])
+    expect(out.get(ID_A)).toEqual(PARAMS_A)
+    expect(second.batches).toEqual([]) // params are immutable per id: no re-fetch, ever
+
+    await b([ID_B]) // a genuinely new market still fetches
+    expect(second.batches).toEqual([[ID_B]])
   })
 })

@@ -37,7 +37,16 @@ type ListedMarketFilter = {
   isListed: (marketId: Hex) => boolean
   refresh: () => Promise<void>
   snapshot: () => { markets: number; updatedAt: number | null }
+  /** Restorable snapshot of the whitelist; `updatedAt` lets the caller decide staleness. */
+  dump: () => ListedMarketsState
 }
+
+/**
+ * Restorable whitelist state: what `dump()` emits and `initialState` accepts. `updatedAt` is the
+ * caller's staleness signal — a restored-but-old whitelist must be refreshed (and treated as empty
+ * past a fail-closed max-age) rather than served forever, or a delisted market would stay in scope.
+ */
+export type ListedMarketsState = { marketIds: string[]; updatedAt: number | null }
 
 /** Minimal `fetch` shape the source calls — the global `fetch` satisfies it; test fakes need not. */
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>
@@ -58,6 +67,8 @@ export function createListedMarketFilter(deps: {
   fetchImpl?: FetchLike
   sleep?: (ms: number) => Promise<void>
   now?: () => number
+  /** Seeds the whitelist from a prior `dump()`; the caller owns the staleness policy. */
+  initialState?: ListedMarketsState
 }): ListedMarketFilter {
   const fetchImpl = deps.fetchImpl ?? fetch
   const sleep = deps.sleep ?? delay
@@ -65,8 +76,8 @@ export function createListedMarketFilter(deps: {
 
   // Last-known-good: only replaced by a fully-successful refresh, so a transient failure keeps serving
   // the prior set rather than emptying the whitelist.
-  let listed = new Set<string>()
-  let updatedAt: number | null = null
+  let listed = new Set<string>(deps.initialState?.marketIds ?? [])
+  let updatedAt: number | null = deps.initialState?.updatedAt ?? null
 
   async function fetchListed(): Promise<ApiMarket[]> {
     const url = new URL(deps.apiUrl)
@@ -119,6 +130,7 @@ export function createListedMarketFilter(deps: {
   return {
     isListed: marketId => listed.has(marketId.toLowerCase()),
     refresh,
-    snapshot: () => ({ markets: listed.size, updatedAt })
+    snapshot: () => ({ markets: listed.size, updatedAt }),
+    dump: () => ({ marketIds: [...listed], updatedAt })
   }
 }
