@@ -12,7 +12,7 @@
  *   - Local: an interactive `railway login` session; the script links the project by id.
  *
  *   RAILWAY_PROJECT_ID=… RPC_URL=… LIQUIDATOR_PRIVATE_KEY=0x… \
- *     bun run --filter @repo/cli deploy:railway:midnight
+ *     bun run --filter @repo/bots deploy:railway:midnight
  *
  * The build context MUST be the repo root so the bun workspace (packages/*) resolves — the script
  * runs `railway up` with cwd set to the repo root (mirrors the Dockerfile header + compose context),
@@ -33,7 +33,7 @@ import { resolve } from 'node:path'
 // RAILWAY_PROJECT_ID is required; RAILWAY_ENVIRONMENT defaults to the conventional `production`.
 const PROJECT_ID = required(Bun.env, 'RAILWAY_PROJECT_ID')
 const ENVIRONMENT = Bun.env.RAILWAY_ENVIRONMENT?.trim() || 'production'
-const DOCKERFILE_PATH = 'uis/cli/Dockerfile'
+const DOCKERFILE_PATH = 'bots/Dockerfile'
 // The single per-service volume mounts at /data so the CLI's cross-tick state (MORPHO_BOTS_HOME
 // defaults to /data/morpho-bots in docker-entrypoint.sh) survives container restarts.
 const DATA_MOUNT_PATH = '/data'
@@ -41,8 +41,8 @@ const DATA_MOUNT_PATH = '/data'
 // bot-cli alongside the live service (give it an UNFUNDED key). Leave unset for the real deployment.
 const SERVICE_SUFFIX = Bun.env.SERVICE_SUFFIX?.trim() ?? ''
 const BOT_SERVICE = `bot${SERVICE_SUFFIX}`
-// Repo root is three levels up from this file (scripts → cli → uis → repo root).
-const REPO_ROOT = resolve(import.meta.dir, '..', '..', '..')
+// Repo root is two levels up from this file (scripts → bots → repo root).
+const REPO_ROOT = resolve(import.meta.dir, '..', '..')
 
 type Env = Record<string, string | undefined>
 type RailwayService = { id: string; name: string }

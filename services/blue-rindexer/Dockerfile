@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 # The blue-liquidation discovery indexer: upstream rindexer + this service's rindexer.yaml + the
 # generated Morpho event ABI baked in (so it need not be committed). The build context MUST be the
-# repo root so the bun workspace resolves for the ABI build stage — docker-compose.blue.yml sets
-# `context: .` and the Railway service sets RAILWAY_DOCKERFILE_PATH=services/blue-rindexer/Dockerfile.
+# repo root so the bun workspace resolves for the ABI build stage — bots/docker-compose.blue.yml sets
+# `context: ..` and the Railway service sets RAILWAY_DOCKERFILE_PATH=services/blue-rindexer/Dockerfile.
 
 # --- build @repo/contracts to materialize abis/Morpho.json (single source: IMorpho.sol) -----------
 # Throwaway stage; only the emitted ABI JSON is copied into the rindexer image below.
@@ -10,7 +10,8 @@ FROM oven/bun:1.3.12-slim AS abi
 WORKDIR /repo
 COPY package.json bun.lock bunfig.toml ./
 COPY packages ./packages
-COPY uis ./uis
+COPY interfaces ./interfaces
+COPY bots ./bots
 RUN bun install --frozen-lockfile
 RUN bun run --filter @repo/contracts build
 

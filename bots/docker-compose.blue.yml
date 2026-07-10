@@ -2,8 +2,11 @@
 # discovery. rindexer indexes the Morpho Blue `Borrow` event (services/blue-rindexer/rindexer.yaml)
 # for every chain into one Postgres, discriminated by a `network` column; each bot tick reads the
 # indexed (market, borrower) pairs for its own chain. Bots run the one-shot CLI in the image's
-# entrypoint loop (uis/cli/docker-entrypoint.sh). Set the chainId-suffixed RPCs (RPC_URL_8453,
+# entrypoint loop (bots/docker-entrypoint.sh). Set the chainId-suffixed RPCs (RPC_URL_8453,
 # RPC_URL_4663, optionally RINDEXER_RPC_URL_<chainId>) and a LIQUIDATOR_PRIVATE_KEY.
+#
+# Build contexts are `..` (the repo root — required for the bun workspace to resolve) because this
+# file lives in bots/; run it from anywhere: `docker compose -f bots/docker-compose.blue.yml up`.
 #
 # NOTE: the rindexer service config (image command, env) follows the rindexer docs but has not been
 # run end-to-end here; verify `docker compose up` against live RPCs before relying on it.
@@ -27,7 +30,7 @@ services:
     # (see services/blue-rindexer/Dockerfile), so no host bind mount is needed and the ABI isn't
     # committed.
     build:
-      context: .
+      context: ..
       dockerfile: services/blue-rindexer/Dockerfile
     depends_on:
       postgres:
@@ -45,8 +48,8 @@ services:
 
   bot-base:
     build:
-      context: .
-      dockerfile: uis/cli/Dockerfile
+      context: ..
+      dockerfile: bots/Dockerfile
     depends_on:
       postgres:
         condition: service_healthy
@@ -66,7 +69,7 @@ services:
     volumes:
       # One /data volume carries both the cross-tick state files and the swap config.
       - bot-base-data:/data
-      - ${SWAP_CONFIG_PATH:-./packages/blue-liquidation/configs/example.json}:/data/morpho-bots/blue/swap-config.json:ro
+      - ${SWAP_CONFIG_PATH:-../packages/blue-liquidation/configs/example.json}:/data/morpho-bots/blue/swap-config.json:ro
     restart: unless-stopped
 
   # Robinhood launches DETECTION-ONLY: no swap route configured (no SWAP_CONFIG_PATH), so the bot
@@ -74,8 +77,8 @@ services:
   # Executor deployed on Robinhood (deploy:executor) to pass the startup liveness gate.
   bot-robinhood:
     build:
-      context: .
-      dockerfile: uis/cli/Dockerfile
+      context: ..
+      dockerfile: bots/Dockerfile
     depends_on:
       postgres:
         condition: service_healthy

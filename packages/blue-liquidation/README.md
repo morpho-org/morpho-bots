@@ -89,7 +89,7 @@ pools/fees and set the API keys for any aggregator venue you use).
 
 ## Running Locally
 
-The bot runs as one-shot ticks via the `morpho-bots` CLI (`uis/cli`). Put config under
+The bot runs as one-shot ticks via the `morpho-bots` CLI (`interfaces/cli`). Put config under
 `~/.morpho-bots` (`morpho-bots init` scaffolds it; secrets — RPC URL, key, `DATABASE_URL` — go in
 `secrets.json`), then drive the loop with plain unix:
 
@@ -107,7 +107,7 @@ easiest path is Docker Compose below.
 
 ```sh
 # from the repo root
-RPC_URL_8453=https://… LIQUIDATOR_PRIVATE_KEY=0x… docker compose -f docker-compose.blue.yml up --build
+RPC_URL_8453=https://… LIQUIDATOR_PRIVATE_KEY=0x… docker compose -f bots/docker-compose.blue.yml up --build
 ```
 
 Brings up Postgres, one shared rindexer (indexing `Borrow` on Base and Robinhood), and one bot per
@@ -119,7 +119,7 @@ rindexer image bakes in the generated `Morpho.json` ABI, so it is not committed.
 
 ```sh
 RAILWAY_PROJECT_ID=… RPC_URL_8453=https://… RPC_URL_4663=https://… LIQUIDATOR_PRIVATE_KEY=0x… \
-  bun run --filter @repo/cli deploy:railway:blue
+  bun run --filter @repo/bots deploy:railway:blue
 # Optional: RINDEXER_RPC_URL_<chainId> (defaults to RPC_URL_<chainId>),
 # ZEROX_API_KEY[_<chainId>] / ONEINCH_API_KEY[_<chainId>],
 # RAILWAY_ENVIRONMENT (defaults to production).
