@@ -1,8 +1,9 @@
-import type { Address } from 'viem'
+import type { Address, Hex } from 'viem'
 
 import { Executor } from '@repo/contracts'
 import { describe, expect, it } from 'bun:test'
 import { getAddress, parseGwei } from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
 import { mainnet } from 'viem/chains'
 
 import type { ChainConfig, Config } from '../src/config'
@@ -281,6 +282,30 @@ describe('loadConfig', () => {
   it('throws on a HEALTH_FACTOR_LTE below the 1.0 floor', () => {
     expect(() => loadConfig(baseEnv({ HEALTH_FACTOR_LTE: '0.9' }), deps)).toThrow(
       /HEALTH_FACTOR_LTE must be >= 1/
+    )
+  })
+
+  // The act/queue wallet-agreement gate: LIQUIDATOR_ADDRESS (act's skim recipient) must be the
+  // wallet the queue's key signs for, or act-built calldata would skim seized funds to a wallet
+  // this deployment's signer does not control.
+  it('rejects a LIQUIDATOR_ADDRESS that does not match the key-derived signer address', () => {
+    expect(() =>
+      loadConfig(
+        baseEnv({ LIQUIDATOR_ADDRESS: '0x2222222222222222222222222222222222222222' }),
+        deps
+      )
+    ).toThrow(/does not match the address derived from LIQUIDATOR_PRIVATE_KEY/)
+  })
+
+  it('accepts a LIQUIDATOR_ADDRESS that matches the key-derived signer address', () => {
+    const derived = privateKeyToAccount(PRIVATE_KEY as Hex).address
+    const config = loadConfig(baseEnv({ LIQUIDATOR_ADDRESS: derived.toLowerCase() }), deps)
+    expect(config.liquidatorPrivateKey).toBe(PRIVATE_KEY as Hex)
+  })
+
+  it('rejects a malformed LIQUIDATOR_ADDRESS on the full-config path', () => {
+    expect(() => loadConfig(baseEnv({ LIQUIDATOR_ADDRESS: 'not-an-address' }), deps)).toThrow(
+      /LIQUIDATOR_ADDRESS is not a valid address/
     )
   })
 })

@@ -1,4 +1,10 @@
-import type { BackoffState, Logger, PendingQueueState } from '@repo/bot-kit'
+import type {
+  BackoffState,
+  Logger,
+  OutcomeRecord,
+  PendingQueueState,
+  TxRecord
+} from '@repo/bot-kit'
 import type { Swap, Venue, VenueSelectorState } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
@@ -17,12 +23,15 @@ import { tryCatch } from '@repo/utils'
 import { erc20Abi } from 'viem'
 import { getBlockNumber, readContract } from 'viem/actions'
 
+import type { MidnightActStatus, MidnightActCache } from './act/act'
 import type { Env } from './config'
 import type { ListedMarketsState } from './discovery/markets'
 import type { Market } from './execution/encode-call'
+import type { MidnightSenseCache } from './sense/sense'
 import type { LiquidationPlan } from './sizing/plan'
-import type { TickCounters } from './tick/tick'
+import type { LensInput, LensOut } from './state/lens.sol'
 
+import { runAct } from './act/act'
 import { loadConfig } from './config'
 import { LISTED_MARKETS_MAX_AGE_MS, SETTLED_COOLDOWN_BLOCKS } from './constants'
 import {
@@ -33,16 +42,39 @@ import {
 import { createListedMarketFilter } from './discovery/markets'
 import { encodeLiquidationExec } from './execution/encode-call'
 import { composeQuoting } from './quotes'
-import { readMidnightLiquidationLens } from './state/lens.sol'
-import { runTick } from './tick/tick'
+import { runSense } from './sense/sense'
+import { lensKey, readMidnightLiquidationLens } from './state/lens.sol'
 import { revertReason } from './tx-error'
 
-export type { Config, Env } from './config'
-export type { TickCounters } from './tick/tick'
-export { loadConfig } from './config'
+export type { Config, Env, SenseConfig, ActConfig } from './config'
+export { loadConfig, loadSenseConfig, loadActConfig } from './config'
+export { DOMAIN, formatOpportunityId, parseOpportunityId } from './wire'
+export type { ParsedOpportunityId } from './wire'
+export { runSense, senseOnce } from './sense/sense'
+export type { MidnightSenseCache, SenseCounters } from './sense/sense'
+export { runAct, actOnce } from './act/act'
+export type { MidnightActStatus, MidnightActCache, ActCounters } from './act/act'
 
-/** Bumped when the persisted-state shape changes; a mismatched file is discarded, not migrated. */
-export const STATE_VERSION = 1
+/** Bumped when the persisted-state shape or its label format changes; a mismatched file is discarded,
+ * not migrated. v2: labels/ids are now the `midnight:liq:…` wire id, not the old `${id}:${borrower}`. */
+export const STATE_VERSION = 2
+
+/** Bumped when a stage's disposable cache shape changes; a mismatched cache is rebuilt, not migrated. */
+export const SENSE_CACHE_VERSION = 1
+export const ACT_CACHE_VERSION = 1
+
+/** Counters `tickOnce` reports for one full cycle (sense + act + submit). */
+export type TickCounters = {
+  pairs: number
+  liquidatable: number
+  planned: number
+  noSwapPath: number
+  quoteFailed: number
+  backoffSkipped: number
+  ok: number
+  reverted: number
+  submitted: number
+}
 
 /**
  * Everything one tick hands to the next across a process boundary. A HINT, not truth: the queue
@@ -59,18 +91,15 @@ export type MidnightPersistedState = {
 }
 
 /**
- * One full liquidation cycle at the current chain head, then return. This is the composition the
- * long-lived runner used to own, reshaped for one-shot invocation (CLI loop / cron): build the
- * pipeline from `env`, restore cross-tick state, refresh the market whitelist inline when stale
- * (replacing the old second refresh loop), run `runTick` once, and dump state for the caller to
- * persist. The core never touches the filesystem for state — only the caller does.
+ * @deprecated One-shot composition of the split stages, kept only so the CLI's `tick` command and its
+ * spawn tests stay green through the pipeline migration. Deleted in the next PR once the CLI wires
+ * `sense`/`act`/`queue` directly. New callers use {@link senseOnce} / {@link actOnce}.
  *
- * ALL env — including venue API keys — is read from the `env` table, never from `Bun.env`, so
- * file-sourced secrets reach the venue adapters. Keys live only in this closure, never on the
- * (logged) `Config`.
- *
- * `runStartupChecks` gates the boot-time liveness checks (Executor code, startup logs) so they run
- * on a fresh host rather than every ~2s tick. The caller sets it from "no state file existed".
+ * Runs the pipeline once at the current head: refresh the whitelist → sense → collect emitted ids →
+ * act → submit the emitted tx records via the queue → `onBlock`. Preserves the pre-split signature
+ * and persisted-state shape. Everything is keyed by the `midnight:liq:…` wire id (backoff, inflight,
+ * queue labels), and the {@link STATE_VERSION} bump discards any old `${id}:${borrower}`-keyed file
+ * cleanly. All env — including venue API keys — is read from the `env` table, never `Bun.env`.
  */
 export async function tickOnce(
   env: Env,
@@ -105,9 +134,6 @@ export async function tickOnce(
     )
   }
 
-  // Venue API keys come from the env TABLE (point of use), so file-sourced secrets work; they stay
-  // in this closure and are never stored on the logged Config. Enabled venues were already derived
-  // from the same table by loadConfig, so the two can't disagree.
   const apiKeys: Partial<Record<Venue, string>> = {}
   if (env.ZEROX_API_KEY) apiKeys['0x'] = env.ZEROX_API_KEY
   if (env.ONEINCH_API_KEY) apiKeys['1inch'] = env.ONEINCH_API_KEY
@@ -127,9 +153,6 @@ export async function tickOnce(
   if (config.venues.zeroxBaseUrl) baseUrls['0x'] = config.venues.zeroxBaseUrl
   if (config.venues.oneinchBaseUrl) baseUrls['1inch'] = config.venues.oneinchBaseUrl
 
-  // Two rate-limited HTTP clients, each with its own per-venue token buckets: one for time-sensitive
-  // FIRM quotes, and a separate, slower one for BACKGROUND probes — so a probe burst can never queue
-  // ahead of a live liquidation's firm quote on the same venue's bucket.
   const httpClient = createRateLimitedClient({
     apiKeys,
     rps: config.quoting.httpRps,
@@ -157,9 +180,8 @@ export async function tickOnce(
     ...(state ? { initialState: state.venues } : {})
   })
 
-  // Market whitelist, refreshed INLINE when stale (the persistent process used a second timer loop
-  // for this). Transient failure keeps last-known-good; past the fail-closed max-age the set is
-  // treated as EMPTY so a delisted market can never linger in scope on the back of an old file.
+  // Market whitelist, refreshed INLINE when stale. Transient failure keeps last-known-good; past the
+  // fail-closed max-age the set is treated as EMPTY so a delisted market can never linger in scope.
   const listedMarkets = createListedMarketFilter({
     apiUrl: config.markets.apiUrl,
     chainId: config.chainId,
@@ -174,7 +196,6 @@ export async function tickOnce(
     const { error } = await tryCatch(listedMarkets.refresh())
     if (error) {
       logger.warn('markets.refresh_failed', { detail: error.message })
-      // Re-emit the bad-debt-only health signal at refresh cadence (mirrors the old timer loop).
       if (venues.length === 0) {
         logger.warn('venues.none_enabled', { detail: 'still no venue API keys — bad-debt-only' })
       }
@@ -207,29 +228,25 @@ export async function tickOnce(
     ...(state ? { initialState: state.backoff } : {})
   })
 
-  // The exec calldata for one liquidation — the same bytes the simulate gate checks and the queue
-  // broadcasts, so a sim-ok plan and its broadcast can't drift.
   const encodeExec = (
     market: Market,
     borrower: Address,
-    plan: LiquidationPlan,
+    liquidationPlan: LiquidationPlan,
     swap: Swap | null
   ): Hex =>
     encodeLiquidationExec({
       executor: config.executooorAddress,
       midnight: config.midnight,
       market,
-      collateralIndex: plan.collateralIndex,
-      seizedAssets: plan.seizedAssets,
-      repaidUnits: plan.repaidUnits,
+      collateralIndex: liquidationPlan.collateralIndex,
+      seizedAssets: liquidationPlan.seizedAssets,
+      repaidUnits: liquidationPlan.repaidUnits,
       borrower,
-      postMaturityMode: plan.postMaturityMode,
+      postMaturityMode: liquidationPlan.postMaturityMode,
       swap,
       recipient: eoa
     })
 
-  // Borrower discovery: poll the markets liquidation-candidates endpoint (cursor-paginated,
-  // over-inclusive), filtered to the whitelist BEFORE the lens read (fail-closed).
   const fetchPage = createApiCandidateSource({
     url: config.discovery.apiUrl,
     chainId: config.chainId,
@@ -243,6 +260,7 @@ export async function tickOnce(
     }
     return listed
   }
+
   const queue = createPendingQueue({
     send: signer.send,
     getReceipt: signer.getReceipt,
@@ -256,34 +274,99 @@ export async function tickOnce(
   })
 
   const head = await getBlockNumber(client)
-  const counters = await runTick({
+
+  // 1. Sense — collect the emitted wire ids.
+  const ids: string[] = []
+  const senseCounters = await runSense({
+    chainId: config.chainId,
+    caller: config.executooorAddress,
     discover,
     chainHead: head,
-    caller: config.executooorAddress,
-    seizeCapMarginBps: config.quoting.seizeCapMarginBps,
     readLens: pairs => readMidnightLiquidationLens(client, config.midnight, pairs),
-    quoteFor,
-    simulate: ({ market, borrower, plan, swap }) =>
-      simulateLiquidationExec(client, {
-        executooor: config.executooorAddress,
-        eoa,
-        data: encodeExec(market, borrower, plan, swap)
-      }),
-    submit: async ({ market, borrower, plan, swap, blockNumber, label }) => {
-      const fees = initialFees(await signer.getBaseFee(), config.maxFeeWei)
-      return queue.submit({
-        request: { to: config.executooorAddress, data: encodeExec(market, borrower, plan, swap) },
-        label,
-        maxFeePerGas: fees.maxFeePerGas,
-        maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
-        blockNumber
-      })
-    },
-    backoff,
-    pendingOnBlock: blockNumber => queue.onBlock(blockNumber),
-    inflightLabels: () => queue.inflightLabels(),
+    emit: record => ids.push(record.id),
     logger
   })
+
+  // 2. Act — re-derive each id and collect tx records; map failure outcomes onto backoff (the role
+  //    the queue command will own once the CLI lands).
+  const readLensForIds = async (
+    evaluands: readonly { id: string; marketId: Hex; borrower: Address }[]
+  ): Promise<Map<string, LensOut>> => {
+    const inputs: LensInput[] = evaluands.map(e => ({
+      id: e.marketId,
+      borrower: e.borrower,
+      caller: config.executooorAddress
+    }))
+    const byLensKey = await readMidnightLiquidationLens(client, config.midnight, inputs)
+    const byWireId = new Map<string, LensOut>()
+    for (const e of evaluands) {
+      const out = byLensKey.get(lensKey(e.marketId, e.borrower))
+      if (out) byWireId.set(e.id, out)
+    }
+    return byWireId
+  }
+
+  const txRecords: TxRecord[] = []
+  const onOutcome = (record: OutcomeRecord) => {
+    const status = record.status as MidnightActStatus
+    if (status === 'quote_failed' || status === 'sim_reverted') backoff.record(record.id, head)
+  }
+  const actCounters = await runAct({
+    ids,
+    chainId: config.chainId,
+    head,
+    seizeCapMarginBps: config.quoting.seizeCapMarginBps,
+    advisory: { backoff: backoff.dump(), inflightLabels: [...queue.inflightLabels()] },
+    backoffConfig: {
+      baseBlocks: config.quoting.backoffBaseBlocks,
+      maxBlocks: config.quoting.backoffMaxBlocks
+    },
+    readLensForIds,
+    quoteFor,
+    simulate: async ({ market, borrower, plan: p, swap }) => {
+      const result = await simulateLiquidationExec(client, {
+        executooor: config.executooorAddress,
+        eoa,
+        data: encodeExec(market, borrower, p, swap)
+      })
+      return result.status === 'ok' ? null : (result.reason ?? 'revert')
+    },
+    encodeExec,
+    executor: config.executooorAddress,
+    emit: record => (record.kind === 'tx' ? txRecords.push(record) : onOutcome(record)),
+    logger
+  })
+
+  // 3. Submit — the queue signs/broadcasts each sim-ok tx; clear backoff only on a real pending entry.
+  let submitted = 0
+  for (const tx of txRecords) {
+    const fees = initialFees(await signer.getBaseFee(), config.maxFeeWei)
+    const { submitted: entered } = await queue.submit({
+      request: { to: tx.to, data: tx.data },
+      label: tx.id,
+      maxFeePerGas: fees.maxFeePerGas,
+      maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
+      blockNumber: head
+    })
+    if (entered) backoff.clear(tx.id)
+    submitted += 1
+  }
+
+  // 4. Confirmations / stuck-detection / fee-bumps for the pending set (incl. prior ticks).
+  await queue.onBlock(head)
+
+  const counters: TickCounters = {
+    pairs: senseCounters.pairs,
+    liquidatable: senseCounters.liquidatable,
+    planned: senseCounters.emitted,
+    noSwapPath: actCounters.noSwapPath,
+    quoteFailed: actCounters.quoteFailed,
+    backoffSkipped: actCounters.backoffSkipped,
+    ok: actCounters.ok,
+    reverted: actCounters.reverted,
+    submitted
+  }
+  logger.info('tick.end', { ...counters })
 
   return {
     counters,

@@ -6,7 +6,8 @@ import { Executor } from '@repo/contracts'
 import { parseSwapConfig, VENUE_API_KEY_ENV } from '@repo/swaps'
 import { tryCatch } from '@repo/utils'
 import { readFileSync } from 'node:fs'
-import { defineChain, getAddress, isAddress, isHex, parseGwei } from 'viem'
+import { defineChain, getAddress, isAddress, isAddressEqual, isHex, parseGwei } from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
 
 // The per-collateral swap routing config (SWAP_CONFIG_PATH JSON) — schemas, `parseSwapConfig`, and
@@ -87,22 +88,52 @@ export type QuotingConfig = {
   backoffMaxBlocks: bigint
 }
 
-export type Config = {
+/** Fields common to every stage config: the resolved chain plus its RPC endpoints and log level. */
+type CommonConfig = {
   chainId: number
   chain: Chain
-  /** rindexer network name for this chain; the discovery SQL filters candidates on it. */
   network: Network
   morpho: Address
   rpcUrl: string
   rpcUrlFallback: string | undefined
+  logLevel: LogLevel
+}
+
+/**
+ * Config for the read-only `sense` stage: discovery (Postgres) + the lens read. Loadable WITHOUT the
+ * signer private key and WITHOUT venue API keys — `sense` is genuinely secret-free (see the pipeline
+ * TIB's key-custody split).
+ */
+export type SenseConfig = CommonConfig & {
+  /** Postgres connection string for the co-located rindexer instance (borrower discovery). */
+  databaseUrl: string
+}
+
+/**
+ * Config for the `act` stage: re-derive → quote → simulate. Needs venue API keys (read at the point
+ * of use in `actOnce`, never stored here) but NOT the signer private key — `act` never signs.
+ */
+export type ActConfig = Omit<CommonConfig, 'network'> & {
+  executooorAddress: Address
+  /**
+   * The operator EOA (`LIQUIDATOR_ADDRESS`) — the skim `recipient` in the exec calldata and the
+   * simulate `from`. An address, not a key: `act` builds and simulates the exact bytes the queue
+   * (the sole key holder) later signs, so this must be the queue's signer address. Skimming to any
+   * other address — the ownerless Executor especially — strands seized funds where anyone can take
+   * them.
+   */
+  liquidatorAddress: Address
+  swapConfig: SwapConfig
+  quoting: QuotingConfig
+}
+
+export type Config = CommonConfig & {
   liquidatorPrivateKey: Hex
   executooorAddress: Address
-  /** Postgres connection string for the co-located rindexer instance (borrower discovery). */
   databaseUrl: string
   swapConfig: SwapConfig
   quoting: QuotingConfig
   maxFeeWei: bigint
-  logLevel: LogLevel
 }
 
 function required(env: Env, name: string): string {
@@ -157,19 +188,14 @@ function isFileNotFound(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT'
 }
 
-/**
- * Reads the full env table into a typed, validated {@link Config}. Throws on any missing
- * required var, malformed value, or unknown `CHAIN_ID` — the bot must fail loud at startup
- * rather than run half-configured. On-chain checks (that `EXECUTOOOR_ADDRESS` and the Morpho
- * singleton hold code) are performed in `index.ts` once a public client exists.
- */
-export function loadConfig(
-  env: Env = Bun.env,
-  deps: { chainMap?: Record<number, ChainConfig>; readFile?: (path: string) => string } = {}
-): Config {
-  const chainMap = deps.chainMap ?? CHAIN_MAP
-  const readFile = deps.readFile ?? (path => readFileSync(path, 'utf8'))
+// ---------------------------------------------------------------------------
+// Shared resolvers — each stage loader composes the subset it needs, so the parsing/validation of a
+// given env var lives in exactly one place regardless of which stage reads it.
+// ---------------------------------------------------------------------------
 
+type LoadDeps = { chainMap?: Record<number, ChainConfig>; readFile?: (path: string) => string }
+
+function resolveCommon(env: Env, chainMap: Record<number, ChainConfig>): CommonConfig {
   const chainIdRaw = required(env, 'CHAIN_ID')
   if (!/^\d+$/.test(chainIdRaw)) {
     // Plain decimal only — reject hex (Number('0x1')) and exponent (Number('1e3')) forms so this
@@ -183,8 +209,23 @@ export function loadConfig(
     throw new Error(`Unsupported CHAIN_ID ${chainId}; supported chain ids: ${supported}`)
   }
 
-  const rpcUrl = required(env, 'RPC_URL')
+  const logLevel = env.LOG_LEVEL?.trim() || 'info'
+  if (!isLogLevel(logLevel)) {
+    throw new Error(`LOG_LEVEL must be one of ${LOG_LEVELS.join(', ')}, got: ${env.LOG_LEVEL}`)
+  }
 
+  return {
+    chainId,
+    chain: chainConfig.chain,
+    network: chainConfig.network,
+    morpho: chainConfig.morpho,
+    rpcUrl: required(env, 'RPC_URL'),
+    rpcUrlFallback: env.RPC_URL_FALLBACK?.trim() || undefined,
+    logLevel
+  }
+}
+
+function resolvePrivateKey(env: Env): Hex {
   const liquidatorPrivateKey = required(env, 'LIQUIDATOR_PRIVATE_KEY')
   if (
     !isHex(liquidatorPrivateKey, { strict: true }) ||
@@ -192,35 +233,68 @@ export function loadConfig(
   ) {
     throw new Error('LIQUIDATOR_PRIVATE_KEY must be a 0x-prefixed 32-byte hex string')
   }
+  return liquidatorPrivateKey
+}
 
-  // The Executor singleton has a deterministic CREATE2 address (soltag bakes the canonical factory +
-  // salt into `Executor.with()`), so EXECUTOOOR_ADDRESS is optional — we default to that derived
-  // address, which the deploy script and the deployless lens also use (one source of truth). Set the
-  // env only to override (e.g. a non-standard deployment).
-  const executooorOverride = env.EXECUTOOOR_ADDRESS?.trim()
-  if (executooorOverride && !isAddress(executooorOverride, { strict: false })) {
-    throw new Error(`EXECUTOOOR_ADDRESS is not a valid address: ${executooorOverride}`)
+// The Executor singleton has a deterministic CREATE2 address (soltag bakes the canonical factory +
+// salt into `Executor.with()`), so EXECUTOOOR_ADDRESS is optional — we default to that derived
+// address, which the deploy script and the deployless lens also use (one source of truth). Set the
+// env only to override (e.g. a non-standard deployment).
+function resolveExecutor(env: Env): Address {
+  const override = env.EXECUTOOOR_ADDRESS?.trim()
+  if (override && !isAddress(override, { strict: false })) {
+    throw new Error(`EXECUTOOOR_ADDRESS is not a valid address: ${override}`)
   }
-  const executooorAddress = executooorOverride
-    ? getAddress(executooorOverride)
-    : getAddress(Executor.with().address)
+  return override ? getAddress(override) : getAddress(Executor.with().address)
+}
 
-  const logLevel = env.LOG_LEVEL?.trim() || 'info'
-  if (!isLogLevel(logLevel)) {
-    throw new Error(`LOG_LEVEL must be one of ${LOG_LEVELS.join(', ')}, got: ${env.LOG_LEVEL}`)
+// The operator EOA `act` targets: required (no derivable default — act has no key to derive from),
+// checksum-normalized, fail-loud on a malformed value.
+function resolveLiquidatorAddress(env: Env): Address {
+  const raw = required(env, 'LIQUIDATOR_ADDRESS').trim()
+  if (!isAddress(raw, { strict: false })) {
+    throw new Error(`LIQUIDATOR_ADDRESS is not a valid address: ${raw}`)
   }
+  return getAddress(raw)
+}
 
+// Full-config (tickOnce/queue path) cross-check: when the operator sets LIQUIDATOR_ADDRESS alongside
+// the private key, the two must agree — a mismatch means act would skim seized funds to a wallet the
+// queue doesn't sign for. When absent, the key remains the single source of truth (no new
+// requirement on the tick path).
+function assertLiquidatorAddressMatchesKey(env: Env, privateKey: Hex): void {
+  const raw = env.LIQUIDATOR_ADDRESS?.trim()
+  if (!raw) return
+  if (!isAddress(raw, { strict: false })) {
+    throw new Error(`LIQUIDATOR_ADDRESS is not a valid address: ${raw}`)
+  }
+  const derived = privateKeyToAccount(privateKey).address
+  if (!isAddressEqual(getAddress(raw), derived)) {
+    throw new Error(
+      `LIQUIDATOR_ADDRESS (${getAddress(raw)}) does not match the address derived from LIQUIDATOR_PRIVATE_KEY (${derived}) — act and queue would target different wallets`
+    )
+  }
+}
+
+function resolveMaxFeeWei(env: Env): bigint {
   const maxFeeGwei = env.MAX_FEE_GWEI?.trim() || DEFAULT_MAX_FEE_GWEI
   if (!/^\d+(\.\d+)?$/.test(maxFeeGwei) || Number(maxFeeGwei) <= 0) {
     throw new Error(`MAX_FEE_GWEI must be a positive number, got: ${env.MAX_FEE_GWEI}`)
   }
+  return parseGwei(maxFeeGwei)
+}
 
-  // Swap routing is OPTIONAL. With no path set, or a path whose file does not exist yet (e.g. a
-  // volume not seeded on first deploy), the bot still boots: discovery identifies liquidatable
-  // borrowers and routed liquidations are skipped for want of a swap path (`config.no_swap_path`).
-  // A file that IS present but malformed/invalid stays fatal (operator error, not absence). This
-  // removes the first-deploy bootstrap deadlock: the bot can't host the volume upload until it
-  // boots, and it couldn't boot without the file.
+// Swap routing is OPTIONAL. With no path set, or a path whose file does not exist yet (e.g. a
+// volume not seeded on first deploy), the bot still boots: discovery identifies liquidatable
+// borrowers and routed liquidations are skipped for want of a swap path (`config.no_swap_path`).
+// A file that IS present but malformed/invalid stays fatal (operator error, not absence). This
+// removes the first-deploy bootstrap deadlock: the bot can't host the volume upload until it
+// boots, and it couldn't boot without the file.
+function resolveSwapConfig(
+  env: Env,
+  chainId: number,
+  readFile: (path: string) => string
+): SwapConfig {
   const swapConfigPath = env.SWAP_CONFIG_PATH?.trim()
   let swapConfig: SwapConfig = {}
   if (swapConfigPath) {
@@ -251,8 +325,11 @@ export function loadConfig(
       )
     }
   }
+  return swapConfig
+}
 
-  const quoting: QuotingConfig = {
+function resolveQuoting(env: Env): QuotingConfig {
+  return {
     quoteTimeoutMs: intEnv(env, 'QUOTE_TIMEOUT_MS', DEFAULT_QUOTE_TIMEOUT_MS, { min: 1 }),
     httpRps: intEnv(env, 'HTTP_RPS', DEFAULT_HTTP_RPS, { min: 1 }),
     httpBurst: intEnv(env, 'HTTP_BURST', DEFAULT_HTTP_BURST, { min: 1 }),
@@ -264,20 +341,61 @@ export function loadConfig(
     backoffBaseBlocks: bigintEnv(env, 'BACKOFF_BASE_BLOCKS', DEFAULT_BACKOFF_BASE_BLOCKS),
     backoffMaxBlocks: bigintEnv(env, 'BACKOFF_MAX_BLOCKS', DEFAULT_BACKOFF_MAX_BLOCKS)
   }
+}
 
+/**
+ * Reads the env table into the read-only {@link SenseConfig} — chain, RPC, discovery Postgres, log
+ * level. Deliberately does NOT require `LIQUIDATOR_PRIVATE_KEY` or any venue API key: `sense` is
+ * secret-free. Throws on any missing required var or unknown `CHAIN_ID`.
+ */
+export function loadSenseConfig(env: Env = Bun.env, deps: LoadDeps = {}): SenseConfig {
+  const common = resolveCommon(env, deps.chainMap ?? CHAIN_MAP)
+  return { ...common, databaseUrl: required(env, 'DATABASE_URL') }
+}
+
+/**
+ * Reads the env table into the {@link ActConfig} — chain, RPC, Executor, the operator EOA
+ * (`LIQUIDATOR_ADDRESS`, required — the skim recipient and simulate `from`), swap routing, quoting.
+ * Needs venue API keys (validated against the swap config; read at the point of use in `actOnce`)
+ * but NOT the signer private key. Throws on any missing required var, unknown `CHAIN_ID`, or a
+ * configured venue whose API key is absent.
+ */
+export function loadActConfig(env: Env = Bun.env, deps: LoadDeps = {}): ActConfig {
+  const readFile = deps.readFile ?? (path => readFileSync(path, 'utf8'))
+  const common = resolveCommon(env, deps.chainMap ?? CHAIN_MAP)
   return {
-    chainId,
-    chain: chainConfig.chain,
-    network: chainConfig.network,
-    morpho: chainConfig.morpho,
-    rpcUrl,
-    rpcUrlFallback: env.RPC_URL_FALLBACK?.trim() || undefined,
+    chainId: common.chainId,
+    chain: common.chain,
+    morpho: common.morpho,
+    rpcUrl: common.rpcUrl,
+    rpcUrlFallback: common.rpcUrlFallback,
+    logLevel: common.logLevel,
+    executooorAddress: resolveExecutor(env),
+    liquidatorAddress: resolveLiquidatorAddress(env),
+    swapConfig: resolveSwapConfig(env, common.chainId, readFile),
+    quoting: resolveQuoting(env)
+  }
+}
+
+/**
+ * Reads the full env table into a typed, validated {@link Config} — everything both stages need plus
+ * the signer private key and fee ceiling. Used by `tickOnce` and by the CLI's config-validation gate.
+ * Throws on any missing required var, malformed value, or unknown `CHAIN_ID` — the bot must fail loud
+ * at startup rather than run half-configured. On-chain checks (that `EXECUTOOOR_ADDRESS` and the
+ * Morpho singleton hold code) are performed in `index.ts` once a public client exists.
+ */
+export function loadConfig(env: Env = Bun.env, deps: LoadDeps = {}): Config {
+  const readFile = deps.readFile ?? (path => readFileSync(path, 'utf8'))
+  const common = resolveCommon(env, deps.chainMap ?? CHAIN_MAP)
+  const liquidatorPrivateKey = resolvePrivateKey(env)
+  assertLiquidatorAddressMatchesKey(env, liquidatorPrivateKey)
+  return {
+    ...common,
     liquidatorPrivateKey,
-    executooorAddress,
+    executooorAddress: resolveExecutor(env),
     databaseUrl: required(env, 'DATABASE_URL'),
-    swapConfig,
-    quoting,
-    maxFeeWei: parseGwei(maxFeeGwei),
-    logLevel
+    swapConfig: resolveSwapConfig(env, common.chainId, readFile),
+    quoting: resolveQuoting(env),
+    maxFeeWei: resolveMaxFeeWei(env)
   }
 }
