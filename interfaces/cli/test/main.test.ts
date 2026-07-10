@@ -1,7 +1,13 @@
-import { describe, expect, it } from 'bun:test'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import type { SignerServer } from '@repo/signer'
+
+import { createSignerServer, parsePolicy } from '@repo/signer'
+import { afterEach, describe, expect, it } from 'bun:test'
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { getAddress } from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
 
 // The CLI's exit-code contract is what loop/cron wrappers script against, so exercise the real
 // binary end-to-end: spawn `bun src/main.ts …` from the package dir (whose bunfig preloads the
@@ -38,9 +44,11 @@ function run(args: string[], env: Record<string, string> = {}) {
 
 describe('morpho-bots exit codes', () => {
   it(
-    'exits 0 for --help',
+    'exits 0 for --help and lists the top-level signer command',
     () => {
-      expect(run(['--help']).code).toBe(0)
+      const { code, stdout } = run(['--help'])
+      expect(code).toBe(0)
+      expect(stdout).toContain('signer')
     },
     SPAWN_TIMEOUT_MS
   )
@@ -155,6 +163,185 @@ describe('morpho-bots exit codes', () => {
       const second = run(['init'], { MORPHO_BOTS_HOME: home })
       expect(second.code).toBe(0)
       expect(second.stdout).toContain('kept')
+    },
+    SPAWN_TIMEOUT_MS
+  )
+})
+
+// Throwaway well-known test key (anvil account #0) — never used to hold funds.
+const SIGNER_KEY = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
+const SIGNER_ADDRESS = privateKeyToAccount(SIGNER_KEY).address
+const EXECUTOR = getAddress(`0x${'22'.repeat(20)}`)
+
+// A minimal default-deny policy the daemon can start on; the `address` handshake never touches it.
+const POLICY = {
+  version: 1,
+  rules: [
+    {
+      name: 'test',
+      chainIds: [8453],
+      to: [EXECUTOR],
+      maxFeePerGasWei: '300000000000',
+      maxGasLimit: '15000000'
+    }
+  ]
+}
+
+// A short-prefixed temp home so `<home>/signer.sock` stays under the ~104-byte sun_path cap.
+function shortHome(): string {
+  return mkdtempSync(join(tmpdir(), 's-'))
+}
+
+// One request line in, one response line out over a fresh connection (the netcat-equivalent probe).
+function rpc(socketPath: string, request: unknown): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const socket = connect(socketPath)
+    let buffer = ''
+    socket.on('connect', () => socket.write(`${JSON.stringify(request)}\n`))
+    socket.on('data', chunk => {
+      buffer += chunk.toString('utf8')
+      const idx = buffer.indexOf('\n')
+      if (idx === -1) return
+      socket.destroy()
+      resolve(JSON.parse(buffer.slice(0, idx)))
+    })
+    socket.on('error', reject)
+  })
+}
+
+describe('morpho-bots signer command', () => {
+  it(
+    'exits 2 when SIGNER_PRIVATE_KEY is missing',
+    () => {
+      const { code, stderr } = run(['signer'], { MORPHO_BOTS_HOME: shortHome() })
+      expect(code).toBe(2)
+      expect(stderr).toContain('SIGNER_PRIVATE_KEY')
+    },
+    SPAWN_TIMEOUT_MS
+  )
+
+  it(
+    'exits 2 when the policy file is missing (key present)',
+    () => {
+      // No signer-policy.json in the fresh home → the daemon refuses to start.
+      const { code, stderr } = run(['signer'], {
+        MORPHO_BOTS_HOME: shortHome(),
+        SIGNER_PRIVATE_KEY: SIGNER_KEY
+      })
+      expect(code).toBe(2)
+      expect(stderr).toContain('signer policy')
+    },
+    SPAWN_TIMEOUT_MS
+  )
+
+  it(
+    'listens, answers an address request over the socket, and exits 0 on SIGTERM (unlinking the socket)',
+    async () => {
+      const home = shortHome()
+      writeFileSync(join(home, 'signer-policy.json'), JSON.stringify(POLICY))
+      const sock = join(home, 'signer.sock')
+      const proc = Bun.spawn(['bun', 'src/main.ts', 'signer'], {
+        cwd: CLI_DIR,
+        env: { ...process.env, MORPHO_BOTS_HOME: home, SIGNER_PRIVATE_KEY: SIGNER_KEY },
+        stdout: 'pipe',
+        stderr: 'pipe'
+      })
+      try {
+        // Poll for the socket to appear (cold bun spawn) rather than sleeping a fixed time.
+        for (let i = 0; i < 200 && !existsSync(sock); i += 1) await Bun.sleep(50)
+        expect(existsSync(sock)).toBe(true)
+
+        const response = await rpc(sock, { v: 1, id: '1', method: 'address' })
+        expect((response.result as { address: string }).address).toBe(SIGNER_ADDRESS)
+      } finally {
+        proc.kill('SIGTERM')
+      }
+      expect(await proc.exited).toBe(0)
+      // close() unlinks the socket on a clean shutdown.
+      expect(existsSync(sock)).toBe(false)
+    },
+    SPAWN_TIMEOUT_MS
+  )
+})
+
+describe('morpho-bots queue via the signing agent', () => {
+  let servers: SignerServer[] = []
+
+  afterEach(async () => {
+    await Promise.all(servers.map(s => s.close()))
+    servers = []
+  })
+
+  async function liveAgent(): Promise<string> {
+    const dir = mkdtempSync(join(tmpdir(), 's-'))
+    const socketPath = join(dir, 'a.sock')
+    const noop = () => undefined
+    const server = createSignerServer({
+      socketPath,
+      account: privateKeyToAccount(SIGNER_KEY),
+      policy: parsePolicy(POLICY),
+      log: { info: noop, warn: noop, error: noop }
+    })
+    await server.listen()
+    servers.push(server)
+    return socketPath
+  }
+
+  // Spawn the queue ASYNC (not spawnSync): the live agent listens on THIS process's event loop, so a
+  // synchronous spawn would block it and the cross-process handshake would deadlock. `stdin: 'ignore'`
+  // gives an empty (non-TTY) stdin → the zero-work fast path. RPC is an unreachable loopback the
+  // zero-work pass must never dial once the handshake succeeds.
+  const AGENT_QUEUE_ENV = { CHAIN_ID: '8453', RPC_URL: 'http://127.0.0.1:1' }
+
+  async function runQueueAsync(env: Record<string, string>) {
+    const proc = Bun.spawn(['bun', 'src/main.ts', 'blue', 'queue'], {
+      cwd: CLI_DIR,
+      env: { ...process.env, MORPHO_BOTS_HOME: mkdtempSync(join(tmpdir(), 's-')), ...env },
+      stdin: 'ignore',
+      stdout: 'pipe',
+      stderr: 'pipe'
+    })
+    const [code, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()])
+    return { code, stderr }
+  }
+
+  it(
+    'exits 1 when SIGNER_SOCKET points at a dead socket and no key is set (transient, loop retries)',
+    async () => {
+      const { code } = await runQueueAsync({
+        ...AGENT_QUEUE_ENV,
+        SIGNER_SOCKET: join(mkdtempSync(join(tmpdir(), 's-')), 'dead.sock')
+      })
+      expect(code).toBe(1)
+    },
+    SPAWN_TIMEOUT_MS
+  )
+
+  it(
+    'exits 2 when the live agent address disagrees with LIQUIDATOR_ADDRESS',
+    async () => {
+      const socketPath = await liveAgent()
+      const { code, stderr } = await runQueueAsync({
+        ...AGENT_QUEUE_ENV,
+        SIGNER_SOCKET: socketPath,
+        LIQUIDATOR_ADDRESS: `0x${'34'.repeat(20)}`
+      })
+      expect(code).toBe(2)
+      expect(stderr).toContain('does not match LIQUIDATOR_ADDRESS')
+    },
+    SPAWN_TIMEOUT_MS
+  )
+
+  it(
+    'exits 0 (zero-work) when the live agent address matches LIQUIDATOR_ADDRESS',
+    async () => {
+      const socketPath = await liveAgent()
+      const { code } = await runQueueAsync({
+        ...AGENT_QUEUE_ENV,
+        SIGNER_SOCKET: socketPath,
+        LIQUIDATOR_ADDRESS: SIGNER_ADDRESS
+      })
+      expect(code).toBe(0)
     },
     SPAWN_TIMEOUT_MS
   )

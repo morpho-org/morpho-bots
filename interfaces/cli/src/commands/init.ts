@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { botsHome, configFile, secretsFile } from '../home'
+import { botsHome, configFile, secretsFile, signerPolicyFile } from '../home'
 
 // Env-var names as keys — the merge layer hands these straight to each bot's loadConfig, so the
 // full knob list is each bot's src/config.ts. "_" keys are documentation; the bots ignore them.
@@ -17,6 +17,11 @@ const EXAMPLE_CONFIG = {
   midnight: {
     defaults: { LOG_LEVEL: 'info' },
     chains: { '8453': { LIQUIDATOR_ADDRESS: '0x…' } }
+  },
+  // The signing agent is chain-less (one daemon serves every chain; per-chain policy lives in
+  // signer-policy.json). Set SIGNER_SOCKET in each bot’s section to opt the queue into the agent.
+  signer: {
+    defaults: { LOG_LEVEL: 'info' }
   }
 }
 
@@ -44,7 +49,30 @@ const EXAMPLE_SECRETS = {
         ONEINCH_API_KEY: ''
       }
     }
+  },
+  // The signing agent’s key — the SOLE holder when the queue runs with SIGNER_SOCKET set. This is
+  // NOT read from LIQUIDATOR_PRIVATE_KEY; move the key here when adopting the agent.
+  signer: {
+    defaults: { SIGNER_PRIVATE_KEY: '0x…' }
   }
+}
+
+// A one-rule default-deny example the operator edits: allow only exec calls to the Executor on Base,
+// value 0, under the fee/gas ceilings. `to` and `selectors` are placeholders — set `to` to your
+// Executor address and the selector(s) to the exec entrypoint(s) you sign. Everything else is denied.
+const EXAMPLE_SIGNER_POLICY = {
+  version: 1,
+  rules: [
+    {
+      name: 'blue-liquidation-base',
+      chainIds: [8453],
+      to: ['0x0000000000000000000000000000000000000000'],
+      selectors: ['0x00000001'],
+      maxValueWei: '0',
+      maxFeePerGasWei: '300000000000',
+      maxGasLimit: '15000000'
+    }
+  ]
 }
 
 // A minimal per-collateral routing example; the maintained reference (live Base/Robinhood routes)
@@ -78,13 +106,21 @@ export function runInit(): number {
     '<home>/blue/swap-config.json',
     swapConfigPath
   )
+  const signerPolicyPath = signerPolicyFile(home)
   const results = [
     [configFile(home), writeOnce(configFile(home), configJson + '\n')],
     [
       secretsFile(home),
       writeOnce(secretsFile(home), JSON.stringify(EXAMPLE_SECRETS, null, 2) + '\n', 0o600)
     ],
-    [swapConfigPath, writeOnce(swapConfigPath, JSON.stringify(EXAMPLE_SWAP_CONFIG, null, 2) + '\n')]
+    [
+      swapConfigPath,
+      writeOnce(swapConfigPath, JSON.stringify(EXAMPLE_SWAP_CONFIG, null, 2) + '\n')
+    ],
+    [
+      signerPolicyPath,
+      writeOnce(signerPolicyPath, JSON.stringify(EXAMPLE_SIGNER_POLICY, null, 2) + '\n')
+    ]
   ] as const
 
   for (const [path, outcome] of results) {
@@ -96,6 +132,11 @@ export function runInit(): number {
   )
   console.log(
     '  while true; do morpho-bots blue unhealthy-positions | morpho-bots blue liquidate | morpho-bots blue queue; sleep 2; done'
+  )
+  console.log(
+    `\nOptional: to run the keyless signing agent, edit ${signerPolicyPath} (set the Executor ` +
+      'address + selectors), set SIGNER_PRIVATE_KEY in secrets.json, start `morpho-bots signer`, ' +
+      'and set SIGNER_SOCKET in each bot’s section so the queue signs through it.'
   )
   return 0
 }

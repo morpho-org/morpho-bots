@@ -1,15 +1,14 @@
 import type { LogLevel } from '@repo/bot-kit'
-import type { Chain, Hex } from 'viem'
+import type { Chain } from 'viem'
 
-import type { ChainConfig, Env } from './config'
+import type { ChainConfig, Env, SignerBackend } from './config'
 
 import {
-  assertLiquidatorAddressMatchesKey,
   CHAIN_MAP,
   resolveBackoff,
   resolveCommon,
   resolveMaxFeeWei,
-  resolvePrivateKey
+  resolveSignerBackend
 } from './config'
 import { SETTLED_COOLDOWN_BLOCKS } from './constants'
 import { revertReason } from './tx-error'
@@ -21,9 +20,9 @@ import { revertReason } from './tx-error'
 
 /**
  * Everything the `queue` command needs to sign and broadcast — the resolved chain, its RPC
- * endpoint(s), the optional dedicated broadcast endpoint (`SEND_RPC_URL`), the signer private key,
- * and the fee ceiling. Deliberately excludes discovery/venue/quoting config: the queue neither
- * discovers nor quotes.
+ * endpoint(s), the optional dedicated broadcast endpoint (`SEND_RPC_URL`), the signer backend, and
+ * the fee ceiling. Deliberately excludes discovery/venue/quoting config: the queue neither discovers
+ * nor quotes.
  */
 export type QueueConfig = {
   chainId: number
@@ -38,7 +37,8 @@ export type QueueConfig = {
    */
   sendRpcUrl: string | undefined
   logLevel: LogLevel
-  liquidatorPrivateKey: Hex
+  /** The local key or the signing-agent socket; see {@link SignerBackend}. */
+  signer: SignerBackend
   maxFeeWei: bigint
   /** Per-position failure-backoff bounds; the queue is the sole writer of backoff state. */
   backoffBaseBlocks: bigint
@@ -49,14 +49,13 @@ type QueueLoadDeps = { chainMap?: Record<number, ChainConfig> }
 
 /**
  * Reads the env table into the {@link QueueConfig}. Requires `LIQUIDATOR_PRIVATE_KEY` (the queue is
- * the sole key holder) and cross-checks it against `LIQUIDATOR_ADDRESS` when present — a mismatch
- * means `act` built calldata skimming to a wallet this signer does not control. Throws on any missing
- * required var, malformed value, or unknown `CHAIN_ID` (exit 2 at the CLI).
+ * the sole key holder) — unless `SIGNER_SOCKET` selects the agent backend, in which case the key is
+ * never read here — and cross-checks it against `LIQUIDATOR_ADDRESS` when present. Throws on any
+ * missing required var, malformed value, or unknown `CHAIN_ID` (exit 2 at the CLI).
  */
 export function loadQueueConfig(env: Env = Bun.env, deps: QueueLoadDeps = {}): QueueConfig {
   const common = resolveCommon(env, deps.chainMap ?? CHAIN_MAP)
-  const liquidatorPrivateKey = resolvePrivateKey(env)
-  assertLiquidatorAddressMatchesKey(env, liquidatorPrivateKey)
+  const signer = resolveSignerBackend(env)
   const backoff = resolveBackoff(env)
   return {
     chainId: common.chainId,
@@ -65,7 +64,7 @@ export function loadQueueConfig(env: Env = Bun.env, deps: QueueLoadDeps = {}): Q
     rpcUrlFallback: common.rpcUrlFallback,
     sendRpcUrl: env.SEND_RPC_URL?.trim() || undefined,
     logLevel: common.logLevel,
-    liquidatorPrivateKey,
+    signer,
     maxFeeWei: resolveMaxFeeWei(env),
     backoffBaseBlocks: backoff.baseBlocks,
     backoffMaxBlocks: backoff.maxBlocks

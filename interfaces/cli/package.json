@@ -16,6 +16,7 @@
     "@repo/blue-liquidation": "workspace:*",
     "@repo/bot-kit": "workspace:*",
     "@repo/midnight-liquidation": "workspace:*",
+    "@repo/signer": "workspace:*",
     "@repo/utils": "workspace:*",
     "commander": "catalog:",
     "viem": "catalog:"
