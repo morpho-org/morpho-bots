@@ -125,8 +125,17 @@ These files provide important background information about dependencies and rela
 
 This is a **bun workspaces monorepo** housing off-chain Morpho curator bots:
 
-- `/bots/` — individual bot apps (one per bot)
-- `/packages/` — shared libraries (`@repo/utils`, `@repo/bot-kit`, `@repo/swaps`, `@repo/contracts`, `@repo/typescript-config`)
+- `/uis/` — operator front-ends. `uis/cli` (`@repo/cli`, bin `morpho-bots`) is the only way to run
+  bots: one-shot `morpho-bots <bot> tick` invocations driven by unix loops/cron, with config and
+  cross-tick state under `~/.morpho-bots` (`MORPHO_BOTS_HOME` overrides). A TUI is planned.
+- `/services/` — independently deployed sidecars (not bun workspaces). `services/blue-rindexer`
+  indexes Morpho Blue `Borrow` events into Postgres for blue's discovery.
+- `/packages/` — libraries: the bot cores (`@repo/blue-liquidation`, `@repo/midnight-liquidation`,
+  each exporting a one-shot `tickOnce`) and the shared layers (`@repo/utils`, `@repo/bot-kit`,
+  `@repo/swaps`, `@repo/contracts`, `@repo/typescript-config`)
+
+See [TIB-2026-07-09-cli-restructure](./docs/decisions/TIB-2026-07-09-cli-restructure.md) for the
+architecture rationale, the CLI's 0/1/2 exit-code contract, and the persisted-state design.
 
 **Key technologies**: bun 1.3.12 (runtime + package manager + workspace task runner), Node.js
 24.14.1, TypeScript 6.0, viem for Web3, oxlint + oxfmt for lint/format, knip for dead-code
@@ -166,29 +175,31 @@ All commit messages, PR titles, and Linear ticket titles use the same format:
 
 **Types:** `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `perf`, `ci`
 
-**Scopes — Packages:**
+**Scopes — Packages & UIs:**
 
-| Package                 | Scope       |
-| ----------------------- | ----------- |
-| @repo/bot-kit           | `bot-kit`   |
-| @repo/contracts         | `contracts` |
-| @repo/swaps             | `swaps`     |
-| @repo/typescript-config | `ts-config` |
-| @repo/utils             | `utils`     |
+| Package                    | Scope                  |
+| -------------------------- | ---------------------- |
+| @repo/blue-liquidation     | `blue-liquidation`     |
+| @repo/bot-kit              | `bot-kit`              |
+| @repo/cli                  | `cli`                  |
+| @repo/contracts            | `contracts`            |
+| @repo/midnight-liquidation | `midnight-liquidation` |
+| @repo/swaps                | `swaps`                |
+| @repo/typescript-config    | `ts-config`            |
+| @repo/utils                | `utils`                |
 
-**Scopes — Bots:**
+**Scopes — Services:**
 
-| Bot                  | Scope                  |
-| -------------------- | ---------------------- |
-| blue-liquidation     | `blue-liquidation`     |
-| midnight-liquidation | `midnight-liquidation` |
+| Service                | Scope           |
+| ---------------------- | --------------- |
+| services/blue-rindexer | `blue-rindexer` |
 
 **Scopes — Cross-cutting:**
 
 | Scope         | Use when                                                    |
 | ------------- | ----------------------------------------------------------- |
 | `repo`        | Repo-wide scaffolding, workspace config, root-level files   |
-| `bots`        | Change spans multiple bots                                  |
+| `bots`        | Change spans both bot core packages                         |
 | `packages`    | Change spans multiple packages                              |
 | `ci`          | CI/CD pipeline changes                                      |
 | `agents`      | `CLAUDE.md`, `.mcp.json`, editor configs, agent definitions |

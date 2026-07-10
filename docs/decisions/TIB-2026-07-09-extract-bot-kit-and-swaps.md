@@ -189,6 +189,15 @@ deployment migrations, upcoming multichain). The protocol pipelines stay per-bot
   clone whose multichain shapes the extracted signatures follow.
 - Branches: `feature/extract-2-swaps`, `feature/extract-3-bot-kit`.
 
+### 2026-07-10 — runner/watcher removed by the CLI restructure
+
+[TIB-2026-07-09 (cli restructure)](./TIB-2026-07-09-cli-restructure.md) supersedes the
+"Block watcher + runner" portion of this TIB's `@repo/bot-kit` surface: the bots now run as
+one-shot `tickOnce` invocations driven by unix loops/cron, so `runner/runner.ts` and
+`runner/watcher.ts` (and their tests) are deleted. Everything else in the extracted surface —
+logger, transports, signer, simulate gate, pending queue, backoff, fee policy — is unchanged, and
+the queue/backoff additionally gained `dump()`/`initialState` for cross-tick persistence.
+
 <!--
 TIB conventions:
 - Once accepted, do not substantively edit this TIB. If the decision needs to change,

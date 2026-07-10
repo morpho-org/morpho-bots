@@ -52,13 +52,21 @@
   bot do and why?" a day later.
 - **Promises**: Use `tryCatch` from `@repo/utils` to handle promise throws.
 
-### Environment Variables
+### Configuration
 
-- **Direct `Bun.env` access**: Bots read `Bun.env.VARIABLE_NAME` directly at the point of use.
-  There is no helper wrapper and no runtime schema layer — if a required variable is missing,
-  fail loudly at startup (throw and exit), don't silently degrade.
-- **Never committed**: Secrets and runtime config live in local `.env` files or deploy-time
-  environment — never in committed code. The repo's Strict Rules enforce this.
+- **Env-shaped tables, not `Bun.env`**: Bot packages receive ALL configuration — venue API keys
+  included — through the env table passed to `tickOnce(env, …)` / `loadConfig(env)`. Never read
+  `Bun.env` directly inside a bot package: the CLI merges `~/.morpho-bots/config.json` +
+  `secrets.json` + the process env into that table (precedence: config < secrets < process env),
+  and a direct `Bun.env` read silently bypasses file-sourced settings. There is still no wrapper
+  helper and no runtime schema layer — if a required key is missing, fail loudly at startup
+  (throw and exit), don't silently degrade.
+  - Known documented exception: `@repo/utils`'s deployless-batch-lens reads
+    `process.env.MAX_DEPLOYLESS_BATCH_SIZE` (env-only override, unreachable from config files).
+- **Never committed**: Secrets live in `~/.morpho-bots/secrets.json` (chmod 600), local `.env`
+  files, or deploy-time environment — never in committed code. The repo's Strict Rules enforce
+  this. Keys are read from the env table at the point of use and are never stored on the (logged)
+  `Config` object.
 
 ### Code Complexity
 
@@ -71,8 +79,9 @@
 
 - **Premature Optimization**: Don't optimize until you measure and identify bottlenecks
 - **RPC efficiency**: Batch on-chain reads where possible. Use `readDeploylessBatchLens` for fetching entities that would be well-modeled by a Lens contract, and `multicall` otherwise (e.g., for one-off fetching of heterogenous data / data sourced from multiple, unrelated contracts). Prefer `readContract` with explicit block tags for deterministic snapshots over loose calls that pick up whatever the provider last saw.
-- **Bundle Size**: Be mindful of third-party dependencies and their impact — each bot ships as its
-  own image, so a dep added in one bot doesn't have to cost the others.
+- **Bundle Size**: Be mindful of third-party dependencies and their impact — all bots ship in the
+  single `@repo/cli` image and the CLI spawns one process per tick, so a heavy dep costs every bot
+  on every invocation.
 
 ## TypeScript Patterns
 

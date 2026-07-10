@@ -7,11 +7,10 @@ FROM oven/bun:1.3.12-slim
 WORKDIR /repo
 
 # Manifests + workspace members first, so `bun install` is layer-cached. All members' package.json
-# are needed for bun to resolve the `workspace:*` links (bots/ until the wrappers are deleted).
+# are needed for bun to resolve the `workspace:*` links.
 COPY package.json bun.lock bunfig.toml ./
 COPY packages ./packages
 COPY uis ./uis
-COPY bots ./bots
 RUN bun install --frozen-lockfile
 
 # Build @repo/contracts once at image build (the runtime no longer runs `prestart`), and warm the

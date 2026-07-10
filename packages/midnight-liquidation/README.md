@@ -130,16 +130,18 @@ needed. Start the bot:
 
 ```sh
 set -a
-source bots/midnight-liquidation/.env
+source packages/midnight-liquidation/.env
 set +a
-bun run --filter @morpho-org/midnight-liquidation start
+bun run --filter @repo/cli start midnight tick    # one tick; loop/cron for persistence
 ```
+
+(Or put config under `~/.morpho-bots` — `morpho-bots init` scaffolds it — instead of env vars.)
 
 Useful validation commands while developing:
 
 ```sh
-bun run --filter @morpho-org/midnight-liquidation typecheck
-bun test bots/midnight-liquidation/test
+bun run --filter @repo/midnight-liquidation typecheck
+bun test packages/midnight-liquidation/test
 ```
 
 ## Seeding Liquidatable Positions
@@ -158,7 +160,7 @@ shape, creates one market per position, signs EcrecoverRatifier offers, and send
 that leave each position healthy at creation but near the liquidation edge. `--dry-run` performs
 discovery, cryptographic self-checks, and capital planning without sending transactions.
 
-Run from `bots/midnight-liquidation`:
+Run from `packages/midnight-liquidation`:
 
 ```sh
 RPC_URL=https://base-mainnet.example \
@@ -198,17 +200,17 @@ Useful options:
 
 ## Running With Docker Compose
 
-[docker-compose.yml](./docker-compose.yml) defines a single `bot` service (discovery is the remote
-API, so there is no database or indexer). It builds from the repo root so workspace packages resolve
-correctly.
+[docker-compose.midnight.yml](../../docker-compose.midnight.yml) defines a single `bot` service
+(discovery is the remote API, so there is no database or indexer). It builds the `uis/cli` image,
+whose entrypoint loops `morpho-bots midnight tick`.
 
-From `bots/midnight-liquidation`:
+From the repo root:
 
 ```sh
 export RPC_URL=https://base-mainnet.example
 export LIQUIDATOR_PRIVATE_KEY=0x...
 export ZEROX_API_KEY=...   # and/or ONEINCH_API_KEY
-docker compose up --build
+docker compose -f docker-compose.midnight.yml up --build
 ```
 
 Optional variables:
@@ -238,7 +240,7 @@ export RAILWAY_PROJECT_ID=...   # required: the Railway project to deploy to
 export RPC_URL=https://base-mainnet.example
 export LIQUIDATOR_PRIVATE_KEY=0x...
 # Optional: RAILWAY_ENVIRONMENT (defaults to production).
-bun run --filter @morpho-org/midnight-liquidation deploy:railway
+bun run --filter @repo/cli deploy:railway:midnight
 ```
 
 Secrets are read from the script's environment, piped to Railway via stdin (never argv), and never
@@ -255,7 +257,8 @@ set, the service will refuse to start unless `ALLOW_BAD_DEBT_ONLY=true`.
 
 ### Startup
 
-[src/index.ts](./src/index.ts) loads config, creates two viem clients, and starts the block-poll runner.
+[src/index.ts](./src/index.ts)'s `tickOnce` loads config, creates two viem clients, and runs one tick
+(the `morpho-bots` CLI drives it in a loop).
 The read client wraps the RPC transport with `deployless` support so the bot can execute its Solidity
 lens via `eth_call`. The signer client is plain HTTP and owns transaction submission with a local
 pending-nonce cursor.

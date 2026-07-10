@@ -6,14 +6,12 @@
   "type": "module",
   "exports": {
     ".": {
-      "types": "./src/bot.ts",
-      "default": "./src/bot.ts"
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
     }
   },
   "scripts": {
     "seed:positions": "bun run scripts/seed-liquidatable-positions.ts",
-    "prestart": "bun run --parallel --workspaces --if-present build",
-    "start": "bun src/index.ts",
     "typecheck": "soltag && tsc --noEmit"
   },
   "dependencies": {
