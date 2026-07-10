@@ -2,7 +2,7 @@
 
 | Field          | Value                                                                                      |
 | -------------- | ------------------------------------------------------------------------------------------ |
-| **Status**     | Proposed                                                                                   |
+| **Status**     | Accepted                                                                                   |
 | **Date**       | 2026-07-09                                                                                 |
 | **Author**     | @hayden                                                                                    |
 | **Scope**      | Repo-wide (`interfaces/cli`, both bot cores, `@repo/bot-kit`, `bots/`)                     |
@@ -416,6 +416,31 @@ depending on a warm step having run and a cache dir surviving on the volume.
 - [TIB-2026-05-28: Midnight liquidation bot — v0](./TIB-2026-05-28-midnight-liquidation-bot.md),
   [TIB-2026-06-30: Blue liquidation bot — v0](./TIB-2026-06-30-blue-liquidation-bot.md) — the
   backstop-liquidator posture that makes the sleep-loop cadence and per-tick spawn cost acceptable.
+
+## Addenda
+
+### 2026-07-10 — accepted; measured latency
+
+The ladder landed as PRs #38–#43 (TIB, bot-kit records + stderr logger, core split, CLI commands,
+pipeline entrypoint + AOT build, this docs sweep). One sequencing deviation from the Implementation
+Phases above: `tickOnce` survived PR2 as a deprecated thin composition (the CLI still imported it)
+and was deleted in PR3 with the `tick` command, keeping `main` green at every step.
+
+Measured latency (built `dist/main.js` artifact):
+
+- Per-stage spawn: **~0.05s** in-container (`--help`), versus ~0.44s under the old soltag preload —
+  the AOT bundle removed the cold-start tax as designed.
+- Zero-work `queue` maintenance pass: **~0.09s**, with the zero-RPC fast path confirmed (an
+  unreachable RPC URL is never dialed when stdin and the pending set are both empty).
+- Full quiet tick (`midnight sense | act | queue`, live Base over a public RPC, zero liquidatable
+  positions, fresh home so act paid its one-time startup check): **~1.7s wall** — sense ~1.5s
+  (network-bound: discovery API + lens `eth_call`), stages overlapping in the pipe.
+
+Block-cadence re-check (the acceptance gate in Assumptions): at `TICK_INTERVAL_S=2` the effective
+cadence is sleep + wall ≈ 3.7s on a public RPC (faster on prod RPCs), i.e. ~2 Base blocks per tick.
+`STUCK_BLOCKS=4` / `SETTLED_COOLDOWN_BLOCKS=20` are block-denominated (measured against
+`submittedAtBlock` vs the observed head), so a slower tick delays bumping by at most one tick — the
+documented and accepted behavior. No retuning needed.
 
 <!--
 TIB conventions:
