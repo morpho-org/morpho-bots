@@ -11,7 +11,6 @@ WORKDIR /repo
 COPY package.json bun.lock bunfig.toml ./
 COPY packages ./packages
 COPY uis ./uis
-COPY bots ./bots
 RUN bun install --frozen-lockfile
 RUN bun run --filter @repo/contracts build
 

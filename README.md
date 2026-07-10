@@ -5,9 +5,11 @@ and the shared packages they consume.
 
 This is a [bun workspaces](https://bun.com/docs/install/workspaces) monorepo:
 
-- `bots/` — individual bot apps (one per bot); each keeps its own `docs/`
-- `packages/` — shared libraries (e.g. `@repo/typescript-config`, `@repo/utils`,
-  `@repo/contracts`)
+- `uis/` — operator front-ends; `uis/cli` (`@repo/cli`, bin `morpho-bots`) is the only way to run
+  bots — one-shot `morpho-bots <bot> tick` invocations driven by unix loops/cron
+- `services/` — independently deployed sidecars (e.g. `services/blue-rindexer`); not bun workspaces
+- `packages/` — libraries: the bot cores (`@repo/blue-liquidation`, `@repo/midnight-liquidation`)
+  and shared layers (e.g. `@repo/typescript-config`, `@repo/utils`, `@repo/contracts`)
 
 ## Getting started
 
@@ -41,9 +43,9 @@ The monorepo scaffold and tooling rationale are documented in
 
 Bot docs:
 
-- `bots/midnight-liquidation/README.md` — how to run the Midnight liquidation bot and how it works
+- `packages/midnight-liquidation/README.md` — how the Midnight liquidation bot works and how to run it
   end to end
-- `bots/blue-liquidation/README.md` — how to run the Morpho Blue liquidation bot and how it works
+- `packages/blue-liquidation/README.md` — how the Morpho Blue liquidation bot works and how to run it
   end to end
 
 ## License

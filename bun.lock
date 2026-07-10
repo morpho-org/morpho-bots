@@ -15,14 +15,6 @@
         "typescript": "catalog:",
       },
     },
-    "bots/blue-liquidation": {
-      "name": "@morpho-org/blue-liquidation",
-      "version": "0.1.0",
-    },
-    "bots/midnight-liquidation": {
-      "name": "@morpho-org/midnight-liquidation",
-      "version": "0.1.0",
-    },
     "packages/blue-liquidation": {
       "name": "@repo/blue-liquidation",
       "version": "0.1.0",
@@ -188,10 +180,6 @@
     "@jridgewell/sourcemap-codec": ["@jridgewell/sourcemap-codec@1.5.5", "", {}, "sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og=="],
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
-
-    "@morpho-org/blue-liquidation": ["@morpho-org/blue-liquidation@workspace:bots/blue-liquidation"],
-
-    "@morpho-org/midnight-liquidation": ["@morpho-org/midnight-liquidation@workspace:bots/midnight-liquidation"],
 
     "@morpho-org/morpho-ts": ["@morpho-org/morpho-ts@2.5.0", "", {}, "sha512-eU0DYR5fJoacOEfHVNdQxt5wYCwjF7/YXGudPhpBrzd3M4ejPS0Gv3Gkr3imUiMKeIA6IBzRLuw7qiFAsqXvxA=="],
 

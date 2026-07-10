@@ -12,7 +12,7 @@
 > **Withdrawn 2026-06-29.** The kill-switch bot project has been cancelled and is no
 > longer being built. This TIB was never accepted; it is kept as a historical record
 > and no longer reflects current plans. See the
-> [Addenda in TIB-2026-04-16](../../../../docs/decisions/TIB-2026-04-16-bootstrap-curator-bots.md#addenda).
+> [Addenda in TIB-2026-04-16](./TIB-2026-04-16-bootstrap-curator-bots.md#addenda).
 
 ## Context
 
@@ -20,7 +20,7 @@ Morpho curators operating Vaults V1 (MetaMorpho V1.0 and V1.1) supply liquidity 
 
 The curator needs an automated circuit breaker — a "kill switch" — that watches the chain, detects oracle staleness, deviation, or reverting on any market in a vault's supply queue, and **halts all new deposits to the vault** without the curator having to be at a keyboard. The bot does **not** selectively remove the affected market; it nukes the entire `supplyQueue`. This is the literal kill-switch posture: any single suspicious oracle stops the whole flow of new deposits, and the curator triages and selectively re-adds markets after reviewing. The bot also does **not** pull existing funds out; existing exposure drains naturally as users withdraw, and a future Reallocation Bot will handle the reallocate-existing-funds case.
 
-[TIB-2026-04-16](../../../../docs/decisions/TIB-2026-04-16-bootstrap-curator-bots.md) stood up the `curator-bots` repo scaffolding and named the Kill Switch Bot as the first planned bot. That bootstrap TIB stopped at "empty `bots/`" — it did not decide how the bot is built. This TIB picks up there and settles the architecture for `kill-switch` only.
+[TIB-2026-04-16](./TIB-2026-04-16-bootstrap-curator-bots.md) stood up the `curator-bots` repo scaffolding and named the Kill Switch Bot as the first planned bot. That bootstrap TIB stopped at "empty `bots/`" — it did not decide how the bot is built. This TIB picks up there and settles the architecture for `kill-switch` only.
 
 Operational constraints that bound the design:
 
@@ -80,7 +80,7 @@ The sections below follow that pipeline in order — **block ingestion → multi
 
 ### Tech stack
 
-Inherits the repo posture established in [TIB-2026-04-16](../../../../docs/decisions/TIB-2026-04-16-bootstrap-curator-bots.md) (bun runtime + package manager, oxlint/oxfmt, `bun test`, `@repo/*` namespace, TS-as-config). Bot-specific choices:
+Inherits the repo posture established in [TIB-2026-04-16](./TIB-2026-04-16-bootstrap-curator-bots.md) (bun runtime + package manager, oxlint/oxfmt, `bun test`, `@repo/*` namespace, TS-as-config). Bot-specific choices:
 
 | Layer                     | Choice                                                                                                                                                                   | Rationale                                                                                                                                                                                                                                                                                                                                                               |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -144,7 +144,7 @@ Per-call `allowFailure: true` is the critical knob: a reverting `oracle.price()`
 
 **No operator market list.** The vault's `supplyQueue` already names the markets at risk of new exposure on-chain, authoritatively, in the same place the bot reads anyway. Mirroring that list in config buys no safety (oracle config is keyed by oracle address, not market) and adds an "edit config + redeploy whenever you change the queue" burden. Auto-discovery removes the burden and collapses what used to be runtime drift handling into the normal flow. Operator config is keyed by the Morpho oracle wrapper address that `idToMarketParams(marketId).oracle` resolves to.
 
-**Chunking by calldata byte-length.** Chunks are packed by a fixed calldata byte budget (~50 KB per chunk, configurable). Gas cost on `aggregate3` is driven by calldata size, not call count — packing by bytes stays correct as adapters with larger payloads land and avoids both under-utilization (small calls) and gas overshoot (large calls). Operators can lower the budget if an RPC endpoint enforces tighter ceilings. Hand-rolled adaptive growth and library options (viem-dlc / soltag-lens) are captured under Future Considerations. Per [CONVENTIONS.md](../../../../docs/CONVENTIONS.md), prefer `readDeploylessBatchLens` when a Lens contract models the entity well; for the heterogeneous price + staleness + state read here, Multicall3 is the right tool.
+**Chunking by calldata byte-length.** Chunks are packed by a fixed calldata byte budget (~50 KB per chunk, configurable). Gas cost on `aggregate3` is driven by calldata size, not call count — packing by bytes stays correct as adapters with larger payloads land and avoids both under-utilization (small calls) and gas overshoot (large calls). Operators can lower the budget if an RPC endpoint enforces tighter ceilings. Hand-rolled adaptive growth and library options (viem-dlc / soltag-lens) are captured under Future Considerations. Per [CONVENTIONS.md](../CONVENTIONS.md), prefer `readDeploylessBatchLens` when a Lens contract models the entity well; for the heterogeneous price + staleness + state read here, Multicall3 is the right tool.
 
 **Runtime new-oracle handling.** When a market enters the `supplyQueue` mid-run whose oracle isn't in `oracleConfigs` (the curator added a market while the bot was running):
 
@@ -368,7 +368,7 @@ Each phase below is tracked as its own Linear ticket and ships as an independent
 
 ## Testing
 
-The kill switch is correctness-critical, so testing is a first-class part of the design. The whole suite runs under a **single `bun test` runner** — we deliberately do **not** add Vitest. The fork tier uses [`@morpho-org/test`](https://github.com/morpho-org/sdks/tree/main/packages/test)'s framework-agnostic `spawnAnvil` (its root export imports only `node:child_process` + viem — no Vitest) to fork mainnet while staying on bun test. This is a deliberate, minimal divergence from [TIB-2026-04-16](../../../../docs/decisions/TIB-2026-04-16-bootstrap-curator-bots.md), which deferred "Playwright/anvil E2E (no surface in a bot repo)": the kill switch _is_ that surface. The bun-test-only runner decision is preserved; only the anvil/Foundry dependency is added (the bootstrap TIB should get a one-line addendum noting this).
+The kill switch is correctness-critical, so testing is a first-class part of the design. The whole suite runs under a **single `bun test` runner** — we deliberately do **not** add Vitest. The fork tier uses [`@morpho-org/test`](https://github.com/morpho-org/sdks/tree/main/packages/test)'s framework-agnostic `spawnAnvil` (its root export imports only `node:child_process` + viem — no Vitest) to fork mainnet while staying on bun test. This is a deliberate, minimal divergence from [TIB-2026-04-16](./TIB-2026-04-16-bootstrap-curator-bots.md), which deferred "Playwright/anvil E2E (no surface in a bot repo)": the kill switch _is_ that surface. The bun-test-only runner decision is preserved; only the anvil/Foundry dependency is added (the bootstrap TIB should get a one-line addendum noting this).
 
 ### Three tiers (all `bun test`)
 
@@ -578,7 +578,7 @@ If tick N is still running when tick N+1 arrives, abort N via a cross-cutting `A
 
 `@morpho-org/test` ships `createViemTest` (`@morpho-org/test/vitest`), a Vitest `test.extend` fixture that forks a chain per test with automatic snapshot/revert. Adopt it as-is — either add Vitest as a second runner alongside `bun test`, or move the whole suite to Vitest.
 
-**Why rejected.** The fixtures require the **Vitest runner** (`test.extend`, which `bun test` doesn't implement), pulling Vitest back in after [TIB-2026-04-16](../../../../docs/decisions/TIB-2026-04-16-bootstrap-curator-bots.md) deliberately dropped it for bun's built-in runner. A second runner splits CI and the contributor mental model across two tools; moving everything to Vitest reverses the bootstrap decision wholesale. The package's framework-agnostic `spawnAnvil` (root export, Vitest-free) gives us the fork without the runner change — we re-implement the small snapshot/revert lifecycle in `bun test` `beforeEach`/`afterEach`. The fixture ergonomics we give up are a few lines of harness; the runner consolidation is worth more. See Testing.
+**Why rejected.** The fixtures require the **Vitest runner** (`test.extend`, which `bun test` doesn't implement), pulling Vitest back in after [TIB-2026-04-16](./TIB-2026-04-16-bootstrap-curator-bots.md) deliberately dropped it for bun's built-in runner. A second runner splits CI and the contributor mental model across two tools; moving everything to Vitest reverses the bootstrap decision wholesale. The package's framework-agnostic `spawnAnvil` (root export, Vitest-free) gives us the fork without the runner change — we re-implement the small snapshot/revert lifecycle in `bun test` `beforeEach`/`afterEach`. The fixture ergonomics we give up are a few lines of harness; the runner consolidation is worth more. See Testing.
 
 ## Assumptions & Constraints
 
@@ -645,8 +645,8 @@ These do not block acceptance — they're the discussion-call agenda.
 
 ## References
 
-- [TIB-2026-04-16: Bootstrap `curator-bots` repo from `morpho-apps` foundations](../../../../docs/decisions/TIB-2026-04-16-bootstrap-curator-bots.md) — the repo scaffolding this TIB builds on.
-- [docs/CONVENTIONS.md](../../../../docs/CONVENTIONS.md) — RPC efficiency rules, structured log expectations, env-var access, test conventions.
+- [TIB-2026-04-16: Bootstrap `curator-bots` repo from `morpho-apps` foundations](./TIB-2026-04-16-bootstrap-curator-bots.md) — the repo scaffolding this TIB builds on.
+- [docs/CONVENTIONS.md](../CONVENTIONS.md) — RPC efficiency rules, structured log expectations, env-var access, test conventions.
 - [docs/GUIDANCE.md](../../../../docs/GUIDANCE.md) — TIB process this document is travelling through.
 - [docs/context/repos/morpho-vaults-v2.txt](../../../../docs/context/repos/morpho-vaults-v2.txt) — context on the V2 vault surface this TIB explicitly defers.
 - Kill Switch Bot product spec — product goals, trigger criteria (oracle staleness, deviation, reverting), non-goals (MEV resistance).

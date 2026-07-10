@@ -1,4 +1,5 @@
-import type { SwapConfigEntry, Swap, Venue } from '@repo/swaps'
+import type { BackoffState, Logger, PendingQueueState } from '@repo/bot-kit'
+import type { Swap, SwapConfigEntry, Venue } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
 import {
@@ -7,7 +8,6 @@ import {
   createDeploylessClient,
   createLogger,
   createPendingQueue,
-  createRunner,
   createSigner,
   initialFees,
   simulateLiquidationExec
@@ -17,8 +17,11 @@ import { ensureError, tryCatch } from '@repo/utils'
 import { getAddress } from 'viem'
 import { getBlockNumber } from 'viem/actions'
 
+import type { Env } from './config'
 import type { MarketParams } from './market'
 import type { LiquidationPlan } from './sizing/plan'
+import type { MarketParamsCache } from './state/market-params'
+import type { TickCounters } from './tick/tick'
 
 import { loadConfig } from './config'
 import {
@@ -33,12 +36,47 @@ import { readBlueLiquidationLens } from './state/lens.sol'
 import { createMarketParamsResolver, multicallIdToMarketParams } from './state/market-params'
 import { runTick } from './tick/tick'
 
-async function main() {
-  const config = loadConfig()
-  const logger = createLogger(config.logLevel)
+export type { Config, Env } from './config'
+export type { TickCounters } from './tick/tick'
+export { loadConfig } from './config'
 
-  // Signed-send path: a plain wallet client + local nonce cursor (separate from the deployless read
-  // client). The EOA is the liquidator and the recipient of both end-of-exec token sweeps.
+/** Bumped when the persisted-state shape changes; a mismatched file is discarded, not migrated. */
+export const STATE_VERSION = 1
+
+/**
+ * Everything one tick hands to the next across a process boundary. A HINT, not truth: the queue
+ * section is reconciled against receipts on the next tick's `onBlock`, and a lost/corrupt file
+ * degrades to today's restart semantics (chain truth wins).
+ */
+export type BluePersistedState = {
+  version: number
+  queue: PendingQueueState
+  backoff: BackoffState
+  marketParams: MarketParamsCache
+}
+
+/**
+ * One full liquidation cycle at the current chain head, then return. This is the composition the
+ * long-lived runner used to own, reshaped for one-shot invocation (CLI loop / cron): build the
+ * pipeline from `env`, restore cross-tick state, run `runTick` once, and dump state for the caller
+ * to persist. The core never touches the filesystem for state — only the caller does.
+ *
+ * ALL env — including venue API keys — is read from the `env` table, never from `Bun.env`, so
+ * file-sourced secrets reach the venue adapters. Keys live only in this closure, never on the
+ * (logged) `Config`.
+ *
+ * `runStartupChecks` gates the boot-time liveness checks (Executor/Morpho code, discovery
+ * diagnostics) so they run on a fresh host rather than every ~2s tick. The caller sets it from "no
+ * state file existed" — explicitly, so a caller passing restored state skips them deliberately.
+ */
+export async function tickOnce(
+  env: Env,
+  opts: { state?: BluePersistedState; runStartupChecks?: boolean; logger?: Logger } = {}
+): Promise<{ counters: TickCounters; state: BluePersistedState }> {
+  const config = loadConfig(env)
+  const logger = opts.logger ?? createLogger(config.logLevel)
+  const state = opts.state?.version === STATE_VERSION ? opts.state : undefined
+
   const signer = createSigner({
     chain: config.chain,
     rpcUrl: config.rpcUrl,
@@ -47,56 +85,55 @@ async function main() {
   })
   const eoa = signer.account.address
 
-  logger.info('startup', {
-    chainId: config.chainId,
-    network: config.network,
-    liquidator: eoa,
-    callback: config.executooorAddress,
-    morpho: config.morpho
-  })
-
-  // Read-only client shared by the lens and simulate paths. Validate both the Executor and the Morpho
-  // singleton hold code before doing any work — fatal on a typo / not-yet-deployed address (liveness,
-  // not identity).
   const client = createDeploylessClient(config)
-  await assertContractDeployed(
-    client,
-    config.executooorAddress,
-    'EXECUTOOOR_ADDRESS',
-    'deploy it with `bun run --filter @repo/contracts deploy:executor`'
-  )
-  await assertContractDeployed(client, config.morpho, 'Morpho singleton')
+  const query = createPostgresQuery(config.databaseUrl)
 
-  // Per-collateral swap routing for this chain, keyed by EIP-55-checksummed collateral address (the
-  // config schema and the lens both return checksummed addresses). A collateral with no entry is
-  // skipped at tick time (`config.no_swap_path`) — a coverage gap, not fatal.
+  if (opts.runStartupChecks) {
+    logger.info('startup', {
+      chainId: config.chainId,
+      network: config.network,
+      liquidator: eoa,
+      callback: config.executooorAddress,
+      morpho: config.morpho
+    })
+    await assertContractDeployed(
+      client,
+      config.executooorAddress,
+      'EXECUTOOOR_ADDRESS',
+      'deploy it with `bun run --filter @repo/contracts deploy:executor`'
+    )
+    await assertContractDeployed(client, config.morpho, 'Morpho singleton')
+  }
+
+  // Per-collateral swap routing for this chain, keyed by EIP-55-checksummed collateral address. A
+  // collateral with no entry is skipped at tick time (`config.no_swap_path`) — a coverage gap, not
+  // fatal.
   const swapByCollateral = new Map<string, SwapConfigEntry>()
   for (const [token, entry] of Object.entries(config.swapConfig[String(config.chainId)] ?? {})) {
     if (entry) swapByCollateral.set(getAddress(token), entry)
   }
-  // No routes configured for this chain (unset/absent swap config): the bot still runs — it
-  // identifies liquidatable borrowers — but skips every routed liquidation (`config.no_swap_path`).
-  // Warn loudly so this isn't mistaken for a healthy, fully armed deployment. Otherwise log the
-  // chosen venue per collateral.
-  if (swapByCollateral.size === 0) {
-    logger.warn('swap_config.no_routes', {
-      chainId: config.chainId,
-      detail: 'no swap routes configured — every liquidation will be skipped (config.no_swap_path)'
-    })
-  } else {
-    logger.info('quoting.startup', {
-      chainId: config.chainId,
-      venues: Object.fromEntries(
-        [...swapByCollateral].map(([token, entry]) => [token, entry.venue])
-      )
-    })
+  if (opts.runStartupChecks) {
+    if (swapByCollateral.size === 0) {
+      logger.warn('swap_config.no_routes', {
+        chainId: config.chainId,
+        detail:
+          'no swap routes configured — every liquidation will be skipped (config.no_swap_path)'
+      })
+    } else {
+      logger.info('quoting.startup', {
+        chainId: config.chainId,
+        venues: Object.fromEntries(
+          [...swapByCollateral].map(([token, entry]) => [token, entry.venue])
+        )
+      })
+    }
   }
 
-  // Rate-limited HTTP client for aggregator quotes. API keys are read from env HERE, at the point of
-  // use, and live only in this closure — never on the (logged) Config object.
+  // Venue API keys come from the env TABLE (point of use), so file-sourced secrets work; they stay
+  // in this closure and are never stored on the logged Config.
   const apiKeys: Partial<Record<Venue, string>> = {}
-  if (Bun.env.ZEROX_API_KEY) apiKeys['0x'] = Bun.env.ZEROX_API_KEY
-  if (Bun.env.ONEINCH_API_KEY) apiKeys['1inch'] = Bun.env.ONEINCH_API_KEY
+  if (env.ZEROX_API_KEY) apiKeys['0x'] = env.ZEROX_API_KEY
+  if (env.ONEINCH_API_KEY) apiKeys['1inch'] = env.ONEINCH_API_KEY
   const httpClient = createRateLimitedClient({
     apiKeys,
     rps: config.quoting.httpRps,
@@ -114,7 +151,8 @@ async function main() {
   })
   const backoff = createBackoff({
     baseBlocks: config.quoting.backoffBaseBlocks,
-    maxBlocks: config.quoting.backoffMaxBlocks
+    maxBlocks: config.quoting.backoffMaxBlocks,
+    ...(state ? { initialState: state.backoff } : {})
   })
 
   // The exec calldata for one liquidation — the same bytes the simulate gate checks and the queue
@@ -135,28 +173,21 @@ async function main() {
       recipient: eoa
     })
 
-  const query = createPostgresQuery(config.databaseUrl)
-  // Discovery is (id, borrower) from the indexed Borrow events; the market's immutable params are
-  // recovered on-chain via idToMarketParams(id) and cached (params never change per id), so
-  // steady-state ticks make no extra RPC calls once every market has been seen once.
-  const resolveParams = createMarketParamsResolver(multicallIdToMarketParams(client, config.morpho))
+  const resolveParams = createMarketParamsResolver(
+    multicallIdToMarketParams(client, config.morpho),
+    state?.marketParams
+  )
   const discover = () => discoverCandidates(query, resolveParams, config.network)
 
-  // Startup discovery self-check (non-fatal): surface the rindexer schema + first discovery result so
-  // a column-name mismatch or a not-yet-migrated table is diagnosable from Railway logs at boot,
-  // rather than as an opaque per-tick `tick.error`. rindexer may still be starting/migrating on first
-  // deploy, so a failure here is logged and the bot proceeds — the per-block tick retries discovery.
-  {
+  // Startup discovery self-check (non-fatal): surface the rindexer schema + first discovery result
+  // so a column-name mismatch or a not-yet-migrated table is diagnosable from logs on a fresh host,
+  // rather than as an opaque per-tick `tick.error`.
+  if (opts.runStartupChecks) {
     const diag = await tryCatch(discoveryDiagnostics(query))
     if (diag.error) {
       logger.warn('discovery.startup_error', { detail: ensureError(diag.error).message })
     } else {
-      logger.info('discovery.schema', {
-        network: config.network,
-        // The ACTUAL rindexer `borrow` column names — compare against what BORROWER_IDS_SQL selects
-        // if discovery yields zero candidates while rindexer is synced.
-        borrow: diag.data.borrow
-      })
+      logger.info('discovery.schema', { network: config.network, borrow: diag.data.borrow })
       const probe = await tryCatch(
         Promise.all([discover(), rindexerSyncedBlock(query, config.network)])
       )
@@ -168,7 +199,6 @@ async function main() {
           network: config.network,
           candidates: candidates.length,
           syncedBlock,
-          // A sample so the join's parsed MarketParams can be eyeballed (non-zero addresses/lltv).
           sample: candidates[0] ?? null
         })
       }
@@ -179,63 +209,48 @@ async function main() {
     send: signer.send,
     getReceipt: signer.getReceipt,
     getBaseFee: signer.getBaseFee,
+    syncNonce: signer.syncNonce,
     maxFeeWei: config.maxFeeWei,
+    logger,
+    ...(state ? { initialState: state.queue } : {})
+  })
+
+  const head = await getBlockNumber(client)
+  const counters = await runTick({
+    discover,
+    syncedBlock: () => rindexerSyncedBlock(query, config.network),
+    chainHead: head,
+    readLens: pairs => readBlueLiquidationLens(client, config.morpho, pairs),
+    quoteFor,
+    simulate: ({ market, borrower, plan, swap }) =>
+      simulateLiquidationExec(client, {
+        executooor: config.executooorAddress,
+        eoa,
+        data: encodeExec(market, borrower, plan, swap)
+      }),
+    submit: async ({ market, borrower, plan, swap, blockNumber, label }) => {
+      const fees = initialFees(await signer.getBaseFee(), config.maxFeeWei)
+      await queue.submit({
+        request: { to: config.executooorAddress, data: encodeExec(market, borrower, plan, swap) },
+        label,
+        maxFeePerGas: fees.maxFeePerGas,
+        maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
+        blockNumber
+      })
+    },
+    backoff,
+    pendingOnBlock: blockNumber => queue.onBlock(blockNumber),
+    inflightLabels: () => queue.inflightLabels(),
     logger
   })
 
-  // An HTTP block-poll watcher drives one tick per new block (coalescing backlog), passing the polled
-  // height as both the rindexer-lag reference and the queue's submittedAtBlock. Each liquidatable
-  // position resolves its swap, simulates the real `exec_606BaXt`, and — on a sim-ok result —
-  // broadcasts that same exec via the Executor singleton, then drives queue.onBlock.
-  const tick = (chainHead: bigint) =>
-    runTick({
-      discover,
-      syncedBlock: () => rindexerSyncedBlock(query, config.network),
-      chainHead,
-      readLens: pairs => readBlueLiquidationLens(client, config.morpho, pairs),
-      quoteFor,
-      simulate: ({ market, borrower, plan, swap }) =>
-        simulateLiquidationExec(client, {
-          executooor: config.executooorAddress,
-          eoa,
-          data: encodeExec(market, borrower, plan, swap)
-        }),
-      submit: async ({ market, borrower, plan, swap, blockNumber, label }) => {
-        const fees = initialFees(await signer.getBaseFee(), config.maxFeeWei)
-        await queue.submit({
-          request: {
-            to: config.executooorAddress,
-            data: encodeExec(market, borrower, plan, swap)
-          },
-          label,
-          maxFeePerGas: fees.maxFeePerGas,
-          maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
-          blockNumber
-        })
-      },
-      backoff,
-      pendingOnBlock: blockNumber => queue.onBlock(blockNumber),
-      inflightLabels: () => queue.inflightLabels(),
-      logger
-    })
-
-  const runner = createRunner({ getBlockNumber: () => getBlockNumber(client), tick, logger })
-  runner.start()
-
-  // Graceful shutdown: stop the watcher and dump the pending set (hashes + nonces). Sends are
-  // fire-and-forget and chain truth wins on restart, so there is nothing to await-drain.
-  const shutdown = (signal: string) => {
-    logger.info('shutdown', { signal, pending: queue.snapshot() })
-    void runner.stop().finally(() => process.exit(0))
+  return {
+    counters,
+    state: {
+      version: STATE_VERSION,
+      queue: queue.dump(),
+      backoff: backoff.dump(),
+      marketParams: resolveParams.dump()
+    }
   }
-  process.on('SIGINT', () => shutdown('SIGINT'))
-  process.on('SIGTERM', () => shutdown('SIGTERM'))
 }
-
-main().catch(error => {
-  // Config/client never came up, so we cannot honor LOG_LEVEL — emit the failure directly, exit non-zero.
-  console.error(
-    JSON.stringify({ level: 'error', event: 'startup.error', error: ensureError(error).message })
-  )
-  process.exitCode = 1
-})

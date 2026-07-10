@@ -89,21 +89,25 @@ pools/fees and set the API keys for any aggregator venue you use).
 
 ## Running Locally
 
+The bot runs as one-shot ticks via the `morpho-bots` CLI (`uis/cli`). Put config under
+`~/.morpho-bots` (`morpho-bots init` scaffolds it; secrets — RPC URL, key, `DATABASE_URL` — go in
+`secrets.json`), then drive the loop with plain unix:
+
 ```sh
-export CHAIN_ID=8453 RPC_URL=https://… LIQUIDATOR_PRIVATE_KEY=0x… \
-  DATABASE_URL=postgres://… SWAP_CONFIG_PATH=./configs/example.json
-bun run --filter @morpho-org/blue-liquidation start
+bun run --filter @repo/cli start blue tick --chain 8453           # one tick
+while true; do bun run --filter @repo/cli start blue tick --chain 8453; sleep 2; done
 ```
 
-`prestart` builds the workspace packages (soltag-compiles `@repo/contracts` and materializes the ABI).
-Discovery needs a running, indexed rindexer against the same `DATABASE_URL` — the easiest path is
-Docker Compose below.
+Env vars override the files (`CHAIN_ID`, `RPC_URL`, `LIQUIDATOR_PRIVATE_KEY`, `DATABASE_URL`,
+`SWAP_CONFIG_PATH=./configs/example.json`, …), so a pure-env invocation also works. Discovery needs
+a running, indexed rindexer (`services/blue-rindexer`) against the same `DATABASE_URL` — the
+easiest path is Docker Compose below.
 
 ## Running With Docker Compose
 
 ```sh
-cd bots/blue-liquidation
-RPC_URL_8453=https://… LIQUIDATOR_PRIVATE_KEY=0x… docker compose up --build
+# from the repo root
+RPC_URL_8453=https://… LIQUIDATOR_PRIVATE_KEY=0x… docker compose -f docker-compose.blue.yml up --build
 ```
 
 Brings up Postgres, one shared rindexer (indexing `Borrow` on Base and Robinhood), and one bot per
@@ -115,7 +119,7 @@ rindexer image bakes in the generated `Morpho.json` ABI, so it is not committed.
 
 ```sh
 RAILWAY_PROJECT_ID=… RPC_URL_8453=https://… RPC_URL_4663=https://… LIQUIDATOR_PRIVATE_KEY=0x… \
-  bun run --filter @morpho-org/blue-liquidation deploy:railway
+  bun run --filter @repo/cli deploy:railway:blue
 # Optional: RINDEXER_RPC_URL_<chainId> (defaults to RPC_URL_<chainId>),
 # ZEROX_API_KEY[_<chainId>] / ONEINCH_API_KEY[_<chainId>],
 # RAILWAY_ENVIRONMENT (defaults to production).
@@ -145,12 +149,13 @@ afterward to pick up routes. Until then it runs but skips routed liquidations.
 Load + validate config, build the signer (wallet client + local nonce cursor) and the deployless read
 client, then fail-loud liveness-check **both** the Executor and the Morpho singleton hold code. Wire
 the per-collateral swap map, the rate-limited HTTP client, the quoter, the backoff, and the pending
-queue, and start the block watcher.
+queue, then run one tick and persist state for the next invocation. Boot-time checks run only on a
+fresh state file, not every tick.
 
 ### Trigger
 
-An HTTP block-number poll (`watcher.ts`, no WebSocket) drives one tick per new height, coalescing any
-backlog. A coverage bot re-derives its work each block, so a skipped intermediate height is safe.
+The CLI (or its Docker entrypoint loop) invokes one tick every ~2s; each tick reads the current
+head and re-derives its work, so skipped heights are safe.
 
 ### Discovery
 
@@ -219,15 +224,16 @@ queue (via `onMorphoLiquidate`) + two trailing `skim` sweeps that drain both tok
 
 Sim-ok plans are broadcast via the signer and tracked in an in-memory nonce queue: parallel submit at
 distinct nonces, EIP-1559 ≥12.5% fee bump on stuck nonces, and a hard `MAX_FEE_GWEI` ceiling that
-drops rather than chases a gas spike. State is not persisted — chain truth wins; a restart re-derives
-the nonce from `getTransactionCount('pending')`.
+drops rather than chases a gas spike. Queue state persists between ticks as a HINT under
+`~/.morpho-bots` — reconciled against receipts each tick; chain truth wins, and a lost state file
+degrades to re-deriving the nonce from `getTransactionCount('pending')`.
 
 ## Testing
 
 - `bun test` — unit tests for the math, LIF, seize-exact planner (incl. the underflow-safety sweep),
   the id derivation, discovery SQL, config, eligibility, quoting, venues, the queue, and the exec
   encoder.
-- **Live read-path probe** — `bun run --filter @morpho-org/blue-liquidation probe:lens` (needs
+- **Live read-path probe** — `bun run --filter @repo/blue-liquidation probe:lens` (needs
   `RPC_URL`, no anvil) runs the deployless lens against a sample of real Base borrowers, prints a
   valid/hasDebt/healthy/liquidatable breakdown + a decoded sample, and — if it finds a live-liquidatable
   position — emits a ready-to-paste `FIXTURE` for the fork suite. Run it any time to confirm the read
