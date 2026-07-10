@@ -5,18 +5,25 @@ import { getAddress } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
 
-import type { ChainConfig, Config, QuotingConfig } from '../src/config'
+import type { ActConfig, ChainConfig, QuotingConfig } from '../src/config'
+import type { QueueConfig } from '../src/queue-policy'
 
-import { loadConfig } from '../src/config'
+import { loadActConfig, loadSenseConfig } from '../src/config'
+import { loadQueueConfig } from '../src/queue-policy'
 
 const MORPHO = getAddress('0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb')
 const KEY = `0x${'1'.repeat(64)}`
+const DERIVED = privateKeyToAccount(KEY as Hex).address
 
+// The per-stage loaders replaced the monolithic `loadConfig`: `sense` reads chain + discovery
+// (secret-free), `act` reads Executor + swap routing + the operator EOA, `queue` reads the signer
+// key + fee ceiling. One env table feeds all three, so a single baseEnv exercises each loader.
 function baseEnv(overrides: Record<string, string | undefined> = {}): Record<string, string> {
   const env: Record<string, string> = {
     CHAIN_ID: String(base.id),
     RPC_URL: 'https://base.example',
     LIQUIDATOR_PRIVATE_KEY: KEY,
+    LIQUIDATOR_ADDRESS: DERIVED,
     DATABASE_URL: 'postgres://localhost/blue',
     ...overrides
   }
@@ -31,67 +38,66 @@ const missingFileRead = (): string => {
   throw err
 }
 
-describe('loadConfig', () => {
-  it('loads a valid Base config with the canonical Morpho singleton', () => {
-    const config = loadConfig(baseEnv())
+describe('loadSenseConfig', () => {
+  it('loads a valid Base config with the canonical Morpho singleton (secret-free)', () => {
+    const config = loadSenseConfig(baseEnv())
     expect(config.chainId).toBe(base.id)
     expect(config.network).toBe('base')
     expect(config.morpho).toBe(MORPHO)
     expect(config.chain.id).toBe(base.id)
     expect(config.rpcUrl).toBe('https://base.example')
-    // Executor address is derived from the deterministic CREATE2 factory when not overridden.
-    expect(config.executooorAddress).toMatch(/^0x[0-9a-fA-F]{40}$/)
-    expect(config.swapConfig).toEqual({})
+    expect(config.databaseUrl).toBe('postgres://localhost/blue')
   })
 
   it('resolves the Robinhood chain with its own (non-canonical) Morpho singleton and network', () => {
-    const config = loadConfig(baseEnv({ CHAIN_ID: '4663' }))
+    const config = loadSenseConfig(baseEnv({ CHAIN_ID: '4663' }))
     expect(config.chainId).toBe(4663)
-    expect(config.chain.id).toBe(4663)
     expect(config.network).toBe('robinhood')
-    // Robinhood's singleton is at a DIFFERENT address than Base's canonical 0xBBBB…
     expect(config.morpho).toBe(getAddress('0x9D53d5E3bd5E8d4Cbfa6DB1ca238AEA02E651010'))
     expect(config.morpho).not.toBe(MORPHO)
   })
 
-  it('fails loud on each missing required var', () => {
-    expect(() => loadConfig(baseEnv({ CHAIN_ID: undefined }))).toThrow(/CHAIN_ID/)
-    expect(() => loadConfig(baseEnv({ RPC_URL: undefined }))).toThrow(/RPC_URL/)
-    expect(() => loadConfig(baseEnv({ LIQUIDATOR_PRIVATE_KEY: undefined }))).toThrow(
-      /LIQUIDATOR_PRIVATE_KEY/
-    )
-    expect(() => loadConfig(baseEnv({ DATABASE_URL: undefined }))).toThrow(/DATABASE_URL/)
+  it('fails loud on each missing required var it owns', () => {
+    expect(() => loadSenseConfig(baseEnv({ CHAIN_ID: undefined }))).toThrow(/CHAIN_ID/)
+    expect(() => loadSenseConfig(baseEnv({ RPC_URL: undefined }))).toThrow(/RPC_URL/)
+    expect(() => loadSenseConfig(baseEnv({ DATABASE_URL: undefined }))).toThrow(/DATABASE_URL/)
   })
 
   it('rejects an unsupported chain id', () => {
-    expect(() => loadConfig(baseEnv({ CHAIN_ID: '1' }))).toThrow(/Unsupported CHAIN_ID/)
+    expect(() => loadSenseConfig(baseEnv({ CHAIN_ID: '1' }))).toThrow(/Unsupported CHAIN_ID/)
   })
 
-  it('parses quoting tunables with safe defaults', () => {
-    const config: Config = loadConfig(baseEnv())
-    const quoting: QuotingConfig = config.quoting
-    expect(quoting.maxRouteImpactBps).toBe(500)
-    expect(quoting.httpRps).toBe(2)
-    expect(quoting.backoffBaseBlocks).toBe(2n)
+  it('is loadable WITHOUT the signer private key (sense is secret-free)', () => {
+    const config = loadSenseConfig(baseEnv({ LIQUIDATOR_PRIVATE_KEY: undefined }))
+    expect(config.chainId).toBe(base.id)
   })
 
   it('honors an injected chain map (so a new chain is wired in one place)', () => {
     const chainMap: Record<number, ChainConfig> = {
       [base.id]: { chain: base, morpho: MORPHO, network: 'base' }
     }
-    expect(loadConfig(baseEnv(), { chainMap }).morpho).toBe(MORPHO)
-    // A chain absent from the injected map is rejected even if it is a real chain id.
-    expect(() => loadConfig(baseEnv({ CHAIN_ID: '10' }), { chainMap })).toThrow(/Unsupported/)
+    expect(loadSenseConfig(baseEnv(), { chainMap }).morpho).toBe(MORPHO)
+    expect(() => loadSenseConfig(baseEnv({ CHAIN_ID: '10' }), { chainMap })).toThrow(/Unsupported/)
+  })
+})
+
+describe('loadActConfig', () => {
+  it('derives the Executor CREATE2 address and defaults to no swap routes', () => {
+    const config: ActConfig = loadActConfig(baseEnv())
+    expect(config.executooorAddress).toMatch(/^0x[0-9a-fA-F]{40}$/)
+    expect(config.swapConfig).toEqual({})
+    expect(config.liquidatorAddress).toBe(DERIVED)
   })
 
-  it('rejects a malformed private key', () => {
-    expect(() => loadConfig(baseEnv({ LIQUIDATOR_PRIVATE_KEY: '0xdeadbeef' }))).toThrow(
-      /LIQUIDATOR_PRIVATE_KEY/
-    )
+  it('parses quoting tunables with safe defaults', () => {
+    const quoting: QuotingConfig = loadActConfig(baseEnv()).quoting
+    expect(quoting.maxRouteImpactBps).toBe(500)
+    expect(quoting.httpRps).toBe(2)
+    expect(quoting.backoffBaseBlocks).toBe(2n)
   })
 
   it('treats an absent swap-config file as no routes (non-fatal first-deploy bootstrap)', () => {
-    const config = loadConfig(baseEnv({ SWAP_CONFIG_PATH: '/config/swap.json' }), {
+    const config = loadActConfig(baseEnv({ SWAP_CONFIG_PATH: '/config/swap.json' }), {
       readFile: missingFileRead
     })
     expect(config.swapConfig).toEqual({})
@@ -108,7 +114,7 @@ describe('loadConfig', () => {
         }
       }
     }
-    const config = loadConfig(baseEnv({ SWAP_CONFIG_PATH: '/config/swap.json' }), {
+    const config = loadActConfig(baseEnv({ SWAP_CONFIG_PATH: '/config/swap.json' }), {
       readFile: () => JSON.stringify(swap)
     })
     expect(config.swapConfig[String(base.id)]).toBeDefined()
@@ -121,10 +127,37 @@ describe('loadConfig', () => {
       }
     }
     expect(() =>
-      loadConfig(baseEnv({ SWAP_CONFIG_PATH: '/config/swap.json' }), {
+      loadActConfig(baseEnv({ SWAP_CONFIG_PATH: '/config/swap.json' }), {
         readFile: () => JSON.stringify(swap)
       })
     ).toThrow(/ONEINCH_API_KEY/)
+  })
+
+  it('requires LIQUIDATOR_ADDRESS (act has no key to derive it from) and rejects a malformed one', () => {
+    expect(() => loadActConfig(baseEnv({ LIQUIDATOR_ADDRESS: undefined }))).toThrow(
+      /LIQUIDATOR_ADDRESS/
+    )
+    expect(() => loadActConfig(baseEnv({ LIQUIDATOR_ADDRESS: 'not-an-address' }))).toThrow(
+      /LIQUIDATOR_ADDRESS is not a valid address/
+    )
+  })
+})
+
+describe('loadQueueConfig', () => {
+  it('loads the signer key + fee ceiling for a valid config', () => {
+    const config: QueueConfig = loadQueueConfig(baseEnv())
+    expect(config.chainId).toBe(base.id)
+    expect(config.rpcUrl).toBe('https://base.example')
+    expect(config.liquidatorPrivateKey).toBe(KEY as Hex)
+  })
+
+  it('fails loud on a missing or malformed private key', () => {
+    expect(() => loadQueueConfig(baseEnv({ LIQUIDATOR_PRIVATE_KEY: undefined }))).toThrow(
+      /LIQUIDATOR_PRIVATE_KEY/
+    )
+    expect(() => loadQueueConfig(baseEnv({ LIQUIDATOR_PRIVATE_KEY: '0xdeadbeef' }))).toThrow(
+      /LIQUIDATOR_PRIVATE_KEY/
+    )
   })
 
   // The act/queue wallet-agreement gate: LIQUIDATOR_ADDRESS (act's skim recipient) must be the
@@ -132,18 +165,17 @@ describe('loadConfig', () => {
   // this deployment's signer does not control.
   it('rejects a LIQUIDATOR_ADDRESS that does not match the key-derived signer address', () => {
     expect(() =>
-      loadConfig(baseEnv({ LIQUIDATOR_ADDRESS: '0x2222222222222222222222222222222222222222' }))
+      loadQueueConfig(baseEnv({ LIQUIDATOR_ADDRESS: '0x2222222222222222222222222222222222222222' }))
     ).toThrow(/does not match the address derived from LIQUIDATOR_PRIVATE_KEY/)
   })
 
   it('accepts a LIQUIDATOR_ADDRESS that matches the key-derived signer address', () => {
-    const derived = privateKeyToAccount(KEY as Hex).address
-    const config = loadConfig(baseEnv({ LIQUIDATOR_ADDRESS: derived.toLowerCase() }))
+    const config = loadQueueConfig(baseEnv({ LIQUIDATOR_ADDRESS: DERIVED.toLowerCase() }))
     expect(config.liquidatorPrivateKey).toBe(KEY as Hex)
   })
 
-  it('rejects a malformed LIQUIDATOR_ADDRESS on the full-config path', () => {
-    expect(() => loadConfig(baseEnv({ LIQUIDATOR_ADDRESS: 'not-an-address' }))).toThrow(
+  it('rejects a malformed LIQUIDATOR_ADDRESS on the queue path', () => {
+    expect(() => loadQueueConfig(baseEnv({ LIQUIDATOR_ADDRESS: 'not-an-address' }))).toThrow(
       /LIQUIDATOR_ADDRESS is not a valid address/
     )
   })

@@ -46,7 +46,7 @@ export type ChainConfig = { chain: Chain; morpho: Address; network: Network }
 // on-chain (canonical 0x4e59… is present on both Base and Robinhood). On-chain validation of the
 // Morpho + Executor addresses (getCode) lands at startup. loadConfig fails loud for any CHAIN_ID not
 // present here.
-const CHAIN_MAP: Record<number, ChainConfig> = {
+export const CHAIN_MAP: Record<number, ChainConfig> = {
   [base.id]: {
     chain: base,
     morpho: getAddress('0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb'),
@@ -127,15 +127,6 @@ export type ActConfig = Omit<CommonConfig, 'network'> & {
   quoting: QuotingConfig
 }
 
-export type Config = CommonConfig & {
-  liquidatorPrivateKey: Hex
-  executooorAddress: Address
-  databaseUrl: string
-  swapConfig: SwapConfig
-  quoting: QuotingConfig
-  maxFeeWei: bigint
-}
-
 function required(env: Env, name: string): string {
   const value = env[name]
   if (value === undefined || value.trim() === '') {
@@ -193,9 +184,12 @@ function isFileNotFound(error: unknown): boolean {
 // given env var lives in exactly one place regardless of which stage reads it.
 // ---------------------------------------------------------------------------
 
-type LoadDeps = { chainMap?: Record<number, ChainConfig>; readFile?: (path: string) => string }
+type LoadDeps = {
+  chainMap?: Record<number, ChainConfig>
+  readFile?: (path: string) => string
+}
 
-function resolveCommon(env: Env, chainMap: Record<number, ChainConfig>): CommonConfig {
+export function resolveCommon(env: Env, chainMap: Record<number, ChainConfig>): CommonConfig {
   const chainIdRaw = required(env, 'CHAIN_ID')
   if (!/^\d+$/.test(chainIdRaw)) {
     // Plain decimal only — reject hex (Number('0x1')) and exponent (Number('1e3')) forms so this
@@ -225,7 +219,7 @@ function resolveCommon(env: Env, chainMap: Record<number, ChainConfig>): CommonC
   }
 }
 
-function resolvePrivateKey(env: Env): Hex {
+export function resolvePrivateKey(env: Env): Hex {
   const liquidatorPrivateKey = required(env, 'LIQUIDATOR_PRIVATE_KEY')
   if (
     !isHex(liquidatorPrivateKey, { strict: true }) ||
@@ -262,7 +256,7 @@ function resolveLiquidatorAddress(env: Env): Address {
 // the private key, the two must agree — a mismatch means act would skim seized funds to a wallet the
 // queue doesn't sign for. When absent, the key remains the single source of truth (no new
 // requirement on the tick path).
-function assertLiquidatorAddressMatchesKey(env: Env, privateKey: Hex): void {
+export function assertLiquidatorAddressMatchesKey(env: Env, privateKey: Hex): void {
   const raw = env.LIQUIDATOR_ADDRESS?.trim()
   if (!raw) return
   if (!isAddress(raw, { strict: false })) {
@@ -276,7 +270,7 @@ function assertLiquidatorAddressMatchesKey(env: Env, privateKey: Hex): void {
   }
 }
 
-function resolveMaxFeeWei(env: Env): bigint {
+export function resolveMaxFeeWei(env: Env): bigint {
   const maxFeeGwei = env.MAX_FEE_GWEI?.trim() || DEFAULT_MAX_FEE_GWEI
   if (!/^\d+(\.\d+)?$/.test(maxFeeGwei) || Number(maxFeeGwei) <= 0) {
     throw new Error(`MAX_FEE_GWEI must be a positive number, got: ${env.MAX_FEE_GWEI}`)
@@ -328,7 +322,18 @@ function resolveSwapConfig(
   return swapConfig
 }
 
+// Per-position failure-backoff bounds. Shared by `act` (which filters via `shouldSkip`) and the
+// `queue` command (the sole writer, which `record`s/`clear`s), so both read them from ONE resolver —
+// the queue's `record()` computes the cooldown `until`, and act only compares against it.
+export function resolveBackoff(env: Env): { baseBlocks: bigint; maxBlocks: bigint } {
+  return {
+    baseBlocks: bigintEnv(env, 'BACKOFF_BASE_BLOCKS', DEFAULT_BACKOFF_BASE_BLOCKS),
+    maxBlocks: bigintEnv(env, 'BACKOFF_MAX_BLOCKS', DEFAULT_BACKOFF_MAX_BLOCKS)
+  }
+}
+
 function resolveQuoting(env: Env): QuotingConfig {
+  const backoff = resolveBackoff(env)
   return {
     quoteTimeoutMs: intEnv(env, 'QUOTE_TIMEOUT_MS', DEFAULT_QUOTE_TIMEOUT_MS, { min: 1 }),
     httpRps: intEnv(env, 'HTTP_RPS', DEFAULT_HTTP_RPS, { min: 1 }),
@@ -338,8 +343,8 @@ function resolveQuoting(env: Env): QuotingConfig {
       min: 0,
       max: 10_000
     }),
-    backoffBaseBlocks: bigintEnv(env, 'BACKOFF_BASE_BLOCKS', DEFAULT_BACKOFF_BASE_BLOCKS),
-    backoffMaxBlocks: bigintEnv(env, 'BACKOFF_MAX_BLOCKS', DEFAULT_BACKOFF_MAX_BLOCKS)
+    backoffBaseBlocks: backoff.baseBlocks,
+    backoffMaxBlocks: backoff.maxBlocks
   }
 }
 
@@ -374,28 +379,5 @@ export function loadActConfig(env: Env = Bun.env, deps: LoadDeps = {}): ActConfi
     liquidatorAddress: resolveLiquidatorAddress(env),
     swapConfig: resolveSwapConfig(env, common.chainId, readFile),
     quoting: resolveQuoting(env)
-  }
-}
-
-/**
- * Reads the full env table into a typed, validated {@link Config} — everything both stages need plus
- * the signer private key and fee ceiling. Used by `tickOnce` and by the CLI's config-validation gate.
- * Throws on any missing required var, malformed value, or unknown `CHAIN_ID` — the bot must fail loud
- * at startup rather than run half-configured. On-chain checks (that `EXECUTOOOR_ADDRESS` and the
- * Morpho singleton hold code) are performed in `index.ts` once a public client exists.
- */
-export function loadConfig(env: Env = Bun.env, deps: LoadDeps = {}): Config {
-  const readFile = deps.readFile ?? (path => readFileSync(path, 'utf8'))
-  const common = resolveCommon(env, deps.chainMap ?? CHAIN_MAP)
-  const liquidatorPrivateKey = resolvePrivateKey(env)
-  assertLiquidatorAddressMatchesKey(env, liquidatorPrivateKey)
-  return {
-    ...common,
-    liquidatorPrivateKey,
-    executooorAddress: resolveExecutor(env),
-    databaseUrl: required(env, 'DATABASE_URL'),
-    swapConfig: resolveSwapConfig(env, common.chainId, readFile),
-    quoting: resolveQuoting(env),
-    maxFeeWei: resolveMaxFeeWei(env)
   }
 }
