@@ -4,7 +4,8 @@ import type { Address, Chain, Hex } from 'viem'
 
 import { Executor } from '@repo/contracts'
 import { tryCatch } from '@repo/utils'
-import { getAddress, isAddress, isHex, parseGwei } from 'viem'
+import { getAddress, isAddress, isAddressEqual, isHex, parseGwei } from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
 
 // Swap venues are no longer a per-collateral config file: markets come from the Midnight markets API
@@ -131,12 +132,47 @@ export type ProbeConfig = {
   ladderWholeTokens: string[]
 }
 
-export type Config = {
+/** Fields common to every stage config: the resolved chain plus its RPC endpoints and log level. */
+type CommonConfig = {
   chainId: number
   chain: Chain
   midnight: Address
   rpcUrl: string
   rpcUrlFallback: string | undefined
+  logLevel: LogLevel
+}
+
+/**
+ * Config for the read-only `sense` stage: discovery + the market whitelist + the lens read. Loadable
+ * WITHOUT the signer private key and WITHOUT venue API keys — `sense` is secret-free. It still needs
+ * `executooorAddress` because the Midnight lens checks the Executor's liquidator gate.
+ */
+export type SenseConfig = CommonConfig & {
+  executooorAddress: Address
+  discovery: DiscoveryConfig
+  markets: MarketsConfig
+}
+
+/**
+ * Config for the `act` stage: re-derive → quote (multi-venue) → simulate. Needs venue API keys (read
+ * at the point of use in `actOnce`, never stored) but NOT the signer private key — `act` never signs.
+ */
+export type ActConfig = CommonConfig & {
+  executooorAddress: Address
+  /**
+   * The operator EOA (`LIQUIDATOR_ADDRESS`) — the skim `recipient` in the exec calldata and the
+   * simulate `from`. An address, not a key: `act` builds and simulates the exact bytes the queue
+   * (the sole key holder) later signs, so this must be the queue's signer address. Skimming to any
+   * other address — the ownerless Executor especially — strands seized funds where anyone can take
+   * them.
+   */
+  liquidatorAddress: Address
+  venues: VenueConfig
+  probe: ProbeConfig
+  quoting: QuotingConfig
+}
+
+export type Config = CommonConfig & {
   /**
    * Optional dedicated broadcast endpoint for `eth_sendRawTransaction` (and the signer's
    * nonce/receipt/base-fee reads). When set, the signer sends here instead of `rpcUrl` — needed
@@ -146,17 +182,12 @@ export type Config = {
   sendRpcUrl: string | undefined
   liquidatorPrivateKey: Hex
   executooorAddress: Address
-  /** Borrower-candidate discovery (the markets liquidation-candidates endpoint). */
   discovery: DiscoveryConfig
-  /** Market whitelist (the Midnight markets API). */
   markets: MarketsConfig
-  /** Enabled venues + global routing knobs. */
   venues: VenueConfig
-  /** Venue-probing knobs. */
   probe: ProbeConfig
   quoting: QuotingConfig
   maxFeeWei: bigint
-  logLevel: LogLevel
 }
 
 function required(env: Env, name: string): string {
@@ -262,18 +293,14 @@ function addressListEnv(env: Env, name: string): Address[] {
     })
 }
 
-/**
- * Reads the full env table into a typed, validated {@link Config}. Throws on any missing
- * required var, malformed value, or unknown `CHAIN_ID` — the bot must fail loud at startup
- * rather than run half-configured. On-chain checks (e.g. that `EXECUTOOOR_ADDRESS` holds code)
- * run separately at startup in `index.ts` once a public client exists.
- */
-export function loadConfig(
-  env: Env = Bun.env,
-  deps: { chainMap?: Record<number, ChainConfig> } = {}
-): Config {
-  const chainMap = deps.chainMap ?? CHAIN_MAP
+// ---------------------------------------------------------------------------
+// Shared resolvers — each stage loader composes the subset it needs, so the parsing/validation of a
+// given env var lives in exactly one place regardless of which stage reads it.
+// ---------------------------------------------------------------------------
 
+type LoadDeps = { chainMap?: Record<number, ChainConfig> }
+
+function resolveCommon(env: Env, chainMap: Record<number, ChainConfig>): CommonConfig {
   const chainIdRaw = required(env, 'CHAIN_ID')
   if (!/^\d+$/.test(chainIdRaw)) {
     // Plain decimal only — reject hex (Number('0x1')) and exponent (Number('1e3')) forms.
@@ -286,8 +313,22 @@ export function loadConfig(
     throw new Error(`Unsupported CHAIN_ID ${chainId}; supported chain ids: ${supported}`)
   }
 
-  const rpcUrl = required(env, 'RPC_URL')
+  const logLevel = env.LOG_LEVEL?.trim() || 'info'
+  if (!isLogLevel(logLevel)) {
+    throw new Error(`LOG_LEVEL must be one of ${LOG_LEVELS.join(', ')}, got: ${env.LOG_LEVEL}`)
+  }
 
+  return {
+    chainId,
+    chain: chainConfig.chain,
+    midnight: chainConfig.midnight,
+    rpcUrl: required(env, 'RPC_URL'),
+    rpcUrlFallback: env.RPC_URL_FALLBACK?.trim() || undefined,
+    logLevel
+  }
+}
+
+function resolvePrivateKey(env: Env): Hex {
   const liquidatorPrivateKey = required(env, 'LIQUIDATOR_PRIVATE_KEY')
   if (
     !isHex(liquidatorPrivateKey, { strict: true }) ||
@@ -295,34 +336,88 @@ export function loadConfig(
   ) {
     throw new Error('LIQUIDATOR_PRIVATE_KEY must be a 0x-prefixed 32-byte hex string')
   }
+  return liquidatorPrivateKey
+}
 
-  // The Executor singleton has a deterministic CREATE2 address (soltag bakes the canonical factory +
-  // salt into `Executor.with()`), so EXECUTOOOR_ADDRESS is optional — we default to that derived
-  // address, which the deploy script and the deployless lens also use (one source of truth). Set the
-  // env only to override (e.g. a non-standard deployment).
-  const executooorOverride = env.EXECUTOOOR_ADDRESS?.trim()
-  if (executooorOverride && !isAddress(executooorOverride, { strict: false })) {
-    throw new Error(`EXECUTOOOR_ADDRESS is not a valid address: ${executooorOverride}`)
+// The Executor singleton has a deterministic CREATE2 address (soltag bakes the canonical factory +
+// salt into `Executor.with()`), so EXECUTOOOR_ADDRESS is optional — we default to that derived
+// address, which the deploy script and the deployless lens also use (one source of truth).
+function resolveExecutor(env: Env): Address {
+  const override = env.EXECUTOOOR_ADDRESS?.trim()
+  if (override && !isAddress(override, { strict: false })) {
+    throw new Error(`EXECUTOOOR_ADDRESS is not a valid address: ${override}`)
   }
-  const executooorAddress = executooorOverride
-    ? getAddress(executooorOverride)
-    : getAddress(Executor.with().address)
+  return override ? getAddress(override) : getAddress(Executor.with().address)
+}
 
-  const logLevel = env.LOG_LEVEL?.trim() || 'info'
-  if (!isLogLevel(logLevel)) {
-    throw new Error(`LOG_LEVEL must be one of ${LOG_LEVELS.join(', ')}, got: ${env.LOG_LEVEL}`)
+// The operator EOA `act` targets: required (no derivable default — act has no key to derive from),
+// checksum-normalized, fail-loud on a malformed value.
+function resolveLiquidatorAddress(env: Env): Address {
+  const raw = required(env, 'LIQUIDATOR_ADDRESS').trim()
+  if (!isAddress(raw, { strict: false })) {
+    throw new Error(`LIQUIDATOR_ADDRESS is not a valid address: ${raw}`)
   }
+  return getAddress(raw)
+}
 
+// Full-config (tickOnce/queue path) cross-check: when the operator sets LIQUIDATOR_ADDRESS alongside
+// the private key, the two must agree — a mismatch means act would skim seized funds to a wallet the
+// queue doesn't sign for. When absent, the key remains the single source of truth (no new
+// requirement on the tick path).
+function assertLiquidatorAddressMatchesKey(env: Env, privateKey: Hex): void {
+  const raw = env.LIQUIDATOR_ADDRESS?.trim()
+  if (!raw) return
+  if (!isAddress(raw, { strict: false })) {
+    throw new Error(`LIQUIDATOR_ADDRESS is not a valid address: ${raw}`)
+  }
+  const derived = privateKeyToAccount(privateKey).address
+  if (!isAddressEqual(getAddress(raw), derived)) {
+    throw new Error(
+      `LIQUIDATOR_ADDRESS (${getAddress(raw)}) does not match the address derived from LIQUIDATOR_PRIVATE_KEY (${derived}) — act and queue would target different wallets`
+    )
+  }
+}
+
+function resolveMaxFeeWei(env: Env): bigint {
   const maxFeeGwei = env.MAX_FEE_GWEI?.trim() || DEFAULT_MAX_FEE_GWEI
   if (!/^\d+(\.\d+)?$/.test(maxFeeGwei) || Number(maxFeeGwei) <= 0) {
     throw new Error(`MAX_FEE_GWEI must be a positive number, got: ${env.MAX_FEE_GWEI}`)
   }
+  return parseGwei(maxFeeGwei)
+}
 
-  // Enabled venues are inferred from which venue API keys are present — there is no per-collateral
-  // routing file anymore. With no key present the bot can only discover positions and realize pure
-  // bad debt (which needs no swap), never actually swap-liquidate — so that degraded posture must be
-  // opted into explicitly (`ALLOW_BAD_DEBT_ONLY=true`); otherwise fail loud rather than silently run
-  // half-armed (a rotated/forgotten key must not quietly disable liquidations).
+function resolveDiscovery(env: Env): DiscoveryConfig {
+  // Borrower-candidate discovery endpoint. Default to the public markets API; fail loud at startup on
+  // a malformed override rather than at the first tick's fetch.
+  const apiUrl = env.LIQUIDATION_CANDIDATES_API_URL?.trim() || DEFAULT_CANDIDATES_API_URL
+  if (tryCatch(() => new URL(apiUrl)).error) {
+    throw new Error(`LIQUIDATION_CANDIDATES_API_URL is not a valid URL: ${apiUrl}`)
+  }
+  return {
+    apiUrl,
+    healthFactorLte: numberEnv(env, 'HEALTH_FACTOR_LTE', DEFAULT_HEALTH_FACTOR_LTE, { min: 1 })
+  }
+}
+
+function resolveMarkets(env: Env): MarketsConfig {
+  // Market whitelist endpoint. Default to the public markets API; fail loud on a malformed override.
+  const marketsApiUrl = env.MARKETS_API_URL?.trim() || DEFAULT_MARKETS_API_URL
+  if (tryCatch(() => new URL(marketsApiUrl)).error) {
+    throw new Error(`MARKETS_API_URL is not a valid URL: ${marketsApiUrl}`)
+  }
+  return {
+    apiUrl: marketsApiUrl,
+    refreshMs: intEnv(env, 'MARKETS_REFRESH_MS', DEFAULT_MARKETS_REFRESH_MS, { min: 1 })
+  }
+}
+
+// Enabled venues are inferred from which venue API keys are present — there is no per-collateral
+// routing file anymore. With no key present the bot can only discover positions and realize pure
+// bad debt (which needs no swap), never actually swap-liquidate — so that degraded posture must be
+// opted into explicitly (`ALLOW_BAD_DEBT_ONLY=true`); otherwise fail loud rather than silently run
+// half-armed (a rotated/forgotten key must not quietly disable liquidations). This gate lives with
+// the `act` stage — the only stage that quotes/swaps — but is also enforced by the full `loadConfig`.
+function resolveVenues(env: Env): VenueConfig {
   const allowBadDebtOnly = boolEnv(env, 'ALLOW_BAD_DEBT_ONLY', false)
   const enabledVenues: Venue[] = []
   if (env[ZEROX_API_KEY_ENV]?.trim()) enabledVenues.push('0x')
@@ -340,31 +435,25 @@ export function loadConfig(
   if (oneinchBaseUrl && tryCatch(() => new URL(oneinchBaseUrl)).error) {
     throw new Error(`ONEINCH_BASE_URL is not a valid URL: ${oneinchBaseUrl}`)
   }
-  const venues: VenueConfig = {
+  return {
     enabled: enabledVenues,
     slippageBps: intEnv(env, 'SLIPPAGE_BPS', DEFAULT_SLIPPAGE_BPS, { min: 0, max: 10_000 }),
     zeroxBaseUrl,
     oneinchBaseUrl,
     excludeCollaterals: addressListEnv(env, 'EXCLUDE_COLLATERALS')
   }
+}
 
-  // Market whitelist endpoint. Default to the public markets API; fail loud on a malformed override.
-  const marketsApiUrl = env.MARKETS_API_URL?.trim() || DEFAULT_MARKETS_API_URL
-  if (tryCatch(() => new URL(marketsApiUrl)).error) {
-    throw new Error(`MARKETS_API_URL is not a valid URL: ${marketsApiUrl}`)
-  }
-  const markets: MarketsConfig = {
-    apiUrl: marketsApiUrl,
-    refreshMs: intEnv(env, 'MARKETS_REFRESH_MS', DEFAULT_MARKETS_REFRESH_MS, { min: 1 })
-  }
-
-  const probe: ProbeConfig = {
+function resolveProbe(env: Env): ProbeConfig {
+  return {
     staleMs: intEnv(env, 'PROBE_STALE_MS', DEFAULT_PROBE_STALE_MS, { min: 1 }),
     httpRps: intEnv(env, 'PROBE_HTTP_RPS', DEFAULT_PROBE_HTTP_RPS, { min: 1 }),
     ladderWholeTokens: ladderEnv(env, 'PROBE_LADDER', DEFAULT_PROBE_LADDER)
   }
+}
 
-  const quoting: QuotingConfig = {
+function resolveQuoting(env: Env): QuotingConfig {
+  return {
     quoteTimeoutMs: intEnv(env, 'QUOTE_TIMEOUT_MS', DEFAULT_QUOTE_TIMEOUT_MS, { min: 1 }),
     httpRps: intEnv(env, 'HTTP_RPS', DEFAULT_HTTP_RPS, { min: 1 }),
     httpBurst: intEnv(env, 'HTTP_BURST', DEFAULT_HTTP_BURST, { min: 1 }),
@@ -380,33 +469,62 @@ export function loadConfig(
     backoffBaseBlocks: bigintEnv(env, 'BACKOFF_BASE_BLOCKS', DEFAULT_BACKOFF_BASE_BLOCKS),
     backoffMaxBlocks: bigintEnv(env, 'BACKOFF_MAX_BLOCKS', DEFAULT_BACKOFF_MAX_BLOCKS)
   }
+}
 
-  // Borrower-candidate discovery endpoint. Default to the public markets API; fail loud at startup on
-  // a malformed override rather than at the first tick's fetch.
-  const apiUrl = env.LIQUIDATION_CANDIDATES_API_URL?.trim() || DEFAULT_CANDIDATES_API_URL
-  if (tryCatch(() => new URL(apiUrl)).error) {
-    throw new Error(`LIQUIDATION_CANDIDATES_API_URL is not a valid URL: ${apiUrl}`)
-  }
-  const discovery: DiscoveryConfig = {
-    apiUrl,
-    healthFactorLte: numberEnv(env, 'HEALTH_FACTOR_LTE', DEFAULT_HEALTH_FACTOR_LTE, { min: 1 })
-  }
-
+/**
+ * Reads the env table into the read-only {@link SenseConfig} — chain, RPC, discovery, market
+ * whitelist, plus the Executor (the lens's gate `msg.sender`). Deliberately does NOT require
+ * `LIQUIDATOR_PRIVATE_KEY` or any venue API key: `sense` is secret-free.
+ */
+export function loadSenseConfig(env: Env = Bun.env, deps: LoadDeps = {}): SenseConfig {
+  const common = resolveCommon(env, deps.chainMap ?? CHAIN_MAP)
   return {
-    chainId,
-    chain: chainConfig.chain,
-    midnight: chainConfig.midnight,
-    rpcUrl,
-    rpcUrlFallback: env.RPC_URL_FALLBACK?.trim() || undefined,
+    ...common,
+    executooorAddress: resolveExecutor(env),
+    discovery: resolveDiscovery(env),
+    markets: resolveMarkets(env)
+  }
+}
+
+/**
+ * Reads the env table into the {@link ActConfig} — chain, RPC, Executor, the operator EOA
+ * (`LIQUIDATOR_ADDRESS`, required — the skim recipient and simulate `from`), venues, probe, quoting.
+ * Needs venue API keys (enforced unless `ALLOW_BAD_DEBT_ONLY=true`; read at the point of use in
+ * `actOnce`) but NOT the signer private key.
+ */
+export function loadActConfig(env: Env = Bun.env, deps: LoadDeps = {}): ActConfig {
+  const common = resolveCommon(env, deps.chainMap ?? CHAIN_MAP)
+  return {
+    ...common,
+    executooorAddress: resolveExecutor(env),
+    liquidatorAddress: resolveLiquidatorAddress(env),
+    venues: resolveVenues(env),
+    probe: resolveProbe(env),
+    quoting: resolveQuoting(env)
+  }
+}
+
+/**
+ * Reads the full env table into a typed, validated {@link Config} — everything both stages need plus
+ * the signer private key, broadcast endpoint, and fee ceiling. Used by `tickOnce` and the CLI's
+ * config-validation gate. Throws on any missing required var, malformed value, or unknown `CHAIN_ID`.
+ * On-chain checks (e.g. that `EXECUTOOOR_ADDRESS` holds code) run separately at startup once a public
+ * client exists.
+ */
+export function loadConfig(env: Env = Bun.env, deps: LoadDeps = {}): Config {
+  const common = resolveCommon(env, deps.chainMap ?? CHAIN_MAP)
+  const liquidatorPrivateKey = resolvePrivateKey(env)
+  assertLiquidatorAddressMatchesKey(env, liquidatorPrivateKey)
+  return {
+    ...common,
     sendRpcUrl: env.SEND_RPC_URL?.trim() || undefined,
     liquidatorPrivateKey,
-    executooorAddress,
-    discovery,
-    markets,
-    venues,
-    probe,
-    quoting,
-    maxFeeWei: parseGwei(maxFeeGwei),
-    logLevel
+    executooorAddress: resolveExecutor(env),
+    discovery: resolveDiscovery(env),
+    markets: resolveMarkets(env),
+    venues: resolveVenues(env),
+    probe: resolveProbe(env),
+    quoting: resolveQuoting(env),
+    maxFeeWei: resolveMaxFeeWei(env)
   }
 }
