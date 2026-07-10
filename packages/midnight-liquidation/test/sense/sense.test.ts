@@ -114,7 +114,7 @@ describe('runSense', () => {
     expect(record.kind).toBe('opportunity')
     expect(record.id).toBe(ID)
     expect(record.domain).toBe('midnight')
-    expect(record.op).toBe('liq')
+    expect(record.op).toBe('unhealthy-positions')
     expect(record.chainId).toBe(CHAIN_ID)
     expect(record.data).toMatchObject({ loanToken: TOKEN, collateralToken: TOKEN, block: 100 })
     expect(typeof record.data?.seizedAssets).toBe('string')

@@ -96,11 +96,11 @@ records; logs are stderr:
 
 ```sh
 cd interfaces/cli
-bun src/main.ts blue sense --chain 8453                            # inspect opportunities
-bun src/main.ts blue sense --chain 8453 | bun src/main.ts blue act --chain 8453 \
+bun src/main.ts blue unhealthy-positions --chain 8453             # inspect opportunities
+bun src/main.ts blue unhealthy-positions --chain 8453 | bun src/main.ts blue liquidate --chain 8453 \
   | bun src/main.ts blue queue --chain 8453                        # one full tick
 while true; do
-  bun src/main.ts blue sense --chain 8453 | bun src/main.ts blue act --chain 8453 \
+  bun src/main.ts blue unhealthy-positions --chain 8453 | bun src/main.ts blue liquidate --chain 8453 \
     | bun src/main.ts blue queue --chain 8453
   sleep 2
 done
@@ -154,11 +154,12 @@ afterward to pick up routes. Until then it runs but skips routed liquidations.
 
 ### Startup
 
-Each stage loads and fail-loud-validates only the config it needs: `sense` is keyless (Postgres +
-deployless read client), `act` adds the per-collateral swap map, the rate-limited HTTP client, and
-the quoter (venue API keys, plus `LIQUIDATOR_ADDRESS` as the skim recipient — never the signer key),
-and only `queue` builds the signer (wallet client + local nonce cursor) plus the backoff and pending
-queue, persisting their state for the next invocation. Boot-time liveness checks (Executor and
+Each stage loads and fail-loud-validates only the config it needs: the `unhealthy-positions` source
+is keyless (Postgres + deployless read client), the `liquidate` transform adds the per-collateral
+swap map, the rate-limited HTTP client, and the quoter (venue API keys, plus `LIQUIDATOR_ADDRESS` as
+the skim recipient — never the signer key), and only `queue` builds the signer (wallet client +
+local nonce cursor) plus the backoff and pending queue, persisting their state for the next
+invocation. Boot-time liveness checks (Executor and
 Morpho singleton hold code, discovery schema) run only on a fresh cache/state file, not every tick.
 
 ### Trigger

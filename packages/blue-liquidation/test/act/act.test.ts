@@ -140,7 +140,7 @@ describe('runAct', () => {
       kind: 'tx',
       id: ID,
       domain: 'blue',
-      op: 'liq',
+      op: 'unhealthy-positions',
       chainId: CHAIN_ID,
       to: EXECUTOR,
       data: '0xdeadbeef',

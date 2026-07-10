@@ -56,6 +56,12 @@
   bare-decimal-string bigints on the wire, and the per-stage IO matrix). `createLogger` routes
   every level to stderr; never `console.log` from a bot package or a CLI command — a stray stdout
   line corrupts the pipe.
+- **Wire IDs are `<domain>:<op>:<suffix>`**: the two-segment `<domain>:<op>` prefix is the GENERIC
+  part of the contract — the CLI may split it off (`splitIdPrefix` in `wire-input.ts`) to route a
+  bare id into its accepting transform and to derive a settled outcome's `op` from its persisted
+  label. The `<suffix>` stays domain-owned and opaque; only the owning core parses it (via its
+  `parseOpportunityId`). The `op` is the SOURCE op's name and stays stable through the pipe — a
+  transform re-emits under the same `op` — so an outcome traces back to the source that found it.
 - **Promises**: Use `tryCatch` from `@repo/utils` to handle promise throws.
 
 ### Configuration

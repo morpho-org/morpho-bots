@@ -9,15 +9,19 @@ import { getAddress, isAddress, isHex } from 'viem'
  */
 export const DOMAIN = 'blue'
 
-/** The single operation this v0 sensor emits. Reserved as a field so the id shape can grow under `v`. */
-export const OP = 'liq'
+/**
+ * The source op this domain's ids belong to. It is the SECOND, generic segment of every id
+ * (`<domain>:<op>:…`) and stays stable through the pipe: `liquidate` re-emits the records it
+ * consumes under this same `op`, so the queue's outcomes trace back to the source that found them.
+ */
+export const OP = 'unhealthy-positions'
 
 const MARKET_ID_HEX_LENGTH = 66 // '0x' + 32 bytes
 
 /**
- * The wire id for a liquidation opportunity: `blue:liq:<chainId>:<marketId>:<borrower>` with both hex
- * values lowercased. Self-describing, pasteable into `act` bare, and the opaque dedupe label the
- * queue keys `Pending.label` on.
+ * The wire id for a liquidation opportunity: `blue:unhealthy-positions:<chainId>:<marketId>:<borrower>`
+ * with both hex values lowercased. Self-describing, pasteable into `liquidate` bare, and the opaque
+ * dedupe label the queue keys `Pending.label` on.
  */
 export function formatOpportunityId(chainId: number, marketId: Hex, borrower: Address): string {
   return `${DOMAIN}:${OP}:${chainId}:${marketId.toLowerCase()}:${borrower.toLowerCase()}`

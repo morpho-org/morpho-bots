@@ -102,7 +102,7 @@ describe('runSense', () => {
     expect(record.kind).toBe('opportunity')
     expect(record.id).toBe(ID)
     expect(record.domain).toBe('blue')
-    expect(record.op).toBe('liq')
+    expect(record.op).toBe('unhealthy-positions')
     expect(record.chainId).toBe(CHAIN_ID)
     expect(typeof record.at).toBe('string')
     expect(record.summary.length).toBeGreaterThan(0)

@@ -133,8 +133,8 @@ set -a
 source packages/midnight-liquidation/.env
 set +a
 cd interfaces/cli
-bun src/main.ts midnight sense    # inspect opportunities (read-only, keyless)
-bun src/main.ts midnight sense | bun src/main.ts midnight act \
+bun src/main.ts midnight unhealthy-positions    # inspect opportunities (read-only, keyless)
+bun src/main.ts midnight unhealthy-positions | bun src/main.ts midnight liquidate \
   | bun src/main.ts midnight queue    # one full tick; loop/cron for persistence
 ```
 
@@ -206,7 +206,7 @@ Useful options:
 [bots/docker-compose.midnight.yml](../../bots/docker-compose.midnight.yml) defines a single `bot`
 service (discovery is the remote API, so there is no database or indexer). It builds the single bot
 image (`bots/Dockerfile`), whose entrypoint loops the three-stage pipeline
-`morpho-bots midnight sense | morpho-bots midnight act | morpho-bots midnight queue`.
+`morpho-bots midnight unhealthy-positions | morpho-bots midnight liquidate | morpho-bots midnight queue`.
 
 From the repo root:
 
@@ -262,10 +262,10 @@ set, the service will refuse to start unless `ALLOW_BAD_DEBT_ONLY=true`.
 
 ### Startup
 
-The core exports one-shot stages the `morpho-bots` CLI pipes together each tick:
-`senseOnce` (discovery + lens → opportunity records, keyless) and `actOnce` (id → fresh
-re-derivation → simulated tx records; venue API keys but no signer key), plus a lens-free `./queue`
-subpath supplying the queue command's config + policy. Read paths wrap the RPC transport with
+The core exports an `OPS` table of one-shot ops the `morpho-bots` CLI pipes together each tick: the
+`unhealthy-positions` source (discovery + lens → opportunity records, keyless) and the `liquidate`
+transform (id → fresh re-derivation → simulated tx records; venue API keys but no signer key), plus
+a lens-free `./queue` subpath supplying the queue command's config + policy. Read paths wrap the RPC transport with
 `deployless` support so the bot can execute its Solidity lens via `eth_call`; only the CLI's `queue`
 command builds the plain-HTTP signer client, which owns transaction submission with a local
 pending-nonce cursor.

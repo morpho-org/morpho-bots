@@ -9,7 +9,9 @@ itself stays unopinionated — everything that turns it into a persistent liquid
   (`bun run --filter @repo/cli build` → `interfaces/cli/dist/main.js`) so the lens bytecode is baked
   in and per-tick spawns pay no soltag/solc cost — "warm by construction", no cache to prime.
 - `docker-entrypoint.sh` — the prod persistence loop. Each tick runs the three-stage pipeline
-  `bun dist/main.js $BOT sense | … act | … queue` every `TICK_INTERVAL_S` seconds; stdout carries
+  `bun dist/main.js $BOT $SOURCE_OP | … $TRANSFORM_OP | … queue` every `TICK_INTERVAL_S` seconds;
+  `SOURCE_OP`/`TRANSFORM_OP` default to the liquidation pair `unhealthy-positions`/`liquidate` and
+  can be overridden to run a different behavior (which ops run is deployment policy). stdout carries
   JSON-Lines records (the queue's outcome lines land in container logs) and all logs go to stderr.
   It inspects `PIPESTATUS` per stage under the CLI's 0/1/2 contract: any stage exiting 2 crashes the
   container visibly (`loop.fatal`), any other nonzero re-loops (transient).

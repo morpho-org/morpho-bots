@@ -1,51 +1,9 @@
-import type {
-  BackoffState,
-  Logger,
-  LogLevel,
-  OpportunityRecord,
-  OutcomeRecord,
-  TxRecord
-} from '@repo/bot-kit'
+import type { LogLevel, OpExport } from '@repo/bot-kit'
 import type { Chain, Hex } from 'viem'
 
 import type { BotName } from './home'
 
 type Env = Record<string, string | undefined>
-
-/** The stage-config validation each command runs before touching the chain (throws → exit 2). */
-type ValidateConfig = (env: Env) => { logLevel: LogLevel }
-
-/** `sense`'s per-domain seam: cache version + config gate + the one-shot sensor. */
-type SenseAdapter = {
-  cacheVersion: number
-  validateConfig: ValidateConfig
-  senseOnce: (
-    env: Env,
-    opts: {
-      cache: unknown
-      runStartupChecks: boolean
-      logger: Logger
-      emit: (record: OpportunityRecord) => void
-    }
-  ) => Promise<{ cache: unknown }>
-}
-
-/** `act`'s per-domain seam: cache version + config gate + the one-shot actor. */
-type ActAdapter = {
-  cacheVersion: number
-  validateConfig: ValidateConfig
-  actOnce: (
-    env: Env,
-    ids: readonly string[],
-    opts: {
-      cache: unknown
-      advisory: { backoff: BackoffState | null; inflightLabels: readonly string[] }
-      runStartupChecks: boolean
-      logger: Logger
-      emit: (record: TxRecord | OutcomeRecord) => void
-    }
-  ) => Promise<{ cache: unknown }>
-}
 
 /**
  * The queue config the CLI wires into `createSigner`/`createPendingQueue`. `sendRpcUrl` is optional
@@ -64,15 +22,18 @@ export type QueueConfig = {
   backoffMaxBlocks: bigint
 }
 
-/** Per-domain queue policy: wire `op`, settled cooldown, and an optional protocol revert decoder. */
+/**
+ * Per-domain queue policy: settled cooldown and an optional protocol revert decoder. The outcome
+ * records' `op` is NOT policy — the queue derives it from the incoming `tx.op` envelope (submit path)
+ * or the persisted label's `<domain>:<op>:` prefix (onSettled path), so nothing pins it here.
+ */
 export type QueuePolicy = {
-  op: string
   settledCooldownBlocks: bigint
   revertReason?: (error: unknown) => string
 }
 
 /**
- * `queue`'s per-domain seam. Unlike sense/act it does NOT import the core index — only the core's
+ * `queue`'s per-domain seam. Unlike an op it does NOT import the core index — only the core's
  * `./queue` subpath (config + policy) — so the stateful signer path stays free of lens/soltag
  * exposure (see the pipeline TIB). The CLI wires bot-kit's `createSigner` + `createPendingQueue`
  * directly around these two values.
@@ -82,46 +43,50 @@ export type QueueAdapter = {
   policy: QueuePolicy
 }
 
+/**
+ * A single op's STATIC manifest entry — just enough for commander to register the `<domain> <op>`
+ * command at startup without importing the core (which would drag the soltag/lens graph into every
+ * spawn, including `queue`'s). The op name is the map key; a source needs only its `kind`, a
+ * transform additionally names the source op it `accepts`. A sync test asserts each manifest matches
+ * the core's `OPS` table exactly, so this static data can never drift from the lazy implementation.
+ */
+export type OpManifest = { kind: 'sense' } | { kind: 'act'; accepts: string }
+
 type DomainRegistry = {
-  sense: () => Promise<SenseAdapter>
-  act: () => Promise<ActAdapter>
+  ops: Record<string, OpManifest>
+  loadOp: (name: string) => Promise<OpExport>
   queue: () => Promise<QueueAdapter>
 }
 
-// Each stage loads its adapter lazily via a STATIC-STRING dynamic import, so (a) one domain's spawn
-// never pays another's module graph + soltag lens compile, (b) `--help`/usage stay fast, and (c)
-// `Bun.build` can still statically bundle every branch into `dist/main.js`. sense/act import the core
-// index (lens + soltag); queue imports ONLY the `./queue` subpath + bot-kit (no lens/soltag).
+// Both liquidation cores expose the same two ops, so they share one manifest. `unhealthy-positions`
+// is the source (today's sensor); `liquidate` is the transform that consumes it.
+const LIQUIDATION_OPS = {
+  'unhealthy-positions': { kind: 'sense' },
+  liquidate: { kind: 'act', accepts: 'unhealthy-positions' }
+} as const satisfies Record<string, OpManifest>
+
+// Names that can never be an op — the flat namespace also holds `queue` (the stateful sink) and the
+// commander built-ins. The sync test fails if a core's `OPS` ever collides with one of these.
+export const RESERVED_OP_NAMES: ReadonlySet<string> = new Set(['queue', 'help', 'init'])
+
+/** Picks the loaded op or throws — commander only ever calls `loadOp` with a registered manifest name. */
+function pickOp(ops: Record<string, OpExport>, name: string, domain: BotName): OpExport {
+  const op = ops[name]
+  if (!op) throw new Error(`unknown op '${name}' for ${domain}`)
+  return op
+}
+
+// Each op/queue loads its implementation lazily via a STATIC-STRING dynamic import, so (a) one
+// domain's spawn never pays another's module graph + soltag lens compile, (b) `--help`/usage stay
+// fast, and (c) `Bun.build` can still statically bundle every branch into `dist/main.js`. `loadOp`
+// imports the core index (lens + soltag); `queue` imports ONLY the `./queue` subpath + bot-kit (no
+// lens/soltag). The static `ops` manifest carries no core code, so registration stays import-free.
 export const DOMAINS: Record<BotName, DomainRegistry> = {
   blue: {
-    sense: async () => {
+    ops: LIQUIDATION_OPS,
+    loadOp: async name => {
       const core = await import('@repo/blue-liquidation')
-      return {
-        cacheVersion: core.SENSE_CACHE_VERSION,
-        validateConfig: env => core.loadSenseConfig(env),
-        senseOnce: (env, opts) =>
-          core.senseOnce(env, {
-            cache: opts.cache as import('@repo/blue-liquidation').BlueSenseCache | null,
-            runStartupChecks: opts.runStartupChecks,
-            logger: opts.logger,
-            emit: opts.emit
-          })
-      }
-    },
-    act: async () => {
-      const core = await import('@repo/blue-liquidation')
-      return {
-        cacheVersion: core.ACT_CACHE_VERSION,
-        validateConfig: env => core.loadActConfig(env),
-        actOnce: (env, ids, opts) =>
-          core.actOnce(env, ids, {
-            cache: opts.cache as import('@repo/blue-liquidation').BlueActCache | null,
-            advisory: opts.advisory,
-            runStartupChecks: opts.runStartupChecks,
-            logger: opts.logger,
-            emit: opts.emit
-          })
-      }
+      return pickOp(core.OPS, name, 'blue')
     },
     queue: async () => {
       const q = await import('@repo/blue-liquidation/queue')
@@ -129,34 +94,10 @@ export const DOMAINS: Record<BotName, DomainRegistry> = {
     }
   },
   midnight: {
-    sense: async () => {
+    ops: LIQUIDATION_OPS,
+    loadOp: async name => {
       const core = await import('@repo/midnight-liquidation')
-      return {
-        cacheVersion: core.SENSE_CACHE_VERSION,
-        validateConfig: env => core.loadSenseConfig(env),
-        senseOnce: (env, opts) =>
-          core.senseOnce(env, {
-            cache: opts.cache as import('@repo/midnight-liquidation').MidnightSenseCache | null,
-            runStartupChecks: opts.runStartupChecks,
-            logger: opts.logger,
-            emit: opts.emit
-          })
-      }
-    },
-    act: async () => {
-      const core = await import('@repo/midnight-liquidation')
-      return {
-        cacheVersion: core.ACT_CACHE_VERSION,
-        validateConfig: env => core.loadActConfig(env),
-        actOnce: (env, ids, opts) =>
-          core.actOnce(env, ids, {
-            cache: opts.cache as import('@repo/midnight-liquidation').MidnightActCache | null,
-            advisory: opts.advisory,
-            runStartupChecks: opts.runStartupChecks,
-            logger: opts.logger,
-            emit: opts.emit
-          })
-      }
+      return pickOp(core.OPS, name, 'midnight')
     },
     queue: async () => {
       const q = await import('@repo/midnight-liquidation/queue')

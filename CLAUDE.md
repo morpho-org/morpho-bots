@@ -126,10 +126,14 @@ These files provide important background information about dependencies and rela
 This is a **bun workspaces monorepo** housing off-chain Morpho curator bots:
 
 - `/interfaces/` — operator interfaces, kept generic/unopinionated. `interfaces/cli` (`@repo/cli`,
-  bin `morpho-bots`) is the only way to run bots: UNIX-pipeable one-shot commands —
-  `morpho-bots <domain> sense | act | queue` — driven by unix loops/cron, with config and
-  cross-tick state under `~/.morpho-bots` (`MORPHO_BOTS_HOME` overrides). stdout carries JSON-Lines
-  wire records; ALL logs go to stderr. A TUI is planned.
+  bin `morpho-bots`) is the only way to run bots: UNIX-pipeable one-shot **op commands** (no fixed
+  `sense`/`act` verbs). Each domain exposes a flat set of ops — each a **source** (emits opportunity
+  records) XOR a **transform** (ids/records → tx records) — piped into the reserved stateful `queue`
+  sink, e.g. `<domain> unhealthy-positions | <domain> liquidate | <domain> queue`, driven by unix
+  loops/cron. Which ops run is caller policy (exogenous composition — several ops = several loop
+  lines). Config and cross-tick state live under
+  `~/.morpho-bots` (`MORPHO_BOTS_HOME` overrides). stdout carries JSON-Lines wire records; ALL logs
+  go to stderr. A TUI is planned.
 - `/bots/` — deployment packaging for the bot use-case (`@repo/bots`): the single bot Docker
   image (which AOT-builds the CLI to `dist/main.js`), the pipeline entrypoint loop, the
   docker-compose files, and the Railway deploy scripts. Anything that turns the generic CLI into a
@@ -137,9 +141,9 @@ This is a **bun workspaces monorepo** housing off-chain Morpho curator bots:
 - `/services/` — independently deployed sidecars (not bun workspaces). `services/blue-rindexer`
   indexes Morpho Blue `Borrow` events into Postgres for blue's discovery.
 - `/packages/` — libraries: the bot cores (`@repo/blue-liquidation`, `@repo/midnight-liquidation`,
-  each exporting one-shot `senseOnce`/`actOnce` stages plus a lens-free `./queue` policy subpath)
-  and the shared layers (`@repo/utils`, `@repo/bot-kit`, `@repo/swaps`, `@repo/contracts`,
-  `@repo/typescript-config`)
+  each exporting an `OPS` table of source/transform ops — the seam types live in `@repo/bot-kit`'s
+  `ops.ts` — plus a lens-free `./queue` policy subpath) and the shared layers (`@repo/utils`,
+  `@repo/bot-kit`, `@repo/swaps`, `@repo/contracts`, `@repo/typescript-config`)
 
 See [TIB-2026-07-09-pipeline-cli](./docs/decisions/TIB-2026-07-09-pipeline-cli.md) for the pipeline
 architecture (command grammar, wire contract, state/lock partition) and

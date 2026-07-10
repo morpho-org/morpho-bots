@@ -31,14 +31,13 @@ export function queueStateFile(home: string, bot: BotName, chainId: string): str
   return join(home, bot, 'queue', `${chainId}.json`)
 }
 
-/** `sense`'s disposable, best-effort cache (blue: marketParams; midnight: listedMarkets). */
-export function senseCacheFile(home: string, bot: BotName, chainId: string): string {
-  return join(home, bot, 'cache', `sense-${chainId}.json`)
-}
-
-/** `act`'s disposable, best-effort cache (midnight: venue-selector ladders/decimals). */
-export function actCacheFile(home: string, bot: BotName, chainId: string): string {
-  return join(home, bot, 'cache', `act-${chainId}.json`)
+/**
+ * An op's disposable, best-effort cache, keyed by the op NAME (unique across the domain's flat
+ * namespace, so no stage prefix is needed) and chain — e.g. `<bot>/cache/unhealthy-positions-8453.json`.
+ * A rename orphans the old file, which is fine: caches are disposable and rebuilt on a miss.
+ */
+export function opCacheFile(home: string, bot: BotName, op: string, chainId: string): string {
+  return join(home, bot, 'cache', `${op}-${chainId}.json`)
 }
 
 /** The per-(bot, chain) pid lockfile, held by `queue` only (the sole state writer). */

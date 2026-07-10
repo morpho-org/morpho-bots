@@ -1,5 +1,6 @@
 export * from './client'
 export * from './logger'
+export * from './ops'
 export * from './queue/backoff'
 export * from './queue/fee-policy'
 export * from './queue/pending-queue'

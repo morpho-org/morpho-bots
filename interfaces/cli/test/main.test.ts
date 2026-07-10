@@ -46,13 +46,16 @@ describe('morpho-bots exit codes', () => {
   )
 
   it(
-    'lists the sense/act/queue pipeline in a domain’s --help',
+    'lists the op commands in a domain’s --help with source/transform labels',
     () => {
       const { code, stdout } = run(['blue', '--help'])
       expect(code).toBe(0)
-      expect(stdout).toContain('sense')
-      expect(stdout).toContain('act')
+      expect(stdout).toContain('unhealthy-positions')
+      expect(stdout).toContain('liquidate')
       expect(stdout).toContain('queue')
+      // The flat namespace stays legible because each op is labeled by its kind.
+      expect(stdout).toContain('[source]')
+      expect(stdout).toContain('[transform]')
     },
     SPAWN_TIMEOUT_MS
   )
@@ -66,18 +69,27 @@ describe('morpho-bots exit codes', () => {
   )
 
   it(
-    'exits 2 for the removed `tick` subcommand',
+    'exits 2 for an unknown op (usage error — wrappers must stop)',
     () => {
-      // `tick` was replaced by sense/act/queue, so it is now an unknown subcommand → usage error.
-      expect(run(['blue', 'tick']).code).toBe(2)
+      // Only the manifest's op names are registered, so an unlisted one is an unknown subcommand.
+      expect(run(['midnight', 'frobnicate']).code).toBe(2)
     },
     SPAWN_TIMEOUT_MS
   )
 
   it(
-    'exits 2 for sense with no usable config, with a startup.error line',
+    'exits 2 for the removed `sense` verb (replaced by op commands)',
     () => {
-      const { code, stderr } = run(['blue', 'sense'])
+      // `sense`/`act` verbs were replaced by op names, so `sense` is now an unknown subcommand.
+      expect(run(['blue', 'sense']).code).toBe(2)
+    },
+    SPAWN_TIMEOUT_MS
+  )
+
+  it(
+    'exits 2 for a source op with no usable config, with a startup.error line',
+    () => {
+      const { code, stderr } = run(['blue', 'unhealthy-positions'])
       expect(code).toBe(2)
       expect(stderr).toContain('startup.error')
       expect(stderr).toContain('no chain configured')
@@ -86,9 +98,9 @@ describe('morpho-bots exit codes', () => {
   )
 
   it(
-    'exits 2 for act with no usable config',
+    'exits 2 for a transform op with no usable config',
     () => {
-      expect(run(['blue', 'act']).code).toBe(2)
+      expect(run(['blue', 'liquidate']).code).toBe(2)
     },
     SPAWN_TIMEOUT_MS
   )
