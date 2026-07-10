@@ -1,0 +1,29 @@
+# Runs the midnight-liquidation bot via the one-shot CLI in the image's entrypoint loop
+# (uis/cli/docker-entrypoint.sh). Borrower candidates come from the markets liquidation-candidates
+# HTTP API (LIQUIDATION_CANDIDATES_API_URL, public by default), so there is no indexer or database
+# to run. Build context is the repo root so the bun workspace (packages/*) resolves.
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: uis/cli/Dockerfile
+    environment:
+      BOT: midnight
+      CHAIN_ID: '8453'
+      TICK_INTERVAL_S: ${TICK_INTERVAL_S:-2}
+      RPC_URL: ${RPC_URL:?set RPC_URL}
+      LIQUIDATOR_PRIVATE_KEY: ${LIQUIDATOR_PRIVATE_KEY:?set LIQUIDATOR_PRIVATE_KEY}
+      EXECUTOOOR_ADDRESS: ${EXECUTOOOR_ADDRESS:-}
+      # Venues are enabled by the presence of their API key. With neither set, the bot refuses to
+      # start unless ALLOW_BAD_DEBT_ONLY=true (then it runs bad-debt-only).
+      ZEROX_API_KEY: ${ZEROX_API_KEY:-}
+      ONEINCH_API_KEY: ${ONEINCH_API_KEY:-}
+      ALLOW_BAD_DEBT_ONLY: ${ALLOW_BAD_DEBT_ONLY:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      # Cross-tick state; without it a container restart degrades to fresh-state semantics (safe).
+      - bot-data:/data
+    restart: unless-stopped
+
+volumes:
+  bot-data:

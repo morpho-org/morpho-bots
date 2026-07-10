@@ -32,7 +32,7 @@ RUN bun run --filter @repo/contracts build
 
 # --- rindexer: upstream binary + project config (committed yaml + the contracts ABI), no bind mount
 FROM ghcr.io/joshstevens19/rindexer:latest AS rindexer
-COPY bots/blue-liquidation/rindexer.yaml /app/project_path/rindexer.yaml
+COPY services/blue-rindexer/rindexer.yaml /app/project_path/rindexer.yaml
 COPY --from=abi /repo/packages/contracts/abis/Morpho.json /app/project_path/abis/morpho.abi.json
 # `rindexer start` resolves rindexer.yaml (and its relative `./abis/…` path) from the working
 # directory — this version ignores PROJECT_PATH — so run from the baked project dir.

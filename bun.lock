@@ -18,26 +18,10 @@
     "bots/blue-liquidation": {
       "name": "@morpho-org/blue-liquidation",
       "version": "0.1.0",
-      "dependencies": {
-        "@repo/utils": "workspace:*",
-      },
-      "devDependencies": {
-        "@repo/typescript-config": "workspace:*",
-        "@types/bun": "catalog:",
-        "typescript": "catalog:",
-      },
     },
     "bots/midnight-liquidation": {
       "name": "@morpho-org/midnight-liquidation",
       "version": "0.1.0",
-      "dependencies": {
-        "@repo/utils": "workspace:*",
-      },
-      "devDependencies": {
-        "@repo/typescript-config": "workspace:*",
-        "@types/bun": "catalog:",
-        "typescript": "catalog:",
-      },
     },
     "packages/blue-liquidation": {
       "name": "@repo/blue-liquidation",

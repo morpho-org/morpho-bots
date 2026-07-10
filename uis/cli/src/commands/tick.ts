@@ -1,18 +1,8 @@
+import type { BluePersistedState } from '@repo/blue-liquidation'
 import type { Logger } from '@repo/bot-kit'
+import type { MidnightPersistedState } from '@repo/midnight-liquidation'
 
-import {
-  loadConfig as blueLoadConfig,
-  STATE_VERSION as BLUE_STATE_VERSION,
-  tickOnce as blueTickOnce,
-  type BluePersistedState
-} from '@repo/blue-liquidation'
 import { createLogger } from '@repo/bot-kit'
-import {
-  loadConfig as midnightLoadConfig,
-  STATE_VERSION as MIDNIGHT_STATE_VERSION,
-  tickOnce as midnightTickOnce,
-  type MidnightPersistedState
-} from '@repo/midnight-liquidation'
 import { ensureError } from '@repo/utils'
 
 import type { BotName } from '../home'
@@ -36,26 +26,34 @@ type BotAdapter = {
   ) => Promise<{ state: unknown }>
 }
 
-const ADAPTERS: Record<BotName, BotAdapter> = {
-  blue: {
-    stateVersion: BLUE_STATE_VERSION,
-    validateConfig: blueLoadConfig,
-    tick: (env, opts) =>
-      blueTickOnce(env, {
-        ...(opts.state ? { state: opts.state as BluePersistedState } : {}),
-        runStartupChecks: opts.runStartupChecks,
-        logger: opts.logger
-      })
+// Cores load lazily so one bot's tick never pays the OTHER bot's module graph + soltag lens
+// compile — a per-spawn cost in the one-shot model. The type-only imports above are erased.
+const ADAPTERS: Record<BotName, () => Promise<BotAdapter>> = {
+  blue: async () => {
+    const core = await import('@repo/blue-liquidation')
+    return {
+      stateVersion: core.STATE_VERSION,
+      validateConfig: core.loadConfig,
+      tick: (env, opts) =>
+        core.tickOnce(env, {
+          ...(opts.state ? { state: opts.state as BluePersistedState } : {}),
+          runStartupChecks: opts.runStartupChecks,
+          logger: opts.logger
+        })
+    }
   },
-  midnight: {
-    stateVersion: MIDNIGHT_STATE_VERSION,
-    validateConfig: midnightLoadConfig,
-    tick: (env, opts) =>
-      midnightTickOnce(env, {
-        ...(opts.state ? { state: opts.state as MidnightPersistedState } : {}),
-        runStartupChecks: opts.runStartupChecks,
-        logger: opts.logger
-      })
+  midnight: async () => {
+    const core = await import('@repo/midnight-liquidation')
+    return {
+      stateVersion: core.STATE_VERSION,
+      validateConfig: core.loadConfig,
+      tick: (env, opts) =>
+        core.tickOnce(env, {
+          ...(opts.state ? { state: opts.state as MidnightPersistedState } : {}),
+          runStartupChecks: opts.runStartupChecks,
+          logger: opts.logger
+        })
+    }
   }
 }
 
@@ -74,7 +72,7 @@ export async function runTickCommand(
   opts: { chain?: string | undefined }
 ): Promise<number> {
   const home = botsHome()
-  const adapter = ADAPTERS[bot]
+  const adapter = await ADAPTERS[bot]()
 
   // Everything the operator must fix (bad files, unresolvable chain, invalid bot config) fails
   // BEFORE any chain interaction, as exit 2. Config validation is re-run inside tickOnce — cheap,

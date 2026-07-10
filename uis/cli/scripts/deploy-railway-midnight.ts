@@ -12,7 +12,7 @@
  *   - Local: an interactive `railway login` session; the script links the project by id.
  *
  *   RAILWAY_PROJECT_ID=… RPC_URL=… LIQUIDATOR_PRIVATE_KEY=0x… \
- *     bun run --filter @morpho-org/midnight-liquidation deploy:railway
+ *     bun run --filter @repo/cli deploy:railway:midnight
  *
  * The build context MUST be the repo root so the bun workspace (packages/*) resolves — the script
  * runs `railway up` with cwd set to the repo root (mirrors the Dockerfile header + compose context),
@@ -33,8 +33,15 @@ import { resolve } from 'node:path'
 // RAILWAY_PROJECT_ID is required; RAILWAY_ENVIRONMENT defaults to the conventional `production`.
 const PROJECT_ID = required(Bun.env, 'RAILWAY_PROJECT_ID')
 const ENVIRONMENT = Bun.env.RAILWAY_ENVIRONMENT?.trim() || 'production'
-const DOCKERFILE_PATH = 'bots/midnight-liquidation/Dockerfile'
-// Repo root is three levels up from this file (scripts → midnight-liquidation → bots → repo root).
+const DOCKERFILE_PATH = 'uis/cli/Dockerfile'
+// The single per-service volume mounts at /data so the CLI's cross-tick state (MORPHO_BOTS_HOME
+// defaults to /data/morpho-bots in docker-entrypoint.sh) survives container restarts.
+const DATA_MOUNT_PATH = '/data'
+// Optional service-name suffix for the parity phase of a cutover: SERVICE_SUFFIX=-cli provisions
+// bot-cli alongside the live service (give it an UNFUNDED key). Leave unset for the real deployment.
+const SERVICE_SUFFIX = Bun.env.SERVICE_SUFFIX?.trim() ?? ''
+const BOT_SERVICE = `bot${SERVICE_SUFFIX}`
+// Repo root is three levels up from this file (scripts → cli → uis → repo root).
 const REPO_ROOT = resolve(import.meta.dir, '..', '..', '..')
 
 type Env = Record<string, string | undefined>
@@ -163,6 +170,46 @@ async function setSecret(service: string, key: string, value: string): Promise<v
   console.log(`Set ${key} on ${service} (secret).`)
 }
 
+// Each volume carries the service it is attached to (`serviceName`, null when orphaned by a deleted
+// service). We key on (serviceName, mountPath) because `railway volume list` is environment-wide.
+// Returns [] on any parse failure (treated as "no volumes").
+function parseVolumeMounts(raw: string): { serviceName: string; mountPath: string }[] {
+  const { data } = tryCatch(() => JSON.parse(raw) as unknown)
+  const rows = Array.isArray(data)
+    ? data
+    : isRecord(data) && Array.isArray(data.volumes)
+      ? data.volumes
+      : []
+  return rows
+    .filter(isRecord)
+    .map(row => ({
+      serviceName: str(row.serviceName) || str(row.service_name),
+      mountPath: str(row.mountPath) || str(row.mount_path)
+    }))
+    .filter(mount => mount.mountPath)
+}
+
+async function ensureVolume(service: string, mountPath: string): Promise<void> {
+  const { data } = await tryCatch(Promise.resolve($`railway volume list --json`.quiet().text()))
+  const mounts = typeof data === 'string' ? parseVolumeMounts(data) : []
+  if (mounts.some(mount => mount.serviceName === service && mount.mountPath === mountPath)) {
+    console.log(`Volume at ${mountPath} already on ${service}.`)
+    return
+  }
+  // `railway volume add` attaches to the *linked* service; its own --service flag is broken in CLI
+  // 5.x (panics), so link the target service first, then add without -s.
+  const link = await tryCatch(
+    Promise.resolve($`railway link -p ${PROJECT_ID} -e ${ENVIRONMENT} -s ${service}`.quiet())
+  )
+  if (link.error)
+    throw new Error(`Failed to link ${service} for volume add: ${stderrOf(link.error)}`)
+  const { error } = await tryCatch(
+    Promise.resolve($`railway volume add -m ${mountPath} --json`.quiet())
+  )
+  if (error) throw new Error(`Failed to add volume ${mountPath} to ${service}: ${stderrOf(error)}`)
+  console.log(`Added volume at ${mountPath} to ${service}.`)
+}
+
 async function deployService(service: string): Promise<void> {
   console.log(`Deploying ${service} from repo root…`)
   // `railway up` runs with cwd = REPO_ROOT (build context), but the script only ever links the
@@ -223,22 +270,25 @@ await ensureContext()
 // --- bot: the liquidation runner. Borrower discovery polls the markets liquidation-candidates API
 // and the markets whitelist comes from the Midnight markets API (both public by default), so there is
 // nothing else to provision — no swap-config file/volume anymore.
-await ensureService('bot')
-await setVar('bot', 'CHAIN_ID=8453')
-await setVar('bot', `RAILWAY_DOCKERFILE_PATH=${DOCKERFILE_PATH}`)
-await setVar('bot', 'LOG_LEVEL=info')
-await setSecret('bot', 'RPC_URL', rpcUrl)
-await setSecret('bot', 'LIQUIDATOR_PRIVATE_KEY', liquidatorPrivateKey)
-if (zeroxKey) await setSecret('bot', 'ZEROX_API_KEY', zeroxKey)
-if (oneinchKey) await setSecret('bot', 'ONEINCH_API_KEY', oneinchKey)
-if (allowBadDebtOnly) await setVar('bot', 'ALLOW_BAD_DEBT_ONLY=true')
-await deployService('bot')
+await ensureService(BOT_SERVICE)
+await ensureVolume(BOT_SERVICE, DATA_MOUNT_PATH)
+await setVar(BOT_SERVICE, 'BOT=midnight')
+await setVar(BOT_SERVICE, 'CHAIN_ID=8453')
+await setVar(BOT_SERVICE, `TICK_INTERVAL_S=${Bun.env.TICK_INTERVAL_S?.trim() || '2'}`)
+await setVar(BOT_SERVICE, `RAILWAY_DOCKERFILE_PATH=${DOCKERFILE_PATH}`)
+await setVar(BOT_SERVICE, 'LOG_LEVEL=info')
+await setSecret(BOT_SERVICE, 'RPC_URL', rpcUrl)
+await setSecret(BOT_SERVICE, 'LIQUIDATOR_PRIVATE_KEY', liquidatorPrivateKey)
+if (zeroxKey) await setSecret(BOT_SERVICE, 'ZEROX_API_KEY', zeroxKey)
+if (oneinchKey) await setSecret(BOT_SERVICE, 'ONEINCH_API_KEY', oneinchKey)
+if (allowBadDebtOnly) await setVar(BOT_SERVICE, 'ALLOW_BAD_DEBT_ONLY=true')
+await deployService(BOT_SERVICE)
 
-const botStatus = await waitForDeploy('bot')
+const botStatus = await waitForDeploy(BOT_SERVICE)
 
 console.log('')
 console.log('=== Deployment status ===')
-console.log(`  bot: ${botStatus}`)
+console.log(`  ${BOT_SERVICE}: ${botStatus}`)
 console.log('')
 console.log('=== Manual steps ===')
 console.log('  1. The bot needs a funded liquidator key + a real RPC before it can broadcast.')

@@ -1,9 +1,9 @@
-# Bundles the per-chain bots with ONE shared rindexer instance + Postgres for borrower discovery.
-# rindexer indexes the Morpho Blue `Borrow` event (per rindexer.yaml) for every chain into one
-# Postgres, discriminated by a `network` column; each bot reads the indexed (market, borrower) pairs
-# for its own chain each tick. Build context is the repo root so the bun workspace (packages/*)
-# resolves — see Dockerfile. Set the chainId-suffixed RPCs (RPC_URL_8453, RPC_URL_4663, optionally
-# RINDEXER_RPC_URL_<chainId>) and a LIQUIDATOR_PRIVATE_KEY.
+# Bundles the per-chain blue bots with ONE shared rindexer instance + Postgres for borrower
+# discovery. rindexer indexes the Morpho Blue `Borrow` event (services/blue-rindexer/rindexer.yaml)
+# for every chain into one Postgres, discriminated by a `network` column; each bot tick reads the
+# indexed (market, borrower) pairs for its own chain. Bots run the one-shot CLI in the image's
+# entrypoint loop (uis/cli/docker-entrypoint.sh). Set the chainId-suffixed RPCs (RPC_URL_8453,
+# RPC_URL_4663, optionally RINDEXER_RPC_URL_<chainId>) and a LIQUIDATOR_PRIVATE_KEY.
 #
 # NOTE: the rindexer service config (image command, env) follows the rindexer docs but has not been
 # run end-to-end here; verify `docker compose up` against live RPCs before relying on it.
@@ -24,11 +24,11 @@ services:
 
   rindexer:
     # Derived from the upstream rindexer image with rindexer.yaml + the generated event ABI baked in
-    # (see Dockerfile `rindexer` target), so no host bind mount is needed and the ABI isn't committed.
+    # (see services/blue-rindexer/Dockerfile), so no host bind mount is needed and the ABI isn't
+    # committed.
     build:
-      context: ../..
-      dockerfile: bots/blue-liquidation/Dockerfile
-      target: rindexer
+      context: .
+      dockerfile: services/blue-rindexer/Dockerfile
     depends_on:
       postgres:
         condition: service_healthy
@@ -39,53 +39,61 @@ services:
       RINDEXER_RPC_URL_8453: ${RINDEXER_RPC_URL_8453:-${RPC_URL_8453:?set RPC_URL_8453 or RINDEXER_RPC_URL_8453}}
       RINDEXER_RPC_URL_4663: ${RINDEXER_RPC_URL_4663:-${RPC_URL_4663:-https://rpc.mainnet.chain.robinhood.com}}
       PROJECT_PATH: /app/project_path
-    # Mirrors the baked `CMD ["start","indexer"]` in the Dockerfile `rindexer` stage (keep in sync).
+    # Mirrors the baked `CMD ["start","indexer"]` in the Dockerfile (keep in sync).
     command: ['start', 'indexer']
     restart: unless-stopped
 
   bot-base:
     build:
-      context: ../..
-      dockerfile: bots/blue-liquidation/Dockerfile
-      target: bot
+      context: .
+      dockerfile: uis/cli/Dockerfile
     depends_on:
       postgres:
         condition: service_healthy
     environment:
+      BOT: blue
       CHAIN_ID: '8453'
+      TICK_INTERVAL_S: ${TICK_INTERVAL_S:-2}
       RPC_URL: ${RPC_URL_8453:?set RPC_URL_8453}
       LIQUIDATOR_PRIVATE_KEY: ${LIQUIDATOR_PRIVATE_KEY:?set LIQUIDATOR_PRIVATE_KEY}
       EXECUTOOOR_ADDRESS: ${EXECUTOOOR_ADDRESS:-}
-      SWAP_CONFIG_PATH: /config/swap.json
+      SWAP_CONFIG_PATH: /data/morpho-bots/blue/swap-config.json
       ZEROX_API_KEY: ${ZEROX_API_KEY:-}
       ONEINCH_API_KEY: ${ONEINCH_API_KEY:-}
       # The bot reads rindexer's indexed events (filtered to network=base) from the same Postgres.
       DATABASE_URL: postgresql://rindexer:${POSTGRES_PASSWORD:-rindexer}@postgres:5432/blue_liquidation
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
-      - ${SWAP_CONFIG_PATH:-./swap.config.json}:/config/swap.json:ro
+      # One /data volume carries both the cross-tick state files and the swap config.
+      - bot-base-data:/data
+      - ${SWAP_CONFIG_PATH:-./packages/blue-liquidation/configs/example.json}:/data/morpho-bots/blue/swap-config.json:ro
     restart: unless-stopped
 
-  # Robinhood launches DETECTION-ONLY: no swap route configured (no SWAP_CONFIG_PATH/volume), so the
-  # bot discovers + logs liquidatable positions but skips every routed liquidation. It still needs the
+  # Robinhood launches DETECTION-ONLY: no swap route configured (no SWAP_CONFIG_PATH), so the bot
+  # discovers + logs liquidatable positions but skips every routed liquidation. It still needs the
   # Executor deployed on Robinhood (deploy:executor) to pass the startup liveness gate.
   bot-robinhood:
     build:
-      context: ../..
-      dockerfile: bots/blue-liquidation/Dockerfile
-      target: bot
+      context: .
+      dockerfile: uis/cli/Dockerfile
     depends_on:
       postgres:
         condition: service_healthy
     environment:
+      BOT: blue
       CHAIN_ID: '4663'
+      TICK_INTERVAL_S: ${TICK_INTERVAL_S:-2}
       RPC_URL: ${RPC_URL_4663:-https://rpc.mainnet.chain.robinhood.com}
       LIQUIDATOR_PRIVATE_KEY: ${LIQUIDATOR_PRIVATE_KEY:?set LIQUIDATOR_PRIVATE_KEY}
       EXECUTOOOR_ADDRESS: ${EXECUTOOOR_ADDRESS:-}
       # The bot reads rindexer's indexed events (filtered to network=robinhood) from the same Postgres.
       DATABASE_URL: postgresql://rindexer:${POSTGRES_PASSWORD:-rindexer}@postgres:5432/blue_liquidation
       LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - bot-robinhood-data:/data
     restart: unless-stopped
 
 volumes:
   rindexer-pg:
+  bot-base-data:
+  bot-robinhood-data:

@@ -6,6 +6,7 @@
   "include": [
     "src",
     "test",
+    "scripts",
     "../../packages/blue-liquidation/.soltag/types.d.ts",
     "../../packages/midnight-liquidation/.soltag/types.d.ts"
   ],
