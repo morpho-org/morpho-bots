@@ -19,7 +19,7 @@
  *   - ZEROX_API_KEY[_<chainId>] / ONEINCH_API_KEY[_<chainId>] (optional; only if a collateral routes there)
  *
  *   RAILWAY_PROJECT_ID=… RPC_URL_8453=… RPC_URL_4663=… LIQUIDATOR_PRIVATE_KEY=0x… \
- *     bun run --filter @repo/cli deploy:railway:blue
+ *     bun run --filter @repo/bots deploy:railway:blue
  *
  * The build context MUST be the repo root so the bun workspace (packages/*) resolves — the script
  * runs `railway up` with cwd set to the repo root (mirrors the Dockerfile header + compose context).
@@ -40,7 +40,7 @@ import { resolve } from 'node:path'
 // RAILWAY_PROJECT_ID is required; RAILWAY_ENVIRONMENT defaults to the conventional `production`.
 const PROJECT_ID = required(Bun.env, 'RAILWAY_PROJECT_ID')
 const ENVIRONMENT = Bun.env.RAILWAY_ENVIRONMENT?.trim() || 'production'
-const BOT_DOCKERFILE_PATH = 'uis/cli/Dockerfile'
+const BOT_DOCKERFILE_PATH = 'bots/Dockerfile'
 const RINDEXER_DOCKERFILE_PATH = 'services/blue-rindexer/Dockerfile'
 // The single per-service volume mounts at /data: it carries BOTH the CLI's cross-tick state
 // (MORPHO_BOTS_HOME defaults to /data/morpho-bots in docker-entrypoint.sh) and the swap config.
@@ -50,8 +50,8 @@ const SWAP_CONFIG_PATH = '/data/morpho-bots/blue/swap-config.json'
 // bot-<chainId>-cli alongside the live services (give it an UNFUNDED key), and legacy-service
 // removal is skipped. Leave unset for the real deployment.
 const SERVICE_SUFFIX = Bun.env.SERVICE_SUFFIX?.trim() ?? ''
-// Repo root is three levels up from this file (scripts → cli → uis → repo root).
-const REPO_ROOT = resolve(import.meta.dir, '..', '..', '..')
+// Repo root is two levels up from this file (scripts → bots → repo root).
+const REPO_ROOT = resolve(import.meta.dir, '..', '..')
 
 type Env = Record<string, string | undefined>
 type RailwayService = { id: string; name: string }
@@ -371,7 +371,8 @@ for (const chain of chainSecrets) {
 }
 await deployService('rindexer')
 
-// --- bot-<chainId>: one CLI tick-loop per chain (uis/cli image; BOT/CHAIN_ID select what runs),
+// --- bot-<chainId>: one CLI tick-loop per chain (the bots/Dockerfile image; BOT/CHAIN_ID select
+// what runs),
 // all sharing the one rindexer + Postgres. The in-container var names stay RPC_URL /
 // LIQUIDATOR_PRIVATE_KEY (the chainId suffix is only an operator-side convention). The per-service
 // /data volume carries cross-tick state AND the swap config (uploaded out-of-band — see manual

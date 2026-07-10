@@ -310,6 +310,24 @@ supervisor.
 - [TIB-2026-07-09: Midnight markets whitelist + best-of-venues](./TIB-2026-07-09-midnight-markets-whitelist-multi-venue.md)
   — the listedMarkets whitelist and venue rankings persisted by the state files.
 
+## Addenda
+
+### 2026-07-10 — `uis/` renamed to `interfaces/`; packaging isolated in `bots/`
+
+Two layout revisions after the ladder landed (paths in the body above are historical):
+
+- **`uis/` → `interfaces/`.** "UIs" over-implied frontend; `interfaces/` names the same idea —
+  operator-facing surfaces (`interfaces/cli` now, a TUI later) — without it. `@repo/cli` and the
+  `morpho-bots` bin are unchanged.
+- **Bot packaging moved out of the CLI package and the repo root into a new `bots/` workspace
+  (`@repo/bots`).** The Dockerfile, `docker-entrypoint.sh`, both `docker-compose.*.yml` files
+  (previously at the repo root), and the `deploy-railway-*.ts` scripts now live under `bots/`.
+  Rationale: `interfaces/cli` stays a generic, unopinionated interface; everything that wraps its
+  one-shot ticks into a persistent liquidation-bot deployment is a _use-case_ and is isolated in
+  `bots/`. `bots/` is a real workspace member (the deploy scripts import `@repo/utils`, so it needs
+  lockfile/typecheck/knip coverage). Railway services set `RAILWAY_DOCKERFILE_PATH=bots/Dockerfile`;
+  compose runs as `docker compose -f bots/docker-compose.<bot>.yml up` with `context: ..`.
+
 <!--
 TIB conventions:
 - Once accepted, do not substantively edit this TIB. If the decision needs to change,

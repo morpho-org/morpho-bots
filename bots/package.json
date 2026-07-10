@@ -1,0 +1,20 @@
+{
+  "name": "@repo/bots",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "deploy:railway:blue": "bun run scripts/deploy-railway-blue.ts",
+    "deploy:railway:midnight": "bun run scripts/deploy-railway-midnight.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@repo/utils": "workspace:*"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@types/bun": "catalog:",
+    "typescript": "catalog:"
+  }
+}

@@ -200,9 +200,9 @@ Useful options:
 
 ## Running With Docker Compose
 
-[docker-compose.midnight.yml](../../docker-compose.midnight.yml) defines a single `bot` service
-(discovery is the remote API, so there is no database or indexer). It builds the `uis/cli` image,
-whose entrypoint loops `morpho-bots midnight tick`.
+[bots/docker-compose.midnight.yml](../../bots/docker-compose.midnight.yml) defines a single `bot`
+service (discovery is the remote API, so there is no database or indexer). It builds the single bot
+image (`bots/Dockerfile`), whose entrypoint loops `morpho-bots midnight tick`.
 
 From the repo root:
 
@@ -210,7 +210,7 @@ From the repo root:
 export RPC_URL=https://base-mainnet.example
 export LIQUIDATOR_PRIVATE_KEY=0x...
 export ZEROX_API_KEY=...   # and/or ONEINCH_API_KEY
-docker compose -f docker-compose.midnight.yml up --build
+docker compose -f bots/docker-compose.midnight.yml up --build
 ```
 
 Optional variables:
@@ -223,12 +223,13 @@ export LOG_LEVEL=debug
 ## Deploying to Railway
 
 The bot runs as a single service on the Railway project `bot.liquidation.midnight` (discovery is the
-remote API — no Postgres or indexer service). [scripts/deploy-railway.ts](./scripts/deploy-railway.ts)
-provisions and deploys it idempotently from the [Railway CLI](https://docs.railway.com/guides/cli), so
-it runs the same locally or in CI.
+remote API — no Postgres or indexer service).
+[bots/scripts/deploy-railway-midnight.ts](../../bots/scripts/deploy-railway-midnight.ts) provisions
+and deploys it idempotently from the [Railway CLI](https://docs.railway.com/guides/cli), so it runs
+the same locally or in CI.
 
-The [Dockerfile](./Dockerfile) is a single-stage bun image; `RAILWAY_DOCKERFILE_PATH` points Railway at
-it and `railway up` runs from the repo root so the bun workspace resolves.
+The [bots/Dockerfile](../../bots/Dockerfile) is a single-stage bun image; `RAILWAY_DOCKERFILE_PATH`
+points Railway at it and `railway up` runs from the repo root so the bun workspace resolves.
 
 Authenticate the CLI first — set `RAILWAY_TOKEN` (a project token scoped to the target project /
 environment, recommended for CI) or run `railway login`. The script bakes in no project identifier, so
@@ -240,7 +241,7 @@ export RAILWAY_PROJECT_ID=...   # required: the Railway project to deploy to
 export RPC_URL=https://base-mainnet.example
 export LIQUIDATOR_PRIVATE_KEY=0x...
 # Optional: RAILWAY_ENVIRONMENT (defaults to production).
-bun run --filter @repo/cli deploy:railway:midnight
+bun run --filter @repo/bots deploy:railway:midnight
 ```
 
 Secrets are read from the script's environment, piped to Railway via stdin (never argv), and never

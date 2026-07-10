@@ -12,6 +12,7 @@
     "packages/swaps": {},
     "packages/midnight-liquidation": {},
     "packages/blue-liquidation": {},
-    "uis/cli": {}
+    "interfaces/cli": {},
+    "bots": {}
   }
 }

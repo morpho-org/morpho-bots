@@ -5,8 +5,10 @@ and the shared packages they consume.
 
 This is a [bun workspaces](https://bun.com/docs/install/workspaces) monorepo:
 
-- `uis/` — operator front-ends; `uis/cli` (`@repo/cli`, bin `morpho-bots`) is the only way to run
-  bots — one-shot `morpho-bots <bot> tick` invocations driven by unix loops/cron
+- `interfaces/` — operator interfaces; `interfaces/cli` (`@repo/cli`, bin `morpho-bots`) is the
+  only way to run bots — one-shot `morpho-bots <bot> tick` invocations driven by unix loops/cron
+- `bots/` — deployment packaging for the bot use-case (`@repo/bots`): the Docker image +
+  entrypoint loop, docker-compose files, and Railway deploy scripts that wrap the generic CLI
 - `services/` — independently deployed sidecars (e.g. `services/blue-rindexer`); not bun workspaces
 - `packages/` — libraries: the bot cores (`@repo/blue-liquidation`, `@repo/midnight-liquidation`)
   and shared layers (e.g. `@repo/typescript-config`, `@repo/utils`, `@repo/contracts`)

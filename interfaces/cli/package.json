@@ -8,8 +8,6 @@
   },
   "type": "module",
   "scripts": {
-    "deploy:railway:blue": "bun run scripts/deploy-railway-blue.ts",
-    "deploy:railway:midnight": "bun run scripts/deploy-railway-midnight.ts",
     "start": "bun src/main.ts",
     "typecheck": "soltag -p ../../packages/blue-liquidation/tsconfig.json && soltag -p ../../packages/midnight-liquidation/tsconfig.json && tsc --noEmit"
   },

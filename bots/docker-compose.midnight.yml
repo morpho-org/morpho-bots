@@ -1,12 +1,13 @@
 # Runs the midnight-liquidation bot via the one-shot CLI in the image's entrypoint loop
-# (uis/cli/docker-entrypoint.sh). Borrower candidates come from the markets liquidation-candidates
+# (bots/docker-entrypoint.sh). Borrower candidates come from the markets liquidation-candidates
 # HTTP API (LIQUIDATION_CANDIDATES_API_URL, public by default), so there is no indexer or database
-# to run. Build context is the repo root so the bun workspace (packages/*) resolves.
+# to run. Build context is `..` (the repo root — required for the bun workspace to resolve) because
+# this file lives in bots/; run it from anywhere: `docker compose -f bots/docker-compose.midnight.yml up`.
 services:
   bot:
     build:
-      context: .
-      dockerfile: uis/cli/Dockerfile
+      context: ..
+      dockerfile: bots/Dockerfile
     environment:
       BOT: midnight
       CHAIN_ID: '8453'

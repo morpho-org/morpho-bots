@@ -125,9 +125,14 @@ These files provide important background information about dependencies and rela
 
 This is a **bun workspaces monorepo** housing off-chain Morpho curator bots:
 
-- `/uis/` — operator front-ends. `uis/cli` (`@repo/cli`, bin `morpho-bots`) is the only way to run
-  bots: one-shot `morpho-bots <bot> tick` invocations driven by unix loops/cron, with config and
-  cross-tick state under `~/.morpho-bots` (`MORPHO_BOTS_HOME` overrides). A TUI is planned.
+- `/interfaces/` — operator interfaces, kept generic/unopinionated. `interfaces/cli` (`@repo/cli`,
+  bin `morpho-bots`) is the only way to run bots: one-shot `morpho-bots <bot> tick` invocations
+  driven by unix loops/cron, with config and cross-tick state under `~/.morpho-bots`
+  (`MORPHO_BOTS_HOME` overrides). A TUI is planned.
+- `/bots/` — deployment packaging for the bot use-case (`@repo/bots`): the single bot Docker
+  image, the entrypoint tick loop, the docker-compose files, and the Railway deploy scripts.
+  Anything that turns the generic CLI into a persistent liquidation bot lives here, not in
+  `interfaces/`.
 - `/services/` — independently deployed sidecars (not bun workspaces). `services/blue-rindexer`
   indexes Morpho Blue `Borrow` events into Postgres for blue's discovery.
 - `/packages/` — libraries: the bot cores (`@repo/blue-liquidation`, `@repo/midnight-liquidation`,
@@ -175,12 +180,13 @@ All commit messages, PR titles, and Linear ticket titles use the same format:
 
 **Types:** `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `perf`, `ci`
 
-**Scopes — Packages & UIs:**
+**Scopes — Packages, Interfaces & Bots:**
 
 | Package                    | Scope                  |
 | -------------------------- | ---------------------- |
 | @repo/blue-liquidation     | `blue-liquidation`     |
 | @repo/bot-kit              | `bot-kit`              |
+| @repo/bots                 | `bots`                 |
 | @repo/cli                  | `cli`                  |
 | @repo/contracts            | `contracts`            |
 | @repo/midnight-liquidation | `midnight-liquidation` |
@@ -199,7 +205,7 @@ All commit messages, PR titles, and Linear ticket titles use the same format:
 | Scope         | Use when                                                    |
 | ------------- | ----------------------------------------------------------- |
 | `repo`        | Repo-wide scaffolding, workspace config, root-level files   |
-| `bots`        | Change spans both bot core packages                         |
+| `bots`        | `bots/` packaging, or a change spanning both bot cores      |
 | `packages`    | Change spans multiple packages                              |
 | `ci`          | CI/CD pipeline changes                                      |
 | `agents`      | `CLAUDE.md`, `.mcp.json`, editor configs, agent definitions |
