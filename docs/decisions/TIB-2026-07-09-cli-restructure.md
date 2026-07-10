@@ -328,6 +328,21 @@ Two layout revisions after the ladder landed (paths in the body above are histor
   lockfile/typecheck/knip coverage). Railway services set `RAILWAY_DOCKERFILE_PATH=bots/Dockerfile`;
   compose runs as `docker compose -f bots/docker-compose.<bot>.yml up` with `context: ..`.
 
+### 2026-07-09 — command shape superseded by the pipeable-CLI TIB
+
+The command shape defined here — `morpho-bots <bot> tick` and the cores' `tickOnce` — is
+superseded by [TIB-2026-07-09-pipeline-cli](./TIB-2026-07-09-pipeline-cli.md), which decomposes the
+monolithic tick into pipeable `<domain> sense | act | queue` commands (`senseOnce` / `actOnce`
+cores, all logs to stderr, prod AOT build). **This TIB's foundations still stand** and are
+explicitly preserved by that supersession: one-shot processes, unix loops as the supervisor,
+state-as-hint reconciled against chain truth, the 0/1/2 exit contract, the `~/.morpho-bots`
+file/env config merge, and `MORPHO_BOTS_HOME`.
+
+Consequently this TIB's two pending acceptance criteria — the Railway cutover (PR4) and the PR3
+tick-latency measurement — are **mooted**: migration is out of scope for the successor, and latency
+is re-measured there against the three-process pipeline. This TIB stays **Proposed** as a
+historical record of the process-model and repo-shape decision; it is not promoted to Accepted.
+
 <!--
 TIB conventions:
 - Once accepted, do not substantively edit this TIB. If the decision needs to change,
