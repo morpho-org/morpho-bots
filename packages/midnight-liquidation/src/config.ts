@@ -61,7 +61,7 @@ const DEFAULT_PROBE_STALE_MS = 600_000
 const DEFAULT_PROBE_HTTP_RPS = 1
 const DEFAULT_PROBE_LADDER = ['0.01', '0.1', '1', '10', '100']
 
-type Env = Record<string, string | undefined>
+export type Env = Record<string, string | undefined>
 
 /**
  * Off-chain quoting + failure-backoff tunables (the multi-venue swap layer), plus the seize-sizing

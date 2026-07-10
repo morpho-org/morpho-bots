@@ -140,6 +140,27 @@
         "typescript": "catalog:",
       },
     },
+    "uis/cli": {
+      "name": "@repo/cli",
+      "version": "0.1.0",
+      "bin": {
+        "morpho-bots": "./src/main.ts",
+      },
+      "dependencies": {
+        "@repo/blue-liquidation": "workspace:*",
+        "@repo/bot-kit": "workspace:*",
+        "@repo/midnight-liquidation": "workspace:*",
+        "@repo/utils": "workspace:*",
+        "commander": "catalog:",
+      },
+      "devDependencies": {
+        "@repo/typescript-config": "workspace:*",
+        "@types/bun": "catalog:",
+        "solc": "catalog:",
+        "soltag": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
   },
   "catalog": {
     "@internationalized/date": "^3.11.0",
@@ -147,6 +168,7 @@
     "@morpho-org/viem-dlc": "0.0.11",
     "@types/bun": "^1.3.0",
     "@types/lodash-es": "^4.17.12",
+    "commander": "^14.0.0",
     "date-fns": "^4.1.0",
     "executooor-viem": "^1.3.3",
     "husky": "^9.1.5",
@@ -336,6 +358,8 @@
     "@repo/blue-liquidation": ["@repo/blue-liquidation@workspace:packages/blue-liquidation"],
 
     "@repo/bot-kit": ["@repo/bot-kit@workspace:packages/bot-kit"],
+
+    "@repo/cli": ["@repo/cli@workspace:uis/cli"],
 
     "@repo/contracts": ["@repo/contracts@workspace:packages/contracts"],
 

@@ -4,7 +4,7 @@ import type { MarketParams } from '../../src/market'
 import type { LensOut } from '../../src/state/lens.sol'
 
 import { ORACLE_PRICE_SCALE, WAD } from '../../src/constants'
-import { isLiquidatable, planInputFromLens } from '../../src/runner/eligibility'
+import { isLiquidatable, planInputFromLens } from '../../src/tick/eligibility'
 
 const PARAMS: MarketParams = {
   loanToken: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',

@@ -30,8 +30,8 @@ import {
 import { createListedMarketFilter } from './discovery/markets'
 import { encodeLiquidationExec } from './execution/encode-call'
 import { composeQuoting } from './quotes'
-import { runTick } from './runner/tick'
 import { readMidnightLiquidationLens } from './state/lens.sol'
+import { runTick } from './tick/tick'
 import { revertReason } from './tx-error'
 
 async function main() {

@@ -17,7 +17,7 @@ import { isLiquidatable, planInputFromLens } from './eligibility'
 /** Blocks our rindexer may trail the chain head before we warn that coverage is degraded. */
 const MAX_RINDEXER_LAG_BLOCKS = 30n
 
-type TickCounters = {
+export type TickCounters = {
   pairs: number
   liquidatable: number
   planned: number

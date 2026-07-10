@@ -17,9 +17,9 @@ import type { ForkFixture, ForkHandle, TestClient } from './harness'
 import { encodeLiquidationExec } from '../../src/execution/encode-call'
 import { expectedLoanOut } from '../../src/execution/swap-step'
 import { marketId } from '../../src/market'
-import { isLiquidatable, planInputFromLens } from '../../src/runner/eligibility'
 import { plan } from '../../src/sizing/plan'
 import { lensKey, readBlueLiquidationLens } from '../../src/state/lens.sol'
+import { isLiquidatable, planInputFromLens } from '../../src/tick/eligibility'
 import {
   deployExecutor,
   FORK_URL,

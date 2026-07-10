@@ -4,6 +4,12 @@
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/bot.ts",
+      "default": "./src/bot.ts"
+    }
+  },
   "scripts": {
     "seed:positions": "bun run scripts/seed-liquidatable-positions.ts",
     "prestart": "bun run --parallel --workspaces --if-present build",

@@ -13,7 +13,7 @@ import { isBadDebtRealization, plan } from '../sizing/plan'
 import { lensKey } from '../state/lens.sol'
 import { isLiquidatable, planInputFromLens } from './eligibility'
 
-type TickCounters = {
+export type TickCounters = {
   pairs: number
   liquidatable: number
   planned: number
