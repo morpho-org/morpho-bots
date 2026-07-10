@@ -16,9 +16,11 @@
  *   - RPC_URL_<chainId>            (required per chain) — the bot's RPC (reads, simulate, sends)
  *   - RINDEXER_RPC_URL_<chainId>   (optional; defaults to RPC_URL_<chainId>) — that network's indexer RPC
  *   - LIQUIDATOR_PRIVATE_KEY_<chainId> (per chain) OR a shared LIQUIDATOR_PRIVATE_KEY fallback
+ *   - LIQUIDATOR_ADDRESS_<chainId> (per chain) OR a shared LIQUIDATOR_ADDRESS fallback (non-secret) —
+ *     the operator EOA `act` skims to; must be the address the matching private key derives.
  *   - ZEROX_API_KEY[_<chainId>] / ONEINCH_API_KEY[_<chainId>] (optional; only if a collateral routes there)
  *
- *   RAILWAY_PROJECT_ID=… RPC_URL_8453=… RPC_URL_4663=… LIQUIDATOR_PRIVATE_KEY=0x… \
+ *   RAILWAY_PROJECT_ID=… RPC_URL_8453=… RPC_URL_4663=… LIQUIDATOR_PRIVATE_KEY=0x… LIQUIDATOR_ADDRESS=0x… \
  *     bun run --filter @repo/bots deploy:railway:blue
  *
  * The build context MUST be the repo root so the bun workspace (packages/*) resolves — the script
@@ -346,11 +348,26 @@ const chainSecrets = CHAINS.map(chain => {
       `Missing required env var: LIQUIDATOR_PRIVATE_KEY_${chain.chainId} (or a shared LIQUIDATOR_PRIVATE_KEY)`
     )
   assertPrivateKey(liquidatorPrivateKey)
+  // The operator EOA `act` targets (non-secret); the queue cross-checks it against the key at load.
+  const liquidatorAddress =
+    suffixed('LIQUIDATOR_ADDRESS', chain.chainId) ?? Bun.env.LIQUIDATOR_ADDRESS?.trim()
+  if (!liquidatorAddress)
+    throw new Error(
+      `Missing required env var: LIQUIDATOR_ADDRESS_${chain.chainId} (or a shared LIQUIDATOR_ADDRESS)`
+    )
   // Aggregator keys are optional (only if the chain's swap config routes a collateral through them).
   const zeroxApiKey = suffixed('ZEROX_API_KEY', chain.chainId) ?? Bun.env.ZEROX_API_KEY?.trim()
   const oneInchApiKey =
     suffixed('ONEINCH_API_KEY', chain.chainId) ?? Bun.env.ONEINCH_API_KEY?.trim()
-  return { ...chain, rpcUrl, rindexerRpcUrl, liquidatorPrivateKey, zeroxApiKey, oneInchApiKey }
+  return {
+    ...chain,
+    rpcUrl,
+    rindexerRpcUrl,
+    liquidatorPrivateKey,
+    liquidatorAddress,
+    zeroxApiKey,
+    oneInchApiKey
+  }
 })
 
 await ensureContext()
@@ -371,12 +388,11 @@ for (const chain of chainSecrets) {
 }
 await deployService('rindexer')
 
-// --- bot-<chainId>: one CLI tick-loop per chain (the bots/Dockerfile image; BOT/CHAIN_ID select
-// what runs),
-// all sharing the one rindexer + Postgres. The in-container var names stay RPC_URL /
-// LIQUIDATOR_PRIVATE_KEY (the chainId suffix is only an operator-side convention). The per-service
-// /data volume carries cross-tick state AND the swap config (uploaded out-of-band — see manual
-// steps below).
+// --- bot-<chainId>: one `sense | act | queue` pipeline loop per chain (the bots/Dockerfile image;
+// BOT/CHAIN_ID select what runs), all sharing the one rindexer + Postgres. The in-container var
+// names stay RPC_URL / LIQUIDATOR_PRIVATE_KEY / LIQUIDATOR_ADDRESS (the chainId suffix is only an
+// operator-side convention). The per-service /data volume carries cross-tick state AND the swap
+// config (uploaded out-of-band — see manual steps below).
 for (const chain of chainSecrets) {
   await ensureService(chain.service)
   await ensureVolume(chain.service, DATA_MOUNT_PATH)
@@ -386,6 +402,7 @@ for (const chain of chainSecrets) {
   await setVar(chain.service, `RAILWAY_DOCKERFILE_PATH=${BOT_DOCKERFILE_PATH}`)
   await setVar(chain.service, `SWAP_CONFIG_PATH=${SWAP_CONFIG_PATH}`)
   await setVar(chain.service, 'LOG_LEVEL=info')
+  await setVar(chain.service, `LIQUIDATOR_ADDRESS=${chain.liquidatorAddress}`)
   await setVar(chain.service, databaseUrlRef)
   await setSecret(chain.service, 'RPC_URL', chain.rpcUrl)
   await setSecret(chain.service, 'LIQUIDATOR_PRIVATE_KEY', chain.liquidatorPrivateKey)

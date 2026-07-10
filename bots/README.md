@@ -5,10 +5,14 @@ Deployment packaging for the bot use-case of the generic `morpho-bots` CLI
 itself stays unopinionated — everything that turns it into a persistent liquidation bot lives here.
 
 - `Dockerfile` — the single bot image (all bots ship in it; `BOT`/`CHAIN_ID` select what runs).
-  Build context MUST be the repo root so the bun workspace resolves.
-- `docker-entrypoint.sh` — the prod persistence loop: `morpho-bots $BOT tick` every
-  `TICK_INTERVAL_S` seconds, honoring the CLI's 0/1/2 exit-code contract (exit 2 crashes the
-  container visibly).
+  Build context MUST be the repo root so the bun workspace resolves. The image AOT-builds the CLI
+  (`bun run --filter @repo/cli build` → `interfaces/cli/dist/main.js`) so the lens bytecode is baked
+  in and per-tick spawns pay no soltag/solc cost — "warm by construction", no cache to prime.
+- `docker-entrypoint.sh` — the prod persistence loop. Each tick runs the three-stage pipeline
+  `bun dist/main.js $BOT sense | … act | … queue` every `TICK_INTERVAL_S` seconds; stdout carries
+  JSON-Lines records (the queue's outcome lines land in container logs) and all logs go to stderr.
+  It inspects `PIPESTATUS` per stage under the CLI's 0/1/2 contract: any stage exiting 2 crashes the
+  container visibly (`loop.fatal`), any other nonzero re-loops (transient).
 - `docker-compose.blue.yml` / `docker-compose.midnight.yml` — local/self-hosted orchestration
   (blue's bundles the shared rindexer + Postgres from `services/blue-rindexer`). Run from the repo
   root: `docker compose -f bots/docker-compose.midnight.yml up`.
