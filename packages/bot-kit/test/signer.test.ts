@@ -2,6 +2,7 @@ import type { Hex } from 'viem'
 
 import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test'
 import { parseTransaction } from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
 
 import { createSigner } from '../src/signer'
@@ -154,5 +155,35 @@ describe('createSigner', () => {
   it('getBaseFee throws when the chain reports no base fee', async () => {
     mockRpc({ eth_getBlockByNumber: {} })
     expect(createSigner(CONFIG).getBaseFee()).rejects.toThrow(/baseFeePerGas/)
+  })
+
+  // The account-based seam: an injected LocalAccount (e.g. @repo/signer's agent-backed account) must
+  // drive the exact same send path as the local-key case — sign via the account, broadcast raw.
+  it('accepts an injected account and still broadcasts via eth_sendRawTransaction', async () => {
+    const account = privateKeyToAccount(KEY)
+    const signSpy = spyOn(account, 'signTransaction')
+    mockRpc({
+      eth_chainId: `0x${base.id.toString(16)}`,
+      eth_getTransactionCount: '0x5',
+      eth_estimateGas: '0x5208',
+      eth_getBlockByNumber: { baseFeePerGas: '0x7' },
+      eth_sendRawTransaction: TXHASH
+    })
+    const { account: exposed, send } = createSigner({
+      chain: base,
+      rpcUrl: 'http://localhost:8545',
+      rpcUrlFallback: undefined,
+      sendRpcUrl: undefined,
+      account
+    })
+    expect(exposed.address).toBe(account.address)
+    const result = await send({
+      to: `0x${'11'.repeat(20)}`,
+      data: '0x',
+      maxFeePerGas: 1_000_000_000n,
+      maxPriorityFeePerGas: 1_000_000n
+    })
+    expect(result).toEqual({ nonce: 5, txHash: TXHASH })
+    expect(signSpy).toHaveBeenCalledTimes(1)
   })
 })

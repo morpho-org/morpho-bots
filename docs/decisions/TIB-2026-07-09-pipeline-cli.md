@@ -452,6 +452,16 @@ uniquely-named ops (each a source XOR transform; liquidation splits into the sou
 part of the contract" — the suffix stays domain-owned and opaque. The internal `sense` / `act`
 vocabulary and the `runSense` / `runAct` seams are preserved.
 
+### 2026-07-10 — key-custody clause amended
+
+[TIB-2026-07-10-signer-agent](./TIB-2026-07-10-signer-agent.md) amends the key-custody clause of
+this TIB; everything else stands. "`queue` is the sole holder of the signer private key" narrows to
+the local-key dev default: when `SIGNER_SOCKET` is set, the key moves to the `morpho-bots signer`
+agent (`@repo/signer` — a policy-enforcing Unix-socket daemon) and the queue becomes a keyless
+client of it via a viem custom account. The single-writer state discipline, nonce cursor,
+re-simulation gate, gas estimation, and broadcast all stay with the queue; the agent is
+signatures-only.
+
 <!--
 TIB conventions:
 - Once accepted, do not substantively edit this TIB. If the decision needs to change,

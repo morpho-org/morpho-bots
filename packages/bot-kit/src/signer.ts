@@ -1,4 +1,4 @@
-import type { Account, Chain, Hex, Transport } from 'viem'
+import type { Account, Chain, Hex, LocalAccount, Transport } from 'viem'
 
 import { tryCatch } from '@repo/utils'
 import { createWalletClient, TransactionReceiptNotFoundError } from 'viem'
@@ -33,14 +33,15 @@ export type Signer = {
  * that can't actually relay sends would otherwise sink every tx. Returns the primitives
  * `createPendingQueue` injects: {@link SendTx}, {@link GetReceipt}, {@link GetBaseFee}, {@link SyncNonce}.
  */
-export function createSigner(options: {
-  chain: Chain
-  rpcUrl: string
-  rpcUrlFallback?: string | undefined
-  /** Broadcast endpoint; sends + the signer's own reads go here (defaults to `rpcUrl`). */
-  sendRpcUrl?: string | undefined
-  privateKey: Hex
-}): Signer {
+export function createSigner(
+  options: {
+    chain: Chain
+    rpcUrl: string
+    rpcUrlFallback?: string | undefined
+    /** Broadcast endpoint; sends + the signer's own reads go here (defaults to `rpcUrl`). */
+    sendRpcUrl?: string | undefined
+  } & ({ privateKey: Hex; account?: never } | { account: LocalAccount; privateKey?: never })
+): Signer {
   // Sends + the signer's own reads run against the broadcast endpoint (sendRpcUrl ?? rpcUrl). Keeping
   // the nonce/receipt reads on the same endpoint we broadcast to is deliberate: a split view (read
   // nonce from A, send to B) is exactly what drifts the cursor out of sync.
@@ -49,7 +50,10 @@ export function createSigner(options: {
   // `Transport` (Record options) — the cast is safe (it's a valid runtime transport). The deployless
   // read client sidesteps this by re-wrapping the base transport in `deployless`.
   const transport = createHttpTransport(sendUrl, options.rpcUrlFallback) as Transport
-  const account = privateKeyToAccount(options.privateKey)
+  // The key stays with the caller: a local `privateKey` becomes an account here, or a keyless
+  // `account` (e.g. `@repo/signer`'s agent-backed account) is injected — the queue never sees either.
+  const account =
+    options.privateKey === undefined ? options.account : privateKeyToAccount(options.privateKey)
   const client = createWalletClient({ account, chain: options.chain, transport })
   let nextNonce: number | undefined
 
