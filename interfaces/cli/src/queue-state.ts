@@ -6,9 +6,11 @@ import { loadState } from './state'
  * The queue-file schema version, owned by the CLI (the `queue` command is not a `DomainAdapter`, so
  * the cores' cache versions don't apply here). Bump when {@link PendingQueueState} or
  * {@link BackoffState} change shape; a mismatched or corrupt file is discarded (warn `state.reset`),
- * never migrated — the queue reconciles against chain truth on the next `onBlock`.
+ * never migrated — the queue reconciles against chain truth on the next `onBlock`. Bumped to 2 with
+ * the op-command rename (`liq` → `unhealthy-positions`): persisted labels changed vocabulary, so a
+ * version-gated discard beats orphaned backoff/cooldown entries whose labels can never match again.
  */
-export const QUEUE_STATE_VERSION = 1
+export const QUEUE_STATE_VERSION = 2
 
 /** The full persisted queue state: the pending-tx queue plus the per-position failure backoff. */
 export type QueueState = {

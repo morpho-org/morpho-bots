@@ -442,6 +442,16 @@ cadence is sleep + wall ≈ 3.7s on a public RPC (faster on prod RPCs), i.e. ~2 
 `submittedAtBlock` vs the observed head), so a slower tick delays bumping by at most one tick — the
 documented and accepted behavior. No retuning needed.
 
+### 2026-07-10 — command grammar and ID-parsing clause amended
+
+[TIB-2026-07-10-op-commands](./TIB-2026-07-10-op-commands.md) amends two clauses of this TIB;
+everything else stands. The fixed `sense` / `act` command surface becomes a flat namespace of
+uniquely-named ops (each a source XOR transform; liquidation splits into the source
+`unhealthy-positions` and the transform `liquidate`, with `queue` reserved). The
+"generic code never parses the ID string" rule narrows to "the `<domain>:<op>:` prefix is the generic
+part of the contract" — the suffix stays domain-owned and opaque. The internal `sense` / `act`
+vocabulary and the `runSense` / `runAct` seams are preserved.
+
 <!--
 TIB conventions:
 - Once accepted, do not substantively edit this TIB. If the decision needs to change,

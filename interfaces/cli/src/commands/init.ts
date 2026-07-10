@@ -91,9 +91,11 @@ export function runInit(): number {
     console.log(`${outcome === 'created' ? 'created' : 'kept   '} ${path}`)
   }
   console.log(`\nNext: fill in ${secretsFile(home)} (kept chmod 600), then run the pipeline e.g.:`)
-  console.log('  morpho-bots blue sense | morpho-bots blue act | morpho-bots blue queue')
   console.log(
-    '  while true; do morpho-bots blue sense | morpho-bots blue act | morpho-bots blue queue; sleep 2; done'
+    '  morpho-bots blue unhealthy-positions | morpho-bots blue liquidate | morpho-bots blue queue'
+  )
+  console.log(
+    '  while true; do morpho-bots blue unhealthy-positions | morpho-bots blue liquidate | morpho-bots blue queue; sleep 2; done'
   )
   return 0
 }

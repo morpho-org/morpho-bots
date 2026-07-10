@@ -1,11 +1,12 @@
 # Bundles the per-chain blue bots with ONE shared rindexer instance + Postgres for borrower
 # discovery. rindexer indexes the Morpho Blue `Borrow` event (services/blue-rindexer/rindexer.yaml)
 # for every chain into one Postgres, discriminated by a `network` column; each bot tick reads the
-# indexed (market, borrower) pairs for its own chain. Bots run the three-stage `sense | act | queue`
-# pipeline in the image's entrypoint loop (bots/docker-entrypoint.sh); stdout carries JSON-Lines
-# records, logs go to stderr. Set the chainId-suffixed RPCs (RPC_URL_8453, RPC_URL_4663, optionally
+# indexed (market, borrower) pairs for its own chain. Bots run the three-stage op pipeline in the
+# image's entrypoint loop (bots/docker-entrypoint.sh): `<SOURCE_OP> | <TRANSFORM_OP> | queue`,
+# defaulting to `unhealthy-positions | liquidate | queue`; stdout carries JSON-Lines records, logs go
+# to stderr. Set the chainId-suffixed RPCs (RPC_URL_8453, RPC_URL_4663, optionally
 # RINDEXER_RPC_URL_<chainId>), a LIQUIDATOR_PRIVATE_KEY, and the matching LIQUIDATOR_ADDRESS (the
-# skim recipient `act` targets — must be the address that private key derives).
+# skim recipient the transform targets — must be the address that private key derives).
 #
 # Build contexts are `..` (the repo root — required for the bun workspace to resolve) because this
 # file lives in bots/; run it from anywhere: `docker compose -f bots/docker-compose.blue.yml up`.
@@ -59,6 +60,10 @@ services:
       BOT: blue
       CHAIN_ID: '8453'
       TICK_INTERVAL_S: ${TICK_INTERVAL_S:-2}
+      # The two op stages piped before `queue`; override to run a different behavior. Defaults are the
+      # liquidation pair. Which ops run is deployment policy, not baked into the core.
+      SOURCE_OP: ${SOURCE_OP:-unhealthy-positions}
+      TRANSFORM_OP: ${TRANSFORM_OP:-liquidate}
       RPC_URL: ${RPC_URL_8453:?set RPC_URL_8453}
       LIQUIDATOR_PRIVATE_KEY: ${LIQUIDATOR_PRIVATE_KEY:?set LIQUIDATOR_PRIVATE_KEY}
       # `act` skims to this EOA and simulates `from` it (secret-free — the key lives only in `queue`);
@@ -91,6 +96,8 @@ services:
       BOT: blue
       CHAIN_ID: '4663'
       TICK_INTERVAL_S: ${TICK_INTERVAL_S:-2}
+      SOURCE_OP: ${SOURCE_OP:-unhealthy-positions}
+      TRANSFORM_OP: ${TRANSFORM_OP:-liquidate}
       RPC_URL: ${RPC_URL_4663:-https://rpc.mainnet.chain.robinhood.com}
       LIQUIDATOR_PRIVATE_KEY: ${LIQUIDATOR_PRIVATE_KEY:?set LIQUIDATOR_PRIVATE_KEY}
       # Must be the address the private key above derives (see bot-base).

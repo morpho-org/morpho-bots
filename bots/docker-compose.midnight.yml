@@ -1,5 +1,6 @@
-# Runs the midnight-liquidation bot as the three-stage `sense | act | queue` pipeline in the image's
-# entrypoint loop (bots/docker-entrypoint.sh); stdout carries JSON-Lines records, logs go to stderr.
+# Runs the midnight-liquidation bot as the three-stage op pipeline in the image's entrypoint loop
+# (bots/docker-entrypoint.sh): `<SOURCE_OP> | <TRANSFORM_OP> | queue`, defaulting to
+# `unhealthy-positions | liquidate | queue`. stdout carries JSON-Lines records, logs go to stderr.
 # Borrower candidates come from the markets liquidation-candidates HTTP API
 # (LIQUIDATION_CANDIDATES_API_URL, public by default), so there is no indexer or database to run.
 # Build context is `..` (the repo root — required for the bun workspace to resolve) because this file
@@ -13,6 +14,10 @@ services:
       BOT: midnight
       CHAIN_ID: '8453'
       TICK_INTERVAL_S: ${TICK_INTERVAL_S:-2}
+      # The two op stages piped before `queue`; override to run a different behavior. Defaults are the
+      # liquidation pair. Which ops run is deployment policy, not baked into the core.
+      SOURCE_OP: ${SOURCE_OP:-unhealthy-positions}
+      TRANSFORM_OP: ${TRANSFORM_OP:-liquidate}
       RPC_URL: ${RPC_URL:?set RPC_URL}
       LIQUIDATOR_PRIVATE_KEY: ${LIQUIDATOR_PRIVATE_KEY:?set LIQUIDATOR_PRIVATE_KEY}
       # `act` skims to this EOA and simulates `from` it (secret-free — the key lives only in `queue`);

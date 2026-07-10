@@ -11,12 +11,11 @@ import {
   resolveMaxFeeWei,
   resolvePrivateKey
 } from './config'
-import { OP } from './wire'
 
 // The queue-policy surface, deliberately isolated from the core index so the CLI's `queue` command
 // can import it WITHOUT pulling in the lens `sol``` templates or soltag (see the pipeline TIB). It
-// imports only `./config` (env resolvers) and `./wire` (the `op` constant) — neither touches
-// `state/lens.sol`. Exposed via the package's `"./queue"` subpath export.
+// imports only `./config` (env resolvers), which does not touch `state/lens.sol`. Exposed via the
+// package's `"./queue"` subpath export.
 
 /**
  * Everything the `queue` command needs to sign and broadcast — the resolved chain, its RPC
@@ -64,19 +63,18 @@ export function loadQueueConfig(env: Env = Bun.env, deps: QueueLoadDeps = {}): Q
 }
 
 /**
- * Per-domain queue behavior the generic `createPendingQueue` needs but cannot know: the wire `op`
- * for this domain's outcome records, the settled-cooldown window, and (when the protocol has custom
- * ABI errors) a revert decoder. Blue has no post-settle cooldown and reverts only with standard
- * Solidity shapes, so `settledCooldownBlocks` is `0n` and `revertReason` is omitted (the queue's
- * default decoder handles `Error`/`Panic`). Mirrors exactly what `tickOnce` wired.
+ * Per-domain queue behavior the generic `createPendingQueue` needs but cannot know: the
+ * settled-cooldown window, and (when the protocol has custom ABI errors) a revert decoder. Blue has
+ * no post-settle cooldown and reverts only with standard Solidity shapes, so `settledCooldownBlocks`
+ * is `0n` and `revertReason` is omitted (the queue's default decoder handles `Error`/`Panic`). The
+ * outcome records' `op` is not policy — the queue derives it from the id/label prefix. Mirrors
+ * exactly what `tickOnce` wired.
  */
 export type QueuePolicy = {
-  op: string
   settledCooldownBlocks: bigint
   revertReason?: (error: unknown) => string
 }
 
 export const queuePolicy: QueuePolicy = {
-  op: OP,
   settledCooldownBlocks: 0n
 }

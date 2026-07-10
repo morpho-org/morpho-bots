@@ -35,14 +35,30 @@ export function parseLine(line: string): ParsedLine | null {
 }
 
 /**
- * Collects opportunity ids for `act` from stdin: bare-id lines pass through verbatim,
- * `opportunity` records for THIS domain contribute their `id`, and everything else (tx/outcome
- * records, wrong-domain opportunities, malformed lines) is warned-and-skipped deterministically. A
- * record from a newer wire version stops the whole pass (`versionSkew` → the caller exits 2).
+ * Splits a wire id into its GENERIC two-segment prefix, `<domain>:<op>`. This is the only part of the
+ * id string generic code may parse (the suffix stays domain-owned); the CLI uses it to
+ * route bare ids into the accepting transform and to derive a settled outcome's `op` from its
+ * persisted label. A label with fewer than two colon-delimited segments yields `'unknown'` for the
+ * missing part(s) rather than throwing — an unsplittable label is data, not a crash.
+ */
+export function splitIdPrefix(id: string): { domain: string; op: string } {
+  const parts = id.split(':')
+  // `||` (not `??`) so an empty segment is as unusable as a missing one — both fall back to 'unknown'.
+  return { domain: parts[0] || 'unknown', op: parts[1] || 'unknown' }
+}
+
+/**
+ * Collects opportunity ids for a transform op from stdin. A record or bare id is taken only when it
+ * belongs to THIS domain AND carries the source op the transform `accepts` (envelope `op` for
+ * records, the `<domain>:<op>:` prefix for bare ids) — so a mixed stream stays legal and a transform
+ * takes only its own. Everything else (tx/outcome records, foreign domain/op, malformed lines) is
+ * warned-and-skipped deterministically. A record from a newer wire version stops the whole pass
+ * (`versionSkew` → the caller exits 2).
  */
 export function collectActIds(
   input: string,
   domain: string,
+  accepts: string,
   logger: Logger
 ): { ids: string[]; versionSkew: boolean } {
   const ids: string[] = []
@@ -55,18 +71,29 @@ export function collectActIds(
       continue
     }
     if (parsed.kind === 'bare') {
-      ids.push(parsed.id)
+      const prefix = splitIdPrefix(parsed.id)
+      if (prefix.domain === domain && prefix.op === accepts) {
+        ids.push(parsed.id)
+      } else {
+        logger.warn('act.skip', { reason: 'unaccepted', domain: prefix.domain, op: prefix.op })
+      }
       continue
     }
     const record = parsed.record
     if (
       record.kind === 'opportunity' &&
       record.domain === domain &&
+      record.op === accepts &&
       typeof record.id === 'string'
     ) {
       ids.push(record.id)
     } else {
-      logger.warn('act.skip', { reason: 'unaccepted', kind: record.kind, domain: record.domain })
+      logger.warn('act.skip', {
+        reason: 'unaccepted',
+        kind: record.kind,
+        domain: record.domain,
+        op: record.op
+      })
     }
   }
   return { ids, versionSkew: false }

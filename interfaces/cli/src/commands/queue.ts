@@ -25,13 +25,15 @@ import { botsHome, lockFile, queueStateFile } from '../home'
 import { acquireLock, releaseLock } from '../lock'
 import { QUEUE_STATE_VERSION } from '../queue-state'
 import { loadState, saveState } from '../state'
-import { collectQueueRecords, QUEUE_BACKOFF_STATUSES } from '../wire-input'
+import { collectQueueRecords, QUEUE_BACKOFF_STATUSES, splitIdPrefix } from '../wire-input'
 import { drainStdin, emitLine, fail } from './shared'
 
 type Env = Record<string, string | undefined>
 
-// Builds one full queue `outcome` envelope for stdout. `op` is domain policy (the queue never parses
-// the id string); block/txHash/nonce/reason ride only when present.
+// Builds one full queue `outcome` envelope for stdout. `op` is the source op the record belongs to —
+// the submit path takes it from the incoming `tx.op` envelope, the onSettled path derives it from the
+// persisted label's `<domain>:<op>:` prefix (the only survivor there). block/txHash/nonce/reason ride
+// only when present.
 function queueOutcome(args: {
   id: string
   domain: BotName
@@ -114,7 +116,6 @@ async function runQueuePass(
     maxBlocks: config.backoffMaxBlocks,
     ...(state ? { initialState: state.backoff } : {})
   })
-  const op = policy.op
 
   const queue = createPendingQueue({
     send: signer.send,
@@ -132,7 +133,7 @@ async function runQueuePass(
         queueOutcome({
           id: info.label,
           domain,
-          op,
+          op: splitIdPrefix(info.label).op,
           chainId: config.chainId,
           status: info.status,
           txHash: info.txHash,
@@ -163,7 +164,7 @@ async function runQueuePass(
           queueOutcome({
             id: tx.id,
             domain,
-            op,
+            op: tx.op,
             chainId: config.chainId,
             status: 'deduped_inflight',
             block: Number(head)
@@ -184,7 +185,7 @@ async function runQueuePass(
           queueOutcome({
             id: tx.id,
             domain,
-            op,
+            op: tx.op,
             chainId: config.chainId,
             status: 'sim_reverted',
             block: Number(head),
@@ -220,7 +221,7 @@ async function runQueuePass(
           queueOutcome({
             id: tx.id,
             domain,
-            op,
+            op: tx.op,
             chainId: config.chainId,
             status: 'submitted',
             block: Number(head),
