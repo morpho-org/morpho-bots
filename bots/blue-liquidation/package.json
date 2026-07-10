@@ -6,20 +6,11 @@
   "type": "module",
   "scripts": {
     "deploy:railway": "bun run scripts/deploy-railway.ts",
-    "probe:lens": "bun run scripts/probe-live-lens.ts",
-    "prestart": "bun run --parallel --workspaces --if-present build",
-    "start": "bun src/index.ts",
-    "typecheck": "soltag && tsc --noEmit"
+    "start": "cd ../../packages/blue-liquidation && bun run start",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@repo/bot-kit": "workspace:*",
-    "@repo/contracts": "workspace:*",
-    "@repo/swaps": "workspace:*",
-    "@repo/utils": "workspace:*",
-    "executooor-viem": "catalog:",
-    "solc": "catalog:",
-    "soltag": "catalog:",
-    "viem": "catalog:"
+    "@repo/utils": "workspace:*"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
