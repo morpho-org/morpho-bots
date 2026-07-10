@@ -1,8 +1,9 @@
-# Runs the midnight-liquidation bot via the one-shot CLI in the image's entrypoint loop
-# (bots/docker-entrypoint.sh). Borrower candidates come from the markets liquidation-candidates
-# HTTP API (LIQUIDATION_CANDIDATES_API_URL, public by default), so there is no indexer or database
-# to run. Build context is `..` (the repo root — required for the bun workspace to resolve) because
-# this file lives in bots/; run it from anywhere: `docker compose -f bots/docker-compose.midnight.yml up`.
+# Runs the midnight-liquidation bot as the three-stage `sense | act | queue` pipeline in the image's
+# entrypoint loop (bots/docker-entrypoint.sh); stdout carries JSON-Lines records, logs go to stderr.
+# Borrower candidates come from the markets liquidation-candidates HTTP API
+# (LIQUIDATION_CANDIDATES_API_URL, public by default), so there is no indexer or database to run.
+# Build context is `..` (the repo root — required for the bun workspace to resolve) because this file
+# lives in bots/; run it from anywhere: `docker compose -f bots/docker-compose.midnight.yml up`.
 services:
   bot:
     build:
@@ -14,6 +15,9 @@ services:
       TICK_INTERVAL_S: ${TICK_INTERVAL_S:-2}
       RPC_URL: ${RPC_URL:?set RPC_URL}
       LIQUIDATOR_PRIVATE_KEY: ${LIQUIDATOR_PRIVATE_KEY:?set LIQUIDATOR_PRIVATE_KEY}
+      # `act` skims to this EOA and simulates `from` it (secret-free — the key lives only in `queue`);
+      # it must be the address the private key above derives, else act/queue target different wallets.
+      LIQUIDATOR_ADDRESS: ${LIQUIDATOR_ADDRESS:?set LIQUIDATOR_ADDRESS}
       EXECUTOOOR_ADDRESS: ${EXECUTOOOR_ADDRESS:-}
       # Venues are enabled by the presence of their API key. With neither set, the bot refuses to
       # start unless ALLOW_BAD_DEBT_ONLY=true (then it runs bad-debt-only).

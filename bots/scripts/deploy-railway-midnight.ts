@@ -11,8 +11,11 @@
  *     every command is then implicitly scoped to it.
  *   - Local: an interactive `railway login` session; the script links the project by id.
  *
- *   RAILWAY_PROJECT_ID=… RPC_URL=… LIQUIDATOR_PRIVATE_KEY=0x… \
+ *   RAILWAY_PROJECT_ID=… RPC_URL=… LIQUIDATOR_PRIVATE_KEY=0x… LIQUIDATOR_ADDRESS=0x… \
  *     bun run --filter @repo/bots deploy:railway:midnight
+ *
+ * LIQUIDATOR_ADDRESS (non-secret) is the operator EOA `act` skims to and simulates `from`; it must
+ * be the address LIQUIDATOR_PRIVATE_KEY derives, else the queue rejects act's calldata at load.
  *
  * The build context MUST be the repo root so the bun workspace (packages/*) resolves — the script
  * runs `railway up` with cwd set to the repo root (mirrors the Dockerfile header + compose context),
@@ -252,6 +255,8 @@ await assertCli()
 const rpcUrl = required(Bun.env, 'RPC_URL')
 const liquidatorPrivateKey = required(Bun.env, 'LIQUIDATOR_PRIVATE_KEY')
 assertPrivateKey(liquidatorPrivateKey)
+// The operator EOA `act` targets (non-secret); the queue cross-checks it against the key at load.
+const liquidatorAddress = required(Bun.env, 'LIQUIDATOR_ADDRESS')
 
 // Venues are enabled by the presence of their API key. The bot hard-fails at boot with no key unless
 // ALLOW_BAD_DEBT_ONLY=true — so require the operator to pass a venue key (pushed as a secret) or
@@ -277,6 +282,7 @@ await setVar(BOT_SERVICE, 'CHAIN_ID=8453')
 await setVar(BOT_SERVICE, `TICK_INTERVAL_S=${Bun.env.TICK_INTERVAL_S?.trim() || '2'}`)
 await setVar(BOT_SERVICE, `RAILWAY_DOCKERFILE_PATH=${DOCKERFILE_PATH}`)
 await setVar(BOT_SERVICE, 'LOG_LEVEL=info')
+await setVar(BOT_SERVICE, `LIQUIDATOR_ADDRESS=${liquidatorAddress}`)
 await setSecret(BOT_SERVICE, 'RPC_URL', rpcUrl)
 await setSecret(BOT_SERVICE, 'LIQUIDATOR_PRIVATE_KEY', liquidatorPrivateKey)
 if (zeroxKey) await setSecret(BOT_SERVICE, 'ZEROX_API_KEY', zeroxKey)

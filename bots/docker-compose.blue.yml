@@ -1,9 +1,11 @@
 # Bundles the per-chain blue bots with ONE shared rindexer instance + Postgres for borrower
 # discovery. rindexer indexes the Morpho Blue `Borrow` event (services/blue-rindexer/rindexer.yaml)
 # for every chain into one Postgres, discriminated by a `network` column; each bot tick reads the
-# indexed (market, borrower) pairs for its own chain. Bots run the one-shot CLI in the image's
-# entrypoint loop (bots/docker-entrypoint.sh). Set the chainId-suffixed RPCs (RPC_URL_8453,
-# RPC_URL_4663, optionally RINDEXER_RPC_URL_<chainId>) and a LIQUIDATOR_PRIVATE_KEY.
+# indexed (market, borrower) pairs for its own chain. Bots run the three-stage `sense | act | queue`
+# pipeline in the image's entrypoint loop (bots/docker-entrypoint.sh); stdout carries JSON-Lines
+# records, logs go to stderr. Set the chainId-suffixed RPCs (RPC_URL_8453, RPC_URL_4663, optionally
+# RINDEXER_RPC_URL_<chainId>), a LIQUIDATOR_PRIVATE_KEY, and the matching LIQUIDATOR_ADDRESS (the
+# skim recipient `act` targets — must be the address that private key derives).
 #
 # Build contexts are `..` (the repo root — required for the bun workspace to resolve) because this
 # file lives in bots/; run it from anywhere: `docker compose -f bots/docker-compose.blue.yml up`.
@@ -59,6 +61,9 @@ services:
       TICK_INTERVAL_S: ${TICK_INTERVAL_S:-2}
       RPC_URL: ${RPC_URL_8453:?set RPC_URL_8453}
       LIQUIDATOR_PRIVATE_KEY: ${LIQUIDATOR_PRIVATE_KEY:?set LIQUIDATOR_PRIVATE_KEY}
+      # `act` skims to this EOA and simulates `from` it (secret-free — the key lives only in `queue`);
+      # it must be the address the private key above derives, else act/queue target different wallets.
+      LIQUIDATOR_ADDRESS: ${LIQUIDATOR_ADDRESS:?set LIQUIDATOR_ADDRESS}
       EXECUTOOOR_ADDRESS: ${EXECUTOOOR_ADDRESS:-}
       SWAP_CONFIG_PATH: /data/morpho-bots/blue/swap-config.json
       ZEROX_API_KEY: ${ZEROX_API_KEY:-}
@@ -88,6 +93,8 @@ services:
       TICK_INTERVAL_S: ${TICK_INTERVAL_S:-2}
       RPC_URL: ${RPC_URL_4663:-https://rpc.mainnet.chain.robinhood.com}
       LIQUIDATOR_PRIVATE_KEY: ${LIQUIDATOR_PRIVATE_KEY:?set LIQUIDATOR_PRIVATE_KEY}
+      # Must be the address the private key above derives (see bot-base).
+      LIQUIDATOR_ADDRESS: ${LIQUIDATOR_ADDRESS:?set LIQUIDATOR_ADDRESS}
       EXECUTOOOR_ADDRESS: ${EXECUTOOOR_ADDRESS:-}
       # The bot reads rindexer's indexed events (filtered to network=robinhood) from the same Postgres.
       DATABASE_URL: postgresql://rindexer:${POSTGRES_PASSWORD:-rindexer}@postgres:5432/blue_liquidation
