@@ -230,7 +230,7 @@ export async function tickOnce(
       }),
     submit: async ({ market, borrower, plan, swap, blockNumber, label }) => {
       const fees = initialFees(await signer.getBaseFee(), config.maxFeeWei)
-      await queue.submit({
+      return queue.submit({
         request: { to: config.executooorAddress, data: encodeExec(market, borrower, plan, swap) },
         label,
         maxFeePerGas: fees.maxFeePerGas,

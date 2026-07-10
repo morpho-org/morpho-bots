@@ -55,13 +55,20 @@ export type PendingQueueState = {
 }
 
 export type PendingQueue = {
+  /**
+   * Broadcasts a tx and tracks it. Resolves `{ submitted: true }` once the tx enters the pending
+   * set, and `{ submitted: false }` when the send was skipped or failed hashlessly (nonce-sync
+   * failure, or a non-`TxSendError` send throw) so nothing is tracked. A `TxSendError` (a nonce was
+   * claimed but no hash returned) still throws — the caller aborts the tick. Callers key
+   * backoff-clear off `submitted`: clearing only on a tx that actually entered `pending`.
+   */
   submit(args: {
     request: TxRequest
     label: string
     maxFeePerGas: bigint
     maxPriorityFeePerGas: bigint
     blockNumber: bigint
-  }): Promise<void>
+  }): Promise<{ submitted: boolean }>
   onBlock(blockNumber: bigint): Promise<void>
   readonly size: number
   snapshot(): { nonce: number; txHash: Hex; attempt: number }[]
@@ -137,7 +144,7 @@ export function createPendingQueue({
     maxFeePerGas: bigint
     maxPriorityFeePerGas: bigint
     blockNumber: bigint
-  }): Promise<void> {
+  }): Promise<{ submitted: boolean }> {
     // Nothing in flight → reconcile the cursor with chain before claiming a nonce. A failed sync
     // would leave a stale (possibly runaway) cursor, so skip the send this tick rather than risk a
     // future-nonce broadcast; the next tick retries from fresh state.
@@ -145,7 +152,7 @@ export function createPendingQueue({
       const synced = await tryCatch(syncNonce())
       if (synced.error) {
         logger.warn('nonce.sync_failed', { label: args.label, reason: revertReason(synced.error) })
-        return
+        return { submitted: false }
       }
     }
     const sent = await tryCatch(
@@ -167,7 +174,7 @@ export function createPendingQueue({
       // state. A claimed nonce with no hash is different: the signer has rolled its local cursor
       // back, and aborting the tick prevents the runner from counting this as submitted.
       if (sent.error instanceof TxSendError && sent.error.nonce !== undefined) throw sent.error
-      return
+      return { submitted: false }
     }
     const { nonce, txHash } = sent.data
     pending.set(nonce, {
@@ -187,6 +194,7 @@ export function createPendingQueue({
       maxFee: args.maxFeePerGas,
       priority: args.maxPriorityFeePerGas
     })
+    return { submitted: true }
   }
 
   async function replaceStuck(entry: Pending, blockNumber: bigint, baseFee: bigint): Promise<void> {

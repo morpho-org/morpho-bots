@@ -109,9 +109,9 @@ function submitOne(queue: PendingQueue, blockNumber = 0n) {
 }
 
 describe('createPendingQueue', () => {
-  it('records a submitted tx with the signer-assigned nonce', async () => {
+  it('records a submitted tx with the signer-assigned nonce and reports submitted:true', async () => {
     const { queue, sends } = setup()
-    await submitOne(queue)
+    expect(await submitOne(queue)).toEqual({ submitted: true })
     expect(queue.size).toBe(1)
     expect(sends[0]?.nonce).toBeUndefined() // first send leaves nonce assignment to the signer
     expect(queue.snapshot()[0]).toEqual({ nonce: 7, txHash: hashOf(1), attempt: 0 })
@@ -161,13 +161,15 @@ describe('createPendingQueue', () => {
     expect(queue.size).toBe(0)
   })
 
-  it('does not track a tx whose first send fails, and logs tx.submit_failed', async () => {
+  it('reports submitted:false and does not track a tx whose first send fails hashlessly', async () => {
     const { logger, events } = captureLogger()
     const send: SendTx = async () => {
       throw new Error('rpc down')
     }
     const { queue } = setup({ send, logger })
-    await submitOne(queue) // must not throw
+    // A hashless failure resolves submitted:false (no throw) so the caller keeps the position backed
+    // off rather than clearing it as if the tx had entered the pending set.
+    expect(await submitOne(queue)).toEqual({ submitted: false })
     expect(queue.size).toBe(0)
     expect(events.find(e => e.event === 'tx.submit_failed')?.level).toBe('warn')
   })
@@ -300,7 +302,7 @@ describe('createPendingQueue', () => {
       },
       logger
     })
-    await submitOne(ctx.queue) // must not throw
+    expect(await submitOne(ctx.queue)).toEqual({ submitted: false }) // skipped → keep backoff
     expect(ctx.queue.size).toBe(0) // nothing broadcast on a stale cursor
     expect(ctx.sends).toHaveLength(0)
     expect(events.find(e => e.event === 'nonce.sync_failed')?.level).toBe('warn')

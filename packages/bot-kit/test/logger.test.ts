@@ -9,7 +9,7 @@ describe('createLogger', () => {
   // cannot leak its captured calls into the next.
   afterEach(() => mock.restore())
 
-  it('drops lines below the configured minimum level', () => {
+  it('drops lines below the minimum level and routes every surviving level to stderr', () => {
     const logger: Logger = createLogger('warn')
     const log = spyOn(console, 'log').mockImplementation(() => undefined)
     const err = spyOn(console, 'error').mockImplementation(() => undefined)
@@ -19,17 +19,17 @@ describe('createLogger', () => {
     logger.warn('rindexer.lag')
     logger.error('tick.error')
 
-    expect(log).toHaveBeenCalledTimes(1) // warn → stdout
-    expect(err).toHaveBeenCalledTimes(1) // error → stderr
+    expect(log).toHaveBeenCalledTimes(0) // stdout is the data plane — never a log line
+    expect(err).toHaveBeenCalledTimes(2) // warn + error both survive the threshold → stderr
   })
 
-  it('serializes bigint fields as decimal strings', () => {
+  it('serializes bigint fields as decimal strings on stderr', () => {
     const logger = createLogger('debug')
-    const log = spyOn(console, 'log').mockImplementation(() => undefined)
+    const err = spyOn(console, 'error').mockImplementation(() => undefined)
 
     logger.info('tx.sent', { nonce: 7n, maxFee: 300_000_000_000n })
 
-    const line = String(log.mock.calls[0]?.[0])
+    const line = String(err.mock.calls[0]?.[0])
     expect(JSON.parse(line)).toEqual({
       level: 'info',
       event: 'tx.sent',
@@ -40,11 +40,11 @@ describe('createLogger', () => {
 
   it('recurses into nested bigint fields', () => {
     const logger = createLogger('debug')
-    const log = spyOn(console, 'log').mockImplementation(() => undefined)
+    const err = spyOn(console, 'error').mockImplementation(() => undefined)
 
     logger.info('tx.bumped', { tx: { nonce: 7n }, attempts: [1n, 2n] })
 
-    const line = String(log.mock.calls[0]?.[0])
+    const line = String(err.mock.calls[0]?.[0])
     expect(JSON.parse(line)).toEqual({
       level: 'info',
       event: 'tx.bumped',
