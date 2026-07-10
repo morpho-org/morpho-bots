@@ -22,10 +22,26 @@ export function secretsFile(home: string): string {
   return join(home, 'secrets.json')
 }
 
-export function stateFile(home: string, bot: BotName, chainId: string): string {
-  return join(home, bot, 'state', `${chainId}.json`)
+/**
+ * The queue's stateful file — `{ version, queue, backoff }`, written only by `queue` (atomic
+ * tmp+rename) and read-only by `act` (for its advisory backoff/inflight snapshot). Replaces the old
+ * monolithic `<bot>/state/<chainId>.json`.
+ */
+export function queueStateFile(home: string, bot: BotName, chainId: string): string {
+  return join(home, bot, 'queue', `${chainId}.json`)
 }
 
+/** `sense`'s disposable, best-effort cache (blue: marketParams; midnight: listedMarkets). */
+export function senseCacheFile(home: string, bot: BotName, chainId: string): string {
+  return join(home, bot, 'cache', `sense-${chainId}.json`)
+}
+
+/** `act`'s disposable, best-effort cache (midnight: venue-selector ladders/decimals). */
+export function actCacheFile(home: string, bot: BotName, chainId: string): string {
+  return join(home, bot, 'cache', `act-${chainId}.json`)
+}
+
+/** The per-(bot, chain) pid lockfile, held by `queue` only (the sole state writer). */
 export function lockFile(home: string, bot: BotName, chainId: string): string {
   return join(home, 'locks', `${bot}-${chainId}.lock`)
 }

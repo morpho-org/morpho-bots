@@ -9,6 +9,7 @@
   "type": "module",
   "scripts": {
     "start": "bun src/main.ts",
+    "build": "bun scripts/build.ts",
     "typecheck": "soltag -p ../../packages/blue-liquidation/tsconfig.json && soltag -p ../../packages/midnight-liquidation/tsconfig.json && tsc --noEmit"
   },
   "dependencies": {
@@ -16,7 +17,8 @@
     "@repo/bot-kit": "workspace:*",
     "@repo/midnight-liquidation": "workspace:*",
     "@repo/utils": "workspace:*",
-    "commander": "catalog:"
+    "commander": "catalog:",
+    "viem": "catalog:"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",

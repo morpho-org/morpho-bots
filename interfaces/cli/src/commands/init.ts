@@ -7,16 +7,16 @@ import { botsHome, configFile, secretsFile } from '../home'
 // full knob list is each bot's src/config.ts. "_" keys are documentation; the bots ignore them.
 const EXAMPLE_CONFIG = {
   _readme:
-    'Non-secret settings. Keys are the bots’ env-var names; per-chain overlays under chains.<id> beat defaults; process env beats everything.',
+    'Non-secret settings. Keys are the bots’ env-var names; per-chain overlays under chains.<id> beat defaults; process env beats everything. LIQUIDATOR_ADDRESS is act’s skim recipient and simulate `from` — it MUST match the address derived from LIQUIDATOR_PRIVATE_KEY (secrets.json), or seized funds skim to a wallet the queue can’t sign for.',
   blue: {
     defaults: { LOG_LEVEL: 'info' },
     chains: {
-      '8453': { SWAP_CONFIG_PATH: '<home>/blue/swap-config.json' }
+      '8453': { LIQUIDATOR_ADDRESS: '0x…', SWAP_CONFIG_PATH: '<home>/blue/swap-config.json' }
     }
   },
   midnight: {
     defaults: { LOG_LEVEL: 'info' },
-    chains: { '8453': {} }
+    chains: { '8453': { LIQUIDATOR_ADDRESS: '0x…' } }
   }
 }
 
@@ -69,7 +69,7 @@ function writeOnce(path: string, content: string, mode?: number): 'created' | 'k
 /** Scaffolds the home dir with commented examples; never overwrites what already exists. */
 export function runInit(): number {
   const home = botsHome()
-  for (const dir of ['locks', 'blue/state', 'midnight/state']) {
+  for (const dir of ['locks', 'blue/queue', 'blue/cache', 'midnight/queue', 'midnight/cache']) {
     mkdirSync(join(home, dir), { recursive: true })
   }
 
@@ -90,8 +90,10 @@ export function runInit(): number {
   for (const [path, outcome] of results) {
     console.log(`${outcome === 'created' ? 'created' : 'kept   '} ${path}`)
   }
-  console.log(`\nNext: fill in ${secretsFile(home)} (kept chmod 600), then run e.g.:`)
-  console.log('  morpho-bots midnight tick')
-  console.log('  while true; do morpho-bots blue tick --chain 8453; sleep 2; done')
+  console.log(`\nNext: fill in ${secretsFile(home)} (kept chmod 600), then run the pipeline e.g.:`)
+  console.log('  morpho-bots blue sense | morpho-bots blue act | morpho-bots blue queue')
+  console.log(
+    '  while true; do morpho-bots blue sense | morpho-bots blue act | morpho-bots blue queue; sleep 2; done'
+  )
   return 0
 }

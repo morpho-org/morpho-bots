@@ -11,6 +11,7 @@ import type {
   PendingQueue,
   PendingQueueState,
   SendTx,
+  Settlement,
   SyncNonce,
   TxRequest
 } from '../../src/queue/pending-queue'
@@ -65,6 +66,7 @@ function setup(
     withCooldown?: boolean
     logger?: Logger
     initialState?: PendingQueueState
+    onSettled?: (settlement: Settlement) => void
   } = {}
 ) {
   const sends: SendArg[] = []
@@ -86,6 +88,7 @@ function setup(
     ...(opts.syncNonce === null ? {} : { syncNonce: opts.syncNonce ?? defaultSyncNonce }),
     ...(opts.withCooldown === false ? {} : { settledCooldownBlocks: SETTLED_COOLDOWN_BLOCKS }),
     ...(opts.initialState ? { initialState: opts.initialState } : {}),
+    ...(opts.onSettled ? { onSettled: opts.onSettled } : {}),
     maxFeeWei: opts.maxFeeWei ?? 10_000_000_000_000n,
     logger: opts.logger ?? NOOP_LOGGER
   })
@@ -111,7 +114,9 @@ function submitOne(queue: PendingQueue, blockNumber = 0n) {
 describe('createPendingQueue', () => {
   it('records a submitted tx with the signer-assigned nonce and reports submitted:true', async () => {
     const { queue, sends } = setup()
-    expect(await submitOne(queue)).toEqual({ submitted: true })
+    // The success return now carries the signer-assigned nonce + hash so the CLI `queue` can emit
+    // them on a `submitted` outcome record.
+    expect(await submitOne(queue)).toEqual({ submitted: true, nonce: 7, txHash: hashOf(1) })
     expect(queue.size).toBe(1)
     expect(sends[0]?.nonce).toBeUndefined() // first send leaves nonce assignment to the signer
     expect(queue.snapshot()[0]).toEqual({ nonce: 7, txHash: hashOf(1), attempt: 0 })
@@ -366,6 +371,46 @@ describe('createPendingQueue', () => {
     await queue.onBlock(1n) // confirms → with no cooldown the label leaves the set right away
     expect(queue.size).toBe(0)
     expect(queue.inflightLabels().size).toBe(0)
+  })
+
+  it('notifies onSettled with confirmed when a receipt succeeds', async () => {
+    const settled: Settlement[] = []
+    const { queue } = setup({
+      getReceipt: async () => ({ status: 'success', blockNumber: 10n }),
+      onSettled: s => settled.push(s)
+    })
+    await submitOne(queue, 0n)
+    await queue.onBlock(1n)
+    expect(settled).toEqual([
+      { label: 'market:borrower', nonce: 7, txHash: hashOf(1), status: 'confirmed' }
+    ])
+  })
+
+  it('notifies onSettled with reverted when a receipt reverts', async () => {
+    const settled: Settlement[] = []
+    const { queue } = setup({
+      getReceipt: async () => ({ status: 'reverted', blockNumber: 10n }),
+      onSettled: s => settled.push(s)
+    })
+    await submitOne(queue, 0n)
+    await queue.onBlock(1n)
+    expect(settled[0]?.status).toBe('reverted')
+  })
+
+  it('notifies onSettled with dropped + reason when a stuck tx is dropped', async () => {
+    const settled: Settlement[] = []
+    const { queue } = setup({ maxFeeWei: 1000n, onSettled: s => settled.push(s) })
+    await submitOne(queue, 0n)
+    await queue.onBlock(5n) // bump would breach the fee ceiling → drop
+    expect(settled).toEqual([
+      {
+        label: 'market:borrower',
+        nonce: 7,
+        txHash: hashOf(1),
+        status: 'dropped',
+        reason: 'fee_ceiling'
+      }
+    ])
   })
 })
 

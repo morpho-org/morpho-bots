@@ -39,6 +39,7 @@
         "@repo/midnight-liquidation": "workspace:*",
         "@repo/utils": "workspace:*",
         "commander": "catalog:",
+        "viem": "catalog:",
       },
       "devDependencies": {
         "@repo/typescript-config": "workspace:*",
