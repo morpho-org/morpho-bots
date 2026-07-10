@@ -89,13 +89,21 @@ pools/fees and set the API keys for any aggregator venue you use).
 
 ## Running Locally
 
-The bot runs as one-shot ticks via the `morpho-bots` CLI (`interfaces/cli`). Put config under
-`~/.morpho-bots` (`morpho-bots init` scaffolds it; secrets — RPC URL, key, `DATABASE_URL` — go in
-`secrets.json`), then drive the loop with plain unix:
+The bot runs as a one-shot three-stage pipeline via the `morpho-bots` CLI (`interfaces/cli`). Put
+config under `~/.morpho-bots` (`morpho-bots init` scaffolds it; secrets — RPC URL, key,
+`DATABASE_URL` — go in `secrets.json`), then drive the loop with plain unix. stdout is JSON-Lines
+records; logs are stderr:
 
 ```sh
-bun run --filter @repo/cli start blue tick --chain 8453           # one tick
-while true; do bun run --filter @repo/cli start blue tick --chain 8453; sleep 2; done
+cd interfaces/cli
+bun src/main.ts blue sense --chain 8453                            # inspect opportunities
+bun src/main.ts blue sense --chain 8453 | bun src/main.ts blue act --chain 8453 \
+  | bun src/main.ts blue queue --chain 8453                        # one full tick
+while true; do
+  bun src/main.ts blue sense --chain 8453 | bun src/main.ts blue act --chain 8453 \
+    | bun src/main.ts blue queue --chain 8453
+  sleep 2
+done
 ```
 
 Env vars override the files (`CHAIN_ID`, `RPC_URL`, `LIQUIDATOR_PRIVATE_KEY`, `DATABASE_URL`,
@@ -146,15 +154,16 @@ afterward to pick up routes. Until then it runs but skips routed liquidations.
 
 ### Startup
 
-Load + validate config, build the signer (wallet client + local nonce cursor) and the deployless read
-client, then fail-loud liveness-check **both** the Executor and the Morpho singleton hold code. Wire
-the per-collateral swap map, the rate-limited HTTP client, the quoter, the backoff, and the pending
-queue, then run one tick and persist state for the next invocation. Boot-time checks run only on a
-fresh state file, not every tick.
+Each stage loads and fail-loud-validates only the config it needs: `sense` is keyless (Postgres +
+deployless read client), `act` adds the per-collateral swap map, the rate-limited HTTP client, and
+the quoter (venue API keys, plus `LIQUIDATOR_ADDRESS` as the skim recipient — never the signer key),
+and only `queue` builds the signer (wallet client + local nonce cursor) plus the backoff and pending
+queue, persisting their state for the next invocation. Boot-time liveness checks (Executor and
+Morpho singleton hold code, discovery schema) run only on a fresh cache/state file, not every tick.
 
 ### Trigger
 
-The CLI (or its Docker entrypoint loop) invokes one tick every ~2s; each tick reads the current
+The CLI pipeline (or its Docker entrypoint loop) runs every ~2s; each tick reads the current
 head and re-derives its work, so skipped heights are safe.
 
 ### Discovery

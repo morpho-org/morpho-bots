@@ -132,7 +132,10 @@ needed. Start the bot:
 set -a
 source packages/midnight-liquidation/.env
 set +a
-bun run --filter @repo/cli start midnight tick    # one tick; loop/cron for persistence
+cd interfaces/cli
+bun src/main.ts midnight sense    # inspect opportunities (read-only, keyless)
+bun src/main.ts midnight sense | bun src/main.ts midnight act \
+  | bun src/main.ts midnight queue    # one full tick; loop/cron for persistence
 ```
 
 (Or put config under `~/.morpho-bots` — `morpho-bots init` scaffolds it — instead of env vars.)
@@ -202,7 +205,8 @@ Useful options:
 
 [bots/docker-compose.midnight.yml](../../bots/docker-compose.midnight.yml) defines a single `bot`
 service (discovery is the remote API, so there is no database or indexer). It builds the single bot
-image (`bots/Dockerfile`), whose entrypoint loops `morpho-bots midnight tick`.
+image (`bots/Dockerfile`), whose entrypoint loops the three-stage pipeline
+`morpho-bots midnight sense | morpho-bots midnight act | morpho-bots midnight queue`.
 
 From the repo root:
 
@@ -258,10 +262,12 @@ set, the service will refuse to start unless `ALLOW_BAD_DEBT_ONLY=true`.
 
 ### Startup
 
-[src/index.ts](./src/index.ts)'s `tickOnce` loads config, creates two viem clients, and runs one tick
-(the `morpho-bots` CLI drives it in a loop).
-The read client wraps the RPC transport with `deployless` support so the bot can execute its Solidity
-lens via `eth_call`. The signer client is plain HTTP and owns transaction submission with a local
+The core exports one-shot stages the `morpho-bots` CLI pipes together each tick:
+`senseOnce` (discovery + lens → opportunity records, keyless) and `actOnce` (id → fresh
+re-derivation → simulated tx records; venue API keys but no signer key), plus a lens-free `./queue`
+subpath supplying the queue command's config + policy. Read paths wrap the RPC transport with
+`deployless` support so the bot can execute its Solidity lens via `eth_call`; only the CLI's `queue`
+command builds the plain-HTTP signer client, which owns transaction submission with a local
 pending-nonce cursor.
 
 Startup fails loudly if required env vars are missing, the chain is unsupported, no venue API key is

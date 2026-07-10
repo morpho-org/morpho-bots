@@ -50,12 +50,19 @@
 - **Logging**: Log errors appropriately for debugging and monitoring. Prefer structured logs with
   enough context (bot name, operation, relevant inputs) that an operator can answer "what did the
   bot do and why?" a day later.
+- **stdout is the data plane; ALL logs go to stderr**: CLI stdout carries only newline-delimited
+  JSON wire records (`opportunity`/`tx`/`outcome`, typed in `@repo/bot-kit`'s `records.ts` — see
+  [TIB-2026-07-09-pipeline-cli](./decisions/TIB-2026-07-09-pipeline-cli.md) for the envelope,
+  bare-decimal-string bigints on the wire, and the per-stage IO matrix). `createLogger` routes
+  every level to stderr; never `console.log` from a bot package or a CLI command — a stray stdout
+  line corrupts the pipe.
 - **Promises**: Use `tryCatch` from `@repo/utils` to handle promise throws.
 
 ### Configuration
 
 - **Env-shaped tables, not `Bun.env`**: Bot packages receive ALL configuration — venue API keys
-  included — through the env table passed to `tickOnce(env, …)` / `loadConfig(env)`. Never read
+  included — through the env table passed to the stage entry points (`senseOnce(env, …)` /
+  `actOnce(env, …)` / `loadQueueConfig(env)` and their stage config loaders). Never read
   `Bun.env` directly inside a bot package: the CLI merges `~/.morpho-bots/config.json` +
   `secrets.json` + the process env into that table (precedence: config < secrets < process env),
   and a direct `Bun.env` read silently bypasses file-sourced settings. There is still no wrapper
