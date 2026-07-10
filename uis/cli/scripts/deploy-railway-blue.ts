@@ -19,7 +19,7 @@
  *   - ZEROX_API_KEY[_<chainId>] / ONEINCH_API_KEY[_<chainId>] (optional; only if a collateral routes there)
  *
  *   RAILWAY_PROJECT_ID=… RPC_URL_8453=… RPC_URL_4663=… LIQUIDATOR_PRIVATE_KEY=0x… \
- *     bun run --filter @morpho-org/blue-liquidation deploy:railway
+ *     bun run --filter @repo/cli deploy:railway:blue
  *
  * The build context MUST be the repo root so the bun workspace (packages/*) resolves — the script
  * runs `railway up` with cwd set to the repo root (mirrors the Dockerfile header + compose context).
@@ -40,10 +40,17 @@ import { resolve } from 'node:path'
 // RAILWAY_PROJECT_ID is required; RAILWAY_ENVIRONMENT defaults to the conventional `production`.
 const PROJECT_ID = required(Bun.env, 'RAILWAY_PROJECT_ID')
 const ENVIRONMENT = Bun.env.RAILWAY_ENVIRONMENT?.trim() || 'production'
-const DOCKERFILE_PATH = 'bots/blue-liquidation/Dockerfile'
-const SWAP_MOUNT_PATH = '/config'
-const SWAP_CONFIG_PATH = '/config/swap.json'
-// Repo root is three levels up from this file (scripts → blue-liquidation → bots → repo root).
+const BOT_DOCKERFILE_PATH = 'uis/cli/Dockerfile'
+const RINDEXER_DOCKERFILE_PATH = 'services/blue-rindexer/Dockerfile'
+// The single per-service volume mounts at /data: it carries BOTH the CLI's cross-tick state
+// (MORPHO_BOTS_HOME defaults to /data/morpho-bots in docker-entrypoint.sh) and the swap config.
+const DATA_MOUNT_PATH = '/data'
+const SWAP_CONFIG_PATH = '/data/morpho-bots/blue/swap-config.json'
+// Optional service-name suffix for the parity phase of a cutover: SERVICE_SUFFIX=-cli provisions
+// bot-<chainId>-cli alongside the live services (give it an UNFUNDED key), and legacy-service
+// removal is skipped. Leave unset for the real deployment.
+const SERVICE_SUFFIX = Bun.env.SERVICE_SUFFIX?.trim() ?? ''
+// Repo root is three levels up from this file (scripts → cli → uis → repo root).
 const REPO_ROOT = resolve(import.meta.dir, '..', '..', '..')
 
 type Env = Record<string, string | undefined>
@@ -309,8 +316,8 @@ await assertCli()
 // here + in rindexer.yaml + in src/config.ts to extend coverage.
 type ChainDeploy = { chainId: number; network: string; service: string }
 const CHAINS: ChainDeploy[] = [
-  { chainId: 8453, network: 'base', service: 'bot-8453' },
-  { chainId: 4663, network: 'robinhood', service: 'bot-4663' }
+  { chainId: 8453, network: 'base', service: `bot-8453${SERVICE_SUFFIX}` },
+  { chainId: 4663, network: 'robinhood', service: `bot-4663${SERVICE_SUFFIX}` }
 ]
 // The pre-multichain single-chain service name, retired after `bot-8453` is confirmed healthy.
 const LEGACY_BOT_SERVICE = 'bot'
@@ -352,12 +359,11 @@ const postgresName = await ensurePostgres()
 // it) and Railway resolves it to the Postgres connection string at runtime.
 const databaseUrlRef = 'DATABASE_URL=${{' + postgresName + '.DATABASE_URL}}'
 
-// --- rindexer: ONE shared process indexing every chain's Borrow events into Postgres (BUILD_TARGET
-// selects the rindexer stage). Each network reads its own RPC via RINDEXER_RPC_URL_<chainId>, matching
-// the `${RINDEXER_RPC_URL_<chainId>}` interpolations in rindexer.yaml.
+// --- rindexer: ONE shared process indexing every chain's Borrow events into Postgres (built from
+// services/blue-rindexer/Dockerfile). Each network reads its own RPC via RINDEXER_RPC_URL_<chainId>,
+// matching the `${RINDEXER_RPC_URL_<chainId>}` interpolations in rindexer.yaml.
 await ensureService('rindexer')
-await setVar('rindexer', `RAILWAY_DOCKERFILE_PATH=${DOCKERFILE_PATH}`)
-await setVar('rindexer', 'BUILD_TARGET=rindexer')
+await setVar('rindexer', `RAILWAY_DOCKERFILE_PATH=${RINDEXER_DOCKERFILE_PATH}`)
 await setVar('rindexer', 'PROJECT_PATH=/app/project_path')
 await setVar('rindexer', databaseUrlRef)
 for (const chain of chainSecrets) {
@@ -365,16 +371,18 @@ for (const chain of chainSecrets) {
 }
 await deployService('rindexer')
 
-// --- bot-<chainId>: one liquidation runner per chain (BUILD_TARGET selects the bun bot stage), all
-// sharing the one rindexer + Postgres. The in-container var names stay RPC_URL / LIQUIDATOR_PRIVATE_KEY
-// (the chainId suffix is only an operator-side convention). Swap config lives on a per-service /config
-// volume (uploaded out-of-band — see manual steps below).
+// --- bot-<chainId>: one CLI tick-loop per chain (uis/cli image; BOT/CHAIN_ID select what runs),
+// all sharing the one rindexer + Postgres. The in-container var names stay RPC_URL /
+// LIQUIDATOR_PRIVATE_KEY (the chainId suffix is only an operator-side convention). The per-service
+// /data volume carries cross-tick state AND the swap config (uploaded out-of-band — see manual
+// steps below).
 for (const chain of chainSecrets) {
   await ensureService(chain.service)
-  await ensureVolume(chain.service, SWAP_MOUNT_PATH)
+  await ensureVolume(chain.service, DATA_MOUNT_PATH)
+  await setVar(chain.service, 'BOT=blue')
   await setVar(chain.service, `CHAIN_ID=${chain.chainId}`)
-  await setVar(chain.service, `RAILWAY_DOCKERFILE_PATH=${DOCKERFILE_PATH}`)
-  await setVar(chain.service, 'BUILD_TARGET=bot')
+  await setVar(chain.service, `TICK_INTERVAL_S=${Bun.env.TICK_INTERVAL_S?.trim() || '2'}`)
+  await setVar(chain.service, `RAILWAY_DOCKERFILE_PATH=${BOT_DOCKERFILE_PATH}`)
   await setVar(chain.service, `SWAP_CONFIG_PATH=${SWAP_CONFIG_PATH}`)
   await setVar(chain.service, 'LOG_LEVEL=info')
   await setVar(chain.service, databaseUrlRef)
@@ -393,7 +401,9 @@ for (const chain of chainSecrets) botStatuses.set(chain.service, await waitForDe
 // so the Base liquidator is never left without a running instance. Leaving `bot` up would run a
 // second, stale Base liquidator with a funded key alongside bot-8453 (nonce contention/double-submits).
 const baseService = CHAINS.find(chain => chain.chainId === 8453)?.service
-if (baseService && botStatuses.get(baseService) === 'SUCCESS') {
+if (SERVICE_SUFFIX) {
+  console.log(`SERVICE_SUFFIX=${SERVICE_SUFFIX}: parity deploy — skipping legacy-service removal.`)
+} else if (baseService && botStatuses.get(baseService) === 'SUCCESS') {
   await removeService(LEGACY_BOT_SERVICE)
 } else {
   console.warn(
@@ -409,7 +419,7 @@ for (const [service, status] of botStatuses) console.log(`  ${service}: ${status
 console.log('')
 console.log('=== Manual steps ===')
 console.log(`  1. For each chain that should ROUTE liquidations, upload swap.json into that bot's`)
-console.log(`     ${SWAP_MOUNT_PATH} volume (the bot boots without it — no routes: it identifies`)
+console.log(`     ${DATA_MOUNT_PATH} volume (the bot boots without it — no routes: it identifies`)
 console.log('     borrowers but skips every routed liquidation). The volume mounts only into a')
 console.log('     running container, so do this once the bot is up, e.g. for Base:')
 console.log(`       railway volume files upload ./swap.config.json ${SWAP_CONFIG_PATH} --overwrite`)
