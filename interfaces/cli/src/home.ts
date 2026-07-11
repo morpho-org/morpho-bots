@@ -44,3 +44,17 @@ export function opCacheFile(home: string, bot: BotName, op: string, chainId: str
 export function lockFile(home: string, bot: BotName, chainId: string): string {
   return join(home, 'locks', `${bot}-${chainId}.lock`)
 }
+
+/**
+ * The signing agent's Unix domain socket — one daemon serves every bot/chain, so it is NOT
+ * namespaced by bot. Kept directly under `home` so the sun_path stays short (the OS caps it at
+ * ~104 bytes). Overridable via `--socket` / `SIGNER_SOCKET`.
+ */
+export function signerSocketFile(home: string): string {
+  return join(home, 'signer.sock')
+}
+
+/** The signing agent's policy file (default-deny rule set). Overridable via `SIGNER_POLICY_PATH`. */
+export function signerPolicyFile(home: string): string {
+  return join(home, 'signer-policy.json')
+}

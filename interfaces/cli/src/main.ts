@@ -5,6 +5,7 @@ import type { BotName } from './home'
 
 import { runInit } from './commands/init'
 import { runQueueCommand } from './commands/queue'
+import { runSignerCommand } from './commands/signer'
 import { runSourceCommand } from './commands/source'
 import { runTransformCommand } from './commands/transform'
 import { DOMAINS } from './domains'
@@ -24,6 +25,17 @@ program
   .description('scaffold the config/state home dir with commented examples (never overwrites)')
   .action(() => {
     process.exitCode = runInit()
+  })
+
+program
+  .command('signer')
+  .description(
+    'run the policy-enforcing signing agent daemon (the sole key holder) on a Unix socket; ' +
+      'the queue opts in via SIGNER_SOCKET'
+  )
+  .option('--socket <path>', 'unix socket path (default: SIGNER_SOCKET env, or <home>/signer.sock)')
+  .action(async (opts: { socket?: string }) => {
+    process.exitCode = await runSignerCommand(opts)
   })
 
 const CHAIN_OPTION = 'chain id (default: CHAIN_ID env, or the sole configured chain)'

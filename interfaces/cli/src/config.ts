@@ -14,7 +14,10 @@ type BotSection = {
   defaults?: Record<string, string>
   chains?: Record<string, Record<string, string>>
 }
-type SettingsFile = Partial<Record<BotName, BotSection>>
+// The signing agent's section is chain-less: one daemon serves every chain, and the per-chain
+// policy lives in the policy file (not env), so there are no chain overlays here.
+type SignerSection = { defaults?: Record<string, string> }
+type SettingsFile = Partial<Record<BotName, BotSection>> & { signer?: SignerSection }
 
 // Missing file → null (prod is env-only, files are optional). Present-but-malformed → ConfigError:
 // silently ignoring a broken file would run the bot with half its config missing.
@@ -112,4 +115,21 @@ export function mergedEnv(args: {
     CHAIN_ID: chainId
   }
   return { env, chainId }
+}
+
+/**
+ * Builds the env-shaped table for the chain-less `signer` daemon. Sources, later wins:
+ * `config.json` `signer.defaults` → `secrets.json` `signer.defaults` → the process env (so an
+ * env-only deployment and ad-hoc shell overrides beat files). No chain resolution — one daemon
+ * serves every chain, and the per-chain policy lives in the policy file, not env.
+ */
+export function mergedSignerEnv(args: { home: string; processEnv?: Env }): Env {
+  const processEnv = args.processEnv ?? process.env
+  const config = readSettings(configFile(args.home))
+  const secrets = readSettings(secretsFile(args.home))
+  return {
+    ...config?.signer?.defaults,
+    ...secrets?.signer?.defaults,
+    ...definedOnly(processEnv)
+  }
 }

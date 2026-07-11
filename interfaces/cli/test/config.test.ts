@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { ConfigError, mergedEnv, warnOnLooseSecrets } from '../src/config'
+import { ConfigError, mergedEnv, mergedSignerEnv, warnOnLooseSecrets } from '../src/config'
 
 function makeHome(files: { config?: unknown; secrets?: unknown; secretsRaw?: string } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'morpho-bots-test-'))
@@ -84,6 +84,40 @@ describe('mergedEnv', () => {
       processEnv: { RPC_URL: undefined }
     })
     expect(env.RPC_URL).toBe('https://from-config')
+  })
+})
+
+describe('mergedSignerEnv', () => {
+  it('layers config signer.defaults < secrets signer.defaults < process env', () => {
+    const home = makeHome({
+      config: {
+        signer: { defaults: { LOG_LEVEL: 'debug', SIGNER_POLICY_PATH: '/from-config.json' } }
+      },
+      secrets: {
+        signer: {
+          defaults: {
+            SIGNER_PRIVATE_KEY: `0x${'11'.repeat(32)}`,
+            SIGNER_POLICY_PATH: '/from-secrets.json'
+          }
+        }
+      }
+    })
+    const env = mergedSignerEnv({ home, processEnv: { LOG_LEVEL: 'warn' } })
+    expect(env.SIGNER_POLICY_PATH).toBe('/from-secrets.json') // secrets beat config
+    expect(env.SIGNER_PRIVATE_KEY).toBe(`0x${'11'.repeat(32)}`)
+    expect(env.LOG_LEVEL).toBe('warn') // process env beats files
+  })
+
+  it('never lets an undefined process-env entry clobber a file value', () => {
+    const home = makeHome({
+      secrets: { signer: { defaults: { SIGNER_PRIVATE_KEY: `0x${'11'.repeat(32)}` } } }
+    })
+    const env = mergedSignerEnv({ home, processEnv: { SIGNER_PRIVATE_KEY: undefined } })
+    expect(env.SIGNER_PRIVATE_KEY).toBe(`0x${'11'.repeat(32)}`)
+  })
+
+  it('tolerates missing files and homes without a signer section', () => {
+    expect(mergedSignerEnv({ home: makeHome(), processEnv: {} })).toEqual({})
   })
 })
 
