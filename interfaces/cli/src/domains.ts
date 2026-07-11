@@ -1,9 +1,18 @@
 import type { LogLevel, OpExport } from '@repo/bot-kit'
-import type { Chain, Hex } from 'viem'
+import type { Address, Chain, Hex } from 'viem'
 
 import type { BotName } from './home'
 
 type Env = Record<string, string | undefined>
+
+/**
+ * How the queue obtains a signer — mirrors each core's `SignerBackend` (a structural duplicate so
+ * both cores' `QueueConfig` stay assignable here). `local` carries the in-process key; `agent`
+ * carries the signing-agent socket plus the optional `LIQUIDATOR_ADDRESS` handshake cross-check.
+ */
+type SignerBackend =
+  | { kind: 'local'; privateKey: Hex }
+  | { kind: 'agent'; socketPath: string; expectedAddress: Address | undefined }
 
 /**
  * The queue config the CLI wires into `createSigner`/`createPendingQueue`. `sendRpcUrl` is optional
@@ -16,7 +25,7 @@ export type QueueConfig = {
   rpcUrlFallback: string | undefined
   sendRpcUrl?: string | undefined
   logLevel: LogLevel
-  liquidatorPrivateKey: Hex
+  signer: SignerBackend
   maxFeeWei: bigint
   backoffBaseBlocks: bigint
   backoffMaxBlocks: bigint
@@ -65,9 +74,10 @@ const LIQUIDATION_OPS = {
   liquidate: { kind: 'act', accepts: 'unhealthy-positions' }
 } as const satisfies Record<string, OpManifest>
 
-// Names that can never be an op — the flat namespace also holds `queue` (the stateful sink) and the
-// commander built-ins. The sync test fails if a core's `OPS` ever collides with one of these.
-export const RESERVED_OP_NAMES: ReadonlySet<string> = new Set(['queue', 'help', 'init'])
+// Names that can never be an op — the flat namespace also holds `queue` (the stateful sink), the
+// top-level `signer` daemon, and the commander built-ins. The sync test fails if a core's `OPS` ever
+// collides with one of these.
+export const RESERVED_OP_NAMES: ReadonlySet<string> = new Set(['queue', 'signer', 'help', 'init'])
 
 /** Picks the loaded op or throws — commander only ever calls `loadOp` with a registered manifest name. */
 function pickOp(ops: Record<string, OpExport>, name: string, domain: BotName): OpExport {

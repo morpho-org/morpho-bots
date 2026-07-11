@@ -8,7 +8,14 @@ import { base } from 'viem/chains'
 import type { ActConfig, ChainConfig, QuotingConfig } from '../src/config'
 import type { QueueConfig } from '../src/queue-policy'
 
-import { loadActConfig, loadSenseConfig } from '../src/config'
+import {
+  assertLiquidatorAddressMatchesKey,
+  loadActConfig,
+  loadSenseConfig,
+  optionalLiquidatorAddress,
+  resolvePrivateKey,
+  resolveSignerBackend
+} from '../src/config'
 import { loadQueueConfig } from '../src/queue-policy'
 
 const MORPHO = getAddress('0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb')
@@ -148,7 +155,7 @@ describe('loadQueueConfig', () => {
     const config: QueueConfig = loadQueueConfig(baseEnv())
     expect(config.chainId).toBe(base.id)
     expect(config.rpcUrl).toBe('https://base.example')
-    expect(config.liquidatorPrivateKey).toBe(KEY as Hex)
+    expect(config.signer).toEqual({ kind: 'local', privateKey: KEY as Hex })
   })
 
   it('fails loud on a missing or malformed private key', () => {
@@ -171,12 +178,84 @@ describe('loadQueueConfig', () => {
 
   it('accepts a LIQUIDATOR_ADDRESS that matches the key-derived signer address', () => {
     const config = loadQueueConfig(baseEnv({ LIQUIDATOR_ADDRESS: DERIVED.toLowerCase() }))
-    expect(config.liquidatorPrivateKey).toBe(KEY as Hex)
+    expect(config.signer).toEqual({ kind: 'local', privateKey: KEY as Hex })
   })
 
   it('rejects a malformed LIQUIDATOR_ADDRESS on the queue path', () => {
     expect(() => loadQueueConfig(baseEnv({ LIQUIDATOR_ADDRESS: 'not-an-address' }))).toThrow(
       /LIQUIDATOR_ADDRESS is not a valid address/
     )
+  })
+})
+
+describe('resolveSignerBackend', () => {
+  it('selects the local backend (key read) when SIGNER_SOCKET is unset', () => {
+    expect(resolveSignerBackend(baseEnv())).toEqual({ kind: 'local', privateKey: KEY as Hex })
+  })
+
+  it('selects the agent backend WITHOUT reading the key when SIGNER_SOCKET is set', () => {
+    // No LIQUIDATOR_PRIVATE_KEY at all — agent selection must not require it (the agent holds it).
+    const backend = resolveSignerBackend(
+      baseEnv({ SIGNER_SOCKET: '/tmp/x.sock', LIQUIDATOR_PRIVATE_KEY: undefined })
+    )
+    expect(backend).toEqual({
+      kind: 'agent',
+      socketPath: '/tmp/x.sock',
+      expectedAddress: DERIVED
+    })
+  })
+
+  it('carries no expectedAddress in agent mode when LIQUIDATOR_ADDRESS is unset', () => {
+    const backend = resolveSignerBackend(
+      baseEnv({ SIGNER_SOCKET: '/tmp/x.sock', LIQUIDATOR_ADDRESS: undefined })
+    )
+    expect(backend).toEqual({
+      kind: 'agent',
+      socketPath: '/tmp/x.sock',
+      expectedAddress: undefined
+    })
+  })
+
+  it('still validates LIQUIDATOR_ADDRESS in agent mode (fails loud on a malformed one)', () => {
+    expect(() =>
+      resolveSignerBackend(baseEnv({ SIGNER_SOCKET: '/tmp/x.sock', LIQUIDATOR_ADDRESS: 'nope' }))
+    ).toThrow(/LIQUIDATOR_ADDRESS is not a valid address/)
+  })
+
+  it('still requires the key in local mode', () => {
+    expect(() => resolveSignerBackend(baseEnv({ LIQUIDATOR_PRIVATE_KEY: undefined }))).toThrow(
+      /LIQUIDATOR_PRIVATE_KEY/
+    )
+  })
+})
+
+// The three signing-path helpers `resolveSignerBackend` composes stay individually exported (used
+// directly by tickOnce's config path and covered here), so their contracts are pinned in one place.
+describe('signing-path key helpers', () => {
+  it('resolvePrivateKey accepts a 32-byte hex key and rejects a malformed one', () => {
+    expect(resolvePrivateKey(baseEnv())).toBe(KEY as Hex)
+    expect(() => resolvePrivateKey(baseEnv({ LIQUIDATOR_PRIVATE_KEY: '0xabc' }))).toThrow(
+      /32-byte hex/
+    )
+  })
+
+  it('optionalLiquidatorAddress checksums a set address, returns undefined when unset, throws on garbage', () => {
+    expect(optionalLiquidatorAddress(baseEnv({ LIQUIDATOR_ADDRESS: DERIVED.toLowerCase() }))).toBe(
+      DERIVED
+    )
+    expect(optionalLiquidatorAddress(baseEnv({ LIQUIDATOR_ADDRESS: undefined }))).toBeUndefined()
+    expect(() => optionalLiquidatorAddress(baseEnv({ LIQUIDATOR_ADDRESS: 'nope' }))).toThrow(
+      /not a valid address/
+    )
+  })
+
+  it('assertLiquidatorAddressMatchesKey passes on a match and throws on a mismatch', () => {
+    expect(() => assertLiquidatorAddressMatchesKey(baseEnv(), KEY as Hex)).not.toThrow()
+    expect(() =>
+      assertLiquidatorAddressMatchesKey(
+        baseEnv({ LIQUIDATOR_ADDRESS: '0x2222222222222222222222222222222222222222' }),
+        KEY as Hex
+      )
+    ).toThrow(/does not match/)
   })
 })

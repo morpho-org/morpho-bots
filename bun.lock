@@ -37,6 +37,7 @@
         "@repo/blue-liquidation": "workspace:*",
         "@repo/bot-kit": "workspace:*",
         "@repo/midnight-liquidation": "workspace:*",
+        "@repo/signer": "workspace:*",
         "@repo/utils": "workspace:*",
         "commander": "catalog:",
         "viem": "catalog:",
@@ -106,6 +107,20 @@
         "solc": "catalog:",
         "soltag": "catalog:",
         "viem": "catalog:",
+      },
+      "devDependencies": {
+        "@repo/typescript-config": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
+    "packages/signer": {
+      "name": "@repo/signer",
+      "version": "0.0.0",
+      "dependencies": {
+        "@repo/utils": "workspace:*",
+        "viem": "catalog:",
+        "zod": "catalog:",
       },
       "devDependencies": {
         "@repo/typescript-config": "workspace:*",
@@ -351,6 +366,8 @@
     "@repo/contracts": ["@repo/contracts@workspace:packages/contracts"],
 
     "@repo/midnight-liquidation": ["@repo/midnight-liquidation@workspace:packages/midnight-liquidation"],
+
+    "@repo/signer": ["@repo/signer@workspace:packages/signer"],
 
     "@repo/swaps": ["@repo/swaps@workspace:packages/swaps"],
 

@@ -20,3 +20,11 @@ itself stays unopinionated — everything that turns it into a persistent liquid
   root: `docker compose -f bots/docker-compose.midnight.yml up`.
 - `scripts/deploy-railway-{blue,midnight}.ts` — reproducible, idempotent Railway deploys:
   `bun run --filter @repo/bots deploy:railway:midnight` (see each script's header for env vars).
+
+## Signing agent (opt-in)
+
+The CLI ships a keyless-queue option: `morpho-bots signer` runs a policy-enforcing signing daemon
+(the sole key holder) on a Unix socket, and a `queue` with `SIGNER_SOCKET` set signs through it
+instead of reading a local key. The compose files and `docker-entrypoint.sh` are unchanged — they
+still run the local-key default (`LIQUIDATOR_PRIVATE_KEY` on the queue). Wiring the agent into prod
+as a sidecar sharing a socket volume is deferred alongside the shelved Railway pipeline migration.

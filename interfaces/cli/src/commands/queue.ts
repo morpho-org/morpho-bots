@@ -1,5 +1,5 @@
 import type { Logger, OutcomeRecord, TxRecord } from '@repo/bot-kit'
-import type { Hex } from 'viem'
+import type { Hex, LocalAccount } from 'viem'
 
 import {
   createBackoff,
@@ -12,14 +12,17 @@ import {
   TxSendError,
   WIRE_VERSION
 } from '@repo/bot-kit'
+import { createAgentAccount } from '@repo/signer'
 import { ensureError } from '@repo/utils'
+import { isAddressEqual } from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
 import { getBlockNumber } from 'viem/actions'
 
 import type { QueueAdapter } from '../domains'
 import type { BotName } from '../home'
 import type { QueueState } from '../queue-state'
 
-import { mergedEnv, warnOnLooseSecrets } from '../config'
+import { ConfigError, mergedEnv, warnOnLooseSecrets } from '../config'
 import { DOMAINS } from '../domains'
 import { botsHome, lockFile, queueStateFile } from '../home'
 import { acquireLock, releaseLock } from '../lock'
@@ -97,12 +100,29 @@ async function runQueuePass(
     outcomes = collected.outcomes
   }
 
+  // Resolve the signing account BEFORE the zero-work fast path so a broken agent surfaces every
+  // pass. Agent mode: the handshake fetches the agent's address — a dead/missing socket throws a
+  // plain error (transient → exit 1, the loop retries), while an address that disagrees with
+  // LIQUIDATOR_ADDRESS is operator misconfig → ConfigError (exit 2). Local mode: build the account
+  // from the in-process key. Either way the queue never holds the key beyond `privateKeyToAccount`.
+  let account: LocalAccount
+  if (config.signer.kind === 'agent') {
+    account = await createAgentAccount({ socketPath: config.signer.socketPath })
+    const expected = config.signer.expectedAddress
+    if (expected && !isAddressEqual(account.address, expected)) {
+      throw new ConfigError(
+        `signing agent address (${account.address}) does not match LIQUIDATOR_ADDRESS (${expected}) — act and queue would target different wallets`
+      )
+    }
+  } else {
+    account = privateKeyToAccount(config.signer.privateKey)
+  }
   const signer = createSigner({
     chain: config.chain,
     rpcUrl: config.rpcUrl,
     rpcUrlFallback: config.rpcUrlFallback,
     ...(config.sendRpcUrl ? { sendRpcUrl: config.sendRpcUrl } : {}),
-    privateKey: config.liquidatorPrivateKey
+    account
   })
   const eoa = signer.account.address
   // Read client for the re-sim `eth_call` and the head fetch (reads go to `rpcUrl`, not sendRpcUrl).
@@ -249,9 +269,12 @@ async function runQueuePass(
 /**
  * `<domain> queue`: the stateful sink and single-writer heartbeat. Acquires the per-(bot,chain) lock
  * (held → drain stdin, exit 0; a dead pid is stolen), then runs one maintenance pass under the lock.
- * The signer private key lives only here. Exit codes: 0 when the maintenance pass ran (even if some
- * submits failed transiently), 2 on config/usage or wire-version skew, 1 only when the pass itself
- * could not run (e.g. the head fetch failed).
+ * Key custody splits on the signer backend: in local mode (no `SIGNER_SOCKET`) the private key lives
+ * only here; in agent mode the `morpho-bots signer` daemon is the sole key holder and this process
+ * stays keyless. Exit codes: 0 when the maintenance pass ran (even if some submits failed
+ * transiently), 2 on config/usage, wire-version skew, or an agent whose address disagrees with
+ * LIQUIDATOR_ADDRESS, 1 only when the pass itself could not run (e.g. the head fetch failed, or the
+ * signer socket is dead — transient, the loop retries).
  */
 export async function runQueueCommand(
   domain: BotName,
@@ -273,6 +296,17 @@ export async function runQueueCommand(
   }
 
   const logger = createLogger(config.logLevel)
+  // In agent mode a still-set LIQUIDATOR_PRIVATE_KEY is dead weight riding this process's env —
+  // exactly what the operator opted out of by setting SIGNER_SOCKET. Warn, don't fail: the value is
+  // ignored either way.
+  if (config.signer.kind === 'agent' && env.LIQUIDATOR_PRIVATE_KEY) {
+    logger.warn('queue.key_ignored', {
+      bot: domain,
+      chainId,
+      detail:
+        'SIGNER_SOCKET is set, so LIQUIDATOR_PRIVATE_KEY is ignored — remove it from the queue env'
+    })
+  }
   const lockPath = lockFile(home, domain, chainId)
   const lock = acquireLock(lockPath)
   if (!lock.acquired) {
@@ -291,8 +325,14 @@ export async function runQueueCommand(
   try {
     return await runQueuePass(domain, chainId, config, adapter.policy, home, logger)
   } catch (error) {
-    // The pass itself could not run (e.g. a transient RPC failure fetching the head) → retry next
-    // interval. Per-tx failures never reach here; they are outcome records / logs.
+    // A ConfigError is operator misconfig the loop can't retry past (an agent whose address
+    // disagrees with LIQUIDATOR_ADDRESS) → exit 2, same contract as a bad startup config. Every
+    // other throw (e.g. a transient RPC failure fetching the head, or a dead signer socket) → retry
+    // next interval. Per-tx failures never reach here; they are outcome records / logs.
+    if (error instanceof ConfigError) {
+      fail('startup.error', error)
+      return 2
+    }
     logger.error('queue.error', { bot: domain, chainId, detail: ensureError(error).message })
     return 1
   } finally {

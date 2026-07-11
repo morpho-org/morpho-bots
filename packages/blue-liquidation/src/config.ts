@@ -252,22 +252,56 @@ function resolveLiquidatorAddress(env: Env): Address {
   return getAddress(raw)
 }
 
+// The optional operator EOA, checksum-normalized when set. Unlike `resolveLiquidatorAddress` (act's
+// required skim recipient), this returns `undefined` when unset — the single validation site for
+// `LIQUIDATOR_ADDRESS` on the signing paths (the key cross-check and the agent-handshake check).
+export function optionalLiquidatorAddress(env: Env): Address | undefined {
+  const raw = env.LIQUIDATOR_ADDRESS?.trim()
+  if (!raw) return undefined
+  if (!isAddress(raw, { strict: false })) {
+    throw new Error(`LIQUIDATOR_ADDRESS is not a valid address: ${raw}`)
+  }
+  return getAddress(raw)
+}
+
 // Full-config (tickOnce/queue path) cross-check: when the operator sets LIQUIDATOR_ADDRESS alongside
 // the private key, the two must agree — a mismatch means act would skim seized funds to a wallet the
 // queue doesn't sign for. When absent, the key remains the single source of truth (no new
 // requirement on the tick path).
 export function assertLiquidatorAddressMatchesKey(env: Env, privateKey: Hex): void {
-  const raw = env.LIQUIDATOR_ADDRESS?.trim()
-  if (!raw) return
-  if (!isAddress(raw, { strict: false })) {
-    throw new Error(`LIQUIDATOR_ADDRESS is not a valid address: ${raw}`)
-  }
+  const address = optionalLiquidatorAddress(env)
+  if (!address) return
   const derived = privateKeyToAccount(privateKey).address
-  if (!isAddressEqual(getAddress(raw), derived)) {
+  if (!isAddressEqual(address, derived)) {
     throw new Error(
-      `LIQUIDATOR_ADDRESS (${getAddress(raw)}) does not match the address derived from LIQUIDATOR_PRIVATE_KEY (${derived}) — act and queue would target different wallets`
+      `LIQUIDATOR_ADDRESS (${address}) does not match the address derived from LIQUIDATOR_PRIVATE_KEY (${derived}) — act and queue would target different wallets`
     )
   }
+}
+
+/**
+ * How the `queue` obtains a signer: the in-process local key (dev default), or the out-of-process
+ * signing agent (`SIGNER_SOCKET`), which is the sole key holder. In agent mode the private key is
+ * NEVER read here; the operator EOA (`LIQUIDATOR_ADDRESS`, when set) is carried so the queue can
+ * cross-check it against the agent's handshake address.
+ */
+export type SignerBackend =
+  | { kind: 'local'; privateKey: Hex }
+  | { kind: 'agent'; socketPath: string; expectedAddress: Address | undefined }
+
+/**
+ * Selects the signer backend. `SIGNER_SOCKET` set → the agent backend (the key is NOT read; the
+ * agent holds it), carrying `LIQUIDATOR_ADDRESS` for the queue's handshake cross-check. Unset → the
+ * local backend: `resolvePrivateKey` + the `LIQUIDATOR_ADDRESS` key cross-check, exactly as before.
+ */
+export function resolveSignerBackend(env: Env): SignerBackend {
+  const socketPath = env.SIGNER_SOCKET?.trim()
+  if (socketPath) {
+    return { kind: 'agent', socketPath, expectedAddress: optionalLiquidatorAddress(env) }
+  }
+  const privateKey = resolvePrivateKey(env)
+  assertLiquidatorAddressMatchesKey(env, privateKey)
+  return { kind: 'local', privateKey }
 }
 
 export function resolveMaxFeeWei(env: Env): bigint {

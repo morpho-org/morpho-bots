@@ -80,6 +80,11 @@
   files, or deploy-time environment — never in committed code. The repo's Strict Rules enforce
   this. Keys are read from the env table at the point of use and are never stored on the (logged)
   `Config` object.
+- **Single key reader**: The signer private key is read by exactly one process — the signing agent
+  (`morpho-bots signer`, reading `SIGNER_PRIVATE_KEY`) when `SIGNER_SOCKET` is set, otherwise the
+  `queue` command (reading `LIQUIDATOR_PRIVATE_KEY`). No other stage or package may read
+  `SIGNER_PRIVATE_KEY`/`LIQUIDATOR_PRIVATE_KEY`: `sense`/`act` never sign, and in agent mode the
+  queue itself never reads the key.
 
 ### Code Complexity
 

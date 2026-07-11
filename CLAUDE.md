@@ -143,7 +143,7 @@ This is a **bun workspaces monorepo** housing off-chain Morpho curator bots:
 - `/packages/` — libraries: the bot cores (`@repo/blue-liquidation`, `@repo/midnight-liquidation`,
   each exporting an `OPS` table of source/transform ops — the seam types live in `@repo/bot-kit`'s
   `ops.ts` — plus a lens-free `./queue` policy subpath) and the shared layers (`@repo/utils`,
-  `@repo/bot-kit`, `@repo/swaps`, `@repo/contracts`, `@repo/typescript-config`)
+  `@repo/bot-kit`, `@repo/swaps`, `@repo/signer`, `@repo/contracts`, `@repo/typescript-config`)
 
 See [TIB-2026-07-09-pipeline-cli](./docs/decisions/TIB-2026-07-09-pipeline-cli.md) for the pipeline
 architecture (command grammar, wire contract, state/lock partition) and
@@ -198,6 +198,7 @@ All commit messages, PR titles, and Linear ticket titles use the same format:
 | @repo/cli                  | `cli`                  |
 | @repo/contracts            | `contracts`            |
 | @repo/midnight-liquidation | `midnight-liquidation` |
+| @repo/signer               | `signer`               |
 | @repo/swaps                | `swaps`                |
 | @repo/typescript-config    | `ts-config`            |
 | @repo/utils                | `utils`                |

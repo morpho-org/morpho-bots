@@ -36,9 +36,17 @@ describe.each(CASES)('$domain manifest is in sync with the core OPS table', ({ d
     expect(manifest).toEqual(fromCore)
   })
 
-  it('does not collide with a reserved name (queue/help/init)', () => {
+  it('does not collide with a reserved name (queue/signer/help/init)', () => {
     for (const name of Object.keys(manifest)) {
       expect(RESERVED_OP_NAMES.has(name)).toBe(false)
     }
+  })
+})
+
+describe('RESERVED_OP_NAMES', () => {
+  // The `signer` daemon shares the top-level command namespace, so its name must stay reserved or a
+  // core could silently register an op that shadows it.
+  it('reserves the signer command name', () => {
+    expect(RESERVED_OP_NAMES.has('signer')).toBe(true)
   })
 })
