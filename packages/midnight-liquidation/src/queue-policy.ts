@@ -18,6 +18,10 @@ import { revertReason } from './tx-error'
 // imports only `./config`, `./constants`, and `./tx-error` — none touch `state/lens.sol`. Exposed
 // via the package's `"./queue"` subpath export.
 
+// Re-exported through the lens/soltag-free `./queue` subpath so the daemon can resolve the chain
+// without importing the core index.
+export { CHAIN_MAP } from './config'
+
 /**
  * Everything the `queue` command needs to sign and broadcast — the resolved chain, its RPC
  * endpoint(s), the optional dedicated broadcast endpoint (`SEND_RPC_URL`), the signer backend, and

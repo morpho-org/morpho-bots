@@ -197,6 +197,7 @@ All commit messages, PR titles, and Linear ticket titles use the same format:
 | @repo/bots                 | `bots`                 |
 | @repo/cli                  | `cli`                  |
 | @repo/contracts            | `contracts`            |
+| @repo/home                 | `home`                 |
 | @repo/midnight-liquidation | `midnight-liquidation` |
 | @repo/signer               | `signer`               |
 | @repo/swaps                | `swaps`                |

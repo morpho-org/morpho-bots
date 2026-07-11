@@ -412,6 +412,44 @@ describe('createPendingQueue', () => {
       }
     ])
   })
+
+  it('drop() settles the tracked nonce as dropped and fires onSettled with the reason', async () => {
+    const settled: Settlement[] = []
+    const { queue } = setup({ onSettled: s => settled.push(s) })
+    await submitOne(queue, 0n)
+    expect(queue.drop(7, 3n, 'nonce_consumed')).toBe(true)
+    expect(queue.size).toBe(0)
+    expect(settled).toEqual([
+      {
+        label: 'market:borrower',
+        nonce: 7,
+        txHash: hashOf(1),
+        status: 'dropped',
+        reason: 'nonce_consumed'
+      }
+    ])
+  })
+
+  it('drop() enters the settled cooldown so the label stays suppressed', async () => {
+    const { queue } = setup()
+    await submitOne(queue, 0n)
+    queue.drop(7, 3n, 'nonce_consumed')
+    // The dropped label rides the same cooldown a natural drop does, so the tick will not re-fire it.
+    expect(queue.inflightLabels().has('market:borrower')).toBe(true)
+    await queue.onBlock(3n + SETTLED_COOLDOWN_BLOCKS) // age == cooldown → still suppressed
+    expect(queue.inflightLabels().has('market:borrower')).toBe(true)
+    await queue.onBlock(4n + SETTLED_COOLDOWN_BLOCKS) // age > cooldown → released
+    expect(queue.inflightLabels().has('market:borrower')).toBe(false)
+  })
+
+  it('drop() returns false for a nonce that is not tracked (nothing to reconcile)', async () => {
+    const settled: Settlement[] = []
+    const { queue } = setup({ onSettled: s => settled.push(s) })
+    await submitOne(queue, 0n)
+    expect(queue.drop(999, 3n, 'nonce_consumed')).toBe(false)
+    expect(queue.size).toBe(1) // the real entry is untouched
+    expect(settled).toEqual([]) // no settlement fired for a phantom nonce
+  })
 })
 
 describe('dump / restore', () => {

@@ -1,7 +1,6 @@
+import { botsHome, configFile, secretsFile, signerPolicyFile } from '@repo/home'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-
-import { botsHome, configFile, secretsFile, signerPolicyFile } from '../home'
 
 // Env-var names as keys — the merge layer hands these straight to each bot's loadConfig, so the
 // full knob list is each bot's src/config.ts. "_" keys are documentation; the bots ignore them.

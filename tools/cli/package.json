@@ -15,6 +15,7 @@
   "dependencies": {
     "@repo/blue-liquidation": "workspace:*",
     "@repo/bot-kit": "workspace:*",
+    "@repo/home": "workspace:*",
     "@repo/midnight-liquidation": "workspace:*",
     "@repo/signer": "workspace:*",
     "@repo/utils": "workspace:*",

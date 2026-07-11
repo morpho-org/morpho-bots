@@ -3,14 +3,20 @@ import type { Policy, SignerServer } from '@repo/signer'
 import type { Hex, LocalAccount } from 'viem'
 
 import { createLogger } from '@repo/bot-kit'
+import {
+  botsHome,
+  ConfigError,
+  signerPolicyFile,
+  signerSocketFile,
+  warnOnLooseSecrets
+} from '@repo/home'
 import { createSignerServer, parsePolicy, PolicyConfigError } from '@repo/signer'
 import { readFileSync, unlinkSync } from 'node:fs'
 import { connect } from 'node:net'
 import { isHex } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
-import { ConfigError, mergedSignerEnv, warnOnLooseSecrets } from '../config'
-import { botsHome, signerPolicyFile, signerSocketFile } from '../home'
+import { mergedSignerEnv } from '../config'
 import { fail } from './shared'
 
 type Env = Record<string, string | undefined>

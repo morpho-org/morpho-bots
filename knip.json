@@ -9,6 +9,7 @@
     "packages/utils": {},
     "packages/contracts": {},
     "packages/bot-kit": {},
+    "packages/home": {},
     "packages/signer": {},
     "packages/swaps": {},
     "packages/midnight-liquidation": {},

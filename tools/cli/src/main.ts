@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
-import { Command, CommanderError } from 'commander'
+import type { BotName } from '@repo/home'
 
-import type { BotName } from './home'
+import { Command, CommanderError } from 'commander'
 
 import { runInit } from './commands/init'
 import { runQueueCommand } from './commands/queue'
