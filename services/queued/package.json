@@ -1,0 +1,30 @@
+{
+  "name": "@repo/queued",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "bin": {
+    "morpho-queued": "./src/main.ts"
+  },
+  "type": "module",
+  "scripts": {
+    "start": "bun src/main.ts",
+    "build": "bun scripts/build.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@repo/blue-liquidation": "workspace:*",
+    "@repo/bot-kit": "workspace:*",
+    "@repo/home": "workspace:*",
+    "@repo/midnight-liquidation": "workspace:*",
+    "@repo/signer": "workspace:*",
+    "@repo/utils": "workspace:*",
+    "commander": "catalog:",
+    "viem": "catalog:"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@types/bun": "catalog:",
+    "typescript": "catalog:"
+  }
+}

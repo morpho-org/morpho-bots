@@ -86,9 +86,6 @@ export function collectActIds(
   return { ids, versionSkew: false }
 }
 
-/** `act` outcome statuses the `queue` records as a backoff failure (see {@link collectQueueRecords}). */
-export const QUEUE_BACKOFF_STATUSES: ReadonlySet<string> = new Set(['quote_failed', 'sim_reverted'])
-
 /**
  * Collects the `queue`'s typed inputs from stdin: `tx` records (to submit) and `outcome` records
  * (to drive backoff). Opportunity records and bare ids are ignored with a deterministic warn+skip;

@@ -15,6 +15,7 @@
     "packages/midnight-liquidation": {},
     "packages/blue-liquidation": {},
     "tools/cli": {},
+    "services/queued": {},
     "bots": {}
   }
 }
