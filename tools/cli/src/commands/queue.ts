@@ -1,8 +1,19 @@
 import type { LogLevel, OutcomeRecord, TxRecord } from '@repo/bot-kit'
 import type { BotName } from '@repo/home'
 
-import { createLogger, QueuedProtocolError } from '@repo/bot-kit'
-import { botsHome, ConfigError, warnOnLooseSecrets, queuedSocketFile } from '@repo/home'
+import {
+  createLogger,
+  MAX_LINE_BYTES,
+  QUEUED_PROTOCOL_VERSION,
+  QueuedProtocolError
+} from '@repo/bot-kit'
+import {
+  assertSunPathLength,
+  botsHome,
+  ConfigError,
+  warnOnLooseSecrets,
+  queuedSocketFile
+} from '@repo/home'
 import { ensureError } from '@repo/utils'
 
 import type { QueuedClient } from '../queued-client'
@@ -18,10 +29,11 @@ import { emitLine, fail } from './shared'
 
 type Env = Record<string, string | undefined>
 
-// The kernel caps a Unix socket path (`sun_path`) at ~104 bytes on macOS / 108 on Linux; stay well
-// under so a too-long path fails loud (exit 2) instead of a cryptic connect error.
-const MAX_SUN_PATH_BYTES = 100
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
 
 // The thin client never validates config beyond chain resolution, so a bad LOG_LEVEL is not worth an
 // exit 2 here (the daemon owns the strict validation). Fall back to `info` rather than throwing.
@@ -56,14 +68,15 @@ export async function runQueueCommand(
   try {
     warnOnLooseSecrets(home)
     ;({ env, chainId } = mergedEnv({ home, bot: domain, chain: opts.chain }))
-    socketPath = env.QUEUED_SOCKET?.trim() || queuedSocketFile(home, chainId)
-    const bytes = Buffer.byteLength(socketPath)
-    if (bytes > MAX_SUN_PATH_BYTES) {
+    // The chain id flows into `Number(chainId)` below (the daemon-handshake comparison); reject a
+    // non-numeric value loud (exit 2) here rather than silently comparing against `NaN`.
+    if (!/^\d+$/.test(chainId)) {
       throw new ConfigError(
-        `queued socket path is ${bytes} bytes; a Unix socket path is capped at ~${MAX_SUN_PATH_BYTES}. ` +
-          'Set QUEUED_SOCKET to a shorter path (or move MORPHO_BOTS_HOME closer to root).'
+        `resolved chain id '${chainId}' is not a positive integer — check --chain / CHAIN_ID and config`
       )
     }
+    socketPath = env.QUEUED_SOCKET?.trim() || queuedSocketFile(home, chainId)
+    assertSunPathLength(socketPath)
   } catch (error) {
     fail('startup.error', error)
     return 2
@@ -131,11 +144,16 @@ export async function runQueueCommand(
     // Handshake: confirm the daemon serves THIS chain and speaks THIS protocol before relaying work.
     try {
       const status = await client.request('status', undefined, QUEUED_HANDSHAKE_TIMEOUT_MS)
-      const daemonChainId = (status as { chainId?: unknown }).chainId
-      if (daemonChainId !== chainIdNum) {
+      // A status reply without a numeric chainId is an unusable daemon — treat it like a chain
+      // mismatch (handshake failure, exit 2) rather than reading through to `NaN`.
+      if (!isRecord(status) || typeof status.chainId !== 'number') {
+        fail('queue.handshake_failed', new Error('daemon status did not report a numeric chainId'))
+        return 2
+      }
+      if (status.chainId !== chainIdNum) {
         fail(
           'queue.handshake_failed',
-          new Error(`daemon serves chain ${String(daemonChainId)}, not ${chainIdNum}`)
+          new Error(`daemon serves chain ${status.chainId}, not ${chainIdNum}`)
         )
         return 2
       }
@@ -159,10 +177,41 @@ export async function runQueueCommand(
         })
         continue
       }
+      // Client-side oversize guard: the daemon KILLS the connection when a single request line
+      // reaches MAX_LINE_BYTES without a newline, which would starve every later record in the
+      // batch. Pre-check the line this record would produce (mirroring the envelope
+      // `queued-client` writes, a fixed-length uuid standing in for the real id) and warn+skip an
+      // oversize record — exit stays 0, the rest of the batch still flows.
+      const requestBytes = Buffer.byteLength(
+        `${JSON.stringify({
+          v: QUEUED_PROTOCOL_VERSION,
+          id: '00000000-0000-0000-0000-000000000000',
+          method: 'ingest',
+          params: { record }
+        })}\n`
+      )
+      if (requestBytes > MAX_LINE_BYTES) {
+        logger.warn('queue.skip', {
+          reason: 'oversize',
+          id: record.id,
+          detail: `serialized request is ${requestBytes} bytes; the daemon caps a line at ${MAX_LINE_BYTES}`
+        })
+        continue
+      }
       try {
         const result = await client.request('ingest', { record }, QUEUED_INGEST_TIMEOUT_MS)
-        const outcome = (result as { outcome?: OutcomeRecord }).outcome
-        if (outcome) emitLine(outcome)
+        // Structural guard before echoing: only a well-formed outcome record rides the pipe. A
+        // malformed ack is warn+skipped (exit stays 0) rather than emitted or read through blindly.
+        const outcome = isRecord(result) ? result.outcome : undefined
+        if (isRecord(outcome) && outcome.kind === 'outcome') {
+          emitLine(outcome as unknown as OutcomeRecord)
+        } else {
+          logger.warn('queue.skip', {
+            reason: 'malformed_ack',
+            id: record.id,
+            detail: 'daemon ingest ack was not a well-formed outcome record'
+          })
+        }
       } catch (error) {
         if (error instanceof QueuedProtocolError) {
           // Per-record defense-in-depth: a malformed/foreign/skewed record is warn+skipped, the batch

@@ -51,7 +51,10 @@ export function connectQueued(
     let opened = false
     let buffer = ''
     // At most one request is in flight (requests are issued sequentially), so a single slot suffices.
+    // `id` is the id we sent, so a stray/out-of-order response line can be matched (and dropped if it
+    // is addressed to some other request) instead of being handed to the wrong caller.
     let pending: {
+      id: string
       resolve: (response: QueuedResponse) => void
       reject: (error: Error) => void
       timer: ReturnType<typeof setTimeout>
@@ -72,16 +75,30 @@ export function connectQueued(
 
     const deliver = (line: string): void => {
       if (!pending) return
-      const p = pending
-      pending = null
-      clearTimeout(p.timer)
       let parsed: unknown
       try {
         parsed = JSON.parse(line)
       } catch {
+        const p = pending
+        pending = null
+        clearTimeout(p.timer)
         p.reject(new Error('queued returned a non-JSON response line'))
         return
       }
+      // Response-id guard: the daemon answers in request order over one connection, but a stray or
+      // out-of-order line whose id is NOT the one we sent must never be delivered to this caller —
+      // drop it and keep waiting for the matching reply (the request timeout still bounds the wait).
+      if (
+        typeof parsed === 'object' &&
+        parsed !== null &&
+        typeof (parsed as { id?: unknown }).id === 'string' &&
+        (parsed as { id: string }).id !== pending.id
+      ) {
+        return
+      }
+      const p = pending
+      pending = null
+      clearTimeout(p.timer)
       // Envelope-version guard BEFORE the structural narrow: a daemon speaking a different protocol is
       // a handshake-level mismatch (the caller maps it to exit 2), distinct from a malformed line
       // (transport, exit 1). `isQueuedResponse` would also reject it, but as an untyped malformed line.
@@ -142,8 +159,9 @@ export function connectQueued(
               () => failPending(new Error(`queued ${method} timed out after ${timeoutMs}ms`)),
               timeoutMs
             )
-            pending = { resolve: res, reject: rej, timer }
-            const request = { v: QUEUED_PROTOCOL_VERSION, id: crypto.randomUUID(), method, params }
+            const id = crypto.randomUUID()
+            pending = { id, resolve: res, reject: rej, timer }
+            const request = { v: QUEUED_PROTOCOL_VERSION, id, method, params }
             socket.write(`${JSON.stringify(request)}\n`)
           }).then(unwrap)
         },

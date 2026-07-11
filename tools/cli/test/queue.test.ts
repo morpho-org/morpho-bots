@@ -1,3 +1,5 @@
+import type { QueuedErrorCode } from '@repo/bot-kit'
+
 import {
   errorResponse,
   ingestRecord,
@@ -37,7 +39,15 @@ function makeOutcome(record: Record<string, unknown>): Record<string, unknown> {
   }
 }
 
-function startStub(opts: { chainId: number }): Promise<Stub> {
+function startStub(opts: {
+  chainId: number
+  // Error mode: when this returns a code for an ingested record, the stub answers with that
+  // `errorResponse` instead of a `submitted` ack (the record never lands in `received`), letting a
+  // test exercise the thin client's per-record warn+skip (`bad_request`) vs break-the-batch (`retry`).
+  ingestError?: (
+    record: Record<string, unknown>
+  ) => { code: QueuedErrorCode; message: string } | undefined
+}): Promise<Stub> {
   const received: Record<string, unknown>[] = []
   const dir = mkdtempSync(join(tmpdir(), 'q-stub-'))
   const socketPath = join(dir, 'q.sock')
@@ -60,6 +70,8 @@ function startStub(opts: { chainId: number }): Promise<Stub> {
         )
       }
       const record = ingestRecord(request.params, id) as Record<string, unknown>
+      const forced = opts.ingestError?.(record)
+      if (forced) return serializeResponse(errorResponse(id, forced.code, forced.message))
       received.push(record)
       return serializeResponse(okResponse(id, { outcome: makeOutcome(record) }))
     } catch (error) {
@@ -207,6 +219,60 @@ describe('morpho-bots queue thin client (pipeline)', () => {
         QUEUED_SOCKET: dead
       })
       expect(code).toBe(2)
+    },
+    SPAWN_TIMEOUT_MS
+  )
+
+  it(
+    'warn-skips a bad_request record and still relays the rest (exit 0)',
+    async () => {
+      stub = await startStub({
+        chainId: 8453,
+        ingestError: record =>
+          record.id === 'blue:liquidate:0xbad'
+            ? { code: 'bad_request', message: 'daemon rejected this record' }
+            : undefined
+      })
+      const input = [
+        JSON.stringify(txRecord({ id: 'blue:liquidate:0xbad' })), // daemon NACKs bad_request
+        JSON.stringify(txRecord({ id: 'blue:liquidate:0xgood' })) // relayed + acked
+      ].join('\n')
+
+      const { code, stdout, stderr } = await runCli(['blue', 'queue', '--chain', '8453'], input, {
+        QUEUED_SOCKET: stub.socketPath
+      })
+
+      // A per-record bad_request is warn+skipped — the batch survives (still exit 0).
+      expect(code).toBe(0)
+      expect(stderr).toContain('bad_request')
+      // Only the good record was acked and its outcome echoed.
+      const outLines = stdout
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map(l => JSON.parse(l))
+      expect(outLines).toHaveLength(1)
+      expect(outLines[0]).toMatchObject({ id: 'blue:liquidate:0xgood', kind: 'outcome' })
+      expect(stub.received).toHaveLength(1)
+      expect(stub.received[0]!.id).toBe('blue:liquidate:0xgood')
+    },
+    SPAWN_TIMEOUT_MS
+  )
+
+  it(
+    'exits 1 on a retry daemon error (transient — the loop breaks and retries)',
+    async () => {
+      stub = await startStub({
+        chainId: 8453,
+        ingestError: () => ({ code: 'retry', message: 'daemon busy' })
+      })
+      const { code, stderr } = await runCli(
+        ['blue', 'queue', '--chain', '8453'],
+        JSON.stringify(txRecord()),
+        { QUEUED_SOCKET: stub.socketPath }
+      )
+      expect(code).toBe(1)
+      expect(stderr).toContain('ingest_failed')
     },
     SPAWN_TIMEOUT_MS
   )

@@ -8,7 +8,14 @@ import {
   resolveMaxFeeWei,
   resolveSignerBackend
 } from '@repo/bot-kit'
-import { ConfigError, configFile, queuedSocketFile, readSettings, secretsFile } from '@repo/home'
+import {
+  assertSunPathLength,
+  ConfigError,
+  configFile,
+  queuedSocketFile,
+  readSettings,
+  secretsFile
+} from '@repo/home'
 import { ensureError } from '@repo/utils'
 
 type Env = Record<string, string | undefined>
@@ -30,9 +37,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
-// The kernel caps a Unix socket path (`sun_path`) at ~104 bytes on macOS / 108 on Linux; stay well
-// under so the daemon fails loud with a clear message instead of a cryptic bind error.
-const MAX_SUN_PATH_BYTES = 100
 // Default blocks a pending tx may sit unconfirmed before the daemon bumps its fee and replaces it —
 // the per-chain knob the pending queue's `stuckBlocks` reads. Matches bot-kit's `STUCK_BLOCKS`.
 const DEFAULT_STUCK_BLOCKS = 4n
@@ -166,13 +170,7 @@ function resolveStuckBlocks(env: Env): bigint {
 function resolveSocketPath(opts: QueuedOpts, env: Env, home: string, chainId: string): string {
   const socketPath =
     opts.socket?.trim() || env.QUEUED_SOCKET?.trim() || queuedSocketFile(home, chainId)
-  const bytes = Buffer.byteLength(socketPath)
-  if (bytes > MAX_SUN_PATH_BYTES) {
-    throw new ConfigError(
-      `queued socket path is ${bytes} bytes; a Unix socket path is capped at ~${MAX_SUN_PATH_BYTES}. ` +
-        'Pass --socket or set QUEUED_SOCKET to a shorter path (or move MORPHO_BOTS_HOME closer to root).'
-    )
-  }
+  assertSunPathLength(socketPath)
   return socketPath
 }
 

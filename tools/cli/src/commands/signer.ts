@@ -4,6 +4,7 @@ import type { Hex, LocalAccount } from 'viem'
 
 import { createLogger } from '@repo/bot-kit'
 import {
+  assertSunPathLength,
   botsHome,
   ConfigError,
   signerPolicyFile,
@@ -25,9 +26,6 @@ type Env = Record<string, string | undefined>
 // command stays lens-free (no core import): a 0x-prefixed 32-byte hex string.
 const PRIVATE_KEY_HEX_LENGTH = 66 // '0x' + 32 bytes
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
-// The kernel caps a Unix socket path (`sun_path`) at ~104 bytes on macOS / 108 on Linux; stay well
-// under so the daemon fails loud with a clear message instead of a cryptic bind error.
-const MAX_SUN_PATH_BYTES = 100
 
 // The signing agent is the SOLE key holder: it reads its own `SIGNER_PRIVATE_KEY` and deliberately
 // does NOT fall back to `LIQUIDATOR_PRIVATE_KEY` — the whole point is to move the key off the queue.
@@ -74,13 +72,7 @@ function loadPolicy(env: Env, home: string): Policy {
 
 function resolveSocketPath(opts: { socket?: string | undefined }, env: Env, home: string): string {
   const socketPath = opts.socket?.trim() || env.SIGNER_SOCKET?.trim() || signerSocketFile(home)
-  const bytes = Buffer.byteLength(socketPath)
-  if (bytes > MAX_SUN_PATH_BYTES) {
-    throw new ConfigError(
-      `signer socket path is ${bytes} bytes; a Unix socket path is capped at ~${MAX_SUN_PATH_BYTES}. ` +
-        'Pass --socket or set SIGNER_SOCKET to a shorter path (or move MORPHO_BOTS_HOME closer to root).'
-    )
-  }
+  assertSunPathLength(socketPath)
   return socketPath
 }
 
