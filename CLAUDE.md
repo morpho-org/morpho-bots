@@ -138,8 +138,11 @@ This is a **bun workspaces monorepo** housing off-chain Morpho curator bots:
   image (which AOT-builds the CLI to `dist/main.js`), the pipeline entrypoint loop, the
   docker-compose files, and the Railway deploy scripts. Anything that turns the generic CLI into a
   persistent liquidation bot lives here, not in `tools/`.
-- `/services/` — independently deployed sidecars (not bun workspaces). `services/blue-rindexer`
-  indexes Morpho Blue `Borrow` events into Postgres for blue's discovery.
+- `/services/` — independently-run, long-lived processes (workspace or not). `services/blue-rindexer`
+  indexes Morpho Blue `Borrow` events into Postgres for blue's discovery (non-workspace).
+  `services/queued` (`@repo/queued`, bin `morpho-queued`) is the per-chain, domain-agnostic
+  transaction-queue daemon — a bun workspace that owns dedupe/backoff/re-sim/fees/nonce/submit and
+  continuous settlement/RBF for the txs any bot pipes to it over a Unix socket.
 - `/packages/` — libraries: the bot cores (`@repo/blue-liquidation`, `@repo/midnight-liquidation`,
   each exporting an `OPS` table of source/transform ops — the seam types live in `@repo/bot-kit`'s
   `ops.ts` — plus a lens-free `./queue` policy subpath) and the shared layers (`@repo/utils`,
@@ -199,6 +202,7 @@ All commit messages, PR titles, and Linear ticket titles use the same format:
 | @repo/contracts            | `contracts`            |
 | @repo/home                 | `home`                 |
 | @repo/midnight-liquidation | `midnight-liquidation` |
+| @repo/queued               | `queued`               |
 | @repo/signer               | `signer`               |
 | @repo/swaps                | `swaps`                |
 | @repo/typescript-config    | `ts-config`            |

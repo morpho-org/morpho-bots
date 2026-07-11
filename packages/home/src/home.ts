@@ -58,3 +58,27 @@ export function signerSocketFile(home: string): string {
 export function signerPolicyFile(home: string): string {
   return join(home, 'signer-policy.json')
 }
+
+/**
+ * The per-chain queue daemon's Unix domain socket — one daemon per chain, domain-agnostic, so it is
+ * namespaced by `chainId` only (never by bot). Kept directly under `home` so the sun_path stays short
+ * (the OS caps it at ~104 bytes). Overridable via `--socket` / `QUEUED_SOCKET`.
+ */
+export function queuedSocketFile(home: string, chainId: string): string {
+  return join(home, `queued-${chainId}.sock`)
+}
+
+/** The per-chain queue daemon's pid lockfile, held for the daemon's lifetime (sole state writer). */
+export function queuedLockFile(home: string, chainId: string): string {
+  return join(home, 'locks', `queued-${chainId}.lock`)
+}
+
+/**
+ * The per-chain queue daemon's append-only outcomes journal — every ack (`submitted`/`would_submit`/
+ * `deduped_inflight`/`sim_reverted`) plus every terminal fate (`confirmed`/`reverted`/`dropped`) lands
+ * here as one JSON-Lines record. Written by the daemon only (single writer, `O_APPEND`); never read
+ * back by the daemon (it is the monitoring plane — `tail -f | jq`). Externally rotatable on restart.
+ */
+export function outcomesFile(home: string, chainId: string): string {
+  return join(home, 'queued', `outcomes-${chainId}.jsonl`)
+}

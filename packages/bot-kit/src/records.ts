@@ -19,6 +19,15 @@ import type { Address, Hex } from 'viem'
 export const WIRE_VERSION = 1
 
 /**
+ * The `act` outcome statuses the stateful sink (the CLI `queue` one-shot and the `@repo/queued`
+ * daemon) records as a per-position backoff failure. Both sinks are backoff writers, so the vocabulary
+ * lives here beside the wire records rather than in either consumer. A `quote_failed`/`sim_reverted`
+ * outcome means the position keeps failing upstream, so re-quoting/re-simulating it every tick is
+ * wasted API/RPC budget — the sink escalates its cooldown instead.
+ */
+export const QUEUE_BACKOFF_STATUSES: ReadonlySet<string> = new Set(['quote_failed', 'sim_reverted'])
+
+/**
  * Fields common to every wire record. `op` is an open string (domain-owned vocabulary); `at` is an
  * ISO-8601 timestamp; `summary` is the one human-readable line behind `jq -r .summary`. The
  * `domain`/`op`/`chainId` fields — not the opaque `id` — are authoritative for routing.

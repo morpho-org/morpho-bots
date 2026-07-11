@@ -155,6 +155,28 @@
         "typescript": "catalog:",
       },
     },
+    "services/queued": {
+      "name": "@repo/queued",
+      "version": "0.0.0",
+      "bin": {
+        "morpho-queued": "./src/main.ts",
+      },
+      "dependencies": {
+        "@repo/blue-liquidation": "workspace:*",
+        "@repo/bot-kit": "workspace:*",
+        "@repo/home": "workspace:*",
+        "@repo/midnight-liquidation": "workspace:*",
+        "@repo/signer": "workspace:*",
+        "@repo/utils": "workspace:*",
+        "commander": "catalog:",
+        "viem": "catalog:",
+      },
+      "devDependencies": {
+        "@repo/typescript-config": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "tools/cli": {
       "name": "@repo/cli",
       "version": "0.1.0",
@@ -382,6 +404,8 @@
     "@repo/home": ["@repo/home@workspace:packages/home"],
 
     "@repo/midnight-liquidation": ["@repo/midnight-liquidation@workspace:packages/midnight-liquidation"],
+
+    "@repo/queued": ["@repo/queued@workspace:services/queued"],
 
     "@repo/signer": ["@repo/signer@workspace:packages/signer"],
 

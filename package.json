@@ -5,6 +5,7 @@
     "packages": [
       "packages/*",
       "tools/*",
+      "services/*",
       "bots"
     ],
     "catalog": {

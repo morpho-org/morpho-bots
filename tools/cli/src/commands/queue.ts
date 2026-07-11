@@ -9,6 +9,7 @@ import {
   createPendingQueue,
   createSigner,
   initialFees,
+  QUEUE_BACKOFF_STATUSES,
   simulateLiquidationExec,
   splitIdPrefix,
   TxSendError,
@@ -36,7 +37,7 @@ import type { QueueAdapter } from '../domains'
 
 import { mergedEnv } from '../config'
 import { DOMAINS } from '../domains'
-import { collectQueueRecords, QUEUE_BACKOFF_STATUSES } from '../wire-input'
+import { collectQueueRecords } from '../wire-input'
 import { drainStdin, emitLine, fail } from './shared'
 
 type Env = Record<string, string | undefined>

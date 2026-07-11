@@ -287,6 +287,17 @@ under Bun.
   generic Executor whose arbitrary-multicall shape drives the `value == 0` and `to == Executor`
   checks.
 
+## Addenda
+
+### 2026-07-11 — local-key-reader clause amended
+
+[TIB-2026-07-11-queued-daemon](./TIB-2026-07-11-queued-daemon.md) amends the local-key clause of
+this TIB's Amended Decisions; everything else stands. "The private key is read by exactly one
+process — the agent when `SIGNER_SOCKET` selects the agent backend, else the `queue` command"
+narrows to: else the **`morpho-queued` daemon** (`LIQUIDATOR_PRIVATE_KEY` moves to the `queued`
+config section). The single-key-reader principle is unchanged; a disarmed (`--dry-run`) daemon
+never resolves a signer backend at all.
+
 <!--
 TIB conventions:
 - Once accepted, do not substantively edit this TIB. If the decision needs to change,

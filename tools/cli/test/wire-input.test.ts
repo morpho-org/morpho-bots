@@ -1,14 +1,9 @@
 import type { Logger } from '@repo/bot-kit'
 
-import { splitIdPrefix, WIRE_VERSION } from '@repo/bot-kit'
+import { QUEUE_BACKOFF_STATUSES, splitIdPrefix, WIRE_VERSION } from '@repo/bot-kit'
 import { describe, expect, it } from 'bun:test'
 
-import {
-  collectActIds,
-  collectQueueRecords,
-  parseLine,
-  QUEUE_BACKOFF_STATUSES
-} from '../src/wire-input'
+import { collectActIds, collectQueueRecords, parseLine } from '../src/wire-input'
 
 const NOOP_LOGGER: Logger = {
   debug: () => undefined,
