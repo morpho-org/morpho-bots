@@ -1,12 +1,25 @@
 import type { LogLevel } from '@repo/bot-kit'
 import type { Venue } from '@repo/swaps'
-import type { Address, Chain, Hex } from 'viem'
+import type { Address, Chain } from 'viem'
 
+import { resolveBackoff } from '@repo/bot-kit'
 import { Executor } from '@repo/contracts'
 import { tryCatch } from '@repo/utils'
-import { getAddress, isAddress, isAddressEqual, isHex, parseGwei } from 'viem'
-import { privateKeyToAccount } from 'viem/accounts'
+import { getAddress, isAddress } from 'viem'
 import { base } from 'viem/chains'
+
+// The queue's signer-backend / fee-ceiling / backoff resolvers now live in `@repo/bot-kit` (they
+// were byte-identical across both cores). Re-exported here so `queue-policy.ts` and the existing
+// test suites keep importing them from `./config` unchanged.
+export {
+  assertLiquidatorAddressMatchesKey,
+  optionalLiquidatorAddress,
+  resolveBackoff,
+  resolveMaxFeeWei,
+  resolvePrivateKey,
+  resolveSignerBackend
+} from '@repo/bot-kit'
+export type { SignerBackend } from '@repo/bot-kit'
 
 // Swap venues are no longer a per-collateral config file: markets come from the Midnight markets API
 // (the whitelist), and the enabled venues are inferred from which venue API keys are present in env.
@@ -31,8 +44,6 @@ export const CHAIN_MAP: Record<number, ChainConfig> = {
 // Env table
 // ---------------------------------------------------------------------------
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
-const DEFAULT_MAX_FEE_GWEI = '300'
-const PRIVATE_KEY_HEX_LENGTH = 66 // '0x' + 32 bytes
 
 // Borrower-candidate discovery defaults (the markets liquidation-candidates endpoint). The URL is a
 // public, unauthenticated endpoint, so it is safe to default in code (override via env per-env). The
@@ -47,8 +58,6 @@ const DEFAULT_HTTP_BURST = 5
 const DEFAULT_HTTP_MAX_RETRIES = 2
 const DEFAULT_MAX_ROUTE_IMPACT_BPS = 500 // reject an aggregator route >5% below the oracle reference
 const DEFAULT_SEIZE_CAP_MARGIN_BPS = 30 // shave the repay cap when sizing a cap-binding seize — one-block oracle-drift headroom; calibratable
-const DEFAULT_BACKOFF_BASE_BLOCKS = 2n
-const DEFAULT_BACKOFF_MAX_BLOCKS = 64n
 
 // Market whitelist + venue-probing defaults. The markets API is Morpho's own (not a rate-limited
 // venue), so it can be refreshed briskly. The probe uses an ISOLATED rps budget (see index.ts) so its
@@ -202,16 +211,6 @@ function intEnv(
   return value
 }
 
-// Parses an optional non-negative integer env var into a bigint, with a default.
-function bigintEnv(env: Env, name: string, def: bigint): bigint {
-  const raw = env[name]?.trim()
-  if (!raw) return def
-  if (!/^\d+$/.test(raw)) {
-    throw new Error(`${name} must be a non-negative integer, got: ${env[name]}`)
-  }
-  return BigInt(raw)
-}
-
 // Parses an optional positive decimal env var, with a default and optional min bound. Decimal form
 // only (same regex as MAX_FEE_GWEI) — rejects hex/exponent so it agrees with the other validators.
 function numberEnv(env: Env, name: string, def: number, bounds: { min?: number } = {}): number {
@@ -310,17 +309,6 @@ export function resolveCommon(env: Env, chainMap: Record<number, ChainConfig>): 
   }
 }
 
-export function resolvePrivateKey(env: Env): Hex {
-  const liquidatorPrivateKey = required(env, 'LIQUIDATOR_PRIVATE_KEY')
-  if (
-    !isHex(liquidatorPrivateKey, { strict: true }) ||
-    liquidatorPrivateKey.length !== PRIVATE_KEY_HEX_LENGTH
-  ) {
-    throw new Error('LIQUIDATOR_PRIVATE_KEY must be a 0x-prefixed 32-byte hex string')
-  }
-  return liquidatorPrivateKey
-}
-
 // The Executor singleton has a deterministic CREATE2 address (soltag bakes the canonical factory +
 // salt into `Executor.with()`), so EXECUTOOOR_ADDRESS is optional — we default to that derived
 // address, which the deploy script and the deployless lens also use (one source of truth).
@@ -340,66 +328,6 @@ function resolveLiquidatorAddress(env: Env): Address {
     throw new Error(`LIQUIDATOR_ADDRESS is not a valid address: ${raw}`)
   }
   return getAddress(raw)
-}
-
-// The optional operator EOA, checksum-normalized when set. Unlike `resolveLiquidatorAddress` (act's
-// required skim recipient), this returns `undefined` when unset — the single validation site for
-// `LIQUIDATOR_ADDRESS` on the signing paths (the key cross-check and the agent-handshake check).
-export function optionalLiquidatorAddress(env: Env): Address | undefined {
-  const raw = env.LIQUIDATOR_ADDRESS?.trim()
-  if (!raw) return undefined
-  if (!isAddress(raw, { strict: false })) {
-    throw new Error(`LIQUIDATOR_ADDRESS is not a valid address: ${raw}`)
-  }
-  return getAddress(raw)
-}
-
-// Full-config (tickOnce/queue path) cross-check: when the operator sets LIQUIDATOR_ADDRESS alongside
-// the private key, the two must agree — a mismatch means act would skim seized funds to a wallet the
-// queue doesn't sign for. When absent, the key remains the single source of truth (no new
-// requirement on the tick path).
-export function assertLiquidatorAddressMatchesKey(env: Env, privateKey: Hex): void {
-  const address = optionalLiquidatorAddress(env)
-  if (!address) return
-  const derived = privateKeyToAccount(privateKey).address
-  if (!isAddressEqual(address, derived)) {
-    throw new Error(
-      `LIQUIDATOR_ADDRESS (${address}) does not match the address derived from LIQUIDATOR_PRIVATE_KEY (${derived}) — act and queue would target different wallets`
-    )
-  }
-}
-
-/**
- * How the `queue` obtains a signer: the in-process local key (dev default), or the out-of-process
- * signing agent (`SIGNER_SOCKET`), which is the sole key holder. In agent mode the private key is
- * NEVER read here; the operator EOA (`LIQUIDATOR_ADDRESS`, when set) is carried so the queue can
- * cross-check it against the agent's handshake address.
- */
-export type SignerBackend =
-  | { kind: 'local'; privateKey: Hex }
-  | { kind: 'agent'; socketPath: string; expectedAddress: Address | undefined }
-
-/**
- * Selects the signer backend. `SIGNER_SOCKET` set → the agent backend (the key is NOT read; the
- * agent holds it), carrying `LIQUIDATOR_ADDRESS` for the queue's handshake cross-check. Unset → the
- * local backend: `resolvePrivateKey` + the `LIQUIDATOR_ADDRESS` key cross-check, exactly as before.
- */
-export function resolveSignerBackend(env: Env): SignerBackend {
-  const socketPath = env.SIGNER_SOCKET?.trim()
-  if (socketPath) {
-    return { kind: 'agent', socketPath, expectedAddress: optionalLiquidatorAddress(env) }
-  }
-  const privateKey = resolvePrivateKey(env)
-  assertLiquidatorAddressMatchesKey(env, privateKey)
-  return { kind: 'local', privateKey }
-}
-
-export function resolveMaxFeeWei(env: Env): bigint {
-  const maxFeeGwei = env.MAX_FEE_GWEI?.trim() || DEFAULT_MAX_FEE_GWEI
-  if (!/^\d+(\.\d+)?$/.test(maxFeeGwei) || Number(maxFeeGwei) <= 0) {
-    throw new Error(`MAX_FEE_GWEI must be a positive number, got: ${env.MAX_FEE_GWEI}`)
-  }
-  return parseGwei(maxFeeGwei)
 }
 
 function resolveDiscovery(env: Env): DiscoveryConfig {
@@ -465,16 +393,6 @@ function resolveProbe(env: Env): ProbeConfig {
     staleMs: intEnv(env, 'PROBE_STALE_MS', DEFAULT_PROBE_STALE_MS, { min: 1 }),
     httpRps: intEnv(env, 'PROBE_HTTP_RPS', DEFAULT_PROBE_HTTP_RPS, { min: 1 }),
     ladderWholeTokens: ladderEnv(env, 'PROBE_LADDER', DEFAULT_PROBE_LADDER)
-  }
-}
-
-// Per-position failure-backoff bounds. Shared by `act` (which filters via `shouldSkip`) and the
-// `queue` command (the sole writer, which `record`s/`clear`s), so both read them from ONE resolver —
-// the queue's `record()` computes the cooldown `until`, and act only compares against it.
-export function resolveBackoff(env: Env): { baseBlocks: bigint; maxBlocks: bigint } {
-  return {
-    baseBlocks: bigintEnv(env, 'BACKOFF_BASE_BLOCKS', DEFAULT_BACKOFF_BASE_BLOCKS),
-    maxBlocks: bigintEnv(env, 'BACKOFF_MAX_BLOCKS', DEFAULT_BACKOFF_MAX_BLOCKS)
   }
 }
 

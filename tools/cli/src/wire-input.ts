@@ -1,6 +1,6 @@
 import type { Logger, OutcomeRecord, TxRecord } from '@repo/bot-kit'
 
-import { WIRE_VERSION } from '@repo/bot-kit'
+import { splitIdPrefix, WIRE_VERSION } from '@repo/bot-kit'
 
 /**
  * One classified stdin line for `act`/`queue`. A line starting with `{` is a JSON wire record; any
@@ -32,19 +32,6 @@ export function parseLine(line: string): ParsedLine | null {
   // A record from a newer wire version is a deploy skew, not perishable data — exit 2, don't guess.
   if (typeof record.v === 'number' && record.v > WIRE_VERSION) return { kind: 'version_skew' }
   return { kind: 'record', record }
-}
-
-/**
- * Splits a wire id into its GENERIC two-segment prefix, `<domain>:<op>`. This is the only part of the
- * id string generic code may parse (the suffix stays domain-owned); the CLI uses it to
- * route bare ids into the accepting transform and to derive a settled outcome's `op` from its
- * persisted label. A label with fewer than two colon-delimited segments yields `'unknown'` for the
- * missing part(s) rather than throwing — an unsplittable label is data, not a crash.
- */
-export function splitIdPrefix(id: string): { domain: string; op: string } {
-  const parts = id.split(':')
-  // `||` (not `??`) so an empty segment is as unusable as a missing one — both fall back to 'unknown'.
-  return { domain: parts[0] || 'unknown', op: parts[1] || 'unknown' }
 }
 
 /**

@@ -1,18 +1,8 @@
-import type { LogLevel, OpExport } from '@repo/bot-kit'
-import type { Address, Chain, Hex } from 'viem'
-
-import type { BotName } from './home'
+import type { LogLevel, OpExport, SignerBackend } from '@repo/bot-kit'
+import type { BotName } from '@repo/home'
+import type { Chain } from 'viem'
 
 type Env = Record<string, string | undefined>
-
-/**
- * How the queue obtains a signer — mirrors each core's `SignerBackend` (a structural duplicate so
- * both cores' `QueueConfig` stay assignable here). `local` carries the in-process key; `agent`
- * carries the signing-agent socket plus the optional `LIQUIDATOR_ADDRESS` handshake cross-check.
- */
-type SignerBackend =
-  | { kind: 'local'; privateKey: Hex }
-  | { kind: 'agent'; socketPath: string; expectedAddress: Address | undefined }
 
 /**
  * The queue config the CLI wires into `createSigner`/`createPendingQueue`. `sendRpcUrl` is optional

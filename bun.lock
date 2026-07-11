@@ -72,6 +72,19 @@
         "viem": "catalog:",
       },
     },
+    "packages/home": {
+      "name": "@repo/home",
+      "version": "0.0.0",
+      "dependencies": {
+        "@repo/bot-kit": "workspace:*",
+        "@repo/utils": "workspace:*",
+      },
+      "devDependencies": {
+        "@repo/typescript-config": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "packages/midnight-liquidation": {
       "name": "@repo/midnight-liquidation",
       "version": "0.1.0",
@@ -151,6 +164,7 @@
       "dependencies": {
         "@repo/blue-liquidation": "workspace:*",
         "@repo/bot-kit": "workspace:*",
+        "@repo/home": "workspace:*",
         "@repo/midnight-liquidation": "workspace:*",
         "@repo/signer": "workspace:*",
         "@repo/utils": "workspace:*",
@@ -364,6 +378,8 @@
     "@repo/cli": ["@repo/cli@workspace:tools/cli"],
 
     "@repo/contracts": ["@repo/contracts@workspace:packages/contracts"],
+
+    "@repo/home": ["@repo/home@workspace:packages/home"],
 
     "@repo/midnight-liquidation": ["@repo/midnight-liquidation@workspace:packages/midnight-liquidation"],
 

@@ -71,3 +71,16 @@ export type OutcomeRecord = WireEnvelope & {
 
 /** Any record that can appear on the wire. */
 export type WireRecord = OpportunityRecord | TxRecord | OutcomeRecord
+
+/**
+ * Splits a wire id into its GENERIC two-segment prefix, `<domain>:<op>`. This is the only part of the
+ * id string generic code may parse (the suffix stays domain-owned); the CLI uses it to
+ * route bare ids into the accepting transform and to derive a settled outcome's `op` from its
+ * persisted label. A label with fewer than two colon-delimited segments yields `'unknown'` for the
+ * missing part(s) rather than throwing — an unsplittable label is data, not a crash.
+ */
+export function splitIdPrefix(id: string): { domain: string; op: string } {
+  const parts = id.split(':')
+  // `||` (not `??`) so an empty segment is as unusable as a missing one — both fall back to 'unknown'.
+  return { domain: parts[0] || 'unknown', op: parts[1] || 'unknown' }
+}

@@ -1,4 +1,4 @@
-import { loadState, saveState } from './state'
+import { loadState, saveState } from '@repo/home'
 
 // sense/act caches are disposable and best-effort — they affect latency/recall, never transaction
 // validity — so a missing/corrupt/version-mismatched file simply degrades to a rebuild. The CLI

@@ -99,6 +99,16 @@ export type PendingQueue = {
    * it the tick re-fires an already-liquidated borrower and lands a doomed revert.
    */
   inflightLabels(): ReadonlySet<string>
+  /**
+   * Retires the tracked tx at `nonce` as a `dropped` settlement with `reason` — the nonce-reconciler
+   * seam for the upcoming queue daemon. When something outside the queue consumes a nonce (a manual
+   * send from the same key, a competing signer, a reorg that replaces our tx), the tx we still track
+   * under that nonce can never mine, so leaving it pending would wedge stuck-detection forever. The
+   * daemon calls this to evict it through the SAME internal `settle` path a natural drop takes —
+   * firing `onSettled` with the reason and entering the settled cooldown — so callers need no new
+   * bookkeeping. Returns `false` when no pending entry has that nonce (nothing to reconcile).
+   */
+  drop(nonce: number, blockNumber: bigint, reason: string): boolean
 }
 
 /**
@@ -362,6 +372,12 @@ export function createPendingQueue({
       const labels = new Set(settledAt.keys())
       for (const { label } of pending.values()) labels.add(label)
       return labels
+    },
+    drop(nonce, blockNumber, reason) {
+      const entry = pending.get(nonce)
+      if (!entry) return false
+      settle(entry, blockNumber, { status: 'dropped', reason })
+      return true
     }
   }
 }

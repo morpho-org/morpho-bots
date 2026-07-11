@@ -1,9 +1,10 @@
+import { ConfigError } from '@repo/home'
 import { describe, expect, it } from 'bun:test'
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { ConfigError, mergedEnv, mergedSignerEnv, warnOnLooseSecrets } from '../src/config'
+import { mergedEnv, mergedSignerEnv } from '../src/config'
 
 function makeHome(files: { config?: unknown; secrets?: unknown; secretsRaw?: string } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'morpho-bots-test-'))
@@ -118,20 +119,5 @@ describe('mergedSignerEnv', () => {
 
   it('tolerates missing files and homes without a signer section', () => {
     expect(mergedSignerEnv({ home: makeHome(), processEnv: {} })).toEqual({})
-  })
-})
-
-describe('warnOnLooseSecrets', () => {
-  it('warns for group/world-accessible secrets and stays quiet for 0600 or missing', () => {
-    const loose = makeHome({ secrets: {} })
-    chmodSync(join(loose, 'secrets.json'), 0o644)
-    expect(warnOnLooseSecrets(loose)).toBe(true)
-
-    const tight = makeHome({ secrets: {} })
-    expect(warnOnLooseSecrets(tight)).toBe(false)
-
-    const missing = mkdtempSync(join(tmpdir(), 'morpho-bots-test-'))
-    mkdirSync(missing, { recursive: true })
-    expect(warnOnLooseSecrets(missing)).toBe(false)
   })
 })
