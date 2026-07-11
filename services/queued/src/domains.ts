@@ -33,8 +33,11 @@ const DOMAINS: Record<BotName, () => Promise<QueueModule>> = {
   midnight: () => import('@repo/midnight-liquidation/queue')
 }
 
-/** Every registered domain, in a stable order for startup restore and status pending sums. */
-export const DOMAIN_NAMES: readonly BotName[] = ['blue', 'midnight']
+/**
+ * Every registered domain, in a stable order for startup restore and status pending sums. Derived
+ * from the {@link DOMAINS} registry so there is a single compile-checked source of domain truth.
+ */
+export const DOMAIN_NAMES = Object.keys(DOMAINS) as readonly BotName[]
 
 /**
  * Resolves `chainId` to its viem `Chain` by scanning the union of every registered domain's chain

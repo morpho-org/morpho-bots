@@ -241,6 +241,41 @@ describe('createQueuedServer', () => {
     expect(pong!.result).toEqual({ pong: true })
   })
 
+  it('rejects a tx record with a non-address `to` as bad_request, connection survives', async () => {
+    mockRpc(ARMED_RPC)
+    await start()
+    const [bad, pong] = await rpcMany(socketPath, [
+      { v: 1, id: 't', method: 'ingest', params: { record: txRecord({ to: 'not-an-address' }) } },
+      { v: 1, id: 'p', method: 'ping' }
+    ])
+    expect((bad!.error as { code: string }).code).toBe('bad_request')
+    expect(pong!.result).toEqual({ pong: true })
+  })
+
+  it('rejects a tx record with non-hex `data` as bad_request', async () => {
+    mockRpc(ARMED_RPC)
+    await start()
+    const response = await rpc(socketPath, {
+      v: 1,
+      id: 'd',
+      method: 'ingest',
+      params: { record: txRecord({ data: 'zzz' }) }
+    })
+    expect((response.error as { code: string }).code).toBe('bad_request')
+  })
+
+  it('rejects a record whose `v` is not a number as bad_request', async () => {
+    mockRpc(ARMED_RPC)
+    await start()
+    const response = await rpc(socketPath, {
+      v: 1,
+      id: 'nv',
+      method: 'ingest',
+      params: { record: txRecord({ v: 'one' }) }
+    })
+    expect((response.error as { code: string }).code).toBe('bad_request')
+  })
+
   it('rejects a record from a newer wire version as unsupported_version', async () => {
     mockRpc(ARMED_RPC)
     await start()

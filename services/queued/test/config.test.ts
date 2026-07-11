@@ -55,6 +55,16 @@ describe('mergedQueuedEnv', () => {
     const env = mergedQueuedEnv({ home, chainId: '8453', processEnv: {} })
     expect(env.RPC_URL).toBeUndefined()
   })
+
+  it('rejects a malformed queued section (fail loudly, not a blind cast)', () => {
+    writeFileSync(join(home, 'config.json'), JSON.stringify({ queued: ['not', 'an', 'object'] }))
+    expect(() => mergedQueuedEnv({ home, chainId: '8453', processEnv: {} })).toThrow(ConfigError)
+  })
+
+  it('rejects a queued section whose defaults is not an object', () => {
+    writeFileSync(join(home, 'config.json'), JSON.stringify({ queued: { defaults: 'nope' } }))
+    expect(() => mergedQueuedEnv({ home, chainId: '8453', processEnv: {} })).toThrow(ConfigError)
+  })
 })
 
 describe('resolveConfig', () => {
@@ -63,6 +73,21 @@ describe('resolveConfig', () => {
   it('requires RPC_URL', () => {
     expect(() => resolveConfig({ ...base8453, env: { LIQUIDATOR_PRIVATE_KEY: KEY } })).toThrow(
       /RPC_URL/
+    )
+  })
+
+  it('rethrows a bad MAX_FEE_GWEI as ConfigError (operator misconfig → exit 2)', () => {
+    expect(() =>
+      resolveConfig({
+        ...base8453,
+        env: { RPC_URL: 'http://base', LIQUIDATOR_PRIVATE_KEY: KEY, MAX_FEE_GWEI: 'abc' }
+      })
+    ).toThrow(ConfigError)
+  })
+
+  it('rethrows a missing signing key as ConfigError (armed, no key, no socket → exit 2)', () => {
+    expect(() => resolveConfig({ ...base8453, env: { RPC_URL: 'http://base' } })).toThrow(
+      ConfigError
     )
   })
 

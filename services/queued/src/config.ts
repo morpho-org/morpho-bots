@@ -9,8 +9,25 @@ import {
   resolveSignerBackend
 } from '@repo/bot-kit'
 import { ConfigError, configFile, queuedSocketFile, readSettings, secretsFile } from '@repo/home'
+import { ensureError } from '@repo/utils'
 
 type Env = Record<string, string | undefined>
+
+// The hoisted bot-kit resolvers throw plain `Error` (the cores' one-shot path wraps at its own
+// layer). Here, operator misconfig must exit 2, so re-brand a plain throw as {@link ConfigError}
+// while preserving the original message; a ConfigError already in flight passes through untouched.
+function asConfigError<T>(resolve: () => T): T {
+  try {
+    return resolve()
+  } catch (error) {
+    if (error instanceof ConfigError) throw error
+    throw new ConfigError(ensureError(error).message)
+  }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
 
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
 // The kernel caps a Unix socket path (`sun_path`) at ~104 bytes on macOS / 108 on Linux; stay well
@@ -65,7 +82,20 @@ function required(env: Env, name: string): string {
 // `BotName` map — so it is read positionally here.
 function queuedSection(settings: ReturnType<typeof readSettings>): BotSection | undefined {
   if (!settings) return undefined
-  return (settings as Record<string, unknown>).queued as BotSection | undefined
+  const raw = (settings as Record<string, unknown>).queued
+  if (raw === undefined) return undefined
+  // Structural check instead of a blind cast: a malformed section must fail loudly (exit 2), not
+  // silently run the daemon with half its config missing.
+  if (!isPlainObject(raw)) {
+    throw new ConfigError("the 'queued' settings section must be a JSON object")
+  }
+  if (raw.defaults !== undefined && !isPlainObject(raw.defaults)) {
+    throw new ConfigError("the 'queued' settings section's 'defaults' must be a JSON object")
+  }
+  if (raw.chains !== undefined && !isPlainObject(raw.chains)) {
+    throw new ConfigError("the 'queued' settings section's 'chains' must be a JSON object")
+  }
+  return raw as BotSection
 }
 
 function overlay(section: BotSection | undefined, chainId: string): Record<string, string> {
@@ -166,6 +196,8 @@ export function resolveConfig(args: {
 }): QueuedConfig {
   const { env, chain, chainId, opts, home } = args
   const dryRun = resolveDryRun(opts, env)
+  // The hoisted resolvers throw plain Error; wrap them so operator misconfig exits 2, not 1.
+  const backoff = asConfigError(() => resolveBackoff(env))
   return {
     chainId: Number(chainId),
     chain,
@@ -173,14 +205,14 @@ export function resolveConfig(args: {
     rpcUrlFallback: env.RPC_URL_FALLBACK?.trim() || undefined,
     sendRpcUrl: env.SEND_RPC_URL?.trim() || undefined,
     logLevel: resolveLogLevel(env),
-    maxFeeWei: resolveMaxFeeWei(env),
-    backoffBaseBlocks: resolveBackoff(env).baseBlocks,
-    backoffMaxBlocks: resolveBackoff(env).maxBlocks,
+    maxFeeWei: asConfigError(() => resolveMaxFeeWei(env)),
+    backoffBaseBlocks: backoff.baseBlocks,
+    backoffMaxBlocks: backoff.maxBlocks,
     stuckBlocks: resolveStuckBlocks(env),
     dryRun,
     socketPath: resolveSocketPath(opts, env, home, chainId),
     // Disarmed → never resolve a signer (no key read); armed → local key or agent socket.
-    signer: dryRun ? undefined : resolveSignerBackend(env),
-    liquidatorAddress: optionalLiquidatorAddress(env)
+    signer: dryRun ? undefined : asConfigError(() => resolveSignerBackend(env)),
+    liquidatorAddress: asConfigError(() => optionalLiquidatorAddress(env))
   }
 }

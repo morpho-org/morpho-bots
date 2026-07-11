@@ -15,10 +15,19 @@ import {
   WIRE_VERSION
 } from '@repo/bot-kit'
 import { loadState, outcomesFile, QUEUE_STATE_VERSION, queueStateFile, saveState } from '@repo/home'
+import { AgentPolicyError, AgentResponseError } from '@repo/signer'
 import { ensureError, tryCatch } from '@repo/utils'
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { createPublicClient, fallback, http, isAddressEqual, zeroAddress } from 'viem'
+import {
+  createPublicClient,
+  fallback,
+  http,
+  isAddress,
+  isAddressEqual,
+  isHex,
+  zeroAddress
+} from 'viem'
 import { getBlock, getTransactionCount } from 'viem/actions'
 
 import type { QueuedConfig } from './config'
@@ -57,7 +66,7 @@ type DomainRuntime = {
 /** The status snapshot the `status` handshake returns. `address` is null when disarmed. */
 export type EngineStatus = {
   chainId: number
-  address: string | null
+  address: Address | null
   armed: boolean
   pending: number
   wireVersion: number
@@ -129,6 +138,29 @@ function queueOutcome(args: {
     ...(args.txHash ? { txHash: args.txHash } : {}),
     ...(args.nonce !== undefined ? { nonce: args.nonce } : {}),
     ...(args.reason ? { reason: args.reason } : {})
+  }
+}
+
+/**
+ * Wraps an agent-backed account so a single `signTransaction` retries ONCE on a connect-class
+ * failure — a plain `Error` from a dead or absent signer socket (the agent restarted mid-life; the
+ * client opens one connection per request, so the next attempt reconnects). Typed protocol errors
+ * ({@link AgentPolicyError}, {@link AgentResponseError}) are deterministic verdicts — a retry would
+ * only replay the same rejection — so they propagate on the first throw. Local-key accounts never
+ * hit the socket and are wrapped nowhere.
+ */
+export function withSignRetry(account: LocalAccount): LocalAccount {
+  const sign = account.signTransaction.bind(account)
+  return {
+    ...account,
+    signTransaction: async (...args: Parameters<typeof sign>) => {
+      try {
+        return await sign(...args)
+      } catch (error) {
+        if (error instanceof AgentPolicyError || error instanceof AgentResponseError) throw error
+        return sign(...args)
+      }
+    }
   }
 }
 
@@ -299,7 +331,10 @@ export function createEngine(deps: EngineDeps): Engine {
   // domain). Throws EngineError — the connection survives; the client warns+skips.
   function envelope(record: unknown): { domain: BotName; id: string; op: string; kind: string } {
     if (!isRecord(record)) throw new EngineError('bad_request', 'record must be an object')
-    if (typeof record.v === 'number' && record.v > WIRE_VERSION) {
+    if (typeof record.v !== 'number') {
+      throw new EngineError('bad_request', "record 'v' must be a number")
+    }
+    if (record.v > WIRE_VERSION) {
       throw new EngineError(
         'unsupported_version',
         `record wire version ${record.v} is newer than ${WIRE_VERSION}`
@@ -341,8 +376,9 @@ export function createEngine(deps: EngineDeps): Engine {
   ): Promise<{ outcome?: OutcomeRecord }> {
     const to = record.to
     const data = record.data
-    if (typeof to !== 'string' || typeof data !== 'string') {
-      throw new EngineError('bad_request', 'tx record missing to/data')
+    // Untrusted socket input: narrow to a real address / hex blob before it reaches the signer.
+    if (typeof to !== 'string' || !isAddress(to) || !isHex(data)) {
+      throw new EngineError('bad_request', 'tx record has invalid or missing to/data')
     }
     const rt = runtimes.get(env.domain)
     if (!rt) throw new EngineError('bad_request', `no runtime for domain '${env.domain}'`)
@@ -364,9 +400,9 @@ export function createEngine(deps: EngineDeps): Engine {
 
     // Structurally sign-what-you-simulate: re-simulate the exact bytes before broadcasting.
     const sim = await simulateLiquidationExec(readClient, {
-      executooor: to as Address,
+      executooor: to,
       eoa,
-      data: data as Hex
+      data
     })
     const { head, baseFee } = await chainState()
     if (sim.status !== 'ok') {
@@ -411,7 +447,7 @@ export function createEngine(deps: EngineDeps): Engine {
     let submitted: Awaited<ReturnType<PendingQueue['submit']>>
     try {
       submitted = await rt.queue.submit({
-        request: { to: to as Address, data: data as Hex },
+        request: { to, data },
         label: env.id,
         maxFeePerGas: fees.maxFeePerGas,
         maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
@@ -485,70 +521,86 @@ export function createEngine(deps: EngineDeps): Engine {
   }
 
   async function runSweep(): Promise<void> {
-    await locked(async () => {
-      let head: bigint
-      try {
-        ;({ head } = await chainState(true))
-      } catch (error) {
-        // Head-fetch failure: warn, skip this sweep, reschedule — never crash the daemon.
-        logger.warn('sweep.head_failed', { detail: ensureError(error).message })
-        return
-      }
-      for (const rt of runtimes.values()) {
-        await rt.queue.onBlock(head)
-        dirty.add(rt)
-      }
-      sendAborted = false // the wave cleared; submits may resume.
-      flushDirty()
-    })
-    scheduleNextSweep()
+    // Also short-circuits `tick()` in dry-run (nothing to settle — matches the doc comment).
+    if (stopped || config.dryRun) return
+    try {
+      await locked(async () => {
+        let head: bigint
+        try {
+          ;({ head } = await chainState(true))
+        } catch (error) {
+          // Head-fetch failure: warn, skip this sweep — never crash the daemon.
+          logger.warn('sweep.head_failed', { detail: ensureError(error).message })
+          return
+        }
+        for (const rt of runtimes.values()) {
+          await rt.queue.onBlock(head)
+          dirty.add(rt)
+        }
+        sendAborted = false // the wave cleared; submits may resume.
+        flushDirty()
+      })
+    } catch (error) {
+      // A persist/onBlock throw must not break the timer chain — log and keep sweeping.
+      logger.warn('sweep.failed', { detail: ensureError(error).message })
+    } finally {
+      scheduleNextSweep()
+    }
   }
 
   // ---- reconciler ---------------------------------------------------------
   function scheduleReconcile(): void {
     if (stopped || config.dryRun) return
+    if (reconcileTimer) clearTimeout(reconcileTimer)
     reconcileTimer = setTimeout(() => void runReconcile(), RECONCILE_MS)
   }
 
   async function runReconcile(): Promise<void> {
-    await locked(async () => {
-      if (!signer || totalPending() === 0) return
-      // Armed agent mode: re-verify the agent still signs for our EOA. A mismatch means the agent
-      // restarted under a different key — fatal misconfig, not a transient.
-      if (reverifyAddress) {
-        const seen = await tryCatch(reverifyAddress())
-        if (!seen.error && !isAddressEqual(seen.data, eoa)) {
-          logger.error('reconcile.agent_mismatch', { expected: eoa, seen: seen.data })
-          for (const rt of runtimes.values()) persist(rt)
-          onFatal?.(2)
+    if (stopped) return
+    try {
+      await locked(async () => {
+        if (!signer || totalPending() === 0) return
+        // Armed agent mode: re-verify the agent still signs for our EOA. A mismatch means the agent
+        // restarted under a different key — fatal misconfig, not a transient.
+        if (reverifyAddress) {
+          const seen = await tryCatch(reverifyAddress())
+          if (!seen.error && !isAddressEqual(seen.data, eoa)) {
+            logger.error('reconcile.agent_mismatch', { expected: eoa, seen: seen.data })
+            for (const rt of runtimes.values()) persist(rt)
+            onFatal?.(2)
+            return
+          }
+        }
+        const fetched = await tryCatch(
+          Promise.all([
+            chainState(true),
+            getTransactionCount(sendClient, { address: eoa, blockTag: 'latest' })
+          ])
+        )
+        if (fetched.error) {
+          logger.warn('reconcile.head_failed', { detail: ensureError(fetched.error).message })
           return
         }
-      }
-      const fetched = await tryCatch(
-        Promise.all([
-          chainState(true),
-          getTransactionCount(sendClient, { address: eoa, blockTag: 'latest' })
-        ])
-      )
-      if (fetched.error) {
-        logger.warn('reconcile.head_failed', { detail: ensureError(fetched.error).message })
-        return
-      }
-      const head = fetched.data[0].head
-      const onchainNonce = fetched.data[1]
-      // A tracked nonce already below the chain's `latest` count is consumed. If our tx for it has no
-      // receipt, something else consumed the nonce — evict it so stuck-detection isn't wedged forever.
-      for (const rt of runtimes.values()) {
-        for (const { nonce, txHash } of rt.queue.snapshot()) {
-          if (nonce >= onchainNonce) continue
-          const receipt = await tryCatch(signer.getReceipt(txHash))
-          if (receipt.error || receipt.data) continue // still visible (or read failed) → leave it.
-          if (rt.queue.drop(nonce, head, 'nonce_consumed')) dirty.add(rt)
+        const head = fetched.data[0].head
+        const onchainNonce = fetched.data[1]
+        // A tracked nonce already below the chain's `latest` count is consumed. If our tx for it has
+        // no receipt, something else consumed the nonce — evict it so stuck-detection isn't wedged.
+        for (const rt of runtimes.values()) {
+          for (const { nonce, txHash } of rt.queue.snapshot()) {
+            if (nonce >= onchainNonce) continue
+            const receipt = await tryCatch(signer.getReceipt(txHash))
+            if (receipt.error || receipt.data) continue // still visible (or read failed) → leave it.
+            if (rt.queue.drop(nonce, head, 'nonce_consumed')) dirty.add(rt)
+          }
         }
-      }
-      flushDirty()
-    })
-    scheduleReconcile()
+        flushDirty()
+      })
+    } catch (error) {
+      // A persist/drop throw must not break the reconcile timer chain — log and keep reconciling.
+      logger.warn('reconcile.failed', { detail: ensureError(error).message })
+    } finally {
+      scheduleReconcile()
+    }
   }
 
   // ---- lifecycle ----------------------------------------------------------
@@ -565,10 +617,11 @@ export function createEngine(deps: EngineDeps): Engine {
       runtimes.set(domain, makeRuntime(domain, policies[domain], state))
     }
     // Startup: one reconcile sweep before we accept connections (armed only), so a restart heals a
-    // consumed-nonce zombie from the prior process before the first ingest claims a nonce.
+    // consumed-nonce zombie from the prior process before the first ingest claims a nonce. That call
+    // ends by scheduling the next reconcile, so we don't re-arm it here (double-schedule). Disarmed
+    // never reconciles (scheduleReconcile early-returns on dryRun).
     if (armed) await runReconcile()
     scheduleNextSweep()
-    scheduleReconcile()
   }
 
   async function shutdown(): Promise<void> {

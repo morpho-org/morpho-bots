@@ -12,6 +12,7 @@ import {
   warnOnLooseSecrets
 } from '@repo/home'
 import { createAgentAccount } from '@repo/signer'
+import { ensureError } from '@repo/utils'
 import { Command, CommanderError } from 'commander'
 import { unlinkSync } from 'node:fs'
 import { connect } from 'node:net'
@@ -22,14 +23,14 @@ import type { QueuedConfig, QueuedOpts } from './config'
 
 import { mergedQueuedEnv, resolveChainId, resolveConfig } from './config'
 import { resolveChain } from './domains'
-import { createEngine } from './engine'
+import { createEngine, withSignRetry } from './engine'
 import { createQueuedServer } from './server'
 
 type Env = Record<string, string | undefined>
 
 // A pre-logger structured error line on stderr (config validation runs before the log level is known).
 function fail(event: string, error: unknown): void {
-  console.error(JSON.stringify({ level: 'error', event, error: (error as Error).message }))
+  console.error(JSON.stringify({ level: 'error', event, error: ensureError(error).message }))
 }
 
 // Distinguish a stale socket file (a prior daemon died without unlinking) from a live one. A connect
@@ -84,7 +85,11 @@ async function resolveAccount(
         `signing agent address (${account.address}) does not match LIQUIDATOR_ADDRESS (${expected}) — the daemon would sign for the wrong wallet`
       )
     }
-    return { account, reverify: async () => (await createAgentAccount({ socketPath })).address }
+    // Agent-backed: one retry per sign on a connect-class socket failure (agent restart mid-life).
+    return {
+      account: withSignRetry(account),
+      reverify: async () => (await createAgentAccount({ socketPath })).address
+    }
   }
   return { account: privateKeyToAccount(backend.privateKey) }
 }
