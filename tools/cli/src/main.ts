@@ -69,7 +69,10 @@ for (const domain of ['blue', 'midnight'] as const satisfies readonly BotName[])
 
   group
     .command('queue')
-    .description('the stateful sink: dedupe, re-simulate, sign, broadcast, and manage replacement')
+    .description(
+      'the sink stage: relay tx/outcome records to the per-chain `morpho-queued` daemon (which owns ' +
+        'dedupe, re-sim, sign, broadcast, and replacement); TTY stdin pings the daemon'
+    )
     .option('--chain <id>', CHAIN_OPTION)
     .action(async (opts: { chain?: string }) => {
       process.exitCode = await runQueueCommand(domain, opts)

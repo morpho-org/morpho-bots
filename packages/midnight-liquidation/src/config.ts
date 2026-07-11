@@ -8,18 +8,17 @@ import { tryCatch } from '@repo/utils'
 import { getAddress, isAddress } from 'viem'
 import { base } from 'viem/chains'
 
-// The queue's signer-backend / fee-ceiling / backoff resolvers now live in `@repo/bot-kit` (they
-// were byte-identical across both cores). Re-exported here so `queue-policy.ts` and the existing
-// test suites keep importing them from `./config` unchanged.
+// The queue's signer-backend / key / address resolvers now live in `@repo/bot-kit` (they were
+// byte-identical across both cores). Re-exported here so the existing `config` test suites and the
+// act path keep importing them from `./config` unchanged. (The fee-ceiling/backoff resolvers moved
+// with them but are now consumed only by the `queued` daemon, so they are imported from bot-kit
+// directly where needed — e.g. `resolveBackoff` above — not re-exported here.)
 export {
   assertLiquidatorAddressMatchesKey,
   optionalLiquidatorAddress,
-  resolveBackoff,
-  resolveMaxFeeWei,
   resolvePrivateKey,
   resolveSignerBackend
 } from '@repo/bot-kit'
-export type { SignerBackend } from '@repo/bot-kit'
 
 // Swap venues are no longer a per-collateral config file: markets come from the Midnight markets API
 // (the whitelist), and the enabled venues are inferred from which venue API keys are present in env.
@@ -281,7 +280,7 @@ function addressListEnv(env: Env, name: string): Address[] {
 
 type LoadDeps = { chainMap?: Record<number, ChainConfig> }
 
-export function resolveCommon(env: Env, chainMap: Record<number, ChainConfig>): CommonConfig {
+function resolveCommon(env: Env, chainMap: Record<number, ChainConfig>): CommonConfig {
   const chainIdRaw = required(env, 'CHAIN_ID')
   if (!/^\d+$/.test(chainIdRaw)) {
     // Plain decimal only — reject hex (Number('0x1')) and exponent (Number('1e3')) forms.

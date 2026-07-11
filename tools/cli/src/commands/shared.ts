@@ -21,17 +21,3 @@ export function fail(event: string, error: unknown): void {
 export function emitLine(record: WireRecord): void {
   process.stdout.write(JSON.stringify(record) + '\n')
 }
-
-/**
- * Drains and discards stdin to EOF. Used when the `queue` lock is held: an upstream `act` is still
- * writing derived, perishable lines into this process's pipe, and reading them to EOF lets it finish
- * cleanly rather than seeing a broken pipe. The lines themselves are dropped — the live queue that
- * holds the lock will act on the next tick's fresh data.
- */
-export async function drainStdin(): Promise<void> {
-  if (process.stdin.isTTY) return
-  // Consuming the ReadableStream to completion discards it without buffering the whole input.
-  for await (const _chunk of Bun.stdin.stream()) {
-    // discard
-  }
-}

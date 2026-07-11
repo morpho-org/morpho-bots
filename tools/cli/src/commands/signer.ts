@@ -84,10 +84,19 @@ function resolveSocketPath(opts: { socket?: string | undefined }, env: Env, home
   return socketPath
 }
 
-// Distinguish a stale socket file (a prior daemon died without unlinking) from a live one. A
-// connect that succeeds means another daemon owns the socket → refuse (exit 2). ECONNREFUSED (file
-// present, nobody listening) → unlink so `listen` can rebind. ENOENT (no file) → nothing to do.
+// Distinguish a stale socket file (a prior daemon died without unlinking) from a live one. A connect
+// that succeeds means another daemon owns the socket → refuse (exit 2). Nobody-listening errors
+// (`ECONNREFUSED`; or `ENOENT` — macOS/Bun report this for a stale socket file whose owner died) →
+// clear the leftover file so `listen` can rebind. Any other error is a genuine problem → propagate.
 function probeStaleSocket(socketPath: string): Promise<void> {
+  const clearToBind = (resolve: () => void): void => {
+    try {
+      unlinkSync(socketPath)
+    } catch {
+      // Raced with another unlink, or the platform reports the file gone — either way we can bind.
+    }
+    resolve()
+  }
   return new Promise<void>((resolve, reject) => {
     const socket = connect(socketPath)
     // A hung daemon can accept-and-stall, leaving the probe neither connected nor errored; treat a
@@ -102,15 +111,8 @@ function probeStaleSocket(socketPath: string): Promise<void> {
     })
     socket.on('error', error => {
       const code = (error as NodeJS.ErrnoException).code
-      if (code === 'ECONNREFUSED') {
-        try {
-          unlinkSync(socketPath)
-        } catch {
-          // Raced with another unlink, or the platform reports the file gone — either way we can bind.
-        }
-        resolve()
-      } else if (code === 'ENOENT') {
-        resolve()
+      if (code === 'ECONNREFUSED' || code === 'ENOENT') {
+        clearToBind(resolve)
       } else {
         reject(error)
       }

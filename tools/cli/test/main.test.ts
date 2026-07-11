@@ -1,8 +1,5 @@
-import type { SignerServer } from '@repo/signer'
-
-import { createSignerServer, parsePolicy } from '@repo/signer'
-import { afterEach, describe, expect, it } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { describe, expect, it } from 'bun:test'
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -16,15 +13,6 @@ const CLI_DIR = join(import.meta.dir, '..')
 
 // Cold bun spawns take ~3s on CI runners (and the init test spawns twice), so the 5s default flakes.
 const SPAWN_TIMEOUT_MS = 30_000
-
-// A config that passes the queue's config gate (chain/rpc/key) without a reachable chain — RPC is at
-// an unreachable loopback port. The zero-work queue pass must never dial it (fast path); the
-// lock-held pass exits before any chain read.
-const VALID_QUEUE_ENV = {
-  CHAIN_ID: '8453',
-  RPC_URL: 'http://127.0.0.1:1',
-  LIQUIDATOR_PRIVATE_KEY: `0x${'1'.repeat(64)}`
-}
 
 function run(args: string[], env: Record<string, string> = {}) {
   const result = Bun.spawnSync(['bun', 'src/main.ts', ...args], {
@@ -114,41 +102,10 @@ describe('morpho-bots exit codes', () => {
   )
 
   it(
-    'exits 2 for queue with no usable config',
+    'exits 2 for queue with no usable config (no chain resolvable)',
     () => {
+      // The thin client resolves the chain via mergedEnv before touching the socket; no chain → exit 2.
       expect(run(['blue', 'queue']).code).toBe(2)
-    },
-    SPAWN_TIMEOUT_MS
-  )
-
-  it(
-    'exits 0 for a queue whose lock is already held by a live pid',
-    () => {
-      const home = mkdtempSync(join(tmpdir(), 'morpho-bots-test-'))
-      // Pre-place the lock held by THIS (live) process, mirroring an overlapping queue.
-      mkdirSync(join(home, 'locks'), { recursive: true })
-      writeFileSync(
-        join(home, 'locks', 'blue-8453.lock'),
-        JSON.stringify({ pid: process.pid, startedAt: Date.now() })
-      )
-      const { code, stdout } = run(['blue', 'queue'], {
-        ...VALID_QUEUE_ENV,
-        MORPHO_BOTS_HOME: home
-      })
-      expect(code).toBe(0)
-      // The lock-held pass emits no wire records (it only drains stdin and skips).
-      expect(stdout.trim()).toBe('')
-    },
-    SPAWN_TIMEOUT_MS
-  )
-
-  it(
-    'exits 0 for a queue with empty stdin and empty state (zero-work fast path, no RPC)',
-    () => {
-      // No lock held, nothing on stdin, no prior queue state → the fast path skips the head fetch
-      // (and thus every RPC call), so the unreachable RPC is never dialed and the pass completes.
-      const { code } = run(['blue', 'queue'], VALID_QUEUE_ENV)
-      expect(code).toBe(0)
     },
     SPAWN_TIMEOUT_MS
   )
@@ -259,89 +216,6 @@ describe('morpho-bots signer command', () => {
       expect(await proc.exited).toBe(0)
       // close() unlinks the socket on a clean shutdown.
       expect(existsSync(sock)).toBe(false)
-    },
-    SPAWN_TIMEOUT_MS
-  )
-})
-
-describe('morpho-bots queue via the signing agent', () => {
-  let servers: SignerServer[] = []
-
-  afterEach(async () => {
-    await Promise.all(servers.map(s => s.close()))
-    servers = []
-  })
-
-  async function liveAgent(): Promise<string> {
-    const dir = mkdtempSync(join(tmpdir(), 's-'))
-    const socketPath = join(dir, 'a.sock')
-    const noop = () => undefined
-    const server = createSignerServer({
-      socketPath,
-      account: privateKeyToAccount(SIGNER_KEY),
-      policy: parsePolicy(POLICY),
-      log: { info: noop, warn: noop, error: noop }
-    })
-    await server.listen()
-    servers.push(server)
-    return socketPath
-  }
-
-  // Spawn the queue ASYNC (not spawnSync): the live agent listens on THIS process's event loop, so a
-  // synchronous spawn would block it and the cross-process handshake would deadlock. `stdin: 'ignore'`
-  // gives an empty (non-TTY) stdin → the zero-work fast path. RPC is an unreachable loopback the
-  // zero-work pass must never dial once the handshake succeeds.
-  const AGENT_QUEUE_ENV = { CHAIN_ID: '8453', RPC_URL: 'http://127.0.0.1:1' }
-
-  async function runQueueAsync(env: Record<string, string>) {
-    const proc = Bun.spawn(['bun', 'src/main.ts', 'blue', 'queue'], {
-      cwd: CLI_DIR,
-      env: { ...process.env, MORPHO_BOTS_HOME: mkdtempSync(join(tmpdir(), 's-')), ...env },
-      stdin: 'ignore',
-      stdout: 'pipe',
-      stderr: 'pipe'
-    })
-    const [code, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()])
-    return { code, stderr }
-  }
-
-  it(
-    'exits 1 when SIGNER_SOCKET points at a dead socket and no key is set (transient, loop retries)',
-    async () => {
-      const { code } = await runQueueAsync({
-        ...AGENT_QUEUE_ENV,
-        SIGNER_SOCKET: join(mkdtempSync(join(tmpdir(), 's-')), 'dead.sock')
-      })
-      expect(code).toBe(1)
-    },
-    SPAWN_TIMEOUT_MS
-  )
-
-  it(
-    'exits 2 when the live agent address disagrees with LIQUIDATOR_ADDRESS',
-    async () => {
-      const socketPath = await liveAgent()
-      const { code, stderr } = await runQueueAsync({
-        ...AGENT_QUEUE_ENV,
-        SIGNER_SOCKET: socketPath,
-        LIQUIDATOR_ADDRESS: `0x${'34'.repeat(20)}`
-      })
-      expect(code).toBe(2)
-      expect(stderr).toContain('does not match LIQUIDATOR_ADDRESS')
-    },
-    SPAWN_TIMEOUT_MS
-  )
-
-  it(
-    'exits 0 (zero-work) when the live agent address matches LIQUIDATOR_ADDRESS',
-    async () => {
-      const socketPath = await liveAgent()
-      const { code } = await runQueueAsync({
-        ...AGENT_QUEUE_ENV,
-        SIGNER_SOCKET: socketPath,
-        LIQUIDATOR_ADDRESS: SIGNER_ADDRESS
-      })
-      expect(code).toBe(0)
     },
     SPAWN_TIMEOUT_MS
   )

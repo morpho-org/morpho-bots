@@ -6,7 +6,6 @@ import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
 
 import type { ActConfig, ChainConfig, QuotingConfig } from '../src/config'
-import type { QueueConfig } from '../src/queue-policy'
 
 import {
   assertLiquidatorAddressMatchesKey,
@@ -16,7 +15,6 @@ import {
   resolvePrivateKey,
   resolveSignerBackend
 } from '../src/config'
-import { loadQueueConfig } from '../src/queue-policy'
 
 const MORPHO = getAddress('0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb')
 const KEY = `0x${'1'.repeat(64)}`
@@ -150,44 +148,10 @@ describe('loadActConfig', () => {
   })
 })
 
-describe('loadQueueConfig', () => {
-  it('loads the signer key + fee ceiling for a valid config', () => {
-    const config: QueueConfig = loadQueueConfig(baseEnv())
-    expect(config.chainId).toBe(base.id)
-    expect(config.rpcUrl).toBe('https://base.example')
-    expect(config.signer).toEqual({ kind: 'local', privateKey: KEY as Hex })
-  })
-
-  it('fails loud on a missing or malformed private key', () => {
-    expect(() => loadQueueConfig(baseEnv({ LIQUIDATOR_PRIVATE_KEY: undefined }))).toThrow(
-      /LIQUIDATOR_PRIVATE_KEY/
-    )
-    expect(() => loadQueueConfig(baseEnv({ LIQUIDATOR_PRIVATE_KEY: '0xdeadbeef' }))).toThrow(
-      /LIQUIDATOR_PRIVATE_KEY/
-    )
-  })
-
-  // The act/queue wallet-agreement gate: LIQUIDATOR_ADDRESS (act's skim recipient) must be the
-  // wallet the queue's key signs for, or act-built calldata would skim seized funds to a wallet
-  // this deployment's signer does not control.
-  it('rejects a LIQUIDATOR_ADDRESS that does not match the key-derived signer address', () => {
-    expect(() =>
-      loadQueueConfig(baseEnv({ LIQUIDATOR_ADDRESS: '0x2222222222222222222222222222222222222222' }))
-    ).toThrow(/does not match the address derived from LIQUIDATOR_PRIVATE_KEY/)
-  })
-
-  it('accepts a LIQUIDATOR_ADDRESS that matches the key-derived signer address', () => {
-    const config = loadQueueConfig(baseEnv({ LIQUIDATOR_ADDRESS: DERIVED.toLowerCase() }))
-    expect(config.signer).toEqual({ kind: 'local', privateKey: KEY as Hex })
-  })
-
-  it('rejects a malformed LIQUIDATOR_ADDRESS on the queue path', () => {
-    expect(() => loadQueueConfig(baseEnv({ LIQUIDATOR_ADDRESS: 'not-an-address' }))).toThrow(
-      /LIQUIDATOR_ADDRESS is not a valid address/
-    )
-  })
-})
-
+// The queue's resolver coverage — signer backend, key format, LIQUIDATOR_ADDRESS cross-check, fee
+// ceiling — moved to the hoisted `@repo/bot-kit` `queue/env.ts` (see its `test/queue/env.test.ts`)
+// and, for the composed daemon config, to `services/queued/test/config.test.ts`; the per-core
+// `loadQueueConfig` retired with the one-shot queue path.
 describe('resolveSignerBackend', () => {
   it('selects the local backend (key read) when SIGNER_SOCKET is unset', () => {
     expect(resolveSignerBackend(baseEnv())).toEqual({ kind: 'local', privateKey: KEY as Hex })

@@ -125,12 +125,16 @@ These files provide important background information about dependencies and rela
 
 This is a **bun workspaces monorepo** housing off-chain Morpho curator bots:
 
-- `/tools/` — operator interfaces, kept generic/unopinionated. `tools/cli` (`@repo/cli`,
-  bin `morpho-bots`) is the only way to run bots: UNIX-pipeable one-shot **op commands** (no fixed
+- `/tools/` — operator-invoked one-shot CLIs, kept generic/unopinionated (short-lived pipe stages;
+  the long-lived processes they feed live in `/services/`). `tools/cli` (`@repo/cli`,
+  bin `morpho-bots`) runs the pipeline: UNIX-pipeable one-shot **op commands** (no fixed
   `sense`/`act` verbs). Each domain exposes a flat set of ops — each a **source** (emits opportunity
-  records) XOR a **transform** (ids/records → tx records) — piped into the reserved stateful `queue`
-  sink, e.g. `<domain> unhealthy-positions | <domain> liquidate | <domain> queue`, driven by unix
-  loops/cron. Which ops run is caller policy (exogenous composition — several ops = several loop
+  records) XOR a **transform** (ids/records → tx records) — piped into the reserved `queue` stage,
+  e.g. `<domain> unhealthy-positions | <domain> liquidate | <domain> queue`, driven by unix
+  loops/cron. `queue` is NOT a sink: it is a thin, keyless, stateless client that relays records over
+  a Unix socket to the per-chain `queued` daemon (`services/queued`), which owns
+  dedupe/re-sim/fees/nonce/submit/RBF — so a bot needs both the pipeline loop AND a running daemon.
+  Which ops run is caller policy (exogenous composition — several ops = several loop
   lines). Config and cross-tick state live under
   `~/.morpho-bots` (`MORPHO_BOTS_HOME` overrides). stdout carries JSON-Lines wire records; ALL logs
   go to stderr. A TUI is planned.
