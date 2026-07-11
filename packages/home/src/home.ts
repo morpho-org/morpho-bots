@@ -1,8 +1,15 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
+import { ConfigError } from './config'
+
 /** The two runnable bots; every per-bot path under the home dir is namespaced by one of these. */
 export type BotName = 'blue' | 'midnight'
+
+// The kernel caps a Unix socket path (`sun_path`) at ~104 bytes on macOS / 108 on Linux; stay well
+// under so a too-long path fails loud (exit 2) with a clear message instead of a cryptic
+// bind/connect error.
+const MAX_SUN_PATH_BYTES = 100
 
 /**
  * Root of all operator config and state. `MORPHO_BOTS_HOME` relocates it — tests point it at a
@@ -66,6 +73,23 @@ export function signerPolicyFile(home: string): string {
  */
 export function queuedSocketFile(home: string, chainId: string): string {
   return join(home, `queued-${chainId}.sock`)
+}
+
+/**
+ * Fail loud (via {@link ConfigError} → exit 2) if a resolved Unix socket path exceeds the kernel's
+ * `sun_path` cap, so a too-long path surfaces a clear, operator-fixable message rather than a cryptic
+ * bind/connect error. Shared by every socket-listening/connecting command (signer, queued daemon,
+ * queue thin client).
+ */
+export function assertSunPathLength(socketPath: string): void {
+  const bytes = Buffer.byteLength(socketPath)
+  if (bytes > MAX_SUN_PATH_BYTES) {
+    throw new ConfigError(
+      `socket path is ${bytes} bytes; a Unix socket path is capped at ~${MAX_SUN_PATH_BYTES}. ` +
+        'Set a shorter socket path (via --socket or the *_SOCKET env var), or move MORPHO_BOTS_HOME ' +
+        'closer to root.'
+    )
+  }
 }
 
 /** The per-chain queue daemon's pid lockfile, held for the daemon's lifetime (sole state writer). */

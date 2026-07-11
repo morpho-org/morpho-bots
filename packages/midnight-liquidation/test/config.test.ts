@@ -2,12 +2,11 @@ import type { Address, Hex } from 'viem'
 
 import { Executor } from '@repo/contracts'
 import { describe, expect, it } from 'bun:test'
-import { getAddress, parseGwei } from 'viem'
+import { getAddress } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { mainnet } from 'viem/chains'
 
 import type { ChainConfig } from '../src/config'
-import type { QueueConfig } from '../src/queue-policy'
 
 import {
   assertLiquidatorAddressMatchesKey,
@@ -17,7 +16,6 @@ import {
   resolvePrivateKey,
   resolveSignerBackend
 } from '../src/config'
-import { loadQueueConfig } from '../src/queue-policy'
 
 const MIDNIGHT = '0x1111111111111111111111111111111111111111' as Address
 const EXECUTOOOR = '0x3333333333333333333333333333333333333333'
@@ -283,68 +281,11 @@ describe('loadActConfig', () => {
   })
 })
 
-describe('loadQueueConfig', () => {
-  it('loads the signer key, fee ceiling, and broadcast endpoint with defaults', () => {
-    const config: QueueConfig = loadQueueConfig(baseEnv(), deps)
-    expect(config.chainId).toBe(mainnet.id)
-    expect(config.rpcUrl).toBe('https://rpc.example')
-    expect(config.sendRpcUrl).toBeUndefined()
-    expect(config.maxFeeWei).toBe(parseGwei('300'))
-    expect(config.signer).toEqual({ kind: 'local', privateKey: PRIVATE_KEY as Hex })
-  })
-
-  it('honors SEND_RPC_URL and MAX_FEE_GWEI overrides', () => {
-    const config = loadQueueConfig(
-      baseEnv({ SEND_RPC_URL: 'https://rpc.send', MAX_FEE_GWEI: '42' }),
-      deps
-    )
-    expect(config.sendRpcUrl).toBe('https://rpc.send')
-    expect(config.maxFeeWei).toBe(parseGwei('42'))
-  })
-
-  it('throws on a too-short private key', () => {
-    expect(() => loadQueueConfig(baseEnv({ LIQUIDATOR_PRIVATE_KEY: '0xabc' }), deps)).toThrow(
-      /32-byte hex/
-    )
-  })
-
-  it('throws on a correct-length private key with a non-hex character', () => {
-    const badKey = `0x${'a'.repeat(63)}g` // 66 chars, but 'g' is not hex → isHex branch must fire
-    expect(() => loadQueueConfig(baseEnv({ LIQUIDATOR_PRIVATE_KEY: badKey }), deps)).toThrow(
-      /32-byte hex/
-    )
-  })
-
-  it('throws on a non-numeric MAX_FEE_GWEI', () => {
-    expect(() => loadQueueConfig(baseEnv({ MAX_FEE_GWEI: 'abc' }), deps)).toThrow(
-      /MAX_FEE_GWEI must be a positive number/
-    )
-  })
-
-  // The act/queue wallet-agreement gate: LIQUIDATOR_ADDRESS (act's skim recipient) must be the
-  // wallet the queue's key signs for, or act-built calldata would skim seized funds to a wallet
-  // this deployment's signer does not control.
-  it('rejects a LIQUIDATOR_ADDRESS that does not match the key-derived signer address', () => {
-    expect(() =>
-      loadQueueConfig(
-        baseEnv({ LIQUIDATOR_ADDRESS: '0x2222222222222222222222222222222222222222' }),
-        deps
-      )
-    ).toThrow(/does not match the address derived from LIQUIDATOR_PRIVATE_KEY/)
-  })
-
-  it('accepts a LIQUIDATOR_ADDRESS that matches the key-derived signer address', () => {
-    const config = loadQueueConfig(baseEnv({ LIQUIDATOR_ADDRESS: DERIVED.toLowerCase() }), deps)
-    expect(config.signer).toEqual({ kind: 'local', privateKey: PRIVATE_KEY as Hex })
-  })
-
-  it('rejects a malformed LIQUIDATOR_ADDRESS on the queue path', () => {
-    expect(() => loadQueueConfig(baseEnv({ LIQUIDATOR_ADDRESS: 'not-an-address' }), deps)).toThrow(
-      /LIQUIDATOR_ADDRESS is not a valid address/
-    )
-  })
-})
-
+// The queue's resolver coverage — signer backend, key format, LIQUIDATOR_ADDRESS cross-check, fee
+// ceiling, and the `SEND_RPC_URL` broadcast endpoint — moved to the hoisted `@repo/bot-kit`
+// `queue/env.ts` (see its `test/queue/env.test.ts`) and, for the composed daemon config (RPC,
+// SEND_RPC_URL, fee ceiling), to `services/queued/test/config.test.ts`; the per-core `loadQueueConfig`
+// retired with the one-shot queue path.
 describe('resolveSignerBackend', () => {
   it('selects the local backend (key read) when SIGNER_SOCKET is unset', () => {
     expect(resolveSignerBackend(baseEnv())).toEqual({

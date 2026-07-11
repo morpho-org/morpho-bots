@@ -1,46 +1,5 @@
-import type { LogLevel, OpExport, SignerBackend } from '@repo/bot-kit'
+import type { OpExport } from '@repo/bot-kit'
 import type { BotName } from '@repo/home'
-import type { Chain } from 'viem'
-
-type Env = Record<string, string | undefined>
-
-/**
- * The queue config the CLI wires into `createSigner`/`createPendingQueue`. `sendRpcUrl` is optional
- * so blue's key-set (which has no dedicated broadcast endpoint) is assignable alongside midnight's.
- */
-export type QueueConfig = {
-  chainId: number
-  chain: Chain
-  rpcUrl: string
-  rpcUrlFallback: string | undefined
-  sendRpcUrl?: string | undefined
-  logLevel: LogLevel
-  signer: SignerBackend
-  maxFeeWei: bigint
-  backoffBaseBlocks: bigint
-  backoffMaxBlocks: bigint
-}
-
-/**
- * Per-domain queue policy: settled cooldown and an optional protocol revert decoder. The outcome
- * records' `op` is NOT policy — the queue derives it from the incoming `tx.op` envelope (submit path)
- * or the persisted label's `<domain>:<op>:` prefix (onSettled path), so nothing pins it here.
- */
-export type QueuePolicy = {
-  settledCooldownBlocks: bigint
-  revertReason?: (error: unknown) => string
-}
-
-/**
- * `queue`'s per-domain seam. Unlike an op it does NOT import the core index — only the core's
- * `./queue` subpath (config + policy) — so the stateful signer path stays free of lens/soltag
- * exposure (see the pipeline TIB). The CLI wires bot-kit's `createSigner` + `createPendingQueue`
- * directly around these two values.
- */
-export type QueueAdapter = {
-  loadConfig: (env: Env) => QueueConfig
-  policy: QueuePolicy
-}
 
 /**
  * A single op's STATIC manifest entry — just enough for commander to register the `<domain> <op>`
@@ -54,7 +13,6 @@ export type OpManifest = { kind: 'sense' } | { kind: 'act'; accepts: string }
 type DomainRegistry = {
   ops: Record<string, OpManifest>
   loadOp: (name: string) => Promise<OpExport>
-  queue: () => Promise<QueueAdapter>
 }
 
 // Both liquidation cores expose the same two ops, so they share one manifest. `unhealthy-positions`
@@ -76,21 +34,18 @@ function pickOp(ops: Record<string, OpExport>, name: string, domain: BotName): O
   return op
 }
 
-// Each op/queue loads its implementation lazily via a STATIC-STRING dynamic import, so (a) one
-// domain's spawn never pays another's module graph + soltag lens compile, (b) `--help`/usage stay
-// fast, and (c) `Bun.build` can still statically bundle every branch into `dist/main.js`. `loadOp`
-// imports the core index (lens + soltag); `queue` imports ONLY the `./queue` subpath + bot-kit (no
-// lens/soltag). The static `ops` manifest carries no core code, so registration stays import-free.
+// Each op loads its implementation lazily via a STATIC-STRING dynamic import, so (a) one domain's
+// spawn never pays another's module graph + soltag lens compile, (b) `--help`/usage stay fast, and
+// (c) `Bun.build` can still statically bundle every branch into `dist/main.js`. `loadOp` imports the
+// core index (lens + soltag). The static `ops` manifest carries no core code, so registration stays
+// import-free. `queue` is no longer a domain seam here — it is a thin, domain-agnostic client that
+// relays to the `queued` daemon (`commands/queue.ts`), importing no core.
 export const DOMAINS: Record<BotName, DomainRegistry> = {
   blue: {
     ops: LIQUIDATION_OPS,
     loadOp: async name => {
       const core = await import('@repo/blue-liquidation')
       return pickOp(core.OPS, name, 'blue')
-    },
-    queue: async () => {
-      const q = await import('@repo/blue-liquidation/queue')
-      return { loadConfig: env => q.loadQueueConfig(env), policy: q.queuePolicy }
     }
   },
   midnight: {
@@ -98,10 +53,6 @@ export const DOMAINS: Record<BotName, DomainRegistry> = {
     loadOp: async name => {
       const core = await import('@repo/midnight-liquidation')
       return pickOp(core.OPS, name, 'midnight')
-    },
-    queue: async () => {
-      const q = await import('@repo/midnight-liquidation/queue')
-      return { loadConfig: env => q.loadQueueConfig(env), policy: q.queuePolicy }
     }
   }
 }

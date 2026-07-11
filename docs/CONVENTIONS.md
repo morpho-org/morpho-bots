@@ -62,13 +62,26 @@
   label. The `<suffix>` stays domain-owned and opaque; only the owning core parses it (via its
   `parseOpportunityId`). The `op` is the SOURCE op's name and stays stable through the pipe — a
   transform re-emits under the same `op` — so an outcome traces back to the source that found it.
+- **The `queue` stage is a thin relay, not a sink**: it holds no key, no state, and no signer — it
+  drains stdin, pre-filters records to this domain+chain (foreign records are warn+skipped like
+  `act`'s `unaccepted`), and relays each over a Unix socket to the per-chain `queued` daemon
+  (`morpho-queued`), which owns dedupe/re-sim/fees/nonce/submit/RBF. Only the daemon's synchronous
+  acks (`submitted`/`would_submit`/`deduped_inflight`/`sim_reverted`) echo back onto the pipe's
+  stdout; terminal outcomes (`confirmed`/`reverted`/`dropped`) land after the pipe has exited, so
+  they live ONLY in the daemon's append-only `<home>/queued/outcomes-<chainId>.jsonl` (the
+  monitoring plane: `tail -f … | jq`), never on stdout. Exit mapping: complete handoff → 0
+  (per-record `bad_request`/`unsupported_version`/`chain_mismatch` are warn+skip, still 0 — a
+  malformed line never kills a stage); transport failure, timeout, or a `retry`/`internal` daemon
+  error → 1 (transient, the loop retries); handshake failure (daemon chain mismatch, protocol-`v`
+  mismatch) or a `ConfigError`/stdin wire-version skew → 2.
 - **Promises**: Use `tryCatch` from `@repo/utils` to handle promise throws.
 
 ### Configuration
 
 - **Env-shaped tables, not `Bun.env`**: Bot packages receive ALL configuration — venue API keys
   included — through the env table passed to the stage entry points (`senseOnce(env, …)` /
-  `actOnce(env, …)` / `loadQueueConfig(env)` and their stage config loaders). Never read
+  `actOnce(env, …)` and their stage config loaders; the `queue` stage is a thin client that reads
+  only chain-resolution env — see the wire-contract bullet). Never read
   `Bun.env` directly inside a bot package: the CLI merges `~/.morpho-bots/config.json` +
   `secrets.json` + the process env into that table (precedence: config < secrets < process env),
   and a direct `Bun.env` read silently bypasses file-sourced settings. There is still no wrapper
@@ -82,9 +95,10 @@
   `Config` object.
 - **Single key reader**: The signer private key is read by exactly one process — the signing agent
   (`morpho-bots signer`, reading `SIGNER_PRIVATE_KEY`) when `SIGNER_SOCKET` is set, otherwise the
-  `queue` command (reading `LIQUIDATOR_PRIVATE_KEY`). No other stage or package may read
-  `SIGNER_PRIVATE_KEY`/`LIQUIDATOR_PRIVATE_KEY`: `sense`/`act` never sign, and in agent mode the
-  queue itself never reads the key.
+  per-chain `queued` daemon (`morpho-queued`, reading `LIQUIDATOR_PRIVATE_KEY` from its own `queued`
+  config section). No pipe stage ever reads a key: `sense`/`act` never sign, and the `queue` stage
+  is now a thin client that holds no key and no signer (it relays to the daemon over a socket). No
+  other stage or package may read `SIGNER_PRIVATE_KEY`/`LIQUIDATOR_PRIVATE_KEY`.
 
 ### Code Complexity
 

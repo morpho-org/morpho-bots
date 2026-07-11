@@ -1,350 +1,245 @@
-import type { Logger, OutcomeRecord, TxRecord } from '@repo/bot-kit'
-import type { BotName, QueueState } from '@repo/home'
-import type { Hex, LocalAccount } from 'viem'
+import type { LogLevel, OutcomeRecord, TxRecord } from '@repo/bot-kit'
+import type { BotName } from '@repo/home'
 
 import {
-  createBackoff,
-  createDeploylessClient,
   createLogger,
-  createPendingQueue,
-  createSigner,
-  initialFees,
-  QUEUE_BACKOFF_STATUSES,
-  simulateLiquidationExec,
-  splitIdPrefix,
-  TxSendError,
-  WIRE_VERSION
+  MAX_LINE_BYTES,
+  QUEUED_PROTOCOL_VERSION,
+  QueuedProtocolError
 } from '@repo/bot-kit'
 import {
-  acquireLock,
+  assertSunPathLength,
   botsHome,
   ConfigError,
-  lockFile,
-  loadState,
-  QUEUE_STATE_VERSION,
-  queueStateFile,
-  releaseLock,
-  saveState,
-  warnOnLooseSecrets
+  warnOnLooseSecrets,
+  queuedSocketFile
 } from '@repo/home'
-import { createAgentAccount } from '@repo/signer'
 import { ensureError } from '@repo/utils'
-import { isAddressEqual } from 'viem'
-import { privateKeyToAccount } from 'viem/accounts'
-import { getBlockNumber } from 'viem/actions'
 
-import type { QueueAdapter } from '../domains'
+import type { QueuedClient } from '../queued-client'
 
 import { mergedEnv } from '../config'
-import { DOMAINS } from '../domains'
+import {
+  connectQueued,
+  QUEUED_HANDSHAKE_TIMEOUT_MS,
+  QUEUED_INGEST_TIMEOUT_MS
+} from '../queued-client'
 import { collectQueueRecords } from '../wire-input'
-import { drainStdin, emitLine, fail } from './shared'
+import { emitLine, fail } from './shared'
 
 type Env = Record<string, string | undefined>
 
-// Builds one full queue `outcome` envelope for stdout. `op` is the source op the record belongs to —
-// the submit path takes it from the incoming `tx.op` envelope, the onSettled path derives it from the
-// persisted label's `<domain>:<op>:` prefix (the only survivor there). block/txHash/nonce/reason ride
-// only when present.
-function queueOutcome(args: {
-  id: string
-  domain: BotName
-  op: string
-  chainId: number
-  status: string
-  block?: number | undefined
-  txHash?: Hex | undefined
-  nonce?: number | undefined
-  reason?: string | undefined
-}): OutcomeRecord {
-  return {
-    v: WIRE_VERSION,
-    kind: 'outcome',
-    id: args.id,
-    domain: args.domain,
-    op: args.op,
-    chainId: args.chainId,
-    at: new Date().toISOString(),
-    summary: `${args.domain} queue ${args.status}${args.reason ? `: ${args.reason}` : ''}`,
-    status: args.status,
-    ...(args.block !== undefined ? { block: args.block } : {}),
-    ...(args.txHash ? { txHash: args.txHash } : {}),
-    ...(args.nonce !== undefined ? { nonce: args.nonce } : {}),
-    ...(args.reason ? { reason: args.reason } : {})
-  }
+const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+// The thin client never validates config beyond chain resolution, so a bad LOG_LEVEL is not worth an
+// exit 2 here (the daemon owns the strict validation). Fall back to `info` rather than throwing.
+function resolveLogLevel(env: Env): LogLevel {
+  const level = env.LOG_LEVEL?.trim()
+  return LOG_LEVELS.find(candidate => candidate === level) ?? 'info'
 }
 
 /**
- * The locked queue pass. Reads tx/outcome records from stdin (TTY → maintenance-only), applies
- * outcome-driven backoff, then for each tx: dedupes against live inflight labels, RE-SIMULATES the
- * exact bytes it will sign, and submits — emitting `deduped_inflight`/`sim_reverted`/`submitted`
- * outcomes. Runs `onBlock` (emitting terminal `confirmed`/`reverted`/`dropped` outcomes via
- * `onSettled`), then persists. Returns 2 on wire-version skew; otherwise 0 (per-tx failures are
- * records/logs, never exit codes). A `TxSendError` mid-batch skips remaining submits but still runs
- * onBlock + persist.
- */
-async function runQueuePass(
-  domain: BotName,
-  chainId: string,
-  config: Awaited<ReturnType<QueueAdapter['loadConfig']>>,
-  policy: QueueAdapter['policy'],
-  home: string,
-  logger: Logger
-): Promise<number> {
-  const queuePath = queueStateFile(home, domain, chainId)
-  const { state, reset } = loadState<QueueState>(queuePath, QUEUE_STATE_VERSION)
-  if (reset && reset !== 'missing')
-    logger.warn('state.reset', { bot: domain, chainId, reason: reset })
-
-  // Read stdin to EOF. A TTY (no upstream pipe) → maintenance-only pass (the queue is the heartbeat).
-  let txs: TxRecord[] = []
-  let outcomes: OutcomeRecord[] = []
-  if (!process.stdin.isTTY) {
-    const collected = collectQueueRecords(await Bun.stdin.text(), logger)
-    if (collected.versionSkew) {
-      fail('wire.version_skew', new Error('input record has a newer wire version than this build'))
-      return 2
-    }
-    txs = collected.txs
-    outcomes = collected.outcomes
-  }
-
-  // Resolve the signing account BEFORE the zero-work fast path so a broken agent surfaces every
-  // pass. Agent mode: the handshake fetches the agent's address — a dead/missing socket throws a
-  // plain error (transient → exit 1, the loop retries), while an address that disagrees with
-  // LIQUIDATOR_ADDRESS is operator misconfig → ConfigError (exit 2). Local mode: build the account
-  // from the in-process key. Either way the queue never holds the key beyond `privateKeyToAccount`.
-  let account: LocalAccount
-  if (config.signer.kind === 'agent') {
-    account = await createAgentAccount({ socketPath: config.signer.socketPath })
-    const expected = config.signer.expectedAddress
-    if (expected && !isAddressEqual(account.address, expected)) {
-      throw new ConfigError(
-        `signing agent address (${account.address}) does not match LIQUIDATOR_ADDRESS (${expected}) — act and queue would target different wallets`
-      )
-    }
-  } else {
-    account = privateKeyToAccount(config.signer.privateKey)
-  }
-  const signer = createSigner({
-    chain: config.chain,
-    rpcUrl: config.rpcUrl,
-    rpcUrlFallback: config.rpcUrlFallback,
-    ...(config.sendRpcUrl ? { sendRpcUrl: config.sendRpcUrl } : {}),
-    account
-  })
-  const eoa = signer.account.address
-  // Read client for the re-sim `eth_call` and the head fetch (reads go to `rpcUrl`, not sendRpcUrl).
-  const client = createDeploylessClient({
-    chain: config.chain,
-    rpcUrl: config.rpcUrl,
-    rpcUrlFallback: config.rpcUrlFallback
-  })
-  const backoff = createBackoff({
-    baseBlocks: config.backoffBaseBlocks,
-    maxBlocks: config.backoffMaxBlocks,
-    ...(state ? { initialState: state.backoff } : {})
-  })
-
-  const queue = createPendingQueue({
-    send: signer.send,
-    getReceipt: signer.getReceipt,
-    getBaseFee: signer.getBaseFee,
-    syncNonce: signer.syncNonce,
-    maxFeeWei: config.maxFeeWei,
-    logger,
-    settledCooldownBlocks: policy.settledCooldownBlocks,
-    ...(policy.revertReason ? { revertReason: policy.revertReason } : {}),
-    ...(state ? { initialState: state.queue } : {}),
-    // Terminal fates during onBlock become first-class outcome lines on stdout.
-    onSettled: info =>
-      emitLine(
-        queueOutcome({
-          id: info.label,
-          domain,
-          op: splitIdPrefix(info.label).op,
-          chainId: config.chainId,
-          status: info.status,
-          txHash: info.txHash,
-          nonce: info.nonce,
-          reason: info.reason
-        })
-      )
-  })
-
-  // Zero-work fast path: with nothing on stdin and an empty pending set, there is nothing to
-  // reconcile — skip the head fetch (and thus every RPC call) and just persist the (empty) state.
-  const hasWork = txs.length > 0 || outcomes.length > 0 || queue.size > 0
-  const head = hasWork ? await getBlockNumber(client) : null
-
-  if (head !== null) {
-    // Outcome-driven backoff: the queue is the single writer (act only filters against a read copy).
-    for (const record of outcomes) {
-      if (QUEUE_BACKOFF_STATUSES.has(record.status)) backoff.record(record.id, head)
-    }
-
-    // One cached base fee for the whole batch (fetched only when there is something to submit).
-    let baseFee: bigint | null = txs.length > 0 ? await signer.getBaseFee() : null
-
-    for (const tx of txs) {
-      // Dedupe against the LIVE inflight set (recomputed so txs submitted earlier this batch count).
-      if (queue.inflightLabels().has(tx.id)) {
-        emitLine(
-          queueOutcome({
-            id: tx.id,
-            domain,
-            op: tx.op,
-            chainId: config.chainId,
-            status: 'deduped_inflight',
-            block: Number(head)
-          })
-        )
-        continue
-      }
-
-      // Structurally sign-what-you-simulate: re-simulate the exact bytes before broadcasting.
-      const sim = await simulateLiquidationExec(client, {
-        executooor: tx.to,
-        eoa,
-        data: tx.data
-      })
-      if (sim.status !== 'ok') {
-        backoff.record(tx.id, head)
-        emitLine(
-          queueOutcome({
-            id: tx.id,
-            domain,
-            op: tx.op,
-            chainId: config.chainId,
-            status: 'sim_reverted',
-            block: Number(head),
-            reason: sim.reason
-          })
-        )
-        continue
-      }
-
-      baseFee ??= await signer.getBaseFee()
-      const fees = initialFees(baseFee, config.maxFeeWei)
-      let submitted: Awaited<ReturnType<typeof queue.submit>>
-      try {
-        submitted = await queue.submit({
-          request: { to: tx.to, data: tx.data },
-          label: tx.id,
-          maxFeePerGas: fees.maxFeePerGas,
-          maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
-          blockNumber: head
-        })
-      } catch (error) {
-        // A claimed-nonce-but-hashless send: the signer rolled its cursor back. Skip the remaining
-        // submits but still run onBlock + persist so pending reconciliation and state survive.
-        if (error instanceof TxSendError) {
-          logger.error('queue.tx_send_error', { label: tx.id, detail: ensureError(error).message })
-          break
-        }
-        throw error
-      }
-      if (submitted.submitted) {
-        backoff.clear(tx.id)
-        emitLine(
-          queueOutcome({
-            id: tx.id,
-            domain,
-            op: tx.op,
-            chainId: config.chainId,
-            status: 'submitted',
-            block: Number(head),
-            txHash: submitted.txHash,
-            nonce: submitted.nonce
-          })
-        )
-      }
-      // A hashless {submitted:false} is a transient failure the queue already logged; per the wire
-      // contract that is a log, not an outcome, and backoff is left as-is (not cleared).
-    }
-
-    // Confirmations / stuck-detection / fee-bumps for the whole pending set (incl. prior ticks).
-    await queue.onBlock(head)
-  }
-
-  saveState(queuePath, {
-    version: QUEUE_STATE_VERSION,
-    queue: queue.dump(),
-    backoff: backoff.dump()
-  } satisfies QueueState)
-  return 0
-}
-
-/**
- * `<domain> queue`: the stateful sink and single-writer heartbeat. Acquires the per-(bot,chain) lock
- * (held → drain stdin, exit 0; a dead pid is stolen), then runs one maintenance pass under the lock.
- * Key custody splits on the signer backend: in local mode (no `SIGNER_SOCKET`) the private key lives
- * only here; in agent mode the `morpho-bots signer` daemon is the sole key holder and this process
- * stays keyless. Exit codes: 0 when the maintenance pass ran (even if some submits failed
- * transiently), 2 on config/usage, wire-version skew, or an agent whose address disagrees with
- * LIQUIDATOR_ADDRESS, 1 only when the pass itself could not run (e.g. the head fetch failed, or the
- * signer socket is dead — transient, the loop retries).
+ * `<domain> queue`: a thin relay into the per-chain `queued` daemon. It holds NO key, NO queue state,
+ * and NO signer — the daemon owns all of that. TTY stdin (a human health-checking the daemon) → a
+ * `ping`. Otherwise it drains stdin, pre-filters records to this domain+chain, opens ONE socket
+ * connection, runs a `status` handshake, then relays each record as an `ingest` and echoes the
+ * daemon's ack `OutcomeRecord` to stdout. Terminal fates (`confirmed`/`reverted`/`dropped`) no longer
+ * ride the pipe — they land in the daemon's `outcomes.jsonl`.
+ *
+ * Exit codes: 0 on a complete handoff (per-record `bad_request`/`unsupported_version`/`chain_mismatch`
+ * are warn+skip, still 0 — the wire discipline that a malformed line never kills a stage); 1 on a
+ * transport failure, timeout, or a `retry`/`internal` daemon error (transient — the loop retries); 2
+ * on a handshake failure (daemon chain mismatch, protocol-version mismatch) or a ConfigError
+ * (unresolved chain, oversize socket path, stdin wire-version skew).
  */
 export async function runQueueCommand(
   domain: BotName,
   opts: { chain?: string | undefined }
 ): Promise<number> {
   const home = botsHome()
-  const adapter = await DOMAINS[domain].queue()
 
   let env: Env
   let chainId: string
-  let config: Awaited<ReturnType<QueueAdapter['loadConfig']>>
+  let socketPath: string
   try {
     warnOnLooseSecrets(home)
     ;({ env, chainId } = mergedEnv({ home, bot: domain, chain: opts.chain }))
-    config = adapter.loadConfig(env)
+    // The chain id flows into `Number(chainId)` below (the daemon-handshake comparison); reject a
+    // non-numeric value loud (exit 2) here rather than silently comparing against `NaN`.
+    if (!/^\d+$/.test(chainId)) {
+      throw new ConfigError(
+        `resolved chain id '${chainId}' is not a positive integer — check --chain / CHAIN_ID and config`
+      )
+    }
+    socketPath = env.QUEUED_SOCKET?.trim() || queuedSocketFile(home, chainId)
+    assertSunPathLength(socketPath)
   } catch (error) {
     fail('startup.error', error)
     return 2
   }
 
-  const logger = createLogger(config.logLevel)
-  // In agent mode a still-set LIQUIDATOR_PRIVATE_KEY is dead weight riding this process's env —
-  // exactly what the operator opted out of by setting SIGNER_SOCKET. Warn, don't fail: the value is
-  // ignored either way.
-  if (config.signer.kind === 'agent' && env.LIQUIDATOR_PRIVATE_KEY) {
+  const logger = createLogger(resolveLogLevel(env))
+  // The client reads no key at all now; the queued daemon is the sole local-key reader (when
+  // SIGNER_SOCKET is unset). A LIQUIDATOR_PRIVATE_KEY riding the bot section is dead weight here.
+  if (env.LIQUIDATOR_PRIVATE_KEY) {
     logger.warn('queue.key_ignored', {
       bot: domain,
       chainId,
       detail:
-        'SIGNER_SOCKET is set, so LIQUIDATOR_PRIVATE_KEY is ignored — remove it from the queue env'
+        'the queue is now a thin client and reads no key — the queued daemon owns the signing key; ' +
+        'move LIQUIDATOR_PRIVATE_KEY into the queued section'
     })
   }
-  const lockPath = lockFile(home, domain, chainId)
-  const lock = acquireLock(lockPath)
-  if (!lock.acquired) {
-    logger.info('queue.skipped', {
-      bot: domain,
-      chainId,
-      reason: 'lock_held',
-      holderPid: lock.holderPid
-    })
-    // Another queue holds the lock; drain our stdin so upstream `act` finishes cleanly, then skip.
-    await drainStdin()
-    return 0
+
+  const chainIdNum = Number(chainId)
+
+  // TTY stdin (no upstream pipe): a human health-check. Ping the daemon and map pong → 0, dead → 1.
+  if (process.stdin.isTTY) {
+    let client: QueuedClient
+    try {
+      client = await connectQueued(socketPath, QUEUED_HANDSHAKE_TIMEOUT_MS)
+    } catch (error) {
+      logger.error('queue.ping_failed', { chainId, detail: ensureError(error).message })
+      return 1
+    }
+    try {
+      const result = await client.request('ping', undefined, QUEUED_HANDSHAKE_TIMEOUT_MS)
+      const alive = (result as { pong?: unknown }).pong === true
+      if (!alive) logger.error('queue.ping_failed', { chainId, detail: 'daemon did not pong' })
+      return alive ? 0 : 1
+    } catch (error) {
+      logger.error('queue.ping_failed', { chainId, detail: ensureError(error).message })
+      return 1
+    } finally {
+      client.close()
+    }
   }
-  if (lock.stolen) logger.warn('lock.stolen', { bot: domain, chainId, lockPath })
+
+  // Drain stdin to EOF FIRST (so an upstream `liquidate` finishes cleanly even if the daemon is down),
+  // then parse. A record from a newer wire version stops the pass (exit 2) — deploy skew, not data.
+  const collected = collectQueueRecords(await Bun.stdin.text(), logger)
+  if (collected.versionSkew) {
+    fail('wire.version_skew', new Error('input record has a newer wire version than this build'))
+    return 2
+  }
+
+  // Outcomes drive backoff, txs submit — the daemon treats each ingest independently, so mirror the
+  // pre-daemon one-shot ordering (outcomes' backoff bookkeeping, then submits). Foreign domain/chain
+  // records are warn+skipped here (the client pre-filters; the daemon re-checks as defense-in-depth).
+  const records: (TxRecord | OutcomeRecord)[] = [...collected.outcomes, ...collected.txs]
+
+  let client: QueuedClient
+  try {
+    client = await connectQueued(socketPath, QUEUED_HANDSHAKE_TIMEOUT_MS)
+  } catch (error) {
+    logger.error('queue.connect_failed', { chainId, detail: ensureError(error).message })
+    return 1
+  }
 
   try {
-    return await runQueuePass(domain, chainId, config, adapter.policy, home, logger)
-  } catch (error) {
-    // A ConfigError is operator misconfig the loop can't retry past (an agent whose address
-    // disagrees with LIQUIDATOR_ADDRESS) → exit 2, same contract as a bad startup config. Every
-    // other throw (e.g. a transient RPC failure fetching the head, or a dead signer socket) → retry
-    // next interval. Per-tx failures never reach here; they are outcome records / logs.
-    if (error instanceof ConfigError) {
-      fail('startup.error', error)
-      return 2
+    // Handshake: confirm the daemon serves THIS chain and speaks THIS protocol before relaying work.
+    try {
+      const status = await client.request('status', undefined, QUEUED_HANDSHAKE_TIMEOUT_MS)
+      // A status reply without a numeric chainId is an unusable daemon — treat it like a chain
+      // mismatch (handshake failure, exit 2) rather than reading through to `NaN`.
+      if (!isRecord(status) || typeof status.chainId !== 'number') {
+        fail('queue.handshake_failed', new Error('daemon status did not report a numeric chainId'))
+        return 2
+      }
+      if (status.chainId !== chainIdNum) {
+        fail(
+          'queue.handshake_failed',
+          new Error(`daemon serves chain ${status.chainId}, not ${chainIdNum}`)
+        )
+        return 2
+      }
+    } catch (error) {
+      // A protocol-version mismatch is a handshake failure (exit 2); any other status failure is
+      // transient (a dead/slow daemon → exit 1, the loop retries).
+      if (error instanceof QueuedProtocolError && error.code === 'unsupported_version') {
+        fail('queue.handshake_failed', error)
+        return 2
+      }
+      logger.error('queue.handshake_failed', { chainId, detail: ensureError(error).message })
+      return 1
     }
-    logger.error('queue.error', { bot: domain, chainId, detail: ensureError(error).message })
-    return 1
+
+    for (const record of records) {
+      if (record.domain !== domain || record.chainId !== chainIdNum) {
+        logger.warn('queue.skip', {
+          reason: 'unaccepted',
+          domain: record.domain,
+          recordChainId: record.chainId
+        })
+        continue
+      }
+      // Client-side oversize guard: the daemon KILLS the connection when a single request line
+      // reaches MAX_LINE_BYTES without a newline, which would starve every later record in the
+      // batch. Pre-check the line this record would produce (mirroring the envelope
+      // `queued-client` writes, a fixed-length uuid standing in for the real id) and warn+skip an
+      // oversize record — exit stays 0, the rest of the batch still flows.
+      const requestBytes = Buffer.byteLength(
+        `${JSON.stringify({
+          v: QUEUED_PROTOCOL_VERSION,
+          id: '00000000-0000-0000-0000-000000000000',
+          method: 'ingest',
+          params: { record }
+        })}\n`
+      )
+      if (requestBytes > MAX_LINE_BYTES) {
+        logger.warn('queue.skip', {
+          reason: 'oversize',
+          id: record.id,
+          detail: `serialized request is ${requestBytes} bytes; the daemon caps a line at ${MAX_LINE_BYTES}`
+        })
+        continue
+      }
+      try {
+        const result = await client.request('ingest', { record }, QUEUED_INGEST_TIMEOUT_MS)
+        // Structural guard before echoing: only a well-formed outcome record rides the pipe. A
+        // malformed ack is warn+skipped (exit stays 0) rather than emitted or read through blindly.
+        const outcome = isRecord(result) ? result.outcome : undefined
+        if (isRecord(outcome) && outcome.kind === 'outcome') {
+          emitLine(outcome as unknown as OutcomeRecord)
+        } else {
+          logger.warn('queue.skip', {
+            reason: 'malformed_ack',
+            id: record.id,
+            detail: 'daemon ingest ack was not a well-formed outcome record'
+          })
+        }
+      } catch (error) {
+        if (error instanceof QueuedProtocolError) {
+          // Per-record defense-in-depth: a malformed/foreign/skewed record is warn+skipped, the batch
+          // survives (still exit 0). A `retry`/`internal` is transient — break the batch and exit 1
+          // (mirrors the one-shot's break-the-batch; subsequent submits would NACK the same way).
+          if (
+            error.code === 'bad_request' ||
+            error.code === 'unsupported_version' ||
+            error.code === 'chain_mismatch'
+          ) {
+            logger.warn('queue.skip', { reason: error.code, id: record.id, detail: error.message })
+            continue
+          }
+          logger.error('queue.ingest_failed', {
+            code: error.code,
+            id: record.id,
+            detail: error.message
+          })
+          return 1
+        }
+        // A transport failure (timeout, socket closed) is transient — the connection is likely dead,
+        // so break the batch and let the loop retry.
+        logger.error('queue.ingest_failed', { id: record.id, detail: ensureError(error).message })
+        return 1
+      }
+    }
+    return 0
   } finally {
-    releaseLock(lockPath)
+    client.close()
   }
 }

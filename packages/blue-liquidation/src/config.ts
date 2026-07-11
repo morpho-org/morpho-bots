@@ -10,18 +10,17 @@ import { readFileSync } from 'node:fs'
 import { defineChain, getAddress, isAddress } from 'viem'
 import { base } from 'viem/chains'
 
-// The queue's signer-backend / fee-ceiling / backoff resolvers now live in `@repo/bot-kit` (they
-// were byte-identical across both cores). Re-exported here so `queue-policy.ts` and the existing
-// test suites keep importing them from `./config` unchanged.
+// The queue's signer-backend / key / address resolvers now live in `@repo/bot-kit` (they were
+// byte-identical across both cores). Re-exported here so the existing `config` test suites and the
+// act path keep importing them from `./config` unchanged. (The fee-ceiling/backoff resolvers moved
+// with them but are now consumed only by the `queued` daemon, so they are imported from bot-kit
+// directly where needed — e.g. `resolveBackoff` above — not re-exported here.)
 export {
   assertLiquidatorAddressMatchesKey,
   optionalLiquidatorAddress,
-  resolveBackoff,
-  resolveMaxFeeWei,
   resolvePrivateKey,
   resolveSignerBackend
 } from '@repo/bot-kit'
-export type { SignerBackend } from '@repo/bot-kit'
 
 // The per-collateral swap routing config (SWAP_CONFIG_PATH JSON) — schemas, `parseSwapConfig`, and
 // `VENUE_API_KEY_ENV` — lives in `@repo/swaps`; this module only reads/validates the file and env.
@@ -188,7 +187,7 @@ type LoadDeps = {
   readFile?: (path: string) => string
 }
 
-export function resolveCommon(env: Env, chainMap: Record<number, ChainConfig>): CommonConfig {
+function resolveCommon(env: Env, chainMap: Record<number, ChainConfig>): CommonConfig {
   const chainIdRaw = required(env, 'CHAIN_ID')
   if (!/^\d+$/.test(chainIdRaw)) {
     // Plain decimal only — reject hex (Number('0x1')) and exponent (Number('1e3')) forms so this
