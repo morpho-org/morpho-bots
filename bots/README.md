@@ -1,12 +1,12 @@
 # bots
 
 Deployment packaging for the bot use-case of the generic `morpho-bots` CLI
-(`interfaces/cli`): how the one-shot ticks are wrapped into long-running services. The CLI package
+(`tools/cli`): how the one-shot ticks are wrapped into long-running services. The CLI package
 itself stays unopinionated — everything that turns it into a persistent liquidation bot lives here.
 
 - `Dockerfile` — the single bot image (all bots ship in it; `BOT`/`CHAIN_ID` select what runs).
   Build context MUST be the repo root so the bun workspace resolves. The image AOT-builds the CLI
-  (`bun run --filter @repo/cli build` → `interfaces/cli/dist/main.js`) so the lens bytecode is baked
+  (`bun run --filter @repo/cli build` → `tools/cli/dist/main.js`) so the lens bytecode is baked
   in and per-tick spawns pay no soltag/solc cost — "warm by construction", no cache to prime.
 - `docker-entrypoint.sh` — the prod persistence loop. Each tick runs the three-stage pipeline
   `bun dist/main.js $BOT $SOURCE_OP | … $TRANSFORM_OP | … queue` every `TICK_INTERVAL_S` seconds;

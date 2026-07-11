@@ -12,12 +12,12 @@ WORKDIR /repo
 # are needed for bun to resolve the `workspace:*` links.
 COPY package.json bun.lock bunfig.toml ./
 COPY packages ./packages
-COPY interfaces ./interfaces
+COPY tools ./tools
 COPY bots ./bots
 RUN bun install --frozen-lockfile
 
 # Build @repo/contracts once at image build (the runtime no longer runs `prestart`), then AOT-bundle
-# the CLI to interfaces/cli/dist/main.js. `bun run --filter @repo/cli build` runs both cores' soltag
+# the CLI to tools/cli/dist/main.js. `bun run --filter @repo/cli build` runs both cores' soltag
 # plugins under Bun.build, baking the compiled lens bytecode into the bundle — so per-tick spawns pay
 # ZERO soltag/solc/transpile cost. This replaces the old warm-soltag-cache trick: the image is now
 # "warm by construction" (see the pipeline TIB), no cache dir to prime or keep alive on the volume.

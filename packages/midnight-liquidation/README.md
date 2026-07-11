@@ -132,7 +132,7 @@ needed. Start the bot:
 set -a
 source packages/midnight-liquidation/.env
 set +a
-cd interfaces/cli
+cd tools/cli
 bun src/main.ts midnight unhealthy-positions    # inspect opportunities (read-only, keyless)
 bun src/main.ts midnight unhealthy-positions | bun src/main.ts midnight liquidate \
   | bun src/main.ts midnight queue    # one full tick; loop/cron for persistence
