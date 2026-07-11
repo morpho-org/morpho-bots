@@ -376,6 +376,7 @@ export function createPendingQueue({
     drop(nonce, blockNumber, reason) {
       const entry = pending.get(nonce)
       if (!entry) return false
+      logger.warn('tx.dropped', { nonce: entry.nonce, txHash: entry.txHash, reason })
       settle(entry, blockNumber, { status: 'dropped', reason })
       return true
     }
