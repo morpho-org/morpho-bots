@@ -1,12 +1,14 @@
 # Bundles the per-chain blue bots with ONE shared rindexer instance + Postgres for borrower
 # discovery. rindexer indexes the Morpho Blue `Borrow` event (services/blue-rindexer/rindexer.yaml)
 # for every chain into one Postgres, discriminated by a `network` column; each bot tick reads the
-# indexed (market, borrower) pairs for its own chain. Bots run the three-stage op pipeline in the
-# image's entrypoint loop (bots/docker-entrypoint.sh): `<SOURCE_OP> | <TRANSFORM_OP> | queue`,
-# defaulting to `unhealthy-positions | liquidate | queue`; stdout carries JSON-Lines records, logs go
-# to stderr. Set the chainId-suffixed RPCs (RPC_URL_8453, RPC_URL_4663, optionally
-# RINDEXER_RPC_URL_<chainId>), a LIQUIDATOR_PRIVATE_KEY, and the matching LIQUIDATOR_ADDRESS (the
-# skim recipient the transform targets — must be the address that private key derives).
+# indexed (market, borrower) pairs for its own chain. Each bot container runs TWO processes in the
+# image's entrypoint (bots/docker-entrypoint.sh): the per-chain `queued` transaction-queue daemon and
+# the three-stage op pipeline that feeds it — `<SOURCE_OP> | <TRANSFORM_OP> | queue`, defaulting to
+# `unhealthy-positions | liquidate | queue`; stdout carries JSON-Lines records, logs go to stderr, and
+# the daemon appends terminal outcomes to /data/morpho-bots/queued/outcomes-<chainId>.jsonl. Set the
+# chainId-suffixed RPCs (RPC_URL_8453, RPC_URL_4663, optionally RINDEXER_RPC_URL_<chainId>), a
+# LIQUIDATOR_PRIVATE_KEY (read by the daemon), and the matching LIQUIDATOR_ADDRESS (the skim recipient
+# the transform targets — must be the address that private key derives).
 #
 # Build contexts are `..` (the repo root — required for the bun workspace to resolve) because this
 # file lives in bots/; run it from anywhere: `docker compose -f bots/docker-compose.blue.yml up`.
@@ -65,11 +67,22 @@ services:
       SOURCE_OP: ${SOURCE_OP:-unhealthy-positions}
       TRANSFORM_OP: ${TRANSFORM_OP:-liquidate}
       RPC_URL: ${RPC_URL_8453:?set RPC_URL_8453}
+      # Dedicated broadcast endpoint for the daemon's eth_sendRawTransaction + nonce/receipt reads. Set
+      # it when RPC_URL is a read-only relay that acks sends without relaying them; falls back to RPC_URL
+      # when unset. chainId-suffixed to match the RPC_URL_<chainId> convention above.
+      SEND_RPC_URL: ${SEND_RPC_URL_8453:-}
+      # The signing key is now read by the `queued` daemon, not the pipe stages. The daemon's
+      # mergedQueuedEnv reads the process env last (after config.json/secrets.json `queued` sections),
+      # so this container-level var lands in the daemon's `queued` config — no secrets.json needed.
       LIQUIDATOR_PRIVATE_KEY: ${LIQUIDATOR_PRIVATE_KEY:?set LIQUIDATOR_PRIVATE_KEY}
-      # `act` skims to this EOA and simulates `from` it (secret-free — the key lives only in `queue`);
-      # it must be the address the private key above derives, else act/queue target different wallets.
+      # `act` skims to this EOA and simulates `from` it (secret-free — no key on the op stages); it
+      # must be the address the private key above derives, else act and the daemon target different
+      # wallets (the daemon cross-checks this against SIGNER_SOCKET when in agent mode).
       LIQUIDATOR_ADDRESS: ${LIQUIDATOR_ADDRESS:?set LIQUIDATOR_ADDRESS}
       EXECUTOOOR_ADDRESS: ${EXECUTOOOR_ADDRESS:-}
+      # Disarm the daemon: run the full dedupe→re-sim→fee pipeline and emit `would_submit`, never
+      # touching the signer. Unset/false = armed (default).
+      QUEUED_DRY_RUN: ${QUEUED_DRY_RUN:-}
       SWAP_CONFIG_PATH: /data/morpho-bots/blue/swap-config.json
       ZEROX_API_KEY: ${ZEROX_API_KEY:-}
       ONEINCH_API_KEY: ${ONEINCH_API_KEY:-}
@@ -81,6 +94,9 @@ services:
       - bot-base-data:/data
       - ${SWAP_CONFIG_PATH:-../packages/blue-liquidation/configs/example.json}:/data/morpho-bots/blue/swap-config.json:ro
     restart: unless-stopped
+    # Worst-case in-flight tick + daemon drain on SIGTERM before the platform SIGKILLs (see the
+    # entrypoint's interruptible-wait shutdown path).
+    stop_grace_period: 60s
 
   # Robinhood launches DETECTION-ONLY: no swap route configured (no SWAP_CONFIG_PATH), so the bot
   # discovers + logs liquidatable positions but skips every routed liquidation. It still needs the
@@ -99,16 +115,23 @@ services:
       SOURCE_OP: ${SOURCE_OP:-unhealthy-positions}
       TRANSFORM_OP: ${TRANSFORM_OP:-liquidate}
       RPC_URL: ${RPC_URL_4663:-https://rpc.mainnet.chain.robinhood.com}
+      # Dedicated broadcast endpoint (see bot-base); chainId-suffixed to match the RPC_URL_<chainId>
+      # convention. Falls back to RPC_URL when unset.
+      SEND_RPC_URL: ${SEND_RPC_URL_4663:-}
+      # Read by the `queued` daemon (process env beats the file-based `queued` section); see bot-base.
       LIQUIDATOR_PRIVATE_KEY: ${LIQUIDATOR_PRIVATE_KEY:?set LIQUIDATOR_PRIVATE_KEY}
       # Must be the address the private key above derives (see bot-base).
       LIQUIDATOR_ADDRESS: ${LIQUIDATOR_ADDRESS:?set LIQUIDATOR_ADDRESS}
       EXECUTOOOR_ADDRESS: ${EXECUTOOOR_ADDRESS:-}
+      QUEUED_DRY_RUN: ${QUEUED_DRY_RUN:-}
       # The bot reads rindexer's indexed events (filtered to network=robinhood) from the same Postgres.
       DATABASE_URL: postgresql://rindexer:${POSTGRES_PASSWORD:-rindexer}@postgres:5432/blue_liquidation
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - bot-robinhood-data:/data
     restart: unless-stopped
+    # Worst-case in-flight tick + daemon drain on SIGTERM before the platform SIGKILLs.
+    stop_grace_period: 60s
 
 volumes:
   rindexer-pg:

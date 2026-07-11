@@ -17,6 +17,10 @@
  * LIQUIDATOR_ADDRESS (non-secret) is the operator EOA `act` skims to and simulates `from`; it must
  * be the address LIQUIDATOR_PRIVATE_KEY derives, else the queue rejects act's calldata at load.
  *
+ * NOTE: when the Railway pipeline migration lands, SEND_RPC_URL (the daemon's dedicated broadcast
+ * endpoint — see the compose files) should be mirrored into the pushed vars here. It is intentionally
+ * NOT pushed today: this script still targets the pre-restructure image.
+ *
  * The build context MUST be the repo root so the bun workspace (packages/*) resolves — the script
  * runs `railway up` with cwd set to the repo root (mirrors the Dockerfile header + compose context),
  * and passes `-p/-e` explicitly so the deploy targets this project/environment regardless of whatever
