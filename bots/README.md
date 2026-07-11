@@ -20,8 +20,11 @@ $CHAIN_ID`), restarting it on transient exits and, on a misconfig exit 2, writin
   `PIPESTATUS` per stage under the CLI's 0/1/2 contract: any stage exiting 2 crashes the container
   visibly (`loop.fatal`), any other nonzero re-loops (transient — including a `queue` exiting 1 while
   the daemon is still booting). The loop also crashes the container (exit 2) if it finds the daemon's
-  fatal sentinel. A `SIGTERM`/`SIGINT` is forwarded to the daemon so it drains and persists before
-  exit. Terminal outcomes (confirmed/reverted/dropped) no longer reach the pipe's stdout — the daemon
+  fatal sentinel. Each tick and inter-tick sleep runs in a backgrounded subshell the loop `wait`s on,
+  so a `SIGTERM`/`SIGINT` interrupts the wait and the trap fires promptly (bash defers traps while a
+  foreground command runs) — it forwards TERM to the daemon and waits for the full drain/persist
+  before exit. The compose files set `stop_grace_period: 60s` (worst-case in-flight tick + daemon
+  drain) so the platform doesn't SIGKILL mid-drain. Terminal outcomes (confirmed/reverted/dropped) no longer reach the pipe's stdout — the daemon
   appends them to `$MORPHO_BOTS_HOME/queued/outcomes-<chainId>.jsonl` on the `/data` volume
   (`tail -f` it to watch settlement). Set `QUEUED_DRY_RUN=true` to disarm the daemon: it runs the full
   dedupe→re-sim→fee pipeline and emits `would_submit` without ever touching the signer.
@@ -33,8 +36,10 @@ $CHAIN_ID`), restarting it on transient exits and, on a misconfig exit 2, writin
 
 ## Signing agent (opt-in)
 
-The CLI ships a keyless-queue option: `morpho-bots signer` runs a policy-enforcing signing daemon
-(the sole key holder) on a Unix socket, and a `queue` with `SIGNER_SOCKET` set signs through it
-instead of reading a local key. The compose files and `docker-entrypoint.sh` are unchanged — they
-still run the local-key default (`LIQUIDATOR_PRIVATE_KEY` on the queue). Wiring the agent into prod
-as a sidecar sharing a socket volume is deferred alongside the shelved Railway pipeline migration.
+The `queue` stage is a thin client and no longer signs or reads keys — signing lives in the `queued`
+daemon. The CLI ships a keyless-signing option: `morpho-bots signer` runs a policy-enforcing signing
+daemon (the sole key holder) on a Unix socket, and a `queued` daemon with `SIGNER_SOCKET` set signs
+through the agent instead of reading a local key. The compose files run the local-key default: the
+`queued` daemon reads `LIQUIDATOR_PRIVATE_KEY` directly (the entrypoint unsets it from the pipe
+stages' env). Wiring the agent into prod as a sidecar sharing a socket volume is deferred alongside
+the shelved Railway pipeline migration.

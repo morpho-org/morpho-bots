@@ -10,14 +10,15 @@ FROM oven/bun:1.3.12-slim
 WORKDIR /repo
 
 # Manifests + workspace members first, so `bun install` is layer-cached. All members' package.json
-# are needed for bun to resolve the `workspace:*` links. `services/` is copied too: `services/queued`
-# is a workspace member (`services/*` in the root workspaces glob), so `bun install --frozen-lockfile`
-# needs its package.json present or the frozen check fails. The non-workspace `services/blue-rindexer`
-# has no package.json and is skipped by the glob (its own image builds from services/blue-rindexer/).
+# are needed for bun to resolve the `workspace:*` links. Only `services/queued` is copied: it is the
+# lone `services/*` workspace member, so `bun install --frozen-lockfile` needs its package.json present
+# or the frozen check fails. The non-workspace `services/blue-rindexer` isn't a member (no package.json)
+# and isn't needed by this image, so copying it would only bust the install layer on unrelated changes
+# (its own image builds from services/blue-rindexer/).
 COPY package.json bun.lock bunfig.toml ./
 COPY packages ./packages
 COPY tools ./tools
-COPY services ./services
+COPY services/queued ./services/queued
 COPY bots ./bots
 RUN bun install --frozen-lockfile
 

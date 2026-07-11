@@ -47,6 +47,9 @@ services:
       # Cross-tick state; without it a container restart degrades to fresh-state semantics (safe).
       - bot-data:/data
     restart: unless-stopped
+    # Worst-case in-flight tick + daemon drain on SIGTERM before the platform SIGKILLs (see the
+    # entrypoint's interruptible-wait shutdown path).
+    stop_grace_period: 60s
 
 volumes:
   bot-data:

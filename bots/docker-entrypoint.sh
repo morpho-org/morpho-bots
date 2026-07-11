@@ -57,12 +57,16 @@ DAEMON_MAIN="$REPO_ROOT/services/queued/dist/main.js"
 
 # Entrypoint-owned coordination files under the state home, all cleared at startup so a prior
 # container's crash never poisons a fresh boot: the fatal sentinel (daemon exited 2 → pipe loop
-# crashes), the stop flag (shutdown asked the supervisor to stop restarting), and the daemon pid file
-# (lets the SIGTERM trap forward TERM to whichever daemon instance is currently running).
+# crashes), the stop flag (shutdown asked the supervisor to stop restarting), the daemon pid file
+# (lets the SIGTERM trap forward TERM to whichever daemon instance is currently running), and the
+# tick-codes file (each tick's PIPESTATUS, written from a backgrounded subshell so the SIGTERM trap
+# can interrupt the wait — see the loop). A stale pid on the /data volume would risk TERMing a
+# recycled pid, so the pid file MUST be cleared here too.
 FATAL_SENTINEL="$MORPHO_BOTS_HOME/queued-$CHAIN_ID.fatal"
 STOP_FLAG="$MORPHO_BOTS_HOME/queued-$CHAIN_ID.stop"
 DAEMON_PID_FILE="$MORPHO_BOTS_HOME/queued-$CHAIN_ID.entrypoint-pid"
-rm -f "$FATAL_SENTINEL" "$STOP_FLAG"
+CODES_FILE="$MORPHO_BOTS_HOME/queued-$CHAIN_ID.tick-codes"
+rm -f "$FATAL_SENTINEL" "$STOP_FLAG" "$DAEMON_PID_FILE" "$CODES_FILE"
 
 # Background supervisor: keep the queue daemon alive. The stop flag (set by `shutdown`) makes it stop
 # restarting; misconfig (exit 2) drops a fatal sentinel and stops (the pipe loop turns that into a
@@ -91,17 +95,29 @@ supervise_daemon() {
 supervise_daemon &
 SUPERVISOR_PID=$!
 
-# On container stop, set the stop flag so the supervisor won't restart, forward TERM to the live daemon
+# The supervisor subshell forked above captured this shell's env (incl. LIQUIDATOR_PRIVATE_KEY), and
+# every daemon respawn inherits that snapshot — so `queued` keeps seeing the key. Unset it HERE so it
+# is gone from this shell's env and never leaks into any pipe-stage spawn (the thin-client `queue`
+# would otherwise warn queue.key_ignored every tick).
+unset LIQUIDATOR_PRIVATE_KEY
+
+# Drain the daemon: set the stop flag so the supervisor won't restart, forward TERM to the live daemon
 # (it drains, persists, unlinks its socket, exits 0), then wait for the supervisor to finish — its
-# `wait` on the daemon reaps the full drain before it returns — and exit 0.
-shutdown() {
-  trap - SIGTERM SIGINT
-  echo "{\"level\":\"info\",\"event\":\"loop.shutdown\",\"bot\":\"$BOT\",\"chainId\":\"$CHAIN_ID\"}" >&2
+# `wait` on the daemon reaps the full drain before it returns. Used by BOTH the SIGTERM handler and the
+# fatal pipe-stage exit-2 branch, so a fatal stage exit also drains the daemon before the container dies.
+stop_daemon() {
   touch "$STOP_FLAG"
   local dpid
   dpid="$(cat "$DAEMON_PID_FILE" 2>/dev/null || true)"
   if [[ -n "$dpid" ]]; then kill -TERM "$dpid" 2>/dev/null || true; fi
   wait "$SUPERVISOR_PID" 2>/dev/null || true
+}
+
+# On container stop, drain the daemon then exit 0.
+shutdown() {
+  trap - SIGTERM SIGINT
+  echo "{\"level\":\"info\",\"event\":\"loop.shutdown\",\"bot\":\"$BOT\",\"chainId\":\"$CHAIN_ID\"}" >&2
+  stop_daemon
   exit 0
 }
 trap shutdown SIGTERM SIGINT
@@ -115,11 +131,25 @@ while true; do
     echo "{\"level\":\"error\",\"event\":\"loop.fatal\",\"bot\":\"$BOT\",\"chainId\":\"$CHAIN_ID\",\"detail\":\"the queued daemon exited 2 (operator misconfig) and cannot recover — stopping the loop; fix config and redeploy\"}" >&2
     exit 2
   fi
-  bun dist/main.js "$BOT" "${SOURCE_OP:-unhealthy-positions}" | bun dist/main.js "$BOT" "${TRANSFORM_OP:-liquidate}" | bun dist/main.js "$BOT" queue
-  codes=("${PIPESTATUS[@]}")
+  # Run the tick in a backgrounded subshell and `wait` on it so a SIGTERM interrupts the wait and the
+  # trap fires PROMPTLY. bash defers traps until a foreground command returns, so a foreground pipeline
+  # could otherwise run the whole tick before `docker stop` SIGKILLs us mid-drain. The subshell writes
+  # its PIPESTATUS to $CODES_FILE, which we read back after the wait.
+  rm -f "$CODES_FILE"
+  ( bun dist/main.js "$BOT" "${SOURCE_OP:-unhealthy-positions}" | bun dist/main.js "$BOT" "${TRANSFORM_OP:-liquidate}" | bun dist/main.js "$BOT" queue; echo "${PIPESTATUS[*]}" >"$CODES_FILE" ) &
+  wait $!
+  # Killed mid-tick: SIGTERM interrupted the wait, the trap already ran shutdown() (which drained the
+  # daemon) and exited. If we still reach here with a stop requested, the codes file may be
+  # missing/partial — don't misread that as a pipeline result; just stop looping.
+  [[ -f "$STOP_FLAG" ]] && break
+  codes=()
+  [[ -s "$CODES_FILE" ]] && read -r -a codes <"$CODES_FILE"
   if [[ " ${codes[*]} " == *" 2 "* ]]; then
     echo "{\"level\":\"error\",\"event\":\"loop.fatal\",\"bot\":\"$BOT\",\"codes\":\"${codes[*]}\",\"detail\":\"a pipeline stage exited 2 (config/usage/wire error) — stopping the loop; fix config and redeploy\"}" >&2
+    stop_daemon
     exit 2
   fi
-  sleep "${TICK_INTERVAL_S:-2}"
+  # Background the inter-tick sleep and wait on it too, so the SIGTERM trap can interrupt it as well.
+  sleep "${TICK_INTERVAL_S:-2}" &
+  wait $!
 done
