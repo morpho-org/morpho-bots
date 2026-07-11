@@ -10,7 +10,7 @@ FROM oven/bun:1.3.12-slim AS abi
 WORKDIR /repo
 COPY package.json bun.lock bunfig.toml ./
 COPY packages ./packages
-COPY interfaces ./interfaces
+COPY tools ./tools
 COPY bots ./bots
 RUN bun install --frozen-lockfile
 RUN bun run --filter @repo/contracts build

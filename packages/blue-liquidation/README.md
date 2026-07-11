@@ -89,13 +89,13 @@ pools/fees and set the API keys for any aggregator venue you use).
 
 ## Running Locally
 
-The bot runs as a one-shot three-stage pipeline via the `morpho-bots` CLI (`interfaces/cli`). Put
+The bot runs as a one-shot three-stage pipeline via the `morpho-bots` CLI (`tools/cli`). Put
 config under `~/.morpho-bots` (`morpho-bots init` scaffolds it; secrets — RPC URL, key,
 `DATABASE_URL` — go in `secrets.json`), then drive the loop with plain unix. stdout is JSON-Lines
 records; logs are stderr:
 
 ```sh
-cd interfaces/cli
+cd tools/cli
 bun src/main.ts blue unhealthy-positions --chain 8453             # inspect opportunities
 bun src/main.ts blue unhealthy-positions --chain 8453 | bun src/main.ts blue liquidate --chain 8453 \
   | bun src/main.ts blue queue --chain 8453                        # one full tick

@@ -27,29 +27,6 @@
         "typescript": "catalog:",
       },
     },
-    "interfaces/cli": {
-      "name": "@repo/cli",
-      "version": "0.1.0",
-      "bin": {
-        "morpho-bots": "./src/main.ts",
-      },
-      "dependencies": {
-        "@repo/blue-liquidation": "workspace:*",
-        "@repo/bot-kit": "workspace:*",
-        "@repo/midnight-liquidation": "workspace:*",
-        "@repo/signer": "workspace:*",
-        "@repo/utils": "workspace:*",
-        "commander": "catalog:",
-        "viem": "catalog:",
-      },
-      "devDependencies": {
-        "@repo/typescript-config": "workspace:*",
-        "@types/bun": "catalog:",
-        "solc": "catalog:",
-        "soltag": "catalog:",
-        "typescript": "catalog:",
-      },
-    },
     "packages/blue-liquidation": {
       "name": "@repo/blue-liquidation",
       "version": "0.1.0",
@@ -162,6 +139,29 @@
         "@repo/typescript-config": "workspace:*",
         "@types/bun": "catalog:",
         "@types/lodash-es": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
+    "tools/cli": {
+      "name": "@repo/cli",
+      "version": "0.1.0",
+      "bin": {
+        "morpho-bots": "./src/main.ts",
+      },
+      "dependencies": {
+        "@repo/blue-liquidation": "workspace:*",
+        "@repo/bot-kit": "workspace:*",
+        "@repo/midnight-liquidation": "workspace:*",
+        "@repo/signer": "workspace:*",
+        "@repo/utils": "workspace:*",
+        "commander": "catalog:",
+        "viem": "catalog:",
+      },
+      "devDependencies": {
+        "@repo/typescript-config": "workspace:*",
+        "@types/bun": "catalog:",
+        "solc": "catalog:",
+        "soltag": "catalog:",
         "typescript": "catalog:",
       },
     },
@@ -361,7 +361,7 @@
 
     "@repo/bots": ["@repo/bots@workspace:bots"],
 
-    "@repo/cli": ["@repo/cli@workspace:interfaces/cli"],
+    "@repo/cli": ["@repo/cli@workspace:tools/cli"],
 
     "@repo/contracts": ["@repo/contracts@workspace:packages/contracts"],
 

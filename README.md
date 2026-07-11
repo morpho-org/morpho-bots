@@ -5,7 +5,7 @@ and the shared packages they consume.
 
 This is a [bun workspaces](https://bun.com/docs/install/workspaces) monorepo:
 
-- `interfaces/` — operator interfaces; `interfaces/cli` (`@repo/cli`, bin `morpho-bots`) is the
+- `tools/` — operator interfaces; `tools/cli` (`@repo/cli`, bin `morpho-bots`) is the
   only way to run bots — UNIX-pipeable one-shot commands, `morpho-bots <bot> sense | act | queue`,
   driven by unix loops/cron
 - `bots/` — deployment packaging for the bot use-case (`@repo/bots`): the Docker image +

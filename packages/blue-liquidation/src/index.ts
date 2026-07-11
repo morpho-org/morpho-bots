@@ -26,7 +26,7 @@ const ACT_CACHE_VERSION = 1
  * The flat op table this core exposes to the CLI (see `@repo/bot-kit`'s {@link OpExport}). Each op is
  * a source XOR a transform; the CLI surfaces each as its own `blue <op>` command. `unhealthy-positions`
  * is the sensor (today's `senseOnce`); `liquidate` is the transform that consumes it (today's
- * `actOnce`). A sync test (`interfaces/cli/test/domains.test.ts`) asserts the CLI's static manifest
+ * `actOnce`). A sync test (`tools/cli/test/domains.test.ts`) asserts the CLI's static manifest
  * matches these names/kinds/`accepts` exactly, so adding an op is an impl here plus a manifest line.
  */
 export const OPS: Record<string, OpExport> = {
