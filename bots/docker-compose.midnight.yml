@@ -1,6 +1,8 @@
-# Runs the midnight-liquidation bot as the three-stage op pipeline in the image's entrypoint loop
-# (bots/docker-entrypoint.sh): `<SOURCE_OP> | <TRANSFORM_OP> | queue`, defaulting to
-# `unhealthy-positions | liquidate | queue`. stdout carries JSON-Lines records, logs go to stderr.
+# Runs the midnight-liquidation bot as TWO processes in the image's entrypoint (bots/docker-entrypoint.sh):
+# the per-chain `queued` transaction-queue daemon and the three-stage op pipeline that feeds it —
+# `<SOURCE_OP> | <TRANSFORM_OP> | queue`, defaulting to `unhealthy-positions | liquidate | queue`.
+# stdout carries JSON-Lines records, logs go to stderr, and the daemon appends terminal outcomes to
+# /data/morpho-bots/queued/outcomes-<chainId>.jsonl.
 # Borrower candidates come from the markets liquidation-candidates HTTP API
 # (LIQUIDATION_CANDIDATES_API_URL, public by default), so there is no indexer or database to run.
 # Build context is `..` (the repo root — required for the bun workspace to resolve) because this file
@@ -19,11 +21,22 @@ services:
       SOURCE_OP: ${SOURCE_OP:-unhealthy-positions}
       TRANSFORM_OP: ${TRANSFORM_OP:-liquidate}
       RPC_URL: ${RPC_URL:?set RPC_URL}
+      # Dedicated broadcast endpoint for the daemon's eth_sendRawTransaction + nonce/receipt reads. Set
+      # it when RPC_URL is a read-only relay that acks sends without relaying them (txs never mine);
+      # falls back to RPC_URL when unset.
+      SEND_RPC_URL: ${SEND_RPC_URL:-}
+      # The signing key is now read by the `queued` daemon, not the pipe stages. The daemon's
+      # mergedQueuedEnv reads the process env last (after config.json/secrets.json `queued` sections),
+      # so this container-level var lands in the daemon's `queued` config — no secrets.json needed.
       LIQUIDATOR_PRIVATE_KEY: ${LIQUIDATOR_PRIVATE_KEY:?set LIQUIDATOR_PRIVATE_KEY}
-      # `act` skims to this EOA and simulates `from` it (secret-free — the key lives only in `queue`);
-      # it must be the address the private key above derives, else act/queue target different wallets.
+      # `act` skims to this EOA and simulates `from` it (secret-free — no key on the op stages); it
+      # must be the address the private key above derives, else act and the daemon target different
+      # wallets (the daemon cross-checks this against SIGNER_SOCKET when in agent mode).
       LIQUIDATOR_ADDRESS: ${LIQUIDATOR_ADDRESS:?set LIQUIDATOR_ADDRESS}
       EXECUTOOOR_ADDRESS: ${EXECUTOOOR_ADDRESS:-}
+      # Disarm the daemon: run the full dedupe→re-sim→fee pipeline and emit `would_submit`, never
+      # touching the signer. Unset/false = armed (default).
+      QUEUED_DRY_RUN: ${QUEUED_DRY_RUN:-}
       # Venues are enabled by the presence of their API key. With neither set, the bot refuses to
       # start unless ALLOW_BAD_DEBT_ONLY=true (then it runs bad-debt-only).
       ZEROX_API_KEY: ${ZEROX_API_KEY:-}
