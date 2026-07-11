@@ -462,6 +462,18 @@ client of it via a viem custom account. The single-writer state discipline, nonc
 re-simulation gate, gas estimation, and broadcast all stay with the queue; the agent is
 signatures-only.
 
+### 2026-07-11 — queue run-order and heartbeat clauses amended
+
+[TIB-2026-07-11-queued-daemon](./TIB-2026-07-11-queued-daemon.md) amends two clauses of this TIB;
+everything else stands. The queue's one-shot run order (lock → state → stdin to EOF → … →
+`onBlock(head)` → persist → release) is replaced by a long-lived per-chain daemon
+(`services/queued`, bin `morpho-queued`) with a continuous settlement/RBF sweeper, and "the queue
+is the heartbeat" becomes "the daemon is the heartbeat" — `<domain> queue` becomes a thin socket
+client, and the per-`(bot, chain)` queue locks retire with the one-shot path. The wire contract,
+outcome vocabulary, re-sim gate, single-writer state discipline, and state-file schema all stand.
+Terminal `confirmed`/`reverted`/`dropped` outcomes move from the pipe's stdout to a per-chain
+`outcomes.jsonl` journal.
+
 <!--
 TIB conventions:
 - Once accepted, do not substantively edit this TIB. If the decision needs to change,
