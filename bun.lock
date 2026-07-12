@@ -76,7 +76,6 @@
       "name": "@repo/home",
       "version": "0.0.0",
       "dependencies": {
-        "@repo/bot-kit": "workspace:*",
         "@repo/utils": "workspace:*",
       },
       "devDependencies": {
@@ -107,10 +106,14 @@
     "packages/signer": {
       "name": "@repo/signer",
       "version": "0.0.0",
+      "bin": {
+        "morpho-signer": "./src/main.ts",
+      },
       "dependencies": {
+        "@repo/bot-kit": "workspace:*",
+        "@repo/home": "workspace:*",
         "@repo/utils": "workspace:*",
         "viem": "catalog:",
-        "zod": "catalog:",
       },
       "devDependencies": {
         "@repo/typescript-config": "workspace:*",
@@ -140,18 +143,13 @@
       "name": "@repo/utils",
       "version": "0.0.0",
       "dependencies": {
-        "@internationalized/date": "catalog:",
-        "@morpho-org/morpho-ts": "catalog:",
         "@morpho-org/viem-dlc": "catalog:",
-        "date-fns": "catalog:",
-        "lodash-es": "catalog:",
         "viem": "catalog:",
         "zod": "catalog:",
       },
       "devDependencies": {
         "@repo/typescript-config": "workspace:*",
         "@types/bun": "catalog:",
-        "@types/lodash-es": "catalog:",
         "typescript": "catalog:",
       },
     },
@@ -162,10 +160,8 @@
         "morpho-queued": "./src/main.ts",
       },
       "dependencies": {
-        "@repo/blue-liquidation": "workspace:*",
         "@repo/bot-kit": "workspace:*",
         "@repo/home": "workspace:*",
-        "@repo/midnight-liquidation": "workspace:*",
         "@repo/signer": "workspace:*",
         "@repo/utils": "workspace:*",
         "commander": "catalog:",
@@ -188,7 +184,6 @@
         "@repo/bot-kit": "workspace:*",
         "@repo/home": "workspace:*",
         "@repo/midnight-liquidation": "workspace:*",
-        "@repo/signer": "workspace:*",
         "@repo/utils": "workspace:*",
         "commander": "catalog:",
         "viem": "catalog:",
@@ -203,18 +198,13 @@
     },
   },
   "catalog": {
-    "@internationalized/date": "^3.11.0",
-    "@morpho-org/morpho-ts": "2.5.0",
     "@morpho-org/viem-dlc": "0.0.11",
     "@types/bun": "^1.3.0",
-    "@types/lodash-es": "^4.17.12",
     "commander": "^14.0.0",
-    "date-fns": "^4.1.0",
     "executooor-viem": "^1.3.3",
     "husky": "^9.1.5",
     "knip": "^5.86.0",
     "lint-staged": "^16.1.2",
-    "lodash-es": "^4.18.0",
     "oxfmt": "^0.36.0",
     "oxlint": "^1.46.0",
     "oxlint-tsgolint": "^0.22.1",
@@ -233,8 +223,6 @@
 
     "@emnapi/wasi-threads": ["@emnapi/wasi-threads@1.2.1", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-uTII7OYF+/Mes/MrcIOYp5yOtSMLBWSIoLPpcgwipoiKbli6k322tcoFsxoIIxPDqW01SQGAgko4EzZi2BNv2w=="],
 
-    "@internationalized/date": ["@internationalized/date@3.12.1", "", { "dependencies": { "@swc/helpers": "^0.5.0" } }, "sha512-6IedsVWXyq4P9Tj+TxuU8WGWM70hYLl12nbYU8jkikVpa6WXapFazPUcHUMDMoWftIDE2ILDkFFte6W2nFCkRQ=="],
-
     "@jridgewell/gen-mapping": ["@jridgewell/gen-mapping@0.3.13", "", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.5.0", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA=="],
 
     "@jridgewell/remapping": ["@jridgewell/remapping@2.3.5", "", { "dependencies": { "@jridgewell/gen-mapping": "^0.3.5", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-LI9u/+laYG4Ds1TDKSJW2YPrIlcVYOwi2fUC6xB43lueCjgxV4lffOCZCtYFiH6TNOX+tQKXx97T4IKHbhyHEQ=="],
@@ -244,8 +232,6 @@
     "@jridgewell/sourcemap-codec": ["@jridgewell/sourcemap-codec@1.5.5", "", {}, "sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og=="],
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
-
-    "@morpho-org/morpho-ts": ["@morpho-org/morpho-ts@2.5.0", "", {}, "sha512-eU0DYR5fJoacOEfHVNdQxt5wYCwjF7/YXGudPhpBrzd3M4ejPS0Gv3Gkr3imUiMKeIA6IBzRLuw7qiFAsqXvxA=="],
 
     "@morpho-org/viem-dlc": ["@morpho-org/viem-dlc@0.0.11", "", { "dependencies": { "valibot": "^1.2.0" }, "peerDependencies": { "@upstash/redis": "^1.0.0", "@vercel/blob": "^2.3.0", "viem": "^2.0.0" }, "optionalPeers": ["@upstash/redis", "@vercel/blob"] }, "sha512-aIam52kaN/Lt2eQuZpcDWPqKKyv/ltH7Di/HoNjdzlWN4ccuk4Keuw63RuP1pXtGAowmxNGblyPnHwja8QohsA=="],
 
@@ -421,15 +407,9 @@
 
     "@scure/bip39": ["@scure/bip39@1.6.0", "", { "dependencies": { "@noble/hashes": "~1.8.0", "@scure/base": "~1.2.5" } }, "sha512-+lF0BbLiJNwVlev4eKelw1WWLaiKXw7sSl8T6FvBlWkdX+94aGJ4o8XjUdlyhTCjd8c+B3KT3JfS8P0bLRNU6A=="],
 
-    "@swc/helpers": ["@swc/helpers@0.5.21", "", { "dependencies": { "tslib": "^2.8.0" } }, "sha512-jI/VAmtdjB/RnI8GTnokyX7Ug8c+g+ffD6QRLa6XQewtnGyukKkKSk3wLTM3b5cjt1jNh9x0jfVlagdN2gDKQg=="],
-
     "@tybys/wasm-util": ["@tybys/wasm-util@0.10.1", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-9tTaPJLSiejZKx+Bmog4uSubteqTvFrVrURwkmHixBo0G4seD0zUxp98E1DzUBJxLQ3NPwXrGKDiVjwx/DpPsg=="],
 
     "@types/bun": ["@types/bun@1.3.13", "", { "dependencies": { "bun-types": "1.3.13" } }, "sha512-9fqXWk5YIHGGnUau9TEi+qdlTYDAnOj+xLCmSTwXfAIqXr2x4tytJb43E9uCvt09zJURKXwAtkoH4nLQfzeTXw=="],
-
-    "@types/lodash": ["@types/lodash@4.17.24", "", {}, "sha512-gIW7lQLZbue7lRSWEFql49QJJWThrTFFeIMJdp3eH4tKoxm1OvEPg02rm4wCCSHS0cL3/Fizimb35b7k8atwsQ=="],
-
-    "@types/lodash-es": ["@types/lodash-es@4.17.12", "", { "dependencies": { "@types/lodash": "*" } }, "sha512-0NgftHUcV4v34VhXm8QBSftKVXtbkBG3ViCjs6+eJ5a6y6Mi/jiFGPc1sC7QK+9BFhWrURE3EOggmWaSxL9OzQ=="],
 
     "@types/node": ["@types/node@25.6.0", "", { "dependencies": { "undici-types": "~7.19.0" } }, "sha512-+qIYRKdNYJwY3vRCZMdJbPLJAtGjQBudzZzdzwQYkEPQd+PJGixUL5QfvCLDaULoLv+RhT3LDkwEfKaAkgSmNQ=="],
 
@@ -454,8 +434,6 @@
     "command-exists": ["command-exists@1.2.9", "", {}, "sha512-LTQ/SGc+s0Xc0Fu5WaKnR0YiygZkm9eKFvyS+fRsU7/ZWFF8ykFM6Pc9aCVf1+xasOOZpO3BAVgVrKvsqKHV7w=="],
 
     "commander": ["commander@14.0.3", "", {}, "sha512-H+y0Jo/T1RZ9qPP4Eh1pkcQcLRglraJaSLoyOtHxu6AapkjWVCy2Sit1QQ4x3Dng8qDlSsZEet7g5Pq06MvTgw=="],
-
-    "date-fns": ["date-fns@4.1.0", "", {}, "sha512-Ukq0owbQXxa/U3EGtsdVBkR1w7KOQ5gIBqdH2hkvknzZPYvBxb/aa6E8L7tmjFtkwZBu3UXBbjIgPo/Ez4xaNg=="],
 
     "emoji-regex": ["emoji-regex@10.6.0", "", {}, "sha512-toUI84YS5YmxW219erniWD0CIVOo46xGKColeNQRgOzDorgBi1v4D71/OFzgD9GO2UGKIv1C3Sp8DAn0+j5w7A=="],
 
@@ -504,8 +482,6 @@
     "lint-staged": ["lint-staged@16.4.0", "", { "dependencies": { "commander": "^14.0.3", "listr2": "^9.0.5", "picomatch": "^4.0.3", "string-argv": "^0.3.2", "tinyexec": "^1.0.4", "yaml": "^2.8.2" }, "bin": { "lint-staged": "bin/lint-staged.js" } }, "sha512-lBWt8hujh/Cjysw5GYVmZpFHXDCgZzhrOm8vbcUdobADZNOK/bRshr2kM3DfgrrtR1DQhfupW9gnIXOfiFi+bw=="],
 
     "listr2": ["listr2@9.0.5", "", { "dependencies": { "cli-truncate": "^5.0.0", "colorette": "^2.0.20", "eventemitter3": "^5.0.1", "log-update": "^6.1.0", "rfdc": "^1.4.1", "wrap-ansi": "^9.0.0" } }, "sha512-ME4Fb83LgEgwNw96RKNvKV4VTLuXfoKudAmm2lP8Kk87KaMK0/Xrx/aAkMWmT8mDb+3MlFDspfbCs7adjRxA2g=="],
-
-    "lodash-es": ["lodash-es@4.18.1", "", {}, "sha512-J8xewKD/Gk22OZbhpOVSwcs60zhd95ESDwezOFuA3/099925PdHJ7OFHNTGtajL3AlZkykD32HykiMo+BIBI8A=="],
 
     "log-update": ["log-update@6.1.0", "", { "dependencies": { "ansi-escapes": "^7.0.0", "cli-cursor": "^5.0.0", "slice-ansi": "^7.1.0", "strip-ansi": "^7.1.0", "wrap-ansi": "^9.0.0" } }, "sha512-9ie8ItPR6tjY5uYJh8K/Zrv/RMZ5VOlOWvtZdEHYSTFKZfIBPQa9tOAEeAWhd+AnIneLJ22w5fjOYtoutpWq5w=="],
 

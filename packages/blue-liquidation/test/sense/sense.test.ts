@@ -1,7 +1,6 @@
-import type { Logger, OpportunityRecord } from '@repo/bot-kit'
+import type { Logger, PositionRecord } from '@repo/bot-kit'
 import type { Address } from 'viem'
 
-import { WIRE_VERSION } from '@repo/bot-kit'
 import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
 
@@ -79,7 +78,7 @@ function runWith(opts: {
   chainHead?: bigint
 }) {
   const { logger, events } = spyLogger()
-  const emitted: OpportunityRecord[] = []
+  const emitted: PositionRecord[] = []
   const chainHead = opts.chainHead ?? 100n
   return runSense({
     chainId: CHAIN_ID,
@@ -98,22 +97,19 @@ describe('runSense', () => {
     expect(counters).toEqual({ pairs: 1, liquidatable: 1, emitted: 1 })
     expect(emitted).toHaveLength(1)
     const record = emitted[0]!
-    expect(record.v).toBe(WIRE_VERSION)
-    expect(record.kind).toBe('opportunity')
+    expect(record.kind).toBe('position')
     expect(record.id).toBe(ID)
-    expect(record.domain).toBe('blue')
-    expect(record.op).toBe('unhealthy-positions')
     expect(record.chainId).toBe(CHAIN_ID)
-    expect(typeof record.at).toBe('string')
-    expect(record.summary.length).toBeGreaterThan(0)
-    expect(record.data).toMatchObject({
-      collateralToken: COLL,
-      loanToken: LOAN,
-      block: 100
+    expect(record.marketId).toBe(marketId(PARAMS))
+    expect(record.borrower).toBe(BORROWER)
+    expect(typeof record.summary).toBe('string')
+    expect(record.market).toEqual({
+      ...PARAMS,
+      lltv: PARAMS.lltv.toString()
     })
     // Sizes ride as bare decimal strings (the wire convention).
-    expect(typeof record.data?.seizableCollateral).toBe('string')
-    expect(typeof record.data?.repayAssets).toBe('string')
+    expect(typeof record.seizableCollateral).toBe('string')
+    expect(typeof record.repayAssets).toBe('string')
   })
 
   it('does not emit a healthy (non-liquidatable) position', async () => {

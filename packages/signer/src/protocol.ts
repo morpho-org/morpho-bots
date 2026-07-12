@@ -2,49 +2,31 @@ import type { Address, Hex, TransactionSerializableEIP1559 } from 'viem'
 
 import { getAddress, isAddress, isHex } from 'viem'
 
-/**
- * The signing agent's wire contract: one JSON request line in, one JSON response line out over a
- * Unix domain socket. Bigint amounts ride as bare decimal strings (the `records.ts` convention),
- * `chainId`/`nonce` stay JSON numbers. A reader that sees an unknown `v` rejects the request.
- */
-export const SIGNER_PROTOCOL_VERSION = 1
+export const SIGNER_PROTOCOL_VERSION = 3
 
-/** The three verbs the agent understands. `ping`/`address` are the client handshake; sign is the work. */
-export type SignerMethod = 'ping' | 'address' | 'signTransaction'
+export type SignerRequest =
+  | { v: number; method: 'address' }
+  | { v: number; method: 'signTransaction'; transaction: unknown }
 
-/** A single request line: versioned envelope + opaque `params` (a {@link WireTx} for `signTransaction`). */
-export type SignerRequest = {
-  v: number
-  id: string
-  method: SignerMethod
-  params?: unknown
-}
+export const SIGNER_ERROR_CODES = [
+  'bad_request',
+  'unsupported_version',
+  'policy_violation',
+  'internal'
+] as const
 
-/** The error taxonomy the agent reports; the client maps `policy_violation` to a distinguishable type. */
-export type SignerErrorCode =
-  | 'bad_request'
-  | 'unsupported_version'
-  | 'policy_violation'
-  | 'internal'
+export type SignerErrorCode = (typeof SIGNER_ERROR_CODES)[number]
 
-/** The structured error body carried on a failure response. `rule`/`check` are set for policy rejections. */
 export type SignerErrorBody = {
   code: SignerErrorCode
   message: string
-  rule?: string
   check?: string
 }
 
-/** One response line: either a `result` payload or a structured `error`. */
 export type SignerResponse =
-  | { v: number; id: string; result: unknown }
-  | { v: number; id: string; error: SignerErrorBody }
+  | { v: number; ok: true; result: unknown }
+  | { v: number; ok: false; error: SignerErrorBody }
 
-/**
- * A fully-specified EIP-1559 transaction to sign. Bigint fields (`value`/`gas`/fees) are bare
- * decimal strings; `to` is mandatory (the agent refuses contract deployments). viem silently signs
- * gas-less txs, so the codec hard-requires every field and `gas > 0`.
- */
 export type WireTx = {
   type: 'eip1559'
   chainId: number
@@ -57,91 +39,81 @@ export type WireTx = {
   maxPriorityFeePerGas: string
 }
 
-/** A typed codec failure carrying the wire error `code` and (when known) the request `id` to echo. */
 export class ProtocolError extends Error {
-  readonly code: SignerErrorCode
-  readonly id: string | undefined
-
-  constructor(code: SignerErrorCode, message: string, id?: string) {
+  constructor(
+    readonly code: SignerErrorCode,
+    message: string
+  ) {
     super(message)
     this.name = 'ProtocolError'
-    this.code = code
-    this.id = id
   }
 }
 
 const DECIMAL = /^\d+$/
 
-function requireField(record: Record<string, unknown>, key: string, id: string): unknown {
-  if (!(key in record) || record[key] === undefined || record[key] === null) {
-    throw new ProtocolError('bad_request', `missing required field '${key}'`, id)
+function field(record: Record<string, unknown>, key: string): unknown {
+  const value = record[key]
+  if (value === undefined || value === null) {
+    throw new ProtocolError('bad_request', `missing required field '${key}'`)
   }
-  return record[key]
+  return value
 }
 
-function decimalField(record: Record<string, unknown>, key: string, id: string): string {
-  const value = requireField(record, key, id)
+function decimalField(record: Record<string, unknown>, key: string): string {
+  const value = field(record, key)
   if (typeof value !== 'string' || !DECIMAL.test(value)) {
-    throw new ProtocolError('bad_request', `field '${key}' must be a decimal string`, id)
+    throw new ProtocolError('bad_request', `field '${key}' must be a decimal string`)
   }
   return value
 }
 
-function integerField(record: Record<string, unknown>, key: string, id: string): number {
-  const value = requireField(record, key, id)
+function integerField(record: Record<string, unknown>, key: string): number {
+  const value = field(record, key)
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
-    throw new ProtocolError('bad_request', `field '${key}' must be a non-negative integer`, id)
+    throw new ProtocolError('bad_request', `field '${key}' must be a non-negative integer`)
   }
   return value
 }
 
-/**
- * Validates and normalizes an untrusted `signTransaction` params object into a {@link WireTx}. Every
- * field is required, bigint fields must be decimal strings, `to` must be a valid address, `data`
- * must be hex, and `gas` must be strictly positive (viem would otherwise sign a gas-less tx). Unknown
- * extra fields are tolerated. Throws {@link ProtocolError} (`bad_request`) on any violation.
- */
-export function toWireTx(raw: unknown, id = ''): WireTx {
+/** Strictly narrows an untrusted signing payload to a complete EIP-1559 transaction. */
+export function toWireTx(raw: unknown): WireTx {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-    throw new ProtocolError('bad_request', 'signTransaction params must be an object', id)
+    throw new ProtocolError('bad_request', 'transaction must be an object')
   }
   const record: Record<string, unknown> = { ...raw }
-
-  const type = requireField(record, 'type', id)
-  if (type !== 'eip1559') {
-    throw new ProtocolError('bad_request', `unsupported tx type '${String(type)}'`, id)
+  if (field(record, 'type') !== 'eip1559') {
+    throw new ProtocolError('bad_request', `unsupported tx type '${String(record.type)}'`)
   }
-
-  const chainId = integerField(record, 'chainId', id)
-  if (chainId === 0) throw new ProtocolError('bad_request', 'chainId must be non-zero', id)
-
-  const toRaw = requireField(record, 'to', id)
-  if (typeof toRaw !== 'string' || !isAddress(toRaw, { strict: false })) {
-    throw new ProtocolError('bad_request', "field 'to' must be a valid address", id)
+  const chainId = integerField(record, 'chainId')
+  if (chainId === 0) throw new ProtocolError('bad_request', 'chainId must be non-zero')
+  const to = field(record, 'to')
+  if (typeof to !== 'string' || !isAddress(to, { strict: false })) {
+    throw new ProtocolError('bad_request', "field 'to' must be a valid address")
   }
-
-  const dataRaw = requireField(record, 'data', id)
-  if (typeof dataRaw !== 'string' || !isHex(dataRaw)) {
-    throw new ProtocolError('bad_request', "field 'data' must be hex", id)
+  const data = field(record, 'data')
+  if (typeof data !== 'string' || !isHex(data)) {
+    throw new ProtocolError('bad_request', "field 'data' must be hex")
   }
-
-  const gas = decimalField(record, 'gas', id)
-  if (BigInt(gas) <= 0n) throw new ProtocolError('bad_request', 'gas must be greater than 0', id)
-
+  const gas = decimalField(record, 'gas')
+  if (BigInt(gas) === 0n) throw new ProtocolError('bad_request', 'gas must be greater than 0')
+  const maxFeePerGas = decimalField(record, 'maxFeePerGas')
+  const maxPriorityFeePerGas = decimalField(record, 'maxPriorityFeePerGas')
+  if (BigInt(maxPriorityFeePerGas) > BigInt(maxFeePerGas)) {
+    throw new ProtocolError('bad_request', 'maxPriorityFeePerGas cannot exceed maxFeePerGas')
+  }
   return {
     type: 'eip1559',
     chainId,
-    to: getAddress(toRaw),
-    data: dataRaw,
-    value: decimalField(record, 'value', id),
-    nonce: integerField(record, 'nonce', id),
+    to: getAddress(to),
+    data,
+    value: decimalField(record, 'value'),
+    nonce: integerField(record, 'nonce'),
     gas,
-    maxFeePerGas: decimalField(record, 'maxFeePerGas', id),
-    maxPriorityFeePerGas: decimalField(record, 'maxPriorityFeePerGas', id)
+    maxFeePerGas,
+    maxPriorityFeePerGas
   }
 }
 
-/** Parses one request line into a {@link SignerRequest}. Throws {@link ProtocolError} on malformed input. */
 export function parseRequestLine(line: string): SignerRequest {
   let parsed: unknown
   try {
@@ -153,58 +125,41 @@ export function parseRequestLine(line: string): SignerRequest {
     throw new ProtocolError('bad_request', 'request must be a JSON object')
   }
   const record: Record<string, unknown> = { ...parsed }
-  const id = typeof record.id === 'string' ? record.id : ''
-
-  if (typeof record.v !== 'number') {
-    throw new ProtocolError('bad_request', "field 'v' must be a number", id)
-  }
   if (record.v !== SIGNER_PROTOCOL_VERSION) {
-    throw new ProtocolError('unsupported_version', `unsupported protocol version ${record.v}`, id)
+    if (typeof record.v !== 'number') {
+      throw new ProtocolError('bad_request', "field 'v' must be a number")
+    }
+    throw new ProtocolError('unsupported_version', `unsupported protocol version ${record.v}`)
   }
-  if (typeof record.id !== 'string' || record.id.length === 0) {
-    throw new ProtocolError('bad_request', "field 'id' must be a non-empty string", id)
+  if (record.method === 'address') return { v: record.v, method: 'address' }
+  if (record.method === 'signTransaction') {
+    return { v: record.v, method: 'signTransaction', transaction: field(record, 'transaction') }
   }
-  if (
-    record.method !== 'ping' &&
-    record.method !== 'address' &&
-    record.method !== 'signTransaction'
-  ) {
-    throw new ProtocolError('bad_request', `unknown method '${String(record.method)}'`, id)
-  }
-  return { v: record.v, id: record.id, method: record.method, params: record.params }
+  throw new ProtocolError('bad_request', `unknown method '${String(record.method)}'`)
 }
 
-/** Converts a validated {@link WireTx} into the viem transaction shape `account.signTransaction` accepts. */
 export function fromWireTx(tx: WireTx): TransactionSerializableEIP1559 {
   return {
-    type: 'eip1559',
-    chainId: tx.chainId,
-    to: tx.to,
-    data: tx.data,
+    ...tx,
     value: BigInt(tx.value),
-    nonce: tx.nonce,
     gas: BigInt(tx.gas),
     maxFeePerGas: BigInt(tx.maxFeePerGas),
     maxPriorityFeePerGas: BigInt(tx.maxPriorityFeePerGas)
   }
 }
 
-/** Serializes a response to a single newline-terminated line ready to write to the socket. */
 export function serializeResponse(response: SignerResponse): string {
   return `${JSON.stringify(response)}\n`
 }
 
-/** Builds a success response envelope. */
-export function okResponse(id: string, result: unknown): SignerResponse {
-  return { v: SIGNER_PROTOCOL_VERSION, id, result }
+export function okResponse(result: unknown): SignerResponse {
+  return { v: SIGNER_PROTOCOL_VERSION, ok: true, result }
 }
 
-/** Builds an error response envelope. */
 export function errorResponse(
-  id: string,
   code: SignerErrorCode,
   message: string,
-  extra?: { rule?: string; check?: string }
+  extra?: { check?: string }
 ): SignerResponse {
-  return { v: SIGNER_PROTOCOL_VERSION, id, error: { code, message, ...extra } }
+  return { v: SIGNER_PROTOCOL_VERSION, ok: false, error: { code, message, ...extra } }
 }

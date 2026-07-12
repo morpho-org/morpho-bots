@@ -10,6 +10,16 @@
 
 ---
 
+> **Implementation supersession (2026-07-11):** The implementation was simplified beyond this
+> proposal before acceptance. `morpho-queued submit` now relays transparent transaction JSONL
+> directly to one per-chain runtime; there are no per-domain runtimes, RPC-style methods, outcome
+> input records, advisory reads, queue-level failure backoff, or settled-position cooldown. State
+> version 3 persists only pending transactions. `inflightLabels()` therefore means pending only;
+> every new ingest is authoritatively re-simulated, while nonce assignment, settlement, RBF, and the
+> append-only journal remain daemon-owned. References below to `createBackoff`, `backoff_active`,
+> `settledCooldownBlocks`, `{version, queue, backoff}`, or per-domain queue state describe the
+> rejected proposal, not the shipped architecture.
+
 ## Context
 
 [TIB-2026-07-09-pipeline-cli](./TIB-2026-07-09-pipeline-cli.md) made `<domain> queue` a stateful

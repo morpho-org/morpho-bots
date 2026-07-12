@@ -1,7 +1,6 @@
-import type { Logger, OpportunityRecord } from '@repo/bot-kit'
+import type { Logger, PositionRecord } from '@repo/bot-kit'
 import type { Address, Hex } from 'viem'
 
-import { WIRE_VERSION } from '@repo/bot-kit'
 import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
 
@@ -90,7 +89,7 @@ function runWith(opts: {
   chainHead?: bigint
 }) {
   const { logger, events } = spyLogger()
-  const emitted: OpportunityRecord[] = []
+  const emitted: PositionRecord[] = []
   return runSense({
     chainId: CHAIN_ID,
     caller: CALLER,
@@ -110,14 +109,13 @@ describe('runSense', () => {
     const { counters, emitted } = await runWith({})
     expect(counters).toEqual({ pairs: 1, liquidatable: 1, emitted: 1 })
     const record = emitted[0]!
-    expect(record.v).toBe(WIRE_VERSION)
-    expect(record.kind).toBe('opportunity')
+    expect(record.kind).toBe('position')
     expect(record.id).toBe(ID)
-    expect(record.domain).toBe('midnight')
-    expect(record.op).toBe('unhealthy-positions')
     expect(record.chainId).toBe(CHAIN_ID)
-    expect(record.data).toMatchObject({ loanToken: TOKEN, collateralToken: TOKEN, block: 100 })
-    expect(typeof record.data?.seizedAssets).toBe('string')
+    expect(record.marketId).toBe(MARKET)
+    expect(record.borrower).toBe(BORROWER)
+    expect(record).toMatchObject({ loanToken: TOKEN, collateralToken: TOKEN, observedAtBlock: 100 })
+    expect(typeof record.seizedAssets).toBe('string')
   })
 
   it('emits a bad-debt-realization opportunity (a valid (0,0) plan)', async () => {
@@ -125,7 +123,7 @@ describe('runSense', () => {
       out: lensOut({ healthy: true, blockTimestamp: 3000n, debt: 1000n, badDebt: 1000n })
     })
     expect(counters).toEqual({ pairs: 1, liquidatable: 1, emitted: 1 })
-    expect(emitted[0]!.data).toMatchObject({ seizedAssets: '0', repaidUnits: '0' })
+    expect(emitted[0]).toMatchObject({ seizedAssets: '0', repaidUnits: '0' })
   })
 
   it('does not emit a non-liquidatable (healthy, pre-maturity) position', async () => {

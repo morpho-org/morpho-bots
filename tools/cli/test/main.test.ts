@@ -1,10 +1,7 @@
 import { describe, expect, it } from 'bun:test'
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
-import { connect } from 'node:net'
+import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { getAddress } from 'viem'
-import { privateKeyToAccount } from 'viem/accounts'
 
 // The CLI's exit-code contract is what loop/cron wrappers script against, so exercise the real
 // binary end-to-end: spawn `bun src/main.ts …` from the package dir (whose bunfig preloads the
@@ -14,14 +11,15 @@ const CLI_DIR = join(import.meta.dir, '..')
 // Cold bun spawns take ~3s on CI runners (and the init test spawns twice), so the 5s default flakes.
 const SPAWN_TIMEOUT_MS = 30_000
 
-function run(args: string[], env: Record<string, string> = {}) {
+function run(args: string[], env: Record<string, string> = {}, stdin?: string) {
   const result = Bun.spawnSync(['bun', 'src/main.ts', ...args], {
     cwd: CLI_DIR,
     env: {
       ...process.env,
       MORPHO_BOTS_HOME: mkdtempSync(join(tmpdir(), 'morpho-bots-test-')),
       ...env
-    }
+    },
+    ...(stdin === undefined ? {} : { stdin: new Blob([stdin]) })
   })
   return {
     code: result.exitCode,
@@ -32,26 +30,22 @@ function run(args: string[], env: Record<string, string> = {}) {
 
 describe('morpho-bots exit codes', () => {
   it(
-    'exits 0 for --help and lists the top-level signer command',
+    'exits 0 for --help',
     () => {
       const { code, stdout } = run(['--help'])
       expect(code).toBe(0)
-      expect(stdout).toContain('signer')
+      expect(stdout).toContain('morpho-bots')
     },
     SPAWN_TIMEOUT_MS
   )
 
   it(
-    'lists the op commands in a domain’s --help with source/transform labels',
+    'documents runtime op dispatch in domain help',
     () => {
       const { code, stdout } = run(['blue', '--help'])
       expect(code).toBe(0)
-      expect(stdout).toContain('unhealthy-positions')
-      expect(stdout).toContain('liquidate')
-      expect(stdout).toContain('queue')
-      // The flat namespace stays legible because each op is labeled by its kind.
-      expect(stdout).toContain('[source]')
-      expect(stdout).toContain('[transform]')
+      expect(stdout).toContain('<op>')
+      expect(stdout).not.toContain('[ids...]')
     },
     SPAWN_TIMEOUT_MS
   )
@@ -102,10 +96,19 @@ describe('morpho-bots exit codes', () => {
   )
 
   it(
-    'exits 2 for queue with no usable config (no chain resolvable)',
+    'exits 2 after reporting malformed transform JSONL',
     () => {
-      // The thin client resolves the chain via mergedEnv before touching the socket; no chain → exit 2.
-      expect(run(['blue', 'queue']).code).toBe(2)
+      const { code, stderr } = run(
+        ['blue', 'liquidate'],
+        {
+          CHAIN_ID: '8453',
+          RPC_URL: 'http://127.0.0.1:1',
+          LIQUIDATOR_ADDRESS: '0x1111111111111111111111111111111111111111'
+        },
+        '{malformed\n'
+      )
+      expect(code).toBe(2)
+      expect(stderr).toContain('malformed_line')
     },
     SPAWN_TIMEOUT_MS
   )
@@ -120,102 +123,6 @@ describe('morpho-bots exit codes', () => {
       const second = run(['init'], { MORPHO_BOTS_HOME: home })
       expect(second.code).toBe(0)
       expect(second.stdout).toContain('kept')
-    },
-    SPAWN_TIMEOUT_MS
-  )
-})
-
-// Throwaway well-known test key (anvil account #0) — never used to hold funds.
-const SIGNER_KEY = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
-const SIGNER_ADDRESS = privateKeyToAccount(SIGNER_KEY).address
-const EXECUTOR = getAddress(`0x${'22'.repeat(20)}`)
-
-// A minimal default-deny policy the daemon can start on; the `address` handshake never touches it.
-const POLICY = {
-  version: 1,
-  rules: [
-    {
-      name: 'test',
-      chainIds: [8453],
-      to: [EXECUTOR],
-      maxFeePerGasWei: '300000000000',
-      maxGasLimit: '15000000'
-    }
-  ]
-}
-
-// A short-prefixed temp home so `<home>/signer.sock` stays under the ~104-byte sun_path cap.
-function shortHome(): string {
-  return mkdtempSync(join(tmpdir(), 's-'))
-}
-
-// One request line in, one response line out over a fresh connection (the netcat-equivalent probe).
-function rpc(socketPath: string, request: unknown): Promise<Record<string, unknown>> {
-  return new Promise((resolve, reject) => {
-    const socket = connect(socketPath)
-    let buffer = ''
-    socket.on('connect', () => socket.write(`${JSON.stringify(request)}\n`))
-    socket.on('data', chunk => {
-      buffer += chunk.toString('utf8')
-      const idx = buffer.indexOf('\n')
-      if (idx === -1) return
-      socket.destroy()
-      resolve(JSON.parse(buffer.slice(0, idx)))
-    })
-    socket.on('error', reject)
-  })
-}
-
-describe('morpho-bots signer command', () => {
-  it(
-    'exits 2 when SIGNER_PRIVATE_KEY is missing',
-    () => {
-      const { code, stderr } = run(['signer'], { MORPHO_BOTS_HOME: shortHome() })
-      expect(code).toBe(2)
-      expect(stderr).toContain('SIGNER_PRIVATE_KEY')
-    },
-    SPAWN_TIMEOUT_MS
-  )
-
-  it(
-    'exits 2 when the policy file is missing (key present)',
-    () => {
-      // No signer-policy.json in the fresh home → the daemon refuses to start.
-      const { code, stderr } = run(['signer'], {
-        MORPHO_BOTS_HOME: shortHome(),
-        SIGNER_PRIVATE_KEY: SIGNER_KEY
-      })
-      expect(code).toBe(2)
-      expect(stderr).toContain('signer policy')
-    },
-    SPAWN_TIMEOUT_MS
-  )
-
-  it(
-    'listens, answers an address request over the socket, and exits 0 on SIGTERM (unlinking the socket)',
-    async () => {
-      const home = shortHome()
-      writeFileSync(join(home, 'signer-policy.json'), JSON.stringify(POLICY))
-      const sock = join(home, 'signer.sock')
-      const proc = Bun.spawn(['bun', 'src/main.ts', 'signer'], {
-        cwd: CLI_DIR,
-        env: { ...process.env, MORPHO_BOTS_HOME: home, SIGNER_PRIVATE_KEY: SIGNER_KEY },
-        stdout: 'pipe',
-        stderr: 'pipe'
-      })
-      try {
-        // Poll for the socket to appear (cold bun spawn) rather than sleeping a fixed time.
-        for (let i = 0; i < 200 && !existsSync(sock); i += 1) await Bun.sleep(50)
-        expect(existsSync(sock)).toBe(true)
-
-        const response = await rpc(sock, { v: 1, id: '1', method: 'address' })
-        expect((response.result as { address: string }).address).toBe(SIGNER_ADDRESS)
-      } finally {
-        proc.kill('SIGTERM')
-      }
-      expect(await proc.exited).toBe(0)
-      // close() unlinks the socket on a clean shutdown.
-      expect(existsSync(sock)).toBe(false)
     },
     SPAWN_TIMEOUT_MS
   )

@@ -1,7 +1,7 @@
-import type { Logger, OpportunityRecord } from '@repo/bot-kit'
+import type { Logger, PositionRecord } from '@repo/bot-kit'
 import type { Address, Hex } from 'viem'
 
-import { assertContractDeployed, createDeploylessClient, WIRE_VERSION } from '@repo/bot-kit'
+import { assertContractDeployed, createDeploylessClient } from '@repo/bot-kit'
 import { ensureError, tryCatch } from '@repo/utils'
 import { getBlockNumber } from 'viem/actions'
 
@@ -24,7 +24,7 @@ import { plan } from '../sizing/plan'
 import { lensKey, readBlueLiquidationLens } from '../state/lens.sol'
 import { createMarketParamsResolver, multicallIdToMarketParams } from '../state/market-params'
 import { isLiquidatable, planInputFromLens } from '../tick/eligibility'
-import { DOMAIN, formatOpportunityId, OP } from '../wire'
+import { formatOpportunityId } from '../wire'
 
 /** Prior `sense` cache: the resolver's `MarketParams` entries. Immutable per id, safe forever. */
 export type BlueSenseCache = MarketParamsCache
@@ -38,8 +38,8 @@ function short(address: Address): string {
   return `${address.slice(0, 6)}…${address.slice(-4)}`
 }
 
-// Builds the advisory OpportunityRecord for one liquidatable position. `data` is domain-owned and
-// diagnostic only — `act` re-derives everything from the id — so sizes ride as bare decimal strings.
+// Builds a transparent position record. Identity fields drive the next stage; sizing fields remain
+// advisory because `liquidate` re-reads mutable state.
 function opportunityRecord(
   chainId: number,
   id: Hex,
@@ -47,31 +47,26 @@ function opportunityRecord(
   out: LensOut,
   liquidationPlan: LiquidationPlan,
   block: bigint
-): OpportunityRecord {
+): PositionRecord {
   const repay = expectedLoanOut(liquidationPlan, out)
   return {
-    v: WIRE_VERSION,
-    kind: 'opportunity',
+    kind: 'position',
     id: formatOpportunityId(chainId, id, borrower),
-    domain: DOMAIN,
-    op: OP,
     chainId,
-    at: new Date().toISOString(),
-    summary: `blue liq ${short(borrower)} — seize ${liquidationPlan.seizedAssets} ${out.params.collateralToken} for ~${repay} ${out.params.loanToken}`,
-    data: {
-      collateralToken: out.params.collateralToken,
-      loanToken: out.params.loanToken,
-      seizableCollateral: liquidationPlan.seizedAssets.toString(),
-      repayAssets: repay.toString(),
-      block: Number(block)
-    }
+    marketId: id,
+    borrower,
+    market: { ...out.params, lltv: out.params.lltv.toString() },
+    seizableCollateral: liquidationPlan.seizedAssets.toString(),
+    repayAssets: repay.toString(),
+    observedAtBlock: Number(block),
+    summary: `blue liq ${short(borrower)} — seize ${liquidationPlan.seizedAssets} ${out.params.collateralToken} for ~${repay} ${out.params.loanToken}`
   }
 }
 
 /**
  * The read-only sensor core: log a rindexer-freshness signal, enumerate the indexed
  * (market, borrower) universe, read the liquidation lens fresh for the whole batch (one deployless
- * `eth_call`), and emit one advisory `OpportunityRecord` per liquidatable, plannable position. Deps
+ * `eth_call`), and emit one position record per liquidatable, plannable position. Deps
  * are injected so the sensor is unit-testable without a chain, Postgres, or config. Emits nothing but
  * opportunities — lockless and secret-free.
  */
@@ -83,7 +78,7 @@ export async function runSense(deps: {
   /** Chain head the runner just polled — lag reference + the opportunity's `data.block`. */
   chainHead: bigint
   readLens: (pairs: LensInput[]) => Promise<Map<string, LensOut>>
-  emit: (record: OpportunityRecord) => void
+  emit: (record: PositionRecord) => void
   logger: Logger
 }): Promise<SenseCounters> {
   const { chainId, discover, syncedBlock, chainHead, readLens, emit, logger } = deps
@@ -143,7 +138,7 @@ export async function senseOnce(
     cache: BlueSenseCache | null
     runStartupChecks: boolean
     logger: Logger
-    emit: (record: OpportunityRecord) => void
+    emit: (record: PositionRecord) => void
   }
 ): Promise<{ cache: BlueSenseCache }> {
   const config: SenseConfig = loadSenseConfig(env)

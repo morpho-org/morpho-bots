@@ -1,14 +1,4 @@
 /**
- * Computes the absolute value of a bigint.
- *
- * @param value - The bigint value to compute the absolute value for.
- * @returns The absolute value of the input bigint.
- */
-export function bigintAbs(value: bigint) {
-  return value < 0n ? -value : value
-}
-
-/**
  * Floor of `x * y / d`. Division by zero throws (native bigint), matching the EVM's
  * divide-by-zero revert — consumers porting Solidity fixed-point math rely on this.
  *

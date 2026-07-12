@@ -23,18 +23,6 @@ export const TIME_TO_MAX_LIF = 3600n
 export const CALLBACK_SUCCESS: Hex =
   '0x7f87788ea698181ea4d28d1576d0ba4fc92c0dbe5bf75b43692af2ce91dbaea2'
 
-// --- Tx-queue operational tuning (consumed by the nonce queue / runner) ---
-
-/**
- * Blocks a position stays in the queue's backpressure set AFTER its tx settles (confirm/revert/drop),
- * suppressing re-submission. A liquidation confirms on the send RPC before the (possibly lagging)
- * read RPC reflects the cleared position, so without this cooldown the tick re-plans an
- * already-liquidated borrower and broadcasts a doomed `NotBorrower` re-send. Sized well above the
- * observed read/confirm head skew; the bot's liquidations are terminal, so a brief suppression of an
- * already-acted position is harmless.
- */
-export const SETTLED_COOLDOWN_BLOCKS = 20n
-
 /**
  * Max age of the listed-markets whitelist before it is treated as EMPTY (fail-closed). The
  * whitelist normally refreshes every `markets.refreshMs` (default 60s) with last-known-good

@@ -1,14 +1,13 @@
 # Bundles the per-chain blue bots with ONE shared rindexer instance + Postgres for borrower
 # discovery. rindexer indexes the Morpho Blue `Borrow` event (services/blue-rindexer/rindexer.yaml)
 # for every chain into one Postgres, discriminated by a `network` column; each bot tick reads the
-# indexed (market, borrower) pairs for its own chain. Each bot container runs TWO processes in the
-# image's entrypoint (bots/docker-entrypoint.sh): the per-chain `queued` transaction-queue daemon and
-# the three-stage op pipeline that feeds it — `<SOURCE_OP> | <TRANSFORM_OP> | queue`, defaulting to
-# `unhealthy-positions | liquidate | queue`; stdout carries JSON-Lines records, logs go to stderr, and
+# indexed (market, borrower) pairs for its own chain. Each bot container runs a signer agent, the
+# per-chain `queued` daemon, and the pipeline that feeds it —
+# `<SOURCE_OP> | <TRANSFORM_OP> | morpho-queued submit`, defaulting to liquidation; logs go to stderr, and
 # the daemon appends terminal outcomes to /data/morpho-bots/queued/outcomes-<chainId>.jsonl. Set the
 # chainId-suffixed RPCs (RPC_URL_8453, RPC_URL_4663, optionally RINDEXER_RPC_URL_<chainId>), a
-# LIQUIDATOR_PRIVATE_KEY (read by the daemon), and the matching LIQUIDATOR_ADDRESS (the skim recipient
-# the transform targets — must be the address that private key derives).
+# SIGNER_PRIVATE_KEY (read only by morpho-signer), SIGNER_POLICY_JSON, and the matching
+# LIQUIDATOR_ADDRESS the transform targets (the address that private key derives).
 #
 # Build contexts are `..` (the repo root — required for the bun workspace to resolve) because this
 # file lives in bots/; run it from anywhere: `docker compose -f bots/docker-compose.blue.yml up`.
@@ -62,19 +61,13 @@ services:
       BOT: blue
       CHAIN_ID: '8453'
       TICK_INTERVAL_S: ${TICK_INTERVAL_S:-2}
-      # The two op stages piped before `queue`; override to run a different behavior. Defaults are the
-      # liquidation pair. Which ops run is deployment policy, not baked into the core.
+      # The two op stages piped before `morpho-queued submit`; override to run a different behavior.
+      # Which ops run is deployment policy, not baked into the core.
       SOURCE_OP: ${SOURCE_OP:-unhealthy-positions}
       TRANSFORM_OP: ${TRANSFORM_OP:-liquidate}
       RPC_URL: ${RPC_URL_8453:?set RPC_URL_8453}
-      # Dedicated broadcast endpoint for the daemon's eth_sendRawTransaction + nonce/receipt reads. Set
-      # it when RPC_URL is a read-only relay that acks sends without relaying them; falls back to RPC_URL
-      # when unset. chainId-suffixed to match the RPC_URL_<chainId> convention above.
-      SEND_RPC_URL: ${SEND_RPC_URL_8453:-}
-      # The signing key is now read by the `queued` daemon, not the pipe stages. The daemon's
-      # mergedQueuedEnv reads the process env last (after config.json/secrets.json `queued` sections),
-      # so this container-level var lands in the daemon's `queued` config — no secrets.json needed.
-      LIQUIDATOR_PRIVATE_KEY: ${LIQUIDATOR_PRIVATE_KEY:?set LIQUIDATOR_PRIVATE_KEY}
+      SIGNER_PRIVATE_KEY: ${SIGNER_PRIVATE_KEY:-}
+      SIGNER_POLICY_JSON: ${SIGNER_POLICY_JSON:-}
       # `act` skims to this EOA and simulates `from` it (secret-free — no key on the op stages); it
       # must be the address the private key above derives, else act and the daemon target different
       # wallets (the daemon cross-checks this against SIGNER_SOCKET when in agent mode).
@@ -115,11 +108,8 @@ services:
       SOURCE_OP: ${SOURCE_OP:-unhealthy-positions}
       TRANSFORM_OP: ${TRANSFORM_OP:-liquidate}
       RPC_URL: ${RPC_URL_4663:-https://rpc.mainnet.chain.robinhood.com}
-      # Dedicated broadcast endpoint (see bot-base); chainId-suffixed to match the RPC_URL_<chainId>
-      # convention. Falls back to RPC_URL when unset.
-      SEND_RPC_URL: ${SEND_RPC_URL_4663:-}
-      # Read by the `queued` daemon (process env beats the file-based `queued` section); see bot-base.
-      LIQUIDATOR_PRIVATE_KEY: ${LIQUIDATOR_PRIVATE_KEY:?set LIQUIDATOR_PRIVATE_KEY}
+      SIGNER_PRIVATE_KEY: ${SIGNER_PRIVATE_KEY:-}
+      SIGNER_POLICY_JSON: ${SIGNER_POLICY_JSON:-}
       # Must be the address the private key above derives (see bot-base).
       LIQUIDATOR_ADDRESS: ${LIQUIDATOR_ADDRESS:?set LIQUIDATOR_ADDRESS}
       EXECUTOOOR_ADDRESS: ${EXECUTOOOR_ADDRESS:-}

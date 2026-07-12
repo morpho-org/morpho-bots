@@ -47,20 +47,7 @@ const DEPLOYER_KEY = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b
 
 export const LIQUIDATOR = privateKeyToAccount(LIQUIDATOR_KEY).address
 
-// Fail loud (no skip) when the fork RPC isn't configured — the suite cannot run without it. Named
-// per-chain (8453 = Base) so CI can supply it as a secret of the same name; locally, set it in
-// packages/midnight-liquidation/.env.test.local. Resolved via a function so the value is typed `string`
-// (a module-level narrowing wouldn't flow into startFork's closure).
-function requireForkUrl(): string {
-  const url = process.env.RPC_URL_8453
-  if (!url) {
-    throw new Error(
-      'RPC_URL_8453 is required for the fork suite — set it in packages/midnight-liquidation/.env.test.local'
-    )
-  }
-  return url
-}
-const FORK_URL = requireForkUrl()
+export const FORK_URL = process.env.RPC_URL_8453
 
 export type TestClient = ReturnType<typeof testClient>
 
@@ -101,6 +88,7 @@ async function waitForRpc(url: string, timeoutMs = 30_000): Promise<void> {
  * Requires the `anvil` binary on PATH (Foundry locally; foundry-toolchain in CI).
  */
 export async function startFork(port = 8545): Promise<{ anvil: ForkHandle; rpcUrl: string }> {
+  if (!FORK_URL) throw new Error('RPC_URL_8453 is required to start the Midnight fork')
   const anvil = Bun.spawn(
     [
       'anvil',

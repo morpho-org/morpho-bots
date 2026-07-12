@@ -6,7 +6,7 @@ import { join } from 'node:path'
 // full knob list is each bot's src/config.ts. "_" keys are documentation; the bots ignore them.
 const EXAMPLE_CONFIG = {
   _readme:
-    'Non-secret settings. Keys are the bots’ env-var names; per-chain overlays under chains.<id> beat defaults; process env beats everything. LIQUIDATOR_ADDRESS is act’s skim recipient and simulate `from` — it MUST match the address derived from LIQUIDATOR_PRIVATE_KEY (secrets.json), or seized funds skim to a wallet the queue can’t sign for.',
+    'Non-secret settings. Keys are the bots’ env-var names; per-chain overlays under chains.<id> beat defaults; process env beats everything. LIQUIDATOR_ADDRESS is act’s skim recipient and simulate `from`; morpho-queued verifies it against morpho-signer at startup.',
   blue: {
     defaults: { LOG_LEVEL: 'info' },
     chains: {
@@ -16,19 +16,6 @@ const EXAMPLE_CONFIG = {
   midnight: {
     defaults: { LOG_LEVEL: 'info' },
     chains: { '8453': { LIQUIDATOR_ADDRESS: '0x…' } }
-  },
-  // The per-chain queue daemon (morpho-queued). One daemon per chain, domain-agnostic: every bot’s
-  // `queue` stage relays tx/outcome records to it. It reads RPC + the signing key from its own
-  // `queued` section of secrets.json (the key MOVED here from the bot sections; RPC is duplicated).
-  // Optional per-chain tunables: MAX_FEE_GWEI, STUCK_BLOCKS, BACKOFF_*_BLOCKS, SEND_RPC_URL.
-  queued: {
-    defaults: { LOG_LEVEL: 'info' },
-    chains: { '8453': {} }
-  },
-  // The signing agent is chain-less (one daemon serves every chain; per-chain policy lives in
-  // signer-policy.json). Set SIGNER_SOCKET in the queued section to opt the daemon into the agent.
-  signer: {
-    defaults: { LOG_LEVEL: 'info' }
   }
 }
 
@@ -54,38 +41,17 @@ const EXAMPLE_SECRETS = {
         ONEINCH_API_KEY: ''
       }
     }
-  },
-  // The queue daemon (morpho-queued) is the SOLE local key reader (when SIGNER_SOCKET is unset). The
-  // signing key MOVED here from the bot sections (only the key moves); RPC_URL is DUPLICATED per
-  // chain (the bot sections keep theirs for the source/transform op stages). Set SIGNER_SOCKET here
-  // instead of a key to sign through the agent.
-  queued: {
-    defaults: { LIQUIDATOR_PRIVATE_KEY: '0x…' },
-    chains: { '8453': { RPC_URL: 'https://…' } }
-  },
-  // The signing agent’s key — the SOLE holder when the daemon runs with SIGNER_SOCKET set. This is
-  // NOT read from LIQUIDATOR_PRIVATE_KEY; move the key here when adopting the agent.
-  signer: {
-    defaults: { SIGNER_PRIVATE_KEY: '0x…' }
   }
 }
 
-// A one-rule default-deny example the operator edits: allow only exec calls to the Executor on Base,
-// value 0, under the fee/gas ceilings. `to` and `selectors` are placeholders — set `to` to your
-// Executor address and the selector(s) to the exec entrypoint(s) you sign. Everything else is denied.
+// One signer process authorizes one Executor on one chain. Zero value and the Executor's
+// exec_606BaXt selector are hard-coded signer invariants.
 const EXAMPLE_SIGNER_POLICY = {
-  version: 1,
-  rules: [
-    {
-      name: 'blue-liquidation-base',
-      chainIds: [8453],
-      to: ['0x0000000000000000000000000000000000000000'],
-      selectors: ['0x00000001'],
-      maxValueWei: '0',
-      maxFeePerGasWei: '300000000000',
-      maxGasLimit: '15000000'
-    }
-  ]
+  chainId: 8453,
+  executor: '0x0000000000000000000000000000000000000000',
+  maxFeePerGasWei: '300000000000',
+  maxGasLimit: '15000000',
+  maxDataBytes: 65536
 }
 
 // A minimal per-collateral routing example; the maintained reference (live Base/Robinhood routes)
@@ -110,7 +76,7 @@ function writeOnce(path: string, content: string, mode?: number): 'created' | 'k
 /** Scaffolds the home dir with commented examples; never overwrites what already exists. */
 export function runInit(): number {
   const home = botsHome()
-  for (const dir of ['locks', 'blue/queue', 'blue/cache', 'midnight/queue', 'midnight/cache']) {
+  for (const dir of ['locks', 'queued', 'blue/cache', 'midnight/cache']) {
     mkdirSync(join(home, dir), { recursive: true })
   }
 
@@ -139,17 +105,15 @@ export function runInit(): number {
   for (const [path, outcome] of results) {
     console.log(`${outcome === 'created' ? 'created' : 'kept   '} ${path}`)
   }
-  console.log(`\nNext: fill in ${secretsFile(home)} (kept chmod 600), then:`)
-  console.log('  1. start the per-chain queue daemon (holds the key, owns submit/RBF):')
-  console.log('       morpho-queued --chain 8453')
-  console.log('  2. run the pipeline in a loop; the `queue` stage relays to the daemon:')
+  console.log(`\nNext: fill in ${secretsFile(home)} (kept chmod 600), export service env, then:`)
+  console.log('  1. edit signer-policy.json and start the signing agent:')
+  console.log('       SIGNER_PRIVATE_KEY=0x… morpho-signer')
+  console.log('  2. start the per-chain queue daemon (owns submit/RBF):')
+  console.log('       morpho-queued serve --chain 8453')
+  console.log('  3. run the pipeline in a loop; `submit` relays to the daemon:')
   console.log(
-    '       while true; do morpho-bots blue unhealthy-positions | morpho-bots blue liquidate | morpho-bots blue queue; sleep 2; done'
+    '       set -o pipefail; while true; do morpho-bots blue unhealthy-positions | morpho-bots blue liquidate | morpho-queued submit --chain 8453 || exit $?; sleep 2; done'
   )
-  console.log(
-    `\nOptional: to run the keyless signing agent, edit ${signerPolicyPath} (set the Executor ` +
-      'address + selectors), set SIGNER_PRIVATE_KEY in secrets.json, start `morpho-bots signer`, ' +
-      'and set SIGNER_SOCKET in the queued section so the daemon signs through it.'
-  )
+  console.log(`\nThe signing policy is ${signerPolicyPath}; signing is default-deny.`)
   return 0
 }

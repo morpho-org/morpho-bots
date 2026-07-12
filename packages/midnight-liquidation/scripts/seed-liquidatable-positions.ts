@@ -609,8 +609,7 @@ async function main() {
   }) as unknown as PublicClient
   const deploylessClient = createDeploylessClient({
     chain: base,
-    rpcUrl,
-    rpcUrlFallback: undefined
+    rpcUrl
   })
   const accountA = privateKeyToAccount(keyA, {
     nonceManager: createNonceManager({ source: jsonRpc() })

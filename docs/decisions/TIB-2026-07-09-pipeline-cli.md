@@ -10,6 +10,11 @@
 
 ---
 
+> **Historical design note (2026-07-11):** The transparent position/transaction pipeline remains,
+> but the envelope, outcome, queue-backoff, cooldown, local-key, and bot-scoped queue clauses below
+> were superseded by the per-chain `morpho-queued` daemon and distinct signer agent. Current records
+> are additive JSON with explicit `marketId` and `borrower`; `id` is correlation-only.
+
 ## Context
 
 [TIB-2026-07-09-cli-restructure](./TIB-2026-07-09-cli-restructure.md) (merged) made

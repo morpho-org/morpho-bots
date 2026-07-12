@@ -1,7 +1,7 @@
-import type { Logger, OpportunityRecord } from '@repo/bot-kit'
+import type { Logger, PositionRecord } from '@repo/bot-kit'
 import type { Address, Hex } from 'viem'
 
-import { createDeploylessClient, WIRE_VERSION } from '@repo/bot-kit'
+import { createDeploylessClient } from '@repo/bot-kit'
 import { tryCatch } from '@repo/utils'
 import { getBlockNumber } from 'viem/actions'
 
@@ -23,7 +23,7 @@ import { expectedLoanOut } from '../execution/swap-step'
 import { plan } from '../sizing/plan'
 import { lensKey, readMidnightLiquidationLens } from '../state/lens.sol'
 import { isLiquidatable, planInputFromLens } from '../tick/eligibility'
-import { DOMAIN, formatOpportunityId, OP } from '../wire'
+import { formatOpportunityId } from '../wire'
 
 /** Prior `sense` cache: the market whitelist snapshot (with its `updatedAt` staleness signal). */
 export type MidnightSenseCache = ListedMarketsState
@@ -45,36 +45,32 @@ function opportunityRecord(
   out: LensOut,
   liquidationPlan: LiquidationPlan,
   block: bigint
-): OpportunityRecord {
+): PositionRecord {
   const collateral = out.market.collateralParams[liquidationPlan.collateralIndex]
   const repay = expectedLoanOut(liquidationPlan, out)
   const mode = liquidationPlan.postMaturityMode ? ' (post-maturity)' : ''
   return {
-    v: WIRE_VERSION,
-    kind: 'opportunity',
+    kind: 'position',
     id: formatOpportunityId(chainId, id, borrower),
-    domain: DOMAIN,
-    op: OP,
     chainId,
-    at: new Date().toISOString(),
+    marketId: id,
+    borrower,
     summary: `midnight liq ${short(borrower)}${mode} — seize ${liquidationPlan.seizedAssets} for ~${repay} ${out.market.loanToken}`,
-    data: {
-      loanToken: out.market.loanToken,
-      collateralToken: collateral?.token ?? null,
-      collateralIndex: liquidationPlan.collateralIndex,
-      seizedAssets: liquidationPlan.seizedAssets.toString(),
-      repaidUnits: liquidationPlan.repaidUnits.toString(),
-      referenceRepay: repay.toString(),
-      postMaturityMode: liquidationPlan.postMaturityMode,
-      block: Number(block)
-    }
+    loanToken: out.market.loanToken,
+    collateralToken: collateral?.token ?? null,
+    collateralIndex: liquidationPlan.collateralIndex,
+    seizedAssets: liquidationPlan.seizedAssets.toString(),
+    repaidUnits: liquidationPlan.repaidUnits.toString(),
+    referenceRepay: repay.toString(),
+    postMaturityMode: liquidationPlan.postMaturityMode,
+    observedAtBlock: Number(block)
   }
 }
 
 /**
  * The read-only sensor core: enumerate the whitelist-filtered candidate universe, read the
  * liquidation lens fresh for the whole batch (one deployless `eth_call`), and emit one advisory
- * `OpportunityRecord` per liquidatable, plannable position. A transient discovery failure is
+ * position record per liquidatable, plannable position. A transient discovery failure is
  * tolerated (`discover.error`, proceed with zero candidates). Deps are injected so the sensor is
  * unit-testable without a chain, a discovery endpoint, or config.
  */
@@ -85,7 +81,7 @@ export async function runSense(deps: {
   discover: () => Promise<BorrowerCandidate[]>
   chainHead: bigint
   readLens: (pairs: LensInput[]) => Promise<Map<string, LensOut>>
-  emit: (record: OpportunityRecord) => void
+  emit: (record: PositionRecord) => void
   logger: Logger
 }): Promise<SenseCounters> {
   const { chainId, caller, discover, chainHead, readLens, emit, logger } = deps
@@ -134,7 +130,7 @@ export async function senseOnce(
     cache: MidnightSenseCache | null
     runStartupChecks: boolean
     logger: Logger
-    emit: (record: OpportunityRecord) => void
+    emit: (record: PositionRecord) => void
   }
 ): Promise<{ cache: MidnightSenseCache }> {
   const config: SenseConfig = loadSenseConfig(env)

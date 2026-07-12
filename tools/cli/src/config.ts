@@ -55,20 +55,3 @@ export function mergedEnv(args: {
   }
   return { env, chainId }
 }
-
-/**
- * Builds the env-shaped table for the chain-less `signer` daemon. Sources, later wins:
- * `config.json` `signer.defaults` → `secrets.json` `signer.defaults` → the process env (so an
- * env-only deployment and ad-hoc shell overrides beat files). No chain resolution — one daemon
- * serves every chain, and the per-chain policy lives in the policy file, not env.
- */
-export function mergedSignerEnv(args: { home: string; processEnv?: Env }): Env {
-  const processEnv = args.processEnv ?? process.env
-  const config = readSettings(configFile(args.home))
-  const secrets = readSettings(secretsFile(args.home))
-  return {
-    ...config?.signer?.defaults,
-    ...secrets?.signer?.defaults,
-    ...definedOnly(processEnv)
-  }
-}

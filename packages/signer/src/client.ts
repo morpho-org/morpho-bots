@@ -1,72 +1,68 @@
-import type { LocalAccount, TransactionSerializable } from 'viem'
+import type { Address, TransactionSerializableEIP1559, TransactionSerializedEIP1559 } from 'viem'
 
 import { connect } from 'node:net'
-import { getAddress, isAddress, isHex } from 'viem'
-import { toAccount } from 'viem/accounts'
+import {
+  getAddress,
+  isAddress,
+  isAddressEqual,
+  isHex,
+  parseTransaction,
+  recoverTransactionAddress
+} from 'viem'
 
 import type { SignerErrorBody, SignerRequest, SignerResponse, WireTx } from './protocol'
 
-import { SIGNER_PROTOCOL_VERSION } from './protocol'
+import { SIGNER_ERROR_CODES, SIGNER_PROTOCOL_VERSION } from './protocol'
 
-/** Thrown when the agent rejects a tx on policy grounds — distinguishable from an on-chain revert. */
-export class AgentPolicyError extends Error {
+export class SignerPolicyError extends Error {
   readonly code = 'policy_violation'
-  readonly rule: string | undefined
-  readonly check: string | undefined
 
-  constructor(message: string, rule?: string, check?: string) {
+  constructor(
+    message: string,
+    readonly check?: string
+  ) {
     super(message)
-    this.name = 'AgentPolicyError'
-    this.rule = rule
-    this.check = check
+    this.name = 'SignerPolicyError'
   }
 }
 
-/** Thrown for any non-policy error response from the agent (bad request, unsupported version, internal). */
-export class AgentResponseError extends Error {
-  readonly code: SignerErrorBody['code']
-
-  constructor(body: SignerErrorBody) {
-    super(body.message)
-    this.name = 'AgentResponseError'
-    this.code = body.code
+export class SignerResponseError extends Error {
+  constructor(
+    message: string,
+    readonly code: SignerErrorBody['code'] = 'internal'
+  ) {
+    super(message)
+    this.name = 'SignerResponseError'
   }
 }
 
-const ERROR_CODES: readonly SignerErrorBody['code'][] = [
-  'bad_request',
-  'unsupported_version',
-  'policy_violation',
-  'internal'
-]
+export type RemoteSigner = {
+  address: Address
+  signPreparedTransaction(
+    transaction: TransactionSerializableEIP1559
+  ): Promise<TransactionSerializedEIP1559>
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-// Validated narrow of a socket line into the response envelope: the version we speak, exactly one
-// of result/error, and a well-formed error body. Deeper result shapes are checked at the use site.
 function isSignerResponse(value: unknown): value is SignerResponse {
-  if (!isRecord(value) || value.v !== SIGNER_PROTOCOL_VERSION) return false
-  if ('error' in value) {
-    if ('result' in value) return false
-    const { error } = value
-    return (
-      isRecord(error) &&
-      typeof error.message === 'string' &&
-      ERROR_CODES.some(code => code === error.code)
-    )
+  if (!isRecord(value) || value.v !== SIGNER_PROTOCOL_VERSION || typeof value.ok !== 'boolean') {
+    return false
   }
-  return isRecord(value.result)
+  if (value.ok) return 'result' in value && !('error' in value)
+  const error = value.error
+  return (
+    !('result' in value) &&
+    isRecord(error) &&
+    typeof error.message === 'string' &&
+    SIGNER_ERROR_CODES.some(code => code === error.code)
+  )
 }
 
-/**
- * Sends one request over a fresh short-lived connection and resolves the single response line. One
- * connection per request keeps the client correct across daemon restarts with no reconnect logic;
- * Unix-socket latency is negligible at queue cadence. Connect/timeout failures throw plain errors
- * (transient); the caller distinguishes those from typed protocol errors.
- */
-export function requestOnce(
+/** One request per fresh connection: no multiplexing, correlation IDs, or reconnect state. */
+function requestOnce(
   socketPath: string,
   request: SignerRequest,
   timeoutMs = 5_000
@@ -75,7 +71,6 @@ export function requestOnce(
     const socket = connect(socketPath)
     let buffer = ''
     let settled = false
-
     const finish = (action: () => void) => {
       if (settled) return
       settled = true
@@ -83,28 +78,25 @@ export function requestOnce(
       socket.destroy()
       action()
     }
-
     const timer = setTimeout(
       () => finish(() => reject(new Error(`signer request timed out after ${timeoutMs}ms`))),
       timeoutMs
     )
-
     socket.on('connect', () => socket.write(`${JSON.stringify(request)}\n`))
     socket.on('data', chunk => {
       buffer += chunk.toString('utf8')
-      const idx = buffer.indexOf('\n')
-      if (idx === -1) return
-      const line = buffer.slice(0, idx)
+      const newline = buffer.indexOf('\n')
+      if (newline === -1) return
       finish(() => {
         let parsed: unknown
         try {
-          parsed = JSON.parse(line)
+          parsed = JSON.parse(buffer.slice(0, newline))
         } catch {
-          reject(new Error('signer returned a non-JSON response line'))
+          reject(new SignerResponseError('signer returned non-JSON'))
           return
         }
         if (!isSignerResponse(parsed)) {
-          reject(new Error('malformed signer response envelope'))
+          reject(new SignerResponseError('malformed signer response'))
           return
         }
         resolve(parsed)
@@ -117,107 +109,102 @@ export function requestOnce(
   })
 }
 
-function unwrapResult(response: SignerResponse): unknown {
-  if ('error' in response) {
-    const { error } = response
-    if (error.code === 'policy_violation') {
-      throw new AgentPolicyError(error.message, error.rule, error.check)
-    }
-    throw new AgentResponseError(error)
+function result(response: SignerResponse): unknown {
+  if (response.ok) return response.result
+  if (response.error.code === 'policy_violation') {
+    throw new SignerPolicyError(response.error.message, response.error.check)
   }
-  return response.result
+  throw new SignerResponseError(response.error.message, response.error.code)
 }
 
-// Whitelist-extract exactly the signing fields viem hands us; never forward the prepared blob.
-// `value` defaults to 0n; every other field is mandatory (a missing field is a caller bug, not a
-// policy matter, so we throw a clear error rather than sending a malformed request).
-function toWireTxRequest(transaction: TransactionSerializable): WireTx {
-  const maxFeePerGas = 'maxFeePerGas' in transaction ? transaction.maxFeePerGas : undefined
-  const maxPriorityFeePerGas =
-    'maxPriorityFeePerGas' in transaction ? transaction.maxPriorityFeePerGas : undefined
-  const { chainId, to, data, value, nonce, gas } = transaction
-
-  if (
-    chainId === undefined ||
-    to === undefined ||
-    to === null ||
-    data === undefined ||
-    nonce === undefined ||
-    gas === undefined ||
-    maxFeePerGas === undefined ||
-    maxPriorityFeePerGas === undefined
-  ) {
-    const missing: string[] = []
-    if (chainId === undefined) missing.push('chainId')
-    if (to === undefined || to === null) missing.push('to')
-    if (data === undefined) missing.push('data')
-    if (nonce === undefined) missing.push('nonce')
-    if (gas === undefined) missing.push('gas')
-    if (maxFeePerGas === undefined) missing.push('maxFeePerGas')
-    if (maxPriorityFeePerGas === undefined) missing.push('maxPriorityFeePerGas')
-    throw new Error(`agent signer: prepared tx missing required field(s): ${missing.join(', ')}`)
+function toWireTx(transaction: TransactionSerializableEIP1559): WireTx {
+  const { chainId, to, data, value, nonce, gas, maxFeePerGas, maxPriorityFeePerGas } = transaction
+  const missing = Object.entries({
+    chainId,
+    to,
+    data,
+    nonce,
+    gas,
+    maxFeePerGas,
+    maxPriorityFeePerGas
+  })
+    .filter(([, item]) => item === undefined || item === null)
+    .map(([name]) => name)
+  if (missing.length > 0) {
+    throw new Error(`prepared transaction missing required field(s): ${missing.join(', ')}`)
   }
-
   return {
     type: 'eip1559',
     chainId,
-    to: getAddress(to),
-    data,
+    to: getAddress(to!),
+    data: data!,
     value: (value ?? 0n).toString(),
-    nonce,
-    gas: gas.toString(),
-    maxFeePerGas: maxFeePerGas.toString(),
-    maxPriorityFeePerGas: maxPriorityFeePerGas.toString()
+    nonce: nonce!,
+    gas: gas!.toString(),
+    maxFeePerGas: maxFeePerGas!.toString(),
+    maxPriorityFeePerGas: maxPriorityFeePerGas!.toString()
   }
 }
 
-/**
- * Builds a keyless viem `LocalAccount` backed by the signing agent. Fetches the agent's address
- * (the startup handshake), then returns an account whose `signTransaction` round-trips through the
- * socket. `signMessage`/`signTypedData` are unsupported stubs. Policy rejections surface as
- * {@link AgentPolicyError}; transient connect failures propagate as plain errors.
- */
-export async function createAgentAccount(options: { socketPath: string }): Promise<LocalAccount> {
+export async function createRemoteSigner(options: { socketPath: string }): Promise<RemoteSigner> {
   const { socketPath } = options
-  const handshake = await requestOnce(socketPath, {
-    v: SIGNER_PROTOCOL_VERSION,
-    id: 'handshake',
-    method: 'address'
-  })
-  const result = unwrapResult(handshake)
-  const address =
-    typeof result === 'object' && result !== null
-      ? (result as { address?: unknown }).address
-      : undefined
+  const handshake = result(
+    await requestOnce(socketPath, { v: SIGNER_PROTOCOL_VERSION, method: 'address' })
+  )
+  const address = isRecord(handshake) ? handshake.address : undefined
   if (typeof address !== 'string' || !isAddress(address, { strict: false })) {
-    throw new Error('signer handshake did not return a valid address')
+    throw new SignerResponseError('signer handshake did not return a valid address')
   }
+  const expectedAddress = getAddress(address)
 
-  return toAccount({
-    address: getAddress(address),
-    async signTransaction(transaction) {
-      const params = toWireTxRequest(transaction)
+  return {
+    address: expectedAddress,
+    async signPreparedTransaction(transaction) {
+      const wire = toWireTx(transaction)
       const response = await requestOnce(socketPath, {
         v: SIGNER_PROTOCOL_VERSION,
-        id: crypto.randomUUID(),
         method: 'signTransaction',
-        params
+        transaction: wire
       })
-      const signed = unwrapResult(response)
-      const signedTransaction =
-        typeof signed === 'object' && signed !== null
-          ? (signed as { signedTransaction?: unknown }).signedTransaction
-          : undefined
-      if (!isHex(signedTransaction)) {
-        throw new Error('signer did not return a signed transaction')
+      const payload = result(response)
+      const signed = isRecord(payload) ? payload.signedTransaction : undefined
+      if (!isHex(signed) || !signed.startsWith('0x02')) {
+        throw new SignerResponseError('signer did not return a serialized EIP-1559 transaction')
       }
-      return signedTransaction
-    },
-    signMessage() {
-      return Promise.reject(new Error('agent account does not support signMessage'))
-    },
-    signTypedData() {
-      return Promise.reject(new Error('agent account does not support signTypedData'))
+      const serialized = signed as TransactionSerializedEIP1559
+      let decoded: ReturnType<typeof parseTransaction>
+      try {
+        decoded = parseTransaction(serialized)
+      } catch {
+        throw new SignerResponseError('signer returned an invalid serialized transaction')
+      }
+      const matchesPrepared =
+        decoded.type === 'eip1559' &&
+        decoded.chainId === wire.chainId &&
+        decoded.to !== null &&
+        decoded.to !== undefined &&
+        isAddressEqual(decoded.to, wire.to) &&
+        decoded.data?.toLowerCase() === wire.data.toLowerCase() &&
+        (decoded.value ?? 0n) === BigInt(wire.value) &&
+        decoded.nonce === wire.nonce &&
+        decoded.gas === BigInt(wire.gas) &&
+        decoded.maxFeePerGas === BigInt(wire.maxFeePerGas) &&
+        decoded.maxPriorityFeePerGas === BigInt(wire.maxPriorityFeePerGas)
+      if (!matchesPrepared) {
+        throw new SignerResponseError('signed transaction does not match prepared transaction')
+      }
+      let recovered: Address
+      try {
+        recovered = await recoverTransactionAddress({ serializedTransaction: serialized })
+      } catch {
+        throw new SignerResponseError('signer returned an invalid serialized transaction')
+      }
+      if (!isAddressEqual(recovered, expectedAddress)) {
+        throw new SignerResponseError(
+          `signed transaction sender ${recovered} does not match signer ${expectedAddress}`
+        )
+      }
+      return serialized
     }
-  })
+  }
 }

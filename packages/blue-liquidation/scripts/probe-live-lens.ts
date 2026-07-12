@@ -41,7 +41,7 @@ function required(name: string): string {
 
 async function main() {
   const rpcUrl = required('RPC_URL')
-  const baseClient = createDeploylessClient({ chain: base, rpcUrl, rpcUrlFallback: undefined })
+  const baseClient = createDeploylessClient({ chain: base, rpcUrl })
 
   const borrowEvent = getAbiItem({ abi: MorphoAbi, name: 'Borrow' })
   const head = await getBlockNumber(baseClient)

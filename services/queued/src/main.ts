@@ -1,29 +1,20 @@
 #!/usr/bin/env bun
 import type { Logger } from '@repo/bot-kit'
-import type { Address, LocalAccount } from 'viem'
+import type { RemoteSigner } from '@repo/signer/client'
 
 import { createLogger } from '@repo/bot-kit'
-import {
-  acquireLock,
-  botsHome,
-  ConfigError,
-  queuedLockFile,
-  releaseLock,
-  warnOnLooseSecrets
-} from '@repo/home'
-import { createAgentAccount } from '@repo/signer'
+import { acquireLock, botsHome, ConfigError, queuedLockFile, releaseLock } from '@repo/home'
+import { createRemoteSigner } from '@repo/signer/client'
 import { ensureError } from '@repo/utils'
 import { Command, CommanderError } from 'commander'
 import { unlinkSync } from 'node:fs'
 import { connect } from 'node:net'
 import { isAddressEqual } from 'viem'
-import { privateKeyToAccount } from 'viem/accounts'
 
 import type { QueuedConfig, QueuedOpts } from './config'
 
-import { mergedQueuedEnv, resolveChainId, resolveConfig } from './config'
-import { resolveChain } from './domains'
-import { createEngine, withSignRetry } from './engine'
+import { resolveChain, resolveChainId, resolveConfig } from './config'
+import { createEngine } from './engine'
 import { createQueuedServer } from './server'
 
 type Env = Record<string, string | undefined>
@@ -70,28 +61,18 @@ function probeStaleSocket(socketPath: string): Promise<void> {
 // Resolves the signing account from the config's signer backend (armed only). Agent mode: the
 // handshake fetches the agent's address (a dead socket throws a plain error → transient exit 1), and
 // an address disagreeing with LIQUIDATOR_ADDRESS is misconfig → ConfigError (exit 2). Returns the
-// account plus an optional agent re-verifier for the reconcile drift check.
-async function resolveAccount(
-  config: QueuedConfig
-): Promise<{ account: LocalAccount; reverify?: () => Promise<Address> }> {
+// remote signer after verifying that the agent owns the configured liquidator address.
+async function resolveRemoteSigner(config: QueuedConfig): Promise<RemoteSigner> {
   const backend = config.signer
   if (!backend) throw new ConfigError('resolveAccount called while disarmed')
-  if (backend.kind === 'agent') {
-    const socketPath = backend.socketPath
-    const account = await createAgentAccount({ socketPath })
-    const expected = backend.expectedAddress
-    if (expected && !isAddressEqual(account.address, expected)) {
-      throw new ConfigError(
-        `signing agent address (${account.address}) does not match LIQUIDATOR_ADDRESS (${expected}) — the daemon would sign for the wrong wallet`
-      )
-    }
-    // Agent-backed: one retry per sign on a connect-class socket failure (agent restart mid-life).
-    return {
-      account: withSignRetry(account),
-      reverify: async () => (await createAgentAccount({ socketPath })).address
-    }
+  const socketPath = backend.socketPath
+  const signer = await createRemoteSigner({ socketPath })
+  if (!isAddressEqual(signer.address, config.liquidatorAddress)) {
+    throw new ConfigError(
+      `signing agent address (${signer.address}) does not match LIQUIDATOR_ADDRESS (${config.liquidatorAddress})`
+    )
   }
-  return { account: privateKeyToAccount(backend.privateKey) }
+  return signer
 }
 
 /**
@@ -108,10 +89,9 @@ export async function runQueued(opts: QueuedOpts): Promise<number> {
   let env: Env
   let config: QueuedConfig
   try {
-    warnOnLooseSecrets(home)
     const chainId = resolveChainId(opts)
-    env = mergedQueuedEnv({ home, chainId })
-    const chain = await resolveChain(Number(chainId))
+    env = { ...process.env, CHAIN_ID: chainId }
+    const chain = resolveChain(chainId, env)
     config = resolveConfig({ env, chain, chainId, opts, home })
   } catch (error) {
     fail('startup.error', error)
@@ -119,15 +99,6 @@ export async function runQueued(opts: QueuedOpts): Promise<number> {
   }
 
   const logger: Logger = createLogger(config.logLevel)
-  // In agent mode a still-set LIQUIDATOR_PRIVATE_KEY is dead weight the operator opted out of.
-  if (config.signer?.kind === 'agent' && env.LIQUIDATOR_PRIVATE_KEY) {
-    logger.warn('queued.key_ignored', {
-      chainId: config.chainId,
-      detail:
-        'SIGNER_SOCKET is set, so LIQUIDATOR_PRIVATE_KEY is ignored — remove it from the queued env'
-    })
-  }
-
   // The per-chain lock: a live holder is a second daemon on the same chain — misconfig, exit 2.
   const lockPath = queuedLockFile(home, String(config.chainId))
   const lock = acquireLock(lockPath)
@@ -148,11 +119,10 @@ export async function runQueued(opts: QueuedOpts): Promise<number> {
     return error instanceof ConfigError ? 2 : 1
   }
 
-  let account: LocalAccount | null = null
-  let reverify: (() => Promise<Address>) | undefined
+  let remoteSigner: RemoteSigner | null = null
   if (config.signer) {
     try {
-      ;({ account, reverify } = await resolveAccount(config))
+      remoteSigner = await resolveRemoteSigner(config)
     } catch (error) {
       fail('startup.error', error)
       releaseLock(lockPath)
@@ -160,14 +130,12 @@ export async function runQueued(opts: QueuedOpts): Promise<number> {
     }
   }
 
-  // Wired after `triggerShutdown` exists (below); the engine calls it on a fatal reconcile drift.
   let fatalTrigger: ((code: number) => void) | null = null
   const engine = createEngine({
     config,
-    account,
+    remoteSigner,
     logger,
     home,
-    reverifyAddress: reverify,
     onFatal: code => fatalTrigger?.(code)
   })
 
@@ -179,10 +147,29 @@ export async function runQueued(opts: QueuedOpts): Promise<number> {
     return error instanceof ConfigError ? 2 : 1
   }
 
-  const server = createQueuedServer({ socketPath: config.socketPath, engine, log: logger })
+  const server = createQueuedServer({
+    socketPath: config.socketPath,
+    chainId: config.chainId,
+    engine,
+    log: logger
+  })
+
+  let shutdownRequested: { signal: string; code: number } | null = null
+  let triggerShutdown: ((signal: string, code: number) => void) | null = null
+  const requestShutdown = (signal: string, code = 0) => {
+    if (triggerShutdown) triggerShutdown(signal, code)
+    else shutdownRequested = { signal, code }
+  }
+  const onSigterm = () => requestShutdown('SIGTERM')
+  const onSigint = () => requestShutdown('SIGINT')
+  process.once('SIGTERM', onSigterm)
+  process.once('SIGINT', onSigint)
+
   try {
     await server.listen()
   } catch (error) {
+    process.removeListener('SIGTERM', onSigterm)
+    process.removeListener('SIGINT', onSigint)
     fail('queued.bind_error', error)
     await engine.shutdown()
     releaseLock(lockPath)
@@ -192,14 +179,14 @@ export async function runQueued(opts: QueuedOpts): Promise<number> {
   logger.info('queued.listening', {
     socket: config.socketPath,
     chainId: config.chainId,
-    address: account?.address ?? null,
-    armed: account !== null,
+    address: remoteSigner?.address ?? null,
+    armed: remoteSigner !== null,
     dryRun: config.dryRun
   })
 
   return new Promise<number>(resolve => {
     let shuttingDown = false
-    const triggerShutdown = async (signal: string, code: number): Promise<void> => {
+    const shutdown = async (signal: string, code: number): Promise<void> => {
       if (shuttingDown) return
       shuttingDown = true
       logger.info('queued.shutdown', { signal, code })
@@ -208,19 +195,24 @@ export async function runQueued(opts: QueuedOpts): Promise<number> {
       releaseLock(lockPath)
       resolve(code)
     }
-    fatalTrigger = code => void triggerShutdown('fatal', code)
-    process.once('SIGTERM', () => void triggerShutdown('SIGTERM', 0))
-    process.once('SIGINT', () => void triggerShutdown('SIGINT', 0))
+    triggerShutdown = (signal, code) => void shutdown(signal, code)
+    fatalTrigger = code => requestShutdown('fatal', code)
+    if (shutdownRequested) triggerShutdown(shutdownRequested.signal, shutdownRequested.code)
   })
 }
 
 const program = new Command('morpho-queued')
   .description(
-    'The per-chain, domain-agnostic transaction-queue daemon. Long-lived: any bot pipes tx/outcome ' +
-      'records to it over a Unix socket; it owns dedupe, backoff, re-sim, fees, nonce, submit, and ' +
+    'The per-chain transaction-queue daemon. Long-lived: bots pipe transaction records to it over ' +
+      'a Unix socket; it owns dedupe, re-sim, fees, nonce, submit, and ' +
       'continuous settlement/RBF. Terminal outcomes append to <home>/queued/outcomes-<chain>.jsonl; ' +
       'all logs go to stderr. Config/state live under ~/.morpho-bots (MORPHO_BOTS_HOME overrides).'
   )
+  .exitOverride()
+
+program
+  .command('serve')
+  .description('run the long-lived per-chain transaction lifecycle daemon')
   .option('--chain <id>', 'chain id to serve (required; else CHAIN_ID env)')
   .option(
     '--socket <path>',
@@ -230,9 +222,17 @@ const program = new Command('morpho-queued')
     '--dry-run',
     'disarmed: run the full pipeline and emit would_submit, never touching a signer'
   )
-  .exitOverride()
   .action(async (opts: QueuedOpts) => {
     process.exitCode = await runQueued(opts)
+  })
+
+program
+  .command('submit')
+  .description('stream transaction JSONL from stdin to the per-chain daemon')
+  .option('--chain <id>', 'chain id to submit to (required; else CHAIN_ID env)')
+  .action(async (opts: { chain?: string }) => {
+    const { runSubmit } = await import('./submit')
+    process.exitCode = await runSubmit(opts)
   })
 
 try {

@@ -1,8 +1,6 @@
 # syntax=docker/dockerfile:1
-# The single bot image runs TWO processes in the entrypoint (see docker-entrypoint.sh — BOT, CHAIN_ID,
-# TICK_INTERVAL_S select what runs): the per-chain `queued` transaction-queue daemon (background,
-# supervised) and the three-stage op-pipeline loop `morpho-bots $BOT $SOURCE_OP | $TRANSFORM_OP | queue`
-# that feeds it over a Unix socket. The build context MUST be the repo root so the bun workspace
+# The bot image runs a signer, a per-chain queue daemon, and the JSONL liquidation pipeline.
+# The build context MUST be the repo root so the bun workspace
 # (packages/*, services/*) resolves — bots/docker-compose.*.yml set `context: ..` and Railway services
 # set RAILWAY_DOCKERFILE_PATH=bots/Dockerfile. The oven/bun base ships bash, which the entrypoint needs
 # for PIPESTATUS.
@@ -31,10 +29,7 @@ RUN bun install --frozen-lockfile
 RUN bun run --filter @repo/contracts build
 RUN bun run --filter @repo/cli build
 
-# AOT-bundle the queue daemon to services/queued/dist/main.js the same way. Its build script runs a
-# bare `Bun.build` with NO soltag plugins — the daemon's graph imports only the cores' lens-free
-# `./queue` subpaths, so there is nothing to compile and a lens leak would fail the build loudly. The
-# entrypoint runs this bundle (`bun /repo/services/queued/dist/main.js`), not the source.
+# AOT-bundle the queue daemon to services/queued/dist/main.js.
 RUN bun run --filter @repo/queued build
 
 # State/config home defaults to /data/morpho-bots (docker-entrypoint.sh) — mount a volume at /data

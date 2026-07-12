@@ -9,12 +9,11 @@ import { senseOnce } from './sense/sense'
 
 export type { Env, SenseConfig, ActConfig } from './config'
 export { loadSenseConfig, loadActConfig } from './config'
-export { DOMAIN, formatOpportunityId, parseOpportunityId } from './wire'
-export type { ParsedOpportunityId } from './wire'
+export { DOMAIN, formatOpportunityId } from './wire'
 export { runSense } from './sense/sense'
 export type { MidnightSenseCache, SenseCounters } from './sense/sense'
 export { runAct } from './act/act'
-export type { MidnightActStatus, MidnightActCache, ActCounters } from './act/act'
+export type { MidnightActCache, ActCounters } from './act/act'
 
 // Bumped when a stage's disposable cache shape changes; a mismatched cache is rebuilt, not migrated.
 // The CLI keys the cache file on the op NAME, so a rename already orphans old files — these version
@@ -26,9 +25,7 @@ const ACT_CACHE_VERSION = 1
  * The flat op table this core exposes to the CLI (see `@repo/bot-kit`'s {@link OpExport}). Each op is
  * a source XOR a transform; the CLI surfaces each as its own `midnight <op>` command.
  * `unhealthy-positions` is the sensor (today's `senseOnce`); `liquidate` is the transform that
- * consumes it (today's `actOnce`). A sync test (`tools/cli/test/domains.test.ts`) asserts the
- * CLI's static manifest matches these names/kinds/`accepts` exactly, so adding an op is an impl here
- * plus a manifest line.
+ * consumes it. The CLI dispatches this table directly.
  */
 export const OPS: Record<string, OpExport> = {
   'unhealthy-positions': {
@@ -45,13 +42,11 @@ export const OPS: Record<string, OpExport> = {
   },
   liquidate: {
     kind: 'act',
-    accepts: 'unhealthy-positions',
     cacheVersion: ACT_CACHE_VERSION,
     validateConfig: env => loadActConfig(env),
     actOnce: (env, ids, opts) =>
       actOnce(env, ids, {
         cache: opts.cache as MidnightActCache | null,
-        advisory: opts.advisory,
         runStartupChecks: opts.runStartupChecks,
         logger: opts.logger,
         emit: opts.emit

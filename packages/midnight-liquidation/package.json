@@ -9,10 +9,6 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
-    "./queue": {
-      "types": "./src/queue-policy.ts",
-      "default": "./src/queue-policy.ts"
-    },
     "./soltag-plugin": {
       "types": "./soltag.plugin.ts",
       "default": "./soltag.plugin.ts"

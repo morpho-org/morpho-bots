@@ -2,10 +2,8 @@ import type { BatchLensTransportType } from '@repo/utils'
 import type { Address, Chain, Client, Transport } from 'viem'
 
 import { deployless } from '@morpho-org/viem-dlc/transports'
-import { createPublicClient } from 'viem'
+import { createPublicClient, http } from 'viem'
 import { getCode } from 'viem/actions'
-
-import { createHttpTransport } from './transport'
 
 // Gas the deployless lens may burn in its single eth_call. Matches the prime-monorepo reference
 // (packages/resolvers/test/measure/clients.ts); the lens itself is read-only so a generous ceiling
@@ -13,18 +11,16 @@ import { createHttpTransport } from './transport'
 const DEPLOYLESS_GAS_LIMIT = 550_000_000
 
 /**
- * Builds the read-only viem client a bot's lens and simulate paths share: an HTTP transport (a
- * viem-dlc `failover` pair when `rpcUrlFallback` is set, else a single endpoint) wrapped in
- * viem-dlc's `deployless` transport so the bot's batch lens can run deploylessly. Plain reads
+ * Builds the read-only viem client a bot's lens and simulate paths share: one HTTP transport wrapped
+ * in viem-dlc's `deployless` transport so the bot's batch lens can run deploylessly. Plain reads
  * (`getCode`, `eth_call`) pass straight through to the base transport. The return is typed against
  * {@link BatchLensTransportType} so `readDeploylessBatchLens`-based fetchers accept it without a cast.
  */
 export function createDeploylessClient(options: {
   chain: Chain
   rpcUrl: string
-  rpcUrlFallback?: string | undefined
 }): Client<Transport<BatchLensTransportType>> {
-  const base = createHttpTransport(options.rpcUrl, options.rpcUrlFallback)
+  const base = http(options.rpcUrl, { timeout: 30_000 })
   return createPublicClient({
     chain: options.chain,
     transport: deployless(base, { gasLimit: DEPLOYLESS_GAS_LIMIT })

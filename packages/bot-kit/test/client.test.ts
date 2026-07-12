@@ -16,18 +16,9 @@ function stubClient(code: string): Client {
 
 describe('createDeploylessClient', () => {
   it('wraps the RPC in viem-dlc deployless transport on the configured chain', () => {
-    const client = createDeploylessClient({ chain: base, rpcUrl: RPC, rpcUrlFallback: undefined })
+    const client = createDeploylessClient({ chain: base, rpcUrl: RPC })
     expect(client.transport.type).toBe('viem-dlc-deployless')
     expect(client.chain?.id).toBe(base.id)
-  })
-
-  it('still presents a deployless transport when a fallback RPC is configured', () => {
-    const client = createDeploylessClient({
-      chain: base,
-      rpcUrl: RPC,
-      rpcUrlFallback: 'http://localhost:8546'
-    })
-    expect(client.transport.type).toBe('viem-dlc-deployless')
   })
 })
 

@@ -50,38 +50,28 @@
 - **Logging**: Log errors appropriately for debugging and monitoring. Prefer structured logs with
   enough context (bot name, operation, relevant inputs) that an operator can answer "what did the
   bot do and why?" a day later.
-- **stdout is the data plane; ALL logs go to stderr**: CLI stdout carries only newline-delimited
-  JSON wire records (`opportunity`/`tx`/`outcome`, typed in `@repo/bot-kit`'s `records.ts` — see
-  [TIB-2026-07-09-pipeline-cli](./decisions/TIB-2026-07-09-pipeline-cli.md) for the envelope,
-  bare-decimal-string bigints on the wire, and the per-stage IO matrix). `createLogger` routes
-  every level to stderr; never `console.log` from a bot package or a CLI command — a stray stdout
-  line corrupts the pipe.
-- **Wire IDs are `<domain>:<op>:<suffix>`**: the two-segment `<domain>:<op>` prefix is the GENERIC
-  part of the contract — the CLI may split it off (`splitIdPrefix` in `wire-input.ts`) to route a
-  bare id into its accepting transform and to derive a settled outcome's `op` from its persisted
-  label. The `<suffix>` stays domain-owned and opaque; only the owning core parses it (via its
-  `parseOpportunityId`). The `op` is the SOURCE op's name and stays stable through the pipe — a
-  transform re-emits under the same `op` — so an outcome traces back to the source that found it.
-- **The `queue` stage is a thin relay, not a sink**: it holds no key, no state, and no signer — it
-  drains stdin, pre-filters records to this domain+chain (foreign records are warn+skipped like
-  `act`'s `unaccepted`), and relays each over a Unix socket to the per-chain `queued` daemon
-  (`morpho-queued`), which owns dedupe/re-sim/fees/nonce/submit/RBF. Only the daemon's synchronous
-  acks (`submitted`/`would_submit`/`deduped_inflight`/`sim_reverted`) echo back onto the pipe's
-  stdout; terminal outcomes (`confirmed`/`reverted`/`dropped`) land after the pipe has exited, so
-  they live ONLY in the daemon's append-only `<home>/queued/outcomes-<chainId>.jsonl` (the
-  monitoring plane: `tail -f … | jq`), never on stdout. Exit mapping: complete handoff → 0
-  (per-record `bad_request`/`unsupported_version`/`chain_mismatch` are warn+skip, still 0 — a
-  malformed line never kills a stage); transport failure, timeout, or a `retry`/`internal` daemon
-  error → 1 (transient, the loop retries); handshake failure (daemon chain mismatch, protocol-`v`
-  mismatch) or a `ConfigError`/stdin wire-version skew → 2.
+- **stdout is the data plane; ALL stage logs go to stderr**: pipeline-op stdout carries
+  newline-delimited, stage-specific JSON (`morpho-bots init` is the explicit human-facing exception).
+  Sources emit `position` records with explicit semantic identity; transforms
+  emit `transaction` records only. Non-actions, validation failures, quote failures, and simulation
+  failures are structured stderr logs. Never `console.log` from a bot package or CLI command.
+- **Records are transparent and additive**: a position includes `kind`, `chainId`, `id`, `marketId`,
+  and `borrower`; Blue also includes its complete immutable market parameters. Consumers validate
+  required semantic fields, ignore unknown fields, and re-read mutable state before acting. `id` is
+  only a correlation/deduplication label and must never be parsed to recover domain data. This keeps
+  seams inspectable and repairable with `jq` without coupling adjacent releases.
+- **`morpho-queued submit` is a thin stream relay**: it holds no key or state and sends transaction
+  JSON directly over the queue daemon's Unix socket. There are no RPC method names, protocol-version
+  negotiation, or ping. `serve` alone owns dedupe, simulation, fees, nonces, broadcast, replacement,
+  and settlement state; synchronous replies are minimal acknowledgements and terminal results live
+  in its append-only per-chain journal.
 - **Promises**: Use `tryCatch` from `@repo/utils` to handle promise throws.
 
 ### Configuration
 
 - **Env-shaped tables, not `Bun.env`**: Bot packages receive ALL configuration — venue API keys
   included — through the env table passed to the stage entry points (`senseOnce(env, …)` /
-  `actOnce(env, …)` and their stage config loaders; the `queue` stage is a thin client that reads
-  only chain-resolution env — see the wire-contract bullet). Never read
+  `actOnce(env, …)` and their stage config loaders). Never read
   `Bun.env` directly inside a bot package: the CLI merges `~/.morpho-bots/config.json` +
   `secrets.json` + the process env into that table (precedence: config < secrets < process env),
   and a direct `Bun.env` read silently bypasses file-sourced settings. There is still no wrapper
@@ -93,12 +83,19 @@
   files, or deploy-time environment — never in committed code. The repo's Strict Rules enforce
   this. Keys are read from the env table at the point of use and are never stored on the (logged)
   `Config` object.
-- **Single key reader**: The signer private key is read by exactly one process — the signing agent
-  (`morpho-bots signer`, reading `SIGNER_PRIVATE_KEY`) when `SIGNER_SOCKET` is set, otherwise the
-  per-chain `queued` daemon (`morpho-queued`, reading `LIQUIDATOR_PRIVATE_KEY` from its own `queued`
-  config section). No pipe stage ever reads a key: `sense`/`act` never sign, and the `queue` stage
-  is now a thin client that holds no key and no signer (it relays to the daemon over a socket). No
-  other stage or package may read `SIGNER_PRIVATE_KEY`/`LIQUIDATOR_PRIVATE_KEY`.
+- **Single key reader**: The signer private key is read by exactly one process: the offline signing
+  agent (`morpho-signer`, reading `SIGNER_PRIVATE_KEY`). Armed `morpho-queued` operation requires
+  `SIGNER_SOCKET` and rejects local private-key material. No pipe stage or queue daemon may read a
+  key; they only exchange transaction records or fully prepared signing requests over Unix sockets.
+- **Services are env/argv-only**: `morpho-queued` and `morpho-signer` do not read operator config
+  overlays. The signer's policy file is the intentional non-overlay exception; it may instead be
+  supplied inline. Services use one RPC endpoint; do not introduce separate send or fallback RPC
+  variables. Dry-run queue operation neither starts nor requires the signer.
+- **Signer policy is concrete**: one signer process serves one chain and one Executor. Zero-value
+  transactions and the Executor entry selector are hard-coded invariants, not generic policy
+  modules. The queue verifies the recovered sender and every prepared field before broadcasting.
+  The signer does not inspect calls nested inside the Executor batch; same-container deployment is
+  a process/policy boundary, not hostile-process isolation.
 
 ### Code Complexity
 

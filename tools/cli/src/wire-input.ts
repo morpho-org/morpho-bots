@@ -1,135 +1,99 @@
-import type { Logger, OutcomeRecord, TxRecord } from '@repo/bot-kit'
+import type { Logger } from '@repo/bot-kit'
 
-import { splitIdPrefix, WIRE_VERSION } from '@repo/bot-kit'
+const DEFAULT_BATCH_SIZE = 256
+const DEFAULT_MAX_LINE_BYTES = 1024 * 1024
 
-/**
- * One classified stdin line for `act`/`queue`. A line starting with `{` is a JSON wire record; any
- * other non-empty line is a bare id (pasteable into `act`). Blank lines yield `null` (skipped).
- * `version_skew` (a record whose `v` exceeds {@link WIRE_VERSION}) is a deploy error the caller maps
- * to exit 2; `malformed` (unparseable JSON) is warned-and-skipped — the wire is derived data.
- */
-type ParsedLine =
-  | { kind: 'record'; record: Record<string, unknown> }
-  | { kind: 'bare'; id: string }
-  | { kind: 'malformed' }
-  | { kind: 'version_skew' }
+type InputSummary = { invalidLines: number; records: number }
 
-/** Classifies a single raw input line (see {@link ParsedLine}); `null` for a blank line. */
-export function parseLine(line: string): ParsedLine | null {
-  const trimmed = line.trim()
-  if (trimmed === '') return null
-  if (!trimmed.startsWith('{')) return { kind: 'bare', id: trimmed }
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(trimmed)
-  } catch {
-    return { kind: 'malformed' }
+/** Stream UTF-8 JSONL into bounded batches without imposing a schema on the records. */
+export async function consumeRecordBatches(
+  input: ReadableStream<Uint8Array>,
+  logger: Logger,
+  consume: (records: readonly unknown[]) => Promise<void>,
+  limits: { batchSize?: number; maxLineBytes?: number } = {}
+): Promise<InputSummary> {
+  const batchSize = limits.batchSize ?? DEFAULT_BATCH_SIZE
+  const maxLineBytes = limits.maxLineBytes ?? DEFAULT_MAX_LINE_BYTES
+  if (batchSize < 1 || maxLineBytes < 1) throw new Error('wire input limits must be positive')
+
+  const summary: InputSummary = { invalidLines: 0, records: 0 }
+  const batch: unknown[] = []
+  const decoder = new TextDecoder()
+  const reader = input.getReader()
+  let lineParts: Uint8Array[] = []
+  let lineBytes = 0
+  let discardingOversizedLine = false
+
+  const flush = async () => {
+    if (batch.length === 0) return
+    const records = batch.splice(0)
+    await consume(records)
   }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    return { kind: 'malformed' }
-  }
-  const record = parsed as Record<string, unknown>
-  // A record from a newer wire version is a deploy skew, not perishable data — exit 2, don't guess.
-  if (typeof record.v === 'number' && record.v > WIRE_VERSION) return { kind: 'version_skew' }
-  return { kind: 'record', record }
-}
 
-/**
- * Collects opportunity ids for a transform op from stdin. A record or bare id is taken only when it
- * belongs to THIS domain AND carries the source op the transform `accepts` (envelope `op` for
- * records, the `<domain>:<op>:` prefix for bare ids) — so a mixed stream stays legal and a transform
- * takes only its own. Everything else (tx/outcome records, foreign domain/op, malformed lines) is
- * warned-and-skipped deterministically. A record from a newer wire version stops the whole pass
- * (`versionSkew` → the caller exits 2).
- */
-export function collectActIds(
-  input: string,
-  domain: string,
-  accepts: string,
-  logger: Logger
-): { ids: string[]; versionSkew: boolean } {
-  const ids: string[] = []
-  for (const line of input.split('\n')) {
-    const parsed = parseLine(line)
-    if (!parsed) continue
-    if (parsed.kind === 'version_skew') return { ids, versionSkew: true }
-    if (parsed.kind === 'malformed') {
+  const parseLine = async (bytes: Uint8Array) => {
+    const trimmed = decoder.decode(bytes).trim()
+    if (trimmed === '') return
+    try {
+      batch.push(JSON.parse(trimmed))
+      summary.records += 1
+      if (batch.length === batchSize) await flush()
+    } catch {
+      summary.invalidLines += 1
       logger.warn('act.skip', { reason: 'malformed_line' })
-      continue
-    }
-    if (parsed.kind === 'bare') {
-      const prefix = splitIdPrefix(parsed.id)
-      if (prefix.domain === domain && prefix.op === accepts) {
-        ids.push(parsed.id)
-      } else {
-        logger.warn('act.skip', { reason: 'unaccepted', domain: prefix.domain, op: prefix.op })
-      }
-      continue
-    }
-    const record = parsed.record
-    if (
-      record.kind === 'opportunity' &&
-      record.domain === domain &&
-      record.op === accepts &&
-      typeof record.id === 'string'
-    ) {
-      ids.push(record.id)
-    } else {
-      logger.warn('act.skip', {
-        reason: 'unaccepted',
-        kind: record.kind,
-        domain: record.domain,
-        op: record.op
-      })
     }
   }
-  return { ids, versionSkew: false }
-}
 
-/**
- * Collects the `queue`'s typed inputs from stdin: `tx` records (to submit) and `outcome` records
- * (to drive backoff). Opportunity records and bare ids are ignored with a deterministic warn+skip;
- * records missing required fields are skipped; malformed lines never fail the pass (the wire is
- * derived data), but a wire-version skew does (`versionSkew` → the caller exits 2).
- */
-export function collectQueueRecords(
-  input: string,
-  logger: Logger
-): { txs: TxRecord[]; outcomes: OutcomeRecord[]; versionSkew: boolean } {
-  const txs: TxRecord[] = []
-  const outcomes: OutcomeRecord[] = []
-  for (const line of input.split('\n')) {
-    const parsed = parseLine(line)
-    if (!parsed) continue
-    if (parsed.kind === 'version_skew') return { txs, outcomes, versionSkew: true }
-    if (parsed.kind === 'malformed') {
-      logger.warn('queue.skip', { reason: 'malformed_line' })
-      continue
-    }
-    if (parsed.kind === 'bare') {
-      logger.warn('queue.skip', { reason: 'bare_id' })
-      continue
-    }
-    const record = parsed.record
-    if (record.kind === 'tx') {
-      if (
-        typeof record.id === 'string' &&
-        typeof record.to === 'string' &&
-        typeof record.data === 'string'
-      ) {
-        txs.push(record as unknown as TxRecord)
-      } else {
-        logger.warn('queue.skip', { reason: 'tx_missing_fields' })
-      }
-    } else if (record.kind === 'outcome') {
-      if (typeof record.id === 'string' && typeof record.status === 'string') {
-        outcomes.push(record as unknown as OutcomeRecord)
-      } else {
-        logger.warn('queue.skip', { reason: 'outcome_missing_fields' })
-      }
-    } else {
-      logger.warn('queue.skip', { reason: 'unaccepted', kind: record.kind })
-    }
+  const rejectOversizedLine = () => {
+    summary.invalidLines += 1
+    logger.warn('act.skip', { reason: 'line_too_long', maxLineBytes })
   }
-  return { txs, outcomes, versionSkew: false }
+
+  const append = (bytes: Uint8Array) => {
+    if (discardingOversizedLine || bytes.length === 0) return
+    lineBytes += bytes.length
+    if (lineBytes > maxLineBytes) {
+      lineParts = []
+      lineBytes = 0
+      discardingOversizedLine = true
+      rejectOversizedLine()
+      return
+    }
+    lineParts.push(bytes)
+  }
+
+  const finishLine = async () => {
+    if (discardingOversizedLine) {
+      discardingOversizedLine = false
+    } else {
+      const line = new Uint8Array(lineBytes)
+      let offset = 0
+      for (const part of lineParts) {
+        line.set(part, offset)
+        offset += part.length
+      }
+      await parseLine(line)
+    }
+    lineParts = []
+    lineBytes = 0
+  }
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      let start = 0
+      for (let index = 0; index < value.length; index += 1) {
+        if (value[index] !== 0x0a) continue
+        append(value.subarray(start, index))
+        await finishLine()
+        start = index + 1
+      }
+      append(value.subarray(start))
+    }
+    if (!discardingOversizedLine && lineBytes > 0) await finishLine()
+    await flush()
+    return summary
+  } finally {
+    reader.releaseLock()
+  }
 }

@@ -5,15 +5,24 @@ and the shared packages they consume.
 
 This is a [bun workspaces](https://bun.com/docs/install/workspaces) monorepo:
 
-- `tools/` — operator interfaces; `tools/cli` (`@repo/cli`, bin `morpho-bots`) is the
-  only way to run bots — UNIX-pipeable one-shot commands, `morpho-bots <bot> sense | act | queue`,
-  driven by unix loops/cron
+- `tools/` — operator-invoked, UNIX-pipeable one-shot commands. Sources emit transparent position
+  JSON; transforms consume those semantic fields and emit transaction JSON.
 - `bots/` — deployment packaging for the bot use-case (`@repo/bots`): the Docker image +
   pipeline entrypoint loop, docker-compose files, and Railway deploy scripts that wrap the
   generic CLI
-- `services/` — independently deployed sidecars (e.g. `services/blue-rindexer`); not bun workspaces
+- `services/` — long-lived processes: the Blue indexer and the per-chain `morpho-queued` daemon,
+  which alone owns transaction state, dedupe, re-simulation, fees, nonces, broadcast, and replacement
 - `packages/` — libraries: the bot cores (`@repo/blue-liquidation`, `@repo/midnight-liquidation`)
-  and shared layers (e.g. `@repo/typescript-config`, `@repo/utils`, `@repo/contracts`)
+  and focused shared layers, including the policy-enforcing `morpho-signer` agent
+
+Pipeline records are deliberately inspectable and adaptable with tools such as `jq`. Position IDs
+are correlation/deduplication labels only; consumers use explicit `marketId`, `borrower`, and domain
+fields rather than decoding IDs. `morpho-queued submit` streams transaction JSON directly over a
+Unix socket to the queue daemon.
+
+Transforms read JSONL incrementally in bounded batches. A malformed or oversized line is reported
+on stderr; valid records are still processed, and the command exits 2 so `pipefail` loops stop.
+Filters must preserve one object per line (for example, use `jq -c`).
 
 ## Getting started
 

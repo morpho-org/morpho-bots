@@ -17,7 +17,7 @@ function wire(overrides: Record<string, unknown> = {}) {
     type: 'eip1559',
     chainId: 8453,
     to: EXECUTOR,
-    data: '0x',
+    data: '0x00000001',
     value: '0',
     nonce: 7,
     gas: '1000000',
@@ -61,22 +61,17 @@ afterEach(async () => {
 })
 
 describe('createSignerServer', () => {
-  it('answers ping and address', async () => {
-    expect(await rpc(socketPath, { v: 1, id: '1', method: 'ping' })).toEqual({
-      v: 1,
-      id: '1',
-      result: { pong: true }
-    })
-    const addr = await rpc(socketPath, { v: 1, id: '2', method: 'address' })
+  it('answers the address identity/readiness handshake', async () => {
+    const addr = await rpc(socketPath, { v: 3, method: 'address' })
+    expect(addr.ok).toBe(true)
     expect(addr.result).toEqual({ address: account.address })
   })
 
   it('signs a policy-compliant tx recoverable to the account, fields intact', async () => {
     const response = await rpc(socketPath, {
-      v: 1,
-      id: '3',
+      v: 3,
       method: 'signTransaction',
-      params: wire()
+      transaction: wire()
     })
     const result = response.result as { signedTransaction: TransactionSerializedEIP1559 }
     expect(
@@ -91,16 +86,14 @@ describe('createSignerServer', () => {
 
   it('signs the same nonce twice with different fees (RBF, stateless policy)', async () => {
     const first = await rpc(socketPath, {
-      v: 1,
-      id: 'a',
+      v: 3,
       method: 'signTransaction',
-      params: wire({ nonce: 9, maxFeePerGas: '1000000000' })
+      transaction: wire({ nonce: 9, maxFeePerGas: '1000000000' })
     })
     const second = await rpc(socketPath, {
-      v: 1,
-      id: 'b',
+      v: 3,
       method: 'signTransaction',
-      params: wire({ nonce: 9, maxFeePerGas: '2000000000' })
+      transaction: wire({ nonce: 9, maxFeePerGas: '2000000000' })
     })
     const firstTx = (first.result as { signedTransaction: Hex }).signedTransaction
     const secondTx = (second.result as { signedTransaction: Hex }).signedTransaction
@@ -110,43 +103,49 @@ describe('createSignerServer', () => {
     expect(parseTransaction(secondTx).maxFeePerGas).toBe(2000000000n)
   })
 
-  it('rejects a disallowed tx with policy_violation carrying rule and check', async () => {
+  it('rejects a disallowed tx with a typed policy check', async () => {
     const response = await rpc(socketPath, {
-      v: 1,
-      id: '4',
+      v: 3,
       method: 'signTransaction',
-      params: wire({ chainId: 1 })
+      transaction: wire({ chainId: 1 })
     })
     expect(response.error).toMatchObject({
       code: 'policy_violation',
-      rule: 'test-rule',
       check: 'chainId'
     })
   })
 
-  it('rejects an oversize line with bad_request and closes the connection', async () => {
-    const response = await new Promise<Record<string, unknown>>((resolve, reject) => {
-      const socket = connect(socketPath)
-      let buffer = ''
-      socket.on('connect', () =>
-        socket.write(`{"v":1,"id":"big","junk":"${'x'.repeat(MAX_LINE_BYTES + 10)}`)
-      )
-      socket.on('data', chunk => {
-        buffer += chunk.toString('utf8')
-        const idx = buffer.indexOf('\n')
-        if (idx === -1) return
-        socket.destroy()
-        resolve(JSON.parse(buffer.slice(0, idx)))
+  it('rejects oversize lines with or without a newline in the final chunk', async () => {
+    const request = (newline: string) =>
+      new Promise<Record<string, unknown>>((resolve, reject) => {
+        const socket = connect(socketPath)
+        let buffer = ''
+        socket.on('connect', () =>
+          socket.write(`{"v":3,"junk":"${'x'.repeat(MAX_LINE_BYTES + 10)}${newline}`)
+        )
+        socket.on('data', chunk => {
+          buffer += chunk.toString('utf8')
+          const idx = buffer.indexOf('\n')
+          if (idx === -1) return
+          socket.destroy()
+          resolve(JSON.parse(buffer.slice(0, idx)))
+        })
+        socket.on('error', reject)
       })
-      socket.on('error', reject)
-    })
-    expect(response.error).toMatchObject({ code: 'bad_request' })
+
+    for (const newline of ['', '\n']) {
+      const response = await request(newline)
+      expect(response.error).toMatchObject({
+        code: 'bad_request',
+        message: 'request line too large'
+      })
+    }
   })
 
   it('handles two concurrent connections', async () => {
     const [a, b] = await Promise.all([
-      rpc(socketPath, { v: 1, id: 'c1', method: 'address' }),
-      rpc(socketPath, { v: 1, id: 'c2', method: 'address' })
+      rpc(socketPath, { v: 3, method: 'address' }),
+      rpc(socketPath, { v: 3, method: 'address' })
     ])
     expect(a.result).toEqual({ address: account.address })
     expect(b.result).toEqual({ address: account.address })

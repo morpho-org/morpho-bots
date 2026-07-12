@@ -2,23 +2,10 @@ import type { LogLevel } from '@repo/bot-kit'
 import type { Venue } from '@repo/swaps'
 import type { Address, Chain } from 'viem'
 
-import { resolveBackoff } from '@repo/bot-kit'
 import { Executor } from '@repo/contracts'
 import { tryCatch } from '@repo/utils'
 import { getAddress, isAddress } from 'viem'
 import { base } from 'viem/chains'
-
-// The queue's signer-backend / key / address resolvers now live in `@repo/bot-kit` (they were
-// byte-identical across both cores). Re-exported here so the existing `config` test suites and the
-// act path keep importing them from `./config` unchanged. (The fee-ceiling/backoff resolvers moved
-// with them but are now consumed only by the `queued` daemon, so they are imported from bot-kit
-// directly where needed — e.g. `resolveBackoff` above — not re-exported here.)
-export {
-  assertLiquidatorAddressMatchesKey,
-  optionalLiquidatorAddress,
-  resolvePrivateKey,
-  resolveSignerBackend
-} from '@repo/bot-kit'
 
 // Swap venues are no longer a per-collateral config file: markets come from the Midnight markets API
 // (the whitelist), and the enabled venues are inferred from which venue API keys are present in env.
@@ -35,7 +22,7 @@ export type ChainConfig = { chain: Chain; midnight: Address }
 // no per-chain deployer — soltag bakes the CREATE2 factory + factoryData into its compiled output
 // (see the lens fetcher). On-chain validation of these addresses (getCode) lands in Phase 2.
 // loadConfig fails loud for any CHAIN_ID not present here.
-export const CHAIN_MAP: Record<number, ChainConfig> = {
+const CHAIN_MAP: Record<number, ChainConfig> = {
   [base.id]: { chain: base, midnight: getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A') }
 }
 
@@ -73,7 +60,7 @@ const DEFAULT_PROBE_LADDER = ['0.01', '0.1', '1', '10', '100']
 export type Env = Record<string, string | undefined>
 
 /**
- * Off-chain quoting + failure-backoff tunables (the multi-venue swap layer), plus the seize-sizing
+ * Off-chain quoting tunables (the multi-venue swap layer), plus the seize-sizing
  * safety margin (`seizeCapMarginBps`). The margin is a *sizing* knob, not an HTTP/route one, but it
  * lives here because the tick already threads `config.quoting.*` into both quoting and planning.
  */
@@ -85,8 +72,6 @@ export type QuotingConfig = {
   maxRouteImpactBps: number
   /** Headroom (bps) shaved off the on-chain repay cap when sizing a cap-binding seize-exact plan. */
   seizeCapMarginBps: number
-  backoffBaseBlocks: bigint
-  backoffMaxBlocks: bigint
 }
 
 /**
@@ -146,7 +131,6 @@ type CommonConfig = {
   chain: Chain
   midnight: Address
   rpcUrl: string
-  rpcUrlFallback: string | undefined
   logLevel: LogLevel
 }
 
@@ -303,7 +287,6 @@ function resolveCommon(env: Env, chainMap: Record<number, ChainConfig>): CommonC
     chain: chainConfig.chain,
     midnight: chainConfig.midnight,
     rpcUrl: required(env, 'RPC_URL'),
-    rpcUrlFallback: env.RPC_URL_FALLBACK?.trim() || undefined,
     logLevel
   }
 }
@@ -396,7 +379,6 @@ function resolveProbe(env: Env): ProbeConfig {
 }
 
 function resolveQuoting(env: Env): QuotingConfig {
-  const backoff = resolveBackoff(env)
   return {
     quoteTimeoutMs: intEnv(env, 'QUOTE_TIMEOUT_MS', DEFAULT_QUOTE_TIMEOUT_MS, { min: 1 }),
     httpRps: intEnv(env, 'HTTP_RPS', DEFAULT_HTTP_RPS, { min: 1 }),
@@ -409,9 +391,7 @@ function resolveQuoting(env: Env): QuotingConfig {
     seizeCapMarginBps: intEnv(env, 'SEIZE_CAP_MARGIN_BPS', DEFAULT_SEIZE_CAP_MARGIN_BPS, {
       min: 0,
       max: 10_000
-    }),
-    backoffBaseBlocks: backoff.baseBlocks,
-    backoffMaxBlocks: backoff.maxBlocks
+    })
   }
 }
 

@@ -16,7 +16,7 @@ const VALID_WIRE = {
   type: 'eip1559',
   chainId: 8453,
   to: `0x${'11'.repeat(20)}`,
-  data: '0x',
+  data: '0x00000001',
   value: '0',
   nonce: 3,
   gas: '21000',
@@ -31,7 +31,7 @@ function caught(fn: () => unknown): ProtocolError {
     if (error instanceof ProtocolError) return error
     throw error
   }
-  throw new Error('expected a ProtocolError to be thrown')
+  throw new Error('expected ProtocolError')
 }
 
 function expectCode(fn: () => unknown, code: SignerErrorCode) {
@@ -39,99 +39,60 @@ function expectCode(fn: () => unknown, code: SignerErrorCode) {
 }
 
 describe('parseRequestLine', () => {
-  it('parses a valid request line and leaves params opaque', () => {
-    const line = JSON.stringify({ v: 1, id: 'abc', method: 'signTransaction', params: VALID_WIRE })
-    const req = parseRequestLine(line)
-    expect(req).toEqual({ v: 1, id: 'abc', method: 'signTransaction', params: VALID_WIRE })
+  it('parses the two uncorrelated request shapes', () => {
+    expect(parseRequestLine('{"v":3,"method":"address"}')).toEqual({
+      v: 3,
+      method: 'address'
+    })
+    const request = parseRequestLine(
+      JSON.stringify({ v: 3, method: 'signTransaction', transaction: VALID_WIRE })
+    )
+    expect(request).toEqual({ v: 3, method: 'signTransaction', transaction: VALID_WIRE })
   })
 
-  it('accepts ping/address without params', () => {
-    expect(parseRequestLine('{"v":1,"id":"1","method":"address"}').method).toBe('address')
-    expect(parseRequestLine('{"v":1,"id":"1","method":"ping"}').method).toBe('ping')
-  })
-
-  it('rejects non-JSON as bad_request', () => {
-    expectCode(() => parseRequestLine('not json'), 'bad_request')
-  })
-
-  it('rejects an unknown method as bad_request', () => {
-    expectCode(() => parseRequestLine('{"v":1,"id":"1","method":"nuke"}'), 'bad_request')
-  })
-
-  it('rejects a missing/empty id as bad_request', () => {
-    expectCode(() => parseRequestLine('{"v":1,"id":"","method":"ping"}'), 'bad_request')
-  })
-
-  it('maps a version mismatch to unsupported_version and echoes the id', () => {
-    const error = caught(() => parseRequestLine('{"v":2,"id":"xyz","method":"ping"}'))
-    expect(error.code).toBe('unsupported_version')
-    expect(error.id).toBe('xyz')
+  it('rejects invalid JSON, methods, missing tx, and version mismatch', () => {
+    expectCode(() => parseRequestLine('nope'), 'bad_request')
+    expectCode(() => parseRequestLine('{"v":3,"method":"ping"}'), 'bad_request')
+    expectCode(() => parseRequestLine('{"v":3,"method":"signTransaction"}'), 'bad_request')
+    expectCode(() => parseRequestLine('{"v":2,"method":"address"}'), 'unsupported_version')
   })
 })
 
 describe('toWireTx', () => {
-  it('normalizes a valid params object (checksums `to`)', () => {
-    const wire = toWireTx(VALID_WIRE)
-    expect(wire.chainId).toBe(8453)
-    expect(wire.to).toBe('0x1111111111111111111111111111111111111111')
-    expect(wire.gas).toBe('21000')
-  })
-
-  it('tolerates unknown extra fields', () => {
-    expect(() => toWireTx({ ...VALID_WIRE, surprise: 'ignored' })).not.toThrow()
-  })
-
-  it('rejects a bad address as bad_request', () => {
-    expectCode(() => toWireTx({ ...VALID_WIRE, to: '0xnothex' }), 'bad_request')
-  })
-
-  it('rejects a non-hex data field as bad_request', () => {
-    expectCode(() => toWireTx({ ...VALID_WIRE, data: 'zz' }), 'bad_request')
-  })
-
-  it('rejects a non-decimal bigint field as bad_request', () => {
-    expectCode(() => toWireTx({ ...VALID_WIRE, maxFeePerGas: '0x10' }), 'bad_request')
-  })
-
-  it('rejects a missing field as bad_request', () => {
-    const { gas: _gas, ...withoutGas } = VALID_WIRE
-    expectCode(() => toWireTx(withoutGas), 'bad_request')
-  })
-
-  it('rejects gas of "0" as bad_request (viem would sign a gas-less tx)', () => {
-    expectCode(() => toWireTx({ ...VALID_WIRE, gas: '0' }), 'bad_request')
-  })
-
-  it('refuses a deployment (null `to`) as bad_request', () => {
-    expectCode(() => toWireTx({ ...VALID_WIRE, to: null }), 'bad_request')
-  })
-})
-
-describe('fromWireTx', () => {
-  it('round-trips decimal strings back to bigints', () => {
-    const tx = fromWireTx(toWireTx(VALID_WIRE))
-    expect(tx).toEqual({
-      type: 'eip1559',
+  it('normalizes a complete EIP-1559 transaction', () => {
+    expect(toWireTx(VALID_WIRE)).toMatchObject({
       chainId: 8453,
       to: '0x1111111111111111111111111111111111111111',
-      data: '0x',
-      value: 0n,
-      nonce: 3,
-      gas: 21000n,
-      maxFeePerGas: 1000000000n,
-      maxPriorityFeePerGas: 1000000n
+      gas: '21000'
     })
+  })
+
+  it('strictly rejects malformed or incomplete signing payloads', () => {
+    expectCode(() => toWireTx({ ...VALID_WIRE, to: null }), 'bad_request')
+    expectCode(() => toWireTx({ ...VALID_WIRE, data: 'zz' }), 'bad_request')
+    expectCode(() => toWireTx({ ...VALID_WIRE, gas: '0' }), 'bad_request')
+    expectCode(() => toWireTx({ ...VALID_WIRE, maxFeePerGas: '0x10' }), 'bad_request')
+    expectCode(() => toWireTx({ ...VALID_WIRE, maxPriorityFeePerGas: '1000000001' }), 'bad_request')
+    const { nonce: _nonce, ...missingNonce } = VALID_WIRE
+    expectCode(() => toWireTx(missingNonce), 'bad_request')
   })
 })
 
-describe('serializeResponse', () => {
-  it('emits one newline-terminated JSON line', () => {
-    const line = serializeResponse(okResponse('1', { pong: true }))
-    expect(line.endsWith('\n')).toBe(true)
-    expect(JSON.parse(line.trimEnd())).toEqual({
-      v: SIGNER_PROTOCOL_VERSION,
-      id: '1',
-      result: { pong: true }
-    })
+it('converts wire decimals to serializable bigints', () => {
+  expect(fromWireTx(toWireTx(VALID_WIRE))).toEqual({
+    ...VALID_WIRE,
+    value: 0n,
+    gas: 21000n,
+    maxFeePerGas: 1000000000n,
+    maxPriorityFeePerGas: 1000000n
+  })
+})
+
+it('serializes a response without a correlation id', () => {
+  const line = serializeResponse(okResponse({ address: VALID_WIRE.to }))
+  expect(JSON.parse(line)).toEqual({
+    v: SIGNER_PROTOCOL_VERSION,
+    ok: true,
+    result: { address: VALID_WIRE.to }
   })
 })

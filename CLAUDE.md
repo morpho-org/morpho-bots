@@ -128,15 +128,18 @@ This is a **bun workspaces monorepo** housing off-chain Morpho curator bots:
 - `/tools/` — operator-invoked one-shot CLIs, kept generic/unopinionated (short-lived pipe stages;
   the long-lived processes they feed live in `/services/`). `tools/cli` (`@repo/cli`,
   bin `morpho-bots`) runs the pipeline: UNIX-pipeable one-shot **op commands** (no fixed
-  `sense`/`act` verbs). Each domain exposes a flat set of ops — each a **source** (emits opportunity
-  records) XOR a **transform** (ids/records → tx records) — piped into the reserved `queue` stage,
-  e.g. `<domain> unhealthy-positions | <domain> liquidate | <domain> queue`, driven by unix
-  loops/cron. `queue` is NOT a sink: it is a thin, keyless, stateless client that relays records over
-  a Unix socket to the per-chain `queued` daemon (`services/queued`), which owns
+  `sense`/`act` verbs). Each domain exposes a flat set of ops — each a **source** (emits transparent
+  position JSON) XOR a **transform** (position JSON → transaction JSON). Position records carry
+  explicit `marketId` and `borrower`; Blue also carries the complete immutable market parameters.
+  Transforms validate their semantic inputs, tolerate additive fields, re-read mutable chain state,
+  and never parse the correlation-only `id`. Non-actions and failures are structured stderr logs.
+  Ops dispatch at runtime from each core's
+  `OPS` table; the CLI maintains no duplicate manifest. Pipelines end in `morpho-queued submit`, a
+  keyless relay to the per-chain `morpho-queued serve` daemon, which owns
   dedupe/re-sim/fees/nonce/submit/RBF — so a bot needs both the pipeline loop AND a running daemon.
   Which ops run is caller policy (exogenous composition — several ops = several loop
   lines). Config and cross-tick state live under
-  `~/.morpho-bots` (`MORPHO_BOTS_HOME` overrides). stdout carries JSON-Lines wire records; ALL logs
+  `~/.morpho-bots` (`MORPHO_BOTS_HOME` overrides). stdout carries JSON Lines; ALL logs
   go to stderr. A TUI is planned.
 - `/bots/` — deployment packaging for the bot use-case (`@repo/bots`): the single bot Docker
   image (which AOT-builds the CLI to `dist/main.js`), the pipeline entrypoint loop, the
@@ -145,12 +148,18 @@ This is a **bun workspaces monorepo** housing off-chain Morpho curator bots:
 - `/services/` — independently-run, long-lived processes (workspace or not). `services/blue-rindexer`
   indexes Morpho Blue `Borrow` events into Postgres for blue's discovery (non-workspace).
   `services/queued` (`@repo/queued`, bin `morpho-queued`) is the per-chain, domain-agnostic
-  transaction-queue daemon — a bun workspace that owns dedupe/backoff/re-sim/fees/nonce/submit and
-  continuous settlement/RBF for the txs any bot pipes to it over a Unix socket.
+  transaction-queue program — `serve` alone owns dedupe/re-sim/fees/nonce/submit and continuous
+  settlement/RBF; `submit` streams transaction JSON directly over its Unix socket and receives
+  minimal acknowledgements. Settlement lives in the daemon journal. Queue state is per-chain,
+  never per-domain. Both queued and signer are configured only through argv/environment, use one
+  RPC topology, and dry-run operation does not start or require the signer.
 - `/packages/` — libraries: the bot cores (`@repo/blue-liquidation`, `@repo/midnight-liquidation`,
   each exporting an `OPS` table of source/transform ops — the seam types live in `@repo/bot-kit`'s
-  `ops.ts` — plus a lens-free `./queue` policy subpath) and the shared layers (`@repo/utils`,
-  `@repo/bot-kit`, `@repo/swaps`, `@repo/signer`, `@repo/contracts`, `@repo/typescript-config`)
+  `ops.ts`) and the shared layers (`@repo/utils`,
+  `@repo/bot-kit`, `@repo/swaps`, `@repo/signer`, `@repo/contracts`, `@repo/typescript-config`).
+  The signer is a distinct one-chain/one-Executor agent: zero value and the Executor selector are
+  invariants, it exposes explicit prepared-transaction signing, and the queue verifies the recovered
+  sender plus every prepared field before broadcast. It does not decode nested Executor calls.
 
 See [TIB-2026-07-09-pipeline-cli](./docs/decisions/TIB-2026-07-09-pipeline-cli.md) for the pipeline
 architecture (command grammar, wire contract, state/lock partition) and

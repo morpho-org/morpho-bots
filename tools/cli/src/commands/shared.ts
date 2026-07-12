@@ -1,5 +1,3 @@
-import type { WireRecord } from '@repo/bot-kit'
-
 import { ensureError } from '@repo/utils'
 
 /**
@@ -18,6 +16,6 @@ export function fail(event: string, error: unknown): void {
  * benign under Bun (a closed-pipe write neither raises nor kills the process), so `sense | head` is
  * clean without special handling.
  */
-export function emitLine(record: WireRecord): void {
+export function emitLine(record: unknown): void {
   process.stdout.write(JSON.stringify(record) + '\n')
 }

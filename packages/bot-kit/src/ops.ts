@@ -1,6 +1,5 @@
 import type { Logger, LogLevel } from './logger'
-import type { BackoffState } from './queue/backoff'
-import type { OpportunityRecord, OutcomeRecord, TxRecord } from './records'
+import type { PositionRecord, TransactionRecord } from './records'
 
 /**
  * The op seam: the shapes a core exposes so the CLI can run each op as its own `<domain> <op>`
@@ -8,8 +7,8 @@ import type { OpportunityRecord, OutcomeRecord, TxRecord } from './records'
  * they reference only bot-kit's own record/{@link Logger} types plus the generic env table, so a
  * core and the CLI cannot drift on what an op looks like. Defined ONCE here for exactly that reason.
  *
- * Each op is EITHER a **source** ({@link SenseOpExport} — emits opportunity records) or a
- * **transform** ({@link ActOpExport} — maps a specific source's ids/records to tx/outcome records),
+ * Each op is EITHER a source ({@link SenseOpExport} — emits position records) or a transform
+ * ({@link ActOpExport} — maps semantic positions to transactions),
  * never both: the two stages are separate pipe processes. The CLI drops the `sense`/`act` verbs at
  * its surface (commands ARE op names), but this seam keeps the internal vocabulary — the `kind`
  * discriminant and the `senseOnce`/`actOnce` entry points — because it is the stable contract the
@@ -23,7 +22,7 @@ type Env = Record<string, string | undefined>
 type ValidateConfig = (env: Env) => { logLevel: LogLevel }
 
 /**
- * A SOURCE op: emits `opportunity` records for actionable on-chain state, read-only and lockless.
+ * A source op emits transparent position records for actionable on-chain state.
  * `cacheVersion` gates its disposable cache (a mismatch rebuilds, never migrates); `runStartupChecks`
  * is set only on a cold cache so liveness probes don't run every tick.
  */
@@ -37,31 +36,27 @@ export type SenseOpExport = {
       cache: unknown
       runStartupChecks: boolean
       logger: Logger
-      emit: (record: OpportunityRecord) => void
+      emit: (record: PositionRecord) => void
     }
   ) => Promise<{ cache: unknown }>
 }
 
 /**
- * A TRANSFORM op: maps ids/records emitted by the source op named in `accepts` to freshly simulated
- * `tx` records (plus diagnostic `outcome`s). `accepts` is the source op's name — the wire `op` field
- * a record must carry to be routed here; the CLI's input collector filters on it so mixed streams
- * stay legal (a transform takes only its own). No signer key: broadcasting is the queue's job.
+ * A transform validates semantic input records and emits freshly simulated transactions. It has no
+ * signer key; broadcasting is the queue's job.
  */
 export type ActOpExport = {
   kind: 'act'
-  accepts: string
   cacheVersion: number
   validateConfig: ValidateConfig
   actOnce: (
     env: Env,
-    ids: readonly string[],
+    records: readonly unknown[],
     opts: {
       cache: unknown
-      advisory: { backoff: BackoffState | null; inflightLabels: readonly string[] }
       runStartupChecks: boolean
       logger: Logger
-      emit: (record: TxRecord | OutcomeRecord) => void
+      emit: (record: TransactionRecord) => void
     }
   ) => Promise<{ cache: unknown }>
 }

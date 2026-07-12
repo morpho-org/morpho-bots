@@ -1,7 +1,5 @@
 import type { Result } from '../types/index'
 
-import { tryCatch } from './tryCatch'
-
 /** Exponential backoff (ms) for retry attempt `n` (0-indexed): 200·2ⁿ → 200, 400, 800, … */
 export function backoffMs(attempt: number): number {
   return 200 * 2 ** attempt
@@ -40,19 +38,4 @@ export async function parseJsonResponse<T>(response: Response): Promise<Result<T
       error: Error(`Failed to parse response (HTTP ${response.status}): ${text.slice(0, 200)}`)
     }
   }
-}
-
-export async function fetchJsonResponse<T>(url: string, requestInit?: RequestInit): Promise<T> {
-  const { data: response, error: fetchError } = await tryCatch(fetch(url, requestInit))
-
-  if (fetchError || !response?.ok) {
-    throw Error(`HTTP ${response?.status ?? 'network error'}: ${url}`, { cause: fetchError })
-  }
-
-  const { data, error: parseError } = await parseJsonResponse<T>(response)
-  if (parseError) {
-    throw Error(`Failed to parse JSON: ${url}`, { cause: parseError })
-  }
-
-  return data
 }

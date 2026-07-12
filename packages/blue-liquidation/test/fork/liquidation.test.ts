@@ -3,13 +3,12 @@ import type { Address } from 'viem'
 import {
   assertContractDeployed,
   createDeploylessClient,
-  createSigner,
-  initialFees,
   simulateLiquidationExec
 } from '@repo/bot-kit'
 import { quoteUniswapV3 } from '@repo/swaps'
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
-import { erc20Abi, parseGwei } from 'viem'
+import { createWalletClient, erc20Abi, http } from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
 
 import type { ForkFixture, ForkHandle, TestClient } from './harness'
@@ -54,11 +53,8 @@ describe.skipIf(!FORK_URL || !FIXTURE)(
     let cfg: {
       chain: typeof base
       rpcUrl: string
-      rpcUrlFallback: undefined
-      privateKey: typeof LIQUIDATOR_KEY
       morpho: Address
       executooorAddress: Address
-      maxFeeWei: bigint
     }
 
     beforeAll(async () => {
@@ -73,11 +69,8 @@ describe.skipIf(!FORK_URL || !FIXTURE)(
       cfg = {
         chain: base,
         rpcUrl: fork.rpcUrl,
-        rpcUrlFallback: undefined,
-        privateKey: LIQUIDATOR_KEY,
         morpho: MORPHO,
-        executooorAddress: executooor,
-        maxFeeWei: parseGwei('300')
+        executooorAddress: executooor
       }
     }, 60_000)
 
@@ -144,14 +137,12 @@ describe.skipIf(!FORK_URL || !FIXTURE)(
         args: [LIQUIDATOR]
       })
 
-      const signer = createSigner(cfg)
-      const fees = initialFees(await signer.getBaseFee(), cfg.maxFeeWei)
-      const { txHash } = await signer.send({
-        to: executooor,
-        data,
-        maxFeePerGas: fees.maxFeePerGas,
-        maxPriorityFeePerGas: fees.maxPriorityFeePerGas
+      const wallet = createWalletClient({
+        account: privateKeyToAccount(LIQUIDATOR_KEY),
+        chain: base,
+        transport: http(cfg.rpcUrl)
       })
+      const txHash = await wallet.sendTransaction({ to: executooor, data })
       const receipt = await test.waitForTransactionReceipt({ hash: txHash })
       expect(receipt.status).toBe('success')
 

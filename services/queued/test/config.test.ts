@@ -1,22 +1,10 @@
 import { ConfigError } from '@repo/home'
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { describe, expect, it } from 'bun:test'
 import { base } from 'viem/chains'
 
-import { mergedQueuedEnv, resolveChainId, resolveConfig } from '../src/config'
+import { resolveChain, resolveChainId, resolveConfig } from '../src/config'
 
-// A throwaway well-known test key (anvil account #0), never used to hold funds.
-const KEY = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
-
-let home: string
-beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), 'q-cfg-'))
-})
-afterEach(() => {
-  rmSync(home, { recursive: true, force: true })
-})
+const LIQUIDATOR_ADDRESS = '0x1111111111111111111111111111111111111111'
 
 describe('resolveChainId', () => {
   it('prefers --chain over CHAIN_ID', () => {
@@ -30,40 +18,16 @@ describe('resolveChainId', () => {
   })
 })
 
-describe('mergedQueuedEnv', () => {
-  it('merges queued.defaults → queued.chains overlay → process env, later wins', () => {
-    writeFileSync(
-      join(home, 'config.json'),
-      JSON.stringify({
-        queued: {
-          defaults: { RPC_URL: 'http://default', MAX_FEE_GWEI: '100' },
-          chains: { '8453': { RPC_URL: 'http://base' } }
-        }
-      })
-    )
-    const env = mergedQueuedEnv({ home, chainId: '8453', processEnv: { MAX_FEE_GWEI: '200' } })
-    expect(env.RPC_URL).toBe('http://base') // chain overlay beats defaults
-    expect(env.MAX_FEE_GWEI).toBe('200') // process env beats files
-    expect(env.CHAIN_ID).toBe('8453')
+describe('resolveChain', () => {
+  it('builds a generic viem chain from explicit id and RPC URL', () => {
+    const chain = resolveChain('4663', { RPC_URL: 'https://rpc.example' })
+    expect(chain.id).toBe(4663)
+    expect(chain.rpcUrls.default.http).toEqual(['https://rpc.example'])
   })
 
-  it('ignores foreign-chain overlays', () => {
-    writeFileSync(
-      join(home, 'config.json'),
-      JSON.stringify({ queued: { chains: { '1': { RPC_URL: 'http://mainnet' } } } })
-    )
-    const env = mergedQueuedEnv({ home, chainId: '8453', processEnv: {} })
-    expect(env.RPC_URL).toBeUndefined()
-  })
-
-  it('rejects a malformed queued section (fail loudly, not a blind cast)', () => {
-    writeFileSync(join(home, 'config.json'), JSON.stringify({ queued: ['not', 'an', 'object'] }))
-    expect(() => mergedQueuedEnv({ home, chainId: '8453', processEnv: {} })).toThrow(ConfigError)
-  })
-
-  it('rejects a queued section whose defaults is not an object', () => {
-    writeFileSync(join(home, 'config.json'), JSON.stringify({ queued: { defaults: 'nope' } }))
-    expect(() => mergedQueuedEnv({ home, chainId: '8453', processEnv: {} })).toThrow(ConfigError)
+  it('rejects invalid ids and missing RPC configuration', () => {
+    expect(() => resolveChain('nope', { RPC_URL: 'https://rpc.example' })).toThrow(/CHAIN_ID/)
+    expect(() => resolveChain('8453', {})).toThrow(/RPC_URL/)
   })
 })
 
@@ -71,7 +35,7 @@ describe('resolveConfig', () => {
   const base8453 = { env: {}, chain: base, chainId: '8453', opts: {}, home: '' }
 
   it('requires RPC_URL', () => {
-    expect(() => resolveConfig({ ...base8453, env: { LIQUIDATOR_PRIVATE_KEY: KEY } })).toThrow(
+    expect(() => resolveConfig({ ...base8453, env: { SIGNER_SOCKET: '/tmp/s.sock' } })).toThrow(
       /RPC_URL/
     )
   })
@@ -80,34 +44,33 @@ describe('resolveConfig', () => {
     expect(() =>
       resolveConfig({
         ...base8453,
-        env: { RPC_URL: 'http://base', LIQUIDATOR_PRIVATE_KEY: KEY, MAX_FEE_GWEI: 'abc' }
+        env: { RPC_URL: 'http://base', SIGNER_SOCKET: '/tmp/s.sock', MAX_FEE_GWEI: 'abc' }
       })
     ).toThrow(ConfigError)
   })
 
-  it('rethrows a missing signing key as ConfigError (armed, no key, no socket → exit 2)', () => {
+  it('requires a signer socket when armed', () => {
     expect(() => resolveConfig({ ...base8453, env: { RPC_URL: 'http://base' } })).toThrow(
       ConfigError
     )
   })
 
-  it('resolves a local-key armed config with defaults', () => {
+  it('resolves an agent-backed armed config with defaults', () => {
     const config = resolveConfig({
       ...base8453,
-      env: { RPC_URL: 'http://base', LIQUIDATOR_PRIVATE_KEY: KEY }
+      env: { RPC_URL: 'http://base', SIGNER_SOCKET: '/tmp/s.sock', LIQUIDATOR_ADDRESS }
     })
     expect(config.chainId).toBe(8453)
     expect(config.dryRun).toBe(false)
-    expect(config.signer?.kind).toBe('local')
+    expect(config.signer?.kind).toBe('agent')
     expect(config.stuckBlocks).toBe(4n) // default
-    expect(config.sendRpcUrl).toBeUndefined()
   })
 
   it('never reads a key in dry-run (signer undefined)', () => {
     const config = resolveConfig({
       ...base8453,
       opts: { dryRun: true },
-      env: { RPC_URL: 'http://base' }
+      env: { RPC_URL: 'http://base', LIQUIDATOR_ADDRESS }
     })
     expect(config.dryRun).toBe(true)
     expect(config.signer).toBeUndefined()
@@ -116,36 +79,40 @@ describe('resolveConfig', () => {
   it('selects the agent backend when SIGNER_SOCKET is set', () => {
     const config = resolveConfig({
       ...base8453,
-      env: { RPC_URL: 'http://base', SIGNER_SOCKET: '/tmp/s.sock' }
+      env: { RPC_URL: 'http://base', SIGNER_SOCKET: '/tmp/s.sock', LIQUIDATOR_ADDRESS }
     })
     expect(config.signer?.kind).toBe('agent')
+  })
+
+  it('rejects local private-key material in armed mode', () => {
+    expect(() =>
+      resolveConfig({
+        ...base8453,
+        env: {
+          RPC_URL: 'http://base',
+          SIGNER_SOCKET: '/tmp/s.sock',
+          LIQUIDATOR_PRIVATE_KEY: '0xdeadbeef'
+        }
+      })
+    ).toThrow(/not accepted by morpho-queued/)
   })
 
   it('validates STUCK_BLOCKS as a positive integer', () => {
     expect(() =>
       resolveConfig({
         ...base8453,
-        env: { RPC_URL: 'http://base', LIQUIDATOR_PRIVATE_KEY: KEY, STUCK_BLOCKS: '0' }
+        env: { RPC_URL: 'http://base', SIGNER_SOCKET: '/tmp/s.sock', STUCK_BLOCKS: '0' }
       })
     ).toThrow(/STUCK_BLOCKS/)
     const config = resolveConfig({
       ...base8453,
-      env: { RPC_URL: 'http://base', LIQUIDATOR_PRIVATE_KEY: KEY, STUCK_BLOCKS: '9' }
-    })
-    expect(config.stuckBlocks).toBe(9n)
-  })
-
-  it('carries SEND_RPC_URL and RPC_URL_FALLBACK when set', () => {
-    const config = resolveConfig({
-      ...base8453,
       env: {
         RPC_URL: 'http://base',
-        RPC_URL_FALLBACK: 'http://backup',
-        SEND_RPC_URL: 'http://send',
-        LIQUIDATOR_PRIVATE_KEY: KEY
+        SIGNER_SOCKET: '/tmp/s.sock',
+        LIQUIDATOR_ADDRESS,
+        STUCK_BLOCKS: '9'
       }
     })
-    expect(config.rpcUrlFallback).toBe('http://backup')
-    expect(config.sendRpcUrl).toBe('http://send')
+    expect(config.stuckBlocks).toBe(9n)
   })
 })

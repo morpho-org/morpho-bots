@@ -1,5 +1,4 @@
 export * from './config'
 export * from './home'
 export * from './lock'
-export * from './queue-state'
 export * from './state'

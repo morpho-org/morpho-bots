@@ -17,15 +17,10 @@ export const log = { info: noop, warn: noop, error: noop }
 
 export function testPolicy(): Policy {
   return parsePolicy({
-    version: 1,
-    rules: [
-      {
-        name: 'test-rule',
-        chainIds: [8453],
-        to: [EXECUTOR],
-        maxFeePerGasWei: '300000000000',
-        maxGasLimit: '15000000'
-      }
-    ]
+    chainId: 8453,
+    executor: EXECUTOR,
+    maxFeePerGasWei: '300000000000',
+    maxGasLimit: '15000000',
+    maxDataBytes: 65536
   })
 }

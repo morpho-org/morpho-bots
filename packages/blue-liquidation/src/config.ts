@@ -2,25 +2,12 @@ import type { LogLevel } from '@repo/bot-kit'
 import type { SwapConfig } from '@repo/swaps'
 import type { Address, Chain } from 'viem'
 
-import { resolveBackoff } from '@repo/bot-kit'
 import { Executor } from '@repo/contracts'
 import { parseSwapConfig, VENUE_API_KEY_ENV } from '@repo/swaps'
 import { tryCatch } from '@repo/utils'
 import { readFileSync } from 'node:fs'
 import { defineChain, getAddress, isAddress } from 'viem'
 import { base } from 'viem/chains'
-
-// The queue's signer-backend / key / address resolvers now live in `@repo/bot-kit` (they were
-// byte-identical across both cores). Re-exported here so the existing `config` test suites and the
-// act path keep importing them from `./config` unchanged. (The fee-ceiling/backoff resolvers moved
-// with them but are now consumed only by the `queued` daemon, so they are imported from bot-kit
-// directly where needed — e.g. `resolveBackoff` above — not re-exported here.)
-export {
-  assertLiquidatorAddressMatchesKey,
-  optionalLiquidatorAddress,
-  resolvePrivateKey,
-  resolveSignerBackend
-} from '@repo/bot-kit'
 
 // The per-collateral swap routing config (SWAP_CONFIG_PATH JSON) — schemas, `parseSwapConfig`, and
 // `VENUE_API_KEY_ENV` — lives in `@repo/swaps`; this module only reads/validates the file and env.
@@ -58,7 +45,7 @@ export type ChainConfig = { chain: Chain; morpho: Address; network: Network }
 // on-chain (canonical 0x4e59… is present on both Base and Robinhood). On-chain validation of the
 // Morpho + Executor addresses (getCode) lands at startup. loadConfig fails loud for any CHAIN_ID not
 // present here.
-export const CHAIN_MAP: Record<number, ChainConfig> = {
+const CHAIN_MAP: Record<number, ChainConfig> = {
   [base.id]: {
     chain: base,
     morpho: getAddress('0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb'),
@@ -85,15 +72,13 @@ const DEFAULT_MAX_ROUTE_IMPACT_BPS = 500 // reject an aggregator route >5% below
 
 export type Env = Record<string, string | undefined>
 
-/** Off-chain quoting and per-position failure-backoff tunables. */
+/** Off-chain quoting tunables. */
 export type QuotingConfig = {
   quoteTimeoutMs: number
   httpRps: number
   httpBurst: number
   httpMaxRetries: number
   maxRouteImpactBps: number
-  backoffBaseBlocks: bigint
-  backoffMaxBlocks: bigint
 }
 
 /** Fields common to every stage config: the resolved chain plus its RPC endpoints and log level. */
@@ -103,7 +88,6 @@ type CommonConfig = {
   network: Network
   morpho: Address
   rpcUrl: string
-  rpcUrlFallback: string | undefined
   logLevel: LogLevel
 }
 
@@ -212,7 +196,6 @@ function resolveCommon(env: Env, chainMap: Record<number, ChainConfig>): CommonC
     network: chainConfig.network,
     morpho: chainConfig.morpho,
     rpcUrl: required(env, 'RPC_URL'),
-    rpcUrlFallback: env.RPC_URL_FALLBACK?.trim() || undefined,
     logLevel
   }
 }
@@ -284,7 +267,6 @@ function resolveSwapConfig(
 }
 
 function resolveQuoting(env: Env): QuotingConfig {
-  const backoff = resolveBackoff(env)
   return {
     quoteTimeoutMs: intEnv(env, 'QUOTE_TIMEOUT_MS', DEFAULT_QUOTE_TIMEOUT_MS, { min: 1 }),
     httpRps: intEnv(env, 'HTTP_RPS', DEFAULT_HTTP_RPS, { min: 1 }),
@@ -293,9 +275,7 @@ function resolveQuoting(env: Env): QuotingConfig {
     maxRouteImpactBps: intEnv(env, 'MAX_ROUTE_IMPACT_BPS', DEFAULT_MAX_ROUTE_IMPACT_BPS, {
       min: 0,
       max: 10_000
-    }),
-    backoffBaseBlocks: backoff.baseBlocks,
-    backoffMaxBlocks: backoff.maxBlocks
+    })
   }
 }
 
@@ -324,7 +304,6 @@ export function loadActConfig(env: Env = Bun.env, deps: LoadDeps = {}): ActConfi
     chain: common.chain,
     morpho: common.morpho,
     rpcUrl: common.rpcUrl,
-    rpcUrlFallback: common.rpcUrlFallback,
     logLevel: common.logLevel,
     executooorAddress: resolveExecutor(env),
     liquidatorAddress: resolveLiquidatorAddress(env),

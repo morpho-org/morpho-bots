@@ -1,22 +1,13 @@
-import type { LogLevel, SignerBackend } from '@repo/bot-kit'
-import type { BotSection } from '@repo/home'
+import type { LogLevel } from '@repo/bot-kit'
 import type { Address, Chain } from 'viem'
 
-import {
-  optionalLiquidatorAddress,
-  resolveBackoff,
-  resolveMaxFeeWei,
-  resolveSignerBackend
-} from '@repo/bot-kit'
-import {
-  assertSunPathLength,
-  ConfigError,
-  configFile,
-  queuedSocketFile,
-  readSettings,
-  secretsFile
-} from '@repo/home'
+import { assertSunPathLength, ConfigError, queuedSocketFile } from '@repo/home'
 import { ensureError } from '@repo/utils'
+import { defineChain } from 'viem'
+
+import type { SignerBackend } from './env'
+
+import { resolveLiquidatorAddress, resolveMaxFeeWei, resolveSignerBackend } from './env'
 
 type Env = Record<string, string | undefined>
 
@@ -32,10 +23,6 @@ function asConfigError<T>(resolve: () => T): T {
   }
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
 // Default blocks a pending tx may sit unconfirmed before the daemon bumps its fee and replaces it —
 // the per-chain knob the pending queue's `stuckBlocks` reads. Matches bot-kit's `STUCK_BLOCKS`.
@@ -43,7 +30,7 @@ const DEFAULT_STUCK_BLOCKS = 4n
 
 /**
  * The fully resolved daemon config `createEngine` consumes. Domain-agnostic and per-chain: one EOA
- * (`signer`), one nonce cursor, one fee ceiling. `signer` is `undefined` in dry-run (the key is never
+ * (`signer`), one nonce cursor, one fee ceiling. `signer` is `undefined` in dry-run (the agent is never
  * read — the daemon never touches a signer when disarmed); `liquidatorAddress` is the optional EOA
  * used as the `from` for the re-sim `eth_call` when disarmed (no account to derive it from).
  */
@@ -51,19 +38,15 @@ export type QueuedConfig = {
   chainId: number
   chain: Chain
   rpcUrl: string
-  rpcUrlFallback: string | undefined
-  sendRpcUrl: string | undefined
   logLevel: LogLevel
   maxFeeWei: bigint
-  backoffBaseBlocks: bigint
-  backoffMaxBlocks: bigint
   stuckBlocks: bigint
   dryRun: boolean
   socketPath: string
   /** The signer backend, resolved only when armed (`dryRun === false`); `undefined` when disarmed. */
   signer: SignerBackend | undefined
   /** `LIQUIDATOR_ADDRESS` when set — the disarmed re-sim `from`, checksum-normalized. */
-  liquidatorAddress: Address | undefined
+  liquidatorAddress: Address
 }
 
 /** The daemon's CLI/env options, before config resolution. */
@@ -79,39 +62,6 @@ function required(env: Env, name: string): string {
     throw new ConfigError(`Missing required env var: ${name}`)
   }
   return value
-}
-
-// Reads the `queued` section from a settings file. The section is `{ defaults, chains }`-shaped like a
-// bot section (chain overlays by id), but the key sits alongside the bot keys, not inside the typed
-// `BotName` map — so it is read positionally here.
-function queuedSection(settings: ReturnType<typeof readSettings>): BotSection | undefined {
-  if (!settings) return undefined
-  const raw = (settings as Record<string, unknown>).queued
-  if (raw === undefined) return undefined
-  // Structural check instead of a blind cast: a malformed section must fail loudly (exit 2), not
-  // silently run the daemon with half its config missing.
-  if (!isPlainObject(raw)) {
-    throw new ConfigError("the 'queued' settings section must be a JSON object")
-  }
-  if (raw.defaults !== undefined && !isPlainObject(raw.defaults)) {
-    throw new ConfigError("the 'queued' settings section's 'defaults' must be a JSON object")
-  }
-  if (raw.chains !== undefined && !isPlainObject(raw.chains)) {
-    throw new ConfigError("the 'queued' settings section's 'chains' must be a JSON object")
-  }
-  return raw as BotSection
-}
-
-function overlay(section: BotSection | undefined, chainId: string): Record<string, string> {
-  return { ...section?.defaults, ...section?.chains?.[chainId] }
-}
-
-// Only keys the caller actually set — spreading raw process.env would inject `undefined` values that
-// clobber file-sourced settings under exactOptionalPropertyTypes-style merges.
-function definedOnly(env: Env): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined)
-  )
 }
 
 /**
@@ -130,22 +80,18 @@ export function resolveChainId(opts: QueuedOpts, processEnv: Env = process.env):
   return chainId
 }
 
-/**
- * Builds the env-shaped table the daemon's resolvers read, from the `queued` section. Sources, later
- * wins: `config.json` `queued.defaults` → its `chains[chainId]` overlay → `secrets.json`
- * `queued.defaults` → its `chains[chainId]` overlay → the process env (so an env-only deployment and
- * ad-hoc shell overrides beat files) → the resolved `CHAIN_ID`.
- */
-export function mergedQueuedEnv(args: { home: string; chainId: string; processEnv?: Env }): Env {
-  const processEnv = args.processEnv ?? process.env
-  const config = queuedSection(readSettings(configFile(args.home)))
-  const secrets = queuedSection(readSettings(secretsFile(args.home)))
-  return {
-    ...overlay(config, args.chainId),
-    ...overlay(secrets, args.chainId),
-    ...definedOnly(processEnv),
-    CHAIN_ID: args.chainId
+/** Build the minimal viem chain descriptor the generic queue needs from explicit runtime config. */
+export function resolveChain(chainId: string, env: Env): Chain {
+  if (!/^\d+$/.test(chainId) || Number(chainId) <= 0) {
+    throw new ConfigError(`CHAIN_ID must be a positive integer, got: ${chainId}`)
   }
+  const rpcUrl = required(env, 'RPC_URL')
+  return defineChain({
+    id: Number(chainId),
+    name: `Chain ${chainId}`,
+    nativeCurrency: { name: 'Native', symbol: 'ETH', decimals: 18 },
+    rpcUrls: { default: { http: [rpcUrl] } }
+  })
 }
 
 function resolveLogLevel(env: Env): LogLevel {
@@ -182,8 +128,8 @@ function resolveDryRun(opts: QueuedOpts, env: Env): boolean {
 
 /**
  * Reads the merged env + resolved chain into a {@link QueuedConfig}. `RPC_URL` is required; the signer
- * backend is resolved (and thus the key/`SIGNER_SOCKET` read) ONLY when armed — dry-run never touches
- * a key. Throws {@link ConfigError} (exit 2) on any missing required var or malformed value.
+ * backend is resolved ONLY when armed — dry-run never touches the agent. Throws {@link ConfigError}
+ * (exit 2) on any missing required var or malformed value.
  */
 export function resolveConfig(args: {
   env: Env
@@ -195,22 +141,17 @@ export function resolveConfig(args: {
   const { env, chain, chainId, opts, home } = args
   const dryRun = resolveDryRun(opts, env)
   // The hoisted resolvers throw plain Error; wrap them so operator misconfig exits 2, not 1.
-  const backoff = asConfigError(() => resolveBackoff(env))
   return {
     chainId: Number(chainId),
     chain,
     rpcUrl: required(env, 'RPC_URL'),
-    rpcUrlFallback: env.RPC_URL_FALLBACK?.trim() || undefined,
-    sendRpcUrl: env.SEND_RPC_URL?.trim() || undefined,
     logLevel: resolveLogLevel(env),
     maxFeeWei: asConfigError(() => resolveMaxFeeWei(env)),
-    backoffBaseBlocks: backoff.baseBlocks,
-    backoffMaxBlocks: backoff.maxBlocks,
     stuckBlocks: resolveStuckBlocks(env),
     dryRun,
     socketPath: resolveSocketPath(opts, env, home, chainId),
-    // Disarmed → never resolve a signer (no key read); armed → local key or agent socket.
+    // Disarmed → never resolve a signer; armed → require the external signing agent.
     signer: dryRun ? undefined : asConfigError(() => resolveSignerBackend(env)),
-    liquidatorAddress: asConfigError(() => optionalLiquidatorAddress(env))
+    liquidatorAddress: asConfigError(() => resolveLiquidatorAddress(env))
   }
 }

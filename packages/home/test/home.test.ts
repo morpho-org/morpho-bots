@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 
-import { botsHome, outcomesFile, queuedLockFile, queuedSocketFile } from '../src/home'
+import { botsHome, queuedLockFile, queuedSocketFile } from '../src/home'
 
 describe('per-chain queue daemon paths', () => {
   const home = '/tmp/morpho-bots'
@@ -8,7 +8,6 @@ describe('per-chain queue daemon paths', () => {
   it('namespaces the socket, lock, and outcomes journal by chain id only (never by bot)', () => {
     expect(queuedSocketFile(home, '8453')).toBe('/tmp/morpho-bots/queued-8453.sock')
     expect(queuedLockFile(home, '8453')).toBe('/tmp/morpho-bots/locks/queued-8453.lock')
-    expect(outcomesFile(home, '8453')).toBe('/tmp/morpho-bots/queued/outcomes-8453.jsonl')
   })
 
   it('keeps the socket directly under home so the sun_path stays short', () => {

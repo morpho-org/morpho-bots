@@ -3,13 +3,12 @@ import type { Address } from 'viem'
 import {
   assertContractDeployed,
   createDeploylessClient,
-  createSigner,
-  initialFees,
   simulateLiquidationExec
 } from '@repo/bot-kit'
 import { quoteUniswapV3 } from '@repo/swaps'
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
-import { erc20Abi, parseGwei } from 'viem'
+import { createWalletClient, erc20Abi, http } from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
 
 import { encodeLiquidationExec } from '../../src/execution/encode-call'
@@ -22,6 +21,7 @@ import {
   deployExecutor,
   type ForkHandle,
   fundEth,
+  FORK_URL,
   LIQUIDATOR,
   LIQUIDATOR_KEY,
   MIDNIGHT,
@@ -41,7 +41,7 @@ import { type SeededPosition, seedLiquidatablePosition } from './seed'
 // 5% slack keeps the swap from reverting on that gap without masking a broken path.
 const SLIPPAGE_BPS = 500
 
-describe('fork: end-to-end liquidation against a real Base position', () => {
+describe.skipIf(!FORK_URL)('fork: end-to-end liquidation against a real Base position', () => {
   let anvil: ForkHandle
   let test: TestClient
   let executooor: Address
@@ -49,12 +49,8 @@ describe('fork: end-to-end liquidation against a real Base position', () => {
   let cfg: {
     chain: typeof base
     rpcUrl: string
-    rpcUrlFallback: undefined
-    sendRpcUrl: undefined
-    privateKey: typeof LIQUIDATOR_KEY
     midnight: Address
     executooorAddress: Address
-    maxFeeWei: bigint
   }
 
   beforeAll(async () => {
@@ -73,12 +69,8 @@ describe('fork: end-to-end liquidation against a real Base position', () => {
     cfg = {
       chain: base,
       rpcUrl: fork.rpcUrl,
-      rpcUrlFallback: undefined,
-      sendRpcUrl: undefined,
-      privateKey: LIQUIDATOR_KEY,
       midnight: MIDNIGHT,
-      executooorAddress: executooor,
-      maxFeeWei: parseGwei('300')
+      executooorAddress: executooor
     }
   }, 120_000)
 
@@ -153,14 +145,12 @@ describe('fork: end-to-end liquidation against a real Base position', () => {
       args: [LIQUIDATOR]
     })
 
-    const signer = createSigner(cfg)
-    const fees = initialFees(await signer.getBaseFee(), cfg.maxFeeWei)
-    const { txHash } = await signer.send({
-      to: executooor,
-      data,
-      maxFeePerGas: fees.maxFeePerGas,
-      maxPriorityFeePerGas: fees.maxPriorityFeePerGas
+    const wallet = createWalletClient({
+      account: privateKeyToAccount(LIQUIDATOR_KEY),
+      chain: base,
+      transport: http(cfg.rpcUrl)
     })
+    const txHash = await wallet.sendTransaction({ to: executooor, data })
     const receipt = await test.waitForTransactionReceipt({ hash: txHash })
     expect(receipt.status).toBe('success')
 

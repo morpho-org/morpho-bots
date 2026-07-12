@@ -1,55 +1,36 @@
-import type { BackoffState, Logger, OutcomeRecord, TxRecord } from '@repo/bot-kit'
+import type { Logger, TransactionRecord } from '@repo/bot-kit'
 import type { QuoteOutcome, Swap, SwapConfigEntry, Venue } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
 import {
   assertContractDeployed,
-  createBackoff,
   createDeploylessClient,
-  simulateLiquidationExec,
-  WIRE_VERSION
+  simulateLiquidationExec
 } from '@repo/bot-kit'
 import { createRateLimitedClient } from '@repo/swaps'
-import { getAddress } from 'viem'
+import { getAddress, isAddress, isHex } from 'viem'
 import { getBlockNumber } from 'viem/actions'
 
 import type { ActConfig, Env } from '../config'
 import type { MarketParams } from '../market'
 import type { LiquidationPlan } from '../sizing/plan'
 import type { LensInput, LensOut } from '../state/lens.sol'
-import type { ParsedOpportunityId } from '../wire'
 
 import { loadActConfig } from '../config'
 import { encodeLiquidationExec } from '../execution/encode-call'
+import { marketId } from '../market'
 import { composeQuoting } from '../quotes'
 import { plan } from '../sizing/plan'
 import { lensKey, readBlueLiquidationLens } from '../state/lens.sol'
 import { createMarketParamsResolver, multicallIdToMarketParams } from '../state/market-params'
 import { isLiquidatable, planInputFromLens } from '../tick/eligibility'
-import { DOMAIN, OP, parseOpportunityId } from '../wire'
-
-/**
- * The narrowed `outcome.status` vocabulary `act` emits (bot-kit keeps `status` an open string). Each
- * value is a non-transient reason a candidate id yielded no tx; transient infra failures are stderr
- * logs plus exit 1, never outcomes.
- */
-export type BlueActStatus =
-  | 'not_liquidatable'
-  | 'no_swap_path'
-  | 'quote_failed'
-  | 'backoff_skipped'
-  | 'sim_reverted'
-  | 'skipped_inflight'
-  | 'bad_id'
 
 /** `act` holds no cross-tick cache — it re-derives everything fresh — so its cache is trivially empty. */
 export type BlueActCache = Record<string, never>
 
 export type ActCounters = {
   requested: number
-  badId: number
-  skippedInflight: number
-  backoffSkipped: number
+  invalid: number
   notLiquidatable: number
   noSwapPath: number
   quoteFailed: number
@@ -57,63 +38,77 @@ export type ActCounters = {
   reverted: number
 }
 
-type Evaluand = ParsedOpportunityId & { id: string }
+type Evaluand = { id: string; marketId: Hex; borrower: Address; market: MarketParams }
 
-function outcomeRecord(
-  id: string,
-  chainId: number,
-  status: BlueActStatus,
-  block: bigint,
-  reason?: string
-): OutcomeRecord {
+function parsePosition(value: unknown, chainId: number): Evaluand | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
+  const record = value as Record<string, unknown>
+  const market = record.market
+  if (
+    record.kind !== 'position' ||
+    record.chainId !== chainId ||
+    typeof record.id !== 'string' ||
+    record.id.trim() === ''
+  )
+    return null
+  if (
+    typeof record.marketId !== 'string' ||
+    !isHex(record.marketId) ||
+    record.marketId.length !== 66
+  )
+    return null
+  if (typeof record.borrower !== 'string' || !isAddress(record.borrower)) return null
+  if (typeof market !== 'object' || market === null || Array.isArray(market)) return null
+  const params = market as Record<string, unknown>
+  if (typeof params.loanToken !== 'string' || !isAddress(params.loanToken)) return null
+  if (typeof params.collateralToken !== 'string' || !isAddress(params.collateralToken)) return null
+  if (typeof params.oracle !== 'string' || !isAddress(params.oracle)) return null
+  if (typeof params.irm !== 'string' || !isAddress(params.irm)) return null
+  if (typeof params.lltv !== 'string' || !/^\d+$/.test(params.lltv)) return null
+  const parsedMarket: MarketParams = {
+    loanToken: getAddress(params.loanToken),
+    collateralToken: getAddress(params.collateralToken),
+    oracle: getAddress(params.oracle),
+    irm: getAddress(params.irm),
+    lltv: BigInt(params.lltv)
+  }
+  const suppliedId = record.marketId.toLowerCase() as Hex
+  if (marketId(parsedMarket) !== suppliedId) return null
   return {
-    v: WIRE_VERSION,
-    kind: 'outcome',
-    id,
-    domain: DOMAIN,
-    op: OP,
-    chainId,
-    at: new Date().toISOString(),
-    summary: `blue liq ${status}${reason ? `: ${reason}` : ''}`,
-    status,
-    block: Number(block),
-    ...(reason ? { reason } : {})
+    id: record.id,
+    marketId: suppliedId,
+    borrower: getAddress(record.borrower),
+    market: parsedMarket
   }
 }
 
-function txRecord(id: string, chainId: number, to: Address, data: Hex, block: bigint): TxRecord {
+function txRecord(
+  id: string,
+  chainId: number,
+  to: Address,
+  data: Hex,
+  block: bigint
+): TransactionRecord {
   return {
-    v: WIRE_VERSION,
-    kind: 'tx',
+    kind: 'transaction',
     id,
-    domain: DOMAIN,
-    op: OP,
     chainId,
-    at: new Date().toISOString(),
-    summary: `blue liq ${id} — repay via configured swap`,
     to,
     data,
-    simulated: { status: 'ok', block: Number(block) }
+    value: '0',
+    simulatedAtBlock: Number(block)
   }
 }
 
 /**
- * The actor core: map opportunity ids to freshly simulated tx records. For each id — parse (malformed
- * → `bad_id`), skip if in flight (`skipped_inflight`) or backed off (`backoff_skipped`), else
- * re-derive fresh (lens read → not liquidatable → `not_liquidatable`; plan → quote → encode →
- * simulate) and emit a `TxRecord` on sim-ok or an `outcome` otherwise. Deps are injected so the actor
- * is unit-testable without a chain, an aggregator, or a signer.
- *
- * Backoff/inflight are consulted through the read-only `advisory` snapshot the caller supplies (the
- * queue owns recording/clearing); the snapshot is never mutated here.
+ * Maps transparent position records to freshly simulated transactions. Invalid or non-actionable
+ * positions are structured stderr events; only successful transactions reach stdout.
  */
 export async function runAct(deps: {
-  ids: readonly string[]
+  records: readonly unknown[]
   chainId: number
   head: bigint
-  advisory: { backoff: BackoffState | null; inflightLabels: readonly string[] }
-  backoffConfig: { baseBlocks: bigint; maxBlocks: bigint }
-  readLensForIds: (evaluands: readonly Evaluand[]) => Promise<Map<string, LensOut>>
+  readLensForPositions: (evaluands: readonly Evaluand[]) => Promise<Map<string, LensOut>>
   quoteFor: (plan: LiquidationPlan, out: LensOut) => Promise<QuoteOutcome>
   simulate: (args: {
     market: MarketParams
@@ -123,16 +118,14 @@ export async function runAct(deps: {
   }) => Promise<string | null>
   encodeExec: (market: MarketParams, borrower: Address, plan: LiquidationPlan, swap: Swap) => Hex
   executor: Address
-  emit: (record: TxRecord | OutcomeRecord) => void
+  emit: (record: TransactionRecord) => void
   logger: Logger
 }): Promise<ActCounters> {
   const {
-    ids,
+    records,
     chainId,
     head,
-    advisory,
-    backoffConfig,
-    readLensForIds,
+    readLensForPositions,
     quoteFor,
     simulate,
     encodeExec,
@@ -142,10 +135,8 @@ export async function runAct(deps: {
   } = deps
 
   const counters: ActCounters = {
-    requested: ids.length,
-    badId: 0,
-    skippedInflight: 0,
-    backoffSkipped: 0,
+    requested: records.length,
+    invalid: 0,
     notLiquidatable: 0,
     noSwapPath: 0,
     quoteFailed: 0,
@@ -153,34 +144,15 @@ export async function runAct(deps: {
     reverted: 0
   }
 
-  // Read-only backoff: seeded from a COPY of the caller's snapshot (createBackoff copies entries on
-  // restore) and only ever queried — the queue owns record/clear, so the snapshot stays untouched.
-  const backoff = createBackoff({
-    baseBlocks: backoffConfig.baseBlocks,
-    maxBlocks: backoffConfig.maxBlocks,
-    ...(advisory.backoff ? { initialState: advisory.backoff } : {})
-  })
-  const inflight = new Set(advisory.inflightLabels)
-
   const evaluands: Evaluand[] = []
-  for (const id of ids) {
-    const parsed = parseOpportunityId(id)
-    if (!parsed || parsed.chainId !== chainId) {
-      emit(outcomeRecord(id, chainId, 'bad_id', head))
-      counters.badId += 1
+  for (const record of records) {
+    const parsed = parsePosition(record, chainId)
+    if (!parsed) {
+      logger.warn('act.skip', { status: 'invalid_record', record })
+      counters.invalid += 1
       continue
     }
-    if (inflight.has(id)) {
-      emit(outcomeRecord(id, chainId, 'skipped_inflight', head))
-      counters.skippedInflight += 1
-      continue
-    }
-    if (backoff.shouldSkip(id, head)) {
-      emit(outcomeRecord(id, chainId, 'backoff_skipped', head))
-      counters.backoffSkipped += 1
-      continue
-    }
-    evaluands.push({ id, ...parsed })
+    evaluands.push(parsed)
   }
 
   if (evaluands.length === 0) {
@@ -189,29 +161,39 @@ export async function runAct(deps: {
   }
 
   // One batched lens read (blue resolves marketParams itself, fresh) for every non-skipped id.
-  const lensOut = await readLensForIds(evaluands)
+  const lensOut = await readLensForPositions(evaluands)
 
   for (const item of evaluands) {
-    const out = lensOut.get(item.id)
+    const out = lensOut.get(lensKey(item.marketId, item.borrower))
     if (!out || !isLiquidatable(out)) {
-      emit(outcomeRecord(item.id, chainId, 'not_liquidatable', head))
+      logger.info('act.skip', { id: item.id, status: 'not_liquidatable', block: head })
       counters.notLiquidatable += 1
       continue
     }
     const liquidationPlan = plan(planInputFromLens(out))
     if (!liquidationPlan) {
-      emit(outcomeRecord(item.id, chainId, 'not_liquidatable', head, 'degenerate_plan'))
+      logger.info('act.skip', {
+        id: item.id,
+        status: 'not_liquidatable',
+        reason: 'degenerate_plan',
+        block: head
+      })
       counters.notLiquidatable += 1
       continue
     }
     const outcome = await quoteFor(liquidationPlan, out)
     if (outcome.kind === 'no_config') {
-      emit(outcomeRecord(item.id, chainId, 'no_swap_path', head))
+      logger.warn('act.skip', { id: item.id, status: 'no_swap_path', block: head })
       counters.noSwapPath += 1
       continue
     }
     if (outcome.kind === 'failed') {
-      emit(outcomeRecord(item.id, chainId, 'quote_failed', head, outcome.reason))
+      logger.warn('act.skip', {
+        id: item.id,
+        status: 'quote_failed',
+        reason: outcome.reason,
+        block: head
+      })
       counters.quoteFailed += 1
       continue
     }
@@ -224,7 +206,7 @@ export async function runAct(deps: {
       swap
     })
     if (revert !== null) {
-      emit(outcomeRecord(item.id, chainId, 'sim_reverted', head, revert))
+      logger.warn('act.skip', { id: item.id, status: 'sim_reverted', reason: revert, block: head })
       counters.reverted += 1
       continue
     }
@@ -239,7 +221,7 @@ export async function runAct(deps: {
 
 /**
  * One `act` pass at the current chain head: build the quote → simulate pipeline from `env`, run
- * {@link runAct} over `ids`, and return the (empty) act cache. Needs venue API keys — read from the
+ * {@link runAct} over position records, and return the empty act cache. Needs venue API keys — read from the
  * env table at the point of use, never stored — but NOT the signer private key. Never touches the
  * filesystem, `process.stdout`, or `Bun.env`.
  *
@@ -247,13 +229,12 @@ export async function runAct(deps: {
  */
 export async function actOnce(
   env: Env,
-  ids: readonly string[],
+  records: readonly unknown[],
   opts: {
     cache: BlueActCache | null
-    advisory: { backoff: BackoffState | null; inflightLabels: readonly string[] }
     runStartupChecks: boolean
     logger: Logger
-    emit: (record: TxRecord | OutcomeRecord) => void
+    emit: (record: TransactionRecord) => void
   }
 ): Promise<{ cache: BlueActCache }> {
   const config: ActConfig = loadActConfig(env)
@@ -335,36 +316,25 @@ export async function actOnce(
 
   // Fresh, uncached resolver — one batched multicall per act pass is cheap, and act keeps no cache.
   const resolveParams = createMarketParamsResolver(multicallIdToMarketParams(client, config.morpho))
-  const readLensForIds = async (evaluands: readonly Evaluand[]): Promise<Map<string, LensOut>> => {
+  const readLensForPositions = async (
+    evaluands: readonly Evaluand[]
+  ): Promise<Map<string, LensOut>> => {
     const paramsById = await resolveParams(evaluands.map(e => e.marketId))
     const inputs: LensInput[] = []
-    const idByLensKey = new Map<string, string>()
     for (const e of evaluands) {
       const params = paramsById.get(e.marketId)
       if (!params) continue // unresolved market → absent from the map → `not_liquidatable`
       inputs.push({ params, borrower: e.borrower })
-      idByLensKey.set(lensKey(e.marketId, e.borrower), e.id)
     }
-    const byLensKey = await readBlueLiquidationLens(client, config.morpho, inputs)
-    const byWireId = new Map<string, LensOut>()
-    for (const [lk, o] of byLensKey) {
-      const wireId = idByLensKey.get(lk)
-      if (wireId) byWireId.set(wireId, o)
-    }
-    return byWireId
+    return readBlueLiquidationLens(client, config.morpho, inputs)
   }
 
   const head = await getBlockNumber(client)
   await runAct({
-    ids,
+    records,
     chainId: config.chainId,
     head,
-    advisory: opts.advisory,
-    backoffConfig: {
-      baseBlocks: config.quoting.backoffBaseBlocks,
-      maxBlocks: config.quoting.backoffMaxBlocks
-    },
-    readLensForIds,
+    readLensForPositions,
     quoteFor,
     simulate: async ({ market, borrower, plan: p, swap }) => {
       const result = await simulateLiquidationExec(client, {

@@ -1,14 +1,14 @@
-import type { TransactionSerializableEIP1559, TransactionSerializedEIP1559 } from 'viem'
+import type { LocalAccount, TransactionSerializableEIP1559 } from 'viem'
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { recoverTransactionAddress } from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
 
 import type { SignerServer } from '../src/server'
 
-import { AgentPolicyError, createAgentAccount } from '../src/client'
+import { createRemoteSigner, SignerPolicyError, SignerResponseError } from '../src/client'
 import { createSignerServer } from '../src/server'
 import { account, EXECUTOR, log, testPolicy } from './helpers'
 
@@ -16,7 +16,7 @@ const preparedTx: TransactionSerializableEIP1559 = {
   type: 'eip1559',
   chainId: 8453,
   to: EXECUTOR,
-  data: '0x',
+  data: '0x00000001',
   value: 0n,
   nonce: 4,
   gas: 1_000_000n,
@@ -40,44 +40,80 @@ afterEach(async () => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-describe('createAgentAccount', () => {
-  it('handshakes and exposes the agent address', async () => {
-    const agent = await createAgentAccount({ socketPath })
-    expect(agent.address).toBe(account.address)
+describe('createRemoteSigner', () => {
+  it('exposes only address and prepared-transaction signing', async () => {
+    const signer = await createRemoteSigner({ socketPath })
+    expect(signer.address).toBe(account.address)
+    expect(Object.keys(signer).toSorted()).toEqual(['address', 'signPreparedTransaction'])
   })
 
-  it('round-trips a signTransaction through the socket, recoverable to the agent', async () => {
-    const agent = await createAgentAccount({ socketPath })
-    const signed = (await agent.signTransaction(preparedTx)) as TransactionSerializedEIP1559
-    expect(await recoverTransactionAddress({ serializedTransaction: signed })).toBe(account.address)
+  it('round-trips a policy-compliant prepared transaction', async () => {
+    const signer = await createRemoteSigner({ socketPath })
+    const signed = await signer.signPreparedTransaction(preparedTx)
+    expect(signed.startsWith('0x02')).toBe(true)
   })
 
-  it('surfaces a policy rejection as AgentPolicyError', async () => {
-    const agent = await createAgentAccount({ socketPath })
-    const promise = agent.signTransaction({ ...preparedTx, chainId: 1 })
-    await expect(promise).rejects.toBeInstanceOf(AgentPolicyError)
-    const error = await promise.catch((e: unknown) => e)
-    expect(error).toMatchObject({ code: 'policy_violation', rule: 'test-rule', check: 'chainId' })
+  it('surfaces default-deny decisions as SignerPolicyError', async () => {
+    const signer = await createRemoteSigner({ socketPath })
+    const promise = signer.signPreparedTransaction({ ...preparedTx, chainId: 1 })
+    await expect(promise).rejects.toBeInstanceOf(SignerPolicyError)
+    expect(await promise.catch((error: unknown) => error)).toMatchObject({
+      code: 'policy_violation',
+      check: 'chainId'
+    })
   })
 
-  it('rejects signMessage and signTypedData as unsupported stubs', async () => {
-    const agent = await createAgentAccount({ socketPath })
-    await expect(agent.signMessage({ message: 'hi' })).rejects.toThrow(/signMessage/)
-    await expect(
-      agent.signTypedData({
-        domain: { name: 'x' },
-        types: { Foo: [{ name: 'a', type: 'uint256' }] },
-        primaryType: 'Foo',
-        message: { a: 1n }
-      })
-    ).rejects.toThrow(/signTypedData/)
-  })
-
-  it('throws a plain error when the socket is dead', async () => {
-    const dead = join(dir, 'nope.sock')
-    await expect(createAgentAccount({ socketPath: dead })).rejects.toBeInstanceOf(Error)
-    await expect(createAgentAccount({ socketPath: dead })).rejects.not.toBeInstanceOf(
-      AgentPolicyError
+  it('rejects a signed response whose recovered sender differs from the handshake', async () => {
+    await server.close()
+    const other = privateKeyToAccount(`0x${'1'.repeat(64)}`)
+    const dishonest = {
+      ...account,
+      signTransaction: other.signTransaction.bind(other)
+    } as LocalAccount
+    server = createSignerServer({ socketPath, account: dishonest, policy: testPolicy(), log })
+    await server.listen()
+    const signer = await createRemoteSigner({ socketPath })
+    await expect(signer.signPreparedTransaction(preparedTx)).rejects.toThrow(
+      /does not match signer/
     )
+  })
+
+  it('rejects a same-signer response that changes the prepared transaction', async () => {
+    await server.close()
+    const dishonest = {
+      ...account,
+      signTransaction: ((transaction: TransactionSerializableEIP1559) =>
+        account.signTransaction({
+          ...transaction,
+          nonce: (transaction.nonce ?? 0) + 1
+        })) as LocalAccount['signTransaction']
+    } as LocalAccount
+    server = createSignerServer({ socketPath, account: dishonest, policy: testPolicy(), log })
+    await server.listen()
+    const signer = await createRemoteSigner({ socketPath })
+    await expect(signer.signPreparedTransaction(preparedTx)).rejects.toThrow(
+      /does not match prepared transaction/
+    )
+  })
+
+  it('classifies malformed serialized signer output as a response error', async () => {
+    await server.close()
+    const malformed = {
+      ...account,
+      signTransaction: (() => Promise.resolve('0x02')) as LocalAccount['signTransaction']
+    } as LocalAccount
+    server = createSignerServer({ socketPath, account: malformed, policy: testPolicy(), log })
+    await server.listen()
+    const signer = await createRemoteSigner({ socketPath })
+    const error = await signer.signPreparedTransaction(preparedTx).catch(value => value)
+    expect(error).toBeInstanceOf(SignerResponseError)
+    expect((error as Error).message).toMatch(/invalid serialized transaction/)
+  })
+
+  it('distinguishes a dead socket from a policy response', async () => {
+    const promise = createRemoteSigner({ socketPath: join(dir, 'missing.sock') })
+    await expect(promise).rejects.toBeInstanceOf(Error)
+    await expect(promise).rejects.not.toBeInstanceOf(SignerPolicyError)
+    await expect(promise).rejects.not.toBeInstanceOf(SignerResponseError)
   })
 })

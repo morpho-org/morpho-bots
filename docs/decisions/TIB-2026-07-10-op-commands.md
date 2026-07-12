@@ -10,6 +10,11 @@
 
 ---
 
+> **Historical design note (2026-07-11):** Flat source/transform op commands remain current. The
+> envelope, outcome, ID-routing, cooldown, and bot-scoped queue details below were superseded by
+> transparent position JSON and the per-chain `morpho-queued` daemon. Transforms consume semantic
+> fields directly and never parse or route through the correlation-only `id`.
+
 ## Context
 
 [TIB-2026-07-09-pipeline-cli](./TIB-2026-07-09-pipeline-cli.md) (merged #38–#43) decomposed the tick

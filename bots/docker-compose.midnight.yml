@@ -1,6 +1,5 @@
-# Runs the midnight-liquidation bot as TWO processes in the image's entrypoint (bots/docker-entrypoint.sh):
-# the per-chain `queued` transaction-queue daemon and the three-stage op pipeline that feeds it —
-# `<SOURCE_OP> | <TRANSFORM_OP> | queue`, defaulting to `unhealthy-positions | liquidate | queue`.
+# Runs a signer agent, the per-chain `queued` daemon, and the pipeline that feeds it:
+# `<SOURCE_OP> | <TRANSFORM_OP> | morpho-queued submit`, defaulting to liquidation.
 # stdout carries JSON-Lines records, logs go to stderr, and the daemon appends terminal outcomes to
 # /data/morpho-bots/queued/outcomes-<chainId>.jsonl.
 # Borrower candidates come from the markets liquidation-candidates HTTP API
@@ -16,19 +15,13 @@ services:
       BOT: midnight
       CHAIN_ID: '8453'
       TICK_INTERVAL_S: ${TICK_INTERVAL_S:-2}
-      # The two op stages piped before `queue`; override to run a different behavior. Defaults are the
+      # The two op stages piped before `morpho-queued submit`; override to run a different behavior.
       # liquidation pair. Which ops run is deployment policy, not baked into the core.
       SOURCE_OP: ${SOURCE_OP:-unhealthy-positions}
       TRANSFORM_OP: ${TRANSFORM_OP:-liquidate}
       RPC_URL: ${RPC_URL:?set RPC_URL}
-      # Dedicated broadcast endpoint for the daemon's eth_sendRawTransaction + nonce/receipt reads. Set
-      # it when RPC_URL is a read-only relay that acks sends without relaying them (txs never mine);
-      # falls back to RPC_URL when unset.
-      SEND_RPC_URL: ${SEND_RPC_URL:-}
-      # The signing key is now read by the `queued` daemon, not the pipe stages. The daemon's
-      # mergedQueuedEnv reads the process env last (after config.json/secrets.json `queued` sections),
-      # so this container-level var lands in the daemon's `queued` config — no secrets.json needed.
-      LIQUIDATOR_PRIVATE_KEY: ${LIQUIDATOR_PRIVATE_KEY:?set LIQUIDATOR_PRIVATE_KEY}
+      SIGNER_PRIVATE_KEY: ${SIGNER_PRIVATE_KEY:-}
+      SIGNER_POLICY_JSON: ${SIGNER_POLICY_JSON:-}
       # `act` skims to this EOA and simulates `from` it (secret-free — no key on the op stages); it
       # must be the address the private key above derives, else act and the daemon target different
       # wallets (the daemon cross-checks this against SIGNER_SOCKET when in agent mode).
