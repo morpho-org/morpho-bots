@@ -20,6 +20,14 @@
 > `settledCooldownBlocks`, `{version, queue, backoff}`, or per-domain queue state describe the
 > rejected proposal, not the shipped architecture.
 
+> **Layout supersession (2026-07-12):** The "Layout: `tools/` vs `services/`, and `@repo/home`"
+> section below is superseded by
+> [TIB-2026-07-12-repo-restructure](./TIB-2026-07-12-repo-restructure.md): `tools/` and `services/`
+> retire in favor of `apps/` + `packages/` + `deploy/` tiers — `queued` moves to `apps/queued`, the
+> signer to `apps/signer` (dissolving the noted placement asymmetry), and `blue-rindexer` to
+> `deploy/blue-rindexer`. `@repo/home` and every bin keep their names; everything else in this TIB
+> stands.
+
 ## Context
 
 [TIB-2026-07-09-pipeline-cli](./TIB-2026-07-09-pipeline-cli.md) made `<domain> queue` a stateful

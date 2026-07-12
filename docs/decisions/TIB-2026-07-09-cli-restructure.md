@@ -312,6 +312,17 @@ supervisor.
 
 ## Addenda
 
+### 2026-07-12 — directory tiers superseded by the repo-restructure TIB
+
+The top-level tiering decided here (`uis/` → `interfaces/` → `tools/`, plus `services/` and the
+`bots/` packaging workspace) is superseded by
+[TIB-2026-07-12-repo-restructure](./TIB-2026-07-12-repo-restructure.md), which restructures the
+repo into `apps/` + `packages/` + `deploy/` (run it / import it / ship it). **This TIB's
+foundations still stand** and are explicitly preserved by that supersession: one-shot processes,
+unix loops as the supervisor, the 0/1/2 exit contract, the `~/.morpho-bots` file/env config merge,
+state-as-hint reconciled against chain truth — and the cores-in-`packages/` placement rationale
+(the cores are libraries; `packages/` is where libraries live) carries over unchanged.
+
 ### 2026-07-10 — `uis/` renamed to `interfaces/`; packaging isolated in `bots/`
 
 Two layout revisions after the ladder landed (paths in the body above are historical):
