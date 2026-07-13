@@ -15,6 +15,14 @@
 > transparent position JSON and the per-chain `morpho-queued` daemon. Transforms consume semantic
 > fields directly and never parse or route through the correlation-only `id`.
 
+> **Amendment note (2026-07-12):** The decision below that "internal code keeps the `sense` / `act`
+> vocabulary" (`runSense` / `runAct` seams, seam kinds `'sense'` / `'act'`) is **reversed** by
+> [TIB-2026-07-12-repo-restructure](./TIB-2026-07-12-repo-restructure.md): the seam kinds become
+> `'source'` / `'transform'`, core identifiers become op-named (`findUnhealthyPositions`,
+> `prepareLiquidations`, …), and the `sense.*` / `act.*` log events are renamed. Everything else —
+> flat op-named commands, source XOR transform, the `<domain>:<op>:` ID prefix, caller-owned
+> composition — stands.
+
 ## Context
 
 [TIB-2026-07-09-pipeline-cli](./TIB-2026-07-09-pipeline-cli.md) (merged #38–#43) decomposed the tick

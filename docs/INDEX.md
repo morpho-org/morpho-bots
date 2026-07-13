@@ -40,6 +40,7 @@ _None yet — copy [`templates/DATA-FLOW.md`](./templates/DATA-FLOW.md) into a b
 ## TIBs (Repo-wide)
 
 - [TIB-2026-04-16: Bootstrap Curator Bots](./decisions/TIB-2026-04-16-bootstrap-curator-bots.md) — initial scaffold, tooling stack, and migration plan from `morpho-apps`
+- [TIB-2026-07-12: Repo restructure](./decisions/TIB-2026-07-12-repo-restructure.md) — `apps/` + `packages/` + `deploy/` tiers, bot-kit split into pipeline/evm-kit/ipc, signer-client extraction, full sense/act retirement
 
 ## TIBs (Bot-scoped)
 
