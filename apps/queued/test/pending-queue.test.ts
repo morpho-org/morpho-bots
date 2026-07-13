@@ -19,6 +19,7 @@ import type {
 } from '../src/pending-queue'
 
 import { createPendingQueue } from '../src/pending-queue'
+import { attachSignerNonce } from '../src/signer-error'
 
 const REQUEST: TxRequest = {
   to: '0x0000000000000000000000000000000000000001' as Address,
@@ -185,21 +186,58 @@ describe('createPendingQueue', () => {
     expect(events.find(e => e.event === 'tx.submit_failed')?.fields?.nonce).toBe(7)
   })
 
-  it('propagates deterministic signer rejection on submit and replacement', async () => {
+  it('logs tx.signer_failed (id + attached nonce + code) and propagates on submit', async () => {
     const rejection = new SignerPolicyError('denied', 'selector')
-    const first = setup({ send: () => Promise.reject(rejection) })
+    attachSignerNonce(rejection, 7) // the real sender annotates the prepared nonce; model it here
+    const { logger, events } = captureLogger()
+    const first = setup({ send: () => Promise.reject(rejection), logger })
     await expect(submitOne(first.queue, 0n)).rejects.toBe(rejection)
+    const failed = events.find(e => e.event === 'tx.signer_failed')
+    expect(failed?.level).toBe('error')
+    expect(failed?.fields).toMatchObject({
+      id: 'market:borrower',
+      nonce: 7,
+      code: 'policy_violation'
+    })
+  })
 
+  it('logs tx.signer_failed (id + entry nonce + code) and propagates on replacement', async () => {
+    const rejection = new SignerPolicyError('denied', 'selector')
     let calls = 0
+    const { logger, events } = captureLogger()
     const replacement = setup({
       send: async request => {
         calls += 1
         if (calls > 1) throw rejection
         return { nonce: request.nonce ?? 7, txHash: hashOf(calls) }
-      }
+      },
+      logger
     })
     await submitOne(replacement.queue, 0n)
     await expect(replacement.queue.onBlock(5n)).rejects.toBe(rejection)
+    const failed = events.find(e => e.event === 'tx.signer_failed')
+    expect(failed?.level).toBe('error')
+    expect(failed?.fields).toMatchObject({
+      id: 'market:borrower',
+      nonce: 7,
+      txHash: hashOf(1),
+      code: 'policy_violation'
+    })
+  })
+
+  it('stamps the correlation id on tx.sent, tx.bumped, and tx.confirmed', async () => {
+    const { logger, events } = captureLogger()
+    let confirmed = false
+    const getReceipt: GetReceipt = async () =>
+      confirmed ? { status: 'success', blockNumber: 20n } : null
+    const { queue } = setup({ baseFee: 100n, getReceipt, logger })
+    await submitOne(queue, 0n) // tx.sent
+    await queue.onBlock(5n) // stuck → tx.bumped
+    confirmed = true
+    await queue.onBlock(6n) // tx.confirmed
+    for (const event of ['tx.sent', 'tx.bumped', 'tx.confirmed']) {
+      expect(events.find(e => e.event === event)?.fields?.id).toBe('market:borrower')
+    }
   })
 
   it('drops a stuck tx when its replacement reverts on-chain (no longer liquidatable)', async () => {
@@ -214,7 +252,9 @@ describe('createPendingQueue', () => {
     await submitOne(queue, 0n)
     await queue.onBlock(5n) // stuck → replace → reverts → drop
     expect(queue.size).toBe(0)
-    expect(events.find(e => e.event === 'tx.dropped')?.fields?.reason).toBe('reverts_on_replace')
+    const dropped = events.find(e => e.event === 'tx.dropped')
+    expect(dropped?.fields?.reason).toBe('reverts_on_replace')
+    expect(dropped?.fields?.id).toBe('market:borrower')
   })
 
   it('retries a stuck tx on transient send failures, then drops it at maxBumpAttempts', async () => {
@@ -234,7 +274,10 @@ describe('createPendingQueue', () => {
     await queue.onBlock(8n) // attempt already 3 → drop
     expect(queue.size).toBe(0)
     expect(events.filter(e => e.event === 'tx.replace_failed')).toHaveLength(3)
-    expect(events.find(e => e.event === 'tx.dropped')?.fields?.reason).toBe('max_bump_attempts')
+    expect(events.find(e => e.event === 'tx.replace_failed')?.fields?.id).toBe('market:borrower')
+    const dropped = events.find(e => e.event === 'tx.dropped')
+    expect(dropped?.fields?.reason).toBe('max_bump_attempts')
+    expect(dropped?.fields?.id).toBe('market:borrower')
   })
 
   it('isolates a per-entry getReceipt failure so the rest of the queue still sweeps', async () => {
@@ -266,7 +309,9 @@ describe('createPendingQueue', () => {
     expect(queue.size).toBe(2)
     await queue.onBlock(1n) // entry #1 getReceipt throws (caught), entry #2 confirms → evicted
     expect(queue.size).toBe(1) // the throwing entry survives; the other was still swept
-    expect(events.some(e => e.event === 'tx.onblock_error')).toBe(true)
+    const onblockError = events.find(e => e.event === 'tx.onblock_error')
+    expect(onblockError).toBeDefined()
+    expect(onblockError?.fields?.id).toBe('a') // the throwing entry (hashOf(1)), joinable by its id
   })
 
   it('re-syncs the nonce before a first send when the queue is empty', async () => {
@@ -349,12 +394,17 @@ describe('createPendingQueue', () => {
     expect(queue.inflightLabels().has('market:borrower')).toBe(false)
   })
 
-  it('releases a reverted label from the inflight set', async () => {
-    const { queue } = setup({ getReceipt: async () => ({ status: 'reverted', blockNumber: 10n }) })
+  it('releases a reverted label from the inflight set and stamps id on tx.reverted', async () => {
+    const { logger, events } = captureLogger()
+    const { queue } = setup({
+      getReceipt: async () => ({ status: 'reverted', blockNumber: 10n }),
+      logger
+    })
     await submitOne(queue, 0n)
     await queue.onBlock(1n)
     expect(queue.size).toBe(0)
     expect(queue.inflightLabels().has('market:borrower')).toBe(false)
+    expect(events.find(e => e.event === 'tx.reverted')?.fields?.id).toBe('market:borrower')
   })
 
   it('releases a dropped label from the inflight set', async () => {

@@ -31,7 +31,7 @@ export function composeQuoting(deps: {
   maxRouteImpactBps: number
   excludeCollaterals: readonly Address[]
   logger: Logger
-}): { quoteFor: (plan: LiquidationPlan, out: LensOut) => Promise<QuoteOutcome> } {
+}): { quoteFor: (plan: LiquidationPlan, out: LensOut, id: string) => Promise<QuoteOutcome> } {
   const { selector, excludeCollaterals, logger, ...rest } = deps
   const { quoteFor: quoteRequest } = composeMultiVenueQuoting({
     ...rest,
@@ -40,11 +40,13 @@ export function composeQuoting(deps: {
   })
 
   return {
-    async quoteFor(plan, out) {
+    // `id` is the position's correlation id, threaded through only so the collateral-level skip
+    // reasons below (excluded / probe failure) can be joined to the borrower that hit them.
+    async quoteFor(plan, out, id) {
       const collateral = out.market.collateralParams[plan.collateralIndex]
       if (!collateral) return { kind: 'no_config' }
       if (excludeCollaterals.some(token => isAddressEqual(token, collateral.token))) {
-        logger.info('quote.excluded_collateral', { collateral: collateral.token })
+        logger.info('quote.excluded_collateral', { id, collateral: collateral.token })
         return { kind: 'no_config' }
       }
 
@@ -56,7 +58,12 @@ export function composeQuoting(deps: {
       if (deps.venues.length > 0) {
         const { error } = await tryCatch(selector.refresh({ collateral: collateral.token, loan }))
         if (error) {
-          logger.warn('probe.error', { collateral: collateral.token, loan, detail: error.message })
+          logger.warn('probe.error', {
+            id,
+            collateral: collateral.token,
+            loan,
+            detail: error.message
+          })
         }
       }
 

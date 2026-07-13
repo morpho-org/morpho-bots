@@ -5,7 +5,7 @@ import { isExecutionRevert, revertReason as defaultRevertReason, TxSendError } f
 import { tryCatch } from '@repo/utils'
 
 import { bumpFees } from './fee-policy'
-import { isSignerError } from './signer-error'
+import { isSignerError, signerErrorNonce } from './signer-error'
 
 /** Default blocks a pending tx may sit unconfirmed before the queue bumps its fee and replaces it. */
 const STUCK_BLOCKS = 4n
@@ -173,7 +173,7 @@ export function createPendingQueue({
     if (syncNonce && pending.size === 0) {
       const synced = await tryCatch(syncNonce())
       if (synced.error) {
-        logger.warn('nonce.sync_failed', { label: args.label, reason: revertReason(synced.error) })
+        logger.warn('nonce.sync_failed', { id: args.label, reason: revertReason(synced.error) })
         return { submitted: false }
       }
     }
@@ -185,9 +185,20 @@ export function createPendingQueue({
       })
     )
     if (sent.error) {
-      if (isSignerError(sent.error)) throw sent.error
+      if (isSignerError(sent.error)) {
+        const nonce = signerErrorNonce(sent.error)
+        // `code` separates a policy rejection from a transport/protocol/internal signer failure;
+        // `nonce` (when the sender attached it) joins the signer's own nonce-keyed rejection line.
+        logger.error('tx.signer_failed', {
+          id: args.label,
+          ...(nonce !== undefined ? { nonce } : {}),
+          code: sent.error.code,
+          reason: revertReason(sent.error)
+        })
+        throw sent.error
+      }
       logger.warn('tx.submit_failed', {
-        label: args.label,
+        id: args.label,
         reason: revertReason(sent.error),
         ...(sent.error instanceof TxSendError && sent.error.nonce !== undefined
           ? { nonce: sent.error.nonce }
@@ -211,7 +222,7 @@ export function createPendingQueue({
       attempt: 0
     })
     logger.info('tx.sent', {
-      label: args.label,
+      id: args.label,
       nonce,
       txHash,
       maxFee: args.maxFeePerGas,
@@ -224,6 +235,7 @@ export function createPendingQueue({
     if (entry.attempt >= maxBumpAttempts) {
       settle(entry, { status: 'dropped', reason: 'max_bump_attempts' })
       logger.warn('tx.dropped', {
+        id: entry.label,
         nonce: entry.nonce,
         txHash: entry.txHash,
         reason: 'max_bump_attempts'
@@ -238,7 +250,12 @@ export function createPendingQueue({
     })
     if (result.kind === 'drop') {
       settle(entry, { status: 'dropped', reason: 'fee_ceiling' })
-      logger.warn('tx.dropped', { nonce: entry.nonce, txHash: entry.txHash, reason: 'fee_ceiling' })
+      logger.warn('tx.dropped', {
+        id: entry.label,
+        nonce: entry.nonce,
+        txHash: entry.txHash,
+        reason: 'fee_ceiling'
+      })
       return
     }
     const replaced = await tryCatch(send({ ...entry.request, ...result.fees, nonce: entry.nonce }))
@@ -250,6 +267,7 @@ export function createPendingQueue({
       if (isExecutionRevert(replaced.error)) {
         settle(entry, { status: 'dropped', reason: 'reverts_on_replace' })
         logger.warn('tx.dropped', {
+          id: entry.label,
           nonce: entry.nonce,
           txHash: entry.txHash,
           reason: 'reverts_on_replace',
@@ -258,6 +276,7 @@ export function createPendingQueue({
       } else {
         entry.attempt += 1
         logger.warn('tx.replace_failed', {
+          id: entry.label,
           nonce: entry.nonce,
           txHash: entry.txHash,
           attempt: entry.attempt,
@@ -273,6 +292,7 @@ export function createPendingQueue({
     entry.submittedAtBlock = blockNumber
     entry.attempt += 1
     logger.info('tx.bumped', {
+      id: entry.label,
       nonce: entry.nonce,
       oldHash,
       newHash: replaced.data.txHash,
@@ -296,12 +316,14 @@ export function createPendingQueue({
           })
           if (receipt.status === 'success') {
             logger.info('tx.confirmed', {
+              id: entry.label,
               nonce: entry.nonce,
               txHash: entry.txHash,
               blockNumber: receipt.blockNumber
             })
           } else {
             logger.warn('tx.reverted', {
+              id: entry.label,
               nonce: entry.nonce,
               txHash: entry.txHash,
               blockNumber: receipt.blockNumber
@@ -314,8 +336,19 @@ export function createPendingQueue({
           await replaceStuck(entry, blockNumber, baseFee)
         }
       } catch (error) {
-        if (isSignerError(error)) throw error
+        if (isSignerError(error)) {
+          // The replacement path's signer rejection; `entry.nonce` is the one the signer rejected.
+          logger.error('tx.signer_failed', {
+            id: entry.label,
+            nonce: entry.nonce,
+            txHash: entry.txHash,
+            code: error.code,
+            reason: revertReason(error)
+          })
+          throw error
+        }
         logger.warn('tx.onblock_error', {
+          id: entry.label,
           nonce: entry.nonce,
           txHash: entry.txHash,
           reason: revertReason(error)
@@ -348,7 +381,12 @@ export function createPendingQueue({
     drop(nonce, reason) {
       const entry = pending.get(nonce)
       if (!entry) return false
-      logger.warn('tx.dropped', { nonce: entry.nonce, txHash: entry.txHash, reason })
+      logger.warn('tx.dropped', {
+        id: entry.label,
+        nonce: entry.nonce,
+        txHash: entry.txHash,
+        reason
+      })
       settle(entry, { status: 'dropped', reason })
       return true
     }

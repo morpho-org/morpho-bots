@@ -8,6 +8,7 @@ import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
 
 import { createSender } from '../src/sender'
+import { signerErrorNonce } from '../src/signer-error'
 
 // Throwaway well-known test key (anvil account #0) — never used to hold funds.
 const KEY: Hex = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
@@ -141,6 +142,9 @@ describe('createSender', () => {
         maxPriorityFeePerGas: 1_000_000n
       })
     ).rejects.toBe(rejection)
+    // The prepared nonce (chain pending nonce 0x5) is annotated onto the rejection so the queue's
+    // tx.signer_failed log can join the signer's own nonce-keyed rejection line.
+    expect(signerErrorNonce(rejection)).toBe(5)
   })
 
   it('getReceipt maps a found receipt to its status + block number', async () => {

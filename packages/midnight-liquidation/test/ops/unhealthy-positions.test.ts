@@ -127,17 +127,31 @@ describe('findUnhealthyPositions', () => {
     expect(emitted[0]).toMatchObject({ seizedAssets: '0', repaidUnits: '0' })
   })
 
-  it('does not emit a non-liquidatable (healthy, pre-maturity) position', async () => {
-    const { counters, emitted } = await runWith({ out: lensOut({ healthy: true }) })
+  it('does not emit a non-liquidatable position, and logs a DEBUG source.skip', async () => {
+    const { counters, emitted, events } = await runWith({ out: lensOut({ healthy: true }) })
     expect(counters).toEqual({ pairs: 1, liquidatable: 0, emitted: 0 })
     expect(emitted).toHaveLength(0)
+    expect(events).toContainEqual({
+      level: 'debug',
+      event: 'source.skip',
+      fields: { id: ID, status: 'not_liquidatable', block: 100n }
+    })
   })
 
-  it('skips a pair the lens did not return', async () => {
-    const { counters, emitted } = await runWith({ out: null })
+  it('skips a pair the lens did not return, and logs a DEBUG source.skip', async () => {
+    const { counters, emitted, events } = await runWith({ out: null })
     expect(counters).toEqual({ pairs: 1, liquidatable: 0, emitted: 0 })
     expect(emitted).toHaveLength(0)
+    expect(events).toContainEqual({
+      level: 'debug',
+      event: 'source.skip',
+      fields: { id: ID, status: 'not_liquidatable', block: 100n }
+    })
   })
+
+  // The INFO-level `degenerate_plan` branch is structurally identical to blue's and is exercised by
+  // blue-liquidation's collateral-less test; midnight's `plan` only returns null via a fragile
+  // cap-rounds-to-zero fixture, so it is not reproduced here.
 
   it('tolerates a discovery failure: logs discover.error and emits nothing', async () => {
     const { counters, emitted, events } = await runWith({ discoverError: new Error('boom') })

@@ -4,7 +4,7 @@ import type { QuoteOutcome, Swap, Venue, VenueSelectorState } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
 import { assertContractDeployed, createDeploylessClient } from '@repo/evm-kit'
-import { simulateLiquidationExec } from '@repo/pipeline'
+import { rawRecordId, simulateLiquidationExec } from '@repo/pipeline'
 import { createRateLimitedClient, createVenueSelector, priceByVenue } from '@repo/swaps'
 import { erc20Abi, getAddress, isAddress, isHex } from 'viem'
 import { getBlockNumber, readContract } from 'viem/actions'
@@ -89,7 +89,7 @@ export async function prepareLiquidations(deps: {
   head: bigint
   seizeCapMarginBps: number
   readLensForPositions: (evaluands: readonly Evaluand[]) => Promise<Map<string, LensOut>>
-  quoteFor: (plan: LiquidationPlan, out: LensOut) => Promise<QuoteOutcome>
+  quoteFor: (plan: LiquidationPlan, out: LensOut, id: string) => Promise<QuoteOutcome>
   simulate: (args: {
     market: Market
     borrower: Address
@@ -129,7 +129,8 @@ export async function prepareLiquidations(deps: {
   for (const record of records) {
     const parsed = parsePosition(record, chainId)
     if (!parsed) {
-      logger.warn('transform.skip', { status: 'invalid_record', record })
+      const id = rawRecordId(record)
+      logger.warn('transform.skip', { status: 'invalid_record', ...(id ? { id } : {}), record })
       counters.invalid += 1
       continue
     }
@@ -167,7 +168,7 @@ export async function prepareLiquidations(deps: {
     let swap: Swap | null = null
     const badDebt = isBadDebtRealization(liquidationPlan)
     if (!badDebt) {
-      const outcome = await quoteFor(liquidationPlan, out)
+      const outcome = await quoteFor(liquidationPlan, out, item.id)
       if (outcome.kind === 'no_config') {
         logger.warn('transform.skip', { id: item.id, status: 'no_swap_path', block: head })
         counters.noSwapPath += 1
@@ -327,6 +328,10 @@ export async function runLiquidate(
       recipient: eoa
     })
 
+  // Unlike blue, midnight has no redundant on-chain params resolution to drop: the lens fetches the
+  // full Market via MIDNIGHT.toMarket(id) inside the same eth_call (the id commits to the Market
+  // struct), and the wire record carries only loan/collateral tokens — not the full Market — so
+  // nothing wire-carried could replace that read. Only the id + borrower + caller are needed here.
   const readLensForPositions = async (
     evaluands: readonly Evaluand[]
   ): Promise<Map<string, LensOut>> => {

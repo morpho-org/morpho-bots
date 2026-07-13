@@ -113,22 +113,37 @@ describe('findUnhealthyPositions', () => {
     expect(typeof record.repayAssets).toBe('string')
   })
 
-  it('does not emit a healthy (non-liquidatable) position', async () => {
-    const { counters, emitted } = await runWith({ out: lensOut({ healthy: true }) })
+  it('does not emit a healthy (non-liquidatable) position, and logs a DEBUG source.skip', async () => {
+    const { counters, emitted, events } = await runWith({ out: lensOut({ healthy: true }) })
     expect(counters).toEqual({ pairs: 1, liquidatable: 0, emitted: 0 })
     expect(emitted).toHaveLength(0)
+    expect(events).toContainEqual({
+      level: 'debug',
+      event: 'source.skip',
+      fields: { id: ID, status: 'not_liquidatable', block: 100n }
+    })
   })
 
-  it('does not emit a degenerate collateral-less position (no plan)', async () => {
-    const { counters, emitted } = await runWith({ out: lensOut({ collateral: 0n }) })
+  it('does not emit a degenerate collateral-less position, and logs an INFO source.skip', async () => {
+    const { counters, emitted, events } = await runWith({ out: lensOut({ collateral: 0n }) })
     expect(counters).toEqual({ pairs: 1, liquidatable: 1, emitted: 0 })
     expect(emitted).toHaveLength(0)
+    expect(events).toContainEqual({
+      level: 'info',
+      event: 'source.skip',
+      fields: { id: ID, status: 'not_liquidatable', reason: 'degenerate_plan', block: 100n }
+    })
   })
 
-  it('skips a pair the lens did not return', async () => {
-    const { counters, emitted } = await runWith({ out: null })
+  it('skips a pair the lens did not return, and logs a DEBUG source.skip', async () => {
+    const { counters, emitted, events } = await runWith({ out: null })
     expect(counters).toEqual({ pairs: 1, liquidatable: 0, emitted: 0 })
     expect(emitted).toHaveLength(0)
+    expect(events).toContainEqual({
+      level: 'debug',
+      event: 'source.skip',
+      fields: { id: ID, status: 'not_liquidatable', block: 100n }
+    })
   })
 
   it('warns rindexer.lag when the indexer trails the head, and still emits', async () => {

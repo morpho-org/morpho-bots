@@ -15,6 +15,17 @@ export const EXECUTOR = getAddress(`0x${'22'.repeat(20)}`)
 const noop = () => undefined
 export const log = { info: noop, warn: noop, error: noop }
 
+type LogLevel = 'info' | 'warn' | 'error'
+
+/** A capturing SignerLog that records every emitted line so tests can assert on events + fields. */
+export function captureLog() {
+  const events: { level: LogLevel; event: string; fields?: Record<string, unknown> }[] = []
+  const make = (level: LogLevel) => (event: string, fields?: Record<string, unknown>) => {
+    events.push({ level, event, fields })
+  }
+  return { events, info: make('info'), warn: make('warn'), error: make('error') }
+}
+
 export function testPolicy(): Policy {
   return parsePolicy({
     chainId: 8453,

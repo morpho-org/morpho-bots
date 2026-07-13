@@ -19,9 +19,11 @@ import { marketId } from './market'
 // decodes the structs natively; no hand-written ABI fragment or manual abi.encode/decode is needed.
 //
 // Blue debt accrues continuously, so the lens simulates interest accrual before the health check.
-// MarketParams are recovered on-chain via idToMarketParams(id) (see ./market-params.ts); the lens
-// re-derives the id from the supplied params on-chain, so mismatched params read an uncreated market
-// and return valid=false.
+// The caller supplies the `(marketParams, borrower)` pairs: the `unhealthy-positions` source resolves
+// params on-chain via idToMarketParams(id) (see ./market-params.ts), while the `liquidate` transform
+// passes the hash-verified params carried on the position record. Either way the lens re-derives the
+// id from the supplied params on-chain, so mismatched params read an uncreated market and return
+// valid=false.
 //
 // Compiled to a deployless factory by the soltag bun preload (see ../../soltag.preload.ts); `sol```
 // throws if not active.

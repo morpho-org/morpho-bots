@@ -17,6 +17,22 @@ import { composeQuoting } from '../src/quotes'
 
 const NOOP_LOGGER: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
 
+function spyLogger() {
+  const events: { level: string; event: string; fields?: Record<string, unknown> }[] = []
+  const make = (level: string) => (event: string, fields?: Record<string, unknown>) =>
+    events.push({ level, event, fields })
+  const logger: Logger = {
+    debug: make('debug'),
+    info: make('info'),
+    warn: make('warn'),
+    error: make('error')
+  }
+  return { logger, events }
+}
+
+// The position's correlation id, threaded into quoteFor so collateral-level skip reasons join back.
+const ID = 'midnight:liquidate:8453:0xmarket:0xborrower'
+
 const LOAN = getAddress('0x6666666666666666666666666666666666666666')
 const COLLATERAL = getAddress('0x7777777777777777777777777777777777777777')
 const ORACLE = getAddress('0x8888888888888888888888888888888888888888')
@@ -95,7 +111,11 @@ function fakeSelector(order: VenueQuoteEstimate[], onRefresh?: () => Promise<voi
 
 function compose(
   selector: VenueSelector,
-  overrides: { venues?: ('0x' | '1inch')[]; excludeCollaterals?: `0x${string}`[] } = {}
+  overrides: {
+    venues?: ('0x' | '1inch')[]
+    excludeCollaterals?: `0x${string}`[]
+    logger?: Logger
+  } = {}
 ) {
   return composeQuoting({
     httpClient: httpStub,
@@ -107,7 +127,7 @@ function compose(
     baseUrls: {},
     maxRouteImpactBps: 500,
     excludeCollaterals: overrides.excludeCollaterals ?? [],
-    logger: NOOP_LOGGER
+    logger: overrides.logger ?? NOOP_LOGGER
   })
 }
 
@@ -115,21 +135,27 @@ describe('composeQuoting (Midnight lens-projection adapter)', () => {
   it('returns no_config when the plan indexes a missing collateral slot', async () => {
     const { selector, refreshed } = fakeSelector([{ venue: '0x', expectedOut: 1000n }])
     const { quoteFor } = compose(selector)
-    expect(await quoteFor({ ...PLAN, collateralIndex: 5 }, OUT)).toEqual({ kind: 'no_config' })
+    expect(await quoteFor({ ...PLAN, collateralIndex: 5 }, OUT, ID)).toEqual({ kind: 'no_config' })
     expect(refreshed).toHaveLength(0) // never probed for a slot it can't route
   })
 
-  it('returns no_config (and never probes) for an excluded collateral', async () => {
+  it('returns no_config for an excluded collateral and logs the skip with the position id', async () => {
     const { selector, refreshed } = fakeSelector([{ venue: '0x', expectedOut: 1000n }])
-    const { quoteFor } = compose(selector, { excludeCollaterals: [COLLATERAL] })
-    expect(await quoteFor(PLAN, OUT)).toEqual({ kind: 'no_config' })
+    const { logger, events } = spyLogger()
+    const { quoteFor } = compose(selector, { excludeCollaterals: [COLLATERAL], logger })
+    expect(await quoteFor(PLAN, OUT, ID)).toEqual({ kind: 'no_config' })
     expect(refreshed).toHaveLength(0)
+    expect(events).toContainEqual({
+      level: 'info',
+      event: 'quote.excluded_collateral',
+      fields: { id: ID, collateral: COLLATERAL }
+    })
   })
 
   it('refreshes the pair probe, then projects into an executable swap from the ranked venue', async () => {
     const { selector, refreshed } = fakeSelector([{ venue: '0x', expectedOut: 1000n }])
     const { quoteFor } = compose(selector)
-    const outcome = await quoteFor(PLAN, OUT)
+    const outcome = await quoteFor(PLAN, OUT, ID)
 
     expect(refreshed).toEqual([{ collateral: COLLATERAL, loan: LOAN }])
     expect(outcome.kind).toBe('swap')
@@ -139,19 +165,25 @@ describe('composeQuoting (Midnight lens-projection adapter)', () => {
     }
   })
 
-  it('still quotes (cold-default) when the probe refresh throws', async () => {
+  it('still quotes (cold-default) when the probe refresh throws, and logs probe.error with the id', async () => {
     // Cold cache (select → []) + a refresh that rejects → the firm-quote step falls back to the
     // deterministic enabled-venue order rather than failing the position.
     const { selector } = fakeSelector([], async () => {
       throw new Error('probe boom')
     })
-    const { quoteFor } = compose(selector)
-    expect((await quoteFor(PLAN, OUT)).kind).toBe('swap')
+    const { logger, events } = spyLogger()
+    const { quoteFor } = compose(selector, { logger })
+    expect((await quoteFor(PLAN, OUT, ID)).kind).toBe('swap')
+    expect(events).toContainEqual({
+      level: 'warn',
+      event: 'probe.error',
+      fields: { id: ID, collateral: COLLATERAL, loan: LOAN, detail: 'probe boom' }
+    })
   })
 
   it('returns no_config when no venues are enabled (bad-debt-only posture)', async () => {
     const { selector } = fakeSelector([])
     const { quoteFor } = compose(selector, { venues: [] })
-    expect(await quoteFor(PLAN, OUT)).toEqual({ kind: 'no_config' })
+    expect(await quoteFor(PLAN, OUT, ID)).toEqual({ kind: 'no_config' })
   })
 })

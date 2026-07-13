@@ -5,7 +5,7 @@ import { assertSunPathLength, botsHome, ConfigError, queuedSocketFile } from '@r
 import { ensureError } from '@repo/utils'
 
 import { connectQueued } from './client'
-import { MAX_TRANSACTION_LINE_BYTES, parseTransactionLine } from './protocol'
+import { MAX_TRANSACTION_LINE_BYTES, parseTransactionLine, TransactionError } from './protocol'
 
 type Env = Record<string, string | undefined>
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
@@ -73,12 +73,12 @@ export async function runSubmit(opts: { chain?: string | undefined }): Promise<n
     )
     return 2
   }
-  const logger = createLogger(resolveLogLevel(env))
+  const logger = createLogger(resolveLogLevel(env), { chainId })
   let client
   try {
     client = await connectQueued(socketPath)
   } catch (error) {
-    logger.error('submit.connect_failed', { chainId, detail: ensureError(error).message })
+    logger.error('submit.connect_failed', { detail: ensureError(error).message })
     return 1
   }
   try {
@@ -95,8 +95,10 @@ export async function runSubmit(opts: { chain?: string | undefined }): Promise<n
       try {
         transaction = parseTransactionLine(line, chainId)
       } catch (error) {
+        const id = error instanceof TransactionError ? error.id : undefined
         logger.warn('submit.skip', {
           reason: 'invalid_transaction',
+          ...(id ? { id } : {}),
           detail: ensureError(error).message
         })
         invalidInput = true
