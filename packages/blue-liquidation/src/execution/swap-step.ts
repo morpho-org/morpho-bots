@@ -1,5 +1,5 @@
+import type { LensOut } from '../lens.sol'
 import type { LiquidationPlan } from '../sizing/plan'
-import type { LensOut } from '../state/lens.sol'
 
 import { ORACLE_PRICE_SCALE } from '../constants'
 import { mulDivDown } from '../sizing/math'

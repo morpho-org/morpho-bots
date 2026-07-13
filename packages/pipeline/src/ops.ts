@@ -11,12 +11,11 @@ import type { PositionRecord, TransactionRecord } from './records'
  * env table), so a core and the CLI cannot drift on what an op looks like. Defined ONCE here for
  * exactly that reason.
  *
- * Each op is EITHER a source ({@link SenseOpExport} — emits position records) or a transform
- * ({@link ActOpExport} — maps semantic positions to transactions),
- * never both: the two stages are separate pipe processes. The CLI drops the `sense`/`act` verbs at
- * its surface (commands ARE op names), but this seam keeps the internal vocabulary — the `kind`
- * discriminant and the `senseOnce`/`actOnce` entry points — because it is the stable contract the
- * cores' own unit tests (`runSense`/`runAct`) and the CLI's run functions both build against.
+ * Each op is EITHER a source ({@link SourceOperation} — emits position records) or a transform
+ * ({@link TransformOperation} — maps semantic positions to transactions), never both: the two
+ * stages are separate pipe processes. The `kind` discriminant narrows `run` to the stage's
+ * signature; a core wires each op's `run` to its own op-named entry point
+ * (e.g. `runUnhealthyPositions`, `runLiquidate`).
  */
 
 /** The generic, file-merged env table every op is handed (the CLI never lets a core read `Bun.env`). */
@@ -30,11 +29,11 @@ type ValidateConfig = (env: Env) => { logLevel: LogLevel }
  * `cacheVersion` gates its disposable cache (a mismatch rebuilds, never migrates); `runStartupChecks`
  * is set only on a cold cache so liveness probes don't run every tick.
  */
-export type SenseOpExport = {
-  kind: 'sense'
+export type SourceOperation = {
+  kind: 'source'
   cacheVersion: number
   validateConfig: ValidateConfig
-  senseOnce: (
+  run: (
     env: Env,
     opts: {
       cache: unknown
@@ -49,11 +48,11 @@ export type SenseOpExport = {
  * A transform validates semantic input records and emits freshly simulated transactions. It has no
  * signer key; broadcasting is the queue's job.
  */
-export type ActOpExport = {
-  kind: 'act'
+export type TransformOperation = {
+  kind: 'transform'
   cacheVersion: number
   validateConfig: ValidateConfig
-  actOnce: (
+  run: (
     env: Env,
     records: readonly unknown[],
     opts: {
@@ -66,4 +65,4 @@ export type ActOpExport = {
 }
 
 /** Any op a core exposes in its `OPS` table — a source XOR a transform, discriminated on `kind`. */
-export type OpExport = SenseOpExport | ActOpExport
+export type Operation = SourceOperation | TransformOperation

@@ -4,14 +4,14 @@ import type { Address } from 'viem'
 
 import { composeQuoting as composeSwapQuoting } from '@repo/swaps'
 
+import type { LensOut } from './lens.sol'
 import type { LiquidationPlan } from './sizing/plan'
-import type { LensOut } from './state/lens.sol'
 
 import { expectedLoanOut } from './execution/swap-step'
 
 /**
  * The thin Blue-shaped adapter over `@repo/swaps`' `composeQuoting`: keeps the `(plan, out)`
- * signature the tick consumes and projects the lens output into the package's plain
+ * signature the op consumes and projects the lens output into the package's plain
  * {@link QuoteRequest} — Blue markets have a single collateral, `out.params.collateralToken`.
  */
 export function composeQuoting(deps: {

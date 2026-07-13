@@ -104,7 +104,7 @@ export type QuoteLogger = {
  * the operator's per-collateral venue, fetches ONE executable quote (Uniswap is local; aggregators
  * make a single API call), and sanity-checks an aggregator's quoted output against the free oracle
  * reference — rejecting a route worse than `maxRouteImpactBps` below it. Quote/route failures return
- * `failed` (the tick backs the position off); an unconfigured collateral returns `no_config` (no API
+ * `failed` (the caller backs the position off); an unconfigured collateral returns `no_config` (no API
  * call, no backoff). Quotes are made ONLY for liquidatable positions, so API usage is bounded by the
  * (small) liquidatable set, never the full candidate universe.
  */
@@ -259,7 +259,7 @@ export function composeMultiVenueQuoting(deps: {
       let lastReason: QuoteFailureReason = 'no_route'
       for (const venue of order) {
         // The `entryFor` call is inside the awaited thunk so a synchronous throw (an unreachable
-        // uniswap arm) becomes a caught rejection, never an escape that aborts the tick.
+        // uniswap arm) becomes a caught rejection, never an escape that aborts the op run.
         const { data: swap, error } = await tryCatch(
           (async () => quoteByVenue(httpClient, entryFor(venue), params))()
         )

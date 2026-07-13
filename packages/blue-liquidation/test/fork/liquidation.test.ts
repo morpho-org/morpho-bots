@@ -10,12 +10,12 @@ import { base } from 'viem/chains'
 
 import type { ForkFixture, ForkHandle, TestClient } from './harness'
 
+import { isLiquidatable, planInputFromLens } from '../../src/eligibility'
 import { encodeLiquidationExec } from '../../src/execution/encode-call'
 import { expectedLoanOut } from '../../src/execution/swap-step'
+import { lensKey, readBlueLiquidationLens } from '../../src/lens.sol'
 import { marketId } from '../../src/market'
 import { plan } from '../../src/sizing/plan'
-import { lensKey, readBlueLiquidationLens } from '../../src/state/lens.sol'
-import { isLiquidatable, planInputFromLens } from '../../src/tick/eligibility'
 import {
   deployExecutor,
   FORK_URL,

@@ -5,7 +5,7 @@ import { encodeAbiParameters, keccak256 } from 'viem'
 /**
  * A Morpho Blue market's immutable definition. Field ORDER is load-bearing: the market id is
  * `keccak256(abi.encode(marketParams))`, so any reorder changes the id. Recovered on-chain from the
- * singleton's `idToMarketParams(id)` (see state/market-params.ts) for each discovered id; the lens
+ * singleton's `idToMarketParams(id)` (see market-params.ts) for each discovered id; the lens
  * still re-derives `keccak256(abi.encode(params))` as an id-commitment check before reading state.
  */
 export type MarketParams = {

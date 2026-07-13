@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 
+import type { LensOut } from '../../src/lens.sol'
 import type { MarketParams } from '../../src/market'
-import type { LensOut } from '../../src/state/lens.sol'
 
 import { ORACLE_PRICE_SCALE, WAD } from '../../src/constants'
 import { expectedLoanOut } from '../../src/execution/swap-step'

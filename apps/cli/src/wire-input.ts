@@ -39,13 +39,13 @@ export async function consumeRecordBatches(
       if (batch.length === batchSize) await flush()
     } catch {
       summary.invalidLines += 1
-      logger.warn('act.skip', { reason: 'malformed_line' })
+      logger.warn('transform.skip', { reason: 'malformed_line' })
     }
   }
 
   const rejectOversizedLine = () => {
     summary.invalidLines += 1
-    logger.warn('act.skip', { reason: 'line_too_long', maxLineBytes })
+    logger.warn('transform.skip', { reason: 'line_too_long', maxLineBytes })
   }
 
   const append = (bytes: Uint8Array) => {

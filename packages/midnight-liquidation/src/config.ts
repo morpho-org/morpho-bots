@@ -62,7 +62,7 @@ export type Env = Record<string, string | undefined>
 /**
  * Off-chain quoting tunables (the multi-venue swap layer), plus the seize-sizing
  * safety margin (`seizeCapMarginBps`). The margin is a *sizing* knob, not an HTTP/route one, but it
- * lives here because the tick already threads `config.quoting.*` into both quoting and planning.
+ * lives here because the op already threads `config.quoting.*` into both quoting and planning.
  */
 export type QuotingConfig = {
   quoteTimeoutMs: number
@@ -135,25 +135,25 @@ type CommonConfig = {
 }
 
 /**
- * Config for the read-only `sense` stage: discovery + the market whitelist + the lens read. Loadable
- * WITHOUT the signer private key and WITHOUT venue API keys — `sense` is secret-free. It still needs
+ * Config for the read-only `unhealthy-positions` source op: discovery + the market whitelist + the lens read. Loadable
+ * WITHOUT the signer private key and WITHOUT venue API keys — the source op is secret-free. It still needs
  * `executooorAddress` because the Midnight lens checks the Executor's liquidator gate.
  */
-export type SenseConfig = CommonConfig & {
+export type UnhealthyPositionsConfig = CommonConfig & {
   executooorAddress: Address
   discovery: DiscoveryConfig
   markets: MarketsConfig
 }
 
 /**
- * Config for the `act` stage: re-derive → quote (multi-venue) → simulate. Needs venue API keys (read
- * at the point of use in `actOnce`, never stored) but NOT the signer private key — `act` never signs.
+ * Config for the `liquidate` transform: re-derive → quote (multi-venue) → simulate. Needs venue API keys (read
+ * at the point of use in `runLiquidate`, never stored) but NOT the signer private key — the transform never signs.
  */
-export type ActConfig = CommonConfig & {
+export type LiquidateConfig = CommonConfig & {
   executooorAddress: Address
   /**
    * The operator EOA (`LIQUIDATOR_ADDRESS`) — the skim `recipient` in the exec calldata and the
-   * simulate `from`. An address, not a key: `act` builds and simulates the exact bytes the queue
+   * simulate `from`. An address, not a key: `liquidate` builds and simulates the exact bytes the queue
    * (the sole key holder) later signs, so this must be the queue's signer address. Skimming to any
    * other address — the ownerless Executor especially — strands seized funds where anyone can take
    * them.
@@ -302,7 +302,7 @@ function resolveExecutor(env: Env): Address {
   return override ? getAddress(override) : getAddress(Executor.with().address)
 }
 
-// The operator EOA `act` targets: required (no derivable default — act has no key to derive from),
+// The operator EOA `liquidate` targets: required (no derivable default — the transform has no key),
 // checksum-normalized, fail-loud on a malformed value.
 function resolveLiquidatorAddress(env: Env): Address {
   const raw = required(env, 'LIQUIDATOR_ADDRESS').trim()
@@ -342,7 +342,7 @@ function resolveMarkets(env: Env): MarketsConfig {
 // bad debt (which needs no swap), never actually swap-liquidate — so that degraded posture must be
 // opted into explicitly (`ALLOW_BAD_DEBT_ONLY=true`); otherwise fail loud rather than silently run
 // half-armed (a rotated/forgotten key must not quietly disable liquidations). This gate lives with
-// the `act` stage — the only stage that quotes/swaps — but is also enforced by the full `loadConfig`.
+// the `liquidate` transform — the only stage that quotes/swaps — but is also enforced by the full `loadConfig`.
 function resolveVenues(env: Env): VenueConfig {
   const allowBadDebtOnly = boolEnv(env, 'ALLOW_BAD_DEBT_ONLY', false)
   const enabledVenues: Venue[] = []
@@ -396,11 +396,14 @@ function resolveQuoting(env: Env): QuotingConfig {
 }
 
 /**
- * Reads the env table into the read-only {@link SenseConfig} — chain, RPC, discovery, market
+ * Reads the env table into the read-only {@link UnhealthyPositionsConfig} — chain, RPC, discovery, market
  * whitelist, plus the Executor (the lens's gate `msg.sender`). Deliberately does NOT require
- * `LIQUIDATOR_PRIVATE_KEY` or any venue API key: `sense` is secret-free.
+ * `LIQUIDATOR_PRIVATE_KEY` or any venue API key: the source op is secret-free.
  */
-export function loadSenseConfig(env: Env = Bun.env, deps: LoadDeps = {}): SenseConfig {
+export function loadUnhealthyPositionsConfig(
+  env: Env = Bun.env,
+  deps: LoadDeps = {}
+): UnhealthyPositionsConfig {
   const common = resolveCommon(env, deps.chainMap ?? CHAIN_MAP)
   return {
     ...common,
@@ -411,12 +414,12 @@ export function loadSenseConfig(env: Env = Bun.env, deps: LoadDeps = {}): SenseC
 }
 
 /**
- * Reads the env table into the {@link ActConfig} — chain, RPC, Executor, the operator EOA
+ * Reads the env table into the {@link LiquidateConfig} — chain, RPC, Executor, the operator EOA
  * (`LIQUIDATOR_ADDRESS`, required — the skim recipient and simulate `from`), venues, probe, quoting.
  * Needs venue API keys (enforced unless `ALLOW_BAD_DEBT_ONLY=true`; read at the point of use in
- * `actOnce`) but NOT the signer private key.
+ * `runLiquidate`) but NOT the signer private key.
  */
-export function loadActConfig(env: Env = Bun.env, deps: LoadDeps = {}): ActConfig {
+export function loadLiquidateConfig(env: Env = Bun.env, deps: LoadDeps = {}): LiquidateConfig {
   const common = resolveCommon(env, deps.chainMap ?? CHAIN_MAP)
   return {
     ...common,

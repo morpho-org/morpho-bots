@@ -22,7 +22,7 @@ services:
       RPC_URL: ${RPC_URL:?set RPC_URL}
       SIGNER_PRIVATE_KEY: ${SIGNER_PRIVATE_KEY:-}
       SIGNER_POLICY_JSON: ${SIGNER_POLICY_JSON:-}
-      # `act` skims to this EOA and simulates `from` it (secret-free — no key on the op stages); it
+      # The `liquidate` transform skims to this EOA and simulates `from` it (secret-free — no key on the op stages); it
       # must be the address the private key above derives, else act and the daemon target different
       # wallets (the daemon cross-checks this against SIGNER_SOCKET when in agent mode).
       LIQUIDATOR_ADDRESS: ${LIQUIDATOR_ADDRESS:?set LIQUIDATOR_ADDRESS}

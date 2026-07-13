@@ -8,11 +8,11 @@ import { createWalletClient, erc20Abi, http } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
 
+import { isLiquidatable, planInputFromLens } from '../../src/eligibility'
 import { encodeLiquidationExec } from '../../src/execution/encode-call'
 import { expectedLoanOut } from '../../src/execution/swap-step'
+import { lensKey, readMidnightLiquidationLens } from '../../src/lens.sol'
 import { plan } from '../../src/sizing/plan'
-import { lensKey, readMidnightLiquidationLens } from '../../src/state/lens.sol'
-import { isLiquidatable, planInputFromLens } from '../../src/tick/eligibility'
 import {
   WETH,
   deployExecutor,
