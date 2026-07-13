@@ -9,9 +9,9 @@ type Env = Record<string, string | undefined>
 
 const DEFAULT_MAX_FEE_GWEI = '300'
 
-// The optional operator EOA, checksum-normalized when set. Unlike act's required skim recipient, this
-// returns `undefined` when unset — the single validation site for `LIQUIDATOR_ADDRESS` on the signing
-// paths (the key cross-check and the agent-handshake check).
+// The required operator EOA, checksum-normalized. Like the `liquidate` transform's required skim
+// recipient, it is validated independently from the signing backend so both paths agree on the
+// account that will execute the transaction.
 export function resolveLiquidatorAddress(env: Env): Address {
   const raw = env.LIQUIDATOR_ADDRESS?.trim()
   if (!raw) throw new Error('Missing required env var: LIQUIDATOR_ADDRESS')

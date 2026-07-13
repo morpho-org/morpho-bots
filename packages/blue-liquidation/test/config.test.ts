@@ -13,9 +13,9 @@ const MORPHO = getAddress('0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb')
 const KEY = `0x${'1'.repeat(64)}`
 const DERIVED = privateKeyToAccount(KEY as Hex).address
 
-// The per-stage loaders replaced the monolithic `loadConfig`: `sense` reads chain + discovery
-// (secret-free), `act` reads Executor + swap routing + the operator EOA, `queue` reads the signer
-// key + fee ceiling. One env table feeds all three, so a single baseEnv exercises each loader.
+// The per-operation loaders replaced the monolithic `loadConfig`: `unhealthy-positions` reads chain
+// + discovery (secret-free), `liquidate` reads Executor + swap routing + the operator EOA, and the
+// queue reads the signer key + fee ceiling. One env table feeds all three.
 function baseEnv(overrides: Record<string, string | undefined> = {}): Record<string, string> {
   const env: Record<string, string> = {
     CHAIN_ID: String(base.id),
@@ -69,7 +69,7 @@ describe('loadUnhealthyPositionsConfig', () => {
     )
   })
 
-  it('is loadable WITHOUT the signer private key (sense is secret-free)', () => {
+  it('is loadable WITHOUT the signer private key (the source is secret-free)', () => {
     const config = loadUnhealthyPositionsConfig(baseEnv({ LIQUIDATOR_PRIVATE_KEY: undefined }))
     expect(config.chainId).toBe(base.id)
   })
@@ -136,7 +136,7 @@ describe('loadLiquidateConfig', () => {
     ).toThrow(/ONEINCH_API_KEY/)
   })
 
-  it('requires LIQUIDATOR_ADDRESS (act has no key to derive it from) and rejects a malformed one', () => {
+  it('requires LIQUIDATOR_ADDRESS (the transform has no key) and rejects a malformed one', () => {
     expect(() => loadLiquidateConfig(baseEnv({ LIQUIDATOR_ADDRESS: undefined }))).toThrow(
       /LIQUIDATOR_ADDRESS/
     )

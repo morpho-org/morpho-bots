@@ -93,7 +93,7 @@ function runWith(opts: {
 }
 
 describe('findUnhealthyPositions', () => {
-  it('emits one fully-formed opportunity per liquidatable, plannable position', async () => {
+  it('emits one fully-formed record per liquidatable, plannable position', async () => {
     const { counters, emitted } = await runWith({})
     expect(counters).toEqual({ pairs: 1, liquidatable: 1, emitted: 1 })
     expect(emitted).toHaveLength(1)
@@ -119,7 +119,7 @@ describe('findUnhealthyPositions', () => {
     expect(emitted).toHaveLength(0)
   })
 
-  it('senses but does not emit a degenerate collateral-less position (no plan)', async () => {
+  it('does not emit a degenerate collateral-less position (no plan)', async () => {
     const { counters, emitted } = await runWith({ out: lensOut({ collateral: 0n }) })
     expect(counters).toEqual({ pairs: 1, liquidatable: 1, emitted: 0 })
     expect(emitted).toHaveLength(0)

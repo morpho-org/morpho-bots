@@ -22,10 +22,10 @@ const CHAIN_MAP: Record<number, ChainConfig> = {
 
 const deps = { chainMap: CHAIN_MAP }
 
-// The per-stage loaders replaced the monolithic `loadConfig`: `sense` reads chain + Executor +
-// discovery + market whitelist (secret-free), `act` reads venues + probe + quoting + the operator
-// EOA, `queue` reads the signer key + broadcast endpoint + fee ceiling. A single env table (with a
-// venue key present so `act` is armed, not bad-debt-only) feeds all three.
+// The per-operation loaders replaced the monolithic `loadConfig`: `unhealthy-positions` reads chain
+// + Executor + discovery + market whitelist (secret-free), while `liquidate` reads venues + probe +
+// quoting + the operator EOA. The queue reads the signer key + broadcast endpoint + fee ceiling. A
+// venue key is present so `liquidate` is armed rather than bad-debt-only.
 function baseEnv(overrides: Record<string, string | undefined> = {}) {
   return {
     CHAIN_ID: String(mainnet.id),
@@ -61,7 +61,7 @@ describe('loadUnhealthyPositionsConfig', () => {
     expect(config.midnight).toBe(getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A'))
   })
 
-  it('is loadable WITHOUT the signer private key (sense is secret-free)', () => {
+  it('is loadable WITHOUT the signer private key (the source is secret-free)', () => {
     const config = loadUnhealthyPositionsConfig(
       baseEnv({ LIQUIDATOR_PRIVATE_KEY: undefined }),
       deps
@@ -267,7 +267,7 @@ describe('loadLiquidateConfig', () => {
     )
   })
 
-  it('requires LIQUIDATOR_ADDRESS (act has no key to derive it from) and rejects a malformed one', () => {
+  it('requires LIQUIDATOR_ADDRESS (the transform has no key) and rejects a malformed one', () => {
     expect(() => loadLiquidateConfig(baseEnv({ LIQUIDATOR_ADDRESS: undefined }), deps)).toThrow(
       /LIQUIDATOR_ADDRESS/
     )

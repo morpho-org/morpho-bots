@@ -106,7 +106,7 @@ function runWith(opts: {
 }
 
 describe('findUnhealthyPositions', () => {
-  it('emits one fully-formed opportunity per liquidatable, plannable position', async () => {
+  it('emits one fully-formed record per liquidatable, plannable position', async () => {
     const { counters, emitted } = await runWith({})
     expect(counters).toEqual({ pairs: 1, liquidatable: 1, emitted: 1 })
     const record = emitted[0]!
@@ -119,7 +119,7 @@ describe('findUnhealthyPositions', () => {
     expect(typeof record.seizedAssets).toBe('string')
   })
 
-  it('emits a bad-debt-realization opportunity (a valid (0,0) plan)', async () => {
+  it('emits a bad-debt-realization record (a valid (0,0) plan)', async () => {
     const { counters, emitted } = await runWith({
       out: lensOut({ healthy: true, blockTimestamp: 3000n, debt: 1000n, badDebt: 1000n })
     })

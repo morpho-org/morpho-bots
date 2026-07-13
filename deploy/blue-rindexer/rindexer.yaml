@@ -6,7 +6,7 @@ description: >-
   the candidate universe and lets the on-chain lens filter to actually-liquidatable positions
   (over-inclusion is harmless; under-inclusion would miss liquidations). One rindexer process indexes
   all networks into ONE `blue_liquidation_morpho.borrow` table, discriminated by rindexer's standard
-  `network` column; each per-chain bot filters on it (see src/discovery/borrowers.ts). MarketParams
+  `network` column; each per-chain bot filters on it (see packages/blue-liquidation/src/borrowers.ts). MarketParams
   (loanToken, collateralToken, oracle, irm, lltv) are recovered ON-CHAIN via `idToMarketParams(id)` on
   the singleton — NOT indexed. `CreateMarket` is deliberately NOT indexed: no-code rindexer cannot
   decode the nested `MarketParams` struct it carries (it panics with "CustomStruct ... not supported"),
