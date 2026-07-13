@@ -1,4 +1,4 @@
-import type { LogLevel } from '@repo/bot-kit'
+import type { LogLevel } from '@repo/evm-kit'
 import type { Address, Chain } from 'viem'
 
 import { assertSunPathLength, ConfigError, queuedSocketFile } from '@repo/home'

@@ -1,7 +1,7 @@
+import type { WireTx } from '@repo/signer-client'
+
 import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
-
-import type { WireTx } from '../src/protocol'
 
 import { evaluatePolicy, EXECUTOR_SELECTOR, parsePolicy, PolicyConfigError } from '../src/policy'
 

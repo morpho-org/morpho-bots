@@ -1,10 +1,7 @@
 import type { Address } from 'viem'
 
-import {
-  assertContractDeployed,
-  createDeploylessClient,
-  simulateLiquidationExec
-} from '@repo/bot-kit'
+import { assertContractDeployed, createDeploylessClient } from '@repo/evm-kit'
+import { simulateLiquidationExec } from '@repo/pipeline'
 import { quoteUniswapV3 } from '@repo/swaps'
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
 import { createWalletClient, erc20Abi, http } from 'viem'

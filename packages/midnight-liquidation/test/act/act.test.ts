@@ -1,4 +1,5 @@
-import type { Logger, TransactionRecord } from '@repo/bot-kit'
+import type { Logger } from '@repo/evm-kit'
+import type { TransactionRecord } from '@repo/pipeline'
 import type { QuoteOutcome, Swap } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 

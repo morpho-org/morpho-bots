@@ -1,7 +1,8 @@
-import type { Logger, PositionRecord } from '@repo/bot-kit'
+import type { Logger } from '@repo/evm-kit'
+import type { PositionRecord } from '@repo/pipeline'
 import type { Address, Hex } from 'viem'
 
-import { assertContractDeployed, createDeploylessClient } from '@repo/bot-kit'
+import { assertContractDeployed, createDeploylessClient } from '@repo/evm-kit'
 import { ensureError, tryCatch } from '@repo/utils'
 import { getBlockNumber } from 'viem/actions'
 

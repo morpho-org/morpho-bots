@@ -1,11 +1,6 @@
 import type { LocalAccount } from 'viem'
 
-import { createUnixJsonServer } from '@repo/bot-kit'
-import { keccak256 } from 'viem'
-
-import type { Policy } from './policy'
-
-import { evaluatePolicy } from './policy'
+import { createUnixJsonServer } from '@repo/ipc'
 import {
   errorResponse,
   fromWireTx,
@@ -14,7 +9,12 @@ import {
   ProtocolError,
   serializeResponse,
   toWireTx
-} from './protocol'
+} from '@repo/signer-client'
+import { keccak256 } from 'viem'
+
+import type { Policy } from './policy'
+
+import { evaluatePolicy } from './policy'
 
 export const MAX_LINE_BYTES = 65_536
 

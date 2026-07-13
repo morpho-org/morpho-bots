@@ -28,8 +28,8 @@
  */
 import type { AbiEvent, Address, Hex, PublicClient, WalletClient } from 'viem'
 
-import { assertContractDeployed, createDeploylessClient, createLogger } from '@repo/bot-kit'
 import { MidnightAbi } from '@repo/contracts'
+import { assertContractDeployed, createDeploylessClient, createLogger } from '@repo/evm-kit'
 import { parseSwapConfig } from '@repo/swaps'
 import { delay as sleep, tryCatch } from '@repo/utils'
 import { readFileSync } from 'node:fs'

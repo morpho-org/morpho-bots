@@ -1,4 +1,4 @@
-import type { Logger } from '@repo/bot-kit'
+import type { Logger } from '@repo/evm-kit'
 
 const DEFAULT_BATCH_SIZE = 256
 const DEFAULT_MAX_LINE_BYTES = 1024 * 1024

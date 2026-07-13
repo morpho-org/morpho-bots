@@ -1,4 +1,4 @@
-import type { Logger } from '@repo/bot-kit'
+import type { Logger } from '@repo/evm-kit'
 import type { QuoteOutcome, RateLimitedClient, Venue, VenueSelector } from '@repo/swaps'
 import type { Address } from 'viem'
 

@@ -1,8 +1,7 @@
+import type { WireTx } from '@repo/signer-client'
 import type { Address } from 'viem'
 
 import { getAddress, isAddress, isAddressEqual } from 'viem'
-
-import type { WireTx } from './protocol'
 
 /** The only Executor entrypoint this signer authorizes: exec_606BaXt(bytes[]). */
 export const EXECUTOR_SELECTOR = '0x00000001'

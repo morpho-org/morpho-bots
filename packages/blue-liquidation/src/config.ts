@@ -1,4 +1,4 @@
-import type { LogLevel } from '@repo/bot-kit'
+import type { LogLevel } from '@repo/evm-kit'
 import type { SwapConfig } from '@repo/swaps'
 import type { Address, Chain } from 'viem'
 

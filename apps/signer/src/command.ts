@@ -1,7 +1,7 @@
-import type { LogLevel } from '@repo/bot-kit'
+import type { LogLevel } from '@repo/evm-kit'
 import type { Hex, LocalAccount } from 'viem'
 
-import { createLogger } from '@repo/bot-kit'
+import { createLogger } from '@repo/evm-kit'
 import {
   assertSunPathLength,
   botsHome,

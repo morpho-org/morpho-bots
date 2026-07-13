@@ -13,8 +13,8 @@
  */
 import type { Address, Hex } from 'viem'
 
-import { createDeploylessClient } from '@repo/bot-kit'
 import { MorphoAbi } from '@repo/contracts'
+import { createDeploylessClient } from '@repo/evm-kit'
 import { ensureError } from '@repo/utils'
 import { getAbiItem } from 'viem'
 import { getBlockNumber, getLogs, readContract } from 'viem/actions'

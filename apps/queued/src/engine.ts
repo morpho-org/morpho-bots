@@ -1,8 +1,8 @@
-import type { Logger } from '@repo/bot-kit'
-import type { RemoteSigner } from '@repo/signer/client'
+import type { Logger } from '@repo/evm-kit'
+import type { RemoteSigner } from '@repo/signer-client'
 import type { Address, Hex, PublicClient } from 'viem'
 
-import { createDeploylessClient, TxSendError } from '@repo/bot-kit'
+import { createDeploylessClient, TxSendError } from '@repo/evm-kit'
 import { loadState, saveState } from '@repo/home'
 import { ensureError, tryCatch } from '@repo/utils'
 import { appendFileSync, mkdirSync } from 'node:fs'

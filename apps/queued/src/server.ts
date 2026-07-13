@@ -1,6 +1,7 @@
-import type { Logger, UnixJsonServer } from '@repo/bot-kit'
+import type { Logger } from '@repo/evm-kit'
+import type { UnixJsonServer } from '@repo/ipc'
 
-import { createUnixJsonServer } from '@repo/bot-kit'
+import { createUnixJsonServer } from '@repo/ipc'
 import { ensureError } from '@repo/utils'
 
 import type { Engine } from './engine'

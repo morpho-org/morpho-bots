@@ -1,24 +1,22 @@
 {
-  "name": "@repo/queued",
+  "name": "@repo/evm-kit",
   "version": "0.0.0",
   "private": true,
   "license": "Apache-2.0",
-  "bin": {
-    "morpho-queued": "./src/main.ts"
-  },
   "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
   "scripts": {
-    "start": "bun src/main.ts",
-    "build": "bun scripts/build.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@repo/evm-kit": "workspace:*",
-    "@repo/home": "workspace:*",
-    "@repo/ipc": "workspace:*",
-    "@repo/signer-client": "workspace:*",
+    "@morpho-org/viem-dlc": "catalog:",
     "@repo/utils": "workspace:*",
-    "commander": "catalog:",
     "viem": "catalog:"
   },
   "devDependencies": {

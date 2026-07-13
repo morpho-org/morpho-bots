@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
-import type { Logger } from '@repo/bot-kit'
-import type { RemoteSigner } from '@repo/signer/client'
+import type { Logger } from '@repo/evm-kit'
+import type { RemoteSigner } from '@repo/signer-client'
 
-import { createLogger } from '@repo/bot-kit'
+import { createLogger } from '@repo/evm-kit'
 import { acquireLock, botsHome, ConfigError, queuedLockFile, releaseLock } from '@repo/home'
-import { createRemoteSigner } from '@repo/signer/client'
+import { createRemoteSigner } from '@repo/signer-client'
 import { ensureError } from '@repo/utils'
 import { Command, CommanderError } from 'commander'
 import { unlinkSync } from 'node:fs'

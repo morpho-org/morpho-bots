@@ -1,7 +1,7 @@
 import type { Hex, TransactionSerializableEIP1559, TransactionSerializedEIP1559 } from 'viem'
 
-import { TxSendError } from '@repo/bot-kit'
-import { SignerPolicyError } from '@repo/signer/client'
+import { TxSendError } from '@repo/evm-kit'
+import { SignerPolicyError } from '@repo/signer-client'
 import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test'
 import { parseTransaction } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'

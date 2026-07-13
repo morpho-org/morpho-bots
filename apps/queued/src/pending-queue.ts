@@ -1,7 +1,7 @@
-import type { Logger } from '@repo/bot-kit'
+import type { Logger } from '@repo/evm-kit'
 import type { Address, Hex } from 'viem'
 
-import { isExecutionRevert, revertReason as defaultRevertReason, TxSendError } from '@repo/bot-kit'
+import { isExecutionRevert, revertReason as defaultRevertReason, TxSendError } from '@repo/evm-kit'
 import { tryCatch } from '@repo/utils'
 
 import { bumpFees } from './fee-policy'

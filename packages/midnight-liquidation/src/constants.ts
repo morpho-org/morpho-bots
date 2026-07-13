@@ -3,7 +3,7 @@ import type { Hex } from 'viem'
 // Midnight protocol constants shared by the sizing, lens, and execution modules. They are pinned
 // here at scaffold time and verified against their on-chain derivations in test/constants.test.ts.
 // Values mirror docs/context/repos/midnight-contracts.txt. Operational tuning constants
-// (block-poll cadence, stuck-tx thresholds, fee-bump floor) live with the `@repo/bot-kit`
+// (block-poll cadence, stuck-tx thresholds, fee-bump floor) live with the `@repo/pipeline`
 // runner/queue modules that consume them; swap-venue constants live in `@repo/swaps`.
 
 /** 1e18 fixed-point one ("WAD") — the base scalar for Midnight's rate and share math. */

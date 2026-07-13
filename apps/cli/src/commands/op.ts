@@ -1,7 +1,7 @@
-import type { LogLevel } from '@repo/bot-kit'
+import type { LogLevel } from '@repo/evm-kit'
 import type { BotName } from '@repo/home'
 
-import { createLogger } from '@repo/bot-kit'
+import { createLogger } from '@repo/evm-kit'
 import { botsHome, opCacheFile, warnOnLooseSecrets } from '@repo/home'
 import { ensureError } from '@repo/utils'
 

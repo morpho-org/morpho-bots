@@ -1,11 +1,15 @@
-import type { Logger, LogLevel } from './logger'
+// Type-only edge: the op signatures reference the logger's types, nothing at runtime. If a
+// runtime import of @repo/evm-kit ever appears here, revisit the split rather than widening it.
+import type { Logger, LogLevel } from '@repo/evm-kit'
+
 import type { PositionRecord, TransactionRecord } from './records'
 
 /**
  * The op seam: the shapes a core exposes so the CLI can run each op as its own `<domain> <op>`
  * command. Like {@link ./records} (the wire contract), these are the PIPE SEAM, not a bot shape:
- * they reference only bot-kit's own record/{@link Logger} types plus the generic env table, so a
- * core and the CLI cannot drift on what an op looks like. Defined ONCE here for exactly that reason.
+ * they reference only this package's own record types (plus the {@link Logger} type and the generic
+ * env table), so a core and the CLI cannot drift on what an op looks like. Defined ONCE here for
+ * exactly that reason.
  *
  * Each op is EITHER a source ({@link SenseOpExport} — emits position records) or a transform
  * ({@link ActOpExport} — maps semantic positions to transactions),

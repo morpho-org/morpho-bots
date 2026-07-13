@@ -152,9 +152,11 @@ Top level answers one question per tier — do you **run it** (`apps/`), **impor
   signer are configured only through argv/environment, use one RPC topology, and dry-run operation
   does not start or require the signer.
 - `/packages/` — libraries: the bot cores (`@repo/blue-liquidation`, `@repo/midnight-liquidation`,
-  each exporting an `OPS` table of source/transform ops — the seam types live in `@repo/bot-kit`'s
-  `ops.ts`) and the shared layers (`@repo/utils`, `@repo/bot-kit`, `@repo/swaps`, `@repo/home`,
-  `@repo/contracts`, `@repo/typescript-config`).
+  each exporting an `OPS` table of source/transform ops — the seam types live in `@repo/pipeline`'s
+  `ops.ts`) and the shared layers (`@repo/utils`, `@repo/pipeline` (op seam, wire records,
+  simulation), `@repo/evm-kit` (deployless client, revert decoding, logger), `@repo/ipc`
+  (Unix-socket JSON server), `@repo/signer-client` (the signer's client + shared wire protocol),
+  `@repo/swaps`, `@repo/home`, `@repo/contracts`, `@repo/typescript-config`).
 - `/deploy/` — deployment packaging (`@repo/deploy`): the single bot Docker image (which
   AOT-builds the CLI to `dist/main.js`), the pipeline entrypoint loop, the docker-compose files,
   and the Railway deploy scripts. Anything that turns the generic CLI into a persistent
@@ -210,14 +212,17 @@ All commit messages, PR titles, and Linear ticket titles use the same format:
 | Package                    | Scope                  |
 | -------------------------- | ---------------------- |
 | @repo/blue-liquidation     | `blue-liquidation`     |
-| @repo/bot-kit              | `bot-kit`              |
 | @repo/cli                  | `cli`                  |
 | @repo/contracts            | `contracts`            |
 | @repo/deploy               | `deploy`               |
+| @repo/evm-kit              | `evm-kit`              |
 | @repo/home                 | `home`                 |
+| @repo/ipc                  | `ipc`                  |
 | @repo/midnight-liquidation | `midnight-liquidation` |
+| @repo/pipeline             | `pipeline`             |
 | @repo/queued               | `queued`               |
 | @repo/signer               | `signer`               |
+| @repo/signer-client        | `signer-client`        |
 | @repo/swaps                | `swaps`                |
 | @repo/typescript-config    | `ts-config`            |
 | @repo/utils                | `utils`                |
