@@ -14,10 +14,10 @@ Quick navigation for the curator-bots documentation.
 
 ## Bots
 
-| Bot                                                   | Description                               | Docs                                             |
-| ----------------------------------------------------- | ----------------------------------------- | ------------------------------------------------ |
-| [midnight-liquidation](../bots/midnight-liquidation/) | Liquidates eligible Midnight positions    | [README](../bots/midnight-liquidation/README.md) |
-| [blue-liquidation](../bots/blue-liquidation/)         | Liquidates eligible Morpho Blue positions | [README](../bots/blue-liquidation/README.md)     |
+| Bot                                                       | Description                               | Docs                                                 |
+| --------------------------------------------------------- | ----------------------------------------- | ---------------------------------------------------- |
+| [midnight-liquidation](../packages/midnight-liquidation/) | Liquidates eligible Midnight positions    | [README](../packages/midnight-liquidation/README.md) |
+| [blue-liquidation](../packages/blue-liquidation/)         | Liquidates eligible Morpho Blue positions | [README](../packages/blue-liquidation/README.md)     |
 
 ---
 
@@ -46,7 +46,7 @@ _None yet — copy [`templates/DATA-FLOW.md`](./templates/DATA-FLOW.md) into a b
 
 - [TIB-2026-06-30: Blue liquidation bot — v0](./decisions/TIB-2026-06-30-blue-liquidation-bot.md) — Morpho Blue ecosystem-backstop liquidator (rindexer discovery, accrual-aware soltag lens, multi-venue swaps, generic Executor, Railway) — implemented
 
-_Bot-scoped TIBs move under `bots/<bot>/docs/decisions/` once a bot lands; proposal TIBs for
+_Bot-scoped TIBs move under `packages/<bot>/docs/decisions/` once a bot lands; proposal TIBs for
 not-yet-built bots sit in `docs/decisions/` alongside their siblings._
 
 ---

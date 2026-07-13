@@ -1,13 +1,13 @@
-# bots
+# deploy
 
 Deployment packaging for the bot use-case of the generic `morpho-bots` CLI
-(`tools/cli`): how the one-shot ticks are wrapped into long-running services. The CLI package
+(`apps/cli`): how the one-shot ticks are wrapped into long-running services. The CLI package
 itself stays unopinionated — everything that turns it into a persistent liquidation bot lives here.
 
 - `Dockerfile` — the single bot image (all bots ship in it; `BOT`/`CHAIN_ID` select what runs).
   Build context MUST be the repo root so the bun workspace resolves. The image AOT-builds both the
-  CLI (`bun run --filter @repo/cli build` → `tools/cli/dist/main.js`) and the queue daemon
-  (`bun run --filter @repo/queued build` → `services/queued/dist/main.js`) so the lens bytecode is
+  CLI (`bun run --filter @repo/cli build` → `apps/cli/dist/main.js`) and the queue daemon
+  (`bun run --filter @repo/queued build` → `apps/queued/dist/main.js`) so the lens bytecode is
   baked in and spawns pay no soltag/solc cost — "warm by construction", no cache to prime.
 - `docker-entrypoint.sh` — starts the offline signer and per-chain queue daemon, then runs the pipeline
   `bun dist/main.js $BOT $SOURCE_OP | … $TRANSFORM_OP | morpho-queued submit` every `TICK_INTERVAL_S` seconds
@@ -23,10 +23,10 @@ itself stays unopinionated — everything that turns it into a persistent liquid
   append-only per-chain journal. Set `QUEUED_DRY_RUN=true` to run the dedupe→re-sim→fee path without
   starting or requiring the signer.
 - `docker-compose.blue.yml` / `docker-compose.midnight.yml` — local/self-hosted orchestration
-  (blue's bundles the shared rindexer + Postgres from `services/blue-rindexer`). Run from the repo
-  root: `docker compose -f bots/docker-compose.midnight.yml up`.
+  (blue's bundles the shared rindexer + Postgres from `deploy/blue-rindexer`). Run from the repo
+  root: `docker compose -f deploy/docker-compose.midnight.yml up`.
 - `scripts/deploy-railway-{blue,midnight}.ts` — reproducible, idempotent Railway deploys:
-  `bun run --filter @repo/bots deploy:railway:midnight` (see each script's header for env vars).
+  `bun run --filter @repo/deploy deploy:railway:midnight` (see each script's header for env vars).
 
 ## Signing agent
 

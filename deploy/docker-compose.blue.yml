@@ -1,5 +1,5 @@
 # Bundles the per-chain blue bots with ONE shared rindexer instance + Postgres for borrower
-# discovery. rindexer indexes the Morpho Blue `Borrow` event (services/blue-rindexer/rindexer.yaml)
+# discovery. rindexer indexes the Morpho Blue `Borrow` event (deploy/blue-rindexer/rindexer.yaml)
 # for every chain into one Postgres, discriminated by a `network` column; each bot tick reads the
 # indexed (market, borrower) pairs for its own chain. Each bot container runs a signer agent, the
 # per-chain `queued` daemon, and the pipeline that feeds it —
@@ -10,7 +10,7 @@
 # LIQUIDATOR_ADDRESS the transform targets (the address that private key derives).
 #
 # Build contexts are `..` (the repo root — required for the bun workspace to resolve) because this
-# file lives in bots/; run it from anywhere: `docker compose -f bots/docker-compose.blue.yml up`.
+# file lives in deploy/; run it from anywhere: `docker compose -f deploy/docker-compose.blue.yml up`.
 #
 # NOTE: the rindexer service config (image command, env) follows the rindexer docs but has not been
 # run end-to-end here; verify `docker compose up` against live RPCs before relying on it.
@@ -31,11 +31,11 @@ services:
 
   rindexer:
     # Derived from the upstream rindexer image with rindexer.yaml + the generated event ABI baked in
-    # (see services/blue-rindexer/Dockerfile), so no host bind mount is needed and the ABI isn't
+    # (see deploy/blue-rindexer/Dockerfile), so no host bind mount is needed and the ABI isn't
     # committed.
     build:
       context: ..
-      dockerfile: services/blue-rindexer/Dockerfile
+      dockerfile: deploy/blue-rindexer/Dockerfile
     depends_on:
       postgres:
         condition: service_healthy
@@ -53,7 +53,7 @@ services:
   bot-base:
     build:
       context: ..
-      dockerfile: bots/Dockerfile
+      dockerfile: deploy/Dockerfile
     depends_on:
       postgres:
         condition: service_healthy
@@ -97,7 +97,7 @@ services:
   bot-robinhood:
     build:
       context: ..
-      dockerfile: bots/Dockerfile
+      dockerfile: deploy/Dockerfile
     depends_on:
       postgres:
         condition: service_healthy
