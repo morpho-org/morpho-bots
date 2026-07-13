@@ -617,12 +617,13 @@ address(0)` markets.
   `https://docs.morpho.org/get-started/resources/addresses/`.
 - `executooor-viem` (native `morphoBlueLiquidate` encoder): `https://www.npmjs.com/package/executooor-viem`.
 
-### 2026-07-10 — persistent runner superseded by the CLI restructure
+### 2026-07-10 — persistent runner superseded by the pipeline architecture
 
-[TIB-2026-07-09 (cli restructure)](./TIB-2026-07-09-cli-restructure.md) replaces this bot's
-persistent runner with a one-shot `tickOnce` the `morpho-bots` CLI invokes per tick; the pending
-queue, backoff, and market-params cache persist between ticks as a chain-truth-reconciled hint.
-Discovery (rindexer/Postgres) is unchanged; the indexer now lives at `services/blue-rindexer`.
+[TIB-2026-07-13 (bot architecture)](./TIB-2026-07-13-bot-architecture.md) replaces this bot's
+persistent runner with one-shot pipeline ops driven by unix loops; the market-params cache persists
+between runs as a chain-truth-reconciled hint, and the transaction queue/nonce state now lives in
+the per-chain `morpho-queued` daemon. Discovery (rindexer/Postgres) is unchanged; the indexer now
+lives at `deploy/blue-rindexer`.
 
 <!--
 TIB conventions:
