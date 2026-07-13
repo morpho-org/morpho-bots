@@ -52,8 +52,8 @@ Bots in this repo are run by **curator operators**:
 
 ### Bots overview
 
-Individual bots land under `/bots/` as they ship. Likely bots: reallocators, liquidation
-monitors, rate setters. Check `/bots/` and Linear's Curator team backlog for the current
+Bot cores land under `/packages/` as they ship. Likely bots: reallocators, liquidation
+monitors, rate setters. Check `/packages/` and Linear's Curator team backlog for the current
 state.
 
 ## Product principles

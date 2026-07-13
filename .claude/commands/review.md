@@ -129,7 +129,7 @@ Review the provided PR thoroughly and interactively guide the user through each 
 7. **Data Flow Diagram Staleness**: Check whether the PR modifies files that could make a
    `DATA-FLOW.md` stale:
    - Scan the PR diff for changes to scheduler/poller logic, decision engines, signers, or RPC
-     transports under `bots/<bot>/src/` or `packages/<pkg>/src/`.
+     transports under `packages/<pkg>/src/` or `apps/<app>/src/`.
    - If the bot or package has a `docs/DATA-FLOW.md`, check whether it was updated in the PR.
    - If the diagram was not updated, flag as **Minor** severity: "Data flow diagram may be stale —
      PR touches data-fetching / signing code but does not update `docs/DATA-FLOW.md`."
