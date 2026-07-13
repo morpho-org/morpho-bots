@@ -2,7 +2,7 @@
 
 | Field          | Value                                                                                                                                                                                                            |
 | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Status**     | Proposed _(flips to Accepted at PR approval)_                                                                                                                                                                    |
+| **Status**     | Accepted                                                                                                                                                                    |
 | **Date**       | 2026-07-12                                                                                                                                                                                                       |
 | **Author**     | @hayden                                                                                                                                                                                                          |
 | **Scope**      | Repo-wide (every top-level tree; `@repo/bot-kit`, `@repo/signer`, `@repo/utils`, both bot cores)                                                                                                                 |
