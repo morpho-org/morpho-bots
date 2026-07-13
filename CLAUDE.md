@@ -164,10 +164,9 @@ Top level answers one question per tier — do you **run it** (`apps/`), **impor
   artifact (Dockerfile + rindexer.yaml) that indexes Morpho Blue `Borrow` events into Postgres for
   blue's discovery.
 
-See [TIB-2026-07-09-pipeline-cli](./docs/decisions/TIB-2026-07-09-pipeline-cli.md) for the pipeline
-architecture (command grammar, wire contract, state/lock partition) and
-[TIB-2026-07-09-cli-restructure](./docs/decisions/TIB-2026-07-09-cli-restructure.md) for the
-foundations it builds on (one-shot processes, 0/1/2 exit-code contract, persisted-state design).
+See [TIB-2026-07-13-bot-architecture](./docs/decisions/TIB-2026-07-13-bot-architecture.md) for the
+whole architecture — the one-shot op pipeline, wire contract, per-chain queue and signer daemons,
+config/state model, and the `apps/`+`packages/`+`deploy/` monorepo shape.
 
 **Key technologies**: bun 1.3.12 (runtime + package manager + workspace task runner), Node.js
 24.14.1, TypeScript 6.0, viem for Web3, oxlint + oxfmt for lint/format, knip for dead-code

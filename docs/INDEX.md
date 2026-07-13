@@ -46,12 +46,12 @@ _None yet — copy [`templates/DATA-FLOW.md`](./templates/DATA-FLOW.md) into a b
 ## TIBs (Repo-wide)
 
 - [TIB-2026-04-16: Bootstrap Curator Bots](./decisions/TIB-2026-04-16-bootstrap-curator-bots.md) — initial scaffold, tooling stack, and migration plan from `morpho-apps`
-- [TIB-2026-07-12: Repo restructure](./decisions/TIB-2026-07-12-repo-restructure.md) — `apps/` + `packages/` + `deploy/` tiers, bot-kit split into pipeline/evm-kit/ipc, signer-client extraction, full sense/act retirement
-- [TIB-2026-07-13: Cross-stage log correlation context](./decisions/TIB-2026-07-13-log-correlation-context.md) — stage-bound logger context (`bot`/`op`/`chainId`), `id` as the ops↔queue↔journal join, `nonce`/`txHash` as the queue↔signer join
+- [TIB-2026-07-13: Off-chain bot architecture](./decisions/TIB-2026-07-13-bot-architecture.md) — the one-shot op pipeline, `apps/`+`packages/`+`deploy/` monorepo shape, transparent JSON-Lines wire contract, per-chain queue and policy-signer daemons, config/state model, and log correlation
 
 ## TIBs (Bot-scoped)
 
 - [TIB-2026-06-30: Blue liquidation bot — v0](./decisions/TIB-2026-06-30-blue-liquidation-bot.md) — Morpho Blue ecosystem-backstop liquidator (rindexer discovery, accrual-aware soltag lens, multi-venue swaps, generic Executor, Railway) — implemented
+- [TIB-2026-07-09: Midnight market whitelist and venue selection](./decisions/TIB-2026-07-09-midnight-market-and-venue-selection.md) — API-sourced market whitelist + best-of-venues probe selection replacing the hand-maintained routing file; Uniswap dropped as a direct venue — implemented
 
 _Bot-scoped TIBs move under `packages/<bot>/docs/decisions/` once a bot lands; proposal TIBs for
 not-yet-built bots sit in `docs/decisions/` alongside their siblings._

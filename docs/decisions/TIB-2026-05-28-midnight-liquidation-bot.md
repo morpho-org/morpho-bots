@@ -919,13 +919,12 @@ After each phase:
   a few comments here and in `sizing/plan.ts` point at that snapshot and are approximate; for the
   authoritative surface, trust the vendored interface above and the deployed contract.
 
-### 2026-07-10 — persistent runner and Alternative 5 superseded by the CLI restructure
+### 2026-07-10 — persistent runner and Alternative 5 superseded by the pipeline architecture
 
-[TIB-2026-07-09 (cli restructure)](./TIB-2026-07-09-cli-restructure.md) supersedes two of this
-TIB's decisions. The persistent runner (block watcher + timer refresh loop) is replaced by a
-one-shot `tickOnce` the `morpho-bots` CLI invokes per tick; the markets whitelist now refreshes
-inline when stale, with a fail-closed max age. Alternative 5 ("Persistent queue state across
-runner restarts", rejected here) is inverted **as required by the one-shot model**: a per-tick
-process with no memory of its pending txs could never fee-bump a stuck one. The spirit survives —
-persisted state is a hint reconciled against chain truth at tick start, and losing the file
-degrades to this TIB's restart semantics.
+[TIB-2026-07-13 (bot architecture)](./TIB-2026-07-13-bot-architecture.md) supersedes two of this
+TIB's decisions. The persistent runner (block watcher + timer refresh loop) is replaced by one-shot
+pipeline ops driven by unix loops; the markets whitelist refreshes inline when stale, fail-closed.
+Alternative 5 ("Persistent queue state across runner restarts", rejected here) is inverted **as
+required by the one-shot model**: a per-run process with no memory of its pending txs could never
+fee-bump a stuck one. The spirit survives — persisted state is a hint reconciled against chain
+truth, and losing the file degrades to this TIB's restart semantics.
