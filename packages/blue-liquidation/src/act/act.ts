@@ -1,12 +1,10 @@
-import type { Logger, TransactionRecord } from '@repo/bot-kit'
+import type { Logger } from '@repo/evm-kit'
+import type { TransactionRecord } from '@repo/pipeline'
 import type { QuoteOutcome, Swap, SwapConfigEntry, Venue } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
-import {
-  assertContractDeployed,
-  createDeploylessClient,
-  simulateLiquidationExec
-} from '@repo/bot-kit'
+import { assertContractDeployed, createDeploylessClient } from '@repo/evm-kit'
+import { simulateLiquidationExec } from '@repo/pipeline'
 import { createRateLimitedClient } from '@repo/swaps'
 import { getAddress, isAddress, isHex } from 'viem'
 import { getBlockNumber } from 'viem/actions'

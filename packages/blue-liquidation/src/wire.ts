@@ -1,6 +1,6 @@
 import type { Address, Hex } from 'viem'
 
-import { formatLiquidationId } from '@repo/bot-kit'
+import { formatLiquidationId } from '@repo/pipeline'
 
 export const DOMAIN = 'blue'
 const OP = 'unhealthy-positions'

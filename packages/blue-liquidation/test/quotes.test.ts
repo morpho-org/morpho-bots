@@ -1,4 +1,4 @@
-import type { Logger } from '@repo/bot-kit'
+import type { Logger } from '@repo/evm-kit'
 import type { RateLimitedClient, SwapConfigEntry } from '@repo/swaps'
 
 import { describe, expect, it } from 'bun:test'

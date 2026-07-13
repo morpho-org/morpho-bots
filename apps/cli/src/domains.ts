@@ -1,5 +1,5 @@
-import type { OpExport } from '@repo/bot-kit'
 import type { BotName } from '@repo/home'
+import type { OpExport } from '@repo/pipeline'
 
 type DomainRegistry = {
   loadOp: (name: string) => Promise<OpExport>

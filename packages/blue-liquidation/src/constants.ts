@@ -1,7 +1,7 @@
 // Morpho Blue protocol constants shared by the sizing, lens, and execution modules. Pinned here at
 // scaffold time and verified against their on-chain derivations in test/constants.test.ts. Values
 // are cited to the canonical morpho-org/morpho-blue source (confirmed on Base). Operational tuning
-// constants (block-poll cadence, stuck-tx thresholds, fee-bump floor) live with the `@repo/bot-kit`
+// constants (block-poll cadence, stuck-tx thresholds, fee-bump floor) live with the `@repo/pipeline`
 // runner/queue modules that consume them; swap-venue constants live in `@repo/swaps`.
 
 /** 1e18 fixed-point one ("WAD") — the base scalar for Blue's rate and share math (MathLib.sol). */

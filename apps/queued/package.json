@@ -13,9 +13,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@repo/bot-kit": "workspace:*",
+    "@repo/evm-kit": "workspace:*",
     "@repo/home": "workspace:*",
-    "@repo/signer": "workspace:*",
+    "@repo/ipc": "workspace:*",
+    "@repo/signer-client": "workspace:*",
     "@repo/utils": "workspace:*",
     "commander": "catalog:",
     "viem": "catalog:"

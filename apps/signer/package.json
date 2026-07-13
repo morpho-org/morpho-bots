@@ -8,19 +8,15 @@
   },
   "type": "module",
   "sideEffects": false,
-  "exports": {
-    "./client": {
-      "types": "./src/client.ts",
-      "default": "./src/client.ts"
-    }
-  },
   "scripts": {
     "start": "bun src/main.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@repo/bot-kit": "workspace:*",
+    "@repo/evm-kit": "workspace:*",
     "@repo/home": "workspace:*",
+    "@repo/ipc": "workspace:*",
+    "@repo/signer-client": "workspace:*",
     "@repo/utils": "workspace:*",
     "viem": "catalog:"
   },

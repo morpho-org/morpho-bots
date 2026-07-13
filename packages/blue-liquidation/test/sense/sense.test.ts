@@ -1,4 +1,5 @@
-import type { Logger, PositionRecord } from '@repo/bot-kit'
+import type { Logger } from '@repo/evm-kit'
+import type { PositionRecord } from '@repo/pipeline'
 import type { Address } from 'viem'
 
 import { describe, expect, it } from 'bun:test'

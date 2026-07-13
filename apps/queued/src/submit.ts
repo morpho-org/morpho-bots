@@ -1,6 +1,6 @@
-import type { LogLevel } from '@repo/bot-kit'
+import type { LogLevel } from '@repo/evm-kit'
 
-import { createLogger } from '@repo/bot-kit'
+import { createLogger } from '@repo/evm-kit'
 import { assertSunPathLength, botsHome, ConfigError, queuedSocketFile } from '@repo/home'
 import { ensureError } from '@repo/utils'
 

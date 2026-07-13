@@ -1,5 +1,6 @@
 import type { LocalAccount, TransactionSerializableEIP1559 } from 'viem'
 
+import { createRemoteSigner, SignerPolicyError, SignerResponseError } from '@repo/signer-client'
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -8,7 +9,6 @@ import { privateKeyToAccount } from 'viem/accounts'
 
 import type { SignerServer } from '../src/server'
 
-import { createRemoteSigner, SignerPolicyError, SignerResponseError } from '../src/client'
 import { createSignerServer } from '../src/server'
 import { account, EXECUTOR, log, testPolicy } from './helpers'
 

@@ -1,4 +1,4 @@
-import type { OpExport } from '@repo/bot-kit'
+import type { OpExport } from '@repo/pipeline'
 
 import type { BlueActCache } from './act/act'
 import type { BlueSenseCache } from './sense/sense'
@@ -22,7 +22,7 @@ const SENSE_CACHE_VERSION = 1
 const ACT_CACHE_VERSION = 1
 
 /**
- * The flat op table this core exposes to the CLI (see `@repo/bot-kit`'s {@link OpExport}). Each op is
+ * The flat op table this core exposes to the CLI (see `@repo/pipeline`'s {@link OpExport}). Each op is
  * a source XOR a transform; the CLI surfaces each as its own `blue <op>` command. `unhealthy-positions`
  * is the sensor; `liquidate` is the transform that consumes it. The CLI dispatches this table directly.
  */

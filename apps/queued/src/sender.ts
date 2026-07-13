@@ -1,7 +1,7 @@
-import type { RemoteSigner } from '@repo/signer/client'
+import type { RemoteSigner } from '@repo/signer-client'
 import type { Chain } from 'viem'
 
-import { TxSendError } from '@repo/bot-kit'
+import { TxSendError } from '@repo/evm-kit'
 import { tryCatch } from '@repo/utils'
 import { createWalletClient, http, TransactionReceiptNotFoundError } from 'viem'
 import {

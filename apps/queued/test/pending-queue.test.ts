@@ -1,8 +1,8 @@
-import type { Logger, LogLevel } from '@repo/bot-kit'
+import type { Logger, LogLevel } from '@repo/evm-kit'
 import type { Address, Hex } from 'viem'
 
-import { TxSendError } from '@repo/bot-kit'
-import { SignerPolicyError } from '@repo/signer/client'
+import { TxSendError } from '@repo/evm-kit'
+import { SignerPolicyError } from '@repo/signer-client'
 import { parse, stringify } from '@repo/utils'
 import { describe, expect, it } from 'bun:test'
 import { ExecutionRevertedError } from 'viem'

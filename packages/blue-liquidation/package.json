@@ -19,8 +19,9 @@
     "typecheck": "soltag && tsc --noEmit"
   },
   "dependencies": {
-    "@repo/bot-kit": "workspace:*",
     "@repo/contracts": "workspace:*",
+    "@repo/evm-kit": "workspace:*",
+    "@repo/pipeline": "workspace:*",
     "@repo/swaps": "workspace:*",
     "@repo/utils": "workspace:*",
     "executooor-viem": "catalog:",

@@ -1,7 +1,7 @@
-import type { Logger } from '@repo/bot-kit'
+import type { Logger } from '@repo/evm-kit'
 import type { Hex } from 'viem'
 
-import { createRemoteSigner, SignerPolicyError } from '@repo/signer/client'
+import { createRemoteSigner, SignerPolicyError } from '@repo/signer-client'
 import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
