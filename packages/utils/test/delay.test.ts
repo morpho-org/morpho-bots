@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 
-import { delay } from '../../src/helpers/delay'
+import { delay } from '../src/delay'
 
 describe('delay', () => {
   it('resolves after at least the specified duration', async () => {

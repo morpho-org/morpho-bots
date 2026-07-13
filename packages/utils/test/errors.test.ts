@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 
-import { assertNever, ensureError } from '../../src/helpers/errors'
+import { assertNever, ensureError } from '../src/errors'
 
 describe('ensureError', () => {
   it('should return the same Error if already an Error instance', () => {

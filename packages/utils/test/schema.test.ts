@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 
-import { addressSchema } from '../../src/helpers/schema'
+import { addressSchema } from '../src/schema'
 
 describe('addressSchema', () => {
   it('should accept valid Ethereum addresses', () => {
