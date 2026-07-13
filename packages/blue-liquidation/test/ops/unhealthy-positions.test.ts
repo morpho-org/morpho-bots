@@ -5,15 +5,15 @@ import type { Address } from 'viem'
 import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
 
-import type { BorrowerCandidate } from '../../src/discovery/borrowers'
+import type { BorrowerCandidate } from '../../src/borrowers'
+import type { LensInput, LensOut } from '../../src/lens.sol'
 import type { MarketParams } from '../../src/market'
-import type { LensInput, LensOut } from '../../src/state/lens.sol'
 
 import { ORACLE_PRICE_SCALE, WAD } from '../../src/constants'
+import { lensKey } from '../../src/lens.sol'
 import { marketId } from '../../src/market'
-import { runSense } from '../../src/sense/sense'
-import { lensKey } from '../../src/state/lens.sol'
-import { formatOpportunityId } from '../../src/wire'
+import { findUnhealthyPositions } from '../../src/ops/unhealthy-positions'
+import { formatPositionId } from '../../src/position-id'
 
 function spyLogger() {
   const events: { level: string; event: string; fields?: Record<string, unknown> }[] = []
@@ -42,7 +42,7 @@ const PARAMS: MarketParams = {
   irm: IRM,
   lltv: 86n * 10n ** 16n
 }
-const ID = formatOpportunityId(CHAIN_ID, marketId(PARAMS), BORROWER)
+const ID = formatPositionId(CHAIN_ID, marketId(PARAMS), BORROWER)
 
 function lensOut(overrides: Partial<LensOut> = {}): LensOut {
   return {
@@ -81,7 +81,7 @@ function runWith(opts: {
   const { logger, events } = spyLogger()
   const emitted: PositionRecord[] = []
   const chainHead = opts.chainHead ?? 100n
-  return runSense({
+  return findUnhealthyPositions({
     chainId: CHAIN_ID,
     discover: async () => candidates(...(opts.borrowers ?? [BORROWER])),
     syncedBlock: async () => (opts.synced === undefined ? chainHead : opts.synced),
@@ -92,7 +92,7 @@ function runWith(opts: {
   }).then(counters => ({ counters, emitted, events }))
 }
 
-describe('runSense', () => {
+describe('findUnhealthyPositions', () => {
   it('emits one fully-formed opportunity per liquidatable, plannable position', async () => {
     const { counters, emitted } = await runWith({})
     expect(counters).toEqual({ pairs: 1, liquidatable: 1, emitted: 1 })

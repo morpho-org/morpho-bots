@@ -2,10 +2,10 @@ import { parse, stringify } from '@repo/utils'
 import { describe, expect, it } from 'bun:test'
 import { getAddress, type Hex } from 'viem'
 
-import type { MarketParams } from '../../src/market'
-import type { MarketParamsCache, MarketParamsResolver } from '../../src/state/market-params'
+import type { MarketParams } from '../src/market'
+import type { MarketParamsCache, MarketParamsResolver } from '../src/market-params'
 
-import { createMarketParamsResolver } from '../../src/state/market-params'
+import { createMarketParamsResolver } from '../src/market-params'
 
 const ID_A: Hex = `0x${'aa'.repeat(32)}`
 const ID_B: Hex = `0x${'bb'.repeat(32)}`

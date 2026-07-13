@@ -4,7 +4,7 @@ import { MorphoAbi } from '@repo/contracts'
 import { isNonZeroAddress } from '@repo/utils'
 import { multicall } from 'viem/actions'
 
-import type { MarketParams } from '../market'
+import type { MarketParams } from './market'
 
 // Canonical Multicall3, deployed at the same address on Base and every other chain. Passed
 // explicitly so the fetcher doesn't depend on viem inferring it from the (chain-erased) client type.

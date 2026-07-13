@@ -4,9 +4,9 @@ import type { Hex } from 'viem'
 import { parse, stringify } from '@repo/utils'
 import { describe, expect, it } from 'bun:test'
 
-import type { ListedMarketsState } from '../../src/discovery/markets'
+import type { ListedMarketsState } from '../src/markets'
 
-import { createListedMarketFilter } from '../../src/discovery/markets'
+import { createListedMarketFilter } from '../src/markets'
 
 const API_URL = 'https://api.example/v0/midnight/markets'
 const LISTED: Hex = `0x${'a'.repeat(64)}`

@@ -4,7 +4,7 @@ import type { Address, Client, Hex, Transport } from 'viem'
 import { MAX_INITCODE_SIZE, readDeploylessBatchLens } from '@repo/utils'
 import { sol } from 'soltag'
 
-import type { Market } from '../execution/encode-call'
+import type { Market } from './execution/encode-call'
 
 // Single-file soltag lens: reads everything the liquidation decision depends on for a batch of
 // (id, borrower) pairs inside one eth_call against a single block.timestamp. Takes an `Input[]` and

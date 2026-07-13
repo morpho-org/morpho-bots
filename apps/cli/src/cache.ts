@@ -1,6 +1,6 @@
 import { loadState, saveState } from '@repo/home'
 
-// sense/act caches are disposable and best-effort — they affect latency/recall, never transaction
+// Op caches are disposable and best-effort — they affect latency/recall, never transaction
 // validity — so a missing/corrupt/version-mismatched file simply degrades to a rebuild. The CLI
 // wraps the core's opaque cache payload in a `{ version, data }` envelope so the shared version-gated
 // loadState/saveState can discard a stale shape.

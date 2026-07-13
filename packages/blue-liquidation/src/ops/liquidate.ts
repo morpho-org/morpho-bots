@@ -9,24 +9,24 @@ import { createRateLimitedClient } from '@repo/swaps'
 import { getAddress, isAddress, isHex } from 'viem'
 import { getBlockNumber } from 'viem/actions'
 
-import type { ActConfig, Env } from '../config'
+import type { LiquidateConfig, Env } from '../config'
+import type { LensInput, LensOut } from '../lens.sol'
 import type { MarketParams } from '../market'
 import type { LiquidationPlan } from '../sizing/plan'
-import type { LensInput, LensOut } from '../state/lens.sol'
 
-import { loadActConfig } from '../config'
+import { loadLiquidateConfig } from '../config'
+import { isLiquidatable, planInputFromLens } from '../eligibility'
 import { encodeLiquidationExec } from '../execution/encode-call'
+import { lensKey, readBlueLiquidationLens } from '../lens.sol'
 import { marketId } from '../market'
+import { createMarketParamsResolver, multicallIdToMarketParams } from '../market-params'
 import { composeQuoting } from '../quotes'
 import { plan } from '../sizing/plan'
-import { lensKey, readBlueLiquidationLens } from '../state/lens.sol'
-import { createMarketParamsResolver, multicallIdToMarketParams } from '../state/market-params'
-import { isLiquidatable, planInputFromLens } from '../tick/eligibility'
 
-/** `act` holds no cross-tick cache — it re-derives everything fresh — so its cache is trivially empty. */
-export type BlueActCache = Record<string, never>
+/** `liquidate` holds no cross-run cache — it re-derives everything fresh — so its cache is trivially empty. */
+export type BlueLiquidateCache = Record<string, never>
 
-export type ActCounters = {
+export type LiquidateCounters = {
   requested: number
   invalid: number
   notLiquidatable: number
@@ -102,7 +102,7 @@ function txRecord(
  * Maps transparent position records to freshly simulated transactions. Invalid or non-actionable
  * positions are structured stderr events; only successful transactions reach stdout.
  */
-export async function runAct(deps: {
+export async function prepareLiquidations(deps: {
   records: readonly unknown[]
   chainId: number
   head: bigint
@@ -118,7 +118,7 @@ export async function runAct(deps: {
   executor: Address
   emit: (record: TransactionRecord) => void
   logger: Logger
-}): Promise<ActCounters> {
+}): Promise<LiquidateCounters> {
   const {
     records,
     chainId,
@@ -132,7 +132,7 @@ export async function runAct(deps: {
     logger
   } = deps
 
-  const counters: ActCounters = {
+  const counters: LiquidateCounters = {
     requested: records.length,
     invalid: 0,
     notLiquidatable: 0,
@@ -146,7 +146,7 @@ export async function runAct(deps: {
   for (const record of records) {
     const parsed = parsePosition(record, chainId)
     if (!parsed) {
-      logger.warn('act.skip', { status: 'invalid_record', record })
+      logger.warn('transform.skip', { status: 'invalid_record', record })
       counters.invalid += 1
       continue
     }
@@ -154,7 +154,7 @@ export async function runAct(deps: {
   }
 
   if (evaluands.length === 0) {
-    logger.info('act.end', { ...counters })
+    logger.info('transform.end', { ...counters })
     return counters
   }
 
@@ -164,13 +164,13 @@ export async function runAct(deps: {
   for (const item of evaluands) {
     const out = lensOut.get(lensKey(item.marketId, item.borrower))
     if (!out || !isLiquidatable(out)) {
-      logger.info('act.skip', { id: item.id, status: 'not_liquidatable', block: head })
+      logger.info('transform.skip', { id: item.id, status: 'not_liquidatable', block: head })
       counters.notLiquidatable += 1
       continue
     }
     const liquidationPlan = plan(planInputFromLens(out))
     if (!liquidationPlan) {
-      logger.info('act.skip', {
+      logger.info('transform.skip', {
         id: item.id,
         status: 'not_liquidatable',
         reason: 'degenerate_plan',
@@ -181,12 +181,12 @@ export async function runAct(deps: {
     }
     const outcome = await quoteFor(liquidationPlan, out)
     if (outcome.kind === 'no_config') {
-      logger.warn('act.skip', { id: item.id, status: 'no_swap_path', block: head })
+      logger.warn('transform.skip', { id: item.id, status: 'no_swap_path', block: head })
       counters.noSwapPath += 1
       continue
     }
     if (outcome.kind === 'failed') {
-      logger.warn('act.skip', {
+      logger.warn('transform.skip', {
         id: item.id,
         status: 'quote_failed',
         reason: outcome.reason,
@@ -204,7 +204,12 @@ export async function runAct(deps: {
       swap
     })
     if (revert !== null) {
-      logger.warn('act.skip', { id: item.id, status: 'sim_reverted', reason: revert, block: head })
+      logger.warn('transform.skip', {
+        id: item.id,
+        status: 'sim_reverted',
+        reason: revert,
+        block: head
+      })
       counters.reverted += 1
       continue
     }
@@ -213,29 +218,29 @@ export async function runAct(deps: {
     counters.ok += 1
   }
 
-  logger.info('act.end', { ...counters })
+  logger.info('transform.end', { ...counters })
   return counters
 }
 
 /**
- * One `act` pass at the current chain head: build the quote → simulate pipeline from `env`, run
- * {@link runAct} over position records, and return the empty act cache. Needs venue API keys — read from the
+ * One `liquidate` pass at the current chain head: build the quote → simulate pipeline from `env`, run
+ * {@link prepareLiquidations} over position records, and return the empty cache. Needs venue API keys — read from the
  * env table at the point of use, never stored — but NOT the signer private key. Never touches the
  * filesystem, `process.stdout`, or `Bun.env`.
  *
  * `runStartupChecks` gates the boot-time Executor-code + swap-route diagnostics.
  */
-export async function actOnce(
+export async function runLiquidate(
   env: Env,
   records: readonly unknown[],
   opts: {
-    cache: BlueActCache | null
+    cache: BlueLiquidateCache | null
     runStartupChecks: boolean
     logger: Logger
     emit: (record: TransactionRecord) => void
   }
-): Promise<{ cache: BlueActCache }> {
-  const config: ActConfig = loadActConfig(env)
+): Promise<{ cache: BlueLiquidateCache }> {
+  const config: LiquidateConfig = loadLiquidateConfig(env)
   const { logger, emit } = opts
 
   const client = createDeploylessClient(config)
@@ -312,7 +317,7 @@ export async function actOnce(
       recipient: eoa
     })
 
-  // Fresh, uncached resolver — one batched multicall per act pass is cheap, and act keeps no cache.
+  // Fresh, uncached resolver — one batched multicall per `liquidate` pass is cheap, and the op keeps no cache.
   const resolveParams = createMarketParamsResolver(multicallIdToMarketParams(client, config.morpho))
   const readLensForPositions = async (
     evaluands: readonly Evaluand[]
@@ -328,7 +333,7 @@ export async function actOnce(
   }
 
   const head = await getBlockNumber(client)
-  await runAct({
+  await prepareLiquidations({
     records,
     chainId: config.chainId,
     head,

@@ -4,13 +4,9 @@ import type { Hex } from 'viem'
 import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
 
-import type { CandidatePage, FetchCandidatePage } from '../../src/discovery/borrowers'
+import type { CandidatePage, FetchCandidatePage } from '../src/borrowers'
 
-import {
-  buildCandidatesUrl,
-  createApiCandidateSource,
-  discoverBorrowers
-} from '../../src/discovery/borrowers'
+import { buildCandidatesUrl, createApiCandidateSource, discoverBorrowers } from '../src/borrowers'
 
 const MARKET: Hex = `0x${'a'.repeat(64)}`
 const MARKET_2: Hex = `0x${'b'.repeat(64)}`

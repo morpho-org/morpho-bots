@@ -1,5 +1,5 @@
-import type { PlanInput } from '../sizing/plan'
-import type { LensOut } from '../state/lens.sol'
+import type { LensOut } from './lens.sol'
+import type { PlanInput } from './sizing/plan'
 
 /**
  * Off-chain liquidatability, composed from a fresh lens reading — mirrors the gate `liquidate()`

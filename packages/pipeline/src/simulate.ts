@@ -17,7 +17,7 @@ export type SimulateResult = { status: SimulateStatus; reason?: string }
  * byte-for-byte what gets broadcast. The Executor self-funds via the in-callback swap, so a success
  * means the seized collateral covered the repay (incl. `amountOutMinimum` slippage) and both tokens
  * swept clean. Any revert — not-liquidatable, swap slippage, repay shortfall — means do not
- * broadcast; the tick gates on `ok` only. No signer; never sends.
+ * broadcast; the caller gates on `ok` only. No signer; never sends.
  *
  * The full-drain (zero-residual) invariant is enforced **structurally**: each bot's
  * `encodeLiquidationExec` always appends two skims that transfer the Executor's entire loan +

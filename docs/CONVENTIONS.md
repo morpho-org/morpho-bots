@@ -70,8 +70,8 @@
 ### Configuration
 
 - **Env-shaped tables, not `Bun.env`**: Bot packages receive ALL configuration — venue API keys
-  included — through the env table passed to the stage entry points (`senseOnce(env, …)` /
-  `actOnce(env, …)` and their stage config loaders). Never read
+  included — through the env table passed to each op's `run(env, …)` entry point (e.g.
+  `runUnhealthyPositions`, `runLiquidate`) and its op config loader. Never read
   `Bun.env` directly inside a bot package: the CLI merges `~/.morpho-bots/config.json` +
   `secrets.json` + the process env into that table (precedence: config < secrets < process env),
   and a direct `Bun.env` read silently bypasses file-sourced settings. There is still no wrapper

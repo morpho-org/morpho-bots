@@ -8,9 +8,9 @@ import {
 import { sol } from 'soltag'
 import { type Address } from 'viem'
 
-import type { MarketParams } from '../market'
+import type { MarketParams } from './market'
 
-import { marketId } from '../market'
+import { marketId } from './market'
 
 // Single-file soltag lens: reads everything the liquidation decision depends on for a batch of
 // (marketParams, borrower) pairs inside one eth_call against a single block.timestamp. Takes an

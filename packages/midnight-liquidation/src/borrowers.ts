@@ -128,7 +128,7 @@ type FetchLike = (url: string, init?: RequestInit) => Promise<Response>
  * Retries 429/5xx/network up to {@link MAX_REQUEST_RETRIES}, honoring `Retry-After`; per-request
  * deadline is {@link REQUEST_TIMEOUT_MS}. Calls `fetch` directly (not `fetchJsonResponse`) because it
  * needs the raw `Response` to read `status` + the `Retry-After` header for backoff. A non-retryable
- * failure throws; the tick catches it (logs `discover.error`) and proceeds so the pending queue is
+ * failure throws; the caller catches it (logs `discover.error`) and proceeds so the pending queue is
  * still driven that block. `fetchImpl`/`sleep` are injectable for tests.
  */
 export function createApiCandidateSource(deps: {
@@ -179,7 +179,7 @@ export function createApiCandidateSource(deps: {
         data?: unknown
       }>(response)
       // A non-429 4xx (e.g. 400 INVALID_CURSOR / bad params) is a request-level rejection — not worth
-      // retrying with the same URL. Surface it so the tick logs and moves on.
+      // retrying with the same URL. Surface it so the caller logs and moves on.
       if (!response.ok) throw new Error(`liquidation-candidates HTTP ${response.status}`)
       if (parseError || !data) {
         throw new Error(

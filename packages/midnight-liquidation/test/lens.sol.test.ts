@@ -1,14 +1,10 @@
 import { describe, expect, it } from 'bun:test'
 import { decodeFunctionResult, encodeFunctionResult, getAddress } from 'viem'
 
-import type { Market } from '../../src/execution/encode-call'
-import type { LensOut } from '../../src/state/lens.sol'
+import type { Market } from '../src/execution/encode-call'
+import type { LensOut } from '../src/lens.sol'
 
-import {
-  lensKey,
-  MidnightLiquidationLens,
-  readMidnightLiquidationLens
-} from '../../src/state/lens.sol'
+import { lensKey, MidnightLiquidationLens, readMidnightLiquidationLens } from '../src/lens.sol'
 
 const MIDNIGHT = getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A')
 const BORROWER = getAddress('0x1111111111111111111111111111111111111111')

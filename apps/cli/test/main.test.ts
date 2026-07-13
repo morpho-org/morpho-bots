@@ -68,10 +68,10 @@ describe('morpho-bots exit codes', () => {
   )
 
   it(
-    'exits 2 for the removed `sense` verb (replaced by op commands)',
+    'exits 2 for an unknown op on the other domain too',
     () => {
-      // `sense`/`act` verbs were replaced by op names, so `sense` is now an unknown subcommand.
-      expect(run(['blue', 'sense']).code).toBe(2)
+      // Op dispatch is per-domain; blue must reject unlisted ops the same way midnight does.
+      expect(run(['blue', 'frobnicate']).code).toBe(2)
     },
     SPAWN_TIMEOUT_MS
   )

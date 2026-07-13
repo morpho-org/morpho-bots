@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'bun:test'
 import { getAddress, type Hex } from 'viem'
 
-import type { DiscoveryDiagnostics, QueryFn, TableDiagnostic } from '../../src/discovery/borrowers'
-import type { MarketParams } from '../../src/market'
+import type { DiscoveryDiagnostics, QueryFn, TableDiagnostic } from '../src/borrowers'
+import type { MarketParams } from '../src/market'
 
 import {
   discoverBorrowerIds,
   discoverCandidates,
   discoveryDiagnostics,
   rindexerSyncedBlock
-} from '../../src/discovery/borrowers'
+} from '../src/borrowers'
 
 const LOAN = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
 const COLL = '0x4200000000000000000000000000000000000006'

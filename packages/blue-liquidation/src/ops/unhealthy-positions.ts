@@ -6,31 +6,31 @@ import { assertContractDeployed, createDeploylessClient } from '@repo/evm-kit'
 import { ensureError, tryCatch } from '@repo/utils'
 import { getBlockNumber } from 'viem/actions'
 
-import type { Env, SenseConfig } from '../config'
-import type { BorrowerCandidate } from '../discovery/borrowers'
+import type { BorrowerCandidate } from '../borrowers'
+import type { Env, UnhealthyPositionsConfig } from '../config'
+import type { LensInput, LensOut } from '../lens.sol'
+import type { MarketParamsCache } from '../market-params'
 import type { LiquidationPlan } from '../sizing/plan'
-import type { LensInput, LensOut } from '../state/lens.sol'
-import type { MarketParamsCache } from '../state/market-params'
 
-import { loadSenseConfig } from '../config'
 import {
   createPostgresQuery,
   discoverCandidates,
   discoveryDiagnostics,
   rindexerSyncedBlock
-} from '../discovery/borrowers'
+} from '../borrowers'
+import { loadUnhealthyPositionsConfig } from '../config'
+import { isLiquidatable, planInputFromLens } from '../eligibility'
 import { expectedLoanOut } from '../execution/swap-step'
+import { lensKey, readBlueLiquidationLens } from '../lens.sol'
 import { marketId } from '../market'
+import { createMarketParamsResolver, multicallIdToMarketParams } from '../market-params'
+import { formatPositionId } from '../position-id'
 import { plan } from '../sizing/plan'
-import { lensKey, readBlueLiquidationLens } from '../state/lens.sol'
-import { createMarketParamsResolver, multicallIdToMarketParams } from '../state/market-params'
-import { isLiquidatable, planInputFromLens } from '../tick/eligibility'
-import { formatOpportunityId } from '../wire'
 
-/** Prior `sense` cache: the resolver's `MarketParams` entries. Immutable per id, safe forever. */
-export type BlueSenseCache = MarketParamsCache
+/** Prior `unhealthy-positions` cache: the resolver's `MarketParams` entries. Immutable per id, safe forever. */
+export type BlueUnhealthyPositionsCache = MarketParamsCache
 
-export type SenseCounters = { pairs: number; liquidatable: number; emitted: number }
+export type UnhealthyPositionsCounters = { pairs: number; liquidatable: number; emitted: number }
 
 /** Blocks our rindexer may trail the chain head before we warn that coverage is degraded. */
 const MAX_RINDEXER_LAG_BLOCKS = 30n
@@ -52,7 +52,7 @@ function opportunityRecord(
   const repay = expectedLoanOut(liquidationPlan, out)
   return {
     kind: 'position',
-    id: formatOpportunityId(chainId, id, borrower),
+    id: formatPositionId(chainId, id, borrower),
     chainId,
     marketId: id,
     borrower,
@@ -71,17 +71,17 @@ function opportunityRecord(
  * are injected so the sensor is unit-testable without a chain, Postgres, or config. Emits nothing but
  * opportunities — lockless and secret-free.
  */
-export async function runSense(deps: {
+export async function findUnhealthyPositions(deps: {
   chainId: number
   discover: () => Promise<BorrowerCandidate[]>
   /** rindexer's indexed head (Postgres); `null`/throw → lag unknown, we proceed. */
   syncedBlock: () => Promise<bigint | null>
-  /** Chain head the runner just polled — lag reference + the opportunity's `data.block`. */
+  /** Chain head the caller just polled — lag reference + the opportunity's `data.block`. */
   chainHead: bigint
   readLens: (pairs: LensInput[]) => Promise<Map<string, LensOut>>
   emit: (record: PositionRecord) => void
   logger: Logger
-}): Promise<SenseCounters> {
+}): Promise<UnhealthyPositionsCounters> {
   const { chainId, discover, syncedBlock, chainHead, readLens, emit, logger } = deps
 
   // rindexer-freshness signal — observability only; the lens reads every candidate fresh on-chain, so
@@ -120,29 +120,29 @@ export async function runSense(deps: {
     emit(opportunityRecord(chainId, id, pair.borrower, out, liquidationPlan, chainHead))
   }
 
-  logger.info('sense.end', { pairs: pairs.length, liquidatable, emitted })
+  logger.info('source.end', { pairs: pairs.length, liquidatable, emitted })
   return { pairs: pairs.length, liquidatable, emitted }
 }
 
 /**
- * One `sense` pass at the current chain head: build the read-only pipeline from `env`, restore the
- * marketParams cache, run {@link runSense} once, and return the refreshed cache for the caller to
+ * One `unhealthy-positions` pass at the current chain head: build the read-only pipeline from `env`, restore the
+ * marketParams cache, run {@link findUnhealthyPositions} once, and return the refreshed cache for the caller to
  * persist. Never touches the filesystem, `process.stdout`, or `Bun.env` — records ride `emit`, logs
  * ride `logger`, config comes from the env table. Loadable without any secret.
  *
  * `runStartupChecks` gates the boot-time diagnostics (Morpho code + the rindexer discovery
  * self-check) so they run on a fresh host rather than every ~2s spawn.
  */
-export async function senseOnce(
+export async function runUnhealthyPositions(
   env: Env,
   opts: {
-    cache: BlueSenseCache | null
+    cache: BlueUnhealthyPositionsCache | null
     runStartupChecks: boolean
     logger: Logger
     emit: (record: PositionRecord) => void
   }
-): Promise<{ cache: BlueSenseCache }> {
-  const config: SenseConfig = loadSenseConfig(env)
+): Promise<{ cache: BlueUnhealthyPositionsCache }> {
+  const config: UnhealthyPositionsConfig = loadUnhealthyPositionsConfig(env)
   const { logger, emit } = opts
 
   const client = createDeploylessClient(config)
@@ -186,7 +186,7 @@ export async function senseOnce(
   }
 
   const head = await getBlockNumber(client)
-  await runSense({
+  await findUnhealthyPositions({
     chainId: config.chainId,
     discover,
     syncedBlock: () => rindexerSyncedBlock(query, config.network),

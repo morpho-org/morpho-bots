@@ -55,7 +55,7 @@ const REQUEST_TIMEOUT_MS = 5_000
 const MAX_REQUEST_RETRIES = 3
 
 /**
- * Builds the {@link ListedMarketFilter}. Mirrors `discovery/borrowers.ts`'s HTTP conventions (direct
+ * Builds the {@link ListedMarketFilter}. Mirrors `borrowers.ts`'s HTTP conventions (direct
  * `fetch`, retry 429/5xx/network with `Retry-After`, {@link REQUEST_TIMEOUT_MS} deadline) — this
  * endpoint is Morpho's own (not a rate-limited venue), so a small self-contained client suffices.
  * `fetchImpl`/`sleep`/`now` are injectable for tests.

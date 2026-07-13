@@ -4,9 +4,9 @@ import type { RateLimitedClient, SwapConfigEntry } from '@repo/swaps'
 import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
 
+import type { LensOut } from '../src/lens.sol'
 import type { MarketParams } from '../src/market'
 import type { LiquidationPlan } from '../src/sizing/plan'
-import type { LensOut } from '../src/state/lens.sol'
 
 import { ORACLE_PRICE_SCALE, WAD } from '../src/constants'
 import { composeQuoting } from '../src/quotes'

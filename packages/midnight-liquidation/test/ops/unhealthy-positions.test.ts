@@ -5,12 +5,12 @@ import type { Address, Hex } from 'viem'
 import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
 
-import type { BorrowerCandidate } from '../../src/discovery/borrowers'
-import type { LensInput, LensOut } from '../../src/state/lens.sol'
+import type { BorrowerCandidate } from '../../src/borrowers'
+import type { LensInput, LensOut } from '../../src/lens.sol'
 
-import { runSense } from '../../src/sense/sense'
-import { lensKey } from '../../src/state/lens.sol'
-import { formatOpportunityId } from '../../src/wire'
+import { lensKey } from '../../src/lens.sol'
+import { findUnhealthyPositions } from '../../src/ops/unhealthy-positions'
+import { formatPositionId } from '../../src/position-id'
 
 function spyLogger() {
   const events: { level: string; event: string; fields?: Record<string, unknown> }[] = []
@@ -32,7 +32,7 @@ const TOKEN: Address = getAddress('0x3333333333333333333333333333333333333333')
 const ORACLE: Address = getAddress('0x4444444444444444444444444444444444444444')
 const ZERO = '0x0000000000000000000000000000000000000000' as const
 const MARKET: Hex = `0x${'a'.repeat(64)}`
-const ID = formatOpportunityId(CHAIN_ID, MARKET, BORROWER)
+const ID = formatPositionId(CHAIN_ID, MARKET, BORROWER)
 
 function lensOut(overrides: Partial<LensOut> = {}): LensOut {
   return {
@@ -91,7 +91,7 @@ function runWith(opts: {
 }) {
   const { logger, events } = spyLogger()
   const emitted: PositionRecord[] = []
-  return runSense({
+  return findUnhealthyPositions({
     chainId: CHAIN_ID,
     caller: CALLER,
     discover: async () => {
@@ -105,7 +105,7 @@ function runWith(opts: {
   }).then(counters => ({ counters, emitted, events }))
 }
 
-describe('runSense', () => {
+describe('findUnhealthyPositions', () => {
   it('emits one fully-formed opportunity per liquidatable, plannable position', async () => {
     const { counters, emitted } = await runWith({})
     expect(counters).toEqual({ pairs: 1, liquidatable: 1, emitted: 1 })

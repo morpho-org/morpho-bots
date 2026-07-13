@@ -9,22 +9,22 @@ import { createRateLimitedClient, createVenueSelector, priceByVenue } from '@rep
 import { erc20Abi, getAddress, isAddress, isHex } from 'viem'
 import { getBlockNumber, readContract } from 'viem/actions'
 
-import type { ActConfig, Env } from '../config'
+import type { LiquidateConfig, Env } from '../config'
 import type { Market } from '../execution/encode-call'
+import type { LensInput, LensOut } from '../lens.sol'
 import type { LiquidationPlan } from '../sizing/plan'
-import type { LensInput, LensOut } from '../state/lens.sol'
 
-import { loadActConfig } from '../config'
+import { loadLiquidateConfig } from '../config'
+import { isLiquidatable, planInputFromLens } from '../eligibility'
 import { encodeLiquidationExec } from '../execution/encode-call'
+import { lensKey, readMidnightLiquidationLens } from '../lens.sol'
 import { composeQuoting } from '../quotes'
 import { isBadDebtRealization, plan } from '../sizing/plan'
-import { lensKey, readMidnightLiquidationLens } from '../state/lens.sol'
-import { isLiquidatable, planInputFromLens } from '../tick/eligibility'
 
-/** `act`'s disposable cache: the venue selector's per-pair ladder rankings + decimals. */
-export type MidnightActCache = VenueSelectorState
+/** `liquidate`'s disposable cache: the venue selector's per-pair ladder rankings + decimals. */
+export type MidnightLiquidateCache = VenueSelectorState
 
-export type ActCounters = {
+export type LiquidateCounters = {
   requested: number
   invalid: number
   notLiquidatable: number
@@ -83,7 +83,7 @@ function txRecord(
  * positions are structured stderr events; only successful transactions reach stdout. Pure bad-debt
  * realization skips quoting.
  */
-export async function runAct(deps: {
+export async function prepareLiquidations(deps: {
   records: readonly unknown[]
   chainId: number
   head: bigint
@@ -100,7 +100,7 @@ export async function runAct(deps: {
   executor: Address
   emit: (record: TransactionRecord) => void
   logger: Logger
-}): Promise<ActCounters> {
+}): Promise<LiquidateCounters> {
   const {
     records,
     chainId,
@@ -115,7 +115,7 @@ export async function runAct(deps: {
     logger
   } = deps
 
-  const counters: ActCounters = {
+  const counters: LiquidateCounters = {
     requested: records.length,
     invalid: 0,
     notLiquidatable: 0,
@@ -129,7 +129,7 @@ export async function runAct(deps: {
   for (const record of records) {
     const parsed = parsePosition(record, chainId)
     if (!parsed) {
-      logger.warn('act.skip', { status: 'invalid_record', record })
+      logger.warn('transform.skip', { status: 'invalid_record', record })
       counters.invalid += 1
       continue
     }
@@ -137,7 +137,7 @@ export async function runAct(deps: {
   }
 
   if (evaluands.length === 0) {
-    logger.info('act.end', { ...counters })
+    logger.info('transform.end', { ...counters })
     return counters
   }
 
@@ -146,13 +146,13 @@ export async function runAct(deps: {
   for (const item of evaluands) {
     const out = lensOut.get(lensKey(item.marketId, item.borrower))
     if (!out || !isLiquidatable(out)) {
-      logger.info('act.skip', { id: item.id, status: 'not_liquidatable', block: head })
+      logger.info('transform.skip', { id: item.id, status: 'not_liquidatable', block: head })
       counters.notLiquidatable += 1
       continue
     }
     const liquidationPlan = plan(planInputFromLens(out), { seizeCapMarginBps })
     if (!liquidationPlan) {
-      logger.info('act.skip', {
+      logger.info('transform.skip', {
         id: item.id,
         status: 'not_liquidatable',
         reason: 'degenerate_plan',
@@ -169,12 +169,12 @@ export async function runAct(deps: {
     if (!badDebt) {
       const outcome = await quoteFor(liquidationPlan, out)
       if (outcome.kind === 'no_config') {
-        logger.warn('act.skip', { id: item.id, status: 'no_swap_path', block: head })
+        logger.warn('transform.skip', { id: item.id, status: 'no_swap_path', block: head })
         counters.noSwapPath += 1
         continue
       }
       if (outcome.kind === 'failed') {
-        logger.warn('act.skip', {
+        logger.warn('transform.skip', {
           id: item.id,
           status: 'quote_failed',
           reason: outcome.reason,
@@ -193,7 +193,12 @@ export async function runAct(deps: {
       swap
     })
     if (revert !== null) {
-      logger.warn('act.skip', { id: item.id, status: 'sim_reverted', reason: revert, block: head })
+      logger.warn('transform.skip', {
+        id: item.id,
+        status: 'sim_reverted',
+        reason: revert,
+        block: head
+      })
       counters.reverted += 1
       continue
     }
@@ -202,29 +207,29 @@ export async function runAct(deps: {
     counters.ok += 1
   }
 
-  logger.info('act.end', { ...counters })
+  logger.info('transform.end', { ...counters })
   return counters
 }
 
 /**
- * One `act` pass at the current chain head: build the multi-venue quote → simulate pipeline from
- * `env`, run {@link runAct} over positions, and return the refreshed venue-selector cache for the caller
+ * One `liquidate` pass at the current chain head: build the multi-venue quote → simulate pipeline from
+ * `env`, run {@link prepareLiquidations} over positions, and return the refreshed venue-selector cache for the caller
  * to persist. Needs venue API keys — read from the env table at the point of use, never stored — but
  * NOT the signer private key. Never touches the filesystem, `process.stdout`, or `Bun.env`.
  *
  * `runStartupChecks` gates the boot-time Executor-code + venue diagnostics.
  */
-export async function actOnce(
+export async function runLiquidate(
   env: Env,
   records: readonly unknown[],
   opts: {
-    cache: MidnightActCache | null
+    cache: MidnightLiquidateCache | null
     runStartupChecks: boolean
     logger: Logger
     emit: (record: TransactionRecord) => void
   }
-): Promise<{ cache: MidnightActCache }> {
-  const config: ActConfig = loadActConfig(env)
+): Promise<{ cache: MidnightLiquidateCache }> {
+  const config: LiquidateConfig = loadLiquidateConfig(env)
   const { logger, emit } = opts
 
   const client = createDeploylessClient(config)
@@ -334,7 +339,7 @@ export async function actOnce(
   }
 
   const head = await getBlockNumber(client)
-  await runAct({
+  await prepareLiquidations({
     records,
     chainId: config.chainId,
     head,

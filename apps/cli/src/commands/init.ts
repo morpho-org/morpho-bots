@@ -6,7 +6,7 @@ import { join } from 'node:path'
 // full knob list is each bot's src/config.ts. "_" keys are documentation; the bots ignore them.
 const EXAMPLE_CONFIG = {
   _readme:
-    'Non-secret settings. Keys are the bots’ env-var names; per-chain overlays under chains.<id> beat defaults; process env beats everything. LIQUIDATOR_ADDRESS is act’s skim recipient and simulate `from`; morpho-queued verifies it against morpho-signer at startup.',
+    'Non-secret settings. Keys are the bots’ env-var names; per-chain overlays under chains.<id> beat defaults; process env beats everything. LIQUIDATOR_ADDRESS is the `liquidate` transform’s skim recipient and simulate `from`; morpho-queued verifies it against morpho-signer at startup.',
   blue: {
     defaults: { LOG_LEVEL: 'info' },
     chains: {

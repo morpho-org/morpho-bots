@@ -44,8 +44,8 @@ export async function runOpCommand(
   const cachePath = opCacheFile(home, domain, op, chainId)
   const cache = loadCache(cachePath, adapter.cacheVersion)
   try {
-    if (adapter.kind === 'sense') {
-      const result = await adapter.senseOnce(env, {
+    if (adapter.kind === 'source') {
+      const result = await adapter.run(env, {
         cache,
         runStartupChecks: cache === null,
         logger,
@@ -58,7 +58,7 @@ export async function runOpCommand(
     if (process.stdin.isTTY) return 0
     let currentCache = cache
     const summary = await consumeRecordBatches(Bun.stdin.stream(), logger, async records => {
-      const result = await adapter.actOnce(env, records, {
+      const result = await adapter.run(env, records, {
         cache: currentCache,
         runStartupChecks: currentCache === null,
         logger,

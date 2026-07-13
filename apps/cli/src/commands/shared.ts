@@ -13,7 +13,7 @@ export function fail(event: string, error: unknown): void {
 /**
  * Writes one wire record to stdout as a single JSON line (line-buffered). Wire records carry only
  * bare decimal strings and `0x`-hex — never raw bigints — so `JSON.stringify` never throws. EPIPE is
- * benign under Bun (a closed-pipe write neither raises nor kills the process), so `sense | head` is
+ * benign under Bun (a closed-pipe write neither raises nor kills the process), so `unhealthy-positions | head` is
  * clean without special handling.
  */
 export function emitLine(record: unknown): void {

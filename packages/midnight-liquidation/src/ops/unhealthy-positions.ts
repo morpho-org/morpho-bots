@@ -6,32 +6,28 @@ import { createDeploylessClient } from '@repo/evm-kit'
 import { tryCatch } from '@repo/utils'
 import { getBlockNumber } from 'viem/actions'
 
-import type { Env, SenseConfig } from '../config'
-import type { BorrowerCandidate } from '../discovery/borrowers'
-import type { ListedMarketsState } from '../discovery/markets'
+import type { BorrowerCandidate } from '../borrowers'
+import type { Env, UnhealthyPositionsConfig } from '../config'
+import type { LensInput, LensOut } from '../lens.sol'
+import type { ListedMarketsState } from '../markets'
 import type { LiquidationPlan } from '../sizing/plan'
-import type { LensInput, LensOut } from '../state/lens.sol'
 
-import { loadSenseConfig } from '../config'
+import { createApiCandidateSource, discoverBorrowers, MAX_DISCOVERY_PAGES } from '../borrowers'
+import { loadUnhealthyPositionsConfig } from '../config'
 import { LISTED_MARKETS_MAX_AGE_MS } from '../constants'
-import {
-  createApiCandidateSource,
-  discoverBorrowers,
-  MAX_DISCOVERY_PAGES
-} from '../discovery/borrowers'
-import { createListedMarketFilter } from '../discovery/markets'
+import { isLiquidatable, planInputFromLens } from '../eligibility'
 import { expectedLoanOut } from '../execution/swap-step'
+import { lensKey, readMidnightLiquidationLens } from '../lens.sol'
+import { createListedMarketFilter } from '../markets'
+import { formatPositionId } from '../position-id'
 import { plan } from '../sizing/plan'
-import { lensKey, readMidnightLiquidationLens } from '../state/lens.sol'
-import { isLiquidatable, planInputFromLens } from '../tick/eligibility'
-import { formatOpportunityId } from '../wire'
 
-/** Prior `sense` cache: the market whitelist snapshot (with its `updatedAt` staleness signal). */
-export type MidnightSenseCache = ListedMarketsState
+/** Prior `unhealthy-positions` cache: the market whitelist snapshot (with its `updatedAt` staleness signal). */
+export type MidnightUnhealthyPositionsCache = ListedMarketsState
 
-export type SenseCounters = { pairs: number; liquidatable: number; emitted: number }
+export type UnhealthyPositionsCounters = { pairs: number; liquidatable: number; emitted: number }
 
-// Advisory-only sizing margin: sense reports an indicative seize; `act` re-sizes with the configured
+// Advisory-only sizing margin: the source op reports an indicative seize; `liquidate` re-sizes with the configured
 // margin, so a 0 here (no headroom) is fine — the payload never gates a transaction.
 const ADVISORY_SEIZE_CAP_MARGIN_BPS = 0
 
@@ -52,7 +48,7 @@ function opportunityRecord(
   const mode = liquidationPlan.postMaturityMode ? ' (post-maturity)' : ''
   return {
     kind: 'position',
-    id: formatOpportunityId(chainId, id, borrower),
+    id: formatPositionId(chainId, id, borrower),
     chainId,
     marketId: id,
     borrower,
@@ -75,7 +71,7 @@ function opportunityRecord(
  * tolerated (`discover.error`, proceed with zero candidates). Deps are injected so the sensor is
  * unit-testable without a chain, a discovery endpoint, or config.
  */
-export async function runSense(deps: {
+export async function findUnhealthyPositions(deps: {
   chainId: number
   /** The Executor singleton — the `liquidate` msg.sender whose gate the lens checks. */
   caller: Address
@@ -84,7 +80,7 @@ export async function runSense(deps: {
   readLens: (pairs: LensInput[]) => Promise<Map<string, LensOut>>
   emit: (record: PositionRecord) => void
   logger: Logger
-}): Promise<SenseCounters> {
+}): Promise<UnhealthyPositionsCounters> {
   const { chainId, caller, discover, chainHead, readLens, emit, logger } = deps
 
   const { data: candidates, error: discoverError } = await tryCatch(discover())
@@ -113,28 +109,28 @@ export async function runSense(deps: {
     emit(opportunityRecord(chainId, pair.id, pair.borrower, out, liquidationPlan, chainHead))
   }
 
-  logger.info('sense.end', { pairs: pairs.length, liquidatable, emitted })
+  logger.info('source.end', { pairs: pairs.length, liquidatable, emitted })
   return { pairs: pairs.length, liquidatable, emitted }
 }
 
 /**
- * One `sense` pass at the current chain head: build the read-only pipeline from `env`, restore and
- * refresh the market whitelist (fail-closed past its max age), run {@link runSense} once, and return
+ * One `unhealthy-positions` pass at the current chain head: build the read-only pipeline from `env`, restore and
+ * refresh the market whitelist (fail-closed past its max age), run {@link findUnhealthyPositions} once, and return
  * the refreshed whitelist for the caller to persist. Never touches the filesystem, `process.stdout`,
  * or `Bun.env`. Loadable without any secret.
  *
  * `runStartupChecks` gates the boot-time startup log.
  */
-export async function senseOnce(
+export async function runUnhealthyPositions(
   env: Env,
   opts: {
-    cache: MidnightSenseCache | null
+    cache: MidnightUnhealthyPositionsCache | null
     runStartupChecks: boolean
     logger: Logger
     emit: (record: PositionRecord) => void
   }
-): Promise<{ cache: MidnightSenseCache }> {
-  const config: SenseConfig = loadSenseConfig(env)
+): Promise<{ cache: MidnightUnhealthyPositionsCache }> {
+  const config: UnhealthyPositionsConfig = loadUnhealthyPositionsConfig(env)
   const { logger, emit } = opts
 
   const client = createDeploylessClient(config)
@@ -188,7 +184,7 @@ export async function senseOnce(
   }
 
   const head = await getBlockNumber(client)
-  await runSense({
+  await findUnhealthyPositions({
     chainId: config.chainId,
     caller: config.executooorAddress,
     discover,

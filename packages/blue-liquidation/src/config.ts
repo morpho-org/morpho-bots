@@ -28,7 +28,7 @@ const robinhood = defineChain({
 })
 
 // The rindexer network name for a chain — the value rindexer writes into the shared Postgres table's
-// `network` column and the discriminator the bot filters discovery on (see discovery/borrowers.ts).
+// `network` column and the discriminator the bot filters discovery on (see borrowers.ts).
 // A closed union (not `string`) so a typo in the chain map vs. rindexer.yaml is a compile error, not
 // a silent empty-discovery at runtime.
 const NETWORKS = ['base', 'robinhood'] as const
@@ -92,24 +92,24 @@ type CommonConfig = {
 }
 
 /**
- * Config for the read-only `sense` stage: discovery (Postgres) + the lens read. Loadable WITHOUT the
- * signer private key and WITHOUT venue API keys — `sense` is genuinely secret-free (see the pipeline
+ * Config for the read-only `unhealthy-positions` source op: discovery (Postgres) + the lens read. Loadable WITHOUT the
+ * signer private key and WITHOUT venue API keys — the source op is genuinely secret-free (see the pipeline
  * TIB's key-custody split).
  */
-export type SenseConfig = CommonConfig & {
+export type UnhealthyPositionsConfig = CommonConfig & {
   /** Postgres connection string for the co-located rindexer instance (borrower discovery). */
   databaseUrl: string
 }
 
 /**
- * Config for the `act` stage: re-derive → quote → simulate. Needs venue API keys (read at the point
- * of use in `actOnce`, never stored here) but NOT the signer private key — `act` never signs.
+ * Config for the `liquidate` transform: re-derive → quote → simulate. Needs venue API keys (read at the point
+ * of use in `runLiquidate`, never stored here) but NOT the signer private key — the transform never signs.
  */
-export type ActConfig = Omit<CommonConfig, 'network'> & {
+export type LiquidateConfig = Omit<CommonConfig, 'network'> & {
   executooorAddress: Address
   /**
    * The operator EOA (`LIQUIDATOR_ADDRESS`) — the skim `recipient` in the exec calldata and the
-   * simulate `from`. An address, not a key: `act` builds and simulates the exact bytes the queue
+   * simulate `from`. An address, not a key: `liquidate` builds and simulates the exact bytes the queue
    * (the sole key holder) later signs, so this must be the queue's signer address. Skimming to any
    * other address — the ownerless Executor especially — strands seized funds where anyone can take
    * them.
@@ -212,7 +212,7 @@ function resolveExecutor(env: Env): Address {
   return override ? getAddress(override) : getAddress(Executor.with().address)
 }
 
-// The operator EOA `act` targets: required (no derivable default — act has no key to derive from),
+// The operator EOA `liquidate` targets: required (no derivable default — the transform has no key),
 // checksum-normalized, fail-loud on a malformed value.
 function resolveLiquidatorAddress(env: Env): Address {
   const raw = required(env, 'LIQUIDATOR_ADDRESS').trim()
@@ -280,23 +280,26 @@ function resolveQuoting(env: Env): QuotingConfig {
 }
 
 /**
- * Reads the env table into the read-only {@link SenseConfig} — chain, RPC, discovery Postgres, log
- * level. Deliberately does NOT require `LIQUIDATOR_PRIVATE_KEY` or any venue API key: `sense` is
+ * Reads the env table into the read-only {@link UnhealthyPositionsConfig} — chain, RPC, discovery Postgres, log
+ * level. Deliberately does NOT require `LIQUIDATOR_PRIVATE_KEY` or any venue API key: `unhealthy-positions` is
  * secret-free. Throws on any missing required var or unknown `CHAIN_ID`.
  */
-export function loadSenseConfig(env: Env = Bun.env, deps: LoadDeps = {}): SenseConfig {
+export function loadUnhealthyPositionsConfig(
+  env: Env = Bun.env,
+  deps: LoadDeps = {}
+): UnhealthyPositionsConfig {
   const common = resolveCommon(env, deps.chainMap ?? CHAIN_MAP)
   return { ...common, databaseUrl: required(env, 'DATABASE_URL') }
 }
 
 /**
- * Reads the env table into the {@link ActConfig} — chain, RPC, Executor, the operator EOA
+ * Reads the env table into the {@link LiquidateConfig} — chain, RPC, Executor, the operator EOA
  * (`LIQUIDATOR_ADDRESS`, required — the skim recipient and simulate `from`), swap routing, quoting.
- * Needs venue API keys (validated against the swap config; read at the point of use in `actOnce`)
+ * Needs venue API keys (validated against the swap config; read at the point of use in `runLiquidate`)
  * but NOT the signer private key. Throws on any missing required var, unknown `CHAIN_ID`, or a
  * configured venue whose API key is absent.
  */
-export function loadActConfig(env: Env = Bun.env, deps: LoadDeps = {}): ActConfig {
+export function loadLiquidateConfig(env: Env = Bun.env, deps: LoadDeps = {}): LiquidateConfig {
   const readFile = deps.readFile ?? (path => readFileSync(path, 'utf8'))
   const common = resolveCommon(env, deps.chainMap ?? CHAIN_MAP)
   return {

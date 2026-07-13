@@ -6,15 +6,15 @@ import type { Address } from 'viem'
 import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
 
+import type { LensOut } from '../../src/lens.sol'
 import type { MarketParams } from '../../src/market'
-import type { LensOut } from '../../src/state/lens.sol'
 
-import { runAct } from '../../src/act/act'
-import { loadActConfig } from '../../src/config'
+import { loadLiquidateConfig } from '../../src/config'
 import { ORACLE_PRICE_SCALE, WAD } from '../../src/constants'
+import { lensKey } from '../../src/lens.sol'
 import { marketId } from '../../src/market'
-import { lensKey } from '../../src/state/lens.sol'
-import { formatOpportunityId } from '../../src/wire'
+import { prepareLiquidations } from '../../src/ops/liquidate'
+import { formatPositionId } from '../../src/position-id'
 
 function spyLogger() {
   const events: { level: string; event: string; fields?: Record<string, unknown> }[] = []
@@ -45,7 +45,7 @@ const PARAMS: MarketParams = {
   irm: IRM,
   lltv: 86n * 10n ** 16n
 }
-const ID = formatOpportunityId(CHAIN_ID, marketId(PARAMS), BORROWER)
+const ID = formatPositionId(CHAIN_ID, marketId(PARAMS), BORROWER)
 
 const SWAP: Swap = {
   spender: ROUTER,
@@ -88,7 +88,7 @@ function runWith(opts: {
   let quoteCalls = 0
   let simCalls = 0
   const head = opts.head ?? 100n
-  const promise = runAct({
+  const promise = prepareLiquidations({
     records: opts.records ?? [
       {
         kind: 'position',
@@ -132,7 +132,7 @@ function runWith(opts: {
   }))
 }
 
-describe('runAct', () => {
+describe('prepareLiquidations', () => {
   it('emits a transaction for a liquidatable position whose sim succeeds', async () => {
     const { counters, emitted, quoteCalls, simCalls } = await runWith({ simRevert: null })
     expect(counters.ok).toBe(1)
@@ -156,9 +156,9 @@ describe('runAct', () => {
     })
     expect(counters.invalid).toBe(1)
     expect(emitted).toHaveLength(0)
-    expect(events.some(e => e.event === 'act.skip' && e.fields?.status === 'invalid_record')).toBe(
-      true
-    )
+    expect(
+      events.some(e => e.event === 'transform.skip' && e.fields?.status === 'invalid_record')
+    ).toBe(true)
     expect(lensReads()).toBe(0)
   })
 
@@ -259,7 +259,7 @@ describe('runAct', () => {
   })
 })
 
-describe('loadActConfig', () => {
+describe('loadLiquidateConfig', () => {
   // An `undefined` override models the var being absent — `required()` treats both the same.
   const actEnv = (overrides: Record<string, string | undefined> = {}) => ({
     CHAIN_ID: String(CHAIN_ID),
@@ -269,19 +269,19 @@ describe('loadActConfig', () => {
   })
 
   it('fails loud without LIQUIDATOR_ADDRESS (the skim recipient / simulate from)', () => {
-    expect(() => loadActConfig(actEnv({ LIQUIDATOR_ADDRESS: undefined }))).toThrow(
+    expect(() => loadLiquidateConfig(actEnv({ LIQUIDATOR_ADDRESS: undefined }))).toThrow(
       /LIQUIDATOR_ADDRESS/
     )
   })
 
   it('rejects a malformed LIQUIDATOR_ADDRESS', () => {
-    expect(() => loadActConfig(actEnv({ LIQUIDATOR_ADDRESS: 'nope' }))).toThrow(
+    expect(() => loadLiquidateConfig(actEnv({ LIQUIDATOR_ADDRESS: 'nope' }))).toThrow(
       /LIQUIDATOR_ADDRESS is not a valid address/
     )
   })
 
   it('checksums LIQUIDATOR_ADDRESS and never requires the private key', () => {
-    const config = loadActConfig(actEnv({ LIQUIDATOR_ADDRESS: BORROWER.toLowerCase() }))
+    const config = loadLiquidateConfig(actEnv({ LIQUIDATOR_ADDRESS: BORROWER.toLowerCase() }))
     expect(config.liquidatorAddress).toBe(BORROWER)
     expect('liquidatorPrivateKey' in config).toBe(false)
   })

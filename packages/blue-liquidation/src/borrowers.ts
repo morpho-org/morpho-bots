@@ -3,8 +3,8 @@ import type { Address, Hex } from 'viem'
 import { SQL } from 'bun'
 import { getAddress, isAddress } from 'viem'
 
-import type { Network } from '../config'
-import type { MarketParams } from '../market'
+import type { Network } from './config'
+import type { MarketParams } from './market'
 
 export type Row = Record<string, unknown>
 // Bound params (`$1`, `$2`, …) are passed separately from the SQL so values (e.g. the network name)
@@ -15,7 +15,7 @@ export type QueryFn = (sql: string, params?: readonly unknown[]) => Promise<read
 type BorrowerId = { id: Hex; borrower: Address }
 
 /** A candidate position to evaluate: a (market, borrower) pair, with the market's immutable params
- * resolved on-chain via `idToMarketParams(id)` (see ../state/market-params.ts). */
+ * resolved on-chain via `idToMarketParams(id)` (see ../market-params.ts). */
 export type BorrowerCandidate = { marketParams: MarketParams; borrower: Address }
 
 // rindexer's no-code Postgres writes one table per indexed event, under a schema named after the
@@ -86,7 +86,7 @@ export async function discoverBorrowerIds(query: QueryFn, network: Network): Pro
 /**
  * The full discovery step for one `network`: the distinct (id, borrower) universe from `Borrow`, with
  * each market's immutable {@link MarketParams} resolved on-chain via `resolveParams` (backed by
- * `idToMarketParams(id)` — see ../state/market-params.ts). A pair whose id doesn't resolve to a market
+ * `idToMarketParams(id)` — see ../market-params.ts). A pair whose id doesn't resolve to a market
  * is dropped. `resolveParams` is injected so this composes cleanly and stays unit-testable without a
  * chain.
  */

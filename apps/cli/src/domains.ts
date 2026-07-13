@@ -1,12 +1,12 @@
 import type { BotName } from '@repo/home'
-import type { OpExport } from '@repo/pipeline'
+import type { Operation } from '@repo/pipeline'
 
 type DomainRegistry = {
-  loadOp: (name: string) => Promise<OpExport>
+  loadOp: (name: string) => Promise<Operation>
 }
 
 /** Picks the loaded op or rejects an unknown runtime command. */
-function pickOp(ops: Record<string, OpExport>, name: string, domain: BotName): OpExport {
+function pickOp(ops: Record<string, Operation>, name: string, domain: BotName): Operation {
   const op = ops[name]
   if (!op) throw new Error(`unknown op '${name}' for ${domain}`)
   return op

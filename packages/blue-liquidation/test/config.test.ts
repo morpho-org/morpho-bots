@@ -5,9 +5,9 @@ import { getAddress } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
 
-import type { ActConfig, ChainConfig, QuotingConfig } from '../src/config'
+import type { LiquidateConfig, ChainConfig, QuotingConfig } from '../src/config'
 
-import { loadActConfig, loadSenseConfig } from '../src/config'
+import { loadLiquidateConfig, loadUnhealthyPositionsConfig } from '../src/config'
 
 const MORPHO = getAddress('0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb')
 const KEY = `0x${'1'.repeat(64)}`
@@ -36,9 +36,9 @@ const missingFileRead = (): string => {
   throw err
 }
 
-describe('loadSenseConfig', () => {
+describe('loadUnhealthyPositionsConfig', () => {
   it('loads a valid Base config with the canonical Morpho singleton (secret-free)', () => {
-    const config = loadSenseConfig(baseEnv())
+    const config = loadUnhealthyPositionsConfig(baseEnv())
     expect(config.chainId).toBe(base.id)
     expect(config.network).toBe('base')
     expect(config.morpho).toBe(MORPHO)
@@ -48,7 +48,7 @@ describe('loadSenseConfig', () => {
   })
 
   it('resolves the Robinhood chain with its own (non-canonical) Morpho singleton and network', () => {
-    const config = loadSenseConfig(baseEnv({ CHAIN_ID: '4663' }))
+    const config = loadUnhealthyPositionsConfig(baseEnv({ CHAIN_ID: '4663' }))
     expect(config.chainId).toBe(4663)
     expect(config.network).toBe('robinhood')
     expect(config.morpho).toBe(getAddress('0x9D53d5E3bd5E8d4Cbfa6DB1ca238AEA02E651010'))
@@ -56,17 +56,21 @@ describe('loadSenseConfig', () => {
   })
 
   it('fails loud on each missing required var it owns', () => {
-    expect(() => loadSenseConfig(baseEnv({ CHAIN_ID: undefined }))).toThrow(/CHAIN_ID/)
-    expect(() => loadSenseConfig(baseEnv({ RPC_URL: undefined }))).toThrow(/RPC_URL/)
-    expect(() => loadSenseConfig(baseEnv({ DATABASE_URL: undefined }))).toThrow(/DATABASE_URL/)
+    expect(() => loadUnhealthyPositionsConfig(baseEnv({ CHAIN_ID: undefined }))).toThrow(/CHAIN_ID/)
+    expect(() => loadUnhealthyPositionsConfig(baseEnv({ RPC_URL: undefined }))).toThrow(/RPC_URL/)
+    expect(() => loadUnhealthyPositionsConfig(baseEnv({ DATABASE_URL: undefined }))).toThrow(
+      /DATABASE_URL/
+    )
   })
 
   it('rejects an unsupported chain id', () => {
-    expect(() => loadSenseConfig(baseEnv({ CHAIN_ID: '1' }))).toThrow(/Unsupported CHAIN_ID/)
+    expect(() => loadUnhealthyPositionsConfig(baseEnv({ CHAIN_ID: '1' }))).toThrow(
+      /Unsupported CHAIN_ID/
+    )
   })
 
   it('is loadable WITHOUT the signer private key (sense is secret-free)', () => {
-    const config = loadSenseConfig(baseEnv({ LIQUIDATOR_PRIVATE_KEY: undefined }))
+    const config = loadUnhealthyPositionsConfig(baseEnv({ LIQUIDATOR_PRIVATE_KEY: undefined }))
     expect(config.chainId).toBe(base.id)
   })
 
@@ -74,27 +78,29 @@ describe('loadSenseConfig', () => {
     const chainMap: Record<number, ChainConfig> = {
       [base.id]: { chain: base, morpho: MORPHO, network: 'base' }
     }
-    expect(loadSenseConfig(baseEnv(), { chainMap }).morpho).toBe(MORPHO)
-    expect(() => loadSenseConfig(baseEnv({ CHAIN_ID: '10' }), { chainMap })).toThrow(/Unsupported/)
+    expect(loadUnhealthyPositionsConfig(baseEnv(), { chainMap }).morpho).toBe(MORPHO)
+    expect(() => loadUnhealthyPositionsConfig(baseEnv({ CHAIN_ID: '10' }), { chainMap })).toThrow(
+      /Unsupported/
+    )
   })
 })
 
-describe('loadActConfig', () => {
+describe('loadLiquidateConfig', () => {
   it('derives the Executor CREATE2 address and defaults to no swap routes', () => {
-    const config: ActConfig = loadActConfig(baseEnv())
+    const config: LiquidateConfig = loadLiquidateConfig(baseEnv())
     expect(config.executooorAddress).toMatch(/^0x[0-9a-fA-F]{40}$/)
     expect(config.swapConfig).toEqual({})
     expect(config.liquidatorAddress).toBe(DERIVED)
   })
 
   it('parses quoting tunables with safe defaults', () => {
-    const quoting: QuotingConfig = loadActConfig(baseEnv()).quoting
+    const quoting: QuotingConfig = loadLiquidateConfig(baseEnv()).quoting
     expect(quoting.maxRouteImpactBps).toBe(500)
     expect(quoting.httpRps).toBe(2)
   })
 
   it('treats an absent swap-config file as no routes (non-fatal first-deploy bootstrap)', () => {
-    const config = loadActConfig(baseEnv({ SWAP_CONFIG_PATH: '/config/swap.json' }), {
+    const config = loadLiquidateConfig(baseEnv({ SWAP_CONFIG_PATH: '/config/swap.json' }), {
       readFile: missingFileRead
     })
     expect(config.swapConfig).toEqual({})
@@ -111,7 +117,7 @@ describe('loadActConfig', () => {
         }
       }
     }
-    const config = loadActConfig(baseEnv({ SWAP_CONFIG_PATH: '/config/swap.json' }), {
+    const config = loadLiquidateConfig(baseEnv({ SWAP_CONFIG_PATH: '/config/swap.json' }), {
       readFile: () => JSON.stringify(swap)
     })
     expect(config.swapConfig[String(base.id)]).toBeDefined()
@@ -124,17 +130,17 @@ describe('loadActConfig', () => {
       }
     }
     expect(() =>
-      loadActConfig(baseEnv({ SWAP_CONFIG_PATH: '/config/swap.json' }), {
+      loadLiquidateConfig(baseEnv({ SWAP_CONFIG_PATH: '/config/swap.json' }), {
         readFile: () => JSON.stringify(swap)
       })
     ).toThrow(/ONEINCH_API_KEY/)
   })
 
   it('requires LIQUIDATOR_ADDRESS (act has no key to derive it from) and rejects a malformed one', () => {
-    expect(() => loadActConfig(baseEnv({ LIQUIDATOR_ADDRESS: undefined }))).toThrow(
+    expect(() => loadLiquidateConfig(baseEnv({ LIQUIDATOR_ADDRESS: undefined }))).toThrow(
       /LIQUIDATOR_ADDRESS/
     )
-    expect(() => loadActConfig(baseEnv({ LIQUIDATOR_ADDRESS: 'not-an-address' }))).toThrow(
+    expect(() => loadLiquidateConfig(baseEnv({ LIQUIDATOR_ADDRESS: 'not-an-address' }))).toThrow(
       /LIQUIDATOR_ADDRESS is not a valid address/
     )
   })
