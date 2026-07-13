@@ -34,7 +34,7 @@ For each app identified by the `release-{app}` labels:
 2. **Get the current package version** to determine what the new release will be:
 
    ```bash
-   jq -r .version bots/{bot}/package.json
+   jq -r .version packages/{bot}/package.json
    ```
 
    If the app version hasn't actually been bumped yet, skip remaining analysis and omit the app from
@@ -43,19 +43,19 @@ For each app identified by the `release-{app}` labels:
 3. **Compare the diff** between the latest tag and the current HEAD:
 
    ```bash
-   git diff {latest-tag}...HEAD -- bots/{bot}
+   git diff {latest-tag}...HEAD -- packages/{bot}
    ```
 
    If no tag exists (initial release), compare against the base branch:
 
    ```bash
-   git diff origin/main...HEAD -- bots/{bot}
+   git diff origin/main...HEAD -- packages/{bot}
    ```
 
 4. **Get commit messages** in the release range for context:
 
    ```bash
-   git log {latest-tag}...HEAD --oneline -- bots/{bot}
+   git log {latest-tag}...HEAD --oneline -- packages/{bot}
    ```
 
    (or use `origin/main...HEAD` for initial releases)

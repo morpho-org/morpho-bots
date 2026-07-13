@@ -23,11 +23,17 @@ Quick navigation for the curator-bots documentation.
 
 ## Packages
 
-| Package                                                   | Description                               | Docs |
-| --------------------------------------------------------- | ----------------------------------------- | ---- |
-| [@repo/contracts](../packages/contracts/)                 | Shared contract ABIs and Executor sources | —    |
-| [@repo/typescript-config](../packages/typescript-config/) | Shared TypeScript configuration           | —    |
-| [@repo/utils](../packages/utils/)                         | Shared server-safe utilities              | —    |
+| Package                                                   | Description                                            | Docs |
+| --------------------------------------------------------- | ------------------------------------------------------ | ---- |
+| [@repo/contracts](../packages/contracts/)                 | Shared contract ABIs and Executor sources              | —    |
+| [@repo/evm-kit](../packages/evm-kit/)                     | Deployless client, revert decoding, JSON-lines logger  | —    |
+| [@repo/home](../packages/home/)                           | `~/.morpho-bots` layout: config, state, locks, sockets | —    |
+| [@repo/ipc](../packages/ipc/)                             | Newline-framed Unix-socket JSON server                 | —    |
+| [@repo/pipeline](../packages/pipeline/)                   | Op seam, wire records, position IDs, simulation        | —    |
+| [@repo/signer-client](../packages/signer-client/)         | Signer client + shared wire protocol                   | —    |
+| [@repo/swaps](../packages/swaps/)                         | Multi-venue DEX quoting, routing, and venue selection  | —    |
+| [@repo/typescript-config](../packages/typescript-config/) | Shared TypeScript configuration                        | —    |
+| [@repo/utils](../packages/utils/)                         | Shared server-safe utilities                           | —    |
 
 ---
 

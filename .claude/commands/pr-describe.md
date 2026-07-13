@@ -59,7 +59,7 @@ Use the commit messages as a guide but write a higher-level summary.
 A bulleted list highlighting the most important changes, grouped by component/area:
 
 - Use file links in the format:
-  `bots/kill-switch/src/trigger.ts:42`
+  `packages/kill-switch/src/trigger.ts:42`
 - Focus on substantive changes, not trivial ones
 - Group related changes together (e.g., "Updated all trigger paths to use shared retry helper")
 - Include 4-8 key changes maximum
@@ -68,10 +68,10 @@ Format example:
 
 ```markdown
 - **Trigger pipeline**: Extracted retry-with-backoff into a shared helper
-  - `bots/kill-switch/src/trigger.ts:45`
-  - `bots/kill-switch/src/handlers.ts:120`
+  - `packages/kill-switch/src/trigger.ts:45`
+  - `packages/kill-switch/src/handlers.ts:120`
 - **ABI wiring**: Added VaultV2 deallocate call site
-  - `bots/kill-switch/src/actions/deallocate.ts:1`
+  - `packages/kill-switch/src/actions/deallocate.ts:1`
 ```
 
 #### 4. Test Plan

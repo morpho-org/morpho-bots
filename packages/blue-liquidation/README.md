@@ -1,7 +1,7 @@
 # Morpho Blue liquidation
 
 `@repo/blue-liquidation` implements the two one-shot Blue pipeline operations. Deployment and
-process supervision belong to [`bots/README.md`](../../bots/README.md).
+process supervision belong to [`deploy/README.md`](../../deploy/README.md).
 
 ## Pipeline contract
 

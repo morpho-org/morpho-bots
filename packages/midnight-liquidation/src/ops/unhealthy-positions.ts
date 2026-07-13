@@ -35,7 +35,7 @@ function short(address: Address): string {
   return `${address.slice(0, 6)}…${address.slice(-4)}`
 }
 
-function opportunityRecord(
+function positionRecord(
   chainId: number,
   id: Hex,
   borrower: Address,
@@ -65,10 +65,10 @@ function opportunityRecord(
 }
 
 /**
- * The read-only sensor core: enumerate the whitelist-filtered candidate universe, read the
+ * The read-only source core: enumerate the whitelist-filtered candidate universe, read the
  * liquidation lens fresh for the whole batch (one deployless `eth_call`), and emit one advisory
  * position record per liquidatable, plannable position. A transient discovery failure is
- * tolerated (`discover.error`, proceed with zero candidates). Deps are injected so the sensor is
+ * tolerated (`discover.error`, proceed with zero candidates). Deps are injected so the source is
  * unit-testable without a chain, a discovery endpoint, or config.
  */
 export async function findUnhealthyPositions(deps: {
@@ -106,7 +106,7 @@ export async function findUnhealthyPositions(deps: {
     })
     if (!liquidationPlan) continue
     emitted += 1
-    emit(opportunityRecord(chainId, pair.id, pair.borrower, out, liquidationPlan, chainHead))
+    emit(positionRecord(chainId, pair.id, pair.borrower, out, liquidationPlan, chainHead))
   }
 
   logger.info('source.end', { pairs: pairs.length, liquidatable, emitted })

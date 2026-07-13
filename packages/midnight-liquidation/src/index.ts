@@ -27,7 +27,7 @@ const LIQUIDATE_CACHE_VERSION = 1
 /**
  * The flat op table this core exposes to the CLI (see `@repo/pipeline`'s {@link Operation}). Each op is
  * a source XOR a transform; the CLI surfaces each as its own `midnight <op>` command.
- * `unhealthy-positions` is the sensor (today's `runUnhealthyPositions`); `liquidate` is the transform that
+ * `unhealthy-positions` is the source (`runUnhealthyPositions`); `liquidate` is the transform that
  * consumes it. The CLI dispatches this table directly.
  */
 export const OPS: Record<string, Operation> = {

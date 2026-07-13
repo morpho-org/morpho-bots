@@ -11,8 +11,8 @@ Deploy a curator bot to Railway and read its logs. The **target bot is required*
 ```
 
 If `<bot>` is omitted, list the bots that have a `deploy:railway` script
-(`bots/*/package.json`) and ask the user which to target — do **not** default. Resolve the chosen
-`<bot>` to: package `@morpho-org/<bot>`, env file `bots/<bot>/.env.local`.
+(`packages/*-liquidation/package.json`) and ask the user which to target — do **not** default. Resolve the chosen
+`<bot>` to: package `@morpho-org/<bot>`, env file `deploy/.env.<bot>.local`.
 
 ## Deploy
 
@@ -23,7 +23,7 @@ and redeploys that bot's services. Secrets come from the bot's `.env.local`.
 2. Run in the **background** — the script polls each service up to ~10 min:
 
    ```bash
-   set -a; source bots/<bot>/.env.local; set +a
+   set -a; source deploy/.env.<bot>.local; set +a
    bun run --filter @morpho-org/<bot> deploy:railway
    ```
 
@@ -36,7 +36,7 @@ attributes, so MCP renders the `message` field **blank**. `railway logs` shows t
 `key=value` content. Always pass `--lines`/`--since` (without them it streams forever and hangs).
 
 ```bash
-set -a; source bots/<bot>/.env.local; set +a
+set -a; source deploy/.env.<bot>.local; set +a
 railway logs -s <service> --lines 200
 railway status                            # lists services + Online/offline
 ```

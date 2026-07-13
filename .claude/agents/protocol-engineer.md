@@ -42,7 +42,7 @@ Before answering any question:
    contracts that are directly relevant to the task. These files are large — use Grep to search for
    specific functions or patterns rather than reading the entire file.
 4. **Check chain configuration** if the question involves a specific chain. Each bot defines its own
-   chain support and contract addresses in its own config (typically `bots/<bot>/src/config/`). No
+   chain support and contract addresses in its own config (typically `packages/<bot>-liquidation/src/config.ts`). No
    monorepo-wide chain package exists in this repo yet.
 
 ## Protocol address list
@@ -134,7 +134,7 @@ role-based access, timelock patterns, custom accounting).
 
 ### Bots and their protocol focus
 
-Individual bots land under `/bots/`. Each bot lists its own protocol focus in its `CLAUDE.md` or
+Bot cores live under `/packages/` (e.g. `blue-liquidation`, `midnight-liquidation`). Each bot lists its own protocol focus in its `CLAUDE.md` or
 `README.md`.
 
 ## What you provide

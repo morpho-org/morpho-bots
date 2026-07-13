@@ -26,7 +26,7 @@ Before doing anything:
 2. Read the TIB template: `docs/templates/TIB.md`.
 3. List existing TIBs in the relevant scope to check for date collisions:
    - Repo-wide: `docs/decisions/TIB-*.md`
-   - Bot-scoped: `bots/<bot>/docs/decisions/TIB-*.md`
+   - Bot-scoped: `packages/<bot>/docs/decisions/TIB-*.md`
    - Package-scoped: `packages/<pkg>/docs/decisions/TIB-*.md`
 
    TIBs use CalVer (`TIB-YYYY-MM-DD-short-slug.md`) — use today's date.

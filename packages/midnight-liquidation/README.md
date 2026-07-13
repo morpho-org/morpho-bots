@@ -1,7 +1,7 @@
 # Midnight liquidation
 
 `@repo/midnight-liquidation` implements the two one-shot Midnight pipeline operations. Deployment
-and process supervision belong to [`bots/README.md`](../../bots/README.md).
+and process supervision belong to [`deploy/README.md`](../../deploy/README.md).
 
 ## Pipeline contract
 

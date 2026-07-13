@@ -80,7 +80,7 @@ Use: `cp docs/templates/TIB.md docs/decisions/TIB-YYYY-MM-DD-short-slug.md`
 
 Present findings as a flat list. Each finding includes:
 
-- **File path + line number**: full path, e.g. `bots/kill-switch/src/trigger.ts:42`
+- **File path + line number**: full path, e.g. `packages/kill-switch/src/trigger.ts:42`
 - **What's wrong**: concrete, specific description
 - **How to fix it**: exact suggestion the invoking agent can act on
 - **Severity**: `must-fix` (would block a PR) or `suggestion` (nice to have)
@@ -88,11 +88,11 @@ Present findings as a flat list. Each finding includes:
 Example:
 
 ```
-must-fix — bots/kill-switch/src/trigger.ts:42
+must-fix — packages/kill-switch/src/trigger.ts:42
 Uses `any` type for market parameter.
 Fix: Replace `any` with `Market` from `@/lib/modules/market/types`.
 
-suggestion — bots/kill-switch/src/trigger.ts:58
+suggestion — packages/kill-switch/src/trigger.ts:58
 `parseTokenAmount` looks like a generic bigint helper that could live in `@repo/utils`.
 Fix: Move the helper into `@repo/utils` and import it here.
 ```

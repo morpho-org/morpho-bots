@@ -41,7 +41,7 @@ function short(address: Address): string {
 
 // Builds a transparent position record. Identity fields drive the next stage; sizing fields remain
 // advisory because `liquidate` re-reads mutable state.
-function opportunityRecord(
+function positionRecord(
   chainId: number,
   id: Hex,
   borrower: Address,
@@ -65,18 +65,18 @@ function opportunityRecord(
 }
 
 /**
- * The read-only sensor core: log a rindexer-freshness signal, enumerate the indexed
+ * The read-only source core: log a rindexer-freshness signal, enumerate the indexed
  * (market, borrower) universe, read the liquidation lens fresh for the whole batch (one deployless
  * `eth_call`), and emit one position record per liquidatable, plannable position. Deps
- * are injected so the sensor is unit-testable without a chain, Postgres, or config. Emits nothing but
- * opportunities — lockless and secret-free.
+ * are injected so the source is unit-testable without a chain, Postgres, or config. Emits nothing
+ * but position records — lockless and secret-free.
  */
 export async function findUnhealthyPositions(deps: {
   chainId: number
   discover: () => Promise<BorrowerCandidate[]>
   /** rindexer's indexed head (Postgres); `null`/throw → lag unknown, we proceed. */
   syncedBlock: () => Promise<bigint | null>
-  /** Chain head the caller just polled — lag reference + the opportunity's `data.block`. */
+  /** Chain head the caller just polled — lag reference + the position's observed block. */
   chainHead: bigint
   readLens: (pairs: LensInput[]) => Promise<Map<string, LensOut>>
   emit: (record: PositionRecord) => void
@@ -113,11 +113,11 @@ export async function findUnhealthyPositions(deps: {
     liquidatable += 1
 
     // Plan off-chain (pure, no RPC) to size the advisory payload; a degenerate (collateral-less)
-    // position yields no plan and is not an actionable opportunity, so it is sensed but not emitted.
+    // A position with no plan is not actionable, so the source does not emit it.
     const liquidationPlan = plan(planInputFromLens(out))
     if (!liquidationPlan) continue
     emitted += 1
-    emit(opportunityRecord(chainId, id, pair.borrower, out, liquidationPlan, chainHead))
+    emit(positionRecord(chainId, id, pair.borrower, out, liquidationPlan, chainHead))
   }
 
   logger.info('source.end', { pairs: pairs.length, liquidatable, emitted })
