@@ -161,13 +161,26 @@ describe('prepareLiquidations', () => {
     expect(simCalls()).toBe(1)
   })
 
-  it('logs and skips a malformed position', async () => {
+  it('logs and skips a malformed position with its best-effort id', async () => {
     const { counters, emitted, events } = await runWith({ records: [{ id: 'not-enough' }] })
     expect(counters.invalid).toBe(1)
     expect(emitted).toHaveLength(0)
-    expect(
-      events.some(e => e.event === 'transform.skip' && e.fields?.status === 'invalid_record')
-    ).toBe(true)
+    const skip = events.find(
+      e => e.event === 'transform.skip' && e.fields?.status === 'invalid_record'
+    )
+    expect(skip?.fields?.id).toBe('not-enough')
+  })
+
+  it('omits id on an invalid_record that carries no usable id', async () => {
+    const { counters, events } = await runWith({
+      records: [{ kind: 'position', chainId: CHAIN_ID }]
+    })
+    expect(counters.invalid).toBe(1)
+    const skip = events.find(
+      e => e.event === 'transform.skip' && e.fields?.status === 'invalid_record'
+    )
+    expect(skip).toBeDefined()
+    expect(skip!.fields && 'id' in skip!.fields).toBe(false)
   })
 
   it('rejects an empty correlation id', async () => {

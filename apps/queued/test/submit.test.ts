@@ -138,6 +138,35 @@ describe('morpho-queued submit', () => {
     }
   })
 
+  it('logs submit.skip with the transaction id and bound chainId for a parseable-but-invalid record', async () => {
+    const queue = await stub()
+    const proc = Bun.spawn(['bun', 'src/main.ts', 'submit', '--chain', '8453'], {
+      cwd: CWD,
+      env: { ...process.env, QUEUED_SOCKET: queue.socketPath },
+      stdin: 'pipe',
+      stdout: 'pipe',
+      stderr: 'pipe'
+    })
+    // Parses as JSON and carries an id, but value != 0 fails validation → skipped, joinable by id.
+    await proc.stdin.write(JSON.stringify({ ...transaction('skipme'), value: '5' }))
+    await proc.stdin.end()
+    const [code, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()])
+    expect(code).toBe(2)
+    expect(queue.received).toHaveLength(0)
+    const skip = stderr
+      .split('\n')
+      .filter(Boolean)
+      .map(rawLine => {
+        try {
+          return JSON.parse(rawLine)
+        } catch {
+          return null
+        }
+      })
+      .find(entry => entry?.event === 'submit.skip' && entry?.reason === 'invalid_transaction')
+    expect(skip).toMatchObject({ id: 'skipme', chainId: 8453 })
+  })
+
   it('fails a handoff when the daemon acknowledges a different transaction', async () => {
     const queue = await stub(() => ({ ok: true, id: 'wrong', status: 'submitted' }))
     const proc = Bun.spawn(['bun', 'src/main.ts', 'submit', '--chain', '8453'], {

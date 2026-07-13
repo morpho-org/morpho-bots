@@ -47,6 +47,7 @@ _None yet — copy [`templates/DATA-FLOW.md`](./templates/DATA-FLOW.md) into a b
 
 - [TIB-2026-04-16: Bootstrap Curator Bots](./decisions/TIB-2026-04-16-bootstrap-curator-bots.md) — initial scaffold, tooling stack, and migration plan from `morpho-apps`
 - [TIB-2026-07-12: Repo restructure](./decisions/TIB-2026-07-12-repo-restructure.md) — `apps/` + `packages/` + `deploy/` tiers, bot-kit split into pipeline/evm-kit/ipc, signer-client extraction, full sense/act retirement
+- [TIB-2026-07-13: Cross-stage log correlation context](./decisions/TIB-2026-07-13-log-correlation-context.md) — stage-bound logger context (`bot`/`op`/`chainId`), `id` as the ops↔queue↔journal join, `nonce`/`txHash` as the queue↔signer join
 
 ## TIBs (Bot-scoped)
 

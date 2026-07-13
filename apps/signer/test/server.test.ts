@@ -10,7 +10,7 @@ import { getAddress, parseTransaction, recoverTransactionAddress } from 'viem'
 import type { SignerServer } from '../src/server'
 
 import { createSignerServer, MAX_LINE_BYTES } from '../src/server'
-import { account, EXECUTOR, log, testPolicy } from './helpers'
+import { account, captureLog, EXECUTOR, testPolicy } from './helpers'
 
 function wire(overrides: Record<string, unknown> = {}) {
   return {
@@ -47,10 +47,12 @@ function rpc(socketPath: string, request: unknown): Promise<Record<string, unkno
 let dir: string
 let socketPath: string
 let server: SignerServer
+let log: ReturnType<typeof captureLog>
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 's-'))
   socketPath = join(dir, 'x.sock')
+  log = captureLog()
   server = createSignerServer({ socketPath, account, policy: testPolicy(), log })
   await server.listen()
 })
@@ -112,6 +114,19 @@ describe('createSignerServer', () => {
     expect(response.error).toMatchObject({
       code: 'policy_violation',
       check: 'chainId'
+    })
+  })
+
+  it('logs signer.rejected with the failing check, chainId, to, and nonce', async () => {
+    await rpc(socketPath, {
+      v: 3,
+      method: 'signTransaction',
+      transaction: wire({ chainId: 1, nonce: 42 })
+    })
+    expect(log.events).toContainEqual({
+      level: 'warn',
+      event: 'signer.rejected',
+      fields: { check: 'chainId', chainId: 1, to: EXECUTOR, nonce: 42 }
     })
   })
 

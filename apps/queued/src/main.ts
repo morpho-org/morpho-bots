@@ -98,7 +98,7 @@ export async function runQueued(opts: QueuedOpts): Promise<number> {
     return error instanceof ConfigError ? 2 : 1
   }
 
-  const logger: Logger = createLogger(config.logLevel)
+  const logger: Logger = createLogger(config.logLevel, { chainId: config.chainId })
   // The per-chain lock: a live holder is a second daemon on the same chain — misconfig, exit 2.
   const lockPath = queuedLockFile(home, String(config.chainId))
   const lock = acquireLock(lockPath)

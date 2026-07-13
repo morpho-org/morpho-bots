@@ -6,7 +6,7 @@ import type { Address } from 'viem'
 import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
 
-import type { LensOut } from '../../src/lens.sol'
+import type { LensInput, LensOut } from '../../src/lens.sol'
 import type { MarketParams } from '../../src/market'
 
 import { loadLiquidateConfig } from '../../src/config'
@@ -84,6 +84,7 @@ function runWith(opts: {
 }) {
   const { logger, events } = spyLogger()
   const emitted: TransactionRecord[] = []
+  const lensInputs: LensInput[] = []
   let lensReads = 0
   let quoteCalls = 0
   let simCalls = 0
@@ -101,12 +102,15 @@ function runWith(opts: {
     ],
     chainId: CHAIN_ID,
     head,
-    readLensForPositions: async evaluands => {
+    // The transform now feeds the wire-verified params straight to the lens (no resolver): the
+    // pairs it receives ARE the parsed record's `market`, keyed the same way the source op keys.
+    readLens: async pairs => {
       lensReads += 1
+      lensInputs.push(...pairs)
       if (opts.outByKey) return opts.outByKey
       const map = new Map<string, LensOut>()
       const out = opts.out === undefined ? lensOut() : opts.out
-      if (out) for (const e of evaluands) map.set(lensKey(e.marketId, e.borrower), out)
+      if (out) for (const p of pairs) map.set(lensKey(marketId(p.params), p.borrower), out)
       return map
     },
     quoteFor: async () => {
@@ -126,6 +130,7 @@ function runWith(opts: {
     counters,
     emitted,
     events,
+    lensInputs,
     lensReads: () => lensReads,
     quoteCalls: () => quoteCalls,
     simCalls: () => simCalls
@@ -134,7 +139,9 @@ function runWith(opts: {
 
 describe('prepareLiquidations', () => {
   it('emits a transaction for a liquidatable position whose sim succeeds', async () => {
-    const { counters, emitted, quoteCalls, simCalls } = await runWith({ simRevert: null })
+    const { counters, emitted, quoteCalls, simCalls, lensInputs } = await runWith({
+      simRevert: null
+    })
     expect(counters.ok).toBe(1)
     expect(emitted).toHaveLength(1)
     expect(emitted[0]!).toEqual({
@@ -148,18 +155,33 @@ describe('prepareLiquidations', () => {
     })
     expect(quoteCalls()).toBe(1)
     expect(simCalls()).toBe(1)
+    // The wire-carried, hash-verified params feed the lens directly — no on-chain id→params resolver.
+    expect(lensInputs).toEqual([{ params: PARAMS, borrower: BORROWER }])
   })
 
-  it('logs a malformed position and never reads the lens', async () => {
+  it('logs a malformed position with its best-effort id and never reads the lens', async () => {
     const { counters, emitted, lensReads, events } = await runWith({
       records: [{ id: 'not-enough' }]
     })
     expect(counters.invalid).toBe(1)
     expect(emitted).toHaveLength(0)
-    expect(
-      events.some(e => e.event === 'transform.skip' && e.fields?.status === 'invalid_record')
-    ).toBe(true)
+    const skip = events.find(
+      e => e.event === 'transform.skip' && e.fields?.status === 'invalid_record'
+    )
+    expect(skip?.fields?.id).toBe('not-enough')
     expect(lensReads()).toBe(0)
+  })
+
+  it('omits id on an invalid_record that carries no usable id', async () => {
+    const { counters, events } = await runWith({
+      records: [{ kind: 'position', chainId: CHAIN_ID }]
+    })
+    expect(counters.invalid).toBe(1)
+    const skip = events.find(
+      e => e.event === 'transform.skip' && e.fields?.status === 'invalid_record'
+    )
+    expect(skip).toBeDefined()
+    expect(skip!.fields && 'id' in skip!.fields).toBe(false)
   })
 
   it('rejects an empty correlation id before reading the lens', async () => {

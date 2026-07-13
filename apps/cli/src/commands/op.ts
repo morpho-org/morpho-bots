@@ -40,7 +40,7 @@ export async function runOpCommand(
     return 2
   }
 
-  const logger = createLogger(logLevel)
+  const logger = createLogger(logLevel, { bot: domain, op, chainId: Number(chainId) })
   const cachePath = opCacheFile(home, domain, op, chainId)
   const cache = loadCache(cachePath, adapter.cacheVersion)
   try {
@@ -69,7 +69,7 @@ export async function runOpCommand(
     if (currentCache !== null) saveCache(cachePath, adapter.cacheVersion, currentCache)
     return summary.invalidLines === 0 ? 0 : 2
   } catch (error) {
-    logger.error('op.error', { bot: domain, op, chainId, detail: ensureError(error).message })
+    logger.error('op.error', { detail: ensureError(error).message })
     return 1
   }
 }

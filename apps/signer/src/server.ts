@@ -52,7 +52,8 @@ export function createSignerServer(options: {
             log.warn('signer.rejected', {
               check: decision.check,
               chainId: wire.chainId,
-              to: wire.to
+              to: wire.to,
+              nonce: wire.nonce
             })
             return serializeResponse(
               errorResponse('policy_violation', decision.message, {

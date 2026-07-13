@@ -4,7 +4,7 @@ import type { QuoteOutcome, Swap, SwapConfigEntry, Venue } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
 import { assertContractDeployed, createDeploylessClient } from '@repo/evm-kit'
-import { simulateLiquidationExec } from '@repo/pipeline'
+import { rawRecordId, simulateLiquidationExec } from '@repo/pipeline'
 import { createRateLimitedClient } from '@repo/swaps'
 import { getAddress, isAddress, isHex } from 'viem'
 import { getBlockNumber } from 'viem/actions'
@@ -19,7 +19,6 @@ import { isLiquidatable, planInputFromLens } from '../eligibility'
 import { encodeLiquidationExec } from '../execution/encode-call'
 import { lensKey, readBlueLiquidationLens } from '../lens.sol'
 import { marketId } from '../market'
-import { createMarketParamsResolver, multicallIdToMarketParams } from '../market-params'
 import { composeQuoting } from '../quotes'
 import { plan } from '../sizing/plan'
 
@@ -106,7 +105,7 @@ export async function prepareLiquidations(deps: {
   records: readonly unknown[]
   chainId: number
   head: bigint
-  readLensForPositions: (evaluands: readonly Evaluand[]) => Promise<Map<string, LensOut>>
+  readLens: (pairs: LensInput[]) => Promise<Map<string, LensOut>>
   quoteFor: (plan: LiquidationPlan, out: LensOut) => Promise<QuoteOutcome>
   simulate: (args: {
     market: MarketParams
@@ -123,7 +122,7 @@ export async function prepareLiquidations(deps: {
     records,
     chainId,
     head,
-    readLensForPositions,
+    readLens,
     quoteFor,
     simulate,
     encodeExec,
@@ -146,7 +145,8 @@ export async function prepareLiquidations(deps: {
   for (const record of records) {
     const parsed = parsePosition(record, chainId)
     if (!parsed) {
-      logger.warn('transform.skip', { status: 'invalid_record', record })
+      const id = rawRecordId(record)
+      logger.warn('transform.skip', { status: 'invalid_record', ...(id ? { id } : {}), record })
       counters.invalid += 1
       continue
     }
@@ -158,8 +158,11 @@ export async function prepareLiquidations(deps: {
     return counters
   }
 
-  // One batched lens read (blue resolves marketParams itself, fresh) for every non-skipped id.
-  const lensOut = await readLensForPositions(evaluands)
+  // Feed the wire-carried MarketParams straight to the lens: `parsePosition` already verified they
+  // hash to the supplied marketId (they ARE the id's preimage), so the transform needs no on-chain
+  // id→params resolution. Only the lens's mutable reads (debt, collateral, price) hit the chain.
+  const inputs: LensInput[] = evaluands.map(e => ({ params: e.market, borrower: e.borrower }))
+  const lensOut = await readLens(inputs)
 
   for (const item of evaluands) {
     const out = lensOut.get(lensKey(item.marketId, item.borrower))
@@ -317,27 +320,14 @@ export async function runLiquidate(
       recipient: eoa
     })
 
-  // Fresh, uncached resolver — one batched multicall per `liquidate` pass is cheap, and the op keeps no cache.
-  const resolveParams = createMarketParamsResolver(multicallIdToMarketParams(client, config.morpho))
-  const readLensForPositions = async (
-    evaluands: readonly Evaluand[]
-  ): Promise<Map<string, LensOut>> => {
-    const paramsById = await resolveParams(evaluands.map(e => e.marketId))
-    const inputs: LensInput[] = []
-    for (const e of evaluands) {
-      const params = paramsById.get(e.marketId)
-      if (!params) continue // unresolved market → absent from the map → `not_liquidatable`
-      inputs.push({ params, borrower: e.borrower })
-    }
-    return readBlueLiquidationLens(client, config.morpho, inputs)
-  }
-
   const head = await getBlockNumber(client)
   await prepareLiquidations({
     records,
     chainId: config.chainId,
     head,
-    readLensForPositions,
+    // The transform trusts the wire-carried, hash-verified MarketParams (see prepareLiquidations),
+    // so the lens reads mutable state directly for each supplied pair — no id→params resolver.
+    readLens: pairs => readBlueLiquidationLens(client, config.morpho, pairs),
     quoteFor,
     simulate: async ({ market, borrower, plan: p, swap }) => {
       const result = await simulateLiquidationExec(client, {

@@ -109,13 +109,30 @@ export async function findUnhealthyPositions(deps: {
   for (const pair of pairs) {
     const id = marketId(pair.params)
     const out = lensOut.get(lensKey(id, pair.borrower))
-    if (!out || !isLiquidatable(out)) continue
+    if (!out || !isLiquidatable(out)) {
+      // Per-position trail so "why wasn't X emitted" is answerable downstream; DEBUG because a full
+      // candidate set is mostly healthy (hundreds/tick), invisible at the default `info` level.
+      logger.debug('source.skip', {
+        id: formatPositionId(chainId, id, pair.borrower),
+        status: 'not_liquidatable',
+        block: chainHead
+      })
+      continue
+    }
     liquidatable += 1
 
     // Plan off-chain (pure, no RPC) to size the advisory payload; a degenerate (collateral-less)
-    // A position with no plan is not actionable, so the source does not emit it.
+    // position has no plan and is not actionable, so the source does not emit it — rare, so INFO.
     const liquidationPlan = plan(planInputFromLens(out))
-    if (!liquidationPlan) continue
+    if (!liquidationPlan) {
+      logger.info('source.skip', {
+        id: formatPositionId(chainId, id, pair.borrower),
+        status: 'not_liquidatable',
+        reason: 'degenerate_plan',
+        block: chainHead
+      })
+      continue
+    }
     emitted += 1
     emit(positionRecord(chainId, id, pair.borrower, out, liquidationPlan, chainHead))
   }

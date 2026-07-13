@@ -14,7 +14,7 @@ import {
 
 import type { GetBaseFee, GetReceipt, SendTx, SyncNonce } from './pending-queue'
 
-import { isSignerError } from './signer-error'
+import { attachSignerNonce, isSignerError } from './signer-error'
 
 type Sender = {
   address: RemoteSigner['address']
@@ -80,7 +80,11 @@ export function createSender(options: {
       return { nonce, txHash }
     } catch (error) {
       if (req.nonce === undefined) nextNonce = Math.min(nextNonce ?? nonce, nonce)
-      if (isSignerError(error)) throw error
+      if (isSignerError(error)) {
+        // Record the prepared nonce so the queue's tx.signer_failed log joins the signer's own line.
+        attachSignerNonce(error, nonce)
+        throw error
+      }
       throw new TxSendError(error, nonce)
     }
   }

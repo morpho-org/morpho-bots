@@ -52,4 +52,55 @@ describe('createLogger', () => {
       attempts: ['1', '2']
     })
   })
+
+  it('stamps bound base fields on every emitted line', () => {
+    const logger = createLogger('debug', { bot: 'blue', op: 'liquidate', chainId: 8453 })
+    const err = spyOn(console, 'error').mockImplementation(() => undefined)
+
+    logger.debug('source.skip', { id: 'blue:liquidate:8453:0xabc:0xdef' })
+    logger.error('op.error', { detail: 'boom' })
+
+    expect(JSON.parse(String(err.mock.calls[0]?.[0]))).toEqual({
+      bot: 'blue',
+      op: 'liquidate',
+      chainId: 8453,
+      id: 'blue:liquidate:8453:0xabc:0xdef',
+      level: 'debug',
+      event: 'source.skip'
+    })
+    expect(JSON.parse(String(err.mock.calls[1]?.[0]))).toEqual({
+      bot: 'blue',
+      op: 'liquidate',
+      chainId: 8453,
+      detail: 'boom',
+      level: 'error',
+      event: 'op.error'
+    })
+  })
+
+  it('lets a per-call field override a colliding base field', () => {
+    const logger = createLogger('debug', { chainId: 8453 })
+    const err = spyOn(console, 'error').mockImplementation(() => undefined)
+
+    logger.info('tx.sent', { chainId: 4663 })
+
+    // A single chainId key, taking the per-call value.
+    expect(JSON.parse(String(err.mock.calls[0]?.[0]))).toEqual({
+      chainId: 4663,
+      level: 'info',
+      event: 'tx.sent'
+    })
+  })
+
+  it('never lets base or per-call fields overwrite the reserved level/event keys', () => {
+    const logger = createLogger('debug', { level: 'debug', event: 'spoofed.base' })
+    const err = spyOn(console, 'error').mockImplementation(() => undefined)
+
+    logger.warn('real.event', { level: 'error', event: 'spoofed.field' })
+
+    expect(JSON.parse(String(err.mock.calls[0]?.[0]))).toEqual({
+      level: 'warn',
+      event: 'real.event'
+    })
+  })
 })
