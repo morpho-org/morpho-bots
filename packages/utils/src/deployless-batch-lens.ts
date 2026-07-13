@@ -15,7 +15,8 @@ import {
 import { readContract } from 'viem/actions'
 import { formatAbiItem } from 'viem/utils'
 
-import type { Id } from '../types/index'
+/** Forces TS to recompute `T` — keeps the exported transport-type union readable in hovers. */
+type Id<T> = T extends infer U ? U : never
 
 // Runs an array-in/array-out "lens" contract deploylessly (viem-dlc's `deployless` transport), in one
 // chunked `eth_call`, and returns a Map keyed by a caller-supplied key. Promoted here from the

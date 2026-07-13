@@ -1,4 +1,4 @@
-import type { Result } from '../types/index'
+import type { Result } from './try-catch'
 
 /** Exponential backoff (ms) for retry attempt `n` (0-indexed): 200·2ⁿ → 200, 400, 800, … */
 export function backoffMs(attempt: number): number {

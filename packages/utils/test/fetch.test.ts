@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 
-import { parseJsonResponse } from '../../src/helpers/fetch'
+import { parseJsonResponse } from '../src/fetch'
 
 function mockResponse(body: string, status = 200): Response {
   return new Response(body, { status })

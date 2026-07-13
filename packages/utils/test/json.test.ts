@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import { Address } from 'viem'
 
-import { bigintReplacer, bigIntReviver, parse, stringify } from '../../src/helpers/json'
+import { bigintReplacer, bigIntReviver, parse, stringify } from '../src/json'
 
 const MARKET1: Address = '0x1eda1b67414336cab3914316cb58339ddaef9e43f939af1fed162a989c98bc20'
 const MARKET2: Address = '0x2eda1b67414336cab3914316cb58339ddaef9e43f939af1fed162a989c98bc21'

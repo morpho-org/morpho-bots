@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 
-import { tryCatch } from '../../src/helpers/tryCatch'
+import { tryCatch } from '../src/try-catch'
 
 describe('tryCatch', () => {
   describe('synchronous function form', () => {

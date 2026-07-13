@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 
-import { bigintMin, mulDivDown, mulDivUp, zeroFloorSub } from '../../src/helpers/bigint'
+import { bigintMin, mulDivDown, mulDivUp, zeroFloorSub } from '../src/bigint'
 
 describe('mulDiv', () => {
   it('floors and ceils around a fractional result', () => {

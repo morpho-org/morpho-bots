@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 
-import { createTokenBucket } from '../../src/helpers/tokenBucket'
+import { createTokenBucket } from '../src/token-bucket'
 
 describe('createTokenBucket', () => {
   it('serves the burst immediately, then sleeps 1/rps for the next token', async () => {
