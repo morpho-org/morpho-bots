@@ -4,9 +4,8 @@
   "workspaces": {
     "packages": [
       "packages/*",
-      "tools/*",
-      "services/*",
-      "bots"
+      "apps/*",
+      "deploy"
     ],
     "catalog": {
       "@morpho-org/viem-dlc": "0.0.11",

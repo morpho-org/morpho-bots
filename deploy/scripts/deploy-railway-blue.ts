@@ -54,7 +54,7 @@ const databaseUrl = 'DATABASE_URL=${{' + postgres + '.DATABASE_URL}}'
 
 await railway.ensureService('rindexer')
 await railway.setVariables('rindexer', {
-  RAILWAY_DOCKERFILE_PATH: 'services/blue-rindexer/Dockerfile',
+  RAILWAY_DOCKERFILE_PATH: 'deploy/blue-rindexer/Dockerfile',
   PROJECT_PATH: '/app/project_path',
   DATABASE_URL: '${{' + postgres + '.DATABASE_URL}}'
 })
@@ -73,7 +73,7 @@ for (const chain of deployments) {
     BOT: 'blue',
     CHAIN_ID: String(chain.chainId),
     TICK_INTERVAL_S: env.TICK_INTERVAL_S?.trim() || '2',
-    RAILWAY_DOCKERFILE_PATH: 'bots/Dockerfile',
+    RAILWAY_DOCKERFILE_PATH: 'deploy/Dockerfile',
     SWAP_CONFIG_PATH: '/data/morpho-bots/blue/swap-config.json',
     LOG_LEVEL: 'info',
     LIQUIDATOR_ADDRESS: chain.liquidatorAddress,

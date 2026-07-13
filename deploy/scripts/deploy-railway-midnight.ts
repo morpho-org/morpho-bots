@@ -29,7 +29,7 @@ await railway.setVariables(service, {
   BOT: 'midnight',
   CHAIN_ID: '8453',
   TICK_INTERVAL_S: env.TICK_INTERVAL_S?.trim() || '2',
-  RAILWAY_DOCKERFILE_PATH: 'bots/Dockerfile',
+  RAILWAY_DOCKERFILE_PATH: 'deploy/Dockerfile',
   LOG_LEVEL: 'info',
   LIQUIDATOR_ADDRESS: required(env, 'LIQUIDATOR_ADDRESS'),
   EXECUTOOOR_ADDRESS: executor,

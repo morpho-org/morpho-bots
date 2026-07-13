@@ -15,8 +15,69 @@
         "typescript": "catalog:",
       },
     },
-    "bots": {
-      "name": "@repo/bots",
+    "apps/cli": {
+      "name": "@repo/cli",
+      "version": "0.1.0",
+      "bin": {
+        "morpho-bots": "./src/main.ts",
+      },
+      "dependencies": {
+        "@repo/blue-liquidation": "workspace:*",
+        "@repo/bot-kit": "workspace:*",
+        "@repo/home": "workspace:*",
+        "@repo/midnight-liquidation": "workspace:*",
+        "@repo/utils": "workspace:*",
+        "commander": "catalog:",
+        "viem": "catalog:",
+      },
+      "devDependencies": {
+        "@repo/typescript-config": "workspace:*",
+        "@types/bun": "catalog:",
+        "solc": "catalog:",
+        "soltag": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
+    "apps/queued": {
+      "name": "@repo/queued",
+      "version": "0.0.0",
+      "bin": {
+        "morpho-queued": "./src/main.ts",
+      },
+      "dependencies": {
+        "@repo/bot-kit": "workspace:*",
+        "@repo/home": "workspace:*",
+        "@repo/signer": "workspace:*",
+        "@repo/utils": "workspace:*",
+        "commander": "catalog:",
+        "viem": "catalog:",
+      },
+      "devDependencies": {
+        "@repo/typescript-config": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
+    "apps/signer": {
+      "name": "@repo/signer",
+      "version": "0.0.0",
+      "bin": {
+        "morpho-signer": "./src/main.ts",
+      },
+      "dependencies": {
+        "@repo/bot-kit": "workspace:*",
+        "@repo/home": "workspace:*",
+        "@repo/utils": "workspace:*",
+        "viem": "catalog:",
+      },
+      "devDependencies": {
+        "@repo/typescript-config": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
+    "deploy": {
+      "name": "@repo/deploy",
       "version": "0.1.0",
       "dependencies": {
         "@repo/utils": "workspace:*",
@@ -103,24 +164,6 @@
         "typescript": "catalog:",
       },
     },
-    "packages/signer": {
-      "name": "@repo/signer",
-      "version": "0.0.0",
-      "bin": {
-        "morpho-signer": "./src/main.ts",
-      },
-      "dependencies": {
-        "@repo/bot-kit": "workspace:*",
-        "@repo/home": "workspace:*",
-        "@repo/utils": "workspace:*",
-        "viem": "catalog:",
-      },
-      "devDependencies": {
-        "@repo/typescript-config": "workspace:*",
-        "@types/bun": "catalog:",
-        "typescript": "catalog:",
-      },
-    },
     "packages/swaps": {
       "name": "@repo/swaps",
       "version": "0.0.0",
@@ -150,49 +193,6 @@
       "devDependencies": {
         "@repo/typescript-config": "workspace:*",
         "@types/bun": "catalog:",
-        "typescript": "catalog:",
-      },
-    },
-    "services/queued": {
-      "name": "@repo/queued",
-      "version": "0.0.0",
-      "bin": {
-        "morpho-queued": "./src/main.ts",
-      },
-      "dependencies": {
-        "@repo/bot-kit": "workspace:*",
-        "@repo/home": "workspace:*",
-        "@repo/signer": "workspace:*",
-        "@repo/utils": "workspace:*",
-        "commander": "catalog:",
-        "viem": "catalog:",
-      },
-      "devDependencies": {
-        "@repo/typescript-config": "workspace:*",
-        "@types/bun": "catalog:",
-        "typescript": "catalog:",
-      },
-    },
-    "tools/cli": {
-      "name": "@repo/cli",
-      "version": "0.1.0",
-      "bin": {
-        "morpho-bots": "./src/main.ts",
-      },
-      "dependencies": {
-        "@repo/blue-liquidation": "workspace:*",
-        "@repo/bot-kit": "workspace:*",
-        "@repo/home": "workspace:*",
-        "@repo/midnight-liquidation": "workspace:*",
-        "@repo/utils": "workspace:*",
-        "commander": "catalog:",
-        "viem": "catalog:",
-      },
-      "devDependencies": {
-        "@repo/typescript-config": "workspace:*",
-        "@types/bun": "catalog:",
-        "solc": "catalog:",
-        "soltag": "catalog:",
         "typescript": "catalog:",
       },
     },
@@ -381,19 +381,19 @@
 
     "@repo/bot-kit": ["@repo/bot-kit@workspace:packages/bot-kit"],
 
-    "@repo/bots": ["@repo/bots@workspace:bots"],
-
-    "@repo/cli": ["@repo/cli@workspace:tools/cli"],
+    "@repo/cli": ["@repo/cli@workspace:apps/cli"],
 
     "@repo/contracts": ["@repo/contracts@workspace:packages/contracts"],
+
+    "@repo/deploy": ["@repo/deploy@workspace:deploy"],
 
     "@repo/home": ["@repo/home@workspace:packages/home"],
 
     "@repo/midnight-liquidation": ["@repo/midnight-liquidation@workspace:packages/midnight-liquidation"],
 
-    "@repo/queued": ["@repo/queued@workspace:services/queued"],
+    "@repo/queued": ["@repo/queued@workspace:apps/queued"],
 
-    "@repo/signer": ["@repo/signer@workspace:packages/signer"],
+    "@repo/signer": ["@repo/signer@workspace:apps/signer"],
 
     "@repo/swaps": ["@repo/swaps@workspace:packages/swaps"],
 

@@ -17,7 +17,7 @@ const EXECUTOR = `0x${'22'.repeat(20)}` as const
 const HASHES = [`0x${'ab'.repeat(32)}`, `0x${'cd'.repeat(32)}`] as const
 const NOOP = () => undefined
 const LOGGER: Logger = { debug: NOOP, info: NOOP, warn: NOOP, error: NOOP }
-const SIGNER_MAIN = join(import.meta.dir, '..', '..', '..', 'packages', 'signer', 'src', 'main.ts')
+const SIGNER_MAIN = join(import.meta.dir, '..', '..', 'signer', 'src', 'main.ts')
 
 type RpcBody = { id: number; method: string; params?: unknown[] }
 

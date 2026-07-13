@@ -5,15 +5,14 @@ and the shared packages they consume.
 
 This is a [bun workspaces](https://bun.com/docs/install/workspaces) monorepo:
 
-- `tools/` — operator-invoked, UNIX-pipeable one-shot commands. Sources emit transparent position
-  JSON; transforms consume those semantic fields and emit transaction JSON.
-- `bots/` — deployment packaging for the bot use-case (`@repo/bots`): the Docker image +
-  pipeline entrypoint loop, docker-compose files, and Railway deploy scripts that wrap the
-  generic CLI
-- `services/` — long-lived processes: the Blue indexer and the per-chain `morpho-queued` daemon,
-  which alone owns transaction state, dedupe, re-simulation, fees, nonces, broadcast, and replacement
+- `apps/` — independently runnable programs: the UNIX-pipeable `morpho-bots` CLI (sources emit
+  transparent position JSON; transforms consume those semantic fields and emit transaction JSON),
+  the per-chain `morpho-queued` daemon — which alone owns transaction state, dedupe, re-simulation,
+  fees, nonces, broadcast, and replacement — and the policy-enforcing `morpho-signer` agent
 - `packages/` — libraries: the bot cores (`@repo/blue-liquidation`, `@repo/midnight-liquidation`)
-  and focused shared layers, including the policy-enforcing `morpho-signer` agent
+  and focused shared layers
+- `deploy/` — deployment packaging (`@repo/deploy`): the Docker image + pipeline entrypoint loop,
+  docker-compose files, Railway deploy scripts, and the Blue indexer image (`deploy/blue-rindexer`)
 
 Pipeline records are deliberately inspectable and adaptable with tools such as `jq`. Position IDs
 are correlation/deduplication labels only; consumers use explicit `marketId`, `borrower`, and domain

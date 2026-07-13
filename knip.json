@@ -10,12 +10,12 @@
     "packages/contracts": {},
     "packages/bot-kit": {},
     "packages/home": {},
-    "packages/signer": {},
     "packages/swaps": {},
     "packages/midnight-liquidation": {},
     "packages/blue-liquidation": {},
-    "tools/cli": {},
-    "services/queued": {},
-    "bots": {}
+    "apps/cli": {},
+    "apps/queued": {},
+    "apps/signer": {},
+    "deploy": {}
   }
 }
