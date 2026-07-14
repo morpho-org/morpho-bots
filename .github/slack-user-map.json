@@ -1,0 +1,6 @@
+{
+  "$comment": "Flat GitHub-login → Slack-user-ID map used by .github/workflows/pr-slack-notify.yml to @-mention PR authors and reviewers. Not secret (GitHub logins are public; Slack user IDs are workspace-internal, not credentials). Add a line per collaborator; unmapped logins fall back to a plain @login string.",
+  "cashd": "U08B2J6D788",
+  "BZahory": "U0AAGS3BJ5D",
+  "haydenshively": "U089XEG69E2"
+}
