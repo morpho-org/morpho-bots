@@ -12,52 +12,24 @@ describe('ensureError', () => {
     expect(result.message).toBe('test error')
   })
 
-  it('should convert string to Error', () => {
-    const result = ensureError('string error')
+  it.each([
+    ['string', 'string error', '"string error"'],
+    ['number', 42, '42'],
+    ['object', { code: 500, message: 'Server error' }, '{"code":500,"message":"Server error"}'],
+    ['null', null, 'null'],
+    ['undefined', undefined, 'undefined'],
+    ['boolean', false, 'false'],
+    ['array', [1, 2, 3], '[1,2,3]']
+  ] as const)(
+    'wraps a thrown %s as an Error carrying the stringified value',
+    (_label, input, fragment) => {
+      const result = ensureError(input)
 
-    expect(result).toBeInstanceOf(Error)
-    expect(result.message).toContain('This value was thrown as is, not through an Error')
-    expect(result.message).toContain('"string error"')
-  })
-
-  it('should convert number to Error', () => {
-    const result = ensureError(42)
-
-    expect(result).toBeInstanceOf(Error)
-    expect(result.message).toContain('This value was thrown as is, not through an Error')
-    expect(result.message).toContain('42')
-  })
-
-  it('should convert object to Error', () => {
-    const obj = { code: 500, message: 'Server error' }
-    const result = ensureError(obj)
-
-    expect(result).toBeInstanceOf(Error)
-    expect(result.message).toContain('This value was thrown as is, not through an Error')
-    expect(result.message).toContain('{"code":500,"message":"Server error"}')
-  })
-
-  it('should convert null to Error', () => {
-    const result = ensureError(null)
-
-    expect(result).toBeInstanceOf(Error)
-    expect(result.message).toContain('This value was thrown as is, not through an Error')
-    expect(result.message).toContain('null')
-  })
-
-  it('should convert undefined to Error', () => {
-    const result = ensureError(undefined)
-
-    expect(result).toBeInstanceOf(Error)
-    expect(result.message).toContain('This value was thrown as is, not through an Error')
-  })
-
-  it('should convert boolean to Error', () => {
-    const result = ensureError(false)
-
-    expect(result).toBeInstanceOf(Error)
-    expect(result.message).toContain('false')
-  })
+      expect(result).toBeInstanceOf(Error)
+      expect(result.message).toContain('This value was thrown as is, not through an Error')
+      expect(result.message).toContain(fragment)
+    }
+  )
 
   it('should have shortMessage property', () => {
     const result = ensureError('test')
@@ -83,20 +55,6 @@ describe('ensureError', () => {
     expect(result).toBeInstanceOf(Error)
     expect(result.message).toContain('[Unable to stringify thrown value]')
     expect(result.shortMessage).toBe('[Unable to stringify thrown value]')
-  })
-
-  it('should handle arrays', () => {
-    const result = ensureError([1, 2, 3])
-
-    expect(result).toBeInstanceOf(Error)
-    expect(result.message).toContain('[1,2,3]')
-  })
-
-  it('should handle BigInt values', () => {
-    const result = ensureError({ value: 'test' })
-
-    expect(result).toBeInstanceOf(Error)
-    expect(result.message).toContain('{"value":"test"}')
   })
 })
 

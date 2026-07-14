@@ -1,4 +1,11 @@
-export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
+export const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
+
+export type LogLevel = (typeof LOG_LEVELS)[number]
+
+/** Type guard for a valid {@link LogLevel} — e.g. validating a `LOG_LEVEL` env var. */
+export function isLogLevel(value: unknown): value is LogLevel {
+  return (LOG_LEVELS as readonly unknown[]).includes(value)
+}
 
 export type Logger = Record<LogLevel, (event: string, fields?: Record<string, unknown>) => void>
 

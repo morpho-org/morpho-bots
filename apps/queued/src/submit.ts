@@ -1,6 +1,6 @@
 import type { LogLevel } from '@repo/evm-kit'
 
-import { createLogger } from '@repo/evm-kit'
+import { createLogger, LOG_LEVELS } from '@repo/evm-kit'
 import { assertSunPathLength, botsHome, ConfigError, queuedSocketFile } from '@repo/home'
 import { ensureError } from '@repo/utils'
 
@@ -8,7 +8,6 @@ import { connectQueued } from './client'
 import { MAX_TRANSACTION_LINE_BYTES, parseTransactionLine, TransactionError } from './protocol'
 
 type Env = Record<string, string | undefined>
-const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
 
 function resolveLogLevel(env: Env): LogLevel {
   const level = env.LOG_LEVEL?.trim()

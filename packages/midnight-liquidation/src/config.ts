@@ -1,11 +1,24 @@
 import type { LogLevel } from '@repo/evm-kit'
 import type { Venue } from '@repo/swaps'
+import type { Env } from '@repo/utils'
 import type { Address, Chain } from 'viem'
 
 import { Executor } from '@repo/contracts'
-import { tryCatch } from '@repo/utils'
+import { isLogLevel, LOG_LEVELS } from '@repo/evm-kit'
+import {
+  addressListEnv,
+  boolEnv,
+  intEnv,
+  ladderEnv,
+  numberEnv,
+  required,
+  resolveLiquidatorAddress,
+  tryCatch
+} from '@repo/utils'
 import { getAddress, isAddress } from 'viem'
 import { base } from 'viem/chains'
+
+export type { Env }
 
 // Swap venues are no longer a per-collateral config file: markets come from the Midnight markets API
 // (the whitelist), and the enabled venues are inferred from which venue API keys are present in env.
@@ -29,7 +42,6 @@ const CHAIN_MAP: Record<number, ChainConfig> = {
 // ---------------------------------------------------------------------------
 // Env table
 // ---------------------------------------------------------------------------
-const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
 
 // Borrower-candidate discovery defaults (the markets liquidation-candidates endpoint). The URL is a
 // public, unauthenticated endpoint, so it is safe to default in code (override via env per-env). An
@@ -60,8 +72,6 @@ const DEFAULT_SLIPPAGE_BPS = 100
 const DEFAULT_PROBE_STALE_MS = 600_000
 const DEFAULT_PROBE_HTTP_RPS = 1
 const DEFAULT_PROBE_LADDER = ['0.01', '0.1', '1', '10', '100']
-
-export type Env = Record<string, string | undefined>
 
 /**
  * Off-chain quoting tunables (the multi-venue swap layer), plus the seize-sizing
@@ -168,99 +178,6 @@ export type LiquidateConfig = CommonConfig & {
   quoting: QuotingConfig
 }
 
-function required(env: Env, name: string): string {
-  const value = env[name]
-  if (value === undefined || value.trim() === '') {
-    throw new Error(`Missing required env var: ${name}`)
-  }
-  return value
-}
-
-// Parses an optional non-negative integer env var, with a default and optional min/max bounds.
-function intEnv(
-  env: Env,
-  name: string,
-  def: number,
-  bounds: { min?: number; max?: number } = {}
-): number {
-  const raw = env[name]?.trim()
-  if (!raw) return def
-  if (!/^\d+$/.test(raw)) {
-    throw new Error(`${name} must be a non-negative integer, got: ${env[name]}`)
-  }
-  const value = Number(raw)
-  if (bounds.min !== undefined && value < bounds.min) {
-    throw new Error(`${name} must be >= ${bounds.min}, got: ${env[name]}`)
-  }
-  if (bounds.max !== undefined && value > bounds.max) {
-    throw new Error(`${name} must be <= ${bounds.max}, got: ${env[name]}`)
-  }
-  return value
-}
-
-// Parses an optional positive decimal env var, with a default and optional min bound. Decimal form
-// only (same regex as MAX_FEE_GWEI) — rejects hex/exponent so it agrees with the other validators.
-function numberEnv(env: Env, name: string, def: number, bounds: { min?: number } = {}): number {
-  const raw = env[name]?.trim()
-  if (!raw) return def
-  if (!/^\d+(\.\d+)?$/.test(raw) || Number(raw) <= 0) {
-    throw new Error(`${name} must be a positive number, got: ${env[name]}`)
-  }
-  const value = Number(raw)
-  if (bounds.min !== undefined && value < bounds.min) {
-    throw new Error(`${name} must be >= ${bounds.min}, got: ${env[name]}`)
-  }
-  return value
-}
-
-function isLogLevel(value: string): value is LogLevel {
-  return (LOG_LEVELS as readonly string[]).includes(value)
-}
-
-// Parses an optional boolean env var (`true`/`false`, case-insensitive), with a default. Any other
-// non-empty value is operator error and fails loud.
-function boolEnv(env: Env, name: string, def: boolean): boolean {
-  const raw = env[name]?.trim().toLowerCase()
-  if (!raw) return def
-  if (raw !== 'true' && raw !== 'false') {
-    throw new Error(`${name} must be "true" or "false", got: ${env[name]}`)
-  }
-  return raw === 'true'
-}
-
-// Parses an optional comma-separated list of positive decimals (whole-token probe sizes) into raw
-// string tokens, with a default. Fails loud on any empty/non-positive/malformed element rather than
-// silently dropping it (a missing ladder point would skew the size buckets). Strings are kept raw so
-// the selector converts them with `safeParseUnits` per-collateral (no lossy Number round-trip).
-function ladderEnv(env: Env, name: string, def: string[]): string[] {
-  const raw = env[name]?.trim()
-  if (!raw) return def
-  const sizes = raw.split(',').map(part => part.trim())
-  for (const size of sizes) {
-    if (!/^\d+(\.\d+)?$/.test(size) || Number(size) <= 0) {
-      throw new Error(`${name} must be comma-separated positive numbers, got: ${env[name]}`)
-    }
-  }
-  return sizes
-}
-
-// Parses an optional comma-separated list of addresses into checksummed `Address`es, with `[]` as the
-// default. Fails loud on any malformed element (operator error).
-function addressListEnv(env: Env, name: string): Address[] {
-  const raw = env[name]?.trim()
-  if (!raw) return []
-  return raw
-    .split(',')
-    .map(part => part.trim())
-    .filter(part => part.length > 0)
-    .map(part => {
-      if (!isAddress(part, { strict: false })) {
-        throw new Error(`${name} contains an invalid address: ${part}`)
-      }
-      return getAddress(part)
-    })
-}
-
 // ---------------------------------------------------------------------------
 // Shared resolvers — each stage loader composes the subset it needs, so the parsing/validation of a
 // given env var lives in exactly one place regardless of which stage reads it.
@@ -304,16 +221,6 @@ function resolveExecutor(env: Env): Address {
     throw new Error(`EXECUTOOOR_ADDRESS is not a valid address: ${override}`)
   }
   return override ? getAddress(override) : getAddress(Executor.with().address)
-}
-
-// The operator EOA `liquidate` targets: required (no derivable default — the transform has no key),
-// checksum-normalized, fail-loud on a malformed value.
-function resolveLiquidatorAddress(env: Env): Address {
-  const raw = required(env, 'LIQUIDATOR_ADDRESS').trim()
-  if (!isAddress(raw, { strict: false })) {
-    throw new Error(`LIQUIDATOR_ADDRESS is not a valid address: ${raw}`)
-  }
-  return getAddress(raw)
 }
 
 function resolveDiscovery(env: Env): DiscoveryConfig {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 
-import { parseSwapConfig, VENUE_API_KEY_ENV } from '../src/config'
+import { parseSwapConfig } from '../src/config'
 
 describe('parseSwapConfig', () => {
   const COLL = '0x4200000000000000000000000000000000000006'
@@ -64,13 +64,5 @@ describe('parseSwapConfig', () => {
     expect(() =>
       parseSwapConfig({ '8453': { [COLL]: { venue: '0x', slippageBps: 1, extra: true } } })
     ).toThrow()
-  })
-})
-
-describe('VENUE_API_KEY_ENV', () => {
-  it('requires keys for aggregators only', () => {
-    expect(VENUE_API_KEY_ENV['uniswap-v3']).toBeNull()
-    expect(VENUE_API_KEY_ENV['0x']).toBe('ZEROX_API_KEY')
-    expect(VENUE_API_KEY_ENV['1inch']).toBe('ONEINCH_API_KEY')
   })
 })

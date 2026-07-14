@@ -3,12 +3,17 @@ import type { Logger } from '@repo/evm-kit'
 import type { RemoteSigner } from '@repo/signer-client'
 
 import { createLogger } from '@repo/evm-kit'
-import { acquireLock, botsHome, ConfigError, queuedLockFile, releaseLock } from '@repo/home'
+import {
+  acquireLock,
+  botsHome,
+  ConfigError,
+  probeStaleSocket,
+  queuedLockFile,
+  releaseLock
+} from '@repo/home'
 import { createRemoteSigner } from '@repo/signer-client'
 import { ensureError } from '@repo/utils'
 import { Command, CommanderError } from 'commander'
-import { unlinkSync } from 'node:fs'
-import { connect } from 'node:net'
 import { isAddressEqual } from 'viem'
 
 import type { QueuedConfig, QueuedOpts } from './config'
@@ -22,40 +27,6 @@ type Env = Record<string, string | undefined>
 // A pre-logger structured error line on stderr (config validation runs before the log level is known).
 function fail(event: string, error: unknown): void {
   console.error(JSON.stringify({ level: 'error', event, error: ensureError(error).message }))
-}
-
-// Distinguish a stale socket file (a prior daemon died without unlinking) from a live one. A connect
-// that succeeds means another daemon owns the socket → refuse (exit 2). Nobody-listening errors
-// (`ECONNREFUSED`; or `ENOENT` — macOS/Bun report this for a stale socket file whose owner died) →
-// clear the leftover file so `listen` can rebind. Any other error is a genuine problem → propagate.
-function probeStaleSocket(socketPath: string): Promise<void> {
-  const clearToBind = (resolve: () => void): void => {
-    try {
-      unlinkSync(socketPath)
-    } catch {
-      // Already gone (or raced with another unlink) — either way we are clear to bind.
-    }
-    resolve()
-  }
-  return new Promise<void>((resolve, reject) => {
-    const socket = connect(socketPath)
-    socket.setTimeout(1_000, () => {
-      socket.destroy()
-      reject(new ConfigError(`the socket at ${socketPath} did not respond to a probe within 1s`))
-    })
-    socket.on('connect', () => {
-      socket.destroy()
-      reject(new ConfigError(`a queue daemon is already listening on ${socketPath}`))
-    })
-    socket.on('error', error => {
-      const code = (error as NodeJS.ErrnoException).code
-      if (code === 'ECONNREFUSED' || code === 'ENOENT') {
-        clearToBind(resolve)
-      } else {
-        reject(error)
-      }
-    })
-  })
 }
 
 // Resolves the signing account from the config's signer backend (armed only). Agent mode: the
@@ -112,7 +83,7 @@ export async function runQueued(opts: QueuedOpts): Promise<number> {
   if (lock.stolen) logger.warn('lock.stolen', { chainId: config.chainId, lockPath })
 
   try {
-    await probeStaleSocket(config.socketPath)
+    await probeStaleSocket(config.socketPath, { label: 'a queue daemon' })
   } catch (error) {
     fail('startup.error', error)
     releaseLock(lockPath)

@@ -1,13 +1,17 @@
 import type { LogLevel } from '@repo/evm-kit'
 import type { SwapConfig } from '@repo/swaps'
+import type { Env } from '@repo/utils'
 import type { Address, Chain } from 'viem'
 
 import { Executor } from '@repo/contracts'
+import { isLogLevel, LOG_LEVELS } from '@repo/evm-kit'
 import { parseSwapConfig, VENUE_API_KEY_ENV } from '@repo/swaps'
-import { tryCatch } from '@repo/utils'
+import { intEnv, required, resolveLiquidatorAddress, tryCatch } from '@repo/utils'
 import { readFileSync } from 'node:fs'
 import { defineChain, getAddress, isAddress } from 'viem'
 import { base } from 'viem/chains'
+
+export type { Env }
 
 // The per-collateral swap routing config (SWAP_CONFIG_PATH JSON) — schemas, `parseSwapConfig`, and
 // `VENUE_API_KEY_ENV` — lives in `@repo/swaps`; this module only reads/validates the file and env.
@@ -61,7 +65,6 @@ const CHAIN_MAP: Record<number, ChainConfig> = {
 // ---------------------------------------------------------------------------
 // Env table
 // ---------------------------------------------------------------------------
-const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
 
 // Quoting tunables, all optional with safe defaults so existing deployments are unaffected.
 const DEFAULT_QUOTE_TIMEOUT_MS = 2500
@@ -69,8 +72,6 @@ const DEFAULT_HTTP_RPS = 2 // per-venue token-bucket refill; 1inch free tier is 
 const DEFAULT_HTTP_BURST = 5
 const DEFAULT_HTTP_MAX_RETRIES = 2
 const DEFAULT_MAX_ROUTE_IMPACT_BPS = 500 // reject an aggregator route >5% below the oracle reference
-
-export type Env = Record<string, string | undefined>
 
 /** Off-chain quoting tunables. */
 export type QuotingConfig = {
@@ -117,40 +118,6 @@ export type LiquidateConfig = Omit<CommonConfig, 'network'> & {
   liquidatorAddress: Address
   swapConfig: SwapConfig
   quoting: QuotingConfig
-}
-
-function required(env: Env, name: string): string {
-  const value = env[name]
-  if (value === undefined || value.trim() === '') {
-    throw new Error(`Missing required env var: ${name}`)
-  }
-  return value
-}
-
-// Parses an optional non-negative integer env var, with a default and optional min/max bounds.
-function intEnv(
-  env: Env,
-  name: string,
-  def: number,
-  bounds: { min?: number; max?: number } = {}
-): number {
-  const raw = env[name]?.trim()
-  if (!raw) return def
-  if (!/^\d+$/.test(raw)) {
-    throw new Error(`${name} must be a non-negative integer, got: ${env[name]}`)
-  }
-  const value = Number(raw)
-  if (bounds.min !== undefined && value < bounds.min) {
-    throw new Error(`${name} must be >= ${bounds.min}, got: ${env[name]}`)
-  }
-  if (bounds.max !== undefined && value > bounds.max) {
-    throw new Error(`${name} must be <= ${bounds.max}, got: ${env[name]}`)
-  }
-  return value
-}
-
-function isLogLevel(value: string): value is LogLevel {
-  return (LOG_LEVELS as readonly string[]).includes(value)
 }
 
 // A genuinely absent swap config file (path set, file not there yet — e.g. a volume not seeded on
@@ -210,16 +177,6 @@ function resolveExecutor(env: Env): Address {
     throw new Error(`EXECUTOOOR_ADDRESS is not a valid address: ${override}`)
   }
   return override ? getAddress(override) : getAddress(Executor.with().address)
-}
-
-// The operator EOA `liquidate` targets: required (no derivable default — the transform has no key),
-// checksum-normalized, fail-loud on a malformed value.
-function resolveLiquidatorAddress(env: Env): Address {
-  const raw = required(env, 'LIQUIDATOR_ADDRESS').trim()
-  if (!isAddress(raw, { strict: false })) {
-    throw new Error(`LIQUIDATOR_ADDRESS is not a valid address: ${raw}`)
-  }
-  return getAddress(raw)
 }
 
 // Swap routing is OPTIONAL. With no path set, or a path whose file does not exist yet (e.g. a

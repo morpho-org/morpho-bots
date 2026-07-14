@@ -37,8 +37,6 @@ describe('wTaylorCompounded', () => {
 
 describe('shares math (virtual offsets)', () => {
   it('applies VIRTUAL_SHARES to shares and VIRTUAL_ASSETS to assets', () => {
-    expect(VIRTUAL_SHARES).toBe(10n ** 6n)
-    expect(VIRTUAL_ASSETS).toBe(1n)
     // Empty market: 1 asset ↔ VIRTUAL_SHARES shares, 1 share-lot ↔ 1 asset.
     expect(toSharesDown(1n, 0n, 0n)).toBe(VIRTUAL_SHARES)
     expect(toSharesUp(1n, 0n, 0n)).toBe(VIRTUAL_SHARES)

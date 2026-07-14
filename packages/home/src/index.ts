@@ -1,4 +1,5 @@
 export * from './config'
 export * from './home'
 export * from './lock'
+export * from './socket'
 export * from './state'

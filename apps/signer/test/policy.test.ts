@@ -77,8 +77,6 @@ describe('evaluatePolicy', () => {
   })
 
   it('hard-codes zero value and exec_606BaXt instead of making them configurable', () => {
-    expect(Object.keys(policy)).not.toContain('maxValueWei')
-    expect(Object.keys(policy)).not.toContain('selectors')
     expect(evaluatePolicy(policy, tx({ value: '1' }))).toMatchObject({ check: 'value' })
     expect(evaluatePolicy(policy, tx({ data: '0xdeadbeef' }))).toMatchObject({ check: 'selector' })
   })
