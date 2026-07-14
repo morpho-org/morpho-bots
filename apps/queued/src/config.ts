@@ -1,6 +1,7 @@
 import type { LogLevel } from '@repo/evm-kit'
 import type { Address, Chain } from 'viem'
 
+import { LOG_LEVELS } from '@repo/evm-kit'
 import { assertSunPathLength, ConfigError, queuedSocketFile } from '@repo/home'
 import { ensureError } from '@repo/utils'
 import { defineChain } from 'viem'
@@ -23,7 +24,6 @@ function asConfigError<T>(resolve: () => T): T {
   }
 }
 
-const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
 // Default blocks a pending tx may sit unconfirmed before the daemon bumps its fee and replaces it —
 // the per-chain knob the pending queue's `stuckBlocks` reads. Matches bot-kit's `STUCK_BLOCKS`.
 const DEFAULT_STUCK_BLOCKS = 4n

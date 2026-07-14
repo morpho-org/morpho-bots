@@ -77,20 +77,14 @@ describe('tryCatch', () => {
     })
   })
 
+  // The promise overload shares the same formatError → ensureError normalization as the sync form,
+  // so it only needs to prove the `.then` (success) / `.catch` (normalize) wiring. The full
+  // normalization matrix lives in the sync form above and in errors.test.ts.
   describe('promise form', () => {
     it('should return success result with data when promise resolves', async () => {
       const result = await tryCatch(Promise.resolve(42))
 
       expect(result).toEqual({ data: 42, error: null })
-    })
-
-    it('should return failure result with error when promise rejects', async () => {
-      const error = new Error('test error')
-      const result = await tryCatch(Promise.reject(error))
-
-      expect(result.data).toBeNull()
-      expect(result.error).toBeInstanceOf(Error)
-      expect(result.error?.message).toBe('test error')
     })
 
     it('should handle non-Error rejections and convert to Error', async () => {
@@ -101,41 +95,12 @@ describe('tryCatch', () => {
       expect(result.error?.message).toContain('This value was thrown as is')
     })
 
-    it('should handle object rejections', async () => {
-      const result = await tryCatch(Promise.reject({ code: 500, message: 'Server error' }))
-
-      expect(result.data).toBeNull()
-      expect(result.error).toBeInstanceOf(Error)
-    })
-
-    it('should handle null and undefined rejections', async () => {
-      const nullResult = await tryCatch(Promise.reject(null))
-      const undefinedResult = await tryCatch(Promise.reject(undefined))
-
-      expect(nullResult.data).toBeNull()
-      expect(nullResult.error).toBeInstanceOf(Error)
-      expect(undefinedResult.data).toBeNull()
-      expect(undefinedResult.error).toBeInstanceOf(Error)
-    })
-
     it('should preserve error properties', async () => {
       const error = new Error('test')
       error.cause = 'root cause'
       const result = await tryCatch(Promise.reject(error))
 
       expect(result.error?.cause).toBe('root cause')
-    })
-
-    it('should work with different data types', async () => {
-      const stringResult = await tryCatch(Promise.resolve('hello'))
-      const arrayResult = await tryCatch(Promise.resolve([1, 2, 3]))
-      const objectResult = await tryCatch(Promise.resolve({ key: 'value' }))
-      const nullResult = await tryCatch(Promise.resolve(null))
-
-      expect(stringResult.data).toBe('hello')
-      expect(arrayResult.data).toEqual([1, 2, 3])
-      expect(objectResult.data).toEqual({ key: 'value' })
-      expect(nullResult.data).toBeNull()
     })
   })
 
@@ -164,50 +129,6 @@ describe('tryCatch', () => {
 
       expect(result.error).toBeInstanceOf(CustomError)
       expect((result.error as CustomError).code).toBe(99)
-    })
-  })
-
-  describe('tryCatchCapture pattern (sync → Result wrapping)', () => {
-    it('should return data from sync callback via Result', () => {
-      const result = tryCatch(() => {
-        const a = 1
-        const b = 2
-        return a + b
-      })
-
-      expect(result.data).toBe(3)
-      expect(result.error).toBeNull()
-    })
-
-    it('should capture error from sync callback and allow post-check', () => {
-      const result = tryCatch(() => {
-        throw new Error('sync failure')
-      })
-
-      // This is the pattern tryCatchCapture uses: check error, then act
-      if (result.error) {
-        expect(result.error.message).toBe('sync failure')
-        expect(result.data).toBeNull()
-      }
-    })
-
-    it('should capture error from async promise and allow post-check', async () => {
-      const result = await tryCatch(Promise.reject(new Error('async failure')))
-
-      if (result.error) {
-        expect(result.error.message).toBe('async failure')
-        expect(result.data).toBeNull()
-      }
-    })
-
-    it('should return void result from sync side-effect callback', () => {
-      let sideEffect = false
-      const result = tryCatch(() => {
-        sideEffect = true
-      })
-
-      expect(sideEffect).toBe(true)
-      expect(result.error).toBeNull()
     })
   })
 })

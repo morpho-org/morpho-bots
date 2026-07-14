@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test'
 
 import type { Logger } from '../src/logger'
 
-import { createLogger } from '../src/logger'
+import { createLogger, isLogLevel, LOG_LEVELS } from '../src/logger'
 
 describe('createLogger', () => {
   // Restore console spies even when an assertion throws first, so a failure in one test
@@ -102,5 +102,19 @@ describe('createLogger', () => {
       level: 'warn',
       event: 'real.event'
     })
+  })
+})
+
+describe('isLogLevel', () => {
+  it('accepts every level in LOG_LEVELS', () => {
+    for (const level of LOG_LEVELS) expect(isLogLevel(level)).toBe(true)
+  })
+
+  it('rejects unknown strings and non-strings', () => {
+    expect(isLogLevel('trace')).toBe(false)
+    expect(isLogLevel('INFO')).toBe(false) // case-sensitive
+    expect(isLogLevel('')).toBe(false)
+    expect(isLogLevel(undefined)).toBe(false)
+    expect(isLogLevel(3)).toBe(false)
   })
 })

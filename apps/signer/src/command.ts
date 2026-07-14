@@ -1,17 +1,17 @@
 import type { LogLevel } from '@repo/evm-kit'
 import type { Hex, LocalAccount } from 'viem'
 
-import { createLogger } from '@repo/evm-kit'
+import { createLogger, LOG_LEVELS } from '@repo/evm-kit'
 import {
   assertSunPathLength,
   botsHome,
   ConfigError,
+  probeStaleSocket,
   signerPolicyFile,
   signerSocketFile
 } from '@repo/home'
 import { ensureError } from '@repo/utils'
-import { readFileSync, unlinkSync } from 'node:fs'
-import { connect } from 'node:net'
+import { readFileSync } from 'node:fs'
 import { isHex } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
@@ -24,7 +24,6 @@ import { createSignerServer } from './server'
 type Env = Record<string, string | undefined>
 
 const PRIVATE_KEY_HEX_LENGTH = 66
-const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
 
 function resolveSignerKey(env: Env): Hex {
   const key = env.SIGNER_PRIVATE_KEY
@@ -75,31 +74,6 @@ function resolveLogLevel(env: Env): LogLevel {
   return match
 }
 
-function probeStaleSocket(socketPath: string): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    const clear = () => {
-      try {
-        unlinkSync(socketPath)
-      } catch {}
-      resolve()
-    }
-    const socket = connect(socketPath)
-    socket.setTimeout(1_000, () => {
-      socket.destroy()
-      reject(new ConfigError(`the socket at ${socketPath} did not respond within 1s`))
-    })
-    socket.on('connect', () => {
-      socket.destroy()
-      reject(new ConfigError(`a signer is already listening on ${socketPath}`))
-    })
-    socket.on('error', error => {
-      const code = (error as NodeJS.ErrnoException).code
-      if (code === 'ECONNREFUSED' || code === 'ENOENT') clear()
-      else reject(error)
-    })
-  })
-}
-
 function fail(event: string, error: unknown): void {
   console.error(JSON.stringify({ level: 'error', event, error: ensureError(error).message }))
 }
@@ -117,7 +91,7 @@ export async function runSigner(opts: { socket?: string | undefined }): Promise<
     policy = loadPolicy(env, home)
     socketPath = opts.socket?.trim() || env.SIGNER_SOCKET?.trim() || signerSocketFile(home)
     assertSunPathLength(socketPath)
-    await probeStaleSocket(socketPath)
+    await probeStaleSocket(socketPath, { label: 'a signer' })
     logLevel = resolveLogLevel(env)
   } catch (error) {
     fail('startup.error', error)
