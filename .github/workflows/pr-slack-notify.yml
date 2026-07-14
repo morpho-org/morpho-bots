@@ -104,13 +104,16 @@ jobs:
               return match ? match[1] : null;
             };
 
-            async function writeMarker(number, body, ts) {
-              if (MARKER_RE.test(body || '')) return; // idempotent
+            async function writeMarker(number, ts) {
+              // Re-read the live body right before writing: the author may have edited the
+              // description during the Slack round-trip, and a stale copy would clobber it.
+              const body = (await getPr(number)).body || '';
+              if (MARKER_RE.test(body)) return; // idempotent (also covers a concurrent run)
               await github.rest.pulls.update({
                 owner,
                 repo,
                 pull_number: number,
-                body: `${body || ''}\n\n<!-- slack-thread-ts:${ts} -->`,
+                body: `${body}\n\n<!-- slack-thread-ts:${ts} -->`,
               });
             }
 
@@ -206,4 +209,4 @@ jobs:
 
             const result = await postMessage(buildParentText(pr));
             if (!result || !result.ts) return; // Slack failed; a later event will retry
-            await writeMarker(prNumber, pr.body, result.ts);
+            await writeMarker(prNumber, result.ts);
