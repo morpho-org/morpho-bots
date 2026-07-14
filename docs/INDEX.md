@@ -47,6 +47,7 @@ _None yet — copy [`templates/DATA-FLOW.md`](./templates/DATA-FLOW.md) into a b
 
 - [TIB-2026-04-16: Bootstrap Curator Bots](./decisions/TIB-2026-04-16-bootstrap-curator-bots.md) — initial scaffold, tooling stack, and migration plan from `morpho-apps`
 - [TIB-2026-07-13: Off-chain bot architecture](./decisions/TIB-2026-07-13-bot-architecture.md) — the one-shot op pipeline, `apps/`+`packages/`+`deploy/` monorepo shape, transparent JSON-Lines wire contract, per-chain queue and policy-signer daemons, config/state model, and log correlation
+- [TIB-2026-07-14: Pared-down Slack CI notifications](./decisions/TIB-2026-07-14-slack-ci-notifications.md) — two `github-script` workflows posting basic PR notifications (store-free threading via a PR-body marker) and `release: published` notes to Slack, deliberately trimmed from `prime-monorepo`'s `@repo/ci-scripts` system — implemented
 
 ## TIBs (Bot-scoped)
 

@@ -1,0 +1,212 @@
+name: PR Slack Notify
+
+on:
+  pull_request:
+    types: [opened, ready_for_review, review_requested, closed]
+  pull_request_review:
+    types: [submitted]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to (re)notify
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  # Serialize a PR's events so the parent post lands before threaded replies.
+  # The inputs.pr_number fallback keeps manual runs in the same group.
+  group: pr-slack-${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+  cancel-in-progress: false
+
+env:
+  SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+  SLACK_PR_CHANNEL_ID: ${{ vars.SLACK_PR_CHANNEL_ID }}
+
+jobs:
+  Notify:
+    runs-on: ubuntu-latest
+    steps:
+      # Check out the trusted base-branch copy of the user map, never PR-controlled
+      # content. On workflow_dispatch the ref expression is empty, so checkout falls
+      # back to the default (main).
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+
+            const token = process.env.SLACK_BOT_TOKEN;
+            const channel = process.env.SLACK_PR_CHANNEL_ID;
+            if (!token || !channel) {
+              core.warning('SLACK_BOT_TOKEN or SLACK_PR_CHANNEL_ID unset; skipping.');
+              return;
+            }
+
+            const { owner, repo } = context.repo;
+
+            // --- Slack Web API (fail-soft: warn, never fail the job) ---
+            async function slack(method, body) {
+              try {
+                const res = await fetch(`https://slack.com/api/${method}`, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json; charset=utf-8',
+                    Authorization: `Bearer ${token}`,
+                  },
+                  body: JSON.stringify(body),
+                });
+                const json = await res.json();
+                if (!json.ok) {
+                  core.warning(`Slack ${method} failed: ${json.error}`);
+                  return null;
+                }
+                return json;
+              } catch (err) {
+                core.warning(`Slack ${method} threw: ${err.message}`);
+                return null;
+              }
+            }
+
+            const postMessage = (text, extra) =>
+              slack('chat.postMessage', { channel, text, unfurl_links: false, unfurl_media: false, ...extra });
+
+            // --- login -> Slack ID map (unmapped logins fall back to @login) ---
+            let userMap = {};
+            try {
+              userMap = JSON.parse(fs.readFileSync('.github/slack-user-map.json', 'utf8'));
+            } catch (err) {
+              core.warning(`Could not read slack-user-map.json: ${err.message}`);
+            }
+
+            // Slack requires escaping these three chars in message text so that
+            // user-controlled content cannot inject <!channel>/<@id> control sequences.
+            const escapeSlack = (s) =>
+              String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const mention = (login) => (userMap[login] ? `<@${userMap[login]}>` : `@${escapeSlack(login)}`);
+
+            // --- thread state lives in the PR body as an HTML-comment marker ---
+            const MARKER_RE = /<!-- slack-thread-ts:([0-9.]+) -->/;
+
+            async function getPr(number) {
+              const { data } = await github.rest.pulls.get({ owner, repo, pull_number: number });
+              return data;
+            }
+
+            const parseTs = (body) => {
+              const match = (body || '').match(MARKER_RE);
+              return match ? match[1] : null;
+            };
+
+            async function writeMarker(number, ts) {
+              // Re-read the live body right before writing: the author may have edited the
+              // description during the Slack round-trip, and a stale copy would clobber it.
+              const body = (await getPr(number)).body || '';
+              if (MARKER_RE.test(body)) return; // idempotent (also covers a concurrent run)
+              await github.rest.pulls.update({
+                owner,
+                repo,
+                pull_number: number,
+                body: `${body}\n\n<!-- slack-thread-ts:${ts} -->`,
+              });
+            }
+
+            // --- emoji tables ---
+            const TYPE_EMOJI = {
+              feat: ':sparkles:',
+              fix: ':bug:',
+              refactor: ':recycle:',
+              docs: ':memo:',
+              chore: ':broom:',
+              test: ':white_check_mark:',
+              perf: ':zap:',
+              ci: ':robot_face:',
+            };
+            const DEFAULT_EMOJI = ':wrench:';
+            const titleEmoji = (title) => {
+              const match = /^([a-z]+)(?:\([^)]*\))?!?:/.exec(title || '');
+              return (match && TYPE_EMOJI[match[1]]) || DEFAULT_EMOJI;
+            };
+
+            const REVIEW_EMOJI = {
+              approved: ':white_check_mark:',
+              changes_requested: ':warning:',
+              commented: ':speech_balloon:',
+            };
+            const DEFAULT_REVIEW_EMOJI = ':eyes:';
+
+            const reviewerMentions = (pr) => [
+              ...(pr.requested_reviewers || []).map((u) => mention(u.login)),
+              ...(pr.requested_teams || []).map((t) => `@${escapeSlack(t.slug)}`),
+            ];
+
+            const buildParentText = (pr) => {
+              const revs = reviewerMentions(pr);
+              return [
+                `${titleEmoji(pr.title)} <${pr.html_url}|${escapeSlack(pr.title)}>`,
+                `By: ${mention(pr.user.login)}`,
+                `Reviewers: ${revs.length ? revs.join(', ') : '—'}`,
+              ].join('\n');
+            };
+
+            // --- resolve the target PR across event types ---
+            const { eventName, payload } = context;
+            const prNumber =
+              eventName === 'workflow_dispatch'
+                ? Number(payload.inputs.pr_number)
+                : payload.pull_request && payload.pull_request.number;
+            if (!prNumber) {
+              core.warning('No PR number resolved; nothing to do.');
+              return;
+            }
+
+            const pr = await getPr(prNumber);
+
+            // Review submitted -> threaded reply (skip bot reviewers).
+            if (eventName === 'pull_request_review') {
+              const review = payload.review;
+              if (review.user && review.user.type === 'Bot') return;
+              const ts = parseTs(pr.body);
+              if (!ts) return;
+              const emoji = REVIEW_EMOJI[review.state] || DEFAULT_REVIEW_EMOJI;
+              const verb = (review.state || 'reviewed').replace(/_/g, ' ');
+              await postMessage(`${emoji} ${mention(review.user.login)} <${review.html_url}|${verb}>`, {
+                thread_ts: ts,
+              });
+              return;
+            }
+
+            // PR closed -> threaded reply.
+            if (eventName === 'pull_request' && payload.action === 'closed') {
+              const ts = parseTs(pr.body);
+              if (!ts) return;
+              await postMessage(pr.merged ? ':merged: PR merged!' : ':x: PR closed', { thread_ts: ts });
+              return;
+            }
+
+            // Remaining paths post the parent (opened / ready_for_review / review_requested / manual).
+            if (pr.draft) return;
+            const existingTs = parseTs(pr.body);
+
+            // A reviewer added after the parent exists -> thread a ping for them.
+            if (eventName === 'pull_request' && payload.action === 'review_requested' && existingTs) {
+              const requested = payload.requested_reviewer
+                ? mention(payload.requested_reviewer.login)
+                : payload.requested_team
+                  ? `@${escapeSlack(payload.requested_team.slug)}`
+                  : null;
+              if (requested) await postMessage(`:eyes: review requested from ${requested}`, { thread_ts: existingTs });
+              return;
+            }
+
+            if (existingTs) return; // parent already posted -> dedupe
+
+            const result = await postMessage(buildParentText(pr));
+            if (!result || !result.ts) return; // Slack failed; a later event will retry
+            await writeMarker(prNumber, result.ts);
