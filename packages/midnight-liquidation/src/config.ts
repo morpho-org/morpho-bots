@@ -32,8 +32,10 @@ const CHAIN_MAP: Record<number, ChainConfig> = {
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
 
 // Borrower-candidate discovery defaults (the markets liquidation-candidates endpoint). The URL is a
-// public, unauthenticated endpoint, so it is safe to default in code (override via env per-env). The
-// health-factor cutoff is intentionally tight — matured positions are always included regardless.
+// public, unauthenticated endpoint, so it is safe to default in code (override via env per-env). An
+// override changes host/prefix only — the request path is fixed by the typed openapi-fetch client
+// (see borrowers.ts). The health-factor cutoff is intentionally tight — matured positions are always
+// included regardless.
 const DEFAULT_CANDIDATES_API_URL = 'https://api.morpho.org/markets/midnight/liquidation-candidates'
 const DEFAULT_HEALTH_FACTOR_LTE = 1.02
 
@@ -46,7 +48,9 @@ const DEFAULT_MAX_ROUTE_IMPACT_BPS = 500 // reject an aggregator route >5% below
 const DEFAULT_SEIZE_CAP_MARGIN_BPS = 30 // shave the repay cap when sizing a cap-binding seize — one-block oracle-drift headroom; calibratable
 
 // Market whitelist + venue-probing defaults. The markets API is Morpho's own (not a rate-limited
-// venue), so it can be refreshed briskly. The probe uses an ISOLATED rps budget (see index.ts) so its
+// venue), so it can be refreshed briskly; an override of the URL changes host/prefix only — the
+// request path is fixed by the typed openapi-fetch client (see markets.ts). The probe uses an
+// ISOLATED rps budget (see index.ts) so its
 // bursts never queue ahead of a time-sensitive firm quote; log-scaled ladder sizes are whole
 // collateral tokens (converted per-collateral to base units). `PROBE_STALE_MS` caps probe cadence per
 // pair; a pair is re-probed only when a liquidatable position touches it after the cache goes stale.

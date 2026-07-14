@@ -6,7 +6,7 @@ import { getAddress } from 'viem'
 
 import type { CandidatePage, FetchCandidatePage } from '../src/borrowers'
 
-import { buildCandidatesUrl, createApiCandidateSource, discoverBorrowers } from '../src/borrowers'
+import { createApiCandidateSource, discoverBorrowers } from '../src/borrowers'
 
 const MARKET: Hex = `0x${'a'.repeat(64)}`
 const MARKET_2: Hex = `0x${'b'.repeat(64)}`
@@ -38,33 +38,6 @@ function spyLogger() {
   }
   return { logger, events }
 }
-
-describe('buildCandidatesUrl', () => {
-  it('assembles chain_ids, health_factor_lte, include_matured, and limit; omits cursor on page 1', () => {
-    const url = new URL(
-      buildCandidatesUrl({ baseUrl: BASE_URL, chainId: 8453, healthFactorLte: 1.02 })
-    )
-    expect(url.searchParams.get('chain_ids')).toBe('8453')
-    expect(url.searchParams.get('health_factor_lte')).toBe('1.02')
-    expect(url.searchParams.get('include_matured')).toBe('true')
-    expect(url.searchParams.get('limit')).toBe('100')
-    expect(url.searchParams.has('cursor')).toBe(false)
-  })
-
-  it('includes the cursor when provided and honors a custom limit', () => {
-    const url = new URL(
-      buildCandidatesUrl({
-        baseUrl: BASE_URL,
-        chainId: 8453,
-        healthFactorLte: 1.02,
-        limit: 20,
-        cursor: 'abc'
-      })
-    )
-    expect(url.searchParams.get('cursor')).toBe('abc')
-    expect(url.searchParams.get('limit')).toBe('20')
-  })
-})
 
 describe('discoverBorrowers', () => {
   it('follows the cursor across pages and returns validated, checksummed candidates', async () => {
@@ -126,12 +99,15 @@ describe('discoverBorrowers', () => {
 
 describe('createApiCandidateSource', () => {
   const jsonResponse = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
-    new Response(JSON.stringify(body), { status, headers })
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { 'content-type': 'application/json', ...headers }
+    })
 
-  it('requests the built URL and returns {cursor, data} from the envelope', async () => {
+  it('sends chain_ids, health_factor_lte, include_matured, and the default limit; omits cursor on page 1', async () => {
     let requestedUrl = ''
-    const fetchImpl = async (url: string) => {
-      requestedUrl = url
+    const fetchImpl = async (request: Request) => {
+      requestedUrl = request.url
       return jsonResponse({ cursor: 'next', data: [row(MARKET, BORROWER)] })
     }
     const source = createApiCandidateSource({
@@ -141,15 +117,21 @@ describe('createApiCandidateSource', () => {
       fetchImpl
     })
     const page: CandidatePage = await source(null)
-    expect(new URL(requestedUrl).searchParams.get('health_factor_lte')).toBe('1.02')
+    const params = new URL(requestedUrl).searchParams
+    expect(new URL(requestedUrl).pathname).toBe('/markets/midnight/liquidation-candidates')
+    expect(params.get('chain_ids')).toBe('8453')
+    expect(params.get('health_factor_lte')).toBe('1.02')
+    expect(params.get('include_matured')).toBe('true')
+    expect(params.get('limit')).toBe('100')
+    expect(params.has('cursor')).toBe(false)
     expect(page.cursor).toBe('next')
     expect(page.data).toHaveLength(1)
   })
 
   it('passes the cursor through on subsequent pages', async () => {
     let requestedUrl = ''
-    const fetchImpl = async (url: string) => {
-      requestedUrl = url
+    const fetchImpl = async (request: Request) => {
+      requestedUrl = request.url
       return jsonResponse({ cursor: null, data: [] })
     }
     const source = createApiCandidateSource({
@@ -185,8 +167,35 @@ describe('createApiCandidateSource', () => {
     expect(page.data).toHaveLength(1)
   })
 
-  it('coerces a null cursor and non-array data to a safe empty page', async () => {
-    const fetchImpl = async () => jsonResponse({ cursor: null, data: undefined })
+  it('retries a 429 with a non-JSON body (Retry-After is read from status/headers, not the body)', async () => {
+    let attempts = 0
+    let slept = 0
+    const fetchImpl = async () => {
+      attempts += 1
+      if (attempts === 1)
+        return new Response('<html>rate limited</html>', {
+          status: 429,
+          headers: { 'retry-after': '0', 'content-type': 'text/html' }
+        })
+      return jsonResponse({ cursor: null, data: [row(MARKET, BORROWER)] })
+    }
+    const source = createApiCandidateSource({
+      url: BASE_URL,
+      chainId: 8453,
+      healthFactorLte: 1.02,
+      fetchImpl,
+      sleep: async () => {
+        slept += 1
+      }
+    })
+    const page = await source(null)
+    expect(attempts).toBe(2)
+    expect(slept).toBe(1)
+    expect(page.data).toHaveLength(1)
+  })
+
+  it('coerces a null cursor and missing data to a safe empty page', async () => {
+    const fetchImpl = async () => jsonResponse({ cursor: null })
     const source = createApiCandidateSource({
       url: BASE_URL,
       chainId: 8453,

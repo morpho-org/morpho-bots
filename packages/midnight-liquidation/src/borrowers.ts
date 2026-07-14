@@ -1,15 +1,11 @@
 import type { Logger } from '@repo/evm-kit'
 import type { Address, Hex } from 'viem'
 
-import {
-  backoffMs,
-  delay,
-  ensureError,
-  parseJsonResponse,
-  retryAfterMs,
-  tryCatch
-} from '@repo/utils'
+import { backoffMs, delay, ensureError, retryAfterMs, tryCatch } from '@repo/utils'
+import createClient from 'openapi-fetch'
 import { getAddress, isAddress, isHex } from 'viem'
+
+import type { paths } from './generated/markets-api'
 
 /** A candidate position to evaluate: a (market, borrower) pair the API flagged as at-risk. */
 export type BorrowerCandidate = { marketId: Hex; borrower: Address }
@@ -42,26 +38,11 @@ const PAGE_LIMIT = 100
 export const MAX_DISCOVERY_PAGES = 100
 
 /**
- * Assembles the fully-qualified request URL for one page. Pure (no fetch) so the query-param contract
- * is unit-tested directly. `include_matured=true` is always sent: a matured market is liquidatable
- * regardless of health factor and the bot's on-chain gate liquidates on maturity, so those positions
- * must be in the candidate set even when their health factor sits above `healthFactorLte`.
+ * The candidates operation path — a literal key of the generated {@link paths}, so `client.GET(PATH)`
+ * is type-checked against the spec. The runtime base URL is derived by stripping this suffix from the
+ * configured endpoint URL (see {@link createApiCandidateSource}).
  */
-export function buildCandidatesUrl(params: {
-  baseUrl: string
-  chainId: number
-  healthFactorLte: number
-  limit?: number
-  cursor?: string | null
-}): string {
-  const url = new URL(params.baseUrl)
-  url.searchParams.set('chain_ids', String(params.chainId))
-  url.searchParams.set('health_factor_lte', String(params.healthFactorLte))
-  url.searchParams.set('include_matured', 'true')
-  url.searchParams.set('limit', String(params.limit ?? PAGE_LIMIT))
-  if (params.cursor) url.searchParams.set('cursor', params.cursor)
-  return url.toString()
-}
+const PATH = '/markets/midnight/liquidation-candidates'
 
 // Validates and normalizes one raw response row into a candidate, or `null` if malformed. Only
 // `market_id` + `borrower` feed the pipeline — the lens re-derives everything else (debt, health,
@@ -120,16 +101,23 @@ export async function discoverBorrowers(
   return candidates
 }
 
-/** Minimal `fetch` shape the source calls — the global `fetch` satisfies it; test fakes need not. */
-type FetchLike = (url: string, init?: RequestInit) => Promise<Response>
+/** The `fetch` shape `openapi-fetch` calls — a single `Request`. The global `fetch` satisfies it. */
+type FetchLike = (request: Request) => Promise<Response>
 
 /**
- * Runtime adapter: a {@link FetchCandidatePage} backed by the liquidation-candidates HTTP endpoint.
- * Retries 429/5xx/network up to {@link MAX_REQUEST_RETRIES}, honoring `Retry-After`; per-request
- * deadline is {@link REQUEST_TIMEOUT_MS}. Calls `fetch` directly (not `fetchJsonResponse`) because it
- * needs the raw `Response` to read `status` + the `Retry-After` header for backoff. A non-retryable
- * failure throws; the caller catches it (logs `discover.error`) and proceeds so the pending queue is
- * still driven that block. `fetchImpl`/`sleep` are injectable for tests.
+ * Runtime adapter: a {@link FetchCandidatePage} backed by the liquidation-candidates HTTP endpoint,
+ * via a typed `openapi-fetch` client generated from the Markets Internal API spec. `openapi-fetch`
+ * builds the URL, serializes the query, and parses/types the body; this wrapper keeps the bespoke
+ * retry policy it does NOT provide: 429/5xx/network up to {@link MAX_REQUEST_RETRIES}, honoring
+ * `Retry-After`, with a per-request {@link REQUEST_TIMEOUT_MS} deadline. `client.GET` resolves on
+ * 4xx/5xx (it only throws on network/abort), so `response.status`/`Retry-After` stay reachable. A
+ * non-retryable failure throws; the caller catches it (logs `discover.error`) and proceeds so the
+ * pending queue is still driven that block. `fetchImpl`/`sleep` are injectable for tests.
+ *
+ * `deps.url` is the fully-qualified endpoint URL from config; the client base URL is it minus the
+ * fixed {@link PATH} suffix (falling back to the origin). An operator override of
+ * `LIQUIDATION_CANDIDATES_API_URL` therefore changes host/prefix, but the request path is fixed by
+ * the typed client.
  */
 export function createApiCandidateSource(deps: {
   url: string
@@ -139,32 +127,41 @@ export function createApiCandidateSource(deps: {
   fetchImpl?: FetchLike
   sleep?: (ms: number) => Promise<void>
 }): FetchCandidatePage {
-  const fetchImpl = deps.fetchImpl ?? fetch
   const sleep = deps.sleep ?? delay
+  const baseUrl = deps.url.endsWith(PATH)
+    ? deps.url.slice(0, -PATH.length)
+    : new URL(deps.url).origin
+  const client = createClient<paths>({ baseUrl, fetch: deps.fetchImpl ?? fetch })
 
   return async cursor => {
-    const url = buildCandidatesUrl({
-      baseUrl: deps.url,
-      chainId: deps.chainId,
-      healthFactorLte: deps.healthFactorLte,
-      limit: deps.limit,
-      cursor
-    })
-
     for (let attempt = 0; ; attempt++) {
-      const { data: response, error: networkError } = await tryCatch(
-        fetchImpl(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
+      const call = await tryCatch(
+        client.GET(PATH, {
+          params: {
+            query: {
+              chain_ids: [deps.chainId],
+              health_factor_lte: deps.healthFactorLte,
+              // `include_matured` is always sent: a matured market is liquidatable regardless of
+              // health factor and the on-chain gate liquidates on maturity, so those positions must
+              // be in the candidate set even when their health factor sits above `healthFactorLte`.
+              include_matured: 'true',
+              limit: deps.limit ?? PAGE_LIMIT,
+              ...(cursor ? { cursor } : {})
+            }
+          },
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+        })
       )
 
-      if (networkError) {
+      if (call.error) {
         if (attempt < MAX_REQUEST_RETRIES) {
           await sleep(backoffMs(attempt))
           continue
         }
-        throw new Error(
-          `liquidation-candidates request failed: ${ensureError(networkError).message}`
-        )
+        throw new Error(`liquidation-candidates request failed: ${ensureError(call.error).message}`)
       }
+
+      const { data: body, response } = call.data
 
       if (response.status === 429 || response.status >= 500) {
         if (attempt < MAX_REQUEST_RETRIES) {
@@ -174,22 +171,14 @@ export function createApiCandidateSource(deps: {
         throw new Error(`liquidation-candidates HTTP ${response.status}`)
       }
 
-      const { data, error: parseError } = await parseJsonResponse<{
-        cursor?: unknown
-        data?: unknown
-      }>(response)
       // A non-429 4xx (e.g. 400 INVALID_CURSOR / bad params) is a request-level rejection — not worth
       // retrying with the same URL. Surface it so the caller logs and moves on.
       if (!response.ok) throw new Error(`liquidation-candidates HTTP ${response.status}`)
-      if (parseError || !data) {
-        throw new Error(
-          `liquidation-candidates parse error: ${parseError?.message ?? 'empty body'}`
-        )
-      }
+      if (!body) throw new Error('liquidation-candidates parse error: empty body')
 
       const nextCursor =
-        typeof data.cursor === 'string' && data.cursor.length > 0 ? data.cursor : null
-      const rows = Array.isArray(data.data) ? data.data : []
+        typeof body.cursor === 'string' && body.cursor.length > 0 ? body.cursor : null
+      const rows = Array.isArray(body.data) ? body.data : []
       return { cursor: nextCursor, data: rows }
     }
   }

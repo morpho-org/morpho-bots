@@ -15,6 +15,7 @@
     }
   },
   "scripts": {
+    "generate": "openapi-typescript https://api.morpho.org/markets/docs/swagger/json -o ./src/generated/markets-api.ts && openapi-typescript https://api.morpho.org/midnight/docs/swagger/json -o ./src/generated/midnight-api.ts",
     "seed:positions": "bun run scripts/seed-liquidatable-positions.ts",
     "typecheck": "soltag && tsc --noEmit"
   },
@@ -25,6 +26,7 @@
     "@repo/swaps": "workspace:*",
     "@repo/utils": "workspace:*",
     "executooor-viem": "catalog:",
+    "openapi-fetch": "catalog:",
     "solc": "catalog:",
     "soltag": "catalog:",
     "viem": "catalog:"
@@ -32,6 +34,7 @@
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
     "@types/bun": "catalog:",
+    "openapi-typescript": "catalog:",
     "typescript": "catalog:"
   }
 }

@@ -14,7 +14,9 @@
     "packages/pipeline": {},
     "packages/signer-client": {},
     "packages/swaps": {},
-    "packages/midnight-liquidation": {},
+    "packages/midnight-liquidation": {
+      "ignore": ["src/generated/**"]
+    },
     "packages/blue-liquidation": {},
     "apps/cli": {},
     "apps/queued": {},

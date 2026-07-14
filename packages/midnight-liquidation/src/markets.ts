@@ -1,26 +1,22 @@
 import type { Logger } from '@repo/evm-kit'
 import type { Address, Hex } from 'viem'
 
-import {
-  backoffMs,
-  delay,
-  ensureError,
-  parseJsonResponse,
-  retryAfterMs,
-  tryCatch
-} from '@repo/utils'
+import { backoffMs, delay, ensureError, retryAfterMs, tryCatch } from '@repo/utils'
+import createClient from 'openapi-fetch'
 import { isAddress, isHex } from 'viem'
 
-// Pure response shapes from `GET /v0/midnight/markets` (the seed script imports these too). Only the
-// fields the whitelist needs are modeled; the API returns more (maturity, fees, …) that we ignore.
-export type ApiCollateral = {
+import type { components, paths } from './generated/midnight-api'
+
+// Response shapes from `GET /v0/midnight/markets` (the seed script imports these too). The spec types
+// ids/addresses as plain strings; we brand the fields the codebase consumes as viem `Hex`/`Address`
+// (validated at runtime in `refresh`). The rest of the generated shape (maturity, fees, …) passes
+// through untouched, and is intentionally ignored by the whitelist.
+type ApiMarketRow = components['schemas']['MarketsResponse']['data'][number]
+export type ApiCollateral = Omit<ApiMarketRow['collaterals'][number], 'token' | 'oracle'> & {
   token: Address
-  lltv: string
-  liquidation_cursor: string
   oracle: Address
 }
-export type ApiMarket = {
-  chain_id: number
+export type ApiMarket = Omit<ApiMarketRow, 'market_id' | 'loan_token' | 'collaterals'> & {
   market_id: Hex
   loan_token: Address
   collaterals: ApiCollateral[]
@@ -48,16 +44,26 @@ type ListedMarketFilter = {
  */
 export type ListedMarketsState = { marketIds: string[]; updatedAt: number | null }
 
-/** Minimal `fetch` shape the source calls — the global `fetch` satisfies it; test fakes need not. */
-type FetchLike = (url: string, init?: RequestInit) => Promise<Response>
+/** The `fetch` shape `openapi-fetch` calls — a single `Request`. The global `fetch` satisfies it. */
+type FetchLike = (request: Request) => Promise<Response>
 
 const REQUEST_TIMEOUT_MS = 5_000
 const MAX_REQUEST_RETRIES = 3
 
 /**
- * Builds the {@link ListedMarketFilter}. Mirrors `borrowers.ts`'s HTTP conventions (direct
- * `fetch`, retry 429/5xx/network with `Retry-After`, {@link REQUEST_TIMEOUT_MS} deadline) — this
- * endpoint is Morpho's own (not a rate-limited venue), so a small self-contained client suffices.
+ * The markets-list operation path — a literal key of the generated {@link paths}, so `client.GET(PATH)`
+ * is type-checked against the spec. The runtime base URL is derived by stripping this suffix from the
+ * configured endpoint URL.
+ */
+const PATH = '/v0/midnight/markets'
+
+/**
+ * Builds the {@link ListedMarketFilter}, via a typed `openapi-fetch` client generated from the
+ * Midnight API spec. `openapi-fetch` builds the URL, serializes the query, and parses/types the body;
+ * this keeps the bespoke retry policy it does NOT provide: 429/5xx/network up to
+ * {@link MAX_REQUEST_RETRIES}, honoring `Retry-After`, with a {@link REQUEST_TIMEOUT_MS} deadline.
+ * `deps.apiUrl` is the full endpoint URL from config; the client base URL is it minus the fixed
+ * {@link PATH} suffix (an override of `MARKETS_API_URL` changes host/prefix, not the request path).
  * `fetchImpl`/`sleep`/`now` are injectable for tests.
  */
 export function createListedMarketFilter(deps: {
@@ -70,9 +76,12 @@ export function createListedMarketFilter(deps: {
   /** Seeds the whitelist from a prior `dump()`; the caller owns the staleness policy. */
   initialState?: ListedMarketsState
 }): ListedMarketFilter {
-  const fetchImpl = deps.fetchImpl ?? fetch
   const sleep = deps.sleep ?? delay
   const now = deps.now ?? (() => Date.now())
+  const baseUrl = deps.apiUrl.endsWith(PATH)
+    ? deps.apiUrl.slice(0, -PATH.length)
+    : new URL(deps.apiUrl).origin
+  const client = createClient<paths>({ baseUrl, fetch: deps.fetchImpl ?? fetch })
 
   // Last-known-good: only replaced by a fully-successful refresh, so a transient failure keeps serving
   // the prior set rather than emptying the whitelist.
@@ -80,21 +89,23 @@ export function createListedMarketFilter(deps: {
   let updatedAt: number | null = deps.initialState?.updatedAt ?? null
 
   async function fetchListed(): Promise<ApiMarket[]> {
-    const url = new URL(deps.apiUrl)
-    url.searchParams.set('listed', 'true')
-
     for (let attempt = 0; ; attempt++) {
-      const { data: response, error: networkError } = await tryCatch(
-        fetchImpl(url.toString(), { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
+      const call = await tryCatch(
+        client.GET(PATH, {
+          params: { query: { listed: 'true' } },
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+        })
       )
 
-      if (networkError) {
+      if (call.error) {
         if (attempt < MAX_REQUEST_RETRIES) {
           await sleep(backoffMs(attempt))
           continue
         }
-        throw new Error(`markets request failed: ${ensureError(networkError).message}`)
+        throw new Error(`markets request failed: ${ensureError(call.error).message}`)
       }
+
+      const { data: body, response } = call.data
 
       if (response.status === 429 || response.status >= 500) {
         if (attempt < MAX_REQUEST_RETRIES) {
@@ -104,12 +115,9 @@ export function createListedMarketFilter(deps: {
         throw new Error(`markets HTTP ${response.status}`)
       }
 
-      const { data, error: parseError } = await parseJsonResponse<{ data?: unknown }>(response)
       if (!response.ok) throw new Error(`markets HTTP ${response.status}`)
-      if (parseError || !data) {
-        throw new Error(`markets parse error: ${parseError?.message ?? 'empty body'}`)
-      }
-      return Array.isArray(data.data) ? (data.data as ApiMarket[]) : []
+      if (!body) throw new Error('markets parse error: empty body')
+      return Array.isArray(body.data) ? (body.data as ApiMarket[]) : []
     }
   }
 
@@ -118,7 +126,7 @@ export function createListedMarketFilter(deps: {
     const next = new Set<string>()
     for (const market of rows) {
       if (market.chain_id !== deps.chainId) continue
-      if (typeof market.market_id !== 'string' || !isHex(market.market_id)) continue
+      if (!isHex(market.market_id)) continue
       if (!isAddress(market.loan_token, { strict: false })) continue
       next.add(market.market_id.toLowerCase())
     }
