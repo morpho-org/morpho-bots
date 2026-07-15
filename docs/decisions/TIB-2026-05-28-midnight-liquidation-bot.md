@@ -838,8 +838,12 @@ recomputed per`(id, borrower)`rather than deduped per`marketId`.
   - Baseline cadence: pure HTTP polling on a fixed ~2s interval, no `eth_subscribe`/WebSocket and no
     oracle-update trigger, so the full per-tick read cost is paid every block regardless of price
     movement. (Adjacent, not RPC: the rindexer `DISTINCT`-union also runs every tick.)
-    Candidate mitigations — all deferred, none needed for v0: prune/cooldown the candidate set (drop
-    `hasDebt=false` pairs, back off persistent `simulate` failures); cache immutable markets (`toMarket`
+    Candidate mitigations — most deferred, none needed for v0: prune/cooldown the candidate set (drop
+    `hasDebt=false` pairs). Per-position failure backoff is now available (CRTR-2807): the
+    `liquidate` transform records positions whose attempt fails to produce a submittable tx
+    (`no_config`/`quote_failed`/`sim_reverted`) and skips re-quoting them for
+    `POSITION_LIQUIDATION_COOLDOWN_MS` (opt-in, default 0 = off). Still deferred: cache immutable
+    markets (`toMarket`
     by `marketId`) and dedupe within a read; tier the cadence (slow full scan + a per-block hot set, or
     trigger off oracle updates); size lens chunks to the provider's real `eth_call` cap; batch
     `getReceipt`.

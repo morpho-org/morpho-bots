@@ -72,6 +72,9 @@ const DEFAULT_HTTP_RPS = 2 // per-venue token-bucket refill; 1inch free tier is 
 const DEFAULT_HTTP_BURST = 5
 const DEFAULT_HTTP_MAX_RETRIES = 2
 const DEFAULT_MAX_ROUTE_IMPACT_BPS = 500 // reject an aggregator route >5% below the oracle reference
+// Per-position backoff after a failed liquidation attempt (no route / quote failure / sim revert).
+// 0 disables it — the default, so existing deployments re-attempt every tick as before.
+const DEFAULT_POSITION_LIQUIDATION_COOLDOWN_MS = 0
 
 /** Off-chain quoting tunables. */
 export type QuotingConfig = {
@@ -118,6 +121,12 @@ export type LiquidateConfig = Omit<CommonConfig, 'network'> & {
   liquidatorAddress: Address
   swapConfig: SwapConfig
   quoting: QuotingConfig
+  /**
+   * Backoff window (ms) before re-attempting a position whose last liquidation attempt failed to
+   * produce a submittable tx. 0 disables the cooldown (re-attempt every tick). See
+   * `POSITION_LIQUIDATION_COOLDOWN_MS`.
+   */
+  positionCooldownMs: number
 }
 
 // A genuinely absent swap config file (path set, file not there yet — e.g. a volume not seeded on
@@ -268,6 +277,12 @@ export function loadLiquidateConfig(env: Env = Bun.env, deps: LoadDeps = {}): Li
     executooorAddress: resolveExecutor(env),
     liquidatorAddress: resolveLiquidatorAddress(env),
     swapConfig: resolveSwapConfig(env, common.chainId, readFile),
-    quoting: resolveQuoting(env)
+    quoting: resolveQuoting(env),
+    positionCooldownMs: intEnv(
+      env,
+      'POSITION_LIQUIDATION_COOLDOWN_MS',
+      DEFAULT_POSITION_LIQUIDATION_COOLDOWN_MS,
+      { min: 0 }
+    )
   }
 }

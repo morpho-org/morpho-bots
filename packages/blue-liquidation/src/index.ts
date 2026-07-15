@@ -22,7 +22,7 @@ export type { BlueLiquidateCache, LiquidateCounters } from './ops/liquidate'
 // The CLI keys the cache file on the op NAME, so a rename already orphans old files — these version
 // only the content shape within a given op's file.
 const UNHEALTHY_POSITIONS_CACHE_VERSION = 1
-const LIQUIDATE_CACHE_VERSION = 1
+const LIQUIDATE_CACHE_VERSION = 2
 
 /**
  * The flat op table this core exposes to the CLI (see `@repo/pipeline`'s {@link Operation}). Each op is

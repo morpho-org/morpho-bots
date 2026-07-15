@@ -560,7 +560,11 @@ alerting are deferred to v1, and the keys are designed to ship as-is.
   immutable `MarketParams` can be cached per `Id` and the market read deduped per `Id`.
 - Richer observability (BetterStack traces + Slack alerts) — deferred to v1.
 - Throughput under a large liquidation wave (single-EOA nonce serialization; sequential
-  simulate/receipt loops) and RPC-usage scaling.
+  simulate/receipt loops) and RPC-usage scaling. Partially addressed (CRTR-2807): the `liquidate`
+  transform now backs off a position whose attempt fails to produce a submittable tx
+  (`no_config`/`quote_failed`/`sim_reverted`), skipping re-quoting for
+  `POSITION_LIQUIDATION_COOLDOWN_MS` (opt-in, default 0 = off) — so a persistently-failing position
+  stops re-hitting the rate-limited venue APIs every tick.
 - Multi-chain: the chain map is deliberately multi-chain-ready; Ethereum mainnet (largest Blue TVL)
   and other Blue chains are a config + deploy follow-on, one process per chain.
 - Pre-liquidation support (Morpho's `PreLiquidation` contracts) as a distinct future mechanism.
