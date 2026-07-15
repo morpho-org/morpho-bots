@@ -12,7 +12,8 @@ import type { Venue } from './types'
 //   - { venue: 'uniswap-v3', router, fee, slippageBps }  (direct, no API key)
 //   - { venue: '0x',    baseUrl?, slippageBps }           (needs ZEROX_API_KEY)
 //   - { venue: '1inch', baseUrl?, slippageBps }           (needs ONEINCH_API_KEY)
-//   - { venue: 'lifi',  baseUrl?, slippageBps }           (needs LIFI_API_KEY)
+//   - { venue: 'lifi',  baseUrl?, slippageBps }           (LIFI_API_KEY optional — keyless works)
+//   - { venue: 'liquidswap', baseUrl?, slippageBps }      (keyless; HyperEVM only)
 // A single file may describe several chains; each bot reads its own chain's entry at swap time.
 // API keys NEVER live here — they come from env (validated for presence in each bot's loadConfig).
 
@@ -35,6 +36,9 @@ const oneInchVenue = z
 const lifiVenue = z
   .object({ venue: z.literal('lifi'), baseUrl: z.string().url().optional(), slippageBps })
   .strict()
+const liquidSwapVenue = z
+  .object({ venue: z.literal('liquidswap'), baseUrl: z.string().url().optional(), slippageBps })
+  .strict()
 
 // A pre-venue entry ({ router, fee, slippageBps }, no `venue`) defaults to uniswap-v3, so existing
 // configs keep parsing byte-identically.
@@ -43,7 +47,13 @@ const swapParamsSchema = z.preprocess(
     value && typeof value === 'object' && !Array.isArray(value) && !('venue' in value)
       ? { venue: 'uniswap-v3', ...value }
       : value,
-  z.discriminatedUnion('venue', [uniswapV3Venue, zeroxVenue, oneInchVenue, lifiVenue])
+  z.discriminatedUnion('venue', [
+    uniswapV3Venue,
+    zeroxVenue,
+    oneInchVenue,
+    lifiVenue,
+    liquidSwapVenue
+  ])
 )
 
 /** One collateral's parsed venue entry — the discriminated union the adapters dispatch on. */
@@ -59,7 +69,8 @@ export const VENUE_API_KEY_ENV: Record<Venue, string | null> = {
   'uniswap-v3': null,
   '0x': 'ZEROX_API_KEY',
   '1inch': 'ONEINCH_API_KEY',
-  lifi: null
+  lifi: null,
+  liquidswap: null
 }
 
 const swapConfigSchema = z.record(

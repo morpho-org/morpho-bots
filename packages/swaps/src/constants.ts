@@ -28,6 +28,9 @@ export const ONEINCH_BASE_URL = 'https://api.1inch.dev'
 /** Default LiFi API host (per-collateral `baseUrl` overrides it). */
 export const LIFI_BASE_URL = 'https://li.quest/v1'
 
+/** Default LiquidSwap (liqd.ag) API host — the HyperEVM DEX aggregator (per-collateral `baseUrl` overrides it). */
+export const LIQUIDSWAP_BASE_URL = 'https://api.liqd.ag/v2'
+
 /**
  * LiFi `integrator` query param — a stable id LiFi uses for analytics and API-key scoping. Not a
  * secret; sent on every LiFi request alongside the `x-lifi-api-key` header.

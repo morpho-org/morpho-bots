@@ -119,7 +119,10 @@ export function createVenueSelector(deps: {
     const existing = cache.get(key)
     if (existing && now() - existing.updatedAt < deps.staleMs) return
 
-    const ladder = ladderFor(await decimalsFor(pair.collateral))
+    // Collateral decimals: for the ladder, and passed to the probe so decimal-denominated venues
+    // (LiquidSwap) can convert base units → a human-readable amountIn.
+    const collateralDecimals = await decimalsFor(pair.collateral)
+    const ladder = ladderFor(collateralDecimals)
     const rankedByBucket: VenueQuoteEstimate[][] = ladder.map(() => [])
     for (const venue of deps.venues) {
       for (let i = 0; i < ladder.length; i++) {
@@ -130,7 +133,8 @@ export function createVenueSelector(deps: {
             chainId: deps.chainId,
             tokenIn: pair.collateral,
             tokenOut: pair.loan,
-            amountIn
+            amountIn,
+            tokenInDecimals: collateralDecimals
           })
         )
         if (error) {
