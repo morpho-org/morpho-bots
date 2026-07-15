@@ -15,6 +15,9 @@ assertPrivateKey(privateKey)
 const zeroxKey = env.ZEROX_API_KEY?.trim()
 const oneinchKey = env.ONEINCH_API_KEY?.trim()
 const allowBadDebtOnly = env.ALLOW_BAD_DEBT_ONLY?.trim().toLowerCase() === 'true'
+// Optional BetterStack forwarding: host is a plain var, token is a secret. Off when unset.
+const betterstackHost = env.BETTERSTACK_INGESTING_HOST?.trim()
+const betterstackToken = env.BETTERSTACK_SOURCE_TOKEN?.trim()
 if (!zeroxKey && !oneinchKey && !allowBadDebtOnly) {
   throw new Error(
     'Set ZEROX_API_KEY and/or ONEINCH_API_KEY, or ALLOW_BAD_DEBT_ONLY=true to deploy bad-debt-only.'
@@ -34,13 +37,15 @@ await railway.setVariables(service, {
   LIQUIDATOR_ADDRESS: required(env, 'LIQUIDATOR_ADDRESS'),
   EXECUTOOOR_ADDRESS: executor,
   SIGNER_POLICY_JSON: signerPolicy(8453, executor),
-  ...(allowBadDebtOnly ? { ALLOW_BAD_DEBT_ONLY: 'true' } : {})
+  ...(allowBadDebtOnly ? { ALLOW_BAD_DEBT_ONLY: 'true' } : {}),
+  ...(betterstackHost ? { BETTERSTACK_INGESTING_HOST: betterstackHost } : {})
 })
 await railway.setSecrets(service, {
   RPC_URL: required(env, 'RPC_URL'),
   SIGNER_PRIVATE_KEY: privateKey,
   ZEROX_API_KEY: zeroxKey,
-  ONEINCH_API_KEY: oneinchKey
+  ONEINCH_API_KEY: oneinchKey,
+  BETTERSTACK_SOURCE_TOKEN: betterstackToken
 })
 await railway.deploy(service)
 

@@ -36,6 +36,10 @@ services:
       ONEINCH_API_KEY: ${ONEINCH_API_KEY:-}
       ALLOW_BAD_DEBT_ONLY: ${ALLOW_BAD_DEBT_ONLY:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Optional BetterStack log forwarding (deploy/vector.yaml). Empty = disabled; the entrypoint only
+      # starts the Vector side-car when the token is set.
+      BETTERSTACK_SOURCE_TOKEN: ${BETTERSTACK_SOURCE_TOKEN:-}
+      BETTERSTACK_INGESTING_HOST: ${BETTERSTACK_INGESTING_HOST:-}
     volumes:
       # Cross-tick state; without it a container restart degrades to fresh-state semantics (safe).
       - bot-data:/data

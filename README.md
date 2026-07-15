@@ -30,6 +30,27 @@ nvm use         # Node 24.14.1 (see .nvmrc)
 bun install
 ```
 
+## Running a bot
+
+A single tick is a source op piped into a transform op piped into the queue daemon — for example,
+Morpho Blue on Base:
+
+```sh
+morpho-bots blue unhealthy-positions \
+  | morpho-bots blue liquidate \
+  | morpho-queued submit --chain 8453
+```
+
+That pipeline runs once. A live bot loops it on an interval alongside a long-lived
+`morpho-queued serve` daemon — which alone owns dedupe, re-simulation, fees, nonces, broadcast, and
+replacement — plus a `morpho-signer` process when armed. Running the queue with `--dry-run` exercises
+the whole path and emits `would_submit` records without any signer or key.
+
+- [`apps/cli/README.md`](./apps/cli/README.md) — the `morpho-bots` command reference and a
+  copy-pasteable walkthrough for running a looping bot by hand
+- [`deploy/README.md`](./deploy/README.md) — the packaged, always-on loop (Docker image, compose
+  files, Railway deploy scripts)
+
 ## Daily commands
 
 ```sh
@@ -42,6 +63,8 @@ bun test            # bun's built-in test runner
 
 ## Pointers
 
+- [`apps/cli/README.md`](./apps/cli/README.md) — the `morpho-bots` operator handbook (commands,
+  config/state, the pipeline, running a looping bot)
 - `docs/INDEX.md` — documentation discovery index (guides, bots, packages, TIBs)
 - `CLAUDE.md` — agent and contributor conventions (Strict Rules, agent team,
   self-verification ritual)

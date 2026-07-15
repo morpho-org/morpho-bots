@@ -24,6 +24,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CLI="${CLI_BIN:-$REPO_ROOT/apps/cli/dist/main.js}"
 QUEUED="${QUEUED_BIN:-$REPO_ROOT/apps/queued/dist/main.js}"
 SIGNER="${SIGNER_BIN:-$REPO_ROOT/apps/signer/src/main.ts}"
+VECTOR="${VECTOR_BIN:-/usr/bin/vector}"
+VECTOR_CONFIG="${VECTOR_CONFIG:-$REPO_ROOT/deploy/vector.yaml}"
 export QUEUED_SOCKET="${QUEUED_SOCKET:-$MORPHO_BOTS_HOME/queued-$CHAIN_ID.sock}"
 POSITIONS_PIPE="$MORPHO_BOTS_HOME/positions-$CHAIN_ID.pipe"
 TRANSACTIONS_PIPE="$MORPHO_BOTS_HOME/transactions-$CHAIN_ID.pipe"
@@ -33,6 +35,8 @@ SUBMIT_PID=""
 SLEEP_PID=""
 SIGNER_PID=""
 QUEUED_PID=""
+VECTOR_PID=""
+SPOOL_ROTATE_PID=""
 
 wait_for_socket() {
   local name=$1 pid=$2 path=$3
@@ -43,6 +47,67 @@ wait_for_socket() {
   done
   echo "{\"level\":\"error\",\"event\":\"$name.timeout\",\"socket\":\"$path\"}" >&2
   return 1
+}
+
+# Bound a graceful stop: SIGTERM was already sent; poll up to `timeout` seconds, then SIGKILL. Keeps a
+# slow child (the log shipper) from eating into the platform's stop_grace_period and starving the
+# queue's drain window.
+stop_within() {
+  local pid=$1 timeout=$2 i
+  for ((i = 0; i < timeout * 10; i++)); do
+    kill -0 "$pid" 2>/dev/null || {
+      wait "$pid" 2>/dev/null || true
+      return 0
+    }
+    sleep 0.1
+  done
+  kill -KILL "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+}
+
+# Keep the ephemeral log spool bounded: truncate in place past the cap. Vector detects the truncation
+# via its data_dir checkpoint; minor dup/loss on rotation is acceptable since the real stderr is the
+# source of truth.
+rotate_spool() {
+  local cap="${BOT_LOG_SPOOL_MAX_BYTES:-52428800}"
+  while true; do
+    sleep "${BOT_LOG_SPOOL_ROTATE_S:-60}"
+    [[ -f "$BOT_LOG_SPOOL" ]] || continue
+    # `wc -c` is portable (GNU + BSD); `stat` flags differ across the two.
+    if (($(wc -c <"$BOT_LOG_SPOOL" 2>/dev/null || echo 0) > cap)); then : >"$BOT_LOG_SPOOL"; fi
+  done
+}
+
+# Optional BetterStack forwarding. Fans ALL stderr to BOTH the real stderr (Railway's native explorer,
+# unchanged) and an ephemeral spool a Vector side-car tails and ships to a per-bot BetterStack source.
+# No-op unless BETTERSTACK_SOURCE_TOKEN is set, so the default container behaves exactly as before.
+start_log_forwarder() {
+  [[ -n "${BETTERSTACK_SOURCE_TOKEN:-}" ]] || return 0
+  if [[ -z "${BETTERSTACK_INGESTING_HOST:-}" ]]; then
+    echo '{"level":"error","event":"logforward.misconfigured","detail":"BETTERSTACK_SOURCE_TOKEN set without BETTERSTACK_INGESTING_HOST; not forwarding"}' >&2
+    return 0
+  fi
+  local dir="${BOT_LOG_SPOOL_DIR:-/tmp/morpho-bots-logs}"
+  export BOT_LOG_SPOOL="${BOT_LOG_SPOOL:-$dir/spool.log}"
+  export VECTOR_DATA_DIR="${VECTOR_DATA_DIR:-$dir/vector}"
+  mkdir -p "$dir" "$VECTOR_DATA_DIR"
+  : >"$BOT_LOG_SPOOL"
+  # Preserve the real stderr on fd 3 so Vector's OWN logs bypass the spool it tails — otherwise its
+  # retry errors during a BetterStack outage would be re-read and re-shipped, a self-amplifying loop.
+  exec 3>&2
+  # tee targets a local ephemeral file, so the shipper can never block the bot; the spool stays off
+  # /data so it can't fill the state/journal volume, and rotate_spool bounds its growth.
+  exec 2> >(tee -a "$BOT_LOG_SPOOL" >&2)
+  # Belt-and-suspenders on top of the ambient unset above: the shipper never holds the signing key.
+  # VECTOR_DANGEROUSLY_ALLOW_ENV_VAR_INTERPOLATION re-enables the ${...} interpolation vector.yaml
+  # relies on, which Vector disabled by default in 0.57 — safe here since the config is baked
+  # read-only and the interpolated vars are operator-set (Railway/compose), not attacker-controlled.
+  env -u SIGNER_PRIVATE_KEY VECTOR_DANGEROUSLY_ALLOW_ENV_VAR_INTERPOLATION=true \
+    "$VECTOR" --config "$VECTOR_CONFIG" 2>&3 &
+  VECTOR_PID=$!
+  rotate_spool &
+  SPOOL_ROTATE_PID=$!
+  echo "{\"level\":\"info\",\"event\":\"logforward.start\",\"spool\":\"$BOT_LOG_SPOOL\"}" >&2
 }
 
 stop_pipeline() {
@@ -72,6 +137,15 @@ stop_children() {
     kill -TERM "$SIGNER_PID" 2>/dev/null || true
     wait "$SIGNER_PID" 2>/dev/null || true
   fi
+  # The log shipper stops LAST so it can flush the teardown lines above, with a bounded wait.
+  if [[ -n "$SPOOL_ROTATE_PID" ]]; then
+    kill -TERM "$SPOOL_ROTATE_PID" 2>/dev/null || true
+    wait "$SPOOL_ROTATE_PID" 2>/dev/null || true
+  fi
+  if [[ -n "$VECTOR_PID" ]]; then
+    kill -TERM "$VECTOR_PID" 2>/dev/null || true
+    stop_within "$VECTOR_PID" "${VECTOR_STOP_TIMEOUT_S:-5}"
+  fi
 }
 
 shutdown() {
@@ -81,15 +155,24 @@ shutdown() {
 }
 trap shutdown SIGTERM SIGINT
 
+# Hold the signing key out of the ambient environment before forking ANY helper (log shipper, tee,
+# rotation, queue) so only the signer process below ever receives it — the single-key-reader
+# invariant, enforced for every child rather than just Vector.
+SIGNER_KEY_HELD="${SIGNER_PRIVATE_KEY:-}"
+unset SIGNER_PRIVATE_KEY
+
+# Start the log shipper before the signer/queue so their startup lines are forwarded too.
+start_log_forwarder
+
 if ! is_dry_run; then
-  bun "$SIGNER" &
+  SIGNER_PRIVATE_KEY="$SIGNER_KEY_HELD" bun "$SIGNER" &
   SIGNER_PID=$!
   wait_for_socket signer "$SIGNER_PID" "$SIGNER_SOCKET" || {
     wait "$SIGNER_PID" 2>/dev/null || true
     exit 1
   }
-  unset SIGNER_PRIVATE_KEY
 fi
+unset SIGNER_KEY_HELD
 
 bun "$QUEUED" serve --chain "$CHAIN_ID" &
 QUEUED_PID=$!
