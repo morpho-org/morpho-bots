@@ -45,11 +45,16 @@ export const ZEROX_ALLOWANCE_HOLDER: Address = getAddress(
 
 /**
  * 1inch AggregationRouterV6 per chain — the plain-ERC20-`approve` spender (and the swap `tx.to`;
- * `/approve/spender` returns this same address). Deployed at the canonical CREATE2 address on every
- * chain EXCEPT zkSync Era, whose different address-derivation scheme places it elsewhere. A chain not
- * listed here throws `api_error` in `quoteOneInch` (no behavior change from before this widening).
+ * `/approve/spender` returns this same address). Deployed at the canonical CREATE2 address on most
+ * chains, but two diverge (both verified on-chain):
+ *   - zkSync Era — a different address-derivation scheme; the canonical address has no bytecode.
+ *   - Robinhood — the canonical address is a dead 1-tx deployment; the live router (82k+ `swap`
+ *     calls) is a separate address. Robinhood is a `@repo/blue-liquidation` chain, so a `1inch`
+ *     swap config there must resolve or liquidations would fail every tick.
+ * A chain not listed here throws `api_error` in `quoteOneInch` (no behavior change for wired chains).
  */
 const ONEINCH_ROUTER_V6 = getAddress('0x111111125421cA6dc452d289314280a0f8842A65')
+const ROBINHOOD_CHAIN_ID = 4663 // Arbitrum Orbit L2; not in viem/chains (defined in blue's config).
 export const ONEINCH_ROUTER: Record<number, Address> = {
   [mainnet.id]: ONEINCH_ROUTER_V6,
   [optimism.id]: ONEINCH_ROUTER_V6,
@@ -60,6 +65,6 @@ export const ONEINCH_ROUTER: Record<number, Address> = {
   [arbitrum.id]: ONEINCH_ROUTER_V6,
   [avalanche.id]: ONEINCH_ROUTER_V6,
   [linea.id]: ONEINCH_ROUTER_V6,
-  // zkSync Era diverges (verified on-chain): canonical address has no bytecode there.
-  [zksync.id]: getAddress('0x6fd4383cB451173D5f9304F041C7BCBf27d561fF')
+  [zksync.id]: getAddress('0x6fd4383cB451173D5f9304F041C7BCBf27d561fF'),
+  [ROBINHOOD_CHAIN_ID]: getAddress('0x5A705DE8982235a7fa45bB83dCaCf03a211389C7')
 }

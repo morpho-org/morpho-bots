@@ -16,7 +16,8 @@ const EXPECTED: Record<number, string> = {
   42161: CANONICAL, // Arbitrum One
   43114: CANONICAL, // Avalanche
   59144: CANONICAL, // Linea
-  324: getAddress('0x6fd4383cB451173D5f9304F041C7BCBf27d561fF') // zkSync Era (divergent)
+  324: getAddress('0x6fd4383cB451173D5f9304F041C7BCBf27d561fF'), // zkSync Era (divergent)
+  4663: getAddress('0x5A705DE8982235a7fa45bB83dCaCf03a211389C7') // Robinhood (divergent, blue chain)
 }
 
 describe('ONEINCH_ROUTER', () => {
@@ -39,6 +40,6 @@ describe('ONEINCH_ROUTER', () => {
   })
 
   it('has no entry for an unsupported chain (fails closed in quoteOneInch)', () => {
-    expect(ONEINCH_ROUTER[4663]).toBeUndefined()
+    expect(ONEINCH_ROUTER[31337]).toBeUndefined() // anvil/local — no 1inch deployment
   })
 })
