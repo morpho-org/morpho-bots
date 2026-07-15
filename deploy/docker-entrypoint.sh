@@ -99,7 +99,11 @@ start_log_forwarder() {
   # /data so it can't fill the state/journal volume, and rotate_spool bounds its growth.
   exec 2> >(tee -a "$BOT_LOG_SPOOL" >&2)
   # Belt-and-suspenders on top of the ambient unset above: the shipper never holds the signing key.
-  env -u SIGNER_PRIVATE_KEY "$VECTOR" --config "$VECTOR_CONFIG" 2>&3 &
+  # VECTOR_DANGEROUSLY_ALLOW_ENV_VAR_INTERPOLATION re-enables the ${...} interpolation vector.yaml
+  # relies on, which Vector disabled by default in 0.57 — safe here since the config is baked
+  # read-only and the interpolated vars are operator-set (Railway/compose), not attacker-controlled.
+  env -u SIGNER_PRIVATE_KEY VECTOR_DANGEROUSLY_ALLOW_ENV_VAR_INTERPOLATION=true \
+    "$VECTOR" --config "$VECTOR_CONFIG" 2>&3 &
   VECTOR_PID=$!
   rotate_spool &
   SPOOL_ROTATE_PID=$!

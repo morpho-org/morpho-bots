@@ -34,10 +34,14 @@ RUN bun install --frozen-lockfile
 
 # The runtime pieces of deploy/: the entrypoint loop (CMD) and the log-forwarder config it starts
 # when BetterStack forwarding is enabled. `vector validate` compiles the config + VRL at BUILD time
-# (dummy creds satisfy the un-defaulted ${...} interpolations; --no-environment skips the live
-# BetterStack connection), so a config or VRL typo fails the build, not a running bot.
+# (dummy creds satisfy the ${...} placeholders; --no-environment skips the live BetterStack
+# connection), so a config or VRL typo fails the build, not a running bot. Vector 0.57 disabled
+# ${...} env interpolation by default; VECTOR_DANGEROUSLY_ALLOW_ENV_VAR_INTERPOLATION re-enables it
+# (safe here: the config is baked read-only and the interpolated vars are operator-set, not
+# attacker-controlled). The runtime launch in docker-entrypoint.sh sets the same flag.
 COPY deploy/docker-entrypoint.sh deploy/vector.yaml ./deploy/
 RUN BETTERSTACK_INGESTING_HOST=example.invalid BETTERSTACK_SOURCE_TOKEN=validate-only \
+  VECTOR_DANGEROUSLY_ALLOW_ENV_VAR_INTERPOLATION=true \
   vector validate --no-environment deploy/vector.yaml
 
 # Build @repo/contracts once at image build (the runtime no longer runs `prestart`), then AOT-bundle

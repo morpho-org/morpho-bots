@@ -6,8 +6,10 @@
 # BetterStack HTTP source. The shipper is deliberately off the critical path: if Vector, the network,
 # or BetterStack is down, the bot and its primary (Railway) logs are unaffected.
 #
-# Everything is env-parameterized so this file is identical under docker-compose and Railway. See
-# deploy/README.md and docs/decisions/TIB-2026-07-14-betterstack-log-forwarding.md.
+# Everything is env-parameterized so this file is identical under docker-compose and Railway. The
+# ${...} placeholders below need env interpolation, which Vector disabled by default in 0.57 — the
+# entrypoint and the Dockerfile validate step both set VECTOR_DANGEROUSLY_ALLOW_ENV_VAR_INTERPOLATION.
+# See deploy/README.md and docs/decisions/TIB-2026-07-14-betterstack-log-forwarding.md.
 
 # Checkpoints (last-read offset per file) live on ephemeral storage — NEVER on /data, so a runaway
 # spool can't fill the volume that holds queue state and the daemon journal.
