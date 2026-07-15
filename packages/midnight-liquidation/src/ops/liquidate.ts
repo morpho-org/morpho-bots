@@ -265,6 +265,7 @@ export async function runLiquidate(
   const apiKeys: Partial<Record<Venue, string>> = {}
   if (env.ZEROX_API_KEY) apiKeys['0x'] = env.ZEROX_API_KEY
   if (env.ONEINCH_API_KEY) apiKeys['1inch'] = env.ONEINCH_API_KEY
+  if (env.LIFI_API_KEY) apiKeys.lifi = env.LIFI_API_KEY
   const venues = config.venues.enabled
   if (opts.runStartupChecks) {
     if (venues.length === 0) {
@@ -280,6 +281,7 @@ export async function runLiquidate(
   const baseUrls: Partial<Record<Venue, string>> = {}
   if (config.venues.zeroxBaseUrl) baseUrls['0x'] = config.venues.zeroxBaseUrl
   if (config.venues.oneinchBaseUrl) baseUrls['1inch'] = config.venues.oneinchBaseUrl
+  if (config.venues.lifiBaseUrl) baseUrls.lifi = config.venues.lifiBaseUrl
 
   // Two rate-limited HTTP clients: one for time-sensitive FIRM quotes, a slower one for BACKGROUND
   // probes — so a probe burst can never queue ahead of a live liquidation's firm quote.

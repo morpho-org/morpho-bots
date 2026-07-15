@@ -79,6 +79,7 @@ services:
       SWAP_CONFIG_PATH: /data/morpho-bots/blue/swap-config.json
       ZEROX_API_KEY: ${ZEROX_API_KEY:-}
       ONEINCH_API_KEY: ${ONEINCH_API_KEY:-}
+      LIFI_API_KEY: ${LIFI_API_KEY:-}
       # The bot reads rindexer's indexed events (filtered to network=base) from the same Postgres.
       DATABASE_URL: postgresql://rindexer:${POSTGRES_PASSWORD:-rindexer}@postgres:5432/blue_liquidation
       LOG_LEVEL: ${LOG_LEVEL:-info}

@@ -67,7 +67,8 @@ parameters are included to make the process boundary explicit and independently 
 The CLI merges operator config and passes an environment-shaped table into each one-shot operation.
 The source needs `CHAIN_ID`, `RPC_URL`, and `DATABASE_URL`. The transform additionally needs
 `LIQUIDATOR_ADDRESS`, swap routing (`SWAP_CONFIG_PATH`), and the API key for each configured venue
-(`ZEROX_API_KEY` or `ONEINCH_API_KEY`). `EXECUTOOOR_ADDRESS` and `LOG_LEVEL` are optional overrides.
+(`ZEROX_API_KEY`, `ONEINCH_API_KEY`, or `LIFI_API_KEY`). `EXECUTOOOR_ADDRESS` and `LOG_LEVEL` are
+optional overrides.
 
 Blue stages never read a signing key. They use one `RPC_URL`; separate send and fallback endpoints
 belong neither to this package nor to the queue architecture.

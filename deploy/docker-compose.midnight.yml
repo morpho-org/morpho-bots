@@ -30,10 +30,13 @@ services:
       # Disarm the daemon: run the full dedupe→re-sim→fee pipeline and emit `would_submit`, never
       # touching the signer. Unset/false = armed (default).
       QUEUED_DRY_RUN: ${QUEUED_DRY_RUN:-}
-      # Venues are enabled by the presence of their API key. With neither set, the bot refuses to
-      # start unless ALLOW_BAD_DEBT_ONLY=true (then it runs bad-debt-only).
+      # Venues are enabled by the presence of their API key. LiFi also works keyless — set
+      # ENABLE_LIFI=true to turn it on without a key (a LIFI_API_KEY only raises rate limits). With no
+      # venue enabled, the bot refuses to start unless ALLOW_BAD_DEBT_ONLY=true (then bad-debt-only).
       ZEROX_API_KEY: ${ZEROX_API_KEY:-}
       ONEINCH_API_KEY: ${ONEINCH_API_KEY:-}
+      LIFI_API_KEY: ${LIFI_API_KEY:-}
+      ENABLE_LIFI: ${ENABLE_LIFI:-}
       ALLOW_BAD_DEBT_ONLY: ${ALLOW_BAD_DEBT_ONLY:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       # Optional BetterStack log forwarding (deploy/vector.yaml). Empty = disabled; the entrypoint only

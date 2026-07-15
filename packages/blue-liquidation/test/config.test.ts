@@ -136,6 +136,19 @@ describe('loadLiquidateConfig', () => {
     ).toThrow(/ONEINCH_API_KEY/)
   })
 
+  it('accepts a lifi collateral without LIFI_API_KEY (LiFi works keyless)', () => {
+    const swap = {
+      [String(base.id)]: {
+        '0x4200000000000000000000000000000000000006': { venue: 'lifi', slippageBps: 100 }
+      }
+    }
+    // No LIFI_API_KEY in env — must still boot (VENUE_API_KEY_ENV.lifi is null).
+    const config = loadLiquidateConfig(baseEnv({ SWAP_CONFIG_PATH: '/config/swap.json' }), {
+      readFile: () => JSON.stringify(swap)
+    })
+    expect(config.swapConfig[String(base.id)]).toBeDefined()
+  })
+
   it('requires LIQUIDATOR_ADDRESS (the transform has no key) and rejects a malformed one', () => {
     expect(() => loadLiquidateConfig(baseEnv({ LIQUIDATOR_ADDRESS: undefined }))).toThrow(
       /LIQUIDATOR_ADDRESS/
