@@ -58,6 +58,9 @@ const DEFAULT_HTTP_BURST = 5
 const DEFAULT_HTTP_MAX_RETRIES = 2
 const DEFAULT_MAX_ROUTE_IMPACT_BPS = 500 // reject an aggregator route >5% below the oracle reference
 const DEFAULT_SEIZE_CAP_MARGIN_BPS = 30 // shave the repay cap when sizing a cap-binding seize — one-block oracle-drift headroom; calibratable
+// Per-position backoff after a failed liquidation attempt (no route / quote failure / sim revert).
+// 0 disables it — the default, so existing deployments re-attempt every tick as before.
+const DEFAULT_POSITION_LIQUIDATION_COOLDOWN_MS = 0
 
 // Market whitelist + venue-probing defaults. The markets API is Morpho's own (not a rate-limited
 // venue), so it can be refreshed briskly; an override of the URL changes host/prefix only — the
@@ -176,6 +179,12 @@ export type LiquidateConfig = CommonConfig & {
   venues: VenueConfig
   probe: ProbeConfig
   quoting: QuotingConfig
+  /**
+   * Backoff window (ms) before re-attempting a position whose last liquidation attempt failed to
+   * produce a submittable tx. 0 disables the cooldown (re-attempt every tick). See
+   * `POSITION_LIQUIDATION_COOLDOWN_MS`.
+   */
+  positionCooldownMs: number
 }
 
 // ---------------------------------------------------------------------------
@@ -338,6 +347,12 @@ export function loadLiquidateConfig(env: Env = Bun.env, deps: LoadDeps = {}): Li
     liquidatorAddress: resolveLiquidatorAddress(env),
     venues: resolveVenues(env),
     probe: resolveProbe(env),
-    quoting: resolveQuoting(env)
+    quoting: resolveQuoting(env),
+    positionCooldownMs: intEnv(
+      env,
+      'POSITION_LIQUIDATION_COOLDOWN_MS',
+      DEFAULT_POSITION_LIQUIDATION_COOLDOWN_MS,
+      { min: 0 }
+    )
   }
 }

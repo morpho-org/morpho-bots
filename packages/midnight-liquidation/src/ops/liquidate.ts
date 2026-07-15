@@ -1,10 +1,10 @@
 import type { Logger } from '@repo/evm-kit'
-import type { TransactionRecord } from '@repo/pipeline'
+import type { CooldownEntries, CooldownStore, TransactionRecord } from '@repo/pipeline'
 import type { QuoteOutcome, Swap, Venue, VenueSelectorState } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
 import { assertContractDeployed, createDeploylessClient } from '@repo/evm-kit'
-import { rawRecordId, simulateLiquidationExec } from '@repo/pipeline'
+import { createCooldownStore, rawRecordId, simulateLiquidationExec } from '@repo/pipeline'
 import { createRateLimitedClient, createVenueSelector, priceByVenue } from '@repo/swaps'
 import { erc20Abi, getAddress, isAddress, isHex } from 'viem'
 import { getBlockNumber, readContract } from 'viem/actions'
@@ -21,13 +21,17 @@ import { lensKey, readMidnightLiquidationLens } from '../lens.sol'
 import { composeQuoting } from '../quotes'
 import { isBadDebtRealization, plan } from '../sizing/plan'
 
-/** `liquidate`'s disposable cache: the venue selector's per-pair ladder rankings + decimals. */
-export type MidnightLiquidateCache = VenueSelectorState
+/**
+ * `liquidate`'s disposable cache: the venue selector's per-pair ladder rankings + decimals, plus the
+ * per-position failure-backoff cooldowns. Both must survive across the per-tick process.
+ */
+export type MidnightLiquidateCache = { venues: VenueSelectorState; cooldowns: CooldownEntries }
 
 export type LiquidateCounters = {
   requested: number
   invalid: number
   notLiquidatable: number
+  cooledDown: number
   noSwapPath: number
   quoteFailed: number
   ok: number
@@ -98,6 +102,7 @@ export async function prepareLiquidations(deps: {
   }) => Promise<string | null>
   encodeExec: (market: Market, borrower: Address, plan: LiquidationPlan, swap: Swap | null) => Hex
   executor: Address
+  cooldown: CooldownStore
   emit: (record: TransactionRecord) => void
   logger: Logger
 }): Promise<LiquidateCounters> {
@@ -111,6 +116,7 @@ export async function prepareLiquidations(deps: {
     simulate,
     encodeExec,
     executor,
+    cooldown,
     emit,
     logger
   } = deps
@@ -119,6 +125,7 @@ export async function prepareLiquidations(deps: {
     requested: records.length,
     invalid: 0,
     notLiquidatable: 0,
+    cooledDown: 0,
     noSwapPath: 0,
     quoteFailed: 0,
     ok: 0,
@@ -162,6 +169,14 @@ export async function prepareLiquidations(deps: {
       counters.notLiquidatable += 1
       continue
     }
+    // Backoff: a position whose last attempt failed to produce a submittable tx is skipped (no venue
+    // quote, no re-sim) until its cooldown elapses — bad-debt realizations included, so a repeatedly
+    // reverting one also backs off. No-op when disabled (POSITION_LIQUIDATION_COOLDOWN_MS=0).
+    if (cooldown.shouldSkip(item.id)) {
+      logger.info('transform.skip', { id: item.id, status: 'cooldown', block: head })
+      counters.cooledDown += 1
+      continue
+    }
 
     // A pure bad-debt realization transfers no assets, so it skips quoting and runs as a no-callback
     // `liquidate`; every other plan needs a swap to fund the repay.
@@ -172,6 +187,7 @@ export async function prepareLiquidations(deps: {
       if (outcome.kind === 'no_config') {
         logger.warn('transform.skip', { id: item.id, status: 'no_swap_path', block: head })
         counters.noSwapPath += 1
+        cooldown.mark(item.id)
         continue
       }
       if (outcome.kind === 'failed') {
@@ -182,6 +198,7 @@ export async function prepareLiquidations(deps: {
           block: head
         })
         counters.quoteFailed += 1
+        cooldown.mark(item.id)
         continue
       }
       swap = outcome.swap
@@ -201,6 +218,7 @@ export async function prepareLiquidations(deps: {
         block: head
       })
       counters.reverted += 1
+      cooldown.mark(item.id)
       continue
     }
     const data = encodeExec(out.market, item.borrower, liquidationPlan, swap)
@@ -214,8 +232,8 @@ export async function prepareLiquidations(deps: {
 
 /**
  * One `liquidate` pass at the current chain head: build the multi-venue quote → simulate pipeline from
- * `env`, run {@link prepareLiquidations} over positions, and return the refreshed venue-selector cache for the caller
- * to persist. Needs venue API keys — read from the env table at the point of use, never stored — but
+ * `env`, run {@link prepareLiquidations} over positions, and return the refreshed venue-selector cache + failure-backoff
+ * cooldowns for the caller to persist. Needs venue API keys — read from the env table at the point of use, never stored — but
  * NOT the signer private key. Never touches the filesystem, `process.stdout`, or `Bun.env`.
  *
  * `runStartupChecks` gates the boot-time Executor-code + venue diagnostics.
@@ -289,7 +307,12 @@ export async function runLiquidate(
     indicativeQuote: (venue, params) => priceByVenue(probeClient, { venue, baseUrls, params }),
     staleMs: config.probe.staleMs,
     logger,
-    ...(opts.cache ? { initialState: opts.cache } : {})
+    ...(opts.cache?.venues ? { initialState: opts.cache.venues } : {})
+  })
+
+  const cooldown = createCooldownStore({
+    cooldownMs: config.positionCooldownMs,
+    initial: opts.cache?.cooldowns
   })
 
   const { quoteFor } = composeQuoting({
@@ -361,9 +384,10 @@ export async function runLiquidate(
     },
     encodeExec,
     executor: config.executooorAddress,
+    cooldown,
     emit,
     logger
   })
 
-  return { cache: venueSelector.dump() }
+  return { cache: { venues: venueSelector.dump(), cooldowns: cooldown.dump() } }
 }

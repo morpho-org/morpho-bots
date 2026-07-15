@@ -1,8 +1,9 @@
 import type { Logger } from '@repo/evm-kit'
-import type { TransactionRecord } from '@repo/pipeline'
+import type { CooldownStore, TransactionRecord } from '@repo/pipeline'
 import type { QuoteOutcome, Swap } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
+import { createCooldownStore } from '@repo/pipeline'
 import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
 
@@ -91,6 +92,7 @@ function runWith(opts: {
   simRevert?: string | null
   head?: bigint
   outByKey?: Map<string, LensOut>
+  cooldown?: CooldownStore
 }) {
   const { logger, events } = spyLogger()
   const emitted: TransactionRecord[] = []
@@ -121,6 +123,8 @@ function runWith(opts: {
     },
     encodeExec: () => '0xdeadbeef',
     executor: EXECUTOR,
+    // Default to a disabled store so pre-existing cases are unaffected; cooldown cases inject one.
+    cooldown: opts.cooldown ?? createCooldownStore({ cooldownMs: 0 }),
     emit: record => emitted.push(record),
     logger
   })
@@ -250,6 +254,49 @@ describe('prepareLiquidations', () => {
     expect(counters.reverted).toBe(1)
     expect(emitted).toHaveLength(0)
   })
+
+  it('skips a position still within its cooldown window and never quotes', async () => {
+    const cooldown = createCooldownStore({
+      cooldownMs: 60_000,
+      now: () => 1_000_000,
+      initial: [[ID, 1_000_000 - 30_000]] // attempted 30s ago, window is 60s
+    })
+    const { counters, emitted, quoteCalls, events } = await runWith({ cooldown })
+    expect(counters.cooledDown).toBe(1)
+    expect(emitted).toHaveLength(0)
+    expect(quoteCalls()).toBe(0)
+    expect(events.some(e => e.fields?.status === 'cooldown')).toBe(true)
+  })
+
+  it('marks a quote_failed attempt for backoff and skips it on the next pass', async () => {
+    const cooldown = createCooldownStore({ cooldownMs: 60_000, now: () => 1_000_000 })
+    const first = await runWith({ cooldown, quoteOutcome: { kind: 'failed', reason: 'no_route' } })
+    expect(first.counters.quoteFailed).toBe(1)
+    expect(cooldown.dump().map(([id]) => id)).toContain(ID)
+
+    const second = await runWith({ cooldown })
+    expect(second.counters.cooledDown).toBe(1)
+    expect(second.quoteCalls()).toBe(0)
+  })
+
+  it('backs off a reverting bad-debt realization (no quote, shared revert branch)', async () => {
+    const cooldown = createCooldownStore({ cooldownMs: 60_000, now: () => 1_000_000 })
+    const { counters, quoteCalls } = await runWith({
+      cooldown,
+      out: lensOut({ healthy: true, blockTimestamp: 3000n, debt: 1000n, badDebt: 1000n }),
+      simRevert: 'realize failed'
+    })
+    expect(counters.reverted).toBe(1)
+    expect(quoteCalls()).toBe(0) // bad-debt realization never quotes
+    expect(cooldown.dump().map(([id]) => id)).toContain(ID)
+  })
+
+  it('never marks a successful liquidation (so a dropped tx retries next tick)', async () => {
+    const cooldown = createCooldownStore({ cooldownMs: 60_000, now: () => 1_000_000 })
+    const { counters } = await runWith({ cooldown })
+    expect(counters.ok).toBe(1)
+    expect(cooldown.dump()).toHaveLength(0)
+  })
 })
 
 describe('loadLiquidateConfig', () => {
@@ -278,5 +325,13 @@ describe('loadLiquidateConfig', () => {
     const config = loadLiquidateConfig(actEnv({ LIQUIDATOR_ADDRESS: BORROWER.toLowerCase() }))
     expect(config.liquidatorAddress).toBe(BORROWER)
     expect('liquidatorPrivateKey' in config).toBe(false)
+  })
+
+  it('defaults positionCooldownMs to 0 (disabled) and parses an override', () => {
+    expect(loadLiquidateConfig(actEnv()).positionCooldownMs).toBe(0)
+    expect(
+      loadLiquidateConfig(actEnv({ POSITION_LIQUIDATION_COOLDOWN_MS: '3600000' }))
+        .positionCooldownMs
+    ).toBe(3_600_000)
   })
 })

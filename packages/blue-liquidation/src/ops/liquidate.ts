@@ -1,10 +1,10 @@
 import type { Logger } from '@repo/evm-kit'
-import type { TransactionRecord } from '@repo/pipeline'
+import type { CooldownEntries, CooldownStore, TransactionRecord } from '@repo/pipeline'
 import type { QuoteOutcome, Swap, SwapConfigEntry, Venue } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
 import { assertContractDeployed, createDeploylessClient } from '@repo/evm-kit'
-import { rawRecordId, simulateLiquidationExec } from '@repo/pipeline'
+import { createCooldownStore, rawRecordId, simulateLiquidationExec } from '@repo/pipeline'
 import { createRateLimitedClient } from '@repo/swaps'
 import { getAddress, isAddress, isHex } from 'viem'
 import { getBlockNumber } from 'viem/actions'
@@ -22,13 +22,17 @@ import { marketId } from '../market'
 import { composeQuoting } from '../quotes'
 import { plan } from '../sizing/plan'
 
-/** `liquidate` holds no cross-run cache — it re-derives everything fresh — so its cache is trivially empty. */
-export type BlueLiquidateCache = Record<string, never>
+/**
+ * `liquidate`'s disposable cache: the per-position failure-backoff cooldowns. Everything else is
+ * re-derived fresh each tick; only the cooldown timestamps must survive across the per-tick process.
+ */
+export type BlueLiquidateCache = { cooldowns: CooldownEntries }
 
 export type LiquidateCounters = {
   requested: number
   invalid: number
   notLiquidatable: number
+  cooledDown: number
   noSwapPath: number
   quoteFailed: number
   ok: number
@@ -115,6 +119,7 @@ export async function prepareLiquidations(deps: {
   }) => Promise<string | null>
   encodeExec: (market: MarketParams, borrower: Address, plan: LiquidationPlan, swap: Swap) => Hex
   executor: Address
+  cooldown: CooldownStore
   emit: (record: TransactionRecord) => void
   logger: Logger
 }): Promise<LiquidateCounters> {
@@ -127,6 +132,7 @@ export async function prepareLiquidations(deps: {
     simulate,
     encodeExec,
     executor,
+    cooldown,
     emit,
     logger
   } = deps
@@ -135,6 +141,7 @@ export async function prepareLiquidations(deps: {
     requested: records.length,
     invalid: 0,
     notLiquidatable: 0,
+    cooledDown: 0,
     noSwapPath: 0,
     quoteFailed: 0,
     ok: 0,
@@ -182,10 +189,18 @@ export async function prepareLiquidations(deps: {
       counters.notLiquidatable += 1
       continue
     }
+    // Backoff: a position whose last attempt failed to produce a submittable tx is skipped (no venue
+    // quote) until its cooldown elapses. No-op when the cooldown is disabled (POSITION_LIQUIDATION_COOLDOWN_MS=0).
+    if (cooldown.shouldSkip(item.id)) {
+      logger.info('transform.skip', { id: item.id, status: 'cooldown', block: head })
+      counters.cooledDown += 1
+      continue
+    }
     const outcome = await quoteFor(liquidationPlan, out)
     if (outcome.kind === 'no_config') {
       logger.warn('transform.skip', { id: item.id, status: 'no_swap_path', block: head })
       counters.noSwapPath += 1
+      cooldown.mark(item.id)
       continue
     }
     if (outcome.kind === 'failed') {
@@ -196,6 +211,7 @@ export async function prepareLiquidations(deps: {
         block: head
       })
       counters.quoteFailed += 1
+      cooldown.mark(item.id)
       continue
     }
     const swap = outcome.swap
@@ -214,6 +230,7 @@ export async function prepareLiquidations(deps: {
         block: head
       })
       counters.reverted += 1
+      cooldown.mark(item.id)
       continue
     }
     const data = encodeExec(out.params, item.borrower, liquidationPlan, swap)
@@ -227,7 +244,8 @@ export async function prepareLiquidations(deps: {
 
 /**
  * One `liquidate` pass at the current chain head: build the quote → simulate pipeline from `env`, run
- * {@link prepareLiquidations} over position records, and return the empty cache. Needs venue API keys — read from the
+ * {@link prepareLiquidations} over position records, and return the refreshed failure-backoff cooldowns for the
+ * caller to persist. Needs venue API keys — read from the
  * env table at the point of use, never stored — but NOT the signer private key. Never touches the
  * filesystem, `process.stdout`, or `Bun.env`.
  *
@@ -320,6 +338,11 @@ export async function runLiquidate(
       recipient: eoa
     })
 
+  const cooldown = createCooldownStore({
+    cooldownMs: config.positionCooldownMs,
+    initial: opts.cache?.cooldowns
+  })
+
   const head = await getBlockNumber(client)
   await prepareLiquidations({
     records,
@@ -339,9 +362,10 @@ export async function runLiquidate(
     },
     encodeExec,
     executor: config.executooorAddress,
+    cooldown,
     emit,
     logger
   })
 
-  return { cache: {} }
+  return { cache: { cooldowns: cooldown.dump() } }
 }
