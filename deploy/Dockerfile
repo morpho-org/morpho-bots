@@ -3,7 +3,7 @@
 # The build context MUST be the repo root so the bun workspace
 # (packages/*, apps/*) resolves — deploy/docker-compose.*.yml set `context: ..` and Railway services
 # set RAILWAY_DOCKERFILE_PATH=deploy/Dockerfile. The oven/bun base ships bash, which the entrypoint
-# needs for PIPESTATUS.
+# needs to wire the pipeline through named FIFOs and wait on each stage.
 
 # Pinned Vector binary for the OPTIONAL BetterStack log-forwarding side-car (deploy/vector.yaml).
 # Copied into the runtime image below so apt never runs in the final layer. Bump this exact tag to
