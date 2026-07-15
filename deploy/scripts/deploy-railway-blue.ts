@@ -44,7 +44,8 @@ const deployments = chains.map(chain => {
     executor: suffixed('EXECUTOOOR_ADDRESS', chain.chainId) ?? required(env, 'EXECUTOOOR_ADDRESS'),
     liquidatorAddress,
     zeroxKey: suffixed('ZEROX_API_KEY', chain.chainId) ?? env.ZEROX_API_KEY?.trim(),
-    oneinchKey: suffixed('ONEINCH_API_KEY', chain.chainId) ?? env.ONEINCH_API_KEY?.trim()
+    oneinchKey: suffixed('ONEINCH_API_KEY', chain.chainId) ?? env.ONEINCH_API_KEY?.trim(),
+    lifiKey: suffixed('LIFI_API_KEY', chain.chainId) ?? env.LIFI_API_KEY?.trim()
   }
 })
 
@@ -92,6 +93,7 @@ for (const chain of deployments) {
     SIGNER_PRIVATE_KEY: chain.privateKey,
     ZEROX_API_KEY: chain.zeroxKey,
     ONEINCH_API_KEY: chain.oneinchKey,
+    LIFI_API_KEY: chain.lifiKey,
     BETTERSTACK_SOURCE_TOKEN: betterstackToken
   })
   await railway.deploy(chain.service)

@@ -59,7 +59,7 @@ Optional:
 | `BETTERSTACK_INGESTING_HOST` | unset                               | BetterStack ingesting host; required when the token is set. |
 
 Per-bot, op-specific variables (e.g. `DATABASE_URL`, `SWAP_CONFIG_PATH`, `ZEROX_API_KEY`,
-`ONEINCH_API_KEY`) are documented in the bot READMEs. State and config live under `/data/morpho-bots`
+`ONEINCH_API_KEY`, `LIFI_API_KEY`) are documented in the bot READMEs. State and config live under `/data/morpho-bots`
 (`MORPHO_BOTS_HOME`); mount a volume at `/data` so cross-tick state, the queue socket/lock, and the
 outcomes journal survive restarts.
 

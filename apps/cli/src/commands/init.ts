@@ -28,7 +28,8 @@ const EXAMPLE_SECRETS = {
       '8453': {
         RPC_URL: 'https://…',
         DATABASE_URL: 'postgres://…',
-        ZEROX_API_KEY: ''
+        ZEROX_API_KEY: '',
+        LIFI_API_KEY: ''
       }
     }
   },
@@ -38,7 +39,8 @@ const EXAMPLE_SECRETS = {
       '8453': {
         RPC_URL: 'https://…',
         ZEROX_API_KEY: '',
-        ONEINCH_API_KEY: ''
+        ONEINCH_API_KEY: '',
+        LIFI_API_KEY: ''
       }
     }
   }

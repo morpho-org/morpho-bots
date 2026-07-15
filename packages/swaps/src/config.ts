@@ -12,6 +12,7 @@ import type { Venue } from './types'
 //   - { venue: 'uniswap-v3', router, fee, slippageBps }  (direct, no API key)
 //   - { venue: '0x',    baseUrl?, slippageBps }           (needs ZEROX_API_KEY)
 //   - { venue: '1inch', baseUrl?, slippageBps }           (needs ONEINCH_API_KEY)
+//   - { venue: 'lifi',  baseUrl?, slippageBps }           (needs LIFI_API_KEY)
 // A single file may describe several chains; each bot reads its own chain's entry at swap time.
 // API keys NEVER live here — they come from env (validated for presence in each bot's loadConfig).
 
@@ -31,6 +32,9 @@ const zeroxVenue = z
 const oneInchVenue = z
   .object({ venue: z.literal('1inch'), baseUrl: z.string().url().optional(), slippageBps })
   .strict()
+const lifiVenue = z
+  .object({ venue: z.literal('lifi'), baseUrl: z.string().url().optional(), slippageBps })
+  .strict()
 
 // A pre-venue entry ({ router, fee, slippageBps }, no `venue`) defaults to uniswap-v3, so existing
 // configs keep parsing byte-identically.
@@ -39,20 +43,23 @@ const swapParamsSchema = z.preprocess(
     value && typeof value === 'object' && !Array.isArray(value) && !('venue' in value)
       ? { venue: 'uniswap-v3', ...value }
       : value,
-  z.discriminatedUnion('venue', [uniswapV3Venue, zeroxVenue, oneInchVenue])
+  z.discriminatedUnion('venue', [uniswapV3Venue, zeroxVenue, oneInchVenue, lifiVenue])
 )
 
 /** One collateral's parsed venue entry — the discriminated union the adapters dispatch on. */
 export type SwapConfigEntry = z.infer<typeof swapParamsSchema>
 
 /**
- * Which env var supplies each venue's API key (null = no key needed). Bots validate presence at
- * startup for every venue the operator actually references on their chain.
+ * Which env var supplies each venue's *required* API key (null = no key required to function). Bots
+ * validate presence at startup for every venue the operator references on their chain. LiFi is
+ * `null` because it works keyless — an optional `LIFI_API_KEY` (injected at the op layer) only raises
+ * rate limits, so a key-free deployment must still boot; uniswap-v3 is on-chain and needs none.
  */
 export const VENUE_API_KEY_ENV: Record<Venue, string | null> = {
   'uniswap-v3': null,
   '0x': 'ZEROX_API_KEY',
-  '1inch': 'ONEINCH_API_KEY'
+  '1inch': 'ONEINCH_API_KEY',
+  lifi: null
 }
 
 const swapConfigSchema = z.record(

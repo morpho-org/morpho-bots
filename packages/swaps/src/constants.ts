@@ -1,7 +1,18 @@
 import type { Address } from 'viem'
 
 import { getAddress } from 'viem'
-import { base } from 'viem/chains'
+import {
+  arbitrum,
+  avalanche,
+  base,
+  bsc,
+  gnosis,
+  linea,
+  mainnet,
+  optimism,
+  polygon,
+  zksync
+} from 'viem/chains'
 
 // Swap-venue constants consumed by the quoting layer and its venue adapters.
 
@@ -14,6 +25,15 @@ export const ZEROX_BASE_URL = 'https://api.0x.org'
 /** Default 1inch API host (per-collateral `baseUrl` overrides it). */
 export const ONEINCH_BASE_URL = 'https://api.1inch.dev'
 
+/** Default LiFi API host (per-collateral `baseUrl` overrides it). */
+export const LIFI_BASE_URL = 'https://li.quest/v1'
+
+/**
+ * LiFi `integrator` query param — a stable id LiFi uses for analytics and API-key scoping. Not a
+ * secret; sent on every LiFi request alongside the `x-lifi-api-key` header.
+ */
+export const LIFI_INTEGRATOR = 'morpho-curator-bots'
+
 /**
  * 0x AllowanceHolder — the canonical plain-ERC20-`approve` spender for the 0x AllowanceHolder flow
  * (same address on every chain). The bot approves THIS, never the Settler. The `/quote` response also
@@ -23,7 +43,28 @@ export const ZEROX_ALLOWANCE_HOLDER: Address = getAddress(
   '0x0000000000001fF3684f28c67538d4D072C22734'
 )
 
-/** 1inch AggregationRouterV6 per chain — the plain-ERC20-`approve` spender (and the swap `tx.to`). */
+/**
+ * 1inch AggregationRouterV6 per chain — the plain-ERC20-`approve` spender (and the swap `tx.to`;
+ * `/approve/spender` returns this same address). Deployed at the canonical CREATE2 address on most
+ * chains, but two diverge (both verified on-chain):
+ *   - zkSync Era — a different address-derivation scheme; the canonical address has no bytecode.
+ *   - Robinhood — the canonical address is a dead 1-tx deployment; the live router (82k+ `swap`
+ *     calls) is a separate address. Robinhood is a `@repo/blue-liquidation` chain, so a `1inch`
+ *     swap config there must resolve or liquidations would fail every tick.
+ * A chain not listed here throws `api_error` in `quoteOneInch` (no behavior change for wired chains).
+ */
+const ONEINCH_ROUTER_V6 = getAddress('0x111111125421cA6dc452d289314280a0f8842A65')
+const ROBINHOOD_CHAIN_ID = 4663 // Arbitrum Orbit L2; not in viem/chains (defined in blue's config).
 export const ONEINCH_ROUTER: Record<number, Address> = {
-  [base.id]: getAddress('0x111111125421cA6dc452d289314280a0f8842A65')
+  [mainnet.id]: ONEINCH_ROUTER_V6,
+  [optimism.id]: ONEINCH_ROUTER_V6,
+  [bsc.id]: ONEINCH_ROUTER_V6,
+  [gnosis.id]: ONEINCH_ROUTER_V6,
+  [polygon.id]: ONEINCH_ROUTER_V6,
+  [base.id]: ONEINCH_ROUTER_V6,
+  [arbitrum.id]: ONEINCH_ROUTER_V6,
+  [avalanche.id]: ONEINCH_ROUTER_V6,
+  [linea.id]: ONEINCH_ROUTER_V6,
+  [zksync.id]: getAddress('0x6fd4383cB451173D5f9304F041C7BCBf27d561fF'),
+  [ROBINHOOD_CHAIN_ID]: getAddress('0x5A705DE8982235a7fa45bB83dCaCf03a211389C7')
 }

@@ -14,13 +14,16 @@ const privateKey = required(env, 'SIGNER_PRIVATE_KEY')
 assertPrivateKey(privateKey)
 const zeroxKey = env.ZEROX_API_KEY?.trim()
 const oneinchKey = env.ONEINCH_API_KEY?.trim()
+const lifiKey = env.LIFI_API_KEY?.trim()
+// LiFi works keyless, so ENABLE_LIFI=true turns it on without a key (a key only raises rate limits).
+const enableLifi = env.ENABLE_LIFI?.trim().toLowerCase() === 'true'
 const allowBadDebtOnly = env.ALLOW_BAD_DEBT_ONLY?.trim().toLowerCase() === 'true'
 // Optional BetterStack forwarding: host is a plain var, token is a secret. Off when unset.
 const betterstackHost = env.BETTERSTACK_INGESTING_HOST?.trim()
 const betterstackToken = env.BETTERSTACK_SOURCE_TOKEN?.trim()
-if (!zeroxKey && !oneinchKey && !allowBadDebtOnly) {
+if (!zeroxKey && !oneinchKey && !lifiKey && !enableLifi && !allowBadDebtOnly) {
   throw new Error(
-    'Set ZEROX_API_KEY and/or ONEINCH_API_KEY, or ALLOW_BAD_DEBT_ONLY=true to deploy bad-debt-only.'
+    'Set ENABLE_LIFI=true or LIFI_API_KEY / ZEROX_API_KEY / ONEINCH_API_KEY, or ALLOW_BAD_DEBT_ONLY=true to deploy bad-debt-only.'
   )
 }
 
@@ -37,6 +40,7 @@ await railway.setVariables(service, {
   LIQUIDATOR_ADDRESS: required(env, 'LIQUIDATOR_ADDRESS'),
   EXECUTOOOR_ADDRESS: executor,
   SIGNER_POLICY_JSON: signerPolicy(8453, executor),
+  ...(enableLifi ? { ENABLE_LIFI: 'true' } : {}),
   ...(allowBadDebtOnly ? { ALLOW_BAD_DEBT_ONLY: 'true' } : {}),
   ...(betterstackHost ? { BETTERSTACK_INGESTING_HOST: betterstackHost } : {})
 })
@@ -45,6 +49,7 @@ await railway.setSecrets(service, {
   SIGNER_PRIVATE_KEY: privateKey,
   ZEROX_API_KEY: zeroxKey,
   ONEINCH_API_KEY: oneinchKey,
+  LIFI_API_KEY: lifiKey,
   BETTERSTACK_SOURCE_TOKEN: betterstackToken
 })
 await railway.deploy(service)

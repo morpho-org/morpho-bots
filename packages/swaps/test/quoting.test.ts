@@ -125,6 +125,16 @@ function oneInchBody(dstAmount: string) {
   return { dstAmount, tx: { to: ROUTER, data: '0xdef', value: '0' } }
 }
 
+const LIFI_SPENDER = getAddress('0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB')
+
+// A LiFi-shaped firm-quote body with the given toAmount.
+function lifiBody(toAmount: string) {
+  return {
+    estimate: { approvalAddress: LIFI_SPENDER, toAmount, toAmountMin: toAmount },
+    transactionRequest: { to: ROUTER, data: '0xfee', value: '0x0' }
+  }
+}
+
 // A client that dispatches a fixed body per venue (throws no_route for an unstubbed venue).
 function multiHttp(bodies: Partial<Record<Venue, unknown>>): RateLimitedClient {
   return {
@@ -195,6 +205,21 @@ describe('composeMultiVenueQuoting', () => {
     const outcome = await quoteFor(REQUEST)
     expect(outcome.kind).toBe('swap')
     if (outcome.kind === 'swap') expect(outcome.swap.spender).toBe(ZEROX_ALLOWANCE_HOLDER)
+  })
+
+  it('quotes the lifi arm (approvalAddress spender) when it is ranked top', async () => {
+    const { quoteFor } = composeMulti(
+      ['lifi', '0x'],
+      [
+        { venue: 'lifi', expectedOut: 1000n },
+        { venue: '0x', expectedOut: 980n }
+      ],
+      multiHttp({ lifi: lifiBody('1000'), '0x': zeroxBody('980') })
+    )
+    const outcome = await quoteFor(REQUEST)
+    expect(outcome.kind).toBe('swap')
+    // LiFi's approvalAddress proves the lifi arm won (entryFor + quoteByVenue dispatch).
+    if (outcome.kind === 'swap') expect(outcome.swap.spender).toBe(LIFI_SPENDER)
   })
 
   it('fails with the last reason when every ranked venue fails', async () => {

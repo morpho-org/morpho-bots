@@ -34,16 +34,23 @@ describe('parseSwapConfig', () => {
     ).toThrow()
   })
 
-  it('parses aggregator entries (0x, 1inch) with optional baseUrl', () => {
+  it('parses aggregator entries (0x, 1inch, lifi) with optional baseUrl', () => {
+    const COLL2 = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
     const parsed = parseSwapConfig({
       '8453': {
-        [COLL]: { venue: '0x', slippageBps: 100 }
+        [COLL]: { venue: '0x', slippageBps: 100 },
+        [COLL2]: { venue: 'lifi', baseUrl: 'https://staging.li.quest/v1', slippageBps: 75 }
       },
       '4663': {
         [COLL]: { venue: '1inch', baseUrl: 'https://proxy.example', slippageBps: 50 }
       }
     })
     expect(parsed['8453']?.[COLL]).toMatchObject({ venue: '0x' })
+    expect(parsed['8453']?.[COLL2]).toMatchObject({
+      venue: 'lifi',
+      baseUrl: 'https://staging.li.quest/v1',
+      slippageBps: 75
+    })
     expect(parsed['4663']?.[COLL]).toMatchObject({
       venue: '1inch',
       baseUrl: 'https://proxy.example'

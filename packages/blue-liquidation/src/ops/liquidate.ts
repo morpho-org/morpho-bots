@@ -302,6 +302,7 @@ export async function runLiquidate(
   const apiKeys: Partial<Record<Venue, string>> = {}
   if (env.ZEROX_API_KEY) apiKeys['0x'] = env.ZEROX_API_KEY
   if (env.ONEINCH_API_KEY) apiKeys['1inch'] = env.ONEINCH_API_KEY
+  if (env.LIFI_API_KEY) apiKeys.lifi = env.LIFI_API_KEY
   const httpClient = createRateLimitedClient({
     apiKeys,
     rps: config.quoting.httpRps,

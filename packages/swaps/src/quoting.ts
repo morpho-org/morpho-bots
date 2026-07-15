@@ -17,6 +17,7 @@ import type {
 
 import { BPS } from './constants'
 import { QuoteError } from './types'
+import { priceLifi, quoteLifi } from './venues/lifi'
 import { priceOneInch, quoteOneInch } from './venues/oneinch'
 import { quoteUniswapV3 } from './venues/uniswap-v3'
 import { priceZerox, quoteZerox } from './venues/zerox'
@@ -36,6 +37,8 @@ export async function quoteByVenue(
       return quoteZerox(client, entry, params)
     case '1inch':
       return quoteOneInch(client, entry, params)
+    case 'lifi':
+      return quoteLifi(client, entry, params)
     default:
       return assertNever(entry)
   }
@@ -53,6 +56,8 @@ export async function priceByVenue(
       return priceZerox(client, { baseUrl: baseUrls['0x'] }, params)
     case '1inch':
       return priceOneInch(client, { baseUrl: baseUrls['1inch'] }, params)
+    case 'lifi':
+      return priceLifi(client, { baseUrl: baseUrls.lifi }, params)
     case 'uniswap-v3':
       throw new QuoteError('api_error', 'uniswap-v3 does not support indicative probing')
     default:
@@ -225,6 +230,8 @@ export function composeMultiVenueQuoting(deps: {
         return { venue: '0x', baseUrl: baseUrls['0x'], slippageBps }
       case '1inch':
         return { venue: '1inch', baseUrl: baseUrls['1inch'], slippageBps }
+      case 'lifi':
+        return { venue: 'lifi', baseUrl: baseUrls.lifi, slippageBps }
       case 'uniswap-v3':
         throw new QuoteError('api_error', 'uniswap-v3 is not a multi-venue candidate')
       default:

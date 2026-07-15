@@ -61,8 +61,10 @@ realization has no asset transfer and therefore skips quoting while still being 
 
 Both operations need `CHAIN_ID` and `RPC_URL`. The source uses
 `LIQUIDATION_CANDIDATES_API_URL` and `MARKETS_API_URL` overrides when configured. The transform also
-needs `LIQUIDATOR_ADDRESS` and venue credentials (`ZEROX_API_KEY` and/or `ONEINCH_API_KEY`); it may
-override the corresponding venue base URLs. `EXECUTOOOR_ADDRESS` and `LOG_LEVEL` are optional.
+needs `LIQUIDATOR_ADDRESS` and venue credentials (`LIFI_API_KEY`, `ZEROX_API_KEY`, and/or
+`ONEINCH_API_KEY`); it may override the corresponding venue base URLs. LiFi also works keyless — set
+`ENABLE_LIFI=true` to enable it without a key (`LIFI_API_KEY` only raises rate limits).
+`EXECUTOOOR_ADDRESS` and `LOG_LEVEL` are optional.
 
 Midnight stages never read a signing key. They use one `RPC_URL`; separate send and fallback
 endpoints are not part of the architecture.
