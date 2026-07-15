@@ -20,7 +20,9 @@ const VENUE_AUTH: Record<Venue, (key: string | undefined) => Record<string, stri
   '1inch': key => ({ Authorization: `Bearer ${key ?? ''}` }),
   // LiFi works keyless (a key only raises rate limits), but it rejects an EMPTY `x-lifi-api-key`
   // header with HTTP 401 — so omit the header entirely when no key is configured.
-  lifi: (key): Record<string, string> => (key ? { 'x-lifi-api-key': key } : {})
+  lifi: (key): Record<string, string> => (key ? { 'x-lifi-api-key': key } : {}),
+  // LiquidSwap (liqd.ag) is keyless — no auth header.
+  liquidswap: () => ({})
 }
 
 /** The rate-limited JSON client shared across venues — see {@link createRateLimitedClient}. */

@@ -18,6 +18,7 @@ import type {
 import { BPS } from './constants'
 import { QuoteError } from './types'
 import { priceLifi, quoteLifi } from './venues/lifi'
+import { priceLiquidSwap, quoteLiquidSwap } from './venues/liquidswap'
 import { priceOneInch, quoteOneInch } from './venues/oneinch'
 import { quoteUniswapV3 } from './venues/uniswap-v3'
 import { priceZerox, quoteZerox } from './venues/zerox'
@@ -39,6 +40,8 @@ export async function quoteByVenue(
       return quoteOneInch(client, entry, params)
     case 'lifi':
       return quoteLifi(client, entry, params)
+    case 'liquidswap':
+      return quoteLiquidSwap(client, entry, params)
     default:
       return assertNever(entry)
   }
@@ -58,6 +61,8 @@ export async function priceByVenue(
       return priceOneInch(client, { baseUrl: baseUrls['1inch'] }, params)
     case 'lifi':
       return priceLifi(client, { baseUrl: baseUrls.lifi }, params)
+    case 'liquidswap':
+      return priceLiquidSwap(client, { baseUrl: baseUrls.liquidswap }, params)
     case 'uniswap-v3':
       throw new QuoteError('api_error', 'uniswap-v3 does not support indicative probing')
     default:
@@ -92,6 +97,8 @@ export type QuoteRequest = {
   amountIn: bigint
   /** Oracle-priced expected output (no DEX slippage) — the route-quality reference. */
   referenceAmountOut: bigint
+  /** `collateralToken` decimals — required only for decimal-denominated venues (LiquidSwap). */
+  tokenInDecimals?: number
 }
 
 /**
@@ -139,7 +146,8 @@ export function composeQuoting(deps: {
         amountIn,
         slippageBps: entry.slippageBps,
         executor,
-        referenceAmountOut
+        referenceAmountOut,
+        tokenInDecimals: request.tokenInDecimals
       }
 
       const { data: swap, error } = await tryCatch(quoteByVenue(httpClient, entry, params))
@@ -232,6 +240,8 @@ export function composeMultiVenueQuoting(deps: {
         return { venue: '1inch', baseUrl: baseUrls['1inch'], slippageBps }
       case 'lifi':
         return { venue: 'lifi', baseUrl: baseUrls.lifi, slippageBps }
+      case 'liquidswap':
+        return { venue: 'liquidswap', baseUrl: baseUrls.liquidswap, slippageBps }
       case 'uniswap-v3':
         throw new QuoteError('api_error', 'uniswap-v3 is not a multi-venue candidate')
       default:
@@ -258,7 +268,8 @@ export function composeMultiVenueQuoting(deps: {
         amountIn,
         slippageBps,
         executor,
-        referenceAmountOut
+        referenceAmountOut,
+        tokenInDecimals: request.tokenInDecimals
       }
 
       // Try the ranked venues in order; a quote or route-quality failure falls through to the next

@@ -27,9 +27,9 @@ function fakeProbe(
   outputs: Record<string, bigint>,
   opts: { throwFor?: (venue: Venue, amountIn: bigint) => boolean } = {}
 ) {
-  const calls: { venue: Venue; amountIn: bigint }[] = []
+  const calls: { venue: Venue; amountIn: bigint; tokenInDecimals?: number }[] = []
   const indicativeQuote = async (venue: Venue, params: PriceParameters) => {
-    calls.push({ venue, amountIn: params.amountIn })
+    calls.push({ venue, amountIn: params.amountIn, tokenInDecimals: params.tokenInDecimals })
     if (opts.throwFor?.(venue, params.amountIn)) throw new QuoteError('no_route', 'probe boom')
     const out = outputs[`${venue}:${params.amountIn}`]
     if (out === undefined) throw new QuoteError('no_route', 'no output stubbed')
@@ -66,6 +66,14 @@ describe('createVenueSelector', () => {
   it('returns [] for a pair that has not been probed', () => {
     const selector = make(fakeProbe(OUTPUTS))
     expect(selector.select(PAIR, SMALL)).toEqual([])
+  })
+
+  it('passes the collateral decimals to every probe (for decimal-denominated venues)', async () => {
+    const probe = fakeProbe(OUTPUTS)
+    const selector = make(probe, { decimals: 8 })
+    await selector.refresh(PAIR)
+    expect(probe.calls.length).toBeGreaterThan(0)
+    expect(probe.calls.every(call => call.tokenInDecimals === 8)).toBe(true)
   })
 
   it('ranks venues best-first per size bucket after a refresh', async () => {

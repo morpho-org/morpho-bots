@@ -135,6 +135,18 @@ function lifiBody(toAmount: string) {
   }
 }
 
+const LIQUIDSWAP_TARGET = getAddress('0x2222222222222222222222222222222222222222')
+
+// A LiquidSwap-shaped firm-route body; `amountOut` is a decimal string parsed at `decimals: 0`.
+function liquidSwapBody(amountOut: string) {
+  return {
+    success: true,
+    amountOut,
+    tokens: { tokenOut: { decimals: 0 } },
+    execution: { to: LIQUIDSWAP_TARGET, calldata: '0x0abc', details: { minAmountOut: amountOut } }
+  }
+}
+
 // A client that dispatches a fixed body per venue (throws no_route for an unstubbed venue).
 function multiHttp(bodies: Partial<Record<Venue, unknown>>): RateLimitedClient {
   return {
@@ -220,6 +232,36 @@ describe('composeMultiVenueQuoting', () => {
     expect(outcome.kind).toBe('swap')
     // LiFi's approvalAddress proves the lifi arm won (entryFor + quoteByVenue dispatch).
     if (outcome.kind === 'swap') expect(outcome.swap.spender).toBe(LIFI_SPENDER)
+  })
+
+  it('quotes the liquidswap arm (execution.to spender) when ranked top, with tokenInDecimals', async () => {
+    const { quoteFor } = composeMulti(
+      ['liquidswap', '0x'],
+      [
+        { venue: 'liquidswap', expectedOut: 1000n },
+        { venue: '0x', expectedOut: 980n }
+      ],
+      multiHttp({ liquidswap: liquidSwapBody('1000'), '0x': zeroxBody('980') })
+    )
+    // tokenInDecimals is required for liquidswap to denominate amountIn.
+    const outcome = await quoteFor({ ...REQUEST, tokenInDecimals: 6 })
+    expect(outcome.kind).toBe('swap')
+    if (outcome.kind === 'swap') expect(outcome.swap.spender).toBe(LIQUIDSWAP_TARGET)
+  })
+
+  it('falls through liquidswap (fails, no escape) when the request omits tokenInDecimals', async () => {
+    const { quoteFor } = composeMulti(
+      ['liquidswap', '0x'],
+      [
+        { venue: 'liquidswap', expectedOut: 1000n },
+        { venue: '0x', expectedOut: 1000n }
+      ],
+      multiHttp({ liquidswap: liquidSwapBody('1000'), '0x': zeroxBody('1000') })
+    )
+    // No tokenInDecimals → liquidswap throws api_error → coverage-first fall-through to 0x.
+    const outcome = await quoteFor(REQUEST)
+    expect(outcome.kind).toBe('swap')
+    if (outcome.kind === 'swap') expect(outcome.swap.spender).toBe(ZEROX_ALLOWANCE_HOLDER)
   })
 
   it('fails with the last reason when every ranked venue fails', async () => {

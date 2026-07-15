@@ -4,7 +4,14 @@ import type { Address, Hex } from 'viem'
 // imports, so an encoder can `import type { Swap }` from here without creating a runtime cycle.
 
 /** A swap venue the operator can route a collateral through. */
-export type Venue = 'uniswap-v3' | '0x' | '1inch' | 'lifi'
+export type Venue = 'uniswap-v3' | '0x' | '1inch' | 'lifi' | 'liquidswap'
+
+/**
+ * `tokenIn` (collateral) decimals — needed ONLY by decimal-denominated venues (LiquidSwap, whose API
+ * takes a human-readable `amountIn`). Base-unit venues (uniswap-v3/0x/1inch/LiFi) ignore it. Optional
+ * so those venues and their callers/tests are unaffected; a venue that requires it fails loud.
+ */
+type TokenInDecimals = { tokenInDecimals?: number }
 
 /**
  * Input to a venue's quote. Raw integer token units throughout — the protocol oracle price converts
@@ -12,7 +19,7 @@ export type Venue = 'uniswap-v3' | '0x' | '1inch' | 'lifi'
  * taker/from/recipient: the Executor singleton holds the collateral, performs the swap, and receives
  * the loan token for the repay.
  */
-export type QuoteParameters = {
+export type QuoteParameters = TokenInDecimals & {
   chainId: number
   tokenIn: Address // seized collateral
   tokenOut: Address // loan token
@@ -53,7 +60,7 @@ export type Swap = {
  * pay out for a given sell size — it never mints executable calldata, needs no taker, and is compared
  * across venues to rank them (see the venue selector), not sanity-checked against the oracle.
  */
-export type PriceParameters = {
+export type PriceParameters = TokenInDecimals & {
   chainId: number
   tokenIn: Address // sell token (collateral)
   tokenOut: Address // buy token (loan)
