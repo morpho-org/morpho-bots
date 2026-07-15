@@ -1,0 +1,68 @@
+# Vector config for the optional BetterStack log-forwarding side-car.
+#
+# docker-entrypoint.sh starts Vector ONLY when BETTERSTACK_SOURCE_TOKEN is set, after redirecting the
+# bots' combined stderr through `tee` to both the real stderr (Railway's native explorer, unchanged)
+# and a bounded spool file on ephemeral storage. Vector tails that spool and ships to a per-bot
+# BetterStack HTTP source. The shipper is deliberately off the critical path: if Vector, the network,
+# or BetterStack is down, the bot and its primary (Railway) logs are unaffected.
+#
+# Everything is env-parameterized so this file is identical under docker-compose and Railway. See
+# deploy/README.md and docs/decisions/TIB-2026-07-14-betterstack-log-forwarding.md.
+
+# Checkpoints (last-read offset per file) live on ephemeral storage — NEVER on /data, so a runaway
+# spool can't fill the volume that holds queue state and the daemon journal.
+data_dir: '${VECTOR_DATA_DIR:-/tmp/morpho-bots-logs/vector}'
+
+sources:
+  bot_logs:
+    type: file
+    include:
+      - '${BOT_LOG_SPOOL:-/tmp/morpho-bots-logs/spool.log}'
+    # Read from the start: the spool is created fresh each container boot, so this captures the
+    # signer/queue startup lines too. The truncate-based rotation in the entrypoint is detected via
+    # the data_dir checkpoint.
+    read_from: beginning
+
+transforms:
+  enrich:
+    type: remap
+    inputs:
+      - bot_logs
+    # Every step is INFALLIBLE (`?? fallback`): the `!` variants abort the whole program and drop the
+    # event. `object(...)` also guards the valid-JSON-but-not-an-object case (a bare scalar/array line),
+    # which `parse_json ?? {}` alone would leave as a non-object and make `merge` fallible. All
+    # get_env_var calls default (RAILWAY_* are unset under compose). App-stamped fields (bot/chainId
+    # from the ops) win over the env fallbacks via merge order, so well-typed values survive and only
+    # gaps are filled.
+    source: |
+      parsed = parse_json(.message) ?? null
+      structured = object(parsed) ?? { "message": .message, "level": "info" }
+      . = merge({
+        "bot": get_env_var("BOT") ?? "unknown",
+        "chainId": get_env_var("CHAIN_ID") ?? "unknown",
+        "railway_service": get_env_var("RAILWAY_SERVICE_NAME") ?? "unknown",
+        "railway_deployment": get_env_var("RAILWAY_DEPLOYMENT_ID") ?? "unknown",
+        "railway_environment": get_env_var("RAILWAY_ENVIRONMENT_NAME") ?? "unknown",
+        "railway_replica": get_env_var("RAILWAY_REPLICA_ID") ?? "unknown"
+      }, structured)
+
+sinks:
+  betterstack:
+    type: http
+    method: post
+    inputs:
+      - enrich
+    uri: 'https://${BETTERSTACK_INGESTING_HOST}/'
+    encoding:
+      codec: json
+    compression: gzip
+    auth:
+      strategy: bearer
+      token: '${BETTERSTACK_SOURCE_TOKEN}'
+    # A stalled sink (BetterStack unreachable) drops the newest events rather than applying
+    # backpressure toward the spool — the bot must never wait on the shipper.
+    buffer:
+      type: memory
+      when_full: drop_newest
+    healthcheck:
+      enabled: false

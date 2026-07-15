@@ -4,8 +4,21 @@
 # (packages/*, apps/*) resolves — deploy/docker-compose.*.yml set `context: ..` and Railway services
 # set RAILWAY_DOCKERFILE_PATH=deploy/Dockerfile. The oven/bun base ships bash, which the entrypoint
 # needs for PIPESTATUS.
+
+# Pinned Vector binary for the OPTIONAL BetterStack log-forwarding side-car (deploy/vector.yaml).
+# Copied into the runtime image below so apt never runs in the final layer. Bump this exact tag to
+# upgrade Vector; the `vector --version` check below fails the build if the binary can't run here.
+FROM timberio/vector:0.57.0-debian AS vector
+
 FROM oven/bun:1.3.12-slim
 WORKDIR /repo
+
+# The optional log-forwarding side-car binary. Placed early (stable layer, cache-friendly). The
+# HTTP sink uses TLS, so `vector --version` proves the binary resolves its shared libs in this slim
+# base at BUILD time — a runtime failure would only surface once a bot is live. The side-car stays
+# inert unless BETTERSTACK_SOURCE_TOKEN is set (see docker-entrypoint.sh).
+COPY --from=vector /usr/bin/vector /usr/bin/vector
+RUN vector --version
 
 # Manifests + workspace members first, so `bun install` is layer-cached. All members' package.json
 # are needed for bun to resolve the `workspace:*` links. deploy/ is copied selectively: its
@@ -19,8 +32,13 @@ COPY apps ./apps
 COPY deploy/package.json ./deploy/package.json
 RUN bun install --frozen-lockfile
 
-# The only runtime piece of deploy/: the entrypoint loop (CMD).
-COPY deploy/docker-entrypoint.sh ./deploy/
+# The runtime pieces of deploy/: the entrypoint loop (CMD) and the log-forwarder config it starts
+# when BetterStack forwarding is enabled. `vector validate` compiles the config + VRL at BUILD time
+# (dummy creds satisfy the un-defaulted ${...} interpolations; --no-environment skips the live
+# BetterStack connection), so a config or VRL typo fails the build, not a running bot.
+COPY deploy/docker-entrypoint.sh deploy/vector.yaml ./deploy/
+RUN BETTERSTACK_INGESTING_HOST=example.invalid BETTERSTACK_SOURCE_TOKEN=validate-only \
+  vector validate --no-environment deploy/vector.yaml
 
 # Build @repo/contracts once at image build (the runtime no longer runs `prestart`), then AOT-bundle
 # the CLI to apps/cli/dist/main.js. `bun run --filter @repo/cli build` runs both cores' soltag

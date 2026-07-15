@@ -66,6 +66,11 @@ await railway.setSecrets(
 )
 await railway.deploy('rindexer')
 
+// One BetterStack source for blue, shared across its chains (distinguished by bot/chainId fields).
+// Host is a plain var; the token is a secret. Both are optional — forwarding is off when unset.
+const betterstackHost = env.BETTERSTACK_INGESTING_HOST?.trim()
+const betterstackToken = env.BETTERSTACK_SOURCE_TOKEN?.trim()
+
 for (const chain of deployments) {
   await railway.ensureService(chain.service)
   await railway.ensureVolume(chain.service, '/data')
@@ -79,13 +84,15 @@ for (const chain of deployments) {
     LIQUIDATOR_ADDRESS: chain.liquidatorAddress,
     EXECUTOOOR_ADDRESS: chain.executor,
     SIGNER_POLICY_JSON: signerPolicy(chain.chainId, chain.executor),
-    DATABASE_URL: databaseUrl.slice('DATABASE_URL='.length)
+    DATABASE_URL: databaseUrl.slice('DATABASE_URL='.length),
+    ...(betterstackHost ? { BETTERSTACK_INGESTING_HOST: betterstackHost } : {})
   })
   await railway.setSecrets(chain.service, {
     RPC_URL: chain.rpcUrl,
     SIGNER_PRIVATE_KEY: chain.privateKey,
     ZEROX_API_KEY: chain.zeroxKey,
-    ONEINCH_API_KEY: chain.oneinchKey
+    ONEINCH_API_KEY: chain.oneinchKey,
+    BETTERSTACK_SOURCE_TOKEN: betterstackToken
   })
   await railway.deploy(chain.service)
 }

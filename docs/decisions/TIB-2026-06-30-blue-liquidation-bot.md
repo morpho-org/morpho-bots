@@ -530,6 +530,9 @@ JSON-line via `logger.ts`: `startup`, `runner.start/shutdown`, `block.new`, `rin
 submitted`. Logs go to stdout/stderr (Railway captures both); BetterStack forwarding + Slack
 alerting are deferred to v1, and the keys are designed to ship as-is.
 
+_Update (2026-07-14): the BetterStack log-forwarding half is now implemented additively — see
+[TIB-2026-07-14-betterstack-log-forwarding](./TIB-2026-07-14-betterstack-log-forwarding.md)._
+
 ## Security
 
 - **Private key** read from env once at startup; never logged or written to disk.

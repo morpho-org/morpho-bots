@@ -741,6 +741,9 @@ sink — on Railway the platform captures both streams. The logs are structured 
 nothing ships them yet. Forwarding these logs/traces to BetterStack and wiring Slack notifications
 are deferred to v1 (see Future Considerations).
 
+_Update (2026-07-14): the BetterStack log-forwarding half is now implemented additively — see
+[TIB-2026-07-14-betterstack-log-forwarding](./TIB-2026-07-14-betterstack-log-forwarding.md)._
+
 ## Security
 
 - **Private key handling.** `LIQUIDATOR_PRIVATE_KEY` read from env once at startup, never logged,

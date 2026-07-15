@@ -27,6 +27,25 @@ itself stays unopinionated — everything that turns it into a persistent liquid
   root: `docker compose -f deploy/docker-compose.midnight.yml up`.
 - `scripts/deploy-railway-{blue,midnight}.ts` — reproducible, idempotent Railway deploys:
   `bun run --filter @repo/deploy deploy:railway:midnight` (see each script's header for env vars).
+- `vector.yaml` — config for the optional BetterStack log-forwarding side-car (see below).
+
+## Log forwarding (optional)
+
+Railway has no log-drain feature, so the image ships a `vector` binary that forwards the bots' logs
+to BetterStack from inside the container. It is **fully opt-in** and controlled by two env vars:
+
+- `BETTERSTACK_SOURCE_TOKEN` — the per-bot BetterStack source token (a secret). **Unset ⇒ no
+  forwarding**, and the container behaves byte-identically to a build without this feature.
+- `BETTERSTACK_INGESTING_HOST` — the source's ingesting host (bare hostname). Required when the token
+  is set; token-set-without-host **fails loud** and skips forwarding rather than shipping nowhere.
+
+When enabled, `docker-entrypoint.sh` `tee`s all stderr to both the real stderr (Railway's native
+explorer is unaffected) and an **ephemeral `/tmp` spool** — never `/data`, so a stalled shipper can't
+fill the state/journal volume — which Vector tails and ships to BetterStack (`deploy/vector.yaml`).
+Vector runs with `SIGNER_PRIVATE_KEY` scrubbed from its environment (single-key-reader invariant) and
+stops last on shutdown so it can flush. Blue's two chains share one blue source; Midnight has its own.
+Creating the sources and setting these secrets is a deploy-time step. See
+[TIB-2026-07-14-betterstack-log-forwarding](../docs/decisions/TIB-2026-07-14-betterstack-log-forwarding.md).
 
 ## Signing agent
 
