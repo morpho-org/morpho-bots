@@ -58,8 +58,10 @@
       "name": "@repo/bot-kit",
       "version": "0.0.0",
       "dependencies": {
+        "@loglayer/transport-betterstack": "catalog:",
         "@morpho-org/viem-dlc": "catalog:",
         "@repo/utils": "workspace:*",
+        "loglayer": "catalog:",
         "viem": "catalog:",
       },
       "devDependencies": {
@@ -120,6 +122,7 @@
   },
   "catalog": {
     "@internationalized/date": "^3.11.0",
+    "@loglayer/transport-betterstack": "2.2.0",
     "@morpho-org/morpho-ts": "2.5.0",
     "@morpho-org/viem-dlc": "0.0.11",
     "@types/bun": "^1.3.0",
@@ -130,6 +133,7 @@
     "knip": "^5.86.0",
     "lint-staged": "^16.1.2",
     "lodash-es": "^4.18.0",
+    "loglayer": "9.3.0",
     "openapi-fetch": "0.17.0",
     "oxfmt": "^0.36.0",
     "oxlint": "^1.46.0",
@@ -160,6 +164,20 @@
     "@jridgewell/sourcemap-codec": ["@jridgewell/sourcemap-codec@1.5.5", "", {}, "sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og=="],
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
+
+    "@loglayer/context-manager": ["@loglayer/context-manager@2.2.0", "", { "dependencies": { "@loglayer/shared": "4.3.0" } }, "sha512-rnAXJIMRCUFuMtWNDK1F9vyh29SQQA659LVHHVv6AxvyQ/5DJpIkM7VhfuPVFV2EfnZXv343zbxDr29La5SOyA=="],
+
+    "@loglayer/log-level-manager": ["@loglayer/log-level-manager@2.2.0", "", { "dependencies": { "@loglayer/shared": "4.3.0" } }, "sha512-ifJ6i2Tc0vwNhPS8Ugr/Y5iabNmcX+QnXnPzjz2aKxgNQQGYZ6qWlAI7WI75tINRr9S+4xxbvim9hNjQ42z7Lw=="],
+
+    "@loglayer/plugin": ["@loglayer/plugin@3.2.0", "", { "dependencies": { "@loglayer/shared": "4.3.0" } }, "sha512-yBqmZeY0+5uFzbUkSrH82tzDfo1YhzCyBx+ZEvikkYAkOlAlQHEFda4Ue+il4Km2FrCCCG0qPgMEd3Mz8kIITg=="],
+
+    "@loglayer/shared": ["@loglayer/shared@4.3.0", "", {}, "sha512-jlNeh0+uOGlKMhKk1Sx9Qdk7ni+I3hHZz2LB7Lp8BmUnqHD0TGRhsp2rV/zMiszSYUwI8XGvNrZttpxBL05U5A=="],
+
+    "@loglayer/transport": ["@loglayer/transport@3.2.0", "", { "dependencies": { "@loglayer/shared": "4.3.0" } }, "sha512-UMnlJggWIAYzZv8PN9dR3v7qMDG7vKVyPJjyfypBa8Y2yLk/4XzDp2fAvSd1OJKWQh03lO7GfGpo87SSYoIANg=="],
+
+    "@loglayer/transport-betterstack": ["@loglayer/transport-betterstack@2.2.0", "", { "dependencies": { "@loglayer/transport": "3.2.0", "@loglayer/transport-http": "2.3.0" } }, "sha512-NSEFAYsjHTfmJmte4vyTZzAP85fSjO2CaGC6Y3kV2quGy3LkSyEEMAHPCwd3AW7YaGap5eJSS9AhY00DIeCiFQ=="],
+
+    "@loglayer/transport-http": ["@loglayer/transport-http@2.3.0", "", { "dependencies": { "@loglayer/transport": "3.2.0" } }, "sha512-VkEqfMWAPffQf3VmKxGO7y48acBnsNxZCwOrt2FcbsnrYsxo0ske+cGkRC2yAUri4I2mKvB9mOy6bxn/Ez+Ztw=="],
 
     "@morpho-org/blue-liquidation": ["@morpho-org/blue-liquidation@workspace:bots/blue-liquidation"],
 
@@ -414,6 +432,8 @@
     "lodash-es": ["lodash-es@4.18.1", "", {}, "sha512-J8xewKD/Gk22OZbhpOVSwcs60zhd95ESDwezOFuA3/099925PdHJ7OFHNTGtajL3AlZkykD32HykiMo+BIBI8A=="],
 
     "log-update": ["log-update@6.1.0", "", { "dependencies": { "ansi-escapes": "^7.0.0", "cli-cursor": "^5.0.0", "slice-ansi": "^7.1.0", "strip-ansi": "^7.1.0", "wrap-ansi": "^9.0.0" } }, "sha512-9ie8ItPR6tjY5uYJh8K/Zrv/RMZ5VOlOWvtZdEHYSTFKZfIBPQa9tOAEeAWhd+AnIneLJ22w5fjOYtoutpWq5w=="],
+
+    "loglayer": ["loglayer@9.3.0", "", { "dependencies": { "@loglayer/context-manager": "2.2.0", "@loglayer/log-level-manager": "2.2.0", "@loglayer/plugin": "3.2.0", "@loglayer/shared": "4.3.0", "@loglayer/transport": "3.2.0" } }, "sha512-xiZFMbUCcy8mC+/uV0EzkZV6nbo3qweQjKKQSGkcrug2VpOHudzcoWR0DOl9edr8oS+BwyEjimpG3sF2CW8sww=="],
 
     "memorystream": ["memorystream@0.3.1", "", {}, "sha512-S3UwM3yj5mtUSEfP41UZmt/0SCoVYUcU1rkXv+BQ5Ig8ndL4sPoJNBUJERafdPb5jjHJGuMgytgKvKIf58XNBw=="],
 

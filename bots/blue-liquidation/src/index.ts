@@ -19,6 +19,7 @@ import {
   initialFees,
   loadState,
   QUEUE_STATE_VERSION,
+  railwayContext,
   saveState,
   simulateLiquidationExec
 } from '@repo/bot-kit'
@@ -50,7 +51,11 @@ import { createMarketParamsResolver, multicallIdToMarketParams } from './state/m
 
 async function main() {
   const config = loadConfig()
-  const logger = createLogger(config.logLevel)
+  // Global wide-log context stamped onto every line (replaces the enrichment the retired Vector VRL
+  // did): the bot identity + chain, plus whichever RAILWAY_* identity vars this deployment exposes.
+  const logger = createLogger(config.logLevel, {
+    context: { bot: 'blue-liquidation', chainId: config.chainId, ...railwayContext() }
+  })
 
   // Signed-send path: a plain wallet client + local nonce cursor (separate from the deployless read
   // client). The EOA is the liquidator and the recipient of both end-of-exec token sweeps.

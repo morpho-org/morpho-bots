@@ -1,8 +1,9 @@
+import { BetterStackTransport } from '@loglayer/transport-betterstack'
 import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test'
 
 import type { Logger } from '../src/logger'
 
-import { createLogger } from '../src/logger'
+import { betterStackTransport, createLogger } from '../src/logger'
 
 describe('createLogger', () => {
   // Restore console spies even when an assertion throws first, so a failure in one test
@@ -65,5 +66,97 @@ describe('createLogger', () => {
       tx: { nonce: '7' },
       attempts: ['1', '2']
     })
+  })
+
+  it('stamps bound context onto every line', () => {
+    const logger = createLogger('debug', { context: { bot: 'blue-liquidation', chainId: 8453 } })
+    const err = spyOn(console, 'error').mockImplementation(() => undefined)
+
+    logger.info('block.new', { height: 42n })
+    logger.warn('state.reset')
+
+    const first = JSON.parse(String(err.mock.calls[0]?.[0]))
+    const second = JSON.parse(String(err.mock.calls[1]?.[0]))
+    expect(first).toEqual({
+      level: 'info',
+      event: 'block.new',
+      bot: 'blue-liquidation',
+      chainId: 8453,
+      height: '42'
+    })
+    // Context is present even when the call passes no fields of its own.
+    expect(second).toEqual({
+      level: 'warn',
+      event: 'state.reset',
+      bot: 'blue-liquidation',
+      chainId: 8453
+    })
+  })
+})
+
+describe('betterStackTransport (opt-in contract)', () => {
+  it('attaches only when BOTH env vars are set', () => {
+    expect(betterStackTransport({})).toBeNull()
+    expect(betterStackTransport({ BETTERSTACK_SOURCE_TOKEN: 'tok' })).toBeNull()
+    expect(
+      betterStackTransport({ BETTERSTACK_INGESTING_HOST: 's1.betterstackdata.com' })
+    ).toBeNull()
+    // Blank/whitespace does not count as set.
+    expect(
+      betterStackTransport({ BETTERSTACK_SOURCE_TOKEN: '  ', BETTERSTACK_INGESTING_HOST: 'h' })
+    ).toBeNull()
+
+    const transport = betterStackTransport({
+      BETTERSTACK_SOURCE_TOKEN: 'tok',
+      BETTERSTACK_INGESTING_HOST: 's1.betterstackdata.com'
+    })
+    expect(transport).toBeInstanceOf(BetterStackTransport)
+  })
+})
+
+describe('createLogger BetterStack path', () => {
+  afterEach(() => mock.restore())
+
+  it('performs zero network activity when the env vars are unset', () => {
+    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((() =>
+      Promise.reject(new Error('network must not be touched'))) as unknown as typeof fetch)
+    spyOn(console, 'error').mockImplementation(() => undefined)
+
+    const logger = createLogger('debug', { env: {} })
+    logger.info('tx.sent', { nonce: 1n })
+
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('serializes nested bigints without throwing when BetterStack is enabled (HTTP mocked)', () => {
+    // Mock the HTTP layer so no real request can escape even if a batch were to flush.
+    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((() =>
+      Promise.resolve(new Response(null, { status: 202 }))) as unknown as typeof fetch)
+    const err = spyOn(console, 'error').mockImplementation(() => undefined)
+
+    const logger = createLogger('debug', {
+      env: {
+        BETTERSTACK_SOURCE_TOKEN: 'tok',
+        BETTERSTACK_INGESTING_HOST: 's1.betterstackdata.com'
+      }
+    })
+
+    // The BetterStack transport builds its payload via JSON.stringify synchronously inside
+    // shipToLogger — a raw bigint there throws and is routed to onError as a `logship.error` line.
+    // With flattening in place this must not happen.
+    expect(() => logger.info('tx.bumped', { tx: { nonce: 7n }, attempts: [1n, 2n] })).not.toThrow()
+
+    const lines = err.mock.calls.map(call => JSON.parse(String(call[0])) as Record<string, unknown>)
+    // No serialization failure reached the BetterStack transport's onError.
+    expect(lines.some(line => line.event === 'logship.error')).toBe(false)
+    // The one structured line carries the bigints as decimal strings (correct string form).
+    const structured = lines.find(line => line.event === 'tx.bumped')
+    expect(structured).toEqual({
+      level: 'info',
+      event: 'tx.bumped',
+      tx: { nonce: '7' },
+      attempts: ['1', '2']
+    })
+    fetchSpy.mockClear()
   })
 })

@@ -15,8 +15,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@loglayer/transport-betterstack": "catalog:",
     "@morpho-org/viem-dlc": "catalog:",
     "@repo/utils": "workspace:*",
+    "loglayer": "catalog:",
     "viem": "catalog:"
   },
   "devDependencies": {
