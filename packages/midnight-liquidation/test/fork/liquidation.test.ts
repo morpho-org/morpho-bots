@@ -1,3 +1,4 @@
+import type { SwapPlan } from '@repo/swaps'
 import type { Address } from 'viem'
 
 import { assertContractDeployed, createDeploylessClient } from '@repo/evm-kit'
@@ -117,6 +118,23 @@ describe.skipIf(!FORK_URL)('fork: end-to-end liquidation against a real Base pos
         referenceAmountOut: expectedLoanOut(liquidationPlan, out)
       }
     )
+    // The plan a plain collateral produces: the venue swap as its single step (what quoting.ts'
+    // toStep normalization emits).
+    const swapPlan: SwapPlan = {
+      steps: [
+        {
+          tokenIn: collateral.token,
+          tokenOut: out.market.loanToken,
+          target: swap.target,
+          value: swap.value,
+          callData: swap.callData,
+          amountIn: swap.amountIn,
+          approvalSpender: swap.spender
+        }
+      ],
+      expectedAmountOut: swap.expectedAmountOut,
+      amountOutMinimum: swap.amountOutMinimum
+    }
     const data = encodeLiquidationExec({
       executor: executooor,
       midnight: MIDNIGHT,
@@ -126,7 +144,7 @@ describe.skipIf(!FORK_URL)('fork: end-to-end liquidation against a real Base pos
       repaidUnits: liquidationPlan.repaidUnits,
       borrower: position.borrower,
       postMaturityMode: liquidationPlan.postMaturityMode,
-      swap,
+      plan: swapPlan,
       recipient: LIQUIDATOR
     })
 

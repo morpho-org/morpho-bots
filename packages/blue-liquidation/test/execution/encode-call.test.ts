@@ -1,4 +1,4 @@
-import type { Swap } from '@repo/swaps'
+import type { SwapPlan, SwapStep } from '@repo/swaps'
 import type { Hex } from 'viem'
 
 import { describe, expect, it } from 'bun:test'
@@ -125,34 +125,78 @@ const LIQUIDATE_ABI = [
   }
 ] as const
 
-const balanceSwap: Swap = {
-  spender: ROUTER,
+// The intermediate underlying an ERC4626 collateral redeems into before the venue swap.
+const UNDERLYING = getAddress('0x8888888888888888888888888888888888888888')
+
+function singleStepPlan(step: Omit<SwapStep, 'tokenIn' | 'tokenOut'>): SwapPlan {
+  return {
+    steps: [{ tokenIn: MARKET.collateralToken, tokenOut: MARKET.loanToken, ...step }],
+    expectedAmountOut: 999n * WAD,
+    amountOutMinimum: 990n * WAD
+  }
+}
+
+// A plain-collateral plan: one Uniswap-shaped venue step (live-balance spliced).
+const balancePlan = singleStepPlan({
   target: ROUTER,
   value: 0n,
   callData: '0xdeadbeef',
   amountIn: { source: 'balance', offset: 132n },
-  expectedAmountOut: 999n * WAD,
-  amountOutMinimum: 990n * WAD
-}
+  approvalSpender: ROUTER
+})
 
-const fixedSwap: Swap = {
-  spender: getAddress('0x0000000000001fF3684f28c67538d4D072C22734'),
+// A plain-collateral plan: one aggregator-shaped venue step (route-bound fixed amount).
+const fixedPlan = singleStepPlan({
   target: getAddress('0xAbCdeF0000000000000000000000000000000000'),
   value: 0n,
   callData: '0xcafebabe',
   amountIn: { source: 'fixed', value: 5n * WAD },
+  approvalSpender: getAddress('0x0000000000001fF3684f28c67538d4D072C22734')
+})
+
+// An ERC4626 redeem step: the vault burns the caller's own shares, so no approvalSpender.
+const redeemStep = (tokenOut: `0x${string}`): SwapStep => ({
+  tokenIn: MARKET.collateralToken,
+  tokenOut,
+  target: MARKET.collateralToken,
+  value: 0n,
+  callData: '0xba087652',
+  amountIn: { source: 'balance', offset: 4n }
+})
+
+// An exotic-collateral plan: redeem the share token to UNDERLYING, then sell it on the venue.
+const unwrapThenSwapPlan: SwapPlan = {
+  steps: [
+    redeemStep(UNDERLYING),
+    {
+      tokenIn: UNDERLYING,
+      tokenOut: MARKET.loanToken,
+      target: ROUTER,
+      value: 0n,
+      callData: '0xdeadbeef',
+      amountIn: { source: 'fixed', value: 5n * WAD },
+      approvalSpender: ROUTER
+    }
+  ],
   expectedAmountOut: 999n * WAD,
   amountOutMinimum: 990n * WAD
 }
 
-function encode(swap: Swap): Hex {
+// The unwrap chain ends in the loan token itself — no venue swap step at all.
+const unwrapOnlyPlan: SwapPlan = {
+  steps: [redeemStep(MARKET.loanToken)],
+  expectedAmountOut: 999n * WAD,
+  amountOutMinimum: 990n * WAD
+}
+
+function encode(plan: SwapPlan): Hex {
   return encodeLiquidationExec({
     executor: EXECUTOR,
     morpho: MORPHO,
     market: MARKET,
     seizedAssets: 3n * WAD,
     borrower: BORROWER,
-    swap,
+    plan,
     recipient: RECIPIENT
   })
 }
@@ -181,9 +225,9 @@ function decodeCallback(liquidateCall: Hex): { queue: readonly Hex[]; returnData
 
 describe('encodeLiquidationExec', () => {
   it('emits exec_606BaXt with exactly [liquidate, skim(loan), skim(collateral)]', () => {
-    const { functionName } = decodeFunctionData({ abi: EXEC_ABI, data: encode(balanceSwap) })
+    const { functionName } = decodeFunctionData({ abi: EXEC_ABI, data: encode(balancePlan) })
     expect(functionName).toBe('exec_606BaXt')
-    const calls = execCalls(encode(balanceSwap))
+    const calls = execCalls(encode(balancePlan))
     expect(calls).toHaveLength(3)
 
     // Sub-call 0: the liquidate to Morpho.
@@ -194,7 +238,7 @@ describe('encodeLiquidationExec', () => {
   })
 
   it('encodes Morpho.liquidate with the pinned seize and repaidShares = 0 (seize-exact)', () => {
-    const calls = execCalls(encode(balanceSwap))
+    const calls = execCalls(encode(balancePlan))
     const { args } = decodeFunctionData({
       abi: LIQUIDATE_ABI,
       data: decodeSubCall(calls[0]!).callData
@@ -209,7 +253,7 @@ describe('encodeLiquidationExec', () => {
   })
 
   it('rides the callback queue in liquidate.data with empty return-data (Blue ignores the callback return)', () => {
-    const calls = execCalls(encode(balanceSwap))
+    const calls = execCalls(encode(balancePlan))
     const { queue, returnData } = decodeCallback(calls[0]!)
     // 5-call queue: approve(coll,0), approve(coll,bal), swap, approve(loan,0), approve(loan,bal).
     expect(queue).toHaveLength(5)
@@ -226,21 +270,70 @@ describe('encodeLiquidationExec', () => {
   })
 
   it('splices the live balance for a Uniswap (balance) swap but not an aggregator (fixed) swap', () => {
-    const balanceQueue = decodeCallback(execCalls(encode(balanceSwap))[0]!).queue
+    const balanceQueue = decodeCallback(execCalls(encode(balancePlan))[0]!).queue
     // balance swap → callWithPlaceholders (spliced), fixed swap → plain call.
     expect(decodeSubCall(balanceQueue[2]!).functionName).toBe('callWithPlaceholders4845164670')
 
-    const fixedQueue = decodeCallback(execCalls(encode(fixedSwap))[0]!).queue
+    const fixedQueue = decodeCallback(execCalls(encode(fixedPlan))[0]!).queue
     expect(decodeSubCall(fixedQueue[2]!).functionName).toBe('call_g0oyU7o')
   })
 
   it('sweeps transfer the full balance to the recipient EOA', () => {
-    const calls = execCalls(encode(balanceSwap))
+    const calls = execCalls(encode(balancePlan))
     const skimLoan = decodeFunctionData({
       abi: ERC20_MIN_ABI,
       data: decodeSubCall(calls[1]!).callData
     })
     expect(skimLoan.functionName).toBe('transfer')
     expect(getAddress(skimLoan.args[0])).toBe(RECIPIENT)
+  })
+
+  it('prepends an unwrap step: spliced redeem, venue approve pair on the UNDERLYING, extra skim', () => {
+    const calls = execCalls(encode(unwrapThenSwapPlan))
+    const { queue } = decodeCallback(calls[0]!)
+    // 6-call queue: redeem(spliced), approve(underlying→router, 0), approve(underlying→router, bal),
+    // swap, approve(loan→morpho, 0), approve(loan→morpho, bal).
+    expect(queue).toHaveLength(6)
+
+    // The redeem is balance-spliced on the SHARE token (the collateral), shares word at offset 4.
+    const redeem = decodeSubCall(queue[0]!)
+    expect(redeem.functionName).toBe('callWithPlaceholders4845164670')
+    expect(redeem.target).toBe(MARKET.collateralToken)
+    const { args: redeemArgs } = decodeFunctionData({ abi: SUBCALL_ABI, data: queue[0]! })
+    const placeholders = redeemArgs[4]!
+    expect(placeholders).toHaveLength(1)
+    expect(getAddress(placeholders[0]!.to)).toBe(MARKET.collateralToken)
+    expect(placeholders[0]!.offset).toBe(4n)
+
+    // The venue approve pair targets the UNDERLYING (the swap's input), not the raw collateral.
+    for (const index of [1, 2]) {
+      const approve = decodeSubCall(queue[index]!)
+      expect(approve.target).toBe(UNDERLYING)
+      const decoded = decodeFunctionData({ abi: ERC20_MIN_ABI, data: approve.callData })
+      expect(decoded.functionName).toBe('approve')
+      expect(getAddress(decoded.args[0])).toBe(ROUTER)
+    }
+    expect(decodeSubCall(queue[3]!).target).toBe(ROUTER)
+
+    // Outer calls grow one sweep for the intermediate underlying, after the two market-token sweeps.
+    expect(calls).toHaveLength(4)
+    expect(decodeSubCall(calls[3]!).target).toBe(UNDERLYING)
+  })
+
+  it('encodes an unwrap-only plan (chain ends in the loan token): no venue call, no extra skim', () => {
+    const calls = execCalls(encode(unwrapOnlyPlan))
+    const { queue } = decodeCallback(calls[0]!)
+    // 3-call queue: redeem(spliced), approve(loan→morpho, 0), approve(loan→morpho, bal).
+    expect(queue).toHaveLength(3)
+    expect(decodeSubCall(queue[0]!).target).toBe(MARKET.collateralToken)
+    const repayApprove = decodeFunctionData({
+      abi: ERC20_MIN_ABI,
+      data: decodeSubCall(queue[2]!).callData
+    })
+    expect(repayApprove.functionName).toBe('approve')
+    expect(getAddress(repayApprove.args[0])).toBe(MORPHO)
+
+    // The redeem output IS the loan token — the standard sweeps already cover it, so no extra skim.
+    expect(calls).toHaveLength(3)
   })
 })

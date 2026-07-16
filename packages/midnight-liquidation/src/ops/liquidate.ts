@@ -1,11 +1,16 @@
 import type { Logger } from '@repo/evm-kit'
 import type { CooldownEntries, CooldownStore, TransactionRecord } from '@repo/pipeline'
-import type { QuoteOutcome, Swap, Venue, VenueSelectorState } from '@repo/swaps'
+import type { QuoteOutcome, SwapPlan, Venue, VenueSelectorState } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
 import { assertContractDeployed, createDeploylessClient } from '@repo/evm-kit'
 import { createCooldownStore, rawRecordId, simulateLiquidationExec } from '@repo/pipeline'
-import { createRateLimitedClient, createVenueSelector, priceByVenue } from '@repo/swaps'
+import {
+  createErc4626Unwrapper,
+  createRateLimitedClient,
+  createVenueSelector,
+  priceByVenue
+} from '@repo/swaps'
 import { erc20Abi, getAddress, isAddress, isHex } from 'viem'
 import { getBlockNumber, readContract } from 'viem/actions'
 
@@ -98,9 +103,14 @@ export async function prepareLiquidations(deps: {
     market: Market
     borrower: Address
     plan: LiquidationPlan
-    swap: Swap | null
+    swapPlan: SwapPlan | null
   }) => Promise<string | null>
-  encodeExec: (market: Market, borrower: Address, plan: LiquidationPlan, swap: Swap | null) => Hex
+  encodeExec: (
+    market: Market,
+    borrower: Address,
+    plan: LiquidationPlan,
+    swapPlan: SwapPlan | null
+  ) => Hex
   executor: Address
   cooldown: CooldownStore
   emit: (record: TransactionRecord) => void
@@ -179,8 +189,8 @@ export async function prepareLiquidations(deps: {
     }
 
     // A pure bad-debt realization transfers no assets, so it skips quoting and runs as a no-callback
-    // `liquidate`; every other plan needs a swap to fund the repay.
-    let swap: Swap | null = null
+    // `liquidate`; every other plan needs a swap plan to fund the repay.
+    let swapPlan: SwapPlan | null = null
     const badDebt = isBadDebtRealization(liquidationPlan)
     if (!badDebt) {
       const outcome = await quoteFor(liquidationPlan, out, item.id)
@@ -201,14 +211,14 @@ export async function prepareLiquidations(deps: {
         cooldown.mark(item.id)
         continue
       }
-      swap = outcome.swap
+      swapPlan = outcome.plan
     }
 
     const revert = await simulate({
       market: out.market,
       borrower: item.borrower,
       plan: liquidationPlan,
-      swap
+      swapPlan
     })
     if (revert !== null) {
       logger.warn('transform.skip', {
@@ -221,7 +231,7 @@ export async function prepareLiquidations(deps: {
       cooldown.mark(item.id)
       continue
     }
-    const data = encodeExec(out.market, item.borrower, liquidationPlan, swap)
+    const data = encodeExec(out.market, item.borrower, liquidationPlan, swapPlan)
     emit(txRecord(item.id, chainId, executor, data, head))
     counters.ok += 1
   }
@@ -317,6 +327,9 @@ export async function runLiquidate(
     initial: opts.cache?.cooldowns
   })
 
+  // Pre-swap converters for exotic collateral (ERC4626 shares → underlying). Auto-detecting with
+  // per-process memoization; EXCLUDE_COLLATERALS is the operator opt-out.
+  const unwrappers = [createErc4626Unwrapper({ client, logger })]
   const { quoteFor } = composeQuoting({
     httpClient,
     selector: venueSelector,
@@ -326,6 +339,7 @@ export async function runLiquidate(
     slippageBps: config.venues.slippageBps,
     baseUrls,
     maxRouteImpactBps: config.quoting.maxRouteImpactBps,
+    unwrappers,
     excludeCollaterals: config.venues.excludeCollaterals,
     logger
   })
@@ -338,7 +352,7 @@ export async function runLiquidate(
     market: Market,
     borrower: Address,
     p: LiquidationPlan,
-    swap: Swap | null
+    swapPlan: SwapPlan | null
   ): Hex =>
     encodeLiquidationExec({
       executor: config.executooorAddress,
@@ -349,7 +363,7 @@ export async function runLiquidate(
       repaidUnits: p.repaidUnits,
       borrower,
       postMaturityMode: p.postMaturityMode,
-      swap,
+      plan: swapPlan,
       recipient: eoa
     })
 
@@ -376,11 +390,11 @@ export async function runLiquidate(
     seizeCapMarginBps: config.quoting.seizeCapMarginBps,
     readLensForPositions,
     quoteFor,
-    simulate: async ({ market, borrower, plan: p, swap }) => {
+    simulate: async ({ market, borrower, plan: p, swapPlan }) => {
       const result = await simulateLiquidationExec(client, {
         executooor: config.executooorAddress,
         eoa,
-        data: encodeExec(market, borrower, p, swap)
+        data: encodeExec(market, borrower, p, swapPlan)
       })
       return result.status === 'ok' ? null : (result.reason ?? 'revert')
     },

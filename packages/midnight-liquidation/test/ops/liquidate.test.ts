@@ -1,6 +1,6 @@
 import type { Logger } from '@repo/evm-kit'
 import type { CooldownStore, TransactionRecord } from '@repo/pipeline'
-import type { QuoteOutcome, Swap } from '@repo/swaps'
+import type { QuoteOutcome, SwapPlan } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
 import { createCooldownStore } from '@repo/pipeline'
@@ -37,12 +37,18 @@ const ZERO = '0x0000000000000000000000000000000000000000' as const
 const MARKET: Hex = `0x${'a'.repeat(64)}`
 const ID = formatPositionId(CHAIN_ID, MARKET, BORROWER)
 
-const SWAP: Swap = {
-  spender: ROUTER,
-  target: ROUTER,
-  value: 0n,
-  callData: '0xabcdef',
-  amountIn: { source: 'balance', offset: 132n },
+const SWAP_PLAN: SwapPlan = {
+  steps: [
+    {
+      tokenIn: TOKEN,
+      tokenOut: TOKEN,
+      target: ROUTER,
+      value: 0n,
+      callData: '0xabcdef',
+      amountIn: { source: 'balance', offset: 132n },
+      approvalSpender: ROUTER
+    }
+  ],
   expectedAmountOut: 2000n,
   amountOutMinimum: 1n
 }
@@ -115,7 +121,7 @@ function runWith(opts: {
     },
     quoteFor: async () => {
       quoteCalls += 1
-      return opts.quoteOutcome ?? { kind: 'swap', swap: SWAP }
+      return opts.quoteOutcome ?? { kind: 'swap', plan: SWAP_PLAN }
     },
     simulate: async () => {
       simCalls += 1

@@ -1,11 +1,11 @@
 import type { Logger } from '@repo/evm-kit'
 import type { CooldownEntries, CooldownStore, TransactionRecord } from '@repo/pipeline'
-import type { QuoteOutcome, Swap, SwapConfigEntry, Venue } from '@repo/swaps'
+import type { QuoteOutcome, SwapConfigEntry, SwapPlan, Venue } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
 import { assertContractDeployed, createDeploylessClient } from '@repo/evm-kit'
 import { createCooldownStore, rawRecordId, simulateLiquidationExec } from '@repo/pipeline'
-import { createRateLimitedClient } from '@repo/swaps'
+import { createErc4626Unwrapper, createRateLimitedClient } from '@repo/swaps'
 import { getAddress, isAddress, isHex } from 'viem'
 import { getBlockNumber } from 'viem/actions'
 
@@ -115,9 +115,14 @@ export async function prepareLiquidations(deps: {
     market: MarketParams
     borrower: Address
     plan: LiquidationPlan
-    swap: Swap
+    swapPlan: SwapPlan
   }) => Promise<string | null>
-  encodeExec: (market: MarketParams, borrower: Address, plan: LiquidationPlan, swap: Swap) => Hex
+  encodeExec: (
+    market: MarketParams,
+    borrower: Address,
+    plan: LiquidationPlan,
+    swapPlan: SwapPlan
+  ) => Hex
   executor: Address
   cooldown: CooldownStore
   emit: (record: TransactionRecord) => void
@@ -214,13 +219,13 @@ export async function prepareLiquidations(deps: {
       cooldown.mark(item.id)
       continue
     }
-    const swap = outcome.swap
+    const swapPlan = outcome.plan
 
     const revert = await simulate({
       market: out.params,
       borrower: item.borrower,
       plan: liquidationPlan,
-      swap
+      swapPlan
     })
     if (revert !== null) {
       logger.warn('transform.skip', {
@@ -233,7 +238,7 @@ export async function prepareLiquidations(deps: {
       cooldown.mark(item.id)
       continue
     }
-    const data = encodeExec(out.params, item.borrower, liquidationPlan, swap)
+    const data = encodeExec(out.params, item.borrower, liquidationPlan, swapPlan)
     emit(txRecord(item.id, chainId, executor, data, head))
     counters.ok += 1
   }
@@ -310,12 +315,16 @@ export async function runLiquidate(
     maxRetries: config.quoting.httpMaxRetries,
     timeoutMs: config.quoting.quoteTimeoutMs
   })
+  // Pre-swap converters for exotic collateral (ERC4626 shares → underlying). Auto-detecting with
+  // per-process memoization; a collateral with its own config entry bypasses them entirely.
+  const unwrappers = [createErc4626Unwrapper({ client, logger })]
   const { quoteFor } = composeQuoting({
     httpClient,
     chainId: config.chainId,
     executor: config.executooorAddress,
     swapByCollateral,
     maxRouteImpactBps: config.quoting.maxRouteImpactBps,
+    unwrappers,
     logger
   })
 
@@ -327,7 +336,7 @@ export async function runLiquidate(
     market: MarketParams,
     borrower: Address,
     p: LiquidationPlan,
-    swap: Swap
+    swapPlan: SwapPlan
   ): Hex =>
     encodeLiquidationExec({
       executor: config.executooorAddress,
@@ -335,7 +344,7 @@ export async function runLiquidate(
       market,
       seizedAssets: p.seizedAssets,
       borrower,
-      swap,
+      plan: swapPlan,
       recipient: eoa
     })
 
@@ -353,11 +362,11 @@ export async function runLiquidate(
     // so the lens reads mutable state directly for each supplied pair — no id→params resolver.
     readLens: pairs => readBlueLiquidationLens(client, config.morpho, pairs),
     quoteFor,
-    simulate: async ({ market, borrower, plan: p, swap }) => {
+    simulate: async ({ market, borrower, plan: p, swapPlan }) => {
       const result = await simulateLiquidationExec(client, {
         executooor: config.executooorAddress,
         eoa,
-        data: encodeExec(market, borrower, p, swap)
+        data: encodeExec(market, borrower, p, swapPlan)
       })
       return result.status === 'ok' ? null : (result.reason ?? 'revert')
     },
