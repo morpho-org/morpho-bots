@@ -1,12 +1,13 @@
 #!/bin/bash
 # Entrypoint for the blue-liquidation bot with an OPTIONAL BetterStack log-forwarding side-car.
 #
-# The bot (`bun run start`, one long-running process) emits JSON log lines to BOTH stdout
-# (debug/info/warn via @repo/bot-kit's createLogger) and stderr (error only). This wrapper fans BOTH
-# streams to (a) the real stdout/stderr — so Railway's native explorer and `railway logs` are
-# byte-identical to today — and (b) a bounded spool file on ephemeral storage that an optional Vector
-# side-car tails and ships to the per-bot BetterStack HTTP source. Capturing stdout is essential:
-# almost every operational event (tx.sent, tx.confirmed, signer.balance) is info/warn, i.e. stdout.
+# The bot (`bun run start`, one long-running process) emits ALL JSON log lines — every level — to
+# stderr (@repo/bot-kit's createLogger; stdout stays reserved for program output). This wrapper fans
+# stderr to (a) the real stderr — so Railway's native explorer and `railway logs` are byte-identical
+# to today — and (b) a bounded spool file on ephemeral storage that an optional Vector side-car
+# tails and ships to the per-bot BetterStack HTTP source. One stream, one tee: log capture cannot
+# silently miss a level, and anything else that reaches stderr (crash traces, runtime errors) ships
+# with it.
 #
 # Opt-in: Vector starts ONLY when BETTERSTACK_SOURCE_TOKEN is set (BETTERSTACK_INGESTING_HOST also
 # required; token-without-host fails loud and skips forwarding). Unset => byte-identical to today.
@@ -48,10 +49,10 @@ start_log_forwarder() {
   # Preserve the real stderr on fd 3 so Vector's OWN logs bypass the spool it tails — otherwise its
   # retry errors during a BetterStack outage would be re-read and re-shipped, a self-amplifying loop.
   exec 3>&2
-  # Fan BOTH the bot's stdout and stderr to the ephemeral spool AND their real destinations. tee
-  # targets a local ephemeral file, so the shipper can never block the bot; the spool stays off any
-  # persistent volume so it can't fill the disk that holds queue state, and rotate_spool bounds it.
-  exec 1> >(tee -a "$BOT_LOG_SPOOL" >&1)
+  # Fan the bot's stderr (the sole log stream) to the ephemeral spool AND its real destination.
+  # tee targets a local ephemeral file, so the shipper can never block the bot; the spool stays off
+  # any persistent volume so it can't fill the disk that holds queue state, and rotate_spool bounds
+  # it. stdout passes through untouched.
   exec 2> >(tee -a "$BOT_LOG_SPOOL" >&2)
   # `env -u` keeps the signing key out of the shipper. VECTOR_DANGEROUSLY_ALLOW_ENV_VAR_INTERPOLATION
   # re-enables the ${...} interpolation vector.yaml relies on, which Vector disabled by default in

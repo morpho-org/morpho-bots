@@ -1,15 +1,16 @@
 # Vector config for the optional BetterStack log-forwarding side-car (blue-liquidation).
 #
 # docker-entrypoint.sh starts Vector ONLY when BETTERSTACK_SOURCE_TOKEN is set, after fanning the
-# bot's combined stdout+stderr through `tee` to both the real streams (Railway's native explorer,
-# unchanged) and a bounded spool file on ephemeral storage. Vector tails that spool and ships to the
-# per-bot BetterStack HTTP source. The shipper is deliberately off the critical path: if Vector, the
+# bot's stderr through `tee` to both the real stream (Railway's native explorer, unchanged) and a
+# bounded spool file on ephemeral storage. Vector tails that spool and ships to the per-bot
+# BetterStack HTTP source. The shipper is deliberately off the critical path: if Vector, the
 # network, or BetterStack is down, the bot and its primary (Railway) logs are unaffected.
 #
-# BOTH streams are captured because @repo/bot-kit's createLogger splits levels — info/warn/debug go
-# to stdout, only error goes to stderr — so nearly every operational event (tx.sent, tx.confirmed,
-# signer.balance) is on stdout. blue runs multi-chain (bot-8453 base, bot-4663 robinhood) sharing
-# this one source; the `bot`/`chainId` fields stamped below discriminate the chains downstream.
+# stderr is the bot's SOLE log stream — @repo/bot-kit's createLogger emits every level there and
+# stdout is reserved for program output — so one tee captures every operational event (tx.sent,
+# tx.confirmed, signer.balance) plus crash traces. blue runs multi-chain (bot-8453 base, bot-4663
+# robinhood) sharing this one source; the `bot`/`chainId` fields stamped below discriminate the
+# chains downstream.
 #
 # Everything is env-parameterized so this file is identical under docker-compose and Railway. The
 # dollar-brace placeholders below need env interpolation, which Vector disabled by default in 0.57 —

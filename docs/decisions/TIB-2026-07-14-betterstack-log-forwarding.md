@@ -217,3 +217,7 @@ but the implementation surface moved:
 - BetterStack query guidance to migrate off `sense.*`/`act.*` and onto `source.*`/`transform.*` +
   `id` is moot: those pipeline-era event names never reached production. Author queries against the
   bots' actual in-process event names (e.g. `block.new`, `tick.end`, `tx.confirmed`).
+- `createLogger` originally split levels across streams (info/warn to stdout, error to stderr),
+  which forced the entrypoint to tee both streams into the spool. Now that stdout is no longer a
+  data plane, the logger emits **every level to stderr** and the side-car tees that single stream —
+  log capture cannot silently miss a level, and stdout stays reserved for program output.

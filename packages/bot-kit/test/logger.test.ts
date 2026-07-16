@@ -19,17 +19,31 @@ describe('createLogger', () => {
     logger.warn('rindexer.lag')
     logger.error('tick.error')
 
-    expect(log).toHaveBeenCalledTimes(1) // warn → stdout
-    expect(err).toHaveBeenCalledTimes(1) // error → stderr
+    expect(err).toHaveBeenCalledTimes(2) // warn + error → stderr
+    expect(log).not.toHaveBeenCalled() // stdout stays reserved for program output
+  })
+
+  it('routes every level to stderr', () => {
+    const logger = createLogger('debug')
+    const log = spyOn(console, 'log').mockImplementation(() => undefined)
+    const err = spyOn(console, 'error').mockImplementation(() => undefined)
+
+    logger.debug('a')
+    logger.info('b')
+    logger.warn('c')
+    logger.error('d')
+
+    expect(err).toHaveBeenCalledTimes(4)
+    expect(log).not.toHaveBeenCalled()
   })
 
   it('serializes bigint fields as decimal strings', () => {
     const logger = createLogger('debug')
-    const log = spyOn(console, 'log').mockImplementation(() => undefined)
+    const err = spyOn(console, 'error').mockImplementation(() => undefined)
 
     logger.info('tx.sent', { nonce: 7n, maxFee: 300_000_000_000n })
 
-    const line = String(log.mock.calls[0]?.[0])
+    const line = String(err.mock.calls[0]?.[0])
     expect(JSON.parse(line)).toEqual({
       level: 'info',
       event: 'tx.sent',
@@ -40,11 +54,11 @@ describe('createLogger', () => {
 
   it('recurses into nested bigint fields', () => {
     const logger = createLogger('debug')
-    const log = spyOn(console, 'log').mockImplementation(() => undefined)
+    const err = spyOn(console, 'error').mockImplementation(() => undefined)
 
     logger.info('tx.bumped', { tx: { nonce: 7n }, attempts: [1n, 2n] })
 
-    const line = String(log.mock.calls[0]?.[0])
+    const line = String(err.mock.calls[0]?.[0])
     expect(JSON.parse(line)).toEqual({
       level: 'info',
       event: 'tx.bumped',

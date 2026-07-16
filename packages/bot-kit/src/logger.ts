@@ -16,7 +16,9 @@ function replacer(_key: string, value: unknown) {
 /**
  * JSON-line structured logger. Each call emits a single `{ level, event, ...fields }` line.
  * `event` is one of the stable keys documented in the bot's observability table. Lines below
- * `minLevel` are dropped; everything at `error` goes to stderr, the rest to stdout.
+ * `minLevel` are dropped. ALL levels write to stderr: diagnostics live on one stream so log
+ * capture (the optional Vector side-car tails a spool fed from stderr alone) can never silently
+ * miss a level, and stdout stays reserved for program output.
  */
 export function createLogger(minLevel: LogLevel = 'info'): Logger {
   const threshold = LEVEL_RANK[minLevel]
@@ -24,9 +26,7 @@ export function createLogger(minLevel: LogLevel = 'info'): Logger {
     (level: LogLevel) =>
     (event: string, fields: Record<string, unknown> = {}) => {
       if (LEVEL_RANK[level] < threshold) return
-      const line = JSON.stringify({ level, event, ...fields }, replacer)
-      if (level === 'error') console.error(line)
-      else console.log(line)
+      console.error(JSON.stringify({ level, event, ...fields }, replacer))
     }
   return { debug: emit('debug'), info: emit('info'), warn: emit('warn'), error: emit('error') }
 }
