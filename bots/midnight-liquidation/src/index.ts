@@ -1,26 +1,20 @@
-import type { QueueState } from '@repo/bot-kit'
 import type { SwapPlan, Venue } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
 import {
   assertContractDeployed,
-  botStatePaths,
   createBalanceMonitor,
   createBackoff,
   createCooldownStore,
   createDeploylessClient,
   createLogger,
-  createOutcomeJournal,
   createPendingQueue,
   createRunner,
   createSigner,
   DEFAULT_MAX_DATA_BYTES,
   DEFAULT_MAX_GAS_LIMIT,
   initialFees,
-  loadState,
-  QUEUE_STATE_VERSION,
   railwayContext,
-  saveState,
   simulateLiquidationExec
 } from '@repo/bot-kit'
 import {
@@ -256,17 +250,9 @@ async function main() {
     }
     return listed
   }
-  // Persisted transaction-queue state + a terminal-outcome audit trail, both under BOT_STATE_DIR
-  // (default ~/.morpho-bots), namespaced by bot + chain. Restoring the pending set on boot preserves
-  // stuck-detection (`submittedAtBlock`) and bump counts across restarts; chain truth still wins, as
-  // the next `onBlock` reconciles every restored entry against receipts and the consumed nonce.
-  const { stateFile, outcomesFile } = botStatePaths('midnight-liquidation', config.chainId)
-  const { state, reset } = loadState<QueueState>(stateFile, QUEUE_STATE_VERSION)
-  if (reset && reset !== 'missing') logger.warn('state.reset', { reason: reset })
-  const journal = createOutcomeJournal({ path: outcomesFile, chainId: config.chainId })
-  const persist = () =>
-    saveState(stateFile, { version: QUEUE_STATE_VERSION, queue: queue.dump() } satisfies QueueState)
-
+  // Transaction-queue state is in-memory only — chain truth wins on restart. A redeploy re-derives
+  // the nonce cursor from `getTransactionCount('pending')`, and any tx that was in flight settles
+  // on-chain regardless of the bot; settlement audit ships via the structured `tx.*` log events.
   const queue = createPendingQueue({
     send: signer.send,
     getReceipt: signer.getReceipt,
@@ -276,9 +262,7 @@ async function main() {
     maxFeeWei: config.maxFeeWei,
     logger,
     settledCooldownBlocks: SETTLED_COOLDOWN_BLOCKS,
-    revertReason,
-    ...(state ? { initialState: state.queue } : {}),
-    onSettled: settlement => journal.record(settlement)
+    revertReason
   })
 
   // Periodic EOA-balance metric so operators can watch gas drain (see `signer.balance`).
@@ -318,13 +302,11 @@ async function main() {
           maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
           blockNumber
         })
-        persist()
       },
       backoff,
       cooldown,
       pendingOnBlock: async blockNumber => {
         await queue.onBlock(blockNumber)
-        persist()
         await balanceMonitor.maybeLog(blockNumber)
       },
       inflightLabels: () => queue.inflightLabels(),
@@ -356,9 +338,9 @@ async function main() {
   }
   void refreshMarketsLoop()
 
-  // Graceful shutdown: stop the loops and dump the pending set (hashes + nonces) plus the venue /
+  // Graceful shutdown: stop the loops and log the pending set (hashes + nonces) plus the venue /
   // whitelist state for observability. Sends are fire-and-forget and chain truth wins on restart, so
-  // there is nothing to await-drain.
+  // there is nothing to persist or await-drain — a redeploy re-derives from chain.
   const shutdown = (signal: string) => {
     stopped = true
     logger.info('shutdown', {
@@ -367,7 +349,6 @@ async function main() {
       venues: venueSelector.snapshot(),
       listedMarkets: listedMarkets.snapshot()
     })
-    persist()
     void runner.stop().finally(() => process.exit(0))
   }
   process.on('SIGINT', () => shutdown('SIGINT'))

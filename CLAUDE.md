@@ -137,15 +137,16 @@ This is a **bun workspaces monorepo** housing off-chain Morpho curator bots:
 - `/packages/` — shared libraries: `@repo/bot-kit` (the shared bot runtime — viem
   clients/transport, loglayer-backed JSON-lines logger (opt-in in-process BetterStack shipping),
   block watcher + runner loop, pending-tx queue with fee
-  policy / per-position backoff / cooldown / journal / durable state, signing policy guard,
+  policy / per-position backoff / cooldown, signing policy guard,
   simulation, revert decoding, balance metric), `@repo/swaps` (multi-venue DEX quoting, routing,
   unwrap seam, and venue selection), `@repo/contracts` (contract ABIs + Executor sources),
   `@repo/utils`, and `@repo/typescript-config`. A bot assembles its behavior from `@repo/bot-kit`
   and `@repo/swaps` rather than forking a monolith.
 
-Cross-tick state that must survive a restart (the pending-tx queue and a terminal-outcome journal)
-persists under `BOT_STATE_DIR` (default `~/.morpho-bots`), namespaced by bot and chain, and is
-reconciled against chain truth on boot. Everything else is in-process memory, re-derived each tick.
+Cross-tick state (the pending-tx queue, nonce cursor, cooldowns) is in-process memory only — nothing
+is persisted to disk. Chain truth wins on restart: a redeploy re-derives the nonce cursor from
+`getTransactionCount('pending')`, any tx that was in flight settles on-chain regardless of the bot,
+and settlement audit ships via the structured `tx.*` log events. Everything is re-derived each tick.
 
 Each bot began this way; a one-shot op-pipeline architecture (per-chain `queued`/`signer` daemons, a
 transparent JSON-Lines wire contract) was tried for ~a week and reverted — see

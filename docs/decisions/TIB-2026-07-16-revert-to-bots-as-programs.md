@@ -35,7 +35,7 @@ The pipeline shipped and ran for roughly a week. Three things became clear in th
   deadline they face; the daemon topology solved a problem the bots do not have.
 
 The feature work that landed _on top of_ the pipeline (swap venues, unwrap seam, typed discovery,
-cooldown, durable queue state, a signing policy guard, log forwarding) is genuinely valuable and
+cooldown, queue reconciliation, a signing policy guard, log forwarding) is genuinely valuable and
 independent of the pipeline paradigm. So the decision is to revert the architecture while keeping
 that progress.
 
@@ -47,7 +47,7 @@ that progress.
   block-watcher + per-tick runner loop and an in-process pending-tx queue — at the pre-pipeline
   baseline (commit `f13d323`).
 - **Preserve every feature backport** that is independent of the pipeline paradigm.
-- Keep the intentionally-kept daemon-era _improvements_ (durable queue state, signing policy guard,
+- Keep the intentionally-kept daemon-era _improvements_ (queue reconciliation, signing policy guard,
   in-memory cooldown) by re-embedding them in `@repo/bot-kit`, the shared bot runtime.
 
 **Non-Goals**
@@ -98,10 +98,22 @@ Revert to the bots-as-programs layout at `f13d323` and backport feature progress
 The queue/signer daemons are gone, but the good ideas inside them are worth keeping. They now live
 in the shared runtime as plain in-process modules:
 
-- **Durable, reconciled queue state + journal**: the pending-tx queue and a terminal-outcome journal
-  persist under `BOT_STATE_DIR` (default `~/.morpho-bots`), namespaced per bot + chain, and are
-  reconciled against chain truth on boot. Adds a `sendAborted` latch (a hashless claimed nonce is
-  rolled back, not counted as submitted) and a balance metric.
+- **Reconciled queue state + journal**: the pending-tx queue gained a nonce-consumed reconciler (a
+  `drop(nonce, reason)` seam plus a block-cadence sweep that evicts tracked txs whose nonce is
+  consumed on-chain with no receipt), a `sendAborted` latch (a hashless claimed nonce is rolled back,
+  not counted as submitted), and a balance metric. The queue also gained disk persistence (a versioned
+  `state-<chain>.json` under `BOT_STATE_DIR`, reconciled on boot) and a terminal-outcome journal
+  (`outcomes-<chain>.jsonl`).
+
+  _2026-07-16 — persistence + journal removed. An external review found the persistence was a net
+  liability: restored state was injected without boot-time reconciliation, `loadState` validated only
+  JSON + version (semantically corrupt state crashed startup), shutdown snapshotted a pre-send state
+  mid-broadcast, and no deployed service mounted a volume — so it never survived a redeploy anyway.
+  Settlement audit is already covered by the structured `tx.*` log events (now shipped to BetterStack
+  in-process via loglayer), so the file-based journal was redundant. Both were dropped: queue state is
+  in-memory only and chain truth wins on restart. The reconciler, `drop()` seam, `sendAborted` latch,
+  and balance metric are kept._
+
 - **Default-deny signing policy guard** (`bot-kit/policy.ts`): every prepared transaction must target
   the configured Executor, call selector `0x00000001` (`exec_606BaXt`), carry zero value, and sit
   under fixed fee/gas/calldata-size ceilings — enforced before broadcast. Previously the `signer`

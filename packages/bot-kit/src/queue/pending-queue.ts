@@ -39,24 +39,8 @@ export type SyncNonce = () => Promise<void>
 /** Reads the EOA's latest (mined) transaction count — the nonce-consumed reconciler's chain truth. */
 export type GetConsumedNonce = () => Promise<number>
 
-/** Terminal fate of a tracked tx, reported to the optional {@link PendingQueue} `onSettled` hook. */
-export type SettlementStatus = 'confirmed' | 'reverted' | 'dropped'
-
-/**
- * A tx leaving the pending set (confirm/revert/drop), surfaced to `onSettled` so the bot can append
- * a terminal journal event. `reason` is set only for drops
- * (`max_bump_attempts` / `fee_ceiling` / `reverts_on_replace` / `nonce_consumed`).
- */
-export type Settlement = {
-  label: string
-  nonce: number
-  txHash: Hex
-  status: SettlementStatus
-  reason?: string
-}
-
-/** One tracked tx — the queue's full per-nonce record, exported so persisted state can carry it. */
-export type Pending = {
+/** One tracked tx — the queue's full per-nonce record. */
+type Pending = {
   nonce: number
   txHash: Hex
   request: TxRequest
@@ -65,16 +49,6 @@ export type Pending = {
   maxFeePerGas: bigint
   maxPriorityFeePerGas: bigint
   attempt: number
-}
-
-/**
- * Restorable queue state: what `dump()` emits and `initialState` accepts. All fields survive the
- * bigint-safe `stringify`/`parse` round-trip from `@repo/utils`, so the bot can persist the queue
- * across restarts. Restored state is a hint — the next `onBlock` reconciles every entry against
- * chain truth (receipts + consumed nonce), so a stale or lost file degrades to restart semantics.
- */
-export type PendingQueueState = {
-  pending: Pending[]
 }
 
 export type PendingQueue = {
@@ -88,8 +62,6 @@ export type PendingQueue = {
   onBlock(blockNumber: bigint): Promise<void>
   readonly size: number
   snapshot(): { nonce: number; txHash: Hex; attempt: number }[]
-  /** Restorable snapshot of the full queue state (unlike `snapshot()`, which is logs-only). */
-  dump(): PendingQueueState
   /**
    * Labels (`${id}:${borrower}`) the tick must NOT re-submit — its backpressure set. Covers
    * currently-pending txs AND, when `settledCooldownBlocks` is set, positions whose tx settled
@@ -103,7 +75,7 @@ export type PendingQueue = {
    * seam. When something outside the queue consumes a nonce (a manual send from the same key, a
    * competing signer, a reorg that replaces our tx), the tx we still track under that nonce can never
    * mine, so leaving it pending would wedge stuck-detection forever. Evicts it through the same
-   * internal settle path a natural drop takes, firing `onSettled` with the reason. Returns `false`
+   * internal settle path a natural drop takes and logs `tx.dropped` with the reason. Returns `false`
    * when no pending entry has that nonce.
    */
   drop(nonce: number, reason: string): boolean
@@ -111,12 +83,11 @@ export type PendingQueue = {
 
 /**
  * In-memory pending-tx tracker. Nonce assignment is delegated to the injected `send`; the queue owns
- * confirmation, stuck-detection, and fee-bump/replace. Chain truth wins: the bot threads `dump()`
- * output back in via `initialState` so stuck-tx detection and fee-bumping survive restarts, but a
- * lost or stale file degrades cleanly (the next `onBlock` reconciles against receipts and the
- * consumed nonce). When `syncNonce` is provided and the tracked set is empty, the next first-send
- * re-syncs the cursor so a dropped (never-mined) tx can't strand the cursor above chain truth and
- * turn every later send into an unminable future nonce.
+ * confirmation, stuck-detection, and fee-bump/replace. State is not persisted — chain truth wins, so
+ * a restart re-derives from `getTransactionCount('pending')` and the next `onBlock` reconciles the
+ * (empty) tracked set against receipts and the consumed nonce. When `syncNonce` is provided and the
+ * tracked set is empty, the next first-send re-syncs the cursor so a dropped (never-mined) tx can't
+ * strand the cursor above chain truth and turn every later send into an unminable future nonce.
  */
 export function createPendingQueue({
   send,
@@ -126,8 +97,6 @@ export function createPendingQueue({
   getConsumedNonce,
   maxFeeWei,
   logger,
-  initialState,
-  onSettled,
   settledCooldownBlocks = 0n,
   stuckBlocks = STUCK_BLOCKS,
   maxBumpAttempts = MAX_BUMP_ATTEMPTS,
@@ -143,13 +112,6 @@ export function createPendingQueue({
   getConsumedNonce?: GetConsumedNonce
   maxFeeWei: bigint
   logger: Logger
-  /** Seeds the queue from a prior `dump()` — a hint, reconciled against chain truth on `onBlock`. */
-  initialState?: PendingQueueState
-  /**
-   * Optional observer invoked as each tracked tx leaves the pending set (confirm/revert/drop). The
-   * bot wires this to append terminal journal events; the queue's own state machine is unaffected.
-   */
-  onSettled?: (settlement: Settlement) => void
   /** Blocks a settled label stays in the backpressure set; 0n (default) disables the cooldown. */
   settledCooldownBlocks?: bigint
   stuckBlocks?: bigint
@@ -159,10 +121,7 @@ export function createPendingQueue({
   /** Formats send/replace failures for logs; default decodes standard `Error`/`Panic` reverts. */
   revertReason?: (error: unknown) => string
 }): PendingQueue {
-  // Entries are copied on restore so a caller-held `initialState` can't alias live queue mutations.
-  const pending = new Map<number, Pending>(
-    (initialState?.pending ?? []).map(entry => [entry.nonce, { ...entry }])
-  )
+  const pending = new Map<number, Pending>()
   // label → block height at which its tx left `pending` (confirm/revert/drop). Keeps the label in the
   // backpressure set for `settledCooldownBlocks` so a just-acted position isn't re-submitted while
   // the read RPC still lags the confirmation. Pruned each `onBlock`. Unused when the cooldown is 0n.
@@ -173,23 +132,14 @@ export function createPendingQueue({
   let sendAborted = false
   let blocksSeen = 0
 
-  // Remove a finished tx from `pending`, start its re-submission cooldown when a `blockNumber` was
-  // supplied and the cooldown is enabled, and notify the optional `onSettled` observer.
-  function settle(
-    entry: Pending,
-    settlement: { status: SettlementStatus; reason?: string; blockNumber?: bigint }
-  ): void {
+  // Remove a finished tx from `pending` and, when a `blockNumber` was supplied and the cooldown is
+  // enabled, start its re-submission cooldown. A `drop` (nonce-consumed / manual) passes no
+  // `blockNumber`, so it evicts without cooling the label down.
+  function settle(entry: Pending, blockNumber?: bigint): void {
     pending.delete(entry.nonce)
-    if (settlement.blockNumber !== undefined && settledCooldownBlocks > 0n) {
-      settledAt.set(entry.label, settlement.blockNumber)
+    if (blockNumber !== undefined && settledCooldownBlocks > 0n) {
+      settledAt.set(entry.label, blockNumber)
     }
-    onSettled?.({
-      label: entry.label,
-      nonce: entry.nonce,
-      txHash: entry.txHash,
-      status: settlement.status,
-      ...(settlement.reason ? { reason: settlement.reason } : {})
-    })
   }
 
   async function submit(args: {
@@ -261,7 +211,7 @@ export function createPendingQueue({
 
   async function replaceStuck(entry: Pending, blockNumber: bigint, baseFee: bigint): Promise<void> {
     if (entry.attempt >= maxBumpAttempts) {
-      settle(entry, { status: 'dropped', reason: 'max_bump_attempts', blockNumber })
+      settle(entry, blockNumber)
       logger.warn('tx.dropped', {
         label: entry.label,
         nonce: entry.nonce,
@@ -277,7 +227,7 @@ export function createPendingQueue({
       maxFeeWei
     })
     if (result.kind === 'drop') {
-      settle(entry, { status: 'dropped', reason: 'fee_ceiling', blockNumber })
+      settle(entry, blockNumber)
       logger.warn('tx.dropped', {
         label: entry.label,
         nonce: entry.nonce,
@@ -292,7 +242,7 @@ export function createPendingQueue({
       // cleared while our tx was in flight) — bumping it forever is futile, so drop it. A transient
       // RPC error instead counts as a spent attempt, so `maxBumpAttempts` still bounds the retries.
       if (isExecutionRevert(replaced.error)) {
-        settle(entry, { status: 'dropped', reason: 'reverts_on_replace', blockNumber })
+        settle(entry, blockNumber)
         logger.warn('tx.dropped', {
           label: entry.label,
           nonce: entry.nonce,
@@ -355,10 +305,7 @@ export function createPendingQueue({
       try {
         const receipt = await getReceipt(entry.txHash)
         if (receipt) {
-          settle(entry, {
-            status: receipt.status === 'success' ? 'confirmed' : 'reverted',
-            blockNumber
-          })
+          settle(entry, blockNumber)
           if (receipt.status === 'success') {
             logger.info('tx.confirmed', {
               label: entry.label,
@@ -411,7 +358,7 @@ export function createPendingQueue({
       txHash: entry.txHash,
       reason
     })
-    settle(entry, { status: 'dropped', reason })
+    settle(entry)
     return true
   }
 
@@ -427,9 +374,6 @@ export function createPendingQueue({
         txHash: entry.txHash,
         attempt: entry.attempt
       }))
-    },
-    dump() {
-      return { pending: [...pending.values()].map(entry => ({ ...entry })) }
     },
     inflightLabels() {
       const labels = new Set(settledAt.keys())

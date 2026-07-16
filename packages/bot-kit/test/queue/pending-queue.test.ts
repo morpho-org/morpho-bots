@@ -1,6 +1,5 @@
 import type { Address, Hex } from 'viem'
 
-import { parse, stringify } from '@repo/utils'
 import { describe, expect, it } from 'bun:test'
 import { ExecutionRevertedError } from 'viem'
 
@@ -10,9 +9,7 @@ import type {
   GetConsumedNonce,
   GetReceipt,
   PendingQueue,
-  PendingQueueState,
   SendTx,
-  Settlement,
   SyncNonce,
   TxRequest
 } from '../../src/queue/pending-queue'
@@ -67,8 +64,6 @@ function setup(
     withCooldown?: boolean
     getConsumedNonce?: GetConsumedNonce
     reconcileEveryBlocks?: number
-    initialState?: PendingQueueState
-    onSettled?: (settlement: Settlement) => void
     logger?: Logger
   } = {}
 ) {
@@ -92,8 +87,6 @@ function setup(
     ...(opts.withCooldown === false ? {} : { settledCooldownBlocks: SETTLED_COOLDOWN_BLOCKS }),
     ...(opts.getConsumedNonce ? { getConsumedNonce: opts.getConsumedNonce } : {}),
     ...(opts.reconcileEveryBlocks ? { reconcileEveryBlocks: opts.reconcileEveryBlocks } : {}),
-    ...(opts.initialState ? { initialState: opts.initialState } : {}),
-    ...(opts.onSettled ? { onSettled: opts.onSettled } : {}),
     maxFeeWei: opts.maxFeeWei ?? 10_000_000_000_000n,
     logger: opts.logger ?? NOOP_LOGGER
   })
@@ -375,64 +368,21 @@ describe('createPendingQueue', () => {
   })
 })
 
-describe('onSettled', () => {
-  it('notifies with confirmed when a receipt succeeds', async () => {
-    const settled: Settlement[] = []
-    const { queue } = setup({
-      getReceipt: async () => ({ status: 'success', blockNumber: 10n }),
-      onSettled: s => settled.push(s)
-    })
-    await submitOne(queue, 0n)
-    await queue.onBlock(1n)
-    expect(settled).toEqual([
-      { label: 'market:borrower', nonce: 7, txHash: hashOf(1), status: 'confirmed' }
-    ])
-  })
-
-  it('notifies with reverted when a receipt reverts', async () => {
-    const settled: Settlement[] = []
-    const { queue } = setup({
-      getReceipt: async () => ({ status: 'reverted', blockNumber: 10n }),
-      onSettled: s => settled.push(s)
-    })
-    await submitOne(queue, 0n)
-    await queue.onBlock(1n)
-    expect(settled[0]?.status).toBe('reverted')
-  })
-
-  it('notifies with dropped + reason when a stuck tx is dropped', async () => {
-    const settled: Settlement[] = []
-    const { queue } = setup({ maxFeeWei: 1000n, onSettled: s => settled.push(s) })
-    await submitOne(queue, 0n)
-    await queue.onBlock(5n) // bump would breach the fee ceiling → drop
-    expect(settled).toEqual([
-      {
-        label: 'market:borrower',
-        nonce: 7,
-        txHash: hashOf(1),
-        status: 'dropped',
-        reason: 'fee_ceiling'
-      }
-    ])
-  })
-})
-
 describe('drop', () => {
-  it('settles the tracked nonce as dropped and fires onSettled with the reason', async () => {
-    const settled: Settlement[] = []
-    const { queue } = setup({ onSettled: s => settled.push(s) })
+  it('settles the tracked nonce as dropped and logs tx.dropped with the reason', async () => {
+    const { logger, events } = captureLogger()
+    const { queue } = setup({ logger })
     await submitOne(queue, 0n)
     expect(queue.drop(7, 'nonce_consumed')).toBe(true)
     expect(queue.size).toBe(0)
-    expect(settled).toEqual([
-      {
-        label: 'market:borrower',
-        nonce: 7,
-        txHash: hashOf(1),
-        status: 'dropped',
-        reason: 'nonce_consumed'
-      }
-    ])
+    const dropped = events.find(e => e.event === 'tx.dropped')
+    expect(dropped?.level).toBe('warn')
+    expect(dropped?.fields).toMatchObject({
+      label: 'market:borrower',
+      nonce: 7,
+      txHash: hashOf(1),
+      reason: 'nonce_consumed'
+    })
   })
 
   it('releases the label from the inflight set', async () => {
@@ -443,37 +393,34 @@ describe('drop', () => {
   })
 
   it('returns false for a nonce that is not tracked (nothing to reconcile)', async () => {
-    const settled: Settlement[] = []
-    const { queue } = setup({ onSettled: s => settled.push(s) })
+    const { logger, events } = captureLogger()
+    const { queue } = setup({ logger })
     await submitOne(queue, 0n)
     expect(queue.drop(999, 'nonce_consumed')).toBe(false)
     expect(queue.size).toBe(1) // the real entry is untouched
-    expect(settled).toEqual([]) // no settlement fired for a phantom nonce
+    expect(events.some(e => e.event === 'tx.dropped')).toBe(false) // nothing dropped for a phantom nonce
   })
 })
 
 describe('nonce-consumed reconciliation', () => {
   it('drops a tracked tx whose nonce is consumed on-chain with no receipt for us', async () => {
-    const settled: Settlement[] = []
+    const { logger, events } = captureLogger()
     // getConsumedNonce reports 8 (> our nonce 7) while getReceipt never returns one: an external
     // send / competing signer took the nonce, so our tx can never mine → drop as nonce_consumed.
     const { queue } = setup({
       getConsumedNonce: async () => 8,
       reconcileEveryBlocks: 1,
-      onSettled: s => settled.push(s)
+      logger
     })
     await submitOne(queue, 0n)
     await queue.onBlock(1n)
     expect(queue.size).toBe(0)
-    expect(settled).toEqual([
-      {
-        label: 'market:borrower',
-        nonce: 7,
-        txHash: hashOf(1),
-        status: 'dropped',
-        reason: 'nonce_consumed'
-      }
-    ])
+    expect(events.find(e => e.event === 'tx.dropped')?.fields).toMatchObject({
+      label: 'market:borrower',
+      nonce: 7,
+      txHash: hashOf(1),
+      reason: 'nonce_consumed'
+    })
   })
 
   it('keeps a tracked tx whose nonce is not yet consumed', async () => {
@@ -540,36 +487,5 @@ describe('send-aborted latch', () => {
     await expect(submitOne(queue, 0n)).rejects.toThrow()
     await submitOne(queue, 0n) // latched → skipped
     expect(events.find(e => e.event === 'tx.send_aborted')?.level).toBe('warn')
-  })
-})
-
-describe('dump / restore', () => {
-  it('round-trips the full queue state through bigint-safe JSON and keeps bumping', async () => {
-    const a = setup()
-    await submitOne(a.queue, 0n)
-    const dumped = a.queue.dump()
-    const restored = parse<PendingQueueState>(stringify(dumped), 'throw')
-    expect(restored).toEqual(dumped) // bigint fields survive the JSON round trip
-
-    const b = setup({ initialState: restored })
-    expect(b.queue.size).toBe(1)
-    expect(b.queue.snapshot()).toEqual(a.queue.snapshot())
-    expect([...b.queue.inflightLabels()]).toEqual(['market:borrower'])
-
-    // The restored submittedAtBlock drives stuck detection: past stuckBlocks, the new instance
-    // replaces the tx at the SAME nonce — fee bumping survives the process boundary.
-    await b.queue.onBlock(5n)
-    expect(b.sends).toHaveLength(1)
-    expect(b.sends[0]?.nonce).toBe(7)
-    expect(b.queue.snapshot()[0]).toEqual({ nonce: 7, txHash: hashOf(1), attempt: 1 })
-  })
-
-  it('copies restored entries so the caller-held state cannot alias live mutations', async () => {
-    const a = setup()
-    await submitOne(a.queue, 0n)
-    const state = a.queue.dump()
-    const b = setup({ initialState: state })
-    await b.queue.onBlock(5n) // bumps: mutates the live entry's attempt/fees
-    expect(state.pending[0]?.attempt).toBe(0) // the dumped state is untouched
   })
 })
