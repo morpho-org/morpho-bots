@@ -356,6 +356,16 @@ describe('loadLiquidateConfig', () => {
     expect('liquidatorPrivateKey' in config).toBe(false)
   })
 
+  it('defaults pendleSlippageBps to 50 and parses an override', () => {
+    expect(loadLiquidateConfig(actEnv()).quoting.pendleSlippageBps).toBe(50)
+    expect(
+      loadLiquidateConfig(actEnv({ PENDLE_SLIPPAGE_BPS: '25' })).quoting.pendleSlippageBps
+    ).toBe(25)
+    expect(() => loadLiquidateConfig(actEnv({ PENDLE_SLIPPAGE_BPS: '20000' }))).toThrow(
+      /PENDLE_SLIPPAGE_BPS must be <= 10000/
+    )
+  })
+
   it('defaults positionCooldownMs to 0 (disabled) and parses an override', () => {
     expect(loadLiquidateConfig(actEnv()).positionCooldownMs).toBe(0)
     expect(

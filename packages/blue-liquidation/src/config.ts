@@ -72,6 +72,10 @@ const DEFAULT_HTTP_RPS = 2 // per-venue token-bucket refill; 1inch free tier is 
 const DEFAULT_HTTP_BURST = 5
 const DEFAULT_HTTP_MAX_RETRIES = 2
 const DEFAULT_MAX_ROUTE_IMPACT_BPS = 500 // reject an aggregator route >5% below the oracle reference
+// Slippage for the Pendle PT → underlying unwrap hop; a property of the unwrapper, not of any venue
+// entry (the underlying's entry isn't known until after resolution). Keep well under
+// MAX_ROUTE_IMPACT_BPS — it also haircuts the amount the downstream venue sells.
+const DEFAULT_PENDLE_SLIPPAGE_BPS = 50
 // Per-position backoff after a failed liquidation attempt (no route / quote failure / sim revert).
 // 0 disables it — the default, so existing deployments re-attempt every tick as before.
 const DEFAULT_POSITION_LIQUIDATION_COOLDOWN_MS = 0
@@ -83,6 +87,7 @@ export type QuotingConfig = {
   httpBurst: number
   httpMaxRetries: number
   maxRouteImpactBps: number
+  pendleSlippageBps: number
 }
 
 /** Fields common to every stage config: the resolved chain plus its RPC endpoints and log level. */
@@ -238,6 +243,10 @@ function resolveQuoting(env: Env): QuotingConfig {
     httpRps: intEnv(env, 'HTTP_RPS', DEFAULT_HTTP_RPS, { min: 1 }),
     httpBurst: intEnv(env, 'HTTP_BURST', DEFAULT_HTTP_BURST, { min: 1 }),
     httpMaxRetries: intEnv(env, 'HTTP_MAX_RETRIES', DEFAULT_HTTP_MAX_RETRIES, { min: 0 }),
+    pendleSlippageBps: intEnv(env, 'PENDLE_SLIPPAGE_BPS', DEFAULT_PENDLE_SLIPPAGE_BPS, {
+      min: 0,
+      max: 10_000
+    }),
     maxRouteImpactBps: intEnv(env, 'MAX_ROUTE_IMPACT_BPS', DEFAULT_MAX_ROUTE_IMPACT_BPS, {
       min: 0,
       max: 10_000

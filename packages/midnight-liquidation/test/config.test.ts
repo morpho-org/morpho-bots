@@ -173,6 +173,7 @@ describe('loadLiquidateConfig', () => {
     expect(config.quoting.quoteTimeoutMs).toBe(2500)
     expect(config.quoting.httpRps).toBe(2)
     expect(config.quoting.maxRouteImpactBps).toBe(500)
+    expect(config.quoting.pendleSlippageBps).toBe(50)
     expect(config.quoting.seizeCapMarginBps).toBe(30)
   })
 
@@ -279,11 +280,17 @@ describe('loadLiquidateConfig', () => {
 
   it('parses quoting tunables from env, overriding defaults', () => {
     const config = loadLiquidateConfig(
-      baseEnv({ HTTP_RPS: '1', MAX_ROUTE_IMPACT_BPS: '250', SEIZE_CAP_MARGIN_BPS: '75' }),
+      baseEnv({
+        HTTP_RPS: '1',
+        MAX_ROUTE_IMPACT_BPS: '250',
+        PENDLE_SLIPPAGE_BPS: '25',
+        SEIZE_CAP_MARGIN_BPS: '75'
+      }),
       deps
     )
     expect(config.quoting.httpRps).toBe(1)
     expect(config.quoting.maxRouteImpactBps).toBe(250)
+    expect(config.quoting.pendleSlippageBps).toBe(25)
     expect(config.quoting.seizeCapMarginBps).toBe(75)
   })
 

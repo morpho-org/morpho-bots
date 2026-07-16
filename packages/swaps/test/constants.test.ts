@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
 
-import { ONEINCH_ROUTER } from '../src/constants'
+import { ONEINCH_ROUTER, PENDLE_CHAIN_IDS } from '../src/constants'
 
 // Literal chainId → address pairs (independent of the source's viem/chains imports) so a wrong id or
 // address in ONEINCH_ROUTER is caught. AggregationRouterV6 is canonical everywhere except zkSync Era.
@@ -41,5 +41,13 @@ describe('ONEINCH_ROUTER', () => {
 
   it('has no entry for an unsupported chain (fails closed in quoteOneInch)', () => {
     expect(ONEINCH_ROUTER[31337]).toBeUndefined() // anvil/local — no 1inch deployment
+  })
+})
+
+describe('PENDLE_CHAIN_IDS', () => {
+  it('includes Base (the deployed bot chain Pendle serves) and excludes Robinhood', () => {
+    expect(PENDLE_CHAIN_IDS.has(8453)).toBe(true) // Base — PT collateral markets live here
+    expect(PENDLE_CHAIN_IDS.has(4663)).toBe(false) // Robinhood — no Pendle deployment
+    expect(PENDLE_CHAIN_IDS.has(31337)).toBe(false) // anvil/local
   })
 })
