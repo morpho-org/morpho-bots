@@ -95,22 +95,53 @@ describe('createLogger', () => {
 })
 
 describe('betterStackTransport (opt-in contract)', () => {
+  afterEach(() => mock.restore())
+
   it('attaches only when BOTH env vars are set', () => {
+    const err = spyOn(console, 'error').mockImplementation(() => undefined)
     expect(betterStackTransport({})).toBeNull()
-    expect(betterStackTransport({ BETTERSTACK_SOURCE_TOKEN: 'tok' })).toBeNull()
-    expect(
-      betterStackTransport({ BETTERSTACK_INGESTING_HOST: 's1.betterstackdata.com' })
-    ).toBeNull()
-    // Blank/whitespace does not count as set.
-    expect(
-      betterStackTransport({ BETTERSTACK_SOURCE_TOKEN: '  ', BETTERSTACK_INGESTING_HOST: 'h' })
-    ).toBeNull()
+    // Both unset stays fully SILENT — no warning line.
+    expect(err).not.toHaveBeenCalled()
 
     const transport = betterStackTransport({
       BETTERSTACK_SOURCE_TOKEN: 'tok',
       BETTERSTACK_INGESTING_HOST: 's1.betterstackdata.com'
     })
     expect(transport).toBeInstanceOf(BetterStackTransport)
+  })
+
+  it('token-only fails loud (names the missing host) and attaches no transport', () => {
+    const err = spyOn(console, 'error').mockImplementation(() => undefined)
+    expect(betterStackTransport({ BETTERSTACK_SOURCE_TOKEN: 'tok' })).toBeNull()
+
+    expect(err).toHaveBeenCalledTimes(1)
+    const line = JSON.parse(String(err.mock.calls[0]?.[0])) as Record<string, unknown>
+    expect(line.level).toBe('error')
+    expect(line.event).toBe('logship.misconfigured')
+    expect(line.detail).toContain('BETTERSTACK_INGESTING_HOST')
+  })
+
+  it('host-only fails loud (names the missing token) and attaches no transport', () => {
+    const err = spyOn(console, 'error').mockImplementation(() => undefined)
+    expect(
+      betterStackTransport({ BETTERSTACK_INGESTING_HOST: 's1.betterstackdata.com' })
+    ).toBeNull()
+
+    expect(err).toHaveBeenCalledTimes(1)
+    const line = JSON.parse(String(err.mock.calls[0]?.[0])) as Record<string, unknown>
+    expect(line.event).toBe('logship.misconfigured')
+    expect(line.detail).toContain('BETTERSTACK_SOURCE_TOKEN')
+  })
+
+  it('treats blank/whitespace as unset — a blank token with a host still fails loud', () => {
+    const err = spyOn(console, 'error').mockImplementation(() => undefined)
+    // Blank/whitespace does not count as set: this is token-unset + host-set → partial config.
+    expect(
+      betterStackTransport({ BETTERSTACK_SOURCE_TOKEN: '  ', BETTERSTACK_INGESTING_HOST: 'h' })
+    ).toBeNull()
+    expect(err).toHaveBeenCalledTimes(1)
+    const line = JSON.parse(String(err.mock.calls[0]?.[0])) as Record<string, unknown>
+    expect(line.detail).toContain('BETTERSTACK_SOURCE_TOKEN')
   })
 })
 
@@ -125,6 +156,20 @@ describe('createLogger BetterStack path', () => {
     const logger = createLogger('debug', { env: {} })
     logger.info('tx.sent', { nonce: 1n })
 
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('warns and performs zero network activity under partial (token-only) config', () => {
+    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((() =>
+      Promise.reject(new Error('network must not be touched'))) as unknown as typeof fetch)
+    const err = spyOn(console, 'error').mockImplementation(() => undefined)
+
+    const logger = createLogger('debug', { env: { BETTERSTACK_SOURCE_TOKEN: 'tok' } })
+    logger.info('tx.sent', { nonce: 1n })
+
+    // The misconfiguration line was emitted at construction, but no transport attached → no network.
+    const lines = err.mock.calls.map(call => JSON.parse(String(call[0])) as Record<string, unknown>)
+    expect(lines.some(line => line.event === 'logship.misconfigured')).toBe(true)
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 

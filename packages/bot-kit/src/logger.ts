@@ -74,12 +74,31 @@ function stderrTransport(): LogLayerTransport {
 // is in-process best-effort and off the tick path, so it must never throw into or block the loop (the
 // transport try/catches its own send). There is no public flush() seam, so a few batched lines may be
 // lost on process exit — accepted loss.
+//
+// Opt-in contract (TIB-2026-07-14 "Opt-in contract"): BOTH vars unset ⇒ fully inert (the opt-out).
+// But EXACTLY ONE set is a provisioning mistake — a half-configured shipper would silently drop
+// external observability while the bot looks healthy — so it FAILS LOUD: a single structured stderr
+// line names the missing var. We still return null (ship nothing) rather than throw: the bot must
+// never crash over observability config. The warning is written plainly via console.error, like the
+// transport's own onError, to avoid recursing back through loglayer.
 export function betterStackTransport(
   env: Record<string, string | undefined>
 ): BetterStackTransport | null {
   const sourceToken = env.BETTERSTACK_SOURCE_TOKEN?.trim()
   const host = env.BETTERSTACK_INGESTING_HOST?.trim()
-  if (!sourceToken || !host) return null
+  if (!sourceToken || !host) {
+    if (sourceToken || host) {
+      const missing = sourceToken ? 'BETTERSTACK_INGESTING_HOST' : 'BETTERSTACK_SOURCE_TOKEN'
+      console.error(
+        JSON.stringify({
+          level: 'error',
+          event: 'logship.misconfigured',
+          detail: `partial BetterStack config: ${missing} is unset — shipping nothing`
+        })
+      )
+    }
+    return null
+  }
   const url = /^https?:\/\//.test(host) ? host : `https://${host}`
   return new BetterStackTransport({
     sourceToken,

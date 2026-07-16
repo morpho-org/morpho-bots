@@ -239,9 +239,14 @@ JSON-line sink and `@loglayer/transport-betterstack`, so typed fields (and per-s
   / `vector --version` link check / `vector validate` step, and the tee-to-spool + rotation
   machinery. The bot stage runs `bun run start` directly again. Compose and `deploy-railway.ts`
   still pass `BETTERSTACK_*` through — the **bot process** consumes them now.
-- **Opt-in contract unchanged:** the transport attaches only when BOTH `BETTERSTACK_SOURCE_TOKEN`
-  and `BETTERSTACK_INGESTING_HOST` are set; unset ⇒ no transport, zero network, byte-identical
-  stderr. Enrichment the Vector VRL did (`bot`/`chainId`/`RAILWAY_*`) is now app-side context.
+- **Opt-in contract preserved, now enforced in-process:** the transport attaches only when BOTH
+  `BETTERSTACK_SOURCE_TOKEN` and `BETTERSTACK_INGESTING_HOST` are set; both unset ⇒ no transport,
+  zero network, byte-identical stderr. The original contract's **fail-loud on partial config** (token
+  set, host missing — previously a `docker-entrypoint.sh` check that skipped Vector) is preserved in
+  `betterStackTransport`: exactly one var set emits a `logship.misconfigured` structured stderr line
+  naming the missing var and still ships nothing (returns null, never crashes the bot over
+  observability config). Enrichment the Vector VRL did (`bot`/`chainId`/`RAILWAY_*`) is now app-side
+  context.
 - **Accepted trade-off:** shipping is in-process best-effort (batched, retried, then dropped) and
   crash traces / uncaught exceptions no longer reach BetterStack — they remain in Railway's native
   explorer only. Crash detection is therefore covered by a **BetterStack absence/heartbeat alert**
