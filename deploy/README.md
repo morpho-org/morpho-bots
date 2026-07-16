@@ -74,19 +74,25 @@ that token. The scoped project-token setup above is preferred.
 
 ### Provisioning (before CI can deploy)
 
-Deploy-only assumes the environment's services + variables + secrets already exist. Production is
-already provisioned; **staging is empty**, so provision it once per bot (use **separate staging
-keys/wallets/RPCs** from production):
+Deploy-only assumes each environment's services + variables + secrets already exist. **Production is
+provisioned; staging is not — and this is the fiddly part.** Railway **service names are unique per
+project**, and the full `deploy-railway-{bot}.ts` scripts create services via
+`railway add --service <name>`, which succeeds only for the _first_ environment in a project (it is
+how production was provisioned). Run against the empty `staging` environment it fails —
+`railway add --service bot` returns _"a service named 'bot' already exists in this project"_ — so the
+scripts **cannot seed a second environment**. Bring the services into `staging` one of two ways:
 
-```bash
-RAILWAY_ENVIRONMENT=staging RAILWAY_PROJECT_ID=<blue-liq> <blue-liq staging secrets…> \
-  bun run --filter @repo/deploy deploy:railway:blue-liq
-RAILWAY_ENVIRONMENT=staging RAILWAY_PROJECT_ID=<midnight-liq> <midnight-liq staging secrets…> \
-  bun run --filter @repo/deploy deploy:railway:midnight-liq
-```
+- **Railway dashboard (recommended):** open the staging environment and add each service (`bot` for
+  midnight-liq; `rindexer` + `bot-8453` + `bot-4663` + Postgres for blue-liq), then set that
+  environment's variables + secrets on them (use **separate staging keys/wallets/RPCs** from
+  production) and deploy.
+- **Fork production → staging:** Railway copies the services _and their variables_, including the
+  production `SIGNER_PRIVATE_KEY` / `RPC_URL`. ⚠️ For a funded liquidation bot this is dangerous — a
+  forked staging env holds (and, if deployed, could act with) the production signer key until you
+  override every secret. Only fork if you override the secrets immediately.
 
-Re-run the relevant full script whenever an environment's variables/secrets change — CI only ships
-code, it does not reconcile config drift.
+Once a service exists in an environment, deploy-only CI (`railway up`) ships code to it. Adjust its
+variables/secrets whenever they change — CI only ships code, it does not reconcile config drift.
 
 ## Container environment
 

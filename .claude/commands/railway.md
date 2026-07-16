@@ -26,6 +26,12 @@ tree** (uncommitted changes included; Railway builds server-side). Secrets are r
 deploy runner's environment — source them locally before running (see `deploy/README.md` for the
 full env-var list and the staging vs. production runbook).
 
+> **Only seeds the first environment in a project.** `ensureService` runs `railway add --service
+<name>`, and Railway service names are unique per project — so against a _second_, empty
+> environment (e.g. `staging` after production exists) it fails with "already exists in this
+> project". Seed additional environments via the Railway dashboard (or a fork) first; see
+> `deploy/README.md` § Provisioning.
+
 1. Confirm the CLI is authenticated: `railway whoami` (else tell the user to run `! railway login`),
    or export a project-scoped `RAILWAY_TOKEN`.
 2. Run in the **background** — the script polls each service up to ~10 min. Set the environment

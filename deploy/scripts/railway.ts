@@ -193,7 +193,15 @@ export class Railway {
       Promise.resolve($`railway volume add -m ${mountPath} --json`.quiet())
     )
     if (error) {
-      throw new Error(`Failed to add volume ${mountPath} to ${service}: ${stderrOf(error)}`)
+      // Idempotent: a volume synced/forked in from another environment (or a prior run) may already
+      // occupy this mount. `railway volume list --json` output varies across CLI versions so the
+      // detection above can miss it — treat an "already mounted" add as success, not a failure.
+      const detail = stderrOf(error)
+      if (/already (mounted|exists)/i.test(detail)) {
+        console.log(`Volume at ${mountPath} already on ${service}.`)
+        return
+      }
+      throw new Error(`Failed to add volume ${mountPath} to ${service}: ${detail}`)
     }
     console.log(`Added volume at ${mountPath} to ${service}.`)
   }
