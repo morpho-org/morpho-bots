@@ -18,4 +18,8 @@ services:
       ONEINCH_API_KEY: ${ONEINCH_API_KEY:-}
       ALLOW_BAD_DEBT_ONLY: ${ALLOW_BAD_DEBT_ONLY:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Optional BetterStack log forwarding (vector.yaml). Empty = disabled; the entrypoint only starts
+      # the Vector side-car when the token is set (host also required), else behaves exactly as before.
+      BETTERSTACK_SOURCE_TOKEN: ${BETTERSTACK_SOURCE_TOKEN:-}
+      BETTERSTACK_INGESTING_HOST: ${BETTERSTACK_INGESTING_HOST:-}
     restart: unless-stopped

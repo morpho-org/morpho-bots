@@ -1,0 +1,77 @@
+# Vector config for the optional BetterStack log-forwarding side-car (midnight-liquidation).
+#
+# docker-entrypoint.sh starts Vector ONLY when BETTERSTACK_SOURCE_TOKEN is set, after fanning the
+# bot's combined stdout+stderr through `tee` to both the real streams (Railway's native explorer,
+# unchanged) and a bounded spool file on ephemeral storage. Vector tails that spool and ships to the
+# per-bot BetterStack HTTP source. The shipper is deliberately off the critical path: if Vector, the
+# network, or BetterStack is down, the bot and its primary (Railway) logs are unaffected.
+#
+# BOTH streams are captured because @repo/bot-kit's createLogger splits levels — info/warn/debug go
+# to stdout, only error goes to stderr — so nearly every operational event (tx.sent, tx.confirmed,
+# signer.balance) is on stdout. The `bot`/`chainId` fields stamped below identify the source.
+#
+# Everything is env-parameterized so this file is identical under docker-compose and Railway. The
+# dollar-brace placeholders below need env interpolation, which Vector disabled by default in 0.57 —
+# the entrypoint and the Dockerfile validate step both set VECTOR_DANGEROUSLY_ALLOW_ENV_VAR_INTERPOLATION.
+# NB: Vector interpolates env vars even inside comments, so this note must NOT contain a literal
+# dollar-brace token — Vector would read it as a missing variable and fail `vector validate`.
+# See bots/midnight-liquidation/docker-entrypoint.sh and
+# docs/decisions/TIB-2026-07-14-betterstack-log-forwarding.md.
+
+# Checkpoints (last-read offset per file) live on ephemeral storage — NEVER on a persistent volume,
+# so a runaway spool can't fill the volume that would hold BOT_STATE_DIR queue state / journal.
+data_dir: '${VECTOR_DATA_DIR:-/tmp/morpho-bots-logs/vector}'
+
+sources:
+  bot_logs:
+    type: file
+    include:
+      - '${BOT_LOG_SPOOL:-/tmp/morpho-bots-logs/spool.log}'
+    # Read from the start: the spool is created fresh each container boot, so this captures the
+    # bot's startup lines too. The truncate-based rotation in the entrypoint is detected via the
+    # data_dir checkpoint.
+    read_from: beginning
+
+transforms:
+  enrich:
+    type: remap
+    inputs:
+      - bot_logs
+    # Every step is INFALLIBLE (`?? fallback`): the `!` variants abort the whole program and drop the
+    # event. `object(...)` also guards the valid-JSON-but-not-an-object case (a bare scalar/array line),
+    # which `parse_json ?? {}` alone would leave as a non-object and make `merge` fallible. All
+    # get_env_var calls default (RAILWAY_* are unset under compose). App-stamped fields (bot/chainId
+    # from the ops) win over the env fallbacks via merge order, so well-typed values survive and only
+    # gaps are filled.
+    source: |
+      parsed = parse_json(.message) ?? null
+      structured = object(parsed) ?? { "message": .message, "level": "info" }
+      . = merge({
+        "bot": get_env_var("BOT") ?? "unknown",
+        "chainId": get_env_var("CHAIN_ID") ?? "unknown",
+        "railway_service": get_env_var("RAILWAY_SERVICE_NAME") ?? "unknown",
+        "railway_deployment": get_env_var("RAILWAY_DEPLOYMENT_ID") ?? "unknown",
+        "railway_environment": get_env_var("RAILWAY_ENVIRONMENT_NAME") ?? "unknown",
+        "railway_replica": get_env_var("RAILWAY_REPLICA_ID") ?? "unknown"
+      }, structured)
+
+sinks:
+  betterstack:
+    type: http
+    method: post
+    inputs:
+      - enrich
+    uri: 'https://${BETTERSTACK_INGESTING_HOST}/'
+    encoding:
+      codec: json
+    compression: gzip
+    auth:
+      strategy: bearer
+      token: '${BETTERSTACK_SOURCE_TOKEN}'
+    # A stalled sink (BetterStack unreachable) drops the newest events rather than applying
+    # backpressure toward the spool — the bot must never wait on the shipper.
+    buffer:
+      type: memory
+      when_full: drop_newest
+    healthcheck:
+      enabled: false

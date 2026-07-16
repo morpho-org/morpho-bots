@@ -218,6 +218,11 @@ if (!zeroxKey && !oneinchKey && !allowBadDebtOnly) {
   )
 }
 
+// Optional BetterStack log forwarding: host is a plain var, token is a secret. Off when unset — the
+// entrypoint's Vector side-car stays inert, so the container behaves exactly as before.
+const betterstackHost = Bun.env.BETTERSTACK_INGESTING_HOST?.trim()
+const betterstackToken = Bun.env.BETTERSTACK_SOURCE_TOKEN?.trim()
+
 await ensureContext()
 
 // --- bot: the liquidation runner. Borrower discovery polls the markets liquidation-candidates API
@@ -232,6 +237,8 @@ await setSecret('bot', 'LIQUIDATOR_PRIVATE_KEY', liquidatorPrivateKey)
 if (zeroxKey) await setSecret('bot', 'ZEROX_API_KEY', zeroxKey)
 if (oneinchKey) await setSecret('bot', 'ONEINCH_API_KEY', oneinchKey)
 if (allowBadDebtOnly) await setVar('bot', 'ALLOW_BAD_DEBT_ONLY=true')
+if (betterstackHost) await setVar('bot', `BETTERSTACK_INGESTING_HOST=${betterstackHost}`)
+if (betterstackToken) await setSecret('bot', 'BETTERSTACK_SOURCE_TOKEN', betterstackToken)
 await deployService('bot')
 
 const botStatus = await waitForDeploy('bot')

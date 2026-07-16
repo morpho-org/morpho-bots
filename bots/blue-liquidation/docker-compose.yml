@@ -62,6 +62,10 @@ services:
       # The bot reads rindexer's indexed events (filtered to network=base) from the same Postgres.
       DATABASE_URL: postgresql://rindexer:${POSTGRES_PASSWORD:-rindexer}@postgres:5432/blue_liquidation
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Optional BetterStack log forwarding (vector.yaml). Empty = disabled; the entrypoint only starts
+      # the Vector side-car when the token is set (host also required), else behaves exactly as before.
+      BETTERSTACK_SOURCE_TOKEN: ${BETTERSTACK_SOURCE_TOKEN:-}
+      BETTERSTACK_INGESTING_HOST: ${BETTERSTACK_INGESTING_HOST:-}
     volumes:
       - ${SWAP_CONFIG_PATH:-./swap.config.json}:/config/swap.json:ro
     restart: unless-stopped
@@ -85,6 +89,10 @@ services:
       # The bot reads rindexer's indexed events (filtered to network=robinhood) from the same Postgres.
       DATABASE_URL: postgresql://rindexer:${POSTGRES_PASSWORD:-rindexer}@postgres:5432/blue_liquidation
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Optional BetterStack log forwarding (vector.yaml). Empty = disabled; both blue chains share the
+      # one blue source, discriminated by the bot/chainId fields Vector stamps.
+      BETTERSTACK_SOURCE_TOKEN: ${BETTERSTACK_SOURCE_TOKEN:-}
+      BETTERSTACK_INGESTING_HOST: ${BETTERSTACK_INGESTING_HOST:-}
     restart: unless-stopped
 
 volumes:

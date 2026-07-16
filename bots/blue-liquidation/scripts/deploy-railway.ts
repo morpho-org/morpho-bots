@@ -365,6 +365,12 @@ for (const chain of chainSecrets) {
 }
 await deployService('rindexer')
 
+// Optional BetterStack log forwarding, one source for blue-liq shared across its chains (told apart
+// by the bot/chainId fields Vector stamps). Host is a plain var; token is a secret. Off when unset —
+// the entrypoint's Vector side-car stays inert, so the container behaves exactly as before.
+const betterstackHost = Bun.env.BETTERSTACK_INGESTING_HOST?.trim()
+const betterstackToken = Bun.env.BETTERSTACK_SOURCE_TOKEN?.trim()
+
 // --- bot-<chainId>: one liquidation runner per chain (BUILD_TARGET selects the bun bot stage), all
 // sharing the one rindexer + Postgres. The in-container var names stay RPC_URL / LIQUIDATOR_PRIVATE_KEY
 // (the chainId suffix is only an operator-side convention). Swap config lives on a per-service /config
@@ -382,6 +388,8 @@ for (const chain of chainSecrets) {
   await setSecret(chain.service, 'LIQUIDATOR_PRIVATE_KEY', chain.liquidatorPrivateKey)
   if (chain.zeroxApiKey) await setSecret(chain.service, 'ZEROX_API_KEY', chain.zeroxApiKey)
   if (chain.oneInchApiKey) await setSecret(chain.service, 'ONEINCH_API_KEY', chain.oneInchApiKey)
+  if (betterstackHost) await setVar(chain.service, `BETTERSTACK_INGESTING_HOST=${betterstackHost}`)
+  if (betterstackToken) await setSecret(chain.service, 'BETTERSTACK_SOURCE_TOKEN', betterstackToken)
   await deployService(chain.service)
 }
 
