@@ -384,9 +384,9 @@ for (const chain of chainSecrets) {
 }
 await deployService('rindexer')
 
-// Optional BetterStack log forwarding, one source for blue-liq shared across its chains (told apart
-// by the bot/chainId fields Vector stamps). Host is a plain var; token is a secret. Off when unset —
-// the entrypoint's Vector side-car stays inert, so the container behaves exactly as before.
+// Optional BetterStack log shipping, one source for blue-liq shared across its chains (told apart by
+// the bot/chainId fields the logger stamps). Host is a plain var; token is a secret. Off when unset —
+// the bot's in-process loglayer transport stays inert, so the container behaves exactly as before.
 const betterstackHost = Bun.env.BETTERSTACK_INGESTING_HOST?.trim()
 const betterstackToken = Bun.env.BETTERSTACK_SOURCE_TOKEN?.trim()
 

@@ -130,12 +130,13 @@ This is a **bun workspaces monorepo** housing off-chain Morpho curator bots:
   viem clients, and drives a block-watcher + per-tick runner loop that discovers positions, reads
   fresh on-chain state, sizes/simulates a liquidation, and broadcasts only simulation-ok
   transactions through an in-process pending-tx queue. No bot imports another bot. Each bot owns its
-  own operator surface — `README.md`, `Dockerfile`, `docker-compose.yml`, `docker-entrypoint.sh`,
-  optional `vector.yaml`, and `scripts/deploy-railway.ts` — so it ships as its own image and
+  own operator surface — `README.md`, `Dockerfile`, `docker-compose.yml`, and
+  `scripts/deploy-railway.ts` — so it ships as its own image and
   deploys independently. `bots/blue-liquidation` and `bots/midnight-liquidation` are the live
   liquidators; `bots/kill-switch` is a proposal bot (docs only).
 - `/packages/` — shared libraries: `@repo/bot-kit` (the shared bot runtime — viem
-  clients/transport, JSON-lines logger, block watcher + runner loop, pending-tx queue with fee
+  clients/transport, loglayer-backed JSON-lines logger (opt-in in-process BetterStack shipping),
+  block watcher + runner loop, pending-tx queue with fee
   policy / per-position backoff / cooldown / journal / durable state, signing policy guard,
   simulation, revert decoding, balance metric), `@repo/swaps` (multi-venue DEX quoting, routing,
   unwrap seam, and venue selection), `@repo/contracts` (contract ABIs + Executor sources),

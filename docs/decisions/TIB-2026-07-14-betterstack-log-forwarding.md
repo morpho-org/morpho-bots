@@ -221,3 +221,29 @@ but the implementation surface moved:
   which forced the entrypoint to tee both streams into the spool. Now that stdout is no longer a
   data plane, the logger emits **every level to stderr** and the side-car tees that single stream —
   log capture cannot silently miss a level, and stdout stays reserved for program output.
+
+### 2026-07-16 — replaced the Vector side-car with an in-process loglayer transport
+
+The Vector side-car (this TIB's original design; "Considered Alternatives → Alternative 1:
+App-level HTTP transport" was rejected then) has itself been replaced by exactly that app-level
+transport, on the same `refactor/revert-bots-as-programs` branch. Alternative 1's rejection turned
+on the pipeline era's **many short-lived per-tick op processes**, where an in-process async shipper
+risked losing its last batch every tick; the pipeline is gone (see
+[TIB-2026-07-16-revert-to-bots-as-programs](./TIB-2026-07-16-revert-to-bots-as-programs.md)) and
+each bot is now one **long-running** process, so that objection no longer holds. The deciding factor
+is now **wide, typed structured logs**: `createLogger` is backed by `loglayer` composing a stderr
+JSON-line sink and `@loglayer/transport-betterstack`, so typed fields (and per-scope context like
+`bot`/`chainId`, stamped by the app rather than a VRL) flow end-to-end.
+
+- **Removed:** both bots' `vector.yaml` + `docker-entrypoint.sh`, the Dockerfile Vector binary bake
+  / `vector --version` link check / `vector validate` step, and the tee-to-spool + rotation
+  machinery. The bot stage runs `bun run start` directly again. Compose and `deploy-railway.ts`
+  still pass `BETTERSTACK_*` through — the **bot process** consumes them now.
+- **Opt-in contract unchanged:** the transport attaches only when BOTH `BETTERSTACK_SOURCE_TOKEN`
+  and `BETTERSTACK_INGESTING_HOST` are set; unset ⇒ no transport, zero network, byte-identical
+  stderr. Enrichment the Vector VRL did (`bot`/`chainId`/`RAILWAY_*`) is now app-side context.
+- **Accepted trade-off:** shipping is in-process best-effort (batched, retried, then dropped) and
+  crash traces / uncaught exceptions no longer reach BetterStack — they remain in Railway's native
+  explorer only. Crash detection is therefore covered by a **BetterStack absence/heartbeat alert**
+  (no logs from a bot for N minutes) rather than by shipping the trace itself. There is no clean
+  flush seam on process exit, so a few batched lines may be lost on shutdown.

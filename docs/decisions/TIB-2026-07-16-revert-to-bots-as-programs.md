@@ -63,8 +63,8 @@ At acceptance the tree is already reverted and the backports already applied on
 `refactor/revert-bots-as-programs`. The monorepo is:
 
 - `/bots/` — one standalone program per bot (`blue-liquidation`, `midnight-liquidation`; `kill-switch`
-  is a docs-only proposal). Each owns its `Dockerfile`, `docker-compose.yml`, `docker-entrypoint.sh`,
-  optional `vector.yaml`, and `scripts/deploy-railway.ts`.
+  is a docs-only proposal). Each owns its `Dockerfile`, `docker-compose.yml`, and
+  `scripts/deploy-railway.ts`.
 - `/packages/` — `@repo/bot-kit` (shared runtime), `@repo/swaps`, `@repo/contracts`, `@repo/utils`,
   `@repo/typescript-config`.
 
@@ -85,6 +85,10 @@ Revert to the bots-as-programs layout at `f13d323` and backport feature progress
   disabled), in-memory, via `bot-kit`'s cooldown store — complementary to the block-based backoff.
 - **BetterStack log forwarding**: per-bot in-image Vector side-car, opt-in via
   `BETTERSTACK_SOURCE_TOKEN` + `BETTERSTACK_INGESTING_HOST`, byte-identical when disabled.
+  _Subsequently replaced (same branch) by an in-process loglayer transport in `@repo/bot-kit`; the
+  side-car, spool, and entrypoints were removed — see
+  [TIB-2026-07-14-betterstack-log-forwarding](./TIB-2026-07-14-betterstack-log-forwarding.md)
+  addendum "2026-07-16 — replaced the Vector side-car"._
 - **Deploy CI repointed** at each bot's own `scripts/deploy-railway.ts` via a thin `DEPLOY_ONLY=1`
   mode (re-ship already-provisioned services without holding RPC/keys); no workflow references
   `deploy/` or `@repo/deploy` anymore.
