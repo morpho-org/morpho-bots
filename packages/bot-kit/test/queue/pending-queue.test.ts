@@ -489,3 +489,135 @@ describe('send-aborted latch', () => {
     expect(events.find(e => e.event === 'tx.send_aborted')?.level).toBe('warn')
   })
 })
+
+describe('nonce-hole latch', () => {
+  // Sequential-nonce send so multiple first-sends get DISTINCT nonces (the shared `setup` default
+  // pins nonce 7, which would collide two entries in the nonce-keyed pending map). `consumedRef` lets
+  // a test advance the chain's consumed-nonce count between `onBlock` passes; it starts at 0 so the
+  // reconciler drops nothing until a test opts in.
+  function setupSeq(opts: { maxFeeWei?: bigint } = {}) {
+    const sends: SendArg[] = []
+    const consumedRef = { value: 0 }
+    let nextNonce = 7
+    let h = 0
+    const send: SendTx = async request => {
+      sends.push(request)
+      h += 1
+      return { nonce: request.nonce ?? nextNonce++, txHash: hashOf(h) }
+    }
+    let syncNonceCalls = 0
+    const { logger, events } = captureLogger()
+    const queue = createPendingQueue({
+      send,
+      getReceipt: async () => null,
+      getBaseFee: async () => 100n,
+      syncNonce: async () => {
+        syncNonceCalls += 1
+      },
+      getConsumedNonce: async () => consumedRef.value,
+      reconcileEveryBlocks: 1,
+      maxFeeWei: opts.maxFeeWei ?? 10_000_000_000_000n,
+      logger
+    })
+    const submit = (label: string, blockNumber: bigint) =>
+      queue.submit({
+        request: REQUEST,
+        label,
+        maxFeePerGas: 1000n,
+        maxPriorityFeePerGas: 1000n,
+        blockNumber
+      })
+    return {
+      queue,
+      sends,
+      submit,
+      events,
+      consumedRef,
+      get syncNonceCalls() {
+        return syncNonceCalls
+      }
+    }
+  }
+
+  it('refuses new first-sends after dropping an unconsumed nonce, then resumes once the chain consumes past it', async () => {
+    const ctx = setupSeq({ maxFeeWei: 1000n }) // low ceiling so a bump breaches → fee_ceiling drop
+    await ctx.submit('a', 0n) // nonce 7 at block 0
+    await ctx.submit('b', 3n) // nonce 8 at block 3 (queue not empty → no extra sync)
+    expect(ctx.queue.size).toBe(2)
+    // Block 5: nonce 7 (age 5 > 4) is stuck; its bump breaches the ceiling → dropped fee_ceiling and
+    // its (still-unconsumed) nonce is latched as a hole. nonce 8 (age 2) is not stuck → stays.
+    await ctx.queue.onBlock(5n)
+    expect(ctx.queue.size).toBe(1)
+    expect(
+      ctx.events.some(e => e.event === 'tx.dropped' && e.fields?.reason === 'fee_ceiling')
+    ).toBe(true)
+    const sendsAfterDrop = ctx.sends.length
+    // A NEW first-send is refused while the hole is latched (nonce 8 still pending → queue not empty,
+    // so the empty-queue sync can't clear it).
+    await ctx.submit('c', 6n)
+    expect(ctx.sends.length).toBe(sendsAfterDrop) // no new broadcast
+    expect(ctx.queue.size).toBe(1)
+    expect(ctx.events.some(e => e.event === 'queue.nonce_hole' && e.fields?.label === 'c')).toBe(
+      true
+    )
+    // The chain now consumes past the dropped nonce (7 mined → count 8 > hole high 7): latch clears.
+    ctx.consumedRef.value = 8
+    await ctx.queue.onBlock(7n)
+    expect(ctx.events.some(e => e.event === 'queue.nonce_hole_cleared')).toBe(true)
+    // Sends flow again.
+    await ctx.submit('d', 8n)
+    expect(ctx.sends.length).toBe(sendsAfterDrop + 1)
+  })
+
+  it('clears the latch when the queue empties and syncNonce re-derives the cursor', async () => {
+    const ctx = setupSeq({ maxFeeWei: 1000n })
+    await ctx.submit('a', 0n) // nonce 7, sole entry (sync #1 on the empty queue)
+    await ctx.queue.onBlock(5n) // stuck → fee_ceiling drop → latched; queue now empty
+    expect(ctx.queue.size).toBe(0)
+    const syncsBefore = ctx.syncNonceCalls
+    // Queue empty → the next first-send syncs the cursor from chain and clears the hole in one step.
+    await ctx.submit('b', 6n)
+    expect(ctx.syncNonceCalls).toBe(syncsBefore + 1)
+    expect(
+      ctx.events.some(e => e.event === 'queue.nonce_hole_cleared' && e.fields?.via === 'sync')
+    ).toBe(true)
+    expect(ctx.queue.size).toBe(1) // send went through
+  })
+
+  it('does not latch a hole when the reconciler drops a consumed nonce', async () => {
+    const ctx = setupSeq()
+    await ctx.submit('a', 0n) // nonce 7
+    await ctx.submit('b', 0n) // nonce 8 (queue not empty → no extra sync)
+    expect(ctx.queue.size).toBe(2)
+    // Chain shows nonce 7 consumed by an external send (count 8); the reconciler drops our tracked
+    // nonce 7 as nonce_consumed — a BY-DEFINITION-consumed retirement that must NOT latch a hole.
+    ctx.consumedRef.value = 8
+    await ctx.queue.onBlock(1n)
+    expect(ctx.queue.size).toBe(1) // nonce 7 dropped, nonce 8 stays
+    expect(
+      ctx.events.some(e => e.event === 'tx.dropped' && e.fields?.reason === 'nonce_consumed')
+    ).toBe(true)
+    const sendsBefore = ctx.sends.length
+    // No hole latched → a new first-send proceeds (it would be refused had the reconciler latched).
+    await ctx.submit('c', 2n)
+    expect(ctx.sends.length).toBe(sendsBefore + 1)
+    expect(ctx.events.some(e => e.event === 'queue.nonce_hole')).toBe(false)
+  })
+
+  it('widens the hole span across multiple drops and clears only past the highest', async () => {
+    const ctx = setupSeq({ maxFeeWei: 1000n })
+    await ctx.submit('a', 0n) // nonce 7 at block 0
+    await ctx.submit('b', 2n) // nonce 8 at block 2
+    await ctx.queue.onBlock(5n) // a (age 5) stuck → drop → hole {7}
+    await ctx.queue.onBlock(7n) // b (age 5) stuck → drop → hole widens to {7, 8}
+    expect(ctx.queue.size).toBe(0)
+    // count 8 means nonce 7 mined but nonce 8 (the HIGHEST hole) not yet: the latch must persist.
+    ctx.consumedRef.value = 8
+    await ctx.queue.onBlock(8n)
+    expect(ctx.events.some(e => e.event === 'queue.nonce_hole_cleared')).toBe(false)
+    // count 9 clears past the highest dropped nonce → latch releases.
+    ctx.consumedRef.value = 9
+    await ctx.queue.onBlock(9n)
+    expect(ctx.events.some(e => e.event === 'queue.nonce_hole_cleared')).toBe(true)
+  })
+})

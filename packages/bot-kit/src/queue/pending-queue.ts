@@ -130,7 +130,43 @@ export function createPendingQueue({
   // until the next settlement pass (`onBlock`) clears it, so the tick can't keep firing behind a
   // rolled-back cursor. The daemon latched this across sweeps; here `onBlock` is the settlement pass.
   let sendAborted = false
+  // Nonce-hole latch — an independent send-refusal latch with a different cause and clear than
+  // `sendAborted`. When `replaceStuck` locally retires an entry (fee_ceiling / max_bump_attempts /
+  // reverts_on_replace) the ORIGINAL broadcast still sits UNCONSUMED at that nonce in the mempool.
+  // The signer's cursor, though, keeps allocating N+1, N+2… — none of which can mine until that hole
+  // is filled. So while a hole is latched we refuse NEW first-sends (which allocate); replacement /
+  // fee-bumps of EXISTING pending entries reuse their own nonce and continue. We track the span of
+  // dropped-but-unconsumed nonces: `low` for the log, `high` because the safe clear rule is
+  // `consumedNonce > high` — the chain's consumed nonce (mined-tx count) exceeding the HIGHEST dropped
+  // nonce proves every dropped nonce ≤ high has mined, so no unconsumed hole remains below the cursor.
+  // The latch also clears when the queue empties and `syncNonce` re-derives the cursor from chain
+  // truth (correct regardless of drop history). Reconciler `drop(_, 'nonce_consumed')` retirements are
+  // BY DEFINITION already consumed, so they never latch a hole.
+  let nonceHoleLow: number | null = null
+  let nonceHoleHigh = 0
   let blocksSeen = 0
+
+  // Records a locally-dropped, not-known-consumed nonce as a hole (or widens the tracked span).
+  function latchNonceHole(nonce: number): void {
+    if (nonceHoleLow === null) {
+      nonceHoleLow = nonce
+      nonceHoleHigh = nonce
+    } else {
+      if (nonce < nonceHoleLow) nonceHoleLow = nonce
+      if (nonce > nonceHoleHigh) nonceHoleHigh = nonce
+    }
+  }
+
+  function clearNonceHole(via: string, extra?: Record<string, unknown>): void {
+    logger.info('queue.nonce_hole_cleared', {
+      low: nonceHoleLow,
+      high: nonceHoleHigh,
+      via,
+      ...extra
+    })
+    nonceHoleLow = null
+    nonceHoleHigh = 0
+  }
 
   // Remove a finished tx from `pending` and, when a `blockNumber` was supplied and the cooldown is
   // enabled, start its re-submission cooldown. A `drop` (nonce-consumed / manual) passes no
@@ -157,13 +193,25 @@ export function createPendingQueue({
     }
     // Nothing in flight → reconcile the cursor with chain before claiming a nonce. A failed sync
     // would leave a stale (possibly runaway) cursor, so skip the send this tick rather than risk a
-    // future-nonce broadcast; the next tick retries from fresh state.
+    // future-nonce broadcast; the next tick retries from fresh state. An empty-queue sync also FILLS
+    // any latched nonce hole: `syncNonce` sets the cursor to the chain's pending count, correct
+    // regardless of a previously-dropped nonce, so the hole can be released here — before the refusal
+    // check below — letting sends flow again.
     if (syncNonce && pending.size === 0) {
       const synced = await tryCatch(syncNonce())
       if (synced.error) {
         logger.warn('nonce.sync_failed', { label: args.label, reason: revertReason(synced.error) })
         return
       }
+      if (nonceHoleLow !== null) clearNonceHole('sync')
+    }
+    // Nonce-hole latch: a dropped-but-unconsumed nonce sits below the cursor, so a NEW first-send
+    // would allocate an unminable future nonce. Refuse it (mirrors the `sendAborted` refusal). Cleared
+    // above on an empty queue; here it only fires while other entries remain in flight. The onBlock
+    // sweep clears it once the chain consumes past the hole.
+    if (nonceHoleLow !== null) {
+      logger.warn('queue.nonce_hole', { label: args.label, nonce: nonceHoleLow })
+      return
     }
     const sent = await tryCatch(
       send({
@@ -212,6 +260,7 @@ export function createPendingQueue({
   async function replaceStuck(entry: Pending, blockNumber: bigint, baseFee: bigint): Promise<void> {
     if (entry.attempt >= maxBumpAttempts) {
       settle(entry, blockNumber)
+      latchNonceHole(entry.nonce)
       logger.warn('tx.dropped', {
         label: entry.label,
         nonce: entry.nonce,
@@ -228,6 +277,7 @@ export function createPendingQueue({
     })
     if (result.kind === 'drop') {
       settle(entry, blockNumber)
+      latchNonceHole(entry.nonce)
       logger.warn('tx.dropped', {
         label: entry.label,
         nonce: entry.nonce,
@@ -243,6 +293,7 @@ export function createPendingQueue({
       // RPC error instead counts as a spent attempt, so `maxBumpAttempts` still bounds the retries.
       if (isExecutionRevert(replaced.error)) {
         settle(entry, blockNumber)
+        latchNonceHole(entry.nonce)
         logger.warn('tx.dropped', {
           label: entry.label,
           nonce: entry.nonce,
@@ -296,6 +347,20 @@ export function createPendingQueue({
     }
   }
 
+  // Clears the nonce-hole latch once the chain's consumed nonce advances past the HIGHEST dropped
+  // nonce — proving the stranded original mined (or something else filled the hole), so every dropped
+  // nonce ≤ high is consumed and no unminable hole remains below the cursor. Runs every block while
+  // latched (not on the reconcile cadence) so sends resume as soon as the chain catches up.
+  async function clearNonceHoleIfFilled(): Promise<void> {
+    if (nonceHoleLow === null || !getConsumedNonce) return
+    const count = await tryCatch(getConsumedNonce())
+    if (count.error) {
+      logger.warn('reconcile.failed', { reason: revertReason(count.error) })
+      return
+    }
+    if (count.data > nonceHoleHigh) clearNonceHole('consumed', { consumed: count.data })
+  }
+
   async function onBlock(blockNumber: bigint): Promise<void> {
     let baseFee: bigint | null = null
     // Deleting the current key mid-iteration is well-defined for a Map; we never insert here.
@@ -340,6 +405,8 @@ export function createPendingQueue({
     // receipt loop can't see — an external/competing send under the same nonce).
     blocksSeen += 1
     if (blocksSeen % reconcileEveryBlocks === 0) await reconcile()
+    // While a nonce hole is latched, check every block whether the chain has caught up past it.
+    await clearNonceHoleIfFilled()
     // Expire cooldowns so a position the bot acted on long ago is eligible again. By now the read RPC
     // has caught up, so an expired label only re-submits if it is genuinely still liquidatable.
     for (const [label, settledBlock] of settledAt) {
