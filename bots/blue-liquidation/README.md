@@ -21,7 +21,7 @@ confirmed at boot by the `discovery.schema` startup log.
 - **bun** `1.3.12`, **Node** `24.14.1` (`.nvmrc`).
 - A chain RPC that both reads and _relays_ transactions — **not** `rpc.morpho.dev/realtime`, which
   acknowledges sends but never broadcasts them.
-- A **funded EOA** (native gas) — the liquidator and the recipient of both end-of-exec token sweeps.
+- A **funded EOA** (native gas) — the liquidator and the recipient of the end-of-exec token sweeps.
 - The generic **Executor** singleton deployed on each chain the bot runs on
   (`bun run --filter @repo/contracts deploy:executor`). The bot derives its CREATE2 address and
   refuses to start if it holds no code.
@@ -215,17 +215,32 @@ function of LLTV (`sizing/lif.ts`), capped at `1.15e18`.
 
 ### Quoting
 
-For each liquidatable position, one quote from the operator's configured venue for its single
-collateral: `uniswap-v3` (built locally, balance-spliced, no key), or `0x` / `1inch` (one rate-limited
-API call, route-bound fixed sell amount). A free oracle-based route-quality check rejects any route
-more than `MAX_ROUTE_IMPACT_BPS` below the reference. Quotes are made only for the small liquidatable
-set; a per-`(id, borrower)` exponential backoff suppresses repeated failures.
+For each liquidatable position, `quotes.ts` projects the lens output into a `@repo/swaps`
+`QuoteRequest` and hands it to the package's per-collateral `composeQuoting`. The package first runs
+the **pre-swap unwrap chain**: if the seized collateral wraps an ERC-4626 vault or a Pendle PT, it
+auto-detects that (memoized `eth_call` for ERC-4626; the Pendle SDK for PT) and prepends the redeem
+step(s) that convert it to a tradable underlying — threading each hop's worst-case output forward so a
+downstream fixed-amount step can never revert on a shortfall. A direct swap-config entry for the raw
+collateral wins verbatim and skips unwrap probing (the operator's escape hatch for share tokens with
+direct DEX liquidity or gated redeems). When the unwrap chain already ends in the loan token there is
+nothing left to sell, so the plan is the unwrap steps alone.
+
+Otherwise it resolves the operator's configured venue for the token the chain ends on and fetches
+**one** executable quote: `uniswap-v3` (built locally, balance-spliced, no key), `0x` / `1inch` /
+`lifi` / `liquidswap` (one rate-limited API call, route-bound fixed sell amount; LiFi and LiquidSwap
+route keyless). A free oracle-based route-quality check (against the full-path oracle reference)
+rejects any route more than `MAX_ROUTE_IMPACT_BPS` below it. Quotes are made only for the small
+liquidatable set; a per-`(id, borrower)` exponential backoff suppresses repeated failures.
 
 ### Simulation
 
 The exact `Executor.exec_606BaXt(...)` bytes are `eth_call`-simulated from the EOA. Only an `ok`
-result is broadcast (`simulate.ok` gate). The exec is `liquidate` + an in-callback swap/approval
-queue (via `onMorphoLiquidate`) + two trailing `skim` sweeps that drain both tokens to the EOA.
+result is broadcast (`simulate.ok` gate). The exec is `liquidate` + an in-callback queue (via
+`onMorphoLiquidate`) that runs the plan's steps — a plain collateral is one venue swap; exotic
+collateral is unwrap step(s) then usually a venue swap — followed by the repay-token approval. After
+`liquidate` returns, trailing `skim` sweeps drain both market tokens **plus every intermediate token
+the unwrap chain introduced** to the EOA (the full-drain invariant: a fixed-amount step leaves the
+worst-case-vs-actual surplus behind).
 
 ### Broadcast and pending queue
 

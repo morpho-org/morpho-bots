@@ -277,9 +277,11 @@ set without `ALLOW_BAD_DEBT_ONLY=true`, or the configured Executor address has n
 
 ### Trigger
 
-[src/runner/runner.ts](./src/runner/runner.ts) polls the latest block. On each new block it runs one
-tick. If blocks arrive while a tick is still running, the watcher coalesces work rather than running
-overlapping ticks.
+`@repo/bot-kit`'s shared runner
+([packages/bot-kit/src/runner/runner.ts](../../packages/bot-kit/src/runner/runner.ts)) polls the
+latest block and runs the bot's per-block tick ([src/runner/tick.ts](./src/runner/tick.ts)) once per
+new block. If blocks arrive while a tick is still running, the watcher coalesces work rather than
+running overlapping ticks.
 
 ### Discovery
 
@@ -345,8 +347,14 @@ All fixed-point math is integer `bigint` math and mirrors the contract's floor/c
 ### Quoting
 
 For each liquidatable, non-bad-debt position, [src/quotes.ts](./src/quotes.ts) projects the lens
-output into a quote request and hands it to `@repo/swaps`' multi-venue quoting. Venue selection is
-driven by a cached, rate-limited probe rather than a per-collateral config file:
+output into a quote request and hands it to `@repo/swaps`' multi-venue quoting. The package first runs
+the **pre-swap unwrap chain**: if the seized collateral wraps an ERC-4626 vault or a Pendle PT, it
+auto-detects that and prepends the redeem step(s) that convert it to a tradable underlying (threading
+each hop's worst-case output forward so a downstream fixed-amount step can never revert on a
+shortfall); if the chain already ends in the loan token there is nothing left to sell, so the plan is
+the unwrap steps alone. A collateral on `EXCLUDE_COLLATERALS` short-circuits before any of this. Venue
+selection then applies to the **post-unwrap** pair, driven by a cached, rate-limited probe rather than
+a per-collateral config file:
 
 - A background probe (the `@repo/swaps` venue selector) requests **indicative** quotes from every
   enabled venue (`lifi`, `0x`, `1inch`) at the `PROBE_LADDER` sizes for each collateral→loan pair, and caches a
@@ -384,20 +392,23 @@ realization skips quoting entirely.
 Executor:
 
 - normal liquidations call `Midnight.liquidate` with `receiver = callback = Executor`;
-- the Executor fallback runs a callback queue that approves the collateral, swaps all seized
-  collateral to the loan token, approves Midnight to pull repayment, and returns Midnight's callback
-  success magic value;
-- after `liquidate` returns, trailing sweeps send any loan or collateral token balance from the
-  Executor to the liquidator EOA;
+- the Executor fallback runs a callback queue that runs the plan's steps — a plain collateral is one
+  venue swap; exotic collateral is unwrap step(s) then usually a venue swap — approves Midnight to
+  pull repayment, and returns Midnight's callback success magic value;
+- after `liquidate` returns, trailing sweeps send both market tokens plus every intermediate token
+  the unwrap chain introduced from the Executor to the liquidator EOA (the full-drain invariant);
 - zero/zero bad-debt realization uses no callback and no sweeps.
 
-[src/execution/simulate.ts](./src/execution/simulate.ts) runs `eth_call` from the liquidator EOA
-against the real Executor calldata. Any revert means the bot does not broadcast.
+`@repo/bot-kit`'s shared simulator ([packages/bot-kit/src/simulate.ts](../../packages/bot-kit/src/simulate.ts))
+runs `eth_call` from the liquidator EOA against the real Executor calldata. Any revert means the bot
+does not broadcast.
 
 ### Broadcast And Pending Queue
 
-On simulation success, [src/queue/pending-queue.ts](./src/queue/pending-queue.ts) sends the
-transaction through the signer client and tracks it by nonce and `(marketId, borrower)` label.
+On simulation success, `@repo/bot-kit`'s shared pending queue
+([packages/bot-kit/src/queue/pending-queue.ts](../../packages/bot-kit/src/queue/pending-queue.ts))
+sends the transaction through the signer client and tracks it by nonce and `(marketId, borrower)`
+label.
 
 While a label is pending, later ticks skip that position. On each block the queue checks receipts,
 logs confirmed or reverted transactions, and fee-bumps stuck transactions until either they confirm,
