@@ -315,6 +315,25 @@ const CHAINS: ChainDeploy[] = [
 // The pre-multichain single-chain service name, retired after `bot-8453` is confirmed healthy.
 const LEGACY_BOT_SERVICE = 'bot'
 
+// Deploy-only mode (DEPLOY_ONLY=1|true): re-ship the ALREADY-PROVISIONED services from the checked-out
+// tree and set NOTHING — no secrets, no variables, no volumes. This is the path CI uses: the per-bot-
+// per-stage GitHub Environment holds only RAILWAY_TOKEN + RAILWAY_PROJECT_ID, and the services/secrets
+// were provisioned once by a full (secret-bearing) run of this script. Skips the RPC/key requirements
+// the full path enforces, so it never needs those secrets in CI. Runs before `chainSecrets` is read.
+if (/^(1|true)$/i.test(Bun.env.DEPLOY_ONLY?.trim() ?? '')) {
+  await ensureContext()
+  // The one shared rindexer plus every per-chain bot. `railway up` rebuilds each server-side.
+  const services = ['rindexer', ...CHAINS.map(chain => chain.service)]
+  for (const service of services) await deployService(service)
+  const statuses = new Map<string, string>()
+  for (const service of services) statuses.set(service, await waitForDeploy(service))
+  console.log('')
+  console.log('=== Deploy-only status ===')
+  for (const [service, status] of statuses) console.log(`  ${service}: ${status}`)
+  const bad = (status: string) => status === 'FAILED' || status === 'TIMEOUT'
+  process.exit([...statuses.values()].some(bad) ? 1 : 0)
+}
+
 // Read a chainId-suffixed env var (e.g. RPC_URL_8453). RPC endpoints differ per chain so these are
 // effectively required per chain; the private key may instead fall back to a shared unsuffixed key.
 function suffixed(name: string, chainId: number): string | undefined {

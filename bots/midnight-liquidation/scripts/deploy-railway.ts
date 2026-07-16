@@ -201,6 +201,21 @@ async function waitForDeploy(
 
 await assertCli()
 
+// Deploy-only mode (DEPLOY_ONLY=1|true): re-ship the ALREADY-PROVISIONED `bot` service from the
+// checked-out tree and set NOTHING — no secrets, no variables. This is the path CI uses: the per-
+// stage GitHub Environment holds only RAILWAY_TOKEN + RAILWAY_PROJECT_ID, and the service/secrets
+// were provisioned once by a full (secret-bearing) run of this script. Skips the RPC/key/venue
+// requirements the full path enforces, so it never needs those secrets in CI.
+if (/^(1|true)$/i.test(Bun.env.DEPLOY_ONLY?.trim() ?? '')) {
+  await ensureContext()
+  await deployService('bot') // `railway up` rebuilds it server-side
+  const status = await waitForDeploy('bot')
+  console.log('')
+  console.log('=== Deploy-only status ===')
+  console.log(`  bot: ${status}`)
+  process.exit(status === 'FAILED' || status === 'TIMEOUT' ? 1 : 0)
+}
+
 // Secrets / config from this process's env (fail loud before mutating any Railway state).
 const rpcUrl = required(Bun.env, 'RPC_URL')
 const liquidatorPrivateKey = required(Bun.env, 'LIQUIDATOR_PRIVATE_KEY')
