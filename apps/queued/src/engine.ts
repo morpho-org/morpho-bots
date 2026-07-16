@@ -7,8 +7,8 @@ import { loadState, saveState } from '@repo/home'
 import { ensureError, tryCatch } from '@repo/utils'
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { BaseError, createPublicClient, http } from 'viem'
-import { call, getBlock, getTransactionCount } from 'viem/actions'
+import { BaseError, createPublicClient, formatEther, http } from 'viem'
+import { call, getBalance, getBlock, getTransactionCount } from 'viem/actions'
 
 import type { QueuedConfig } from './config'
 import type { PendingQueue } from './pending-queue'
@@ -25,6 +25,9 @@ const ACTIVE_SWEEP_MS = 2_000
 const IDLE_SWEEP_MS = 15_000
 const CACHE_TTL_MS = 2_000
 const RECONCILE_EVERY_SWEEPS = 3
+// Minimum spacing between signer gas-balance reads. Independent of sweep cadence (which chases
+// inflight work) so the balance metric ships at a steady rate whether the queue is busy or idle.
+const BALANCE_CHECK_MS = 60_000
 
 export class EngineError extends Error {
   constructor(
@@ -87,6 +90,7 @@ export function createEngine({ config, remoteSigner, logger, home, onFatal }: En
   let dirty = false
   let sendAborted = false
   let sweepCount = 0
+  let lastBalanceCheckAt = 0
   let cache: { head: bigint; baseFee: bigint; at: number } | null = null
   let mutex: Promise<unknown> = Promise.resolve()
   let sweepTimer: ReturnType<typeof setTimeout> | null = null
@@ -253,6 +257,36 @@ export function createEngine({ config, remoteSigner, logger, home, onFatal }: En
     }
   }
 
+  // Reads the signer EOA's native balance and emits it as the `signer.balance` metric line.
+  // `balanceEth` is a plain number (a queryable metric field); `balanceWei` is the lossless decimal
+  // string. Thresholding/alerting is BetterStack's job, so this is always `info` — the daemon just
+  // ships the value. A read failure logs `signer.balance_failed` and never disturbs settlement.
+  async function checkBalance(now: number): Promise<void> {
+    lastBalanceCheckAt = now
+    const balance = await tryCatch(getBalance(sendClient, { address: eoa }))
+    if (balance.error) {
+      logger.warn('signer.balance_failed', {
+        address: eoa,
+        detail: ensureError(balance.error).message
+      })
+      return
+    }
+    logger.info('signer.balance', {
+      address: eoa,
+      balanceWei: balance.data,
+      balanceEth: Number(formatEther(balance.data))
+    })
+  }
+
+  // Gates checkBalance to once per BALANCE_CHECK_MS. Armed only — a dry-run daemon has no signer to
+  // fund and never reaches the sweep loop. Swallows its own errors so it never breaks a sweep.
+  async function maybeCheckBalance(): Promise<void> {
+    if (!armed) return
+    const now = Date.now()
+    if (now - lastBalanceCheckAt < BALANCE_CHECK_MS) return
+    await checkBalance(now)
+  }
+
   function scheduleSweep(ms: number): void {
     if (stopped || config.dryRun) return
     if (sweepTimer) clearTimeout(sweepTimer)
@@ -262,6 +296,7 @@ export function createEngine({ config, remoteSigner, logger, home, onFatal }: En
   async function runSweep(): Promise<void> {
     if (stopped || config.dryRun) return
     try {
+      await maybeCheckBalance()
       await locked(async () => {
         const state = await tryCatch(chainState(true))
         if (state.error) {
@@ -293,6 +328,7 @@ export function createEngine({ config, remoteSigner, logger, home, onFatal }: En
     if (reset && reset !== 'missing') logger.warn('state.reset', { reason: reset })
     restore(state)
     if (armed) await locked(async () => reconcile())
+    await maybeCheckBalance()
     scheduleSweep(queue.inflightLabels().size > 0 ? ACTIVE_SWEEP_MS : IDLE_SWEEP_MS)
   }
 
