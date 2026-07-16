@@ -275,7 +275,7 @@ async function main() {
   // Phase-4 runner: an HTTP block-poll watcher drives one tick per new block (coalescing backlog),
   // passing the polled height as the queue's submittedAtBlock. Each liquidatable position resolves its
   // swap step, simulates the real `exec_606BaXt`, and — on a sim-ok result — broadcasts that same exec
-  // via the Executor singleton, then drives queue.onBlock.
+  // via the Executor singleton. Pending-queue upkeep runs in `maintain`.
   const tick = (chainHead: bigint) =>
     runTick({
       discover,
@@ -305,17 +305,23 @@ async function main() {
       },
       backoff,
       cooldown,
-      pendingOnBlock: async blockNumber => {
-        await queue.onBlock(blockNumber)
-        await balanceMonitor.maybeLog(blockNumber)
-      },
       inflightLabels: () => queue.inflightLabels(),
       logger
     })
 
+  // Per-block maintenance, run by the runner BEFORE the tick and independently of it: pending-queue
+  // upkeep (confirmations / stuck-detection / fee-bumps / nonce reconciliation / latch clearing) plus
+  // the periodic EOA-balance metric. Keeping it off the tick means a sustained discovery / lens / API
+  // outage can't starve already-broadcast transactions of receipt checks and fee replacement.
+  const maintain = async (blockNumber: bigint) => {
+    await queue.onBlock(blockNumber)
+    await balanceMonitor.maybeLog(blockNumber)
+  }
+
   const runner = createRunner({
     getBlockNumber: () => getBlockNumber(client),
     tick,
+    maintain,
     logger,
     revertReason
   })

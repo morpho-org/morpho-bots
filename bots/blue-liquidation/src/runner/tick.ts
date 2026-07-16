@@ -35,8 +35,9 @@ type TickCounters = {
  * the liquidation lens fresh for the whole batch (one deployless `eth_call`), and for each
  * liquidatable position build a seize-exact plan, resolve its swap, simulate the real `exec_606BaXt`,
  * and — when the simulation is `ok` and the position is not already in flight — broadcast it via
- * `submit`. Finally drive the pending queue's `onBlock`. Deps are injected so the tick is
- * unit-testable without a chain, Postgres, or signer.
+ * `submit`. Pending-queue upkeep (`queue.onBlock`) is NOT driven here: the runner runs it as an
+ * independent per-block maintenance phase so it survives a discovery/lens failure in this tick. Deps
+ * are injected so the tick is unit-testable without a chain, Postgres, or signer.
  *
  * No staleness skip: the lens reads every candidate fresh on-chain, so rindexer lag is coverage
  * latency, never a correctness issue — we emit `rindexer.lag` for observability and always proceed.
@@ -77,8 +78,6 @@ export async function runTick(deps: {
    * (`POSITION_LIQUIDATION_COOLDOWN_MS=0`), in which case `shouldSkip` is always false.
    */
   cooldown: CooldownStore
-  /** Confirmations / stuck-detection / fee-bumps for already-pending txs. */
-  pendingOnBlock: (blockNumber: bigint) => Promise<void>
   /** Labels (`${id}:${borrower}`) already in flight — skipped to avoid re-submitting each block. */
   inflightLabels: () => ReadonlySet<string>
   logger: Logger
@@ -93,7 +92,6 @@ export async function runTick(deps: {
     submit,
     backoff,
     cooldown,
-    pendingOnBlock,
     inflightLabels,
     logger
   } = deps
@@ -226,9 +224,6 @@ export async function runTick(deps: {
       counters.submitted += 1
     }
   }
-
-  // 5. Confirmations / stuck-detection / fee-bumps for the pending set (incl. prior ticks).
-  await pendingOnBlock(chainHead)
 
   logger.info('tick.end', { ...counters })
   return counters

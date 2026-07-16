@@ -105,7 +105,6 @@ function runWith(opts: {
   const { logger, events } = spyLogger()
   let simulateCalls = 0
   let submitCalls = 0
-  let onBlockCalls = 0
   let quoteCalls = 0
   const chainHead = opts.chainHead ?? 100n
   const backoff = createBackoff({ baseBlocks: 2n, maxBlocks: 64n })
@@ -133,9 +132,6 @@ function runWith(opts: {
     },
     backoff,
     cooldown,
-    pendingOnBlock: async () => {
-      onBlockCalls += 1
-    },
     inflightLabels: () => opts.inflight ?? new Set(),
     logger
   })
@@ -145,7 +141,6 @@ function runWith(opts: {
     cooldown,
     simulateCalls: () => simulateCalls,
     submitCalls: () => submitCalls,
-    onBlockCalls: () => onBlockCalls,
     quoteCalls: () => quoteCalls,
     events
   }))
@@ -153,7 +148,7 @@ function runWith(opts: {
 
 describe('runTick', () => {
   it('plans, quotes, simulates, and submits a liquidatable pair on a successful sim', async () => {
-    const { counters, simulateCalls, submitCalls, onBlockCalls } = await runWith({
+    const { counters, simulateCalls, submitCalls } = await runWith({
       simulateResult: { status: 'ok' }
     })
     expect(counters).toEqual({
@@ -170,7 +165,6 @@ describe('runTick', () => {
     })
     expect(simulateCalls()).toBe(1)
     expect(submitCalls()).toBe(1)
-    expect(onBlockCalls()).toBe(1) // pendingOnBlock runs every tick
   })
 
   it('does not submit a reverting plan and backs the position off', async () => {

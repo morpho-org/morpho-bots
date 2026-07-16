@@ -30,14 +30,14 @@ type TickCounters = {
  * One tick: enumerate the over-inclusive (id, borrower) candidate universe from discovery, read the
  * liquidation lens fresh for the whole batch (one deployless `eth_call`), and for each liquidatable
  * position build a plan, resolve its swap step, simulate the real `exec_606BaXt`, and — when the
- * simulation is `ok` and the position is not already in flight — broadcast it via `submit`. Finally
- * drive the pending queue's `onBlock`. Deps are injected so the tick is unit-testable without a
- * chain, a discovery endpoint, or a signer.
+ * simulation is `ok` and the position is not already in flight — broadcast it via `submit`.
+ * Pending-queue upkeep (`queue.onBlock`) is NOT driven here: the runner runs it as an independent
+ * per-block maintenance phase so it survives a discovery/lens failure in this tick. Deps are injected
+ * so the tick is unit-testable without a chain, a discovery endpoint, or a signer.
  *
  * Discovery failure is tolerated: a transient error is logged (`discover.error`) and the tick proceeds
- * with zero new candidates so the pending queue (confirmations / fee bumps) is still driven that
- * block. The lens reads every candidate fresh on-chain, so discovery is a coverage source, never a
- * correctness dependency.
+ * with zero new candidates. The lens reads every candidate fresh on-chain, so discovery is a coverage
+ * source, never a correctness dependency.
  */
 export async function runTick(deps: {
   discover: () => Promise<BorrowerCandidate[]>
@@ -77,8 +77,6 @@ export async function runTick(deps: {
    * included). Disabled by default (`POSITION_LIQUIDATION_COOLDOWN_MS=0`) — `shouldSkip` always false.
    */
   cooldown: CooldownStore
-  /** Confirmations / stuck-detection / fee-bumps for already-pending txs. */
-  pendingOnBlock: (blockNumber: bigint) => Promise<void>
   /** Labels (`${id}:${borrower}`) already in flight — skipped to avoid re-submitting each block. */
   inflightLabels: () => ReadonlySet<string>
   logger: Logger
@@ -94,7 +92,6 @@ export async function runTick(deps: {
     submit,
     backoff,
     cooldown,
-    pendingOnBlock,
     inflightLabels,
     logger
   } = deps
@@ -231,9 +228,6 @@ export async function runTick(deps: {
       counters.submitted += 1
     }
   }
-
-  // 4. Confirmations / stuck-detection / fee-bumps for the pending set (incl. prior ticks).
-  await pendingOnBlock(chainHead)
 
   logger.info('tick.end', { ...counters })
   return counters

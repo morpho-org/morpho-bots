@@ -17,10 +17,21 @@ export type Runner = {
  * Long-running lifecycle: a block-poll watcher drives `tick` once per new block height. Owns
  * start/stop, logs `block.new` per height, and swallows tick errors so one bad tick never kills the
  * loop. `stop()` is idempotent.
+ *
+ * When a `maintain` phase is given it runs once per block BEFORE the tick, in its own try/catch, so
+ * block-lifecycle upkeep (pending-queue receipt checks, fee replacement, nonce reconciliation, latch
+ * clearing) is driven even when the tick's discovery/lens/quote work throws. Ordering before the tick
+ * makes the guarantee structural — the tick can never starve maintenance — and a maintenance failure
+ * (`queue.maintenance_failed`) is isolated so it never kills the tick.
  */
 export function createRunner(deps: {
   getBlockNumber: () => Promise<bigint>
   tick: (height: bigint) => Promise<unknown>
+  /**
+   * Optional per-block upkeep phase run BEFORE the tick and independently of it. Its failure is
+   * logged (`queue.maintenance_failed`) and swallowed so neither phase can starve the other.
+   */
+  maintain?: (height: bigint) => Promise<unknown>
   intervalMs?: number
   logger: Logger
   /**
@@ -30,7 +41,7 @@ export function createRunner(deps: {
    */
   revertReason?: (error: unknown) => string
 }): Runner {
-  const { getBlockNumber, tick, logger } = deps
+  const { getBlockNumber, tick, maintain, logger } = deps
   const intervalMs = deps.intervalMs ?? BLOCK_POLL_MS
   const revertReason = deps.revertReason ?? defaultRevertReason
   let started = false
@@ -42,6 +53,14 @@ export function createRunner(deps: {
     logger,
     onBlock: async height => {
       logger.info('block.new', { height })
+      // Maintenance first, isolated: even if the tick throws below, the queue was already driven this
+      // block. A maintenance failure is logged and swallowed so it never blocks the tick.
+      if (maintain) {
+        const maintained = await tryCatch(maintain(height))
+        if (maintained.error) {
+          logger.error('queue.maintenance_failed', { reason: revertReason(maintained.error) })
+        }
+      }
       const { error } = await tryCatch(tick(height))
       // Log a compact, decoded reason — never `error.message`, whose viem request/calldata dump
       // bloats the line and gets truncated by log shippers. Per-tx context is logged by the queue.
