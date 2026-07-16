@@ -28,7 +28,7 @@ import type { Market } from './execution/encode-call'
 import type { LiquidationPlan } from './sizing/plan'
 
 import { loadConfig } from './config'
-import { SETTLED_COOLDOWN_BLOCKS } from './constants'
+import { LISTED_MARKETS_MAX_AGE_MS, SETTLED_COOLDOWN_BLOCKS } from './constants'
 import {
   createApiCandidateSource,
   discoverBorrowers,
@@ -200,11 +200,29 @@ async function main() {
     chainId: config.chainId,
     healthFactorLte: config.discovery.healthFactorLte
   })
+  // Age of the whitelist since its last successful refresh — the caller's staleness signal. `Infinity`
+  // before the first successful fetch (never-refreshed = fail-closed).
+  const whitelistAge = () => {
+    const { updatedAt } = listedMarkets.snapshot()
+    return updatedAt === null ? Infinity : Date.now() - updatedAt
+  }
   // Filter candidates to the market whitelist BEFORE the lens read — a non-listed market is never
-  // touched (fail-closed), and this also shrinks the lens batch.
+  // touched (fail-closed), and this also shrinks the lens batch. Past the fail-closed max-age (a
+  // sustained markets-API outage the refresh loop could not recover from) the whitelist is treated as
+  // EMPTY so a since-delisted market can never linger in scope on the back of a stale set.
   const discover = async () => {
     const candidates = await discoverBorrowers(fetchPage, { logger, maxPages: MAX_DISCOVERY_PAGES })
-    const listed = candidates.filter(candidate => listedMarkets.isListed(candidate.marketId))
+    const whitelistExpired = whitelistAge() > LISTED_MARKETS_MAX_AGE_MS
+    if (whitelistExpired) {
+      logger.warn('markets.whitelist_expired', {
+        ageMs: whitelistAge(),
+        detail:
+          'whitelist older than max age — treating as empty (fail-closed) until a refresh lands'
+      })
+    }
+    const listed = whitelistExpired
+      ? []
+      : candidates.filter(candidate => listedMarkets.isListed(candidate.marketId))
     if (listed.length < candidates.length) {
       logger.info('discover.filtered', { total: candidates.length, listed: listed.length })
     }

@@ -26,13 +26,16 @@ const market = (marketId: Hex, chainId = 8453) => ({
 })
 
 const jsonResponse = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
-  new Response(JSON.stringify(body), { status, headers })
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json', ...headers }
+  })
 
 describe('createListedMarketFilter', () => {
   it('requests listed=true and whitelists only listed markets on the configured chain', async () => {
     let requested = ''
-    const fetchImpl = async (url: string) => {
-      requested = url
+    const fetchImpl = async (request: Request) => {
+      requested = request.url
       // Include an off-chain market to prove the chain filter drops it.
       return jsonResponse({ data: [market(LISTED), market(OTHER_CHAIN, 1)] })
     }
@@ -44,6 +47,7 @@ describe('createListedMarketFilter', () => {
     })
     await filter.refresh()
 
+    expect(new URL(requested).pathname).toBe('/v0/midnight/markets')
     expect(new URL(requested).searchParams.get('listed')).toBe('true')
     expect(filter.isListed(LISTED)).toBe(true)
     expect(filter.isListed(OTHER_CHAIN)).toBe(false) // wrong chain
@@ -94,6 +98,18 @@ describe('createListedMarketFilter', () => {
     await expect(filter.refresh()).rejects.toThrow(/markets HTTP 500/)
     // Prior set survives the failed refresh.
     expect(filter.isListed(LISTED)).toBe(true)
+  })
+
+  it('surfaces updatedAt for the caller to gate whitelist staleness', async () => {
+    const filter = createListedMarketFilter({
+      apiUrl: API_URL,
+      chainId: 8453,
+      logger: NOOP_LOGGER,
+      fetchImpl: async () => jsonResponse({ data: [market(LISTED)] }),
+      now: () => 111
+    })
+    await filter.refresh()
+    expect(filter.snapshot()).toEqual({ markets: 1, updatedAt: 111 })
   })
 
   it('retries a 429 honoring Retry-After', async () => {

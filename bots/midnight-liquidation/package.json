@@ -17,6 +17,7 @@
     "@repo/swaps": "workspace:*",
     "@repo/utils": "workspace:*",
     "executooor-viem": "catalog:",
+    "openapi-fetch": "catalog:",
     "solc": "catalog:",
     "soltag": "catalog:",
     "viem": "catalog:"

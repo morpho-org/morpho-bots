@@ -43,22 +43,9 @@
         "@repo/swaps": "workspace:*",
         "@repo/utils": "workspace:*",
         "executooor-viem": "catalog:",
+        "openapi-fetch": "catalog:",
         "solc": "catalog:",
         "soltag": "catalog:",
-        "viem": "catalog:",
-      },
-      "devDependencies": {
-        "@repo/typescript-config": "workspace:*",
-        "@types/bun": "catalog:",
-        "typescript": "catalog:",
-      },
-    },
-    "packages/bot-kit": {
-      "name": "@repo/bot-kit",
-      "version": "0.0.0",
-      "dependencies": {
-        "@morpho-org/viem-dlc": "catalog:",
-        "@repo/utils": "workspace:*",
         "viem": "catalog:",
       },
       "devDependencies": {
@@ -143,6 +130,7 @@
     "knip": "^5.86.0",
     "lint-staged": "^16.1.2",
     "lodash-es": "^4.18.0",
+    "openapi-fetch": "0.17.0",
     "oxfmt": "^0.36.0",
     "oxlint": "^1.46.0",
     "oxlint-tsgolint": "^0.22.1",
@@ -438,6 +426,10 @@
     "minimist": ["minimist@1.2.8", "", {}, "sha512-2yyAR8qBkN3YuheJanUpWC5U3bb5osDywNB8RzDVlDwDHbocAJveqqj1u8+SVD7jkWT4yvsHCpWqqWqAxb0zCA=="],
 
     "onetime": ["onetime@7.0.0", "", { "dependencies": { "mimic-function": "^5.0.0" } }, "sha512-VXJjc87FScF88uafS3JllDgvAm+c/Slfz06lorj2uAY34rlUu0Nt+v8wreiImcrgAjjIHp1rXpTDlLOGw29WwQ=="],
+
+    "openapi-fetch": ["openapi-fetch@0.17.0", "", { "dependencies": { "openapi-typescript-helpers": "^0.1.0" } }, "sha512-PsbZR1wAPcG91eEthKhN+Zn92FMHxv+/faECIwjXdxfTODGSGegYv0sc1Olz+HYPvKOuoXfp+0pA2XVt2cI0Ig=="],
+
+    "openapi-typescript-helpers": ["openapi-typescript-helpers@0.1.0", "", {}, "sha512-OKTGPthhivLw/fHz6c3OPtg72vi86qaMlqbJuVJ23qOvQ+53uw1n7HdmkJFibloF7QEjDrDkzJiOJuockM/ljw=="],
 
     "os-tmpdir": ["os-tmpdir@1.0.2", "", {}, "sha512-D2FR03Vir7FIu45XBY20mTb+/ZSWB00sjU9jdQXt83gDrI4Ztz5Fs7/yy74g2N5SVQY4xY1qDr4rNddwYRVX0g=="],
 

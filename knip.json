@@ -10,7 +10,9 @@
     "packages/contracts": {},
     "packages/bot-kit": {},
     "packages/swaps": {},
-    "bots/midnight-liquidation": {},
+    "bots/midnight-liquidation": {
+      "ignore": ["src/generated/**"]
+    },
     "bots/blue-liquidation": {}
   }
 }
