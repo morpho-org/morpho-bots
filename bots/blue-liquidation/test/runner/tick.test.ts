@@ -1,5 +1,5 @@
 import type { Logger, SimulateResult } from '@repo/bot-kit'
-import type { QuoteOutcome, Swap } from '@repo/swaps'
+import type { QuoteOutcome, SwapPlan } from '@repo/swaps'
 import type { Address } from 'viem'
 
 import { createBackoff } from '@repo/bot-kit'
@@ -44,12 +44,18 @@ const PARAMS: MarketParams = {
 }
 const LABEL = lensKey(marketId(PARAMS), BORROWER)
 
-const SWAP: Swap = {
-  spender: ROUTER,
-  target: ROUTER,
-  value: 0n,
-  callData: '0xabcdef',
-  amountIn: { source: 'balance', offset: 132n },
+const SWAP_PLAN: SwapPlan = {
+  steps: [
+    {
+      tokenIn: PARAMS.collateralToken,
+      tokenOut: PARAMS.loanToken,
+      target: ROUTER,
+      value: 0n,
+      callData: '0xabcdef',
+      amountIn: { source: 'balance', offset: 132n },
+      approvalSpender: ROUTER
+    }
+  ],
   expectedAmountOut: 2000n * WAD,
   amountOutMinimum: 1n
 }
@@ -104,7 +110,7 @@ function runWith(opts: {
   if (opts.seedBackoffAt !== undefined) backoff.record(LABEL, opts.seedBackoffAt)
   const defaultOutcome: QuoteOutcome = opts.noSwap
     ? { kind: 'no_config' }
-    : { kind: 'swap', swap: SWAP }
+    : { kind: 'swap', plan: SWAP_PLAN }
   const result = runTick({
     discover: async () => candidates(...(opts.borrowers ?? [BORROWER])),
     syncedBlock: async () => (opts.synced === undefined ? chainHead : opts.synced),

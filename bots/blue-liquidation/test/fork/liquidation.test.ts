@@ -1,3 +1,4 @@
+import type { SwapPlan } from '@repo/swaps'
 import type { Address } from 'viem'
 
 import {
@@ -122,13 +123,29 @@ describe.skipIf(!FORK_URL || !FIXTURE)(
           referenceAmountOut: expectedLoanOut(liquidationPlan, out)
         }
       )
+      // Wrap the single venue swap as a one-step plan (mirrors quoting.ts' toStep projection).
+      const swapPlan: SwapPlan = {
+        steps: [
+          {
+            tokenIn: out.params.collateralToken,
+            tokenOut: out.params.loanToken,
+            target: swap.target,
+            value: swap.value,
+            callData: swap.callData,
+            amountIn: swap.amountIn,
+            approvalSpender: swap.spender
+          }
+        ],
+        expectedAmountOut: swap.expectedAmountOut,
+        amountOutMinimum: swap.amountOutMinimum
+      }
       const data = encodeLiquidationExec({
         executor: executooor,
         morpho: MORPHO,
         market: out.params,
         seizedAssets: liquidationPlan.seizedAssets,
         borrower,
-        swap,
+        plan: swapPlan,
         recipient: LIQUIDATOR
       })
 

@@ -71,6 +71,10 @@ const DEFAULT_HTTP_RPS = 2 // per-venue token-bucket refill; 1inch free tier is 
 const DEFAULT_HTTP_BURST = 5
 const DEFAULT_HTTP_MAX_RETRIES = 2
 const DEFAULT_MAX_ROUTE_IMPACT_BPS = 500 // reject an aggregator route >5% below the oracle reference
+// Slippage for the Pendle PT → underlying unwrap hop; a property of the unwrapper, not of any venue
+// entry (the underlying's entry isn't known until after resolution). Keep well under
+// MAX_ROUTE_IMPACT_BPS — it also haircuts the amount the downstream venue sells.
+const DEFAULT_PENDLE_SLIPPAGE_BPS = 50
 const DEFAULT_BACKOFF_BASE_BLOCKS = 2n
 const DEFAULT_BACKOFF_MAX_BLOCKS = 64n
 
@@ -83,6 +87,7 @@ export type QuotingConfig = {
   httpBurst: number
   httpMaxRetries: number
   maxRouteImpactBps: number
+  pendleSlippageBps: number
   backoffBaseBlocks: bigint
   backoffMaxBlocks: bigint
 }
@@ -258,6 +263,10 @@ export function loadConfig(
     httpBurst: intEnv(env, 'HTTP_BURST', DEFAULT_HTTP_BURST, { min: 1 }),
     httpMaxRetries: intEnv(env, 'HTTP_MAX_RETRIES', DEFAULT_HTTP_MAX_RETRIES, { min: 0 }),
     maxRouteImpactBps: intEnv(env, 'MAX_ROUTE_IMPACT_BPS', DEFAULT_MAX_ROUTE_IMPACT_BPS, {
+      min: 0,
+      max: 10_000
+    }),
+    pendleSlippageBps: intEnv(env, 'PENDLE_SLIPPAGE_BPS', DEFAULT_PENDLE_SLIPPAGE_BPS, {
       min: 0,
       max: 10_000
     }),

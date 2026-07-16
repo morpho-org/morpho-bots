@@ -1,10 +1,13 @@
+import type { Address } from 'viem'
+
 import { describe, expect, it } from 'bun:test'
-import { getAddress } from 'viem'
+import { getAddress, isAddressEqual } from 'viem'
 
 import type { SwapConfigEntry } from '../src/config'
-import type { RateLimitedClient } from '../src/http-client'
+import type { HttpVenue, RateLimitedClient } from '../src/http-client'
 import type { QuoteLogger, QuoteRequest } from '../src/quoting'
-import type { Venue } from '../src/types'
+import type { QuoteOutcome, Venue } from '../src/types'
+import type { Unwrapper } from '../src/unwrappers/resolve'
 
 import { ONEINCH_ROUTER, ZEROX_ALLOWANCE_HOLDER } from '../src/constants'
 import { composeMultiVenueQuoting, composeQuoting, passesRouteQuality } from '../src/quoting'
@@ -15,6 +18,7 @@ const NOOP_LOGGER: QuoteLogger = { info: () => {}, warn: () => {} }
 const ROUTER = getAddress('0x5555555555555555555555555555555555555555')
 const LOAN = getAddress('0x6666666666666666666666666666666666666666')
 const COLLATERAL = getAddress('0x7777777777777777777777777777777777777777')
+const UNDERLYING = getAddress('0x8888888888888888888888888888888888888888')
 const EXECUTOR = getAddress('0x1111111111111111111111111111111111111111')
 
 // referenceAmountOut = amountIn = 1000 (i.e. an oracle price of exactly 1) — the route-quality
@@ -24,6 +28,40 @@ const REQUEST: QuoteRequest = {
   loanToken: LOAN,
   amountIn: 1000n,
   referenceAmountOut: 1000n
+}
+
+// The plan's final step is the venue swap; its approvalSpender is the venue's approve target — the
+// same identity the pre-SwapPlan tests asserted via `swap.spender`.
+function finalSpender(outcome: QuoteOutcome): Address | undefined {
+  return outcome.kind === 'swap' ? outcome.plan.steps.at(-1)?.approvalSpender : undefined
+}
+
+// An unwrapper that converts `from` → `to` at the given output, recording the tokens it was asked
+// about; every other token resolves null (not unwrappable).
+function fakeUnwrapper(args: { from: Address; to: Address; out: bigint }): Unwrapper & {
+  probed: Address[]
+} {
+  const probed: Address[] = []
+  return {
+    kind: 'fake',
+    probed,
+    async resolve({ token }) {
+      probed.push(token)
+      if (!isAddressEqual(token, args.from)) return null
+      return {
+        step: {
+          tokenIn: args.from,
+          tokenOut: args.to,
+          target: args.from,
+          value: 0n,
+          callData: '0x12345678',
+          amountIn: { source: 'balance', offset: 4n }
+        },
+        expectedAmountOut: args.out,
+        amountOutMinimum: args.out
+      }
+    }
+  }
 }
 
 function httpStub(body: unknown): RateLimitedClient {
@@ -36,15 +74,20 @@ const throwingHttp: RateLimitedClient = {
   }
 }
 
-function compose(entry: SwapConfigEntry | null, httpClient: RateLimitedClient) {
+function compose(
+  entry: SwapConfigEntry | null,
+  httpClient: RateLimitedClient,
+  options: { unwrappers?: readonly Unwrapper[]; key?: Address } = {}
+) {
   const swapByCollateral = new Map<string, SwapConfigEntry>()
-  if (entry) swapByCollateral.set(getAddress(COLLATERAL), entry)
+  if (entry) swapByCollateral.set(getAddress(options.key ?? COLLATERAL), entry)
   return composeQuoting({
     httpClient,
     chainId: 8453,
     executor: EXECUTOR,
     swapByCollateral,
     maxRouteImpactBps: 500, // floor = 1000 × 0.95 = 950
+    unwrappers: options.unwrappers ?? [],
     logger: NOOP_LOGGER
   })
 }
@@ -55,14 +98,101 @@ describe('composeQuoting', () => {
     expect(await quoteFor(REQUEST)).toEqual({ kind: 'no_config' })
   })
 
-  it('returns a uniswap swap (local, no API) when configured', async () => {
+  it('returns a single-step uniswap plan (local, no API) when configured', async () => {
     const { quoteFor } = compose(
       { venue: 'uniswap-v3', router: ROUTER, fee: 3000, slippageBps: 50 },
       httpStub({})
     )
     const outcome = await quoteFor(REQUEST)
     expect(outcome.kind).toBe('swap')
-    if (outcome.kind === 'swap') expect(outcome.swap.spender).toBe(ROUTER)
+    expect(finalSpender(outcome)).toBe(ROUTER)
+    if (outcome.kind === 'swap') {
+      expect(outcome.plan.steps).toHaveLength(1)
+      expect(outcome.plan.steps[0]).toMatchObject({ tokenIn: COLLATERAL, tokenOut: LOAN })
+    }
+  })
+
+  it('unwraps then quotes the venue configured for the UNDERLYING token', async () => {
+    const unwrapper = fakeUnwrapper({ from: COLLATERAL, to: UNDERLYING, out: 900n })
+    const { quoteFor } = compose(
+      { venue: '0x', slippageBps: 50 },
+      httpStub({
+        liquidityAvailable: true,
+        buyAmount: '990',
+        minBuyAmount: '985',
+        transaction: { to: ROUTER, data: '0xabc' }
+      }),
+      { unwrappers: [unwrapper], key: UNDERLYING } // config keyed on the underlying, NOT the share
+    )
+    const outcome = await quoteFor(REQUEST)
+    expect(outcome.kind).toBe('swap')
+    if (outcome.kind === 'swap') {
+      expect(outcome.plan.steps).toHaveLength(2)
+      expect(outcome.plan.steps[0]).toMatchObject({ tokenIn: COLLATERAL, tokenOut: UNDERLYING })
+      expect(outcome.plan.steps[1]).toMatchObject({
+        tokenIn: UNDERLYING,
+        tokenOut: LOAN,
+        approvalSpender: ZEROX_ALLOWANCE_HOLDER
+      })
+    }
+  })
+
+  it('lets a direct entry for the raw collateral win without probing unwrappers', async () => {
+    const unwrapper = fakeUnwrapper({ from: COLLATERAL, to: UNDERLYING, out: 900n })
+    const { quoteFor } = compose(
+      { venue: 'uniswap-v3', router: ROUTER, fee: 3000, slippageBps: 50 },
+      httpStub({}),
+      { unwrappers: [unwrapper] } // keyed on COLLATERAL (default)
+    )
+    const outcome = await quoteFor(REQUEST)
+    expect(outcome.kind).toBe('swap')
+    if (outcome.kind === 'swap') expect(outcome.plan.steps).toHaveLength(1)
+    expect(unwrapper.probed).toHaveLength(0)
+  })
+
+  it('returns an unwrap-only plan when the chain ends in the loan token, route-quality checked', async () => {
+    const good = fakeUnwrapper({ from: COLLATERAL, to: LOAN, out: 990n })
+    const { quoteFor: goodQuote } = compose(null, httpStub({}), { unwrappers: [good] })
+    const outcome = await goodQuote(REQUEST)
+    expect(outcome.kind).toBe('swap')
+    if (outcome.kind === 'swap') {
+      expect(outcome.plan.steps).toHaveLength(1)
+      expect(outcome.plan.steps[0]?.tokenOut).toBe(LOAN)
+      expect(outcome.plan.expectedAmountOut).toBe(990n)
+    }
+
+    // Output 900 < floor 950 → the oracle sanity check applies to unwrap-only plans too.
+    const bad = fakeUnwrapper({ from: COLLATERAL, to: LOAN, out: 900n })
+    const { quoteFor: badQuote } = compose(null, httpStub({}), { unwrappers: [bad] })
+    expect(await badQuote(REQUEST)).toEqual({ kind: 'failed', reason: 'bad_route' })
+  })
+
+  it('maps an unwrapper error to a failed outcome', async () => {
+    const broken: Unwrapper = {
+      kind: 'broken',
+      resolve: async () => {
+        throw new QuoteError('api_error', 'probe exploded')
+      }
+    }
+    const { quoteFor } = compose(null, httpStub({}), { unwrappers: [broken] })
+    expect(await quoteFor(REQUEST)).toEqual({ kind: 'failed', reason: 'api_error' })
+  })
+
+  it('drops the request tokenInDecimals after an unwrap (they described the raw collateral)', async () => {
+    const unwrapper = fakeUnwrapper({ from: COLLATERAL, to: UNDERLYING, out: 1000n })
+    // LiquidSwap requires tokenInDecimals; the post-unwrap quote must NOT reuse the share token's.
+    const { quoteFor } = compose(
+      { venue: 'liquidswap', slippageBps: 50 },
+      httpStub({
+        success: true,
+        amountOut: '1000',
+        tokens: { tokenOut: { decimals: 0 } },
+        execution: { to: ROUTER, calldata: '0x0abc', details: { minAmountOut: '1000' } }
+      }),
+      { unwrappers: [unwrapper], key: UNDERLYING }
+    )
+    const outcome = await quoteFor({ ...REQUEST, tokenInDecimals: 18 })
+    expect(outcome).toEqual({ kind: 'failed', reason: 'api_error' })
   })
 
   it('rejects an aggregator route worse than maxRouteImpactBps below the oracle reference', async () => {
@@ -125,10 +255,32 @@ function oneInchBody(dstAmount: string) {
   return { dstAmount, tx: { to: ROUTER, data: '0xdef', value: '0' } }
 }
 
-// A client that dispatches a fixed body per venue (throws no_route for an unstubbed venue).
-function multiHttp(bodies: Partial<Record<Venue, unknown>>): RateLimitedClient {
+const LIFI_SPENDER = getAddress('0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB')
+
+// A LiFi-shaped firm-quote body with the given toAmount.
+function lifiBody(toAmount: string) {
   return {
-    getJson: async <T>(args: { venue: Venue }) => {
+    estimate: { approvalAddress: LIFI_SPENDER, toAmount, toAmountMin: toAmount },
+    transactionRequest: { to: ROUTER, data: '0xfee', value: '0x0' }
+  }
+}
+
+const LIQUIDSWAP_TARGET = getAddress('0x2222222222222222222222222222222222222222')
+
+// A LiquidSwap-shaped firm-route body; `amountOut` is a decimal string parsed at `decimals: 0`.
+function liquidSwapBody(amountOut: string) {
+  return {
+    success: true,
+    amountOut,
+    tokens: { tokenOut: { decimals: 0 } },
+    execution: { to: LIQUIDSWAP_TARGET, calldata: '0x0abc', details: { minAmountOut: amountOut } }
+  }
+}
+
+// A client that dispatches a fixed body per venue (throws no_route for an unstubbed venue).
+function multiHttp(bodies: Partial<Record<HttpVenue, unknown>>): RateLimitedClient {
+  return {
+    getJson: async <T>(args: { venue: HttpVenue }) => {
       const body = bodies[args.venue]
       if (body === undefined) throw new QuoteError('no_route', `no stub for ${args.venue}`)
       return body as T
@@ -139,9 +291,12 @@ function multiHttp(bodies: Partial<Record<Venue, unknown>>): RateLimitedClient {
 function composeMulti(
   venues: Venue[],
   order: { venue: Venue; expectedOut: bigint }[],
-  httpClient: RateLimitedClient
+  httpClient: RateLimitedClient,
+  options: { unwrappers?: readonly Unwrapper[] } = {}
 ) {
-  return composeMultiVenueQuoting({
+  const refreshed: { collateral: Address; loan: Address }[] = []
+  const selected: { pair: { collateral: Address; loan: Address }; amountIn: bigint }[] = []
+  const quoting = composeMultiVenueQuoting({
     httpClient,
     chainId: 8453,
     executor: EXECUTOR,
@@ -149,9 +304,17 @@ function composeMulti(
     slippageBps: 50,
     baseUrls: {},
     maxRouteImpactBps: 500, // floor = 950
-    select: () => order,
+    unwrappers: options.unwrappers ?? [],
+    refresh: async pair => {
+      refreshed.push(pair)
+    },
+    select: (pair, amountIn) => {
+      selected.push({ pair, amountIn })
+      return order
+    },
     logger: NOOP_LOGGER
   })
+  return { ...quoting, refreshed, selected }
 }
 
 describe('composeMultiVenueQuoting', () => {
@@ -172,7 +335,7 @@ describe('composeMultiVenueQuoting', () => {
     const outcome = await quoteFor(REQUEST)
     expect(outcome.kind).toBe('swap')
     // 0x's AllowanceHolder spender proves the 0x arm won (not 1inch's router).
-    if (outcome.kind === 'swap') expect(outcome.swap.spender).toBe(ZEROX_ALLOWANCE_HOLDER)
+    expect(finalSpender(outcome)).toBe(ZEROX_ALLOWANCE_HOLDER)
   })
 
   it('falls through to the runner-up venue when the top one fails route quality', async () => {
@@ -187,14 +350,59 @@ describe('composeMultiVenueQuoting', () => {
     )
     const outcome = await quoteFor(REQUEST)
     expect(outcome.kind).toBe('swap')
-    if (outcome.kind === 'swap') expect(outcome.swap.spender).toBe(ONEINCH_ROUTER[8453]!)
+    expect(finalSpender(outcome)).toBe(ONEINCH_ROUTER[8453])
   })
 
   it('uses the deterministic enabled-venue order when the pair is not yet probed (cold cache)', async () => {
     const { quoteFor } = composeMulti(['0x', '1inch'], [], multiHttp({ '0x': zeroxBody('1000') }))
     const outcome = await quoteFor(REQUEST)
     expect(outcome.kind).toBe('swap')
-    if (outcome.kind === 'swap') expect(outcome.swap.spender).toBe(ZEROX_ALLOWANCE_HOLDER)
+    expect(finalSpender(outcome)).toBe(ZEROX_ALLOWANCE_HOLDER)
+  })
+
+  it('quotes the lifi arm (approvalAddress spender) when it is ranked top', async () => {
+    const { quoteFor } = composeMulti(
+      ['lifi', '0x'],
+      [
+        { venue: 'lifi', expectedOut: 1000n },
+        { venue: '0x', expectedOut: 980n }
+      ],
+      multiHttp({ lifi: lifiBody('1000'), '0x': zeroxBody('980') })
+    )
+    const outcome = await quoteFor(REQUEST)
+    expect(outcome.kind).toBe('swap')
+    // LiFi's approvalAddress proves the lifi arm won (entryFor + quoteByVenue dispatch).
+    expect(finalSpender(outcome)).toBe(LIFI_SPENDER)
+  })
+
+  it('quotes the liquidswap arm (execution.to spender) when ranked top, with tokenInDecimals', async () => {
+    const { quoteFor } = composeMulti(
+      ['liquidswap', '0x'],
+      [
+        { venue: 'liquidswap', expectedOut: 1000n },
+        { venue: '0x', expectedOut: 980n }
+      ],
+      multiHttp({ liquidswap: liquidSwapBody('1000'), '0x': zeroxBody('980') })
+    )
+    // tokenInDecimals is required for liquidswap to denominate amountIn.
+    const outcome = await quoteFor({ ...REQUEST, tokenInDecimals: 6 })
+    expect(outcome.kind).toBe('swap')
+    expect(finalSpender(outcome)).toBe(LIQUIDSWAP_TARGET)
+  })
+
+  it('falls through liquidswap (fails, no escape) when the request omits tokenInDecimals', async () => {
+    const { quoteFor } = composeMulti(
+      ['liquidswap', '0x'],
+      [
+        { venue: 'liquidswap', expectedOut: 1000n },
+        { venue: '0x', expectedOut: 1000n }
+      ],
+      multiHttp({ liquidswap: liquidSwapBody('1000'), '0x': zeroxBody('1000') })
+    )
+    // No tokenInDecimals → liquidswap throws api_error → coverage-first fall-through to 0x.
+    const outcome = await quoteFor(REQUEST)
+    expect(outcome.kind).toBe('swap')
+    expect(finalSpender(outcome)).toBe(ZEROX_ALLOWANCE_HOLDER)
   })
 
   it('fails with the last reason when every ranked venue fails', async () => {
@@ -204,5 +412,42 @@ describe('composeMultiVenueQuoting', () => {
       multiHttp({ '0x': { liquidityAvailable: false } })
     )
     expect(await quoteFor(REQUEST)).toEqual({ kind: 'failed', reason: 'no_route' })
+  })
+
+  it('probes and selects the POST-unwrap pair with the threaded worst-case amount', async () => {
+    const unwrapper = fakeUnwrapper({ from: COLLATERAL, to: UNDERLYING, out: 970n })
+    const { quoteFor, refreshed, selected } = composeMulti(
+      ['0x'],
+      [{ venue: '0x', expectedOut: 1000n }],
+      multiHttp({ '0x': zeroxBody('990') }),
+      { unwrappers: [unwrapper] }
+    )
+    const outcome = await quoteFor(REQUEST)
+    expect(outcome.kind).toBe('swap')
+    // The probe/ranking pair is the tradable underlying, sized by the unwrap's worst-case output.
+    expect(refreshed).toEqual([{ collateral: UNDERLYING, loan: LOAN }])
+    expect(selected).toEqual([{ pair: { collateral: UNDERLYING, loan: LOAN }, amountIn: 970n }])
+    if (outcome.kind === 'swap') {
+      expect(outcome.plan.steps).toHaveLength(2)
+      expect(outcome.plan.steps[1]).toMatchObject({ tokenIn: UNDERLYING, tokenOut: LOAN })
+    }
+  })
+
+  it('returns an unwrap-only plan without probing when the chain ends in the loan token', async () => {
+    const unwrapper = fakeUnwrapper({ from: COLLATERAL, to: LOAN, out: 990n })
+    const { quoteFor, refreshed } = composeMulti(['0x'], [], multiHttp({}), {
+      unwrappers: [unwrapper]
+    })
+    const outcome = await quoteFor(REQUEST)
+    expect(outcome.kind).toBe('swap')
+    if (outcome.kind === 'swap') expect(outcome.plan.steps).toHaveLength(1)
+    expect(refreshed).toHaveLength(0)
+  })
+
+  it('skips unwrap resolution entirely in bad-debt-only mode (no venues)', async () => {
+    const unwrapper = fakeUnwrapper({ from: COLLATERAL, to: UNDERLYING, out: 970n })
+    const { quoteFor } = composeMulti([], [], multiHttp({}), { unwrappers: [unwrapper] })
+    expect(await quoteFor(REQUEST)).toEqual({ kind: 'no_config' })
+    expect(unwrapper.probed).toHaveLength(0)
   })
 })

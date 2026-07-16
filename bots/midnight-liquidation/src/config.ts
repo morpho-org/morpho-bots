@@ -12,6 +12,7 @@ import { base } from 'viem/chains'
 // The 0x/1inch quoting adapters + the venue selector live in `@repo/swaps`.
 const ZEROX_API_KEY_ENV = 'ZEROX_API_KEY'
 const ONEINCH_API_KEY_ENV = 'ONEINCH_API_KEY'
+const LIFI_API_KEY_ENV = 'LIFI_API_KEY'
 
 // ---------------------------------------------------------------------------
 // Per-chain Midnight deployment map
@@ -45,6 +46,10 @@ const DEFAULT_HTTP_RPS = 2 // per-venue token-bucket refill; 1inch free tier is 
 const DEFAULT_HTTP_BURST = 5
 const DEFAULT_HTTP_MAX_RETRIES = 2
 const DEFAULT_MAX_ROUTE_IMPACT_BPS = 500 // reject an aggregator route >5% below the oracle reference
+// Slippage for the Pendle PT → underlying unwrap hop; a property of the unwrapper, not of any venue
+// entry (the underlying's entry isn't known until after resolution). Keep well under
+// MAX_ROUTE_IMPACT_BPS — it also haircuts the amount the downstream venue sells.
+const DEFAULT_PENDLE_SLIPPAGE_BPS = 50
 const DEFAULT_SEIZE_CAP_MARGIN_BPS = 30 // shave the repay cap when sizing a cap-binding seize — one-block oracle-drift headroom; calibratable
 const DEFAULT_BACKOFF_BASE_BLOCKS = 2n
 const DEFAULT_BACKOFF_MAX_BLOCKS = 64n
@@ -74,6 +79,8 @@ export type QuotingConfig = {
   httpBurst: number
   httpMaxRetries: number
   maxRouteImpactBps: number
+  /** Slippage (bps) for the Pendle PT → underlying unwrap hop (see the unwrapper). */
+  pendleSlippageBps: number
   /** Headroom (bps) shaved off the on-chain repay cap when sizing a cap-binding seize-exact plan. */
   seizeCapMarginBps: number
   backoffBaseBlocks: bigint
@@ -106,6 +113,7 @@ export type VenueConfig = {
   slippageBps: number
   zeroxBaseUrl: string | undefined
   oneinchBaseUrl: string | undefined
+  lifiBaseUrl: string | undefined
   /** Collaterals the operator refuses to seize/hold — skipped (no quote) even in a listed market. */
   excludeCollaterals: Address[]
 }
@@ -325,11 +333,17 @@ export function loadConfig(
   // half-armed (a rotated/forgotten key must not quietly disable liquidations).
   const allowBadDebtOnly = boolEnv(env, 'ALLOW_BAD_DEBT_ONLY', false)
   const enabledVenues: Venue[] = []
+  // LiFi first: broadest aggregator coverage, so it is the default cold-cache order before the probe
+  // selector ranks by actual output. 0x and 1inch follow. LiFi works keyless, so it is enabled by
+  // either a present LIFI_API_KEY (which also raises rate limits) or an explicit ENABLE_LIFI opt-in;
+  // 0x/1inch have no keyless mode and are gated purely on their key.
+  const enableLifi = boolEnv(env, 'ENABLE_LIFI', false) || Boolean(env[LIFI_API_KEY_ENV]?.trim())
+  if (enableLifi) enabledVenues.push('lifi')
   if (env[ZEROX_API_KEY_ENV]?.trim()) enabledVenues.push('0x')
   if (env[ONEINCH_API_KEY_ENV]?.trim()) enabledVenues.push('1inch')
   if (enabledVenues.length === 0 && !allowBadDebtOnly) {
     throw new Error(
-      `No venue API keys set (${ZEROX_API_KEY_ENV} / ${ONEINCH_API_KEY_ENV}). Set at least one, or set ALLOW_BAD_DEBT_ONLY=true to run in bad-debt-only mode.`
+      `No venues enabled (set ENABLE_LIFI=true or ${LIFI_API_KEY_ENV} / ${ZEROX_API_KEY_ENV} / ${ONEINCH_API_KEY_ENV}). Set at least one, or set ALLOW_BAD_DEBT_ONLY=true to run in bad-debt-only mode.`
     )
   }
   const zeroxBaseUrl = env.ZEROX_BASE_URL?.trim() || undefined
@@ -340,11 +354,16 @@ export function loadConfig(
   if (oneinchBaseUrl && tryCatch(() => new URL(oneinchBaseUrl)).error) {
     throw new Error(`ONEINCH_BASE_URL is not a valid URL: ${oneinchBaseUrl}`)
   }
+  const lifiBaseUrl = env.LIFI_BASE_URL?.trim() || undefined
+  if (lifiBaseUrl && tryCatch(() => new URL(lifiBaseUrl)).error) {
+    throw new Error(`LIFI_BASE_URL is not a valid URL: ${lifiBaseUrl}`)
+  }
   const venues: VenueConfig = {
     enabled: enabledVenues,
     slippageBps: intEnv(env, 'SLIPPAGE_BPS', DEFAULT_SLIPPAGE_BPS, { min: 0, max: 10_000 }),
     zeroxBaseUrl,
     oneinchBaseUrl,
+    lifiBaseUrl,
     excludeCollaterals: addressListEnv(env, 'EXCLUDE_COLLATERALS')
   }
 
@@ -370,6 +389,10 @@ export function loadConfig(
     httpBurst: intEnv(env, 'HTTP_BURST', DEFAULT_HTTP_BURST, { min: 1 }),
     httpMaxRetries: intEnv(env, 'HTTP_MAX_RETRIES', DEFAULT_HTTP_MAX_RETRIES, { min: 0 }),
     maxRouteImpactBps: intEnv(env, 'MAX_ROUTE_IMPACT_BPS', DEFAULT_MAX_ROUTE_IMPACT_BPS, {
+      min: 0,
+      max: 10_000
+    }),
+    pendleSlippageBps: intEnv(env, 'PENDLE_SLIPPAGE_BPS', DEFAULT_PENDLE_SLIPPAGE_BPS, {
       min: 0,
       max: 10_000
     }),

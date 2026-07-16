@@ -1,5 +1,5 @@
 import type { Backoff, Logger, SimulateResult } from '@repo/bot-kit'
-import type { QuoteOutcome, Swap } from '@repo/swaps'
+import type { QuoteOutcome, SwapPlan } from '@repo/swaps'
 import type { Address } from 'viem'
 
 import { assertNever, tryCatch } from '@repo/utils'
@@ -57,14 +57,14 @@ export async function runTick(deps: {
     market: Market
     borrower: Address
     plan: LiquidationPlan
-    swap: Swap | null
+    swapPlan: SwapPlan | null
   }) => Promise<SimulateResult>
   /** Broadcasts a plan via the pending queue (builds the exec tx, derives fees, tracks the nonce). */
   submit: (args: {
     market: Market
     borrower: Address
     plan: LiquidationPlan
-    swap: Swap | null
+    swapPlan: SwapPlan | null
     blockNumber: bigint
     label: string
   }) => Promise<void>
@@ -145,7 +145,7 @@ export async function runTick(deps: {
 
     // The swap funds repay/seize liquidations. Pure bad-debt realization transfers no assets, so it
     // deliberately skips quoting and executes as a no-callback `liquidate`.
-    let swap: Swap | null = null
+    let swapPlan: SwapPlan | null = null
     if (!isBadDebtRealization(liquidationPlan)) {
       // Suppress positions that keep failing to quote/simulate — bounds API + RPC usage under a
       // backlog, since executable quotes are spent only on positions not currently backed off.
@@ -168,14 +168,14 @@ export async function runTick(deps: {
         backoff.record(label, chainHead)
         continue
       }
-      swap = outcome.swap
+      swapPlan = outcome.plan
     }
 
     const result = await simulate({
       market: out.market,
       borrower: pair.borrower,
       plan: liquidationPlan,
-      swap
+      swapPlan
     })
     const fields = { marketId: pair.id, borrower: pair.borrower }
     switch (result.status) {
@@ -201,7 +201,7 @@ export async function runTick(deps: {
         market: out.market,
         borrower: pair.borrower,
         plan: liquidationPlan,
-        swap,
+        swapPlan,
         blockNumber: chainHead,
         label
       })

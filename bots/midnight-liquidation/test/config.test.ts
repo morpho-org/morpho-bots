@@ -67,6 +67,7 @@ describe('loadConfig', () => {
     expect(config.quoting.quoteTimeoutMs).toBe(2500)
     expect(config.quoting.httpRps).toBe(2)
     expect(config.quoting.maxRouteImpactBps).toBe(500)
+    expect(config.quoting.pendleSlippageBps).toBe(50)
     expect(config.quoting.seizeCapMarginBps).toBe(30)
     expect(config.quoting.backoffBaseBlocks).toBe(2n)
   })
@@ -169,9 +170,32 @@ describe('loadConfig', () => {
     expect(config.venues.enabled).toEqual(['0x', '1inch'])
   })
 
-  it('throws when no venue API key is set and bad-debt-only is not opted into', () => {
+  it('puts lifi first in the default order when LIFI_API_KEY is set', () => {
+    const config = loadConfig(baseEnv({ LIFI_API_KEY: 'k', ONEINCH_API_KEY: 'k' }), deps)
+    expect(config.venues.enabled).toEqual(['lifi', '0x', '1inch'])
+  })
+
+  it('reads an optional LIFI_BASE_URL override', () => {
+    const config = loadConfig(
+      baseEnv({ LIFI_API_KEY: 'k', LIFI_BASE_URL: 'https://staging.li.quest/v1' }),
+      deps
+    )
+    expect(config.venues.lifiBaseUrl).toBe('https://staging.li.quest/v1')
+  })
+
+  it('enables lifi keyless via ENABLE_LIFI=true (no LIFI_API_KEY)', () => {
+    const config = loadConfig(baseEnv({ ENABLE_LIFI: 'true' }), deps)
+    expect(config.venues.enabled).toEqual(['lifi', '0x'])
+  })
+
+  it('boots on ENABLE_LIFI alone with no venue API keys set', () => {
+    const config = loadConfig(baseEnv({ ZEROX_API_KEY: undefined, ENABLE_LIFI: 'true' }), deps)
+    expect(config.venues.enabled).toEqual(['lifi'])
+  })
+
+  it('throws when no venue is enabled and bad-debt-only is not opted into', () => {
     expect(() => loadConfig(baseEnv({ ZEROX_API_KEY: undefined }), deps)).toThrow(
-      /No venue API keys set/
+      /No venues enabled/
     )
   })
 

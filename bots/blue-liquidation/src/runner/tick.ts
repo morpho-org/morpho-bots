@@ -1,5 +1,5 @@
 import type { Backoff, Logger, SimulateResult } from '@repo/bot-kit'
-import type { QuoteOutcome, Swap } from '@repo/swaps'
+import type { QuoteOutcome, SwapPlan } from '@repo/swaps'
 import type { Address } from 'viem'
 
 import { assertNever, tryCatch } from '@repo/utils'
@@ -57,14 +57,14 @@ export async function runTick(deps: {
     market: MarketParams
     borrower: Address
     plan: LiquidationPlan
-    swap: Swap
+    swapPlan: SwapPlan
   }) => Promise<SimulateResult>
   /** Broadcasts a plan via the pending queue (builds the exec tx, derives fees, tracks the nonce). */
   submit: (args: {
     market: MarketParams
     borrower: Address
     plan: LiquidationPlan
-    swap: Swap
+    swapPlan: SwapPlan
     blockNumber: bigint
     label: string
   }) => Promise<void>
@@ -166,13 +166,13 @@ export async function runTick(deps: {
       backoff.record(label, chainHead)
       continue
     }
-    const swap = outcome.swap
+    const swapPlan = outcome.plan
 
     const result = await simulate({
       market: out.params,
       borrower: pair.borrower,
       plan: liquidationPlan,
-      swap
+      swapPlan
     })
     const fields = { marketId: id, borrower: pair.borrower }
     switch (result.status) {
@@ -198,7 +198,7 @@ export async function runTick(deps: {
         market: out.params,
         borrower: pair.borrower,
         plan: liquidationPlan,
-        swap,
+        swapPlan,
         blockNumber: chainHead,
         label
       })

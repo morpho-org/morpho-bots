@@ -1,3 +1,4 @@
+import type { SwapPlan } from '@repo/swaps'
 import type { Address } from 'viem'
 
 import {
@@ -128,6 +129,22 @@ describe('fork: end-to-end liquidation against a real Base position', () => {
         referenceAmountOut: expectedLoanOut(liquidationPlan, out)
       }
     )
+    // Wrap the single venue swap as a one-step plan (mirrors quoting.ts' toStep projection).
+    const swapPlan: SwapPlan = {
+      steps: [
+        {
+          tokenIn: collateral.token,
+          tokenOut: out.market.loanToken,
+          target: swap.target,
+          value: swap.value,
+          callData: swap.callData,
+          amountIn: swap.amountIn,
+          approvalSpender: swap.spender
+        }
+      ],
+      expectedAmountOut: swap.expectedAmountOut,
+      amountOutMinimum: swap.amountOutMinimum
+    }
     const data = encodeLiquidationExec({
       executor: executooor,
       midnight: MIDNIGHT,
@@ -137,7 +154,7 @@ describe('fork: end-to-end liquidation against a real Base position', () => {
       repaidUnits: liquidationPlan.repaidUnits,
       borrower: position.borrower,
       postMaturityMode: liquidationPlan.postMaturityMode,
-      swap,
+      plan: swapPlan,
       recipient: LIQUIDATOR
     })
 

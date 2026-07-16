@@ -1,4 +1,4 @@
-import type { SwapConfigEntry, Swap, Venue } from '@repo/swaps'
+import type { SwapConfigEntry, SwapPlan, Venue } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
 import {
@@ -12,7 +12,12 @@ import {
   initialFees,
   simulateLiquidationExec
 } from '@repo/bot-kit'
-import { createRateLimitedClient } from '@repo/swaps'
+import {
+  createErc4626Unwrapper,
+  createPendlePtUnwrapper,
+  createRateLimitedClient,
+  PENDLE_CHAIN_IDS
+} from '@repo/swaps'
 import { ensureError, tryCatch } from '@repo/utils'
 import { getAddress } from 'viem'
 import { getBlockNumber } from 'viem/actions'
@@ -97,6 +102,7 @@ async function main() {
   const apiKeys: Partial<Record<Venue, string>> = {}
   if (Bun.env.ZEROX_API_KEY) apiKeys['0x'] = Bun.env.ZEROX_API_KEY
   if (Bun.env.ONEINCH_API_KEY) apiKeys['1inch'] = Bun.env.ONEINCH_API_KEY
+  if (Bun.env.LIFI_API_KEY) apiKeys.lifi = Bun.env.LIFI_API_KEY
   const httpClient = createRateLimitedClient({
     apiKeys,
     rps: config.quoting.httpRps,
@@ -104,12 +110,28 @@ async function main() {
     maxRetries: config.quoting.httpMaxRetries,
     timeoutMs: config.quoting.quoteTimeoutMs
   })
+  // Pre-swap converters for exotic collateral (ERC4626 shares, Pendle PTs → underlying).
+  // Auto-detecting with per-process memoization; a collateral with its own config entry bypasses
+  // them entirely. erc4626 first: a memoized eth_call beats consulting the markets list. Pendle is
+  // only constructed on chains it is deployed to — elsewhere a cold-cache markets outage would fail
+  // plain-collateral quotes too. The Pendle markets list is cached in-process for the bot's lifetime
+  // (a 6h TTL inside the unwrapper handles staleness), so it is built once here.
+  const pendle = PENDLE_CHAIN_IDS.has(config.chainId)
+    ? createPendlePtUnwrapper({
+        client: httpClient,
+        chainId: config.chainId,
+        slippageBps: config.quoting.pendleSlippageBps,
+        logger
+      })
+    : null
+  const unwrappers = [createErc4626Unwrapper({ client, logger }), ...(pendle ? [pendle] : [])]
   const { quoteFor } = composeQuoting({
     httpClient,
     chainId: config.chainId,
     executor: config.executooorAddress,
     swapByCollateral,
     maxRouteImpactBps: config.quoting.maxRouteImpactBps,
+    unwrappers,
     logger
   })
   const backoff = createBackoff({
@@ -123,7 +145,7 @@ async function main() {
     market: MarketParams,
     borrower: Address,
     plan: LiquidationPlan,
-    swap: Swap
+    swapPlan: SwapPlan
   ): Hex =>
     encodeLiquidationExec({
       executor: config.executooorAddress,
@@ -131,7 +153,7 @@ async function main() {
       market,
       seizedAssets: plan.seizedAssets,
       borrower,
-      swap,
+      plan: swapPlan,
       recipient: eoa
     })
 
@@ -194,18 +216,18 @@ async function main() {
       chainHead,
       readLens: pairs => readBlueLiquidationLens(client, config.morpho, pairs),
       quoteFor,
-      simulate: ({ market, borrower, plan, swap }) =>
+      simulate: ({ market, borrower, plan, swapPlan }) =>
         simulateLiquidationExec(client, {
           executooor: config.executooorAddress,
           eoa,
-          data: encodeExec(market, borrower, plan, swap)
+          data: encodeExec(market, borrower, plan, swapPlan)
         }),
-      submit: async ({ market, borrower, plan, swap, blockNumber, label }) => {
+      submit: async ({ market, borrower, plan, swapPlan, blockNumber, label }) => {
         const fees = initialFees(await signer.getBaseFee(), config.maxFeeWei)
         await queue.submit({
           request: {
             to: config.executooorAddress,
-            data: encodeExec(market, borrower, plan, swap)
+            data: encodeExec(market, borrower, plan, swapPlan)
           },
           label,
           maxFeePerGas: fees.maxFeePerGas,

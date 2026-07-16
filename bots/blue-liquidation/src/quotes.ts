@@ -1,5 +1,5 @@
 import type { Logger } from '@repo/bot-kit'
-import type { QuoteOutcome, RateLimitedClient, SwapConfigEntry } from '@repo/swaps'
+import type { QuoteOutcome, RateLimitedClient, SwapConfigEntry, Unwrapper } from '@repo/swaps'
 import type { Address } from 'viem'
 
 import { composeQuoting as composeSwapQuoting } from '@repo/swaps'
@@ -21,6 +21,7 @@ export function composeQuoting(deps: {
   /** Per-collateral venue config for this chain, keyed by EIP-55-checksummed collateral address. */
   swapByCollateral: Map<string, SwapConfigEntry>
   maxRouteImpactBps: number
+  unwrappers: readonly Unwrapper[]
   logger: Logger
 }): { quoteFor: (plan: LiquidationPlan, out: LensOut) => Promise<QuoteOutcome> } {
   const { quoteFor: quoteRequest } = composeSwapQuoting(deps)

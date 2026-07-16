@@ -1,4 +1,4 @@
-import type { Swap } from '@repo/swaps'
+import type { SwapPlan } from '@repo/swaps'
 import type { Hex } from 'viem'
 
 import { MidnightAbi } from '@repo/contracts'
@@ -46,30 +46,42 @@ const market: Market = {
   liquidatorGate: zeroAddress
 }
 
-// A balance-bound (Uniswap-style) swap: opaque-to-the-encoder calldata + a 132-byte amountIn offset.
-const BALANCE_SWAP: Swap = {
-  spender: ROUTER,
-  target: ROUTER,
-  value: 0n,
-  callData: `0x${'be'.repeat(8)}`,
-  amountIn: { source: 'balance', offset: 132n },
+// A balance-bound (Uniswap-style) plan: opaque-to-the-encoder calldata + a 132-byte amountIn offset.
+const BALANCE_PLAN: SwapPlan = {
+  steps: [
+    {
+      tokenIn: COLLATERAL,
+      tokenOut: LOAN,
+      target: ROUTER,
+      value: 0n,
+      callData: `0x${'be'.repeat(8)}`,
+      amountIn: { source: 'balance', offset: 132n },
+      approvalSpender: ROUTER
+    }
+  ],
   expectedAmountOut: 2000n,
   amountOutMinimum: 12345n
 }
 
-// A fixed-amount (aggregator-style) swap: opaque calldata committing its own sell amount, distinct
+// A fixed-amount (aggregator-style) plan: opaque calldata committing its own sell amount, distinct
 // spender and target — the encoder must NOT splice a placeholder into it.
-const FIXED_SWAP: Swap = {
-  spender: AGG_SPENDER,
-  target: AGG_TARGET,
-  value: 0n,
-  callData: `0x${'c0ffee'.repeat(4)}`,
-  amountIn: { source: 'fixed', value: 100n },
+const FIXED_PLAN: SwapPlan = {
+  steps: [
+    {
+      tokenIn: COLLATERAL,
+      tokenOut: LOAN,
+      target: AGG_TARGET,
+      value: 0n,
+      callData: `0x${'c0ffee'.repeat(4)}`,
+      amountIn: { source: 'fixed', value: 100n },
+      approvalSpender: AGG_SPENDER
+    }
+  ],
   expectedAmountOut: 2000n,
   amountOutMinimum: 1990n
 }
 
-function encode(swap: Swap = BALANCE_SWAP) {
+function encode(plan: SwapPlan = BALANCE_PLAN) {
   return encodeLiquidationExec({
     executor: EXECUTOR,
     midnight: MIDNIGHT,
@@ -79,7 +91,7 @@ function encode(swap: Swap = BALANCE_SWAP) {
     repaidUnits: 0n,
     borrower: BORROWER,
     postMaturityMode: false,
-    swap,
+    plan,
     recipient: RECIPIENT
   })
 }
@@ -94,7 +106,7 @@ function encodeBadDebtRealization() {
     repaidUnits: 0n,
     borrower: BORROWER,
     postMaturityMode: true,
-    swap: null,
+    plan: null,
     recipient: RECIPIENT
   })
 }
@@ -148,7 +160,7 @@ describe('encodeLiquidationExec', () => {
   })
 
   it('builds a balance-bound queue: zero-first approve to spender, spliced swap, zero-first repay', () => {
-    const { queue } = decodeLiquidate(encode(BALANCE_SWAP))
+    const { queue } = decodeLiquidate(encode(BALANCE_PLAN))
     expect(queue).toHaveLength(5)
 
     // (1) approve(collateral -> spender, 0) — plain self-call, no placeholder.
@@ -172,7 +184,7 @@ describe('encodeLiquidationExec', () => {
     if (swap.functionName !== 'callWithPlaceholders4845164670')
       throw new Error('expected placeholder call')
     expect(isAddressEqual(swap.args[0], ROUTER)).toBe(true)
-    expect(swap.args[3]).toBe(BALANCE_SWAP.callData)
+    expect(swap.args[3]).toBe(BALANCE_PLAN.steps[0]!.callData)
     expect(swap.args[4][0]!.offset).toBe(132n)
     expect(isAddressEqual(swap.args[4][0]!.to, COLLATERAL)).toBe(true)
 
@@ -190,7 +202,7 @@ describe('encodeLiquidationExec', () => {
   })
 
   it('builds a fixed-amount (aggregator) queue: approve the spender, run opaque calldata with NO splice', () => {
-    const { queue } = decodeLiquidate(encode(FIXED_SWAP))
+    const { queue } = decodeLiquidate(encode(FIXED_PLAN))
     expect(queue).toHaveLength(5)
 
     // (1)/(2) collateral approvals target the aggregator's spender, not its call target.
@@ -206,7 +218,7 @@ describe('encodeLiquidationExec', () => {
     if (swap.functionName !== 'call_g0oyU7o')
       throw new Error('expected plain call (no placeholder)')
     expect(isAddressEqual(swap.args[0], AGG_TARGET)).toBe(true)
-    expect(swap.args[3]).toBe(FIXED_SWAP.callData)
+    expect(swap.args[3]).toBe(FIXED_PLAN.steps[0]!.callData)
   })
 
   it('sweeps the loan token then the collateral token to the recipient', () => {
@@ -221,6 +233,58 @@ describe('encodeLiquidationExec', () => {
     if (collateralSweep.functionName !== 'callWithPlaceholders4845164670')
       throw new Error('expected placeholder call')
     expect(isAddressEqual(collateralSweep.args[0], COLLATERAL)).toBe(true)
+  })
+
+  it('prepends an unwrap step (spliced redeem, no approval) and sweeps the intermediate', () => {
+    const UNDERLYING = getAddress('0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB')
+    const unwrapPlan: SwapPlan = {
+      steps: [
+        {
+          // ERC4626 redeem: the vault burns the caller's own shares — no approvalSpender.
+          tokenIn: COLLATERAL,
+          tokenOut: UNDERLYING,
+          target: COLLATERAL,
+          value: 0n,
+          callData: '0xba087652',
+          amountIn: { source: 'balance', offset: 4n }
+        },
+        {
+          tokenIn: UNDERLYING,
+          tokenOut: LOAN,
+          target: AGG_TARGET,
+          value: 0n,
+          callData: `0x${'c0ffee'.repeat(4)}`,
+          amountIn: { source: 'fixed', value: 100n },
+          approvalSpender: AGG_SPENDER
+        }
+      ],
+      expectedAmountOut: 2000n,
+      amountOutMinimum: 1990n
+    }
+
+    const { queue } = decodeLiquidate(encode(unwrapPlan))
+    // redeem, approve(underlying, 0), approve(underlying, bal), swap, repay approve pair.
+    expect(queue).toHaveLength(6)
+
+    // The redeem is balance-spliced on the SHARE token, shares word at offset 4, with no approvals.
+    const redeem = decodeFunctionData({ abi: executorAbi, data: queue[0]! })
+    if (redeem.functionName !== 'callWithPlaceholders4845164670')
+      throw new Error('expected placeholder call')
+    expect(isAddressEqual(redeem.args[0], COLLATERAL)).toBe(true)
+    expect(redeem.args[4][0]!.offset).toBe(4n)
+
+    // The venue approve pair targets the UNDERLYING (the swap's input), not the raw collateral.
+    const approveZero = decodeFunctionData({ abi: executorAbi, data: queue[1]! })
+    if (approveZero.functionName !== 'call_g0oyU7o') throw new Error('expected call_g0oyU7o')
+    expect(isAddressEqual(approveZero.args[0], UNDERLYING)).toBe(true)
+
+    // Outer calls grow one sweep for the intermediate underlying.
+    const calls = outerCalls(encode(unwrapPlan))
+    expect(calls).toHaveLength(4)
+    const intermediateSweep = decodeFunctionData({ abi: executorAbi, data: calls[3]! })
+    if (intermediateSweep.functionName !== 'callWithPlaceholders4845164670')
+      throw new Error('expected placeholder call')
+    expect(isAddressEqual(intermediateSweep.args[0], UNDERLYING)).toBe(true)
   })
 
   it('encodes fully bad-debt realization without callback, swap, or sweeps', () => {
@@ -251,13 +315,13 @@ describe('encodeLiquidationExec', () => {
         repaidUnits: 0n,
         borrower: BORROWER,
         postMaturityMode: false,
-        swap: BALANCE_SWAP,
+        plan: BALANCE_PLAN,
         recipient: RECIPIENT
       })
     ).toThrow(/out of range/)
   })
 
-  it('throws when a non-zero liquidation has no swap', () => {
+  it('throws when a non-zero liquidation has no swap plan', () => {
     expect(() =>
       encodeLiquidationExec({
         executor: EXECUTOR,
@@ -268,10 +332,10 @@ describe('encodeLiquidationExec', () => {
         repaidUnits: 0n,
         borrower: BORROWER,
         postMaturityMode: false,
-        swap: null,
+        plan: null,
         recipient: RECIPIENT
       })
-    ).toThrow(/swap is required/)
+    ).toThrow(/swap plan is required/)
   })
 })
 
