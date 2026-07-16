@@ -1,14 +1,10 @@
 import { resolve } from 'node:path'
 
+import { BOTS } from './manifest'
 import { assertPrivateKey, deploymentFailed, Railway, required, signerPolicy } from './railway'
 
-type Chain = { chainId: number; service: string }
-
 const env = Bun.env
-const chains: Chain[] = [
-  { chainId: 8453, service: 'bot-8453' },
-  { chainId: 4663, service: 'bot-4663' }
-]
+const chains = BOTS['blue-liq'].chains
 const railway = new Railway(
   required(env, 'RAILWAY_PROJECT_ID'),
   env.RAILWAY_ENVIRONMENT?.trim() || 'production',
@@ -67,7 +63,7 @@ await railway.setSecrets(
 )
 await railway.deploy('rindexer')
 
-// One BetterStack source for blue, shared across its chains (distinguished by bot/chainId fields).
+// One BetterStack source for blue-liq, shared across its chains (distinguished by bot/chainId fields).
 // Host is a plain var; the token is a secret. Both are optional — forwarding is off when unset.
 const betterstackHost = env.BETTERSTACK_INGESTING_HOST?.trim()
 const betterstackToken = env.BETTERSTACK_SOURCE_TOKEN?.trim()

@@ -5,7 +5,7 @@
 # Borrower candidates come from the markets liquidation-candidates HTTP API
 # (LIQUIDATION_CANDIDATES_API_URL, public by default), so there is no indexer or database to run.
 # Build context is `..` (the repo root — required for the bun workspace to resolve) because this file
-# lives in deploy/; run it from anywhere: `docker compose -f deploy/docker-compose.midnight.yml up`.
+# lives in deploy/; run it from anywhere: `docker compose -f deploy/docker-compose.midnight-liq.yml up`.
 services:
   bot:
     build:

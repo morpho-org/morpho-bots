@@ -9,6 +9,10 @@ inputs:
     description: 'Whether to use --frozen-lockfile when installing dependencies'
     required: false
     default: 'true'
+  build-contracts:
+    description: 'Whether to build @repo/contracts (skip for jobs that do not need its ABIs)'
+    required: false
+    default: 'true'
 runs:
   using: 'composite'
   steps:
@@ -29,5 +33,6 @@ runs:
         bun install ${{ inputs.frozen-lockfile == 'true' && '--frozen-lockfile' || '' }}
 
     - name: Build @repo/contracts
+      if: ${{ inputs.build-contracts == 'true' }}
       shell: bash
       run: bun run --filter @repo/contracts build

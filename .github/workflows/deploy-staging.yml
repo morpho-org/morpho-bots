@@ -1,0 +1,28 @@
+name: Deploy staging
+
+# Every commit that lands on main redeploys both bots to their Railway staging environment.
+# Main is already green (the merge queue gates checks.yml); the queue's gh-readonly-queue/* refs
+# fire merge_group, not push, so this runs once per merged PR.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  blue-liq:
+    uses: ./.github/workflows/deploy-bot.yml
+    with:
+      bot: blue-liq
+      stage: staging
+      ref: ${{ github.sha }}
+
+  midnight-liq:
+    uses: ./.github/workflows/deploy-bot.yml
+    with:
+      bot: midnight-liq
+      stage: staging
+      ref: ${{ github.sha }}

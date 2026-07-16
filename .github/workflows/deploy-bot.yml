@@ -1,0 +1,59 @@
+name: Deploy bot
+
+# Reusable deploy-only job. Ships the checked-out working tree to a bot's Railway environment via
+# `railway up` (Railway builds server-side). Sets no variables or secrets — the environment must
+# already be provisioned by deploy/scripts/deploy-railway-{bot}.ts. The only credential is a
+# RAILWAY_TOKEN scoped to the target project + environment, read from the per-bot-per-stage
+# GitHub Environment (never passed by callers, never a fork-readable repo secret).
+
+on:
+  workflow_call:
+    inputs:
+      bot:
+        description: Which bot to deploy (blue-liq | midnight-liq)
+        required: true
+        type: string
+      stage:
+        description: Target stage (staging | production)
+        required: true
+        type: string
+      ref:
+        description: Git SHA/ref to deploy (defaults to the triggering ref)
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  Deploy:
+    runs-on: ubuntu-latest
+    # GitHub Environment named "<bot>-<stage>" (e.g. blue-staging). Holds secret RAILWAY_TOKEN and
+    # var RAILWAY_PROJECT_ID; scope its deployment branches to `main` so the token is unreachable
+    # from arbitrary PR branches.
+    environment: ${{ inputs.bot }}-${{ inputs.stage }}
+    concurrency:
+      group: deploy-${{ inputs.bot }}-${{ inputs.stage }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Setup
+        uses: ./.github/actions/setup
+        with:
+          # Deploy-only builds on Railway; the local @repo/contracts ABIs aren't needed here.
+          build-contracts: 'false'
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli@5.26.1
+
+      - name: Deploy
+        run: bun run --filter @repo/deploy deploy:railway
+        env:
+          BOT: ${{ inputs.bot }}
+          RAILWAY_ENVIRONMENT: ${{ inputs.stage }}
+          RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
