@@ -236,6 +236,7 @@ async function main() {
     getReceipt: signer.getReceipt,
     getBaseFee: signer.getBaseFee,
     getConsumedNonce: signer.consumedNonce,
+    syncNonce: signer.syncNonce,
     maxFeeWei: config.maxFeeWei,
     logger,
     ...(state ? { initialState: state.queue } : {}),

@@ -61,7 +61,7 @@ function setup(
     baseFee?: bigint
     maxFeeWei?: bigint
     send?: SendTx
-    /** `null` builds the queue WITHOUT a syncNonce hook (the Blue-shaped default). */
+    /** `null` builds the queue WITHOUT a syncNonce hook (both bots wire one; kept for coverage). */
     syncNonce?: SyncNonce | null
     /** `0n` (or passing nothing via `withCooldown: false`) disables the cooldown. */
     withCooldown?: boolean
