@@ -71,8 +71,7 @@ describe('quoteOneInch', () => {
 
   it('throws api_error for a chain with no configured router', async () => {
     const { client } = fakeClient({ dstAmount: '2000', tx: { to: TARGET, data: '0xdef' } })
-    // 31337 (anvil/local) has no 1inch deployment, so it is absent from ONEINCH_ROUTER.
-    const reason = await quoteOneInch(client, {}, { ...params, chainId: 31337 }).catch(e =>
+    const reason = await quoteOneInch(client, {}, { ...params, chainId: 1 }).catch(e =>
       e instanceof QuoteError ? e.reason : 'other'
     )
     expect(reason).toBe('api_error')

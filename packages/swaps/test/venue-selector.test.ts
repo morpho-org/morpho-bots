@@ -1,10 +1,9 @@
-import { parse, stringify } from '@repo/utils'
 import { describe, expect, it } from 'bun:test'
 import { getAddress, parseUnits } from 'viem'
 
 import type { QuoteLogger } from '../src/quoting'
 import type { PriceParameters, Venue } from '../src/types'
-import type { VenuePair, VenueSelectorState } from '../src/venue-selector'
+import type { VenuePair } from '../src/venue-selector'
 
 import { QuoteError } from '../src/types'
 import { createVenueSelector } from '../src/venue-selector'
@@ -27,9 +26,9 @@ function fakeProbe(
   outputs: Record<string, bigint>,
   opts: { throwFor?: (venue: Venue, amountIn: bigint) => boolean } = {}
 ) {
-  const calls: { venue: Venue; amountIn: bigint; tokenInDecimals?: number }[] = []
+  const calls: { venue: Venue; amountIn: bigint }[] = []
   const indicativeQuote = async (venue: Venue, params: PriceParameters) => {
-    calls.push({ venue, amountIn: params.amountIn, tokenInDecimals: params.tokenInDecimals })
+    calls.push({ venue, amountIn: params.amountIn })
     if (opts.throwFor?.(venue, params.amountIn)) throw new QuoteError('no_route', 'probe boom')
     const out = outputs[`${venue}:${params.amountIn}`]
     if (out === undefined) throw new QuoteError('no_route', 'no output stubbed')
@@ -66,14 +65,6 @@ describe('createVenueSelector', () => {
   it('returns [] for a pair that has not been probed', () => {
     const selector = make(fakeProbe(OUTPUTS))
     expect(selector.select(PAIR, SMALL)).toEqual([])
-  })
-
-  it('passes the collateral decimals to every probe (for decimal-denominated venues)', async () => {
-    const probe = fakeProbe(OUTPUTS)
-    const selector = make(probe, { decimals: 8 })
-    await selector.refresh(PAIR)
-    expect(probe.calls.length).toBeGreaterThan(0)
-    expect(probe.calls.every(call => call.tokenInDecimals === 8)).toBe(true)
   })
 
   it('ranks venues best-first per size bucket after a refresh', async () => {
@@ -138,42 +129,5 @@ describe('createVenueSelector', () => {
       logger: NOOP_LOGGER
     })
     await expect(selector.refresh(PAIR)).rejects.toThrow(/invalid probe ladder size/)
-  })
-
-  it('restores dumped state without re-probing while fresh, and re-probes once stale', async () => {
-    let t = 0
-    const probeA = fakeProbe(OUTPUTS)
-    const a = make(probeA, { now: () => t, staleMs: 1000 })
-    await a.refresh(PAIR)
-
-    const state = parse<VenueSelectorState>(stringify(a.dump()), 'throw')
-    expect(state).toEqual(a.dump()) // bigint ladder/expectedOut survive the JSON round trip
-
-    const probeB = fakeProbe(OUTPUTS)
-    let decimalsCalls = 0
-    const b = createVenueSelector({
-      venues: ['0x', '1inch'],
-      chainId: 8453,
-      ladderWholeTokens: ['1', '100'],
-      getDecimals: async () => {
-        decimalsCalls += 1
-        return 18
-      },
-      indicativeQuote: probeB.indicativeQuote,
-      staleMs: 1000,
-      logger: NOOP_LOGGER,
-      now: () => t,
-      initialState: state
-    })
-
-    await b.refresh(PAIR) // fresh restored entry → no venue calls
-    expect(probeB.calls).toHaveLength(0)
-    expect(b.select(PAIR, SMALL)[0]?.venue).toBe('0x')
-    expect(b.select(PAIR, LARGE)[0]?.venue).toBe('1inch')
-
-    t = 2000 // past staleMs: a restored entry must NOT pin an outdated ranking
-    await b.refresh(PAIR)
-    expect(probeB.calls.length).toBeGreaterThan(0)
-    expect(decimalsCalls).toBe(0) // the decimals cache was restored too
   })
 })

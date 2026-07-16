@@ -55,39 +55,6 @@ describe('createRateLimitedClient', () => {
     expect(headers?.Authorization).toBe('Bearer TOK')
   })
 
-  it('injects the LiFi api key header when a key is configured', async () => {
-    let headers: Record<string, string> | undefined
-    const client = fastClient(
-      async (_url, init) => {
-        headers = init?.headers as Record<string, string>
-        return new Response('{}', { status: 200 })
-      },
-      { apiKeys: { lifi: 'LK' } }
-    )
-    await client.getJson({ venue: 'lifi', url: 'https://li.quest/v1/quote' })
-    expect(headers?.['x-lifi-api-key']).toBe('LK')
-  })
-
-  it('omits the LiFi api key header entirely when keyless (LiFi 401s on an empty key)', async () => {
-    let headers: Record<string, string> | undefined
-    const client = fastClient(async (_url, init) => {
-      headers = init?.headers as Record<string, string>
-      return new Response('{}', { status: 200 })
-    }) // no apiKeys
-    await client.getJson({ venue: 'lifi', url: 'https://li.quest/v1/quote' })
-    expect(headers && 'x-lifi-api-key' in headers).toBe(false)
-  })
-
-  it('serves pendle (an unwrapper host, not a Venue) keyless with no auth headers', async () => {
-    let headers: Record<string, string> | undefined
-    const client = fastClient(async (_url, init) => {
-      headers = init?.headers as Record<string, string>
-      return new Response('{}', { status: 200 })
-    })
-    await client.getJson({ venue: 'pendle', url: 'https://api-v2.pendle.finance/core/v1/chains' })
-    expect(headers).toEqual({})
-  })
-
   it('retries a 429 honoring Retry-After, then succeeds', async () => {
     let calls = 0
     const sleeps: number[] = []

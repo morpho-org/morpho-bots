@@ -12,32 +12,18 @@ import type { Venue } from './types'
 
 import { QuoteError } from './types'
 
-/**
- * The hosts this client rate-limits and authenticates: the swap venues plus Pendle's hosted SDK
- * (an unwrapper data source, not a `Venue` — widening `Venue` itself would ripple through the
- * config union and every `assertNever` venue switch for a host that never quotes a full route).
- */
-export type HttpVenue = Venue | 'pendle'
-
-// Per-host auth: where each host's API key goes. Uniswap is on-chain (no key). Keys are injected
+// Per-venue auth: where each venue's API key goes. Uniswap is on-chain (no key). Keys are injected
 // here, at the single point of use, and never logged (we log only the path, never the query/headers).
-const VENUE_AUTH: Record<HttpVenue, (key: string | undefined) => Record<string, string>> = {
+const VENUE_AUTH: Record<Venue, (key: string | undefined) => Record<string, string>> = {
   'uniswap-v3': () => ({}),
   '0x': key => ({ '0x-api-key': key ?? '', '0x-version': 'v2' }),
-  '1inch': key => ({ Authorization: `Bearer ${key ?? ''}` }),
-  // LiFi works keyless (a key only raises rate limits), but it rejects an EMPTY `x-lifi-api-key`
-  // header with HTTP 401 — so omit the header entirely when no key is configured.
-  lifi: (key): Record<string, string> => (key ? { 'x-lifi-api-key': key } : {}),
-  // LiquidSwap (liqd.ag) is keyless — no auth header.
-  liquidswap: () => ({}),
-  // Pendle's hosted SDK is keyless — no auth header.
-  pendle: () => ({})
+  '1inch': key => ({ Authorization: `Bearer ${key ?? ''}` })
 }
 
 /** The rate-limited JSON client shared across venues — see {@link createRateLimitedClient}. */
 export type RateLimitedClient = {
   getJson: <T>(args: {
-    venue: HttpVenue
+    venue: Venue
     url: string
     searchParams?: Record<string, string>
   }) => Promise<T>
@@ -54,7 +40,7 @@ type FetchLike = (url: string, init?: RequestInit) => Promise<Response>
  * a {@link QuoteError} carrying a classified reason on exhaustion.
  */
 export function createRateLimitedClient(deps: {
-  apiKeys: Partial<Record<HttpVenue, string>>
+  apiKeys: Partial<Record<Venue, string>>
   rps: number
   burst: number
   maxRetries: number
@@ -66,8 +52,8 @@ export function createRateLimitedClient(deps: {
   const fetchImpl = deps.fetchImpl ?? fetch
   const now = deps.now ?? (() => Date.now())
   const sleep = deps.sleep ?? delay
-  const buckets = new Map<HttpVenue, { take: () => Promise<void> }>()
-  const bucketFor = (venue: HttpVenue) => {
+  const buckets = new Map<Venue, { take: () => Promise<void> }>()
+  const bucketFor = (venue: Venue) => {
     let bucket = buckets.get(venue)
     if (!bucket) {
       bucket = createTokenBucket({ rps: deps.rps, burst: deps.burst, now, sleep })
@@ -77,11 +63,7 @@ export function createRateLimitedClient(deps: {
   }
 
   return {
-    async getJson<T>(args: {
-      venue: HttpVenue
-      url: string
-      searchParams?: Record<string, string>
-    }) {
+    async getJson<T>(args: { venue: Venue; url: string; searchParams?: Record<string, string> }) {
       const url = new URL(args.url)
       for (const [key, value] of Object.entries(args.searchParams ?? {})) {
         url.searchParams.set(key, value)

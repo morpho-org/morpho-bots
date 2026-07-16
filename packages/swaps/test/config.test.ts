@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 
-import { parseSwapConfig } from '../src/config'
+import { parseSwapConfig, VENUE_API_KEY_ENV } from '../src/config'
 
 describe('parseSwapConfig', () => {
   const COLL = '0x4200000000000000000000000000000000000006'
@@ -34,28 +34,16 @@ describe('parseSwapConfig', () => {
     ).toThrow()
   })
 
-  it('parses aggregator entries (0x, 1inch, lifi, liquidswap) with optional baseUrl', () => {
-    const COLL2 = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
-    const COLL3 = '0x4200000000000000000000000000000000000042'
+  it('parses aggregator entries (0x, 1inch) with optional baseUrl', () => {
     const parsed = parseSwapConfig({
       '8453': {
-        [COLL]: { venue: '0x', slippageBps: 100 },
-        [COLL2]: { venue: 'lifi', baseUrl: 'https://staging.li.quest/v1', slippageBps: 75 }
-      },
-      '999': {
-        [COLL3]: { venue: 'liquidswap', slippageBps: 150 }
+        [COLL]: { venue: '0x', slippageBps: 100 }
       },
       '4663': {
         [COLL]: { venue: '1inch', baseUrl: 'https://proxy.example', slippageBps: 50 }
       }
     })
     expect(parsed['8453']?.[COLL]).toMatchObject({ venue: '0x' })
-    expect(parsed['8453']?.[COLL2]).toMatchObject({
-      venue: 'lifi',
-      baseUrl: 'https://staging.li.quest/v1',
-      slippageBps: 75
-    })
-    expect(parsed['999']?.[COLL3]).toMatchObject({ venue: 'liquidswap', slippageBps: 150 })
     expect(parsed['4663']?.[COLL]).toMatchObject({
       venue: '1inch',
       baseUrl: 'https://proxy.example'
@@ -76,5 +64,13 @@ describe('parseSwapConfig', () => {
     expect(() =>
       parseSwapConfig({ '8453': { [COLL]: { venue: '0x', slippageBps: 1, extra: true } } })
     ).toThrow()
+  })
+})
+
+describe('VENUE_API_KEY_ENV', () => {
+  it('requires keys for aggregators only', () => {
+    expect(VENUE_API_KEY_ENV['uniswap-v3']).toBeNull()
+    expect(VENUE_API_KEY_ENV['0x']).toBe('ZEROX_API_KEY')
+    expect(VENUE_API_KEY_ENV['1inch']).toBe('ONEINCH_API_KEY')
   })
 })
