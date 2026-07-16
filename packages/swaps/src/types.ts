@@ -70,19 +70,60 @@ export type PriceParameters = TokenInDecimals & {
 /** A venue's indicative output for a {@link PriceParameters} probe — raw integer `tokenOut` units. */
 export type PriceQuote = { expectedAmountOut: bigint }
 
+/**
+ * One executable conversion call — a vault redeem, a PT redeem/swap, or a venue swap — ready for
+ * the Executor callback queue. One shape for unwraps AND the venue swap: the encoders flatten
+ * everything into a single queue, so the seam matches the runtime shape. Carries only what the
+ * encoder needs; amounts for observability and route-quality live on {@link SwapPlan}.
+ */
+export type SwapStep = {
+  tokenIn: Address
+  tokenOut: Address
+  /** Call target. */
+  target: Address
+  /** Native value to forward (0 for ERC20 → ERC20). */
+  value: bigint
+  /** Pre-built calldata; any min-out floor is already encoded inside it. */
+  callData: Hex
+  /** How the on-chain input amount is bound — same binding union as {@link Swap.amountIn}. */
+  amountIn:
+    | { source: 'balance'; offset: bigint } // splice the Executor's live `tokenIn` balance at `offset`
+    | { source: 'fixed'; value: bigint } // `callData` commits to `value`; do NOT splice
+  /**
+   * Approve `tokenIn` to this spender (zero-then-balance pair) before the call. Omitted when the
+   * target burns the caller's own balance (ERC4626 redeem).
+   */
+  approvalSpender?: Address
+}
+
+/**
+ * The full sell path for one liquidation: ordered steps chaining `tokenIn` → `tokenOut` until the
+ * loan token (`steps.at(-1).tokenOut` is the loan token; never empty). Plain collateral is one
+ * venue-swap step; exotic collateral is unwrap step(s) then usually a venue-swap step — but none
+ * when the unwrap chain already ends in the loan token (PT-USDC collateral / USDC loan is the
+ * norm there, not an edge case).
+ */
+export type SwapPlan = {
+  steps: SwapStep[]
+  /** Final loan-token output, expected — route-quality + logging only. */
+  expectedAmountOut: bigint
+  /** Final loan-token output, worst-case — logging/observability. */
+  amountOutMinimum: bigint
+}
+
 /** Why an executable quote could not be produced (for logging + backoff). */
 export type QuoteFailureReason = 'timeout' | 'rate_limited' | 'no_route' | 'api_error' | 'bad_route'
 
 /**
  * The result of resolving a swap for one liquidatable position:
- * - `swap` — an executable swap to encode + simulate;
+ * - `swap` — an executable {@link SwapPlan} to encode + simulate;
  * - `no_config` — the operator has not configured this collateral (a coverage gap, not a failure; no
- *   API call was made) → skip with `config.no_swap_path`, no backoff;
+ *   API call was made) → skip with `config.no_swap_path`;
  * - `failed` — a transient quote/route failure (API down, no route, or the route fails the oracle
  *   sanity check) → skip and back the position off.
  */
 export type QuoteOutcome =
-  | { kind: 'swap'; swap: Swap }
+  | { kind: 'swap'; plan: SwapPlan }
   | { kind: 'no_config' }
   | { kind: 'failed'; reason: QuoteFailureReason }
 

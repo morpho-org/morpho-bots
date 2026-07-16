@@ -126,6 +126,7 @@ function compose(
     slippageBps: 100,
     baseUrls: {},
     maxRouteImpactBps: 500,
+    unwrappers: [],
     excludeCollaterals: overrides.excludeCollaterals ?? [],
     logger: overrides.logger ?? NOOP_LOGGER
   })
@@ -160,8 +161,9 @@ describe('composeQuoting (Midnight lens-projection adapter)', () => {
     expect(refreshed).toEqual([{ collateral: COLLATERAL, loan: LOAN }])
     expect(outcome.kind).toBe('swap')
     if (outcome.kind === 'swap') {
-      expect(outcome.swap.target).toBe(TARGET)
-      expect(outcome.swap.expectedAmountOut).toBe(1000n)
+      expect(outcome.plan.steps).toHaveLength(1)
+      expect(outcome.plan.steps[0]?.target).toBe(TARGET)
+      expect(outcome.plan.expectedAmountOut).toBe(1000n)
     }
   })
 

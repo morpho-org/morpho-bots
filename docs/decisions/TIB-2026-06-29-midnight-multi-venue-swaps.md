@@ -9,6 +9,13 @@
 
 ---
 
+> **Note (2026-07-16).**
+> [TIB-2026-07-16-pre-swap-unwrap-stage](./TIB-2026-07-16-pre-swap-unwrap-stage.md) amends the
+> single-currency clause: the quote → encoder boundary now carries a `SwapPlan` of uniform
+> `SwapStep`s (pre-swap unwraps + the venue swap flattened into one callback queue). `Swap` remains
+> each venue adapter's output; the `amountIn` binding union, the venue-agnostic encoder principle,
+> and seize-exact sizing are unchanged.
+
 ## Context
 
 The midnight-liquidation bot ([TIB-2026-05-28](./TIB-2026-05-28-midnight-liquidation-bot.md))

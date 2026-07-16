@@ -54,6 +54,7 @@ _None yet — copy [`templates/DATA-FLOW.md`](./templates/DATA-FLOW.md) into a b
 
 - [TIB-2026-06-30: Blue liquidation bot — v0](./decisions/TIB-2026-06-30-blue-liquidation-bot.md) — Morpho Blue ecosystem-backstop liquidator (rindexer discovery, accrual-aware soltag lens, multi-venue swaps, generic Executor, Railway) — implemented
 - [TIB-2026-07-09: Midnight market whitelist and venue selection](./decisions/TIB-2026-07-09-midnight-market-and-venue-selection.md) — API-sourced market whitelist + best-of-venues probe selection replacing the hand-maintained routing file; Uniswap dropped as a direct venue — implemented
+- [TIB-2026-07-16: Pre-swap unwrap stage](./decisions/TIB-2026-07-16-pre-swap-unwrap-stage.md) — uniform `SwapStep`/`SwapPlan` seam replacing the single `Swap` at the quote/encode boundary; auto-detected ERC4626 redeems with worst-case amount threading ahead of the venue swap (Pendle PT lands with PR 2) — implemented on `feature/crtr-2804-unwrap-seam`
 
 _Bot-scoped TIBs move under `packages/<bot>/docs/decisions/` once a bot lands; proposal TIBs for
 not-yet-built bots sit in `docs/decisions/` alongside their siblings._

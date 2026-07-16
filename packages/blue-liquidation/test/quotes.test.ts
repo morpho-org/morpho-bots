@@ -59,6 +59,7 @@ function compose(entry: SwapConfigEntry | null) {
     executor: EXECUTOR,
     swapByCollateral,
     maxRouteImpactBps: 500,
+    unwrappers: [],
     logger: NOOP_LOGGER
   })
 }
@@ -69,15 +70,20 @@ describe('composeQuoting (Blue lens-projection adapter)', () => {
     expect(await quoteFor(PLAN, OUT)).toEqual({ kind: 'no_config' })
   })
 
-  it('projects out.params + the oracle reference into an executable swap', async () => {
+  it('projects out.params + the oracle reference into an executable swap plan', async () => {
     const { quoteFor } = compose({ venue: 'uniswap-v3', router: ROUTER, fee: 3000, slippageBps: 0 })
     const outcome = await quoteFor(PLAN, OUT)
     expect(outcome.kind).toBe('swap')
     if (outcome.kind === 'swap') {
-      expect(outcome.swap.spender).toBe(ROUTER)
+      expect(outcome.plan.steps).toHaveLength(1)
+      expect(outcome.plan.steps[0]).toMatchObject({
+        tokenIn: COLLATERAL,
+        tokenOut: LOAN,
+        approvalSpender: ROUTER
+      })
       // slippageBps 0 → the min-out IS the oracle reference (seizedAssets at price 1e36) — proving
       // expectedLoanOut(plan, out) was passed as referenceAmountOut.
-      expect(outcome.swap.amountOutMinimum).toBe(1000n)
+      expect(outcome.plan.amountOutMinimum).toBe(1000n)
     }
   })
 })

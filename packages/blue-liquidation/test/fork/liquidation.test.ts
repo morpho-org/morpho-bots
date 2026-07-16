@@ -1,8 +1,9 @@
+import type { SwapPlan } from '@repo/swaps'
 import type { Address } from 'viem'
 
 import { assertContractDeployed, createDeploylessClient } from '@repo/evm-kit'
 import { simulateLiquidationExec } from '@repo/pipeline'
-import { quoteUniswapV3 } from '@repo/swaps'
+import { createErc4626Unwrapper, quoteUniswapV3, resolveUnwraps } from '@repo/swaps'
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
 import { createWalletClient, erc20Abi, http } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
@@ -99,26 +100,55 @@ describe.skipIf(!FORK_URL || !FIXTURE)(
       if (!liquidationPlan) throw new Error('plan returned null')
       expect(liquidationPlan.seizedAssets).toBeGreaterThan(0n)
 
-      // 4. Single-hop Uniswap-V3 swap (collateral → loan via the operator pool) + the real exec.
+      // 4. Resolve the unwrap chain (a no-op for plain collateral; a real vault-share fixture
+      //    exercises the redeem step end-to-end), then the single-hop Uniswap-V3 swap (resolved
+      //    token → loan via the operator pool) as the final step — mirroring quoting.ts' toStep
+      //    normalization.
+      const unwrapper = createErc4626Unwrapper({
+        client,
+        logger: { info: () => {}, warn: () => {} }
+      })
+      const resolution = await resolveUnwraps([unwrapper], {
+        token: out.params.collateralToken,
+        amountIn: liquidationPlan.seizedAssets,
+        executor: executooor,
+        stopToken: out.params.loanToken
+      })
       const swap = quoteUniswapV3(
         { router: SWAP_ROUTER_02, fee: poolFee },
         {
           chainId: base.id,
-          tokenIn: out.params.collateralToken,
+          tokenIn: resolution.token,
           tokenOut: out.params.loanToken,
-          amountIn: liquidationPlan.seizedAssets,
+          amountIn: resolution.amountIn,
           slippageBps: SLIPPAGE_BPS,
           executor: executooor,
           referenceAmountOut: expectedLoanOut(liquidationPlan, out)
         }
       )
+      const swapPlan: SwapPlan = {
+        steps: [
+          ...resolution.steps,
+          {
+            tokenIn: resolution.token,
+            tokenOut: out.params.loanToken,
+            target: swap.target,
+            value: swap.value,
+            callData: swap.callData,
+            amountIn: swap.amountIn,
+            approvalSpender: swap.spender
+          }
+        ],
+        expectedAmountOut: swap.expectedAmountOut,
+        amountOutMinimum: swap.amountOutMinimum
+      }
       const data = encodeLiquidationExec({
         executor: executooor,
         morpho: MORPHO,
         market: out.params,
         seizedAssets: liquidationPlan.seizedAssets,
         borrower,
-        swap,
+        plan: swapPlan,
         recipient: LIQUIDATOR
       })
 
@@ -166,6 +196,17 @@ describe.skipIf(!FORK_URL || !FIXTURE)(
       })
       expect(exLoan).toBe(0n)
       expect(exColl).toBe(0n)
+
+      // Any unwrap intermediates (vault-share fixture) must be swept too — the full-drain invariant.
+      for (const step of resolution.steps) {
+        const exIntermediate = await test.readContract({
+          address: step.tokenOut,
+          abi: erc20Abi,
+          functionName: 'balanceOf',
+          args: [executooor]
+        })
+        expect(exIntermediate).toBe(0n)
+      }
     }, 120_000)
   }
 )
