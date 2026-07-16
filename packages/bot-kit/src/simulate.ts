@@ -27,10 +27,17 @@ export type SimulateResult = { status: SimulateStatus; reason?: string }
  */
 export async function simulateLiquidationExec(
   client: Client,
-  params: { executooor: Address; eoa: Address; data: Hex }
+  params: { executooor: Address; eoa: Address; data: Hex; value?: bigint }
 ): Promise<SimulateResult> {
   const { error } = await tryCatch(
-    call(client, { account: params.eoa, to: params.executooor, data: params.data })
+    call(client, {
+      account: params.eoa,
+      to: params.executooor,
+      data: params.data,
+      // Match what gets broadcast byte-for-byte, value included. Liquidation execs are value-0, so
+      // this is 0n in practice, but passing it explicitly keeps the sim and the send in lockstep.
+      value: params.value ?? 0n
+    })
   )
   if (!error) return { status: 'ok' }
   return {

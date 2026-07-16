@@ -11,14 +11,18 @@ const EOA = getAddress('0x4444444444444444444444444444444444444444')
 const DATA: Hex = '0xdeadbeef'
 
 // A client whose `eth_call` is driven by `onCall`: returning a hex string models a successful exec,
-// throwing models a revert somewhere in the seize → swap → repay → sweep path.
-function clientThatCalls(onCall: () => string) {
+// throwing models a revert somewhere in the seize → swap → repay → sweep path. Captured `eth_call`
+// param objects are pushed to `calls` so tests can assert the exact request that would be broadcast.
+function clientThatCalls(onCall: () => string, calls: Record<string, unknown>[] = []) {
   return createPublicClient({
     chain: base,
     transport: custom({
-      request: async ({ method }) => {
+      request: async ({ method, params }) => {
         if (method === 'eth_chainId') return `0x${base.id.toString(16)}`
-        if (method === 'eth_call') return onCall()
+        if (method === 'eth_call') {
+          calls.push((params as Record<string, unknown>[])[0] ?? {})
+          return onCall()
+        }
         throw new Error(`unexpected RPC method ${method}`)
       }
     })
@@ -44,5 +48,24 @@ describe('simulateLiquidationExec', () => {
     })
     expect(result.status).toBe('revert')
     expect(result.reason).toBeTruthy()
+  })
+
+  it('threads the tx value into the eth_call so the sim matches the broadcast byte-for-byte', async () => {
+    const calls: Record<string, unknown>[] = []
+    const client = clientThatCalls(() => '0x', calls)
+    await simulateLiquidationExec(client, {
+      executooor: EXECUTOR,
+      eoa: EOA,
+      data: DATA,
+      value: 5n
+    })
+    expect(calls[0]?.value).toBe('0x5') // viem hex-encodes the value word
+  })
+
+  it('defaults value to zero when omitted', async () => {
+    const calls: Record<string, unknown>[] = []
+    const client = clientThatCalls(() => '0x', calls)
+    await simulateLiquidationExec(client, { executooor: EXECUTOR, eoa: EOA, data: DATA })
+    expect(calls[0]?.value).toBe('0x0')
   })
 })

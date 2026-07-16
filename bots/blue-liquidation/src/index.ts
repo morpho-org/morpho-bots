@@ -1,16 +1,23 @@
+import type { QueueState } from '@repo/bot-kit'
 import type { SwapConfigEntry, SwapPlan, Venue } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
 import {
   assertContractDeployed,
+  botStatePaths,
+  createBalanceMonitor,
   createBackoff,
   createCooldownStore,
   createDeploylessClient,
   createLogger,
+  createOutcomeJournal,
   createPendingQueue,
   createRunner,
   createSigner,
   initialFees,
+  loadState,
+  QUEUE_STATE_VERSION,
+  saveState,
   simulateLiquidationExec
 } from '@repo/bot-kit'
 import {
@@ -201,11 +208,32 @@ async function main() {
     }
   }
 
+  // Persisted transaction-queue state + a terminal-outcome audit trail, both under BOT_STATE_DIR
+  // (default ~/.morpho-bots), namespaced by bot + chain. Restoring the pending set on boot preserves
+  // stuck-detection (`submittedAtBlock`) and bump counts across restarts; chain truth still wins, as
+  // the next `onBlock` reconciles every restored entry against receipts and the consumed nonce.
+  const { stateFile, outcomesFile } = botStatePaths('blue-liquidation', config.chainId)
+  const { state, reset } = loadState<QueueState>(stateFile, QUEUE_STATE_VERSION)
+  if (reset && reset !== 'missing') logger.warn('state.reset', { reason: reset })
+  const journal = createOutcomeJournal({ path: outcomesFile, chainId: config.chainId })
+  const persist = () =>
+    saveState(stateFile, { version: QUEUE_STATE_VERSION, queue: queue.dump() } satisfies QueueState)
+
   const queue = createPendingQueue({
     send: signer.send,
     getReceipt: signer.getReceipt,
     getBaseFee: signer.getBaseFee,
+    getConsumedNonce: signer.consumedNonce,
     maxFeeWei: config.maxFeeWei,
+    logger,
+    ...(state ? { initialState: state.queue } : {}),
+    onSettled: settlement => journal.record(settlement)
+  })
+
+  // Periodic EOA-balance metric so operators can watch gas drain (see `signer.balance`).
+  const balanceMonitor = createBalanceMonitor({
+    address: eoa,
+    read: signer.balance,
     logger
   })
 
@@ -238,10 +266,15 @@ async function main() {
           maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
           blockNumber
         })
+        persist()
       },
       backoff,
       cooldown,
-      pendingOnBlock: blockNumber => queue.onBlock(blockNumber),
+      pendingOnBlock: async blockNumber => {
+        await queue.onBlock(blockNumber)
+        persist()
+        await balanceMonitor.maybeLog(blockNumber)
+      },
       inflightLabels: () => queue.inflightLabels(),
       logger
     })
@@ -253,6 +286,7 @@ async function main() {
   // fire-and-forget and chain truth wins on restart, so there is nothing to await-drain.
   const shutdown = (signal: string) => {
     logger.info('shutdown', { signal, pending: queue.snapshot() })
+    persist()
     void runner.stop().finally(() => process.exit(0))
   }
   process.on('SIGINT', () => shutdown('SIGINT'))

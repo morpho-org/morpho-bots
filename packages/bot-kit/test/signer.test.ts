@@ -155,4 +155,23 @@ describe('createSigner', () => {
     mockRpc({ eth_getBlockByNumber: {} })
     expect(createSigner(CONFIG).getBaseFee()).rejects.toThrow(/baseFeePerGas/)
   })
+
+  it('consumedNonce reads the latest (mined) transaction count', async () => {
+    const calls: RpcBody[] = []
+    mockRpc({
+      eth_chainId: `0x${base.id.toString(16)}`,
+      eth_getTransactionCount: (body: RpcBody) => {
+        calls.push(body)
+        return '0x3'
+      }
+    })
+    expect(await createSigner(CONFIG).consumedNonce()).toBe(3)
+    // The reconciler needs mined truth, not the local pending cursor.
+    expect(calls[0]?.params?.[1]).toBe('latest')
+  })
+
+  it('balance returns the EOA native balance in wei', async () => {
+    mockRpc({ eth_chainId: `0x${base.id.toString(16)}`, eth_getBalance: '0xde0b6b3a7640000' })
+    expect(await createSigner(CONFIG).balance()).toBe(1_000_000_000_000_000_000n)
+  })
 })

@@ -4,6 +4,7 @@ import { tryCatch } from '@repo/utils'
 import { createWalletClient, TransactionReceiptNotFoundError } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import {
+  getBalance,
   getBlock,
   getTransactionCount,
   getTransactionReceipt,
@@ -11,7 +12,13 @@ import {
   sendTransaction
 } from 'viem/actions'
 
-import type { GetBaseFee, GetReceipt, SendTx, SyncNonce } from './queue/pending-queue'
+import type {
+  GetBaseFee,
+  GetConsumedNonce,
+  GetReceipt,
+  SendTx,
+  SyncNonce
+} from './queue/pending-queue'
 
 import { createHttpTransport } from './transport'
 import { TxSendError } from './tx-error'
@@ -23,6 +30,10 @@ export type Signer = {
   getReceipt: GetReceipt
   getBaseFee: GetBaseFee
   syncNonce: SyncNonce
+  /** Latest (mined) transaction count for the EOA — the pending queue's nonce-consumed reconciler. */
+  consumedNonce: GetConsumedNonce
+  /** The EOA's native balance (wei) — feeds the periodic `signer.balance` metric. */
+  balance: () => Promise<bigint>
 }
 
 /**
@@ -116,5 +127,12 @@ export function createSigner(options: {
     return block.baseFeePerGas
   }
 
-  return { account, send, getReceipt, getBaseFee, syncNonce }
+  // Latest (mined) count — distinct from the local `pending` cursor. The queue's reconciler compares
+  // it against tracked nonces to evict txs whose nonce was consumed on-chain without a receipt for us.
+  const consumedNonce: GetConsumedNonce = () =>
+    getTransactionCount(client, { address: account.address, blockTag: 'latest' })
+
+  const balance = (): Promise<bigint> => getBalance(client, { address: account.address })
+
+  return { account, send, getReceipt, getBaseFee, syncNonce, consumedNonce, balance }
 }
