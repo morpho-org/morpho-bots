@@ -60,6 +60,13 @@ export class PolicyViolationError extends Error {
  * {@link Policy}. Every field must satisfy its rule; the first failure decides. In-process, this
  * runs between prepare and broadcast — the cheap defense-in-depth against an upstream encoding bug
  * ever sending value, hitting the wrong contract, or exceeding a ceiling.
+ *
+ * OUTER-ENVELOPE guard, by deliberate scope: it pins only the OUTER call — target is the Executor,
+ * selector is `exec_606BaXt`, value is 0, and the fee/gas/size ceilings hold. It does NOT decode or
+ * allowlist the inner `bytes[]` program the Executor executes; the integrity of those inner calls
+ * rests elsewhere — venue response handling (including the 1inch router pin), quote validation, and
+ * the mandatory pre-send simulation that reverts an unprofitable or malformed program before it can
+ * be broadcast.
  */
 export function evaluatePolicy(policy: Policy, tx: PolicyTx): PolicyDecision {
   const deny = (check: PolicyCheck, message: string): PolicyDecision => ({

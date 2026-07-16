@@ -8,6 +8,9 @@ import { ONEINCH_ROUTER } from '../../src/constants'
 import { QuoteError } from '../../src/types'
 import { priceOneInch, quoteOneInch } from '../../src/venues/oneinch'
 
+// The 1inch swap must target the statically-known router for the chain (Base here); the adapter
+// pins `tx.to` to it, so the happy-path fixture returns exactly this address.
+const ROUTER = ONEINCH_ROUTER[8453]!
 const TARGET = getAddress('0xaAaAaAaaAaAaAaaAaAAAAAAAAaaaAaAaAaaAaaAa')
 const COLLATERAL = getAddress('0x7777777777777777777777777777777777777777')
 const LOAN = getAddress('0x6666666666666666666666666666666666666666')
@@ -38,12 +41,13 @@ describe('quoteOneInch', () => {
   it('maps a swap into a fixed-amount Swap with the static Base router as spender', async () => {
     const { client, calls } = fakeClient({
       dstAmount: '2000',
-      tx: { to: TARGET, data: '0xdef', value: '0' }
+      tx: { to: ROUTER, data: '0xdef', value: '0' }
     })
     const swap = await quoteOneInch(client, {}, params)
 
     expect(swap.spender).toBe(ONEINCH_ROUTER[8453]!)
-    expect(swap.target).toBe(TARGET)
+    // tx.to is pinned to (and equals) the static router — target and approval stay in lockstep.
+    expect(swap.target).toBe(ROUTER)
     expect(swap.callData).toBe('0xdef')
     expect(swap.amountIn).toEqual({ source: 'fixed', value: 100n })
     expect(swap.expectedAmountOut).toBe(2000n)
@@ -59,6 +63,22 @@ describe('quoteOneInch', () => {
       receiver: EXECUTOR,
       slippage: '0.5'
     })
+  })
+
+  it('rejects a response whose tx.to is not the configured router', async () => {
+    // A compromised/misdirected API answer points the swap (and its approval) at an arbitrary
+    // contract. The adapter must fail the quote loudly (api_error) with BOTH addresses in the
+    // message — the quoting layer surfaces that as `quote.failed`'s `detail`.
+    const { client } = fakeClient({
+      dstAmount: '2000',
+      tx: { to: TARGET, data: '0xdef', value: '0' }
+    })
+    const error = await quoteOneInch(client, {}, params).catch(e => e)
+    expect(error).toBeInstanceOf(QuoteError)
+    expect((error as QuoteError).reason).toBe('api_error')
+    // Both the offending target and the expected router appear in the detail.
+    expect((error as QuoteError).message).toContain(TARGET)
+    expect((error as QuoteError).message).toContain(ROUTER)
   })
 
   it('throws no_route when the response carries no tx', async () => {

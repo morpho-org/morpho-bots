@@ -173,6 +173,20 @@ second one. If daemons are justified later, that is a clean forward decision, no
   [TIB-2026-07-15-ci-deploy-pipeline](./TIB-2026-07-15-ci-deploy-pipeline.md) — the log-forwarding and
   deploy-CI surfaces re-pointed at the per-bot layout.
 
+## Addenda
+
+### 2026-07-16 — review-acknowledged scoping decisions
+
+An external adversarial review confirmed two deliberate scopings as accepted, not gaps. The signing
+policy guard (`bot-kit/policy.ts`) is an **outer-envelope** guard: it pins the outer call (Executor
+target, `exec_606BaXt` selector, zero value, fee/gas/size ceilings) but deliberately does not decode
+or allowlist the inner `bytes[]` program — inner-call integrity rests on venue response handling
+(now including a **1inch `tx.to` router pin** against the statically-known `ONEINCH_ROUTER`, so a
+misdirected API response cannot point the swap or its approval at an arbitrary contract), quote
+validation, and mandatory pre-send simulation. The pending-tx queue treats a **one-block receipt as
+terminal**, an accepted assumption for the L2s these bots target (Base, Robinhood / Arbitrum-Orbit),
+where an orphaned receipt would surface as a re-discovered position, not a stuck queue entry.
+
 <!--
 TIB conventions:
 - Once accepted, do not substantively edit this TIB. If the decision needs to change,
