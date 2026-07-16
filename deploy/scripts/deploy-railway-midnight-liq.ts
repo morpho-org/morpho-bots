@@ -1,9 +1,10 @@
 import { resolve } from 'node:path'
 
+import { BOTS } from './manifest'
 import { assertPrivateKey, deploymentFailed, Railway, required, signerPolicy } from './railway'
 
 const env = Bun.env
-const service = 'bot'
+const { chainId, service } = BOTS['midnight-liq'].chains[0]
 const railway = new Railway(
   required(env, 'RAILWAY_PROJECT_ID'),
   env.RAILWAY_ENVIRONMENT?.trim() || 'production',
@@ -33,13 +34,13 @@ await railway.ensureVolume(service, '/data')
 const executor = required(env, 'EXECUTOOOR_ADDRESS')
 await railway.setVariables(service, {
   BOT: 'midnight',
-  CHAIN_ID: '8453',
+  CHAIN_ID: String(chainId),
   TICK_INTERVAL_S: env.TICK_INTERVAL_S?.trim() || '2',
   RAILWAY_DOCKERFILE_PATH: 'deploy/Dockerfile',
   LOG_LEVEL: 'info',
   LIQUIDATOR_ADDRESS: required(env, 'LIQUIDATOR_ADDRESS'),
   EXECUTOOOR_ADDRESS: executor,
-  SIGNER_POLICY_JSON: signerPolicy(8453, executor),
+  SIGNER_POLICY_JSON: signerPolicy(chainId, executor),
   ...(enableLifi ? { ENABLE_LIFI: 'true' } : {}),
   ...(allowBadDebtOnly ? { ALLOW_BAD_DEBT_ONLY: 'true' } : {}),
   ...(betterstackHost ? { BETTERSTACK_INGESTING_HOST: betterstackHost } : {})

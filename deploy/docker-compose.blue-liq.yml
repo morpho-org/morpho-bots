@@ -1,4 +1,4 @@
-# Bundles the per-chain blue bots with ONE shared rindexer instance + Postgres for borrower
+# Bundles the per-chain blue-liq bots with ONE shared rindexer instance + Postgres for borrower
 # discovery. rindexer indexes the Morpho Blue `Borrow` event (deploy/blue-rindexer/rindexer.yaml)
 # for every chain into one Postgres, discriminated by a `network` column; each bot tick reads the
 # indexed (market, borrower) pairs for its own chain. Each bot container runs a signer agent, the
@@ -10,7 +10,7 @@
 # LIQUIDATOR_ADDRESS the transform targets (the address that private key derives).
 #
 # Build contexts are `..` (the repo root — required for the bun workspace to resolve) because this
-# file lives in deploy/; run it from anywhere: `docker compose -f deploy/docker-compose.blue.yml up`.
+# file lives in deploy/; run it from anywhere: `docker compose -f deploy/docker-compose.blue-liq.yml up`.
 #
 # NOTE: the rindexer service config (image command, env) follows the rindexer docs but has not been
 # run end-to-end here; verify `docker compose up` against live RPCs before relying on it.
@@ -84,7 +84,7 @@ services:
       DATABASE_URL: postgresql://rindexer:${POSTGRES_PASSWORD:-rindexer}@postgres:5432/blue_liquidation
       LOG_LEVEL: ${LOG_LEVEL:-info}
       # Optional BetterStack log forwarding (deploy/vector.yaml). Empty = disabled; the entrypoint only
-      # starts the Vector side-car when the token is set. Blue's two chains share one blue source.
+      # starts the Vector side-car when the token is set. blue-liq's two chains share one source.
       BETTERSTACK_SOURCE_TOKEN: ${BETTERSTACK_SOURCE_TOKEN:-}
       BETTERSTACK_INGESTING_HOST: ${BETTERSTACK_INGESTING_HOST:-}
     volumes:
@@ -123,7 +123,7 @@ services:
       DATABASE_URL: postgresql://rindexer:${POSTGRES_PASSWORD:-rindexer}@postgres:5432/blue_liquidation
       LOG_LEVEL: ${LOG_LEVEL:-info}
       # Optional BetterStack log forwarding (deploy/vector.yaml). Empty = disabled; the entrypoint only
-      # starts the Vector side-car when the token is set. Blue's two chains share one blue source.
+      # starts the Vector side-car when the token is set. blue-liq's two chains share one source.
       BETTERSTACK_SOURCE_TOKEN: ${BETTERSTACK_SOURCE_TOKEN:-}
       BETTERSTACK_INGESTING_HOST: ${BETTERSTACK_INGESTING_HOST:-}
     volumes:

@@ -5,8 +5,9 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "deploy:railway:blue": "bun run scripts/deploy-railway-blue.ts",
-    "deploy:railway:midnight": "bun run scripts/deploy-railway-midnight.ts",
+    "deploy:railway": "bun run scripts/deploy-railway.ts",
+    "deploy:railway:blue-liq": "bun run scripts/deploy-railway-blue-liq.ts",
+    "deploy:railway:midnight-liq": "bun run scripts/deploy-railway-midnight-liq.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

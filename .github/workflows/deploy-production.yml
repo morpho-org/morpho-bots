@@ -1,0 +1,136 @@
+name: Deploy production
+
+# A PR merged to main carrying a `release-{bot}` label redeploys that bot to production and cuts a
+# GitHub release + git tag (CalVer `{bot}-YYYY.MM.DD-N`). Triggered on push:main (not
+# pull_request:closed) so the run's ref is refs/heads/main — satisfying a main-only environment
+# branch policy and giving the correct main HEAD in github.sha. Releasing publishes the tag, which
+# fires release-slack-notify.yml. Runs on every push; when no release-* label is present, the
+# deploy jobs are simply skipped.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bot:
+        description: Bot to release to production
+        required: true
+        type: choice
+        options:
+          - blue-liq
+          - midnight-liq
+
+permissions:
+  contents: read
+
+concurrency:
+  # Serialize production runs so same-day CalVer `N` computation can't race between runs.
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  Select:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      # Output keys use underscores — a `-` in an Actions expression is the subtraction operator.
+      blue_liq: ${{ steps.pick.outputs.blue_liq }}
+      midnight_liq: ${{ steps.pick.outputs.midnight_liq }}
+    steps:
+      - id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          EVENT: ${{ github.event_name }}
+          DISPATCH_BOT: ${{ github.event.inputs.bot }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            labels="release-$DISPATCH_BOT"
+          else
+            # Labels of the PR whose merge produced this commit.
+            labels="$(gh api "repos/$REPO/commits/$SHA/pulls" --jq '.[].labels[].name' 2>/dev/null || true)"
+          fi
+          has() { echo "$labels" | grep -qx "release-$1" && echo true || echo false; }
+          {
+            echo "blue_liq=$(has blue-liq)"
+            echo "midnight_liq=$(has midnight-liq)"
+          } >> "$GITHUB_OUTPUT"
+
+  Blue:
+    needs: Select
+    if: ${{ needs.Select.outputs.blue_liq == 'true' }}
+    uses: ./.github/workflows/deploy-bot.yml
+    with:
+      bot: blue-liq
+      stage: production
+      ref: ${{ github.sha }}
+
+  Midnight:
+    needs: Select
+    if: ${{ needs.Select.outputs.midnight_liq == 'true' }}
+    uses: ./.github/workflows/deploy-bot.yml
+    with:
+      bot: midnight-liq
+      stage: production
+      ref: ${{ github.sha }}
+
+  Release-blue:
+    # A skipped/failed Blue deploy skips this job too, so a bot is never tagged unless it deployed.
+    needs: Blue
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Create release
+        env:
+          BOT: blue-liq
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          date="$(date -u +%Y.%m.%d)"
+          n=$(( $(git tag -l "${BOT}-${date}-*" | wc -l) + 1 ))
+          tag="${BOT}-${date}-${n}"
+          # `|| true` guards against SIGPIPE aborting the job under `set -o pipefail` (git is
+          # killed when head closes the pipe early once there are many tags).
+          prev="$(git tag -l "${BOT}-*" --sort=-version:refname | head -n 1 || true)"
+          echo "Creating release $tag (previous: ${prev:-none})"
+          gh release create "$tag" --target "$SHA" --title "$tag" --generate-notes \
+            ${prev:+--notes-start-tag "$prev"}
+
+  Release-midnight:
+    needs: Midnight
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Create release
+        env:
+          BOT: midnight-liq
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          date="$(date -u +%Y.%m.%d)"
+          n=$(( $(git tag -l "${BOT}-${date}-*" | wc -l) + 1 ))
+          tag="${BOT}-${date}-${n}"
+          # `|| true` guards against SIGPIPE aborting the job under `set -o pipefail` (git is
+          # killed when head closes the pipe early once there are many tags).
+          prev="$(git tag -l "${BOT}-*" --sort=-version:refname | head -n 1 || true)"
+          echo "Creating release $tag (previous: ${prev:-none})"
+          gh release create "$tag" --target "$SHA" --title "$tag" --generate-notes \
+            ${prev:+--notes-start-tag "$prev"}

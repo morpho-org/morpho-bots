@@ -33,6 +33,28 @@ export function deploymentFailed(status: string): boolean {
   return status === 'FAILED' || status === 'CRASHED' || status === 'TIMEOUT'
 }
 
+type Target = { service: string; projectId: string; environment: string; hasToken: boolean }
+
+// A project-scoped RAILWAY_TOKEN already pins the project + environment; passing -p/-e alongside it
+// conflicts, so omit them when a token is present and let the token supply the context.
+function targetFlags(projectId: string, environment: string, hasToken: boolean): string[] {
+  return hasToken ? [] : ['-p', projectId, '-e', environment]
+}
+
+export function upArgs({ service, projectId, environment, hasToken }: Target): string[] {
+  return ['railway', 'up', '-s', service, ...targetFlags(projectId, environment, hasToken), '-d']
+}
+
+export function deploymentListArgs({
+  service,
+  projectId,
+  environment,
+  hasToken
+}: Target): string[] {
+  const target = targetFlags(projectId, environment, hasToken)
+  return ['railway', 'deployment', 'list', '-s', service, ...target, '--limit', '1', '--json']
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
@@ -84,18 +106,22 @@ function stderrOf(error: unknown): string {
 }
 
 export class Railway {
+  private readonly hasToken: boolean
+
   constructor(
     private readonly projectId: string,
     private readonly environment: string,
     private readonly repoRoot: string
-  ) {}
+  ) {
+    this.hasToken = Boolean(Bun.env.RAILWAY_TOKEN?.trim())
+  }
 
   async initialize(): Promise<void> {
     const cli = await tryCatch(Promise.resolve($`railway --version`.quiet()))
     if (cli.error) {
       throw new Error('Railway CLI not found. Install it: https://docs.railway.com/guides/cli')
     }
-    if (Bun.env.RAILWAY_TOKEN) {
+    if (this.hasToken) {
       console.log('Using RAILWAY_TOKEN for project context.')
       return
     }
@@ -167,7 +193,15 @@ export class Railway {
       Promise.resolve($`railway volume add -m ${mountPath} --json`.quiet())
     )
     if (error) {
-      throw new Error(`Failed to add volume ${mountPath} to ${service}: ${stderrOf(error)}`)
+      // Idempotent: a volume synced/forked in from another environment (or a prior run) may already
+      // occupy this mount. `railway volume list --json` output varies across CLI versions so the
+      // detection above can miss it — treat an "already mounted" add as success, not a failure.
+      const detail = stderrOf(error)
+      if (/already (mounted|exists)/i.test(detail)) {
+        console.log(`Volume at ${mountPath} already on ${service}.`)
+        return
+      }
+      throw new Error(`Failed to add volume ${mountPath} to ${service}: ${detail}`)
     }
     console.log(`Added volume at ${mountPath} to ${service}.`)
   }
@@ -196,33 +230,24 @@ export class Railway {
     }
   }
 
+  private target(service: string): Target {
+    return {
+      service,
+      projectId: this.projectId,
+      environment: this.environment,
+      hasToken: this.hasToken
+    }
+  }
+
   async deploy(service: string): Promise<void> {
     console.log(`Deploying ${service} from repo root…`)
-    const { error } = await tryCatch(
-      Promise.resolve(
-        $`railway up -s ${service} -p ${this.projectId} -e ${this.environment} -d`
-          .cwd(this.repoRoot)
-          .quiet()
-      )
-    )
+    const args = upArgs(this.target(service))
+    const { error } = await tryCatch(Promise.resolve($`${args}`.cwd(this.repoRoot).quiet()))
     if (error) throw new Error(`Failed to start deploy for ${service}: ${stderrOf(error)}`)
   }
 
   private async latestStatus(service: string): Promise<string> {
-    const args = [
-      'railway',
-      'deployment',
-      'list',
-      '-s',
-      service,
-      '-p',
-      this.projectId,
-      '-e',
-      this.environment,
-      '--limit',
-      '1',
-      '--json'
-    ]
+    const args = deploymentListArgs(this.target(service))
     const { data, error } = await tryCatch(Promise.resolve($`${args}`.quiet().text()))
     return error || typeof data !== 'string' ? 'UNKNOWN' : parseLatestStatus(data)
   }
