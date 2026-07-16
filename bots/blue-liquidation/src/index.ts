@@ -4,6 +4,7 @@ import type { Address, Hex } from 'viem'
 import {
   assertContractDeployed,
   createBackoff,
+  createCooldownStore,
   createDeploylessClient,
   createLogger,
   createPendingQueue,
@@ -138,6 +139,9 @@ async function main() {
     baseBlocks: config.quoting.backoffBaseBlocks,
     maxBlocks: config.quoting.backoffMaxBlocks
   })
+  // Opt-in per-position cooldown (default disabled): one in-memory store for the process lifetime,
+  // complementary to `backoff` (see POSITION_LIQUIDATION_COOLDOWN_MS).
+  const cooldown = createCooldownStore({ cooldownMs: config.positionCooldownMs })
 
   // The exec calldata for one liquidation — the same bytes the simulate gate checks and the queue
   // broadcasts, so a sim-ok plan and its broadcast can't drift.
@@ -236,6 +240,7 @@ async function main() {
         })
       },
       backoff,
+      cooldown,
       pendingOnBlock: blockNumber => queue.onBlock(blockNumber),
       inflightLabels: () => queue.inflightLabels(),
       logger

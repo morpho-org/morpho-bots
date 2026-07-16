@@ -77,6 +77,10 @@ const DEFAULT_MAX_ROUTE_IMPACT_BPS = 500 // reject an aggregator route >5% below
 const DEFAULT_PENDLE_SLIPPAGE_BPS = 50
 const DEFAULT_BACKOFF_BASE_BLOCKS = 2n
 const DEFAULT_BACKOFF_MAX_BLOCKS = 64n
+// Opt-in per-position cooldown (ms) after a liquidation attempt fails to produce a submittable tx
+// (no route / quote failure / sim revert). 0 disables it — the default, so existing deployments
+// re-attempt every tick as before.
+const DEFAULT_POSITION_LIQUIDATION_COOLDOWN_MS = 0
 
 type Env = Record<string, string | undefined>
 
@@ -106,6 +110,12 @@ export type Config = {
   databaseUrl: string
   swapConfig: SwapConfig
   quoting: QuotingConfig
+  /**
+   * Opt-in cooldown window (ms) before re-attempting a position whose last liquidation attempt failed
+   * to produce a submittable tx. 0 disables it (re-attempt every tick). See
+   * `POSITION_LIQUIDATION_COOLDOWN_MS`.
+   */
+  positionCooldownMs: number
   maxFeeWei: bigint
   logLevel: LogLevel
 }
@@ -286,6 +296,12 @@ export function loadConfig(
     databaseUrl: required(env, 'DATABASE_URL'),
     swapConfig,
     quoting,
+    positionCooldownMs: intEnv(
+      env,
+      'POSITION_LIQUIDATION_COOLDOWN_MS',
+      DEFAULT_POSITION_LIQUIDATION_COOLDOWN_MS,
+      { min: 0 }
+    ),
     maxFeeWei: parseGwei(maxFeeGwei),
     logLevel
   }

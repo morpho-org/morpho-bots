@@ -1,8 +1,9 @@
 import type { Logger, SimulateResult } from '@repo/bot-kit'
+import type { CooldownStore } from '@repo/bot-kit'
 import type { QuoteOutcome, SwapPlan } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
-import { createBackoff } from '@repo/bot-kit'
+import { createBackoff, createCooldownStore } from '@repo/bot-kit'
 import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
 
@@ -110,6 +111,7 @@ function runWith(opts: {
   inflight?: ReadonlySet<string>
   noSwap?: boolean
   seedBackoffAt?: bigint
+  cooldown?: CooldownStore
 }) {
   const { logger, events } = spyLogger()
   let simulateCalls = 0
@@ -119,6 +121,8 @@ function runWith(opts: {
   const chainHead = opts.chainHead ?? 100n
   const backoff = createBackoff({ baseBlocks: 2n, maxBlocks: 64n })
   if (opts.seedBackoffAt !== undefined) backoff.record(LABEL, opts.seedBackoffAt)
+  // Default disabled (0) so existing cases are unaffected; opt-in cases pass an enabled store.
+  const cooldown = opts.cooldown ?? createCooldownStore({ cooldownMs: 0 })
   const defaultOutcome: QuoteOutcome = opts.noSwap
     ? { kind: 'no_config' }
     : { kind: 'swap', plan: SWAP_PLAN }
@@ -143,6 +147,7 @@ function runWith(opts: {
       submitCalls += 1
     },
     backoff,
+    cooldown,
     pendingOnBlock: async () => {
       onBlockCalls += 1
     },
@@ -152,6 +157,7 @@ function runWith(opts: {
   return result.then(counters => ({
     counters,
     backoff,
+    cooldown,
     simulateCalls: () => simulateCalls,
     submitCalls: () => submitCalls,
     onBlockCalls: () => onBlockCalls,
@@ -172,6 +178,7 @@ describe('runTick', () => {
       noSwapPath: 0,
       quoteFailed: 0,
       backoffSkipped: 0,
+      cooledDown: 0,
       ok: 1,
       reverted: 0,
       submitted: 1
@@ -290,5 +297,82 @@ describe('runTick', () => {
     expect(events.some(e => e.level === 'warn' && e.event === 'discover.error')).toBe(true)
     expect(submitCalls()).toBe(0)
     expect(onBlockCalls()).toBe(1) // pendingOnBlock still runs despite discovery failing
+  })
+
+  describe('position cooldown (opt-in)', () => {
+    it('skips a cooled-down position without quoting or simulating, counting cooledDown', async () => {
+      const cooldown = createCooldownStore({ cooldownMs: 60_000 })
+      cooldown.mark(LABEL) // pre-marked as if a prior tick failed
+      const { counters, quoteCalls, simulateCalls, submitCalls, events } = await runWith({
+        cooldown
+      })
+      expect(counters).toMatchObject({ liquidatable: 1, cooledDown: 1, submitted: 0 })
+      expect(quoteCalls()).toBe(0)
+      expect(simulateCalls()).toBe(0)
+      expect(submitCalls()).toBe(0)
+      expect(events.some(e => e.event === 'cooldown.skip')).toBe(true)
+    })
+
+    it('marks the position on a failed quote so the next tick cools it down', async () => {
+      const cooldown = createCooldownStore({ cooldownMs: 60_000 })
+      const { counters } = await runWith({
+        cooldown,
+        quoteOutcome: { kind: 'failed', reason: 'no_route' }
+      })
+      expect(counters.quoteFailed).toBe(1)
+      expect(cooldown.shouldSkip(LABEL)).toBe(true)
+    })
+
+    it('marks the position on a no_swap_path outcome', async () => {
+      const cooldown = createCooldownStore({ cooldownMs: 60_000 })
+      const { counters } = await runWith({ cooldown, noSwap: true })
+      expect(counters.noSwapPath).toBe(1)
+      expect(cooldown.shouldSkip(LABEL)).toBe(true)
+    })
+
+    it('marks the position on a sim revert', async () => {
+      const cooldown = createCooldownStore({ cooldownMs: 60_000 })
+      const { counters } = await runWith({
+        cooldown,
+        simulateResult: { status: 'revert', reason: 'amountOutMinimum not met' }
+      })
+      expect(counters.reverted).toBe(1)
+      expect(cooldown.shouldSkip(LABEL)).toBe(true)
+    })
+
+    it('marks a bad-debt realization on a sim revert (cooldown check precedes the bad-debt branch)', async () => {
+      const cooldown = createCooldownStore({ cooldownMs: 60_000 })
+      const { counters, quoteCalls } = await runWith({
+        cooldown,
+        out: lensOut({
+          healthy: true,
+          blockTimestamp: 3000n,
+          debt: 1000n,
+          badDebt: 1000n,
+          market: { ...lensOut().market, maturity: 2000n }
+        }),
+        simulateResult: { status: 'revert', reason: 'boom' }
+      })
+      expect(quoteCalls()).toBe(0) // bad-debt realization never quotes
+      expect(counters.reverted).toBe(1)
+      expect(cooldown.shouldSkip(LABEL)).toBe(true)
+    })
+
+    it('does not mark the position on a successful submit', async () => {
+      const cooldown = createCooldownStore({ cooldownMs: 60_000 })
+      const { counters } = await runWith({ cooldown, simulateResult: { status: 'ok' } })
+      expect(counters.submitted).toBe(1)
+      expect(cooldown.shouldSkip(LABEL)).toBe(false)
+    })
+
+    it('is disabled at 0: a failed attempt never skips or marks', async () => {
+      const cooldown = createCooldownStore({ cooldownMs: 0 })
+      const { counters } = await runWith({
+        cooldown,
+        quoteOutcome: { kind: 'failed', reason: 'no_route' }
+      })
+      expect(counters.cooledDown).toBe(0)
+      expect(cooldown.shouldSkip(LABEL)).toBe(false)
+    })
   })
 })

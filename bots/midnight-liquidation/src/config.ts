@@ -53,6 +53,10 @@ const DEFAULT_PENDLE_SLIPPAGE_BPS = 50
 const DEFAULT_SEIZE_CAP_MARGIN_BPS = 30 // shave the repay cap when sizing a cap-binding seize — one-block oracle-drift headroom; calibratable
 const DEFAULT_BACKOFF_BASE_BLOCKS = 2n
 const DEFAULT_BACKOFF_MAX_BLOCKS = 64n
+// Opt-in per-position cooldown (ms) after a liquidation attempt fails to produce a submittable tx
+// (no route / quote failure / sim revert). 0 disables it — the default, so existing deployments
+// re-attempt every tick as before.
+const DEFAULT_POSITION_LIQUIDATION_COOLDOWN_MS = 0
 
 // Market whitelist + venue-probing defaults. The markets API is Morpho's own (not a rate-limited
 // venue), so it can be refreshed briskly. The probe uses an ISOLATED rps budget (see index.ts) so its
@@ -163,6 +167,12 @@ export type Config = {
   /** Venue-probing knobs. */
   probe: ProbeConfig
   quoting: QuotingConfig
+  /**
+   * Opt-in cooldown window (ms) before re-attempting a position whose last liquidation attempt failed
+   * to produce a submittable tx. 0 disables it (re-attempt every tick). See
+   * `POSITION_LIQUIDATION_COOLDOWN_MS`.
+   */
+  positionCooldownMs: number
   maxFeeWei: bigint
   logLevel: LogLevel
 }
@@ -429,6 +439,12 @@ export function loadConfig(
     venues,
     probe,
     quoting,
+    positionCooldownMs: intEnv(
+      env,
+      'POSITION_LIQUIDATION_COOLDOWN_MS',
+      DEFAULT_POSITION_LIQUIDATION_COOLDOWN_MS,
+      { min: 0 }
+    ),
     maxFeeWei: parseGwei(maxFeeGwei),
     logLevel
   }

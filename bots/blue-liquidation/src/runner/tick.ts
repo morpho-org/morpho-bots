@@ -1,4 +1,4 @@
-import type { Backoff, Logger, SimulateResult } from '@repo/bot-kit'
+import type { Backoff, CooldownStore, Logger, SimulateResult } from '@repo/bot-kit'
 import type { QuoteOutcome, SwapPlan } from '@repo/swaps'
 import type { Address } from 'viem'
 
@@ -24,6 +24,7 @@ type TickCounters = {
   noSwapPath: number
   quoteFailed: number
   backoffSkipped: number
+  cooledDown: number
   ok: number
   reverted: number
   submitted: number
@@ -70,6 +71,12 @@ export async function runTick(deps: {
   }) => Promise<void>
   /** Per-position exponential backoff suppressing repeated quote/simulate failures (rate-limit defense). */
   backoff: Backoff
+  /**
+   * Opt-in per-position cooldown, complementary to `backoff`: a fixed wall-clock window suppressing
+   * re-quoting a position whose last attempt produced no submittable tx. Disabled by default
+   * (`POSITION_LIQUIDATION_COOLDOWN_MS=0`), in which case `shouldSkip` is always false.
+   */
+  cooldown: CooldownStore
   /** Confirmations / stuck-detection / fee-bumps for already-pending txs. */
   pendingOnBlock: (blockNumber: bigint) => Promise<void>
   /** Labels (`${id}:${borrower}`) already in flight — skipped to avoid re-submitting each block. */
@@ -85,6 +92,7 @@ export async function runTick(deps: {
     simulate,
     submit,
     backoff,
+    cooldown,
     pendingOnBlock,
     inflightLabels,
     logger
@@ -121,6 +129,7 @@ export async function runTick(deps: {
     noSwapPath: 0,
     quoteFailed: 0,
     backoffSkipped: 0,
+    cooledDown: 0,
     ok: 0,
     reverted: 0,
     submitted: 0
@@ -155,15 +164,25 @@ export async function runTick(deps: {
       counters.backoffSkipped += 1
       continue
     }
+    // Opt-in cooldown (complementary to backoff): a position whose last attempt produced no
+    // submittable tx is skipped without re-quoting until its wall-clock window elapses. No-op when
+    // disabled (POSITION_LIQUIDATION_COOLDOWN_MS=0).
+    if (cooldown.shouldSkip(label)) {
+      counters.cooledDown += 1
+      logger.info('cooldown.skip', { marketId: id, borrower: pair.borrower })
+      continue
+    }
     const outcome = await quoteFor(liquidationPlan, out)
     if (outcome.kind === 'no_config') {
       counters.noSwapPath += 1
+      cooldown.mark(label)
       logger.info('config.no_swap_path', { marketId: id, borrower: pair.borrower })
       continue
     }
     if (outcome.kind === 'failed') {
       counters.quoteFailed += 1
       backoff.record(label, chainHead)
+      cooldown.mark(label)
       continue
     }
     const swapPlan = outcome.plan
@@ -185,6 +204,7 @@ export async function runTick(deps: {
         // Back off: a sim revert (stale quote, transient unliquidatability, oracle drift) shouldn't
         // re-quote + re-simulate this position every block.
         backoff.record(label, chainHead)
+        cooldown.mark(label)
         logger.warn('simulate.revert', { ...fields, reason: result.reason })
         break
       default:
