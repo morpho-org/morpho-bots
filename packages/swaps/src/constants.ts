@@ -37,6 +37,28 @@ export const LIQUIDSWAP_BASE_URL = 'https://api.liqd.ag/v2'
  */
 export const LIFI_INTEGRATOR = 'morpho-curator-bots'
 
+/** Pendle hosted-SDK API host (keyless). A factory `baseUrl` override exists for tests only. */
+export const PENDLE_BASE_URL = 'https://api-v2.pendle.finance/core'
+
+/** How long a fetched Pendle markets list stays fresh — matches upstream's 6h refresh interval. */
+export const PENDLE_MARKETS_STALE_MS = 6 * 60 * 60 * 1000
+
+/**
+ * Default slippage for the PT → underlying hop, deliberately small: it both floors the hop's
+ * on-chain min-out AND haircuts the amount the downstream venue sells, so it effectively tightens
+ * the route-quality threshold by this much. Keep it well under `MAX_ROUTE_IMPACT_BPS` (default 500).
+ */
+export const DEFAULT_PENDLE_SLIPPAGE_BPS = 50
+
+/**
+ * Chains with a live Pendle deployment (their `GET /v1/chains`, checked 2026-07-16). The PT
+ * unwrapper is only constructed on these — elsewhere (e.g. Robinhood 4663) it would burn a failing
+ * markets fetch per TTL and, with a cold cache, fail plain-collateral quotes too.
+ */
+export const PENDLE_CHAIN_IDS: ReadonlySet<number> = new Set([
+  1, 10, 56, 143, 146, 999, 5000, 8453, 9745, 42161, 80094
+])
+
 /**
  * 0x AllowanceHolder — the canonical plain-ERC20-`approve` spender for the 0x AllowanceHolder flow
  * (same address on every chain). The bot approves THIS, never the Settler. The `/quote` response also

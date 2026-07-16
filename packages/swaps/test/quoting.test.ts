@@ -4,7 +4,7 @@ import { describe, expect, it } from 'bun:test'
 import { getAddress, isAddressEqual } from 'viem'
 
 import type { SwapConfigEntry } from '../src/config'
-import type { RateLimitedClient } from '../src/http-client'
+import type { HttpVenue, RateLimitedClient } from '../src/http-client'
 import type { QuoteLogger, QuoteRequest } from '../src/quoting'
 import type { QuoteOutcome, Venue } from '../src/types'
 import type { Unwrapper } from '../src/unwrappers/resolve'
@@ -278,9 +278,9 @@ function liquidSwapBody(amountOut: string) {
 }
 
 // A client that dispatches a fixed body per venue (throws no_route for an unstubbed venue).
-function multiHttp(bodies: Partial<Record<Venue, unknown>>): RateLimitedClient {
+function multiHttp(bodies: Partial<Record<HttpVenue, unknown>>): RateLimitedClient {
   return {
-    getJson: async <T>(args: { venue: Venue }) => {
+    getJson: async <T>(args: { venue: HttpVenue }) => {
       const body = bodies[args.venue]
       if (body === undefined) throw new QuoteError('no_route', `no stub for ${args.venue}`)
       return body as T

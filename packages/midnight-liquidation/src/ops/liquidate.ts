@@ -1,14 +1,22 @@
 import type { Logger } from '@repo/evm-kit'
 import type { CooldownEntries, CooldownStore, TransactionRecord } from '@repo/pipeline'
-import type { QuoteOutcome, SwapPlan, Venue, VenueSelectorState } from '@repo/swaps'
+import type {
+  PendleMarketsState,
+  QuoteOutcome,
+  SwapPlan,
+  Venue,
+  VenueSelectorState
+} from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
 import { assertContractDeployed, createDeploylessClient } from '@repo/evm-kit'
 import { createCooldownStore, rawRecordId, simulateLiquidationExec } from '@repo/pipeline'
 import {
   createErc4626Unwrapper,
+  createPendlePtUnwrapper,
   createRateLimitedClient,
   createVenueSelector,
+  PENDLE_CHAIN_IDS,
   priceByVenue
 } from '@repo/swaps'
 import { erc20Abi, getAddress, isAddress, isHex } from 'viem'
@@ -27,10 +35,15 @@ import { composeQuoting } from '../quotes'
 import { isBadDebtRealization, plan } from '../sizing/plan'
 
 /**
- * `liquidate`'s disposable cache: the venue selector's per-pair ladder rankings + decimals, plus the
- * per-position failure-backoff cooldowns. Both must survive across the per-tick process.
+ * `liquidate`'s disposable cache: the venue selector's per-pair ladder rankings + decimals, the
+ * per-position failure-backoff cooldowns, and the Pendle markets list (a real HTTP fetch on a 6h
+ * TTL). All must survive across the per-tick process.
  */
-export type MidnightLiquidateCache = { venues: VenueSelectorState; cooldowns: CooldownEntries }
+export type MidnightLiquidateCache = {
+  venues: VenueSelectorState
+  cooldowns: CooldownEntries
+  pendleMarkets?: PendleMarketsState | null
+}
 
 export type LiquidateCounters = {
   requested: number
@@ -327,9 +340,21 @@ export async function runLiquidate(
     initial: opts.cache?.cooldowns
   })
 
-  // Pre-swap converters for exotic collateral (ERC4626 shares → underlying). Auto-detecting with
-  // per-process memoization; EXCLUDE_COLLATERALS is the operator opt-out.
-  const unwrappers = [createErc4626Unwrapper({ client, logger })]
+  // Pre-swap converters for exotic collateral (ERC4626 shares, Pendle PTs → underlying).
+  // Auto-detecting with per-process memoization; EXCLUDE_COLLATERALS is the operator opt-out.
+  // erc4626 first: a memoized eth_call beats consulting the markets list. Pendle is only
+  // constructed on chains it is deployed to — elsewhere a cold-cache markets outage would fail
+  // plain-collateral quotes too.
+  const pendle = PENDLE_CHAIN_IDS.has(config.chainId)
+    ? createPendlePtUnwrapper({
+        client: httpClient,
+        chainId: config.chainId,
+        slippageBps: config.quoting.pendleSlippageBps,
+        logger,
+        ...(opts.cache?.pendleMarkets ? { initialState: opts.cache.pendleMarkets } : {})
+      })
+    : null
+  const unwrappers = [createErc4626Unwrapper({ client, logger }), ...(pendle ? [pendle] : [])]
   const { quoteFor } = composeQuoting({
     httpClient,
     selector: venueSelector,
@@ -405,5 +430,11 @@ export async function runLiquidate(
     logger
   })
 
-  return { cache: { venues: venueSelector.dump(), cooldowns: cooldown.dump() } }
+  return {
+    cache: {
+      venues: venueSelector.dump(),
+      cooldowns: cooldown.dump(),
+      pendleMarkets: pendle ? pendle.dump() : null
+    }
+  }
 }
