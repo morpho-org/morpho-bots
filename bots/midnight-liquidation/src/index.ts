@@ -14,6 +14,8 @@ import {
   createPendingQueue,
   createRunner,
   createSigner,
+  DEFAULT_MAX_DATA_BYTES,
+  DEFAULT_MAX_GAS_LIMIT,
   initialFees,
   loadState,
   QUEUE_STATE_VERSION,
@@ -60,7 +62,17 @@ async function main() {
     rpcUrl: config.rpcUrl,
     rpcUrlFallback: config.rpcUrlFallback,
     sendRpcUrl: config.sendRpcUrl,
-    privateKey: config.liquidatorPrivateKey
+    privateKey: config.liquidatorPrivateKey,
+    // Default-deny pre-broadcast guard: only value-0 exec_606BaXt calls to this bot's Executor,
+    // under the fee/gas/size ceilings, are ever signed (see @repo/bot-kit `evaluatePolicy`).
+    policy: {
+      chainId: config.chainId,
+      executor: config.executooorAddress,
+      maxFeePerGasWei: config.maxFeeWei,
+      maxGasLimit: DEFAULT_MAX_GAS_LIMIT,
+      maxDataBytes: DEFAULT_MAX_DATA_BYTES
+    },
+    logger
   })
   const eoa = signer.account.address
 

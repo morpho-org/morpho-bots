@@ -4,8 +4,20 @@ import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test'
 import { parseTransaction } from 'viem'
 import { base } from 'viem/chains'
 
+import type { Policy } from '../src/policy'
+
+import { EXECUTOR_SELECTOR, PolicyViolationError } from '../src/policy'
 import { createSigner } from '../src/signer'
 import { TxSendError } from '../src/tx-error'
+
+const EXECUTOR = `0x${'11'.repeat(20)}` as const
+const POLICY: Policy = {
+  chainId: base.id,
+  executor: EXECUTOR,
+  maxFeePerGasWei: 300_000_000_000n,
+  maxGasLimit: 15_000_000n,
+  maxDataBytes: 65_536
+}
 
 // Throwaway well-known test key (anvil account #0) — never used to hold funds.
 const KEY: Hex = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
@@ -173,5 +185,86 @@ describe('createSigner', () => {
   it('balance returns the EOA native balance in wei', async () => {
     mockRpc({ eth_chainId: `0x${base.id.toString(16)}`, eth_getBalance: '0xde0b6b3a7640000' })
     expect(await createSigner(CONFIG).balance()).toBe(1_000_000_000_000_000_000n)
+  })
+
+  it('signs and broadcasts a policy-compliant exec call', async () => {
+    let sends = 0
+    mockRpc({
+      eth_chainId: `0x${base.id.toString(16)}`,
+      eth_getTransactionCount: '0x5',
+      eth_estimateGas: '0x5208',
+      eth_getBlockByNumber: { baseFeePerGas: '0x7' },
+      eth_sendRawTransaction: () => {
+        sends += 1
+        return TXHASH
+      }
+    })
+    const { send } = createSigner({ ...CONFIG, policy: POLICY })
+    const result = await send({
+      to: EXECUTOR,
+      data: EXECUTOR_SELECTOR,
+      maxFeePerGas: 1_000_000_000n,
+      maxPriorityFeePerGas: 1_000_000n
+    })
+    expect(result).toEqual({ nonce: 5, txHash: TXHASH })
+    expect(sends).toBe(1)
+  })
+
+  it('rejects a non-Executor target before broadcasting and rolls the nonce back', async () => {
+    let sends = 0
+    mockRpc({
+      eth_chainId: `0x${base.id.toString(16)}`,
+      eth_getTransactionCount: '0x5',
+      eth_estimateGas: '0x5208',
+      eth_getBlockByNumber: { baseFeePerGas: '0x7' },
+      eth_sendRawTransaction: () => {
+        sends += 1
+        return TXHASH
+      }
+    })
+    const { send } = createSigner({ ...CONFIG, policy: POLICY })
+    // Target is the wrong contract → policy 'executor' violation, thrown before any raw broadcast.
+    await expect(
+      send({
+        to: `0x${'99'.repeat(20)}`,
+        data: EXECUTOR_SELECTOR,
+        maxFeePerGas: 1_000_000_000n,
+        maxPriorityFeePerGas: 1_000_000n
+      })
+    ).rejects.toBeInstanceOf(PolicyViolationError)
+    expect(sends).toBe(0) // nothing broadcast
+    // The rolled-back cursor lets a subsequent compliant send reuse nonce 5.
+    expect(
+      await send({
+        to: EXECUTOR,
+        data: EXECUTOR_SELECTOR,
+        maxFeePerGas: 1_000_000_000n,
+        maxPriorityFeePerGas: 1_000_000n
+      })
+    ).toEqual({ nonce: 5, txHash: TXHASH })
+  })
+
+  it('rejects a non-exec selector before broadcasting', async () => {
+    let sends = 0
+    mockRpc({
+      eth_chainId: `0x${base.id.toString(16)}`,
+      eth_getTransactionCount: '0x5',
+      eth_estimateGas: '0x5208',
+      eth_getBlockByNumber: { baseFeePerGas: '0x7' },
+      eth_sendRawTransaction: () => {
+        sends += 1
+        return TXHASH
+      }
+    })
+    const { send } = createSigner({ ...CONFIG, policy: POLICY })
+    await expect(
+      send({
+        to: EXECUTOR,
+        data: '0xdeadbeef',
+        maxFeePerGas: 1_000_000_000n,
+        maxPriorityFeePerGas: 1_000_000n
+      })
+    ).rejects.toMatchObject({ check: 'selector' })
+    expect(sends).toBe(0)
   })
 })

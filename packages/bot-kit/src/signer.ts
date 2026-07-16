@@ -12,6 +12,8 @@ import {
   sendTransaction
 } from 'viem/actions'
 
+import type { Logger } from './logger'
+import type { Policy } from './policy'
 import type {
   GetBaseFee,
   GetConsumedNonce,
@@ -20,6 +22,7 @@ import type {
   SyncNonce
 } from './queue/pending-queue'
 
+import { evaluatePolicy, PolicyViolationError } from './policy'
 import { createHttpTransport } from './transport'
 import { TxSendError } from './tx-error'
 
@@ -51,6 +54,14 @@ export function createSigner(options: {
   /** Broadcast endpoint; sends + the signer's own reads go here (defaults to `rpcUrl`). */
   sendRpcUrl?: string | undefined
   privateKey: Hex
+  /**
+   * Default-deny signing policy. When set, every prepared transaction is checked against it between
+   * prepare and broadcast; a violation logs `signer.policy_violation` (error) and throws instead of
+   * sending. Both bots pass their Executor + ceilings here; omitted only in generic/unit contexts.
+   */
+  policy?: Policy | undefined
+  /** Where a policy violation is logged before it throws. */
+  logger?: Logger | undefined
 }): Signer {
   // Sends + the signer's own reads run against the broadcast endpoint (sendRpcUrl ?? rpcUrl). Keeping
   // the nonce/receipt reads on the same endpoint we broadcast to is deliberate: a split view (read
@@ -100,6 +111,30 @@ export function createSigner(options: {
     } catch (error) {
       if (req.nonce === undefined) nextNonce = Math.min(nextNonce ?? nonce, nonce)
       throw error
+    }
+    // Default-deny guard between prepare and broadcast: a violation means an upstream encoding bug,
+    // so fail loudly and never send. Roll the cursor back (nothing was broadcast) so the claimed
+    // nonce isn't stranded. In-process there is no remote signer to distrust, so the recovered-sender
+    // and prepared-vs-signed field checks the daemon-era client did are redundant and skipped.
+    if (options.policy) {
+      const decision = evaluatePolicy(options.policy, {
+        chainId: options.chain.id,
+        to: req.to,
+        data: req.data,
+        value: request.value ?? 0n,
+        gas: request.gas ?? 0n,
+        maxFeePerGas: req.maxFeePerGas
+      })
+      if (!decision.ok) {
+        if (req.nonce === undefined) nextNonce = Math.min(nextNonce ?? nonce, nonce)
+        options.logger?.error('signer.policy_violation', {
+          check: decision.check,
+          reason: decision.message,
+          to: req.to,
+          nonce
+        })
+        throw new PolicyViolationError(decision.message, decision.check)
+      }
     }
     try {
       const txHash = await sendTransaction(client, request)
