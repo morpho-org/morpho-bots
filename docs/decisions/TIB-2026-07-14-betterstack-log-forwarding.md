@@ -198,3 +198,22 @@ This decision _is_ an observability feature; its surface:
   Fluent Bit; Railway has no built-in log drain.
 - Implementation surface: `deploy/vector.yaml`, `deploy/docker-entrypoint.sh`, `deploy/Dockerfile`,
   `packages/evm-kit/src/logger.ts`.
+
+## Addenda
+
+### 2026-07-16 — re-pointed at the per-bot layout after the pipeline revert
+
+The op-pipeline architecture was reverted (see
+[TIB-2026-07-16-revert-to-bots-as-programs](./TIB-2026-07-16-revert-to-bots-as-programs.md)); the
+decision here (opt-in in-image Vector side-car, key-scrubbed, byte-identical when disabled) stands,
+but the implementation surface moved:
+
+- `deploy/{vector.yaml,docker-entrypoint.sh,Dockerfile}` are now **per-bot**:
+  `bots/<bot>/{vector.yaml,docker-entrypoint.sh,Dockerfile}`. The logger lives in
+  `packages/bot-kit/src/logger.ts` (there is no `@repo/evm-kit`).
+- The single-key-reader scrub is unchanged in spirit but keyed to the bot's own key env
+  (`LIQUIDATOR_PRIVATE_KEY`), not `SIGNER_PRIVATE_KEY` — there is no separate `morpho-signer` process
+  anymore; each bot holds its own key in-process.
+- BetterStack query guidance to migrate off `sense.*`/`act.*` and onto `source.*`/`transform.*` +
+  `id` is moot: those pipeline-era event names never reached production. Author queries against the
+  bots' actual in-process event names (e.g. `block.new`, `tick.end`, `tx.confirmed`).

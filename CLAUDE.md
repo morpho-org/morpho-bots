@@ -125,48 +125,32 @@ These files provide important background information about dependencies and rela
 
 This is a **bun workspaces monorepo** housing off-chain Morpho curator bots:
 
-Top level answers one question per tier — do you **run it** (`apps/`), **import it**
-(`packages/`), or **ship it** (`deploy/`):
+- `/bots/` — individual bot apps, one per bot. Each is a **standalone long-running TypeScript
+  program**: `main()` in `src/index.ts` loads config from the environment (fail-loud), builds its
+  viem clients, and drives a block-watcher + per-tick runner loop that discovers positions, reads
+  fresh on-chain state, sizes/simulates a liquidation, and broadcasts only simulation-ok
+  transactions through an in-process pending-tx queue. No bot imports another bot. Each bot owns its
+  own operator surface — `README.md`, `Dockerfile`, `docker-compose.yml`, `docker-entrypoint.sh`,
+  optional `vector.yaml`, and `scripts/deploy-railway.ts` — so it ships as its own image and
+  deploys independently. `bots/blue-liquidation` and `bots/midnight-liquidation` are the live
+  liquidators; `bots/kill-switch` is a proposal bot (docs only).
+- `/packages/` — shared libraries: `@repo/bot-kit` (the shared bot runtime — viem
+  clients/transport, JSON-lines logger, block watcher + runner loop, pending-tx queue with fee
+  policy / per-position backoff / cooldown / journal / durable state, signing policy guard,
+  simulation, revert decoding, balance metric), `@repo/swaps` (multi-venue DEX quoting, routing,
+  unwrap seam, and venue selection), `@repo/contracts` (contract ABIs + Executor sources),
+  `@repo/utils`, and `@repo/typescript-config`. A bot assembles its behavior from `@repo/bot-kit`
+  and `@repo/swaps` rather than forking a monolith.
 
-- `/apps/` — independently runnable programs, all leaves of the dependency graph (no app imports
-  another app). `apps/cli` (`@repo/cli`, bin `morpho-bots`) runs the pipeline: UNIX-pipeable
-  one-shot **op commands** (commands ARE op names). Each domain exposes a flat set of ops — each a
-  **source** (emits transparent position JSON) XOR a **transform** (position JSON → transaction
-  JSON). Position records carry explicit `marketId` and `borrower`; Blue also carries the complete
-  immutable market parameters. Transforms validate their semantic inputs, tolerate additive fields,
-  re-read mutable chain state, and never parse the correlation-only `id`. Non-actions and failures
-  are structured stderr logs. Ops dispatch at runtime from each core's `OPS` table; the CLI
-  maintains no duplicate manifest. Pipelines end in `morpho-queued submit`, a keyless relay to the
-  per-chain `morpho-queued serve` daemon — so a bot needs both the pipeline loop AND a running
-  daemon. Which ops run is caller policy (exogenous composition — several ops = several loop
-  lines). Config and cross-tick state live under `~/.morpho-bots` (`MORPHO_BOTS_HOME` overrides).
-  stdout carries JSON Lines; ALL logs go to stderr. A TUI is planned.
-  `apps/queued` (`@repo/queued`, bin `morpho-queued`) is the per-chain, domain-agnostic
-  transaction-queue daemon — `serve` alone owns dedupe/re-sim/fees/nonce/submit and continuous
-  settlement/RBF; `submit` streams transaction JSON directly over its Unix socket and receives
-  minimal acknowledgements. Settlement lives in the daemon journal. Queue state is per-chain,
-  never per-domain. `apps/signer` (`@repo/signer`, bin `morpho-signer`) is a distinct
-  one-chain/one-Executor agent: zero value and the Executor selector are invariants, it exposes
-  explicit prepared-transaction signing, and the queue verifies the recovered sender plus every
-  prepared field before broadcast. It does not decode nested Executor calls. Both queued and
-  signer are configured only through argv/environment, use one RPC topology, and dry-run operation
-  does not start or require the signer.
-- `/packages/` — libraries: the bot cores (`@repo/blue-liquidation`, `@repo/midnight-liquidation`,
-  each exporting an `OPS` table of source/transform ops — the seam types live in `@repo/pipeline`'s
-  `ops.ts`) and the shared layers (`@repo/utils`, `@repo/pipeline` (op seam, wire records,
-  simulation), `@repo/evm-kit` (deployless client, revert decoding, logger), `@repo/ipc`
-  (Unix-socket JSON server), `@repo/signer-client` (the signer's client + shared wire protocol),
-  `@repo/swaps`, `@repo/home`, `@repo/contracts`, `@repo/typescript-config`).
-- `/deploy/` — deployment packaging (`@repo/deploy`): the single bot Docker image (which
-  AOT-builds the CLI to `dist/main.js`), the pipeline entrypoint loop, the docker-compose files,
-  and the Railway deploy scripts. Anything that turns the generic CLI into a persistent
-  liquidation bot lives here, not in `apps/`. `deploy/blue-rindexer` is a non-workspace deploy
-  artifact (Dockerfile + rindexer.yaml) that indexes Morpho Blue `Borrow` events into Postgres for
-  blue's discovery.
+Cross-tick state that must survive a restart (the pending-tx queue and a terminal-outcome journal)
+persists under `BOT_STATE_DIR` (default `~/.morpho-bots`), namespaced by bot and chain, and is
+reconciled against chain truth on boot. Everything else is in-process memory, re-derived each tick.
 
-See [TIB-2026-07-13-bot-architecture](./docs/decisions/TIB-2026-07-13-bot-architecture.md) for the
-whole architecture — the one-shot op pipeline, wire contract, per-chain queue and signer daemons,
-config/state model, and the `apps/`+`packages/`+`deploy/` monorepo shape.
+Each bot began this way; a one-shot op-pipeline architecture (per-chain `queued`/`signer` daemons, a
+transparent JSON-Lines wire contract) was tried for ~a week and reverted — see
+[TIB-2026-07-16-revert-to-bots-as-programs](./docs/decisions/TIB-2026-07-16-revert-to-bots-as-programs.md),
+which supersedes the now-historical
+[TIB-2026-07-13-bot-architecture](./docs/decisions/TIB-2026-07-13-bot-architecture.md).
 
 **Key technologies**: bun 1.3.12 (runtime + package manager + workspace task runner), Node.js
 24.14.1, TypeScript 6.0, viem for Web3, oxlint + oxfmt for lint/format, knip for dead-code
@@ -206,38 +190,29 @@ All commit messages, PR titles, and Linear ticket titles use the same format:
 
 **Types:** `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `perf`, `ci`
 
-**Scopes — Apps & Packages:**
+**Scopes — Packages:**
 
-| Package                    | Scope                  |
-| -------------------------- | ---------------------- |
-| @repo/blue-liquidation     | `blue-liquidation`     |
-| @repo/cli                  | `cli`                  |
-| @repo/contracts            | `contracts`            |
-| @repo/deploy               | `deploy`               |
-| @repo/evm-kit              | `evm-kit`              |
-| @repo/home                 | `home`                 |
-| @repo/ipc                  | `ipc`                  |
-| @repo/midnight-liquidation | `midnight-liquidation` |
-| @repo/pipeline             | `pipeline`             |
-| @repo/queued               | `queued`               |
-| @repo/signer               | `signer`               |
-| @repo/signer-client        | `signer-client`        |
-| @repo/swaps                | `swaps`                |
-| @repo/typescript-config    | `ts-config`            |
-| @repo/utils                | `utils`                |
+| Package                 | Scope       |
+| ----------------------- | ----------- |
+| @repo/bot-kit           | `bot-kit`   |
+| @repo/contracts         | `contracts` |
+| @repo/swaps             | `swaps`     |
+| @repo/typescript-config | `ts-config` |
+| @repo/utils             | `utils`     |
 
-**Scopes — Deploy artifacts:**
+**Scopes — Bots:**
 
-| Artifact             | Scope           |
-| -------------------- | --------------- |
-| deploy/blue-rindexer | `blue-rindexer` |
+| Bot                  | Scope                  |
+| -------------------- | ---------------------- |
+| blue-liquidation     | `blue-liquidation`     |
+| midnight-liquidation | `midnight-liquidation` |
 
 **Scopes — Cross-cutting:**
 
 | Scope         | Use when                                                    |
 | ------------- | ----------------------------------------------------------- |
 | `repo`        | Repo-wide scaffolding, workspace config, root-level files   |
-| `bots`        | A change spanning both bot cores                            |
+| `bots`        | Change spans multiple bots                                  |
 | `packages`    | Change spans multiple packages                              |
 | `ci`          | CI/CD pipeline changes                                      |
 | `agents`      | `CLAUDE.md`, `.mcp.json`, editor configs, agent definitions |

@@ -26,27 +26,33 @@ confirmed at boot by the `discovery.schema` startup log.
   (`bun run --filter @repo/contracts deploy:executor`). The bot derives its CREATE2 address and
   refuses to start if it holds no code.
 - **Postgres** + a **rindexer** instance for borrower discovery (bundled in `docker-compose.yml`).
-- Optional: **0x** / **1inch** API keys, only if a collateral routes through them.
+- Optional: **0x** / **1inch** API keys, only if a collateral routes through them (**LiFi** and
+  **LiquidSwap** venues route keyless; a `LIFI_API_KEY` only raises LiFi's rate limits).
 
 ## Configuration
 
 Env vars (fail-loud on a missing required var, an unknown chain, or a malformed value):
 
-| Var                                                                 | Required | Default         | Purpose                                                |
-| ------------------------------------------------------------------- | -------- | --------------- | ------------------------------------------------------ |
-| `CHAIN_ID`                                                          | yes      | —               | Must be in the chain map (`8453`, `4663`)              |
-| `RPC_URL`                                                           | yes      | —               | Primary RPC (reads, simulation, sends)                 |
-| `RPC_URL_FALLBACK`                                                  | no       | —               | Optional viem-dlc `failover` endpoint                  |
-| `LIQUIDATOR_PRIVATE_KEY`                                            | yes      | —               | EOA hex key (`0x` + 32-byte hex)                       |
-| `EXECUTOOOR_ADDRESS`                                                | no       | derived         | Override; default is the derived CREATE2 address       |
-| `DATABASE_URL`                                                      | yes      | —               | Postgres for the co-located rindexer (discovery)       |
-| `SWAP_CONFIG_PATH`                                                  | no       | —               | Per-collateral, per-venue swap params JSON             |
-| `MAX_FEE_GWEI`                                                      | no       | `300`           | Hard ceiling for fee bumps                             |
-| `ZEROX_API_KEY` / `ONEINCH_API_KEY`                                 | cond.    | —               | Required iff a collateral uses that venue              |
-| `MAX_ROUTE_IMPACT_BPS`                                              | no       | `500`           | Reject aggregator routes this far below the oracle ref |
-| `QUOTE_TIMEOUT_MS` / `HTTP_RPS` / `HTTP_BURST` / `HTTP_MAX_RETRIES` | no       | see `config.ts` | Aggregator HTTP tunables                               |
-| `BACKOFF_BASE_BLOCKS` / `BACKOFF_MAX_BLOCKS`                        | no       | `2` / `64`      | Per-position failure backoff                           |
-| `LOG_LEVEL`                                                         | no       | `info`          | `debug` \| `info` \| `warn` \| `error`                 |
+| Var                                                                 | Required | Default          | Purpose                                                                                                                            |
+| ------------------------------------------------------------------- | -------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `CHAIN_ID`                                                          | yes      | —                | Must be in the chain map (`8453`, `4663`)                                                                                          |
+| `RPC_URL`                                                           | yes      | —                | Primary RPC (reads, simulation, sends)                                                                                             |
+| `RPC_URL_FALLBACK`                                                  | no       | —                | Optional viem-dlc `failover` endpoint                                                                                              |
+| `LIQUIDATOR_PRIVATE_KEY`                                            | yes      | —                | EOA hex key (`0x` + 32-byte hex)                                                                                                   |
+| `EXECUTOOOR_ADDRESS`                                                | no       | derived          | Override; default is the derived CREATE2 address                                                                                   |
+| `DATABASE_URL`                                                      | yes      | —                | Postgres for the co-located rindexer (discovery)                                                                                   |
+| `SWAP_CONFIG_PATH`                                                  | no       | —                | Per-collateral, per-venue swap params JSON                                                                                         |
+| `MAX_FEE_GWEI`                                                      | no       | `300`            | Hard ceiling for fee bumps                                                                                                         |
+| `ZEROX_API_KEY` / `ONEINCH_API_KEY`                                 | cond.    | —                | Required iff a collateral uses that venue                                                                                          |
+| `LIFI_API_KEY`                                                      | no       | —                | Optional; LiFi routes keyless, a key only raises its rate limits                                                                   |
+| `MAX_ROUTE_IMPACT_BPS`                                              | no       | `500`            | Reject aggregator routes this far below the oracle ref                                                                             |
+| `PENDLE_SLIPPAGE_BPS`                                               | no       | `50`             | Slippage for the Pendle PT → underlying unwrap hop (before the downstream venue sells)                                             |
+| `QUOTE_TIMEOUT_MS` / `HTTP_RPS` / `HTTP_BURST` / `HTTP_MAX_RETRIES` | no       | see `config.ts`  | Aggregator HTTP tunables                                                                                                           |
+| `BACKOFF_BASE_BLOCKS` / `BACKOFF_MAX_BLOCKS`                        | no       | `2` / `64`       | Per-position failure backoff                                                                                                       |
+| `POSITION_LIQUIDATION_COOLDOWN_MS`                                  | no       | `0`              | Opt-in per-position cooldown (ms) after a failed attempt; `0` disables (re-attempt every tick)                                     |
+| `BOT_STATE_DIR`                                                     | no       | `~/.morpho-bots` | Dir for the persisted pending-tx queue + terminal-outcome journal (per bot + chain); point at a mounted volume to survive restarts |
+| `BETTERSTACK_SOURCE_TOKEN` / `BETTERSTACK_INGESTING_HOST`           | no       | —                | Opt-in log shipping; when both are set the in-image Vector side-car forwards stderr to BetterStack (inert otherwise)               |
+| `LOG_LEVEL`                                                         | no       | `info`           | `debug` \| `info` \| `warn` \| `error`                                                                                             |
 
 For Compose/Railway, operator-facing RPC env vars are chain-id suffixed: `RPC_URL_8453`,
 `RPC_URL_4663`, and optional `RINDEXER_RPC_URL_<chainId>` overrides. Inside each bot container the
@@ -55,7 +61,9 @@ runtime env remains unsuffixed (`RPC_URL`) because each service runs exactly one
 ### Swap config
 
 A JSON file, keyed by chain id then by EIP-55 collateral address, each entry a discriminated union
-on `venue` (see [`configs/example.json`](./configs/example.json)):
+on `venue` — `uniswap-v3` (direct, keyless), `0x`, `1inch`, `lifi` (keyless), or `liquidswap`
+(keyless, HyperEVM). Collateral that wraps an ERC-4626 vault or a Pendle PT is auto-unwrapped before
+the venue swap (see [`configs/example.json`](./configs/example.json)):
 
 ```jsonc
 {
@@ -125,6 +133,11 @@ Idempotent: provisions managed Postgres + one shared `rindexer` service + per-ch
 runners, reusing existing services/vars. Secrets are piped via stdin (never argv, never logged).
 After `bot-8453` is confirmed healthy, the script attempts to remove the legacy single-chain `bot`
 service to avoid running two Base liquidators.
+
+Set `DEPLOY_ONLY=1` (or `true`) to re-ship the **already-provisioned** services from the current
+working tree without setting any secrets or variables — the mode the deploy CI uses (it holds no
+RPC/keys). A full first-time provision needs `RPC_URL_<chainId>` + `LIQUIDATOR_PRIVATE_KEY`;
+`DEPLOY_ONLY` needs neither.
 
 ### Swap config (manual step)
 
