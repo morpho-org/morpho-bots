@@ -41,6 +41,10 @@ type TickCounters = {
  *
  * No staleness skip: the lens reads every candidate fresh on-chain, so rindexer lag is coverage
  * latency, never a correctness issue — we emit `rindexer.lag` for observability and always proceed.
+ *
+ * Discovery failure is tolerated: a transient error is logged (`discover.error`) and the tick proceeds
+ * with zero new candidates. The lens reads every candidate fresh on-chain, so discovery is a coverage
+ * source, never a correctness dependency.
  */
 export async function runTick(deps: {
   discover: () => Promise<BorrowerCandidate[]>
@@ -109,9 +113,12 @@ export async function runTick(deps: {
   }
 
   // 2. Discover the (marketParams, borrower) universe → lens inputs. The lens re-derives the id from
-  //    params on-chain, so no `caller`/gate is threaded (Blue is permissionless).
-  const candidates = await discover()
-  const pairs: LensInput[] = candidates.map(candidate => ({
+  //    params on-chain, so no `caller`/gate is threaded (Blue is permissionless). A transient
+  //    discovery failure is non-fatal: log it and proceed with zero candidates so the pending queue
+  //    (confirmations / fee bumps) maintained below is still driven this block.
+  const { data: candidates, error: discoverError } = await tryCatch(discover())
+  if (discoverError) logger.warn('discover.error', { error: discoverError.message })
+  const pairs: LensInput[] = (candidates ?? []).map(candidate => ({
     params: candidate.marketParams,
     borrower: candidate.borrower
   }))

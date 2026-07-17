@@ -31,6 +31,7 @@ import type { MarketParams } from './market'
 import type { LiquidationPlan } from './sizing/plan'
 
 import { loadConfig } from './config'
+import { SETTLED_COOLDOWN_BLOCKS } from './constants'
 import {
   createPostgresQuery,
   discoverCandidates,
@@ -42,6 +43,7 @@ import { composeQuoting } from './quotes'
 import { runTick } from './runner/tick'
 import { readBlueLiquidationLens } from './state/lens.sol'
 import { createMarketParamsResolver, multicallIdToMarketParams } from './state/market-params'
+import { revertReason } from './tx-error'
 
 async function main() {
   const config = loadConfig()
@@ -229,7 +231,9 @@ async function main() {
     getConsumedNonce: signer.consumedNonce,
     syncNonce: signer.syncNonce,
     maxFeeWei: config.maxFeeWei,
-    logger
+    logger,
+    settledCooldownBlocks: SETTLED_COOLDOWN_BLOCKS,
+    revertReason
   })
 
   // Periodic EOA-balance metric so operators can watch gas drain (see `signer.balance`).
@@ -288,7 +292,8 @@ async function main() {
     getBlockNumber: () => getBlockNumber(client),
     tick,
     maintain,
-    logger
+    logger,
+    revertReason
   })
   runner.start()
 

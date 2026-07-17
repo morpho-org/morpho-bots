@@ -27,3 +27,15 @@ export const VIRTUAL_SHARES = 10n ** 6n
 /** Virtual assets offset, 1 — added to the assets total in every share/asset conversion
  * (SharesMathLib.sol). */
 export const VIRTUAL_ASSETS = 1n
+
+// --- Tx-queue operational tuning (consumed by the nonce queue / runner) ---
+
+/**
+ * Blocks a position stays in the queue's backpressure set AFTER its tx settles (confirm/revert/drop),
+ * suppressing re-submission. A liquidation confirms on the send RPC before the (possibly lagging)
+ * read RPC reflects the cleared position, so without this cooldown the tick re-plans an
+ * already-liquidated borrower and broadcasts a doomed re-send that reverts (the position is now
+ * healthy). Sized well above the observed read/confirm head skew; the bot's liquidations are
+ * terminal, so a brief suppression of an already-acted position is harmless.
+ */
+export const SETTLED_COOLDOWN_BLOCKS = 20n
