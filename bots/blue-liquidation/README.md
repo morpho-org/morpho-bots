@@ -1,10 +1,12 @@
 # Blue Liquidation Bot
 
 A non-competitive, ecosystem-backstop liquidator for **Morpho Blue** on Base and Robinhood. It
-watches indexed borrowers, reads fresh accrued state, sizes seize-exact liquidations, simulates the
-final Executor call, and broadcasts only simulation-ok plans.
+discovers at-risk borrowers via the Morpho GraphQL API, reads fresh accrued state, sizes seize-exact
+liquidations, simulates the final Executor call, and broadcasts only simulation-ok plans.
 
-Design: [TIB-2026-06-30-blue-liquidation-bot](../../docs/decisions/TIB-2026-06-30-blue-liquidation-bot.md).
+Design: [TIB-2026-06-30-blue-liquidation-bot](../../docs/decisions/TIB-2026-06-30-blue-liquidation-bot.md)
+(its discovery + swap-routing sections are superseded by the GraphQL discovery and key-inferred
+multi-venue quoting described below).
 
 ## Status
 
@@ -13,8 +15,7 @@ IRM accrual sim → oracle → health → decode) is **validated against 256 liv
 `probe:lens`, and the lens gas model is **measured** (see `state/lens.sol.ts`). The end-to-end
 _liquidate-broadcast_ fork suite is written but **fixture-gated** — it needs a live-unhealthy Base
 position (none exist while the market is healthy), `RPC_URL_8453`, and
-`BLUE_LIQUIDATION_FORK_FIXTURE` (see [Testing](#testing)). The rindexer `borrow` table columns are
-confirmed at boot by the `discovery.schema` startup log.
+`BLUE_LIQUIDATION_FORK_FIXTURE` (see [Testing](#testing)).
 
 ## Prerequisites
 
@@ -25,74 +26,58 @@ confirmed at boot by the `discovery.schema` startup log.
 - The generic **Executor** singleton deployed on each chain the bot runs on
   (`bun run --filter @repo/contracts deploy:executor`). The bot derives its CREATE2 address and
   refuses to start if it holds no code.
-- **Postgres** + a **rindexer** instance for borrower discovery (bundled in `docker-compose.yml`).
-- Optional: **0x** / **1inch** API keys, only if a collateral routes through them (**LiFi** and
-  **LiquidSwap** venues route keyless; a `LIFI_API_KEY` only raises LiFi's rate limits).
+- At least one enabled **swap venue** — a `ZEROX_API_KEY` / `ONEINCH_API_KEY` / `LIFI_API_KEY`, or
+  `ENABLE_LIFI=true` (LiFi routes keyless; its key only raises rate limits). A venue-less deployment
+  must opt into detection-only mode explicitly (`ALLOW_DETECTION_ONLY=true`).
 
 ## Configuration
 
 Env vars (fail-loud on a missing required var, an unknown chain, or a malformed value):
 
-| Var                                                                 | Required | Default         | Purpose                                                                                                                               |
-| ------------------------------------------------------------------- | -------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `CHAIN_ID`                                                          | yes      | —               | Must be in the chain map (`8453`, `4663`)                                                                                             |
-| `RPC_URL`                                                           | yes      | —               | Primary RPC (reads, simulation, sends)                                                                                                |
-| `RPC_URL_FALLBACK`                                                  | no       | —               | Optional viem-dlc `failover` endpoint                                                                                                 |
-| `LIQUIDATOR_PRIVATE_KEY`                                            | yes      | —               | EOA hex key (`0x` + 32-byte hex)                                                                                                      |
-| `EXECUTOOOR_ADDRESS`                                                | no       | derived         | Override; default is the derived CREATE2 address                                                                                      |
-| `DATABASE_URL`                                                      | yes      | —               | Postgres for the co-located rindexer (discovery)                                                                                      |
-| `SWAP_CONFIG_PATH`                                                  | no       | —               | Per-collateral, per-venue swap params JSON                                                                                            |
-| `MAX_FEE_GWEI`                                                      | no       | `300`           | Hard ceiling for fee bumps                                                                                                            |
-| `ZEROX_API_KEY` / `ONEINCH_API_KEY`                                 | cond.    | —               | Required iff a collateral uses that venue                                                                                             |
-| `LIFI_API_KEY`                                                      | no       | —               | Optional; LiFi routes keyless, a key only raises its rate limits                                                                      |
-| `MAX_ROUTE_IMPACT_BPS`                                              | no       | `500`           | Reject aggregator routes this far below the oracle ref                                                                                |
-| `PENDLE_SLIPPAGE_BPS`                                               | no       | `50`            | Slippage for the Pendle PT → underlying unwrap hop (before the downstream venue sells)                                                |
-| `QUOTE_TIMEOUT_MS` / `HTTP_RPS` / `HTTP_BURST` / `HTTP_MAX_RETRIES` | no       | see `config.ts` | Aggregator HTTP tunables                                                                                                              |
-| `BACKOFF_BASE_BLOCKS` / `BACKOFF_MAX_BLOCKS`                        | no       | `2` / `64`      | Per-position failure backoff                                                                                                          |
-| `POSITION_LIQUIDATION_COOLDOWN_MS`                                  | no       | `0`             | Opt-in per-position cooldown (ms) after a failed attempt; `0` disables (re-attempt every tick)                                        |
-| `BETTERSTACK_SOURCE_TOKEN` / `BETTERSTACK_INGESTING_HOST`           | no       | —               | Opt-in log shipping; when both are set the bot's in-process loglayer transport ships structured logs to BetterStack (inert otherwise) |
-| `LOG_LEVEL`                                                         | no       | `info`          | `debug` \| `info` \| `warn` \| `error`                                                                                                |
+| Var                                                                 | Required | Default                          | Purpose                                                                                                                               |
+| ------------------------------------------------------------------- | -------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `CHAIN_ID`                                                          | yes      | —                                | Must be in the chain map (`8453`, `4663`)                                                                                             |
+| `RPC_URL`                                                           | yes      | —                                | Primary RPC (reads, simulation, sends)                                                                                                |
+| `RPC_URL_FALLBACK`                                                  | no       | —                                | Optional viem-dlc `failover` endpoint                                                                                                 |
+| `LIQUIDATOR_PRIVATE_KEY`                                            | yes      | —                                | EOA hex key (`0x` + 32-byte hex)                                                                                                      |
+| `EXECUTOOOR_ADDRESS`                                                | no       | derived                          | Override; default is the derived CREATE2 address                                                                                      |
+| `MORPHO_API_URL`                                                    | no       | `https://api.morpho.org/graphql` | GraphQL endpoint for borrower discovery                                                                                               |
+| `HEALTH_FACTOR_LTE`                                                 | no       | `1.02`                           | Discovery health-factor cutoff (min `1.0` — throws below)                                                                             |
+| `ZEROX_API_KEY` / `ONEINCH_API_KEY` / `LIFI_API_KEY`                | no       | —                                | Each key **enables** its venue; LiFi also via `ENABLE_LIFI` (keyless)                                                                 |
+| `ENABLE_LIFI`                                                       | no       | `false`                          | Enable LiFi without a key                                                                                                             |
+| `ALLOW_DETECTION_ONLY`                                              | no       | `false`                          | Opt-in: boot with zero venues (discover + log only, skip every liquidation). Without it, zero venues is a startup error               |
+| `SLIPPAGE_BPS`                                                      | no       | `100`                            | Global venue slippage (routing is no longer per-collateral)                                                                           |
+| `EXCLUDE_COLLATERALS`                                               | no       | —                                | Comma-separated collateral deny-list (skipped with `config.no_swap_path`)                                                             |
+| `ZEROX_BASE_URL` / `ONEINCH_BASE_URL` / `LIFI_BASE_URL`             | no       | —                                | Optional per-venue API host overrides                                                                                                 |
+| `PROBE_STALE_MS` / `PROBE_HTTP_RPS` / `PROBE_LADDER`                | no       | see `config.ts`                  | Venue-probe cache staleness, isolated probe rate, and whole-token ladder sizes                                                        |
+| `MAX_FEE_GWEI`                                                      | no       | `300`                            | Hard ceiling for fee bumps                                                                                                            |
+| `MAX_ROUTE_IMPACT_BPS`                                              | no       | `500`                            | Reject aggregator routes this far below the oracle ref                                                                                |
+| `PENDLE_SLIPPAGE_BPS`                                               | no       | `50`                             | Slippage for the Pendle PT → underlying unwrap hop (before the downstream venue sells)                                                |
+| `QUOTE_TIMEOUT_MS` / `HTTP_RPS` / `HTTP_BURST` / `HTTP_MAX_RETRIES` | no       | see `config.ts`                  | Aggregator HTTP tunables                                                                                                              |
+| `BACKOFF_BASE_BLOCKS` / `BACKOFF_MAX_BLOCKS`                        | no       | `2` / `64`                       | Per-position failure backoff                                                                                                          |
+| `POSITION_LIQUIDATION_COOLDOWN_MS`                                  | no       | `0`                              | Opt-in per-position cooldown (ms) after a failed attempt; `0` disables (re-attempt every tick)                                        |
+| `BETTERSTACK_SOURCE_TOKEN` / `BETTERSTACK_INGESTING_HOST`           | no       | —                                | Opt-in log shipping; when both are set the bot's in-process loglayer transport ships structured logs to BetterStack (inert otherwise) |
+| `BETTERSTACK_HEARTBEAT_URL`                                         | no       | —                                | Optional Better Stack Uptime heartbeat URL, pinged every minute; failures only log a warning and never interrupt liquidations         |
+| `LOG_LEVEL`                                                         | no       | `info`                           | `debug` \| `info` \| `warn` \| `error`                                                                                                |
 
 For Compose/Railway, operator-facing RPC env vars are chain-id suffixed: `RPC_URL_8453`,
-`RPC_URL_4663`, and optional `RINDEXER_RPC_URL_<chainId>` overrides. Inside each bot container the
-runtime env remains unsuffixed (`RPC_URL`) because each service runs exactly one chain.
+`RPC_URL_4663`, and optional distinct `BETTERSTACK_HEARTBEAT_URL_<chainId>` values. Inside each bot
+container the runtime env remains unsuffixed because each service runs exactly one chain.
 
-### Swap config
+### Venues
 
-A JSON file, keyed by chain id then by EIP-55 collateral address, each entry a discriminated union
-on `venue` — `uniswap-v3` (direct, keyless), `0x`, `1inch`, `lifi` (keyless), or `liquidswap`
-(keyless, HyperEVM). Collateral that wraps an ERC-4626 vault or a Pendle PT is auto-unwrapped before
-the venue swap (see [`configs/example.json`](./configs/example.json)):
+There is no per-collateral routing file. Venues are **enabled by key presence** (`ZEROX_API_KEY`,
+`ONEINCH_API_KEY`, `LIFI_API_KEY` — or `ENABLE_LIFI=true` for keyless LiFi), and for each
+liquidatable position a background probe cache ranks the enabled venues best-first for the
+`(collateral, loan)` pair (log-scaled indicative quotes on an isolated rate budget — see
+`PROBE_LADDER`/`PROBE_STALE_MS`/`PROBE_HTTP_RPS`). The firm quote goes to the top venue and falls
+through to the next on failure, so a transient venue outage costs coverage, never correctness.
+Collateral that wraps an ERC-4626 vault or a Pendle PT is auto-unwrapped before the venue swap.
+`EXCLUDE_COLLATERALS` is the operator's deny-list for collaterals the bot must never seize/hold.
 
-```jsonc
-{
-  "8453": {
-    "0x4200000000000000000000000000000000000006": { "venue": "uniswap-v3", "router": "0x2626…e481", "fee": 500, "slippageBps": 100 },
-    "0xcbB7C0…33Bf":                               { "venue": "0x", "slippageBps": 100 },
-    "0xc1CBa3…e452":                               { "venue": "1inch", "slippageBps": 100 }
-  }
-}
-```
-
-**API keys never live in this file** — they come from `ZEROX_API_KEY` / `ONEINCH_API_KEY` at the
-point of use. A collateral with no entry is skipped (`config.no_swap_path`), so coverage is bounded to
-collaterals the operator has routed. The bot boots without any swap config (it discovers borrowers and
-skips every routed liquidation), so a first deploy can host the volume upload before the file exists.
-
-**Keyed by collateral, not by market/pair.** A liquidation only ever swaps in one direction — the
-seized **collateral → the market's loan token** — so the routing question is purely "how do I sell
-this collateral?", which is a property of the collateral's liquidity, not of the pair. Aggregator
-venues (`0x`/`1inch`) route collateral → _any_ loan token, so one entry per collateral covers every
-market that uses it. The one caveat is the direct `uniswap-v3` venue: it swaps through a single
-`(collateral, fee)` pool, so it assumes a direct collateral→loan pool at that fee exists for every
-market using that collateral — if a collateral is borrowed against different loan tokens and lacks a
-direct pool for one, route it through an aggregator instead (pair-keyed routing would be the fix if a
-direct-DEX-only deployment ever needed it). `simulate()` rejects mis-keyed routes before broadcast.
-`configs/example.json` covers the top live Base collaterals (by active positions): cbBTC
-(`0xcbB7C0…33Bf`), WETH (`0x4200…0006`), cbXRP (`0xcb5852…a4af`), SOL (`0x311935…9cf82`), cbETH
-(`0x2Ae3F1…Dec22`), cbDOGE (`0xcbD06E…eb510`), cbADA (`0xcbADA7…7b8c`), JitoSOL (`0x97bE14…C34de`),
-wstETH (`0xc1CBa3…e452`), AERO (`0x940181…D98631`) — edit to taste (the file is illustrative; verify
-pools/fees and set the API keys for any aggregator venue you use).
+With **zero venues** the bot refuses to start unless `ALLOW_DETECTION_ONLY=true`, in which case it
+discovers and logs liquidatable positions but skips every liquidation (`config.no_swap_path`) — a
+rotated/forgotten key must not quietly disable liquidations.
 
 ## Running Locally
 
@@ -100,14 +85,12 @@ pools/fees and set the API keys for any aggregator venue you use).
 export CHAIN_ID=8453
 export RPC_URL=https://…
 export LIQUIDATOR_PRIVATE_KEY=0x…
-export DATABASE_URL=postgres://…
-export SWAP_CONFIG_PATH=./configs/example.json
+export ZEROX_API_KEY=…            # or ENABLE_LIFI=true, or ALLOW_DETECTION_ONLY=true
 bun run --filter @morpho-org/blue-liquidation start
 ```
 
 `prestart` builds the workspace packages (soltag-compiles `@repo/contracts` and materializes the ABI).
-Discovery needs a running, indexed rindexer against the same `DATABASE_URL` — the easiest path is
-Docker Compose below.
+Discovery hits the public Morpho GraphQL API — no indexer or database to run.
 
 ## Running With Docker Compose
 
@@ -115,13 +98,15 @@ Docker Compose below.
 cd bots/blue-liquidation
 export RPC_URL_8453=https://…
 export LIQUIDATOR_PRIVATE_KEY=0x…
+export ZEROX_API_KEY=…
 docker compose up --build
 ```
 
-Brings up Postgres, one shared rindexer (indexing `Borrow` on Base and Robinhood), and one bot per
-chain against the same `DATABASE_URL`. `RPC_URL_4663` is optional locally because Compose defaults
-Robinhood to its public RPC. The build context is the repo root so the bun workspace resolves. The
-rindexer image bakes in the generated `Morpho.json` ABI, so it is not committed.
+Brings up one bot per chain (`bot-base`, `bot-robinhood`) — nothing else. `RPC_URL_4663` is optional
+locally because Compose defaults Robinhood to its public RPC. Robinhood defaults to detection-only
+(`ALLOW_DETECTION_ONLY_4663` defaults true) and takes chainId-suffixed venue inputs
+(`ZEROX_API_KEY_4663` etc.) so arming Base never silently arms it. The build context is the repo
+root so the bun workspace resolves.
 
 ## Deploying to Railway
 
@@ -134,42 +119,44 @@ export RAILWAY_PROJECT_ID=…
 export RPC_URL_8453=https://…
 export RPC_URL_4663=https://…
 export LIQUIDATOR_PRIVATE_KEY=0x…
+export ZEROX_API_KEY=…                 # venue inputs; per-chain via ZEROX_API_KEY_<chainId> etc.
+export ALLOW_DETECTION_ONLY_4663=true  # required while Robinhood has no venue
 bun run --filter @morpho-org/blue-liquidation deploy:railway
-# Optional: RINDEXER_RPC_URL_<chainId> (defaults to RPC_URL_<chainId>),
-# ZEROX_API_KEY[_<chainId>] / ONEINCH_API_KEY[_<chainId>],
+# Optional: ENABLE_LIFI[_<chainId>], ONEINCH_API_KEY[_<chainId>] / LIFI_API_KEY[_<chainId>],
 # RAILWAY_ENVIRONMENT (defaults to production).
 ```
 
-Idempotent: provisions managed Postgres + one shared `rindexer` service + per-chain `bot-<chainId>`
-runners, reusing existing services/vars. Secrets are piped via stdin (never argv, never logged).
-After `bot-8453` is confirmed healthy, the script attempts to remove the legacy single-chain `bot`
-service to avoid running two Base liquidators.
+Idempotent: provisions one per-chain `bot-<chainId>` runner each, reusing existing services/vars.
+Secrets are piped via stdin (never argv, never logged). The whole venue posture is **synchronized**
+on every full run: `ENABLE_LIFI`/`ALLOW_DETECTION_ONLY` are set explicitly, and each venue key is
+either set from this run's inputs or **deleted** when absent — so neither a stale detection-only
+opt-in nor a dropped venue key can linger from a previous run. A chain with no venue input and no
+opt-in fails loud before any Railway mutation. A `CRASHED` deployment is a failed deploy (the bot
+fails loud on a bad config). After `bot-8453` is confirmed healthy, the script attempts to remove
+the legacy single-chain `bot` service to avoid running two Base liquidators.
+
+Railway service names are project-wide. Production retains `bot-<chainId>`; every other environment
+is prefixed (for example, `staging-bot-8453`).
 
 Set `DEPLOY_ONLY=1` (or `true`) to re-ship the **already-provisioned** services from the current
 working tree without setting any secrets or variables — the mode the deploy CI uses (it holds no
 RPC/keys). A full first-time provision needs `RPC_URL_<chainId>` + `LIQUIDATOR_PRIVATE_KEY`;
 `DEPLOY_ONLY` needs neither.
 
-### Swap config (manual step)
-
-Each chain bot has its own `/config` Railway volume. Upload swap config out-of-band once the target
-bot is up:
-
-```sh
-railway volume files upload ./swap.config.json /config/swap.json --overwrite
-```
-
-Select the target bot service/volume when prompted (for example `bot-8453`). Restart that bot
-afterward to pick up routes. Until then it runs but skips routed liquidations.
+**One-time migration teardown**: earlier deployments provisioned a managed `Postgres` and a
+`rindexer` service (plus `staging-` prefixed variants) for discovery. The bot no longer reads them —
+once the new bots are confirmed healthy in an environment, delete those services and their volumes
+from the Railway dashboard. The deploy script never deletes a database itself.
 
 ## How It Works
 
 ### Startup
 
-Load + validate config, build the signer (wallet client + local nonce cursor) and the deployless read
-client, then fail-loud liveness-check **both** the Executor and the Morpho singleton hold code. Wire
-the per-collateral swap map, the rate-limited HTTP client, the quoter, the backoff, and the pending
-queue, and start the block watcher.
+Load + validate config (including the venue inference and the zero-venue gate), build the signer
+(wallet client + local nonce cursor) and the deployless read client, then fail-loud liveness-check
+**both** the Executor and the Morpho singleton hold code. Wire the venue selector + the two
+rate-limited HTTP clients (firm quotes vs background probes), the quoter, the backoff, and the
+pending queue, run one discovery self-check, and start the block watcher.
 
 ### Trigger
 
@@ -178,21 +165,25 @@ backlog. A coverage bot re-derives its work each block, so a skipped intermediat
 
 ### Discovery
 
-A co-located rindexer indexes the Morpho `Borrow` event for each configured chain. Base uses the
-canonical singleton `0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb`; Robinhood uses its own singleton
+Each tick, `discovery/borrowers.ts` POSTs one `marketPositions` GraphQL query to
+`api.morpho.org/graphql` per page, filtered server-side to **this chain** (`chainId_in`), **listed
+markets only** (`marketListed: true`), and positions at or below `HEALTH_FACTOR_LTE` — ordered by
+ascending health factor so the worst positions are always on page 1. Only `market.marketId` +
+`user.address` are consumed; skip-pagination walks the full set (page size 1000, with a loud
+`discover.max_pages` backstop against silent truncation, and de-dupe across pages).
+
+Each distinct id resolves to `MarketParams` on-chain via `idToMarketParams(id)` (memoized forever —
+params are immutable per id), and the lens re-reads every pair fresh, so the API is a coverage
+source, never a correctness dependency: over-inclusion is harmless, API indexing lag is coverage
+latency only, and an id that doesn't resolve against this chain's singleton is dropped (with a
+`discover.dropped` warn — the backstop against an API/deployment mismatch). Base uses the canonical
+singleton `0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb`; Robinhood uses its own singleton
 `0x9D53d5E3bd5E8d4Cbfa6DB1ca238AEA02E651010`.
 
-`Borrow` yields the `(marketId, onBehalf)` candidate universe (`onBehalf` is the borrower). One
-rindexer process writes all networks into one `blue_liquidation_morpho.borrow` table, and each bot
-filters by rindexer's `network` column.
-
-`CreateMarket` is deliberately not indexed: no-code rindexer cannot decode the nested `MarketParams`
-struct, and the singleton exposes `idToMarketParams(id)`. `discovery/borrowers.ts` reads distinct
-`(id, borrower)` pairs for this chain, resolves each id to `MarketParams` on-chain, and returns
-`{ marketParams, borrower }[]`. Over-inclusion is harmless (the lens drops repaid/healthy positions);
-under-inclusion would miss a liquidation, so v0 does not prune with `Repay`/`WithdrawCollateral` at
-the SQL layer. rindexer lag is emitted as `rindexer.lag` for observability only — the lens reads every
-candidate fresh.
+Because `marketListed: true` is enforced server-side, discovery covers **every listed market** from
+the first tick — including markets that never had a borrow while the bot was running (the old
+indexer only knew markets with an indexed `Borrow` event). The flip side: a delisted market's
+positions leave discovery even if still liquidatable.
 
 ### State lens
 
@@ -228,21 +219,22 @@ function of LLTV (`sizing/lif.ts`), capped at `1.15e18`.
 ### Quoting
 
 For each liquidatable position, `quotes.ts` projects the lens output into a `@repo/swaps`
-`QuoteRequest` and hands it to the package's per-collateral `composeQuoting`. The package first runs
-the **pre-swap unwrap chain**: if the seized collateral wraps an ERC-4626 vault or a Pendle PT, it
+`QuoteRequest` and hands it to the package's `composeMultiVenueQuoting`. The package first runs the
+**pre-swap unwrap chain**: if the seized collateral wraps an ERC-4626 vault or a Pendle PT, it
 auto-detects that (memoized `eth_call` for ERC-4626; the Pendle SDK for PT) and prepends the redeem
 step(s) that convert it to a tradable underlying — threading each hop's worst-case output forward so a
-downstream fixed-amount step can never revert on a shortfall. A direct swap-config entry for the raw
-collateral wins verbatim and skips unwrap probing (the operator's escape hatch for share tokens with
-direct DEX liquidity or gated redeems). When the unwrap chain already ends in the loan token there is
-nothing left to sell, so the plan is the unwrap steps alone.
+downstream fixed-amount step can never revert on a shortfall. When the unwrap chain already ends in
+the loan token there is nothing left to sell, so the plan is the unwrap steps alone.
 
-Otherwise it resolves the operator's configured venue for the token the chain ends on and fetches
-**one** executable quote: `uniswap-v3` (built locally, balance-spliced, no key), `0x` / `1inch` /
-`lifi` / `liquidswap` (one rate-limited API call, route-bound fixed sell amount; LiFi and LiquidSwap
-route keyless). A free oracle-based route-quality check (against the full-path oracle reference)
-rejects any route more than `MAX_ROUTE_IMPACT_BPS` below it. Quotes are made only for the small
-liquidatable set; a per-`(id, borrower)` exponential backoff suppresses repeated failures.
+Otherwise it refreshes the probe cache for the POST-unwrap `(collateral, loan)` pair (staleness-gated
+— quiet markets cost no venue calls; a stale-cache refresh runs synchronously before the firm quote,
+worst case roughly venues × ladder points at `PROBE_HTTP_RPS`), takes the best-first venue order
+(enabled-but-unranked venues appended so a probe hiccup can't hide a venue), and fetches **one**
+executable quote from the top venue — `0x` / `1inch` / `lifi` (one rate-limited API call,
+route-bound fixed sell amount; LiFi routes keyless) — falling through to the next venue on failure.
+A free oracle-based route-quality check (against the full-path oracle reference) rejects any route
+more than `MAX_ROUTE_IMPACT_BPS` below it. Quotes are made only for the small liquidatable set; a
+per-`(id, borrower)` exponential backoff suppresses repeated failures.
 
 ### Simulation
 
@@ -264,8 +256,8 @@ the nonce from `getTransactionCount('pending')`.
 ## Testing
 
 - `bun test` — unit tests for the math, LIF, seize-exact planner (incl. the underflow-safety sweep),
-  the id derivation, discovery SQL, config, eligibility, quoting, venues, the queue, and the exec
-  encoder.
+  the id derivation, GraphQL discovery (parsing, pagination, retry semantics), config (incl. venue
+  inference and the zero-venue gate), eligibility, quoting, venues, the queue, and the exec encoder.
 - **Live read-path probe** — `bun run --filter @morpho-org/blue-liquidation probe:lens` (needs
   `RPC_URL`, no anvil) runs the deployless lens against a sample of real Base borrowers, prints a
   valid/hasDebt/healthy/liquidatable breakdown + a decoded sample, and — if it finds a live-liquidatable
@@ -291,13 +283,13 @@ the nonce from `getTransactionCount('pending')`.
   ~750k deployless-CREATE constant, fit on an anvil fork of Base against real discovered pairs (method
   documented at the config). Re-measure the same way if the lens body changes materially. Any residual
   under-budget is self-correcting (viem-dlc's chunker halve-and-retries an over-cap batch).
-- **rindexer schema**: at boot the bot logs `discovery.schema` with the **actual** rindexer column
-  names + row count for the `borrow` table, and `discovery.startup` with this network's candidate
-  count, synced block, and a parsed `MarketParams` sample (or `discovery.startup_error` with the DB
-  message). On Railway, grep those first: if `discovery.schema` shows different column names than the
-  `SELECT` in `borrowers.ts`, or `discovery.startup` shows `candidates: 0` while `syncedBlock` is well
-  past the deploy block, fix `borrowers.ts` (the one place the schema is encoded) to match the logged
-  names. rindexer may not have migrated tables on the first boot (`present: false`); the per-block
-  tick retries, so this is informational, not fatal.
-- **Coverage grows monotonically** (all markets, no SQL pruning in v0); the lens re-reads healthy rows
-  every block. SQL-layer pruning via `Repay`/`WithdrawCollateral` is a scale follow-up.
+- **Discovery health**: at boot the bot logs `discovery.startup` with this chain's candidate count
+  and a parsed `MarketParams` sample (or `discovery.startup_error` with the API message). On Railway,
+  grep those first, then per tick: `discover.error` (transient API failure — the tick proceeds with
+  zero candidates and the pending queue is still maintained), `discover.dropped` (malformed rows or
+  ids that don't resolve on this chain's singleton — API schema drift or a wrong-deployment mismatch),
+  and `discover.max_pages` (pagination backstop hit — under-inclusion, investigate immediately).
+  There is no indexer-lag signal anymore: API indexing latency is a coverage concern only, since the
+  lens re-reads every candidate fresh on-chain each block.
+- **Coverage** spans every listed market server-side; the lens re-reads all discovered candidates
+  each block, bounded by the `HEALTH_FACTOR_LTE` cutoff rather than a borrow-event history.

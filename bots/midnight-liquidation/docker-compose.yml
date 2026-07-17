@@ -22,4 +22,5 @@ services:
       # ships its structured logs only when BOTH are set (host also required), else behaves as before.
       BETTERSTACK_SOURCE_TOKEN: ${BETTERSTACK_SOURCE_TOKEN:-}
       BETTERSTACK_INGESTING_HOST: ${BETTERSTACK_INGESTING_HOST:-}
+      BETTERSTACK_HEARTBEAT_URL: ${BETTERSTACK_HEARTBEAT_URL:-}
     restart: unless-stopped

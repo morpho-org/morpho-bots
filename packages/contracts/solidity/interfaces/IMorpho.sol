@@ -2,12 +2,12 @@
 // Copyright (c) 2025 Morpho Association
 //
 // VENDORED from morpho-org/morpho-blue (src/interfaces/IMorpho.sol + EventsLib.sol), trimmed to the
-// surface the blue-liquidation bot needs: the three market structs, the borrower-discovery event set,
-// and the read/entry functions the lens and executor path reference. The deployed Base singleton
+// surface the blue-liquidation bot needs: the three market structs, the position event set, and the
+// read/entry functions the lens and executor path reference. The deployed Base singleton
 // (0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb) emits exactly these events and exposes these signatures
 // (verified on-chain). We use `bytes32` in place of Blue's `type Id is bytes32` user-defined value
-// type — the ABI encoding is identical (Id is a bytes32) and it keeps rindexer/viem decoding plain,
-// matching the sibling IMidnight vendoring.
+// type — the ABI encoding is identical (Id is a bytes32) and it keeps viem decoding plain, matching
+// the sibling IMidnight vendoring.
 //
 // Structs are file-level so the generated ABI carries internalType "struct Market" (not
 // "struct IMorpho.Market"). All fields are static, so the auto-generated public-mapping getters
@@ -16,8 +16,8 @@
 pragma solidity >=0.5.0;
 
 /// @dev Immutable market definition. `id = keccak256(abi.encode(marketParams))`; field ORDER is
-/// load-bearing (any reorder changes the id). Not stored on the singleton — recovered from the
-/// `CreateMarket` event and re-derived by the lens as an id-commitment check.
+/// load-bearing (any reorder changes the id). Recovered from `idToMarketParams(id)` and re-derived
+/// by the lens as an id-commitment check.
 struct MarketParams {
     address loanToken;
     address collateralToken;
@@ -46,9 +46,8 @@ struct Position {
 
 interface IMorpho {
     /// EVENTS ///
-    // Mirrors morpho-blue EventsLib so the generated MorphoAbi exposes them for log decoding and for
-    // the co-located rindexer (which indexes CreateMarket + Borrow for borrower discovery). Indexed
-    // annotations are load-bearing for rindexer topic filters — NOTE the asymmetry: Borrow and
+    // Mirrors morpho-blue EventsLib so the generated MorphoAbi exposes them for log decoding.
+    // Indexed annotations are load-bearing for topic filters — NOTE the asymmetry: Borrow and
     // WithdrawCollateral do NOT index `caller`, whereas Repay/SupplyCollateral/Liquidate DO.
     event CreateMarket(bytes32 indexed id, MarketParams marketParams);
     event Borrow(

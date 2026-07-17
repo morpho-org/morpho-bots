@@ -1,5 +1,5 @@
 import type { Logger } from '@repo/bot-kit'
-import type { RateLimitedClient, SwapConfigEntry } from '@repo/swaps'
+import type { RateLimitedClient, VenuePair, VenueQuoteEstimate, VenueSelector } from '@repo/swaps'
 
 import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
@@ -11,17 +11,18 @@ import type { LensOut } from '../src/state/lens.sol'
 import { ORACLE_PRICE_SCALE, WAD } from '../src/constants'
 import { composeQuoting } from '../src/quotes'
 
-// The Blue-shaped adapter over @repo/swaps' composeQuoting: these cases pin the LENS PROJECTION
-// (out.params.* → QuoteRequest); the venue/floor behavior itself is tested in the package.
+// The Blue-shaped adapter over @repo/swaps' composeMultiVenueQuoting: these cases pin the LENS
+// PROJECTION (out.params.* → QuoteRequest), the excluded-collateral short-circuit, and that a probe
+// is refreshed for the pair before quoting; the venue/floor behavior itself is tested in the package.
 
 const NOOP_LOGGER: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
 
-const ROUTER = getAddress('0x5555555555555555555555555555555555555555')
 const LOAN = getAddress('0x6666666666666666666666666666666666666666')
 const COLLATERAL = getAddress('0x7777777777777777777777777777777777777777')
 const ORACLE = getAddress('0x8888888888888888888888888888888888888888')
 const IRM = getAddress('0x46415998764C29aB2a25CbeA6254146D50D22687')
 const EXECUTOR = getAddress('0x1111111111111111111111111111111111111111')
+const TARGET = getAddress('0x5555555555555555555555555555555555555555')
 
 const PARAMS: MarketParams = {
   loanToken: LOAN,
@@ -48,46 +49,97 @@ const OUT: LensOut = {
   lltv: PARAMS.lltv
 }
 
-const NOOP_HTTP: RateLimitedClient = { getJson: async <T>() => ({}) as T }
+// A 0x firm-quote body whose buyAmount is at/above the route-quality floor.
+const OK_ZEROX_BODY = {
+  liquidityAvailable: true,
+  buyAmount: '1000',
+  minBuyAmount: '995',
+  transaction: { to: TARGET, data: '0xabc', value: '0' }
+}
+const httpStub: RateLimitedClient = { getJson: async <T>() => OK_ZEROX_BODY as T }
 
 // The position label the tick threads as the QuoteRequest correlation id (`${id}:${borrower}`).
 const LABEL = '0xabc:0x9999999999999999999999999999999999999999'
 
-function compose(entry: SwapConfigEntry | null, logger: Logger = NOOP_LOGGER) {
-  const swapByCollateral = new Map<string, SwapConfigEntry>()
-  if (entry) swapByCollateral.set(getAddress(COLLATERAL), entry)
+// A selector stub: records which pairs were refreshed and returns a fixed best-first order.
+function fakeSelector(order: VenueQuoteEstimate[], onRefresh?: () => Promise<void>) {
+  const refreshed: VenuePair[] = []
+  const selector: VenueSelector = {
+    refresh: async pair => {
+      refreshed.push(pair)
+      if (onRefresh) await onRefresh()
+    },
+    select: () => order,
+    snapshot: () => []
+  }
+  return { selector, refreshed }
+}
+
+function compose(
+  selector: VenueSelector,
+  overrides: {
+    venues?: ('0x' | '1inch')[]
+    excludeCollaterals?: `0x${string}`[]
+    logger?: Logger
+  } = {}
+) {
   return composeQuoting({
-    httpClient: NOOP_HTTP,
+    httpClient: httpStub,
+    selector,
     chainId: 8453,
     executor: EXECUTOR,
-    swapByCollateral,
+    venues: overrides.venues ?? ['0x'],
+    slippageBps: 100,
+    baseUrls: {},
     maxRouteImpactBps: 500,
     unwrappers: [],
-    logger
+    excludeCollaterals: overrides.excludeCollaterals ?? [],
+    logger: overrides.logger ?? NOOP_LOGGER
   })
 }
 
 describe('composeQuoting (Blue lens-projection adapter)', () => {
-  it('returns no_config when the market collateral has no configured venue', async () => {
-    const { quoteFor } = compose(null)
+  it('returns no_config (and never probes) for an excluded collateral', async () => {
+    const { selector, refreshed } = fakeSelector([{ venue: '0x', expectedOut: 1000n }])
+    const { quoteFor } = compose(selector, { excludeCollaterals: [COLLATERAL] })
     expect(await quoteFor(PLAN, OUT, LABEL)).toEqual({ kind: 'no_config' })
+    expect(refreshed).toHaveLength(0)
   })
 
-  it('projects out.params + the oracle reference into an executable swap plan', async () => {
-    const { quoteFor } = compose({ venue: 'uniswap-v3', router: ROUTER, fee: 3000, slippageBps: 0 })
+  it('refreshes the pair probe, then projects out.params into an executable swap', async () => {
+    const { selector, refreshed } = fakeSelector([{ venue: '0x', expectedOut: 1000n }])
+    const { quoteFor } = compose(selector)
     const outcome = await quoteFor(PLAN, OUT, LABEL)
+
+    expect(refreshed).toEqual([{ collateral: COLLATERAL, loan: LOAN }])
     expect(outcome.kind).toBe('swap')
     if (outcome.kind === 'swap') {
       expect(outcome.plan.steps).toHaveLength(1)
       expect(outcome.plan.steps[0]).toMatchObject({
         tokenIn: COLLATERAL,
         tokenOut: LOAN,
-        approvalSpender: ROUTER
+        target: TARGET
       })
-      // slippageBps 0 → the min-out IS the oracle reference (seizedAssets at price 1e36) — proving
+      // buyAmount 1000 at the 1e36 oracle price meets the route-quality floor — proving
       // expectedLoanOut(plan, out) was passed as referenceAmountOut.
-      expect(outcome.plan.amountOutMinimum).toBe(1000n)
+      expect(outcome.plan.expectedAmountOut).toBe(1000n)
     }
+  })
+
+  it('still quotes (cold-default) when the probe refresh throws', async () => {
+    // Cold cache (select → []) + a refresh that rejects → the firm-quote step falls back to the
+    // deterministic enabled-venue order rather than failing the position.
+    const { selector } = fakeSelector([], async () => {
+      throw new Error('probe boom')
+    })
+    const { quoteFor } = compose(selector)
+    expect((await quoteFor(PLAN, OUT, LABEL)).kind).toBe('swap')
+  })
+
+  it('returns no_config when no venues are enabled (detection-only posture)', async () => {
+    const { selector } = fakeSelector([])
+    const { quoteFor } = compose(selector, { venues: [] })
+    expect(await quoteFor(PLAN, OUT, LABEL)).toEqual({ kind: 'no_config' })
   })
 
   it('threads the position label into quote log events as the correlation id', async () => {
@@ -98,12 +150,10 @@ describe('composeQuoting (Blue lens-projection adapter)', () => {
       warn: () => {},
       error: () => {}
     }
-    const { quoteFor } = compose(
-      { venue: 'uniswap-v3', router: ROUTER, fee: 3000, slippageBps: 0 },
-      capturing
-    )
+    const { selector } = fakeSelector([{ venue: '0x', expectedOut: 1000n }])
+    const { quoteFor } = compose(selector, { logger: capturing })
     await quoteFor(PLAN, OUT, LABEL)
-    const quoteOk = events.find(e => e.event === 'quote.ok')
-    expect(quoteOk?.fields?.id).toBe(LABEL)
+    const selectOk = events.find(e => e.event === 'select.ok')
+    expect(selectOk?.fields?.id).toBe(LABEL)
   })
 })

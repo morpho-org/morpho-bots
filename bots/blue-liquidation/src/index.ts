@@ -1,4 +1,4 @@
-import type { SwapConfigEntry, SwapPlan, Venue } from '@repo/swaps'
+import type { SwapPlan, Venue } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
 import {
@@ -7,6 +7,7 @@ import {
   createBackoff,
   createCooldownStore,
   createDeploylessClient,
+  createHeartbeatMonitor,
   createLogger,
   createPendingQueue,
   createRunner,
@@ -21,23 +22,20 @@ import {
   createErc4626Unwrapper,
   createPendlePtUnwrapper,
   createRateLimitedClient,
-  PENDLE_CHAIN_IDS
+  createVenueSelector,
+  PENDLE_CHAIN_IDS,
+  priceByVenue
 } from '@repo/swaps'
 import { ensureError, tryCatch } from '@repo/utils'
-import { getAddress } from 'viem'
-import { getBlockNumber } from 'viem/actions'
+import { erc20Abi } from 'viem'
+import { getBlockNumber, readContract } from 'viem/actions'
 
 import type { MarketParams } from './market'
 import type { LiquidationPlan } from './sizing/plan'
 
 import { loadConfig } from './config'
 import { SETTLED_COOLDOWN_BLOCKS } from './constants'
-import {
-  createPostgresQuery,
-  discoverCandidates,
-  discoveryDiagnostics,
-  rindexerSyncedBlock
-} from './discovery/borrowers'
+import { createGraphqlCandidateSource, discoverCandidates } from './discovery/borrowers'
 import { encodeLiquidationExec } from './execution/encode-call'
 import { composeQuoting } from './quotes'
 import { runTick } from './runner/tick'
@@ -75,7 +73,6 @@ async function main() {
 
   logger.info('startup', {
     chainId: config.chainId,
-    network: config.network,
     liquidator: eoa,
     callback: config.executooorAddress,
     morpho: config.morpho
@@ -93,37 +90,31 @@ async function main() {
   )
   await assertContractDeployed(client, config.morpho, 'Morpho singleton')
 
-  // Per-collateral swap routing for this chain, keyed by EIP-55-checksummed collateral address (the
-  // config schema and the lens both return checksummed addresses). A collateral with no entry is
-  // skipped at tick time (`config.no_swap_path`) — a coverage gap, not fatal.
-  const swapByCollateral = new Map<string, SwapConfigEntry>()
-  for (const [token, entry] of Object.entries(config.swapConfig[String(config.chainId)] ?? {})) {
-    if (entry) swapByCollateral.set(getAddress(token), entry)
-  }
-  // No routes configured for this chain (unset/absent swap config): the bot still runs — it
-  // identifies liquidatable borrowers — but skips every routed liquidation (`config.no_swap_path`).
-  // Warn loudly so this isn't mistaken for a healthy, fully armed deployment. Otherwise log the
-  // chosen venue per collateral.
-  if (swapByCollateral.size === 0) {
-    logger.warn('quoting.no_routes', {
-      chainId: config.chainId,
-      detail: 'no swap routes configured — every liquidation will be skipped (config.no_swap_path)'
-    })
-  } else {
-    logger.info('quoting.startup', {
-      chainId: config.chainId,
-      venues: Object.fromEntries(
-        [...swapByCollateral].map(([token, entry]) => [token, entry.venue])
-      )
-    })
-  }
-
-  // Rate-limited HTTP client for aggregator quotes. API keys are read from env HERE, at the point of
-  // use, and live only in this closure — never on the (logged) Config object.
+  // Enabled venues are inferred from which venue API keys are present (loadConfig already enforced
+  // the no-key → detection-only opt-in). Keys are read HERE, at the point of use, and live only in
+  // this closure — never on the (logged) Config object.
   const apiKeys: Partial<Record<Venue, string>> = {}
   if (Bun.env.ZEROX_API_KEY) apiKeys['0x'] = Bun.env.ZEROX_API_KEY
   if (Bun.env.ONEINCH_API_KEY) apiKeys['1inch'] = Bun.env.ONEINCH_API_KEY
   if (Bun.env.LIFI_API_KEY) apiKeys.lifi = Bun.env.LIFI_API_KEY
+  const venues = config.venues.enabled
+  if (venues.length === 0) {
+    logger.warn('quoting.no_routes', {
+      chainId: config.chainId,
+      detail:
+        'no venue API keys set — running detection-only (every liquidation is skipped, config.no_swap_path)'
+    })
+  } else {
+    logger.info('quoting.startup', { chainId: config.chainId, venues })
+  }
+  const baseUrls: Partial<Record<Venue, string>> = {}
+  if (config.venues.zeroxBaseUrl) baseUrls['0x'] = config.venues.zeroxBaseUrl
+  if (config.venues.oneinchBaseUrl) baseUrls['1inch'] = config.venues.oneinchBaseUrl
+  if (config.venues.lifiBaseUrl) baseUrls.lifi = config.venues.lifiBaseUrl
+
+  // Two rate-limited HTTP clients, each with its own per-venue token buckets: one for time-sensitive
+  // FIRM quotes, and a separate, slower one for BACKGROUND probes — so a probe burst can never queue
+  // ahead of a live liquidation's firm quote on the same venue's bucket.
   const httpClient = createRateLimitedClient({
     apiKeys,
     rps: config.quoting.httpRps,
@@ -131,12 +122,34 @@ async function main() {
     maxRetries: config.quoting.httpMaxRetries,
     timeoutMs: config.quoting.quoteTimeoutMs
   })
+  const probeClient = createRateLimitedClient({
+    apiKeys,
+    rps: config.probe.httpRps,
+    burst: config.probe.httpRps,
+    maxRetries: config.quoting.httpMaxRetries,
+    timeoutMs: config.quoting.quoteTimeoutMs
+  })
+
+  // Venue selector: caches a best-first venue ranking per pair from log-scaled indicative probes.
+  // Decimals are read once per collateral (memoized in the selector); the collateral set is bounded
+  // by the discovered markets, so these are a handful of one-off reads over the process lifetime.
+  const venueSelector = createVenueSelector({
+    venues,
+    chainId: config.chainId,
+    ladderWholeTokens: config.probe.ladderWholeTokens,
+    getDecimals: token =>
+      readContract(client, { address: token, abi: erc20Abi, functionName: 'decimals' }),
+    indicativeQuote: (venue, params) => priceByVenue(probeClient, { venue, baseUrls, params }),
+    staleMs: config.probe.staleMs,
+    logger
+  })
+
   // Pre-swap converters for exotic collateral (ERC4626 shares, Pendle PTs → underlying).
-  // Auto-detecting with per-process memoization; a collateral with its own config entry bypasses
-  // them entirely. erc4626 first: a memoized eth_call beats consulting the markets list. Pendle is
-  // only constructed on chains it is deployed to — elsewhere a cold-cache markets outage would fail
-  // plain-collateral quotes too. The Pendle markets list is cached in-process for the bot's lifetime
-  // (a 6h TTL inside the unwrapper handles staleness), so it is built once here.
+  // Auto-detecting with per-process memoization. erc4626 first: a memoized eth_call beats consulting
+  // the markets list. Pendle is only constructed on chains it is deployed to — elsewhere a
+  // cold-cache markets outage would fail plain-collateral quotes too. The Pendle markets list is
+  // cached in-process for the bot's lifetime (a 6h TTL inside the unwrapper handles staleness), so
+  // it is built once here.
   const pendle = PENDLE_CHAIN_IDS.has(config.chainId)
     ? createPendlePtUnwrapper({
         client: httpClient,
@@ -148,11 +161,15 @@ async function main() {
   const unwrappers = [createErc4626Unwrapper({ client, logger }), ...(pendle ? [pendle] : [])]
   const { quoteFor } = composeQuoting({
     httpClient,
+    selector: venueSelector,
     chainId: config.chainId,
     executor: config.executooorAddress,
-    swapByCollateral,
+    venues,
+    slippageBps: config.venues.slippageBps,
+    baseUrls,
     maxRouteImpactBps: config.quoting.maxRouteImpactBps,
     unwrappers,
+    excludeCollaterals: config.venues.excludeCollaterals,
     logger
   })
   const backoff = createBackoff({
@@ -181,43 +198,33 @@ async function main() {
       recipient: eoa
     })
 
-  const query = createPostgresQuery(config.databaseUrl)
-  // Discovery is (id, borrower) from the indexed Borrow events; the market's immutable params are
-  // recovered on-chain via idToMarketParams(id) and cached (params never change per id), so
-  // steady-state ticks make no extra RPC calls once every market has been seen once.
+  // Borrower discovery: poll the Morpho GraphQL API's `marketPositions` (skip-paginated, listed
+  // markets only, over-inclusive by health-factor cutoff). Only (marketId, borrower) is consumed —
+  // the market's immutable params are recovered on-chain via idToMarketParams(id) and cached (params
+  // never change per id), and the lens re-reads every pair fresh, so the API is a coverage source,
+  // never the source of truth.
+  const fetchPage = createGraphqlCandidateSource({
+    url: config.discovery.apiUrl,
+    chainId: config.chainId,
+    healthFactorLte: config.discovery.healthFactorLte
+  })
   const resolveParams = createMarketParamsResolver(multicallIdToMarketParams(client, config.morpho))
-  const discover = () => discoverCandidates(query, resolveParams, config.network)
+  const discover = () => discoverCandidates(fetchPage, resolveParams, { logger })
 
-  // Startup discovery self-check (non-fatal): surface the rindexer schema + first discovery result so
-  // a column-name mismatch or a not-yet-migrated table is diagnosable from Railway logs at boot,
-  // rather than as an opaque per-tick `tick.error`. rindexer may still be starting/migrating on first
-  // deploy, so a failure here is logged and the bot proceeds — the per-block tick retries discovery.
+  // Startup discovery self-check (non-fatal): run one discovery pass at boot so a bad API URL or a
+  // schema drift is diagnosable from Railway logs at boot, rather than as an opaque per-tick
+  // `tick.error`. A failure here is logged and the bot proceeds — the per-block tick retries.
   {
-    const diag = await tryCatch(discoveryDiagnostics(query))
-    if (diag.error) {
-      logger.warn('discovery.startup_error', { detail: ensureError(diag.error).message })
+    const probe = await tryCatch(discover())
+    if (probe.error) {
+      logger.warn('discovery.startup_error', { detail: ensureError(probe.error).message })
     } else {
-      logger.info('discovery.schema', {
-        network: config.network,
-        // The ACTUAL rindexer `borrow` column names — compare against what BORROWER_IDS_SQL selects
-        // if discovery yields zero candidates while rindexer is synced.
-        borrow: diag.data.borrow
+      logger.info('discovery.startup', {
+        chainId: config.chainId,
+        candidates: probe.data.length,
+        // A sample so the join's parsed MarketParams can be eyeballed (non-zero addresses/lltv).
+        sample: probe.data[0] ?? null
       })
-      const probe = await tryCatch(
-        Promise.all([discover(), rindexerSyncedBlock(query, config.network)])
-      )
-      if (probe.error) {
-        logger.warn('discovery.startup_error', { detail: ensureError(probe.error).message })
-      } else {
-        const [candidates, syncedBlock] = probe.data
-        logger.info('discovery.startup', {
-          network: config.network,
-          candidates: candidates.length,
-          syncedBlock,
-          // A sample so the join's parsed MarketParams can be eyeballed (non-zero addresses/lltv).
-          sample: candidates[0] ?? null
-        })
-      }
     }
   }
 
@@ -242,15 +249,19 @@ async function main() {
     read: signer.balance,
     logger
   })
+  const heartbeatMonitor = createHeartbeatMonitor({
+    url: Bun.env.BETTERSTACK_HEARTBEAT_URL,
+    logger
+  })
+  void heartbeatMonitor.start()
 
   // An HTTP block-poll watcher drives one tick per new block (coalescing backlog), passing the polled
-  // height as both the rindexer-lag reference and the queue's submittedAtBlock. Each liquidatable
-  // position resolves its swap, simulates the real `exec_606BaXt`, and — on a sim-ok result —
-  // broadcasts that same exec via the Executor singleton. Pending-queue upkeep runs in `maintain`.
+  // height as the queue's submittedAtBlock. Each liquidatable position resolves its swap, simulates
+  // the real `exec_606BaXt`, and — on a sim-ok result — broadcasts that same exec via the Executor
+  // singleton. Pending-queue upkeep runs in `maintain`.
   const tick = (chainHead: bigint) =>
     runTick({
       discover,
-      syncedBlock: () => rindexerSyncedBlock(query, config.network),
       chainHead,
       readLens: pairs => readBlueLiquidationLens(client, config.morpho, pairs),
       quoteFor,
@@ -297,11 +308,16 @@ async function main() {
   })
   runner.start()
 
-  // Graceful shutdown: stop the watcher and log the pending set (hashes + nonces) for observability.
-  // Sends are fire-and-forget and chain truth wins on restart, so there is nothing to persist or
-  // await-drain — a redeploy re-derives from chain.
+  // Graceful shutdown: stop the watcher and log the pending set (hashes + nonces) plus the venue
+  // state for observability. Sends are fire-and-forget and chain truth wins on restart, so there is
+  // nothing to persist or await-drain — a redeploy re-derives from chain.
   const shutdown = (signal: string) => {
-    logger.info('shutdown', { signal, pending: queue.snapshot() })
+    heartbeatMonitor.stop()
+    logger.info('shutdown', {
+      signal,
+      pending: queue.snapshot(),
+      venues: venueSelector.snapshot()
+    })
     void runner.stop().finally(() => process.exit(0))
   }
   process.on('SIGINT', () => shutdown('SIGINT'))

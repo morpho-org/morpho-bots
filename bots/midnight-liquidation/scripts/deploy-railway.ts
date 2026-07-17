@@ -46,6 +46,12 @@ function required(env: Env, name: string): string {
   return value.trim()
 }
 
+// Railway service names are project-wide, while environments only scope service instances. Retain
+// the established production name and prefix every non-production service to prevent collisions.
+function serviceName(productionName: string): string {
+  return ENVIRONMENT === 'production' ? productionName : `${ENVIRONMENT}-${productionName}`
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
@@ -215,6 +221,8 @@ async function waitForDeploy(
 
 await assertCli()
 
+const BOT_SERVICE = serviceName('bot')
+
 // Deploy-only mode (DEPLOY_ONLY=1|true): re-ship the ALREADY-PROVISIONED `bot` service from the
 // checked-out tree and set NOTHING — no secrets, no variables. This is the path CI uses: the per-
 // stage GitHub Environment holds only RAILWAY_TOKEN + RAILWAY_PROJECT_ID, and the service/secrets
@@ -222,11 +230,11 @@ await assertCli()
 // requirements the full path enforces, so it never needs those secrets in CI.
 if (/^(1|true)$/i.test(Bun.env.DEPLOY_ONLY?.trim() ?? '')) {
   await ensureContext()
-  await deployService('bot') // `railway up` rebuilds it server-side
-  const status = await waitForDeploy('bot')
+  await deployService(BOT_SERVICE) // `railway up` rebuilds it server-side
+  const status = await waitForDeploy(BOT_SERVICE)
   console.log('')
   console.log('=== Deploy-only status ===')
-  console.log(`  bot: ${status}`)
+  console.log(`  ${BOT_SERVICE}: ${status}`)
   process.exit(status === 'FAILED' || status === 'TIMEOUT' ? 1 : 0)
 }
 
@@ -240,10 +248,11 @@ assertPrivateKey(liquidatorPrivateKey)
 // explicitly opt into bad-debt-only here, rather than deploying a service that crash-loops.
 const zeroxKey = Bun.env.ZEROX_API_KEY?.trim()
 const oneinchKey = Bun.env.ONEINCH_API_KEY?.trim()
+const lifiKey = Bun.env.LIFI_API_KEY?.trim()
 const allowBadDebtOnly = Bun.env.ALLOW_BAD_DEBT_ONLY?.trim().toLowerCase() === 'true'
-if (!zeroxKey && !oneinchKey && !allowBadDebtOnly) {
+if (!zeroxKey && !oneinchKey && !lifiKey && !allowBadDebtOnly) {
   throw new Error(
-    'Set ZEROX_API_KEY and/or ONEINCH_API_KEY, or ALLOW_BAD_DEBT_ONLY=true to deploy bad-debt-only.'
+    'Set LIFI_API_KEY, ZEROX_API_KEY, and/or ONEINCH_API_KEY, or ALLOW_BAD_DEBT_ONLY=true to deploy bad-debt-only.'
   )
 }
 
@@ -251,36 +260,45 @@ if (!zeroxKey && !oneinchKey && !allowBadDebtOnly) {
 // bot's in-process loglayer transport stays inert, so the container behaves exactly as before.
 const betterstackHost = Bun.env.BETTERSTACK_INGESTING_HOST?.trim()
 const betterstackToken = Bun.env.BETTERSTACK_SOURCE_TOKEN?.trim()
+const betterstackHeartbeatUrl = Bun.env.BETTERSTACK_HEARTBEAT_URL?.trim()
 
 await ensureContext()
 
 // --- bot: the liquidation runner. Borrower discovery polls the markets liquidation-candidates API
 // and the markets whitelist comes from the Midnight markets API (both public by default), so there is
 // nothing else to provision — no swap-config file/volume anymore.
-await ensureService('bot')
-await setVar('bot', 'CHAIN_ID=8453')
-await setVar('bot', `RAILWAY_DOCKERFILE_PATH=${DOCKERFILE_PATH}`)
-await setVar('bot', 'LOG_LEVEL=info')
-await setSecret('bot', 'RPC_URL', rpcUrl)
-await setSecret('bot', 'LIQUIDATOR_PRIVATE_KEY', liquidatorPrivateKey)
-if (zeroxKey) await setSecret('bot', 'ZEROX_API_KEY', zeroxKey)
-if (oneinchKey) await setSecret('bot', 'ONEINCH_API_KEY', oneinchKey)
-if (allowBadDebtOnly) await setVar('bot', 'ALLOW_BAD_DEBT_ONLY=true')
-if (betterstackHost) await setVar('bot', `BETTERSTACK_INGESTING_HOST=${betterstackHost}`)
-if (betterstackToken) await setSecret('bot', 'BETTERSTACK_SOURCE_TOKEN', betterstackToken)
-await deployService('bot')
+await ensureService(BOT_SERVICE)
+await setVar(BOT_SERVICE, 'CHAIN_ID=8453')
+await setVar(BOT_SERVICE, `RAILWAY_DOCKERFILE_PATH=${DOCKERFILE_PATH}`)
+await setVar(BOT_SERVICE, 'LOG_LEVEL=info')
+await setSecret(BOT_SERVICE, 'RPC_URL', rpcUrl)
+await setSecret(BOT_SERVICE, 'LIQUIDATOR_PRIVATE_KEY', liquidatorPrivateKey)
+if (zeroxKey) await setSecret(BOT_SERVICE, 'ZEROX_API_KEY', zeroxKey)
+if (oneinchKey) await setSecret(BOT_SERVICE, 'ONEINCH_API_KEY', oneinchKey)
+if (lifiKey) await setSecret(BOT_SERVICE, 'LIFI_API_KEY', lifiKey)
+if (allowBadDebtOnly) await setVar(BOT_SERVICE, 'ALLOW_BAD_DEBT_ONLY=true')
+if (betterstackHost) await setVar(BOT_SERVICE, `BETTERSTACK_INGESTING_HOST=${betterstackHost}`)
+if (betterstackToken) await setSecret(BOT_SERVICE, 'BETTERSTACK_SOURCE_TOKEN', betterstackToken)
+if (betterstackHeartbeatUrl) {
+  await setSecret(BOT_SERVICE, 'BETTERSTACK_HEARTBEAT_URL', betterstackHeartbeatUrl)
+}
+await deployService(BOT_SERVICE)
 
-const botStatus = await waitForDeploy('bot')
+const botStatus = await waitForDeploy(BOT_SERVICE)
 
 console.log('')
 console.log('=== Deployment status ===')
-console.log(`  bot: ${botStatus}`)
+console.log(`  ${BOT_SERVICE}: ${botStatus}`)
 console.log('')
 console.log('=== Manual steps ===')
 console.log('  1. The bot needs a funded liquidator key + a real RPC before it can broadcast.')
-if (!zeroxKey && !oneinchKey) {
-  console.log('  2. Deployed in bad-debt-only mode (no venue key). Add ZEROX_API_KEY and/or')
-  console.log('     ONEINCH_API_KEY and drop ALLOW_BAD_DEBT_ONLY to enable swap-liquidations.')
+if (!zeroxKey && !oneinchKey && !lifiKey) {
+  console.log(
+    '  2. Deployed in bad-debt-only mode (no venue key). Add LIFI_API_KEY, ZEROX_API_KEY,'
+  )
+  console.log(
+    '     and/or ONEINCH_API_KEY and drop ALLOW_BAD_DEBT_ONLY to enable swap-liquidations.'
+  )
 }
 
 // FAILED/TIMEOUT signal a real build or platform problem; a bot CRASH pre-config is expected.

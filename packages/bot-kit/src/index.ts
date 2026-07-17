@@ -1,5 +1,6 @@
 export * from './balance'
 export * from './client'
+export * from './heartbeat'
 export * from './logger'
 export * from './policy'
 export * from './queue/backoff'

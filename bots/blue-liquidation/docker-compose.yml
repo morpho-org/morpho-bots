@@ -1,99 +1,59 @@
-# Bundles the per-chain bots with ONE shared rindexer instance + Postgres for borrower discovery.
-# rindexer indexes the Morpho Blue `Borrow` event (per rindexer.yaml) for every chain into one
-# Postgres, discriminated by a `network` column; each bot reads the indexed (market, borrower) pairs
-# for its own chain each tick. Build context is the repo root so the bun workspace (packages/*)
-# resolves — see Dockerfile. Set the chainId-suffixed RPCs (RPC_URL_8453, RPC_URL_4663, optionally
-# RINDEXER_RPC_URL_<chainId>) and a LIQUIDATOR_PRIVATE_KEY.
-#
-# NOTE: the rindexer service config (image command, env) follows the rindexer docs but has not been
-# run end-to-end here; verify `docker compose up` against live RPCs before relying on it.
+# Runs the per-chain blue-liquidation bots. Borrower candidates come from the Morpho GraphQL API
+# (MORPHO_API_URL, public by default), so there is no indexer or database to run. The bots' build
+# context is the repo root so the bun workspace (packages/*) resolves — see Dockerfile. Set the
+# chainId-suffixed RPCs (RPC_URL_8453, RPC_URL_4663) and a LIQUIDATOR_PRIVATE_KEY.
 services:
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: rindexer
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rindexer}
-      POSTGRES_DB: blue_liquidation
-    volumes:
-      - rindexer-pg:/var/lib/postgresql/data
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U rindexer -d blue_liquidation']
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  rindexer:
-    # Derived from the upstream rindexer image with rindexer.yaml + the generated event ABI baked in
-    # (see Dockerfile `rindexer` target), so no host bind mount is needed and the ABI isn't committed.
-    build:
-      context: ../..
-      dockerfile: bots/blue-liquidation/Dockerfile
-      target: rindexer
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: postgresql://rindexer:${POSTGRES_PASSWORD:-rindexer}@postgres:5432/blue_liquidation
-      # One shared indexer for both networks; each reads its own RPC (matches the ${RINDEXER_RPC_URL_*}
-      # interpolations in rindexer.yaml). Defaults to that chain's bot RPC; Robinhood to its public RPC.
-      RINDEXER_RPC_URL_8453: ${RINDEXER_RPC_URL_8453:-${RPC_URL_8453:?set RPC_URL_8453 or RINDEXER_RPC_URL_8453}}
-      RINDEXER_RPC_URL_4663: ${RINDEXER_RPC_URL_4663:-${RPC_URL_4663:-https://rpc.mainnet.chain.robinhood.com}}
-      PROJECT_PATH: /app/project_path
-    # Mirrors the baked `CMD ["start","indexer"]` in the Dockerfile `rindexer` stage (keep in sync).
-    command: ['start', 'indexer']
-    restart: unless-stopped
-
   bot-base:
     build:
       context: ../..
       dockerfile: bots/blue-liquidation/Dockerfile
-      target: bot
-    depends_on:
-      postgres:
-        condition: service_healthy
     environment:
       CHAIN_ID: '8453'
       RPC_URL: ${RPC_URL_8453:?set RPC_URL_8453}
       LIQUIDATOR_PRIVATE_KEY: ${LIQUIDATOR_PRIVATE_KEY:?set LIQUIDATOR_PRIVATE_KEY}
       EXECUTOOOR_ADDRESS: ${EXECUTOOOR_ADDRESS:-}
-      SWAP_CONFIG_PATH: /config/swap.json
+      # Venues are enabled by the presence of their API key (or ENABLE_LIFI=true — LiFi works
+      # keyless). With none set, the bot refuses to start unless ALLOW_DETECTION_ONLY=true.
       ZEROX_API_KEY: ${ZEROX_API_KEY:-}
       ONEINCH_API_KEY: ${ONEINCH_API_KEY:-}
-      # The bot reads rindexer's indexed events (filtered to network=base) from the same Postgres.
-      DATABASE_URL: postgresql://rindexer:${POSTGRES_PASSWORD:-rindexer}@postgres:5432/blue_liquidation
+      LIFI_API_KEY: ${LIFI_API_KEY:-}
+      ENABLE_LIFI: ${ENABLE_LIFI:-}
+      ALLOW_DETECTION_ONLY: ${ALLOW_DETECTION_ONLY:-}
+      MORPHO_API_URL: ${MORPHO_API_URL:-}
+      HEALTH_FACTOR_LTE: ${HEALTH_FACTOR_LTE:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       # Optional BetterStack log shipping (in-process loglayer transport). Empty = disabled; the bot
       # ships its structured logs only when BOTH are set (host also required), else behaves as before.
       BETTERSTACK_SOURCE_TOKEN: ${BETTERSTACK_SOURCE_TOKEN:-}
       BETTERSTACK_INGESTING_HOST: ${BETTERSTACK_INGESTING_HOST:-}
-    volumes:
-      - ${SWAP_CONFIG_PATH:-./swap.config.json}:/config/swap.json:ro
+      BETTERSTACK_HEARTBEAT_URL: ${BETTERSTACK_HEARTBEAT_URL_8453:-}
     restart: unless-stopped
 
-  # Robinhood launches DETECTION-ONLY: no swap route configured (no SWAP_CONFIG_PATH/volume), so the
-  # bot discovers + logs liquidatable positions but skips every routed liquidation. It still needs the
+  # Robinhood launches DETECTION-ONLY by default (ALLOW_DETECTION_ONLY_4663 defaults true, no venue
+  # keys): the bot discovers + logs liquidatable positions but skips every routed liquidation. Its
+  # venue inputs are chainId-suffixed (ZEROX_API_KEY_4663 etc.) so arming Base never silently arms
+  # Robinhood — set those AND drop the opt-in once it is expected to route. It still needs the
   # Executor deployed on Robinhood (deploy:executor) to pass the startup liveness gate.
   bot-robinhood:
     build:
       context: ../..
       dockerfile: bots/blue-liquidation/Dockerfile
-      target: bot
-    depends_on:
-      postgres:
-        condition: service_healthy
     environment:
       CHAIN_ID: '4663'
       RPC_URL: ${RPC_URL_4663:-https://rpc.mainnet.chain.robinhood.com}
       LIQUIDATOR_PRIVATE_KEY: ${LIQUIDATOR_PRIVATE_KEY:?set LIQUIDATOR_PRIVATE_KEY}
       EXECUTOOOR_ADDRESS: ${EXECUTOOOR_ADDRESS:-}
-      # The bot reads rindexer's indexed events (filtered to network=robinhood) from the same Postgres.
-      DATABASE_URL: postgresql://rindexer:${POSTGRES_PASSWORD:-rindexer}@postgres:5432/blue_liquidation
+      ZEROX_API_KEY: ${ZEROX_API_KEY_4663:-}
+      ONEINCH_API_KEY: ${ONEINCH_API_KEY_4663:-}
+      LIFI_API_KEY: ${LIFI_API_KEY_4663:-}
+      ENABLE_LIFI: ${ENABLE_LIFI_4663:-}
+      ALLOW_DETECTION_ONLY: ${ALLOW_DETECTION_ONLY_4663:-true}
+      MORPHO_API_URL: ${MORPHO_API_URL:-}
+      HEALTH_FACTOR_LTE: ${HEALTH_FACTOR_LTE:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       # Optional BetterStack log shipping (in-process loglayer transport). Empty = disabled; both blue
       # chains share the one blue source, discriminated by the bot/chainId fields the logger stamps.
       BETTERSTACK_SOURCE_TOKEN: ${BETTERSTACK_SOURCE_TOKEN:-}
       BETTERSTACK_INGESTING_HOST: ${BETTERSTACK_INGESTING_HOST:-}
+      BETTERSTACK_HEARTBEAT_URL: ${BETTERSTACK_HEARTBEAT_URL_4663:-}
     restart: unless-stopped
-
-volumes:
-  rindexer-pg:

@@ -1,9 +1,7 @@
 /**
  * Reproducible, idempotent deployment of the multi-chain blue-liquidation system to a Railway
- * project: managed Postgres + ONE shared `rindexer` service (indexing every chain's Borrow events
- * into one database) + one `bot-<chainId>` runner per chain (see CHAINS below). Each bot reads
- * borrower candidates from rindexer's Postgres tables (filtered to its own chain's `network`), so all
- * are provisioned here.
+ * project: one `bot-<chainId>` runner per chain (see CHAINS below). Borrower discovery polls the
+ * Morpho GraphQL API, so there is no Postgres or indexer service to provision.
  *
  * Runs anywhere with the `railway` CLI installed and authenticated. The target project is supplied
  * entirely via env vars — no project identifier is baked into this (open-source) file:
@@ -14,23 +12,28 @@
  *
  * Per-chain env vars are chainId-suffixed (endpoints/keys differ per chain):
  *   - RPC_URL_<chainId>            (required per chain) — the bot's RPC (reads, simulate, sends)
- *   - RINDEXER_RPC_URL_<chainId>   (optional; defaults to RPC_URL_<chainId>) — that network's indexer RPC
  *   - LIQUIDATOR_PRIVATE_KEY_<chainId> (per chain) OR a shared LIQUIDATOR_PRIVATE_KEY fallback
- *   - ZEROX_API_KEY[_<chainId>] / ONEINCH_API_KEY[_<chainId>] (optional; only if a collateral routes there)
+ *   - ZEROX_API_KEY[_<chainId>] / ONEINCH_API_KEY[_<chainId>] / LIFI_API_KEY[_<chainId>]
+ *     (optional; keys ENABLE their venue — LiFi also via ENABLE_LIFI[_<chainId>]=true, keyless)
+ *   - ALLOW_DETECTION_ONLY[_<chainId>]=true — required for a chain with NO venue enabled; the bot
+ *     fails loud at startup otherwise. Remove it (rerun with venues) once the chain should route.
  *
  *   RAILWAY_PROJECT_ID=… RPC_URL_8453=… RPC_URL_4663=… LIQUIDATOR_PRIVATE_KEY=0x… \
- *     bun run --filter @morpho-org/blue-liquidation deploy:railway
+ *     ALLOW_DETECTION_ONLY_4663=true bun run --filter @morpho-org/blue-liquidation deploy:railway
  *
  * The build context MUST be the repo root so the bun workspace (packages/*) resolves — the script
  * runs `railway up` with cwd set to the repo root (mirrors the Dockerfile header + compose context).
  *
- * Idempotent: existing services / volume / variables are reused; each run redeploys the rindexer and
- * every bot. Cutover: the pre-multichain `bot` service is removed once its replacement `bot-8453` is
- * confirmed healthy (leaving it would run a second, stale Base liquidator with a funded key).
+ * Idempotent: existing services / variables are reused; each run redeploys every bot. The venue
+ * posture is SYNCHRONIZED on every full run: ENABLE_LIFI / ALLOW_DETECTION_ONLY are set explicitly,
+ * and each venue key is either set from this run's inputs or deleted when absent — so neither a
+ * stale detection-only opt-in nor a dropped venue key can linger from a previous run. Cutover: the
+ * pre-multichain `bot` service is removed once its replacement `bot-8453` is confirmed healthy
+ * (leaving it would run a second, stale Base liquidator with a funded key).
  *
- * Secret hygiene: secrets (per-chain RPC_URL/RINDEXER_RPC_URL, LIQUIDATOR_PRIVATE_KEY, aggregator
- * keys) are piped to `railway variable set --stdin` so their values never appear in argv; on failure
- * we surface only the variable key, never its value; variable values are never logged.
+ * Secret hygiene: secrets (per-chain RPC_URL, LIQUIDATOR_PRIVATE_KEY, aggregator keys) are piped to
+ * `railway variable set --stdin` so their values never appear in argv; on failure we surface only
+ * the variable key, never its value; variable values are never logged.
  */
 import { delay, tryCatch } from '@repo/utils'
 import { $ } from 'bun'
@@ -41,8 +44,6 @@ import { resolve } from 'node:path'
 const PROJECT_ID = required(Bun.env, 'RAILWAY_PROJECT_ID')
 const ENVIRONMENT = Bun.env.RAILWAY_ENVIRONMENT?.trim() || 'production'
 const DOCKERFILE_PATH = 'bots/blue-liquidation/Dockerfile'
-const SWAP_MOUNT_PATH = '/config'
-const SWAP_CONFIG_PATH = '/config/swap.json'
 // Repo root is three levels up from this file (scripts → blue-liquidation → bots → repo root).
 const REPO_ROOT = resolve(import.meta.dir, '..', '..', '..')
 
@@ -53,6 +54,14 @@ function required(env: Env, name: string): string {
   const value = env[name]
   if (!value || !value.trim()) throw new Error(`Missing required env var: ${name}`)
   return value.trim()
+}
+
+// Railway service names are project-wide, while environments only scope service instances. Retain
+// the established production names and prefix every non-production service to prevent collisions.
+function serviceName(productionName: string): string {
+  return ENVIRONMENT === 'production'
+    ? productionName
+    : `${ENVIRONMENT}-${productionName.toLowerCase()}`
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -99,26 +108,6 @@ function parseServices(raw: string): RailwayService[] {
     .filter(service => service.name)
 }
 
-// Each volume carries the service it is attached to (`serviceName`, null when orphaned by a deleted
-// service). We key on (serviceName, mountPath) because `railway volume list` is environment-wide:
-// matching mountPath alone would treat another service's — or an orphaned — `/config` volume as this
-// service's, and skip creating one. Returns [] on any parse failure (treated as "no volumes").
-function parseVolumeMounts(raw: string): { serviceName: string; mountPath: string }[] {
-  const { data } = tryCatch(() => JSON.parse(raw) as unknown)
-  const rows = Array.isArray(data)
-    ? data
-    : isRecord(data) && Array.isArray(data.volumes)
-      ? data.volumes
-      : []
-  return rows
-    .filter(isRecord)
-    .map(row => ({
-      serviceName: str(row.serviceName) || str(row.service_name),
-      mountPath: str(row.mountPath) || str(row.mount_path)
-    }))
-    .filter(mount => mount.mountPath)
-}
-
 function parseLatestStatus(raw: string): string {
   const { data } = tryCatch(() => JSON.parse(raw) as unknown)
   const rows = Array.isArray(data)
@@ -161,26 +150,6 @@ async function listServices(): Promise<RailwayService[]> {
   return error || typeof data !== 'string' ? [] : parseServices(data)
 }
 
-async function ensurePostgres(): Promise<string> {
-  const isPostgres = (service: RailwayService) => /postgres/i.test(service.name)
-  let postgres = (await listServices()).find(isPostgres)
-  if (!postgres) {
-    console.log('Adding managed Postgres…')
-    // `railway add --database` can exit non-zero even after the managed Postgres is provisioned (it
-    // writes selection echoes to stderr and the service shows up moments later). Don't trust the exit
-    // code alone — re-list and only treat the failure as fatal if Postgres is still absent.
-    const { error } = await tryCatch(
-      Promise.resolve($`railway add --database postgres --json`.quiet())
-    )
-    postgres = (await listServices()).find(isPostgres)
-    if (!postgres && error) throw new Error(`Failed to add Postgres: ${stderrOf(error)}`)
-  }
-  if (!postgres)
-    throw new Error('Postgres service not found after `railway add --database postgres`.')
-  console.log(`Postgres service: ${postgres.name}`)
-  return postgres.name
-}
-
 async function ensureService(name: string): Promise<void> {
   if ((await listServices()).some(service => service.name === name)) {
     console.log(`Service ${name} already exists.`)
@@ -210,30 +179,6 @@ async function removeService(name: string): Promise<void> {
   else console.log(`Removed legacy service ${name}.`)
 }
 
-async function ensureVolume(service: string, mountPath: string): Promise<void> {
-  const { data } = await tryCatch(Promise.resolve($`railway volume list --json`.quiet().text()))
-  const mounts = typeof data === 'string' ? parseVolumeMounts(data) : []
-  // Match this service's own volume — NOT merely a same-mount volume elsewhere in the environment.
-  // Volumes are per-service, so each bot needs its own `/config`; keying on mountPath alone made every
-  // bot after the first (and after a legacy service left an orphaned `/config`) skip provisioning.
-  if (mounts.some(mount => mount.serviceName === service && mount.mountPath === mountPath)) {
-    console.log(`Volume at ${mountPath} already on ${service}.`)
-    return
-  }
-  // `railway volume add` attaches to the *linked* service; its own --service flag is broken in CLI
-  // 5.x (panics), so link the target service first, then add without -s.
-  const link = await tryCatch(
-    Promise.resolve($`railway link -p ${PROJECT_ID} -e ${ENVIRONMENT} -s ${service}`.quiet())
-  )
-  if (link.error)
-    throw new Error(`Failed to link ${service} for volume add: ${stderrOf(link.error)}`)
-  const { error } = await tryCatch(
-    Promise.resolve($`railway volume add -m ${mountPath} --json`.quiet())
-  )
-  if (error) throw new Error(`Failed to add volume ${mountPath} to ${service}: ${stderrOf(error)}`)
-  console.log(`Added volume at ${mountPath} to ${service}.`)
-}
-
 // Non-secret variable. `kv` is a single "KEY=VALUE" arg; only the key is logged.
 async function setVar(service: string, kv: string): Promise<void> {
   const key = kv.split('=')[0]
@@ -242,6 +187,31 @@ async function setVar(service: string, kv: string): Promise<void> {
   )
   if (error) throw new Error(`Failed to set ${key} on ${service}: ${stderrOf(error)}`)
   console.log(`Set ${key} on ${service}.`)
+}
+
+// Keys currently set on a service — used to clear stale venue secrets without blind deletes. The
+// CLI's JSON includes raw values, so it is parsed in-memory and only key NAMES ever leave here.
+async function listVarKeys(service: string): Promise<Set<string>> {
+  const { data, error } = await tryCatch(
+    Promise.resolve(
+      $`railway variable list -s ${service} -e ${ENVIRONMENT} -p ${PROJECT_ID} --json`
+        .quiet()
+        .text()
+    )
+  )
+  if (error || typeof data !== 'string') return new Set()
+  const { data: parsed } = tryCatch(() => JSON.parse(data) as unknown)
+  return isRecord(parsed) ? new Set(Object.keys(parsed)) : new Set()
+}
+
+// Delete a variable (used to clear a stale venue secret). Fatal on failure: a stale key that
+// survives the delete silently keeps its venue enabled, which is exactly the drift this prevents.
+async function deleteVar(service: string, key: string): Promise<void> {
+  const { error } = await tryCatch(
+    Promise.resolve($`railway variable delete ${key} -s ${service} --skip-deploys`.quiet())
+  )
+  if (error) throw new Error(`Failed to delete ${key} on ${service}: ${stderrOf(error)}`)
+  console.log(`Deleted ${key} on ${service} (stale).`)
 }
 
 // Secret variable: value piped via stdin (never argv), `--json` omitted (it echoes raw values).
@@ -302,36 +272,39 @@ async function waitForDeploy(
   return 'TIMEOUT'
 }
 
+// CRASHED is a failure: the bot fails loud at startup on a bad config (no venues without the
+// detection-only opt-in, malformed URLs), so a crash-looping service must never read as a green
+// deploy.
+const badStatus = (status: string) =>
+  status === 'FAILED' || status === 'TIMEOUT' || status === 'CRASHED'
+
 await assertCli()
 
-// The chains this deploy targets: one `bot-<chainId>` service each, all sharing the one rindexer +
-// Postgres. `network` must match the rindexer.yaml network name and the bot's chain map. Add a chain
-// here + in rindexer.yaml + in src/config.ts to extend coverage.
-type ChainDeploy = { chainId: number; network: string; service: string }
+// The chains this deploy targets: one `bot-<chainId>` service each. Add a chain here + in
+// src/config.ts's chain map to extend coverage.
+type ChainDeploy = { chainId: number; service: string }
 const CHAINS: ChainDeploy[] = [
-  { chainId: 8453, network: 'base', service: 'bot-8453' },
-  { chainId: 4663, network: 'robinhood', service: 'bot-4663' }
+  { chainId: 8453, service: serviceName('bot-8453') },
+  { chainId: 4663, service: serviceName('bot-4663') }
 ]
 // The pre-multichain single-chain service name, retired after `bot-8453` is confirmed healthy.
 const LEGACY_BOT_SERVICE = 'bot'
 
 // Deploy-only mode (DEPLOY_ONLY=1|true): re-ship the ALREADY-PROVISIONED services from the checked-out
-// tree and set NOTHING — no secrets, no variables, no volumes. This is the path CI uses: the per-bot-
-// per-stage GitHub Environment holds only RAILWAY_TOKEN + RAILWAY_PROJECT_ID, and the services/secrets
-// were provisioned once by a full (secret-bearing) run of this script. Skips the RPC/key requirements
-// the full path enforces, so it never needs those secrets in CI. Runs before `chainSecrets` is read.
+// tree and set NOTHING — no secrets, no variables. This is the path CI uses: the per-bot-per-stage
+// GitHub Environment holds only RAILWAY_TOKEN + RAILWAY_PROJECT_ID, and the services/secrets were
+// provisioned once by a full (secret-bearing) run of this script. Skips the RPC/key requirements the
+// full path enforces, so it never needs those secrets in CI. Runs before `chainSecrets` is read.
 if (/^(1|true)$/i.test(Bun.env.DEPLOY_ONLY?.trim() ?? '')) {
   await ensureContext()
-  // The one shared rindexer plus every per-chain bot. `railway up` rebuilds each server-side.
-  const services = ['rindexer', ...CHAINS.map(chain => chain.service)]
+  const services = CHAINS.map(chain => chain.service)
   for (const service of services) await deployService(service)
   const statuses = new Map<string, string>()
   for (const service of services) statuses.set(service, await waitForDeploy(service))
   console.log('')
   console.log('=== Deploy-only status ===')
   for (const [service, status] of statuses) console.log(`  ${service}: ${status}`)
-  const bad = (status: string) => status === 'FAILED' || status === 'TIMEOUT'
-  process.exit([...statuses.values()].some(bad) ? 1 : 0)
+  process.exit([...statuses.values()].some(badStatus) ? 1 : 0)
 }
 
 // Read a chainId-suffixed env var (e.g. RPC_URL_8453). RPC endpoints differ per chain so these are
@@ -344,12 +317,18 @@ function requiredSuffixed(name: string, chainId: number): string {
   if (!value) throw new Error(`Missing required env var: ${name}_${chainId}`)
   return value
 }
+// A chainId-suffixed boolean flag with an unsuffixed fallback (e.g. ALLOW_DETECTION_ONLY_4663).
+function suffixedFlag(name: string, chainId: number): boolean {
+  const raw = suffixed(name, chainId) ?? Bun.env[name]?.trim()
+  return /^(1|true)$/i.test(raw ?? '')
+}
 
 // Per-chain secrets/config, read + validated up front so we fail loud before mutating Railway state.
+// The venue posture mirrors the bot's own startup gate: a chain with no enabled venue is refused
+// unless its detection-only opt-in is set, so a misconfigured full run can't provision a service
+// that will only crash-loop.
 const chainSecrets = CHAINS.map(chain => {
   const rpcUrl = requiredSuffixed('RPC_URL', chain.chainId)
-  // rindexer indexes each network from its own RPC; default to the bot's RPC for that chain.
-  const rindexerRpcUrl = suffixed('RINDEXER_RPC_URL', chain.chainId) ?? rpcUrl
   // A single funded key may be reused across chains (unsuffixed fallback), or set one per chain.
   const liquidatorPrivateKey =
     suffixed('LIQUIDATOR_PRIVATE_KEY', chain.chainId) ?? Bun.env.LIQUIDATOR_PRIVATE_KEY?.trim()
@@ -358,31 +337,36 @@ const chainSecrets = CHAINS.map(chain => {
       `Missing required env var: LIQUIDATOR_PRIVATE_KEY_${chain.chainId} (or a shared LIQUIDATOR_PRIVATE_KEY)`
     )
   assertPrivateKey(liquidatorPrivateKey)
-  // Aggregator keys are optional (only if the chain's swap config routes a collateral through them).
+  // Venue keys enable their venue on this chain (no per-collateral routing file anymore).
   const zeroxApiKey = suffixed('ZEROX_API_KEY', chain.chainId) ?? Bun.env.ZEROX_API_KEY?.trim()
   const oneInchApiKey =
     suffixed('ONEINCH_API_KEY', chain.chainId) ?? Bun.env.ONEINCH_API_KEY?.trim()
-  return { ...chain, rpcUrl, rindexerRpcUrl, liquidatorPrivateKey, zeroxApiKey, oneInchApiKey }
+  const lifiApiKey = suffixed('LIFI_API_KEY', chain.chainId) ?? Bun.env.LIFI_API_KEY?.trim()
+  const enableLifi = suffixedFlag('ENABLE_LIFI', chain.chainId) || Boolean(lifiApiKey)
+  const allowDetectionOnly = suffixedFlag('ALLOW_DETECTION_ONLY', chain.chainId)
+  const hasVenue = Boolean(zeroxApiKey || oneInchApiKey || enableLifi)
+  if (!hasVenue && !allowDetectionOnly) {
+    throw new Error(
+      `Chain ${chain.chainId} has no venue enabled (set ZEROX_API_KEY/ONEINCH_API_KEY/LIFI_API_KEY` +
+        `[_${chain.chainId}] or ENABLE_LIFI[_${chain.chainId}]=true) and no ` +
+        `ALLOW_DETECTION_ONLY[_${chain.chainId}]=true opt-in.`
+    )
+  }
+  const betterstackHeartbeatUrl = suffixed('BETTERSTACK_HEARTBEAT_URL', chain.chainId)
+  return {
+    ...chain,
+    rpcUrl,
+    liquidatorPrivateKey,
+    zeroxApiKey,
+    oneInchApiKey,
+    lifiApiKey,
+    enableLifi,
+    allowDetectionOnly,
+    betterstackHeartbeatUrl
+  }
 })
 
 await ensureContext()
-const postgresName = await ensurePostgres()
-// Railway reference variable; `${{ }}` is a literal here (single-quoted, so JS does not interpolate
-// it) and Railway resolves it to the Postgres connection string at runtime.
-const databaseUrlRef = 'DATABASE_URL=${{' + postgresName + '.DATABASE_URL}}'
-
-// --- rindexer: ONE shared process indexing every chain's Borrow events into Postgres (BUILD_TARGET
-// selects the rindexer stage). Each network reads its own RPC via RINDEXER_RPC_URL_<chainId>, matching
-// the `${RINDEXER_RPC_URL_<chainId>}` interpolations in rindexer.yaml.
-await ensureService('rindexer')
-await setVar('rindexer', `RAILWAY_DOCKERFILE_PATH=${DOCKERFILE_PATH}`)
-await setVar('rindexer', 'BUILD_TARGET=rindexer')
-await setVar('rindexer', 'PROJECT_PATH=/app/project_path')
-await setVar('rindexer', databaseUrlRef)
-for (const chain of chainSecrets) {
-  await setSecret('rindexer', `RINDEXER_RPC_URL_${chain.chainId}`, chain.rindexerRpcUrl)
-}
-await deployService('rindexer')
 
 // Optional BetterStack log shipping, one source for blue-liq shared across its chains (told apart by
 // the bot/chainId fields the logger stamps). Host is a plain var; token is a secret. Off when unset —
@@ -390,29 +374,39 @@ await deployService('rindexer')
 const betterstackHost = Bun.env.BETTERSTACK_INGESTING_HOST?.trim()
 const betterstackToken = Bun.env.BETTERSTACK_SOURCE_TOKEN?.trim()
 
-// --- bot-<chainId>: one liquidation runner per chain (BUILD_TARGET selects the bun bot stage), all
-// sharing the one rindexer + Postgres. The in-container var names stay RPC_URL / LIQUIDATOR_PRIVATE_KEY
-// (the chainId suffix is only an operator-side convention). Swap config lives on a per-service /config
-// volume (uploaded out-of-band — see manual steps below).
+// --- bot-<chainId>: one liquidation runner per chain. The in-container var names stay RPC_URL /
+// LIQUIDATOR_PRIVATE_KEY (the chainId suffix is only an operator-side convention). The whole venue
+// posture is SYNCHRONIZED every full run — ENABLE_LIFI and ALLOW_DETECTION_ONLY set explicitly
+// (true or false), and each venue key either set from this run's inputs or DELETED when absent:
+// Railway vars persist across runs, so a lingering opt-in or a stale key from a past run would
+// otherwise silently defeat the bot's fail-loud gate / keep a dropped venue enabled.
 for (const chain of chainSecrets) {
   await ensureService(chain.service)
-  await ensureVolume(chain.service, SWAP_MOUNT_PATH)
   await setVar(chain.service, `CHAIN_ID=${chain.chainId}`)
   await setVar(chain.service, `RAILWAY_DOCKERFILE_PATH=${DOCKERFILE_PATH}`)
-  await setVar(chain.service, 'BUILD_TARGET=bot')
-  await setVar(chain.service, `SWAP_CONFIG_PATH=${SWAP_CONFIG_PATH}`)
   await setVar(chain.service, 'LOG_LEVEL=info')
-  await setVar(chain.service, databaseUrlRef)
+  await setVar(chain.service, `ENABLE_LIFI=${chain.enableLifi}`)
+  await setVar(chain.service, `ALLOW_DETECTION_ONLY=${chain.allowDetectionOnly}`)
   await setSecret(chain.service, 'RPC_URL', chain.rpcUrl)
   await setSecret(chain.service, 'LIQUIDATOR_PRIVATE_KEY', chain.liquidatorPrivateKey)
-  if (chain.zeroxApiKey) await setSecret(chain.service, 'ZEROX_API_KEY', chain.zeroxApiKey)
-  if (chain.oneInchApiKey) await setSecret(chain.service, 'ONEINCH_API_KEY', chain.oneInchApiKey)
+  const existingKeys = await listVarKeys(chain.service)
+  const venueKeys: [string, string | undefined][] = [
+    ['ZEROX_API_KEY', chain.zeroxApiKey],
+    ['ONEINCH_API_KEY', chain.oneInchApiKey],
+    ['LIFI_API_KEY', chain.lifiApiKey]
+  ]
+  for (const [key, value] of venueKeys) {
+    if (value) await setSecret(chain.service, key, value)
+    else if (existingKeys.has(key)) await deleteVar(chain.service, key)
+  }
   if (betterstackHost) await setVar(chain.service, `BETTERSTACK_INGESTING_HOST=${betterstackHost}`)
   if (betterstackToken) await setSecret(chain.service, 'BETTERSTACK_SOURCE_TOKEN', betterstackToken)
+  if (chain.betterstackHeartbeatUrl) {
+    await setSecret(chain.service, 'BETTERSTACK_HEARTBEAT_URL', chain.betterstackHeartbeatUrl)
+  }
   await deployService(chain.service)
 }
 
-const rindexerStatus = await waitForDeploy('rindexer')
 const botStatuses = new Map<string, string>()
 for (const chain of chainSecrets) botStatuses.set(chain.service, await waitForDeploy(chain.service))
 
@@ -420,9 +414,9 @@ for (const chain of chainSecrets) botStatuses.set(chain.service, await waitForDe
 // so the Base liquidator is never left without a running instance. Leaving `bot` up would run a
 // second, stale Base liquidator with a funded key alongside bot-8453 (nonce contention/double-submits).
 const baseService = CHAINS.find(chain => chain.chainId === 8453)?.service
-if (baseService && botStatuses.get(baseService) === 'SUCCESS') {
+if (ENVIRONMENT === 'production' && baseService && botStatuses.get(baseService) === 'SUCCESS') {
   await removeService(LEGACY_BOT_SERVICE)
-} else {
+} else if (ENVIRONMENT === 'production') {
   console.warn(
     `Skipping '${LEGACY_BOT_SERVICE}' removal — bot-8453 not confirmed SUCCESS. Remove it manually ` +
       `once bot-8453 is healthy to avoid a stale second Base liquidator.`
@@ -431,23 +425,19 @@ if (baseService && botStatuses.get(baseService) === 'SUCCESS') {
 
 console.log('')
 console.log('=== Deployment status ===')
-console.log(`  rindexer: ${rindexerStatus}`)
 for (const [service, status] of botStatuses) console.log(`  ${service}: ${status}`)
 console.log('')
 console.log('=== Manual steps ===')
-console.log(`  1. For each chain that should ROUTE liquidations, upload swap.json into that bot's`)
-console.log(`     ${SWAP_MOUNT_PATH} volume (the bot boots without it — no routes: it identifies`)
-console.log('     borrowers but skips every routed liquidation). The volume mounts only into a')
-console.log('     running container, so do this once the bot is up, e.g. for Base:')
-console.log(`       railway volume files upload ./swap.config.json ${SWAP_CONFIG_PATH} --overwrite`)
-console.log('     (prompts for the volume; or pass --volume <name> before the subcommand. Shape:')
-console.log(
-  '     bots/blue-liquidation/configs/example.json.) Restart that bot afterward to pick up routes.'
-)
-console.log('     Robinhood (bot-4663) launches DETECTION-ONLY — no swap route configured yet.')
+console.log('  1. Venue keys enable venues (ZEROX_API_KEY / ONEINCH_API_KEY / LIFI_API_KEY, or')
+console.log('     ENABLE_LIFI=true keyless). A detection-only chain (ALLOW_DETECTION_ONLY=true)')
+console.log('     discovers + logs liquidatable positions but skips every liquidation — rerun this')
+console.log('     script with venue inputs once it should route.')
 console.log('  2. Each bot needs a funded key + a real RPC before it can broadcast; Robinhood also')
 console.log('     needs the Executor deployed (bun run --filter @repo/contracts deploy:executor).')
+console.log(
+  '  3. One-time after this migration: delete the legacy Postgres + rindexer services (and'
+)
+console.log('     their volumes) from the Railway dashboard once the bots are confirmed healthy —')
+console.log('     discovery no longer reads them. This script never deletes a database.')
 
-// FAILED/TIMEOUT signal a real build or platform problem; a bot CRASH pre-config is expected.
-const badStatus = (status: string) => status === 'FAILED' || status === 'TIMEOUT'
-process.exitCode = badStatus(rindexerStatus) || [...botStatuses.values()].some(badStatus) ? 1 : 0
+process.exitCode = [...botStatuses.values()].some(badStatus) ? 1 : 0
