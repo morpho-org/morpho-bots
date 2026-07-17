@@ -1,11 +1,13 @@
 import type { Logger } from '@repo/bot-kit'
 import type { Address, Hex } from 'viem'
 
-import { backoffMs, delay, ensureError, retryAfterMs, tryCatch } from '@repo/utils'
+import { delay } from '@repo/utils'
 import createClient from 'openapi-fetch'
 import { isAddress, isHex } from 'viem'
 
 import type { components, paths } from '../generated/midnight-api'
+
+import { fetchWithRetry } from './retry'
 
 // Response shapes from `GET /v0/midnight/markets` (the seed script imports these too). The spec types
 // ids/addresses as plain strings; we brand the fields the codebase consumes as viem `Hex`/`Address`
@@ -41,7 +43,6 @@ type ListedMarketFilter = {
 type FetchLike = (request: Request) => Promise<Response>
 
 const REQUEST_TIMEOUT_MS = 5_000
-const MAX_REQUEST_RETRIES = 3
 
 /**
  * The markets-list operation path — a literal key of the generated {@link paths}, so `client.GET(PATH)`
@@ -53,8 +54,8 @@ const PATH = '/v0/midnight/markets'
 /**
  * Builds the {@link ListedMarketFilter}, via a typed `openapi-fetch` client generated from the
  * Midnight API spec. `openapi-fetch` builds the URL, serializes the query, and parses/types the body;
- * this keeps the bespoke retry policy it does NOT provide: 429/5xx/network up to
- * {@link MAX_REQUEST_RETRIES}, honoring `Retry-After`, with a {@link REQUEST_TIMEOUT_MS} deadline.
+ * this keeps the bespoke retry policy it does NOT provide via {@link fetchWithRetry} (429/5xx/network,
+ * honoring `Retry-After`), with a {@link REQUEST_TIMEOUT_MS} deadline.
  * `deps.apiUrl` is the full endpoint URL from config; the client base URL is it minus the fixed
  * {@link PATH} suffix (an override of `MARKETS_API_URL` changes host/prefix, not the request path).
  * `fetchImpl`/`sleep`/`now` are injectable for tests.
@@ -80,36 +81,15 @@ export function createListedMarketFilter(deps: {
   let updatedAt: number | null = null
 
   async function fetchListed(): Promise<ApiMarket[]> {
-    for (let attempt = 0; ; attempt++) {
-      const call = await tryCatch(
+    const body = await fetchWithRetry(
+      () =>
         client.GET(PATH, {
           params: { query: { listed: 'true' } },
           signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
-        })
-      )
-
-      if (call.error) {
-        if (attempt < MAX_REQUEST_RETRIES) {
-          await sleep(backoffMs(attempt))
-          continue
-        }
-        throw new Error(`markets request failed: ${ensureError(call.error).message}`)
-      }
-
-      const { data: body, response } = call.data
-
-      if (response.status === 429 || response.status >= 500) {
-        if (attempt < MAX_REQUEST_RETRIES) {
-          await sleep(retryAfterMs(response.headers.get('retry-after')) ?? backoffMs(attempt))
-          continue
-        }
-        throw new Error(`markets HTTP ${response.status}`)
-      }
-
-      if (!response.ok) throw new Error(`markets HTTP ${response.status}`)
-      if (!body) throw new Error('markets parse error: empty body')
-      return Array.isArray(body.data) ? (body.data as ApiMarket[]) : []
-    }
+        }),
+      { label: 'markets', sleep }
+    )
+    return Array.isArray(body.data) ? (body.data as ApiMarket[]) : []
   }
 
   async function refresh(): Promise<void> {

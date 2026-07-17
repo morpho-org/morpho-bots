@@ -1,11 +1,13 @@
 import type { Logger } from '@repo/bot-kit'
 import type { Address, Hex } from 'viem'
 
-import { backoffMs, delay, ensureError, retryAfterMs, tryCatch } from '@repo/utils'
+import { delay } from '@repo/utils'
 import createClient from 'openapi-fetch'
 import { getAddress, isAddress, isHex } from 'viem'
 
 import type { paths } from '../generated/markets-api'
+
+import { fetchWithRetry } from './retry'
 
 /** A candidate position to evaluate: a (market, borrower) pair the API flagged as at-risk. */
 export type BorrowerCandidate = { marketId: Hex; borrower: Address }
@@ -20,11 +22,9 @@ export type CandidatePage = { cursor: string | null; data: readonly unknown[] }
  */
 export type FetchCandidatePage = (cursor: string | null) => Promise<CandidatePage>
 
-// Per-request tuning for the candidates endpoint. Mirrors the retry conventions in
-// `@repo/swaps` http-client (429/5xx/network with Retry-After), but this endpoint is unauthenticated
-// and not venue-keyed, so it is a small self-contained client rather than the venue rate-limiter.
+// Per-request tuning for the candidates endpoint: a short deadline. The retry policy lives in
+// `./retry` (see {@link fetchWithRetry}).
 const REQUEST_TIMEOUT_MS = 5_000
-const MAX_REQUEST_RETRIES = 3
 /** The endpoint's maximum page size — fewer round-trips than the default 20. */
 const PAGE_LIMIT = 100
 
@@ -108,8 +108,8 @@ type FetchLike = (request: Request) => Promise<Response>
  * Runtime adapter: a {@link FetchCandidatePage} backed by the liquidation-candidates HTTP endpoint,
  * via a typed `openapi-fetch` client generated from the Markets Internal API spec. `openapi-fetch`
  * builds the URL, serializes the query, and parses/types the body; this wrapper keeps the bespoke
- * retry policy it does NOT provide: 429/5xx/network up to {@link MAX_REQUEST_RETRIES}, honoring
- * `Retry-After`, with a per-request {@link REQUEST_TIMEOUT_MS} deadline. `client.GET` resolves on
+ * retry policy it does NOT provide via {@link fetchWithRetry} (429/5xx/network, honoring
+ * `Retry-After`), with a per-request {@link REQUEST_TIMEOUT_MS} deadline. `client.GET` resolves on
  * 4xx/5xx (it only throws on network/abort), so `response.status`/`Retry-After` stay reachable. A
  * non-retryable failure throws; the caller catches it (logs `discover.error`) and proceeds so the
  * pending queue is still driven that block. `fetchImpl`/`sleep` are injectable for tests.
@@ -134,8 +134,8 @@ export function createApiCandidateSource(deps: {
   const client = createClient<paths>({ baseUrl, fetch: deps.fetchImpl ?? fetch })
 
   return async cursor => {
-    for (let attempt = 0; ; attempt++) {
-      const call = await tryCatch(
+    const body = await fetchWithRetry(
+      () =>
         client.GET(PATH, {
           params: {
             query: {
@@ -150,36 +150,13 @@ export function createApiCandidateSource(deps: {
             }
           },
           signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
-        })
-      )
+        }),
+      { label: 'liquidation-candidates', sleep }
+    )
 
-      if (call.error) {
-        if (attempt < MAX_REQUEST_RETRIES) {
-          await sleep(backoffMs(attempt))
-          continue
-        }
-        throw new Error(`liquidation-candidates request failed: ${ensureError(call.error).message}`)
-      }
-
-      const { data: body, response } = call.data
-
-      if (response.status === 429 || response.status >= 500) {
-        if (attempt < MAX_REQUEST_RETRIES) {
-          await sleep(retryAfterMs(response.headers.get('retry-after')) ?? backoffMs(attempt))
-          continue
-        }
-        throw new Error(`liquidation-candidates HTTP ${response.status}`)
-      }
-
-      // A non-429 4xx (e.g. 400 INVALID_CURSOR / bad params) is a request-level rejection — not worth
-      // retrying with the same URL. Surface it so the caller logs and moves on.
-      if (!response.ok) throw new Error(`liquidation-candidates HTTP ${response.status}`)
-      if (!body) throw new Error('liquidation-candidates parse error: empty body')
-
-      const nextCursor =
-        typeof body.cursor === 'string' && body.cursor.length > 0 ? body.cursor : null
-      const rows = Array.isArray(body.data) ? body.data : []
-      return { cursor: nextCursor, data: rows }
-    }
+    const nextCursor =
+      typeof body.cursor === 'string' && body.cursor.length > 0 ? body.cursor : null
+    const rows = Array.isArray(body.data) ? body.data : []
+    return { cursor: nextCursor, data: rows }
   }
 }
