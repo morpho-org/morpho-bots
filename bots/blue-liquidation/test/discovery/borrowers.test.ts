@@ -119,6 +119,30 @@ describe('discoverBorrowerIds', () => {
     expect(warn?.fields?.cap).toBe(2)
     expect(warn?.fields?.pages).toBe(2)
   })
+
+  it('caps at maxCandidates and logs discover.oversized loud on an oversized full page', async () => {
+    const { logger, events } = spyLogger()
+    // A FULL page of distinct pairs that reports more rows beyond it: neither partial-page exhaustion
+    // (items.length == PAGE_LIMIT) nor countTotal would stop the walk, so only the row cap can — which
+    // is what `calls === 1` proves. Models the real bug: the API returns the whole universe in one
+    // oversized page, slipping under the page-count backstop.
+    const items = Array.from({ length: PAGE_LIMIT }, (_, i) =>
+      row(MARKET, `0x${(i + 1).toString(16).padStart(40, '0')}`)
+    )
+    let calls = 0
+    const fetchPage: FetchPositionPage = async skip => {
+      calls += 1
+      return { items, countTotal: skip + PAGE_LIMIT * 2 }
+    }
+    const { pairs } = await discoverBorrowerIds(fetchPage, { logger, maxCandidates: 500 })
+    // Truncated to the cap (worst-HF first via the query's ascending order), without fetching page 2.
+    expect(pairs).toHaveLength(500)
+    expect(calls).toBe(1)
+    const warn = events.find(e => e.event === 'discover.oversized')
+    expect(warn?.level).toBe('warn')
+    expect(warn?.fields?.cap).toBe(500)
+    expect(warn?.fields?.collected).toBe(500)
+  })
 })
 
 describe('discoverCandidates', () => {

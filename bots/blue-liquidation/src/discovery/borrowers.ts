@@ -41,6 +41,18 @@ export const PAGE_LIMIT = 1000
 const MAX_DISCOVERY_PAGES = 10
 
 /**
+ * Row-level companion to {@link MAX_DISCOVERY_PAGES}: a hard cap on candidates collected in one pass.
+ * The page backstop bounds *pages*, but the API can return the whole universe in a single oversized
+ * page (observed: ~135k rows when the `healthFactor_lte` filter never reaches the server), which slips
+ * straight under a page-count cap. Reaching this many candidates under a health-factor cutoff means
+ * the filter almost certainly isn't narrowing — logged loud as `discover.oversized` so it's alertable.
+ * Truncating here is safe (unlike the paginated case {@link MAX_DISCOVERY_PAGES} guards): the query
+ * orders by ascending health factor, so the retained candidates are the most-at-risk, and the on-chain
+ * lens still filters the rest. Kept equal to the page ceiling so both backstops bound the same volume.
+ */
+const MAX_CANDIDATES = PAGE_LIMIT * MAX_DISCOVERY_PAGES
+
+/**
  * The `marketPositions` query: only listed markets, only positions at or below the health-factor
  * cutoff, scoped to this bot's chain server-side. Ascending health-factor order puts the worst
  * positions on page 1, so even a pathological truncation degrades gracefully. Only
@@ -83,15 +95,17 @@ function parseCandidate(row: unknown): BorrowerId | null {
 /**
  * Walks the skip-paginated position set: parse every row, de-dupe (market, borrower) pairs across
  * pages, and count malformed rows for the caller's drop diagnostics. Stops on a partial page, on
- * reaching the server-reported total, or at the {@link MAX_DISCOVERY_PAGES} backstop (logged loud —
- * see its doc). Note skip-pagination can shift under concurrent updates; the de-dupe absorbs
+ * reaching the server-reported total, at the {@link MAX_DISCOVERY_PAGES} page backstop, or at the
+ * {@link MAX_CANDIDATES} row cap (both logged loud — see their docs). Note skip-pagination can shift
+ * under concurrent updates; the de-dupe absorbs
  * duplicates and a transiently missed row reappears next tick.
  */
 export async function discoverBorrowerIds(
   fetchPage: FetchPositionPage,
-  deps: { logger: Logger; maxPages?: number }
+  deps: { logger: Logger; maxPages?: number; maxCandidates?: number }
 ): Promise<{ pairs: BorrowerId[]; rawRows: number; malformed: number }> {
   const maxPages = deps.maxPages ?? MAX_DISCOVERY_PAGES
+  const maxCandidates = deps.maxCandidates ?? MAX_CANDIDATES
   const seen = new Set<string>()
   const pairs: BorrowerId[] = []
   let rawRows = 0
@@ -112,6 +126,16 @@ export async function discoverBorrowerIds(
       if (seen.has(key)) continue
       seen.add(key)
       pairs.push(candidate)
+      if (pairs.length >= maxCandidates) break
+    }
+    // Row-level runaway backstop — truncate an oversized result and log loud; see MAX_CANDIDATES.
+    if (pairs.length >= maxCandidates) {
+      deps.logger.warn('discover.oversized', {
+        cap: maxCandidates,
+        collected: pairs.length,
+        rawRows
+      })
+      break
     }
     skip += page.items.length
     const exhausted =
@@ -137,7 +161,7 @@ export async function discoverBorrowerIds(
 export async function discoverCandidates(
   fetchPage: FetchPositionPage,
   resolveParams: MarketParamsResolver,
-  deps: { logger: Logger; maxPages?: number }
+  deps: { logger: Logger; maxPages?: number; maxCandidates?: number }
 ): Promise<BorrowerCandidate[]> {
   const { pairs, rawRows, malformed } = await discoverBorrowerIds(fetchPage, deps)
   const marketIds = [...new Set(pairs.map(pair => pair.marketId))]
