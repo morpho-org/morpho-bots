@@ -11,7 +11,7 @@ export type MarketQuoteConfig = {
   levels: number
   maxUnits: bigint
 }
-export type Config = {
+type Config = {
   chainId: 8453
   rpcUrl: string
   rpcUrlFallback: string | undefined

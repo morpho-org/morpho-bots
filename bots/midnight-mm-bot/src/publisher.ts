@@ -8,7 +8,7 @@ import { base } from 'viem/chains'
 import type { MarketQuoteConfig } from './config'
 
 import { buildOfferTree } from './offers'
-export type PublishContext = {
+type PublishContext = {
   publicClient: PublicClient<Transport, typeof base>
   walletClient: WalletClient<Transport, typeof base, Account>
   maker: Address
