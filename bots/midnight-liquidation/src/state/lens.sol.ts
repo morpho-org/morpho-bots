@@ -1,7 +1,7 @@
 import type { BatchLensTransportType } from '@repo/utils'
 import type { Address, Client, Hex, Transport } from 'viem'
 
-import { MAX_INITCODE_SIZE, readDeploylessBatchLens } from '@repo/utils'
+import { lensKey, MAX_INITCODE_SIZE, readDeploylessBatchLens } from '@repo/utils'
 import { sol } from 'soltag'
 
 import type { Market } from '../execution/encode-call'
@@ -189,11 +189,6 @@ export type LensOut = {
   bestCollateralLltv: bigint
   /** Full Market read on-chain via `toMarket(id)`; pass straight into `liquidate`. */
   market: Market
-}
-
-/** Stable per-pair key for the result map. */
-export function lensKey(id: Hex, borrower: Address): string {
-  return `${id.toLowerCase()}:${borrower.toLowerCase()}`
 }
 
 /**

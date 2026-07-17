@@ -15,7 +15,7 @@ import type { Address, Hex } from 'viem'
 
 import { createDeploylessClient } from '@repo/bot-kit'
 import { MorphoAbi } from '@repo/contracts'
-import { ensureError } from '@repo/utils'
+import { ensureError, lensKey } from '@repo/utils'
 import { getAbiItem } from 'viem'
 import { getBlockNumber, getLogs, readContract } from 'viem/actions'
 import { base } from 'viem/chains'
@@ -26,7 +26,7 @@ import type { LensInput, LensOut } from '../src/state/lens.sol'
 import { marketId } from '../src/market'
 import { isLiquidatable } from '../src/runner/eligibility'
 import { plan } from '../src/sizing/plan'
-import { lensKey, readBlueLiquidationLens } from '../src/state/lens.sol'
+import { readBlueLiquidationLens } from '../src/state/lens.sol'
 
 const MORPHO: Address = '0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb'
 const LOGS_CHUNK = 4_000n

@@ -1,11 +1,9 @@
 import { describe, expect, it } from 'bun:test'
 import { decodeFunctionResult, encodeFunctionResult, getAddress } from 'viem'
 
-import { BlueLiquidationLens, lensKey } from '../../src/state/lens.sol'
+import { BlueLiquidationLens } from '../../src/state/lens.sol'
 
 const MORPHO = getAddress('0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb')
-const BORROWER = getAddress('0x1111111111111111111111111111111111111111')
-const ID = `0x${'ab'.repeat(32)}` as const
 
 describe('BlueLiquidationLens', () => {
   it('compiles via soltag and binds the Morpho address into the factory call', () => {
@@ -49,11 +47,5 @@ describe('BlueLiquidationLens', () => {
     const encoded = encodeFunctionResult({ abi, functionName: 'lens', result: [sample] })
     const decoded = decodeFunctionResult({ abi, functionName: 'lens', data: encoded })
     expect(decoded).toEqual([sample])
-  })
-})
-
-describe('lens helpers', () => {
-  it('keys results by lowercased id:borrower', () => {
-    expect(lensKey(ID, BORROWER)).toBe(`${ID.toLowerCase()}:${BORROWER.toLowerCase()}`)
   })
 })

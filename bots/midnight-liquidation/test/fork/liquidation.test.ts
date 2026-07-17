@@ -9,6 +9,7 @@ import {
   simulateLiquidationExec
 } from '@repo/bot-kit'
 import { quoteUniswapV3 } from '@repo/swaps'
+import { lensKey } from '@repo/utils'
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
 import { erc20Abi, parseGwei } from 'viem'
 import { base } from 'viem/chains'
@@ -17,7 +18,7 @@ import { encodeLiquidationExec } from '../../src/execution/encode-call'
 import { expectedLoanOut } from '../../src/execution/swap-step'
 import { isLiquidatable, planInputFromLens } from '../../src/runner/eligibility'
 import { plan } from '../../src/sizing/plan'
-import { lensKey, readMidnightLiquidationLens } from '../../src/state/lens.sol'
+import { readMidnightLiquidationLens } from '../../src/state/lens.sol'
 import {
   WETH,
   deployExecutor,

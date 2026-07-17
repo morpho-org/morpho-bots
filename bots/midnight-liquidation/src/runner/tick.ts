@@ -2,7 +2,7 @@ import type { Backoff, CooldownStore, Logger, SimulateResult } from '@repo/bot-k
 import type { QuoteOutcome, SwapPlan } from '@repo/swaps'
 import type { Address } from 'viem'
 
-import { assertNever, tryCatch } from '@repo/utils'
+import { assertNever, lensKey, tryCatch } from '@repo/utils'
 
 import type { BorrowerCandidate } from '../discovery/borrowers'
 import type { Market } from '../execution/encode-call'
@@ -10,7 +10,6 @@ import type { LiquidationPlan } from '../sizing/plan'
 import type { LensInput, LensOut } from '../state/lens.sol'
 
 import { isBadDebtRealization, plan } from '../sizing/plan'
-import { lensKey } from '../state/lens.sol'
 import { isLiquidatable, planInputFromLens } from './eligibility'
 
 type TickCounters = {
