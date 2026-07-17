@@ -14,22 +14,12 @@ export type VenueQuoteEstimate = { venue: Venue; expectedOut: bigint }
 
 /**
  * One pair's cached probe: the base-unit sizes we priced at, and — per ladder index — the best-first
- * venue ranking. `updatedAt` gates staleness. Exported so persisted selector state can carry it.
+ * venue ranking. `updatedAt` gates staleness.
  */
-export type PairCache = {
+type PairCache = {
   updatedAt: number
   ladder: bigint[]
   rankedByBucket: VenueQuoteEstimate[][]
-}
-
-/**
- * Restorable selector state: what `dump()` emits and `initialState` accepts. Survives a bigint-safe
- * JSON round-trip. Restored entries stay subject to the `staleMs` gate — stale pairs re-probe on the
- * next `refresh`, so an old file can slow the first tick but never pin an outdated ranking.
- */
-export type VenueSelectorState = {
-  pairs: [key: string, entry: PairCache][]
-  decimals: [token: string, decimals: number][]
 }
 
 /** A process-lifetime probe cache + best-first venue lookup, keyed by chain + collateral + loan. */
@@ -40,8 +30,6 @@ export type VenueSelector = {
   select: (pair: VenuePair, amountIn: bigint) => VenueQuoteEstimate[]
   /** Per-pair cache ages + current winner per bucket, for periodic / shutdown observability. */
   snapshot: () => { pair: string; ageMs: number; winners: (Venue | null)[] }[]
-  /** Restorable snapshot of the probe + decimals caches (unlike `snapshot()`, which is logs-only). */
-  dump: () => VenueSelectorState
 }
 
 // Nearest ladder index to `amountIn` in LOG space (venue rankings shift with size, and the ladder is
@@ -82,13 +70,10 @@ export function createVenueSelector(deps: {
   staleMs: number
   logger: QuoteLogger
   now?: () => number
-  /** Seeds both caches from a prior `dump()`; entries remain subject to the `staleMs` gate. */
-  initialState?: VenueSelectorState
 }): VenueSelector {
   const now = deps.now ?? (() => Date.now())
-  // Refresh replaces whole entries (never mutates one in place), so restoring by reference is safe.
-  const cache = new Map<string, PairCache>(deps.initialState?.pairs ?? [])
-  const decimalsCache = new Map<string, number>(deps.initialState?.decimals ?? [])
+  const cache = new Map<string, PairCache>()
+  const decimalsCache = new Map<string, number>()
 
   const keyFor = (pair: VenuePair) =>
     `${deps.chainId}:${getAddress(pair.collateral)}:${getAddress(pair.loan)}`
@@ -180,9 +165,5 @@ export function createVenueSelector(deps: {
     }))
   }
 
-  function dump(): VenueSelectorState {
-    return { pairs: [...cache.entries()], decimals: [...decimalsCache.entries()] }
-  }
-
-  return { refresh, select, snapshot, dump }
+  return { refresh, select, snapshot }
 }

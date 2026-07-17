@@ -25,11 +25,8 @@ type PendleMarket = {
   underlying: Address
 }
 
-/**
- * The markets cache in dump/restore form (JSON-safe), so the once-per-TTL fetch doesn't ride every
- * per-tick process start — the venue selector's persistence precedent.
- */
-export type PendleMarketsState = { fetchedAt: number; markets: PendleMarket[] }
+/** The TTL-cached markets list: when it was fetched and the usable markets it yielded. */
+type PendleMarketsState = { fetchedAt: number; markets: PendleMarket[] }
 
 // Response subsets we consume. Markets carry addresses as "{chainId}-{address}" strings.
 type MarketsResponse = {
@@ -60,8 +57,8 @@ function parsePrefixedAddress(value: string | undefined): Address | null {
  * never cacheable) and pulls the PT via `transferFrom`, so the step carries the router as its
  * `approvalSpender`.
  *
- * Detection is a per-chain markets list (`/v1/markets/all`), TTL-cached in the closure and
- * dump/restorable via the op cache. **Only successful responses are cached** — a fetch failure with
+ * Detection is a per-chain markets list (`/v1/markets/all`), TTL-cached in the closure.
+ * **Only successful responses are cached** — a fetch failure with
  * stale data falls back to the stale list (warn), and with NO data it throws (→ `failed` +
  * cooldown): "couldn't determine" must never persist as "confirmed not a PT", or one outage would
  * suppress PT liquidations for the whole TTL. Construct this unwrapper only on `PENDLE_CHAIN_IDS` —
@@ -81,15 +78,14 @@ export function createPendlePtUnwrapper(deps: {
   staleMs?: number
   logger: QuoteLogger
   now?: () => number
-  initialState?: PendleMarketsState
-}): Unwrapper & { dump: () => PendleMarketsState | null } {
+}): Unwrapper {
   const { client, chainId, logger } = deps
   const slippageBps = deps.slippageBps ?? DEFAULT_PENDLE_SLIPPAGE_BPS
   const baseUrl = deps.baseUrl ?? PENDLE_BASE_URL
   const staleMs = deps.staleMs ?? PENDLE_MARKETS_STALE_MS
   const now = deps.now ?? (() => Date.now())
 
-  let cache: PendleMarketsState | null = deps.initialState ?? null
+  let cache: PendleMarketsState | null = null
 
   function parseMarkets(json: MarketsResponse): PendleMarket[] {
     const markets: PendleMarket[] = []
@@ -143,7 +139,6 @@ export function createPendlePtUnwrapper(deps: {
 
   return {
     kind: 'pendle-pt',
-    dump: () => cache,
     async resolve({ token, amountIn, executor }) {
       const markets = await marketsFor()
       const market = markets.find(entry => isAddressEqual(entry.pt, token))
