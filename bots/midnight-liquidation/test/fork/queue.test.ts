@@ -43,7 +43,6 @@ describe('fork: pending-queue bump + replacement against a real node', () => {
       chain: base,
       rpcUrl,
       rpcUrlFallback: undefined,
-      sendRpcUrl: undefined,
       privateKey: LIQUIDATOR_KEY
     }
     const signer = createSigner(cfg)

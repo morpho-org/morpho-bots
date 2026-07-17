@@ -41,7 +41,6 @@ describe('loadConfig', () => {
     expect(config.midnight).toBe(MIDNIGHT)
     expect(config.rpcUrl).toBe('https://rpc.example')
     expect(config.rpcUrlFallback).toBeUndefined()
-    expect(config.sendRpcUrl).toBeUndefined()
     expect(config.executooorAddress).toBe(getAddress(EXECUTOOOR))
     expect(config.discovery.apiUrl).toBe(
       'https://api.morpho.org/markets/midnight/liquidation-candidates'
@@ -76,7 +75,6 @@ describe('loadConfig', () => {
     const config = loadConfig(
       baseEnv({
         RPC_URL_FALLBACK: 'https://rpc.fallback',
-        SEND_RPC_URL: 'https://rpc.send',
         MAX_FEE_GWEI: '42',
         LOG_LEVEL: 'debug'
       }),
@@ -84,7 +82,6 @@ describe('loadConfig', () => {
     )
 
     expect(config.rpcUrlFallback).toBe('https://rpc.fallback')
-    expect(config.sendRpcUrl).toBe('https://rpc.send')
     expect(config.maxFeeWei).toBe(parseGwei('42'))
     expect(config.logLevel).toBe('debug')
   })

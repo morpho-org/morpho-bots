@@ -42,17 +42,15 @@ export type Signer = {
 /**
  * Builds the signed-send path the pending queue needs: a plain HTTP (optionally `failover`) wallet
  * client — deliberately NOT the viem-dlc `deployless` transport, which only wraps `eth_call` for the
- * lens — with a local pending-nonce cursor so sequential sends claim sequential nonces. Broadcasts
- * (and the nonce/receipt/base-fee reads) go to `sendRpcUrl` when set, else `rpcUrl`: a read relay
- * that can't actually relay sends would otherwise sink every tx. Returns the primitives
+ * lens — with a local pending-nonce cursor so sequential sends claim sequential nonces. `rpcUrl`
+ * must be a full RPC that relays sends: a read-only relay that acks `eth_sendRawTransaction`
+ * without forwarding it to the sequencer would sink every tx. Returns the primitives
  * `createPendingQueue` injects: {@link SendTx}, {@link GetReceipt}, {@link GetBaseFee}, {@link SyncNonce}.
  */
 export function createSigner(options: {
   chain: Chain
   rpcUrl: string
   rpcUrlFallback?: string | undefined
-  /** Broadcast endpoint; sends + the signer's own reads go here (defaults to `rpcUrl`). */
-  sendRpcUrl?: string | undefined
   privateKey: Hex
   /**
    * Default-deny signing policy. When set, every prepared transaction is checked against it between
@@ -63,14 +61,10 @@ export function createSigner(options: {
   /** Where a policy violation is logged before it throws. */
   logger?: Logger | undefined
 }): Signer {
-  // Sends + the signer's own reads run against the broadcast endpoint (sendRpcUrl ?? rpcUrl). Keeping
-  // the nonce/receipt reads on the same endpoint we broadcast to is deliberate: a split view (read
-  // nonce from A, send to B) is exactly what drifts the cursor out of sync.
-  const sendUrl = options.sendRpcUrl ?? options.rpcUrl
   // viem-dlc's `failover` transport types its options as `unknown`, which isn't assignable to viem's
   // `Transport` (Record options) — the cast is safe (it's a valid runtime transport). The deployless
   // read client sidesteps this by re-wrapping the base transport in `deployless`.
-  const transport = createHttpTransport(sendUrl, options.rpcUrlFallback) as Transport
+  const transport = createHttpTransport(options.rpcUrl, options.rpcUrlFallback) as Transport
   const account = privateKeyToAccount(options.privateKey)
   const client = createWalletClient({ account, chain: options.chain, transport })
   let nextNonce: number | undefined

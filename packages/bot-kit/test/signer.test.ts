@@ -25,7 +25,6 @@ const CONFIG = {
   chain: base,
   rpcUrl: 'http://localhost:8545',
   rpcUrlFallback: undefined,
-  sendRpcUrl: undefined,
   privateKey: KEY
 } as const
 
@@ -36,11 +35,9 @@ type RpcBody = { id: number; method: string; params?: unknown[] }
 type RpcResult = unknown
 
 // Canned JSON-RPC: maps method → result/function. Any unmocked method throws (surfaces a missing
-// stub). Returns the captured request URLs so tests can assert which endpoint was hit.
+// stub).
 function mockRpc(results: Record<string, RpcResult>) {
-  const urls: string[] = []
-  const handler = async (url: unknown, init?: { body?: string }): Promise<Response> => {
-    urls.push(String(url))
+  const handler = async (_url: unknown, init?: { body?: string }): Promise<Response> => {
     const body = JSON.parse(init?.body ?? '{}') as RpcBody
     if (!(body.method in results)) throw new Error(`unmocked RPC method ${body.method}`)
     const value = results[body.method]
@@ -48,7 +45,6 @@ function mockRpc(results: Record<string, RpcResult>) {
     return Response.json({ jsonrpc: '2.0', id: body.id, result })
   }
   spyOn(globalThis, 'fetch').mockImplementation(handler as unknown as typeof fetch)
-  return { urls }
 }
 
 describe('createSigner', () => {
@@ -94,26 +90,6 @@ describe('createSigner', () => {
     // 7 (a future-nonce gap). syncNonce collapses it back to chain truth.
     await syncNonce()
     expect((await send(req)).nonce).toBe(5)
-  })
-
-  it('broadcasts to sendRpcUrl when set, never touching rpcUrl', async () => {
-    const { urls } = mockRpc({
-      eth_chainId: `0x${base.id.toString(16)}`,
-      eth_getTransactionCount: '0x5',
-      eth_estimateGas: '0x5208',
-      eth_getBlockByNumber: { baseFeePerGas: '0x7' },
-      eth_sendRawTransaction: TXHASH
-    })
-    const { send } = createSigner({ ...CONFIG, sendRpcUrl: 'http://send.example' })
-    await send({
-      to: `0x${'11'.repeat(20)}`,
-      data: '0x',
-      maxFeePerGas: 1_000_000_000n,
-      maxPriorityFeePerGas: 1_000_000n
-    })
-    expect(urls.length).toBeGreaterThan(0)
-    expect(urls.every(u => u.startsWith('http://send.example'))).toBe(true)
-    expect(urls.some(u => u.startsWith('http://localhost:8545'))).toBe(false)
   })
 
   it('rolls back the local nonce cursor when raw broadcast fails before returning a hash', async () => {

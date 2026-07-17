@@ -60,7 +60,6 @@ async function main() {
     chain: config.chain,
     rpcUrl: config.rpcUrl,
     rpcUrlFallback: config.rpcUrlFallback,
-    sendRpcUrl: config.sendRpcUrl,
     privateKey: config.liquidatorPrivateKey,
     // Default-deny pre-broadcast guard: only value-0 exec_606BaXt calls to this bot's Executor,
     // under the fee/gas/size ceilings, are ever signed (see @repo/bot-kit `evaluatePolicy`).
