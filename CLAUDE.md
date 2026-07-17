@@ -139,7 +139,8 @@ This is a **bun workspaces monorepo** housing off-chain Morpho curator bots:
   block watcher + runner loop, pending-tx queue with fee
   policy / per-position backoff / cooldown, signing policy guard,
   simulation, revert decoding, balance metric), `@repo/swaps` (multi-venue DEX quoting, routing,
-  unwrap seam, and venue selection), `@repo/contracts` (contract ABIs + Executor sources),
+  unwrap seam, venue selection, and the shared Executor call builders), `@repo/contracts` (contract
+  ABIs + Executor sources),
   `@repo/utils`, and `@repo/typescript-config`. A bot assembles its behavior from `@repo/bot-kit`
   and `@repo/swaps` rather than forking a monolith.
 
