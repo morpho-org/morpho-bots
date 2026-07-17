@@ -1,1 +1,24 @@
-{"name":"@morpho-org/midnight-mm-bot","version":"0.1.0","private":true,"license":"Apache-2.0","type":"module","scripts":{"deploy:railway":"bun run scripts/deploy-railway.ts","start":"bun src/index.ts","typecheck":"tsc --noEmit"},"dependencies":{"@morpho-org/midnight-sdk":"catalog:","@morpho-org/morpho-ts":"catalog:","@repo/bot-kit":"workspace:*","@repo/utils":"workspace:*","viem":"catalog:"},"devDependencies":{"@repo/typescript-config":"workspace:*","@types/bun":"catalog:","typescript":"catalog:"}}
+{
+  "name": "@morpho-org/midnight-mm-bot",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "deploy:railway": "bun run scripts/deploy-railway.ts",
+    "start": "bun src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@morpho-org/midnight-sdk": "catalog:",
+    "@morpho-org/morpho-ts": "catalog:",
+    "@repo/bot-kit": "workspace:*",
+    "@repo/utils": "workspace:*",
+    "viem": "catalog:"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@types/bun": "catalog:",
+    "typescript": "catalog:"
+  }
+}

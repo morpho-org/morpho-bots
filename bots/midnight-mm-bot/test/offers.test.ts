@@ -1,6 +1,63 @@
-import type { Address, Hash } from 'viem'
+import type { Address } from 'viem'
+
 import { describe, expect, it } from 'bun:test'
 import { zeroAddress } from 'viem'
+
 import { buildOfferTree } from '../src/offers'
-const maker='0x1111111111111111111111111111111111111111' as Address;const ratifier='0x2222222222222222222222222222222222222222' as Address;const market={params:{chainId:8453n,midnight:'0x3333333333333333333333333333333333333333' as Address,loanToken:'0x4444444444444444444444444444444444444444' as Address,collateralParams:[{token:'0x5555555555555555555555555555555555555555' as Address,lltv:770000000000000000n,liquidationCursor:250000000000000000n,oracle:'0x6666666666666666666666666666666666666666' as Address}],maturity:2000000000n,rcfThreshold:0n,enterGate:zeroAddress,liquidatorGate:zeroAddress},totalUnits:0n,lossFactor:0n,withdrawable:0n,continuousFeeCredit:0n,settlementFeeCbps:[0,0,0,0,0,0,0] as const,continuousFee:123,tickSpacing:4}
-describe('buildOfferTree',()=>{it('builds one shared-consumption ladder per side',()=>{const result=buildOfferTree({market,config:{marketId:`0x${'11'.repeat(32)}` as Hash,midTick:5000,halfSpreadTicks:8,levelStepTicks:4,levels:3,maxUnits:1000000n},maker,ratifier,start:1000n,expiry:2000n});expect(result.tree.offers).toHaveLength(6);expect(result.bidGroup.offers.map(o=>o.tick)).toEqual([5008n,5012n,5016n]);expect(result.askGroup.offers.map(o=>o.tick)).toEqual([4992n,4988n,4984n]);expect(result.bidGroup.offers.every(o=>o.buy)).toBe(true);expect(result.askGroup.offers.every(o=>!o.buy)).toBe(true);expect(new Set(result.bidGroup.offers.map(o=>o.group)).size).toBe(1);expect(new Set(result.askGroup.offers.map(o=>o.group)).size).toBe(1);expect(result.bidGroup.id).not.toBe(result.askGroup.id);expect(result.tree.offers.every(o=>o.maxUnits===1000000n)).toBe(true);expect(result.tree.offers.every(o=>o.continuousFeeCap===123n)).toBe(true)})})
+const maker = '0x1111111111111111111111111111111111111111' as Address
+const ratifier = '0x2222222222222222222222222222222222222222' as Address
+const market = {
+  params: {
+    chainId: 8453n,
+    midnight: '0x3333333333333333333333333333333333333333' as Address,
+    loanToken: '0x4444444444444444444444444444444444444444' as Address,
+    collateralParams: [
+      {
+        token: '0x5555555555555555555555555555555555555555' as Address,
+        lltv: 770000000000000000n,
+        liquidationCursor: 250000000000000000n,
+        oracle: '0x6666666666666666666666666666666666666666' as Address
+      }
+    ],
+    maturity: 2000000000n,
+    rcfThreshold: 0n,
+    enterGate: zeroAddress,
+    liquidatorGate: zeroAddress
+  },
+  totalUnits: 0n,
+  lossFactor: 0n,
+  withdrawable: 0n,
+  continuousFeeCredit: 0n,
+  settlementFeeCbps: [0, 0, 0, 0, 0, 0, 0] as const,
+  continuousFee: 123,
+  tickSpacing: 4
+}
+describe('buildOfferTree', () => {
+  it('builds one shared-consumption ladder per side', () => {
+    const result = buildOfferTree({
+      market,
+      config: {
+        marketId: `0x${'11'.repeat(32)}`,
+        midTick: 5000,
+        halfSpreadTicks: 8,
+        levelStepTicks: 4,
+        levels: 3,
+        maxUnits: 1000000n
+      },
+      maker,
+      ratifier,
+      start: 1000n,
+      expiry: 2000n
+    })
+    expect(result.tree.offers).toHaveLength(6)
+    expect(result.bidGroup.offers.map(o => o.tick)).toEqual([5008n, 5012n, 5016n])
+    expect(result.askGroup.offers.map(o => o.tick)).toEqual([4992n, 4988n, 4984n])
+    expect(result.bidGroup.offers.every(o => o.buy)).toBe(true)
+    expect(result.askGroup.offers.every(o => !o.buy)).toBe(true)
+    expect(new Set(result.bidGroup.offers.map(o => o.group)).size).toBe(1)
+    expect(new Set(result.askGroup.offers.map(o => o.group)).size).toBe(1)
+    expect(result.bidGroup.id).not.toBe(result.askGroup.id)
+    expect(result.tree.offers.every(o => o.maxUnits === 1000000n)).toBe(true)
+    expect(result.tree.offers.every(o => o.continuousFeeCap === 123n)).toBe(true)
+  })
+})
