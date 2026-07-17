@@ -43,6 +43,7 @@ Bot docs:
 
 - `bots/midnight-liquidation/README.md` — how to run the Midnight liquidation bot and how it works
   end to end
+- `bots/midnight-mm-bot/README.md` — configure and run the Base Midnight double-ladder market maker
 - `bots/blue-liquidation/README.md` — how to run the Morpho Blue liquidation bot and how it works
   end to end
 

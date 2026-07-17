@@ -133,7 +133,8 @@ This is a **bun workspaces monorepo** housing off-chain Morpho curator bots:
   own operator surface — `README.md`, `Dockerfile`, `docker-compose.yml`, and
   `scripts/deploy-railway.ts` — so it ships as its own image and
   deploys independently. `bots/blue-liquidation` and `bots/midnight-liquidation` are the live
-  liquidators; `bots/kill-switch` is a proposal bot (docs only).
+  liquidators; `bots/midnight-mm-bot` publishes fixed double ladders; `bots/kill-switch` is a
+  proposal bot (docs only).
 - `/packages/` — shared libraries: `@repo/bot-kit` (the shared bot runtime — viem
   clients/transport, loglayer-backed JSON-lines logger (opt-in in-process BetterStack shipping),
   block watcher + runner loop, pending-tx queue with fee
@@ -209,6 +210,7 @@ All commit messages, PR titles, and Linear ticket titles use the same format:
 | -------------------- | ---------------------- |
 | blue-liquidation     | `blue-liquidation`     |
 | midnight-liquidation | `midnight-liquidation` |
+| midnight-mm-bot      | `midnight-mm-bot`      |
 
 **Scopes — Cross-cutting:**
 

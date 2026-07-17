@@ -1,0 +1,20 @@
+services:
+  bot:
+    build:
+      context: ../..
+      dockerfile: bots/midnight-mm-bot/Dockerfile
+    environment:
+      CHAIN_ID: '8453'
+      RPC_URL: ${RPC_URL:?set RPC_URL}
+      RPC_URL_FALLBACK: ${RPC_URL_FALLBACK:-}
+      MAKER_PRIVATE_KEY: ${MAKER_PRIVATE_KEY:?set MAKER_PRIVATE_KEY}
+      MIDNIGHT_MARKETS_JSON: ${MIDNIGHT_MARKETS_JSON:?set MIDNIGHT_MARKETS_JSON}
+      OFFER_TTL_SECONDS: ${OFFER_TTL_SECONDS:-3600}
+      PUBLISH_LEAD_SECONDS: ${PUBLISH_LEAD_SECONDS:-300}
+      LOOP_INTERVAL_SECONDS: ${LOOP_INTERVAL_SECONDS:-30}
+      MAX_FEE_GWEI: ${MAX_FEE_GWEI:-10}
+      DRY_RUN: ${DRY_RUN:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      BETTERSTACK_SOURCE_TOKEN: ${BETTERSTACK_SOURCE_TOKEN:-}
+      BETTERSTACK_INGESTING_HOST: ${BETTERSTACK_INGESTING_HOST:-}
+    restart: unless-stopped
