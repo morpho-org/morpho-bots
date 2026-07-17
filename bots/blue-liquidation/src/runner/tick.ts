@@ -13,9 +13,6 @@ import { marketId } from '../market'
 import { plan } from '../sizing/plan'
 import { isLiquidatable, planInputFromLens } from './eligibility'
 
-/** Blocks our rindexer may trail the chain head before we warn that coverage is degraded. */
-const MAX_RINDEXER_LAG_BLOCKS = 30n
-
 type TickCounters = {
   pairs: number
   liquidatable: number
@@ -30,26 +27,21 @@ type TickCounters = {
 }
 
 /**
- * One tick: log a rindexer-freshness signal, enumerate the indexed (market, borrower) universe, read
- * the liquidation lens fresh for the whole batch (one deployless `eth_call`), and for each
- * liquidatable position build a seize-exact plan, resolve its swap, simulate the real `exec_606BaXt`,
- * and — when the simulation is `ok` and the position is not already in flight — broadcast it via
- * `submit`. Pending-queue upkeep (`queue.onBlock`) is NOT driven here: the runner runs it as an
- * independent per-block maintenance phase so it survives a discovery/lens failure in this tick. Deps
- * are injected so the tick is unit-testable without a chain, Postgres, or signer.
- *
- * No staleness skip: the lens reads every candidate fresh on-chain, so rindexer lag is coverage
- * latency, never a correctness issue — we emit `rindexer.lag` for observability and always proceed.
+ * One tick: enumerate the API-discovered (market, borrower) universe, read the liquidation lens
+ * fresh for the whole batch (one deployless `eth_call`), and for each liquidatable position build a
+ * seize-exact plan, resolve its swap, simulate the real `exec_606BaXt`, and — when the simulation is
+ * `ok` and the position is not already in flight — broadcast it via `submit`. Pending-queue upkeep
+ * (`queue.onBlock`) is NOT driven here: the runner runs it as an independent per-block maintenance
+ * phase so it survives a discovery/lens failure in this tick. Deps are injected so the tick is
+ * unit-testable without a chain, API, or signer.
  *
  * Discovery failure is tolerated: a transient error is logged (`discover.error`) and the tick proceeds
  * with zero new candidates. The lens reads every candidate fresh on-chain, so discovery is a coverage
- * source, never a correctness dependency.
+ * source, never a correctness dependency — API indexing lag is coverage latency only.
  */
 export async function runTick(deps: {
   discover: () => Promise<BorrowerCandidate[]>
-  /** rindexer's indexed head (Postgres); `null`/throw → lag unknown, we proceed. */
-  syncedBlock: () => Promise<bigint | null>
-  /** Chain head the runner just polled — lag reference + the queue's `submittedAtBlock`. */
+  /** Chain head the runner just polled — the queue's `submittedAtBlock`. */
   chainHead: bigint
   readLens: (pairs: LensInput[]) => Promise<Map<string, LensOut>>
   /**
@@ -87,7 +79,6 @@ export async function runTick(deps: {
 }): Promise<TickCounters> {
   const {
     discover,
-    syncedBlock,
     chainHead,
     readLens,
     quoteFor,
@@ -99,19 +90,7 @@ export async function runTick(deps: {
     logger
   } = deps
 
-  // 1. rindexer-freshness signal — observability only (see the note above; we never skip).
-  // tryCatch resolves `data` to null on a thrown query; `syncedBlock` also returns null when the
-  // head is unknown — both mean "lag unknown".
-  const { data: synced } = await tryCatch(syncedBlock())
-  if (synced === null) {
-    logger.warn('rindexer.lag', { reason: 'unknown', chainHead })
-  } else {
-    const lag = chainHead > synced ? chainHead - synced : 0n
-    if (lag > MAX_RINDEXER_LAG_BLOCKS) logger.warn('rindexer.lag', { chainHead, synced, lag })
-    else logger.debug('rindexer.lag', { chainHead, synced, lag })
-  }
-
-  // 2. Discover the (marketParams, borrower) universe → lens inputs. The lens re-derives the id from
+  // 1. Discover the (marketParams, borrower) universe → lens inputs. The lens re-derives the id from
   //    params on-chain, so no `caller`/gate is threaded (Blue is permissionless). A transient
   //    discovery failure is non-fatal: log it and proceed with zero candidates so the pending queue
   //    (confirmations / fee bumps) maintained below is still driven this block.
@@ -122,7 +101,7 @@ export async function runTick(deps: {
     borrower: candidate.borrower
   }))
 
-  // 3. Read the lens fresh for the whole batch in one deployless eth_call.
+  // 2. Read the lens fresh for the whole batch in one deployless eth_call.
   const lensOut = await readLens(pairs)
   logger.info('lens.read', { pairs: pairs.length, returned: lensOut.size })
 
@@ -139,7 +118,7 @@ export async function runTick(deps: {
     submitted: 0
   }
 
-  // 4. Compose liquidatability off-chain → plan → quote → simulate → submit. `inflight` is captured
+  // 3. Compose liquidatability off-chain → plan → quote → simulate → submit. `inflight` is captured
   //    once; discovery yields distinct (market, borrower) pairs, so no label repeats within a tick.
   const inflight = inflightLabels()
   for (const pair of pairs) {

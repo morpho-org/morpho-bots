@@ -1,13 +1,11 @@
 import type { Logger } from '@repo/bot-kit'
 import type { Address, Hex } from 'viem'
 
-import { delay } from '@repo/utils'
+import { delay, fetchWithRetry } from '@repo/utils'
 import createClient from 'openapi-fetch'
 import { getAddress, isAddress, isHex } from 'viem'
 
 import type { paths } from '../generated/markets-api'
-
-import { fetchWithRetry } from './retry'
 
 /** A candidate position to evaluate: a (market, borrower) pair the API flagged as at-risk. */
 export type BorrowerCandidate = { marketId: Hex; borrower: Address }
@@ -23,7 +21,7 @@ export type CandidatePage = { cursor: string | null; data: readonly unknown[] }
 export type FetchCandidatePage = (cursor: string | null) => Promise<CandidatePage>
 
 // Per-request tuning for the candidates endpoint: a short deadline. The retry policy lives in
-// `./retry` (see {@link fetchWithRetry}).
+// `@repo/utils` (see {@link fetchWithRetry}).
 const REQUEST_TIMEOUT_MS = 5_000
 /** The endpoint's maximum page size — fewer round-trips than the default 20. */
 const PAGE_LIMIT = 100

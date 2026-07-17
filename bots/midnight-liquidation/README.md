@@ -80,6 +80,7 @@ Environment variables:
 | `BACKOFF_BASE_BLOCKS` / `BACKOFF_MAX_BLOCKS`              | no       | `2` / `64`          | Exponential per-position cooldown (in blocks) after a failed quote/simulate, bounding API + RPC usage under a backlog.                                                                                             |
 | `POSITION_LIQUIDATION_COOLDOWN_MS`                        | no       | `0`                 | Opt-in per-position cooldown (ms) after a failed liquidation attempt; `0` disables it (re-attempt every tick).                                                                                                     |
 | `BETTERSTACK_SOURCE_TOKEN` / `BETTERSTACK_INGESTING_HOST` | no       | —                   | Opt-in log shipping; when both are set the bot's in-process loglayer transport ships structured logs to BetterStack (inert otherwise).                                                                             |
+| `BETTERSTACK_HEARTBEAT_URL`                               | no       | —                   | Optional Better Stack Uptime heartbeat URL, pinged every minute; failures only log a warning and never interrupt liquidations.                                                                                     |
 
 The bot **refuses to start** if no venue is enabled, unless `ALLOW_BAD_DEBT_ONLY=true` — a rotated or
 forgotten key (or a missing `ENABLE_LIFI`) must not silently disable liquidations.
@@ -245,6 +246,9 @@ remote API — no Postgres or indexer service). [scripts/deploy-railway.ts](./sc
 provisions and deploys it idempotently from the [Railway CLI](https://docs.railway.com/guides/cli), so
 it runs the same locally or in CI.
 
+Railway service names are project-wide: production uses `bot`, while non-production environments use
+an environment prefix (for example, `staging-bot`).
+
 The [Dockerfile](./Dockerfile) is a single-stage bun image; `RAILWAY_DOCKERFILE_PATH` points Railway at
 it and `railway up` runs from the repo root so the bun workspace resolves.
 
@@ -268,13 +272,13 @@ Set `DEPLOY_ONLY=1` (or `true`) to re-ship the **already-provisioned** `bot` ser
 working tree without setting any secrets or variables — the mode the deploy CI uses (it holds no
 RPC/keys). In this mode `RPC_URL` and `LIQUIDATOR_PRIVATE_KEY` are not required.
 
-### Venue API keys (manual step)
+### Venue API keys
 
 There is no swap config file to upload anymore — venues are enabled by the presence of their API key
-(or `ENABLE_LIFI=true` for keyless LiFi). Set `ENABLE_LIFI` / `LIFI_API_KEY` / `ZEROX_API_KEY` /
-`ONEINCH_API_KEY` in the Railway service environment (the deploy script pushes `RPC_URL` +
-`LIQUIDATOR_PRIVATE_KEY` only, so add the venue config yourself). With no venue enabled, the service
-will refuse to start unless `ALLOW_BAD_DEBT_ONLY=true`.
+(or `ENABLE_LIFI=true` for keyless LiFi). The deploy script uploads `LIFI_API_KEY`, `ZEROX_API_KEY`,
+and `ONEINCH_API_KEY` when they are present in its environment. Set `ENABLE_LIFI=true` manually in the
+Railway service only when you want keyless LiFi. With no venue enabled, the service will refuse to
+start unless `ALLOW_BAD_DEBT_ONLY=true`.
 
 ## How It Works
 

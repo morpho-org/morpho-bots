@@ -95,7 +95,6 @@ function runWith(opts: {
   simulateResult?: SimulateResult
   quoteOutcome?: QuoteOutcome
   borrowers?: Address[]
-  synced?: bigint | null
   discoverError?: Error
   chainHead?: bigint
   inflight?: ReadonlySet<string>
@@ -120,7 +119,6 @@ function runWith(opts: {
       if (opts.discoverError) throw opts.discoverError
       return candidates(...(opts.borrowers ?? [BORROWER]))
     },
-    syncedBlock: async () => (opts.synced === undefined ? chainHead : opts.synced),
     chainHead,
     readLens: stubReadLens(opts.out === undefined ? lensOut() : opts.out),
     quoteFor: async () => {
@@ -257,20 +255,6 @@ describe('runTick', () => {
     expect(counters).toMatchObject({ liquidatable: 1, planned: 0, submitted: 0 })
     expect(quoteCalls()).toBe(0)
     expect(submitCalls()).toBe(0)
-  })
-
-  it('warns rindexer.lag when our indexer trails the chain head, but still proceeds', async () => {
-    const { counters, events } = await runWith({ synced: 10n, chainHead: 100n }) // lag 90 > 30
-    expect(events.some(e => e.level === 'warn' && e.event === 'rindexer.lag')).toBe(true)
-    expect(counters.submitted).toBe(1) // proceeded despite the lag
-  })
-
-  it('warns rindexer.lag with reason unknown when the synced head is unavailable, and proceeds', async () => {
-    const { counters, events } = await runWith({ synced: null })
-    expect(events.some(e => e.event === 'rindexer.lag' && e.fields?.reason === 'unknown')).toBe(
-      true
-    )
-    expect(counters.submitted).toBe(1)
   })
 
   it('tolerates a discovery failure: logs discover.error and submits nothing', async () => {

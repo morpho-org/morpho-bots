@@ -2,10 +2,8 @@ import { addressSchema } from '@repo/utils'
 import { isAddress } from 'viem'
 import { z } from 'zod'
 
-import type { Venue } from './types'
-
 // ---------------------------------------------------------------------------
-// Per-collateral swap routing config (the JSON file at SWAP_CONFIG_PATH)
+// Per-collateral swap routing config (operator-tooling JSON, e.g. the seed script)
 // ---------------------------------------------------------------------------
 // Shape: { "<chainId>": { "<collateralToken>": <venue entry> } }, where the entry is a
 // discriminated union on `venue`:
@@ -14,8 +12,9 @@ import type { Venue } from './types'
 //   - { venue: '1inch', baseUrl?, slippageBps }           (needs ONEINCH_API_KEY)
 //   - { venue: 'lifi',  baseUrl?, slippageBps }           (LIFI_API_KEY optional — keyless works)
 //   - { venue: 'liquidswap', baseUrl?, slippageBps }      (keyless; HyperEVM only)
-// A single file may describe several chains; each bot reads its own chain's entry at swap time.
-// API keys NEVER live here — they come from env (validated for presence in each bot's loadConfig).
+// The live bots infer venues from env keys and no longer read a routing file; `SwapConfigEntry` is
+// still the shape the venue adapters dispatch on, and `parseSwapConfig` still validates the JSON the
+// operator tooling (midnight's seed script) consumes. API keys NEVER live here — they come from env.
 
 const slippageBps = z.number().int().min(0).max(10_000)
 
@@ -58,20 +57,6 @@ const swapParamsSchema = z.preprocess(
 
 /** One collateral's parsed venue entry — the discriminated union the adapters dispatch on. */
 export type SwapConfigEntry = z.infer<typeof swapParamsSchema>
-
-/**
- * Which env var supplies each venue's *required* API key (null = no key required to function). Bots
- * validate presence at startup for every venue the operator references on their chain. LiFi is
- * `null` because it works keyless — an optional `LIFI_API_KEY` (injected at the op layer) only raises
- * rate limits, so a key-free deployment must still boot; uniswap-v3 is on-chain and needs none.
- */
-export const VENUE_API_KEY_ENV: Record<Venue, string | null> = {
-  'uniswap-v3': null,
-  '0x': 'ZEROX_API_KEY',
-  '1inch': 'ONEINCH_API_KEY',
-  lifi: null,
-  liquidswap: null
-}
 
 const swapConfigSchema = z.record(
   z.string().regex(/^\d+$/, 'Swap config keys must be numeric chain ids'),

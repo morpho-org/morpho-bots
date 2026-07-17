@@ -1,13 +1,11 @@
 import type { Logger } from '@repo/bot-kit'
 import type { Address, Hex } from 'viem'
 
-import { delay } from '@repo/utils'
+import { delay, fetchWithRetry } from '@repo/utils'
 import createClient from 'openapi-fetch'
 import { isAddress, isHex } from 'viem'
 
 import type { components, paths } from '../generated/midnight-api'
-
-import { fetchWithRetry } from './retry'
 
 // Response shapes from `GET /v0/midnight/markets` (the seed script imports these too). The spec types
 // ids/addresses as plain strings; we brand the fields the codebase consumes as viem `Hex`/`Address`

@@ -7,6 +7,7 @@ import {
   createBackoff,
   createCooldownStore,
   createDeploylessClient,
+  createHeartbeatMonitor,
   createLogger,
   createPendingQueue,
   createRunner,
@@ -291,6 +292,11 @@ async function main() {
     read: signer.balance,
     logger
   })
+  const heartbeatMonitor = createHeartbeatMonitor({
+    url: Bun.env.BETTERSTACK_HEARTBEAT_URL,
+    logger
+  })
+  void heartbeatMonitor.start()
 
   // Phase-4 runner: an HTTP block-poll watcher drives one tick per new block (coalescing backlog),
   // passing the polled height as the queue's submittedAtBlock. Each liquidatable position resolves its
@@ -369,6 +375,7 @@ async function main() {
   // there is nothing to persist or await-drain — a redeploy re-derives from chain.
   const shutdown = (signal: string) => {
     stopped = true
+    heartbeatMonitor.stop()
     logger.info('shutdown', {
       signal,
       pending: queue.snapshot(),

@@ -1,7 +1,7 @@
 import type { Address } from 'viem'
 
 import { assertNever, ensureError, tryCatch } from '@repo/utils'
-import { getAddress, isAddressEqual } from 'viem'
+import { isAddressEqual } from 'viem'
 
 import type { SwapConfigEntry } from './config'
 import type { RateLimitedClient } from './http-client'
@@ -123,10 +123,9 @@ function toStep(swap: Swap, tokenIn: Address, tokenOut: Address): SwapStep {
 }
 
 /**
- * The outcome of firm-quoting ONE venue. Returned structured (not logged) because the two composers
- * emit DIFFERENT event names for the same outcome (`quote.bad_route` vs `quote.route_quality_failed`,
- * `quote.ok` vs `select.ok`) and diverge on control flow (short-circuit vs fall through to the next
- * venue), so each caller owns its own logging + branching.
+ * The outcome of firm-quoting ONE venue. Returned structured (not logged) so the composer owns its
+ * own logging + branching (`quote.failed`/`quote.route_quality_failed` fall through to the next
+ * venue; `select.ok` short-circuits).
  */
 type FirmQuoteOutcome =
   | { kind: 'swap'; swap: Swap; plan: SwapPlan }
@@ -296,132 +295,17 @@ export type QuoteLogger = {
 
 /**
  * Builds the `quoteFor` a liquidation bot's tick consumes (behind a thin per-protocol adapter that
- * projects its lens output into a {@link QuoteRequest}). For each liquidatable position it first
- * runs the pre-swap unwrap chain (ERC4626 shares etc. → a tradable underlying — unless the
- * collateral has its own config entry, which wins verbatim as the operator's escape hatch), then
- * resolves the operator's per-collateral venue for the token the chain ends on, fetches ONE
- * executable quote (Uniswap is local; aggregators make a single API call), and sanity-checks an
- * aggregator's quoted output against the free oracle reference — rejecting a route worse than
- * `maxRouteImpactBps` below it. Quote/route/unwrap failures return `failed` (the caller backs the
- * position off); an unconfigured (post-unwrap) collateral returns `no_config` (no API call).
- * Quotes are made ONLY for liquidatable positions, so API + probe usage is bounded by the (small)
- * liquidatable set, never the full candidate universe.
- */
-export function composeQuoting(deps: {
-  httpClient: RateLimitedClient
-  chainId: number
-  executor: Address
-  /** Per-collateral venue config for this chain, keyed by EIP-55-checksummed collateral address. */
-  swapByCollateral: Map<string, SwapConfigEntry>
-  maxRouteImpactBps: number
-  /** Pre-swap converters, tried in order each hop. Pass `[]` for venue-only quoting. */
-  unwrappers: readonly Unwrapper[]
-  logger: QuoteLogger
-}): { quoteFor: (request: QuoteRequest) => Promise<QuoteOutcome> } {
-  const { httpClient, chainId, executor, swapByCollateral, maxRouteImpactBps, unwrappers, logger } =
-    deps
-
-  // One venue quote for `tokenIn`, appended to the (possibly empty) unwrap steps as the plan's
-  // final step.
-  async function quoteVenue(args: {
-    entry: SwapConfigEntry
-    tokenIn: Address
-    amountIn: bigint
-    steps: SwapStep[]
-    request: QuoteRequest
-  }): Promise<QuoteOutcome> {
-    const { entry, tokenIn, amountIn, steps, request } = args
-    const { id } = request
-
-    const outcome = await firmQuoteVenue({
-      httpClient,
-      chainId,
-      executor,
-      venueEntry: () => entry,
-      slippageBps: entry.slippageBps,
-      tokenIn,
-      amountIn,
-      steps,
-      request,
-      maxRouteImpactBps
-    })
-
-    if (outcome.kind === 'quote_failed') {
-      logger.warn('quote.failed', {
-        venue: entry.venue,
-        id,
-        collateral: request.collateralToken,
-        reason: outcome.reason,
-        detail: outcome.detail
-      })
-      return { kind: 'failed', reason: outcome.reason }
-    }
-
-    if (outcome.kind === 'bad_route') {
-      logger.warn('quote.bad_route', {
-        venue: entry.venue,
-        id,
-        collateral: request.collateralToken,
-        expected: outcome.swap.expectedAmountOut,
-        oracle: request.referenceAmountOut
-      })
-      return { kind: 'failed', reason: 'bad_route' }
-    }
-
-    logger.info('quote.ok', {
-      venue: entry.venue,
-      id,
-      collateral: request.collateralToken,
-      expected: outcome.swap.expectedAmountOut,
-      oracle: request.referenceAmountOut,
-      amountOutMinimum: outcome.swap.amountOutMinimum
-    })
-    return { kind: 'swap', plan: outcome.plan }
-  }
-
-  return {
-    async quoteFor(request) {
-      const { collateralToken, loanToken, amountIn } = request
-
-      // A direct entry for the raw collateral wins verbatim (no unwrap probing): backward
-      // compatible, and the operator's escape hatch for share tokens with direct DEX liquidity or
-      // gated redeems (sUSDe-style vaults that preview fine but revert on redeem).
-      const direct = swapByCollateral.get(getAddress(collateralToken))
-      if (direct) {
-        return quoteVenue({ entry: direct, tokenIn: collateralToken, amountIn, steps: [], request })
-      }
-
-      const unwrapped = await tryResolveUnwraps(unwrappers, request, executor, logger)
-      if ('outcome' in unwrapped) return unwrapped.outcome
-      const { resolution } = unwrapped
-
-      if (resolution.steps.length > 0 && isAddressEqual(resolution.token, loanToken)) {
-        return unwrapOnlyPlan({ resolution, request, maxRouteImpactBps, logger })
-      }
-
-      const entry = swapByCollateral.get(getAddress(resolution.token))
-      if (!entry) return { kind: 'no_config' }
-      return quoteVenue({
-        entry,
-        tokenIn: resolution.token,
-        amountIn: resolution.amountIn,
-        steps: resolution.steps,
-        request
-      })
-    }
-  }
-}
-
-/**
- * Multi-venue variant of {@link composeQuoting} for bots that discover collateral at runtime and rank
- * venues by a cached probe (see {@link createVenueSelector}) instead of a per-collateral config file.
- * For each liquidatable position it first runs the pre-swap unwrap chain, then refreshes + takes the
- * selector's best-first venue order for the POST-unwrap pair (or a deterministic default when the
- * pair is not yet probed), fetches ONE firm quote from the top venue, sanity-checks it against the
- * oracle reference, and — coverage-first — falls through to the next ranked venue on failure
- * (bounded by the enabled set) before giving up. No enabled venues → `no_config` (no API call, no
- * probe, no unwrap), preserving the caller's bad-debt path. A firm quote is requested only AFTER
- * the venue is chosen, never fanned out across venues at once.
+ * projects its lens output into a {@link QuoteRequest}), for bots that discover collateral at
+ * runtime and rank venues by a cached probe (see {@link createVenueSelector}). For each
+ * liquidatable position it first runs the pre-swap unwrap chain, then refreshes + takes the
+ * selector's best-first venue order for the POST-unwrap pair (falling back to the deterministic
+ * enabled order for venues the probe couldn't rank), fetches ONE firm quote from the top venue,
+ * sanity-checks it against the oracle reference, and — coverage-first — falls through to the next
+ * venue on failure (bounded by the enabled set) before giving up. No enabled venues → `no_config`
+ * (no API call, no probe, no unwrap), preserving the caller's no-swap posture. A firm quote is
+ * requested only AFTER the venue is chosen, never fanned out across venues at once. Quotes are made
+ * ONLY for liquidatable positions, so API + probe usage is bounded by the (small) liquidatable set,
+ * never the full candidate universe.
  */
 export function composeMultiVenueQuoting(deps: {
   httpClient: RateLimitedClient
@@ -479,8 +363,10 @@ export function composeMultiVenueQuoting(deps: {
   }
 
   // Probe the POST-unwrap pair (indicative, isolated rate budget) so the selector ranks venues for
-  // the token actually being sold, then take its best-first order — or the deterministic default when
-  // the pair is cold. A probe failure is non-fatal: the default order still drives the firm-quote loop.
+  // the token actually being sold, then take its best-first order. Enabled venues the cache could
+  // NOT rank (a cold pair, or a venue whose probe transiently failed) are appended in deterministic
+  // configured order rather than dropped — a probe hiccup must not hide a healthy venue from the
+  // firm-quote fall-through for a full staleMs window. A probe failure is likewise non-fatal.
   async function venueOrderFor(pair: VenuePair, amountIn: bigint, id?: string): Promise<Venue[]> {
     const { error: probeError } = await tryCatch(refresh(pair))
     if (probeError) {
@@ -492,8 +378,8 @@ export function composeMultiVenueQuoting(deps: {
       })
     }
 
-    const ranked = select(pair, amountIn)
-    const order = ranked.length > 0 ? ranked.map(estimate => estimate.venue) : [...venues]
+    const ranked = select(pair, amountIn).map(estimate => estimate.venue)
+    const order = [...ranked, ...venues.filter(venue => !ranked.includes(venue))]
     if (ranked.length === 0) {
       logger.info('select.cold_default', { collateral: pair.collateral, loan: pair.loan, order })
     }

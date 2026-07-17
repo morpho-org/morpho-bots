@@ -17,9 +17,9 @@ export type MarketParamsResolver = (ids: readonly Hex[]) => Promise<Map<Hex, Mar
 /**
  * On-chain fetcher: reads `idToMarketParams(id)` from the Morpho singleton for a batch of ids in one
  * Multicall3 `aggregate3`. Blue stores every market's immutable params keyed by id, so this recovers
- * `(loanToken, collateralToken, oracle, irm, lltv)` authoritatively — no `CreateMarket` index needed
- * (and no-code rindexer can't decode that event's `MarketParams` struct anyway). `allowFailure` keeps
- * one bad id from sinking the batch; a zero `loanToken` (unknown id) is treated as unresolved.
+ * `(loanToken, collateralToken, oracle, irm, lltv)` authoritatively from the API's marketId alone.
+ * `allowFailure` keeps one bad id from sinking the batch; a zero `loanToken` (unknown id) is treated
+ * as unresolved.
  */
 export function multicallIdToMarketParams(client: Client, morpho: Address): MarketParamsResolver {
   return async ids => {
