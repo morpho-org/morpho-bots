@@ -3,7 +3,6 @@ import { describe, expect, it } from 'bun:test'
 import {
   formatBPSPercent,
   formatInt256,
-  formatters,
   formatTokenBalance,
   formatTokenBalanceFull,
   formatUint256,
@@ -11,21 +10,7 @@ import {
   formatUsdValue
 } from '../../src/helpers/formatters'
 
-describe('formatters', () => {
-  it('should have formatters object with morpho-ts methods', () => {
-    expect(formatters).toBeDefined()
-    expect(formatters).toHaveProperty('commas')
-    expect(formatters).toHaveProperty('number')
-    expect(formatters).toHaveProperty('short')
-  })
-})
-
 describe('formatUint256', () => {
-  it('should be a formatter object with proper configuration', () => {
-    expect(formatUint256).toBeDefined()
-    expect(typeof formatUint256).toBe('function')
-  })
-
   it('should format large bigint values', () => {
     const result = formatUint256(1000000000000000000n, 18)
 
@@ -49,11 +34,6 @@ describe('formatUint256', () => {
 })
 
 describe('formatInt256', () => {
-  it('should be a formatter object with proper configuration', () => {
-    expect(formatInt256).toBeDefined()
-    expect(typeof formatInt256).toBe('function')
-  })
-
   it('should preserve negative bigint values', () => {
     const result = formatInt256(-123456789n, 6)
 

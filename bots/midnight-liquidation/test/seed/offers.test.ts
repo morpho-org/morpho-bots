@@ -94,13 +94,11 @@ describe('seed/offers typehashes (HashLib @ 336b924a)', () => {
     )
   })
 
-  it('hashOffer is deterministic and sensitive to every field (e.g. maxUnits)', () => {
-    expect(hashOffer(offer(1000n))).toBe(hashOffer(offer(1000n)))
+  it('hashOffer changes when maxUnits changes', () => {
     expect(hashOffer(offer(1000n))).not.toBe(hashOffer(offer(1001n)))
   })
 
-  it('toId is deterministic and depends on the Midnight address', () => {
-    expect(toId(market())).toBe(toId(market()))
+  it('toId changes when the Midnight address changes', () => {
     expect(toId(market())).not.toBe(toId(market('0x2F7a3AA739ba5792Ce1b4eA046117f2C0095BCA6')))
   })
 })

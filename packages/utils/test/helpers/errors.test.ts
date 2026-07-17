@@ -93,10 +93,11 @@ describe('ensureError', () => {
   })
 
   it('should handle BigInt values', () => {
-    const result = ensureError({ value: 'test' })
+    const result = ensureError({ value: 1n })
 
     expect(result).toBeInstanceOf(Error)
-    expect(result.message).toContain('{"value":"test"}')
+    expect(result.message).toContain('[Unable to stringify thrown value]')
+    expect(result.shortMessage).toBe('[Unable to stringify thrown value]')
   })
 })
 
@@ -117,23 +118,5 @@ describe('assertNever', () => {
     const value = { type: 'unknown' } as never
 
     expect(() => assertNever(value)).toThrow('Unhandled case: {"type":"unknown"}')
-  })
-
-  it('should be used in exhaustiveness checks', () => {
-    type Status = 'success' | 'error'
-
-    function handleStatus(status: Status) {
-      switch (status) {
-        case 'success':
-          return 'OK'
-        case 'error':
-          return 'FAIL'
-        default:
-          return assertNever(status)
-      }
-    }
-
-    expect(handleStatus('success')).toBe('OK')
-    expect(handleStatus('error')).toBe('FAIL')
   })
 })

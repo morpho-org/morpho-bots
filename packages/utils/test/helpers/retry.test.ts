@@ -33,26 +33,6 @@ describe('retryUntilDefined', () => {
     expect(fn).toHaveBeenCalledTimes(3)
   })
 
-  // Skipped: this assertion requires fake-timer precision (advanceTimersByTime)
-  // that bun:test does not currently support. Real-timer measurements are too
-  // flaky for sub-millisecond accuracy on the retry boundary.
-  it.skip('should respect custom retry delay', async () => {
-    const fn = mock<() => string | undefined>(() => undefined)
-      .mockReturnValueOnce(undefined)
-      .mockReturnValue('success')
-    const onRetry = mock(() => {})
-
-    const promise = retryUntilDefined(fn, { retryDelay: 1000, onRetry })
-
-    expect(fn).toHaveBeenCalledTimes(1)
-
-    const result = await promise
-
-    expect(result).toBe('success')
-    expect(fn).toHaveBeenCalledTimes(2)
-    expect(onRetry).toHaveBeenCalledWith(1)
-  })
-
   it('should call onRetry callback with attempt number', async () => {
     const fn = mock<() => string | undefined>(() => undefined)
       .mockReturnValueOnce(undefined)

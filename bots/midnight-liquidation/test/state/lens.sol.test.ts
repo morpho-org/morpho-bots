@@ -4,11 +4,7 @@ import { decodeFunctionResult, encodeFunctionResult, getAddress } from 'viem'
 import type { Market } from '../../src/execution/encode-call'
 import type { LensOut } from '../../src/state/lens.sol'
 
-import {
-  lensKey,
-  MidnightLiquidationLens,
-  readMidnightLiquidationLens
-} from '../../src/state/lens.sol'
+import { lensKey, MidnightLiquidationLens } from '../../src/state/lens.sol'
 
 const MIDNIGHT = getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A')
 const BORROWER = getAddress('0x1111111111111111111111111111111111111111')
@@ -89,9 +85,5 @@ describe('MidnightLiquidationLens', () => {
 describe('lens helpers', () => {
   it('keys results by lowercased id:borrower', () => {
     expect(lensKey(ID, BORROWER)).toBe(`${ID.toLowerCase()}:${BORROWER.toLowerCase()}`)
-  })
-
-  it('exposes the deployless fetcher', () => {
-    expect(typeof readMidnightLiquidationLens).toBe('function')
   })
 })

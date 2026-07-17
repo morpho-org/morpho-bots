@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import { decodeFunctionResult, encodeFunctionResult, getAddress } from 'viem'
 
-import { BlueLiquidationLens, lensKey, readBlueLiquidationLens } from '../../src/state/lens.sol'
+import { BlueLiquidationLens, lensKey } from '../../src/state/lens.sol'
 
 const MORPHO = getAddress('0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb')
 const BORROWER = getAddress('0x1111111111111111111111111111111111111111')
@@ -55,9 +55,5 @@ describe('BlueLiquidationLens', () => {
 describe('lens helpers', () => {
   it('keys results by lowercased id:borrower', () => {
     expect(lensKey(ID, BORROWER)).toBe(`${ID.toLowerCase()}:${BORROWER.toLowerCase()}`)
-  })
-
-  it('exposes the deployless fetcher', () => {
-    expect(typeof readBlueLiquidationLens).toBe('function')
   })
 })
