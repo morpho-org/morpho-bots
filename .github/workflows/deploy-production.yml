@@ -64,6 +64,11 @@ jobs:
     needs: Select
     if: ${{ needs.Select.outputs.blue_liq == 'true' }}
     uses: ./.github/workflows/deploy-bot.yml
+    # Environment secrets (RAILWAY_TOKEN) only populate in the reusable workflow when the callee job
+    # declares `environment:` AND the caller passes `secrets: inherit`. Environment *variables*
+    # (RAILWAY_PROJECT_ID) flow without it, which is why the token — and only the token — came through
+    # empty before. See https://github.com/actions/runner/issues/1490.
+    secrets: inherit
     with:
       bot: blue-liq
       stage: production
@@ -73,6 +78,7 @@ jobs:
     needs: Select
     if: ${{ needs.Select.outputs.midnight_liq == 'true' }}
     uses: ./.github/workflows/deploy-bot.yml
+    secrets: inherit
     with:
       bot: midnight-liq
       stage: production
