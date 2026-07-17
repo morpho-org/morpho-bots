@@ -1,8 +1,16 @@
 {
   "$schema": "https://unpkg.com/knip@5/schema.json",
-  "exclude": ["enumMembers", "classMembers"],
-  "ignore": [".claude/**"],
-  "ignoreBinaries": ["forge", "railway"],
+  "exclude": [
+    "enumMembers",
+    "classMembers"
+  ],
+  "ignore": [
+    ".claude/**"
+  ],
+  "ignoreBinaries": [
+    "forge",
+    "railway"
+  ],
   "workspaces": {
     ".": {},
     "packages/typescript-config": {},
@@ -11,8 +19,11 @@
     "packages/bot-kit": {},
     "packages/swaps": {},
     "bots/midnight-liquidation": {
-      "ignore": ["src/generated/**"]
+      "ignore": [
+        "src/generated/**"
+      ]
     },
-    "bots/blue-liquidation": {}
+    "bots/blue-liquidation": {},
+    "bots/midnight-mm-bot": {}
   }
 }
