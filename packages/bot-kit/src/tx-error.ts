@@ -58,7 +58,7 @@ const SOLIDITY_ERRORS = [
 ] as const
 
 /** Decodes standard Solidity reverts: `Error(string)` → the string, `Panic(uint256)` → `Panic(code)`. */
-export const decodeStandardRevert: RevertDecoder = data => {
+const decodeStandardRevert: RevertDecoder = data => {
   const { errorName, args } = decodeErrorResult({ abi: SOLIDITY_ERRORS, data })
   if (errorName === 'Error') return args?.[0] ?? errorName
   if (errorName === 'Panic') return `Panic(${args?.[0]})`

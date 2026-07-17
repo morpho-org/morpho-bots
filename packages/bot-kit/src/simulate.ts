@@ -4,13 +4,14 @@ import { tryCatch } from '@repo/utils'
 import { BaseError } from 'viem'
 import { call } from 'viem/actions'
 
-export type SimulateStatus =
-  /** The full exec (seize → swap → repay → sweep) succeeds — safe to broadcast. */
-  | 'ok'
-  /** Reverted in the exec path (not liquidatable, swap slippage, repay shortfall) — do not send. */
-  | 'revert'
-
-export type SimulateResult = { status: SimulateStatus; reason?: string }
+export type SimulateResult = {
+  /**
+   * `ok` — the full exec (seize → swap → repay → sweep) succeeds, safe to broadcast. `revert` —
+   * reverted in the exec path (not liquidatable, swap slippage, repay shortfall), do not send.
+   */
+  status: 'ok' | 'revert'
+  reason?: string
+}
 
 /**
  * Simulates the real liquidation — `Executor.exec_606BaXt(...)` from the liquidator EOA,

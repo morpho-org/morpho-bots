@@ -126,22 +126,27 @@ export function createPendingQueue({
   // backpressure set for `settledCooldownBlocks` so a just-acted position isn't re-submitted while
   // the read RPC still lags the confirmation. Pruned each `onBlock`. Unused when the cooldown is 0n.
   const settledAt = new Map<string, bigint>()
-  // Latched when a first-send claims a nonce but fails hashless (`TxSendError`). Blocks further sends
-  // until the next settlement pass (`onBlock`) clears it, so the tick can't keep firing behind a
-  // rolled-back cursor. The daemon latched this across sweeps; here `onBlock` is the settlement pass.
+  // ── Two independent send-refusal latches ────────────────────────────────────────────────────
+  // Both refuse NEW first-sends (which allocate the next nonce); neither blocks replacement /
+  // fee-bumps of EXISTING pending entries, which reuse their own nonce. They have distinct causes and
+  // distinct clears and must not be collapsed into one flag:
+  //
+  //   `sendAborted` (bool) — set when a first-send claims a nonce but then fails hashless
+  //     (`TxSendError`): the signer has rolled its local cursor back, so broadcasting again now would
+  //     race that rollback. Cleared unconditionally at the end of every `onBlock` settlement pass —
+  //     one pass suffices because the rollback already took effect. (The daemon era latched this
+  //     across sweeps; here `onBlock` is the settlement pass.)
+  //
+  //   `nonceHoleLow`/`nonceHoleHigh` (span) — set when `replaceStuck` locally retires an entry
+  //     (fee_ceiling / max_bump_attempts / reverts_on_replace) while its ORIGINAL broadcast still sits
+  //     UNCONSUMED at that nonce; the cursor keeps allocating N+1, N+2…, none of which can mine until
+  //     the hole fills. `low` is for the log; `high` drives the clear rule — `consumedNonce > high`
+  //     proves every dropped nonce ≤ high has mined, so no unconsumed hole remains below the cursor.
+  //     Also clears when the queue empties and `syncNonce` re-derives the cursor from chain truth. A
+  //     settlement pass alone cannot clear it — the chain must catch up first. Reconciler
+  //     `drop(_, 'nonce_consumed')` retirements are already consumed by definition, so they never
+  //     latch a hole.
   let sendAborted = false
-  // Nonce-hole latch — an independent send-refusal latch with a different cause and clear than
-  // `sendAborted`. When `replaceStuck` locally retires an entry (fee_ceiling / max_bump_attempts /
-  // reverts_on_replace) the ORIGINAL broadcast still sits UNCONSUMED at that nonce in the mempool.
-  // The signer's cursor, though, keeps allocating N+1, N+2… — none of which can mine until that hole
-  // is filled. So while a hole is latched we refuse NEW first-sends (which allocate); replacement /
-  // fee-bumps of EXISTING pending entries reuse their own nonce and continue. We track the span of
-  // dropped-but-unconsumed nonces: `low` for the log, `high` because the safe clear rule is
-  // `consumedNonce > high` — the chain's consumed nonce (mined-tx count) exceeding the HIGHEST dropped
-  // nonce proves every dropped nonce ≤ high has mined, so no unconsumed hole remains below the cursor.
-  // The latch also clears when the queue empties and `syncNonce` re-derives the cursor from chain
-  // truth (correct regardless of drop history). Reconciler `drop(_, 'nonce_consumed')` retirements are
-  // BY DEFINITION already consumed, so they never latch a hole.
   let nonceHoleLow: number | null = null
   let nonceHoleHigh = 0
   let blocksSeen = 0
@@ -361,6 +366,26 @@ export function createPendingQueue({
     if (count.data > nonceHoleHigh) clearNonceHole('consumed', { consumed: count.data })
   }
 
+  // Nonce-consumed reconciliation on a fixed block cadence (chain truth cleaning up entries the
+  // receipt loop can't see — an external/competing send under the same nonce).
+  async function reconcileOnCadence(): Promise<void> {
+    blocksSeen += 1
+    if (blocksSeen % reconcileEveryBlocks === 0) await reconcile()
+  }
+
+  // Expire cooldowns so a position the bot acted on long ago is eligible again. By now the read RPC
+  // has caught up, so an expired label only re-submits if it is genuinely still liquidatable.
+  function pruneSettledCooldowns(blockNumber: bigint): void {
+    for (const [label, settledBlock] of settledAt) {
+      if (blockNumber - settledBlock > settledCooldownBlocks) settledAt.delete(label)
+    }
+  }
+
+  // The settlement pass is complete: release the send latch so the next tick can broadcast again.
+  function releaseSendLatch(): void {
+    sendAborted = false
+  }
+
   async function onBlock(blockNumber: bigint): Promise<void> {
     let baseFee: bigint | null = null
     // Deleting the current key mid-iteration is well-defined for a Map; we never insert here.
@@ -407,19 +432,11 @@ export function createPendingQueue({
         })
       }
     }
-    // Nonce-consumed reconciliation on a fixed block cadence (chain truth cleaning up entries the
-    // receipt loop can't see — an external/competing send under the same nonce).
-    blocksSeen += 1
-    if (blocksSeen % reconcileEveryBlocks === 0) await reconcile()
+    await reconcileOnCadence()
     // While a nonce hole is latched, check every block whether the chain has caught up past it.
     await clearNonceHoleIfFilled()
-    // Expire cooldowns so a position the bot acted on long ago is eligible again. By now the read RPC
-    // has caught up, so an expired label only re-submits if it is genuinely still liquidatable.
-    for (const [label, settledBlock] of settledAt) {
-      if (blockNumber - settledBlock > settledCooldownBlocks) settledAt.delete(label)
-    }
-    // The settlement pass is complete: release the send latch so the next tick can broadcast again.
-    sendAborted = false
+    pruneSettledCooldowns(blockNumber)
+    releaseSendLatch()
   }
 
   function drop(nonce: number, reason: string): boolean {

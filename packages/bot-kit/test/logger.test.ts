@@ -1,9 +1,8 @@
-import { BetterStackTransport } from '@loglayer/transport-betterstack'
 import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test'
 
 import type { Logger } from '../src/logger'
 
-import { betterStackTransport, createLogger } from '../src/logger'
+import { createLogger } from '../src/logger'
 
 describe('createLogger', () => {
   // Restore console spies even when an assertion throws first, so a failure in one test
@@ -94,25 +93,19 @@ describe('createLogger', () => {
   })
 })
 
-describe('betterStackTransport (opt-in contract)', () => {
+describe('createLogger BetterStack opt-in contract', () => {
   afterEach(() => mock.restore())
 
-  it('attaches only when BOTH env vars are set', () => {
+  it('stays fully silent when BOTH env vars are unset', () => {
     const err = spyOn(console, 'error').mockImplementation(() => undefined)
-    expect(betterStackTransport({})).toBeNull()
-    // Both unset stays fully SILENT — no warning line.
+    createLogger('info', { env: {} })
+    // Both unset is the opt-out: no warning line at construction.
     expect(err).not.toHaveBeenCalled()
-
-    const transport = betterStackTransport({
-      BETTERSTACK_SOURCE_TOKEN: 'tok',
-      BETTERSTACK_INGESTING_HOST: 's1.betterstackdata.com'
-    })
-    expect(transport).toBeInstanceOf(BetterStackTransport)
   })
 
-  it('token-only fails loud (names the missing host) and attaches no transport', () => {
+  it('token-only fails loud (names the missing host)', () => {
     const err = spyOn(console, 'error').mockImplementation(() => undefined)
-    expect(betterStackTransport({ BETTERSTACK_SOURCE_TOKEN: 'tok' })).toBeNull()
+    createLogger('info', { env: { BETTERSTACK_SOURCE_TOKEN: 'tok' } })
 
     expect(err).toHaveBeenCalledTimes(1)
     const line = JSON.parse(String(err.mock.calls[0]?.[0])) as Record<string, unknown>
@@ -121,11 +114,9 @@ describe('betterStackTransport (opt-in contract)', () => {
     expect(line.detail).toContain('BETTERSTACK_INGESTING_HOST')
   })
 
-  it('host-only fails loud (names the missing token) and attaches no transport', () => {
+  it('host-only fails loud (names the missing token)', () => {
     const err = spyOn(console, 'error').mockImplementation(() => undefined)
-    expect(
-      betterStackTransport({ BETTERSTACK_INGESTING_HOST: 's1.betterstackdata.com' })
-    ).toBeNull()
+    createLogger('info', { env: { BETTERSTACK_INGESTING_HOST: 's1.betterstackdata.com' } })
 
     expect(err).toHaveBeenCalledTimes(1)
     const line = JSON.parse(String(err.mock.calls[0]?.[0])) as Record<string, unknown>
@@ -136,9 +127,9 @@ describe('betterStackTransport (opt-in contract)', () => {
   it('treats blank/whitespace as unset — a blank token with a host still fails loud', () => {
     const err = spyOn(console, 'error').mockImplementation(() => undefined)
     // Blank/whitespace does not count as set: this is token-unset + host-set → partial config.
-    expect(
-      betterStackTransport({ BETTERSTACK_SOURCE_TOKEN: '  ', BETTERSTACK_INGESTING_HOST: 'h' })
-    ).toBeNull()
+    createLogger('info', {
+      env: { BETTERSTACK_SOURCE_TOKEN: '  ', BETTERSTACK_INGESTING_HOST: 'h' }
+    })
     expect(err).toHaveBeenCalledTimes(1)
     const line = JSON.parse(String(err.mock.calls[0]?.[0])) as Record<string, unknown>
     expect(line.detail).toContain('BETTERSTACK_SOURCE_TOKEN')

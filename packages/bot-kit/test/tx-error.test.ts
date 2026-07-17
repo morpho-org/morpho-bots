@@ -1,13 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import { BaseError, encodeErrorResult, ExecutionRevertedError } from 'viem'
 
-import {
-  abiRevertDecoder,
-  decodeStandardRevert,
-  isExecutionRevert,
-  revertReason,
-  TxSendError
-} from '../src/tx-error'
+import { abiRevertDecoder, isExecutionRevert, revertReason, TxSendError } from '../src/tx-error'
 
 const SOLIDITY_ERRORS = [
   { type: 'error', name: 'Error', inputs: [{ type: 'string' }] },
@@ -29,17 +23,17 @@ function revertError(data: `0x${string}`): BaseError {
   })
 }
 
-describe('decodeStandardRevert', () => {
+describe('revertReason standard (default) decoding', () => {
   it('decodes Error(string) to the bare string and Panic(uint256) to Panic(code)', () => {
     const errorData = encodeErrorResult({
       abi: SOLIDITY_ERRORS,
       errorName: 'Error',
       args: ['healthy position']
     })
-    expect(decodeStandardRevert(errorData)).toBe('healthy position')
+    expect(revertReason(revertError(errorData))).toBe('healthy position')
 
     const panicData = encodeErrorResult({ abi: SOLIDITY_ERRORS, errorName: 'Panic', args: [17n] })
-    expect(decodeStandardRevert(panicData)).toBe('Panic(17)')
+    expect(revertReason(revertError(panicData))).toBe('Panic(17)')
   })
 })
 
