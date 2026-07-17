@@ -23,15 +23,17 @@ export function composeQuoting(deps: {
   maxRouteImpactBps: number
   unwrappers: readonly Unwrapper[]
   logger: Logger
-}): { quoteFor: (plan: LiquidationPlan, out: LensOut) => Promise<QuoteOutcome> } {
+}): { quoteFor: (plan: LiquidationPlan, out: LensOut, label: string) => Promise<QuoteOutcome> } {
   const { quoteFor: quoteRequest } = composeSwapQuoting(deps)
   return {
-    quoteFor: (plan, out) =>
+    quoteFor: (plan, out, label) =>
       quoteRequest({
         collateralToken: out.params.collateralToken,
         loanToken: out.params.loanToken,
         amountIn: plan.seizedAssets,
-        referenceAmountOut: expectedLoanOut(plan, out)
+        referenceAmountOut: expectedLoanOut(plan, out),
+        // The tick's position label (`${id}:${borrower}`) — the correlation id join across quote logs.
+        id: label
       })
   }
 }

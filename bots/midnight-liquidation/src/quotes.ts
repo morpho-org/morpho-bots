@@ -31,7 +31,7 @@ export function composeQuoting(deps: {
   unwrappers: readonly Unwrapper[]
   excludeCollaterals: readonly Address[]
   logger: Logger
-}): { quoteFor: (plan: LiquidationPlan, out: LensOut) => Promise<QuoteOutcome> } {
+}): { quoteFor: (plan: LiquidationPlan, out: LensOut, label: string) => Promise<QuoteOutcome> } {
   const { selector, excludeCollaterals, logger, ...rest } = deps
   const { quoteFor: quoteRequest } = composeMultiVenueQuoting({
     ...rest,
@@ -43,7 +43,7 @@ export function composeQuoting(deps: {
   })
 
   return {
-    async quoteFor(plan, out) {
+    async quoteFor(plan, out, label) {
       const collateral = out.market.collateralParams[plan.collateralIndex]
       if (!collateral) return { kind: 'no_config' }
       // The operator opt-out applies to the RAW collateral — midnight has no per-collateral config
@@ -57,7 +57,9 @@ export function composeQuoting(deps: {
         collateralToken: collateral.token,
         loanToken: out.market.loanToken,
         amountIn: plan.seizedAssets,
-        referenceAmountOut: expectedLoanOut(plan, out)
+        referenceAmountOut: expectedLoanOut(plan, out),
+        // The tick's position label (`${id}:${borrower}`) — the correlation id join across quote logs.
+        id: label
       })
     }
   }

@@ -50,7 +50,10 @@ const OUT: LensOut = {
 
 const NOOP_HTTP: RateLimitedClient = { getJson: async <T>() => ({}) as T }
 
-function compose(entry: SwapConfigEntry | null) {
+// The position label the tick threads as the QuoteRequest correlation id (`${id}:${borrower}`).
+const LABEL = '0xabc:0x9999999999999999999999999999999999999999'
+
+function compose(entry: SwapConfigEntry | null, logger: Logger = NOOP_LOGGER) {
   const swapByCollateral = new Map<string, SwapConfigEntry>()
   if (entry) swapByCollateral.set(getAddress(COLLATERAL), entry)
   return composeQuoting({
@@ -60,19 +63,19 @@ function compose(entry: SwapConfigEntry | null) {
     swapByCollateral,
     maxRouteImpactBps: 500,
     unwrappers: [],
-    logger: NOOP_LOGGER
+    logger
   })
 }
 
 describe('composeQuoting (Blue lens-projection adapter)', () => {
   it('returns no_config when the market collateral has no configured venue', async () => {
     const { quoteFor } = compose(null)
-    expect(await quoteFor(PLAN, OUT)).toEqual({ kind: 'no_config' })
+    expect(await quoteFor(PLAN, OUT, LABEL)).toEqual({ kind: 'no_config' })
   })
 
   it('projects out.params + the oracle reference into an executable swap plan', async () => {
     const { quoteFor } = compose({ venue: 'uniswap-v3', router: ROUTER, fee: 3000, slippageBps: 0 })
-    const outcome = await quoteFor(PLAN, OUT)
+    const outcome = await quoteFor(PLAN, OUT, LABEL)
     expect(outcome.kind).toBe('swap')
     if (outcome.kind === 'swap') {
       expect(outcome.plan.steps).toHaveLength(1)
@@ -85,5 +88,22 @@ describe('composeQuoting (Blue lens-projection adapter)', () => {
       // expectedLoanOut(plan, out) was passed as referenceAmountOut.
       expect(outcome.plan.amountOutMinimum).toBe(1000n)
     }
+  })
+
+  it('threads the position label into quote log events as the correlation id', async () => {
+    const events: { event: string; fields?: Record<string, unknown> }[] = []
+    const capturing: Logger = {
+      debug: () => {},
+      info: (event, fields) => events.push({ event, fields }),
+      warn: () => {},
+      error: () => {}
+    }
+    const { quoteFor } = compose(
+      { venue: 'uniswap-v3', router: ROUTER, fee: 3000, slippageBps: 0 },
+      capturing
+    )
+    await quoteFor(PLAN, OUT, LABEL)
+    const quoteOk = events.find(e => e.event === 'quote.ok')
+    expect(quoteOk?.fields?.id).toBe(LABEL)
   })
 })
