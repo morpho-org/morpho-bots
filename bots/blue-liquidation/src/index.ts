@@ -105,7 +105,7 @@ async function main() {
   // Warn loudly so this isn't mistaken for a healthy, fully armed deployment. Otherwise log the
   // chosen venue per collateral.
   if (swapByCollateral.size === 0) {
-    logger.warn('swap_config.no_routes', {
+    logger.warn('quoting.no_routes', {
       chainId: config.chainId,
       detail: 'no swap routes configured — every liquidation will be skipped (config.no_swap_path)'
     })

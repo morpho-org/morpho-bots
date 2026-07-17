@@ -2,7 +2,7 @@ import type { Backoff, CooldownStore, Logger, SimulateResult } from '@repo/bot-k
 import type { QuoteOutcome, SwapPlan } from '@repo/swaps'
 import type { Address } from 'viem'
 
-import { assertNever, tryCatch } from '@repo/utils'
+import { assertNever, lensKey, tryCatch } from '@repo/utils'
 
 import type { BorrowerCandidate } from '../discovery/borrowers'
 import type { MarketParams } from '../market'
@@ -11,7 +11,6 @@ import type { LensInput, LensOut } from '../state/lens.sol'
 
 import { marketId } from '../market'
 import { plan } from '../sizing/plan'
-import { lensKey } from '../state/lens.sol'
 import { isLiquidatable, planInputFromLens } from './eligibility'
 
 /** Blocks our rindexer may trail the chain head before we warn that coverage is degraded. */
@@ -58,7 +57,7 @@ export async function runTick(deps: {
    * local; aggregators make a single API call). `no_config` → skip with `config.no_swap_path` (no
    * backoff); `failed` → skip and back the position off.
    */
-  quoteFor: (plan: LiquidationPlan, out: LensOut) => Promise<QuoteOutcome>
+  quoteFor: (plan: LiquidationPlan, out: LensOut, label: string) => Promise<QuoteOutcome>
   simulate: (args: {
     market: MarketParams
     borrower: Address
@@ -163,12 +162,6 @@ export async function runTick(deps: {
       seizedAssets: liquidationPlan.seizedAssets
     })
 
-    // Suppress positions that keep failing to quote/simulate — bounds API + RPC usage under a
-    // backlog, since executable quotes are spent only on positions not currently backed off.
-    if (backoff.shouldSkip(label, chainHead)) {
-      counters.backoffSkipped += 1
-      continue
-    }
     // Opt-in cooldown (complementary to backoff): a position whose last attempt produced no
     // submittable tx is skipped without re-quoting until its wall-clock window elapses. No-op when
     // disabled (POSITION_LIQUIDATION_COOLDOWN_MS=0).
@@ -177,7 +170,13 @@ export async function runTick(deps: {
       logger.info('cooldown.skip', { marketId: id, borrower: pair.borrower })
       continue
     }
-    const outcome = await quoteFor(liquidationPlan, out)
+    // Suppress positions that keep failing to quote/simulate — bounds API + RPC usage under a
+    // backlog, since executable quotes are spent only on positions not currently backed off.
+    if (backoff.shouldSkip(label, chainHead)) {
+      counters.backoffSkipped += 1
+      continue
+    }
+    const outcome = await quoteFor(liquidationPlan, out, label)
     if (outcome.kind === 'no_config') {
       counters.noSwapPath += 1
       cooldown.mark(label)

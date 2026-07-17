@@ -4,6 +4,7 @@ import type { QuoteOutcome, SwapPlan } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
 import { createBackoff, createCooldownStore } from '@repo/bot-kit'
+import { lensKey } from '@repo/utils'
 import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
 
@@ -11,7 +12,6 @@ import type { BorrowerCandidate } from '../../src/discovery/borrowers'
 import type { LensInput, LensOut } from '../../src/state/lens.sol'
 
 import { runTick } from '../../src/runner/tick'
-import { lensKey } from '../../src/state/lens.sol'
 
 function spyLogger() {
   const events: { level: string; event: string; fields?: Record<string, unknown> }[] = []

@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@repo/utils": "workspace:*",
+    "executooor-viem": "catalog:",
     "viem": "catalog:",
     "zod": "catalog:"
   },

@@ -12,10 +12,12 @@ import type {
   QuoteOutcome,
   QuoteParameters,
   Swap,
+  SwapPlan,
   SwapStep,
   Venue
 } from './types'
 import type { Unwrapper, UnwrapResolution } from './unwrappers/resolve'
+import type { VenuePair, VenueQuoteEstimate } from './venue-selector'
 
 import { BPS } from './constants'
 import { QuoteError } from './types'
@@ -117,6 +119,84 @@ function toStep(swap: Swap, tokenIn: Address, tokenOut: Address): SwapStep {
     callData: swap.callData,
     amountIn: swap.amountIn,
     approvalSpender: swap.spender
+  }
+}
+
+/**
+ * The outcome of firm-quoting ONE venue. Returned structured (not logged) because the two composers
+ * emit DIFFERENT event names for the same outcome (`quote.bad_route` vs `quote.route_quality_failed`,
+ * `quote.ok` vs `select.ok`) and diverge on control flow (short-circuit vs fall through to the next
+ * venue), so each caller owns its own logging + branching.
+ */
+type FirmQuoteOutcome =
+  | { kind: 'swap'; swap: Swap; plan: SwapPlan }
+  | { kind: 'quote_failed'; reason: QuoteFailureReason; detail: string }
+  | { kind: 'bad_route'; swap: Swap }
+
+// One firm venue quote shared by both composers: build the venue params, dispatch under `tryCatch`,
+// then oracle-sanity the quoted output and fold a success into the plan's final step. `venueEntry` is
+// resolved INSIDE the awaited thunk so a synchronous adapter/entry throw (e.g. an unreachable uniswap
+// arm in multi-venue mode) becomes a caught rejection, never an escape that aborts the run.
+async function firmQuoteVenue(args: {
+  httpClient: RateLimitedClient
+  chainId: number
+  executor: Address
+  venueEntry: () => SwapConfigEntry
+  slippageBps: number
+  tokenIn: Address
+  amountIn: bigint
+  steps: SwapStep[]
+  request: QuoteRequest
+  maxRouteImpactBps: number
+}): Promise<FirmQuoteOutcome> {
+  const { httpClient, chainId, executor, venueEntry, slippageBps } = args
+  const { tokenIn, amountIn, steps, request, maxRouteImpactBps } = args
+  const { loanToken, referenceAmountOut } = request
+
+  const params: QuoteParameters = {
+    chainId,
+    tokenIn,
+    tokenOut: loanToken,
+    // Seize-exact when no unwraps ran: the contract transfers exactly `amountIn` to the Executor
+    // before the callback. After unwraps it is the chain's worst-case output — a fixed-amount
+    // venue can only leave skimmable surplus, never revert on shortfall.
+    amountIn,
+    slippageBps,
+    executor,
+    referenceAmountOut,
+    // The request's decimals describe the RAW collateral; after an unwrap they would mislabel
+    // the underlying, so they are only forwarded on the direct (no-unwrap) path.
+    tokenInDecimals: steps.length === 0 ? request.tokenInDecimals : undefined
+  }
+
+  const { data: swap, error } = await tryCatch(
+    (async () => quoteByVenue(httpClient, venueEntry(), params))()
+  )
+  if (error || !swap) {
+    const reason = error instanceof QuoteError ? error.reason : 'api_error'
+    return { kind: 'quote_failed', reason, detail: ensureError(error).message }
+  }
+
+  // The reference stays the FULL-PATH oracle value (collateral → loan): the unwrap chain threads its
+  // worst-case amounts into `amountIn`, so the venue's quoted output is directly comparable.
+  if (
+    !passesRouteQuality({
+      expected: swap.expectedAmountOut,
+      reference: referenceAmountOut,
+      maxBps: maxRouteImpactBps
+    })
+  ) {
+    return { kind: 'bad_route', swap }
+  }
+
+  return {
+    kind: 'swap',
+    swap,
+    plan: {
+      steps: [...steps, toStep(swap, tokenIn, loanToken)],
+      expectedAmountOut: swap.expectedAmountOut,
+      amountOutMinimum: swap.amountOutMinimum
+    }
   }
 }
 
@@ -251,52 +331,39 @@ export function composeQuoting(deps: {
     request: QuoteRequest
   }): Promise<QuoteOutcome> {
     const { entry, tokenIn, amountIn, steps, request } = args
-    const { loanToken, referenceAmountOut, id } = request
+    const { id } = request
 
-    const params: QuoteParameters = {
+    const outcome = await firmQuoteVenue({
+      httpClient,
       chainId,
-      tokenIn,
-      tokenOut: loanToken,
-      // Seize-exact when no unwraps ran: the contract transfers exactly `amountIn` to the Executor
-      // before the callback. After unwraps it is the chain's worst-case output — a fixed-amount
-      // venue can only leave skimmable surplus, never revert on shortfall.
-      amountIn,
-      slippageBps: entry.slippageBps,
       executor,
-      referenceAmountOut,
-      // The request's decimals describe the RAW collateral; after an unwrap they would mislabel
-      // the underlying, so they are only forwarded on the direct (no-unwrap) path.
-      tokenInDecimals: steps.length === 0 ? request.tokenInDecimals : undefined
-    }
+      venueEntry: () => entry,
+      slippageBps: entry.slippageBps,
+      tokenIn,
+      amountIn,
+      steps,
+      request,
+      maxRouteImpactBps
+    })
 
-    const { data: swap, error } = await tryCatch(quoteByVenue(httpClient, entry, params))
-    if (error || !swap) {
-      const reason = error instanceof QuoteError ? error.reason : 'api_error'
+    if (outcome.kind === 'quote_failed') {
       logger.warn('quote.failed', {
         venue: entry.venue,
         id,
         collateral: request.collateralToken,
-        reason,
-        detail: ensureError(error).message
+        reason: outcome.reason,
+        detail: outcome.detail
       })
-      return { kind: 'failed', reason }
+      return { kind: 'failed', reason: outcome.reason }
     }
 
-    // The reference stays the FULL-PATH oracle value (collateral → loan): the unwrap chain threads
-    // its worst-case amounts into `amountIn`, so the venue's quoted output is directly comparable.
-    if (
-      !passesRouteQuality({
-        expected: swap.expectedAmountOut,
-        reference: referenceAmountOut,
-        maxBps: maxRouteImpactBps
-      })
-    ) {
+    if (outcome.kind === 'bad_route') {
       logger.warn('quote.bad_route', {
         venue: entry.venue,
         id,
         collateral: request.collateralToken,
-        expected: swap.expectedAmountOut,
-        oracle: referenceAmountOut
+        expected: outcome.swap.expectedAmountOut,
+        oracle: request.referenceAmountOut
       })
       return { kind: 'failed', reason: 'bad_route' }
     }
@@ -305,18 +372,11 @@ export function composeQuoting(deps: {
       venue: entry.venue,
       id,
       collateral: request.collateralToken,
-      expected: swap.expectedAmountOut,
-      oracle: referenceAmountOut,
-      amountOutMinimum: swap.amountOutMinimum
+      expected: outcome.swap.expectedAmountOut,
+      oracle: request.referenceAmountOut,
+      amountOutMinimum: outcome.swap.amountOutMinimum
     })
-    return {
-      kind: 'swap',
-      plan: {
-        steps: [...steps, toStep(swap, tokenIn, loanToken)],
-        expectedAmountOut: swap.expectedAmountOut,
-        amountOutMinimum: swap.amountOutMinimum
-      }
-    }
+    return { kind: 'swap', plan: outcome.plan }
   }
 
   return {
@@ -380,12 +440,9 @@ export function composeMultiVenueQuoting(deps: {
    * Probe-cache refresh for the (post-unwrap) pair — runs here, after unwrap resolution, so the
    * probes price the tradable underlying. Failures are non-fatal (cold-default venue order).
    */
-  refresh: (pair: { collateral: Address; loan: Address }) => Promise<void>
+  refresh: (pair: VenuePair) => Promise<void>
   /** Best-first venues (with indicative outputs) for a pair+size, from the probe cache; `[]` if cold. */
-  select: (
-    pair: { collateral: Address; loan: Address },
-    amountIn: bigint
-  ) => readonly { venue: Venue; expectedOut: bigint }[]
+  select: (pair: VenuePair, amountIn: bigint) => readonly VenueQuoteEstimate[]
   logger: QuoteLogger
 }): { quoteFor: (request: QuoteRequest) => Promise<QuoteOutcome> } {
   const {
@@ -421,6 +478,28 @@ export function composeMultiVenueQuoting(deps: {
     }
   }
 
+  // Probe the POST-unwrap pair (indicative, isolated rate budget) so the selector ranks venues for
+  // the token actually being sold, then take its best-first order — or the deterministic default when
+  // the pair is cold. A probe failure is non-fatal: the default order still drives the firm-quote loop.
+  async function venueOrderFor(pair: VenuePair, amountIn: bigint, id?: string): Promise<Venue[]> {
+    const { error: probeError } = await tryCatch(refresh(pair))
+    if (probeError) {
+      logger.warn('probe.error', {
+        id,
+        collateral: pair.collateral,
+        loan: pair.loan,
+        detail: probeError.message
+      })
+    }
+
+    const ranked = select(pair, amountIn)
+    const order = ranked.length > 0 ? ranked.map(estimate => estimate.venue) : [...venues]
+    if (ranked.length === 0) {
+      logger.info('select.cold_default', { collateral: pair.collateral, loan: pair.loan, order })
+    }
+    return order
+  }
+
   return {
     async quoteFor(request) {
       const { collateralToken, loanToken, referenceAmountOut, id } = request
@@ -434,74 +513,43 @@ export function composeMultiVenueQuoting(deps: {
         return unwrapOnlyPlan({ resolution, request, maxRouteImpactBps, logger })
       }
 
-      // Probe the POST-unwrap pair (indicative, isolated rate budget) so the selector ranks venues
-      // for the token actually being sold. A probe failure is non-fatal: the firm-quote loop below
-      // falls back to the deterministic default order.
-      const pair = { collateral: resolution.token, loan: loanToken }
-      const { error: probeError } = await tryCatch(refresh(pair))
-      if (probeError) {
-        logger.warn('probe.error', {
-          id,
-          collateral: pair.collateral,
-          loan: pair.loan,
-          detail: probeError.message
-        })
-      }
-
-      const ranked = select(pair, resolution.amountIn)
-      const order = ranked.length > 0 ? ranked.map(estimate => estimate.venue) : [...venues]
-      if (ranked.length === 0) {
-        logger.info('select.cold_default', { collateral: pair.collateral, loan: loanToken, order })
-      }
-
-      const params: QuoteParameters = {
-        chainId,
-        tokenIn: resolution.token,
-        tokenOut: loanToken,
-        // Seize-exact when no unwraps ran: the contract transfers exactly `amountIn` to the
-        // Executor before the callback. After unwraps it is the chain's worst-case output.
-        amountIn: resolution.amountIn,
-        slippageBps,
-        executor,
-        referenceAmountOut,
-        // The request's decimals describe the RAW collateral; after an unwrap they would mislabel
-        // the underlying, so they are only forwarded on the direct (no-unwrap) path.
-        tokenInDecimals: resolution.steps.length === 0 ? request.tokenInDecimals : undefined
-      }
+      const pair: VenuePair = { collateral: resolution.token, loan: loanToken }
+      const order = await venueOrderFor(pair, resolution.amountIn, id)
 
       // Try the ranked venues in order; a quote or route-quality failure falls through to the next
       // (coverage-first). Only the CHOSEN venue is firm-quoted per step — never all venues at once.
       let lastReason: QuoteFailureReason = 'no_route'
       for (const venue of order) {
-        // The `entryFor` call is inside the awaited thunk so a synchronous throw (an unreachable
-        // uniswap arm) becomes a caught rejection, never an escape that aborts the op run.
-        const { data: swap, error } = await tryCatch(
-          (async () => quoteByVenue(httpClient, entryFor(venue), params))()
-        )
-        if (error || !swap) {
-          lastReason = error instanceof QuoteError ? error.reason : 'api_error'
+        const outcome = await firmQuoteVenue({
+          httpClient,
+          chainId,
+          executor,
+          venueEntry: () => entryFor(venue),
+          slippageBps,
+          tokenIn: resolution.token,
+          amountIn: resolution.amountIn,
+          steps: resolution.steps,
+          request,
+          maxRouteImpactBps
+        })
+        if (outcome.kind === 'quote_failed') {
+          lastReason = outcome.reason
           logger.warn('quote.failed', {
             venue,
             id,
             collateral: collateralToken,
             reason: lastReason,
-            detail: ensureError(error).message
+            detail: outcome.detail
           })
           continue
         }
-        if (
-          !passesRouteQuality({
-            expected: swap.expectedAmountOut,
-            reference: referenceAmountOut,
-            maxBps: maxRouteImpactBps
-          })
-        ) {
+        if (outcome.kind === 'bad_route') {
           lastReason = 'bad_route'
           logger.warn('quote.route_quality_failed', {
             venue,
             id,
             collateral: collateralToken,
-            expected: swap.expectedAmountOut,
+            expected: outcome.swap.expectedAmountOut,
             oracle: referenceAmountOut
           })
           continue
@@ -510,19 +558,12 @@ export function composeMultiVenueQuoting(deps: {
           venue,
           id,
           collateral: collateralToken,
-          expected: swap.expectedAmountOut,
+          expected: outcome.swap.expectedAmountOut,
           oracle: referenceAmountOut,
-          amountOutMinimum: swap.amountOutMinimum,
+          amountOutMinimum: outcome.swap.amountOutMinimum,
           order
         })
-        return {
-          kind: 'swap',
-          plan: {
-            steps: [...resolution.steps, toStep(swap, resolution.token, loanToken)],
-            expectedAmountOut: swap.expectedAmountOut,
-            amountOutMinimum: swap.amountOutMinimum
-          }
-        }
+        return { kind: 'swap', plan: outcome.plan }
       }
       return { kind: 'failed', reason: lastReason }
     }

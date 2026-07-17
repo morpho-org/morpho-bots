@@ -9,6 +9,7 @@ import {
   simulateLiquidationExec
 } from '@repo/bot-kit'
 import { quoteUniswapV3 } from '@repo/swaps'
+import { lensKey } from '@repo/utils'
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
 import { erc20Abi, parseGwei } from 'viem'
 import { base } from 'viem/chains'
@@ -17,7 +18,7 @@ import { encodeLiquidationExec } from '../../src/execution/encode-call'
 import { expectedLoanOut } from '../../src/execution/swap-step'
 import { isLiquidatable, planInputFromLens } from '../../src/runner/eligibility'
 import { plan } from '../../src/sizing/plan'
-import { lensKey, readMidnightLiquidationLens } from '../../src/state/lens.sol'
+import { readMidnightLiquidationLens } from '../../src/state/lens.sol'
 import {
   WETH,
   deployExecutor,
@@ -79,7 +80,9 @@ describe('fork: end-to-end liquidation against a real Base position', () => {
       executooorAddress: executooor,
       maxFeeWei: parseGwei('300')
     }
-  }, 120_000)
+    // The seed's archive reads through the fork RPC take ~120s end-to-end, so a 120s budget had
+    // zero headroom — ordinary provider latency variance made this hook time out intermittently.
+  }, 300_000)
 
   afterAll(async () => {
     await stopFork(anvil)
@@ -203,5 +206,5 @@ describe('fork: end-to-end liquidation against a real Base position', () => {
     })
     expect(exUsdc).toBe(0n)
     expect(exCbbtc).toBe(0n)
-  }, 120_000)
+  }, 300_000)
 })

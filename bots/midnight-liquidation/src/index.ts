@@ -102,7 +102,7 @@ async function main() {
   if (Bun.env.LIFI_API_KEY) apiKeys.lifi = Bun.env.LIFI_API_KEY
   const venues = config.venues.enabled
   if (venues.length === 0) {
-    logger.warn('venues.none_enabled', {
+    logger.warn('quoting.no_routes', {
       chainId: config.chainId,
       detail:
         'no venue API keys set — running bad-debt-only (positions discovered, bad debt realized, no swap-liquidations)'
@@ -358,7 +358,7 @@ async function main() {
     const { error } = await tryCatch(listedMarkets.refresh())
     if (error) logger.warn('markets.refresh_failed', { detail: error.message })
     if (venues.length === 0) {
-      logger.warn('venues.none_enabled', { detail: 'still no venue API keys — bad-debt-only' })
+      logger.warn('quoting.no_routes', { detail: 'still no venue API keys — bad-debt-only' })
     }
     void refreshMarketsLoop()
   }

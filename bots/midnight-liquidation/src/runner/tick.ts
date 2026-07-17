@@ -2,7 +2,7 @@ import type { Backoff, CooldownStore, Logger, SimulateResult } from '@repo/bot-k
 import type { QuoteOutcome, SwapPlan } from '@repo/swaps'
 import type { Address } from 'viem'
 
-import { assertNever, tryCatch } from '@repo/utils'
+import { assertNever, lensKey, tryCatch } from '@repo/utils'
 
 import type { BorrowerCandidate } from '../discovery/borrowers'
 import type { Market } from '../execution/encode-call'
@@ -10,7 +10,6 @@ import type { LiquidationPlan } from '../sizing/plan'
 import type { LensInput, LensOut } from '../state/lens.sol'
 
 import { isBadDebtRealization, plan } from '../sizing/plan'
-import { lensKey } from '../state/lens.sol'
 import { isLiquidatable, planInputFromLens } from './eligibility'
 
 type TickCounters = {
@@ -53,7 +52,7 @@ export async function runTick(deps: {
    * local; aggregators make a single API call). `no_config` → skip with `config.no_swap_path` (no
    * backoff); `failed` → skip and back the position off.
    */
-  quoteFor: (plan: LiquidationPlan, out: LensOut) => Promise<QuoteOutcome>
+  quoteFor: (plan: LiquidationPlan, out: LensOut, label: string) => Promise<QuoteOutcome>
   simulate: (args: {
     market: Market
     borrower: Address
@@ -169,7 +168,7 @@ export async function runTick(deps: {
         counters.backoffSkipped += 1
         continue
       }
-      const outcome = await quoteFor(liquidationPlan, out)
+      const outcome = await quoteFor(liquidationPlan, out, label)
       if (outcome.kind === 'no_config') {
         counters.noSwapPath += 1
         cooldown.mark(label)

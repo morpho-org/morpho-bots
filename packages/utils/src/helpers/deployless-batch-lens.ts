@@ -2,6 +2,7 @@ import { omit, policy } from '@morpho-org/viem-dlc'
 import {
   type Abi,
   type AbiFunction,
+  type Address,
   type CallParameters,
   type Client,
   type ContractFunctionArgs,
@@ -10,6 +11,7 @@ import {
   type ContractFunctionReturnType,
   getAbiItem,
   type GetAbiItemParameters,
+  type Hex,
   type Transport
 } from 'viem'
 import { readContract } from 'viem/actions'
@@ -24,6 +26,14 @@ import type { Id } from '../types/index'
 // trigger. Both bots' `state/lens.sol.ts` fetchers delegate here.
 
 export const MAX_INITCODE_SIZE = 49_152
+
+/**
+ * Stable per-pair key for a batch-lens result map. `id` widens to {@link Hex} so both a market id
+ * (bytes32) and an address-shaped id key uniformly.
+ */
+export function lensKey(id: Hex, borrower: Address): string {
+  return `${id.toLowerCase()}:${borrower.toLowerCase()}`
+}
 
 export type BatchLensTransportParameters = {
   'viem-dlc-cache': {

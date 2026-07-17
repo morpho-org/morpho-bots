@@ -81,7 +81,7 @@ function stderrTransport(): LogLayerTransport {
 // line names the missing var. We still return null (ship nothing) rather than throw: the bot must
 // never crash over observability config. The warning is written plainly via console.error, like the
 // transport's own onError, to avoid recursing back through loglayer.
-export function betterStackTransport(
+function betterStackTransport(
   env: Record<string, string | undefined>
 ): BetterStackTransport | null {
   const sourceToken = env.BETTERSTACK_SOURCE_TOKEN?.trim()
