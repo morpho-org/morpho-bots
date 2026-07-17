@@ -80,7 +80,9 @@ describe('fork: end-to-end liquidation against a real Base position', () => {
       executooorAddress: executooor,
       maxFeeWei: parseGwei('300')
     }
-  }, 120_000)
+    // The seed's archive reads through the fork RPC take ~120s end-to-end, so a 120s budget had
+    // zero headroom — ordinary provider latency variance made this hook time out intermittently.
+  }, 300_000)
 
   afterAll(async () => {
     await stopFork(anvil)
@@ -204,5 +206,5 @@ describe('fork: end-to-end liquidation against a real Base position', () => {
     })
     expect(exUsdc).toBe(0n)
     expect(exCbbtc).toBe(0n)
-  }, 120_000)
+  }, 300_000)
 })
