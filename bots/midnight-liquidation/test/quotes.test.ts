@@ -17,6 +17,9 @@ import { composeQuoting } from '../src/quotes'
 
 const NOOP_LOGGER: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
 
+// The position label the tick threads as the QuoteRequest correlation id (`${id}:${borrower}`).
+const LABEL = '0xabc:0x9999999999999999999999999999999999999999'
+
 const LOAN = getAddress('0x6666666666666666666666666666666666666666')
 const COLLATERAL = getAddress('0x7777777777777777777777777777777777777777')
 const ORACLE = getAddress('0x8888888888888888888888888888888888888888')
@@ -94,7 +97,11 @@ function fakeSelector(order: VenueQuoteEstimate[], onRefresh?: () => Promise<voi
 
 function compose(
   selector: VenueSelector,
-  overrides: { venues?: ('0x' | '1inch')[]; excludeCollaterals?: `0x${string}`[] } = {}
+  overrides: {
+    venues?: ('0x' | '1inch')[]
+    excludeCollaterals?: `0x${string}`[]
+    logger?: Logger
+  } = {}
 ) {
   return composeQuoting({
     httpClient: httpStub,
@@ -107,7 +114,7 @@ function compose(
     maxRouteImpactBps: 500,
     unwrappers: [],
     excludeCollaterals: overrides.excludeCollaterals ?? [],
-    logger: NOOP_LOGGER
+    logger: overrides.logger ?? NOOP_LOGGER
   })
 }
 
@@ -115,21 +122,23 @@ describe('composeQuoting (Midnight lens-projection adapter)', () => {
   it('returns no_config when the plan indexes a missing collateral slot', async () => {
     const { selector, refreshed } = fakeSelector([{ venue: '0x', expectedOut: 1000n }])
     const { quoteFor } = compose(selector)
-    expect(await quoteFor({ ...PLAN, collateralIndex: 5 }, OUT)).toEqual({ kind: 'no_config' })
+    expect(await quoteFor({ ...PLAN, collateralIndex: 5 }, OUT, LABEL)).toEqual({
+      kind: 'no_config'
+    })
     expect(refreshed).toHaveLength(0) // never probed for a slot it can't route
   })
 
   it('returns no_config (and never probes) for an excluded collateral', async () => {
     const { selector, refreshed } = fakeSelector([{ venue: '0x', expectedOut: 1000n }])
     const { quoteFor } = compose(selector, { excludeCollaterals: [COLLATERAL] })
-    expect(await quoteFor(PLAN, OUT)).toEqual({ kind: 'no_config' })
+    expect(await quoteFor(PLAN, OUT, LABEL)).toEqual({ kind: 'no_config' })
     expect(refreshed).toHaveLength(0)
   })
 
   it('refreshes the pair probe, then projects into an executable swap from the ranked venue', async () => {
     const { selector, refreshed } = fakeSelector([{ venue: '0x', expectedOut: 1000n }])
     const { quoteFor } = compose(selector)
-    const outcome = await quoteFor(PLAN, OUT)
+    const outcome = await quoteFor(PLAN, OUT, LABEL)
 
     expect(refreshed).toEqual([{ collateral: COLLATERAL, loan: LOAN }])
     expect(outcome.kind).toBe('swap')
@@ -147,12 +156,27 @@ describe('composeQuoting (Midnight lens-projection adapter)', () => {
       throw new Error('probe boom')
     })
     const { quoteFor } = compose(selector)
-    expect((await quoteFor(PLAN, OUT)).kind).toBe('swap')
+    expect((await quoteFor(PLAN, OUT, LABEL)).kind).toBe('swap')
   })
 
   it('returns no_config when no venues are enabled (bad-debt-only posture)', async () => {
     const { selector } = fakeSelector([])
     const { quoteFor } = compose(selector, { venues: [] })
-    expect(await quoteFor(PLAN, OUT)).toEqual({ kind: 'no_config' })
+    expect(await quoteFor(PLAN, OUT, LABEL)).toEqual({ kind: 'no_config' })
+  })
+
+  it('threads the position label into quote log events as the correlation id', async () => {
+    const events: { event: string; fields?: Record<string, unknown> }[] = []
+    const capturing: Logger = {
+      debug: () => {},
+      info: (event, fields) => events.push({ event, fields }),
+      warn: () => {},
+      error: () => {}
+    }
+    const { selector } = fakeSelector([{ venue: '0x', expectedOut: 1000n }])
+    const { quoteFor } = compose(selector, { logger: capturing })
+    await quoteFor(PLAN, OUT, LABEL)
+    const selectOk = events.find(e => e.event === 'select.ok')
+    expect(selectOk?.fields?.id).toBe(LABEL)
   })
 })

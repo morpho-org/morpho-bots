@@ -52,7 +52,7 @@ export async function runTick(deps: {
    * local; aggregators make a single API call). `no_config` → skip with `config.no_swap_path` (no
    * backoff); `failed` → skip and back the position off.
    */
-  quoteFor: (plan: LiquidationPlan, out: LensOut) => Promise<QuoteOutcome>
+  quoteFor: (plan: LiquidationPlan, out: LensOut, label: string) => Promise<QuoteOutcome>
   simulate: (args: {
     market: Market
     borrower: Address
@@ -168,7 +168,7 @@ export async function runTick(deps: {
         counters.backoffSkipped += 1
         continue
       }
-      const outcome = await quoteFor(liquidationPlan, out)
+      const outcome = await quoteFor(liquidationPlan, out, label)
       if (outcome.kind === 'no_config') {
         counters.noSwapPath += 1
         cooldown.mark(label)

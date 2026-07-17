@@ -97,8 +97,11 @@ pools/fees and set the API keys for any aggregator venue you use).
 ## Running Locally
 
 ```sh
-export CHAIN_ID=8453 RPC_URL=https://… LIQUIDATOR_PRIVATE_KEY=0x… \
-  DATABASE_URL=postgres://… SWAP_CONFIG_PATH=./configs/example.json
+export CHAIN_ID=8453
+export RPC_URL=https://…
+export LIQUIDATOR_PRIVATE_KEY=0x…
+export DATABASE_URL=postgres://…
+export SWAP_CONFIG_PATH=./configs/example.json
 bun run --filter @morpho-org/blue-liquidation start
 ```
 
@@ -110,7 +113,9 @@ Docker Compose below.
 
 ```sh
 cd bots/blue-liquidation
-RPC_URL_8453=https://… LIQUIDATOR_PRIVATE_KEY=0x… docker compose up --build
+export RPC_URL_8453=https://…
+export LIQUIDATOR_PRIVATE_KEY=0x…
+docker compose up --build
 ```
 
 Brings up Postgres, one shared rindexer (indexing `Borrow` on Base and Robinhood), and one bot per
@@ -120,9 +125,16 @@ rindexer image bakes in the generated `Morpho.json` ABI, so it is not committed.
 
 ## Deploying to Railway
 
+Authenticate the CLI first — set `RAILWAY_TOKEN` (a project token scoped to the target project /
+environment, recommended for CI) or run `railway login`. Then provide the secrets via the environment
+and run the script:
+
 ```sh
-RAILWAY_PROJECT_ID=… RPC_URL_8453=https://… RPC_URL_4663=https://… LIQUIDATOR_PRIVATE_KEY=0x… \
-  bun run --filter @morpho-org/blue-liquidation deploy:railway
+export RAILWAY_PROJECT_ID=…
+export RPC_URL_8453=https://…
+export RPC_URL_4663=https://…
+export LIQUIDATOR_PRIVATE_KEY=0x…
+bun run --filter @morpho-org/blue-liquidation deploy:railway
 # Optional: RINDEXER_RPC_URL_<chainId> (defaults to RPC_URL_<chainId>),
 # ZEROX_API_KEY[_<chainId>] / ONEINCH_API_KEY[_<chainId>],
 # RAILWAY_ENVIRONMENT (defaults to production).

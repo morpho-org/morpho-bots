@@ -46,25 +46,25 @@ Never commit `.env` files, private keys, or RPC credentials.
 
 Environment variables:
 
-| Name                                                      | Required | Default             | Description                                                                                                                                                                                                        |
+| Var                                                       | Required | Default             | Purpose                                                                                                                                                                                                            |
 | --------------------------------------------------------- | -------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `CHAIN_ID`                                                | yes      | -                   | Must be `8453` for Base.                                                                                                                                                                                           |
-| `RPC_URL`                                                 | yes      | -                   | Base RPC used for reads, simulation, and sends. Must be a full RPC that relays `eth_sendRawTransaction` — a read-only relay that acks sends without forwarding them to the sequencer would leave every tx unmined. |
-| `RPC_URL_FALLBACK`                                        | no       | -                   | Optional fallback RPC for the signer's transport.                                                                                                                                                                  |
-| `LIQUIDATOR_PRIVATE_KEY`                                  | yes      | -                   | `0x`-prefixed 32-byte private key for the sender EOA.                                                                                                                                                              |
+| `CHAIN_ID`                                                | yes      | —                   | Must be `8453` for Base.                                                                                                                                                                                           |
+| `RPC_URL`                                                 | yes      | —                   | Base RPC used for reads, simulation, and sends. Must be a full RPC that relays `eth_sendRawTransaction` — a read-only relay that acks sends without forwarding them to the sequencer would leave every tx unmined. |
+| `RPC_URL_FALLBACK`                                        | no       | —                   | Optional fallback RPC for the signer's transport.                                                                                                                                                                  |
+| `LIQUIDATOR_PRIVATE_KEY`                                  | yes      | —                   | `0x`-prefixed 32-byte private key for the sender EOA.                                                                                                                                                              |
 | `EXECUTOOOR_ADDRESS`                                      | no       | derived             | Override for the shared Executor address.                                                                                                                                                                          |
 | `LIQUIDATION_CANDIDATES_API_URL`                          | no       | public              | Liquidation-candidates endpoint polled for borrower discovery. Defaults to the public Morpho markets API; validated as a URL at startup (fail-loud).                                                               |
 | `HEALTH_FACTOR_LTE`                                       | no       | `1.02`              | Health-factor cutoff sent to discovery (`health_factor_lte`); matured positions are always included regardless. Floored at `1.0`. Over-inclusive by design — the on-chain lens is the source of truth.             |
 | `MARKETS_API_URL`                                         | no       | public              | Midnight markets endpoint used as the market whitelist (`listed=true`). Defaults to the public Morpho markets API; validated as a URL at startup.                                                                  |
 | `MARKETS_REFRESH_MS`                                      | no       | `60000`             | How often the whitelist is refreshed. The endpoint is Morpho's own (not rate-limited); last-known-good is served on a transient failure.                                                                           |
-| `ZEROX_API_KEY`                                           | cond.    | -                   | Enables the `0x` venue when set. Read at point of use; never stored on config or logged.                                                                                                                           |
-| `ONEINCH_API_KEY`                                         | cond.    | -                   | Enables the `1inch` venue when set. Read at point of use; never stored on config or logged.                                                                                                                        |
+| `ZEROX_API_KEY`                                           | cond.    | —                   | Enables the `0x` venue when set. Read at point of use; never stored on config or logged.                                                                                                                           |
+| `ONEINCH_API_KEY`                                         | cond.    | —                   | Enables the `1inch` venue when set. Read at point of use; never stored on config or logged.                                                                                                                        |
 | `ENABLE_LIFI`                                             | no       | `false`             | Enables the keyless `lifi` venue. Also implicitly enabled when `LIFI_API_KEY` is set.                                                                                                                              |
-| `LIFI_API_KEY`                                            | no       | -                   | Optional; LiFi routes keyless, a key only raises its rate limits (and enables the venue). Read at point of use; never logged.                                                                                      |
+| `LIFI_API_KEY`                                            | no       | —                   | Optional; LiFi routes keyless, a key only raises its rate limits (and enables the venue). Read at point of use; never logged.                                                                                      |
 | `ALLOW_BAD_DEBT_ONLY`                                     | no       | `false`             | When no venue is enabled, the bot refuses to start unless this is `true` (then it runs bad-debt-only: discovers positions, realizes bad debt, never swap-liquidates).                                              |
 | `SLIPPAGE_BPS`                                            | no       | `100`               | Global max oracle-to-DEX output discount passed to every venue (bakes the on-chain min-out into calldata). Replaces the old per-collateral `slippageBps`.                                                          |
 | `ZEROX_BASE_URL` / `ONEINCH_BASE_URL` / `LIFI_BASE_URL`   | no       | public              | Optional venue API host overrides.                                                                                                                                                                                 |
-| `EXCLUDE_COLLATERALS`                                     | no       | -                   | Comma-separated collateral addresses the bot must never seize/hold — skipped (no quote) even in a listed market.                                                                                                   |
+| `EXCLUDE_COLLATERALS`                                     | no       | —                   | Comma-separated collateral addresses the bot must never seize/hold — skipped (no quote) even in a listed market.                                                                                                   |
 | `MAX_FEE_GWEI`                                            | no       | `300`               | Hard max fee cap used by the pending transaction queue.                                                                                                                                                            |
 | `LOG_LEVEL`                                               | no       | `info`              | One of `debug`, `info`, `warn`, `error`.                                                                                                                                                                           |
 | `CACHE_DIR`                                               | no       | `.cache`            | Soltag/deployless cache directory.                                                                                                                                                                                 |
@@ -79,7 +79,7 @@ Environment variables:
 | `PENDLE_SLIPPAGE_BPS`                                     | no       | `50`                | Slippage for the Pendle PT → underlying unwrap hop (before the downstream venue sells).                                                                                                                            |
 | `BACKOFF_BASE_BLOCKS` / `BACKOFF_MAX_BLOCKS`              | no       | `2` / `64`          | Exponential per-position cooldown (in blocks) after a failed quote/simulate, bounding API + RPC usage under a backlog.                                                                                             |
 | `POSITION_LIQUIDATION_COOLDOWN_MS`                        | no       | `0`                 | Opt-in per-position cooldown (ms) after a failed liquidation attempt; `0` disables it (re-attempt every tick).                                                                                                     |
-| `BETTERSTACK_SOURCE_TOKEN` / `BETTERSTACK_INGESTING_HOST` | no       | -                   | Opt-in log shipping; when both are set the bot's in-process loglayer transport ships structured logs to BetterStack (inert otherwise).                                                                             |
+| `BETTERSTACK_SOURCE_TOKEN` / `BETTERSTACK_INGESTING_HOST` | no       | —                   | Opt-in log shipping; when both are set the bot's in-process loglayer transport ships structured logs to BetterStack (inert otherwise).                                                                             |
 
 The bot **refuses to start** if no venue is enabled, unless `ALLOW_BAD_DEBT_ONLY=true` — a rotated or
 forgotten key (or a missing `ENABLE_LIFI`) must not silently disable liquidations.
@@ -148,6 +148,20 @@ bun run --filter @morpho-org/midnight-liquidation typecheck
 bun test bots/midnight-liquidation/test
 ```
 
+## Testing
+
+- `bun test bots/midnight-liquidation/test` — unit tests for the sizing planner, the deployless lens,
+  discovery (the candidate + markets APIs and their shared retry loop), quoting / venue selection, the
+  pending queue, eligibility, and the exec encoder.
+- **Fork suite** (`test/fork/`) — end-to-end against a real Base fork. Unlike a fixture-gated suite it
+  **seeds its own liquidatable position** ([test/fork/seed.ts](./test/fork/seed.ts)): Midnight has no
+  `borrow()`, so it clones a curator-trusted market, funds both EOAs via cheatcodes, signs an offer,
+  and drives the `supplyCollateral` + `take` order-book path, then warps past maturity to make the
+  position liquidatable. `liquidation.test.ts` then drives lens → plan → swap → exec, asserts the tx
+  lands, and asserts the Executor ends holding zero of both tokens; `queue.test.ts` bumps a stuck tx
+  and asserts the replacement lands at the same nonce. Both **require `RPC_URL_8453`** (an archive
+  endpoint that serves the fork block) and fail loud — not skip — when it is unset.
+
 ## Seeding Liquidatable Positions
 
 The package includes an operator-only helper for creating real, edge-of-liquidation Midnight
@@ -188,7 +202,7 @@ Before sending any transaction, the script checks:
 
 Useful options:
 
-| Option               | Default     | Description                                                               |
+| Option               | Default     | Purpose                                                                   |
 | -------------------- | ----------- | ------------------------------------------------------------------------- |
 | `--config`           | required    | Swap config JSON path. Must include the route the prod bot will use.      |
 | `--pair`             | `WETH/USDC` | Token pair to seed. Supported symbols are defined in the script.          |

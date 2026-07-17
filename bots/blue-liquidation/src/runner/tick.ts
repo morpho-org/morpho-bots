@@ -57,7 +57,7 @@ export async function runTick(deps: {
    * local; aggregators make a single API call). `no_config` → skip with `config.no_swap_path` (no
    * backoff); `failed` → skip and back the position off.
    */
-  quoteFor: (plan: LiquidationPlan, out: LensOut) => Promise<QuoteOutcome>
+  quoteFor: (plan: LiquidationPlan, out: LensOut, label: string) => Promise<QuoteOutcome>
   simulate: (args: {
     market: MarketParams
     borrower: Address
@@ -162,12 +162,6 @@ export async function runTick(deps: {
       seizedAssets: liquidationPlan.seizedAssets
     })
 
-    // Suppress positions that keep failing to quote/simulate — bounds API + RPC usage under a
-    // backlog, since executable quotes are spent only on positions not currently backed off.
-    if (backoff.shouldSkip(label, chainHead)) {
-      counters.backoffSkipped += 1
-      continue
-    }
     // Opt-in cooldown (complementary to backoff): a position whose last attempt produced no
     // submittable tx is skipped without re-quoting until its wall-clock window elapses. No-op when
     // disabled (POSITION_LIQUIDATION_COOLDOWN_MS=0).
@@ -176,7 +170,13 @@ export async function runTick(deps: {
       logger.info('cooldown.skip', { marketId: id, borrower: pair.borrower })
       continue
     }
-    const outcome = await quoteFor(liquidationPlan, out)
+    // Suppress positions that keep failing to quote/simulate — bounds API + RPC usage under a
+    // backlog, since executable quotes are spent only on positions not currently backed off.
+    if (backoff.shouldSkip(label, chainHead)) {
+      counters.backoffSkipped += 1
+      continue
+    }
+    const outcome = await quoteFor(liquidationPlan, out, label)
     if (outcome.kind === 'no_config') {
       counters.noSwapPath += 1
       cooldown.mark(label)
