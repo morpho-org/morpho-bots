@@ -12,10 +12,10 @@ You are helping the user triage a backlog item. This is a lightweight flow to cr
 
 Use this table to determine the correct team and project based on scope:
 
-| Scope                                                          | Project               | Project ID                             | Team    | Team ID                                |
-| -------------------------------------------------------------- | --------------------- | -------------------------------------- | ------- | -------------------------------------- |
-| `apps/*`, `packages/*`, `deploy/*`, `@repo/*`, repo-wide infra | Curator Backlog       | `d2b6d657-c059-4d9b-8f55-aa98390ab81f` | Curator | `c07ff95f-03b7-4bee-aa17-c7e04fda8845` |
-| Cross-repo infra shared with `morpho-apps`                     | Apps Monorepo Backlog | `1127eedb-8ef7-49e8-b8c7-9f9e2e47f9c8` | Apps    | `cc8fe27e-f516-45e8-921e-69b0562c7792` |
+| Scope                                              | Project               | Project ID                             | Team    | Team ID                                |
+| -------------------------------------------------- | --------------------- | -------------------------------------- | ------- | -------------------------------------- |
+| `bots/*`, `packages/*`, `@repo/*`, repo-wide infra | Curator Backlog       | `d2b6d657-c059-4d9b-8f55-aa98390ab81f` | Curator | `c07ff95f-03b7-4bee-aa17-c7e04fda8845` |
+| Cross-repo infra shared with `morpho-apps`         | Apps Monorepo Backlog | `1127eedb-8ef7-49e8-b8c7-9f9e2e47f9c8` | Apps    | `cc8fe27e-f516-45e8-921e-69b0562c7792` |
 
 ---
 
@@ -55,7 +55,7 @@ Check `$ARGUMENTS`:
 
 From the description, determine the target using the routing table above:
 
-- Mentions `apps/*`, `packages/*`, `deploy/*`, `@repo/*`, repo-wide infra → **Curator Backlog** (CRTR)
+- Mentions `bots/*`, `packages/*`, `@repo/*`, repo-wide infra → **Curator Backlog** (CRTR)
 - Mentions cross-repo infra shared with `morpho-apps` → **Apps Monorepo Backlog** (APPS)
 - If ambiguous, ask the user to pick from the two options above
 
@@ -144,7 +144,7 @@ The kill-switch bot aborts the trigger loop on any transient RPC failure from th
 deallocate call. Curator operators then have to re-run manually.
 
 ## References
-- packages/kill-switch/src/actions/deallocate.ts
+- bots/kill-switch/src/actions/deallocate.ts
 
 ## Possible solution
 > ⚠️ AI-generated — treat as a starting point, not a prescription.

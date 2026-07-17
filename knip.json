@@ -8,19 +8,11 @@
     "packages/typescript-config": {},
     "packages/utils": {},
     "packages/contracts": {},
-    "packages/evm-kit": {},
-    "packages/home": {},
-    "packages/ipc": {},
-    "packages/pipeline": {},
-    "packages/signer-client": {},
+    "packages/bot-kit": {},
     "packages/swaps": {},
-    "packages/midnight-liquidation": {
+    "bots/midnight-liquidation": {
       "ignore": ["src/generated/**"]
     },
-    "packages/blue-liquidation": {},
-    "apps/cli": {},
-    "apps/queued": {},
-    "apps/signer": {},
-    "deploy": {}
+    "bots/blue-liquidation": {}
   }
 }

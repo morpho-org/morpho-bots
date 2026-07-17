@@ -1,0 +1,30 @@
+{
+  "name": "@morpho-org/midnight-liquidation",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "deploy:railway": "bun run scripts/deploy-railway.ts",
+    "seed:positions": "bun run scripts/seed-liquidatable-positions.ts",
+    "prestart": "bun run --parallel --workspaces --if-present build",
+    "start": "bun src/index.ts",
+    "typecheck": "soltag && tsc --noEmit"
+  },
+  "dependencies": {
+    "@repo/bot-kit": "workspace:*",
+    "@repo/contracts": "workspace:*",
+    "@repo/swaps": "workspace:*",
+    "@repo/utils": "workspace:*",
+    "executooor-viem": "catalog:",
+    "openapi-fetch": "catalog:",
+    "solc": "catalog:",
+    "soltag": "catalog:",
+    "viem": "catalog:"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@types/bun": "catalog:",
+    "typescript": "catalog:"
+  }
+}

@@ -632,6 +632,17 @@ between runs as a chain-truth-reconciled hint, and the transaction queue/nonce s
 the per-chain `morpho-queued` daemon. Discovery (rindexer/Postgres) is unchanged; the indexer now
 lives at `deploy/blue-rindexer`.
 
+### 2026-07-16 — pipeline reverted; persistent runner restored
+
+The pipeline architecture above was reverted (see
+[TIB-2026-07-16-revert-to-bots-as-programs](./TIB-2026-07-16-revert-to-bots-as-programs.md)). This
+bot is again a standalone long-running program with an in-process block-watcher + runner loop and an
+in-process pending-tx queue (via `@repo/bot-kit` rather than a `morpho-queued` daemon). The queue is
+in-memory only — chain truth wins on restart: a redeploy re-derives the nonce cursor from
+`getTransactionCount('pending')`, and settlement audit ships via the structured `tx.*` log events.
+The rindexer + its `rindexer.yaml` live back under `bots/blue-liquidation/` (no
+`deploy/blue-rindexer`). The market-params chain-truth reconciliation is preserved.
+
 <!--
 TIB conventions:
 - Once accepted, do not substantively edit this TIB. If the decision needs to change,

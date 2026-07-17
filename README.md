@@ -5,23 +5,9 @@ and the shared packages they consume.
 
 This is a [bun workspaces](https://bun.com/docs/install/workspaces) monorepo:
 
-- `apps/` — independently runnable programs: the UNIX-pipeable `morpho-bots` CLI (sources emit
-  transparent position JSON; transforms consume those semantic fields and emit transaction JSON),
-  the per-chain `morpho-queued` daemon — which alone owns transaction state, dedupe, re-simulation,
-  fees, nonces, broadcast, and replacement — and the policy-enforcing `morpho-signer` agent
-- `packages/` — libraries: the bot cores (`@repo/blue-liquidation`, `@repo/midnight-liquidation`)
-  and focused shared layers
-- `deploy/` — deployment packaging (`@repo/deploy`): the Docker image + pipeline entrypoint loop,
-  docker-compose files, Railway deploy scripts, and the Blue indexer image (`deploy/blue-rindexer`)
-
-Pipeline records are deliberately inspectable and adaptable with tools such as `jq`. Position IDs
-are correlation/deduplication labels only; consumers use explicit `marketId`, `borrower`, and domain
-fields rather than decoding IDs. `morpho-queued submit` streams transaction JSON directly over a
-Unix socket to the queue daemon.
-
-Transforms read JSONL incrementally in bounded batches. A malformed or oversized line is reported
-on stderr; valid records are still processed, and the command exits 2 so `pipefail` loops stop.
-Filters must preserve one object per line (for example, use `jq -c`).
+- `bots/` — individual bot apps (one per bot); each keeps its own `docs/`
+- `packages/` — shared libraries (`@repo/bot-kit`, `@repo/swaps`, `@repo/contracts`,
+  `@repo/utils`, `@repo/typescript-config`)
 
 ## Getting started
 
@@ -29,27 +15,6 @@ Filters must preserve one object per line (for example, use `jq -c`).
 nvm use         # Node 24.14.1 (see .nvmrc)
 bun install
 ```
-
-## Running a bot
-
-A single tick is a source op piped into a transform op piped into the queue daemon — for example,
-Morpho Blue on Base:
-
-```sh
-morpho-bots blue unhealthy-positions \
-  | morpho-bots blue liquidate \
-  | morpho-queued submit --chain 8453
-```
-
-That pipeline runs once. A live bot loops it on an interval alongside a long-lived
-`morpho-queued serve` daemon — which alone owns dedupe, re-simulation, fees, nonces, broadcast, and
-replacement — plus a `morpho-signer` process when armed. Running the queue with `--dry-run` exercises
-the whole path and emits `would_submit` records without any signer or key.
-
-- [`apps/cli/README.md`](./apps/cli/README.md) — the `morpho-bots` command reference and a
-  copy-pasteable walkthrough for running a looping bot by hand
-- [`deploy/README.md`](./deploy/README.md) — the packaged, always-on loop (Docker image, compose
-  files, Railway deploy scripts)
 
 ## Daily commands
 
@@ -63,8 +28,6 @@ bun test            # bun's built-in test runner
 
 ## Pointers
 
-- [`apps/cli/README.md`](./apps/cli/README.md) — the `morpho-bots` operator handbook (commands,
-  config/state, the pipeline, running a looping bot)
 - `docs/INDEX.md` — documentation discovery index (guides, bots, packages, TIBs)
 - `CLAUDE.md` — agent and contributor conventions (Strict Rules, agent team,
   self-verification ritual)
@@ -78,9 +41,9 @@ The monorepo scaffold and tooling rationale are documented in
 
 Bot docs:
 
-- `packages/midnight-liquidation/README.md` — how the Midnight liquidation bot works and how to run it
+- `bots/midnight-liquidation/README.md` — how to run the Midnight liquidation bot and how it works
   end to end
-- `packages/blue-liquidation/README.md` — how the Morpho Blue liquidation bot works and how to run it
+- `bots/blue-liquidation/README.md` — how to run the Morpho Blue liquidation bot and how it works
   end to end
 
 ## License

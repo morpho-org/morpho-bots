@@ -5,6 +5,6 @@ minimumReleaseAge = 259200
 # self-scopes to its own bot's files, so both can be preloaded — other workspaces are untouched).
 [test]
 preload = [
-  "./packages/midnight-liquidation/soltag.preload.ts",
-  "./packages/blue-liquidation/soltag.preload.ts"
+  "./bots/midnight-liquidation/soltag.preload.ts",
+  "./bots/blue-liquidation/soltag.preload.ts"
 ]

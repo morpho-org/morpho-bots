@@ -1,14 +1,22 @@
 # TIB-2026-07-13: Off-chain bot architecture — one-shot op pipeline, per-chain daemons, monorepo shape
 
-| Field          | Value                                                                                                                                                                                                                                                                 |
-| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Status**     | Accepted                                                                                                                                                                                                                                                              |
-| **Date**       | 2026-07-13                                                                                                                                                                                                                                                            |
-| **Author**     | @hayden                                                                                                                                                                                                                                                               |
-| **Scope**      | Repo-wide                                                                                                                                                                                                                                                             |
-| **Supersedes** | TIB-2026-07-09-cli-restructure, TIB-2026-07-09-extract-bot-kit-and-swaps, TIB-2026-07-09-pipeline-cli, TIB-2026-07-10-op-commands, TIB-2026-07-10-signer-agent, TIB-2026-07-11-queued-daemon, TIB-2026-07-12-repo-restructure, TIB-2026-07-13-log-correlation-context |
+| Field             | Value                                                                                                                                                                                                                                                                 |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Status**        | Superseded                                                                                                                                                                                                                                                            |
+| **Date**          | 2026-07-13                                                                                                                                                                                                                                                            |
+| **Author**        | @hayden                                                                                                                                                                                                                                                               |
+| **Scope**         | Repo-wide                                                                                                                                                                                                                                                             |
+| **Supersedes**    | TIB-2026-07-09-cli-restructure, TIB-2026-07-09-extract-bot-kit-and-swaps, TIB-2026-07-09-pipeline-cli, TIB-2026-07-10-op-commands, TIB-2026-07-10-signer-agent, TIB-2026-07-11-queued-daemon, TIB-2026-07-12-repo-restructure, TIB-2026-07-13-log-correlation-context |
+| **Superseded by** | TIB-2026-07-16-revert-to-bots-as-programs                                                                                                                                                                                                                             |
 
 ---
+
+> **Superseded (2026-07-16).** The architecture below was built in stacked PRs, ran for ~a week, and
+> was reverted before production ever migrated off the pre-restructure image. The repo is back to
+> standalone long-running bots on `@repo/bot-kit`. This TIB is retained as the historical record of
+> what was tried and why; see
+> [TIB-2026-07-16-revert-to-bots-as-programs](./TIB-2026-07-16-revert-to-bots-as-programs.md) for the
+> reversal, what was kept, what was dropped, and what was re-embedded in adapted form.
 
 ## Context
 

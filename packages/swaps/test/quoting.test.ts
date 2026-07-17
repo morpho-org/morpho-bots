@@ -250,9 +250,10 @@ function zeroxBody(buyAmount: string) {
   }
 }
 
-// A 1inch-shaped firm-swap body with the given dstAmount.
+// A 1inch-shaped firm-swap body with the given dstAmount. `tx.to` must be the static per-chain
+// AggregationRouterV6 — the adapter pins it — so use the real Base router, not the generic ROUTER.
 function oneInchBody(dstAmount: string) {
-  return { dstAmount, tx: { to: ROUTER, data: '0xdef', value: '0' } }
+  return { dstAmount, tx: { to: ONEINCH_ROUTER[8453]!, data: '0xdef', value: '0' } }
 }
 
 const LIFI_SPENDER = getAddress('0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB')

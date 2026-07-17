@@ -1,4 +1,4 @@
-import { getAddress, isHex } from 'viem'
+import { getAddress, isAddressEqual, isHex } from 'viem'
 
 import type { RateLimitedClient } from '../http-client'
 import type { PriceParameters, PriceQuote, QuoteParameters, Swap } from '../types'
@@ -53,10 +53,26 @@ export async function quoteOneInch(
     throw new QuoteError('api_error', '1inch: tx.data is not hex')
   }
 
+  // Pin the swap target to the statically-known AggregationRouterV6 for this chain. `tx.to` is
+  // otherwise trusted verbatim, so a compromised/misdirected API response could point the swap — and
+  // the token approval — at an arbitrary contract. `spender` is ALREADY the static `router` (never
+  // read from the response), and 1inch's contract semantics make `tx.to === spender`; asserting
+  // `tx.to === router` keeps the call target and the approval in lockstep on the same known contract.
+  // A mismatch is treated as any other invalid 1inch response: throw `QuoteError`, which the quoting
+  // layer catches and logs as `quote.failed` with both addresses in `detail` (fail the quote loudly,
+  // never past the venue seam).
+  const target = getAddress(json.tx.to)
+  if (!isAddressEqual(target, router)) {
+    throw new QuoteError(
+      'api_error',
+      `1inch: tx.to ${target} does not match the configured router ${router}`
+    )
+  }
+
   const expectedAmountOut = BigInt(json.dstAmount ?? '0')
   return {
     spender: router,
-    target: getAddress(json.tx.to),
+    target,
     value: BigInt(json.tx.value ?? '0'),
     callData: json.tx.data,
     amountIn: { source: 'fixed', value: params.amountIn },

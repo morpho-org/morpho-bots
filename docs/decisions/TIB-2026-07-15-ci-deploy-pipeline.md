@@ -176,3 +176,23 @@ Mitigations:
   `deploy-production.yml`; `deploy/scripts/deploy-railway.ts`, `manifest.ts`, `railway.ts`.
 - Release-notes convention: `.claude/commands/ci-write-release-notes.md`,
   `ci-comment-on-pr-release-labels.md`.
+
+## Addenda
+
+### 2026-07-16 — re-pointed at per-bot deploy scripts after the pipeline revert
+
+The op-pipeline architecture was reverted (see
+[TIB-2026-07-16-revert-to-bots-as-programs](./TIB-2026-07-16-revert-to-bots-as-programs.md)). The
+deploy pipeline's shape is unchanged — same triggers, `<bot>-<stage>` GitHub Environments,
+`release-{bot}` labels, CalVer tagging, and concurrency — but the machinery it drives moved:
+
+- `@repo/deploy` (`deploy/scripts/deploy-railway.ts`, `manifest.ts`, `railway.ts`) is gone. The
+  reusable `deploy-bot.yml` now maps each bot id to its workspace package and runs that bot's own
+  `bots/<bot>/scripts/deploy-railway.ts` (`blue-liq` → `@morpho-org/blue-liquidation`, `midnight-liq`
+  → `@morpho-org/midnight-liquidation`). No workflow references `deploy/` or `@repo/deploy`.
+- Those per-bot scripts are full-provisioning and require RPC/keys, which CI does not hold — so CI
+  runs them in a thin `DEPLOY_ONLY=true` mode that re-ships already-provisioned services and sets no
+  secrets or variables.
+- The signing key stored as a GitHub/Railway secret is each bot's `LIQUIDATOR_PRIVATE_KEY`, not
+  `SIGNER_PRIVATE_KEY` — there is no separate signer daemon; the `apps/` + `packages/` + `deploy/`
+  monorepo shape referenced above is now `bots/` + `packages/`.

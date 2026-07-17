@@ -1,0 +1,29 @@
+{
+  "name": "@repo/bot-kit",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@loglayer/transport-betterstack": "catalog:",
+    "@morpho-org/viem-dlc": "catalog:",
+    "@repo/utils": "workspace:*",
+    "loglayer": "catalog:",
+    "viem": "catalog:"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@types/bun": "catalog:",
+    "typescript": "catalog:"
+  }
+}

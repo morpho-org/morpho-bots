@@ -50,52 +50,15 @@
 - **Logging**: Log errors appropriately for debugging and monitoring. Prefer structured logs with
   enough context (bot name, operation, relevant inputs) that an operator can answer "what did the
   bot do and why?" a day later.
-- **stdout is the data plane; ALL stage logs go to stderr**: pipeline-op stdout carries
-  newline-delimited, stage-specific JSON (`morpho-bots init` is the explicit human-facing exception).
-  Sources emit `position` records with explicit semantic identity; transforms
-  emit `transaction` records only. Non-actions, validation failures, quote failures, and simulation
-  failures are structured stderr logs. Never `console.log` from a bot package or CLI command.
-- **Records are transparent and additive**: a position includes `kind`, `chainId`, `id`, `marketId`,
-  and `borrower`; Blue also includes its complete immutable market parameters. Consumers validate
-  required semantic fields, ignore unknown fields, and re-read mutable state before acting. `id` is
-  only a correlation/deduplication label and must never be parsed to recover domain data. This keeps
-  seams inspectable and repairable with `jq` without coupling adjacent releases.
-- **`morpho-queued submit` is a thin stream relay**: it holds no key or state and sends transaction
-  JSON directly over the queue daemon's Unix socket. There are no RPC method names, protocol-version
-  negotiation, or ping. `serve` alone owns dedupe, simulation, fees, nonces, broadcast, replacement,
-  and settlement state; synchronous replies are minimal acknowledgements and terminal results live
-  in its append-only per-chain journal.
 - **Promises**: Use `tryCatch` from `@repo/utils` to handle promise throws.
 
-### Configuration
+### Environment Variables
 
-- **Env-shaped tables, not `Bun.env`**: Bot packages receive ALL configuration — venue API keys
-  included — through the env table passed to each op's `run(env, …)` entry point (e.g.
-  `runUnhealthyPositions`, `runLiquidate`) and its op config loader. Never read
-  `Bun.env` directly inside a bot package: the CLI merges `~/.morpho-bots/config.json` +
-  `secrets.json` + the process env into that table (precedence: config < secrets < process env),
-  and a direct `Bun.env` read silently bypasses file-sourced settings. There is still no wrapper
-  helper and no runtime schema layer — if a required key is missing, fail loudly at startup
-  (throw and exit), don't silently degrade.
-  - Known documented exception: `@repo/utils`'s deployless-batch-lens reads
-    `process.env.MAX_DEPLOYLESS_BATCH_SIZE` (env-only override, unreachable from config files).
-- **Never committed**: Secrets live in `~/.morpho-bots/secrets.json` (chmod 600), local `.env`
-  files, or deploy-time environment — never in committed code. The repo's Strict Rules enforce
-  this. Keys are read from the env table at the point of use and are never stored on the (logged)
-  `Config` object.
-- **Single key reader**: The signer private key is read by exactly one process: the offline signing
-  agent (`morpho-signer`, reading `SIGNER_PRIVATE_KEY`). Armed `morpho-queued` operation requires
-  `SIGNER_SOCKET` and rejects local private-key material. No pipe stage or queue daemon may read a
-  key; they only exchange transaction records or fully prepared signing requests over Unix sockets.
-- **Services are env/argv-only**: `morpho-queued` and `morpho-signer` do not read operator config
-  overlays. The signer's policy file is the intentional non-overlay exception; it may instead be
-  supplied inline. Services use one RPC endpoint; do not introduce separate send or fallback RPC
-  variables. Dry-run queue operation neither starts nor requires the signer.
-- **Signer policy is concrete**: one signer process serves one chain and one Executor. Zero-value
-  transactions and the Executor entry selector are hard-coded invariants, not generic policy
-  modules. The queue verifies the recovered sender and every prepared field before broadcasting.
-  The signer does not inspect calls nested inside the Executor batch; same-container deployment is
-  a process/policy boundary, not hostile-process isolation.
+- **Direct `Bun.env` access**: Bots read `Bun.env.VARIABLE_NAME` directly at the point of use.
+  There is no helper wrapper and no runtime schema layer — if a required variable is missing,
+  fail loudly at startup (throw and exit), don't silently degrade.
+- **Never committed**: Secrets and runtime config live in local `.env` files or deploy-time
+  environment — never in committed code. The repo's Strict Rules enforce this.
 
 ### Code Complexity
 
@@ -108,9 +71,8 @@
 
 - **Premature Optimization**: Don't optimize until you measure and identify bottlenecks
 - **RPC efficiency**: Batch on-chain reads where possible. Use `readDeploylessBatchLens` for fetching entities that would be well-modeled by a Lens contract, and `multicall` otherwise (e.g., for one-off fetching of heterogenous data / data sourced from multiple, unrelated contracts). Prefer `readContract` with explicit block tags for deterministic snapshots over loose calls that pick up whatever the provider last saw.
-- **Bundle Size**: Be mindful of third-party dependencies and their impact — all bots ship in the
-  single `@repo/cli` image and the CLI spawns one process per tick, so a heavy dep costs every bot
-  on every invocation.
+- **Bundle Size**: Be mindful of third-party dependencies and their impact — each bot ships as its
+  own image, so a dep added in one bot doesn't have to cost the others.
 
 ## TypeScript Patterns
 

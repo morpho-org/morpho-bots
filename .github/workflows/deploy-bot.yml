@@ -2,9 +2,10 @@ name: Deploy bot
 
 # Reusable deploy-only job. Ships the checked-out working tree to a bot's Railway environment via
 # `railway up` (Railway builds server-side). Sets no variables or secrets — the environment must
-# already be provisioned by deploy/scripts/deploy-railway-{bot}.ts. The only credential is a
-# RAILWAY_TOKEN scoped to the target project + environment, read from the per-bot-per-stage
-# GitHub Environment (never passed by callers, never a fork-readable repo secret).
+# already be provisioned by a full run of that bot's bots/<bot-liquidation>/scripts/deploy-railway.ts.
+# It runs that same script in DEPLOY_ONLY mode, which re-ships services and touches nothing else. The
+# only credential is a RAILWAY_TOKEN scoped to the target project + environment, read from the
+# per-bot-per-stage GitHub Environment (never passed by callers, never a fork-readable repo secret).
 
 on:
   workflow_call:
@@ -51,9 +52,19 @@ jobs:
         run: npm install -g @railway/cli@5.26.1
 
       - name: Deploy
-        run: bun run --filter @repo/deploy deploy:railway
         env:
           BOT: ${{ inputs.bot }}
           RAILWAY_ENVIRONMENT: ${{ inputs.stage }}
           RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          # Re-ship the pre-provisioned services only; set no secrets/variables (CI holds none).
+          DEPLOY_ONLY: 'true'
+        run: |
+          set -euo pipefail
+          # Map the stable bot id (also the release-label suffix) to its workspace package.
+          case "$BOT" in
+            blue-liq) pkg='@morpho-org/blue-liquidation' ;;
+            midnight-liq) pkg='@morpho-org/midnight-liquidation' ;;
+            *) echo "Unknown bot: $BOT" >&2; exit 1 ;;
+          esac
+          bun run --filter "$pkg" deploy:railway

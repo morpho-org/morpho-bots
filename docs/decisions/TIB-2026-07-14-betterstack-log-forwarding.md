@@ -198,3 +198,57 @@ This decision _is_ an observability feature; its surface:
   Fluent Bit; Railway has no built-in log drain.
 - Implementation surface: `deploy/vector.yaml`, `deploy/docker-entrypoint.sh`, `deploy/Dockerfile`,
   `packages/evm-kit/src/logger.ts`.
+
+## Addenda
+
+### 2026-07-16 — re-pointed at the per-bot layout after the pipeline revert
+
+The op-pipeline architecture was reverted (see
+[TIB-2026-07-16-revert-to-bots-as-programs](./TIB-2026-07-16-revert-to-bots-as-programs.md)); the
+decision here (opt-in in-image Vector side-car, key-scrubbed, byte-identical when disabled) stands,
+but the implementation surface moved:
+
+- `deploy/{vector.yaml,docker-entrypoint.sh,Dockerfile}` are now **per-bot**:
+  `bots/<bot>/{vector.yaml,docker-entrypoint.sh,Dockerfile}`. The logger lives in
+  `packages/bot-kit/src/logger.ts` (there is no `@repo/evm-kit`).
+- The single-key-reader scrub is unchanged in spirit but keyed to the bot's own key env
+  (`LIQUIDATOR_PRIVATE_KEY`), not `SIGNER_PRIVATE_KEY` — there is no separate `morpho-signer` process
+  anymore; each bot holds its own key in-process.
+- BetterStack query guidance to migrate off `sense.*`/`act.*` and onto `source.*`/`transform.*` +
+  `id` is moot: those pipeline-era event names never reached production. Author queries against the
+  bots' actual in-process event names (e.g. `block.new`, `tick.end`, `tx.confirmed`).
+- `createLogger` originally split levels across streams (info/warn to stdout, error to stderr),
+  which forced the entrypoint to tee both streams into the spool. Now that stdout is no longer a
+  data plane, the logger emits **every level to stderr** and the side-car tees that single stream —
+  log capture cannot silently miss a level, and stdout stays reserved for program output.
+
+### 2026-07-16 — replaced the Vector side-car with an in-process loglayer transport
+
+The Vector side-car (this TIB's original design; "Considered Alternatives → Alternative 1:
+App-level HTTP transport" was rejected then) has itself been replaced by exactly that app-level
+transport, on the same `refactor/revert-bots-as-programs` branch. Alternative 1's rejection turned
+on the pipeline era's **many short-lived per-tick op processes**, where an in-process async shipper
+risked losing its last batch every tick; the pipeline is gone (see
+[TIB-2026-07-16-revert-to-bots-as-programs](./TIB-2026-07-16-revert-to-bots-as-programs.md)) and
+each bot is now one **long-running** process, so that objection no longer holds. The deciding factor
+is now **wide, typed structured logs**: `createLogger` is backed by `loglayer` composing a stderr
+JSON-line sink and `@loglayer/transport-betterstack`, so typed fields (and per-scope context like
+`bot`/`chainId`, stamped by the app rather than a VRL) flow end-to-end.
+
+- **Removed:** both bots' `vector.yaml` + `docker-entrypoint.sh`, the Dockerfile Vector binary bake
+  / `vector --version` link check / `vector validate` step, and the tee-to-spool + rotation
+  machinery. The bot stage runs `bun run start` directly again. Compose and `deploy-railway.ts`
+  still pass `BETTERSTACK_*` through — the **bot process** consumes them now.
+- **Opt-in contract preserved, now enforced in-process:** the transport attaches only when BOTH
+  `BETTERSTACK_SOURCE_TOKEN` and `BETTERSTACK_INGESTING_HOST` are set; both unset ⇒ no transport,
+  zero network, byte-identical stderr. The original contract's **fail-loud on partial config** (token
+  set, host missing — previously a `docker-entrypoint.sh` check that skipped Vector) is preserved in
+  `betterStackTransport`: exactly one var set emits a `logship.misconfigured` structured stderr line
+  naming the missing var and still ships nothing (returns null, never crashes the bot over
+  observability config). Enrichment the Vector VRL did (`bot`/`chainId`/`RAILWAY_*`) is now app-side
+  context.
+- **Accepted trade-off:** shipping is in-process best-effort (batched, retried, then dropped) and
+  crash traces / uncaught exceptions no longer reach BetterStack — they remain in Railway's native
+  explorer only. Crash detection is therefore covered by a **BetterStack absence/heartbeat alert**
+  (no logs from a bot for N minutes) rather than by shipping the trace itself. There is no clean
+  flush seam on process exit, so a few batched lines may be lost on shutdown.

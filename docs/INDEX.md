@@ -14,26 +14,22 @@ Quick navigation for the curator-bots documentation.
 
 ## Bots
 
-| Bot                                                       | Description                               | Docs                                                 |
-| --------------------------------------------------------- | ----------------------------------------- | ---------------------------------------------------- |
-| [midnight-liquidation](../packages/midnight-liquidation/) | Liquidates eligible Midnight positions    | [README](../packages/midnight-liquidation/README.md) |
-| [blue-liquidation](../packages/blue-liquidation/)         | Liquidates eligible Morpho Blue positions | [README](../packages/blue-liquidation/README.md)     |
+| Bot                                                   | Description                               | Docs                                             |
+| ----------------------------------------------------- | ----------------------------------------- | ------------------------------------------------ |
+| [midnight-liquidation](../bots/midnight-liquidation/) | Liquidates eligible Midnight positions    | [README](../bots/midnight-liquidation/README.md) |
+| [blue-liquidation](../bots/blue-liquidation/)         | Liquidates eligible Morpho Blue positions | [README](../bots/blue-liquidation/README.md)     |
 
 ---
 
 ## Packages
 
-| Package                                                   | Description                                            | Docs |
-| --------------------------------------------------------- | ------------------------------------------------------ | ---- |
-| [@repo/contracts](../packages/contracts/)                 | Shared contract ABIs and Executor sources              | —    |
-| [@repo/evm-kit](../packages/evm-kit/)                     | Deployless client, revert decoding, JSON-lines logger  | —    |
-| [@repo/home](../packages/home/)                           | `~/.morpho-bots` layout: config, state, locks, sockets | —    |
-| [@repo/ipc](../packages/ipc/)                             | Newline-framed Unix-socket JSON server                 | —    |
-| [@repo/pipeline](../packages/pipeline/)                   | Op seam, wire records, position IDs, simulation        | —    |
-| [@repo/signer-client](../packages/signer-client/)         | Signer client + shared wire protocol                   | —    |
-| [@repo/swaps](../packages/swaps/)                         | Multi-venue DEX quoting, routing, and venue selection  | —    |
-| [@repo/typescript-config](../packages/typescript-config/) | Shared TypeScript configuration                        | —    |
-| [@repo/utils](../packages/utils/)                         | Shared server-safe utilities                           | —    |
+| Package                                                   | Description                                                                  | Docs |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------- | ---- |
+| [@repo/bot-kit](../packages/bot-kit/)                     | Shared bot runtime: clients, logger, watcher/runner, tx queue, state, policy | —    |
+| [@repo/contracts](../packages/contracts/)                 | Shared contract ABIs and Executor sources                                    | —    |
+| [@repo/swaps](../packages/swaps/)                         | Multi-venue DEX quoting, routing, unwrap seam, and venue selection           | —    |
+| [@repo/typescript-config](../packages/typescript-config/) | Shared TypeScript configuration                                              | —    |
+| [@repo/utils](../packages/utils/)                         | Shared server-safe utilities                                                 | —    |
 
 ---
 
@@ -46,9 +42,10 @@ _None yet — copy [`templates/DATA-FLOW.md`](./templates/DATA-FLOW.md) into a b
 ## TIBs (Repo-wide)
 
 - [TIB-2026-04-16: Bootstrap Curator Bots](./decisions/TIB-2026-04-16-bootstrap-curator-bots.md) — initial scaffold, tooling stack, and migration plan from `morpho-apps`
-- [TIB-2026-07-13: Off-chain bot architecture](./decisions/TIB-2026-07-13-bot-architecture.md) — the one-shot op pipeline, `apps/`+`packages/`+`deploy/` monorepo shape, transparent JSON-Lines wire contract, per-chain queue and policy-signer daemons, config/state model, and log correlation
+- [TIB-2026-07-16: Revert to bots-as-programs](./decisions/TIB-2026-07-16-revert-to-bots-as-programs.md) — reverts the one-shot op pipeline back to standalone long-running bots on `@repo/bot-kit`; records what was kept, dropped, and re-embedded
+- [TIB-2026-07-13: Off-chain bot architecture](./decisions/TIB-2026-07-13-bot-architecture.md) — **Superseded** by TIB-2026-07-16. The one-shot op pipeline, `apps/`+`packages/`+`deploy/` monorepo shape, transparent JSON-Lines wire contract, per-chain queue and policy-signer daemons, config/state model, and log correlation — tried and reverted
 - [TIB-2026-07-14: Pared-down Slack CI notifications](./decisions/TIB-2026-07-14-slack-ci-notifications.md) — two `github-script` workflows posting basic PR notifications (store-free threading via a PR-body marker) and `release: published` notes to Slack, deliberately trimmed from `prime-monorepo`'s `@repo/ci-scripts` system — implemented
-- [TIB-2026-07-14: BetterStack log forwarding via a Vector side-car](./decisions/TIB-2026-07-14-betterstack-log-forwarding.md) — opt-in in-image Vector side-car tails the bots' combined stderr (tee-to-ephemeral-spool, off the critical path) and ships to a per-bot BetterStack HTTP source; key-scrubbed, byte-identical when disabled — repo wiring implemented
+- [TIB-2026-07-14: BetterStack log forwarding](./decisions/TIB-2026-07-14-betterstack-log-forwarding.md) — opt-in in-process log shipping: `@repo/bot-kit`'s loglayer logger ([packages/bot-kit/src/logger.ts](../packages/bot-kit/src/logger.ts)) ships structured logs to a per-bot BetterStack source when both `BETTERSTACK_SOURCE_TOKEN` and `BETTERSTACK_INGESTING_HOST` are set (partial config fails loud); inert otherwise — implemented. The addenda record dropping the earlier Vector side-car for this in-process transport
 - [TIB-2026-07-15: CI/CD deploy pipeline for Railway bots](./decisions/TIB-2026-07-15-ci-deploy-pipeline.md) — deploy-only GitHub Actions (`railway up`, secrets stay on Railway): `push:main` redeploys both bots to staging, `release-{bot}`-labelled merges ship to production + cut a CalVer tag; four scoped GitHub Environments, `push:main` chosen over `pull_request:closed` for the environment branch policy — implemented
 
 ## TIBs (Bot-scoped)
