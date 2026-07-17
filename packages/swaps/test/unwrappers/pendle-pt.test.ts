@@ -3,7 +3,6 @@ import { getAddress } from 'viem'
 
 import type { HttpVenue, RateLimitedClient } from '../../src/http-client'
 import type { QuoteLogger } from '../../src/quoting'
-import type { PendleMarketsState } from '../../src/unwrappers/pendle-pt'
 
 import { QuoteError } from '../../src/types'
 import { createPendlePtUnwrapper } from '../../src/unwrappers/pendle-pt'
@@ -76,7 +75,7 @@ function fakeHttp(bodies: { markets?: () => unknown; convert?: () => unknown }) 
 
 function unwrapperWith(
   bodies: { markets?: () => unknown; convert?: () => unknown },
-  overrides: { initialState?: PendleMarketsState; logger?: QuoteLogger } = {}
+  overrides: { logger?: QuoteLogger } = {}
 ) {
   const { client, calls } = fakeHttp(bodies)
   const unwrapper = createPendlePtUnwrapper({
@@ -85,8 +84,7 @@ function unwrapperWith(
     slippageBps: 50,
     baseUrl: 'https://pendle.test/core',
     logger: overrides.logger ?? NOOP_LOGGER,
-    now: () => T0,
-    ...(overrides.initialState ? { initialState: overrides.initialState } : {})
+    now: () => T0
   })
   return { unwrapper, calls }
 }
@@ -158,56 +156,44 @@ describe('createPendlePtUnwrapper', () => {
     expect(calls).toHaveLength(1)
   })
 
-  it('skips the markets fetch entirely when restored from a fresh initialState, and dumps it back', async () => {
-    const initialState: PendleMarketsState = {
-      fetchedAt: T0 - 1000, // fresh (staleMs default is 6h)
-      markets: [{ pt: PT, yt: YT, market: MARKET, expiry: FUTURE, underlying: UNDERLYING }]
-    }
-    const { unwrapper, calls } = unwrapperWith({ convert: () => convertBody }, { initialState })
-
-    const result = await unwrapper.resolve({ token: PT, amountIn: 5000n, executor: EXECUTOR })
-    expect(result?.step.tokenOut).toBe(UNDERLYING)
-    // Only the convert call — no /v1/markets/all request.
-    expect(calls).toHaveLength(1)
-    expect(calls[0]!.url).toContain('/swap')
-    expect(unwrapper.dump()).toEqual(initialState)
-  })
-
-  it('refetches when the restored state is older than staleMs', async () => {
-    const initialState: PendleMarketsState = { fetchedAt: T0 - 7 * 60 * 60 * 1000, markets: [] }
-    const { unwrapper, calls } = unwrapperWith(
-      { markets: () => marketsBody(FUTURE), convert: () => convertBody },
-      { initialState }
-    )
-    const result = await unwrapper.resolve({ token: PT, amountIn: 5000n, executor: EXECUTOR })
-    expect(result).not.toBeNull()
-    expect(calls[0]!.url).toContain('/v1/markets/all')
-    expect(unwrapper.dump()?.fetchedAt).toBe(T0)
-  })
-
   it('falls back to a STALE list on fetch failure (warn) without re-stamping it', async () => {
-    const initialState: PendleMarketsState = {
-      fetchedAt: T0 - 7 * 60 * 60 * 1000, // stale
-      markets: [{ pt: PT, yt: YT, market: MARKET, expiry: FUTURE, underlying: UNDERLYING }]
+    let clock = T0
+    let marketsCalls = 0
+    const client: RateLimitedClient = {
+      async getJson<T>(args: Call) {
+        if (args.url.includes('/v1/markets/all')) {
+          marketsCalls += 1
+          if (marketsCalls === 1) return marketsBody(FUTURE) as T
+          throw new QuoteError('api_error', 'pendle down')
+        }
+        return convertBody as T
+      }
     }
     const { logger, events } = spyLogger()
-    const { unwrapper, calls } = unwrapperWith(
-      {
-        markets: () => {
-          throw new QuoteError('api_error', 'pendle down')
-        },
-        convert: () => convertBody
-      },
-      { initialState, logger }
-    )
+    const unwrapper = createPendlePtUnwrapper({
+      client,
+      chainId: CHAIN_ID,
+      slippageBps: 50,
+      baseUrl: 'https://pendle.test/core',
+      logger,
+      now: () => clock
+    })
 
-    const result = await unwrapper.resolve({ token: PT, amountIn: 5000n, executor: EXECUTOR })
-    expect(result?.step.tokenOut).toBe(UNDERLYING)
+    // First resolve populates the cache from a successful fetch.
+    const first = await unwrapper.resolve({ token: PT, amountIn: 5000n, executor: EXECUTOR })
+    expect(first?.step.tokenOut).toBe(UNDERLYING)
+    expect(marketsCalls).toBe(1)
+
+    // Past staleMs (default 6h) the fetch is retried; it fails, so we fall back to the stale list.
+    clock = T0 + 7 * 60 * 60 * 1000
+    const second = await unwrapper.resolve({ token: PT, amountIn: 5000n, executor: EXECUTOR })
+    expect(second?.step.tokenOut).toBe(UNDERLYING)
     expect(events.some(e => e.event === 'pendle.markets_stale')).toBe(true)
+    expect(marketsCalls).toBe(2)
 
     // The stale cache was NOT re-stamped as fresh — the next resolve retries the fetch.
     await unwrapper.resolve({ token: PT, amountIn: 5000n, executor: EXECUTOR })
-    expect(calls.filter(call => call.url.includes('/v1/markets/all'))).toHaveLength(2)
+    expect(marketsCalls).toBe(3)
   })
 
   it('throws on fetch failure with NO cached data — never persisted as an empty list', async () => {
@@ -220,7 +206,6 @@ describe('createPendlePtUnwrapper', () => {
     expect(unwrapper.resolve({ token: PT, amountIn: 1n, executor: EXECUTOR })).rejects.toThrow(
       'pendle down'
     )
-    expect(unwrapper.dump()).toBeNull()
 
     // The failure was not cached: the next resolve fetches again.
     expect(unwrapper.resolve({ token: PT, amountIn: 1n, executor: EXECUTOR })).rejects.toThrow()
