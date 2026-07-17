@@ -81,8 +81,9 @@ async function main() {
     midnight: config.midnight
   })
 
-  // Read-only client shared by the lens and simulate paths. Validate EXECUTOOOR_ADDRESS holds code
-  // before doing any work — fatal on a typo / not-yet-deployed address (liveness, not identity).
+  // Read-only client shared by the lens and simulate paths. Validate both the Executor and the
+  // Midnight singleton hold code before doing any work — fatal on a typo / not-yet-deployed address
+  // (liveness, not identity).
   const client = createDeploylessClient(config)
   await assertContractDeployed(
     client,
@@ -90,6 +91,7 @@ async function main() {
     'EXECUTOOOR_ADDRESS',
     'deploy it with `bun run --filter @repo/contracts deploy:executor`'
   )
+  await assertContractDeployed(client, config.midnight, 'Midnight singleton')
 
   // Enabled venues are inferred from which venue API keys are present (loadConfig already enforced the
   // no-key → bad-debt-only opt-in). Keys are read HERE, at the point of use, and live only in this
@@ -249,6 +251,25 @@ async function main() {
     }
     return listed
   }
+
+  // Startup discovery self-check (non-fatal): run one discovery pass at boot so a bad candidates-API
+  // URL, an auth failure, or a stale/empty whitelist is diagnosable from Railway logs at boot, rather
+  // than as an opaque per-tick `tick.error`. The candidates API may still be warming on first deploy,
+  // so a failure here is logged and the bot proceeds — the per-block tick retries discovery.
+  {
+    const probe = await tryCatch(discover())
+    if (probe.error) {
+      logger.warn('discovery.startup_error', { detail: ensureError(probe.error).message })
+    } else {
+      logger.info('discovery.startup', {
+        chainId: config.chainId,
+        candidates: probe.data.length,
+        // A sample so the parsed candidate (marketId / borrower) can be eyeballed at boot.
+        sample: probe.data[0] ?? null
+      })
+    }
+  }
+
   // Transaction-queue state is in-memory only — chain truth wins on restart. A redeploy re-derives
   // the nonce cursor from `getTransactionCount('pending')`, and any tx that was in flight settles
   // on-chain regardless of the bot; settlement audit ships via the structured `tx.*` log events.

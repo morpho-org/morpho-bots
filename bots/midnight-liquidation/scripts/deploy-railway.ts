@@ -179,7 +179,21 @@ async function deployService(service: string): Promise<void> {
 }
 
 async function latestStatus(service: string): Promise<string> {
-  const args = ['railway', 'deployment', 'list', '-s', service, '--limit', '1', '--json']
+  // -e/-p explicit for the same reason as deployService: don't depend on ambient link state.
+  const args = [
+    'railway',
+    'deployment',
+    'list',
+    '-s',
+    service,
+    '-e',
+    ENVIRONMENT,
+    '-p',
+    PROJECT_ID,
+    '--limit',
+    '1',
+    '--json'
+  ]
   const { data, error } = await tryCatch(Promise.resolve($`${args}`.quiet().text()))
   return error || typeof data !== 'string' ? 'UNKNOWN' : parseLatestStatus(data)
 }

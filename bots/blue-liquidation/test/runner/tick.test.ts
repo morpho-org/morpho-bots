@@ -96,6 +96,7 @@ function runWith(opts: {
   quoteOutcome?: QuoteOutcome
   borrowers?: Address[]
   synced?: bigint | null
+  discoverError?: Error
   chainHead?: bigint
   inflight?: ReadonlySet<string>
   noSwap?: boolean
@@ -115,7 +116,10 @@ function runWith(opts: {
     ? { kind: 'no_config' }
     : { kind: 'swap', plan: SWAP_PLAN }
   const result = runTick({
-    discover: async () => candidates(...(opts.borrowers ?? [BORROWER])),
+    discover: async () => {
+      if (opts.discoverError) throw opts.discoverError
+      return candidates(...(opts.borrowers ?? [BORROWER]))
+    },
     syncedBlock: async () => (opts.synced === undefined ? chainHead : opts.synced),
     chainHead,
     readLens: stubReadLens(opts.out === undefined ? lensOut() : opts.out),
@@ -267,6 +271,15 @@ describe('runTick', () => {
       true
     )
     expect(counters.submitted).toBe(1)
+  })
+
+  it('tolerates a discovery failure: logs discover.error and submits nothing', async () => {
+    const { counters, events, submitCalls } = await runWith({
+      discoverError: new Error('boom')
+    })
+    expect(counters).toMatchObject({ pairs: 0, liquidatable: 0, submitted: 0 })
+    expect(events.some(e => e.level === 'warn' && e.event === 'discover.error')).toBe(true)
+    expect(submitCalls()).toBe(0)
   })
 
   describe('position cooldown (opt-in)', () => {
