@@ -2,6 +2,7 @@ import type { Client, Transport } from 'viem'
 
 import {
   type BatchLensTransportType,
+  lensKey,
   MAX_INITCODE_SIZE,
   readDeploylessBatchLens
 } from '@repo/utils'
@@ -175,11 +176,6 @@ type RawLensOut = {
  * created with — safe to feed straight into `quote`, `plan`, and `liquidate`.
  */
 export type LensOut = RawLensOut & { params: MarketParams }
-
-/** Stable per-pair key for the result map. */
-export function lensKey(id: Address, borrower: Address): string {
-  return `${id.toLowerCase()}:${borrower.toLowerCase()}`
-}
 
 /**
  * Reads the liquidation lens for every pair in one deployless, chunked `eth_call` (no signer, no

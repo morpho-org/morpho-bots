@@ -4,6 +4,7 @@ import type { QuoteOutcome, SwapPlan } from '@repo/swaps'
 import type { Address } from 'viem'
 
 import { createBackoff, createCooldownStore } from '@repo/bot-kit'
+import { lensKey } from '@repo/utils'
 import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
 
@@ -14,7 +15,6 @@ import type { LensInput, LensOut } from '../../src/state/lens.sol'
 import { ORACLE_PRICE_SCALE, WAD } from '../../src/constants'
 import { marketId } from '../../src/market'
 import { runTick } from '../../src/runner/tick'
-import { lensKey } from '../../src/state/lens.sol'
 
 function spyLogger() {
   const events: { level: string; event: string; fields?: Record<string, unknown> }[] = []

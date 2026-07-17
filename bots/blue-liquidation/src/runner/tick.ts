@@ -2,7 +2,7 @@ import type { Backoff, CooldownStore, Logger, SimulateResult } from '@repo/bot-k
 import type { QuoteOutcome, SwapPlan } from '@repo/swaps'
 import type { Address } from 'viem'
 
-import { assertNever, tryCatch } from '@repo/utils'
+import { assertNever, lensKey, tryCatch } from '@repo/utils'
 
 import type { BorrowerCandidate } from '../discovery/borrowers'
 import type { MarketParams } from '../market'
@@ -11,7 +11,6 @@ import type { LensInput, LensOut } from '../state/lens.sol'
 
 import { marketId } from '../market'
 import { plan } from '../sizing/plan'
-import { lensKey } from '../state/lens.sol'
 import { isLiquidatable, planInputFromLens } from './eligibility'
 
 /** Blocks our rindexer may trail the chain head before we warn that coverage is degraded. */
