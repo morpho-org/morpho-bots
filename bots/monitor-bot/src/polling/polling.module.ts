@@ -16,6 +16,7 @@ import { createMidnightClient } from '../midnight/client'
 import { MarketDirectory } from '../midnight/markets'
 import { TransactionFilter } from '../pollers/filter'
 import { MarketTransactionsPoller } from '../pollers/market-transactions.poller'
+import { OfferGroupsPoller } from '../pollers/offer-groups.poller'
 import { POLLERS } from './poller'
 import { PollerRegistrar } from './poller.registrar'
 
@@ -60,7 +61,21 @@ function buildPollers(
     users: env.FILTER_USERS
   })
   const deps = { cursors, dispatcher, logger, client, directory, filter }
-  return pollerDefinitions(env).map(options => new MarketTransactionsPoller(options, deps))
+  const pollers: (MarketTransactionsPoller | OfferGroupsPoller)[] = pollerDefinitions(env).map(
+    options => new MarketTransactionsPoller(options, deps)
+  )
+  // Make orders have no protocol-wide feed — the poller only exists when makers are configured.
+  if (env.WATCH_MAKERS.length > 0) {
+    pollers.push(
+      new OfferGroupsPoller(
+        { cron: env.POLL_CRON_MAKE_ORDERS, makers: env.WATCH_MAKERS },
+        { cursors, dispatcher, logger, client, minAssets: env.FILTER_MIN_ASSETS }
+      )
+    )
+  } else {
+    logger.info('make_orders.disabled', { reason: 'WATCH_MAKERS is empty' })
+  }
+  return pollers
 }
 
 @Module({

@@ -41,6 +41,8 @@ missing or malformed.
 | `POLL_CRON_LIQUIDATIONS`      | no       | `*/15 * * * * *`         | Liquidations poller cadence                      |
 | `REPAYS_INCLUDE_SECONDARY`    | no       | `false`                  | Also treat debt closed via trade as a repay      |
 | `COLLATERAL_INCLUDE_WITHDRAW` | no       | `true`                   | Also alert on collateral withdrawals             |
+| `WATCH_MAKERS`                | no       | — (poller disabled)      | Makers whose offer groups are watched            |
+| `POLL_CRON_MAKE_ORDERS`       | no       | `*/30 * * * * *`         | Make-orders poller cadence                       |
 | `BETTERSTACK_SOURCE_TOKEN`    | no       | —                        | Opt-in BetterStack log shipping (secret)         |
 | `BETTERSTACK_INGESTING_HOST`  | no       | —                        | BetterStack ingest host (with the token)         |
 | `BETTERSTACK_HEARTBEAT_URL`   | no       | —                        | Opt-in BetterStack uptime heartbeat              |
@@ -144,6 +146,19 @@ TTL-cached), then per market queries
 `/v0/midnight/markets/{id}/transactions?sort_direction=asc&created_at_gte={watermark}` walking
 pagination cursors, dedupes by stable item id at the (inclusive) watermark second, and advances a
 **per-market** watermark — a global watermark would skip items in slower-indexed markets.
+
+### Make-order poller
+
+There is no protocol-wide make-order feed: offers are off-chain EIP-712 signatures, and
+`/v0/midnight/users/{user}/offer-groups` is a per-user, **active-only snapshot**. The
+`make-orders` poller therefore watches the configured `WATCH_MAKERS` (disabled when empty) and
+**diffs snapshots**: new groups, size changes (`max_assets`/`max_units`), and disappearances
+(cancelled / expired / fully consumed — indistinguishable in a snapshot). `consumed` increases
+are deliberately ignored — that is take activity, already covered by the transaction pollers.
+The first tick per maker is a quiet baseline (no boot-time spam of the standing book); make-order
+alerts carry no tx link (nothing is on-chain until an offer is taken) and are identified by
+group id + maker. A created-and-fully-consumed-between-polls offer is missed here by design — its
+take still shows in the tx pollers.
 
 With no saved position (first tick, restart, new market) a poller anchors at _now_ — history is
 never replayed; the skipped window is logged as `poll.anchor`. Every fetch after the anchor tick

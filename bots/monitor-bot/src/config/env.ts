@@ -78,7 +78,10 @@ export function loadEnv(runtimeEnv: Record<string, string | undefined> = process
       /** Also treat exit_borrow_secondary (debt closed via trade) as a repay. */
       REPAYS_INCLUDE_SECONDARY: boolSchema.default('false'),
       /** Also alert on withdraw_collateral (borrower de-collateralizing — the risk signal). */
-      COLLATERAL_INCLUDE_WITHDRAW: boolSchema.default('true')
+      COLLATERAL_INCLUDE_WITHDRAW: boolSchema.default('true'),
+      /** Makers whose offer groups (make orders) are watched; empty disables the poller. */
+      WATCH_MAKERS: addressListSchema,
+      POLL_CRON_MAKE_ORDERS: cronSchema.default('*/30 * * * * *')
     },
     runtimeEnv,
     emptyStringAsUndefined: true
