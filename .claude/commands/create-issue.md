@@ -71,6 +71,7 @@ Show the proposed ticket details and ask the user to confirm or edit:
 ```
 Title:       <generated title>
 Project:     <inferred project name> (<team identifier>)
+Assignee:    <current user name> (you)
 Description:
 ---
 ## Context
@@ -86,6 +87,8 @@ Description:
 ```
 
 Then ask:
+
+**Assignee** (default: current user): Resolve the current user via `mcp__linear__get_user` with `query: "me"` and default the assignee to them. Show the resolved name in the confirmation, e.g. `Assignee: <name> (you)`. The user may reassign to someone else (resolve via `mcp__linear__list_users`) or explicitly clear it to leave the ticket unassigned.
 
 **Label**: `Bug`, `Feature`, `Improvement`, or `Documentation`
 
@@ -116,7 +119,7 @@ Use `mcp__linear__create_issue` with:
 - `labels` (label names as an array, e.g. `["Feature"]`)
 - `priority` (number 1–4)
 - `estimate` (number: 1, 2, 3, or 5 — omit if not specified)
-- Leave `assignee` unassigned by default — only set if the user explicitly specifies one
+- `assignee` (defaults to the current user resolved in Step 4 via `mcp__linear__get_user` with `query: "me"`) — omit only if the user explicitly chose to leave it unassigned
 
 ### Step 6: Confirm
 
@@ -136,8 +139,9 @@ No branch creation — this is backlog triage only.
 **Claude**: Routes to Curator Backlog (CRTR). Generates:
 
 ```
-Title:   feat(kill-switch): add retry-with-backoff to deallocate calls
-Project: Curator Backlog (CRTR)
+Title:    feat(kill-switch): add retry-with-backoff to deallocate calls
+Project:  Curator Backlog (CRTR)
+Assignee: <current user name> (you)
 
 ## Context
 The kill-switch bot aborts the trigger loop on any transient RPC failure from the VaultV2
@@ -175,4 +179,5 @@ Label? Priority?
 - Always use the project ID (not just the name) when calling `mcp__linear__create_issue`
 - The description must include all 3 sections — omit References only if genuinely none exist
 - Default priority for backlog items is Low (4)
+- Default assignee is the current user (resolved via `mcp__linear__get_user` with `query: "me"`) — only leave unassigned if the user explicitly asks
 - Do not create a git branch — this command is for triage only

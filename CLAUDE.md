@@ -232,3 +232,17 @@ Examples:
 - `chore(agents): port CLAUDE.md, editor configs, and .mcp.json for bun-first bots repo`
 - `feat(tooling): ship @repo/typescript-config`
 - `ci(checks): port setup action, checks.yml, husky pre-commit and commit-msg hooks`
+
+## Pull Request Workflow
+
+When opening a PR on this repo, **always pass** `--draft` (`gh pr create --draft`). Reviewer
+notifications fire on open and CODEOWNERS auto-assigns reviewers — opening as draft suppresses
+the ping until the author has self-reviewed and is genuinely ready for review.
+
+**After every `git push` to a branch with an open PR**, re-check that the PR title and
+description still describe the **full branch diff**, not just the latest commit. Get the
+base with `gh pr view --json title,body,baseRefName` and fetch it first — a stale local
+base ref skews the merge-base, and the diff with it — then compare against
+`git diff origin/<baseRefName>...HEAD --stat`. If they have drifted, update them with
+`gh pr edit`, following the title convention above. If they still match, no action is
+needed.
