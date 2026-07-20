@@ -4,7 +4,7 @@
 
 export const WETH_ABI = [
   { type: 'function', name: 'deposit', stateMutability: 'payable', inputs: [], outputs: [] }
-] as const
+] as const;
 
 export const ORACLE_ABI = [
   {
@@ -14,7 +14,7 @@ export const ORACLE_ABI = [
     inputs: [],
     outputs: [{ type: 'uint256' }]
   }
-] as const
+] as const;
 
 // Uniswap `SwapRouter02` exactInputSingle (no `deadline`); same shape the bot's swap encoder uses.
 export const SWAP_ROUTER_ABI = [
@@ -39,4 +39,4 @@ export const SWAP_ROUTER_ABI = [
     ],
     outputs: [{ name: 'amountOut', type: 'uint256' }]
   }
-] as const
+] as const;

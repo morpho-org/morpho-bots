@@ -1,19 +1,19 @@
-import { describe, expect, it } from 'bun:test'
-import { getAddress, zeroAddress } from 'viem'
+import { describe, expect, it } from 'bun:test';
 
-import type { LiquidationPlan } from '../../src/sizing/plan'
-import type { LensOut } from '../../src/state/lens.sol'
+import { getAddress, zeroAddress } from 'viem';
 
-import { ORACLE_PRICE_SCALE, WAD } from '../../src/constants'
-import { expectedLoanOut } from '../../src/execution/swap-step'
+import { ORACLE_PRICE_SCALE, WAD } from '../../src/constants';
+import { expectedLoanOut } from '../../src/execution/swap-step';
+import type { LiquidationPlan } from '../../src/sizing/plan';
+import type { LensOut } from '../../src/state/lens.sol';
 
-const LOAN = getAddress('0x6666666666666666666666666666666666666666')
-const COLLATERAL = getAddress('0x7777777777777777777777777777777777777777')
-const ORACLE = getAddress('0x8888888888888888888888888888888888888888')
+const LOAN = getAddress('0x6666666666666666666666666666666666666666');
+const COLLATERAL = getAddress('0x7777777777777777777777777777777777777777');
+const ORACLE = getAddress('0x8888888888888888888888888888888888888888');
 
 // price = 2 loan per collateral (1000 collateral → 2000 loan); maxLif = 1.1×.
-const PRICE = ORACLE_PRICE_SCALE * 2n
-const MAX_LIF = (WAD * 11n) / 10n
+const PRICE = ORACLE_PRICE_SCALE * 2n;
+const MAX_LIF = (WAD * 11n) / 10n;
 
 const out: LensOut = {
   valid: true,
@@ -48,7 +48,7 @@ const out: LensOut = {
     enterGate: zeroAddress,
     liquidatorGate: zeroAddress
   }
-}
+};
 
 describe('expectedLoanOut', () => {
   it('values a whole-slot plan at the oracle price', () => {
@@ -57,10 +57,10 @@ describe('expectedLoanOut', () => {
       seizedAssets: 1000n,
       repaidUnits: 0n,
       postMaturityMode: false
-    }
+    };
     // 1000 collateral × price(2) = 2000 loan.
-    expect(expectedLoanOut(plan, out)).toBe(2000n)
-  })
+    expect(expectedLoanOut(plan, out)).toBe(2000n);
+  });
 
   it('values a cap-binding seize-exact plan at the oracle price (pinned seizedAssets)', () => {
     // Seize-exact: a cap-binding plan pins `seizedAssets` directly (here 366, the contract-derived
@@ -70,11 +70,11 @@ describe('expectedLoanOut', () => {
       seizedAssets: 366n,
       repaidUnits: 0n,
       postMaturityMode: false
-    }
+    };
     expect(expectedLoanOut(plan, { ...out, bestCollateralPrice: ORACLE_PRICE_SCALE * 3n })).toBe(
       1098n
-    )
-  })
+    );
+  });
 
   it('returns 0 when the oracle price is 0 (avoids a divide-by-zero)', () => {
     const plan: LiquidationPlan = {
@@ -82,7 +82,7 @@ describe('expectedLoanOut', () => {
       seizedAssets: 1000n,
       repaidUnits: 0n,
       postMaturityMode: false
-    }
-    expect(expectedLoanOut(plan, { ...out, bestCollateralPrice: 0n })).toBe(0n)
-  })
-})
+    };
+    expect(expectedLoanOut(plan, { ...out, bestCollateralPrice: 0n })).toBe(0n);
+  });
+});

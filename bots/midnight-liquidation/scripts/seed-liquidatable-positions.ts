@@ -26,14 +26,16 @@
  *
  * Never prints secrets (keys, full RPC URL).
  */
-import type { AbiEvent, Address, Hex, PublicClient, WalletClient } from 'viem'
 
-import { assertContractDeployed, createDeploylessClient, createLogger } from '@repo/bot-kit'
-import { MidnightAbi } from '@repo/contracts'
-import { parseSwapConfig } from '@repo/swaps'
-import { delay as sleep, lensKey, tryCatch } from '@repo/utils'
-import { readFileSync } from 'node:fs'
-import { parseArgs } from 'node:util'
+import { readFileSync } from 'node:fs';
+import { parseArgs } from 'node:util';
+
+import { assertContractDeployed, createDeploylessClient, createLogger } from '@repo/bot-kit';
+import { MidnightAbi } from '@repo/contracts';
+import { parseSwapConfig } from '@repo/swaps';
+import { lensKey, delay as sleep, tryCatch } from '@repo/utils';
+
+import type { AbiEvent, Address, Hex, PublicClient, WalletClient } from 'viem';
 import {
   createPublicClient,
   createWalletClient,
@@ -48,92 +50,93 @@ import {
   numberToHex,
   parseUnits,
   zeroAddress
-} from 'viem'
-import { privateKeyToAccount } from 'viem/accounts'
-import { base } from 'viem/chains'
-import { createNonceManager, jsonRpc } from 'viem/nonce'
+} from 'viem';
+import { privateKeyToAccount } from 'viem/accounts';
+import { base } from 'viem/chains';
+import { createNonceManager, jsonRpc } from 'viem/nonce';
 
-import type { ApiMarket } from '../src/discovery/markets'
-import type { CollateralParams, Market } from '../src/execution/encode-call'
-import type { Offer } from './seed/offers'
+import type { ApiMarket } from '../src/discovery/markets';
+import type { CollateralParams, Market } from '../src/execution/encode-call';
+import { mulDivDown, mulDivUp } from '../src/sizing/math';
+import { readMidnightLiquidationLens } from '../src/state/lens.sol';
+import { ORACLE_ABI, SWAP_ROUTER_ABI, WETH_ABI } from './seed/abis';
+import type { Offer } from './seed/offers';
+import { encodeRatifierData, hashOffer, isLeaf, signOfferTree, toId } from './seed/offers';
+import { DEFAULT_TICK_SPACING, priceToTick, tickToPrice } from './seed/price-tick';
+import { priceDropToLiquidateBps, sizePosition } from './seed/sizing';
 
-import { mulDivDown, mulDivUp } from '../src/sizing/math'
-import { readMidnightLiquidationLens } from '../src/state/lens.sol'
-import { ORACLE_ABI, SWAP_ROUTER_ABI, WETH_ABI } from './seed/abis'
-import { encodeRatifierData, hashOffer, isLeaf, signOfferTree, toId } from './seed/offers'
-import { DEFAULT_TICK_SPACING, priceToTick, tickToPrice } from './seed/price-tick'
-import { priceDropToLiquidateBps, sizePosition } from './seed/sizing'
-
-const CHAIN_ID = 8453
-const MIDNIGHT = getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A')
-const PRIVATE_KEY_HEX_LENGTH = 66
-const WAD = 10n ** 18n
-const ORACLE_PRICE_SCALE = 10n ** 36n
-const BPS = 10_000n
+const CHAIN_ID = 8453;
+const MIDNIGHT = getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A');
+const PRIVATE_KEY_HEX_LENGTH = 66;
+const WAD = 10n ** 18n;
+const ORACLE_PRICE_SCALE = 10n ** 36n;
+const BPS = 10_000n;
 
 // Far-future maturity: keeps every position PRE-maturity (price, not maturity, is the trigger) and
 // > 360 days so the settlement fee is the flat top tier. Well under the 100-year `touchMarket` cap.
-const MATURITY_HORIZON_SECONDS = 730n * 24n * 60n * 60n
-const OFFER_START_BACKDATE = 300n
-const OFFER_EXPIRY_AHEAD = 7n * 24n * 60n * 60n
+const MATURITY_HORIZON_SECONDS = 730n * 24n * 60n * 60n;
+const OFFER_START_BACKDATE = 300n;
+const OFFER_EXPIRY_AHEAD = 7n * 24n * 60n * 60n;
 // Offer price ~0.99 (must be ≤ 1 WAD for priceToTick); health uses the ORACLE price, not this.
-const TARGET_OFFER_PRICE = 990_000_000_000_000_000n
+const TARGET_OFFER_PRICE = 990_000_000_000_000_000n;
 // Distinct, health-neutral `rcfThreshold` per market. Large ⇒ the slot is RCF-exempt, so the bot
 // repays up to the full (post-writeoff) debt in one liquidation rather than a tiny RCF-capped
 // partial — a cleaner test. Safe because `plan()` bounds the repay by the debt before seizing the
 // whole slot (src/sizing/plan.ts); without that guard an exempt over-collateralized position
 // over-derives repaidUnits > debt and the liquidation reverts with a 0x11 underflow.
-const RCF_THRESHOLD_BASE = 10n ** 30n
+const RCF_THRESHOLD_BASE = 10n ** 30n;
 // Extra WETH wallet A swaps beyond the oracle estimate, to absorb DEX slippage + oracle/pool drift.
-const SWAP_INPUT_BUFFER_BPS = 1500n
+const SWAP_INPUT_BUFFER_BPS = 1500n;
 // Rough per-tx gas headroom for the ETH-spend guard preview (Base is cheap; this is a ceiling).
-const GAS_PER_TX_WEI = 2_000_000_000_000n
+const GAS_PER_TX_WEI = 2_000_000_000_000n;
 // Production Midnight API — discovery reads its markets + oracles (incl. the curator `trusted_by`
 // signal) to pick a real, trusted market to clone, instead of guessing from on-chain take activity.
-const MIDNIGHT_API = 'https://api.morpho.org/v0/midnight'
+const MIDNIGHT_API = 'https://api.morpho.org/v0/midnight';
 // The configured RPC is a caching proxy with read-after-write lag: a pre-send simulate can transiently
 // see stale state (e.g. an approval/balance from a just-mined tx). Re-simulate a few times before
 // treating a revert as real — a genuine revert persists across retries and still aborts the run.
-const SIMULATE_RETRIES = 8
-const RETRY_DELAY_MS = 3000
+const SIMULATE_RETRIES = 8;
+const RETRY_DELAY_MS = 3000;
 
 const TOKENS: Record<string, { address: Address; decimals: number }> = {
   WETH: { address: getAddress('0x4200000000000000000000000000000000000006'), decimals: 18 },
   USDC: { address: getAddress('0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'), decimals: 6 },
   cbBTC: { address: getAddress('0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf'), decimals: 8 }
-}
+};
 
 const TAKE_EVENT = MidnightAbi.find(x => x.type === 'event' && x.name === 'Take') as
   | AbiEvent
-  | undefined
+  | undefined;
 
 type Args = {
-  count: number
-  config: string
-  pair: string
-  drawdownBps: number
-  notionalUsdc: string
-  referenceMarket: Hex | undefined
-  ratifier: Address | undefined
-  ladder: boolean
-  maxSpendEth: string
-  maturitySeconds: bigint
-  dryRun: boolean
-  yes: boolean
-}
+  count: number;
+  config: string;
+  pair: string;
+  drawdownBps: number;
+  notionalUsdc: string;
+  referenceMarket: Hex | undefined;
+  ratifier: Address | undefined;
+  ladder: boolean;
+  maxSpendEth: string;
+  maturitySeconds: bigint;
+  dryRun: boolean;
+  yes: boolean;
+};
 
 function reqEnv(name: string) {
-  const v = process.env[name]
-  if (!v || !v.trim()) throw new Error(`${name} not set`)
-  return v.trim()
+  const v = process.env[name];
+  if (!v || !v.trim()) {
+    throw new Error(`${name} not set`);
+  }
+  return v.trim();
 }
 
 function reqKey(name: string): Hex {
-  const v = reqEnv(name)
+  const v = reqEnv(name);
   if (!v.startsWith('0x') || v.length !== PRIVATE_KEY_HEX_LENGTH) {
-    throw new Error(`${name} must be a 0x-prefixed 32-byte hex string`)
+    throw new Error(`${name} must be a 0x-prefixed 32-byte hex string`);
   }
-  return v as Hex
+  return v as Hex;
 }
 
 function parseCliArgs(): Args {
@@ -152,23 +155,26 @@ function parseCliArgs(): Args {
       'dry-run': { type: 'boolean', default: false },
       yes: { type: 'boolean', default: false }
     }
-  })
-  if (!values.config)
-    throw new Error('--config <path> is required (swap-route config; needs a WETH route)')
-  const count = Number(values.count)
-  const drawdownBps = Number(values['drawdown-bps'])
-  if (!Number.isInteger(count) || count <= 0) throw new Error('--count must be a positive integer')
+  });
+  if (!values.config) {
+    throw new Error('--config <path> is required (swap-route config; needs a WETH route)');
+  }
+  const count = Number(values.count);
+  const drawdownBps = Number(values['drawdown-bps']);
+  if (!Number.isInteger(count) || count <= 0) {
+    throw new Error('--count must be a positive integer');
+  }
   if (!Number.isInteger(drawdownBps) || drawdownBps < 0 || drawdownBps >= 10_000) {
-    throw new Error('--drawdown-bps must be an integer in [0, 9999]')
+    throw new Error('--drawdown-bps must be an integer in [0, 9999]');
   }
   // Seconds from now until each seeded position's maturity. Default is the far-future horizon (keeps
   // positions pre-maturity so a real WETH downtick is the trigger). A near-term value is useful for the
   // fork test, which warps just past maturity to liquidate in post-maturity mode.
-  const maturityRaw = values['maturity-seconds']
+  const maturityRaw = values['maturity-seconds'];
   if (maturityRaw !== undefined && !/^\d+$/.test(maturityRaw)) {
-    throw new Error('--maturity-seconds must be a non-negative integer')
+    throw new Error('--maturity-seconds must be a non-negative integer');
   }
-  const maturitySeconds = maturityRaw ? BigInt(maturityRaw) : MATURITY_HORIZON_SECONDS
+  const maturitySeconds = maturityRaw ? BigInt(maturityRaw) : MATURITY_HORIZON_SECONDS;
   return {
     count,
     config: values.config,
@@ -182,28 +188,29 @@ function parseCliArgs(): Args {
     maturitySeconds,
     dryRun: values['dry-run'] ?? false,
     yes: values.yes ?? false
-  }
+  };
 }
 
 function resolvePair(pair: string) {
-  const [collateralSym, loanSym] = pair.split('/')
-  const collateral = collateralSym ? TOKENS[collateralSym] : undefined
-  const loan = loanSym ? TOKENS[loanSym] : undefined
-  if (!collateral || !loan)
-    throw new Error(`unknown pair ${pair}; known tokens: ${Object.keys(TOKENS).join(', ')}`)
+  const [collateralSym, loanSym] = pair.split('/');
+  const collateral = collateralSym ? TOKENS[collateralSym] : undefined;
+  const loan = loanSym ? TOKENS[loanSym] : undefined;
+  if (!collateral || !loan) {
+    throw new Error(`unknown pair ${pair}; known tokens: ${Object.keys(TOKENS).join(', ')}`);
+  }
   return {
     collateral: { ...collateral, symbol: collateralSym! },
     loan: { ...loan, symbol: loanSym! }
-  }
+  };
 }
 
 type Sample = {
-  offer: Offer
-  cp: CollateralParams
-  root: Hex
-  leafIndex: bigint
-  proof: readonly Hex[]
-}
+  offer: Offer;
+  cp: CollateralParams;
+  root: Hex;
+  leafIndex: bigint;
+  proof: readonly Hex[];
+};
 
 // Decode one tx as a direct `take` whose offer is for the wanted collateral/loan and uses the
 // EcrecoverRatifier ratifierData layout. Returns null for anything that doesn't match (bundled
@@ -214,14 +221,20 @@ async function loadTakeSample(
   collateral: Address,
   loan: Address
 ): Promise<Sample | null> {
-  const tx = await tryCatch(publicClient.getTransaction({ hash }))
-  if (tx.error || !tx.data.input) return null
-  const decoded = tryCatch(() => decodeFunctionData({ abi: MidnightAbi, data: tx.data.input }))
-  if (decoded.error || decoded.data.functionName !== 'take') return null
-  const offer = decoded.data.args[0] as unknown as Offer
-  const ratifierData = decoded.data.args[1]
-  const cp = offer.market.collateralParams.find(c => isAddressEqual(c.token, collateral))
-  if (!cp || !isAddressEqual(offer.market.loanToken, loan)) return null
+  const tx = await tryCatch(publicClient.getTransaction({ hash }));
+  if (tx.error || !tx.data.input) {
+    return null;
+  }
+  const decoded = tryCatch(() => decodeFunctionData({ abi: MidnightAbi, data: tx.data.input }));
+  if (decoded.error || decoded.data.functionName !== 'take') {
+    return null;
+  }
+  const offer = decoded.data.args[0] as unknown as Offer;
+  const ratifierData = decoded.data.args[1];
+  const cp = offer.market.collateralParams.find(c => isAddressEqual(c.token, collateral));
+  if (!cp || !isAddressEqual(offer.market.loanToken, loan)) {
+    return null;
+  }
   const parsed = tryCatch(() =>
     decodeAbiParameters(
       [
@@ -235,25 +248,29 @@ async function loadTakeSample(
       ],
       ratifierData
     )
-  )
-  if (parsed.error) return null
-  const [, root, leafIndex, proof] = parsed.data
-  return { offer, cp, root, leafIndex, proof }
+  );
+  if (parsed.error) {
+    return null;
+  }
+  const [, root, leafIndex, proof] = parsed.data;
+  return { offer, cp, root, leafIndex, proof };
 }
 
-type ApiAsset = { chain_id: number; address: Address }
+type ApiAsset = { chain_id: number; address: Address };
 type ApiOracle = {
-  chain_id: number
-  address: Address
-  collateral_assets: ApiAsset[]
-  loan_assets: ApiAsset[]
-  trusted_by: unknown[]
-}
+  chain_id: number;
+  address: Address;
+  collateral_assets: ApiAsset[];
+  loan_assets: ApiAsset[];
+  trusted_by: unknown[];
+};
 
 async function fetchMidnight<T>(path: string): Promise<T> {
-  const res = await fetch(`${MIDNIGHT_API}${path}`)
-  if (!res.ok) throw new Error(`Midnight API GET ${path} → HTTP ${res.status}`)
-  return (await res.json()) as T
+  const res = await fetch(`${MIDNIGHT_API}${path}`);
+  if (!res.ok) {
+    throw new Error(`Midnight API GET ${path} → HTTP ${res.status}`);
+  }
+  return (await res.json()) as T;
 }
 
 // Picks a real collateral/loan market whose oracle curators actually trust (the API `trusted_by`
@@ -264,11 +281,11 @@ async function findTrustedMarket({
   loan,
   logger
 }: {
-  collateral: { address: Address; symbol: string }
-  loan: { address: Address; symbol: string }
-  logger: ReturnType<typeof createLogger>
+  collateral: { address: Address; symbol: string };
+  loan: { address: Address; symbol: string };
+  logger: ReturnType<typeof createLogger>;
 }): Promise<CollateralParams> {
-  const oracles = (await fetchMidnight<{ data: ApiOracle[] }>('/oracles')).data
+  const oracles = (await fetchMidnight<{ data: ApiOracle[] }>('/oracles')).data;
   const trusted = new Set(
     oracles
       .filter(
@@ -280,35 +297,40 @@ async function findTrustedMarket({
           o.loan_assets.some(a => isAddressEqual(a.address, loan.address))
       )
       .map(o => o.address.toLowerCase())
-  )
-  if (trusted.size === 0)
+  );
+  if (trusted.size === 0) {
     throw new Error(
       `no curator-trusted ${collateral.symbol}/${loan.symbol} oracle in the Midnight API`
-    )
+    );
+  }
 
-  const markets = (await fetchMidnight<{ data: ApiMarket[] }>('/markets')).data
+  const markets = (await fetchMidnight<{ data: ApiMarket[] }>('/markets')).data;
   for (const m of markets) {
-    if (m.chain_id !== CHAIN_ID || !isAddressEqual(m.loan_token, loan.address)) continue
+    if (m.chain_id !== CHAIN_ID || !isAddressEqual(m.loan_token, loan.address)) {
+      continue;
+    }
     const c = m.collaterals?.find(
       x => isAddressEqual(x.token, collateral.address) && trusted.has(x.oracle.toLowerCase())
-    )
-    if (!c) continue
+    );
+    if (!c) {
+      continue;
+    }
     logger.info('seed.reference.market', {
       marketId: m.market_id,
       oracle: c.oracle,
       lltv: c.lltv,
       liquidationCursor: c.liquidation_cursor
-    })
+    });
     return {
       token: getAddress(c.token),
       lltv: BigInt(c.lltv),
       liquidationCursor: BigInt(c.liquidation_cursor),
       oracle: getAddress(c.oracle)
-    }
+    };
   }
   throw new Error(
     `no ${collateral.symbol}/${loan.symbol} market with a trusted oracle found; pass --reference-market`
-  )
+  );
 }
 
 // Discovers a deployed EcrecoverRatifier from any recent decodable take (market-independent) and
@@ -319,30 +341,36 @@ async function findRatifier({
   loan,
   logger
 }: {
-  publicClient: PublicClient
-  collateral: { address: Address }
-  loan: { address: Address }
-  logger: ReturnType<typeof createLogger>
+  publicClient: PublicClient;
+  collateral: { address: Address };
+  loan: { address: Address };
+  logger: ReturnType<typeof createLogger>;
 }): Promise<Address> {
-  if (!TAKE_EVENT) throw new Error('Take event missing from MidnightAbi')
-  const latest = await publicClient.getBlockNumber()
-  const window = 2_000n
-  const lookback = 100_000n
-  const seen = new Set<Hex>()
+  if (!TAKE_EVENT) {
+    throw new Error('Take event missing from MidnightAbi');
+  }
+  const latest = await publicClient.getBlockNumber();
+  const window = 2_000n;
+  const lookback = 100_000n;
+  const seen = new Set<Hex>();
   for (let to = latest; to > latest - lookback && to > 0n; to -= window) {
-    const from = to - window + 1n > 0n ? to - window + 1n : 0n
+    const from = to - window + 1n > 0n ? to - window + 1n : 0n;
     const logs = await publicClient.getLogs({
       address: MIDNIGHT,
       event: TAKE_EVENT,
       fromBlock: from,
       toBlock: to
-    })
+    });
     for (const log of logs) {
-      const h = log.transactionHash
-      if (!h || seen.has(h)) continue
-      seen.add(h)
-      const sample = await loadTakeSample(publicClient, h, collateral.address, loan.address)
-      if (!sample) continue
+      const h = log.transactionHash;
+      if (!h || seen.has(h)) {
+        continue;
+      }
+      seen.add(h);
+      const sample = await loadTakeSample(publicClient, h, collateral.address, loan.address);
+      if (!sample) {
+        continue;
+      }
       if (
         !isLeaf({
           root: sample.root,
@@ -353,13 +381,13 @@ async function findRatifier({
       ) {
         throw new Error(
           `hashOffer cross-check FAILED against on-chain take ${h} — offer hashing is wrong, aborting`
-        )
+        );
       }
-      logger.info('seed.reference.ratifier', { txHash: h, ratifier: sample.offer.ratifier })
-      return getAddress(sample.offer.ratifier)
+      logger.info('seed.reference.ratifier', { txHash: h, ratifier: sample.offer.ratifier });
+      return getAddress(sample.offer.ratifier);
     }
   }
-  throw new Error('no decodable take found for ratifier discovery — pass --ratifier')
+  throw new Error('no decodable take found for ratifier discovery — pass --ratifier');
 }
 
 async function resolveReference({
@@ -369,11 +397,11 @@ async function resolveReference({
   loan,
   logger
 }: {
-  publicClient: PublicClient
-  args: Args
-  collateral: { address: Address; symbol: string }
-  loan: { address: Address; symbol: string }
-  logger: ReturnType<typeof createLogger>
+  publicClient: PublicClient;
+  args: Args;
+  collateral: { address: Address; symbol: string };
+  loan: { address: Address; symbol: string };
+  logger: ReturnType<typeof createLogger>;
 }): Promise<{ cp: CollateralParams; ratifier: Address }> {
   if (args.referenceMarket && args.ratifier) {
     const market = (await publicClient.readContract({
@@ -381,36 +409,39 @@ async function resolveReference({
       abi: MidnightAbi,
       functionName: 'toMarket',
       args: [args.referenceMarket]
-    })) as Market
-    const cp = market.collateralParams.find(c => isAddressEqual(c.token, collateral.address))
-    if (!cp) throw new Error(`reference market has no ${collateral.symbol} collateral`)
-    if (!isAddressEqual(market.loanToken, loan.address))
-      throw new Error(`reference market loanToken != ${loan.symbol}`)
+    })) as Market;
+    const cp = market.collateralParams.find(c => isAddressEqual(c.token, collateral.address));
+    if (!cp) {
+      throw new Error(`reference market has no ${collateral.symbol} collateral`);
+    }
+    if (!isAddressEqual(market.loanToken, loan.address)) {
+      throw new Error(`reference market loanToken != ${loan.symbol}`);
+    }
     logger.warn('seed.reference.override', {
       detail:
         'using --reference-market/--ratifier; trust + hashOffer checks skipped (validated live on first take)',
       oracle: cp.oracle
-    })
-    return { cp, ratifier: args.ratifier }
+    });
+    return { cp, ratifier: args.ratifier };
   }
 
-  const cp = await findTrustedMarket({ collateral, loan, logger })
-  const ratifier = await findRatifier({ publicClient, collateral, loan, logger })
-  return { cp, ratifier }
+  const cp = await findTrustedMarket({ collateral, loan, logger });
+  const ratifier = await findRatifier({ publicClient, collateral, loan, logger });
+  return { cp, ratifier };
 }
 
 type Position = {
-  index: number
-  id: Hex
-  market: Market
-  offer: Offer
-  ratifierData: Hex
-  collateral: bigint
-  maxDebt: bigint
-  units: bigint
-  buyerAssets: bigint
-  drawdownBps: number
-}
+  index: number;
+  id: Hex;
+  market: Market;
+  offer: Offer;
+  ratifierData: Hex;
+  collateral: bigint;
+  maxDebt: bigint;
+  units: bigint;
+  buyerAssets: bigint;
+  drawdownBps: number;
+};
 
 async function buildPositions({
   args,
@@ -424,31 +455,31 @@ async function buildPositions({
   maker,
   keyA
 }: {
-  args: Args
-  cp: CollateralParams
-  ratifier: Address
-  loan: { address: Address; decimals: number }
-  price: bigint
-  tick: bigint
-  offerPrice: bigint
-  now: bigint
-  maker: Address
-  keyA: Hex
+  args: Args;
+  cp: CollateralParams;
+  ratifier: Address;
+  loan: { address: Address; decimals: number };
+  price: bigint;
+  tick: bigint;
+  offerPrice: bigint;
+  now: bigint;
+  maker: Address;
+  keyA: Hex;
 }): Promise<Position[]> {
-  const debtTargetUnits = parseUnits(args.notionalUsdc, loan.decimals)
-  const maturity = now + args.maturitySeconds
-  const positions: Position[] = []
+  const debtTargetUnits = parseUnits(args.notionalUsdc, loan.decimals);
+  const maturity = now + args.maturitySeconds;
+  const positions: Position[] = [];
   for (let i = 0; i < args.count; i++) {
     const drawdownBps =
       args.ladder && args.count > 1
         ? Math.floor((args.drawdownBps * i) / (args.count - 1))
-        : args.drawdownBps
+        : args.drawdownBps;
     const { collateral, maxDebt, units } = sizePosition({
       price,
       lltv: cp.lltv,
       debtTargetUnits,
       drawdownBps
-    })
+    });
     const market: Market = {
       chainId: BigInt(CHAIN_ID),
       midnight: MIDNIGHT,
@@ -458,8 +489,8 @@ async function buildPositions({
       rcfThreshold: RCF_THRESHOLD_BASE + BigInt(i),
       enterGate: zeroAddress,
       liquidatorGate: zeroAddress
-    }
-    const id = toId(market)
+    };
+    const id = toId(market);
     const offer: Offer = {
       market,
       buy: true,
@@ -478,12 +509,12 @@ async function buildPositions({
       // Uncapped (max uint32): the take reverts if the market's continuousFee exceeds this; USDC's
       // default continuousFee is 0, but max uint32 keeps the seed robust to a nonzero default.
       continuousFeeCap: 4294967295n
-    }
-    const root = hashOffer(offer)
-    const signature = await signOfferTree({ root, privateKey: keyA, ratifier, chainId: CHAIN_ID })
-    const ratifierData = encodeRatifierData({ signature, root, leafIndex: 0n, proof: [] })
+    };
+    const root = hashOffer(offer);
+    const signature = await signOfferTree({ root, privateKey: keyA, ratifier, chainId: CHAIN_ID });
+    const ratifierData = encodeRatifierData({ signature, root, leafIndex: 0n, proof: [] });
     // buyerPrice == offerPrice on a buy offer, so buyerAssets is exact without the settlement fee.
-    const buyerAssets = mulDivDown(units, offerPrice, WAD)
+    const buyerAssets = mulDivDown(units, offerPrice, WAD);
     positions.push({
       index: i,
       id,
@@ -495,9 +526,9 @@ async function buildPositions({
       units,
       buyerAssets,
       drawdownBps
-    })
+    });
   }
-  return positions
+  return positions;
 }
 
 function printPlan({
@@ -513,19 +544,19 @@ function printPlan({
   balA,
   balB
 }: {
-  args: Args
-  positions: Position[]
-  cp: CollateralParams
-  ratifier: Address
-  price: bigint
-  offerPrice: bigint
-  totals: { wethForA: bigint; usdcForA: bigint; wethForB: bigint; ethA: bigint; ethB: bigint }
-  addrA: Address
-  addrB: Address
-  balA: bigint
-  balB: bigint
+  args: Args;
+  positions: Position[];
+  cp: CollateralParams;
+  ratifier: Address;
+  price: bigint;
+  offerPrice: bigint;
+  totals: { wethForA: bigint; usdcForA: bigint; wethForB: bigint; ethA: bigint; ethB: bigint };
+  addrA: Address;
+  addrB: Address;
+  balA: bigint;
+  balB: bigint;
 }) {
-  const sample = positions[0]!
+  const sample = positions[0]!;
   const lines = [
     '',
     '================  LIVE BASE MAINNET — REAL FUNDS  ================',
@@ -545,8 +576,8 @@ function printPlan({
     `  wallet A ETH ~${formatEther(totals.ethA)}   wallet B ETH ~${formatEther(totals.ethB)}   txns ~${3 + 3 + positions.length * 2}`,
     '=================================================================',
     ''
-  ]
-  process.stderr.write(`${lines.join('\n')}\n`)
+  ];
+  process.stderr.write(`${lines.join('\n')}\n`);
 }
 
 async function txStep({
@@ -555,126 +586,132 @@ async function txStep({
   label,
   call
 }: {
-  ctx: { publicClient: PublicClient; logger: ReturnType<typeof createLogger> }
-  wallet: WalletClient
-  label: string
+  ctx: { publicClient: PublicClient; logger: ReturnType<typeof createLogger> };
+  wallet: WalletClient;
+  label: string;
   // Heterogeneous contract call across several ABIs; typed loosely on purpose for a one-off script.
   call: {
-    address: Address
-    abi: readonly unknown[]
-    functionName: string
-    args: readonly unknown[]
-    value?: bigint
-  }
+    address: Address;
+    abi: readonly unknown[];
+    functionName: string;
+    args: readonly unknown[];
+    value?: bigint;
+  };
 }) {
   let sim = await tryCatch(
     ctx.publicClient.simulateContract({ account: wallet.account, ...call } as never)
-  )
+  );
   for (let attempt = 1; sim.error && attempt < SIMULATE_RETRIES; attempt++) {
     // Likely the caching RPC lagging a just-mined dependency — wait and re-simulate.
-    ctx.logger.warn('seed.simulate_retry', { step: label, attempt })
-    await sleep(RETRY_DELAY_MS)
+    ctx.logger.warn('seed.simulate_retry', { step: label, attempt });
+    await sleep(RETRY_DELAY_MS);
     sim = await tryCatch(
       ctx.publicClient.simulateContract({ account: wallet.account, ...call } as never)
-    )
+    );
   }
   if (sim.error) {
-    ctx.logger.error('seed.simulate_failed', { step: label, reason: sim.error.message })
-    throw sim.error
+    ctx.logger.error('seed.simulate_failed', { step: label, reason: sim.error.message });
+    throw sim.error;
   }
-  ctx.logger.info('seed.simulate_ok', { step: label })
-  const { request, result } = sim.data as unknown as { request: never; result: unknown }
-  const hash = await wallet.writeContract(request)
-  const receipt = await ctx.publicClient.waitForTransactionReceipt({ hash })
-  if (receipt.status !== 'success') throw new Error(`${label} reverted on-chain (tx ${hash})`)
-  ctx.logger.info('seed.tx', { step: label, txHash: hash })
-  return result
+  ctx.logger.info('seed.simulate_ok', { step: label });
+  const { request, result } = sim.data as unknown as { request: never; result: unknown };
+  const hash = await wallet.writeContract(request);
+  const receipt = await ctx.publicClient.waitForTransactionReceipt({ hash });
+  if (receipt.status !== 'success') {
+    throw new Error(`${label} reverted on-chain (tx ${hash})`);
+  }
+  ctx.logger.info('seed.tx', { step: label, txHash: hash });
+  return result;
 }
 
 async function main() {
-  const args = parseCliArgs()
-  const logger = createLogger('info')
-  const rpcUrl = reqEnv('RPC_URL')
-  const chainIdEnv = process.env.CHAIN_ID?.trim()
-  if (chainIdEnv && chainIdEnv !== String(CHAIN_ID))
-    throw new Error(`only Base (${CHAIN_ID}) is supported`)
-  const keyA = reqKey('PRIVATE_KEY_LENDER')
-  const keyB = reqKey('PRIVATE_KEY_BORROWER')
+  const args = parseCliArgs();
+  const logger = createLogger('info');
+  const rpcUrl = reqEnv('RPC_URL');
+  const chainIdEnv = process.env.CHAIN_ID?.trim();
+  if (chainIdEnv && chainIdEnv !== String(CHAIN_ID)) {
+    throw new Error(`only Base (${CHAIN_ID}) is supported`);
+  }
+  const keyA = reqKey('PRIVATE_KEY_LENDER');
+  const keyB = reqKey('PRIVATE_KEY_BORROWER');
 
   // viem's concrete client generics are invariant against the broad `PublicClient`/`WalletClient`
   // aliases the helpers accept, so cast once at the creation site (keeps helper internals typed).
   const publicClient = createPublicClient({
     chain: base,
     transport: http(rpcUrl)
-  }) as unknown as PublicClient
+  }) as unknown as PublicClient;
   const deploylessClient = createDeploylessClient({
     chain: base,
     rpcUrl,
     rpcUrlFallback: undefined
-  })
+  });
   const accountA = privateKeyToAccount(keyA, {
     nonceManager: createNonceManager({ source: jsonRpc() })
-  })
+  });
   const accountB = privateKeyToAccount(keyB, {
     nonceManager: createNonceManager({ source: jsonRpc() })
-  })
-  if (isAddressEqual(accountA.address, accountB.address))
-    throw new Error('maker and taker keys must differ (SelfTake)')
+  });
+  if (isAddressEqual(accountA.address, accountB.address)) {
+    throw new Error('maker and taker keys must differ (SelfTake)');
+  }
   const walletA = createWalletClient({
     account: accountA,
     chain: base,
     transport: http(rpcUrl)
-  }) as unknown as WalletClient
+  }) as unknown as WalletClient;
   const walletB = createWalletClient({
     account: accountB,
     chain: base,
     transport: http(rpcUrl)
-  }) as unknown as WalletClient
+  }) as unknown as WalletClient;
   logger.info('seed.start', {
     maker: accountA.address,
     taker: accountB.address,
     count: args.count,
     dryRun: args.dryRun
-  })
+  });
 
-  await assertContractDeployed(publicClient, MIDNIGHT, 'Midnight')
+  await assertContractDeployed(publicClient, MIDNIGHT, 'Midnight');
 
-  const { collateral, loan } = resolvePair(args.pair)
-  const swapConfig = parseSwapConfig(JSON.parse(readFileSync(args.config, 'utf8')))
-  const route = swapConfig[String(CHAIN_ID)]?.[collateral.address]
+  const { collateral, loan } = resolvePair(args.pair);
+  const swapConfig = parseSwapConfig(JSON.parse(readFileSync(args.config, 'utf8')));
+  const route = swapConfig[String(CHAIN_ID)]?.[collateral.address];
   if (!route) {
     throw new Error(
       `no swap route for ${collateral.symbol} (${collateral.address}) in ${args.config} — the prod bot also needs it to liquidate`
-    )
+    );
   }
   // The seed tool acquires the collateral by swapping WETH directly through a Uniswap-V3 router, so it
   // needs a uniswap-v3 route (router + fee). Aggregator venues have no static router for this script.
   if (route.venue !== 'uniswap-v3') {
     throw new Error(
       `seed tool supports only uniswap-v3 routes; ${collateral.symbol} is configured for venue '${route.venue}'`
-    )
+    );
   }
 
-  const { cp, ratifier } = await resolveReference({ publicClient, args, collateral, loan, logger })
-  await assertContractDeployed(publicClient, ratifier, 'EcrecoverRatifier')
+  const { cp, ratifier } = await resolveReference({ publicClient, args, collateral, loan, logger });
+  await assertContractDeployed(publicClient, ratifier, 'EcrecoverRatifier');
 
   const price = await publicClient.readContract({
     address: cp.oracle,
     abi: ORACLE_ABI,
     functionName: 'price'
-  })
-  if (price === 0n) throw new Error('oracle returned price 0')
+  });
+  if (price === 0n) {
+    throw new Error('oracle returned price 0');
+  }
 
   // Our markets are freshly created, so tickSpacing == DEFAULT_TICK_SPACING. Validate priceToTick's
   // contract directly (spacing-aligned, prices at/above target and ≤ 1 WAD) — a plain round-trip
   // would false-fail in the rounding-flat regions at the price extremes.
-  const tick = priceToTick(TARGET_OFFER_PRICE, DEFAULT_TICK_SPACING)
-  const offerPrice = tickToPrice(tick)
+  const tick = priceToTick(TARGET_OFFER_PRICE, DEFAULT_TICK_SPACING);
+  const offerPrice = tickToPrice(tick);
   if (tick % DEFAULT_TICK_SPACING !== 0n || offerPrice < TARGET_OFFER_PRICE || offerPrice > WAD) {
-    throw new Error(`tick self-check failed: tick=${tick} offerPrice=${offerPrice}`)
+    throw new Error(`tick self-check failed: tick=${tick} offerPrice=${offerPrice}`);
   }
 
-  const now = (await publicClient.getBlock()).timestamp
+  const now = (await publicClient.getBlock()).timestamp;
   const positions = await buildPositions({
     args,
     cp,
@@ -686,7 +723,7 @@ async function main() {
     now,
     maker: accountA.address,
     keyA
-  })
+  });
 
   // Validate the toId port before spending. The contract no longer exposes `toId`, so instead
   // reconstruct a real, known market from `toMarket(referenceMarket)` and assert our local `toId`
@@ -698,39 +735,39 @@ async function main() {
       abi: MidnightAbi,
       functionName: 'toMarket',
       args: [args.referenceMarket]
-    })) as Market
-    const derived = toId(refMarket)
+    })) as Market;
+    const derived = toId(refMarket);
     if (derived.toLowerCase() !== args.referenceMarket.toLowerCase()) {
       throw new Error(
         `toId cross-check failed: derived ${derived} != reference ${args.referenceMarket}`
-      )
+      );
     }
-    logger.info('seed.selfcheck_ok', { toId: true, tickRoundTrip: true })
+    logger.info('seed.selfcheck_ok', { toId: true, tickRoundTrip: true });
   } else {
     logger.warn('seed.selfcheck_skipped', {
       detail: 'no --reference-market; toId port not cross-checked against a known id'
-    })
+    });
   }
 
-  const usdcForA = positions.reduce((sum, p) => sum + p.buyerAssets, 0n)
-  const wethForB = positions.reduce((sum, p) => sum + p.collateral, 0n)
+  const usdcForA = positions.reduce((sum, p) => sum + p.buyerAssets, 0n);
+  const wethForB = positions.reduce((sum, p) => sum + p.collateral, 0n);
   // WETH wallet A must swap to cover usdcForA, padded for slippage + oracle/pool drift.
   const wethForA =
-    (mulDivUp(usdcForA, ORACLE_PRICE_SCALE, price) * (BPS + SWAP_INPUT_BUFFER_BPS)) / BPS
+    (mulDivUp(usdcForA, ORACLE_PRICE_SCALE, price) * (BPS + SWAP_INPUT_BUFFER_BPS)) / BPS;
   const ratifierAuthed = await publicClient.readContract({
     address: MIDNIGHT,
     abi: MidnightAbi,
     functionName: 'isAuthorized',
     args: [accountA.address, ratifier]
-  })
-  const gasA = GAS_PER_TX_WEI * (ratifierAuthed ? 4n : 5n)
-  const gasB = GAS_PER_TX_WEI * BigInt(2 + positions.length * 2)
-  const totals = { wethForA, usdcForA, wethForB, ethA: wethForA + gasA, ethB: wethForB + gasB }
+  });
+  const gasA = GAS_PER_TX_WEI * (ratifierAuthed ? 4n : 5n);
+  const gasB = GAS_PER_TX_WEI * BigInt(2 + positions.length * 2);
+  const totals = { wethForA, usdcForA, wethForB, ethA: wethForA + gasA, ethB: wethForB + gasB };
 
   const [balA, balB] = await Promise.all([
     publicClient.getBalance({ address: accountA.address }),
     publicClient.getBalance({ address: accountB.address })
-  ])
+  ]);
   printPlan({
     args,
     positions,
@@ -743,37 +780,37 @@ async function main() {
     addrB: accountB.address,
     balA,
     balB
-  })
+  });
 
-  const maxSpend = parseUnits(args.maxSpendEth, 18)
+  const maxSpend = parseUnits(args.maxSpendEth, 18);
   if (totals.ethA + totals.ethB > maxSpend) {
     throw new Error(
       `estimated spend ${formatEther(totals.ethA + totals.ethB)} ETH exceeds --max-spend-eth ${args.maxSpendEth}`
-    )
+    );
   }
   if (!args.dryRun) {
     if (balA < totals.ethA) {
       throw new Error(
         `wallet A balance ${formatEther(balA)} ETH is below estimated requirement ${formatEther(totals.ethA)} ETH`
-      )
+      );
     }
     if (balB < totals.ethB) {
       throw new Error(
         `wallet B balance ${formatEther(balB)} ETH is below estimated requirement ${formatEther(totals.ethB)} ETH`
-      )
+      );
     }
   }
 
   if (args.dryRun) {
-    logger.info('seed.dry_run_complete', { detail: 'self-checks passed; no transactions sent' })
-    return
+    logger.info('seed.dry_run_complete', { detail: 'self-checks passed; no transactions sent' });
+    return;
   }
   if (!args.yes && !confirm('Proceed to send REAL transactions on Base mainnet?')) {
-    logger.warn('seed.aborted', { detail: 'user declined' })
-    return
+    logger.warn('seed.aborted', { detail: 'user declined' });
+    return;
   }
 
-  const ctx = { publicClient, logger }
+  const ctx = { publicClient, logger };
 
   // --- Wallet A: acquire USDC, approve Midnight, authorize the ratifier ---
   await txStep({
@@ -787,7 +824,7 @@ async function main() {
       args: [],
       value: wethForA
     }
-  })
+  });
   await txStep({
     ctx,
     wallet: walletA,
@@ -798,7 +835,7 @@ async function main() {
       functionName: 'approve',
       args: [route.router, wethForA]
     }
-  })
+  });
   await txStep({
     ctx,
     wallet: walletA,
@@ -819,7 +856,7 @@ async function main() {
         }
       ]
     }
-  })
+  });
   // Approve the known required amount (the swap delivered ≥ usdcForA via amountOutMinimum); avoids
   // depending on a post-swap balance read that the caching RPC may serve stale.
   await txStep({
@@ -832,7 +869,7 @@ async function main() {
       functionName: 'approve',
       args: [MIDNIGHT, usdcForA]
     }
-  })
+  });
   if (!ratifierAuthed) {
     await txStep({
       ctx,
@@ -844,7 +881,7 @@ async function main() {
         functionName: 'setIsAuthorized',
         args: [ratifier, true, accountA.address]
       }
-    })
+    });
   }
 
   // --- Wallet B: wrap collateral, approve, then per-position supplyCollateral + take ---
@@ -859,7 +896,7 @@ async function main() {
       args: [],
       value: wethForB
     }
-  })
+  });
   await txStep({
     ctx,
     wallet: walletB,
@@ -870,7 +907,7 @@ async function main() {
       functionName: 'approve',
       args: [MIDNIGHT, wethForB]
     }
-  })
+  });
 
   for (const p of positions) {
     await txStep({
@@ -883,7 +920,7 @@ async function main() {
         functionName: 'supplyCollateral',
         args: [p.market, 0n, p.collateral, accountB.address]
       }
-    })
+    });
     const result = (await txStep({
       ctx,
       wallet: walletB,
@@ -902,38 +939,40 @@ async function main() {
           '0x'
         ]
       }
-    })) as readonly [bigint, bigint]
+    })) as readonly [bigint, bigint];
     if (p.index === 0 && result[0] !== p.buyerAssets) {
-      logger.warn('seed.buyerAssets_mismatch', { expected: p.buyerAssets, actual: result[0] })
+      logger.warn('seed.buyerAssets_mismatch', { expected: p.buyerAssets, actual: result[0] });
     }
     logger.info('seed.position_created', {
       index: p.index,
       id: p.id,
       debt: p.units,
       drawdownBps: p.drawdownBps
-    })
+    });
   }
 
   // --- Verify via the bot's own lens (retry: the caching RPC lags the just-landed takes) ---
-  const pairs = positions.map(p => ({ id: p.id, borrower: accountB.address, caller: zeroAddress }))
-  let lensOut = await readMidnightLiquidationLens(deploylessClient, MIDNIGHT, pairs)
+  const pairs = positions.map(p => ({ id: p.id, borrower: accountB.address, caller: zeroAddress }));
+  let lensOut = await readMidnightLiquidationLens(deploylessClient, MIDNIGHT, pairs);
   for (let attempt = 1; attempt < SIMULATE_RETRIES; attempt++) {
-    if (!positions.some(p => !lensOut.get(lensKey(p.id, accountB.address))?.hasDebt)) break
-    await sleep(RETRY_DELAY_MS)
-    lensOut = await readMidnightLiquidationLens(deploylessClient, MIDNIGHT, pairs)
+    if (!positions.some(p => !lensOut.get(lensKey(p.id, accountB.address))?.hasDebt)) {
+      break;
+    }
+    await sleep(RETRY_DELAY_MS);
+    lensOut = await readMidnightLiquidationLens(deploylessClient, MIDNIGHT, pairs);
   }
-  let healthy = 0
+  let healthy = 0;
   for (const p of positions) {
-    const out = lensOut.get(lensKey(p.id, accountB.address))
+    const out = lensOut.get(lensKey(p.id, accountB.address));
     if (out?.valid && out.hasDebt && out.healthy) {
-      healthy += 1
+      healthy += 1;
       logger.info('seed.verified', {
         index: p.index,
         id: p.id,
         debt: out.debt,
         maxDebt: out.maxDebt,
         priceDropToLiquidateBps: priceDropToLiquidateBps(out.maxDebt, out.debt)
-      })
+      });
     } else {
       logger.error('seed.verify_failed', {
         index: p.index,
@@ -941,7 +980,7 @@ async function main() {
         valid: out?.valid,
         hasDebt: out?.hasDebt,
         healthy: out?.healthy
-      })
+      });
     }
   }
   logger.info('seed.done', {
@@ -949,7 +988,7 @@ async function main() {
     healthyAtCreation: healthy,
     borrower: accountB.address,
     detail: `watch the prod bot liquidate these when WETH drops ~${args.drawdownBps}bps`
-  })
+  });
 }
 
-await main()
+await main();

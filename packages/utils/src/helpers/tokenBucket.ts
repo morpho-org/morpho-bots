@@ -8,26 +8,26 @@
  * @returns A bucket whose `take()` resolves when a token has been consumed.
  */
 export function createTokenBucket(opts: {
-  rps: number
-  burst: number
-  now: () => number
-  sleep: (ms: number) => Promise<void>
+  rps: number;
+  burst: number;
+  now: () => number;
+  sleep: (ms: number) => Promise<void>;
 }): { take: () => Promise<void> } {
-  const { rps, burst, now, sleep } = opts
-  let tokens = burst
-  let last = now()
+  const { rps, burst, now, sleep } = opts;
+  let tokens = burst;
+  let last = now();
   return {
     async take() {
       for (;;) {
-        const t = now()
-        tokens = Math.min(burst, tokens + ((t - last) / 1000) * rps)
-        last = t
+        const t = now();
+        tokens = Math.min(burst, tokens + ((t - last) / 1000) * rps);
+        last = t;
         if (tokens >= 1) {
-          tokens -= 1
-          return
+          tokens -= 1;
+          return;
         }
-        await sleep(Math.ceil(((1 - tokens) / rps) * 1000))
+        await sleep(Math.ceil(((1 - tokens) / rps) * 1000));
       }
     }
-  }
+  };
 }

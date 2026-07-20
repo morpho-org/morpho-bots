@@ -20,29 +20,33 @@
  */
 export type CooldownStore = {
   /** True if `label` was marked within the cooldown window and should be skipped this tick. */
-  shouldSkip: (label: string) => boolean
+  shouldSkip: (label: string) => boolean;
   /** Record that `label` just failed to produce a submittable tx (starts/refreshes its cooldown). */
-  mark: (label: string) => void
-}
+  mark: (label: string) => void;
+};
 
 export function createCooldownStore(opts: {
-  cooldownMs: number
-  now?: () => number
+  cooldownMs: number;
+  now?: () => number;
 }): CooldownStore {
-  const { cooldownMs } = opts
-  const now = opts.now ?? (() => Date.now())
-  const enabled = cooldownMs > 0
-  const attemptedAt = new Map<string, number>()
+  const { cooldownMs } = opts;
+  const now = opts.now ?? (() => Date.now());
+  const enabled = cooldownMs > 0;
+  const attemptedAt = new Map<string, number>();
 
   return {
     shouldSkip: label => {
-      if (!enabled) return false
-      const at = attemptedAt.get(label)
-      return at !== undefined && now() - at < cooldownMs
+      if (!enabled) {
+        return false;
+      }
+      const at = attemptedAt.get(label);
+      return at !== undefined && now() - at < cooldownMs;
     },
     mark: label => {
-      if (!enabled) return
-      attemptedAt.set(label, now())
+      if (!enabled) {
+        return;
+      }
+      attemptedAt.set(label, now());
     }
-  }
+  };
 }

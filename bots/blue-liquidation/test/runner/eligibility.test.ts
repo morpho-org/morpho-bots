@@ -1,10 +1,9 @@
-import { describe, expect, it } from 'bun:test'
+import { describe, expect, it } from 'bun:test';
 
-import type { MarketParams } from '../../src/market'
-import type { LensOut } from '../../src/state/lens.sol'
-
-import { ORACLE_PRICE_SCALE, WAD } from '../../src/constants'
-import { isLiquidatable, planInputFromLens } from '../../src/runner/eligibility'
+import { ORACLE_PRICE_SCALE, WAD } from '../../src/constants';
+import type { MarketParams } from '../../src/market';
+import { isLiquidatable, planInputFromLens } from '../../src/runner/eligibility';
+import type { LensOut } from '../../src/state/lens.sol';
 
 const PARAMS: MarketParams = {
   loanToken: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
@@ -12,7 +11,7 @@ const PARAMS: MarketParams = {
   oracle: '0x1111111111111111111111111111111111111111',
   irm: '0x46415998764C29aB2a25CbeA6254146D50D22687',
   lltv: 86n * 10n ** 16n
-}
+};
 
 function lensOut(overrides: Partial<LensOut> = {}): LensOut {
   return {
@@ -28,30 +27,30 @@ function lensOut(overrides: Partial<LensOut> = {}): LensOut {
     collateralPrice: ORACLE_PRICE_SCALE,
     lltv: PARAMS.lltv,
     ...overrides
-  }
+  };
 }
 
 describe('isLiquidatable', () => {
   it('is true only for a valid, indebted, unhealthy position', () => {
-    expect(isLiquidatable(lensOut())).toBe(true)
-  })
+    expect(isLiquidatable(lensOut())).toBe(true);
+  });
 
   it('is false when the market is invalid (forged params / no market)', () => {
-    expect(isLiquidatable(lensOut({ valid: false }))).toBe(false)
-  })
+    expect(isLiquidatable(lensOut({ valid: false }))).toBe(false);
+  });
 
   it('is false with no debt', () => {
-    expect(isLiquidatable(lensOut({ hasDebt: false }))).toBe(false)
-  })
+    expect(isLiquidatable(lensOut({ hasDebt: false }))).toBe(false);
+  });
 
   it('is false when healthy', () => {
-    expect(isLiquidatable(lensOut({ healthy: true }))).toBe(false)
-  })
-})
+    expect(isLiquidatable(lensOut({ healthy: true }))).toBe(false);
+  });
+});
 
 describe('planInputFromLens', () => {
   it('projects the flat per-position + accrued-market fields onto PlanInput', () => {
-    const out = lensOut()
+    const out = lensOut();
     expect(planInputFromLens(out)).toEqual({
       hasDebt: out.hasDebt,
       healthy: out.healthy,
@@ -61,6 +60,6 @@ describe('planInputFromLens', () => {
       totalBorrowShares: out.totalBorrowShares,
       collateralPrice: out.collateralPrice,
       lltv: out.lltv
-    })
-  })
-})
+    });
+  });
+});

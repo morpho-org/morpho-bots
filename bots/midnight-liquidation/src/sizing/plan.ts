@@ -1,7 +1,7 @@
-import { BPS, ORACLE_PRICE_SCALE, WAD } from '../constants'
-import { lifAt } from './lif'
-import { min, mulDivDown, mulDivUp } from './math'
-import { isRcfExempt, maxRepaidPreMaturity } from './rcf'
+import { BPS, ORACLE_PRICE_SCALE, WAD } from '../constants';
+import { lifAt } from './lif';
+import { min, mulDivDown, mulDivUp } from './math';
+import { isRcfExempt, maxRepaidPreMaturity } from './rcf';
 
 /**
  * The fresh, lens-derived inputs the sizing decision depends on. Field names mirror the lens
@@ -9,33 +9,33 @@ import { isRcfExempt, maxRepaidPreMaturity } from './rcf'
  * are evaluated against the same block the rest of the reading came from.
  */
 export type PlanInput = {
-  blockTimestamp: bigint
-  maturity: bigint
-  hasDebt: boolean
-  locked: boolean
+  blockTimestamp: bigint;
+  maturity: bigint;
+  hasDebt: boolean;
+  locked: boolean;
   /** `isHealthy`: `maxDebt >= debt` (so `!healthy` ⟺ `debt > maxDebt`). */
-  healthy: boolean
-  debt: bigint
-  badDebt: bigint
-  maxDebt: bigint
+  healthy: boolean;
+  debt: bigint;
+  badDebt: bigint;
+  maxDebt: bigint;
   /** Market-level `rcfThreshold`. */
-  rcfThreshold: bigint
+  rcfThreshold: bigint;
   /** Best (highest USD value) activated collateral slot, chosen by the lens. */
-  bestCollateralIndex: number
-  bestCollateralAmt: bigint
+  bestCollateralIndex: number;
+  bestCollateralAmt: bigint;
   /** Oracle price of the best slot, in ORACLE_PRICE_SCALE units. */
-  bestCollateralPrice: bigint
+  bestCollateralPrice: bigint;
   /** Per-collateral `maxLif` and `lltv` of the best slot. */
-  bestCollateralMaxLif: bigint
-  bestCollateralLltv: bigint
-}
+  bestCollateralMaxLif: bigint;
+  bestCollateralLltv: bigint;
+};
 
 export type LiquidationPlan = {
-  collateralIndex: number
-  seizedAssets: bigint
-  repaidUnits: bigint
-  postMaturityMode: boolean
-}
+  collateralIndex: number;
+  seizedAssets: bigint;
+  repaidUnits: bigint;
+  postMaturityMode: boolean;
+};
 
 /**
  * Operator sizing knobs that are NOT lens-derived (so they live here, not on `PlanInput`). Sourced
@@ -49,17 +49,17 @@ type PlanOptions = {
    * cap and revert (RCF check, normal mode; debt underflow, post-maturity). Sizing against
    * `cap·(1 - margin)` keeps headroom for ordinary one-block moves. `0` reproduces the unmargined cap.
    */
-  seizeCapMarginBps?: number
-}
+  seizeCapMarginBps?: number;
+};
 
 export function isBadDebtRealization(plan: LiquidationPlan): boolean {
-  return plan.seizedAssets === 0n && plan.repaidUnits === 0n
+  return plan.seizedAssets === 0n && plan.repaidUnits === 0n;
 }
 
 // Repaid units the contract derives when the caller passes `seizedAssets` (midnight-contracts.txt:2369):
 // two chained ceil-divisions, collateral → loan units → repaid units.
 function impliedRepaidUnits(seizedAssets: bigint, price: bigint, lif: bigint): bigint {
-  return mulDivUp(mulDivUp(seizedAssets, price, ORACLE_PRICE_SCALE), WAD, lif)
+  return mulDivUp(mulDivUp(seizedAssets, price, ORACLE_PRICE_SCALE), WAD, lif);
 }
 
 /**
@@ -73,8 +73,10 @@ function impliedRepaidUnits(seizedAssets: bigint, price: bigint, lif: bigint): b
  * largest such seize (`impliedRepaidUnits(result + 1) > cap`).
  */
 export function maxSeizeForCap(cap: bigint, price: bigint, lif: bigint): bigint {
-  if (cap === 0n || price === 0n) return 0n
-  return mulDivDown(mulDivDown(cap, lif, WAD), ORACLE_PRICE_SCALE, price)
+  if (cap === 0n || price === 0n) {
+    return 0n;
+  }
+  return mulDivDown(mulDivDown(cap, lif, WAD), ORACLE_PRICE_SCALE, price);
 }
 
 // Builds a cap-binding seize-exact plan: seize the largest amount whose contract-derived repaid stays
@@ -88,15 +90,17 @@ function capBoundPlan(
   marginBps: number,
   postMaturityMode: boolean
 ): LiquidationPlan | null {
-  const capEff = mulDivDown(cap, BPS - BigInt(marginBps), BPS)
-  const seizedAssets = maxSeizeForCap(capEff, input.bestCollateralPrice, lif)
-  if (seizedAssets === 0n) return null
+  const capEff = mulDivDown(cap, BPS - BigInt(marginBps), BPS);
+  const seizedAssets = maxSeizeForCap(capEff, input.bestCollateralPrice, lif);
+  if (seizedAssets === 0n) {
+    return null;
+  }
   return {
     collateralIndex: input.bestCollateralIndex,
     seizedAssets,
     repaidUnits: 0n,
     postMaturityMode
-  }
+  };
 }
 
 /**
@@ -118,12 +122,16 @@ function capBoundPlan(
  * headroom for a one-block oracle move; any residual drift fails closed in `simulate()`, never on-chain.
  */
 export function plan(input: PlanInput, options: PlanOptions = {}): LiquidationPlan | null {
-  const { seizeCapMarginBps = 0 } = options
+  const { seizeCapMarginBps = 0 } = options;
 
-  if (!input.hasDebt || input.locked) return null
+  if (!input.hasDebt || input.locked) {
+    return null;
+  }
 
-  const postMaturityMode = input.blockTimestamp > input.maturity
-  if (!postMaturityMode && input.healthy) return null
+  const postMaturityMode = input.blockTimestamp > input.maturity;
+  if (!postMaturityMode && input.healthy) {
+    return null;
+  }
 
   if (input.badDebt >= input.debt) {
     return {
@@ -131,7 +139,7 @@ export function plan(input: PlanInput, options: PlanOptions = {}): LiquidationPl
       seizedAssets: 0n,
       repaidUnits: 0n,
       postMaturityMode
-    }
+    };
   }
 
   const lif = lifAt({
@@ -139,14 +147,14 @@ export function plan(input: PlanInput, options: PlanOptions = {}): LiquidationPl
     maturity: input.maturity,
     maxLif: input.bestCollateralMaxLif,
     postMaturityMode
-  })
+  });
 
   const seizeWholeSlot: LiquidationPlan = {
     collateralIndex: input.bestCollateralIndex,
     seizedAssets: input.bestCollateralAmt,
     repaidUnits: 0n,
     postMaturityMode
-  }
+  };
 
   // Post-maturity mode: the RCF cap does not apply, but the contract still subtracts `repaidUnits`
   // from the (post-writeoff) debt with no clamp, so over-repaying reverts (Panic 0x11 underflow).
@@ -156,14 +164,16 @@ export function plan(input: PlanInput, options: PlanOptions = {}): LiquidationPl
   // that debt. `badDebt` is written off before the repay, so the cap is the post-writeoff debt
   // (`debt - badDebt`).
   if (postMaturityMode) {
-    const effectiveDebt = input.debt - input.badDebt
+    const effectiveDebt = input.debt - input.badDebt;
     const wholeSlotRepaid = impliedRepaidUnits(
       input.bestCollateralAmt,
       input.bestCollateralPrice,
       lif
-    )
-    if (wholeSlotRepaid <= effectiveDebt) return seizeWholeSlot
-    return capBoundPlan(input, effectiveDebt, lif, seizeCapMarginBps, postMaturityMode)
+    );
+    if (wholeSlotRepaid <= effectiveDebt) {
+      return seizeWholeSlot;
+    }
+    return capBoundPlan(input, effectiveDebt, lif, seizeCapMarginBps, postMaturityMode);
   }
 
   // Normal mode: like post-maturity above, the contract subtracts `repaidUnits` from the
@@ -171,28 +181,30 @@ export function plan(input: PlanInput, options: PlanOptions = {}): LiquidationPl
   // bounded by the RCF cap (waived when the slot is rcf-exempt) AND never exceeds that debt. Seize
   // the whole slot only when its implied repaid units fit within the bound; otherwise seize the
   // largest amount whose contract-derived repaid stays within that bound.
-  const effectiveDebt = input.debt - input.badDebt
+  const effectiveDebt = input.debt - input.badDebt;
   const maxRepaid = maxRepaidPreMaturity({
     debt: input.debt,
     badDebt: input.badDebt,
     maxDebt: input.maxDebt,
     lif,
     lltv: input.bestCollateralLltv
-  })
+  });
   const wholeSlotRepaid = impliedRepaidUnits(
     input.bestCollateralAmt,
     input.bestCollateralPrice,
     lif
-  )
+  );
   const exempt = isRcfExempt({
     collateralAmt: input.bestCollateralAmt,
     price: input.bestCollateralPrice,
     lif,
     maxRepaid,
     rcfThreshold: input.rcfThreshold
-  })
-  const repayCap = exempt ? effectiveDebt : min(maxRepaid, effectiveDebt)
+  });
+  const repayCap = exempt ? effectiveDebt : min(maxRepaid, effectiveDebt);
 
-  if (wholeSlotRepaid <= repayCap) return seizeWholeSlot
-  return capBoundPlan(input, repayCap, lif, seizeCapMarginBps, postMaturityMode)
+  if (wholeSlotRepaid <= repayCap) {
+    return seizeWholeSlot;
+  }
+  return capBoundPlan(input, repayCap, lif, seizeCapMarginBps, postMaturityMode);
 }

@@ -11,15 +11,17 @@ export function mapObjValues<T extends object, U>(
   obj: T,
   fn: (value: T[keyof T], key: keyof T) => U
 ): { [K in keyof T]: U } {
-  const result = {} as { [K in keyof T]: U }
-  const keys = Reflect.ownKeys(obj) as (keyof T)[]
-  for (const k of keys) result[k] = fn(obj[k], k)
-  return result
+  const result = {} as { [K in keyof T]: U };
+  const keys = Reflect.ownKeys(obj) as (keyof T)[];
+  for (const k of keys) {
+    result[k] = fn(obj[k], k);
+  }
+  return result;
 }
 
 /**
  * Filters out null values from an array and returns a type-safe array
  */
 export function filterNull<T>(arr: (T | null)[]): T[] {
-  return arr.filter(item => item !== null) as T[]
+  return arr.filter(item => item !== null) as T[];
 }

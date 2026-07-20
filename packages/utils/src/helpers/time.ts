@@ -1,23 +1,23 @@
-import { ZonedDateTime } from '@internationalized/date'
-import { format } from 'date-fns'
-import isNil from 'lodash-es/isNil'
+import { ZonedDateTime } from '@internationalized/date';
+import { format } from 'date-fns';
+import isNil from 'lodash-es/isNil';
 
-export const oneSecondInMs = 1000
-export const oneMinInMs = 60 * oneSecondInMs
-export const oneHourInMs = 60 * oneMinInMs
-export const oneDayInMs = 24 * oneHourInMs
-export const oneWeekInMs = 7 * oneDayInMs
+export const oneSecondInMs = 1000;
+export const oneMinInMs = 60 * oneSecondInMs;
+export const oneHourInMs = 60 * oneMinInMs;
+export const oneDayInMs = 24 * oneHourInMs;
+export const oneWeekInMs = 7 * oneDayInMs;
 
-export const oneSecond = 1
-export const oneMinInSecs = 60 * oneSecond
-export const oneHourInSecs = 60 * oneMinInSecs
-export const oneDayInSecs = 24 * oneHourInSecs
+export const oneSecond = 1;
+export const oneMinInSecs = 60 * oneSecond;
+export const oneHourInSecs = 60 * oneMinInSecs;
+export const oneDayInSecs = 24 * oneHourInSecs;
 
-export const twentyFourHoursInMs = 24 * oneHourInMs
-export const twentyFourHoursInSecs = twentyFourHoursInMs / oneSecondInMs
+export const twentyFourHoursInMs = 24 * oneHourInMs;
+export const twentyFourHoursInSecs = twentyFourHoursInMs / oneSecondInMs;
 
-export const oneYearInSecs = twentyFourHoursInSecs * 365
-export const oneWeekInSecs = twentyFourHoursInSecs * 7
+export const oneYearInSecs = twentyFourHoursInSecs * 365;
+export const oneWeekInSecs = twentyFourHoursInSecs * 7;
 
 /**
  * Converts hours to seconds
@@ -27,7 +27,7 @@ export const oneWeekInSecs = twentyFourHoursInSecs * 7
 export function hours(hrs: number) {
   return {
     toSecs: () => hrs * oneHourInSecs
-  }
+  };
 }
 
 /**
@@ -39,7 +39,7 @@ export function days(_days: number) {
   return {
     toSecs: () => _days * oneDayInSecs,
     toMs: () => _days * oneDayInMs
-  }
+  };
 }
 
 /**
@@ -51,7 +51,7 @@ export function mins(_mins: number) {
   return {
     toSecs: () => _mins * oneMinInSecs,
     toMs: () => _mins * oneMinInMs
-  }
+  };
 }
 
 /**
@@ -62,7 +62,7 @@ export function mins(_mins: number) {
 export function secs(_secs: number) {
   return {
     toMs: () => _secs * oneSecondInMs
-  }
+  };
 }
 
 /**
@@ -73,7 +73,7 @@ export function secs(_secs: number) {
 export function ms(_ms: number) {
   return {
     toSecs: () => _ms / oneSecondInMs
-  }
+  };
 }
 
 /**
@@ -82,7 +82,7 @@ export function ms(_ms: number) {
  * @returns {number} JavaScript timestamp in milliseconds
  */
 export function toJsTimestamp(unixTimestamp: number): number {
-  return unixTimestamp * oneSecondInMs
+  return unixTimestamp * oneSecondInMs;
 }
 
 /**
@@ -91,7 +91,7 @@ export function toJsTimestamp(unixTimestamp: number): number {
  * @returns {number} Unix timestamp in seconds
  */
 export function toUnixTimestamp(jsTimestamp: number): number {
-  return Math.round(jsTimestamp / oneSecondInMs)
+  return Math.round(jsTimestamp / oneSecondInMs);
 }
 
 /**
@@ -99,7 +99,7 @@ export function toUnixTimestamp(jsTimestamp: number): number {
  * @returns {number} Current time as a Unix timestamp (seconds since epoch)
  */
 export function nowInSeconds(): number {
-  return Math.floor(Date.now() / oneSecondInMs)
+  return Math.floor(Date.now() / oneSecondInMs);
 }
 
 /**
@@ -109,25 +109,29 @@ export function nowInSeconds(): number {
  * @returns {number} - Unix timestamp in seconds
  */
 export function dateToUnixTimestamp(date: string): number {
-  return Date.parse(date) / oneSecondInMs
+  return Date.parse(date) / oneSecondInMs;
 }
 
 export function formatSecondsToUtcDate(
   timelockDurationSeconds: number | string | undefined
 ): string {
-  if (isNil(timelockDurationSeconds)) return 'N/A'
+  if (isNil(timelockDurationSeconds)) {
+    return 'N/A';
+  }
 
   const duration =
     typeof timelockDurationSeconds === 'string'
       ? parseInt(timelockDurationSeconds)
-      : timelockDurationSeconds
+      : timelockDurationSeconds;
 
-  if (!isFinite(duration) || duration <= 0) return 'N/A'
+  if (!isFinite(duration) || duration <= 0) {
+    return 'N/A';
+  }
 
-  const currentTimeSeconds = nowInSeconds()
-  const executionTimeSeconds = currentTimeSeconds + duration
+  const currentTimeSeconds = nowInSeconds();
+  const executionTimeSeconds = currentTimeSeconds + duration;
 
-  const executionDate = new Date(executionTimeSeconds * 1000)
+  const executionDate = new Date(executionTimeSeconds * 1000);
 
   const utcDate = new Date(
     executionDate.getUTCFullYear(),
@@ -136,9 +140,9 @@ export function formatSecondsToUtcDate(
     executionDate.getUTCHours(),
     executionDate.getUTCMinutes(),
     executionDate.getUTCSeconds()
-  )
+  );
 
-  return format(utcDate, "MMM d, yyyy 'at' h:mm a 'UTC'")
+  return format(utcDate, "MMM d, yyyy 'at' h:mm a 'UTC'");
 }
 
 /**
@@ -147,7 +151,7 @@ export function formatSecondsToUtcDate(
  * @returns {ZonedDateTime} ZonedDateTime object
  */
 export function secondsToZonedDateTime(timestamp: string): ZonedDateTime {
-  const jsDate = new Date(Number(timestamp) * 1000)
+  const jsDate = new Date(Number(timestamp) * 1000);
   return new ZonedDateTime(
     jsDate.getUTCFullYear(),
     jsDate.getUTCMonth() + 1,
@@ -158,22 +162,22 @@ export function secondsToZonedDateTime(timestamp: string): ZonedDateTime {
     jsDate.getUTCMinutes(),
     jsDate.getUTCSeconds(),
     jsDate.getUTCMilliseconds()
-  )
+  );
 }
 
 interface FormatDurationOptions {
   /** Unit format. `'short'` → `"5h"`, `'long'` → `"5 hours"`. Defaults to `'short'`. */
-  format?: 'short' | 'long'
+  format?: 'short' | 'long';
   /** When true, also show the next-smaller unit if non-zero (e.g. `"5d 3h"` vs `"5d"`). Defaults to false. */
-  granular?: boolean
+  granular?: boolean;
 }
 
 function formatUnit(n: number, unit: 'day' | 'hour' | 'minute', format: 'short' | 'long'): string {
   if (format === 'short') {
-    const abbr = unit === 'day' ? 'd' : unit === 'hour' ? 'h' : 'm'
-    return `${n}${abbr}`
+    const abbr = unit === 'day' ? 'd' : unit === 'hour' ? 'h' : 'm';
+    return `${n}${abbr}`;
   }
-  return `${n} ${n === 1 ? unit : `${unit}s`}`
+  return `${n} ${n === 1 ? unit : `${unit}s`}`;
 }
 
 /**
@@ -190,28 +194,38 @@ export function formatDuration(
   seconds: number,
   { format = 'short', granular = false }: FormatDurationOptions = {}
 ): string | null {
-  if (seconds <= 0) return null
+  if (seconds <= 0) {
+    return null;
+  }
 
-  const sep = format === 'short' ? ' ' : ', '
+  const sep = format === 'short' ? ' ' : ', ';
 
   if (seconds >= oneDayInSecs) {
-    const d = Math.floor(seconds / oneDayInSecs)
-    if (!granular) return formatUnit(d, 'day', format)
-    const h = Math.floor((seconds % oneDayInSecs) / oneHourInSecs)
-    const parts = [formatUnit(d, 'day', format)]
-    if (h > 0) parts.push(formatUnit(h, 'hour', format))
-    return parts.join(sep)
+    const d = Math.floor(seconds / oneDayInSecs);
+    if (!granular) {
+      return formatUnit(d, 'day', format);
+    }
+    const h = Math.floor((seconds % oneDayInSecs) / oneHourInSecs);
+    const parts = [formatUnit(d, 'day', format)];
+    if (h > 0) {
+      parts.push(formatUnit(h, 'hour', format));
+    }
+    return parts.join(sep);
   }
   if (seconds >= oneHourInSecs) {
-    const h = Math.floor(seconds / oneHourInSecs)
-    if (!granular) return formatUnit(h, 'hour', format)
-    const m = Math.floor((seconds % oneHourInSecs) / oneMinInSecs)
-    const parts = [formatUnit(h, 'hour', format)]
-    if (m > 0) parts.push(formatUnit(m, 'minute', format))
-    return parts.join(sep)
+    const h = Math.floor(seconds / oneHourInSecs);
+    if (!granular) {
+      return formatUnit(h, 'hour', format);
+    }
+    const m = Math.floor((seconds % oneHourInSecs) / oneMinInSecs);
+    const parts = [formatUnit(h, 'hour', format)];
+    if (m > 0) {
+      parts.push(formatUnit(m, 'minute', format));
+    }
+    return parts.join(sep);
   }
-  const m = Math.max(1, Math.floor(seconds / oneMinInSecs))
-  return formatUnit(m, 'minute', format)
+  const m = Math.max(1, Math.floor(seconds / oneMinInSecs));
+  return formatUnit(m, 'minute', format);
 }
 
 export function dateLabelForUnixTimestamp(timestamp: number): string {
@@ -219,7 +233,7 @@ export function dateLabelForUnixTimestamp(timestamp: number): string {
     year: 'numeric',
     month: 'short',
     day: 'numeric'
-  })
+  });
 }
 
 /**
@@ -228,25 +242,25 @@ export function dateLabelForUnixTimestamp(timestamp: number): string {
  * the timezone breakdown on hover.
  */
 export function dateTimeLabelForUnixTimestamp(timestamp: number): string {
-  const date = new Date(toJsTimestamp(timestamp))
+  const date = new Date(toJsTimestamp(timestamp));
   const datePart = date.toLocaleDateString('en-US', {
     year: 'numeric',
     month: 'short',
     day: 'numeric'
-  })
+  });
   const timePart = date.toLocaleTimeString(undefined, {
     hour: '2-digit',
     minute: '2-digit'
-  })
-  return `${datePart}, ${timePart}`
+  });
+  return `${datePart}, ${timePart}`;
 }
 
 export function fullUtcDateLabel(timestamp: number): string {
-  const date = new Date(toJsTimestamp(timestamp))
-  const month = date.toLocaleString('en-US', { month: 'long', timeZone: 'UTC' })
-  const day = date.getUTCDate()
-  const year = date.getUTCFullYear()
-  const hours = date.getUTCHours().toString().padStart(2, '0')
-  const minutes = date.getUTCMinutes().toString().padStart(2, '0')
-  return `${month} ${day}, ${year}, ${hours}:${minutes} UTC`
+  const date = new Date(toJsTimestamp(timestamp));
+  const month = date.toLocaleString('en-US', { month: 'long', timeZone: 'UTC' });
+  const day = date.getUTCDate();
+  const year = date.getUTCFullYear();
+  const hours = date.getUTCHours().toString().padStart(2, '0');
+  const minutes = date.getUTCMinutes().toString().padStart(2, '0');
+  return `${month} ${day}, ${year}, ${hours}:${minutes} UTC`;
 }

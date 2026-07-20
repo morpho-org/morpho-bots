@@ -1,7 +1,7 @@
-import { abiRevertDecoder, revertReason as revertReasonWith } from '@repo/bot-kit'
-import { MidnightAbi } from '@repo/contracts'
+import { abiRevertDecoder, revertReason as revertReasonWith } from '@repo/bot-kit';
+import { MidnightAbi } from '@repo/contracts';
 
-const decodeMidnightRevert = abiRevertDecoder(MidnightAbi)
+const decodeMidnightRevert = abiRevertDecoder(MidnightAbi);
 
 /**
  * Midnight-aware revert formatter: decodes the protocol's custom ABI errors (`NotBorrower(…)` etc.)
@@ -9,4 +9,4 @@ const decodeMidnightRevert = abiRevertDecoder(MidnightAbi)
  * `tick.error` / `tx.*` log lines carry decoded Midnight reasons.
  */
 export const revertReason = (error: unknown): string =>
-  revertReasonWith(error, decodeMidnightRevert)
+  revertReasonWith(error, decodeMidnightRevert);

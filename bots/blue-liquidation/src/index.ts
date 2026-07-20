@@ -1,10 +1,7 @@
-import type { SwapPlan, Venue } from '@repo/swaps'
-import type { Address, Hex } from 'viem'
-
 import {
   assertContractDeployed,
-  createBalanceMonitor,
   createBackoff,
+  createBalanceMonitor,
   createCooldownStore,
   createDeploylessClient,
   createHeartbeatMonitor,
@@ -17,7 +14,8 @@ import {
   initialFees,
   railwayContext,
   simulateLiquidationExec
-} from '@repo/bot-kit'
+} from '@repo/bot-kit';
+import type { SwapPlan, Venue } from '@repo/swaps';
 import {
   createErc4626Unwrapper,
   createPendlePtUnwrapper,
@@ -25,31 +23,32 @@ import {
   createVenueSelector,
   PENDLE_CHAIN_IDS,
   priceByVenue
-} from '@repo/swaps'
-import { ensureError, tryCatch } from '@repo/utils'
-import { erc20Abi } from 'viem'
-import { getBlockNumber, readContract } from 'viem/actions'
+} from '@repo/swaps';
+import { ensureError, tryCatch } from '@repo/utils';
 
-import type { MarketParams } from './market'
-import type { LiquidationPlan } from './sizing/plan'
+import type { Address, Hex } from 'viem';
+import { erc20Abi } from 'viem';
+import { getBlockNumber, readContract } from 'viem/actions';
 
-import { loadConfig } from './config'
-import { SETTLED_COOLDOWN_BLOCKS } from './constants'
-import { createGraphqlCandidateSource, discoverCandidates } from './discovery/borrowers'
-import { encodeLiquidationExec } from './execution/encode-call'
-import { composeQuoting } from './quotes'
-import { runTick } from './runner/tick'
-import { readBlueLiquidationLens } from './state/lens.sol'
-import { createMarketParamsResolver, multicallIdToMarketParams } from './state/market-params'
-import { revertReason } from './tx-error'
+import { loadConfig } from './config';
+import { SETTLED_COOLDOWN_BLOCKS } from './constants';
+import { createGraphqlCandidateSource, discoverCandidates } from './discovery/borrowers';
+import { encodeLiquidationExec } from './execution/encode-call';
+import type { MarketParams } from './market';
+import { composeQuoting } from './quotes';
+import { runTick } from './runner/tick';
+import type { LiquidationPlan } from './sizing/plan';
+import { readBlueLiquidationLens } from './state/lens.sol';
+import { createMarketParamsResolver, multicallIdToMarketParams } from './state/market-params';
+import { revertReason } from './tx-error';
 
 async function main() {
-  const config = loadConfig()
+  const config = loadConfig();
   // Global wide-log context stamped onto every line (replaces the enrichment the retired Vector VRL
   // did): the bot identity + chain, plus whichever RAILWAY_* identity vars this deployment exposes.
   const logger = createLogger(config.logLevel, {
     context: { bot: 'blue-liquidation', chainId: config.chainId, ...railwayContext() }
-  })
+  });
 
   // Signed-send path: a plain wallet client + local nonce cursor (separate from the deployless read
   // client). The EOA is the liquidator and the recipient of both end-of-exec token sweeps.
@@ -68,49 +67,61 @@ async function main() {
       maxDataBytes: DEFAULT_MAX_DATA_BYTES
     },
     logger
-  })
-  const eoa = signer.account.address
+  });
+  const eoa = signer.account.address;
 
   logger.info('startup', {
     chainId: config.chainId,
     liquidator: eoa,
     callback: config.executooorAddress,
     morpho: config.morpho
-  })
+  });
 
   // Read-only client shared by the lens and simulate paths. Validate both the Executor and the Morpho
   // singleton hold code before doing any work — fatal on a typo / not-yet-deployed address (liveness,
   // not identity).
-  const client = createDeploylessClient(config)
+  const client = createDeploylessClient(config);
   await assertContractDeployed(
     client,
     config.executooorAddress,
     'EXECUTOOOR_ADDRESS',
     'deploy it with `bun run --filter @repo/contracts deploy:executor`'
-  )
-  await assertContractDeployed(client, config.morpho, 'Morpho singleton')
+  );
+  await assertContractDeployed(client, config.morpho, 'Morpho singleton');
 
   // Enabled venues are inferred from which venue API keys are present (loadConfig already enforced
   // the no-key → detection-only opt-in). Keys are read HERE, at the point of use, and live only in
   // this closure — never on the (logged) Config object.
-  const apiKeys: Partial<Record<Venue, string>> = {}
-  if (Bun.env.ZEROX_API_KEY) apiKeys['0x'] = Bun.env.ZEROX_API_KEY
-  if (Bun.env.ONEINCH_API_KEY) apiKeys['1inch'] = Bun.env.ONEINCH_API_KEY
-  if (Bun.env.LIFI_API_KEY) apiKeys.lifi = Bun.env.LIFI_API_KEY
-  const venues = config.venues.enabled
+  const apiKeys: Partial<Record<Venue, string>> = {};
+  if (Bun.env.ZEROX_API_KEY) {
+    apiKeys['0x'] = Bun.env.ZEROX_API_KEY;
+  }
+  if (Bun.env.ONEINCH_API_KEY) {
+    apiKeys['1inch'] = Bun.env.ONEINCH_API_KEY;
+  }
+  if (Bun.env.LIFI_API_KEY) {
+    apiKeys.lifi = Bun.env.LIFI_API_KEY;
+  }
+  const venues = config.venues.enabled;
   if (venues.length === 0) {
     logger.warn('quoting.no_routes', {
       chainId: config.chainId,
       detail:
         'no venue API keys set — running detection-only (every liquidation is skipped, config.no_swap_path)'
-    })
+    });
   } else {
-    logger.info('quoting.startup', { chainId: config.chainId, venues })
+    logger.info('quoting.startup', { chainId: config.chainId, venues });
   }
-  const baseUrls: Partial<Record<Venue, string>> = {}
-  if (config.venues.zeroxBaseUrl) baseUrls['0x'] = config.venues.zeroxBaseUrl
-  if (config.venues.oneinchBaseUrl) baseUrls['1inch'] = config.venues.oneinchBaseUrl
-  if (config.venues.lifiBaseUrl) baseUrls.lifi = config.venues.lifiBaseUrl
+  const baseUrls: Partial<Record<Venue, string>> = {};
+  if (config.venues.zeroxBaseUrl) {
+    baseUrls['0x'] = config.venues.zeroxBaseUrl;
+  }
+  if (config.venues.oneinchBaseUrl) {
+    baseUrls['1inch'] = config.venues.oneinchBaseUrl;
+  }
+  if (config.venues.lifiBaseUrl) {
+    baseUrls.lifi = config.venues.lifiBaseUrl;
+  }
 
   // Two rate-limited HTTP clients, each with its own per-venue token buckets: one for time-sensitive
   // FIRM quotes, and a separate, slower one for BACKGROUND probes — so a probe burst can never queue
@@ -121,14 +132,14 @@ async function main() {
     burst: config.quoting.httpBurst,
     maxRetries: config.quoting.httpMaxRetries,
     timeoutMs: config.quoting.quoteTimeoutMs
-  })
+  });
   const probeClient = createRateLimitedClient({
     apiKeys,
     rps: config.probe.httpRps,
     burst: config.probe.httpRps,
     maxRetries: config.quoting.httpMaxRetries,
     timeoutMs: config.quoting.quoteTimeoutMs
-  })
+  });
 
   // Venue selector: caches a best-first venue ranking per pair from log-scaled indicative probes.
   // Decimals are read once per collateral (memoized in the selector); the collateral set is bounded
@@ -142,7 +153,7 @@ async function main() {
     indicativeQuote: (venue, params) => priceByVenue(probeClient, { venue, baseUrls, params }),
     staleMs: config.probe.staleMs,
     logger
-  })
+  });
 
   // Pre-swap converters for exotic collateral (ERC4626 shares, Pendle PTs → underlying).
   // Auto-detecting with per-process memoization. erc4626 first: a memoized eth_call beats consulting
@@ -157,8 +168,8 @@ async function main() {
         slippageBps: config.quoting.pendleSlippageBps,
         logger
       })
-    : null
-  const unwrappers = [createErc4626Unwrapper({ client, logger }), ...(pendle ? [pendle] : [])]
+    : null;
+  const unwrappers = [createErc4626Unwrapper({ client, logger }), ...(pendle ? [pendle] : [])];
   const { quoteFor } = composeQuoting({
     httpClient,
     selector: venueSelector,
@@ -171,14 +182,14 @@ async function main() {
     unwrappers,
     excludeCollaterals: config.venues.excludeCollaterals,
     logger
-  })
+  });
   const backoff = createBackoff({
     baseBlocks: config.quoting.backoffBaseBlocks,
     maxBlocks: config.quoting.backoffMaxBlocks
-  })
+  });
   // Opt-in per-position cooldown (default disabled): one in-memory store for the process lifetime,
   // complementary to `backoff` (see POSITION_LIQUIDATION_COOLDOWN_MS).
-  const cooldown = createCooldownStore({ cooldownMs: config.positionCooldownMs })
+  const cooldown = createCooldownStore({ cooldownMs: config.positionCooldownMs });
 
   // The exec calldata for one liquidation — the same bytes the simulate gate checks and the queue
   // broadcasts, so a sim-ok plan and its broadcast can't drift.
@@ -196,7 +207,7 @@ async function main() {
       borrower,
       plan: swapPlan,
       recipient: eoa
-    })
+    });
 
   // Borrower discovery: poll the Morpho GraphQL API's `marketPositions` (skip-paginated, listed
   // markets only, over-inclusive by health-factor cutoff). Only (marketId, borrower) is consumed —
@@ -207,24 +218,26 @@ async function main() {
     url: config.discovery.apiUrl,
     chainId: config.chainId,
     healthFactorLte: config.discovery.healthFactorLte
-  })
-  const resolveParams = createMarketParamsResolver(multicallIdToMarketParams(client, config.morpho))
-  const discover = () => discoverCandidates(fetchPage, resolveParams, { logger })
+  });
+  const resolveParams = createMarketParamsResolver(
+    multicallIdToMarketParams(client, config.morpho)
+  );
+  const discover = () => discoverCandidates(fetchPage, resolveParams, { logger });
 
   // Startup discovery self-check (non-fatal): run one discovery pass at boot so a bad API URL or a
   // schema drift is diagnosable from Railway logs at boot, rather than as an opaque per-tick
   // `tick.error`. A failure here is logged and the bot proceeds — the per-block tick retries.
   {
-    const probe = await tryCatch(discover())
+    const probe = await tryCatch(discover());
     if (probe.error) {
-      logger.warn('discovery.startup_error', { detail: ensureError(probe.error).message })
+      logger.warn('discovery.startup_error', { detail: ensureError(probe.error).message });
     } else {
       logger.info('discovery.startup', {
         chainId: config.chainId,
         candidates: probe.data.length,
         // A sample so the join's parsed MarketParams can be eyeballed (non-zero addresses/lltv).
         sample: probe.data[0] ?? null
-      })
+      });
     }
   }
 
@@ -241,19 +254,19 @@ async function main() {
     logger,
     settledCooldownBlocks: SETTLED_COOLDOWN_BLOCKS,
     revertReason
-  })
+  });
 
   // Periodic EOA-balance metric so operators can watch gas drain (see `signer.balance`).
   const balanceMonitor = createBalanceMonitor({
     address: eoa,
     read: signer.balance,
     logger
-  })
+  });
   const heartbeatMonitor = createHeartbeatMonitor({
     url: Bun.env.BETTERSTACK_HEARTBEAT_URL,
     logger
-  })
-  void heartbeatMonitor.start()
+  });
+  void heartbeatMonitor.start();
 
   // An HTTP block-poll watcher drives one tick per new block (coalescing backlog), passing the polled
   // height as the queue's submittedAtBlock. Each liquidatable position resolves its swap, simulates
@@ -272,7 +285,7 @@ async function main() {
           data: encodeExec(market, borrower, plan, swapPlan)
         }),
       submit: async ({ market, borrower, plan, swapPlan, blockNumber, label }) => {
-        const fees = initialFees(await signer.getBaseFee(), config.maxFeeWei)
+        const fees = initialFees(await signer.getBaseFee(), config.maxFeeWei);
         await queue.submit({
           request: {
             to: config.executooorAddress,
@@ -282,22 +295,22 @@ async function main() {
           maxFeePerGas: fees.maxFeePerGas,
           maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
           blockNumber
-        })
+        });
       },
       backoff,
       cooldown,
       inflightLabels: () => queue.inflightLabels(),
       logger
-    })
+    });
 
   // Per-block maintenance, run by the runner BEFORE the tick and independently of it: pending-queue
   // upkeep (confirmations / stuck-detection / fee-bumps / nonce reconciliation / latch clearing) plus
   // the periodic EOA-balance metric. Keeping it off the tick means a sustained discovery / lens
   // outage can't starve already-broadcast transactions of receipt checks and fee replacement.
   const maintain = async (blockNumber: bigint) => {
-    await queue.onBlock(blockNumber)
-    await balanceMonitor.maybeLog(blockNumber)
-  }
+    await queue.onBlock(blockNumber);
+    await balanceMonitor.maybeLog(blockNumber);
+  };
 
   const runner = createRunner({
     getBlockNumber: () => getBlockNumber(client),
@@ -305,29 +318,29 @@ async function main() {
     maintain,
     logger,
     revertReason
-  })
-  runner.start()
+  });
+  runner.start();
 
   // Graceful shutdown: stop the watcher and log the pending set (hashes + nonces) plus the venue
   // state for observability. Sends are fire-and-forget and chain truth wins on restart, so there is
   // nothing to persist or await-drain — a redeploy re-derives from chain.
   const shutdown = (signal: string) => {
-    heartbeatMonitor.stop()
+    heartbeatMonitor.stop();
     logger.info('shutdown', {
       signal,
       pending: queue.snapshot(),
       venues: venueSelector.snapshot()
-    })
-    void runner.stop().finally(() => process.exit(0))
-  }
-  process.on('SIGINT', () => shutdown('SIGINT'))
-  process.on('SIGTERM', () => shutdown('SIGTERM'))
+    });
+    void runner.stop().finally(() => process.exit(0));
+  };
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
 }
 
 main().catch(error => {
   // Config/client never came up, so we cannot honor LOG_LEVEL — emit the failure directly, exit non-zero.
   console.error(
     JSON.stringify({ level: 'error', event: 'startup.error', error: ensureError(error).message })
-  )
-  process.exitCode = 1
-})
+  );
+  process.exitCode = 1;
+});

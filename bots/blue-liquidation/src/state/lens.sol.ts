@@ -1,17 +1,16 @@
-import type { Client, Transport } from 'viem'
-
 import {
   type BatchLensTransportType,
   lensKey,
   MAX_INITCODE_SIZE,
   readDeploylessBatchLens
-} from '@repo/utils'
-import { sol } from 'soltag'
-import { type Address } from 'viem'
+} from '@repo/utils';
 
-import type { MarketParams } from '../market'
+import { sol } from 'soltag';
+import type { Client, Transport } from 'viem';
+import { type Address } from 'viem';
 
-import { marketId } from '../market'
+import type { MarketParams } from '../market';
+import { marketId } from '../market';
 
 // Single-file soltag lens: reads everything the liquidation decision depends on for a batch of
 // (marketParams, borrower) pairs inside one eth_call against a single block.timestamp. Takes an
@@ -150,32 +149,32 @@ contract BlueLiquidationLens {
     }
   }
 }
-`
+`;
 
 /** What the lens reads for one (marketParams, borrower) pair. The lens re-derives the id from
  * `params` on-chain and reads state at it, so a mismatched param set is rejected (valid=false). */
-export type LensInput = { params: MarketParams; borrower: Address }
+export type LensInput = { params: MarketParams; borrower: Address };
 
 /** The decoded Solidity `LensOut` struct (uint64/128/256 → bigint per viem). */
 type RawLensOut = {
-  valid: boolean
-  hasDebt: boolean
-  healthy: boolean
-  blockTimestamp: bigint
-  borrowShares: bigint
-  collateral: bigint
-  accruedTotalBorrowAssets: bigint
-  totalBorrowShares: bigint
-  collateralPrice: bigint
-  lltv: bigint
-}
+  valid: boolean;
+  hasDebt: boolean;
+  healthy: boolean;
+  blockTimestamp: bigint;
+  borrowShares: bigint;
+  collateral: bigint;
+  accruedTotalBorrowAssets: bigint;
+  totalBorrowShares: bigint;
+  collateralPrice: bigint;
+  lltv: bigint;
+};
 
 /**
  * The per-pair reading, with the market's `params` echoed back from the input. When `valid` is true
  * the on-chain id-commitment check passed, so these params are the ones the market at that id was
  * created with — safe to feed straight into `quote`, `plan`, and `liquidate`.
  */
-export type LensOut = RawLensOut & { params: MarketParams }
+export type LensOut = RawLensOut & { params: MarketParams };
 
 /**
  * Reads the liquidation lens for every pair in one deployless, chunked `eth_call` (no signer, no
@@ -211,5 +210,5 @@ export async function readBlueLiquidationLens(
     },
     ({ params, borrower }) => lensKey(marketId(params), borrower),
     (input, out): LensOut => ({ ...out, params: input.params })
-  )
+  );
 }

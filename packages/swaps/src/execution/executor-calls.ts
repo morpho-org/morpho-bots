@@ -1,13 +1,12 @@
-import type { Address, Hex } from 'viem'
+import { ExecutorEncoder } from 'executooor-viem';
+import type { Address, Hex } from 'viem';
+import { encodeFunctionData, erc20Abi, getAddress, isAddressEqual } from 'viem';
 
-import { ExecutorEncoder } from 'executooor-viem'
-import { encodeFunctionData, erc20Abi, getAddress, isAddressEqual } from 'viem'
-
-import type { SwapStep } from '../types'
+import type { SwapStep } from '../types';
 
 // `approve(spender, amount)` / `transfer(recipient, amount)`: the amount word sits at byte offset
 // 4 (selector) + 32 (the address word).
-const ERC20_AMOUNT_OFFSET = 36n
+const ERC20_AMOUNT_OFFSET = 36n;
 
 /**
  * A self-referential placeholder: at exec time the Executor staticcalls `asset.balanceOf(executor)`
@@ -22,7 +21,7 @@ function balanceOfPlaceholder(asset: Address, executor: Address, amountOffset: b
     offset: amountOffset,
     length: 32n,
     resOffset: 0n
-  }
+  };
 }
 
 /**
@@ -37,7 +36,7 @@ export function skimCall(asset: Address, recipient: Address, executor: Address):
     encodeFunctionData({ abi: erc20Abi, functionName: 'transfer', args: [recipient, 0n] }),
     undefined,
     [balanceOfPlaceholder(asset, executor, ERC20_AMOUNT_OFFSET)]
-  )
+  );
 }
 
 /**
@@ -61,7 +60,7 @@ export function approvePair(token: Address, spender: Address, executor: Address)
       undefined,
       [balanceOfPlaceholder(token, executor, ERC20_AMOUNT_OFFSET)]
     )
-  ]
+  ];
 }
 
 /**
@@ -81,7 +80,7 @@ export function stepCalls(step: SwapStep, executor: Address): Hex[] {
           balanceOfPlaceholder(step.tokenIn, executor, step.amountIn.offset)
         ])
       : ExecutorEncoder.buildCall(step.target, step.value, step.callData)
-  ]
+  ];
 }
 
 /**
@@ -93,14 +92,18 @@ export function intermediateTokens(
   steps: readonly SwapStep[],
   exclude: readonly Address[]
 ): Address[] {
-  const seen = new Set<string>()
-  const intermediates: Address[] = []
+  const seen = new Set<string>();
+  const intermediates: Address[] = [];
   for (const step of steps) {
-    if (exclude.some(token => isAddressEqual(token, step.tokenOut))) continue
-    const key = getAddress(step.tokenOut)
-    if (seen.has(key)) continue
-    seen.add(key)
-    intermediates.push(step.tokenOut)
+    if (exclude.some(token => isAddressEqual(token, step.tokenOut))) {
+      continue;
+    }
+    const key = getAddress(step.tokenOut);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    intermediates.push(step.tokenOut);
   }
-  return intermediates
+  return intermediates;
 }

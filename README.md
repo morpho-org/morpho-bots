@@ -19,9 +19,9 @@ bun install
 ## Daily commands
 
 ```sh
-bun run lint        # oxlint, repo-wide
-bun run lint:fix    # oxlint with --fix
-bun format          # oxfmt, repo-wide
+bun run lint        # Biome lint, repo-wide
+bun run lint:fix    # Biome lint with --write
+bun format          # Biome, repo-wide
 bun run knip        # dead-code detection
 bun test            # bun's built-in test runner
 ```

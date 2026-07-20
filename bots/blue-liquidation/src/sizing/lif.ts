@@ -1,5 +1,5 @@
-import { LIQUIDATION_CURSOR, MAX_LIQUIDATION_INCENTIVE_FACTOR, WAD } from '../constants'
-import { min, wDivDown, wMulDown } from './math'
+import { LIQUIDATION_CURSOR, MAX_LIQUIDATION_INCENTIVE_FACTOR, WAD } from '../constants';
+import { min, wDivDown, wMulDown } from './math';
 
 /**
  * Liquidation incentive factor from a market's LLTV — a pure function of LLTV (no maturity ramp, no
@@ -14,5 +14,5 @@ export function lifFromLltv(lltv: bigint): bigint {
   return min(
     MAX_LIQUIDATION_INCENTIVE_FACTOR,
     wDivDown(WAD, WAD - wMulDown(LIQUIDATION_CURSOR, WAD - lltv))
-  )
+  );
 }

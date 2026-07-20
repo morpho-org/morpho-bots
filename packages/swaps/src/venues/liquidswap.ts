@@ -1,23 +1,23 @@
-import { safeParseUnits } from '@repo/utils'
-import { formatUnits, getAddress, isHex } from 'viem'
+import { safeParseUnits } from '@repo/utils';
 
-import type { RateLimitedClient } from '../http-client'
-import type { PriceParameters, PriceQuote, QuoteParameters, Swap } from '../types'
+import { formatUnits, getAddress, isHex } from 'viem';
 
-import { LIQUIDSWAP_BASE_URL } from '../constants'
-import { QuoteError } from '../types'
+import { LIQUIDSWAP_BASE_URL } from '../constants';
+import type { RateLimitedClient } from '../http-client';
+import type { PriceParameters, PriceQuote, QuoteParameters, Swap } from '../types';
+import { QuoteError } from '../types';
 
 /** The LiquidSwap arm of the per-collateral swap config. */
-type LiquidSwapEntry = { baseUrl?: string }
+type LiquidSwapEntry = { baseUrl?: string };
 
 // Subset of the liqd.ag `/route` response we consume. `amountOut` is a human-readable DECIMAL string
 // (e.g. "6773.208147"); `execution.details.minAmountOut` is the slippage-adjusted floor in BASE units.
 type LiquidSwapRoute = {
-  success?: boolean
-  amountOut?: string
-  tokens?: { tokenOut?: { decimals?: number } | null } | null
-  execution?: { to?: string; calldata?: string; details?: { minAmountOut?: string } | null } | null
-}
+  success?: boolean;
+  amountOut?: string;
+  tokens?: { tokenOut?: { decimals?: number } | null } | null;
+  execution?: { to?: string; calldata?: string; details?: { minAmountOut?: string } | null } | null;
+};
 
 // liqd.ag is decimal-denominated: `amountIn` is a human-readable token amount, not base units. Our
 // params carry base units + tokenIn decimals, so convert with viem's `formatUnits` (full precision —
@@ -27,9 +27,9 @@ function amountInDecimalString(params: QuoteParameters | PriceParameters): strin
     throw new QuoteError(
       'api_error',
       'liquidswap: tokenInDecimals is required to denominate amountIn'
-    )
+    );
   }
-  return formatUnits(params.amountIn, params.tokenInDecimals)
+  return formatUnits(params.amountIn, params.tokenInDecimals);
 }
 
 /**
@@ -46,7 +46,7 @@ export async function quoteLiquidSwap(
 ): Promise<Swap> {
   // Fail loud BEFORE the HTTP call if the caller didn't supply decimals — a misconfigured firm quote
   // must not burn an API request.
-  const amountIn = amountInDecimalString(params)
+  const amountIn = amountInDecimalString(params);
 
   const json = await client.getJson<LiquidSwapRoute>({
     venue: 'liquidswap',
@@ -58,10 +58,10 @@ export async function quoteLiquidSwap(
       amountIn,
       slippage: String(params.slippageBps / 100)
     }
-  })
+  });
 
-  const minAmountOut = json.execution?.details?.minAmountOut
-  const outDecimals = json.tokens?.tokenOut?.decimals
+  const minAmountOut = json.execution?.details?.minAmountOut;
+  const outDecimals = json.tokens?.tokenOut?.decimals;
   // Presence-first so the fields are narrowed to non-undefined before parsing (strict typecheck).
   if (
     !json.success ||
@@ -71,17 +71,17 @@ export async function quoteLiquidSwap(
     json.amountOut === undefined ||
     outDecimals === undefined
   ) {
-    throw new QuoteError('no_route', 'liquidswap: no route for this pair/size')
+    throw new QuoteError('no_route', 'liquidswap: no route for this pair/size');
   }
   if (!isHex(json.execution.calldata)) {
-    throw new QuoteError('api_error', 'liquidswap: execution.calldata is not hex')
+    throw new QuoteError('api_error', 'liquidswap: execution.calldata is not hex');
   }
-  const expectedAmountOut = safeParseUnits(json.amountOut, outDecimals)
+  const expectedAmountOut = safeParseUnits(json.amountOut, outDecimals);
   if (expectedAmountOut === null) {
-    throw new QuoteError('api_error', 'liquidswap: amountOut is not a number')
+    throw new QuoteError('api_error', 'liquidswap: amountOut is not a number');
   }
 
-  const target = getAddress(json.execution.to)
+  const target = getAddress(json.execution.to);
   return {
     spender: target,
     target,
@@ -91,7 +91,7 @@ export async function quoteLiquidSwap(
     amountIn: { source: 'fixed', value: params.amountIn },
     expectedAmountOut,
     amountOutMinimum: BigInt(minAmountOut)
-  }
+  };
 }
 
 /**
@@ -103,7 +103,7 @@ export async function priceLiquidSwap(
   entry: LiquidSwapEntry,
   params: PriceParameters
 ): Promise<PriceQuote> {
-  const amountIn = amountInDecimalString(params)
+  const amountIn = amountInDecimalString(params);
 
   const json = await client.getJson<LiquidSwapRoute>({
     venue: 'liquidswap',
@@ -114,15 +114,15 @@ export async function priceLiquidSwap(
       tokenOut: params.tokenOut,
       amountIn
     }
-  })
+  });
 
-  const outDecimals = json.tokens?.tokenOut?.decimals
+  const outDecimals = json.tokens?.tokenOut?.decimals;
   if (!json.success || json.amountOut === undefined || outDecimals === undefined) {
-    throw new QuoteError('no_route', 'liquidswap: no route for this pair/size')
+    throw new QuoteError('no_route', 'liquidswap: no route for this pair/size');
   }
-  const expectedAmountOut = safeParseUnits(json.amountOut, outDecimals)
+  const expectedAmountOut = safeParseUnits(json.amountOut, outDecimals);
   if (expectedAmountOut === null) {
-    throw new QuoteError('api_error', 'liquidswap: amountOut is not a number')
+    throw new QuoteError('api_error', 'liquidswap: amountOut is not a number');
   }
-  return { expectedAmountOut }
+  return { expectedAmountOut };
 }

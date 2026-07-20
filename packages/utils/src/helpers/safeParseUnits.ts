@@ -1,4 +1,4 @@
-import { parseUnits } from 'viem'
+import { parseUnits } from 'viem';
 
 /**
  * Parses a string value to a bigint with the specified decimals or return null if the value is invalid.
@@ -10,8 +10,8 @@ import { parseUnits } from 'viem'
 export function safeParseUnits(value: string, decimals: number): bigint | null {
   try {
     // parseUnits handles "" and "." as 0n (desired behavior)
-    return parseUnits(value.trim(), decimals)
+    return parseUnits(value.trim(), decimals);
   } catch {
-    return null
+    return null;
   }
 }

@@ -4,14 +4,12 @@
 // stale constant here would silently produce offers no ratifier accepts. Recomputing each hash from its
 // canonical EIP-712 type string catches any future struct drift the same way this migration required.
 
-import type { Address, Hex } from 'viem'
+import { describe, expect, it } from 'bun:test';
 
-import { describe, expect, it } from 'bun:test'
-import { keccak256, toHex, zeroAddress } from 'viem'
+import type { Address, Hex } from 'viem';
+import { keccak256, toHex, zeroAddress } from 'viem';
 
-import type { Offer } from '../../scripts/seed/offers'
-import type { CollateralParams, Market } from '../../src/execution/encode-call'
-
+import type { Offer } from '../../scripts/seed/offers';
 import {
   COLLATERAL_PARAMS_TYPEHASH,
   hashOffer,
@@ -19,20 +17,21 @@ import {
   OFFER_TREE_TYPEHASH_HEIGHT0,
   OFFER_TYPEHASH,
   toId
-} from '../../scripts/seed/offers'
+} from '../../scripts/seed/offers';
+import type { CollateralParams, Market } from '../../src/execution/encode-call';
 
 // Canonical EIP-712 encodeType strings (referenced structs appended, per HashLib's bytes.concat order).
 const CP_TYPE =
-  'CollateralParams(address token,uint256 lltv,uint256 liquidationCursor,address oracle)'
+  'CollateralParams(address token,uint256 lltv,uint256 liquidationCursor,address oracle)';
 const MARKET_TYPE =
-  'Market(uint256 chainId,address midnight,address loanToken,CollateralParams[] collateralParams,uint256 maturity,uint256 rcfThreshold,address enterGate,address liquidatorGate)'
+  'Market(uint256 chainId,address midnight,address loanToken,CollateralParams[] collateralParams,uint256 maturity,uint256 rcfThreshold,address enterGate,address liquidatorGate)';
 const OFFER_TYPE =
-  'Offer(Market market,bool buy,address maker,uint256 start,uint256 expiry,uint256 tick,bytes32 group,address callback,bytes callbackData,address receiverIfMakerIsSeller,address ratifier,bool reduceOnly,uint128 maxUnits,uint128 maxAssets,uint256 continuousFeeCap)'
-const OFFER_TREE_TYPE_HEIGHT0 = 'OfferTree(Offer offerTree)'
+  'Offer(Market market,bool buy,address maker,uint256 start,uint256 expiry,uint256 tick,bytes32 group,address callback,bytes callbackData,address receiverIfMakerIsSeller,address ratifier,bool reduceOnly,uint128 maxUnits,uint128 maxAssets,uint256 continuousFeeCap)';
+const OFFER_TREE_TYPE_HEIGHT0 = 'OfferTree(Offer offerTree)';
 
-const hashType = (s: string): Hex => keccak256(toHex(s))
+const hashType = (s: string): Hex => keccak256(toHex(s));
 
-const MIDNIGHT = '0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A' as Address
+const MIDNIGHT = '0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A' as Address;
 
 function market(midnight: Address = MIDNIGHT): Market {
   return {
@@ -51,7 +50,7 @@ function market(midnight: Address = MIDNIGHT): Market {
     rcfThreshold: 10n ** 30n,
     enterGate: zeroAddress,
     liquidatorGate: zeroAddress
-  }
+  };
 }
 
 function offer(maxUnits: bigint): Offer {
@@ -71,34 +70,34 @@ function offer(maxUnits: bigint): Offer {
     maxUnits,
     maxAssets: 0n,
     continuousFeeCap: 4294967295n
-  }
+  };
 }
 
 describe('seed/offers typehashes (HashLib @ 336b924a)', () => {
   it('CollateralParams and Market typehashes match their EIP-712 type strings', () => {
     // hashType (generic `Hex`) is the receiver so the pinned literal-typed constant is the expectation.
-    expect(hashType(CP_TYPE)).toBe(COLLATERAL_PARAMS_TYPEHASH)
+    expect(hashType(CP_TYPE)).toBe(COLLATERAL_PARAMS_TYPEHASH);
     // Market references CollateralParams: keccak256(MARKET_TYPE ++ COLLATERAL_PARAMS_TYPE).
-    expect(hashType(MARKET_TYPE + CP_TYPE)).toBe(MARKET_TYPEHASH)
-  })
+    expect(hashType(MARKET_TYPE + CP_TYPE)).toBe(MARKET_TYPEHASH);
+  });
 
   it('OFFER_TYPEHASH matches keccak256(OFFER_TYPE ++ COLLATERAL_PARAMS_TYPE ++ MARKET_TYPE)', () => {
     // uint128 maxUnits/maxAssets — the 336b924a narrowing. A uint256 here would reproduce the old
     // 0x2F7a… deployment's typehash and break ratification on the new contract.
-    expect(hashType(OFFER_TYPE + CP_TYPE + MARKET_TYPE)).toBe(OFFER_TYPEHASH)
-  })
+    expect(hashType(OFFER_TYPE + CP_TYPE + MARKET_TYPE)).toBe(OFFER_TYPEHASH);
+  });
 
   it('OfferTree height-0 typehash matches its EIP-712 type string', () => {
     expect(hashType(OFFER_TREE_TYPE_HEIGHT0 + CP_TYPE + MARKET_TYPE + OFFER_TYPE)).toBe(
       OFFER_TREE_TYPEHASH_HEIGHT0
-    )
-  })
+    );
+  });
 
   it('hashOffer changes when maxUnits changes', () => {
-    expect(hashOffer(offer(1000n))).not.toBe(hashOffer(offer(1001n)))
-  })
+    expect(hashOffer(offer(1000n))).not.toBe(hashOffer(offer(1001n)));
+  });
 
   it('toId changes when the Midnight address changes', () => {
-    expect(toId(market())).not.toBe(toId(market('0x2F7a3AA739ba5792Ce1b4eA046117f2C0095BCA6')))
-  })
-})
+    expect(toId(market())).not.toBe(toId(market('0x2F7a3AA739ba5792Ce1b4eA046117f2C0095BCA6')));
+  });
+});

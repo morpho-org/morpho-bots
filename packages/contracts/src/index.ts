@@ -1,2 +1,2 @@
-export * from './abis.js'
-export * from './contracts.js'
+export * from './abis.js';
+export * from './contracts.js';

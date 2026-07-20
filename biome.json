@@ -1,0 +1,67 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.2.4/schema.json",
+  "assist": {
+    "enabled": true,
+    "includes": [
+      "**",
+      "!bots/midnight-liquidation/src/generated/**",
+      "!packages/utils/src/helpers/deployless-batch-lens.ts"
+    ],
+    "actions": {
+      "source": {
+        "organizeImports": {
+          "level": "on",
+          "options": {
+            "groups": [
+              ":BUN:",
+              ":NODE:",
+              ":BLANK_LINE:",
+              ["@morpho-org/**", "@repo/**"],
+              ":BLANK_LINE:",
+              ":PACKAGE:",
+              ":BLANK_LINE:",
+              ":PATH:"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "formatter": {
+    "enabled": true,
+    "bracketSpacing": true,
+    "includes": [
+      "**",
+      "!bots/midnight-liquidation/src/generated/**",
+      "!packages/utils/src/helpers/deployless-batch-lens.ts"
+    ],
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100
+  },
+  "javascript": {
+    "formatter": {
+      "arrowParentheses": "asNeeded",
+      "bracketSpacing": true,
+      "quoteStyle": "single",
+      "semicolons": "always",
+      "trailingCommas": "none"
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "includes": [
+      "**",
+      "!bots/midnight-liquidation/src/generated/**",
+      "!packages/utils/src/helpers/deployless-batch-lens.ts"
+    ],
+    "rules": {
+      "recommended": false
+    }
+  },
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  }
+}

@@ -1,14 +1,13 @@
-import type { Logger } from '@repo/bot-kit'
-import type { QuoteOutcome, RateLimitedClient, Unwrapper, Venue, VenueSelector } from '@repo/swaps'
-import type { Address } from 'viem'
+import type { Logger } from '@repo/bot-kit';
+import type { QuoteOutcome, RateLimitedClient, Unwrapper, Venue, VenueSelector } from '@repo/swaps';
+import { composeMultiVenueQuoting } from '@repo/swaps';
 
-import { composeMultiVenueQuoting } from '@repo/swaps'
-import { isAddressEqual } from 'viem'
+import type { Address } from 'viem';
+import { isAddressEqual } from 'viem';
 
-import type { LiquidationPlan } from './sizing/plan'
-import type { LensOut } from './state/lens.sol'
-
-import { expectedLoanOut } from './execution/swap-step'
+import { expectedLoanOut } from './execution/swap-step';
+import type { LiquidationPlan } from './sizing/plan';
+import type { LensOut } from './state/lens.sol';
 
 /**
  * The Blue-shaped adapter over `@repo/swaps`' {@link composeMultiVenueQuoting}: keeps the
@@ -21,19 +20,19 @@ import { expectedLoanOut } from './execution/swap-step'
  * no-API-call semantics for a position the bot won't route.
  */
 export function composeQuoting(deps: {
-  httpClient: RateLimitedClient
-  selector: VenueSelector
-  chainId: number
-  executor: Address
-  venues: readonly Venue[]
-  slippageBps: number
-  baseUrls: Partial<Record<Venue, string>>
-  maxRouteImpactBps: number
-  unwrappers: readonly Unwrapper[]
-  excludeCollaterals: readonly Address[]
-  logger: Logger
+  httpClient: RateLimitedClient;
+  selector: VenueSelector;
+  chainId: number;
+  executor: Address;
+  venues: readonly Venue[];
+  slippageBps: number;
+  baseUrls: Partial<Record<Venue, string>>;
+  maxRouteImpactBps: number;
+  unwrappers: readonly Unwrapper[];
+  excludeCollaterals: readonly Address[];
+  logger: Logger;
 }): { quoteFor: (plan: LiquidationPlan, out: LensOut, label: string) => Promise<QuoteOutcome> } {
-  const { selector, excludeCollaterals, logger, ...rest } = deps
+  const { selector, excludeCollaterals, logger, ...rest } = deps;
   const { quoteFor: quoteRequest } = composeMultiVenueQuoting({
     ...rest,
     // The composer owns the probe refresh: it runs after unwrap resolution so probes price the
@@ -41,15 +40,15 @@ export function composeQuoting(deps: {
     refresh: selector.refresh,
     select: selector.select,
     logger
-  })
+  });
 
   return {
     async quoteFor(plan, out, label) {
       // The operator opt-out applies to the RAW collateral — blue has no per-collateral config file
       // anymore, so this is its escape hatch from the auto-unwrap path too.
       if (excludeCollaterals.some(token => isAddressEqual(token, out.params.collateralToken))) {
-        logger.info('quote.excluded_collateral', { collateral: out.params.collateralToken })
-        return { kind: 'no_config' }
+        logger.info('quote.excluded_collateral', { collateral: out.params.collateralToken });
+        return { kind: 'no_config' };
       }
 
       return quoteRequest({
@@ -59,7 +58,7 @@ export function composeQuoting(deps: {
         referenceAmountOut: expectedLoanOut(plan, out),
         // The tick's position label (`${id}:${borrower}`) — the correlation id join across quote logs.
         id: label
-      })
+      });
     }
-  }
+  };
 }

@@ -1,10 +1,7 @@
-import type { SwapPlan, Venue } from '@repo/swaps'
-import type { Address, Hex } from 'viem'
-
 import {
   assertContractDeployed,
-  createBalanceMonitor,
   createBackoff,
+  createBalanceMonitor,
   createCooldownStore,
   createDeploylessClient,
   createHeartbeatMonitor,
@@ -17,7 +14,8 @@ import {
   initialFees,
   railwayContext,
   simulateLiquidationExec
-} from '@repo/bot-kit'
+} from '@repo/bot-kit';
+import type { SwapPlan, Venue } from '@repo/swaps';
 import {
   createErc4626Unwrapper,
   createPendlePtUnwrapper,
@@ -25,35 +23,36 @@ import {
   createVenueSelector,
   PENDLE_CHAIN_IDS,
   priceByVenue
-} from '@repo/swaps'
-import { delay, ensureError, tryCatch } from '@repo/utils'
-import { erc20Abi } from 'viem'
-import { getBlockNumber, readContract } from 'viem/actions'
+} from '@repo/swaps';
+import { delay, ensureError, tryCatch } from '@repo/utils';
 
-import type { Market } from './execution/encode-call'
-import type { LiquidationPlan } from './sizing/plan'
+import type { Address, Hex } from 'viem';
+import { erc20Abi } from 'viem';
+import { getBlockNumber, readContract } from 'viem/actions';
 
-import { loadConfig } from './config'
-import { LISTED_MARKETS_MAX_AGE_MS, SETTLED_COOLDOWN_BLOCKS } from './constants'
+import { loadConfig } from './config';
+import { LISTED_MARKETS_MAX_AGE_MS, SETTLED_COOLDOWN_BLOCKS } from './constants';
 import {
   createApiCandidateSource,
   discoverBorrowers,
   MAX_DISCOVERY_PAGES
-} from './discovery/borrowers'
-import { createListedMarketFilter } from './discovery/markets'
-import { encodeLiquidationExec } from './execution/encode-call'
-import { composeQuoting } from './quotes'
-import { runTick } from './runner/tick'
-import { readMidnightLiquidationLens } from './state/lens.sol'
-import { revertReason } from './tx-error'
+} from './discovery/borrowers';
+import { createListedMarketFilter } from './discovery/markets';
+import type { Market } from './execution/encode-call';
+import { encodeLiquidationExec } from './execution/encode-call';
+import { composeQuoting } from './quotes';
+import { runTick } from './runner/tick';
+import type { LiquidationPlan } from './sizing/plan';
+import { readMidnightLiquidationLens } from './state/lens.sol';
+import { revertReason } from './tx-error';
 
 async function main() {
-  const config = loadConfig()
+  const config = loadConfig();
   // Global wide-log context stamped onto every line (replaces the enrichment the retired Vector VRL
   // did): the bot identity + chain, plus whichever RAILWAY_* identity vars this deployment exposes.
   const logger = createLogger(config.logLevel, {
     context: { bot: 'midnight-liquidation', chainId: config.chainId, ...railwayContext() }
-  })
+  });
 
   // Signed-send path: a plain wallet client + local nonce cursor (separate from the deployless read
   // client). The EOA is the liquidator and the recipient of both end-of-exec token sweeps.
@@ -72,49 +71,61 @@ async function main() {
       maxDataBytes: DEFAULT_MAX_DATA_BYTES
     },
     logger
-  })
-  const eoa = signer.account.address
+  });
+  const eoa = signer.account.address;
 
   logger.info('startup', {
     chainId: config.chainId,
     liquidator: eoa,
     callback: config.executooorAddress,
     midnight: config.midnight
-  })
+  });
 
   // Read-only client shared by the lens and simulate paths. Validate both the Executor and the
   // Midnight singleton hold code before doing any work — fatal on a typo / not-yet-deployed address
   // (liveness, not identity).
-  const client = createDeploylessClient(config)
+  const client = createDeploylessClient(config);
   await assertContractDeployed(
     client,
     config.executooorAddress,
     'EXECUTOOOR_ADDRESS',
     'deploy it with `bun run --filter @repo/contracts deploy:executor`'
-  )
-  await assertContractDeployed(client, config.midnight, 'Midnight singleton')
+  );
+  await assertContractDeployed(client, config.midnight, 'Midnight singleton');
 
   // Enabled venues are inferred from which venue API keys are present (loadConfig already enforced the
   // no-key → bad-debt-only opt-in). Keys are read HERE, at the point of use, and live only in this
   // closure — never on the (logged) Config object.
-  const apiKeys: Partial<Record<Venue, string>> = {}
-  if (Bun.env.ZEROX_API_KEY) apiKeys['0x'] = Bun.env.ZEROX_API_KEY
-  if (Bun.env.ONEINCH_API_KEY) apiKeys['1inch'] = Bun.env.ONEINCH_API_KEY
-  if (Bun.env.LIFI_API_KEY) apiKeys.lifi = Bun.env.LIFI_API_KEY
-  const venues = config.venues.enabled
+  const apiKeys: Partial<Record<Venue, string>> = {};
+  if (Bun.env.ZEROX_API_KEY) {
+    apiKeys['0x'] = Bun.env.ZEROX_API_KEY;
+  }
+  if (Bun.env.ONEINCH_API_KEY) {
+    apiKeys['1inch'] = Bun.env.ONEINCH_API_KEY;
+  }
+  if (Bun.env.LIFI_API_KEY) {
+    apiKeys.lifi = Bun.env.LIFI_API_KEY;
+  }
+  const venues = config.venues.enabled;
   if (venues.length === 0) {
     logger.warn('quoting.no_routes', {
       chainId: config.chainId,
       detail:
         'no venue API keys set — running bad-debt-only (positions discovered, bad debt realized, no swap-liquidations)'
-    })
+    });
   } else {
-    logger.info('quoting.startup', { chainId: config.chainId, venues })
+    logger.info('quoting.startup', { chainId: config.chainId, venues });
   }
-  const baseUrls: Partial<Record<Venue, string>> = {}
-  if (config.venues.zeroxBaseUrl) baseUrls['0x'] = config.venues.zeroxBaseUrl
-  if (config.venues.oneinchBaseUrl) baseUrls['1inch'] = config.venues.oneinchBaseUrl
-  if (config.venues.lifiBaseUrl) baseUrls.lifi = config.venues.lifiBaseUrl
+  const baseUrls: Partial<Record<Venue, string>> = {};
+  if (config.venues.zeroxBaseUrl) {
+    baseUrls['0x'] = config.venues.zeroxBaseUrl;
+  }
+  if (config.venues.oneinchBaseUrl) {
+    baseUrls['1inch'] = config.venues.oneinchBaseUrl;
+  }
+  if (config.venues.lifiBaseUrl) {
+    baseUrls.lifi = config.venues.lifiBaseUrl;
+  }
 
   // Two rate-limited HTTP clients, each with its own per-venue token buckets: one for time-sensitive
   // FIRM quotes, and a separate, slower one for BACKGROUND probes — so a probe burst can never queue
@@ -125,14 +136,14 @@ async function main() {
     burst: config.quoting.httpBurst,
     maxRetries: config.quoting.httpMaxRetries,
     timeoutMs: config.quoting.quoteTimeoutMs
-  })
+  });
   const probeClient = createRateLimitedClient({
     apiKeys,
     rps: config.probe.httpRps,
     burst: config.probe.httpRps,
     maxRetries: config.quoting.httpMaxRetries,
     timeoutMs: config.quoting.quoteTimeoutMs
-  })
+  });
 
   // Venue selector: caches a best-first venue ranking per pair from log-scaled indicative probes.
   // Decimals are read once per collateral (memoized in the selector); the collateral set is bounded by
@@ -146,7 +157,7 @@ async function main() {
     indicativeQuote: (venue, params) => priceByVenue(probeClient, { venue, baseUrls, params }),
     staleMs: config.probe.staleMs,
     logger
-  })
+  });
 
   // Market whitelist: only listed markets are discovered / probed / liquidated. Refresh once at
   // startup (non-fatal — a failed first fetch leaves the set empty = fail-closed, and the timer below
@@ -155,8 +166,8 @@ async function main() {
     apiUrl: config.markets.apiUrl,
     chainId: config.chainId,
     logger
-  })
-  await tryCatch(listedMarkets.refresh())
+  });
+  await tryCatch(listedMarkets.refresh());
 
   // Pre-swap converters for exotic collateral (ERC4626 shares, Pendle PTs → underlying).
   // Auto-detecting with per-process memoization. erc4626 first: a memoized eth_call beats consulting
@@ -171,8 +182,8 @@ async function main() {
         slippageBps: config.quoting.pendleSlippageBps,
         logger
       })
-    : null
-  const unwrappers = [createErc4626Unwrapper({ client, logger }), ...(pendle ? [pendle] : [])]
+    : null;
+  const unwrappers = [createErc4626Unwrapper({ client, logger }), ...(pendle ? [pendle] : [])];
 
   const { quoteFor } = composeQuoting({
     httpClient,
@@ -186,14 +197,14 @@ async function main() {
     unwrappers,
     excludeCollaterals: config.venues.excludeCollaterals,
     logger
-  })
+  });
   const backoff = createBackoff({
     baseBlocks: config.quoting.backoffBaseBlocks,
     maxBlocks: config.quoting.backoffMaxBlocks
-  })
+  });
   // Opt-in per-position cooldown (default disabled): one in-memory store for the process lifetime,
   // complementary to `backoff` (see POSITION_LIQUIDATION_COOLDOWN_MS).
-  const cooldown = createCooldownStore({ cooldownMs: config.positionCooldownMs })
+  const cooldown = createCooldownStore({ cooldownMs: config.positionCooldownMs });
 
   // The exec calldata for one liquidation — the same bytes the simulate gate checks and the queue
   // broadcasts, so a sim-ok plan and its broadcast can't drift.
@@ -214,7 +225,7 @@ async function main() {
       postMaturityMode: plan.postMaturityMode,
       plan: swapPlan,
       recipient: eoa
-    })
+    });
 
   // Borrower discovery: poll the markets liquidation-candidates endpoint (cursor-paginated,
   // over-inclusive). The lens re-reads every returned pair fresh on-chain, so this is a coverage
@@ -223,51 +234,54 @@ async function main() {
     url: config.discovery.apiUrl,
     chainId: config.chainId,
     healthFactorLte: config.discovery.healthFactorLte
-  })
+  });
   // Age of the whitelist since its last successful refresh — the caller's staleness signal. `Infinity`
   // before the first successful fetch (never-refreshed = fail-closed).
   const whitelistAge = () => {
-    const { updatedAt } = listedMarkets.snapshot()
-    return updatedAt === null ? Infinity : Date.now() - updatedAt
-  }
+    const { updatedAt } = listedMarkets.snapshot();
+    return updatedAt === null ? Infinity : Date.now() - updatedAt;
+  };
   // Filter candidates to the market whitelist BEFORE the lens read — a non-listed market is never
   // touched (fail-closed), and this also shrinks the lens batch. Past the fail-closed max-age (a
   // sustained markets-API outage the refresh loop could not recover from) the whitelist is treated as
   // EMPTY so a since-delisted market can never linger in scope on the back of a stale set.
   const discover = async () => {
-    const candidates = await discoverBorrowers(fetchPage, { logger, maxPages: MAX_DISCOVERY_PAGES })
-    const whitelistExpired = whitelistAge() > LISTED_MARKETS_MAX_AGE_MS
+    const candidates = await discoverBorrowers(fetchPage, {
+      logger,
+      maxPages: MAX_DISCOVERY_PAGES
+    });
+    const whitelistExpired = whitelistAge() > LISTED_MARKETS_MAX_AGE_MS;
     if (whitelistExpired) {
       logger.warn('markets.whitelist_expired', {
         ageMs: whitelistAge(),
         detail:
           'whitelist older than max age — treating as empty (fail-closed) until a refresh lands'
-      })
+      });
     }
     const listed = whitelistExpired
       ? []
-      : candidates.filter(candidate => listedMarkets.isListed(candidate.marketId))
+      : candidates.filter(candidate => listedMarkets.isListed(candidate.marketId));
     if (listed.length < candidates.length) {
-      logger.info('discover.filtered', { total: candidates.length, listed: listed.length })
+      logger.info('discover.filtered', { total: candidates.length, listed: listed.length });
     }
-    return listed
-  }
+    return listed;
+  };
 
   // Startup discovery self-check (non-fatal): run one discovery pass at boot so a bad candidates-API
   // URL, an auth failure, or a stale/empty whitelist is diagnosable from Railway logs at boot, rather
   // than as an opaque per-tick `tick.error`. The candidates API may still be warming on first deploy,
   // so a failure here is logged and the bot proceeds — the per-block tick retries discovery.
   {
-    const probe = await tryCatch(discover())
+    const probe = await tryCatch(discover());
     if (probe.error) {
-      logger.warn('discovery.startup_error', { detail: ensureError(probe.error).message })
+      logger.warn('discovery.startup_error', { detail: ensureError(probe.error).message });
     } else {
       logger.info('discovery.startup', {
         chainId: config.chainId,
         candidates: probe.data.length,
         // A sample so the parsed candidate (marketId / borrower) can be eyeballed at boot.
         sample: probe.data[0] ?? null
-      })
+      });
     }
   }
 
@@ -284,19 +298,19 @@ async function main() {
     logger,
     settledCooldownBlocks: SETTLED_COOLDOWN_BLOCKS,
     revertReason
-  })
+  });
 
   // Periodic EOA-balance metric so operators can watch gas drain (see `signer.balance`).
   const balanceMonitor = createBalanceMonitor({
     address: eoa,
     read: signer.balance,
     logger
-  })
+  });
   const heartbeatMonitor = createHeartbeatMonitor({
     url: Bun.env.BETTERSTACK_HEARTBEAT_URL,
     logger
-  })
-  void heartbeatMonitor.start()
+  });
+  void heartbeatMonitor.start();
 
   // Phase-4 runner: an HTTP block-poll watcher drives one tick per new block (coalescing backlog),
   // passing the polled height as the queue's submittedAtBlock. Each liquidatable position resolves its
@@ -317,7 +331,7 @@ async function main() {
           data: encodeExec(market, borrower, plan, swapPlan)
         }),
       submit: async ({ market, borrower, plan, swapPlan, blockNumber, label }) => {
-        const fees = initialFees(await signer.getBaseFee(), config.maxFeeWei)
+        const fees = initialFees(await signer.getBaseFee(), config.maxFeeWei);
         await queue.submit({
           request: {
             to: config.executooorAddress,
@@ -327,22 +341,22 @@ async function main() {
           maxFeePerGas: fees.maxFeePerGas,
           maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
           blockNumber
-        })
+        });
       },
       backoff,
       cooldown,
       inflightLabels: () => queue.inflightLabels(),
       logger
-    })
+    });
 
   // Per-block maintenance, run by the runner BEFORE the tick and independently of it: pending-queue
   // upkeep (confirmations / stuck-detection / fee-bumps / nonce reconciliation / latch clearing) plus
   // the periodic EOA-balance metric. Keeping it off the tick means a sustained discovery / lens / API
   // outage can't starve already-broadcast transactions of receipt checks and fee replacement.
   const maintain = async (blockNumber: bigint) => {
-    await queue.onBlock(blockNumber)
-    await balanceMonitor.maybeLog(blockNumber)
-  }
+    await queue.onBlock(blockNumber);
+    await balanceMonitor.maybeLog(blockNumber);
+  };
 
   const runner = createRunner({
     getBlockNumber: () => getBlockNumber(client),
@@ -350,48 +364,52 @@ async function main() {
     maintain,
     logger,
     revertReason
-  })
-  runner.start()
+  });
+  runner.start();
 
   // Refresh the market whitelist on an interval, independent of the block loop, via a delay-spaced
   // self-reschedule (no busy loop). Each round is wrapped so a transient markets-API failure logs and
   // keeps last-known-good rather than killing the schedule (or emptying the whitelist). Also re-emits
   // the bad-debt-only health signal while no venue is keyed.
-  let stopped = false
+  let stopped = false;
   const refreshMarketsLoop = async () => {
-    await delay(config.markets.refreshMs)
-    if (stopped) return
-    const { error } = await tryCatch(listedMarkets.refresh())
-    if (error) logger.warn('markets.refresh_failed', { detail: error.message })
-    if (venues.length === 0) {
-      logger.warn('quoting.no_routes', { detail: 'still no venue API keys — bad-debt-only' })
+    await delay(config.markets.refreshMs);
+    if (stopped) {
+      return;
     }
-    void refreshMarketsLoop()
-  }
-  void refreshMarketsLoop()
+    const { error } = await tryCatch(listedMarkets.refresh());
+    if (error) {
+      logger.warn('markets.refresh_failed', { detail: error.message });
+    }
+    if (venues.length === 0) {
+      logger.warn('quoting.no_routes', { detail: 'still no venue API keys — bad-debt-only' });
+    }
+    void refreshMarketsLoop();
+  };
+  void refreshMarketsLoop();
 
   // Graceful shutdown: stop the loops and log the pending set (hashes + nonces) plus the venue /
   // whitelist state for observability. Sends are fire-and-forget and chain truth wins on restart, so
   // there is nothing to persist or await-drain — a redeploy re-derives from chain.
   const shutdown = (signal: string) => {
-    stopped = true
-    heartbeatMonitor.stop()
+    stopped = true;
+    heartbeatMonitor.stop();
     logger.info('shutdown', {
       signal,
       pending: queue.snapshot(),
       venues: venueSelector.snapshot(),
       listedMarkets: listedMarkets.snapshot()
-    })
-    void runner.stop().finally(() => process.exit(0))
-  }
-  process.on('SIGINT', () => shutdown('SIGINT'))
-  process.on('SIGTERM', () => shutdown('SIGTERM'))
+    });
+    void runner.stop().finally(() => process.exit(0));
+  };
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
 }
 
 main().catch(error => {
   // Config/client never came up, so we cannot honor LOG_LEVEL — emit the failure directly, exit non-zero.
   console.error(
     JSON.stringify({ level: 'error', event: 'startup.error', error: ensureError(error).message })
-  )
-  process.exitCode = 1
-})
+  );
+  process.exitCode = 1;
+});

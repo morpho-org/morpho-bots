@@ -1,5 +1,6 @@
 #!/usr/bin/env sh
 set -e
 
-bun lint-staged
+bun format
+bun lint
 bun knip

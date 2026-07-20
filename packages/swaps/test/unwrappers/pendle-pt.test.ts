@@ -1,16 +1,16 @@
-import { describe, expect, it } from 'bun:test'
-import { getAddress } from 'viem'
+import { describe, expect, it } from 'bun:test';
 
-import type { HttpVenue, RateLimitedClient } from '../../src/http-client'
-import type { QuoteLogger } from '../../src/quoting'
+import { getAddress } from 'viem';
 
-import { QuoteError } from '../../src/types'
-import { createPendlePtUnwrapper } from '../../src/unwrappers/pendle-pt'
+import type { HttpVenue, RateLimitedClient } from '../../src/http-client';
+import type { QuoteLogger } from '../../src/quoting';
+import { QuoteError } from '../../src/types';
+import { createPendlePtUnwrapper } from '../../src/unwrappers/pendle-pt';
 
-const NOOP_LOGGER: QuoteLogger = { info: () => {}, warn: () => {} }
+const NOOP_LOGGER: QuoteLogger = { info: () => {}, warn: () => {} };
 
 function spyLogger() {
-  const events: { level: string; event: string; fields?: Record<string, unknown> }[] = []
+  const events: { level: string; event: string; fields?: Record<string, unknown> }[] = [];
   return {
     logger: {
       info: (event: string, fields?: Record<string, unknown>) =>
@@ -19,21 +19,21 @@ function spyLogger() {
         events.push({ level: 'warn', event, fields })
     } satisfies QuoteLogger,
     events
-  }
+  };
 }
 
-const CHAIN_ID = 8453
-const PT = getAddress('0x1111111111111111111111111111111111111101')
-const YT = getAddress('0x1111111111111111111111111111111111111102')
-const MARKET = getAddress('0x1111111111111111111111111111111111111103')
-const UNDERLYING = getAddress('0x1111111111111111111111111111111111111104')
-const ROUTER = getAddress('0x888888888889758F76e7103c6CbF23ABbF58F946')
-const EXECUTOR = getAddress('0x2222222222222222222222222222222222222222')
-const NOT_A_PT = getAddress('0x3333333333333333333333333333333333333333')
+const CHAIN_ID = 8453;
+const PT = getAddress('0x1111111111111111111111111111111111111101');
+const YT = getAddress('0x1111111111111111111111111111111111111102');
+const MARKET = getAddress('0x1111111111111111111111111111111111111103');
+const UNDERLYING = getAddress('0x1111111111111111111111111111111111111104');
+const ROUTER = getAddress('0x888888888889758F76e7103c6CbF23ABbF58F946');
+const EXECUTOR = getAddress('0x2222222222222222222222222222222222222222');
+const NOT_A_PT = getAddress('0x3333333333333333333333333333333333333333');
 
-const T0 = 1_800_000_000_000 // fixed "now" (ms)
-const FUTURE = new Date(T0 + 86_400_000).toISOString()
-const PAST = new Date(T0 - 86_400_000).toISOString()
+const T0 = 1_800_000_000_000; // fixed "now" (ms)
+const FUTURE = new Date(T0 + 86_400_000).toISOString();
+const PAST = new Date(T0 - 86_400_000).toISOString();
 
 function marketsBody(expiry: string) {
   return {
@@ -46,38 +46,42 @@ function marketsBody(expiry: string) {
         expiry
       }
     ]
-  }
+  };
 }
 
 const convertBody = {
   tx: { to: ROUTER, data: '0xdeadbeef', value: '0' },
   data: { amountOut: '10000' }
-}
+};
 
-type Call = { venue: HttpVenue; url: string; searchParams?: Record<string, string> }
+type Call = { venue: HttpVenue; url: string; searchParams?: Record<string, string> };
 
 // A fake RateLimitedClient dispatching by URL path, recording every request.
 function fakeHttp(bodies: { markets?: () => unknown; convert?: () => unknown }) {
-  const calls: Call[] = []
+  const calls: Call[] = [];
   const client: RateLimitedClient = {
     async getJson<T>(args: Call) {
-      calls.push(args)
+      calls.push(args);
       if (args.url.includes('/v1/markets/all')) {
-        if (!bodies.markets) throw new QuoteError('api_error', 'markets stub missing')
-        return bodies.markets() as T
+        if (!bodies.markets) {
+          throw new QuoteError('api_error', 'markets stub missing');
+        }
+        return bodies.markets() as T;
       }
-      if (!bodies.convert) throw new QuoteError('api_error', 'convert stub missing')
-      return bodies.convert() as T
+      if (!bodies.convert) {
+        throw new QuoteError('api_error', 'convert stub missing');
+      }
+      return bodies.convert() as T;
     }
-  }
-  return { client, calls }
+  };
+  return { client, calls };
 }
 
 function unwrapperWith(
   bodies: { markets?: () => unknown; convert?: () => unknown },
   overrides: { logger?: QuoteLogger } = {}
 ) {
-  const { client, calls } = fakeHttp(bodies)
+  const { client, calls } = fakeHttp(bodies);
   const unwrapper = createPendlePtUnwrapper({
     client,
     chainId: CHAIN_ID,
@@ -85,8 +89,8 @@ function unwrapperWith(
     baseUrl: 'https://pendle.test/core',
     logger: overrides.logger ?? NOOP_LOGGER,
     now: () => T0
-  })
-  return { unwrapper, calls }
+  });
+  return { unwrapper, calls };
 }
 
 describe('createPendlePtUnwrapper', () => {
@@ -94,23 +98,27 @@ describe('createPendlePtUnwrapper', () => {
     const { unwrapper, calls } = unwrapperWith({
       markets: () => marketsBody(FUTURE),
       convert: () => convertBody
-    })
+    });
 
-    const result = await unwrapper.resolve({ token: PT, amountIn: 5000n, executor: EXECUTOR })
-    expect(result).not.toBeNull()
-    if (!result) return
+    const result = await unwrapper.resolve({ token: PT, amountIn: 5000n, executor: EXECUTOR });
+    expect(result).not.toBeNull();
+    if (!result) {
+      return;
+    }
 
     // One markets fetch, then the swap endpoint (active PT — expiry is in the future).
-    expect(calls).toHaveLength(2)
-    expect(calls[0]!.venue).toBe('pendle')
-    expect(calls[1]!.url).toBe(`https://pendle.test/core/v2/sdk/${CHAIN_ID}/markets/${MARKET}/swap`)
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.venue).toBe('pendle');
+    expect(calls[1]!.url).toBe(
+      `https://pendle.test/core/v2/sdk/${CHAIN_ID}/markets/${MARKET}/swap`
+    );
     expect(calls[1]!.searchParams).toEqual({
       receiver: EXECUTOR,
       slippage: '0.005', // 50 bps as a decimal fraction
       tokenIn: PT,
       tokenOut: UNDERLYING,
       amountIn: '5000'
-    })
+    });
 
     expect(result.step).toMatchObject({
       tokenIn: PT,
@@ -120,21 +128,21 @@ describe('createPendlePtUnwrapper', () => {
       callData: '0xdeadbeef',
       amountIn: { source: 'fixed', value: 5000n },
       approvalSpender: ROUTER // the Router pulls the PT via transferFrom
-    })
-    expect(result.expectedAmountOut).toBe(10000n)
+    });
+    expect(result.expectedAmountOut).toBe(10000n);
     // Conservative floor estimate: 10000 × (10000 − 50) / 10000.
-    expect(result.amountOutMinimum).toBe(9950n)
-  })
+    expect(result.amountOutMinimum).toBe(9950n);
+  });
 
   it('converts an EXPIRED PT via the redeem endpoint (yt-addressed, aggregator off)', async () => {
     const { unwrapper, calls } = unwrapperWith({
       markets: () => marketsBody(PAST),
       convert: () => convertBody
-    })
+    });
 
-    const result = await unwrapper.resolve({ token: PT, amountIn: 5000n, executor: EXECUTOR })
-    expect(result?.step.target).toBe(ROUTER)
-    expect(calls[1]!.url).toBe(`https://pendle.test/core/v2/sdk/${CHAIN_ID}/redeem`)
+    const result = await unwrapper.resolve({ token: PT, amountIn: 5000n, executor: EXECUTOR });
+    expect(result?.step.target).toBe(ROUTER);
+    expect(calls[1]!.url).toBe(`https://pendle.test/core/v2/sdk/${CHAIN_ID}/redeem`);
     expect(calls[1]!.searchParams).toEqual({
       receiver: EXECUTOR,
       slippage: '0.005',
@@ -142,34 +150,36 @@ describe('createPendlePtUnwrapper', () => {
       amountIn: '5000',
       tokenOut: UNDERLYING,
       enableAggregator: 'false'
-    })
-  })
+    });
+  });
 
   it('resolves a non-PT to null off ONE cached markets fetch', async () => {
-    const { unwrapper, calls } = unwrapperWith({ markets: () => marketsBody(FUTURE) })
+    const { unwrapper, calls } = unwrapperWith({ markets: () => marketsBody(FUTURE) });
     expect(
       await unwrapper.resolve({ token: NOT_A_PT, amountIn: 1n, executor: EXECUTOR })
-    ).toBeNull()
+    ).toBeNull();
     expect(
       await unwrapper.resolve({ token: NOT_A_PT, amountIn: 1n, executor: EXECUTOR })
-    ).toBeNull()
-    expect(calls).toHaveLength(1)
-  })
+    ).toBeNull();
+    expect(calls).toHaveLength(1);
+  });
 
   it('falls back to a STALE list on fetch failure (warn) without re-stamping it', async () => {
-    let clock = T0
-    let marketsCalls = 0
+    let clock = T0;
+    let marketsCalls = 0;
     const client: RateLimitedClient = {
       async getJson<T>(args: Call) {
         if (args.url.includes('/v1/markets/all')) {
-          marketsCalls += 1
-          if (marketsCalls === 1) return marketsBody(FUTURE) as T
-          throw new QuoteError('api_error', 'pendle down')
+          marketsCalls += 1;
+          if (marketsCalls === 1) {
+            return marketsBody(FUTURE) as T;
+          }
+          throw new QuoteError('api_error', 'pendle down');
         }
-        return convertBody as T
+        return convertBody as T;
       }
-    }
-    const { logger, events } = spyLogger()
+    };
+    const { logger, events } = spyLogger();
     const unwrapper = createPendlePtUnwrapper({
       client,
       chainId: CHAIN_ID,
@@ -177,63 +187,63 @@ describe('createPendlePtUnwrapper', () => {
       baseUrl: 'https://pendle.test/core',
       logger,
       now: () => clock
-    })
+    });
 
     // First resolve populates the cache from a successful fetch.
-    const first = await unwrapper.resolve({ token: PT, amountIn: 5000n, executor: EXECUTOR })
-    expect(first?.step.tokenOut).toBe(UNDERLYING)
-    expect(marketsCalls).toBe(1)
+    const first = await unwrapper.resolve({ token: PT, amountIn: 5000n, executor: EXECUTOR });
+    expect(first?.step.tokenOut).toBe(UNDERLYING);
+    expect(marketsCalls).toBe(1);
 
     // Past staleMs (default 6h) the fetch is retried; it fails, so we fall back to the stale list.
-    clock = T0 + 7 * 60 * 60 * 1000
-    const second = await unwrapper.resolve({ token: PT, amountIn: 5000n, executor: EXECUTOR })
-    expect(second?.step.tokenOut).toBe(UNDERLYING)
-    expect(events.some(e => e.event === 'pendle.markets_stale')).toBe(true)
-    expect(marketsCalls).toBe(2)
+    clock = T0 + 7 * 60 * 60 * 1000;
+    const second = await unwrapper.resolve({ token: PT, amountIn: 5000n, executor: EXECUTOR });
+    expect(second?.step.tokenOut).toBe(UNDERLYING);
+    expect(events.some(e => e.event === 'pendle.markets_stale')).toBe(true);
+    expect(marketsCalls).toBe(2);
 
     // The stale cache was NOT re-stamped as fresh — the next resolve retries the fetch.
-    await unwrapper.resolve({ token: PT, amountIn: 5000n, executor: EXECUTOR })
-    expect(marketsCalls).toBe(3)
-  })
+    await unwrapper.resolve({ token: PT, amountIn: 5000n, executor: EXECUTOR });
+    expect(marketsCalls).toBe(3);
+  });
 
   it('throws on fetch failure with NO cached data — never persisted as an empty list', async () => {
     const { unwrapper, calls } = unwrapperWith({
       markets: () => {
-        throw new QuoteError('rate_limited', 'pendle down')
+        throw new QuoteError('rate_limited', 'pendle down');
       }
-    })
+    });
 
     expect(unwrapper.resolve({ token: PT, amountIn: 1n, executor: EXECUTOR })).rejects.toThrow(
       'pendle down'
-    )
+    );
 
     // The failure was not cached: the next resolve fetches again.
-    expect(unwrapper.resolve({ token: PT, amountIn: 1n, executor: EXECUTOR })).rejects.toThrow()
-    expect(calls).toHaveLength(2)
-  })
+    expect(unwrapper.resolve({ token: PT, amountIn: 1n, executor: EXECUTOR })).rejects.toThrow();
+    expect(calls).toHaveLength(2);
+  });
 
   it('drops a market entry with a malformed expiry (warn) instead of treating it as active', async () => {
-    const { logger, events } = spyLogger()
-    const { unwrapper } = unwrapperWith({ markets: () => marketsBody('not-a-date') }, { logger })
-    expect(await unwrapper.resolve({ token: PT, amountIn: 1n, executor: EXECUTOR })).toBeNull()
-    expect(events.some(e => e.event === 'pendle.market_malformed')).toBe(true)
-  })
+    const { logger, events } = spyLogger();
+    const { unwrapper } = unwrapperWith({ markets: () => marketsBody('not-a-date') }, { logger });
+    expect(await unwrapper.resolve({ token: PT, amountIn: 1n, executor: EXECUTOR })).toBeNull();
+    expect(events.some(e => e.event === 'pendle.market_malformed')).toBe(true);
+  });
 
   it('throws api_error on malformed convert responses', async () => {
     const badData = unwrapperWith({
       markets: () => marketsBody(FUTURE),
       convert: () => ({ tx: { to: ROUTER, data: 'nothex' }, data: { amountOut: '1' } })
-    })
+    });
     expect(
       badData.unwrapper.resolve({ token: PT, amountIn: 1n, executor: EXECUTOR })
-    ).rejects.toThrow(/malformed swap tx/)
+    ).rejects.toThrow(/malformed swap tx/);
 
     const badAmount = unwrapperWith({
       markets: () => marketsBody(FUTURE),
       convert: () => ({ tx: { to: ROUTER, data: '0xabc1' }, data: { amountOut: 'NaN' } })
-    })
+    });
     expect(
       badAmount.unwrapper.resolve({ token: PT, amountIn: 1n, executor: EXECUTOR })
-    ).rejects.toThrow(/malformed amountOut/)
-  })
-})
+    ).rejects.toThrow(/malformed amountOut/);
+  });
+});

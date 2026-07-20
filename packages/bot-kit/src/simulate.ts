@@ -1,17 +1,17 @@
-import type { Address, Client, Hex } from 'viem'
+import { tryCatch } from '@repo/utils';
 
-import { tryCatch } from '@repo/utils'
-import { BaseError } from 'viem'
-import { call } from 'viem/actions'
+import type { Address, Client, Hex } from 'viem';
+import { BaseError } from 'viem';
+import { call } from 'viem/actions';
 
 export type SimulateResult = {
   /**
    * `ok` — the full exec (seize → swap → repay → sweep) succeeds, safe to broadcast. `revert` —
    * reverted in the exec path (not liquidatable, swap slippage, repay shortfall), do not send.
    */
-  status: 'ok' | 'revert'
-  reason?: string
-}
+  status: 'ok' | 'revert';
+  reason?: string;
+};
 
 /**
  * Simulates the real liquidation — `Executor.exec_606BaXt(...)` from the liquidator EOA,
@@ -39,10 +39,12 @@ export async function simulateLiquidationExec(
       // this is 0n in practice, but passing it explicitly keeps the sim and the send in lockstep.
       value: params.value ?? 0n
     })
-  )
-  if (!error) return { status: 'ok' }
+  );
+  if (!error) {
+    return { status: 'ok' };
+  }
   return {
     status: 'revert',
     reason: error instanceof BaseError ? error.shortMessage : error.message
-  }
+  };
 }

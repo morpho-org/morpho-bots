@@ -2,12 +2,12 @@
 // Run `bun run --filter @repo/contracts generate` after adding, renaming, or removing a .sol file.
 // Do not edit by hand — your changes will be overwritten.
 
-import { sol, solFile } from 'soltag'
+import { sol, solFile } from 'soltag';
 
 export const MidnightAbi = sol('IMidnight')`
   ${solFile('../solidity/interfaces/IMidnight.sol', { raw: true })}
-`.abi
+`.abi;
 
 export const MorphoAbi = sol('IMorpho')`
   ${solFile('../solidity/interfaces/IMorpho.sol', { raw: true })}
-`.abi
+`.abi;

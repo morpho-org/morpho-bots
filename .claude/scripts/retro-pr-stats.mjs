@@ -14,9 +14,9 @@
  * Output: JSON summary and markdown table with per-PR and aggregate stats.
  */
 
-import { execFileSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process';
 
-const REPO = process.env.GITHUB_REPO || 'morpho-org/curator-bots'
+const REPO = process.env.GITHUB_REPO || 'morpho-org/curator-bots';
 
 function usage() {
   console.error(`
@@ -30,8 +30,8 @@ Examples:
 
 Environment:
   GITHUB_REPO  Repository in owner/repo format (default: morpho-org/curator-bots)
-`)
-  process.exit(1)
+`);
+  process.exit(1);
 }
 
 function fetchPRStats(prNumber) {
@@ -48,40 +48,40 @@ function fetchPRStats(prNumber) {
         'number,title,additions,deletions,changedFiles,mergedAt,url'
       ],
       { encoding: 'utf-8', timeout: 30_000 }
-    )
-    return JSON.parse(raw)
+    );
+    return JSON.parse(raw);
   } catch (error) {
-    console.error(`Warning: Failed to fetch PR #${prNumber}: ${error.message}`)
-    return null
+    console.error(`Warning: Failed to fetch PR #${prNumber}: ${error.message}`);
+    return null;
   }
 }
 
 function formatNumber(n) {
-  return n.toLocaleString('en-US')
+  return n.toLocaleString('en-US');
 }
 
 function main() {
-  const args = process.argv.slice(2).filter(a => !a.startsWith('-'))
+  const args = process.argv.slice(2).filter(a => !a.startsWith('-'));
 
   if (args.length === 0) {
-    usage()
+    usage();
   }
 
   const prNumbers = args.map(a => {
-    const n = parseInt(a, 10)
+    const n = parseInt(a, 10);
     if (isNaN(n)) {
-      console.error(`Error: "${a}" is not a valid PR number`)
-      process.exit(1)
+      console.error(`Error: "${a}" is not a valid PR number`);
+      process.exit(1);
     }
-    return n
-  })
+    return n;
+  });
 
-  console.error(`Fetching stats for ${prNumbers.length} PRs from ${REPO}...\n`)
+  console.error(`Fetching stats for ${prNumbers.length} PRs from ${REPO}...\n`);
 
-  const results = []
+  const results = [];
 
   for (const pr of prNumbers) {
-    const stats = fetchPRStats(pr)
+    const stats = fetchPRStats(pr);
     if (stats) {
       results.push({
         number: stats.number,
@@ -93,13 +93,13 @@ function main() {
         totalChange: stats.additions + stats.deletions,
         mergedAt: stats.mergedAt,
         url: stats.url
-      })
+      });
     }
   }
 
   if (results.length === 0) {
-    console.error('Error: No PR data retrieved. Check your gh auth and PR numbers.')
-    process.exit(1)
+    console.error('Error: No PR data retrieved. Check your gh auth and PR numbers.');
+    process.exit(1);
   }
 
   // Aggregate stats
@@ -112,30 +112,36 @@ function main() {
       totalChange: acc.totalChange + r.totalChange
     }),
     { additions: 0, deletions: 0, changedFiles: 0, netChange: 0, totalChange: 0 }
-  )
+  );
 
-  const avgAdditions = Math.round(totals.additions / results.length)
-  const avgDeletions = Math.round(totals.deletions / results.length)
-  const avgTotalChange = Math.round(totals.totalChange / results.length)
+  const avgAdditions = Math.round(totals.additions / results.length);
+  const avgDeletions = Math.round(totals.deletions / results.length);
+  const avgTotalChange = Math.round(totals.totalChange / results.length);
 
-  const largest = results.reduce((max, r) => (r.totalChange > max.totalChange ? r : max))
-  const smallest = results.reduce((min, r) => (r.totalChange < min.totalChange ? r : min))
+  const largest = results.reduce((max, r) => (r.totalChange > max.totalChange ? r : max));
+  const smallest = results.reduce((min, r) => (r.totalChange < min.totalChange ? r : min));
 
   // Warn about unmerged PRs (likely accidental input)
-  const unmerged = results.filter(r => !r.mergedAt)
+  const unmerged = results.filter(r => !r.mergedAt);
   if (unmerged.length > 0) {
     console.error(
       `Warning: ${unmerged.length} PR(s) not yet merged: ${unmerged.map(r => `#${r.number}`).join(', ')}. These will appear at the end of the timeline.`
-    )
+    );
   }
 
   // Sort by merge date — unmerged PRs sort to the end
   const sorted = [...results].sort((a, b) => {
-    if (!a.mergedAt && !b.mergedAt) return a.number - b.number
-    if (!a.mergedAt) return 1
-    if (!b.mergedAt) return -1
-    return new Date(a.mergedAt).getTime() - new Date(b.mergedAt).getTime()
-  })
+    if (!a.mergedAt && !b.mergedAt) {
+      return a.number - b.number;
+    }
+    if (!a.mergedAt) {
+      return 1;
+    }
+    if (!b.mergedAt) {
+      return -1;
+    }
+    return new Date(a.mergedAt).getTime() - new Date(b.mergedAt).getTime();
+  });
 
   // Output JSON summary to stderr for programmatic use
   const summary = {
@@ -149,50 +155,50 @@ function main() {
     },
     largest: { number: largest.number, totalChange: largest.totalChange },
     smallest: { number: smallest.number, totalChange: smallest.totalChange }
-  }
-  console.error('JSON Summary:')
-  console.error(JSON.stringify(summary, null, 2))
-  console.error('')
+  };
+  console.error('JSON Summary:');
+  console.error(JSON.stringify(summary, null, 2));
+  console.error('');
 
   // Output markdown table to stdout
-  console.log('## PR Statistics\n')
-  console.log('### Aggregate\n')
-  console.log('| Metric              | Value        |')
-  console.log('| ------------------- | ------------ |')
-  console.log(`| PRs analyzed        | ${results.length}            |`)
-  console.log(`| Total files changed | ${formatNumber(totals.changedFiles)}          |`)
-  console.log(`| Total insertions    | +${formatNumber(totals.additions)}         |`)
-  console.log(`| Total deletions     | -${formatNumber(totals.deletions)}         |`)
+  console.log('## PR Statistics\n');
+  console.log('### Aggregate\n');
+  console.log('| Metric              | Value        |');
+  console.log('| ------------------- | ------------ |');
+  console.log(`| PRs analyzed        | ${results.length}            |`);
+  console.log(`| Total files changed | ${formatNumber(totals.changedFiles)}          |`);
+  console.log(`| Total insertions    | +${formatNumber(totals.additions)}         |`);
+  console.log(`| Total deletions     | -${formatNumber(totals.deletions)}         |`);
   console.log(
     `| Net change          | ${totals.netChange >= 0 ? '+' : ''}${formatNumber(totals.netChange)} lines |`
-  )
+  );
   console.log(
     `| Average PR size     | +${formatNumber(avgAdditions)} / -${formatNumber(avgDeletions)} (${formatNumber(avgTotalChange)} total) |`
-  )
+  );
   console.log(
     `| Largest PR          | [#${largest.number}] (+${formatNumber(largest.additions)} / -${formatNumber(largest.deletions)}) |`
-  )
+  );
   console.log(
     `| Smallest PR         | [#${smallest.number}] (+${formatNumber(smallest.additions)} / -${formatNumber(smallest.deletions)}) |`
-  )
+  );
 
-  console.log('\n### Per-PR Breakdown\n')
-  console.log('| PR | Title | Additions | Deletions | Net | Files |')
-  console.log('| -- | ----- | --------: | --------: | --: | ----: |')
+  console.log('\n### Per-PR Breakdown\n');
+  console.log('| PR | Title | Additions | Deletions | Net | Files |');
+  console.log('| -- | ----- | --------: | --------: | --: | ----: |');
   for (const r of sorted) {
     const shortTitle = (r.title.length > 60 ? r.title.slice(0, 57) + '...' : r.title).replaceAll(
       '|',
       '\\|'
-    )
+    );
     console.log(
       `| [#${r.number}] | ${shortTitle} | +${formatNumber(r.additions)} | -${formatNumber(r.deletions)} | ${r.netChange >= 0 ? '+' : ''}${formatNumber(r.netChange)} | ${r.changedFiles} |`
-    )
+    );
   }
 
-  console.log('\n---\n')
+  console.log('\n---\n');
   console.log(
     `_Generated by retro-pr-stats.mjs on ${new Date().toISOString().slice(0, 10)} from ${REPO}_`
-  )
+  );
 }
 
-main()
+main();

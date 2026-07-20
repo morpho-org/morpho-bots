@@ -1,6 +1,5 @@
-import type { Address, Hex } from 'viem'
-
-import { encodeAbiParameters, keccak256 } from 'viem'
+import type { Address, Hex } from 'viem';
+import { encodeAbiParameters, keccak256 } from 'viem';
 
 /**
  * A Morpho Blue market's immutable definition. Field ORDER is load-bearing: the market id is
@@ -9,12 +8,12 @@ import { encodeAbiParameters, keccak256 } from 'viem'
  * still re-derives `keccak256(abi.encode(params))` as an id-commitment check before reading state.
  */
 export type MarketParams = {
-  loanToken: Address
-  collateralToken: Address
-  oracle: Address
-  irm: Address
-  lltv: bigint
-}
+  loanToken: Address;
+  collateralToken: Address;
+  oracle: Address;
+  irm: Address;
+  lltv: bigint;
+};
 
 // The abi.encode layout of MarketParams: five static 32-byte words (3 addresses, 2 uint256), so
 // `keccak256(abi.encode(params))` is byte-identical to Blue's `keccak256(marketParams, 5*32)`.
@@ -24,7 +23,7 @@ const MARKET_PARAMS_COMPONENTS = [
   { name: 'oracle', type: 'address' },
   { name: 'irm', type: 'address' },
   { name: 'lltv', type: 'uint256' }
-] as const
+] as const;
 
 /**
  * The market id: `keccak256(abi.encode(marketParams))`. This is a cryptographic commitment to the
@@ -35,5 +34,5 @@ const MARKET_PARAMS_COMPONENTS = [
 export function marketId(params: MarketParams): Hex {
   return keccak256(
     encodeAbiParameters([{ type: 'tuple', components: MARKET_PARAMS_COMPONENTS }], [params])
-  )
+  );
 }

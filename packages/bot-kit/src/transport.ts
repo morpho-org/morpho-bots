@@ -1,8 +1,9 @@
-import { failover } from '@morpho-org/viem-dlc/transports'
-import { http } from 'viem'
+import { failover } from '@morpho-org/viem-dlc/transports';
+
+import { http } from 'viem';
 
 /** Per-request timeout for every bot-kit HTTP transport (the read client and the signer). */
-const RPC_TIMEOUT_MS = 30_000
+const RPC_TIMEOUT_MS = 30_000;
 
 /**
  * The base HTTP transport bot-kit clients share: a viem-dlc `failover` pair when `fallbackUrl` is
@@ -11,6 +12,6 @@ const RPC_TIMEOUT_MS = 30_000
  * signer casts it to viem's `Transport` (see the call sites for why each is needed).
  */
 export function createHttpTransport(primaryUrl: string, fallbackUrl?: string) {
-  const rpc = (url: string) => http(url, { timeout: RPC_TIMEOUT_MS })
-  return fallbackUrl ? failover([rpc(primaryUrl), rpc(fallbackUrl)]) : rpc(primaryUrl)
+  const rpc = (url: string) => http(url, { timeout: RPC_TIMEOUT_MS });
+  return fallbackUrl ? failover([rpc(primaryUrl), rpc(fallbackUrl)]) : rpc(primaryUrl);
 }

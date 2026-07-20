@@ -1,25 +1,24 @@
-import { getAddress, isHex } from 'viem'
+import { getAddress, isHex } from 'viem';
 
-import type { RateLimitedClient } from '../http-client'
-import type { PriceParameters, PriceQuote, QuoteParameters, Swap } from '../types'
-
-import { BPS, LIFI_BASE_URL, LIFI_INTEGRATOR } from '../constants'
-import { QuoteError } from '../types'
+import { BPS, LIFI_BASE_URL, LIFI_INTEGRATOR } from '../constants';
+import type { RateLimitedClient } from '../http-client';
+import type { PriceParameters, PriceQuote, QuoteParameters, Swap } from '../types';
+import { QuoteError } from '../types';
 
 /** The LiFi arm of the per-collateral swap config. */
-type LiFiEntry = { baseUrl?: string }
+type LiFiEntry = { baseUrl?: string };
 
 // Subset of the LiFi `/quote` response we consume. `transactionRequest` follows the Ethereum JSON-RPC
 // tx shape, so `value` is a hex string ("0x0") — unlike 0x's decimal `transaction.value`.
 type LiFiQuote = {
-  estimate?: { approvalAddress?: string; toAmount?: string; toAmountMin?: string }
-  transactionRequest?: { to?: string; data?: string; value?: string }
-}
+  estimate?: { approvalAddress?: string; toAmount?: string; toAmountMin?: string };
+  transactionRequest?: { to?: string; data?: string; value?: string };
+};
 
 // A non-zero placeholder `fromAddress` for the indicative probe: LiFi's `/quote` requires a sender,
 // but a PriceParameters probe has no executor and never mints executable calldata. A zero address can
 // be rejected by some routing paths even with `skipSimulation`, so we send a stable non-zero EOA.
-const LIFI_PROBE_ADDRESS = getAddress('0x000000000000000000000000000000000000dEaD')
+const LIFI_PROBE_ADDRESS = getAddress('0x000000000000000000000000000000000000dEaD');
 
 /**
  * Quotes LiFi via the one-step `/quote` endpoint, which returns ready-to-use `transactionRequest`
@@ -54,17 +53,17 @@ export async function quoteLifi(
       skipSimulation: 'true',
       integrator: LIFI_INTEGRATOR
     }
-  })
+  });
 
   if (
     !json.estimate?.approvalAddress ||
     !json.transactionRequest?.to ||
     !json.transactionRequest.data
   ) {
-    throw new QuoteError('no_route', 'lifi: no route for this pair/size')
+    throw new QuoteError('no_route', 'lifi: no route for this pair/size');
   }
   if (!isHex(json.transactionRequest.data)) {
-    throw new QuoteError('api_error', 'lifi: transactionRequest.data is not hex')
+    throw new QuoteError('api_error', 'lifi: transactionRequest.data is not hex');
   }
 
   return {
@@ -75,7 +74,7 @@ export async function quoteLifi(
     amountIn: { source: 'fixed', value: params.amountIn },
     expectedAmountOut: BigInt(json.estimate.toAmount ?? '0'),
     amountOutMinimum: BigInt(json.estimate.toAmountMin ?? '0')
-  }
+  };
 }
 
 /**
@@ -103,9 +102,10 @@ export async function priceLifi(
       skipSimulation: 'true',
       integrator: LIFI_INTEGRATOR
     }
-  })
+  });
 
-  if (!json.estimate?.toAmount)
-    throw new QuoteError('no_route', 'lifi: no route for this pair/size')
-  return { expectedAmountOut: BigInt(json.estimate.toAmount) }
+  if (!json.estimate?.toAmount) {
+    throw new QuoteError('no_route', 'lifi: no route for this pair/size');
+  }
+  return { expectedAmountOut: BigInt(json.estimate.toAmount) };
 }

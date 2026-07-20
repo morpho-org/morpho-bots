@@ -6,15 +6,15 @@ export async function allFulfilled<T>(
   promises: Promise<T>[],
   onRejected?: (reason: unknown, index: number) => void
 ): Promise<T[]> {
-  const results = await Promise.allSettled(promises)
+  const results = await Promise.allSettled(promises);
 
-  const fulfilled: T[] = []
+  const fulfilled: T[] = [];
   for (const [i, result] of results.entries()) {
     if (result.status === 'fulfilled') {
-      fulfilled.push(result.value)
+      fulfilled.push(result.value);
     } else if (onRejected) {
-      onRejected(result.reason, i)
+      onRejected(result.reason, i);
     }
   }
-  return fulfilled
+  return fulfilled;
 }

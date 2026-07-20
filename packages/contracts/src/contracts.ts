@@ -2,8 +2,8 @@
 // Run `bun run --filter @repo/contracts generate` after adding, renaming, or removing a .sol file.
 // Do not edit by hand — your changes will be overwritten.
 
-import { sol, solFile } from 'soltag'
+import { sol, solFile } from 'soltag';
 
 export const Executor = sol('Executor')`
   ${solFile('../solidity/Executor.sol', { raw: true })}
-`
+`;

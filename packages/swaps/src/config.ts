@@ -1,6 +1,7 @@
-import { addressSchema } from '@repo/utils'
-import { isAddress } from 'viem'
-import { z } from 'zod'
+import { addressSchema } from '@repo/utils';
+
+import { isAddress } from 'viem';
+import { z } from 'zod';
 
 // ---------------------------------------------------------------------------
 // Per-collateral swap routing config (operator-tooling JSON, e.g. the seed script)
@@ -16,7 +17,7 @@ import { z } from 'zod'
 // still the shape the venue adapters dispatch on, and `parseSwapConfig` still validates the JSON the
 // operator tooling (midnight's seed script) consumes. API keys NEVER live here — they come from env.
 
-const slippageBps = z.number().int().min(0).max(10_000)
+const slippageBps = z.number().int().min(0).max(10_000);
 
 const uniswapV3Venue = z
   .object({
@@ -25,19 +26,19 @@ const uniswapV3Venue = z
     fee: z.number().int().positive(),
     slippageBps
   })
-  .strict()
+  .strict();
 const zeroxVenue = z
   .object({ venue: z.literal('0x'), baseUrl: z.string().url().optional(), slippageBps })
-  .strict()
+  .strict();
 const oneInchVenue = z
   .object({ venue: z.literal('1inch'), baseUrl: z.string().url().optional(), slippageBps })
-  .strict()
+  .strict();
 const lifiVenue = z
   .object({ venue: z.literal('lifi'), baseUrl: z.string().url().optional(), slippageBps })
-  .strict()
+  .strict();
 const liquidSwapVenue = z
   .object({ venue: z.literal('liquidswap'), baseUrl: z.string().url().optional(), slippageBps })
-  .strict()
+  .strict();
 
 // A pre-venue entry ({ router, fee, slippageBps }, no `venue`) defaults to uniswap-v3, so existing
 // configs keep parsing byte-identically.
@@ -53,10 +54,10 @@ const swapParamsSchema = z.preprocess(
     lifiVenue,
     liquidSwapVenue
   ])
-)
+);
 
 /** One collateral's parsed venue entry — the discriminated union the adapters dispatch on. */
-export type SwapConfigEntry = z.infer<typeof swapParamsSchema>
+export type SwapConfigEntry = z.infer<typeof swapParamsSchema>;
 
 const swapConfigSchema = z.record(
   z.string().regex(/^\d+$/, 'Swap config keys must be numeric chain ids'),
@@ -66,15 +67,15 @@ const swapConfigSchema = z.record(
       .refine(value => isAddress(value, { strict: false }), 'Invalid collateral token address'),
     swapParamsSchema
   )
-)
+);
 
 /** The full parsed swap-routing file: chainId → collateral address → venue entry. */
-export type SwapConfig = z.infer<typeof swapConfigSchema>
+export type SwapConfig = z.infer<typeof swapConfigSchema>;
 
 /**
  * Parses (and validates) the raw JSON swap-routing config. Throws a `ZodError` on any malformed
  * entry — a present-but-invalid file is operator error and must fail loud.
  */
 export function parseSwapConfig(raw: unknown): SwapConfig {
-  return swapConfigSchema.parse(raw)
+  return swapConfigSchema.parse(raw);
 }

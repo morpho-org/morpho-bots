@@ -1,22 +1,21 @@
-import { getAddress, isHex } from 'viem'
+import { getAddress, isHex } from 'viem';
 
-import type { RateLimitedClient } from '../http-client'
-import type { PriceParameters, PriceQuote, QuoteParameters, Swap } from '../types'
-
-import { ZEROX_ALLOWANCE_HOLDER, ZEROX_BASE_URL } from '../constants'
-import { QuoteError } from '../types'
+import { ZEROX_ALLOWANCE_HOLDER, ZEROX_BASE_URL } from '../constants';
+import type { RateLimitedClient } from '../http-client';
+import type { PriceParameters, PriceQuote, QuoteParameters, Swap } from '../types';
+import { QuoteError } from '../types';
 
 /** The 0x arm of the per-collateral swap config. */
-type ZeroxEntry = { baseUrl?: string }
+type ZeroxEntry = { baseUrl?: string };
 
 // Subset of the 0x Swap API v2 (AllowanceHolder) `/quote` response we consume.
 type ZeroxQuote = {
-  liquidityAvailable?: boolean
-  buyAmount?: string
-  minBuyAmount?: string
-  transaction?: { to?: string; data?: string; value?: string }
-  issues?: { allowance?: { spender?: string } | null } | null
-}
+  liquidityAvailable?: boolean;
+  buyAmount?: string;
+  minBuyAmount?: string;
+  transaction?: { to?: string; data?: string; value?: string };
+  issues?: { allowance?: { spender?: string } | null } | null;
+};
 
 /**
  * Quotes 0x via the one-step AllowanceHolder `/quote` endpoint, which returns ready-to-use calldata
@@ -40,19 +39,19 @@ export async function quoteZerox(
       taker: params.executor,
       slippageBps: String(params.slippageBps)
     }
-  })
+  });
 
   if (json.liquidityAvailable === false || !json.transaction?.to || !json.transaction.data) {
-    throw new QuoteError('no_route', '0x: no liquidity available for this pair/size')
+    throw new QuoteError('no_route', '0x: no liquidity available for this pair/size');
   }
   if (!isHex(json.transaction.data)) {
-    throw new QuoteError('api_error', '0x: transaction.data is not hex')
+    throw new QuoteError('api_error', '0x: transaction.data is not hex');
   }
 
   // The docs say approve AllowanceHolder, not the Settler. Prefer the response's spender; fall back to
   // the canonical AllowanceHolder (the response omits `issues.allowance` when it thinks allowance is
   // already sufficient, which never holds for the always-zeroed Executor).
-  const spender = getAddress(json.issues?.allowance?.spender ?? ZEROX_ALLOWANCE_HOLDER)
+  const spender = getAddress(json.issues?.allowance?.spender ?? ZEROX_ALLOWANCE_HOLDER);
 
   return {
     spender,
@@ -62,7 +61,7 @@ export async function quoteZerox(
     amountIn: { source: 'fixed', value: params.amountIn },
     expectedAmountOut: BigInt(json.buyAmount ?? '0'),
     amountOutMinimum: BigInt(json.minBuyAmount ?? '0')
-  }
+  };
 }
 
 /**
@@ -84,10 +83,10 @@ export async function priceZerox(
       buyToken: params.tokenOut,
       sellAmount: params.amountIn.toString()
     }
-  })
+  });
 
   if (json.liquidityAvailable === false || !json.buyAmount) {
-    throw new QuoteError('no_route', '0x: no liquidity available for this pair/size')
+    throw new QuoteError('no_route', '0x: no liquidity available for this pair/size');
   }
-  return { expectedAmountOut: BigInt(json.buyAmount) }
+  return { expectedAmountOut: BigInt(json.buyAmount) };
 }

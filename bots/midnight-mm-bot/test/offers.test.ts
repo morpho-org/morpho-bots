@@ -1,12 +1,14 @@
-import type { Address } from 'viem'
+import { describe, expect, it } from 'bun:test';
 
-import { TickLib } from '@morpho-org/midnight-sdk'
-import { describe, expect, it } from 'bun:test'
-import { zeroAddress } from 'viem'
+import { TickLib } from '@morpho-org/midnight-sdk';
 
-import { buildOfferTree } from '../src/offers'
-const maker = '0x1111111111111111111111111111111111111111' as Address
-const ratifier = '0x2222222222222222222222222222222222222222' as Address
+import type { Address } from 'viem';
+import { zeroAddress } from 'viem';
+
+import { buildOfferTree } from '../src/offers';
+
+const maker = '0x1111111111111111111111111111111111111111' as Address;
+const ratifier = '0x2222222222222222222222222222222222222222' as Address;
 const market = {
   params: {
     chainId: 8453n,
@@ -32,9 +34,11 @@ const market = {
   settlementFeeCbps: [0, 0, 0, 0, 0, 0, 0] as const,
   continuousFee: 123,
   tickSpacing: 4
-}
+};
+
 const tick = (rateBps: number) =>
-  TickLib.priceToTick(TickLib.rateToPrice(BigInt(rateBps) * 100_000_000_000_000n), 4n)
+  TickLib.priceToTick(TickLib.rateToPrice(BigInt(rateBps) * 100_000_000_000_000n), 4n);
+
 describe('buildOfferTree', () => {
   it('builds one shared-consumption rate ladder per side', () => {
     const result = buildOfferTree({
@@ -51,16 +55,17 @@ describe('buildOfferTree', () => {
       ratifier,
       start: 1000n,
       expiry: 2000n
-    })
-    expect(result.tree.offers).toHaveLength(6)
-    expect(result.bidGroup.offers.map(o => o.tick)).toEqual([tick(200), tick(300), tick(400)])
-    expect(result.askGroup.offers.map(o => o.tick)).toEqual([tick(600), tick(700), tick(800)])
-    expect(result.bidGroup.offers.every(o => o.buy)).toBe(true)
-    expect(result.askGroup.offers.every(o => !o.buy)).toBe(true)
-    expect(new Set(result.bidGroup.offers.map(o => o.group)).size).toBe(1)
-    expect(new Set(result.askGroup.offers.map(o => o.group)).size).toBe(1)
-    expect(result.bidGroup.id).not.toBe(result.askGroup.id)
-    expect(result.tree.offers.every(o => o.maxUnits === 1000000n)).toBe(true)
-    expect(result.tree.offers.every(o => o.continuousFeeCap === 123n)).toBe(true)
-  })
-})
+    });
+
+    expect(result.tree.offers).toHaveLength(6);
+    expect(result.bidGroup.offers.map(o => o.tick)).toEqual([tick(200), tick(300), tick(400)]);
+    expect(result.askGroup.offers.map(o => o.tick)).toEqual([tick(600), tick(700), tick(800)]);
+    expect(result.bidGroup.offers.every(o => o.buy)).toBe(true);
+    expect(result.askGroup.offers.every(o => !o.buy)).toBe(true);
+    expect(new Set(result.bidGroup.offers.map(o => o.group)).size).toBe(1);
+    expect(new Set(result.askGroup.offers.map(o => o.group)).size).toBe(1);
+    expect(result.bidGroup.id).not.toBe(result.askGroup.id);
+    expect(result.tree.offers.every(o => o.maxUnits === 1000000n)).toBe(true);
+    expect(result.tree.offers.every(o => o.continuousFeeCap === 123n)).toBe(true);
+  });
+});

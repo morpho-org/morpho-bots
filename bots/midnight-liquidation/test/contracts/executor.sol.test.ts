@@ -1,10 +1,12 @@
-import { Executor } from '@repo/contracts'
-import { describe, expect, test } from 'bun:test'
-import { executorAbi as upstreamExecutorAbi } from 'executooor-viem'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
-import solc from 'solc'
-import { toFunctionSelector } from 'viem'
+import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+import { Executor } from '@repo/contracts';
+
+import { executorAbi as upstreamExecutorAbi } from 'executooor-viem';
+import solc from 'solc';
+import { toFunctionSelector } from 'viem';
 
 // Verifies the vendored Executor singleton (@repo/contracts/solidity/Executor.sol — a single
 // self-contained file with IExecutor/Placeholder inlined): it must compile clean for Cancun, its
@@ -13,7 +15,7 @@ import { toFunctionSelector } from 'viem'
 // constructor, same call surface). solc runs once per file (~seconds), so all assertions share one
 // compile.
 
-const CONTRACTS_DIR = join(import.meta.dir, '../../../../packages/contracts/solidity')
+const CONTRACTS_DIR = join(import.meta.dir, '../../../../packages/contracts/solidity');
 
 function compile() {
   const input = {
@@ -27,32 +29,32 @@ function compile() {
       evmVersion: 'cancun',
       outputSelection: { '*': { '*': ['abi', 'evm.bytecode.object'] } }
     }
-  }
+  };
   const output = JSON.parse(solc.compile(JSON.stringify(input))) as {
-    errors?: { severity: string; formattedMessage: string }[]
+    errors?: { severity: string; formattedMessage: string }[];
     contracts: Record<
       string,
       Record<string, { abi: unknown[]; evm: { bytecode: { object: string } } }>
-    >
-  }
+    >;
+  };
   return {
     errors: (output.errors ?? []).filter(e => e.severity === 'error'),
     executor: output.contracts['Executor.sol']?.Executor
-  }
+  };
 }
 
-const { errors, executor } = compile()
+const { errors, executor } = compile();
 
 describe('packages/contracts/solidity/Executor.sol', () => {
   test('compiles for Cancun with zero errors', () => {
-    expect(errors.map(e => e.formattedMessage)).toEqual([])
-    expect(executor).toBeDefined()
-    expect(executor!.evm.bytecode.object.length).toBeGreaterThan(0)
-  })
+    expect(errors.map(e => e.formattedMessage)).toEqual([]);
+    expect(executor).toBeDefined();
+    expect(executor!.evm.bytecode.object.length).toBeGreaterThan(0);
+  });
 
   test('solc ABI matches @repo/contracts/v2 Executor.abi exactly', () => {
-    expect(executor!.abi).toEqual(Executor.abi as unknown as unknown[])
-  })
+    expect(executor!.abi).toEqual(Executor.abi as unknown as unknown[]);
+  });
 
   test('owner gate is the only ABI diff from upstream executooor: constructor dropped, call surface identical', () => {
     const signatures = (abi: readonly unknown[]) =>
@@ -62,13 +64,13 @@ describe('packages/contracts/solidity/Executor.sol', () => {
             ? toFunctionSelector(entry as Parameters<typeof toFunctionSelector>[0])
             : entry.type
         )
-        .sort()
+        .sort();
 
     expect(
       (Executor.abi as readonly { type: string }[]).some(entry => entry.type === 'constructor')
-    ).toBe(false)
+    ).toBe(false);
     expect(signatures(Executor.abi)).toEqual(
       signatures(upstreamExecutorAbi.filter(entry => entry.type !== 'constructor'))
-    )
-  })
-})
+    );
+  });
+});

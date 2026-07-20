@@ -1,5 +1,5 @@
-import type { PlanInput } from '../sizing/plan'
-import type { LensOut } from '../state/lens.sol'
+import type { PlanInput } from '../sizing/plan';
+import type { LensOut } from '../state/lens.sol';
 
 /**
  * Off-chain liquidatability, composed from a fresh lens reading — mirrors the gate `liquidate()`
@@ -14,7 +14,7 @@ export function isLiquidatable(out: LensOut): boolean {
     out.hasDebt &&
     !out.locked &&
     (out.blockTimestamp > out.market.maturity || !out.healthy)
-  )
+  );
 }
 
 /**
@@ -38,5 +38,5 @@ export function planInputFromLens(out: LensOut): PlanInput {
     bestCollateralPrice: out.bestCollateralPrice,
     bestCollateralMaxLif: out.bestCollateralMaxLif,
     bestCollateralLltv: out.bestCollateralLltv
-  }
+  };
 }

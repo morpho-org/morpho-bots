@@ -1,5 +1,5 @@
-import { TIME_TO_MAX_LIF, WAD } from '../constants'
-import { min } from './math'
+import { TIME_TO_MAX_LIF, WAD } from '../constants';
+import { min } from './math';
 
 /**
  * Liquidation incentive factor at chain time `now`. Normal mode returns the slot's full `maxLif`;
@@ -17,12 +17,14 @@ export function lifAt({
   maxLif,
   postMaturityMode
 }: {
-  now: bigint
-  maturity: bigint
-  maxLif: bigint
-  postMaturityMode: boolean
+  now: bigint;
+  maturity: bigint;
+  maxLif: bigint;
+  postMaturityMode: boolean;
 }): bigint {
-  if (!postMaturityMode) return maxLif
-  const lif = WAD + ((maxLif - WAD) * (now - maturity)) / TIME_TO_MAX_LIF
-  return min(maxLif, lif)
+  if (!postMaturityMode) {
+    return maxLif;
+  }
+  const lif = WAD + ((maxLif - WAD) * (now - maturity)) / TIME_TO_MAX_LIF;
+  return min(maxLif, lif);
 }

@@ -1,10 +1,10 @@
-import type { BatchLensTransportType } from '@repo/utils'
-import type { Address, Client, Hex, Transport } from 'viem'
+import type { BatchLensTransportType } from '@repo/utils';
+import { lensKey, MAX_INITCODE_SIZE, readDeploylessBatchLens } from '@repo/utils';
 
-import { lensKey, MAX_INITCODE_SIZE, readDeploylessBatchLens } from '@repo/utils'
-import { sol } from 'soltag'
+import { sol } from 'soltag';
+import type { Address, Client, Hex, Transport } from 'viem';
 
-import type { Market } from '../execution/encode-call'
+import type { Market } from '../execution/encode-call';
 
 // Single-file soltag lens: reads everything the liquidation decision depends on for a batch of
 // (id, borrower) pairs inside one eth_call against a single block.timestamp. Takes an `Input[]` and
@@ -163,33 +163,33 @@ contract MidnightLiquidationLens {
     }
   }
 }
-`
+`;
 
 /** What the lens reads for one (id, borrower) pair. The lens fetches the Market on-chain from
  * `id`; `caller` is the Executor (the liquidate `msg.sender`), whose `canLiquidate` is checked —
  * not the EOA. */
-export type LensInput = { id: Hex; borrower: Address; caller: Address }
+export type LensInput = { id: Hex; borrower: Address; caller: Address };
 
 /** Decoded `LensOut` (uint8 → number, uint64/128/256 → bigint, per viem). */
 export type LensOut = {
-  valid: boolean
-  hasDebt: boolean
-  healthy: boolean
-  locked: boolean
-  gateAllows: boolean
-  blockTimestamp: bigint
-  debt: bigint
-  maxDebt: bigint
-  badDebt: bigint
-  activatedBitmap: bigint
-  bestCollateralIdx: number
-  bestCollateralAmt: bigint
-  bestCollateralPrice: bigint
-  bestCollateralMaxLif: bigint
-  bestCollateralLltv: bigint
+  valid: boolean;
+  hasDebt: boolean;
+  healthy: boolean;
+  locked: boolean;
+  gateAllows: boolean;
+  blockTimestamp: bigint;
+  debt: bigint;
+  maxDebt: bigint;
+  badDebt: bigint;
+  activatedBitmap: bigint;
+  bestCollateralIdx: number;
+  bestCollateralAmt: bigint;
+  bestCollateralPrice: bigint;
+  bestCollateralMaxLif: bigint;
+  bestCollateralLltv: bigint;
   /** Full Market read on-chain via `toMarket(id)`; pass straight into `liquidate`. */
-  market: Market
-}
+  market: Market;
+};
 
 /**
  * Reads the liquidation lens for every pair in one deployless, chunked `eth_call` (no signer, no
@@ -217,5 +217,5 @@ export async function readMidnightLiquidationLens(
     },
     ({ id, borrower }) => lensKey(id, borrower),
     (_input, out): LensOut => out
-  )
+  );
 }

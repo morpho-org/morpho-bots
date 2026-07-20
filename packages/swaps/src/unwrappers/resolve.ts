@@ -1,8 +1,7 @@
-import type { Address } from 'viem'
+import type { Address } from 'viem';
+import { isAddressEqual } from 'viem';
 
-import { isAddressEqual } from 'viem'
-
-import type { SwapStep } from '../types'
+import type { SwapStep } from '../types';
 
 /**
  * A pre-swap converter (ERC4626 redeem, Pendle PT redeem/swap, …). `resolve` returns `null` when
@@ -12,32 +11,32 @@ import type { SwapStep } from '../types'
  */
 export type Unwrapper = {
   /** Stable name for logging only (e.g. 'erc4626', 'pendle-pt'). */
-  kind: string
+  kind: string;
   resolve: (args: {
-    token: Address
-    amountIn: bigint
-    executor: Address
-  }) => Promise<{ step: SwapStep; expectedAmountOut: bigint; amountOutMinimum: bigint } | null>
-}
+    token: Address;
+    amountIn: bigint;
+    executor: Address;
+  }) => Promise<{ step: SwapStep; expectedAmountOut: bigint; amountOutMinimum: bigint } | null>;
+};
 
 /**
  * Bounds the unwrap chain (a PT whose underlying is itself a vault share is depth 2; anything
  * deeper is pathological). Also the cycle guard — no route optimization, just ordered first-match
  * trials that must terminate.
  */
-export const MAX_UNWRAP_DEPTH = 3
+export const MAX_UNWRAP_DEPTH = 3;
 
 /** The unwrap chain plus where it left off: the first token no unwrapper applies to. */
 export type UnwrapResolution = {
-  steps: SwapStep[]
+  steps: SwapStep[];
   /** The token the chain ends on — the venue swap's `tokenIn` (or the loan token itself). */
-  token: Address
+  token: Address;
   /**
    * Worst-case amount of `token` the Executor will hold — each hop threads its
    * `amountOutMinimum` forward so a downstream fixed-amount step can never revert on shortfall.
    */
-  amountIn: bigint
-}
+  amountIn: bigint;
+};
 
 /**
  * Repeatedly tries each unwrapper in order (first match advances the chain) until none applies,
@@ -48,29 +47,37 @@ export async function resolveUnwraps(
   unwrappers: readonly Unwrapper[],
   args: { token: Address; amountIn: bigint; executor: Address; stopToken: Address }
 ): Promise<UnwrapResolution> {
-  const { executor, stopToken } = args
-  const steps: SwapStep[] = []
-  let token = args.token
-  let amountIn = args.amountIn
+  const { executor, stopToken } = args;
+  const steps: SwapStep[] = [];
+  let token = args.token;
+  let amountIn = args.amountIn;
 
   for (let depth = 0; depth < MAX_UNWRAP_DEPTH; depth++) {
-    if (isAddressEqual(token, stopToken)) break
-
-    let advanced = false
-    for (const unwrapper of unwrappers) {
-      const result = await unwrapper.resolve({ token, amountIn, executor })
-      if (!result) continue
-      // A hop that doesn't change the token can never terminate — treat it as "does not apply".
-      if (isAddressEqual(result.step.tokenIn, result.step.tokenOut)) continue
-
-      steps.push(result.step)
-      token = result.step.tokenOut
-      amountIn = result.amountOutMinimum
-      advanced = true
-      break
+    if (isAddressEqual(token, stopToken)) {
+      break;
     }
-    if (!advanced) break
+
+    let advanced = false;
+    for (const unwrapper of unwrappers) {
+      const result = await unwrapper.resolve({ token, amountIn, executor });
+      if (!result) {
+        continue;
+      }
+      // A hop that doesn't change the token can never terminate — treat it as "does not apply".
+      if (isAddressEqual(result.step.tokenIn, result.step.tokenOut)) {
+        continue;
+      }
+
+      steps.push(result.step);
+      token = result.step.tokenOut;
+      amountIn = result.amountOutMinimum;
+      advanced = true;
+      break;
+    }
+    if (!advanced) {
+      break;
+    }
   }
 
-  return { steps, token, amountIn }
+  return { steps, token, amountIn };
 }

@@ -62,7 +62,7 @@ commit/push):
 
 1. **Type safety**: Run `bun run --filter <affected-package> typecheck` — zero errors required.
 2. **Lint**: Run `bun lint` from the repo root — zero warnings policy. Lint is a workspace-level
-   concern; oxlint walks the whole tree and per-package `lint` scripts are deliberately omitted.
+   concern; Biome walks the whole tree and per-package `lint` scripts are deliberately omitted.
 3. **Format**: Run `bun format` — auto-fixes formatting in place.
 4. **Existing tests**: Run `bun test` — all must pass.
 
@@ -100,7 +100,7 @@ addressing PR feedback, etc.).
 **When NOT to write tests:**
 
 - Trivial changes: renaming, moving imports, updating strings/copy
-- Config changes: tsconfig, oxlint, package.json
+- Config changes: tsconfig, Biome, package.json
 - Changes already covered by existing tests
 
 ## Coding Conventions
@@ -157,7 +157,7 @@ which supersedes the now-historical
 [TIB-2026-07-13-bot-architecture](./docs/decisions/TIB-2026-07-13-bot-architecture.md).
 
 **Key technologies**: bun 1.3.12 (runtime + package manager + workspace task runner), Node.js
-24.14.1, TypeScript 6.0, viem for Web3, oxlint + oxfmt for lint/format, knip for dead-code
+24.14.1, TypeScript 6.0, viem for Web3, Biome for formatting and linting, knip for dead-code
 detection, bun's built-in test runner.
 
 **Node.js requirement**: `24.14.1` (see `.nvmrc`).
@@ -222,7 +222,7 @@ All commit messages, PR titles, and Linear ticket titles use the same format:
 | `ci`          | CI/CD pipeline changes                                      |
 | `agents`      | `CLAUDE.md`, `.mcp.json`, editor configs, agent definitions |
 | `conventions` | `CONVENTIONS.md`, `GUIDANCE.md`, docs templates             |
-| `tooling`     | `@repo/typescript-config`, oxlint, oxfmt, knip              |
+| `tooling`     | `@repo/typescript-config`, Biome, knip                      |
 | `checks`      | CI workflow files and git hooks                             |
 | `docs`        | TIBs, retros, READMEs, `docs/context/`                      |
 

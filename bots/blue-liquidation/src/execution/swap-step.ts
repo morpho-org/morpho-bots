@@ -1,8 +1,7 @@
-import type { LiquidationPlan } from '../sizing/plan'
-import type { LensOut } from '../state/lens.sol'
-
-import { ORACLE_PRICE_SCALE } from '../constants'
-import { mulDivDown } from '../sizing/math'
+import { ORACLE_PRICE_SCALE } from '../constants';
+import { mulDivDown } from '../sizing/math';
+import type { LiquidationPlan } from '../sizing/plan';
+import type { LensOut } from '../state/lens.sol';
 
 /**
  * The loan-token amount the swap is expected to produce, valued at the lens's fresh oracle price (no
@@ -13,5 +12,5 @@ import { mulDivDown } from '../sizing/math'
  * construction and aggregator route-quality checks.
  */
 export function expectedLoanOut(plan: LiquidationPlan, out: LensOut): bigint {
-  return mulDivDown(plan.seizedAssets, out.collateralPrice, ORACLE_PRICE_SCALE)
+  return mulDivDown(plan.seizedAssets, out.collateralPrice, ORACLE_PRICE_SCALE);
 }

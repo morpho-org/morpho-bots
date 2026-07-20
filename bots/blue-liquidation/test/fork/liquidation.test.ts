@@ -1,5 +1,4 @@
-import type { SwapPlan } from '@repo/swaps'
-import type { Address } from 'viem'
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 
 import {
   assertContractDeployed,
@@ -7,70 +6,75 @@ import {
   createSigner,
   initialFees,
   simulateLiquidationExec
-} from '@repo/bot-kit'
-import { quoteUniswapV3 } from '@repo/swaps'
-import { lensKey } from '@repo/utils'
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
-import { erc20Abi, parseGwei } from 'viem'
-import { base } from 'viem/chains'
+} from '@repo/bot-kit';
+import type { SwapPlan } from '@repo/swaps';
+import { quoteUniswapV3 } from '@repo/swaps';
+import { lensKey } from '@repo/utils';
 
-import type { ForkFixture, ForkHandle, TestClient } from './harness'
+import type { Address } from 'viem';
+import { erc20Abi, parseGwei } from 'viem';
+import { base } from 'viem/chains';
 
-import { encodeLiquidationExec } from '../../src/execution/encode-call'
-import { expectedLoanOut } from '../../src/execution/swap-step'
-import { marketId } from '../../src/market'
-import { isLiquidatable, planInputFromLens } from '../../src/runner/eligibility'
-import { plan } from '../../src/sizing/plan'
-import { readBlueLiquidationLens } from '../../src/state/lens.sol'
+import { encodeLiquidationExec } from '../../src/execution/encode-call';
+import { expectedLoanOut } from '../../src/execution/swap-step';
+import { marketId } from '../../src/market';
+import { isLiquidatable, planInputFromLens } from '../../src/runner/eligibility';
+import { plan } from '../../src/sizing/plan';
+import { readBlueLiquidationLens } from '../../src/state/lens.sol';
+import type { ForkFixture, ForkHandle, TestClient } from './harness';
 import {
   deployExecutor,
   FORK_URL,
   fundEth,
   LIQUIDATOR,
   LIQUIDATOR_KEY,
+  loadForkFixtureFromEnv,
   MORPHO,
   SWAP_ROUTER_02,
-  loadForkFixtureFromEnv,
   startFork,
   stopFork,
   testClient,
   warpBy
-} from './harness'
+} from './harness';
 
 // Generous slippage: the `amountOutMinimum` is derived from the lens's ORACLE price, which can
 // diverge from the pool spot; 5% slack keeps the swap from reverting on that gap without masking a
 // broken path.
-const SLIPPAGE_BPS = 500
+const SLIPPAGE_BPS = 500;
 
 // A real, currently-unhealthy (or warp-into-unhealthy) Base Morpho Blue position, pinned at a
 // deterministic fork block, with a deep Uniswap pool for its collateral. The suite skips by default
 // and runs when `RPC_URL_8453` plus `BLUE_LIQUIDATION_FORK_FIXTURE` are set.
-const FIXTURE: ForkFixture | null = loadForkFixtureFromEnv()
+const FIXTURE: ForkFixture | null = loadForkFixtureFromEnv();
 
 describe.skipIf(!FORK_URL || !FIXTURE)(
   'fork: end-to-end liquidation against a real Base Morpho Blue position',
   () => {
-    let anvil: ForkHandle
-    let test: TestClient
-    let executooor: Address
+    let anvil: ForkHandle;
+    let test: TestClient;
+    let executooor: Address;
     let cfg: {
-      chain: typeof base
-      rpcUrl: string
-      rpcUrlFallback: undefined
-      privateKey: typeof LIQUIDATOR_KEY
-      morpho: Address
-      executooorAddress: Address
-      maxFeeWei: bigint
-    }
+      chain: typeof base;
+      rpcUrl: string;
+      rpcUrlFallback: undefined;
+      privateKey: typeof LIQUIDATOR_KEY;
+      morpho: Address;
+      executooorAddress: Address;
+      maxFeeWei: bigint;
+    };
 
     beforeAll(async () => {
-      if (!FIXTURE) return
-      const fork = await startFork(FIXTURE.forkBlock)
-      anvil = fork.anvil
-      test = testClient(fork.rpcUrl)
-      await fundEth(test, LIQUIDATOR)
-      executooor = await deployExecutor(test, fork.rpcUrl)
-      if (FIXTURE.warpBySeconds) await warpBy(test, FIXTURE.warpBySeconds)
+      if (!FIXTURE) {
+        return;
+      }
+      const fork = await startFork(FIXTURE.forkBlock);
+      anvil = fork.anvil;
+      test = testClient(fork.rpcUrl);
+      await fundEth(test, LIQUIDATOR);
+      executooor = await deployExecutor(test, fork.rpcUrl);
+      if (FIXTURE.warpBySeconds) {
+        await warpBy(test, FIXTURE.warpBySeconds);
+      }
 
       cfg = {
         chain: base,
@@ -80,36 +84,42 @@ describe.skipIf(!FORK_URL || !FIXTURE)(
         morpho: MORPHO,
         executooorAddress: executooor,
         maxFeeWei: parseGwei('300')
-      }
-    }, 60_000)
+      };
+    }, 60_000);
 
     afterAll(async () => {
-      await stopFork(anvil)
-    })
+      await stopFork(anvil);
+    });
 
     it('drives lens → plan → swap → exec, lands the tx, and fully drains the Executor', async () => {
-      if (!FIXTURE) return
-      const { marketParams, borrower, poolFee } = FIXTURE
-      const client = createDeploylessClient(cfg)
-      await assertContractDeployed(client, executooor, 'EXECUTOOOR_ADDRESS')
+      if (!FIXTURE) {
+        return;
+      }
+      const { marketParams, borrower, poolFee } = FIXTURE;
+      const client = createDeploylessClient(cfg);
+      await assertContractDeployed(client, executooor, 'EXECUTOOOR_ADDRESS');
 
       // 1. Fresh lens read — the lens re-derives the id from params and reads accrued state.
       const lensOut = await readBlueLiquidationLens(client, MORPHO, [
         { params: marketParams, borrower }
-      ])
-      const out = lensOut.get(lensKey(marketId(marketParams), borrower))
-      expect(out).toBeDefined()
-      if (!out) throw new Error('lens returned no entry')
+      ]);
+      const out = lensOut.get(lensKey(marketId(marketParams), borrower));
+      expect(out).toBeDefined();
+      if (!out) {
+        throw new Error('lens returned no entry');
+      }
 
       // 2. Liquidatable (unhealthy, has debt, valid market).
-      expect(isLiquidatable(out)).toBe(true)
+      expect(isLiquidatable(out)).toBe(true);
 
       // 3. Seize-exact plan. The successful exec below is the on-chain proof that the contract-derived
       //    repaidShares stayed ≤ borrowShares (no debt-underflow revert).
-      const liquidationPlan = plan(planInputFromLens(out))
-      expect(liquidationPlan).not.toBeNull()
-      if (!liquidationPlan) throw new Error('plan returned null')
-      expect(liquidationPlan.seizedAssets).toBeGreaterThan(0n)
+      const liquidationPlan = plan(planInputFromLens(out));
+      expect(liquidationPlan).not.toBeNull();
+      if (!liquidationPlan) {
+        throw new Error('plan returned null');
+      }
+      expect(liquidationPlan.seizedAssets).toBeGreaterThan(0n);
 
       // 4. Single-hop Uniswap-V3 swap (collateral → loan via the operator pool) + the real exec.
       const swap = quoteUniswapV3(
@@ -123,7 +133,7 @@ describe.skipIf(!FORK_URL || !FIXTURE)(
           executor: executooor,
           referenceAmountOut: expectedLoanOut(liquidationPlan, out)
         }
-      )
+      );
       // Wrap the single venue swap as a one-step plan (mirrors quoting.ts' toStep projection).
       const swapPlan: SwapPlan = {
         steps: [
@@ -139,7 +149,7 @@ describe.skipIf(!FORK_URL || !FIXTURE)(
         ],
         expectedAmountOut: swap.expectedAmountOut,
         amountOutMinimum: swap.amountOutMinimum
-      }
+      };
       const data = encodeLiquidationExec({
         executor: executooor,
         morpho: MORPHO,
@@ -148,11 +158,11 @@ describe.skipIf(!FORK_URL || !FIXTURE)(
         borrower,
         plan: swapPlan,
         recipient: LIQUIDATOR
-      })
+      });
 
       // 5. Simulate the exact broadcast calldata — must be ok before we send.
-      const sim = await simulateLiquidationExec(client, { executooor, eoa: LIQUIDATOR, data })
-      expect(sim.status).toBe('ok')
+      const sim = await simulateLiquidationExec(client, { executooor, eoa: LIQUIDATOR, data });
+      expect(sim.status).toBe('ok');
 
       // 6. Broadcast through the real signer path.
       const loanBefore = await test.readContract({
@@ -160,18 +170,18 @@ describe.skipIf(!FORK_URL || !FIXTURE)(
         abi: erc20Abi,
         functionName: 'balanceOf',
         args: [LIQUIDATOR]
-      })
+      });
 
-      const signer = createSigner(cfg)
-      const fees = initialFees(await signer.getBaseFee(), cfg.maxFeeWei)
+      const signer = createSigner(cfg);
+      const fees = initialFees(await signer.getBaseFee(), cfg.maxFeeWei);
       const { txHash } = await signer.send({
         to: executooor,
         data,
         maxFeePerGas: fees.maxFeePerGas,
         maxPriorityFeePerGas: fees.maxPriorityFeePerGas
-      })
-      const receipt = await test.waitForTransactionReceipt({ hash: txHash })
-      expect(receipt.status).toBe('success')
+      });
+      const receipt = await test.waitForTransactionReceipt({ hash: txHash });
+      expect(receipt.status).toBe('success');
 
       // 7. The EOA gained the loan token, and the Executor ends with neither token.
       const loanAfter = await test.readContract({
@@ -179,23 +189,23 @@ describe.skipIf(!FORK_URL || !FIXTURE)(
         abi: erc20Abi,
         functionName: 'balanceOf',
         args: [LIQUIDATOR]
-      })
-      expect(loanAfter).toBeGreaterThan(loanBefore)
+      });
+      expect(loanAfter).toBeGreaterThan(loanBefore);
 
       const exLoan = await test.readContract({
         address: out.params.loanToken,
         abi: erc20Abi,
         functionName: 'balanceOf',
         args: [executooor]
-      })
+      });
       const exColl = await test.readContract({
         address: out.params.collateralToken,
         abi: erc20Abi,
         functionName: 'balanceOf',
         args: [executooor]
-      })
-      expect(exLoan).toBe(0n)
-      expect(exColl).toBe(0n)
-    }, 120_000)
+      });
+      expect(exLoan).toBe(0n);
+      expect(exColl).toBe(0n);
+    }, 120_000);
   }
-)
+);

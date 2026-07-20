@@ -1,30 +1,30 @@
-import type { Logger } from '@repo/bot-kit'
-import type { Address, Hex } from 'viem'
+import type { Logger } from '@repo/bot-kit';
+import { delay, fetchWithRetry } from '@repo/utils';
 
-import { delay, fetchWithRetry } from '@repo/utils'
-import createClient from 'openapi-fetch'
-import { getAddress, isAddress, isHex } from 'viem'
+import createClient from 'openapi-fetch';
+import type { Address, Hex } from 'viem';
+import { getAddress, isAddress, isHex } from 'viem';
 
-import type { paths } from '../generated/markets-api'
+import type { paths } from '../generated/markets-api';
 
 /** A candidate position to evaluate: a (market, borrower) pair the API flagged as at-risk. */
-export type BorrowerCandidate = { marketId: Hex; borrower: Address }
+export type BorrowerCandidate = { marketId: Hex; borrower: Address };
 
 /** One page of the cursor-paginated liquidation-candidates response: the raw rows plus the cursor. */
-export type CandidatePage = { cursor: string | null; data: readonly unknown[] }
+export type CandidatePage = { cursor: string | null; data: readonly unknown[] };
 
 /**
  * Fetches one page of candidates given the previous page's cursor (`null` for the first page). It is
  * injected into {@link discoverBorrowers} so the pagination + row parsing is unit-testable without a
  * network; the runtime adapter that actually calls the endpoint is {@link createApiCandidateSource}.
  */
-export type FetchCandidatePage = (cursor: string | null) => Promise<CandidatePage>
+export type FetchCandidatePage = (cursor: string | null) => Promise<CandidatePage>;
 
 // Per-request tuning for the candidates endpoint: a short deadline. The retry policy lives in
 // `@repo/utils` (see {@link fetchWithRetry}).
-const REQUEST_TIMEOUT_MS = 5_000
+const REQUEST_TIMEOUT_MS = 5_000;
 /** The endpoint's maximum page size — fewer round-trips than the default 20. */
-const PAGE_LIMIT = 100
+const PAGE_LIMIT = 100;
 
 /**
  * Hard cap on pages followed in one discovery pass — a runaway-cursor backstop, NOT an expected
@@ -33,30 +33,32 @@ const PAGE_LIMIT = 100
  * set is *under-inclusion* — a liquidatable position we would then never see (over-inclusion is
  * harmless; the on-chain lens filters non-liquidatable pairs).
  */
-export const MAX_DISCOVERY_PAGES = 100
+export const MAX_DISCOVERY_PAGES = 100;
 
 /**
  * The candidates operation path — a literal key of the generated {@link paths}, so `client.GET(PATH)`
  * is type-checked against the spec. The runtime base URL is derived by stripping this suffix from the
  * configured endpoint URL (see {@link createApiCandidateSource}).
  */
-const PATH = '/markets/midnight/liquidation-candidates'
+const PATH = '/markets/midnight/liquidation-candidates';
 
 // Validates and normalizes one raw response row into a candidate, or `null` if malformed. Only
 // `market_id` + `borrower` feed the pipeline — the lens re-derives everything else (debt, health,
 // gates, maturity) fresh on-chain — so the rest of the row is intentionally ignored.
 function parseCandidate(row: unknown): BorrowerCandidate | null {
-  if (typeof row !== 'object' || row === null) return null
-  const { market_id: marketId, borrower } = row as { market_id?: unknown; borrower?: unknown }
+  if (typeof row !== 'object' || row === null) {
+    return null;
+  }
+  const { market_id: marketId, borrower } = row as { market_id?: unknown; borrower?: unknown };
   if (
     typeof marketId === 'string' &&
     isHex(marketId) &&
     typeof borrower === 'string' &&
     isAddress(borrower, { strict: false })
   ) {
-    return { marketId, borrower: getAddress(borrower) }
+    return { marketId, borrower: getAddress(borrower) };
   }
-  return null
+  return null;
 }
 
 /**
@@ -72,35 +74,43 @@ export async function discoverBorrowers(
   fetchPage: FetchCandidatePage,
   deps: { logger: Logger; maxPages?: number }
 ): Promise<BorrowerCandidate[]> {
-  const maxPages = deps.maxPages ?? MAX_DISCOVERY_PAGES
-  const seen = new Set<string>()
-  const candidates: BorrowerCandidate[] = []
-  let cursor: string | null = null
-  let pages = 0
+  const maxPages = deps.maxPages ?? MAX_DISCOVERY_PAGES;
+  const seen = new Set<string>();
+  const candidates: BorrowerCandidate[] = [];
+  let cursor: string | null = null;
+  let pages = 0;
 
   do {
-    const page = await fetchPage(cursor)
-    pages += 1
+    const page = await fetchPage(cursor);
+    pages += 1;
     for (const row of page.data) {
-      const candidate = parseCandidate(row)
-      if (!candidate) continue
-      const key = `${candidate.marketId}:${candidate.borrower}`
-      if (seen.has(key)) continue
-      seen.add(key)
-      candidates.push(candidate)
+      const candidate = parseCandidate(row);
+      if (!candidate) {
+        continue;
+      }
+      const key = `${candidate.marketId}:${candidate.borrower}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      candidates.push(candidate);
     }
-    cursor = page.cursor
+    cursor = page.cursor;
     if (cursor && pages >= maxPages) {
-      deps.logger.warn('discover.max_pages', { pages, cap: maxPages, collected: candidates.length })
-      break
+      deps.logger.warn('discover.max_pages', {
+        pages,
+        cap: maxPages,
+        collected: candidates.length
+      });
+      break;
     }
-  } while (cursor)
+  } while (cursor);
 
-  return candidates
+  return candidates;
 }
 
 /** The `fetch` shape `openapi-fetch` calls — a single `Request`. The global `fetch` satisfies it. */
-type FetchLike = (request: Request) => Promise<Response>
+type FetchLike = (request: Request) => Promise<Response>;
 
 /**
  * Runtime adapter: a {@link FetchCandidatePage} backed by the liquidation-candidates HTTP endpoint,
@@ -118,18 +128,18 @@ type FetchLike = (request: Request) => Promise<Response>
  * the typed client.
  */
 export function createApiCandidateSource(deps: {
-  url: string
-  chainId: number
-  healthFactorLte: number
-  limit?: number
-  fetchImpl?: FetchLike
-  sleep?: (ms: number) => Promise<void>
+  url: string;
+  chainId: number;
+  healthFactorLte: number;
+  limit?: number;
+  fetchImpl?: FetchLike;
+  sleep?: (ms: number) => Promise<void>;
 }): FetchCandidatePage {
-  const sleep = deps.sleep ?? delay
+  const sleep = deps.sleep ?? delay;
   const baseUrl = deps.url.endsWith(PATH)
     ? deps.url.slice(0, -PATH.length)
-    : new URL(deps.url).origin
-  const client = createClient<paths>({ baseUrl, fetch: deps.fetchImpl ?? fetch })
+    : new URL(deps.url).origin;
+  const client = createClient<paths>({ baseUrl, fetch: deps.fetchImpl ?? fetch });
 
   return async cursor => {
     const body = await fetchWithRetry(
@@ -150,11 +160,11 @@ export function createApiCandidateSource(deps: {
           signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
         }),
       { label: 'liquidation-candidates', sleep }
-    )
+    );
 
     const nextCursor =
-      typeof body.cursor === 'string' && body.cursor.length > 0 ? body.cursor : null
-    const rows = Array.isArray(body.data) ? body.data : []
-    return { cursor: nextCursor, data: rows }
-  }
+      typeof body.cursor === 'string' && body.cursor.length > 0 ? body.cursor : null;
+    const rows = Array.isArray(body.data) ? body.data : [];
+    return { cursor: nextCursor, data: rows };
+  };
 }

@@ -1,12 +1,13 @@
-import { describe, expect, it } from 'bun:test'
-import { getAddress } from 'viem'
+import { describe, expect, it } from 'bun:test';
 
-import { loadForkFixtureFromEnv } from './harness'
+import { getAddress } from 'viem';
+
+import { loadForkFixtureFromEnv } from './harness';
 
 describe('loadForkFixtureFromEnv', () => {
   it('returns null when no fork fixture is configured', () => {
-    expect(loadForkFixtureFromEnv({})).toBeNull()
-  })
+    expect(loadForkFixtureFromEnv({})).toBeNull();
+  });
 
   it('parses a JSON fork fixture from the environment', () => {
     const fixture = loadForkFixtureFromEnv({
@@ -23,7 +24,7 @@ describe('loadForkFixtureFromEnv', () => {
         poolFee: '500',
         warpBySeconds: '3600'
       })
-    })
+    });
 
     expect(fixture).toEqual({
       forkBlock: 29100000n,
@@ -37,8 +38,8 @@ describe('loadForkFixtureFromEnv', () => {
       borrower: getAddress('0x000000000000000000000000000000000000b011'),
       poolFee: 500,
       warpBySeconds: 3600n
-    })
-  })
+    });
+  });
 
   it('throws a field-specific error for malformed fixtures', () => {
     expect(() =>
@@ -50,6 +51,6 @@ describe('loadForkFixtureFromEnv', () => {
           poolFee: '500'
         })
       })
-    ).toThrow(/marketParams\.loanToken/)
-  })
-})
+    ).toThrow(/marketParams\.loanToken/);
+  });
+});

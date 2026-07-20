@@ -1,6 +1,6 @@
-import { formatUnits, parseUnits } from 'viem/utils'
+import { formatUnits, parseUnits } from 'viem/utils';
 
-const WAD_TWO_DECIMALS = 16
+const WAD_TWO_DECIMALS = 16;
 
 /**
  * Converts a whole percentage value to a WAD value.
@@ -9,7 +9,7 @@ const WAD_TWO_DECIMALS = 16
  * @returns The WAD value as a bigint.
  */
 export function wholePercentToWAD(percentValue: number): bigint {
-  return parseUnits(percentValue.toString(), WAD_TWO_DECIMALS)
+  return parseUnits(percentValue.toString(), WAD_TWO_DECIMALS);
 }
 
 /**
@@ -19,5 +19,5 @@ export function wholePercentToWAD(percentValue: number): bigint {
  * @returns The whole percentage value as a number.
  */
 export function wadToWholePercent(wadValue: bigint): number {
-  return Number(formatUnits(wadValue, WAD_TWO_DECIMALS))
+  return Number(formatUnits(wadValue, WAD_TWO_DECIMALS));
 }

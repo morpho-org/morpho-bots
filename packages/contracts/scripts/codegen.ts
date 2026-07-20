@@ -10,13 +10,13 @@
  * Run via `bun run --filter @repo/contracts generate` after adding/renaming/removing a `.sol` file.
  * The output is checked in — we don't run codegen on every build.
  */
-import { readdirSync, writeFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { readdirSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 // This script lives in `scripts/`, so paths resolve against the package root one level up.
-const ROOT = resolve(import.meta.dir, '..')
-const SOLIDITY_DIR = resolve(ROOT, 'solidity')
-const INTERFACES_DIR = resolve(SOLIDITY_DIR, 'interfaces')
+const ROOT = resolve(import.meta.dir, '..');
+const SOLIDITY_DIR = resolve(ROOT, 'solidity');
+const INTERFACES_DIR = resolve(SOLIDITY_DIR, 'interfaces');
 
 /** Renders a generated `src/*.ts` module (header + soltag import + body). */
 function render(sourceGlob: string, body: string): string {
@@ -27,48 +27,48 @@ function render(sourceGlob: string, body: string): string {
 import { sol, solFile } from 'soltag'
 
 ${body}
-`
+`;
 }
 
 // Interfaces (solidity/interfaces/IFoo.sol) -> src/abis.ts: `IFoo` -> `FooAbi`, exporting `.abi`.
 const interfaceFiles = readdirSync(INTERFACES_DIR)
   .filter(f => f.endsWith('.sol'))
-  .toSorted()
+  .toSorted();
 
 const abisBody = interfaceFiles
   .map(file => {
-    const iface = file.slice(0, -4) // drop ".sol"
+    const iface = file.slice(0, -4); // drop ".sol"
     if (!iface.startsWith('I')) {
-      throw new Error(`[codegen] ${file}: interface filenames must start with "I".`)
+      throw new Error(`[codegen] ${file}: interface filenames must start with "I".`);
     }
-    const exportName = `${iface.slice(1)}Abi` // `IMidnight` -> `MidnightAbi`
+    const exportName = `${iface.slice(1)}Abi`; // `IMidnight` -> `MidnightAbi`
     return `export const ${exportName} = sol('${iface}')\`
   \${solFile('../solidity/interfaces/${file}', { raw: true })}
-\`.abi`
+\`.abi`;
   })
-  .join('\n\n')
+  .join('\n\n');
 
-writeFileSync(resolve(ROOT, 'src/abis.ts'), render('interfaces/*.sol', abisBody))
+writeFileSync(resolve(ROOT, 'src/abis.ts'), render('interfaces/*.sol', abisBody));
 
 // Top-level contracts (solidity/Bar.sol) -> src/contracts.ts: `Bar` -> `Bar`, exporting the whole
 // soltag object (abi + bytecode + factory).
 const contractFiles = readdirSync(SOLIDITY_DIR, { withFileTypes: true })
   .filter(entry => entry.isFile() && entry.name.endsWith('.sol'))
   .map(entry => entry.name)
-  .toSorted()
+  .toSorted();
 
 const contractsBody = contractFiles
   .map(file => {
-    const name = file.slice(0, -4) // drop ".sol"; `Executor.sol` -> `Executor`
+    const name = file.slice(0, -4); // drop ".sol"; `Executor.sol` -> `Executor`
     return `export const ${name} = sol('${name}')\`
   \${solFile('../solidity/${file}', { raw: true })}
-\``
+\``;
   })
-  .join('\n\n')
+  .join('\n\n');
 
-writeFileSync(resolve(ROOT, 'src/contracts.ts'), render('*.sol', contractsBody))
+writeFileSync(resolve(ROOT, 'src/contracts.ts'), render('*.sol', contractsBody));
 
 console.log(
   `[codegen] wrote src/abis.ts (${interfaceFiles.length} interfaces), ` +
     `src/contracts.ts (${contractFiles.length} contracts)`
-)
+);

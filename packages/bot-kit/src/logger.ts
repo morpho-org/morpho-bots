@@ -1,23 +1,22 @@
-import type { LogLayerTransport, LogLayerTransportParams } from 'loglayer'
+import { BetterStackTransport } from '@loglayer/transport-betterstack';
+import type { LogLayerTransport, LogLayerTransportParams } from 'loglayer';
+import { BlankTransport, LogLayer } from 'loglayer';
 
-import { BetterStackTransport } from '@loglayer/transport-betterstack'
-import { BlankTransport, LogLayer } from 'loglayer'
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
-export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
+export type Logger = Record<LogLevel, (event: string, fields?: Record<string, unknown>) => void>;
 
-export type Logger = Record<LogLevel, (event: string, fields?: Record<string, unknown>) => void>
-
-const LEVEL_RANK: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 }
+const LEVEL_RANK: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
 
 /** Fields bound once and stamped onto every line — the wide-log context (e.g. bot, chainId). */
-export type LogContext = Record<string, unknown>
+export type LogContext = Record<string, unknown>;
 
 export type CreateLoggerOptions = {
   /** Persistent fields stamped onto every line (see {@link LogContext}). */
-  context?: LogContext
+  context?: LogContext;
   /** Env source for the BetterStack opt-in vars; defaults to `process.env`. Injectable for tests. */
-  env?: Record<string, string | undefined>
-}
+  env?: Record<string, string | undefined>;
+};
 
 // The event keys carry bigints (nonce, gas, block number, seized/repaid amounts) and downstream
 // serialization — the stderr line AND the BetterStack transport's own JSON.stringify — throws on a
@@ -29,7 +28,7 @@ export type CreateLoggerOptions = {
 function toJsonSafe(fields: Record<string, unknown>): Record<string, unknown> {
   return JSON.parse(
     JSON.stringify(fields, (_key, value) => (typeof value === 'bigint' ? value.toString() : value))
-  ) as Record<string, unknown>
+  ) as Record<string, unknown>;
 }
 
 // Railway does not stamp its native identity onto forwarded logs, so replicate what the retired
@@ -41,13 +40,15 @@ export function railwayContext(env: Record<string, string | undefined> = process
     railway_deployment: env.RAILWAY_DEPLOYMENT_ID,
     railway_environment: env.RAILWAY_ENVIRONMENT_NAME,
     railway_replica: env.RAILWAY_REPLICA_ID
-  }
-  const context: LogContext = {}
+  };
+  const context: LogContext = {};
   for (const [key, value] of Object.entries(map)) {
-    const trimmed = value?.trim()
-    if (trimmed) context[key] = trimmed
+    const trimmed = value?.trim();
+    if (trimmed) {
+      context[key] = trimmed;
+    }
   }
-  return context
+  return context;
 }
 
 // The stderr sink: one `{ level, event, ...fields }` JSON line per call, ALL levels to stderr (so log
@@ -58,11 +59,11 @@ function stderrTransport(): LogLayerTransport {
   return new BlankTransport({
     id: 'stderr',
     shipToLogger: ({ logLevel, messages, data }: LogLayerTransportParams) => {
-      const event = messages.map(part => String(part)).join(' ')
-      console.error(JSON.stringify({ level: logLevel, event, ...data }))
-      return messages
+      const event = messages.map(part => String(part)).join(' ');
+      console.error(JSON.stringify({ level: logLevel, event, ...data }));
+      return messages;
     }
-  })
+  });
 }
 
 // The BetterStack sink, attached ONLY when both opt-in vars are set (else null → zero network
@@ -84,30 +85,30 @@ function stderrTransport(): LogLayerTransport {
 function betterStackTransport(
   env: Record<string, string | undefined>
 ): BetterStackTransport | null {
-  const sourceToken = env.BETTERSTACK_SOURCE_TOKEN?.trim()
-  const host = env.BETTERSTACK_INGESTING_HOST?.trim()
+  const sourceToken = env.BETTERSTACK_SOURCE_TOKEN?.trim();
+  const host = env.BETTERSTACK_INGESTING_HOST?.trim();
   if (!sourceToken || !host) {
     if (sourceToken || host) {
-      const missing = sourceToken ? 'BETTERSTACK_INGESTING_HOST' : 'BETTERSTACK_SOURCE_TOKEN'
+      const missing = sourceToken ? 'BETTERSTACK_INGESTING_HOST' : 'BETTERSTACK_SOURCE_TOKEN';
       console.error(
         JSON.stringify({
           level: 'error',
           event: 'logship.misconfigured',
           detail: `partial BetterStack config: ${missing} is unset — shipping nothing`
         })
-      )
+      );
     }
-    return null
+    return null;
   }
-  const url = /^https?:\/\//.test(host) ? host : `https://${host}`
+  const url = /^https?:\/\//.test(host) ? host : `https://${host}`;
   return new BetterStackTransport({
     sourceToken,
     url,
     onError: error => {
-      const detail = error instanceof Error ? error.message : String(error)
-      console.error(JSON.stringify({ level: 'error', event: 'logship.error', detail }))
+      const detail = error instanceof Error ? error.message : String(error);
+      console.error(JSON.stringify({ level: 'error', event: 'logship.error', detail }));
     }
-  })
+  });
 }
 
 /**
@@ -122,24 +123,28 @@ export function createLogger(
   minLevel: LogLevel = 'info',
   options: CreateLoggerOptions = {}
 ): Logger {
-  const threshold = LEVEL_RANK[minLevel]
-  const env = options.env ?? process.env
+  const threshold = LEVEL_RANK[minLevel];
+  const env = options.env ?? process.env;
 
-  const betterStack = betterStackTransport(env)
+  const betterStack = betterStackTransport(env);
   const transports: LogLayerTransport[] = betterStack
     ? [stderrTransport(), betterStack]
-    : [stderrTransport()]
+    : [stderrTransport()];
 
-  const layer = new LogLayer({ transport: transports })
-  if (options.context) layer.withContext(toJsonSafe(options.context))
+  const layer = new LogLayer({ transport: transports });
+  if (options.context) {
+    layer.withContext(toJsonSafe(options.context));
+  }
 
   const emit =
     (level: LogLevel) =>
     (event: string, fields: Record<string, unknown> = {}) => {
-      if (LEVEL_RANK[level] < threshold) return
+      if (LEVEL_RANK[level] < threshold) {
+        return;
+      }
       // Flatten bigints BEFORE loglayer so both the stderr line and the BetterStack payload serialize.
-      layer.withMetadata(toJsonSafe(fields))[level](event)
-    }
+      layer.withMetadata(toJsonSafe(fields))[level](event);
+    };
 
-  return { debug: emit('debug'), info: emit('info'), warn: emit('warn'), error: emit('error') }
+  return { debug: emit('debug'), info: emit('info'), warn: emit('warn'), error: emit('error') };
 }

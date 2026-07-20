@@ -1,19 +1,18 @@
-import { getAddress, isAddressEqual, isHex } from 'viem'
+import { getAddress, isAddressEqual, isHex } from 'viem';
 
-import type { RateLimitedClient } from '../http-client'
-import type { PriceParameters, PriceQuote, QuoteParameters, Swap } from '../types'
-
-import { BPS, ONEINCH_BASE_URL, ONEINCH_ROUTER } from '../constants'
-import { QuoteError } from '../types'
+import { BPS, ONEINCH_BASE_URL, ONEINCH_ROUTER } from '../constants';
+import type { RateLimitedClient } from '../http-client';
+import type { PriceParameters, PriceQuote, QuoteParameters, Swap } from '../types';
+import { QuoteError } from '../types';
 
 /** The 1inch arm of the per-collateral swap config. */
-type OneInchEntry = { baseUrl?: string }
+type OneInchEntry = { baseUrl?: string };
 
 // Subset of the 1inch Classic Swap v6 `/swap` response we consume.
 type OneInchSwap = {
-  dstAmount?: string
-  tx?: { to?: string; data?: string; value?: string }
-}
+  dstAmount?: string;
+  tx?: { to?: string; data?: string; value?: string };
+};
 
 /**
  * Quotes 1inch via the one-step Classic Swap `/swap` endpoint, which returns ready-to-use `tx`
@@ -27,9 +26,10 @@ export async function quoteOneInch(
   entry: OneInchEntry,
   params: QuoteParameters
 ): Promise<Swap> {
-  const router = ONEINCH_ROUTER[params.chainId]
-  if (!router)
-    throw new QuoteError('api_error', `1inch: no router configured for chain ${params.chainId}`)
+  const router = ONEINCH_ROUTER[params.chainId];
+  if (!router) {
+    throw new QuoteError('api_error', `1inch: no router configured for chain ${params.chainId}`);
+  }
 
   const json = await client.getJson<OneInchSwap>({
     venue: '1inch',
@@ -44,13 +44,13 @@ export async function quoteOneInch(
       slippage: (params.slippageBps / 100).toString(),
       disableEstimate: 'true'
     }
-  })
+  });
 
   if (!json.tx?.to || !json.tx.data) {
-    throw new QuoteError('no_route', '1inch: no route for this pair/size')
+    throw new QuoteError('no_route', '1inch: no route for this pair/size');
   }
   if (!isHex(json.tx.data)) {
-    throw new QuoteError('api_error', '1inch: tx.data is not hex')
+    throw new QuoteError('api_error', '1inch: tx.data is not hex');
   }
 
   // Pin the swap target to the statically-known AggregationRouterV6 for this chain. `tx.to` is
@@ -61,15 +61,15 @@ export async function quoteOneInch(
   // A mismatch is treated as any other invalid 1inch response: throw `QuoteError`, which the quoting
   // layer catches and logs as `quote.failed` with both addresses in `detail` (fail the quote loudly,
   // never past the venue seam).
-  const target = getAddress(json.tx.to)
+  const target = getAddress(json.tx.to);
   if (!isAddressEqual(target, router)) {
     throw new QuoteError(
       'api_error',
       `1inch: tx.to ${target} does not match the configured router ${router}`
-    )
+    );
   }
 
-  const expectedAmountOut = BigInt(json.dstAmount ?? '0')
+  const expectedAmountOut = BigInt(json.dstAmount ?? '0');
   return {
     spender: router,
     target,
@@ -78,7 +78,7 @@ export async function quoteOneInch(
     amountIn: { source: 'fixed', value: params.amountIn },
     expectedAmountOut,
     amountOutMinimum: (expectedAmountOut * (BPS - BigInt(params.slippageBps))) / BPS
-  }
+  };
 }
 
 /**
@@ -98,8 +98,10 @@ export async function priceOneInch(
       dst: params.tokenOut,
       amount: params.amountIn.toString()
     }
-  })
+  });
 
-  if (!json.dstAmount) throw new QuoteError('no_route', '1inch: no route for this pair/size')
-  return { expectedAmountOut: BigInt(json.dstAmount) }
+  if (!json.dstAmount) {
+    throw new QuoteError('no_route', '1inch: no route for this pair/size');
+  }
+  return { expectedAmountOut: BigInt(json.dstAmount) };
 }

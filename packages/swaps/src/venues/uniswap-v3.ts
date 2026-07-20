@@ -1,13 +1,11 @@
-import type { Address } from 'viem'
+import type { Address } from 'viem';
+import { encodeFunctionData } from 'viem';
 
-import { encodeFunctionData } from 'viem'
-
-import type { QuoteParameters, Swap } from '../types'
-
-import { BPS } from '../constants'
+import { BPS } from '../constants';
+import type { QuoteParameters, Swap } from '../types';
 
 /** The Uniswap-V3 arm of the per-collateral swap config. */
-type UniswapV3Entry = { router: Address; fee: number }
+type UniswapV3Entry = { router: Address; fee: number };
 
 // Uniswap `SwapRouter02` (`IV3SwapRouter`) `exactInputSingle`. NOTE: SwapRouter02 dropped the
 // `deadline` field present in the original `SwapRouter`. Every field is static, so the params tuple
@@ -34,10 +32,10 @@ const EXACT_INPUT_SINGLE_ABI = [
     ],
     outputs: [{ name: 'amountOut', type: 'uint256' }]
   }
-] as const
+] as const;
 
 /** Byte offset of `amountIn` (field index 4) within the inline `exactInputSingle` params tuple. */
-export const SWAP_AMOUNT_IN_OFFSET = 132n
+export const SWAP_AMOUNT_IN_OFFSET = 132n;
 
 /**
  * Builds the Uniswap-V3 single-hop {@link Swap} locally — no API, no key. `amountIn` is left at `0n`
@@ -47,7 +45,7 @@ export const SWAP_AMOUNT_IN_OFFSET = 132n
  * swap reverts mid-liquidation and the whole tx rolls back (a missed liquidation, never a loss).
  */
 export function quoteUniswapV3(entry: UniswapV3Entry, params: QuoteParameters): Swap {
-  const amountOutMinimum = (params.referenceAmountOut * (BPS - BigInt(params.slippageBps))) / BPS
+  const amountOutMinimum = (params.referenceAmountOut * (BPS - BigInt(params.slippageBps))) / BPS;
   const callData = encodeFunctionData({
     abi: EXACT_INPUT_SINGLE_ABI,
     functionName: 'exactInputSingle',
@@ -62,7 +60,7 @@ export function quoteUniswapV3(entry: UniswapV3Entry, params: QuoteParameters): 
         sqrtPriceLimitX96: 0n
       }
     ]
-  })
+  });
   return {
     spender: entry.router,
     target: entry.router,
@@ -71,5 +69,5 @@ export function quoteUniswapV3(entry: UniswapV3Entry, params: QuoteParameters): 
     amountIn: { source: 'balance', offset: SWAP_AMOUNT_IN_OFFSET },
     expectedAmountOut: params.referenceAmountOut,
     amountOutMinimum
-  }
+  };
 }

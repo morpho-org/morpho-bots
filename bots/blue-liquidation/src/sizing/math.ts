@@ -3,27 +3,27 @@
 // Division by zero throws (native bigint), matching the EVM's divide-by-zero revert. This is the full
 // library the lens and planner reason about; it also reads as documentation of Blue's share math.
 
-import { mulDivDown, mulDivUp } from '@repo/utils'
+import { mulDivDown, mulDivUp } from '@repo/utils';
 
-import { VIRTUAL_ASSETS, VIRTUAL_SHARES, WAD } from '../constants'
+import { VIRTUAL_ASSETS, VIRTUAL_SHARES, WAD } from '../constants';
 
 // The generic fixed-point primitives (MathLib.mulDivDown/mulDivUp, UtilsLib.min) live in
 // @repo/utils; re-exported here so this module stays the one documented surface for Blue's math.
-export { mulDivDown, mulDivUp, bigintMin as min } from '@repo/utils'
+export { bigintMin as min, mulDivDown, mulDivUp } from '@repo/utils';
 
 /** Floor of `x * y / WAD` (MathLib.wMulDown). */
 export function wMulDown(x: bigint, y: bigint): bigint {
-  return mulDivDown(x, y, WAD)
+  return mulDivDown(x, y, WAD);
 }
 
 /** Floor of `x * WAD / y` (MathLib.wDivDown). */
 export function wDivDown(x: bigint, y: bigint): bigint {
-  return mulDivDown(x, WAD, y)
+  return mulDivDown(x, WAD, y);
 }
 
 /** Ceil of `x * WAD / y` (MathLib.wDivUp). */
 export function wDivUp(x: bigint, y: bigint): bigint {
-  return mulDivUp(x, WAD, y)
+  return mulDivUp(x, WAD, y);
 }
 
 /**
@@ -32,28 +32,28 @@ export function wDivUp(x: bigint, y: bigint): bigint {
  * formula diverges by a few wei.
  */
 export function wTaylorCompounded(x: bigint, n: bigint): bigint {
-  const firstTerm = x * n
-  const secondTerm = mulDivDown(firstTerm, firstTerm, 2n * WAD)
-  const thirdTerm = mulDivDown(secondTerm, firstTerm, 3n * WAD)
-  return firstTerm + secondTerm + thirdTerm
+  const firstTerm = x * n;
+  const secondTerm = mulDivDown(firstTerm, firstTerm, 2n * WAD);
+  const thirdTerm = mulDivDown(secondTerm, firstTerm, 3n * WAD);
+  return firstTerm + secondTerm + thirdTerm;
 }
 
 /** assets → shares, rounding down (SharesMathLib.toSharesDown). */
 export function toSharesDown(assets: bigint, totalAssets: bigint, totalShares: bigint): bigint {
-  return mulDivDown(assets, totalShares + VIRTUAL_SHARES, totalAssets + VIRTUAL_ASSETS)
+  return mulDivDown(assets, totalShares + VIRTUAL_SHARES, totalAssets + VIRTUAL_ASSETS);
 }
 
 /** assets → shares, rounding up (SharesMathLib.toSharesUp). */
 export function toSharesUp(assets: bigint, totalAssets: bigint, totalShares: bigint): bigint {
-  return mulDivUp(assets, totalShares + VIRTUAL_SHARES, totalAssets + VIRTUAL_ASSETS)
+  return mulDivUp(assets, totalShares + VIRTUAL_SHARES, totalAssets + VIRTUAL_ASSETS);
 }
 
 /** shares → assets, rounding down (SharesMathLib.toAssetsDown). */
 export function toAssetsDown(shares: bigint, totalAssets: bigint, totalShares: bigint): bigint {
-  return mulDivDown(shares, totalAssets + VIRTUAL_ASSETS, totalShares + VIRTUAL_SHARES)
+  return mulDivDown(shares, totalAssets + VIRTUAL_ASSETS, totalShares + VIRTUAL_SHARES);
 }
 
 /** shares → assets, rounding up (SharesMathLib.toAssetsUp). */
 export function toAssetsUp(shares: bigint, totalAssets: bigint, totalShares: bigint): bigint {
-  return mulDivUp(shares, totalAssets + VIRTUAL_ASSETS, totalShares + VIRTUAL_SHARES)
+  return mulDivUp(shares, totalAssets + VIRTUAL_ASSETS, totalShares + VIRTUAL_SHARES);
 }

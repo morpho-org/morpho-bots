@@ -1,17 +1,17 @@
-import type { SwapPlan } from '@repo/swaps'
-import type { Address, Hex } from 'viem'
+import { MorphoAbi } from '@repo/contracts';
+import type { SwapPlan } from '@repo/swaps';
+import { approvePair, intermediateTokens, skimCall, stepCalls } from '@repo/swaps';
 
-import { MorphoAbi } from '@repo/contracts'
-import { approvePair, intermediateTokens, skimCall, stepCalls } from '@repo/swaps'
-import { ExecutorEncoder, executorAbi } from 'executooor-viem'
-import { encodeAbiParameters, encodeFunctionData } from 'viem'
+import { ExecutorEncoder, executorAbi } from 'executooor-viem';
+import type { Address, Hex } from 'viem';
+import { encodeAbiParameters, encodeFunctionData } from 'viem';
 
-import type { MarketParams } from '../market'
+import type { MarketParams } from '../market';
 
 // onMorphoLiquidate(uint256 repaidAssets, bytes data) — `data` is the 2nd arg, so its head word (the
 // offset pointer the Executor's fallback reads the queue from) is at index 1. This mirrors
 // executooor-viem's `morphoBlueLiquidate` (verified against executooor-viem@1.3.3).
-const CALLBACK_DATA_INDEX = 1n
+const CALLBACK_DATA_INDEX = 1n;
 
 /**
  * Encodes the `Executor.exec_606BaXt(bytes[])` calldata for one Morpho Blue liquidation against the
@@ -31,17 +31,17 @@ const CALLBACK_DATA_INDEX = 1n
  * collateral-less residual is skipped upstream in `plan()`), so a swap plan is always required.
  */
 export function encodeLiquidationExec(params: {
-  executor: Address
-  morpho: Address
-  market: MarketParams
-  seizedAssets: bigint
-  borrower: Address
-  plan: SwapPlan
-  recipient: Address
+  executor: Address;
+  morpho: Address;
+  market: MarketParams;
+  seizedAssets: bigint;
+  borrower: Address;
+  plan: SwapPlan;
+  recipient: Address;
 }): Hex {
-  const { executor, morpho, market, plan } = params
-  const collateralToken = market.collateralToken
-  const loanToken = market.loanToken
+  const { executor, morpho, market, plan } = params;
+  const collateralToken = market.collateralToken;
+  const loanToken = market.loanToken;
 
   // The callback queue the Executor runs when Blue calls back into `onMorphoLiquidate`. The seized
   // collateral is already on the Executor; the steps convert it to the loan token, then the repay
@@ -50,19 +50,19 @@ export function encodeLiquidationExec(params: {
   const callbackQueue: Hex[] = [
     ...plan.steps.flatMap(step => stepCalls(step, executor)),
     ...approvePair(loanToken, morpho, executor)
-  ]
+  ];
 
   // Blue ignores `onMorphoLiquidate`'s return value, so callback return data is empty.
   const callbackData = encodeAbiParameters(
     [{ type: 'bytes[]' }, { type: 'bytes' }],
     [callbackQueue, '0x']
-  )
+  );
 
   const liquidateData = encodeFunctionData({
     abi: MorphoAbi,
     functionName: 'liquidate',
     args: [market, params.borrower, params.seizedAssets, 0n, callbackData]
-  })
+  });
 
   const calls: Hex[] = [
     // The liquidate call carries the callback context so the Executor's `fallback` authorizes
@@ -79,7 +79,7 @@ export function encodeLiquidationExec(params: {
     ...intermediateTokens(plan.steps, [loanToken, collateralToken]).map(token =>
       skimCall(token, params.recipient, executor)
     )
-  ]
+  ];
 
-  return encodeFunctionData({ abi: executorAbi, functionName: 'exec_606BaXt', args: [calls] })
+  return encodeFunctionData({ abi: executorAbi, functionName: 'exec_606BaXt', args: [calls] });
 }

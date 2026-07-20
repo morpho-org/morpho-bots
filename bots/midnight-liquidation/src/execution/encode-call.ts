@@ -1,32 +1,32 @@
-import type { SwapPlan } from '@repo/swaps'
-import type { Address, Hex } from 'viem'
+import { MidnightAbi } from '@repo/contracts';
+import type { SwapPlan } from '@repo/swaps';
+import { approvePair, intermediateTokens, skimCall, stepCalls } from '@repo/swaps';
 
-import { MidnightAbi } from '@repo/contracts'
-import { approvePair, intermediateTokens, skimCall, stepCalls } from '@repo/swaps'
-import { ExecutorEncoder, executorAbi } from 'executooor-viem'
-import { encodeAbiParameters, encodeFunctionData, zeroAddress } from 'viem'
+import { ExecutorEncoder, executorAbi } from 'executooor-viem';
+import type { Address, Hex } from 'viem';
+import { encodeAbiParameters, encodeFunctionData, zeroAddress } from 'viem';
 
-import { CALLBACK_SUCCESS } from '../constants'
-import { isBadDebtRealization } from '../sizing/plan'
+import { CALLBACK_SUCCESS } from '../constants';
+import { isBadDebtRealization } from '../sizing/plan';
 
 // The Midnight `Market` struct passed to `liquidate`. The bot reads it on-chain from the lens
 // (`toMarket(id)`) and re-passes it verbatim.
 export type CollateralParams = {
-  token: Address
-  lltv: bigint
-  liquidationCursor: bigint
-  oracle: Address
-}
+  token: Address;
+  lltv: bigint;
+  liquidationCursor: bigint;
+  oracle: Address;
+};
 export type Market = {
-  chainId: bigint
-  midnight: Address
-  loanToken: Address
-  collateralParams: readonly CollateralParams[]
-  maturity: bigint
-  rcfThreshold: bigint
-  enterGate: Address
-  liquidatorGate: Address
-}
+  chainId: bigint;
+  midnight: Address;
+  loanToken: Address;
+  collateralParams: readonly CollateralParams[];
+  maturity: bigint;
+  rcfThreshold: bigint;
+  enterGate: Address;
+  liquidatorGate: Address;
+};
 
 /**
  * Encodes the `Executor.exec_606BaXt(bytes[])` calldata for one liquidation against the **generic**
@@ -42,25 +42,25 @@ export type Market = {
  * shared permissionless singleton. Pure — no RPC.
  */
 export function encodeLiquidationExec(params: {
-  executor: Address
-  midnight: Address
-  market: Market
-  collateralIndex: number
-  seizedAssets: bigint
-  repaidUnits: bigint
-  borrower: Address
-  postMaturityMode: boolean
-  plan: SwapPlan | null
-  recipient: Address
+  executor: Address;
+  midnight: Address;
+  market: Market;
+  collateralIndex: number;
+  seizedAssets: bigint;
+  repaidUnits: bigint;
+  borrower: Address;
+  postMaturityMode: boolean;
+  plan: SwapPlan | null;
+  recipient: Address;
 }): Hex {
-  const collateral = params.market.collateralParams[params.collateralIndex]
+  const collateral = params.market.collateralParams[params.collateralIndex];
   if (!collateral) {
-    throw new Error(`collateralIndex ${params.collateralIndex} out of range for market`)
+    throw new Error(`collateralIndex ${params.collateralIndex} out of range for market`);
   }
 
-  const { executor, midnight } = params
-  const collateralToken = collateral.token
-  const loanToken = params.market.loanToken
+  const { executor, midnight } = params;
+  const collateralToken = collateral.token;
+  const loanToken = params.market.loanToken;
 
   if (
     isBadDebtRealization({
@@ -84,20 +84,20 @@ export function encodeLiquidationExec(params: {
         zeroAddress,
         '0x'
       ]
-    })
+    });
 
     return encodeFunctionData({
       abi: executorAbi,
       functionName: 'exec_606BaXt',
       args: [[ExecutorEncoder.buildCall(midnight, 0n, liquidateData)]]
-    })
+    });
   }
 
   if (!params.plan) {
-    throw new Error('a swap plan is required when liquidation repays or seizes assets')
+    throw new Error('a swap plan is required when liquidation repays or seizes assets');
   }
 
-  const plan = params.plan
+  const plan = params.plan;
 
   // The callback queue the Executor runs when Midnight calls back into `onLiquidate`. The seized
   // collateral is already on the Executor (receiver = the Executor); the steps convert it to the
@@ -108,7 +108,7 @@ export function encodeLiquidationExec(params: {
   const callbackQueue: Hex[] = [
     ...plan.steps.flatMap(step => stepCalls(step, executor)),
     ...approvePair(loanToken, midnight, executor)
-  ]
+  ];
 
   // The Executor's `fallback` decodes this blob as `(bytes[] queue, bytes returnData)`, runs the
   // queue, and returns `returnData` RAW — Solidity's `fallback(bytes) returns (bytes memory)` special
@@ -118,7 +118,7 @@ export function encodeLiquidationExec(params: {
   const callbackData = encodeAbiParameters(
     [{ type: 'bytes[]' }, { type: 'bytes' }],
     [callbackQueue, CALLBACK_SUCCESS]
-  )
+  );
 
   const liquidateData = encodeFunctionData({
     abi: MidnightAbi,
@@ -134,7 +134,7 @@ export function encodeLiquidationExec(params: {
       executor, // callback — Midnight calls Executor.onLiquidate → fallback runs the queue
       callbackData
     ]
-  })
+  });
 
   const calls: Hex[] = [
     // The liquidate call carries the callback context so the Executor's `fallback` authorizes
@@ -151,7 +151,7 @@ export function encodeLiquidationExec(params: {
     ...intermediateTokens(plan.steps, [loanToken, collateralToken]).map(token =>
       skimCall(token, params.recipient, executor)
     )
-  ]
+  ];
 
-  return encodeFunctionData({ abi: executorAbi, functionName: 'exec_606BaXt', args: [calls] })
+  return encodeFunctionData({ abi: executorAbi, functionName: 'exec_606BaXt', args: [calls] });
 }

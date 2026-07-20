@@ -5,7 +5,7 @@
  * @returns The absolute value of the input bigint.
  */
 export function bigintAbs(value: bigint) {
-  return value < 0n ? -value : value
+  return value < 0n ? -value : value;
 }
 
 /**
@@ -18,7 +18,7 @@ export function bigintAbs(value: bigint) {
  * @returns `⌊x * y / d⌋`.
  */
 export function mulDivDown(x: bigint, y: bigint, d: bigint): bigint {
-  return (x * y) / d
+  return (x * y) / d;
 }
 
 /**
@@ -31,7 +31,7 @@ export function mulDivDown(x: bigint, y: bigint, d: bigint): bigint {
  * @returns `⌈x * y / d⌉`.
  */
 export function mulDivUp(x: bigint, y: bigint, d: bigint): bigint {
-  return (x * y + (d - 1n)) / d
+  return (x * y + (d - 1n)) / d;
 }
 
 /**
@@ -42,7 +42,7 @@ export function mulDivUp(x: bigint, y: bigint, d: bigint): bigint {
  * @returns `x - y` when positive, otherwise `0n`.
  */
 export function zeroFloorSub(x: bigint, y: bigint): bigint {
-  return x > y ? x - y : 0n
+  return x > y ? x - y : 0n;
 }
 
 /**
@@ -53,5 +53,5 @@ export function zeroFloorSub(x: bigint, y: bigint): bigint {
  * @returns The smaller of `x` and `y`.
  */
 export function bigintMin(x: bigint, y: bigint): bigint {
-  return y < x ? y : x
+  return y < x ? y : x;
 }

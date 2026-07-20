@@ -1,7 +1,7 @@
-import { maxUint256 } from 'viem'
+import { maxUint256 } from 'viem';
 
-import { ORACLE_PRICE_SCALE, WAD } from '../constants'
-import { mulDivDown, mulDivUp, zeroFloorSub } from './math'
+import { ORACLE_PRICE_SCALE, WAD } from '../constants';
+import { mulDivDown, mulDivUp, zeroFloorSub } from './math';
 
 /**
  * Maximum repaid units permitted by the pre-maturity Repayment Cap Factor.
@@ -20,15 +20,17 @@ export function maxRepaidPreMaturity({
   lif,
   lltv
 }: {
-  debt: bigint
-  badDebt: bigint
-  maxDebt: bigint
-  lif: bigint
-  lltv: bigint
+  debt: bigint;
+  badDebt: bigint;
+  maxDebt: bigint;
+  lif: bigint;
+  lltv: bigint;
 }): bigint {
-  if (lltv >= WAD) return maxUint256
-  const effectiveDebt = debt - badDebt
-  return mulDivUp(effectiveDebt - maxDebt, WAD * WAD, WAD * WAD - lif * lltv)
+  if (lltv >= WAD) {
+    return maxUint256;
+  }
+  const effectiveDebt = debt - badDebt;
+  return mulDivUp(effectiveDebt - maxDebt, WAD * WAD, WAD * WAD - lif * lltv);
 }
 
 /**
@@ -44,13 +46,13 @@ export function isRcfExempt({
   maxRepaid,
   rcfThreshold
 }: {
-  collateralAmt: bigint
-  price: bigint
-  lif: bigint
-  maxRepaid: bigint
-  rcfThreshold: bigint
+  collateralAmt: bigint;
+  price: bigint;
+  lif: bigint;
+  maxRepaid: bigint;
+  rcfThreshold: bigint;
 }): boolean {
-  const slotInLoanUnits = mulDivDown(collateralAmt, price, ORACLE_PRICE_SCALE)
-  const slotInRepaidUnits = mulDivDown(slotInLoanUnits, WAD, lif)
-  return zeroFloorSub(slotInRepaidUnits, maxRepaid) < rcfThreshold
+  const slotInLoanUnits = mulDivDown(collateralAmt, price, ORACLE_PRICE_SCALE);
+  const slotInRepaidUnits = mulDivDown(slotInLoanUnits, WAD, lif);
+  return zeroFloorSub(slotInRepaidUnits, maxRepaid) < rcfThreshold;
 }

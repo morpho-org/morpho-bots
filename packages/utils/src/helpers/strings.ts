@@ -1,5 +1,5 @@
 export function removeCommas(numStr: string) {
-  return numStr.replace(/,/g, '')
+  return numStr.replace(/,/g, '');
 }
 
 /**
@@ -14,7 +14,7 @@ export const convertSnakeToTitleCase = (s: string): string =>
   s
     .toLowerCase()
     .replace(/^[-_]*(.)/, (_, c: string) => c.toUpperCase())
-    .replace(/[-_]+(.)/g, (_, c: string) => ' ' + c.toUpperCase())
+    .replace(/[-_]+(.)/g, (_, c: string) => ' ' + c.toUpperCase());
 
 /**
  * Converts an array of strings into a grammatically correct sentence with proper conjunctions.
@@ -26,12 +26,18 @@ export const convertSnakeToTitleCase = (s: string): string =>
  * arrayToSentence(['apple', 'banana', 'orange']) // returns 'apple, banana, and orange'
  */
 export function arrayToSentence(arr: string[]): string {
-  if (arr.length === 0) return ''
-  if (arr.length === 1) return arr[0] ?? ''
-  if (arr.length === 2) return arr.join(' and ')
+  if (arr.length === 0) {
+    return '';
+  }
+  if (arr.length === 1) {
+    return arr[0] ?? '';
+  }
+  if (arr.length === 2) {
+    return arr.join(' and ');
+  }
 
-  const lastElement = arr[arr.length - 1]
-  return arr.slice(0, -1).join(', ') + ', and ' + lastElement
+  const lastElement = arr[arr.length - 1];
+  return arr.slice(0, -1).join(', ') + ', and ' + lastElement;
 }
 
 /**
@@ -44,12 +50,12 @@ export function arrayToSentence(arr: string[]): string {
  */
 export function sortAlphabetically(a: string, b: string) {
   if (a < b) {
-    return -1
+    return -1;
   }
   if (a > b) {
-    return 1
+    return 1;
   }
-  return 0
+  return 0;
 }
 
 const exceptions = {
@@ -63,31 +69,31 @@ const exceptions = {
   sit: 'sat',
   visit: 'visited',
   supply: 'supplied'
-}
+};
 
 // grammatically predictable rules
 export function getPastTense(verb: string) {
   if (Object.keys(exceptions).includes(verb)) {
-    return exceptions[verb as keyof typeof exceptions]
+    return exceptions[verb as keyof typeof exceptions];
   }
 
   if (/e$/i.test(verb)) {
-    return verb + 'd'
+    return verb + 'd';
   }
   if (/[aeiou]c/i.test(verb)) {
-    return verb + 'ked'
+    return verb + 'ked';
   }
   // for american english only
   if (/el$/i.test(verb)) {
-    return verb + 'ed'
+    return verb + 'ed';
   }
   if (/[aeio][aeiou][dlmnprst]$/.test(verb)) {
-    return verb + 'ed'
+    return verb + 'ed';
   }
   if (/[aeiou][bdglmnprst]$/i.test(verb)) {
-    return verb.replace(/(.+[aeiou])([bdglmnprst])/, '$1$2$2ed')
+    return verb.replace(/(.+[aeiou])([bdglmnprst])/, '$1$2$2ed');
   }
-  return verb + 'ed'
+  return verb + 'ed';
 }
 
 /**
@@ -107,5 +113,5 @@ export function titleize(str: string): string {
     .split(' ')
     .map(word => word.charAt(0).toUpperCase() + word.slice(1))
     .join(' ')
-    .trim()
+    .trim();
 }

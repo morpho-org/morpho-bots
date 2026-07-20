@@ -4,9 +4,9 @@
  */
 export function bigintReplacer(_: string, value: unknown): unknown {
   if (typeof value === 'bigint') {
-    return { __bigint__: value.toString() }
+    return { __bigint__: value.toString() };
   }
-  return value
+  return value;
 }
 
 /**
@@ -21,35 +21,35 @@ export function bigIntReviver(_: string, value: unknown): unknown {
     '__bigint__' in value
   ) {
     // We know value is an object with __bigint__ property here.
-    const obj = value as { __bigint__: string }
-    return BigInt(obj.__bigint__)
+    const obj = value as { __bigint__: string };
+    return BigInt(obj.__bigint__);
   }
-  return value
+  return value;
 }
 
-export type Stringifier<T = unknown> = (value: T) => string
+export type Stringifier<T = unknown> = (value: T) => string;
 
 /** `JSON.stringify` but with bigint support */
 export function stringify(value: unknown): string {
-  return JSON.stringify(value, bigintReplacer)
+  return JSON.stringify(value, bigintReplacer);
 }
 
-export type Parser<T = unknown> = (value: string) => T | undefined
+export type Parser<T = unknown> = (value: string) => T | undefined;
 
 /** `JSON.parse` but with bigint support -- returns undefined on parsing error */
 // Tells TypeScript that return type is `T` in `throw` mode
-export function parse<T = unknown>(value: string, errorHandling: 'throw'): T
+export function parse<T = unknown>(value: string, errorHandling: 'throw'): T;
 // Tells TypeScript that return type is `T | undefined` otherwise
-export function parse<T = unknown>(value: string, errorHandling?: undefined): T | undefined
+export function parse<T = unknown>(value: string, errorHandling?: undefined): T | undefined;
 // Implementation (must cover both cases)
 export function parse<T = unknown>(value: string, errorHandling?: 'throw') {
   if (errorHandling === 'throw') {
-    return JSON.parse(value, bigIntReviver) as T
+    return JSON.parse(value, bigIntReviver) as T;
   }
 
   try {
-    return JSON.parse(value, bigIntReviver) as T
+    return JSON.parse(value, bigIntReviver) as T;
   } catch {
-    return undefined
+    return undefined;
   }
 }

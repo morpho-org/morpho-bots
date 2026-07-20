@@ -1,53 +1,51 @@
-import type { Address } from 'viem'
-
-import { getAddress, isAddress, isAddressEqual, isHex } from 'viem'
-
-import type { RateLimitedClient } from '../http-client'
-import type { QuoteLogger } from '../quoting'
-import type { Unwrapper } from './resolve'
+import type { Address } from 'viem';
+import { getAddress, isAddress, isAddressEqual, isHex } from 'viem';
 
 import {
   BPS,
   DEFAULT_PENDLE_SLIPPAGE_BPS,
   PENDLE_BASE_URL,
   PENDLE_MARKETS_STALE_MS
-} from '../constants'
-import { QuoteError } from '../types'
+} from '../constants';
+import type { RateLimitedClient } from '../http-client';
+import type { QuoteLogger } from '../quoting';
+import { QuoteError } from '../types';
+import type { Unwrapper } from './resolve';
 
 /** One usable market from Pendle's list: everything PT detection + conversion needs. */
 type PendleMarket = {
-  pt: Address
-  yt: Address
+  pt: Address;
+  yt: Address;
   /** The market contract, path segment of the active-PT swap endpoint. */
-  market: Address
+  market: Address;
   /** ISO expiry — decides redeem (expired) vs swap (active). Validated parseable at ingest. */
-  expiry: string
-  underlying: Address
-}
+  expiry: string;
+  underlying: Address;
+};
 
 /** The TTL-cached markets list: when it was fetched and the usable markets it yielded. */
-type PendleMarketsState = { fetchedAt: number; markets: PendleMarket[] }
+type PendleMarketsState = { fetchedAt: number; markets: PendleMarket[] };
 
 // Response subsets we consume. Markets carry addresses as "{chainId}-{address}" strings.
 type MarketsResponse = {
   markets?: {
-    address?: string
-    pt?: string
-    yt?: string
-    underlyingAsset?: string
-    expiry?: string
-  }[]
-}
+    address?: string;
+    pt?: string;
+    yt?: string;
+    underlyingAsset?: string;
+    expiry?: string;
+  }[];
+};
 type ConvertResponse = {
-  tx?: { to?: string; data?: string; value?: string }
-  data?: { amountOut?: string }
-}
+  tx?: { to?: string; data?: string; value?: string };
+  data?: { amountOut?: string };
+};
 
 // Pendle encodes token references as "{chainId}-{address}" (the market's own `address` is plain);
 // accept either shape by taking the last '-'-separated segment.
 function parsePrefixedAddress(value: string | undefined): Address | null {
-  const raw = value?.split('-').at(-1)
-  return raw !== undefined && isAddress(raw, { strict: false }) ? getAddress(raw) : null
+  const raw = value?.split('-').at(-1);
+  return raw !== undefined && isAddress(raw, { strict: false }) ? getAddress(raw) : null;
 }
 
 /**
@@ -70,53 +68,55 @@ function parsePrefixedAddress(value: string | undefined): Address | null {
  * `simulate()` as the real guarantee and the intermediate skim sweeping the surplus.
  */
 export function createPendlePtUnwrapper(deps: {
-  client: RateLimitedClient
-  chainId: number
-  slippageBps?: number
+  client: RateLimitedClient;
+  chainId: number;
+  slippageBps?: number;
   /** Test seam only — production uses {@link PENDLE_BASE_URL}. */
-  baseUrl?: string
-  staleMs?: number
-  logger: QuoteLogger
-  now?: () => number
+  baseUrl?: string;
+  staleMs?: number;
+  logger: QuoteLogger;
+  now?: () => number;
 }): Unwrapper {
-  const { client, chainId, logger } = deps
-  const slippageBps = deps.slippageBps ?? DEFAULT_PENDLE_SLIPPAGE_BPS
-  const baseUrl = deps.baseUrl ?? PENDLE_BASE_URL
-  const staleMs = deps.staleMs ?? PENDLE_MARKETS_STALE_MS
-  const now = deps.now ?? (() => Date.now())
+  const { client, chainId, logger } = deps;
+  const slippageBps = deps.slippageBps ?? DEFAULT_PENDLE_SLIPPAGE_BPS;
+  const baseUrl = deps.baseUrl ?? PENDLE_BASE_URL;
+  const staleMs = deps.staleMs ?? PENDLE_MARKETS_STALE_MS;
+  const now = deps.now ?? (() => Date.now());
 
-  let cache: PendleMarketsState | null = null
+  let cache: PendleMarketsState | null = null;
 
   function parseMarkets(json: MarketsResponse): PendleMarket[] {
-    const markets: PendleMarket[] = []
+    const markets: PendleMarket[] = [];
     for (const entry of json.markets ?? []) {
-      const pt = parsePrefixedAddress(entry.pt)
-      const yt = parsePrefixedAddress(entry.yt)
-      const market = parsePrefixedAddress(entry.address)
-      const underlying = parsePrefixedAddress(entry.underlyingAsset)
+      const pt = parsePrefixedAddress(entry.pt);
+      const yt = parsePrefixedAddress(entry.yt);
+      const market = parsePrefixedAddress(entry.address);
+      const underlying = parsePrefixedAddress(entry.underlyingAsset);
       // A malformed expiry would Date.parse to NaN, whose comparisons are all false — silently
       // classifying the PT as active. Drop the entry loudly instead.
-      const expiryValid = entry.expiry !== undefined && !Number.isNaN(Date.parse(entry.expiry))
+      const expiryValid = entry.expiry !== undefined && !Number.isNaN(Date.parse(entry.expiry));
       if (!pt || !yt || !market || !underlying || !expiryValid) {
-        logger.warn('pendle.market_malformed', { chainId, market: entry.address ?? null })
-        continue
+        logger.warn('pendle.market_malformed', { chainId, market: entry.address ?? null });
+        continue;
       }
-      markets.push({ pt, yt, market, expiry: entry.expiry as string, underlying })
+      markets.push({ pt, yt, market, expiry: entry.expiry as string, underlying });
     }
-    return markets
+    return markets;
   }
 
   async function marketsFor(): Promise<PendleMarket[]> {
-    if (cache && now() - cache.fetchedAt < staleMs) return cache.markets
+    if (cache && now() - cache.fetchedAt < staleMs) {
+      return cache.markets;
+    }
 
     try {
       const json = await client.getJson<MarketsResponse>({
         venue: 'pendle',
         url: `${baseUrl}/v1/markets/all`,
         searchParams: { chainId: String(chainId) }
-      })
-      cache = { fetchedAt: now(), markets: parseMarkets(json) }
-      return cache.markets
+      });
+      cache = { fetchedAt: now(), markets: parseMarkets(json) };
+      return cache.markets;
     } catch (error) {
       // Stale beats nothing: keep detecting PTs through an API outage on the last good list. The
       // stale cache is NOT re-stamped, so the next resolve retries the fetch.
@@ -125,26 +125,28 @@ export function createPendlePtUnwrapper(deps: {
           chainId,
           fetchedAt: cache.fetchedAt,
           detail: error instanceof Error ? error.message : String(error)
-        })
-        return cache.markets
+        });
+        return cache.markets;
       }
       throw error instanceof QuoteError
         ? error
         : new QuoteError(
             'api_error',
             `pendle markets fetch failed: ${error instanceof Error ? error.message : String(error)}`
-          )
+          );
     }
   }
 
   return {
     kind: 'pendle-pt',
     async resolve({ token, amountIn, executor }) {
-      const markets = await marketsFor()
-      const market = markets.find(entry => isAddressEqual(entry.pt, token))
-      if (!market) return null
+      const markets = await marketsFor();
+      const market = markets.find(entry => isAddressEqual(entry.pt, token));
+      if (!market) {
+        return null;
+      }
 
-      const expired = Date.parse(market.expiry) <= now()
+      const expired = Date.parse(market.expiry) <= now();
       // `slippage` is a decimal fraction. `enableAggregator=false` keeps the expired-PT redeem a
       // pure deterministic conversion to the native underlying (deliberate divergence from
       // upstream's `true`): our own venues sell the underlying, and if it is itself a vault share,
@@ -172,19 +174,19 @@ export function createPendlePtUnwrapper(deps: {
               tokenOut: market.underlying,
               amountIn: amountIn.toString()
             }
-          })
+          });
 
-      const to = json.tx?.to
-      const data = json.tx?.data
-      const amountOut = json.data?.amountOut
+      const to = json.tx?.to;
+      const data = json.tx?.data;
+      const amountOut = json.data?.amountOut;
       if (!to || !isAddress(to, { strict: false }) || !data || !isHex(data)) {
-        throw new QuoteError('api_error', `pendle: malformed ${expired ? 'redeem' : 'swap'} tx`)
+        throw new QuoteError('api_error', `pendle: malformed ${expired ? 'redeem' : 'swap'} tx`);
       }
       if (amountOut === undefined || !/^\d+$/.test(amountOut)) {
-        throw new QuoteError('api_error', 'pendle: malformed amountOut')
+        throw new QuoteError('api_error', 'pendle: malformed amountOut');
       }
 
-      const expectedAmountOut = BigInt(amountOut)
+      const expectedAmountOut = BigInt(amountOut);
       return {
         step: {
           tokenIn: token,
@@ -199,7 +201,7 @@ export function createPendlePtUnwrapper(deps: {
         },
         expectedAmountOut,
         amountOutMinimum: (expectedAmountOut * (BPS - BigInt(slippageBps))) / BPS
-      }
+      };
     }
-  }
+  };
 }

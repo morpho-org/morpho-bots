@@ -1,11 +1,11 @@
-import type { IMarket } from '@morpho-org/midnight-sdk'
-import type { Address } from 'viem'
+import type { IMarket } from '@morpho-org/midnight-sdk';
+import { Group, Offer, Tree } from '@morpho-org/midnight-sdk';
 
-import { Group, Offer, Tree } from '@morpho-org/midnight-sdk'
+import type { Address } from 'viem';
 
-import type { MarketQuoteConfig } from './config'
+import type { MarketQuoteConfig } from './config';
+import { buildLadderTicks } from './ladder';
 
-import { buildLadderTicks } from './ladder'
 export function buildOfferTree({
   market,
   config,
@@ -14,14 +14,14 @@ export function buildOfferTree({
   start,
   expiry
 }: {
-  market: IMarket
-  config: MarketQuoteConfig
-  maker: Address
-  ratifier: Address
-  start: bigint
-  expiry: bigint
+  market: IMarket;
+  config: MarketQuoteConfig;
+  maker: Address;
+  ratifier: Address;
+  start: bigint;
+  expiry: bigint;
 }) {
-  const { bids, asks } = buildLadderTicks(config, market.tickSpacing)
+  const { bids, asks } = buildLadderTicks(config, market.tickSpacing);
   const common = {
     market,
     maker,
@@ -30,8 +30,10 @@ export function buildOfferTree({
     ratifier,
     maxUnits: config.maxUnits,
     continuousFeeCap: BigInt(market.continuousFee)
-  }
-  const bidGroup = Group.create(bids.map(tick => Offer.create({ ...common, buy: true, tick })))
-  const askGroup = Group.create(asks.map(tick => Offer.create({ ...common, buy: false, tick })))
-  return { tree: Tree.create([bidGroup, askGroup]), bidGroup, askGroup }
+  };
+
+  const bidGroup = Group.create(bids.map(tick => Offer.create({ ...common, buy: true, tick })));
+  const askGroup = Group.create(asks.map(tick => Offer.create({ ...common, buy: false, tick })));
+
+  return { tree: Tree.create([bidGroup, askGroup]), bidGroup, askGroup };
 }
