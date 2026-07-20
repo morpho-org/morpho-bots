@@ -64,7 +64,9 @@ commit/push):
 2. **Lint**: Run `bun lint` from the repo root — zero warnings policy. Lint is a workspace-level
    concern; oxlint walks the whole tree and per-package `lint` scripts are deliberately omitted.
 3. **Format**: Run `bun format` — auto-fixes formatting in place.
-4. **Existing tests**: Run `bun test` — all must pass.
+4. **Existing tests**: Run `bun test` — all must pass. `bots/monitor-bot` is excluded from
+   `bun test` (vitest suite); when it is affected, also run
+   `bun run --filter @morpho-org/monitor-bot test`.
 
 **Escalation rule**: After 3 failed fix attempts for the same issue, STOP. Tell the user what you
 tried, what failed, and ask for guidance. Bad work is worse than no work — do not keep iterating
@@ -126,14 +128,17 @@ These files provide important background information about dependencies and rela
 This is a **bun workspaces monorepo** housing off-chain Morpho curator bots:
 
 - `/bots/` — individual bot apps, one per bot. Each is a **standalone long-running TypeScript
-  program**: `main()` in `src/index.ts` loads config from the environment (fail-loud), builds its
-  viem clients, and drives a block-watcher + per-tick runner loop that discovers positions, reads
-  fresh on-chain state, sizes/simulates a liquidation, and broadcasts only simulation-ok
-  transactions through an in-process pending-tx queue. No bot imports another bot. Each bot owns its
-  own operator surface — `README.md`, `Dockerfile`, `docker-compose.yml`, and
+  program**: `main()` in `src/index.ts` loads config from the environment (fail-loud). The
+  liquidators build viem clients and drive a block-watcher + per-tick runner loop that discovers
+  positions, reads fresh on-chain state, sizes/simulates a liquidation, and broadcasts only
+  simulation-ok transactions through an in-process pending-tx queue. No bot imports another bot.
+  Each bot owns its own operator surface — `README.md`, `Dockerfile`, `docker-compose.yml`, and
   `scripts/deploy-railway.ts` — so it ships as its own image and
   deploys independently. `bots/blue-liquidation` and `bots/midnight-liquidation` are the live
-  liquidators; `bots/kill-switch` is a proposal bot (docs only).
+  liquidators; `bots/monitor-bot` is a NestJS HTTP service that polls Morpho REST endpoints and
+  posts Slack notifications (no on-chain interaction, no signer — see
+  [TIB-2026-07-20-monitor-bot-nestjs-stack](./docs/decisions/TIB-2026-07-20-monitor-bot-nestjs-stack.md));
+  `bots/kill-switch` is a proposal bot (docs only).
 - `/packages/` — shared libraries: `@repo/bot-kit` (the shared bot runtime — viem
   clients/transport, loglayer-backed JSON-lines logger (opt-in in-process BetterStack shipping),
   block watcher + runner loop, pending-tx queue with fee
@@ -209,6 +214,7 @@ All commit messages, PR titles, and Linear ticket titles use the same format:
 | -------------------- | ---------------------- |
 | blue-liquidation     | `blue-liquidation`     |
 | midnight-liquidation | `midnight-liquidation` |
+| monitor-bot          | `monitor-bot`          |
 
 **Scopes — Cross-cutting:**
 
