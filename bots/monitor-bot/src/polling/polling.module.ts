@@ -12,7 +12,6 @@ import type { BootSnapshotStore } from '../snapshot/boot-snapshot.store'
 import { ALERT_DISPATCHER, LogAlertDispatcher } from '../alerts/alert'
 import { SlackDispatcher } from '../alerts/slack.dispatcher'
 import { ENV } from '../config/env'
-import { createCoreClient } from '../core/client'
 import { CURSOR_STORE, InMemoryCursorStore } from '../cursor/cursor.store'
 import { LOGGER } from '../logging/logger.provider'
 import { createMidnightClient } from '../midnight/client'
@@ -21,7 +20,6 @@ import { BookOffersPoller } from '../pollers/book-offers.poller'
 import { TransactionFilter } from '../pollers/filter'
 import { MarketTransactionsPoller } from '../pollers/market-transactions.poller'
 import { BOOT_SNAPSHOT_STORE, InMemoryBootSnapshotStore } from '../snapshot/boot-snapshot.store'
-import { TokenMetadataLoader } from '../tokens/metadata'
 import { TOKEN_REGISTRY, TokenRegistry } from '../tokens/registry'
 import { POLLERS } from './poller'
 import { PollerRegistrar } from './poller.registrar'
@@ -63,20 +61,12 @@ function buildPollers(
     logger,
     verbose: env.LOG_LEVEL === 'debug'
   })
-  // The core API serves token metadata on a different path prefix than the Midnight endpoints, so
-  // it gets its own base URL even though both default to the same host.
-  const tokenMetadata = new TokenMetadataLoader({
-    client: createCoreClient(env.CORE_API_URL),
-    logger,
-    tokens
-  })
   const directory = new MarketDirectory({
     client,
     logger,
     fixedMarketIds: env.MARKET_IDS,
     refreshMs: env.MARKETS_REFRESH_MS,
-    tokens,
-    tokenMetadata
+    tokens
   })
   const filter = new TransactionFilter({
     minAssets: env.FILTER_MIN_ASSETS,

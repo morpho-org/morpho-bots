@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from 'vitest'
 import type { MidnightClient } from '../../src/midnight/client'
 
 import { MarketDirectory } from '../../src/midnight/markets'
-import { TokenMetadataLoader } from '../../src/tokens/metadata'
 import { TokenRegistry } from '../../src/tokens/registry'
 import { fakeLogger } from '../helpers'
 import { apiPage, MARKET_A, MARKET_B } from './fixtures'
@@ -33,20 +32,10 @@ const COLLATERAL_TOKEN = '0x4200000000000000000000000000000000000006'
 
 const noSleep = () => Promise.resolve()
 
-/** Metadata lookups are a separate API; these tests cover market discovery, so stub it out. */
-function noMetadata(tokens: TokenRegistry): TokenMetadataLoader {
-  return new TokenMetadataLoader({
-    client: { GET: () => Promise.reject(new Error('no metadata in this test')) } as never,
-    logger: fakeLogger(),
-    tokens,
-    sleep: noSleep
-  })
-}
-
 describe('MarketDirectory', () => {
-  // Behaviour change: fixed scope used to make zero requests. It now issues one hydration call per
-  // TTL, because MARKET_IDS supplies ids but not the token metadata every alert needs to render a
-  // denomination — without it the registry would stay permanently empty in this mode.
+  // Fixed scope still issues one hydration call per TTL, because MARKET_IDS supplies ids but not
+  // the token addresses every alert needs to render a denomination — without it the registry
+  // would stay permanently empty in this mode.
   it('returns fixed ids and hydrates their tokens', async () => {
     const client = marketsClient([{ cursor: null, ids: [MARKET_A] }])
     const directory = new MarketDirectory({
@@ -54,7 +43,6 @@ describe('MarketDirectory', () => {
       logger: fakeLogger(),
       fixedMarketIds: [MARKET_A],
       tokens: new TokenRegistry(),
-      tokenMetadata: noMetadata(new TokenRegistry()),
       refreshMs: 1000,
       sleep: noSleep
     })
@@ -73,7 +61,6 @@ describe('MarketDirectory', () => {
       logger: fakeLogger(),
       fixedMarketIds: [],
       tokens: new TokenRegistry(),
-      tokenMetadata: noMetadata(new TokenRegistry()),
       refreshMs: 10_000,
       now: () => now,
       sleep: noSleep
@@ -93,7 +80,6 @@ describe('MarketDirectory', () => {
       logger: fakeLogger(),
       fixedMarketIds: [],
       tokens: new TokenRegistry(),
-      tokenMetadata: noMetadata(new TokenRegistry()),
       refreshMs: 10_000,
       now: () => 0,
       sleep: noSleep
@@ -119,7 +105,6 @@ describe('MarketDirectory', () => {
       logger: fakeLogger(),
       fixedMarketIds: [],
       tokens: new TokenRegistry(),
-      tokenMetadata: noMetadata(new TokenRegistry()),
       refreshMs: 10_000,
       now: () => 0,
       sleep: noSleep
@@ -140,7 +125,6 @@ describe('MarketDirectory', () => {
       logger: fakeLogger(),
       fixedMarketIds: [],
       tokens: new TokenRegistry(),
-      tokenMetadata: noMetadata(new TokenRegistry()),
       refreshMs: 10_000,
       now: () => now,
       sleep: noSleep
@@ -161,7 +145,6 @@ describe('MarketDirectory', () => {
       logger: fakeLogger(),
       fixedMarketIds: [],
       tokens,
-      tokenMetadata: noMetadata(tokens),
       refreshMs: 1000,
       sleep: noSleep
     })
@@ -179,7 +162,6 @@ describe('MarketDirectory', () => {
       logger: fakeLogger(),
       fixedMarketIds: [MARKET_A],
       tokens,
-      tokenMetadata: noMetadata(tokens),
       refreshMs: 1000,
       sleep: noSleep
     })
@@ -198,7 +180,6 @@ describe('MarketDirectory', () => {
       logger,
       fixedMarketIds: [MARKET_A],
       tokens,
-      tokenMetadata: noMetadata(tokens),
       refreshMs: 1_000_000,
       sleep: noSleep
     })
@@ -226,7 +207,6 @@ describe('MarketDirectory', () => {
       logger: fakeLogger(),
       fixedMarketIds: many,
       tokens,
-      tokenMetadata: noMetadata(tokens),
       refreshMs: 1000,
       sleep: noSleep
     })

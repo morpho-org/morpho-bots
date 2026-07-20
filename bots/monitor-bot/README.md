@@ -32,7 +32,7 @@ missing or malformed.
 | `LOG_LEVEL`                   | no       | `info`                   | `debug` \| `info` \| `warn` \| `error`           |
 | `MIDNIGHT_API_URL`            | no       | `https://api.morpho.org` | Midnight API base URL                            |
 | `MARKET_IDS`                  | no       | — (auto-discover)        | Comma-separated market ids; empty = all active   |
-| `MARKETS_REFRESH_MS`          | no       | `600000`                 | Market-discovery + token-metadata cache TTL      |
+| `MARKETS_REFRESH_MS`          | no       | `600000`                 | Market-discovery + token-registry cache TTL      |
 | `FILTER_MIN_ASSETS`           | no       | `0`                      | Min size (base units) for an alert; 0 = off      |
 | `FILTER_USERS`                | no       | — (all users)            | Comma-separated position-owner allowlist         |
 | `POLL_CRON_TAKE_ORDERS`       | no       | `*/30 * * * * *`         | Take-orders poller cadence (cron, seconds field) |
@@ -173,7 +173,7 @@ requests. It is injected into every poller via `PollerDependencies.tokens`.
 
 It is a passive store and never performs I/O, so injecting it cannot add latency or a failure mode
 to a tick. A miss returns `null` and the caller falls back to raw units rather than throwing —
-token metadata is a presentation nicety, alerting is the job that must not break.
+token denominations are a presentation nicety, alerting is the job that must not break.
 
 `collaterals[]` lists what a market **accepts**, usually more than one token, so it cannot identify
 which token a given event moved. Collateral-denominated amounts (`supply_collateral`,
@@ -182,7 +182,7 @@ which token a given event moved. Collateral-denominated amounts (`supply_collate
 Setting `MARKET_IDS` fixes the polled scope but does **not** eliminate API calls: one `market_ids`
 request per `MARKETS_REFRESH_MS` still hydrates the registry, because ids alone do not say what a
 market is denominated in. If that request fails the configured ids are still returned, so a
-metadata outage never shrinks the polled scope, and the cache is cleared so the next tick retries.
+hydration outage never shrinks the polled scope, and the cache is cleared so the next tick retries.
 
 Alert delivery is pluggable behind the `ALERT_DISPATCHER` DI token. With `SLACK_CHANNEL` +
 `SLACK_BOT_TOKEN` set, `SlackDispatcher` posts to Slack via `chat.postMessage` (bot token, so the
