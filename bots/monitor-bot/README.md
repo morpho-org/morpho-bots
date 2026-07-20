@@ -21,8 +21,10 @@ Never commit `.env` files or credentials.
 
 ## Configuration
 
-Config is validated at startup with [t3-env](https://env.t3.gg/) + zod — a missing or malformed
-variable fails the boot loudly.
+`PORT` and `LOG_LEVEL` are validated at startup with [t3-env](https://env.t3.gg/) + zod — a
+malformed value fails the boot loudly. The `BETTERSTACK_*` vars are read at point of use by
+`@repo/bot-kit`, which disables shipping/heartbeat with a warning (never a crash) when they are
+missing or malformed.
 
 | Var                          | Required | Default | Purpose                                  |
 | ---------------------------- | -------- | ------- | ---------------------------------------- |

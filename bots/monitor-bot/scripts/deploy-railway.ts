@@ -204,6 +204,13 @@ async function waitForDeploy(
   return 'TIMEOUT'
 }
 
+// Unlike midnight-liquidation (where a pre-config CRASH is expected before secrets exist), every
+// monitor-bot variable has a default — a CRASHED boot is always a real failure and must never
+// read as a green deploy.
+function badStatus(status: string): boolean {
+  return status === 'FAILED' || status === 'CRASHED' || status === 'TIMEOUT'
+}
+
 await assertCli()
 
 const BOT_SERVICE = serviceName('bot')
@@ -219,7 +226,7 @@ if (/^(1|true)$/i.test(Bun.env.DEPLOY_ONLY?.trim() ?? '')) {
   console.log('')
   console.log('=== Deploy-only status ===')
   console.log(`  ${BOT_SERVICE}: ${status}`)
-  process.exit(status === 'FAILED' || status === 'TIMEOUT' ? 1 : 0)
+  process.exit(badStatus(status) ? 1 : 0)
 }
 
 // Optional BetterStack log shipping: host is a plain var, token is a secret. Off when unset — the
@@ -246,4 +253,4 @@ console.log('')
 console.log('=== Deployment status ===')
 console.log(`  ${BOT_SERVICE}: ${botStatus}`)
 
-process.exitCode = botStatus === 'FAILED' || botStatus === 'TIMEOUT' ? 1 : 0
+process.exitCode = badStatus(botStatus) ? 1 : 0
