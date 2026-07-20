@@ -14,7 +14,14 @@ const market = {
     chainId: 8453n,
     midnight,
     loanToken,
-    collateralParams: [],
+    collateralParams: [
+      {
+        token: '0x5555555555555555555555555555555555555555' as Address,
+        lltv: 770000000000000000n,
+        liquidationCursor: 250000000000000000n,
+        oracle: '0x6666666666666666666666666666666666666666' as Address
+      }
+    ],
     maturity: 2_000_000_000n,
     rcfThreshold: 0n,
     enterGate: zeroAddress,
