@@ -12,6 +12,7 @@ import type { BootSnapshotStore } from '../snapshot/boot-snapshot.store'
 import { ALERT_DISPATCHER, LogAlertDispatcher } from '../alerts/alert'
 import { SlackDispatcher } from '../alerts/slack.dispatcher'
 import { ENV } from '../config/env'
+import { createCoreClient } from '../core/client'
 import { CURSOR_STORE, InMemoryCursorStore } from '../cursor/cursor.store'
 import { LOGGER } from '../logging/logger.provider'
 import { createMidnightClient } from '../midnight/client'
@@ -20,6 +21,8 @@ import { BookOffersPoller } from '../pollers/book-offers.poller'
 import { TransactionFilter } from '../pollers/filter'
 import { MarketTransactionsPoller } from '../pollers/market-transactions.poller'
 import { BOOT_SNAPSHOT_STORE, InMemoryBootSnapshotStore } from '../snapshot/boot-snapshot.store'
+import { TokenMetadataLoader } from '../tokens/metadata'
+import { TOKEN_REGISTRY, TokenRegistry } from '../tokens/registry'
 import { POLLERS } from './poller'
 import { PollerRegistrar } from './poller.registrar'
 
@@ -51,21 +54,36 @@ function buildPollers(
   logger: Logger,
   cursors: CursorStore,
   snapshots: BootSnapshotStore,
-  dispatcher: AlertDispatcher
+  dispatcher: AlertDispatcher,
+  tokens: TokenRegistry
 ) {
-  const client = createMidnightClient(env.MIDNIGHT_API_URL)
+  // Always attached so request failures surface at any log level; per-response lines are the part
+  // gated on debug, since they cost a body clone + parse the logger would otherwise discard.
+  const client = createMidnightClient(env.MIDNIGHT_API_URL, {
+    logger,
+    verbose: env.LOG_LEVEL === 'debug'
+  })
+  // The core API serves token metadata on a different path prefix than the Midnight endpoints, so
+  // it gets its own base URL even though both default to the same host.
+  const tokenMetadata = new TokenMetadataLoader({
+    client: createCoreClient(env.CORE_API_URL),
+    logger,
+    tokens
+  })
   const directory = new MarketDirectory({
     client,
     logger,
     fixedMarketIds: env.MARKET_IDS,
-    refreshMs: env.MARKETS_REFRESH_MS
+    refreshMs: env.MARKETS_REFRESH_MS,
+    tokens,
+    tokenMetadata
   })
   const filter = new TransactionFilter({
     minAssets: env.FILTER_MIN_ASSETS,
     users: env.FILTER_USERS
   })
   // Transaction pollers resume from a watermark, so their state is a cursor.
-  const deps = { state: cursors, dispatcher, logger, client, directory, filter }
+  const deps = { state: cursors, dispatcher, logger, tokens, client, directory, filter }
   const pollers: (MarketTransactionsPoller | BookOffersPoller)[] = pollerDefinitions(env).map(
     options => new MarketTransactionsPoller(options, deps)
   )
@@ -77,7 +95,7 @@ function buildPollers(
   pollers.push(
     new BookOffersPoller(
       { cron: env.POLL_CRON_MAKE_ORDERS, marketIds: env.MARKET_IDS },
-      { state: snapshots, dispatcher, logger, client, minAssets: env.FILTER_MIN_ASSETS }
+      { state: snapshots, dispatcher, logger, tokens, client, minAssets: env.FILTER_MIN_ASSETS }
     )
   )
   return pollers
@@ -106,11 +124,12 @@ export function buildDispatcher(env: MonitorEnv, logger: Logger): AlertDispatche
   providers: [
     { provide: CURSOR_STORE, useClass: InMemoryCursorStore },
     { provide: BOOT_SNAPSHOT_STORE, useClass: InMemoryBootSnapshotStore },
+    { provide: TOKEN_REGISTRY, useClass: TokenRegistry },
     { provide: ALERT_DISPATCHER, useFactory: buildDispatcher, inject: [ENV, LOGGER] },
     {
       provide: POLLERS,
       useFactory: buildPollers,
-      inject: [ENV, LOGGER, CURSOR_STORE, BOOT_SNAPSHOT_STORE, ALERT_DISPATCHER]
+      inject: [ENV, LOGGER, CURSOR_STORE, BOOT_SNAPSHOT_STORE, ALERT_DISPATCHER, TOKEN_REGISTRY]
     },
     PollerRegistrar
   ]

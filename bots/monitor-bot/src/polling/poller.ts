@@ -1,6 +1,7 @@
 import type { Logger } from '@repo/bot-kit'
 
 import type { Alert, AlertDispatcher } from '../alerts/alert'
+import type { TokenRegistry } from '../tokens/registry'
 
 /** Injection token for the array of registered pollers (Nest has no multi-providers). */
 export const POLLERS = Symbol('POLLERS')
@@ -29,6 +30,11 @@ export type PollerDependencies = {
   state: PollerStateStore
   dispatcher: AlertDispatcher
   logger: Logger
+  /**
+   * market id → token addresses. Shared by every poller: transaction items carry only a
+   * `market_id`, so this is the only way to learn what their amounts are denominated in.
+   */
+  tokens: TokenRegistry
 }
 
 // Template method: subclasses supply fetch + toAlerts, the base class owns the invariant tick

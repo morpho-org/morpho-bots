@@ -5,6 +5,7 @@ import type { MarketSnapshot, OfferBucket } from '../../src/pollers/book-offers.
 
 import { BookOffersPoller, diffSnapshots } from '../../src/pollers/book-offers.poller'
 import { InMemoryBootSnapshotStore } from '../../src/snapshot/boot-snapshot.store'
+import { TokenRegistry } from '../../src/tokens/registry'
 import { capturingDispatcher, fakeLogger } from '../helpers'
 import { apiPage, MARKET_A, MARKET_B, USER_ONE, USER_TWO } from '../midnight/fixtures'
 
@@ -130,6 +131,7 @@ function makePoller(ticks: TickSpec[], minAssets = 0n, marketIds: string[] = [])
       state: new InMemoryBootSnapshotStore(),
       dispatcher,
       logger,
+      tokens: new TokenRegistry(),
       client,
       minAssets,
       sleep: () => Promise.resolve()
@@ -459,6 +461,7 @@ describe('BookOffersPoller', () => {
         state: new InMemoryBootSnapshotStore(),
         dispatcher,
         logger,
+        tokens: new TokenRegistry(),
         client,
         minAssets: 0n,
         sleep: () => Promise.resolve()

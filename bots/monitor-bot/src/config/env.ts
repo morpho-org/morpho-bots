@@ -63,6 +63,8 @@ export function loadEnv(runtimeEnv: Record<string, string | undefined> = process
       PORT: z.coerce.number().int().min(1).max(65535).default(3000),
       LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
       MIDNIGHT_API_URL: z.string().url().default('https://api.morpho.org'),
+      /** Morpho core API base — serves `/v0/tokens/{chain_id}:{address}` for ERC-20 metadata. */
+      CORE_API_URL: z.string().url().default('https://api.morpho.org'),
       /** Fixed market scope; empty = auto-discover all active markets. */
       MARKET_IDS: marketIdListSchema,
       /** Same name and unit as midnight-liquidation's market-refresh knob. */

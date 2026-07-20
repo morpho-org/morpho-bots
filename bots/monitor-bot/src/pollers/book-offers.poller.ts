@@ -288,6 +288,18 @@ export class BookOffersPoller extends Poller<BookSnapshot, OfferEvent> {
     // A failure here aborts the whole tick (snapshot untouched) rather than diffing a partial
     // market universe, which would forget every market the sweep did not reach.
     const books = await this.fetchBooks()
+    // Book entries carry loan_token and collaterals[], so the make-orders sweep keeps the registry
+    // fresh for book markets without a single extra request — and covers any market that has a
+    // book but has not been through a MarketDirectory sweep yet.
+    this.ext.tokens.recordAll(books)
+    // Debug, not info: this fires every tick. It is the only place the swept market universe is
+    // visible — `poll.baseline` only reports a market the first time it is seen, so in steady
+    // state there is otherwise no record of which books were actually covered.
+    this.ext.logger.debug('poll.books_listed', {
+      pollerId: this.id,
+      books: books.length,
+      marketIds: books.map(book => book.market_id)
+    })
     const nextState: BookSnapshot = {}
     const items: OfferEvent[] = []
     let failures = 0

@@ -6,6 +6,7 @@ import type { MarketDirectory } from '../../src/midnight/markets'
 import { InMemoryCursorStore } from '../../src/cursor/cursor.store'
 import { TransactionFilter } from '../../src/pollers/filter'
 import { MarketTransactionsPoller } from '../../src/pollers/market-transactions.poller'
+import { TokenRegistry } from '../../src/tokens/registry'
 import { capturingDispatcher, fakeLogger } from '../helpers'
 import { apiPage, lendItem, MARKET_A, MARKET_B } from '../midnight/fixtures'
 
@@ -42,6 +43,7 @@ function makePoller(pages: Record<string, Page[]>, marketIds: string[]) {
       state: cursors,
       dispatcher,
       logger,
+      tokens: new TokenRegistry(),
       client,
       directory,
       filter: new TransactionFilter({ minAssets: 0n, users: [] }),

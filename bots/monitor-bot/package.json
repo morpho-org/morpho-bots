@@ -6,7 +6,9 @@
   "type": "module",
   "scripts": {
     "deploy:railway": "bun run scripts/deploy-railway.ts",
+    "dev": "LOG_LEVEL=debug bun src/index.ts",
     "generate": "openapi-typescript https://api.morpho.org/midnight/docs/swagger/json -o ./src/generated/midnight-api.ts",
+    "generate:core": "openapi-typescript https://api.morpho.org/core/docs/swagger/json -o ./src/generated/core-api.ts",
     "start": "bun src/index.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"

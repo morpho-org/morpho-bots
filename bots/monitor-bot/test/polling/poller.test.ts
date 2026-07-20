@@ -4,6 +4,7 @@ import type { Alert } from '../../src/alerts/alert'
 
 import { InMemoryCursorStore } from '../../src/cursor/cursor.store'
 import { Poller, type PollerDependencies } from '../../src/polling/poller'
+import { TokenRegistry } from '../../src/tokens/registry'
 import { capturingDispatcher, fakeLogger } from '../helpers'
 
 type FetchResult = { items: string[]; nextState: number }
@@ -44,7 +45,11 @@ class SamplePoller extends Poller<number, string> {
 function makeDeps() {
   const cursors = new InMemoryCursorStore()
   const dispatcher = capturingDispatcher()
-  return { cursors, dispatcher, deps: { state: cursors, dispatcher, logger: fakeLogger() } }
+  return {
+    cursors,
+    dispatcher,
+    deps: { state: cursors, dispatcher, logger: fakeLogger(), tokens: new TokenRegistry() }
+  }
 }
 
 describe('Poller.pollOnce', () => {

@@ -8,6 +8,7 @@ import { InMemoryCursorStore } from '../../src/cursor/cursor.store'
 import { LOGGER } from '../../src/logging/logger.provider'
 import { Poller, POLLERS } from '../../src/polling/poller'
 import { PollerRegistrar } from '../../src/polling/poller.registrar'
+import { TokenRegistry } from '../../src/tokens/registry'
 import { capturingDispatcher, fakeLogger } from '../helpers'
 
 // A poller whose tick blocks until release() is called, to observe shutdown behavior mid-tick.
@@ -65,7 +66,8 @@ describe('PollerRegistrar', () => {
     const deps = {
       state: new InMemoryCursorStore(),
       dispatcher: capturingDispatcher(),
-      logger: fakeLogger()
+      logger: fakeLogger(),
+      tokens: new TokenRegistry()
     }
     const first = new BlockingPoller(deps)
     const second = new BlockingPoller(deps)
@@ -87,7 +89,8 @@ describe('PollerRegistrar', () => {
     const deps = {
       state: new InMemoryCursorStore(),
       dispatcher: capturingDispatcher(),
-      logger: fakeLogger()
+      logger: fakeLogger(),
+      tokens: new TokenRegistry()
     }
     const poller = new BlockingPoller(deps)
     app = await createApp(poller)
@@ -102,7 +105,8 @@ describe('PollerRegistrar', () => {
     const deps = {
       state: new InMemoryCursorStore(),
       dispatcher: capturingDispatcher(),
-      logger: fakeLogger()
+      logger: fakeLogger(),
+      tokens: new TokenRegistry()
     }
     const poller = new BlockingPoller(deps)
     app = await createApp(poller)

@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest'
 import type { MidnightClient } from '../../src/midnight/client'
 
 import { MarketDirectory } from '../../src/midnight/markets'
+import { TokenMetadataLoader } from '../../src/tokens/metadata'
+import { TokenRegistry } from '../../src/tokens/registry'
 import { fakeLogger } from '../helpers'
 import { apiPage, MARKET_A, MARKET_B } from './fixtures'
 
@@ -12,26 +14,52 @@ function marketsClient(pages: { cursor: string | null; ids: string[] }[]) {
     GET: vi.fn(() => {
       const page = queue.shift() ?? { cursor: null, ids: [] }
       return Promise.resolve(
-        apiPage({ cursor: page.cursor, data: page.ids.map(id => ({ market_id: id })) })
+        apiPage({
+          cursor: page.cursor,
+          data: page.ids.map(id => ({
+            market_id: id,
+            chain_id: 8453,
+            loan_token: LOAN_TOKEN,
+            collaterals: [{ token: COLLATERAL_TOKEN }]
+          }))
+        })
       )
     })
   } as unknown as MidnightClient
 }
 
+const LOAN_TOKEN = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
+const COLLATERAL_TOKEN = '0x4200000000000000000000000000000000000006'
+
 const noSleep = () => Promise.resolve()
 
+/** Metadata lookups are a separate API; these tests cover market discovery, so stub it out. */
+function noMetadata(tokens: TokenRegistry): TokenMetadataLoader {
+  return new TokenMetadataLoader({
+    client: { GET: () => Promise.reject(new Error('no metadata in this test')) } as never,
+    logger: fakeLogger(),
+    tokens,
+    sleep: noSleep
+  })
+}
+
 describe('MarketDirectory', () => {
-  it('returns fixed ids without calling the API', async () => {
-    const client = marketsClient([])
+  // Behaviour change: fixed scope used to make zero requests. It now issues one hydration call per
+  // TTL, because MARKET_IDS supplies ids but not the token metadata every alert needs to render a
+  // denomination — without it the registry would stay permanently empty in this mode.
+  it('returns fixed ids and hydrates their tokens', async () => {
+    const client = marketsClient([{ cursor: null, ids: [MARKET_A] }])
     const directory = new MarketDirectory({
       client,
       logger: fakeLogger(),
       fixedMarketIds: [MARKET_A],
+      tokens: new TokenRegistry(),
+      tokenMetadata: noMetadata(new TokenRegistry()),
       refreshMs: 1000,
       sleep: noSleep
     })
     expect(await directory.marketIds()).toEqual([MARKET_A])
-    expect(client.GET).not.toHaveBeenCalled()
+    expect(client.GET).toHaveBeenCalledTimes(1)
   })
 
   it('discovers across pages and caches within the TTL', async () => {
@@ -44,6 +72,8 @@ describe('MarketDirectory', () => {
       client,
       logger: fakeLogger(),
       fixedMarketIds: [],
+      tokens: new TokenRegistry(),
+      tokenMetadata: noMetadata(new TokenRegistry()),
       refreshMs: 10_000,
       now: () => now,
       sleep: noSleep
@@ -62,6 +92,8 @@ describe('MarketDirectory', () => {
       client,
       logger: fakeLogger(),
       fixedMarketIds: [],
+      tokens: new TokenRegistry(),
+      tokenMetadata: noMetadata(new TokenRegistry()),
       refreshMs: 10_000,
       now: () => 0,
       sleep: noSleep
@@ -86,6 +118,8 @@ describe('MarketDirectory', () => {
       client,
       logger: fakeLogger(),
       fixedMarketIds: [],
+      tokens: new TokenRegistry(),
+      tokenMetadata: noMetadata(new TokenRegistry()),
       refreshMs: 10_000,
       now: () => 0,
       sleep: noSleep
@@ -105,6 +139,8 @@ describe('MarketDirectory', () => {
       client,
       logger: fakeLogger(),
       fixedMarketIds: [],
+      tokens: new TokenRegistry(),
+      tokenMetadata: noMetadata(new TokenRegistry()),
       refreshMs: 10_000,
       now: () => now,
       sleep: noSleep
@@ -113,5 +149,90 @@ describe('MarketDirectory', () => {
     now = 10_001
     expect(await directory.marketIds()).toEqual([MARKET_A, MARKET_B])
     expect(client.GET).toHaveBeenCalledTimes(2)
+  })
+
+  // The whole point of the change: both sweeps must populate the registry. Without these, the
+  // recordAll calls in markets.ts could be deleted and the suite would still pass.
+  it('populates the token registry from a discovery sweep', async () => {
+    const tokens = new TokenRegistry()
+    const client = marketsClient([{ cursor: null, ids: [MARKET_A, MARKET_B] }])
+    const directory = new MarketDirectory({
+      client,
+      logger: fakeLogger(),
+      fixedMarketIds: [],
+      tokens,
+      tokenMetadata: noMetadata(tokens),
+      refreshMs: 1000,
+      sleep: noSleep
+    })
+    await directory.marketIds()
+    expect(tokens.size).toBe(2)
+    expect(tokens.loanToken(MARKET_A)).toBe(LOAN_TOKEN)
+    expect(tokens.get(MARKET_B)?.collaterals).toEqual([COLLATERAL_TOKEN])
+  })
+
+  it('populates the token registry in fixed-id mode too', async () => {
+    const tokens = new TokenRegistry()
+    const client = marketsClient([{ cursor: null, ids: [MARKET_A] }])
+    const directory = new MarketDirectory({
+      client,
+      logger: fakeLogger(),
+      fixedMarketIds: [MARKET_A],
+      tokens,
+      tokenMetadata: noMetadata(tokens),
+      refreshMs: 1000,
+      sleep: noSleep
+    })
+    expect(await directory.marketIds()).toEqual([MARKET_A])
+    expect(tokens.loanToken(MARKET_A)).toBe(LOAN_TOKEN)
+  })
+
+  it('still returns fixed ids when hydration fails, and retries on the next tick', async () => {
+    const tokens = new TokenRegistry()
+    const logger = fakeLogger()
+    const client = {
+      GET: vi.fn(() => Promise.reject(new Error('boom')))
+    } as unknown as MidnightClient
+    const directory = new MarketDirectory({
+      client,
+      logger,
+      fixedMarketIds: [MARKET_A],
+      tokens,
+      tokenMetadata: noMetadata(tokens),
+      refreshMs: 1_000_000,
+      sleep: noSleep
+    })
+    // Scope must not shrink because metadata is unavailable.
+    expect(await directory.marketIds()).toEqual([MARKET_A])
+    expect(tokens.size).toBe(0)
+    expect(logger.warn).toHaveBeenCalledWith('markets.tokens_unavailable', expect.anything())
+
+    // A failed hydration must NOT be cached for the whole TTL — the next tick retries.
+    const calls = (client.GET as ReturnType<typeof vi.fn>).mock.calls.length
+    await directory.marketIds()
+    expect((client.GET as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(calls)
+  })
+
+  it('batches fixed ids so the market_ids query string stays bounded', async () => {
+    const tokens = new TokenRegistry()
+    const many = Array.from({ length: 120 }, (_, i) => `0x${String(i).padStart(64, '0')}`)
+    const client = marketsClient([
+      { cursor: null, ids: many.slice(0, 50) },
+      { cursor: null, ids: many.slice(50, 100) },
+      { cursor: null, ids: many.slice(100) }
+    ])
+    const directory = new MarketDirectory({
+      client,
+      logger: fakeLogger(),
+      fixedMarketIds: many,
+      tokens,
+      tokenMetadata: noMetadata(tokens),
+      refreshMs: 1000,
+      sleep: noSleep
+    })
+    await directory.marketIds()
+    // 120 ids at 50 per request = 3 calls.
+    expect(client.GET).toHaveBeenCalledTimes(3)
+    expect(tokens.size).toBe(120)
   })
 })
