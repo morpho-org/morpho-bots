@@ -67,4 +67,4 @@ jobs:
             midnight-liq) pkg='@morpho-org/midnight-liquidation' ;;
             *) echo "Unknown bot: $BOT" >&2; exit 1 ;;
           esac
-          bun run --filter "$pkg" deploy:railway
+          pnpm --filter "$pkg" run deploy:railway

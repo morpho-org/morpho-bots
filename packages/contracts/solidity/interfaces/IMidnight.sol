@@ -11,7 +11,7 @@
 // (this is the "LATER commit" the old header flagged as not-yet-deployed), and the `consumed` getter +
 // `setConsumed` narrow to uint128 to match. The `Take`/`SetConsumed` EVENTS keep uint256 (unchanged).
 // `Market`, `CollateralParams`, and the `liquidate` signature are byte-for-byte identical to 3836155f.
-// Regenerate the ABI with `bun run --filter @repo/contracts build`.
+// Regenerate the ABI with `pnpm --filter @repo/contracts run build`.
 pragma solidity >=0.5.0;
 
 struct Market {

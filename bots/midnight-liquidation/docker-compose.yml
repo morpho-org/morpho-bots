@@ -1,6 +1,6 @@
 # Runs the midnight-liquidation bot. Borrower candidates come from the markets liquidation-candidates
 # HTTP API (LIQUIDATION_CANDIDATES_API_URL, public by default), so there is no indexer or database to
-# run. The bot's build context is the repo root so the bun workspace (packages/*) resolves — see
+# run. The bot's build context is the repo root so the pnpm workspace (packages/*) resolves — see
 # Dockerfile.
 services:
   bot:

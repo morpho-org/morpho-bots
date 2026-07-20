@@ -19,12 +19,12 @@ position (none exist while the market is healthy), `RPC_URL_8453`, and
 
 ## Prerequisites
 
-- **bun** `1.3.12`, **Node** `24.14.1` (`.nvmrc`).
+- **pnpm** `11.1.1` (installs), **bun** `1.3.12` (runtime), **Node** `24.14.1` (`.nvmrc`).
 - A chain RPC that both reads and _relays_ transactions — **not** `rpc.morpho.dev/realtime`, which
   acknowledges sends but never broadcasts them.
 - A **funded EOA** (native gas) — the liquidator and the recipient of the end-of-exec token sweeps.
 - The generic **Executor** singleton deployed on each chain the bot runs on
-  (`bun run --filter @repo/contracts deploy:executor`). The bot derives its CREATE2 address and
+  (`pnpm --filter @repo/contracts run deploy:executor`). The bot derives its CREATE2 address and
   refuses to start if it holds no code.
 - At least one enabled **swap venue** — a `ZEROX_API_KEY` / `ONEINCH_API_KEY` / `LIFI_API_KEY`, or
   `ENABLE_LIFI=true` (LiFi routes keyless; its key only raises rate limits). A venue-less deployment
@@ -86,7 +86,7 @@ export CHAIN_ID=8453
 export RPC_URL=https://…
 export LIQUIDATOR_PRIVATE_KEY=0x…
 export ZEROX_API_KEY=…            # or ENABLE_LIFI=true, or ALLOW_DETECTION_ONLY=true
-bun run --filter @morpho-org/blue-liquidation start
+pnpm --filter @morpho-org/blue-liquidation run start
 ```
 
 `prestart` builds the workspace packages (soltag-compiles `@repo/contracts` and materializes the ABI).
@@ -106,7 +106,7 @@ Brings up one bot per chain (`bot-base`, `bot-robinhood`) — nothing else. `RPC
 locally because Compose defaults Robinhood to its public RPC. Robinhood defaults to detection-only
 (`ALLOW_DETECTION_ONLY_4663` defaults true) and takes chainId-suffixed venue inputs
 (`ZEROX_API_KEY_4663` etc.) so arming Base never silently arms it. The build context is the repo
-root so the bun workspace resolves.
+root so the pnpm workspace resolves.
 
 ## Deploying to Railway
 
@@ -121,7 +121,7 @@ export RPC_URL_4663=https://…
 export LIQUIDATOR_PRIVATE_KEY=0x…
 export ZEROX_API_KEY=…                 # venue inputs; per-chain via ZEROX_API_KEY_<chainId> etc.
 export ALLOW_DETECTION_ONLY_4663=true  # required while Robinhood has no venue
-bun run --filter @morpho-org/blue-liquidation deploy:railway
+pnpm --filter @morpho-org/blue-liquidation run deploy:railway
 # Optional: ENABLE_LIFI[_<chainId>], ONEINCH_API_KEY[_<chainId>] / LIFI_API_KEY[_<chainId>],
 # RAILWAY_ENVIRONMENT (defaults to production).
 ```
@@ -258,7 +258,7 @@ the nonce from `getTransactionCount('pending')`.
 - `bun test` — unit tests for the math, LIF, seize-exact planner (incl. the underflow-safety sweep),
   the id derivation, GraphQL discovery (parsing, pagination, retry semantics), config (incl. venue
   inference and the zero-venue gate), eligibility, quoting, venues, the queue, and the exec encoder.
-- **Live read-path probe** — `bun run --filter @morpho-org/blue-liquidation probe:lens` (needs
+- **Live read-path probe** — `pnpm --filter @morpho-org/blue-liquidation run probe:lens` (needs
   `RPC_URL`, no anvil) runs the deployless lens against a sample of real Base borrowers, prints a
   valid/hasDebt/healthy/liquidatable breakdown + a decoded sample, and — if it finds a live-liquidatable
   position — emits a ready-to-paste `FIXTURE` for the fork suite. Run it any time to confirm the read

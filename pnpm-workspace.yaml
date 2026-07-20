@@ -1,0 +1,47 @@
+packages:
+  - bots/*
+  - packages/*
+
+# Install-time hardening, mirroring the morpho-apps pnpm setup. pnpm v11 no longer reads
+# non-auth settings from .npmrc — everything lives here.
+engineStrict: true
+saveExact: true
+verifyStoreIntegrity: true
+preferOffline: true
+
+# 3 days (4320 minutes) — carried over from bunfig.toml's minimumReleaseAge (259200 s).
+# Delays installation of newly published packages to mitigate supply-chain attacks.
+minimumReleaseAge: 4320
+minimumReleaseAgeExclude:
+  - '@morpho-org/*'
+
+# pnpm v11 enables strictDepBuilds by default: no dependency lifecycle script runs unless
+# opted in here. This "no by default" policy is the reason the repo moved from bun to pnpm.
+# Nothing in the current tree needs a build hook — add entries deliberately if one appears.
+allowBuilds: {}
+
+catalog:
+  '@internationalized/date': ^3.11.0
+  '@loglayer/transport-betterstack': 2.2.0
+  '@morpho-org/morpho-ts': 2.5.0
+  '@morpho-org/viem-dlc': 0.0.11
+  '@types/bun': ^1.3.0
+  '@types/lodash-es': ^4.17.12
+  date-fns: ^4.1.0
+  executooor-viem: ^1.3.3
+  husky: ^9.1.5
+  knip: ^5.86.0
+  lint-staged: ^16.1.2
+  lodash-es: ^4.18.0
+  loglayer: 9.3.0
+  openapi-fetch: 0.17.0
+  oxfmt: ^0.36.0
+  # Pinned to the version the pre-migration bun.lock resolved — oxlint >=1.62 adds new rule
+  # behavior (and wants oxlint-tsgolint >=0.24). Bump both together deliberately.
+  oxlint: 1.61.0
+  oxlint-tsgolint: ^0.22.1
+  solc: ^0.8.35
+  soltag: ^0.0.17
+  typescript: 6.0.2
+  viem: 2.47.17
+  zod: 3.25.76

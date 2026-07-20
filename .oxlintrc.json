@@ -29,7 +29,7 @@
     "**/build",
     "**/coverage",
     "**/generated",
-    "bun.lock",
+    "pnpm-lock.yaml",
     "**/*.cjs",
     "**/*.mjs",
     "**/*.js"
