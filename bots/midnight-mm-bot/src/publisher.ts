@@ -1,3 +1,4 @@
+import type { IMarket } from '@morpho-org/midnight-sdk';
 import {
   AccrualPosition,
   EcrecoverRatifierUtils,
@@ -30,7 +31,7 @@ type PublishContext = {
 
 export async function assertFunding(
   context: Pick<PublishContext, 'publicClient' | 'maker' | 'midnight'>,
-  market: Awaited<ReturnType<typeof fetchMarket>>,
+  market: IMarket,
   marketId: `0x${string}`,
   maxUnits: bigint,
   timestamp: bigint
