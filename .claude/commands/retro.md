@@ -63,7 +63,7 @@ Follow these phases in order. Do not skip phases.
 
 1. Collect all unique PR numbers found in Phase 2.
 
-2. For each PR, use `gh pr view <number> --repo morpho-org/curator-bots --json number,title,additions,deletions,changedFiles,mergedAt,body,url`
+2. For each PR, use `gh pr view <number> --repo morpho-org/morpho-bots --json number,title,additions,deletions,changedFiles,mergedAt,body,url`
    to get stats. Parse the JSON output.
 
 3. Build a timeline of milestones by sorting PRs by merge date.

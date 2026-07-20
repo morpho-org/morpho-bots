@@ -9,14 +9,14 @@
  *   node .claude/scripts/retro-pr-stats.mjs <pr_numbers...>
  *   node .claude/scripts/retro-pr-stats.mjs 844 1013 1020 1070
  *
- * Requires: `gh` CLI authenticated with access to morpho-org/curator-bots
+ * Requires: `gh` CLI authenticated with access to morpho-org/morpho-bots
  *
  * Output: JSON summary and markdown table with per-PR and aggregate stats.
  */
 
 import { execFileSync } from 'node:child_process'
 
-const REPO = process.env.GITHUB_REPO || 'morpho-org/curator-bots'
+const REPO = process.env.GITHUB_REPO || 'morpho-org/morpho-bots'
 
 function usage() {
   console.error(`
@@ -29,7 +29,7 @@ Examples:
   GITHUB_REPO=morpho-org/other-repo node retro-pr-stats.mjs 1 2 3
 
 Environment:
-  GITHUB_REPO  Repository in owner/repo format (default: morpho-org/curator-bots)
+  GITHUB_REPO  Repository in owner/repo format (default: morpho-org/morpho-bots)
 `)
   process.exit(1)
 }

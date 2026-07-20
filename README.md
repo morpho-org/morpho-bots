@@ -1,4 +1,4 @@
-# curator-bots
+# morpho-bots
 
 Off-chain Morpho curator bots — reallocators, liquidation monitors, and similar —
 and the shared packages they consume.
