@@ -81,7 +81,10 @@ export function loadEnv(runtimeEnv: Record<string, string | undefined> = process
       COLLATERAL_INCLUDE_WITHDRAW: boolSchema.default('true'),
       /** Makers whose offer groups (make orders) are watched; empty disables the poller. */
       WATCH_MAKERS: addressListSchema,
-      POLL_CRON_MAKE_ORDERS: cronSchema.default('*/30 * * * * *')
+      POLL_CRON_MAKE_ORDERS: cronSchema.default('*/30 * * * * *'),
+      /** Slack channel id for alerts; unset falls back to log-only dispatch. The bot token is a
+       *  secret read at point of use (SLACK_BOT_TOKEN), never stored on this object. */
+      SLACK_CHANNEL: z.string().min(1).optional()
     },
     runtimeEnv,
     emptyStringAsUndefined: true

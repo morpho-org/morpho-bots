@@ -1,12 +1,12 @@
 # Monitor Bot
 
 A NestJS service that polls Morpho Midnight REST endpoints with cursor-tracked pollers and posts
-notifications to a configured Slack channel. This package currently ships the bootstrap: the NestJS
-application shell, a `/health` endpoint, and the operator surface (Docker, Railway deploy).
+notifications to a configured Slack channel.
 
 ## Status
 
-Bootstrap only — pollers and the Slack dispatcher land in follow-up PRs.
+Feature-complete for v1: market transaction pollers (takes, repays, collateral, liquidations),
+the make-orders poller, and Slack delivery.
 
 Scope note: this bot does **protocol-activity** alerting (Midnight market events). It is not
 bot-health alerting — liquidation-bot failures are covered by the BetterStack log/heartbeat
@@ -43,6 +43,8 @@ missing or malformed.
 | `COLLATERAL_INCLUDE_WITHDRAW` | no       | `true`                   | Also alert on collateral withdrawals             |
 | `WATCH_MAKERS`                | no       | — (poller disabled)      | Makers whose offer groups are watched            |
 | `POLL_CRON_MAKE_ORDERS`       | no       | `*/30 * * * * *`         | Make-orders poller cadence                       |
+| `SLACK_CHANNEL`               | no       | — (log-only alerts)      | Slack channel id for alerts                      |
+| `SLACK_BOT_TOKEN`             | no       | —                        | Slack bot token (secret, with `SLACK_CHANNEL`)   |
 | `BETTERSTACK_SOURCE_TOKEN`    | no       | —                        | Opt-in BetterStack log shipping (secret)         |
 | `BETTERSTACK_INGESTING_HOST`  | no       | —                        | BetterStack ingest host (with the token)         |
 | `BETTERSTACK_HEARTBEAT_URL`   | no       | —                        | Opt-in BetterStack uptime heartbeat              |
@@ -130,8 +132,16 @@ Cursors are held in-process only (`InMemoryCursorStore`), matching the repo's
 cross-tick-state philosophy — nothing is persisted to disk and API truth wins on restart. The
 `CursorStore` interface keeps a file/db-backed store a drop-in replacement.
 
-Until the Slack dispatcher lands, alerts go through `LogAlertDispatcher` — one structured
-`alert` log line each.
+Alert delivery is pluggable behind the `ALERT_DISPATCHER` DI token. With `SLACK_CHANNEL` +
+`SLACK_BOT_TOKEN` set, `SlackDispatcher` posts to Slack via `chat.postMessage` (bot token, so the
+channel is env-configurable; the bot needs the `chat:write` scope and must be invited to the
+channel). Severity maps to a leading emoji (ℹ️ / ⚠️ / 🚨); every API-sourced string is escaped
+(`& < >`) so alert content can never inject a `<!channel>` or `<@id>` mention; ≤10 alerts per
+message keeps Slack's block limit clear; 429s honor `Retry-After`. A Slack failure (network,
+`ok:false`) logs `slack.error` AND throws — the poller keeps its cursor and re-sends the same
+window next tick (at-least-once; the alert `key` is the dedupe handle if consumers need it).
+Setting exactly one of channel/token fails the boot. With neither set, alerts go through
+`LogAlertDispatcher` — one structured `alert` log line each.
 
 ### Market transaction pollers
 
