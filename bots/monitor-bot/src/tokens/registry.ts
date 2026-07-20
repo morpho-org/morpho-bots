@@ -47,14 +47,23 @@ export function tokenKey(chainId: number, address: string) {
   return `${chainId}:${address.toLowerCase()}`
 }
 
+/** One accepted collateral with the risk parameter alerts display next to it. */
+type CollateralConfig = {
+  address: Address
+  /** Liquidation loan-to-value, WAD-scaled, verbatim from the API. */
+  lltv: string
+}
+
 /** The token addresses a market's amounts are denominated in. Inferred through `get()`. */
 type MarketTokens = {
   /** The chain the market lives on, per the listing response. */
   chainId: number
   /** The token `assets` amounts are denominated in for this market. */
   loanToken: Address
+  /** Maturity timestamp in unix seconds — the market's defining date, shown in alert headlines. */
+  maturity: number
   /** Every collateral the market accepts — markets routinely list more than one. */
-  collaterals: Address[]
+  collaterals: CollateralConfig[]
 }
 
 /** Shape shared by `/markets` and `/books` entries; both carry the tokens we need. */
@@ -62,7 +71,8 @@ type MarketLike = {
   market_id: string
   chain_id: number
   loan_token: string
-  collaterals: { token: string }[]
+  maturity: number
+  collaterals: { token: string; lltv: string }[]
 }
 
 /**
@@ -103,10 +113,10 @@ export class TokenRegistry {
     this.byMarket.set(market.market_id.toLowerCase(), {
       chainId: market.chain_id,
       loanToken: getAddress(market.loan_token),
+      maturity: market.maturity,
       collaterals: market.collaterals
-        .map(collateral => collateral.token)
-        .filter((token): token is Address => isAddress(token, { strict: false }))
-        .map(token => getAddress(token))
+        .filter(collateral => isAddress(collateral.token, { strict: false }))
+        .map(collateral => ({ address: getAddress(collateral.token), lltv: collateral.lltv }))
     })
     return true
   }
@@ -127,6 +137,13 @@ export class TokenRegistry {
 
   loanToken(marketId: string): Address | null {
     return this.get(marketId)?.loanToken ?? null
+  }
+
+  /** The market's configuration for one collateral (its LLTV), or null when either is unknown. */
+  collateral(marketId: string, address: string): CollateralConfig | null {
+    if (!isAddress(address, { strict: false })) return null
+    const wanted = getAddress(address)
+    return this.get(marketId)?.collaterals.find(collateral => collateral.address === wanted) ?? null
   }
 
   /** Token metadata is immutable ERC-20 identity, so a hit is cached for the process lifetime. */
@@ -152,14 +169,24 @@ export class TokenRegistry {
    * the loan asset of several markets and the collateral of others.
    */
   missingTokens() {
-    const missing = new Map<string, { chainId: number; address: Address }>()
+    return this.referencedTokens().filter(
+      ({ chainId, address }) => !this.byToken.has(tokenKey(chainId, address))
+    )
+  }
+
+  /**
+   * Every (chain, token) recorded markets reference, deduped — loan and collateral tokens alike.
+   * This is the set alerts can name, so it is also the set the price cache keeps fresh.
+   */
+  referencedTokens() {
+    const referenced = new Map<string, { chainId: number; address: Address }>()
     for (const market of this.byMarket.values()) {
-      for (const address of [market.loanToken, ...market.collaterals]) {
-        const key = tokenKey(market.chainId, address)
-        if (!this.byToken.has(key)) missing.set(key, { chainId: market.chainId, address })
+      const addresses = market.collaterals.map(collateral => collateral.address)
+      for (const address of [market.loanToken, ...addresses]) {
+        referenced.set(tokenKey(market.chainId, address), { chainId: market.chainId, address })
       }
     }
-    return [...missing.values()]
+    return [...referenced.values()]
   }
 
   get size() {

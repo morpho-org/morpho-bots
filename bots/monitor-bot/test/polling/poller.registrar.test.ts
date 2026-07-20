@@ -10,6 +10,7 @@ import { Poller, POLLERS } from '../../src/polling/poller'
 import { PollerRegistrar } from '../../src/polling/poller.registrar'
 import { TokenRegistry } from '../../src/tokens/registry'
 import { capturingDispatcher, fakeLogger } from '../helpers'
+import { NO_PRICES } from '../midnight/fixtures'
 
 // A poller whose tick blocks until release() is called, to observe shutdown behavior mid-tick.
 class BlockingPoller extends Poller<number, string> {
@@ -67,7 +68,8 @@ describe('PollerRegistrar', () => {
       state: new InMemoryCursorStore(),
       dispatcher: capturingDispatcher(),
       logger: fakeLogger(),
-      tokens: new TokenRegistry()
+      tokens: new TokenRegistry(),
+      prices: NO_PRICES
     }
     const first = new BlockingPoller(deps)
     const second = new BlockingPoller(deps)
@@ -90,7 +92,8 @@ describe('PollerRegistrar', () => {
       state: new InMemoryCursorStore(),
       dispatcher: capturingDispatcher(),
       logger: fakeLogger(),
-      tokens: new TokenRegistry()
+      tokens: new TokenRegistry(),
+      prices: NO_PRICES
     }
     const poller = new BlockingPoller(deps)
     app = await createApp(poller)
@@ -106,7 +109,8 @@ describe('PollerRegistrar', () => {
       state: new InMemoryCursorStore(),
       dispatcher: capturingDispatcher(),
       logger: fakeLogger(),
-      tokens: new TokenRegistry()
+      tokens: new TokenRegistry(),
+      prices: NO_PRICES
     }
     const poller = new BlockingPoller(deps)
     app = await createApp(poller)

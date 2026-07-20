@@ -1,4 +1,5 @@
 import type { TransactionItem } from '../../src/midnight/client'
+import type { PriceLookup } from '../../src/tokens/prices'
 
 export const MARKET_A = `0x${'a'.repeat(64)}`
 export const MARKET_B = `0x${'b'.repeat(64)}`
@@ -8,6 +9,16 @@ export const TX_HASH = `0x${'c'.repeat(64)}`
 /** Base mainnet USDC and WETH — seeded in the registry's KNOWN_TOKENS table. */
 export const USDC_TOKEN = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
 export const WETH_TOKEN = '0x4200000000000000000000000000000000000006'
+/** 30/09/2026 00:00 UTC — the maturity used by market fixtures across the suite. */
+export const MATURITY = Date.UTC(2026, 8, 30) / 1000
+
+/** Price cache stand-in with nothing cached — alerts render without $-figures. */
+export const NO_PRICES: PriceLookup = { usd: () => null }
+
+/** Price cache stand-in keyed `<chainId>:<lowercased address>`, mirroring the real cache. */
+export function priceLookup(prices: Record<string, number>): PriceLookup {
+  return { usd: (chainId, address) => prices[`${chainId}:${address.toLowerCase()}`] ?? null }
+}
 
 type LendItem = Extract<TransactionItem, { event_type: 'lend' }>
 type BorrowItem = Extract<TransactionItem, { event_type: 'borrow' }>
@@ -20,6 +31,7 @@ type TradeOverrides = {
   created_at: number
   market_id?: string
   assets?: string
+  units?: string
   account?: string
 }
 
@@ -34,11 +46,11 @@ function tradeData(over: TradeOverrides) {
     buyer_assets: over.assets ?? '1000',
     seller_assets: over.assets ?? '1000',
     assets: over.assets ?? '1000',
-    units: '1001',
-    take_units: '1001',
+    units: over.units ?? '1001',
+    take_units: over.units ?? '1001',
     buyer_pending_fee_increase: '0',
     seller_pending_fee_decrease: '0',
-    total_units_delta: '1001',
+    total_units_delta: over.units ?? '1001',
     payer: USER_ONE,
     receiver: USER_TWO,
     group: `0x${'d'.repeat(64)}`,
@@ -77,6 +89,8 @@ export function liquidationItem(over: {
   bad_debt?: string
   pure_bad_debt_realization?: boolean
   repaid_units?: string
+  seized_assets?: string
+  collateral?: string
   account?: string
 }): LiquidationItem {
   return {
@@ -90,8 +104,8 @@ export function liquidationItem(over: {
       account: over.account ?? USER_TWO,
       caller: USER_ONE,
       borrower: over.account ?? USER_TWO,
-      collateral: USER_ONE,
-      seized_assets: '246',
+      collateral: over.collateral ?? USER_ONE,
+      seized_assets: over.seized_assets ?? '246',
       repaid_units: over.repaid_units ?? '500',
       post_maturity_mode: false,
       bad_debt: over.bad_debt ?? '0',

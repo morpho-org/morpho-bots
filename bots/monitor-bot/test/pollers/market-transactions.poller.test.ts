@@ -8,7 +8,15 @@ import { TransactionFilter } from '../../src/pollers/filter'
 import { MarketTransactionsPoller } from '../../src/pollers/market-transactions.poller'
 import { TokenRegistry } from '../../src/tokens/registry'
 import { capturingDispatcher, fakeLogger } from '../helpers'
-import { apiPage, borrowItem, lendItem, MARKET_A, MARKET_B, USER_TWO } from '../midnight/fixtures'
+import {
+  apiPage,
+  borrowItem,
+  lendItem,
+  MARKET_A,
+  MARKET_B,
+  NO_PRICES,
+  USER_TWO
+} from '../midnight/fixtures'
 
 const NOW_MS = 1_784_300_000_000
 const NOW_S = 1_784_300_000
@@ -48,6 +56,7 @@ function makePoller(
       dispatcher,
       logger,
       tokens: new TokenRegistry(),
+      prices: NO_PRICES,
       client,
       directory,
       filter,

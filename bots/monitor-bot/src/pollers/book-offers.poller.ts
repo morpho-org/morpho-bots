@@ -14,12 +14,21 @@ import { getAddress, isAddress, parseUnits } from 'viem'
 import type { Alert } from '../alerts/alert'
 import type { BookMarket, MidnightClient, TakeableOffer } from '../midnight/client'
 import type { PollerDependencies } from '../polling/poller'
-import type { TokenInfo, TokenRegistry } from '../tokens/registry'
+import type { PriceLookup } from '../tokens/prices'
+import type { TokenEntry, TokenRegistry } from '../tokens/registry'
 
 import { escapeSlack, slackLink } from '../alerts/mrkdwn'
 import { MARKET_CONCURRENCY, REQUEST_TIMEOUT_MS } from '../midnight/client'
 import { Poller } from '../polling/poller'
-import { chainLabel, explorerAddressUrl, tokenAmount, unitsAmount } from './format'
+import {
+  assetsAmount,
+  chainLabel,
+  debankUrl,
+  explorerAddressUrl,
+  loanTokenEntry,
+  marketLabel,
+  unitsAmount
+} from './format'
 
 /** `/v0/midnight/books` caps `limit` at 20 — far below the 1000 the other list endpoints allow. */
 const BOOK_PAGE_LIMIT = 20
@@ -200,17 +209,20 @@ export function diffSnapshots(
   return events
 }
 
-function shortId(id: string) {
-  return id.length > 14 ? `${id.slice(0, 10)}…${id.slice(-4)}` : id
-}
-
 // Lending is buying units, so bids are lend-side offers and asks are borrow-side.
 function sideLabel(side: BookSide) {
   return side === 'bids' ? 'lend' : 'borrow'
 }
 
-function sizeLabel(bucket: OfferBucket, assets: bigint | null, loan: TokenInfo | null) {
-  return assets === null ? unitsAmount(bucket.maxUnits, loan) : tokenAmount(`${assets}`, loan)
+function sizeLabel(
+  bucket: OfferBucket,
+  assets: bigint | null,
+  loan: TokenEntry | null,
+  prices: PriceLookup
+) {
+  return assets === null
+    ? unitsAmount(bucket.maxUnits, loan)
+    : assetsAmount(`${assets}`, loan, prices)
 }
 
 /** Both caps in the dedupe key so an A→B→A→B resize cycle stays distinct for dedupe consumers. */
@@ -218,13 +230,17 @@ function capKey(bucket: OfferBucket) {
   return `${bucket.maxUnits}/${bucket.maxAssets}`
 }
 
-// Same sentence shape as the transaction alerts, minus what an off-chain make order does not have:
-// EIP-712 signatures carry no tx to link and no on-chain timestamp, so the headline names the
-// market and tick instead, and identity stays market + side + maker + group + tick.
-function formatOfferAlert(event: OfferEvent, tokens: TokenRegistry): Alert {
+const OFFER_EMOJI = { created: ':memo:', resized: ':arrows_counterclockwise:', closed: ':x:' }
+const OFFER_ACTION = { created: 'posted', resized: 'resized', closed: 'closed' }
+
+// Same block shape as the transaction alerts, minus what an off-chain make order does not have:
+// EIP-712 signatures carry no tx to link and no on-chain timestamp, so the link row is Debank
+// only and the footer has no time. Identity stays market + side + maker + group + tick.
+function formatOfferAlert(event: OfferEvent, tokens: TokenRegistry, prices: PriceLookup): Alert {
   const { bucket, marketId } = event
   const market = tokens.get(marketId)
-  const size = sizeLabel(bucket, event.assets, tokens.loanTokenInfo(marketId))
+  const loan = loanTokenEntry(tokens, marketId)
+  const size = sizeLabel(bucket, event.assets, loan, prices)
   const side = sideLabel(bucket.side)
   const key = bucketKey(bucket.side, bucket.maker, bucket.group, bucket.tick)
   const maker = abbreviateAddress(bucket.maker)
@@ -232,39 +248,34 @@ function formatOfferAlert(event: OfferEvent, tokens: TokenRegistry): Alert {
   // diff), so a miss only happens on drift — degrade to no chain segment rather than guessing.
   const where = market ? ` on ${chainLabel(market.chainId)}` : ''
   const makerUrl = market ? explorerAddressUrl(market.chainId, bucket.maker) : null
-  const sentence = (headline: string) => ({
+  const headline =
+    `Make order ${OFFER_ACTION[event.kind]}: ${size} ${side} @ tick ${bucket.tick} ` +
+    `in ${marketLabel(tokens, marketId)}`
+  const details =
+    event.kind === 'resized' && event.previous
+      ? [`was ${sizeLabel(event.previous, event.previousAssets, loan, prices)}`]
+      : []
+  const debank = debankUrl(bucket.maker)
+  const alert = {
     title: `${headline} by ${maker}${where}`,
-    text: `${escapeSlack(headline)} by ${slackLink(makerUrl, maker)}${where}`
-  })
+    text: [
+      `${OFFER_EMOJI[event.kind]} ${escapeSlack(headline)}`,
+      ...details.map(detail => `        • ${escapeSlack(detail)}`),
+      `By ${slackLink(makerUrl, maker)}${where}`,
+      ...(debank ? [slackLink(debank, 'Debank')] : [])
+    ].join('\n'),
+    severity: 'info' as const
+  }
   switch (event.kind) {
     case 'created':
-      return {
-        key: `${marketId}:${key}:created`,
-        ...sentence(
-          `${size} ${side} make order posted @ tick ${bucket.tick} in ${shortId(marketId)}`
-        ),
-        severity: 'info'
-      }
-    case 'resized': {
-      const was = event.previous
-        ? sizeLabel(event.previous, event.previousAssets, tokens.loanTokenInfo(marketId))
-        : 'unknown'
+      return { key: `${marketId}:${key}:created`, ...alert }
+    case 'resized':
       return {
         key: `${marketId}:${key}:resized:${event.previous ? capKey(event.previous) : '?'}->${capKey(bucket)}`,
-        ...sentence(
-          `${size} ${side} make order resized (was ${was}) @ tick ${bucket.tick} in ${shortId(marketId)}`
-        ),
-        severity: 'info'
+        ...alert
       }
-    }
     case 'closed':
-      return {
-        key: `${marketId}:${key}:closed`,
-        ...sentence(
-          `${size} ${side} make order closed @ tick ${bucket.tick} in ${shortId(marketId)}`
-        ),
-        severity: 'info'
-      }
+      return { key: `${marketId}:${key}:closed`, ...alert }
     default:
       return assertNever(event.kind)
   }
@@ -342,7 +353,7 @@ export class BookOffersPoller extends Poller<BookSnapshot, OfferEvent> {
   protected toAlerts(items: OfferEvent[]) {
     return items
       .filter(event => event.assets === null || event.assets >= this.ext.minAssets)
-      .map(event => formatOfferAlert(event, this.ext.tokens))
+      .map(event => formatOfferAlert(event, this.ext.tokens, this.ext.prices))
   }
 
   // One market's expansion, error-isolated: a market that persistently fails must not starve every

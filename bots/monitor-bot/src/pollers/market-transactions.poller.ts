@@ -126,11 +126,11 @@ export class MarketTransactionsPoller extends Poller<TxCursor, TransactionItem> 
         // Both legs are one on-chain event: alert once, kept when either leg passes the filter so
         // user scoping still matches on both the buyer and the seller account.
         return this.ext.filter.matches(entry.lend) || this.ext.filter.matches(entry.borrow)
-          ? formatTakeAlert(entry, this.ext.tokens)
+          ? formatTakeAlert(entry, this.ext.tokens, this.ext.prices)
           : []
       }
       return this.ext.filter.matches(entry.item)
-        ? formatTransactionAlert(entry.item, this.ext.tokens)
+        ? formatTransactionAlert(entry.item, this.ext.tokens, this.ext.prices)
         : []
     })
   }

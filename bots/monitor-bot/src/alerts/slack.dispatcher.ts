@@ -12,14 +12,13 @@ const POST_MESSAGE_URL = 'https://slack.com/api/chat.postMessage'
 /** Alerts per Slack message — stays well under Slack's 50-blocks-per-message limit. */
 const ALERTS_PER_MESSAGE = 10
 
-const SEVERITY_EMOJI = { info: 'ℹ️', warning: '⚠️', critical: '🚨' } as const
-
 // `text` is producer-escaped mrkdwn (see the Alert type) — escaping it again here would break its
-// explorer links, so this trusts the contract and renders it verbatim.
+// explorer links, so this trusts the contract and renders it verbatim. Producers own the leading
+// emoji too (it encodes the event type, not just severity), so nothing is prefixed here.
 function alertBlock(alert: Alert) {
   return {
     type: 'section',
-    text: { type: 'mrkdwn', text: `${SEVERITY_EMOJI[alert.severity]} ${alert.text}` }
+    text: { type: 'mrkdwn', text: alert.text }
   }
 }
 

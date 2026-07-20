@@ -176,7 +176,8 @@ requests. It is injected into every poller via `PollerDependencies.tokens`.
 ERC-20 identity (name, symbol, decimals) comes from the Morpho **core** API: after each market
 sweep, `TokenMetadataLoader` fetches `GET /v0/tokens/{chain_id}:{address}` on `CORE_API_URL`
 (default `https://private.api.morpho.org`, authenticated with `MORPHO_API_KEY` as `x-api-key`)
-for every token the registry references but has no metadata for. The two live midnight-base loan/collateral tokens are seeded in code, so
+for every token the registry references but has no metadata for. The two live midnight-base
+loan/collateral tokens are seeded in code, so
 alerts render denominations from the first tick even before — or without — that fetch.
 
 The registry itself is a passive store and never performs I/O, so injecting it cannot add latency

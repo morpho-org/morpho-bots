@@ -7,12 +7,18 @@ const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
 const WETH = '0x4200000000000000000000000000000000000006'
 const CBBTC = '0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf'
 
+const LLTV = '860000000000000000'
+
+/** 30/09/2026 00:00 UTC. */
+const MATURITY = Date.UTC(2026, 8, 30) / 1000
+
 function market(over: Partial<{ id: string; loan: string; collaterals: string[] }> = {}) {
   return {
     market_id: over.id ?? MARKET_A,
     chain_id: 8453,
     loan_token: over.loan ?? USDC,
-    collaterals: (over.collaterals ?? [WETH]).map(token => ({ token }))
+    maturity: MATURITY,
+    collaterals: (over.collaterals ?? [WETH]).map(token => ({ token, lltv: LLTV }))
   }
 }
 
@@ -23,9 +29,14 @@ describe('TokenRegistry', () => {
     expect(registry.get(MARKET_A)).toEqual({
       chainId: 8453,
       loanToken: USDC,
-      collaterals: [WETH, CBBTC]
+      maturity: MATURITY,
+      collaterals: [
+        { address: WETH, lltv: LLTV },
+        { address: CBBTC, lltv: LLTV }
+      ]
     })
     expect(registry.loanToken(MARKET_A)).toBe(USDC)
+    expect(registry.collateral(MARKET_A, CBBTC)).toEqual({ address: CBBTC, lltv: LLTV })
   })
 
   it('returns null for a market it has never seen rather than throwing', () => {
@@ -53,14 +64,21 @@ describe('TokenRegistry', () => {
     const registry = new TokenRegistry()
     registry.record(market({ loan: USDC.toLowerCase(), collaterals: [WETH.toLowerCase()] }))
     expect(registry.loanToken(MARKET_A)).toBe(USDC)
-    expect(registry.get(MARKET_A)?.collaterals).toEqual([WETH])
+    expect(registry.get(MARKET_A)?.collaterals).toEqual([{ address: WETH, lltv: LLTV }])
+    // `collateral()` normalises the queried casing too, so an event's lowercase address resolves.
+    expect(registry.collateral(MARKET_A, WETH.toLowerCase())?.lltv).toBe(LLTV)
   })
 
   it('overwrites on re-record so a changed market self-heals', () => {
     const registry = new TokenRegistry()
     registry.record(market({ loan: USDC }))
     registry.record(market({ loan: WETH, collaterals: [CBBTC] }))
-    expect(registry.get(MARKET_A)).toEqual({ chainId: 8453, loanToken: WETH, collaterals: [CBBTC] })
+    expect(registry.get(MARKET_A)).toEqual({
+      chainId: 8453,
+      loanToken: WETH,
+      maturity: MATURITY,
+      collaterals: [{ address: CBBTC, lltv: LLTV }]
+    })
     expect(registry.size).toBe(1)
   })
 
@@ -74,7 +92,10 @@ describe('TokenRegistry', () => {
   it('drops only the malformed collateral, keeping the rest of the market', () => {
     const registry = new TokenRegistry()
     registry.record(market({ collaterals: [WETH, 'nope', CBBTC] }))
-    expect(registry.get(MARKET_A)?.collaterals).toEqual([WETH, CBBTC])
+    expect(registry.get(MARKET_A)?.collaterals.map(collateral => collateral.address)).toEqual([
+      WETH,
+      CBBTC
+    ])
   })
 
   it('reports how many markets it rejected instead of dropping them silently', () => {

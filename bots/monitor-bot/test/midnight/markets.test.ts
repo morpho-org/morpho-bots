@@ -4,9 +4,10 @@ import type { MidnightClient } from '../../src/midnight/client'
 
 import { MarketDirectory } from '../../src/midnight/markets'
 import { TokenMetadataLoader } from '../../src/tokens/metadata'
+import { TokenPriceCache } from '../../src/tokens/prices'
 import { TokenRegistry } from '../../src/tokens/registry'
 import { fakeLogger } from '../helpers'
-import { apiPage, MARKET_A, MARKET_B } from './fixtures'
+import { apiPage, MARKET_A, MARKET_B, MATURITY } from './fixtures'
 
 function marketsClient(pages: { cursor: string | null; ids: string[] }[]) {
   const queue = [...pages]
@@ -20,7 +21,8 @@ function marketsClient(pages: { cursor: string | null; ids: string[] }[]) {
             market_id: id,
             chain_id: 8453,
             loan_token: LOAN_TOKEN,
-            collaterals: [{ token: COLLATERAL_TOKEN }]
+            maturity: MATURITY,
+            collaterals: [{ token: COLLATERAL_TOKEN, lltv: '860000000000000000' }]
           }))
         })
       )
@@ -43,6 +45,16 @@ function noMetadata(tokens: TokenRegistry): TokenMetadataLoader {
   })
 }
 
+/** Price lookups share the metadata API; stubbed out for the same reason. */
+function noPrices(tokens: TokenRegistry): TokenPriceCache {
+  return new TokenPriceCache({
+    client: { GET: () => Promise.reject(new Error('no prices in this test')) } as never,
+    logger: fakeLogger(),
+    tokens,
+    sleep: noSleep
+  })
+}
+
 describe('MarketDirectory', () => {
   // Fixed scope still issues one hydration call per TTL, because MARKET_IDS supplies ids but not
   // the token metadata every alert needs to render a denomination — without it the registry would
@@ -55,6 +67,7 @@ describe('MarketDirectory', () => {
       fixedMarketIds: [MARKET_A],
       tokens: new TokenRegistry(),
       tokenMetadata: noMetadata(new TokenRegistry()),
+      tokenPrices: noPrices(new TokenRegistry()),
       refreshMs: 1000,
       sleep: noSleep
     })
@@ -74,6 +87,7 @@ describe('MarketDirectory', () => {
       fixedMarketIds: [],
       tokens: new TokenRegistry(),
       tokenMetadata: noMetadata(new TokenRegistry()),
+      tokenPrices: noPrices(new TokenRegistry()),
       refreshMs: 10_000,
       now: () => now,
       sleep: noSleep
@@ -94,6 +108,7 @@ describe('MarketDirectory', () => {
       fixedMarketIds: [],
       tokens: new TokenRegistry(),
       tokenMetadata: noMetadata(new TokenRegistry()),
+      tokenPrices: noPrices(new TokenRegistry()),
       refreshMs: 10_000,
       now: () => 0,
       sleep: noSleep
@@ -120,6 +135,7 @@ describe('MarketDirectory', () => {
       fixedMarketIds: [],
       tokens: new TokenRegistry(),
       tokenMetadata: noMetadata(new TokenRegistry()),
+      tokenPrices: noPrices(new TokenRegistry()),
       refreshMs: 10_000,
       now: () => 0,
       sleep: noSleep
@@ -141,6 +157,7 @@ describe('MarketDirectory', () => {
       fixedMarketIds: [],
       tokens: new TokenRegistry(),
       tokenMetadata: noMetadata(new TokenRegistry()),
+      tokenPrices: noPrices(new TokenRegistry()),
       refreshMs: 10_000,
       now: () => now,
       sleep: noSleep
@@ -162,13 +179,16 @@ describe('MarketDirectory', () => {
       fixedMarketIds: [],
       tokens,
       tokenMetadata: noMetadata(tokens),
+      tokenPrices: noPrices(tokens),
       refreshMs: 1000,
       sleep: noSleep
     })
     await directory.marketIds()
     expect(tokens.size).toBe(2)
     expect(tokens.loanToken(MARKET_A)).toBe(LOAN_TOKEN)
-    expect(tokens.get(MARKET_B)?.collaterals).toEqual([COLLATERAL_TOKEN])
+    expect(tokens.get(MARKET_B)?.collaterals).toEqual([
+      { address: COLLATERAL_TOKEN, lltv: '860000000000000000' }
+    ])
   })
 
   it('populates the token registry in fixed-id mode too', async () => {
@@ -180,6 +200,7 @@ describe('MarketDirectory', () => {
       fixedMarketIds: [MARKET_A],
       tokens,
       tokenMetadata: noMetadata(tokens),
+      tokenPrices: noPrices(tokens),
       refreshMs: 1000,
       sleep: noSleep
     })
@@ -199,6 +220,7 @@ describe('MarketDirectory', () => {
       fixedMarketIds: [MARKET_A],
       tokens,
       tokenMetadata: noMetadata(tokens),
+      tokenPrices: noPrices(tokens),
       refreshMs: 1_000_000,
       sleep: noSleep
     })
@@ -227,6 +249,7 @@ describe('MarketDirectory', () => {
       fixedMarketIds: many,
       tokens,
       tokenMetadata: noMetadata(tokens),
+      tokenPrices: noPrices(tokens),
       refreshMs: 1000,
       sleep: noSleep
     })

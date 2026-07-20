@@ -4,6 +4,7 @@ import { delay, ensureError, fetchWithRetry } from '@repo/utils'
 import chunk from 'lodash-es/chunk'
 
 import type { TokenMetadataLoader } from '../tokens/metadata'
+import type { TokenPriceCache } from '../tokens/prices'
 import type { TokenRegistry } from '../tokens/registry'
 
 import { MAX_PAGES, REQUEST_TIMEOUT_MS, type MidnightClient } from './client'
@@ -25,6 +26,8 @@ type MarketDirectoryDependencies = {
   tokens: TokenRegistry
   /** Resolves ERC-20 metadata for whatever the sweep just recorded. */
   tokenMetadata: TokenMetadataLoader
+  /** Refreshes USD spot prices for the same token set, on the same cadence. */
+  tokenPrices: TokenPriceCache
   now?: () => number
   sleep?: (ms: number) => Promise<void>
 }
@@ -48,9 +51,10 @@ export class MarketDirectory {
     if (this.cache && now - this.cache.fetchedAt < this.deps.refreshMs) return this.cache.promise
     const promise = this.discover().then(async ids => {
       this.deps.logger.info('markets.discovered', { count: ids.length })
-      // After recording, not before: the loader reads what the sweep just wrote. Failures inside
-      // are logged and swallowed there, so this can never fail market discovery.
+      // After recording, not before: the loaders read what the sweep just wrote. Failures inside
+      // are logged and swallowed there, so neither can fail market discovery.
       await this.deps.tokenMetadata.ensure()
+      await this.deps.tokenPrices.refresh()
       // Ids at debug so the info line stays a one-glance count — the full list is ~78 entries and
       // would bury every other startup log.
       this.deps.logger.debug('markets.listed', {
@@ -82,6 +86,7 @@ export class MarketDirectory {
       // `discover`'s policy — otherwise one blip would leave the registry empty for a full TTL.
       promise: this.hydrate(ids)
         .then(() => this.deps.tokenMetadata.ensure())
+        .then(() => this.deps.tokenPrices.refresh())
         .then(() => [...ids])
         .catch(error => {
           this.deps.logger.warn('markets.tokens_unavailable', {

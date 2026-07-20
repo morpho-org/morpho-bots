@@ -7,14 +7,15 @@ import { BookOffersPoller, diffSnapshots } from '../../src/pollers/book-offers.p
 import { InMemoryBootSnapshotStore } from '../../src/snapshot/boot-snapshot.store'
 import { TokenRegistry } from '../../src/tokens/registry'
 import { capturingDispatcher, fakeLogger } from '../helpers'
-import { apiPage, MARKET_A, MARKET_B, USER_ONE, USER_TWO } from '../midnight/fixtures'
+import { apiPage, MARKET_A, MARKET_B, NO_PRICES, USER_ONE, USER_TWO } from '../midnight/fixtures'
 
 const GROUP_1 = `0x${'1'.repeat(64)}`
 const GROUP_2 = `0x${'2'.repeat(64)}`
 const WAD = '1000000000000000000'
 const DEFAULT_TICK = 495
-/** MARKET_A through the alert formatter's shortId. */
-const MARKET_A_SHORT = '0xaaaaaaaa…aaaa'
+/** MARKET_A through the alert formatter's market label: the fixture books carry USER_TWO as an
+ * unresolvable loan token and a maturity of 2000 unix seconds. */
+const MARKET_A_LABEL = '0x5356...4C91 (0xaaaa...aaaa, matures 01/01/1970)'
 /** Every offer alert ends with the linked maker and the deployment label. */
 const TAIL = ' by 0x958e...1917 on midnight-base'
 
@@ -136,6 +137,7 @@ function makePoller(ticks: TickSpec[], minAssets = 0n, marketIds: string[] = [])
       dispatcher,
       logger,
       tokens: new TokenRegistry(),
+      prices: NO_PRICES,
       client,
       minAssets,
       sleep: () => Promise.resolve()
@@ -170,7 +172,7 @@ describe('BookOffersPoller', () => {
     expect(dispatcher.sent).toHaveLength(1)
     expect(firstAlert(dispatcher)?.key).toBe(`${MARKET_A}:asks:${USER_ONE}:${GROUP_2}:500:created`)
     expect(firstAlert(dispatcher)?.title).toBe(
-      `500 assets borrow make order posted @ tick 500 in ${MARKET_A_SHORT}${TAIL}`
+      `Make order posted: 500 assets borrow @ tick 500 in ${MARKET_A_LABEL}${TAIL}`
     )
   })
 
@@ -182,7 +184,7 @@ describe('BookOffersPoller', () => {
     await poller.pollOnce()
     await poller.pollOnce()
     expect(firstAlert(dispatcher)?.title).toBe(
-      `1000 assets lend make order posted @ tick 495 in ${MARKET_A_SHORT}${TAIL}`
+      `Make order posted: 1000 assets lend @ tick 495 in ${MARKET_A_LABEL}${TAIL}`
     )
   })
 
@@ -195,8 +197,10 @@ describe('BookOffersPoller', () => {
     await poller.pollOnce()
     expect(dispatcher.sent).toHaveLength(1)
     expect(firstAlert(dispatcher)?.title).toBe(
-      `2000 assets borrow make order resized (was 1000 assets) @ tick 495 in ${MARKET_A_SHORT}${TAIL}`
+      `Make order resized: 2000 assets borrow @ tick 495 in ${MARKET_A_LABEL}${TAIL}`
     )
+    // The previous size lives in an indented detail line of the mrkdwn text, not the title.
+    expect(firstAlert(dispatcher)?.text).toContain('• was 1000 assets')
   })
 
   it('ignores a re-signed offer that only moves its expiry', async () => {
@@ -217,7 +221,7 @@ describe('BookOffersPoller', () => {
     await poller.pollOnce()
     await poller.pollOnce()
     expect(firstAlert(dispatcher)?.title).toBe(
-      `1400 assets borrow make order resized (was 1000 assets) @ tick 495 in ${MARKET_A_SHORT}${TAIL}`
+      `Make order resized: 1400 assets borrow @ tick 495 in ${MARKET_A_LABEL}${TAIL}`
     )
     // The mrkdwn text carries the maker as a basescan link.
     expect(firstAlert(dispatcher)?.text).toContain(
@@ -246,7 +250,7 @@ describe('BookOffersPoller', () => {
     expect(dispatcher.sent).toHaveLength(1)
     expect(firstAlert(dispatcher)?.key).toBe(`${MARKET_A}:asks:${USER_ONE}:${GROUP_1}:495:closed`)
     expect(firstAlert(dispatcher)?.title).toBe(
-      `1000 units borrow make order closed @ tick 495 in ${MARKET_A_SHORT}${TAIL}`
+      `Make order closed: 1000 units borrow @ tick 495 in ${MARKET_A_LABEL}${TAIL}`
     )
   })
 
@@ -343,7 +347,7 @@ describe('BookOffersPoller', () => {
     expect(dispatcher.sent).toHaveLength(1)
     // Unpriced, so the title falls back to units rather than claiming an asset amount.
     expect(firstAlert(dispatcher)?.title).toBe(
-      `5 units borrow make order posted @ tick 900 in ${MARKET_A_SHORT}${TAIL}`
+      `Make order posted: 5 units borrow @ tick 900 in ${MARKET_A_LABEL}${TAIL}`
     )
   })
 
@@ -378,7 +382,7 @@ describe('BookOffersPoller', () => {
     await poller.pollOnce()
     expect(dispatcher.sent).toHaveLength(1)
     expect(firstAlert(dispatcher)?.title).toBe(
-      `5000 assets borrow make order posted @ tick 495 in ${MARKET_A_SHORT}${TAIL}`
+      `Make order posted: 5000 assets borrow @ tick 495 in ${MARKET_A_LABEL}${TAIL}`
     )
   })
 
@@ -479,6 +483,7 @@ describe('BookOffersPoller', () => {
         dispatcher,
         logger,
         tokens: new TokenRegistry(),
+        prices: NO_PRICES,
         client,
         minAssets: 0n,
         sleep: () => Promise.resolve()

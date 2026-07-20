@@ -49,9 +49,10 @@ describe('SlackDispatcher', () => {
       blocks: { text: { text: string } }[]
     }
     expect(body.channel).toBe('C123')
-    // `text` is producer-escaped mrkdwn — rendered verbatim so its links survive.
+    // `text` is producer-escaped mrkdwn — rendered verbatim (no prefix) so its links survive and
+    // the producer's leading emoji stays the first thing in the block.
     expect(body.blocks[0]?.text.text).toBe(
-      '🚨 <https://basescan.org/tx/0xabc|big take> by 0x1234…abcd'
+      '<https://basescan.org/tx/0xabc|big take> by 0x1234…abcd'
     )
     // The fallback text field is mrkdwn-parsed too — the plain title must be escaped.
     expect(body.text).toBe('big &lt;take&gt;')

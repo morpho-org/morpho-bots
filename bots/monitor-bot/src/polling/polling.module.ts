@@ -22,6 +22,7 @@ import { TransactionFilter } from '../pollers/filter'
 import { MarketTransactionsPoller } from '../pollers/market-transactions.poller'
 import { BOOT_SNAPSHOT_STORE, InMemoryBootSnapshotStore } from '../snapshot/boot-snapshot.store'
 import { TokenMetadataLoader } from '../tokens/metadata'
+import { TokenPriceCache } from '../tokens/prices'
 import { TOKEN_REGISTRY, TokenRegistry } from '../tokens/registry'
 import { POLLERS } from './poller'
 import { PollerRegistrar } from './poller.registrar'
@@ -67,27 +68,26 @@ function buildPollers(
     verbose: env.LOG_LEVEL === 'debug',
     apiKey
   })
-  // The core API serves token metadata as a separate key-authenticated service, so it gets its
-  // own client and base URL.
-  const tokenMetadata = new TokenMetadataLoader({
-    client: createCoreClient(env.CORE_API_URL, { apiKey }),
-    logger,
-    tokens
-  })
+  // The core API serves token metadata and prices as a separate key-authenticated service, so it
+  // gets its own client and base URL, shared by both loaders.
+  const coreClient = createCoreClient(env.CORE_API_URL, { apiKey })
+  const tokenMetadata = new TokenMetadataLoader({ client: coreClient, logger, tokens })
+  const prices = new TokenPriceCache({ client: coreClient, logger, tokens })
   const directory = new MarketDirectory({
     client,
     logger,
     fixedMarketIds: env.MARKET_IDS,
     refreshMs: env.MARKETS_REFRESH_MS,
     tokens,
-    tokenMetadata
+    tokenMetadata,
+    tokenPrices: prices
   })
   const filter = new TransactionFilter({
     minAssets: env.FILTER_MIN_ASSETS,
     users: env.FILTER_USERS
   })
   // Transaction pollers resume from a watermark, so their state is a cursor.
-  const deps = { state: cursors, dispatcher, logger, tokens, client, directory, filter }
+  const deps = { state: cursors, dispatcher, logger, tokens, prices, client, directory, filter }
   const pollers: (MarketTransactionsPoller | BookOffersPoller)[] = pollerDefinitions(env).map(
     options => new MarketTransactionsPoller(options, deps)
   )
@@ -99,7 +99,15 @@ function buildPollers(
   pollers.push(
     new BookOffersPoller(
       { cron: env.POLL_CRON_MAKE_ORDERS, marketIds: env.MARKET_IDS },
-      { state: snapshots, dispatcher, logger, tokens, client, minAssets: env.FILTER_MIN_ASSETS }
+      {
+        state: snapshots,
+        dispatcher,
+        logger,
+        tokens,
+        prices,
+        client,
+        minAssets: env.FILTER_MIN_ASSETS
+      }
     )
   )
   return pollers

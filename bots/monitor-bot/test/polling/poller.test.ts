@@ -6,6 +6,7 @@ import { InMemoryCursorStore } from '../../src/cursor/cursor.store'
 import { Poller, type PollerDependencies } from '../../src/polling/poller'
 import { TokenRegistry } from '../../src/tokens/registry'
 import { capturingDispatcher, fakeLogger } from '../helpers'
+import { NO_PRICES } from '../midnight/fixtures'
 
 type FetchResult = { items: string[]; nextState: number }
 
@@ -48,7 +49,13 @@ function makeDeps() {
   return {
     cursors,
     dispatcher,
-    deps: { state: cursors, dispatcher, logger: fakeLogger(), tokens: new TokenRegistry() }
+    deps: {
+      state: cursors,
+      dispatcher,
+      logger: fakeLogger(),
+      tokens: new TokenRegistry(),
+      prices: NO_PRICES
+    }
   }
 }
 

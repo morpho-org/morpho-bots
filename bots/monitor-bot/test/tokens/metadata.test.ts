@@ -31,7 +31,8 @@ function market(id: string, loan: string, collaterals: string[] = []) {
     market_id: id,
     chain_id: 8453,
     loan_token: loan,
-    collaterals: collaterals.map(token => ({ token }))
+    maturity: 1_790_726_400,
+    collaterals: collaterals.map(token => ({ token, lltv: '860000000000000000' }))
   }
 }
 
