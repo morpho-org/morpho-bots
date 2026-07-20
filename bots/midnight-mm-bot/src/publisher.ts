@@ -1,4 +1,5 @@
 import {
+  AccrualPosition,
   EcrecoverRatifierUtils,
   fetchMarket,
   midnightAbi,
@@ -27,12 +28,14 @@ type PublishContext = {
   logger: Logger;
 };
 
-async function assertFunding(
-  context: PublishContext,
+export async function assertFunding(
+  context: Pick<PublishContext, 'publicClient' | 'maker' | 'midnight'>,
   market: Awaited<ReturnType<typeof fetchMarket>>,
-  maxUnits: bigint
+  marketId: `0x${string}`,
+  maxUnits: bigint,
+  timestamp: bigint
 ) {
-  const [balance, allowance] = await Promise.all([
+  const [balance, allowance, position] = await Promise.all([
     context.publicClient.readContract({
       address: market.params.loanToken,
       abi: erc20Abi,
@@ -44,8 +47,26 @@ async function assertFunding(
       abi: erc20Abi,
       functionName: 'allowance',
       args: [context.maker, context.midnight]
+    }),
+    context.publicClient.readContract({
+      address: context.midnight,
+      abi: midnightAbi,
+      functionName: 'position',
+      args: [marketId, context.maker]
     })
   ]);
+  const accruedCredit = new AccrualPosition(
+    {
+      credit: position[0],
+      pendingFee: position[1],
+      lastLossFactor: position[2],
+      lastAccrual: position[3],
+      debt: position[4],
+      collateralBitmap: position[5],
+      collateral: []
+    },
+    market
+  ).accrueInterest(timestamp).credit;
 
   if (balance < maxUnits) {
     throw new Error(`maker loan-token balance ${balance} is below maxUnits ${maxUnits}`);
@@ -53,6 +74,10 @@ async function assertFunding(
 
   if (allowance < maxUnits) {
     throw new Error(`Midnight loan-token allowance ${allowance} is below maxUnits ${maxUnits}`);
+  }
+
+  if (accruedCredit < maxUnits) {
+    throw new Error(`maker accrued credit ${accruedCredit} is below maxUnits ${maxUnits}`);
   }
 }
 
@@ -88,7 +113,7 @@ export async function publishMarketEpoch(
     throw new Error(`market ${config.marketId} matures before offer epoch expiry ${expiry}`);
   }
 
-  await assertFunding(context, market, config.maxUnits);
+  await assertFunding(context, market, config.marketId, config.maxUnits, expiry);
   const { tree, bidGroup, askGroup } = buildOfferTree({
     market,
     config,

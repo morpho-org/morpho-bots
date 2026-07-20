@@ -7,9 +7,9 @@
 - Uses `@morpho-org/midnight-sdk` for offers, groups, trees, Ecrecover signing, API validation, and payload encoding.
 - Reads official Base Midnight, MidnightMempool, and EcrecoverRatifier addresses from `@morpho-org/morpho-ts`, verifies deployed code, and submits raw payloads to MidnightMempool.
 - Validates every tree before and after signing. Deterministic non-overlapping epochs prevent double capacity; restart re-publication produces the same offers/root.
-- Refuses publication without ratifier authorization, sufficient bid-side loan-token balance/allowance, or under a gas fee above `MAX_FEE_GWEI`.
+- Refuses publication without ratifier authorization, sufficient bid-side loan-token balance/allowance, sufficient accrued position credit through epoch expiry for the ask side, or under a gas fee above `MAX_FEE_GWEI`.
 
-Operator must separately supply enough collateral/credit for ask fills. Bot does not manage inventory, take offers, or cancel roots. `DRY_RUN=true` performs reads, validation, signing, and encoding without broadcast.
+Ask fills sell the maker's existing position credit and never rely on crossing into new borrower debt. Bot does not manage inventory, take offers, or cancel roots. `DRY_RUN=true` performs reads, validation, signing, and encoding without broadcast.
 
 ## Configuration
 
