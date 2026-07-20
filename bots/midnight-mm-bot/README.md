@@ -6,7 +6,8 @@
 
 - Uses `@morpho-org/midnight-sdk` for offers, groups, trees, Ecrecover signing, API validation, and payload encoding.
 - Reads official Base Midnight, MidnightMempool, and EcrecoverRatifier addresses from `@morpho-org/morpho-ts`, verifies deployed code, and submits raw payloads to MidnightMempool.
-- Validates every tree before and after signing. Deterministic non-overlapping epochs prevent double capacity; restart re-publication produces the same offers/root.
+- Validates every generated offer price against the current Router book before any funding check, mempool validation, signing, ratification, or submission. Publication fails closed when the book request times out or fails, JSON/book data is invalid, either best side is missing or non-positive, or any offer exceeds `MAX_PRICE_DEVIATION_BPS` from the best bid/ask midpoint.
+- Validates every accepted tree before and after signing. Deterministic non-overlapping epochs prevent double capacity; restart re-publication produces the same offers/root.
 - Refuses publication without ratifier authorization, sufficient bid-side loan-token balance/allowance, or under a gas fee above `MAX_FEE_GWEI`.
 
 Operator must separately supply enough collateral/credit for ask fills. Bot does not manage inventory, take offers, or cancel roots. `DRY_RUN=true` performs reads, validation, signing, and encoding without broadcast.
@@ -28,7 +29,9 @@ Required: `RPC_URL`, `MAKER_PRIVATE_KEY`, `MIDNIGHT_MARKETS_JSON`, `TARGET_RATE_
 
 For example, `TARGET_RATE_BPS=500`, `SPREAD_BPS=200`, `LADDER_LEVELS=3`, and `LADDER_RANGE_BPS=300` quote lower rates at 2%, 3%, and 4%, and upper rates at 6%, 7%, and 8%. Rates are converted to valid market ticks with the Midnight SDK using the market's on-chain tick spacing; startup publication rejects a ladder if snapping produces duplicate ticks.
 
-Optional: `RPC_URL_FALLBACK`, `MIDNIGHT_API_URL` (default `https://api.morpho.org/v0/midnight`), `OFFER_TTL_SECONDS` (3600, min 600), `PUBLISH_LEAD_SECONDS` (300), `LOOP_INTERVAL_SECONDS` (30), `MAX_FEE_GWEI` (10), `DRY_RUN` (false), and `LOG_LEVEL` (info).
+Optional: `RPC_URL_FALLBACK`, `MIDNIGHT_API_URL` (default `https://api.morpho.org/v0/midnight`), `MAX_PRICE_DEVIATION_BPS` (1000, integer 1–10000), `ROUTER_TIMEOUT_MS` (2500, positive integer), `OFFER_TTL_SECONDS` (3600, min 600), `PUBLISH_LEAD_SECONDS` (300), `LOOP_INTERVAL_SECONDS` (30), `MAX_FEE_GWEI` (10), `DRY_RUN` (false), and `LOG_LEVEL` (info).
+
+The Router price guard requests `GET {MIDNIGHT_API_URL without trailing slashes}/books/{marketId}`. It uses the first bid and ask as the best levels, requires positive decimal-bigint prices, and computes the reference price as the integer midpoint `(bestBid + bestAsk) / 2`. A generated offer exactly on the configured deviation boundary is accepted; any offer beyond it rejects the entire ladder and the loop retries later.
 
 Before first publication, maker must approve Midnight for each loan token and call `setIsAuthorized(ecrecoverRatifier, true, maker)`.
 

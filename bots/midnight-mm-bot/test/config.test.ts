@@ -50,6 +50,24 @@ describe('loadConfig quote settings', () => {
     ]);
   });
 
+  it('uses safe Router guard defaults', () => {
+    const config = loadConfig(env);
+    expect(config.maxPriceDeviationBps).toBe(1000);
+    expect(config.routerTimeoutMs).toBe(2500);
+  });
+
+  it('validates Router guard bounds', () => {
+    expect(() => loadConfig({ ...env, MAX_PRICE_DEVIATION_BPS: '0' })).toThrow(
+      'MAX_PRICE_DEVIATION_BPS must be an integer >= 1'
+    );
+    expect(() => loadConfig({ ...env, MAX_PRICE_DEVIATION_BPS: '10001' })).toThrow(
+      'MAX_PRICE_DEVIATION_BPS must be an integer between 1 and 10000'
+    );
+    expect(() => loadConfig({ ...env, ROUTER_TIMEOUT_MS: '0' })).toThrow(
+      'ROUTER_TIMEOUT_MS must be an integer >= 1'
+    );
+  });
+
   it('requires every global quote setting', () => {
     for (const name of ['TARGET_RATE_BPS', 'SPREAD_BPS', 'LADDER_LEVELS', 'LADDER_RANGE_BPS']) {
       expect(() => loadConfig({ ...env, [name]: undefined })).toThrow(

@@ -53,6 +53,8 @@ if (!/^(1|true)$/i.test(Bun.env.DEPLOY_ONLY?.trim() || '')) {
   for (const key of [
     'RPC_URL_FALLBACK',
     'MIDNIGHT_API_URL',
+    'MAX_PRICE_DEVIATION_BPS',
+    'ROUTER_TIMEOUT_MS',
     'OFFER_TTL_SECONDS',
     'PUBLISH_LEAD_SECONDS',
     'LOOP_INTERVAL_SECONDS',

@@ -65,6 +65,8 @@ async function main() {
     ratifier,
     apiUrl: config.apiUrl,
     ttlSeconds: config.offerTtlSeconds,
+    maxPriceDeviationBps: config.maxPriceDeviationBps,
+    routerTimeoutMs: config.routerTimeoutMs,
     maxFeeWei: config.maxFeeWei,
     dryRun: config.dryRun,
     logger
@@ -77,6 +79,8 @@ async function main() {
     mempool,
     ratifier,
     offerTtlSeconds: config.offerTtlSeconds,
+    maxPriceDeviationBps: config.maxPriceDeviationBps,
+    routerTimeoutMs: config.routerTimeoutMs,
     dryRun: config.dryRun
   });
 

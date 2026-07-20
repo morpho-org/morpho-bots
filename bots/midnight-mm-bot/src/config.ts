@@ -45,8 +45,12 @@ type Config = {
   makerPrivateKey: Hex;
   /** Per-market ladder definitions to publish each epoch. */
   markets: MarketQuoteConfig[];
-  /** Midnight API endpoint used for mempool validation. */
+  /** Midnight API endpoint used for mempool validation and Router book reads. */
   apiUrl: string;
+  /** Maximum permitted offer-price distance from the Router midpoint, in basis points. */
+  maxPriceDeviationBps: number;
+  /** Timeout for Router book requests, in milliseconds. */
+  routerTimeoutMs: number;
   /** Offer lifetime in seconds. */
   offerTtlSeconds: number;
   /** Seconds before the next epoch when the bot pre-publishes offers. */
@@ -181,6 +185,10 @@ export function loadConfig(env: Env = Bun.env): Config {
   if (!(LOG_LEVELS as readonly string[]).includes(logLevel))
     throw new Error(`LOG_LEVEL must be one of: ${LOG_LEVELS.join(', ')}`);
 
+  const maxPriceDeviationBps = intEnv(env, 'MAX_PRICE_DEVIATION_BPS', 1000, 1);
+  if (maxPriceDeviationBps > 10_000)
+    throw new Error('MAX_PRICE_DEVIATION_BPS must be an integer between 1 and 10000');
+
   return {
     chainId: 8453,
     rpcUrl: required(env, 'RPC_URL'),
@@ -191,6 +199,8 @@ export function loadConfig(env: Env = Bun.env): Config {
       ...quoteConfig
     })),
     apiUrl: env.MIDNIGHT_API_URL?.trim() || 'https://api.morpho.org/v0/midnight',
+    maxPriceDeviationBps,
+    routerTimeoutMs: intEnv(env, 'ROUTER_TIMEOUT_MS', 2500, 1),
     offerTtlSeconds,
     publishLeadSeconds,
     loopIntervalSeconds: intEnv(env, 'LOOP_INTERVAL_SECONDS', 30, 5),

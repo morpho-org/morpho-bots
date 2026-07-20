@@ -2,7 +2,8 @@ import {
   EcrecoverRatifierUtils,
   fetchMarket,
   midnightAbi,
-  Payload
+  Payload,
+  TickLib
 } from '@morpho-org/midnight-sdk';
 import type { Logger } from '@repo/bot-kit';
 
@@ -11,6 +12,7 @@ import { erc20Abi } from 'viem';
 import { base } from 'viem/chains';
 
 import type { MarketQuoteConfig } from './config';
+import { assertOffersWithinDeviation, fetchReferenceMarketPrice } from './market-price';
 import { buildOfferTree } from './offers';
 
 type PublishContext = {
@@ -22,6 +24,8 @@ type PublishContext = {
   ratifier: Address;
   apiUrl: string;
   ttlSeconds: number;
+  maxPriceDeviationBps: number;
+  routerTimeoutMs: number;
   maxFeeWei: bigint;
   dryRun: boolean;
   logger: Logger;
@@ -88,7 +92,6 @@ export async function publishMarketEpoch(
     throw new Error(`market ${config.marketId} matures before offer epoch expiry ${expiry}`);
   }
 
-  await assertFunding(context, market, config.maxUnits);
   const { tree, bidGroup, askGroup } = buildOfferTree({
     market,
     config,
@@ -97,7 +100,18 @@ export async function publishMarketEpoch(
     start,
     expiry
   });
+  const marketPrice = await fetchReferenceMarketPrice({
+    apiUrl: context.apiUrl,
+    marketId: config.marketId,
+    timeoutMs: context.routerTimeoutMs
+  });
+  assertOffersWithinDeviation(
+    tree.offers.map(offer => TickLib.tickToPrice(offer.tick)),
+    marketPrice,
+    context.maxPriceDeviationBps
+  );
 
+  await assertFunding(context, market, config.maxUnits);
   await tree.mempoolValidate({ chainId: 8453, apiUrl: context.apiUrl });
   const signature = await EcrecoverRatifierUtils.sign({
     tree,
@@ -115,6 +129,7 @@ export async function publishMarketEpoch(
   const payload = await Payload.encode(items);
   const fields = {
     marketId: config.marketId,
+    marketPrice,
     root: tree.root,
     start,
     expiry,
