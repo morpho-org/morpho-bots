@@ -29,6 +29,7 @@
       "loglayer": "9.3.0",
       "@loglayer/transport-betterstack": "2.2.0",
       "openapi-fetch": "0.17.0",
+      "openapi-typescript": "^7.13.0",
       "oxfmt": "^0.36.0",
       "oxlint": "^1.46.0",
       "oxlint-tsgolint": "^0.22.1",

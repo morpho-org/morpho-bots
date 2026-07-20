@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "deploy:railway": "bun run scripts/deploy-railway.ts",
+    "generate": "openapi-typescript https://api.morpho.org/midnight/docs/swagger/json -o ./src/generated/midnight-api.ts",
     "start": "bun src/index.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
@@ -19,7 +20,10 @@
     "@repo/utils": "workspace:*",
     "@t3-oss/env-core": "catalog:",
     "cron": "catalog:",
+    "lodash-es": "catalog:",
+    "openapi-fetch": "catalog:",
     "reflect-metadata": "catalog:",
+    "viem": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
@@ -27,6 +31,8 @@
     "@repo/typescript-config": "workspace:*",
     "@swc/core": "catalog:",
     "@types/bun": "catalog:",
+    "@types/lodash-es": "catalog:",
+    "openapi-typescript": "catalog:",
     "typescript": "catalog:",
     "unplugin-swc": "catalog:",
     "vitest": "catalog:"

@@ -174,6 +174,12 @@ consequently holds its own `CronJob` references and awaits those on shutdown; re
 is kept only for introspection. Caught by the registrar shutdown test
 (`test/polling/poller.registrar.test.ts`).
 
+Also recorded: monitor-bot commits its own `src/generated/midnight-api.ts` openapi-typescript
+artifact rather than sharing midnight-liquidation's (which is older — it predates the
+`/v0/midnight/users/{user}/transactions` endpoint). Per-bot artifacts match the post-revert
+bots-don't-import-bots philosophy; the drift is deliberate, and regenerating
+midnight-liquidation's artifact is a separate chore when wanted.
+
 ## References
 
 - [TIB-2026-04-16-bootstrap-curator-bots](./TIB-2026-04-16-bootstrap-curator-bots.md) — the baseline
