@@ -26,13 +26,24 @@ malformed value fails the boot loudly. The `BETTERSTACK_*` vars are read at poin
 `@repo/bot-kit`, which disables shipping/heartbeat with a warning (never a crash) when they are
 missing or malformed.
 
-| Var                          | Required | Default | Purpose                                  |
-| ---------------------------- | -------- | ------- | ---------------------------------------- |
-| `PORT`                       | no       | `3000`  | HTTP port for `/health`                  |
-| `LOG_LEVEL`                  | no       | `info`  | `debug` \| `info` \| `warn` \| `error`   |
-| `BETTERSTACK_SOURCE_TOKEN`   | no       | —       | Opt-in BetterStack log shipping (secret) |
-| `BETTERSTACK_INGESTING_HOST` | no       | —       | BetterStack ingest host (with the token) |
-| `BETTERSTACK_HEARTBEAT_URL`  | no       | —       | Opt-in BetterStack uptime heartbeat      |
+| Var                           | Required | Default                  | Purpose                                          |
+| ----------------------------- | -------- | ------------------------ | ------------------------------------------------ |
+| `PORT`                        | no       | `3000`                   | HTTP port for `/health`                          |
+| `LOG_LEVEL`                   | no       | `info`                   | `debug` \| `info` \| `warn` \| `error`           |
+| `MIDNIGHT_API_URL`            | no       | `https://api.morpho.org` | Midnight API base URL                            |
+| `MARKET_IDS`                  | no       | — (auto-discover)        | Comma-separated market ids; empty = all active   |
+| `MARKETS_REFRESH_SECONDS`     | no       | `600`                    | Market-discovery cache TTL                       |
+| `FILTER_MIN_ASSETS`           | no       | `0`                      | Min size (base units) for an alert; 0 = off      |
+| `FILTER_USERS`                | no       | — (all users)            | Comma-separated position-owner allowlist         |
+| `POLL_CRON_TAKE_ORDERS`       | no       | `*/30 * * * * *`         | Take-orders poller cadence (cron, seconds field) |
+| `POLL_CRON_REPAYS`            | no       | `*/30 * * * * *`         | Repays poller cadence                            |
+| `POLL_CRON_COLLATERAL`        | no       | `*/30 * * * * *`         | Collateral poller cadence                        |
+| `POLL_CRON_LIQUIDATIONS`      | no       | `*/15 * * * * *`         | Liquidations poller cadence                      |
+| `REPAYS_INCLUDE_SECONDARY`    | no       | `false`                  | Also treat debt closed via trade as a repay      |
+| `COLLATERAL_INCLUDE_WITHDRAW` | no       | `true`                   | Also alert on collateral withdrawals             |
+| `BETTERSTACK_SOURCE_TOKEN`    | no       | —                        | Opt-in BetterStack log shipping (secret)         |
+| `BETTERSTACK_INGESTING_HOST`  | no       | —                        | BetterStack ingest host (with the token)         |
+| `BETTERSTACK_HEARTBEAT_URL`   | no       | —                        | Opt-in BetterStack uptime heartbeat              |
 
 Example `.env` shape:
 
@@ -119,6 +130,28 @@ cross-tick-state philosophy — nothing is persisted to disk and API truth wins 
 
 Until the Slack dispatcher lands, alerts go through `LogAlertDispatcher` — one structured
 `alert` log line each.
+
+### Market transaction pollers
+
+Four poller instances share `MarketTransactionsPoller`, differing only in `event_types` and
+cadence: **take-orders** (`lend`, `borrow`), **repays** (`exit_borrow_primary`, plus
+`exit_borrow_secondary` when `REPAYS_INCLUDE_SECONDARY=true`), **collateral**
+(`supply_collateral`, plus `withdraw_collateral` unless disabled — withdrawal is the risk
+signal), and **liquidations** (`partial_liquidation`, `full_liquidation`).
+
+Each tick enumerates markets (`MarketDirectory`: fixed `MARKET_IDS` or all active markets,
+TTL-cached), then per market queries
+`/v0/midnight/markets/{id}/transactions?sort_direction=asc&created_at_gte={watermark}` walking
+pagination cursors, dedupes by stable item id at the (inclusive) watermark second, and advances a
+**per-market** watermark — a global watermark would skip items in slower-indexed markets.
+
+With no saved position (first tick, restart, new market) a poller anchors at _now_ — history is
+never replayed; the skipped window is logged as `poll.anchor`. Alerts pass a `TransactionFilter`
+(size threshold on the per-type amount; position-owner allowlist), except **bad-debt
+liquidations** (`bad_debt > 0` or `pure_bad_debt_realization`) which bypass all filters and post
+as `critical` — bad debt is socialized to lenders and is the curator signal. Amounts are raw
+loan-token base units (this API exposes no token metadata); every alert carries a basescan tx
+link.
 
 ## Important Operational Notes
 
