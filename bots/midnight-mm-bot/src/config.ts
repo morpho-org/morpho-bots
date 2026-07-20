@@ -3,13 +3,15 @@ import type { Hash, Hex } from 'viem'
 
 import { isHex, parseGwei } from 'viem'
 
-export type MarketQuoteConfig = {
+export type MarketConfig = {
   marketId: Hash
-  midTick: number
-  halfSpreadTicks: number
-  levelStepTicks: number
-  levels: number
   maxUnits: bigint
+}
+export type MarketQuoteConfig = MarketConfig & {
+  targetRateBps: number
+  spreadBps: number
+  ladderLevels: number
+  ladderRangeBps: number
 }
 type Config = {
   chainId: 8453
@@ -55,7 +57,7 @@ function parseMarketId(value: unknown): Hash {
     throw new Error('marketId must be a 32-byte hex string')
   return value as Hash
 }
-export function parseMarketConfigs(raw: string): MarketQuoteConfig[] {
+export function parseMarketConfigs(raw: string): MarketConfig[] {
   let value: unknown
   try {
     value = JSON.parse(raw) as unknown
@@ -67,16 +69,15 @@ export function parseMarketConfigs(raw: string): MarketQuoteConfig[] {
   const seen = new Set<string>()
   return value.map((item, index) => {
     if (!isRecord(item)) throw new Error(`market[${index}] must be an object`)
+    const keys = Object.keys(item)
+    if (keys.length !== 2 || !keys.includes('marketId') || !keys.includes('maxUnits'))
+      throw new Error(`market[${index}] must contain only marketId and maxUnits`)
     const marketId = parseMarketId(item.marketId)
     const key = marketId.toLowerCase()
     if (seen.has(key)) throw new Error(`duplicate marketId: ${marketId}`)
     seen.add(key)
     return {
       marketId,
-      midTick: integer(item.midTick, `market[${index}].midTick`, 0),
-      halfSpreadTicks: integer(item.halfSpreadTicks, `market[${index}].halfSpreadTicks`, 1),
-      levelStepTicks: integer(item.levelStepTicks, `market[${index}].levelStepTicks`, 1),
-      levels: integer(item.levels, `market[${index}].levels`, 1),
       maxUnits: positiveBigInt(item.maxUnits, `market[${index}].maxUnits`)
     }
   })
@@ -84,6 +85,11 @@ export function parseMarketConfigs(raw: string): MarketQuoteConfig[] {
 function intEnv(env: Env, name: string, fallback: number, min: number) {
   const raw = env[name]?.trim()
   if (!raw) return fallback
+  if (!/^\d+$/.test(raw)) throw new Error(`${name} must be an integer >= ${min}`)
+  return integer(Number(raw), name, min)
+}
+function requiredIntEnv(env: Env, name: string, min: number) {
+  const raw = required(env, name)
   if (!/^\d+$/.test(raw)) throw new Error(`${name} must be an integer >= ${min}`)
   return integer(Number(raw), name, min)
 }
@@ -100,6 +106,17 @@ export function loadConfig(env: Env = Bun.env): Config {
   const makerPrivateKey = required(env, 'MAKER_PRIVATE_KEY')
   if (!isHex(makerPrivateKey) || makerPrivateKey.length !== 66)
     throw new Error('MAKER_PRIVATE_KEY must be a 0x-prefixed 32-byte hex string')
+  const targetRateBps = requiredIntEnv(env, 'TARGET_RATE_BPS', 1)
+  const spreadBps = requiredIntEnv(env, 'SPREAD_BPS', 1)
+  const ladderLevels = requiredIntEnv(env, 'LADDER_LEVELS', 1)
+  const ladderRangeBps = requiredIntEnv(env, 'LADDER_RANGE_BPS', 1)
+  if (2 * ladderRangeBps < spreadBps)
+    throw new Error('LADDER_RANGE_BPS must be at least half of SPREAD_BPS')
+  if (ladderRangeBps > targetRateBps)
+    throw new Error('LADDER_RANGE_BPS must not exceed TARGET_RATE_BPS')
+  if (ladderLevels === 1 && 2 * ladderRangeBps !== spreadBps)
+    throw new Error('LADDER_RANGE_BPS must equal half of SPREAD_BPS when LADDER_LEVELS is 1')
+  const quoteConfig = { targetRateBps, spreadBps, ladderLevels, ladderRangeBps }
   const offerTtlSeconds = intEnv(env, 'OFFER_TTL_SECONDS', 3600, 600)
   const publishLeadSeconds = intEnv(env, 'PUBLISH_LEAD_SECONDS', 300, 0)
   if (publishLeadSeconds >= offerTtlSeconds)
@@ -112,7 +129,10 @@ export function loadConfig(env: Env = Bun.env): Config {
     rpcUrl: required(env, 'RPC_URL'),
     rpcUrlFallback: env.RPC_URL_FALLBACK?.trim() || undefined,
     makerPrivateKey,
-    markets: parseMarketConfigs(required(env, 'MIDNIGHT_MARKETS_JSON')),
+    markets: parseMarketConfigs(required(env, 'MIDNIGHT_MARKETS_JSON')).map(market => ({
+      ...market,
+      ...quoteConfig
+    })),
     apiUrl: env.MIDNIGHT_API_URL?.trim() || 'https://api.morpho.org/v0/midnight',
     offerTtlSeconds,
     publishLeadSeconds,

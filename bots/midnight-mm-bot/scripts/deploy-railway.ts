@@ -40,6 +40,8 @@ if (!rows.some(row => row.name === service))
 if (!/^(1|true)$/i.test(Bun.env.DEPLOY_ONLY?.trim() || '')) {
   await setVar('CHAIN_ID', '8453')
   await setVar('MIDNIGHT_MARKETS_JSON', required('MIDNIGHT_MARKETS_JSON'))
+  for (const key of ['TARGET_RATE_BPS', 'SPREAD_BPS', 'LADDER_LEVELS', 'LADDER_RANGE_BPS'])
+    await setVar(key, required(key))
   for (const key of [
     'RPC_URL_FALLBACK',
     'MIDNIGHT_API_URL',

@@ -1,5 +1,6 @@
 import type { Address } from 'viem'
 
+import { TickLib } from '@morpho-org/midnight-sdk'
 import { describe, expect, it } from 'bun:test'
 import { zeroAddress } from 'viem'
 
@@ -32,16 +33,18 @@ const market = {
   continuousFee: 123,
   tickSpacing: 4
 }
+const tick = (rateBps: number) =>
+  TickLib.priceToTick(TickLib.rateToPrice(BigInt(rateBps) * 100_000_000_000_000n), 4n)
 describe('buildOfferTree', () => {
-  it('builds one shared-consumption ladder per side', () => {
+  it('builds one shared-consumption rate ladder per side', () => {
     const result = buildOfferTree({
       market,
       config: {
         marketId: `0x${'11'.repeat(32)}`,
-        midTick: 5000,
-        halfSpreadTicks: 8,
-        levelStepTicks: 4,
-        levels: 3,
+        targetRateBps: 500,
+        spreadBps: 200,
+        ladderLevels: 3,
+        ladderRangeBps: 300,
         maxUnits: 1000000n
       },
       maker,
@@ -50,8 +53,8 @@ describe('buildOfferTree', () => {
       expiry: 2000n
     })
     expect(result.tree.offers).toHaveLength(6)
-    expect(result.bidGroup.offers.map(o => o.tick)).toEqual([5008n, 5012n, 5016n])
-    expect(result.askGroup.offers.map(o => o.tick)).toEqual([4992n, 4988n, 4984n])
+    expect(result.bidGroup.offers.map(o => o.tick)).toEqual([tick(200), tick(300), tick(400)])
+    expect(result.askGroup.offers.map(o => o.tick)).toEqual([tick(600), tick(700), tick(800)])
     expect(result.bidGroup.offers.every(o => o.buy)).toBe(true)
     expect(result.askGroup.offers.every(o => !o.buy)).toBe(true)
     expect(new Set(result.bidGroup.offers.map(o => o.group)).size).toBe(1)

@@ -13,13 +13,20 @@ Operator must separately supply enough collateral/credit for ask fills. Bot does
 
 ## Configuration
 
-Required: `RPC_URL`, `MAKER_PRIVATE_KEY`, and `MIDNIGHT_MARKETS_JSON`.
+Required: `RPC_URL`, `MAKER_PRIVATE_KEY`, `MIDNIGHT_MARKETS_JSON`, `TARGET_RATE_BPS`, `SPREAD_BPS`, `LADDER_LEVELS`, and `LADDER_RANGE_BPS`.
 
 ```json
-[{"marketId":"0x...","midTick":5000,"halfSpreadTicks":8,"levelStepTicks":4,"levels":3,"maxUnits":"1000000"}]
+[{"marketId":"0x...","maxUnits":"1000000"}]
 ```
 
-`maxUnits` is a raw protocol amount. Tick inputs must align with on-chain tick spacing. Price falls as tick rises, so bids are `mid + spread + level*step`; asks are `mid - spread - level*step`.
+`MIDNIGHT_MARKETS_JSON` contains only static per-market values: `marketId` and the raw protocol `maxUnits` cap. Quote shape is global across all configured markets:
+
+- `TARGET_RATE_BPS` is the center fixed rate.
+- `SPREAD_BPS` is the full inside spread, so each inside level is half the spread from target.
+- `LADDER_LEVELS` is the number of offers on each side.
+- `LADDER_RANGE_BPS` is the distance from target to each outermost level. It must be at least half the spread and no greater than the target.
+
+For example, `TARGET_RATE_BPS=500`, `SPREAD_BPS=200`, `LADDER_LEVELS=3`, and `LADDER_RANGE_BPS=300` quote lower rates at 2%, 3%, and 4%, and upper rates at 6%, 7%, and 8%. Rates are converted to valid market ticks with the Midnight SDK using the market's on-chain tick spacing; startup publication rejects a ladder if snapping produces duplicate ticks.
 
 Optional: `RPC_URL_FALLBACK`, `MIDNIGHT_API_URL` (default `https://api.morpho.org/v0/midnight`), `OFFER_TTL_SECONDS` (3600, min 600), `PUBLISH_LEAD_SECONDS` (300), `LOOP_INTERVAL_SECONDS` (30), `MAX_FEE_GWEI` (10), `DRY_RUN` (false), and `LOG_LEVEL` (info).
 

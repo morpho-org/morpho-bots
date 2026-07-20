@@ -1,3 +1,4 @@
+import { TickLib } from '@morpho-org/midnight-sdk'
 import { describe, expect, it } from 'bun:test'
 
 import type { MarketQuoteConfig } from '../src/config'
@@ -5,28 +6,30 @@ import type { MarketQuoteConfig } from '../src/config'
 import { buildLadderTicks } from '../src/ladder'
 const config: MarketQuoteConfig = {
   marketId: `0x${'11'.repeat(32)}`,
-  midTick: 5000,
-  halfSpreadTicks: 8,
-  levelStepTicks: 4,
-  levels: 3,
+  targetRateBps: 500,
+  spreadBps: 200,
+  ladderLevels: 3,
+  ladderRangeBps: 300,
   maxUnits: 1000000n
 }
+const tick = (rateBps: number) =>
+  TickLib.priceToTick(TickLib.rateToPrice(BigInt(rateBps) * 100_000_000_000_000n), 4n)
 describe('buildLadderTicks', () => {
-  it('builds bids below asks in price space', () => {
+  it('builds 2%, 3%, 4% bids and 6%, 7%, 8% asks', () => {
     expect(buildLadderTicks(config, 4)).toEqual({
-      bids: [5008n, 5012n, 5016n],
-      asks: [4992n, 4988n, 4984n]
+      bids: [tick(200), tick(300), tick(400)],
+      asks: [tick(600), tick(700), tick(800)]
     })
   })
-  it('requires offsets to match spacing', () => {
-    expect(() => buildLadderTicks({ ...config, halfSpreadTicks: 6 }, 4)).toThrow(
-      'halfSpreadTicks must be a multiple'
-    )
-    expect(() => buildLadderTicks({ ...config, levelStepTicks: 2 }, 4)).toThrow(
-      'levelStepTicks must be a multiple'
-    )
+  it('rejects ticks that collapse after snapping to market spacing', () => {
+    expect(() =>
+      buildLadderTicks(
+        { ...config, targetRateBps: 500, spreadBps: 2, ladderLevels: 3, ladderRangeBps: 2 },
+        4
+      )
+    ).toThrow('duplicate snapped tick')
   })
-  it('rejects out-of-bounds ladders', () => {
-    expect(() => buildLadderTicks({ ...config, midTick: 4 }, 4)).toThrow('ask tick is outside')
+  it('rejects invalid market tick spacing', () => {
+    expect(() => buildLadderTicks(config, 0)).toThrow('invalid market tick spacing')
   })
 })

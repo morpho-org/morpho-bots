@@ -1,25 +1,29 @@
-import { MAX_TICK } from '@morpho-org/midnight-sdk'
+import { TickLib } from '@morpho-org/midnight-sdk'
 
 import type { MarketQuoteConfig } from './config'
+
+const WAD_PER_BPS = 100_000_000_000_000n
+
 export function buildLadderTicks(config: MarketQuoteConfig, tickSpacing: number) {
   if (!Number.isSafeInteger(tickSpacing) || tickSpacing <= 0)
     throw new Error(`invalid market tick spacing: ${tickSpacing}`)
-  if (config.midTick % tickSpacing !== 0)
-    throw new Error(`midTick must be a multiple of tick spacing ${tickSpacing}`)
-  if (config.halfSpreadTicks % tickSpacing !== 0)
-    throw new Error(`halfSpreadTicks must be a multiple of tick spacing ${tickSpacing}`)
-  if (config.levelStepTicks % tickSpacing !== 0)
-    throw new Error(`levelStepTicks must be a multiple of tick spacing ${tickSpacing}`)
+  const targetRate = BigInt(config.targetRateBps) * WAD_PER_BPS
+  const halfSpread = (BigInt(config.spreadBps) * WAD_PER_BPS) / 2n
+  const range = BigInt(config.ladderRangeBps) * WAD_PER_BPS
+  const intervals = BigInt(config.ladderLevels - 1)
+  const span = range - halfSpread
+  const toTick = (rate: bigint) =>
+    TickLib.priceToTick(TickLib.rateToPrice(rate), BigInt(tickSpacing))
   const bids: bigint[] = []
   const asks: bigint[] = []
-  for (let level = 0; level < config.levels; level++) {
-    const offset = config.halfSpreadTicks + level * config.levelStepTicks
-    const bid = BigInt(config.midTick + offset)
-    const ask = BigInt(config.midTick - offset)
-    if (bid > MAX_TICK) throw new Error(`bid tick is outside protocol bounds: ${bid}`)
-    if (ask < 0n) throw new Error(`ask tick is outside protocol bounds: ${ask}`)
-    bids.push(bid)
-    asks.push(ask)
+  for (let level = 0; level < config.ladderLevels; level++) {
+    const index = BigInt(level)
+    const lowerDistance = intervals === 0n ? halfSpread : range - (span * index) / intervals
+    const upperDistance = intervals === 0n ? halfSpread : halfSpread + (span * index) / intervals
+    bids.push(toTick(targetRate - lowerDistance))
+    asks.push(toTick(targetRate + upperDistance))
   }
+  const ticks = [...bids, ...asks]
+  if (new Set(ticks).size !== ticks.length) throw new Error('duplicate snapped tick in ladder')
   return { bids, asks }
 }
