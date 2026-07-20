@@ -10,17 +10,43 @@ export const USDC_TOKEN = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
 export const WETH_TOKEN = '0x4200000000000000000000000000000000000006'
 
 type LendItem = Extract<TransactionItem, { event_type: 'lend' }>
+type BorrowItem = Extract<TransactionItem, { event_type: 'borrow' }>
 type LiquidationItem = Extract<TransactionItem, { event_type: 'full_liquidation' }>
 type ExitPrimaryItem = Extract<TransactionItem, { event_type: 'exit_borrow_primary' }>
 type SupplyCollateralItem = Extract<TransactionItem, { event_type: 'supply_collateral' }>
 
-export function lendItem(over: {
+type TradeOverrides = {
   id: string
   created_at: number
   market_id?: string
   assets?: string
   account?: string
-}): LendItem {
+}
+
+/** Trade-scoped payload both legs of one Take share verbatim (what `takeKey` matches on). */
+function tradeData(over: TradeOverrides) {
+  return {
+    caller: USER_ONE,
+    maker: USER_ONE,
+    taker: USER_TWO,
+    buyer: USER_ONE,
+    seller: USER_TWO,
+    buyer_assets: over.assets ?? '1000',
+    seller_assets: over.assets ?? '1000',
+    assets: over.assets ?? '1000',
+    units: '1001',
+    take_units: '1001',
+    buyer_pending_fee_increase: '0',
+    seller_pending_fee_decrease: '0',
+    total_units_delta: '1001',
+    payer: USER_ONE,
+    receiver: USER_TWO,
+    group: `0x${'d'.repeat(64)}`,
+    consumed: '1000'
+  }
+}
+
+export function lendItem(over: TradeOverrides): LendItem {
   return {
     id: over.id,
     chain_id: 8453,
@@ -28,26 +54,20 @@ export function lendItem(over: {
     created_at: over.created_at,
     tx_hash: TX_HASH,
     event_type: 'lend',
-    data: {
-      account: over.account ?? USER_ONE,
-      caller: USER_ONE,
-      maker: USER_ONE,
-      taker: USER_TWO,
-      buyer: USER_ONE,
-      seller: USER_TWO,
-      buyer_assets: over.assets ?? '1000',
-      seller_assets: over.assets ?? '1000',
-      assets: over.assets ?? '1000',
-      units: '1001',
-      take_units: '1001',
-      buyer_pending_fee_increase: '0',
-      seller_pending_fee_decrease: '0',
-      total_units_delta: '1001',
-      payer: USER_ONE,
-      receiver: USER_TWO,
-      group: `0x${'d'.repeat(64)}`,
-      consumed: '1000'
-    }
+    data: { account: over.account ?? USER_ONE, ...tradeData(over) }
+  }
+}
+
+/** The seller leg of the Take that `lendItem` builds — same overrides pair the two by default. */
+export function borrowItem(over: TradeOverrides): BorrowItem {
+  return {
+    id: over.id,
+    chain_id: 8453,
+    market_id: over.market_id ?? MARKET_A,
+    created_at: over.created_at,
+    tx_hash: TX_HASH,
+    event_type: 'borrow',
+    data: { account: over.account ?? USER_TWO, ...tradeData(over) }
   }
 }
 

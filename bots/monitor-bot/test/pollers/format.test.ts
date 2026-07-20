@@ -4,11 +4,13 @@ import {
   chainLabel,
   explorerAddressUrl,
   explorerTxUrl,
+  formatTakeAlert,
   formatTransactionAlert,
   tokenAmount
 } from '../../src/pollers/format'
 import { TokenRegistry } from '../../src/tokens/registry'
 import {
+  borrowItem,
   exitPrimaryItem,
   lendItem,
   liquidationItem,
@@ -17,6 +19,7 @@ import {
   TX_HASH,
   USDC_TOKEN,
   USER_ONE,
+  USER_TWO,
   WETH_TOKEN
 } from '../midnight/fixtures'
 
@@ -170,5 +173,53 @@ describe('formatTransactionAlert', () => {
     )
     expect(alert.title).toContain('<!channel> assets lend')
     expect(alert.text).toContain('&lt;!channel&gt; assets lend')
+  })
+})
+
+describe('formatTakeAlert', () => {
+  it('merges both legs of one take into a single sentence naming buyer and seller', () => {
+    const alert = formatTakeAlert(
+      {
+        lend: lendItem({ id: 'l', created_at: 1_700_000_000, assets: '20000000000000' }),
+        borrow: borrowItem({ id: 'b', created_at: 1_700_000_000, assets: '20000000000000' })
+      },
+      registryWithTokens()
+    )
+    expect(alert.key).toBe('l+b')
+    expect(alert.severity).toBe('info')
+    expect(alert.title).toBe(
+      '20M USDC lend by 0x958e...1917 + 20M USDC borrow by 0x5356...4C91 ' +
+        'on midnight-base at 2023-11-14 22:13:20 UTC'
+    )
+    expect(alert.text).toBe(
+      `<https://basescan.org/tx/${TX_HASH}|20M USDC lend> ` +
+        `by <https://basescan.org/address/${USER_ONE}|0x958e...1917> ` +
+        `+ 20M USDC borrow by <https://basescan.org/address/${USER_TWO}|0x5356...4C91> ` +
+        'on midnight-base at 2023-11-14 22:13:20 UTC'
+    )
+  })
+
+  it("keeps each leg's attributed amount when they diverge (position crossing)", () => {
+    const borrow = borrowItem({ id: 'b', created_at: 1_700_000_000, assets: '20000000000000' })
+    borrow.data.assets = '5000000000000'
+    const alert = formatTakeAlert(
+      { lend: lendItem({ id: 'l', created_at: 1_700_000_000, assets: '20000000000000' }), borrow },
+      registryWithTokens()
+    )
+    expect(alert.title).toContain('20M USDC lend by')
+    expect(alert.title).toContain('5M USDC borrow by')
+  })
+
+  it('escapes the API-sourced amount fallback in the plain-text borrow segment', () => {
+    // The borrow half is the one label slot not built by slackLink, so it must escape on its own.
+    const alert = formatTakeAlert(
+      {
+        lend: lendItem({ id: 'l', created_at: 1_700_000_000 }),
+        borrow: borrowItem({ id: 'b', created_at: 1_700_000_000, assets: '<!channel>' })
+      },
+      new TokenRegistry()
+    )
+    expect(alert.title).toContain('<!channel> assets borrow')
+    expect(alert.text).toContain('&lt;!channel&gt; assets borrow')
   })
 })

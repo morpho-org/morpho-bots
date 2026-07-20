@@ -8,7 +8,8 @@ import type { TransactionFilter } from './filter'
 
 import { MARKET_CONCURRENCY, MAX_PAGES, REQUEST_TIMEOUT_MS } from '../midnight/client'
 import { Poller } from '../polling/poller'
-import { formatTransactionAlert } from './format'
+import { formatTakeAlert, formatTransactionAlert } from './format'
+import { mergeTakeLegs } from './take'
 
 // The watermark design assumes items never appear in the feed with a created_at more than
 // OVERLAP_SECONDS below what has already been returned (late indexing / out-of-order ingestion).
@@ -120,9 +121,18 @@ export class MarketTransactionsPoller extends Poller<TxCursor, TransactionItem> 
   }
 
   protected toAlerts(items: TransactionItem[]) {
-    return items
-      .filter(item => this.ext.filter.matches(item))
-      .map(item => formatTransactionAlert(item, this.ext.tokens))
+    return mergeTakeLegs(items).flatMap(entry => {
+      if (entry.kind === 'take') {
+        // Both legs are one on-chain event: alert once, kept when either leg passes the filter so
+        // user scoping still matches on both the buyer and the seller account.
+        return this.ext.filter.matches(entry.lend) || this.ext.filter.matches(entry.borrow)
+          ? formatTakeAlert(entry, this.ext.tokens)
+          : []
+      }
+      return this.ext.filter.matches(entry.item)
+        ? formatTransactionAlert(entry.item, this.ext.tokens)
+        : []
+    })
   }
 
   private anchorMarket(marketId: string, anchor: number): MarketCursor {

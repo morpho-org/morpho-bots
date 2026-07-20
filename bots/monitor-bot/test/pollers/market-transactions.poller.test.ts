@@ -8,14 +8,18 @@ import { TransactionFilter } from '../../src/pollers/filter'
 import { MarketTransactionsPoller } from '../../src/pollers/market-transactions.poller'
 import { TokenRegistry } from '../../src/tokens/registry'
 import { capturingDispatcher, fakeLogger } from '../helpers'
-import { apiPage, lendItem, MARKET_A, MARKET_B } from '../midnight/fixtures'
+import { apiPage, borrowItem, lendItem, MARKET_A, MARKET_B, USER_TWO } from '../midnight/fixtures'
 
 const NOW_MS = 1_784_300_000_000
 const NOW_S = 1_784_300_000
 
 type Page = { cursor: string | null; data: TransactionItem[] }
 
-function makePoller(pages: Record<string, Page[]>, marketIds: string[]) {
+function makePoller(
+  pages: Record<string, Page[]>,
+  marketIds: string[],
+  filter = new TransactionFilter({ minAssets: 0n, users: [] })
+) {
   // Each GET pops the next queued page for the requested market.
   const queues = new Map(Object.entries(pages).map(([key, value]) => [key, [...value]]))
   const calls: { marketId: string; query: Record<string, unknown> }[] = []
@@ -46,7 +50,7 @@ function makePoller(pages: Record<string, Page[]>, marketIds: string[]) {
       tokens: new TokenRegistry(),
       client,
       directory,
-      filter: new TransactionFilter({ minAssets: 0n, users: [] }),
+      filter,
       now: () => NOW_MS,
       sleep: () => Promise.resolve()
     }
@@ -260,6 +264,47 @@ describe('MarketTransactionsPoller', () => {
       .client
     client.GET.mockImplementation(() => Promise.reject(new Error('outage')))
     await expect(poller.pollOnce()).rejects.toThrow('all 2 markets failed')
+  })
+
+  it('dispatches one alert when both legs of a take arrive in the same tick', async () => {
+    const lend = lendItem({ id: 'l', created_at: NOW_S + 5 })
+    const borrow = borrowItem({ id: 'b', created_at: NOW_S + 5 })
+    const { poller, dispatcher } = makePoller(
+      { [MARKET_A]: [{ cursor: null, data: [lend, borrow] }] },
+      [MARKET_A]
+    )
+    await poller.pollOnce()
+    expect(dispatcher.sent[0]?.map(alert => alert.key)).toEqual(['l+b'])
+  })
+
+  it('sends the merged take when only one leg passes the user filter', async () => {
+    // lendItem's account is USER_ONE (buyer); borrowItem's is USER_TWO (seller) — scope to seller.
+    const lend = lendItem({ id: 'l', created_at: NOW_S + 5 })
+    const borrow = borrowItem({ id: 'b', created_at: NOW_S + 5 })
+    const { poller, dispatcher } = makePoller(
+      { [MARKET_A]: [{ cursor: null, data: [lend, borrow] }] },
+      [MARKET_A],
+      new TransactionFilter({ minAssets: 0n, users: [USER_TWO] })
+    )
+    await poller.pollOnce()
+    expect(dispatcher.sent[0]?.map(alert => alert.key)).toEqual(['l+b'])
+  })
+
+  it('alerts a late-indexed second leg singly instead of dropping it', async () => {
+    const lend = lendItem({ id: 'l', created_at: NOW_S + 5 })
+    const borrow = borrowItem({ id: 'b', created_at: NOW_S + 5 })
+    const { poller, dispatcher } = makePoller(
+      {
+        [MARKET_A]: [
+          { cursor: null, data: [lend] },
+          { cursor: null, data: [lend, borrow] }
+        ]
+      },
+      [MARKET_A]
+    )
+    await poller.pollOnce()
+    await poller.pollOnce()
+    expect(dispatcher.sent.map(batch => batch.map(alert => alert.key))).toEqual([['l'], ['b']])
   })
 
   it('sorts dispatched items across markets by created_at', async () => {

@@ -7,8 +7,9 @@ import { base } from 'viem/chains'
 import type { Alert } from '../alerts/alert'
 import type { TransactionItem } from '../midnight/client'
 import type { TokenInfo, TokenRegistry } from '../tokens/registry'
+import type { TakePair } from './take'
 
-import { slackLink } from '../alerts/mrkdwn'
+import { escapeSlack, slackLink } from '../alerts/mrkdwn'
 import { isBadDebtLiquidation } from './filter'
 
 const CHAINS: Record<number, Chain> = { [base.id]: base }
@@ -174,5 +175,33 @@ export function formatTransactionAlert(item: TransactionItem, tokens: TokenRegis
     }
     default:
       return assertNever(item)
+  }
+}
+
+/**
+ * One Take fill arrives as two API items — the buyer's lend and the seller's borrow — but is a
+ * single on-chain event, so both legs merge into one alert. Each leg keeps its own attributed
+ * amount: they differ by the settlement fee, and materially when a position crosses zero (part of
+ * the trade then retires debt or credit instead of creating it).
+ */
+export function formatTakeAlert({ lend, borrow }: TakePair, tokens: TokenRegistry): Alert {
+  const loan = tokens.loanTokenInfo(lend.market_id)
+  const headline = `${tokenAmount(lend.data.assets, loan)} lend`
+  const counterpart = `${tokenAmount(borrow.data.assets, loan)} borrow`
+  const where = `on ${chainLabel(lend.chain_id)} at ${formatUtcTime(lend.created_at)}`
+  const buyer = abbreviateAddress(lend.data.account)
+  const seller = abbreviateAddress(borrow.data.account)
+  return {
+    key: `${lend.id}+${borrow.id}`,
+    title: `${headline} by ${buyer} + ${counterpart} by ${seller} ${where}`,
+    text: [
+      slackLink(explorerTxUrl(lend.chain_id, lend.tx_hash), headline),
+      'by',
+      slackLink(explorerAddressUrl(lend.chain_id, lend.data.account), buyer),
+      `+ ${escapeSlack(counterpart)} by`,
+      slackLink(explorerAddressUrl(borrow.chain_id, borrow.data.account), seller),
+      where
+    ].join(' '),
+    severity: 'info'
   }
 }

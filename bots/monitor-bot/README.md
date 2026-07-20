@@ -223,6 +223,12 @@ cadence: **take-orders** (`lend`, `borrow`), **repays** (`exit_borrow_primary`, 
 (`supply_collateral`, plus `withdraw_collateral` unless disabled — withdrawal is the risk
 signal), and **liquidations** (`partial_liquidation`, `full_liquidation`).
 
+A filled offer is one on-chain Take but surfaces as two API items — the buyer's `lend` and the
+seller's `borrow`. Legs whose trade-scoped fields all agree fold into a single alert (`… lend by
+<buyer> + … borrow by <seller>`, each leg keeping its own attributed amount), kept when either leg
+passes the filter. A counterparty leg that is an exit event instead, or one indexed late into a
+different tick, still alerts on its own — merging never drops a leg.
+
 Each tick enumerates markets (`MarketDirectory`: fixed `MARKET_IDS` or all active markets,
 TTL-cached), then per market queries
 `/v0/midnight/markets/{id}/transactions?sort_direction=asc&created_at_gte={watermark}` walking
