@@ -131,6 +131,17 @@ the base class owns the invariant tick pipeline (`state → fetch → toAlerts �
 `PollerRegistrar` registers one `cron` job per poller (`waitForCompletion` — an overlapping tick
 is skipped, never run concurrently) and awaits every in-flight tick on shutdown.
 
+The pollers at a glance (cadences are the defaults; each is a cron expression overridable via its
+env var):
+
+| Event name                                                                               | Poller name    | Poll cadence                          | REST endpoint                                                                          |
+| ---------------------------------------------------------------------------------------- | -------------- | ------------------------------------- | -------------------------------------------------------------------------------------- |
+| `lend`, `borrow`                                                                         | `take-orders`  | every 30 s (`POLL_CRON_TAKE_ORDERS`)  | `GET /v0/midnight/markets/{market-id}/transactions`                                    |
+| `exit_borrow_primary` (+ `exit_borrow_secondary` when `REPAYS_INCLUDE_SECONDARY=true`)   | `repays`       | every 30 s (`POLL_CRON_REPAYS`)       | `GET /v0/midnight/markets/{market-id}/transactions`                                    |
+| `supply_collateral` (+ `withdraw_collateral` unless `COLLATERAL_INCLUDE_WITHDRAW=false`) | `collateral`   | every 30 s (`POLL_CRON_COLLATERAL`)   | `GET /v0/midnight/markets/{market-id}/transactions`                                    |
+| `partial_liquidation`, `full_liquidation`                                                | `liquidations` | every 15 s (`POLL_CRON_LIQUIDATIONS`) | `GET /v0/midnight/markets/{market-id}/transactions`                                    |
+| make-offer snapshot diff (`created` / `updated` / `closed` — no API event type)          | `make-orders`  | every 30 s (`POLL_CRON_MAKE_ORDERS`)  | `GET /v0/midnight/books` → `GET /v0/midnight/books/{market-id}/{side}/takeable-offers` |
+
 Locked-in semantics:
 
 | Guarantee              | Mechanism                                                       |
