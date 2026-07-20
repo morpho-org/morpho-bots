@@ -29,7 +29,7 @@ class BlockingPoller extends Poller<number, string> {
       this.releaseTick = resolve
     })
     this.tickFinished = true
-    return { items: [], nextCursor: (cursor ?? 0) + 1 }
+    return { items: [], nextState: (cursor ?? 0) + 1 }
   }
 
   protected toAlerts() {
@@ -63,7 +63,7 @@ describe('PollerRegistrar', () => {
 
   it('fails boot loudly on duplicate poller ids', async () => {
     const deps = {
-      cursors: new InMemoryCursorStore(),
+      state: new InMemoryCursorStore(),
       dispatcher: capturingDispatcher(),
       logger: fakeLogger()
     }
@@ -85,7 +85,7 @@ describe('PollerRegistrar', () => {
 
   it('registers one cron job per poller on bootstrap', async () => {
     const deps = {
-      cursors: new InMemoryCursorStore(),
+      state: new InMemoryCursorStore(),
       dispatcher: capturingDispatcher(),
       logger: fakeLogger()
     }
@@ -100,7 +100,7 @@ describe('PollerRegistrar', () => {
 
   it('shutdown awaits the in-flight tick before resolving', async () => {
     const deps = {
-      cursors: new InMemoryCursorStore(),
+      state: new InMemoryCursorStore(),
       dispatcher: capturingDispatcher(),
       logger: fakeLogger()
     }

@@ -39,7 +39,7 @@ function makePoller(pages: Record<string, Page[]>, marketIds: string[]) {
   const poller = new MarketTransactionsPoller(
     { id: 'take-orders', cron: '*/30 * * * * *', eventTypes: ['lend', 'borrow'] },
     {
-      cursors,
+      state: cursors,
       dispatcher,
       logger,
       client,

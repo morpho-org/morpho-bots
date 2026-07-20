@@ -8,6 +8,12 @@ export type TransactionItem = components['schemas']['TransactionsResponse']['dat
 
 export type MidnightEventType = TransactionItem['event_type']
 
+/** One market's book snapshot: market metadata plus the top ask/bid price levels. */
+export type BookMarket = components['schemas']['BookCursorListResponse']['data'][number]
+
+/** A single executable offer on one book side, with the signed offer payload attached. */
+export type TakeableOffer = components['schemas']['ListBookTakeableOfferResponse']['data'][number]
+
 export const REQUEST_TIMEOUT_MS = 5_000
 
 /** Backstop on cursor-page walks so runaway pagination cannot stall a tick forever. */

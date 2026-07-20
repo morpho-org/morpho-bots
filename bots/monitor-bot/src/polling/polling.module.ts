@@ -7,6 +7,7 @@ import type { AlertDispatcher } from '../alerts/alert'
 import type { MonitorEnv } from '../config/env'
 import type { CursorStore } from '../cursor/cursor.store'
 import type { MidnightEventType } from '../midnight/client'
+import type { BootSnapshotStore } from '../snapshot/boot-snapshot.store'
 
 import { ALERT_DISPATCHER, LogAlertDispatcher } from '../alerts/alert'
 import { SlackDispatcher } from '../alerts/slack.dispatcher'
@@ -15,9 +16,10 @@ import { CURSOR_STORE, InMemoryCursorStore } from '../cursor/cursor.store'
 import { LOGGER } from '../logging/logger.provider'
 import { createMidnightClient } from '../midnight/client'
 import { MarketDirectory } from '../midnight/markets'
+import { BookOffersPoller } from '../pollers/book-offers.poller'
 import { TransactionFilter } from '../pollers/filter'
 import { MarketTransactionsPoller } from '../pollers/market-transactions.poller'
-import { OfferGroupsPoller } from '../pollers/offer-groups.poller'
+import { BOOT_SNAPSHOT_STORE, InMemoryBootSnapshotStore } from '../snapshot/boot-snapshot.store'
 import { POLLERS } from './poller'
 import { PollerRegistrar } from './poller.registrar'
 
@@ -48,6 +50,7 @@ function buildPollers(
   env: MonitorEnv,
   logger: Logger,
   cursors: CursorStore,
+  snapshots: BootSnapshotStore,
   dispatcher: AlertDispatcher
 ) {
   const client = createMidnightClient(env.MIDNIGHT_API_URL)
@@ -61,21 +64,22 @@ function buildPollers(
     minAssets: env.FILTER_MIN_ASSETS,
     users: env.FILTER_USERS
   })
-  const deps = { cursors, dispatcher, logger, client, directory, filter }
-  const pollers: (MarketTransactionsPoller | OfferGroupsPoller)[] = pollerDefinitions(env).map(
+  // Transaction pollers resume from a watermark, so their state is a cursor.
+  const deps = { state: cursors, dispatcher, logger, client, directory, filter }
+  const pollers: (MarketTransactionsPoller | BookOffersPoller)[] = pollerDefinitions(env).map(
     options => new MarketTransactionsPoller(options, deps)
   )
-  // Make orders have no protocol-wide feed — the poller only exists when makers are configured.
-  if (env.WATCH_MAKERS.length > 0) {
-    pollers.push(
-      new OfferGroupsPoller(
-        { cron: env.POLL_CRON_MAKE_ORDERS, makers: env.WATCH_MAKERS },
-        { cursors, dispatcher, logger, client, minAssets: env.FILTER_MIN_ASSETS }
-      )
+  // Make orders are read straight off the books, so this poller is always on — it scopes itself
+  // with MARKET_IDS when set and sweeps every active book otherwise. It does not use the
+  // MarketDirectory: `/v0/midnight/books` is itself the active-market universe for books, and it
+  // already carries the price levels needed to skip empty sides and size unit-capped offers.
+  // Its state is a BootSnapshotStore, not a cursor — the book has no change feed to resume within.
+  pollers.push(
+    new BookOffersPoller(
+      { cron: env.POLL_CRON_MAKE_ORDERS, marketIds: env.MARKET_IDS },
+      { state: snapshots, dispatcher, logger, client, minAssets: env.FILTER_MIN_ASSETS }
     )
-  } else {
-    logger.info('make_orders.disabled', { reason: 'WATCH_MAKERS is empty' })
-  }
+  )
   return pollers
 }
 
@@ -101,11 +105,12 @@ export function buildDispatcher(env: MonitorEnv, logger: Logger): AlertDispatche
   imports: [ScheduleModule.forRoot()],
   providers: [
     { provide: CURSOR_STORE, useClass: InMemoryCursorStore },
+    { provide: BOOT_SNAPSHOT_STORE, useClass: InMemoryBootSnapshotStore },
     { provide: ALERT_DISPATCHER, useFactory: buildDispatcher, inject: [ENV, LOGGER] },
     {
       provide: POLLERS,
       useFactory: buildPollers,
-      inject: [ENV, LOGGER, CURSOR_STORE, ALERT_DISPATCHER]
+      inject: [ENV, LOGGER, CURSOR_STORE, BOOT_SNAPSHOT_STORE, ALERT_DISPATCHER]
     },
     PollerRegistrar
   ]

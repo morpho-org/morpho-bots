@@ -6,7 +6,7 @@ import { InMemoryCursorStore } from '../../src/cursor/cursor.store'
 import { Poller, type PollerDependencies } from '../../src/polling/poller'
 import { capturingDispatcher, fakeLogger } from '../helpers'
 
-type FetchResult = { items: string[]; nextCursor: number }
+type FetchResult = { items: string[]; nextState: number }
 
 // Sample implementation of the generic poller: cursor is a number, items are strings, one alert
 // per item unless toAlerts is overridden.
@@ -44,14 +44,14 @@ class SamplePoller extends Poller<number, string> {
 function makeDeps() {
   const cursors = new InMemoryCursorStore()
   const dispatcher = capturingDispatcher()
-  return { cursors, dispatcher, deps: { cursors, dispatcher, logger: fakeLogger() } }
+  return { cursors, dispatcher, deps: { state: cursors, dispatcher, logger: fakeLogger() } }
 }
 
 describe('Poller.pollOnce', () => {
   it('passes null on the first tick and the saved cursor on the next', async () => {
     const { deps } = makeDeps()
     const poller = new SamplePoller(deps, {
-      fetch: cursor => Promise.resolve({ items: [], nextCursor: (cursor ?? 0) + 1 })
+      fetch: cursor => Promise.resolve({ items: [], nextState: (cursor ?? 0) + 1 })
     })
     await poller.pollOnce()
     await poller.pollOnce()
@@ -61,7 +61,7 @@ describe('Poller.pollOnce', () => {
   it('advances the cursor after a successful dispatch', async () => {
     const { cursors, dispatcher, deps } = makeDeps()
     const poller = new SamplePoller(deps, {
-      fetch: () => Promise.resolve({ items: ['a', 'b'], nextCursor: 7 })
+      fetch: () => Promise.resolve({ items: ['a', 'b'], nextState: 7 })
     })
     await poller.pollOnce()
     expect(await cursors.get('sample')).toBe(7)
@@ -86,7 +86,7 @@ describe('Poller.pollOnce', () => {
   it('does not advance the cursor when dispatch fails, then retries the same window', async () => {
     const { cursors, dispatcher, deps } = makeDeps()
     const poller = new SamplePoller(deps, {
-      fetch: () => Promise.resolve({ items: ['a'], nextCursor: 3 })
+      fetch: () => Promise.resolve({ items: ['a'], nextState: 3 })
     })
     dispatcher.failNext()
     await expect(poller.pollOnce()).rejects.toThrow('dispatch failed')
@@ -102,7 +102,7 @@ describe('Poller.pollOnce', () => {
   it('does not advance the cursor when toAlerts fails', async () => {
     const { cursors, dispatcher, deps } = makeDeps()
     const poller = new SamplePoller(deps, {
-      fetch: () => Promise.resolve({ items: ['a'], nextCursor: 9 }),
+      fetch: () => Promise.resolve({ items: ['a'], nextState: 9 }),
       toAlerts: () => {
         throw new Error('mapping failed')
       }
@@ -115,7 +115,7 @@ describe('Poller.pollOnce', () => {
   it('skips dispatch entirely for an empty alert list but still advances the cursor', async () => {
     const { cursors, dispatcher, deps } = makeDeps()
     const poller = new SamplePoller(deps, {
-      fetch: () => Promise.resolve({ items: ['ignored'], nextCursor: 5 }),
+      fetch: () => Promise.resolve({ items: ['ignored'], nextState: 5 }),
       toAlerts: () => []
     })
     await poller.pollOnce()

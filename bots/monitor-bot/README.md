@@ -1,6 +1,6 @@
 # Monitor Bot
 
-A NestJS service that polls Morpho Midnight REST endpoints with cursor-tracked pollers and posts
+A NestJS service that polls Morpho Midnight REST endpoints with state-tracked pollers and posts
 notifications to a configured Slack channel.
 
 ## Status
@@ -41,7 +41,6 @@ missing or malformed.
 | `POLL_CRON_LIQUIDATIONS`      | no       | `*/15 * * * * *`         | Liquidations poller cadence                      |
 | `REPAYS_INCLUDE_SECONDARY`    | no       | `false`                  | Also treat debt closed via trade as a repay      |
 | `COLLATERAL_INCLUDE_WITHDRAW` | no       | `true`                   | Also alert on collateral withdrawals             |
-| `WATCH_MAKERS`                | no       | — (poller disabled)      | Makers whose offer groups are watched            |
 | `POLL_CRON_MAKE_ORDERS`       | no       | `*/30 * * * * *`         | Make-orders poller cadence                       |
 | `SLACK_CHANNEL`               | no       | — (log-only alerts)      | Slack channel id for alerts                      |
 | `SLACK_BOT_TOKEN`             | no       | —                        | Slack bot token (secret, with `SLACK_CHANNEL`)   |
@@ -113,8 +112,8 @@ integration checks in later PRs.
 ### Polling
 
 The generic polling foundation lives in `src/polling/`. Each endpoint poller extends
-`Poller<TCursor, TItem>` and supplies only `fetch` (cursor → items + next cursor) and `toAlerts`;
-the base class owns the invariant tick pipeline (`cursor → fetch → toAlerts → dispatch → save`).
+`Poller<TState, TItem>` and supplies only `fetch` (state → items + next state) and `toAlerts`;
+the base class owns the invariant tick pipeline (`state → fetch → toAlerts → dispatch → save`).
 `PollerRegistrar` registers one `cron` job per poller (`waitForCompletion` — an overlapping tick
 is skipped, never run concurrently) and awaits every in-flight tick on shutdown.
 
@@ -122,15 +121,35 @@ Locked-in semantics:
 
 | Guarantee              | Mechanism                                                       |
 | ---------------------- | --------------------------------------------------------------- |
-| At-least-once delivery | Cursor saves only after a successful dispatch                   |
-| Failed-request restart | A failed tick never advances the cursor; the next tick retries  |
+| At-least-once delivery | State saves only after a successful dispatch                    |
+| Failed-request restart | A failed tick never saves state; the next tick retries          |
 | No overlapping ticks   | `cron` `waitForCompletion` skips ticks while one runs           |
 | Graceful shutdown      | Registrar holds its own job refs and awaits `stop()` on SIGTERM |
 | Configurable period    | `cron` expression is an instance property, sourced from config  |
 
-Cursors are held in-process only (`InMemoryCursorStore`), matching the repo's
-cross-tick-state philosophy — nothing is persisted to disk and API truth wins on restart. The
-`CursorStore` interface keeps a file/db-backed store a drop-in replacement.
+#### Cursors vs boot snapshots
+
+Cross-tick state comes in two kinds. The base class depends on the neutral `PollerStateStore`
+shape; the two concrete stores have separate types and separate DI tokens because they mean
+different things — and because only one of them would ever be safe to persist.
+
+| Store               | Holds                         | Used by             | Persistable?      |
+| ------------------- | ----------------------------- | ------------------- | ----------------- |
+| `CursorStore`       | A resume position (watermark) | Transaction pollers | Yes, in principle |
+| `BootSnapshotStore` | The previous observation      | `make-orders`       | **No — never**    |
+
+A **cursor** is a position you fetch forward from: the transaction pollers keep
+`{lastCreatedAt, seenIds}` per market and ask the API for everything after it. `InMemoryCursorStore`
+is in-process only today, matching the repo's cross-tick-state philosophy, but the interface keeps
+a file/db-backed store a drop-in replacement if replay-across-restarts is ever wanted.
+
+A **boot snapshot** is not a cursor and calling it one was a mistake worth correcting. The book has
+no change feed — only an active-only view of what is true right now — so there is no position to
+resume from. The state _is_ the previous observation, and items come from diffing it. Its lifetime
+is exactly one process lifetime: the first tick after boot establishes a silent baseline, and a
+restart drops it so the next boot re-baselines. Persisting one would be a bug, not an upgrade: a
+stale snapshot diffed against live data reports every change made while the process was down as if
+it had just happened.
 
 Alert delivery is pluggable behind the `ALERT_DISPATCHER` DI token. With `SLACK_CHANNEL` +
 `SLACK_BOT_TOKEN` set, `SlackDispatcher` posts to Slack via `chat.postMessage` (bot token, so the
@@ -138,7 +157,7 @@ channel is env-configurable; the bot needs the `chat:write` scope and must be in
 channel). Severity maps to a leading emoji (ℹ️ / ⚠️ / 🚨); every API-sourced string is escaped
 (`& < >`) so alert content can never inject a `<!channel>` or `<@id>` mention; ≤10 alerts per
 message keeps Slack's block limit clear; 429s honor `Retry-After`. A Slack failure (network,
-`ok:false`) logs `slack.error` AND throws — the poller keeps its cursor and re-sends the same
+`ok:false`) logs `slack.error` AND throws — the poller keeps its state and re-sends the same
 window next tick (at-least-once; the alert `key` is the dedupe handle if consumers need it).
 Setting exactly one of channel/token fails the boot. With neither set, alerts go through
 `LogAlertDispatcher` — one structured `alert` log line each.
@@ -159,16 +178,44 @@ pagination cursors, dedupes by stable item id at the (inclusive) watermark secon
 
 ### Make-order poller
 
-There is no protocol-wide make-order feed: offers are off-chain EIP-712 signatures, and
-`/v0/midnight/users/{user}/offer-groups` is a per-user, **active-only snapshot**. The
-`make-orders` poller therefore watches the configured `WATCH_MAKERS` (disabled when empty) and
-**diffs snapshots**: new groups, size changes (`max_assets`/`max_units`), and disappearances
-(cancelled / expired / fully consumed — indistinguishable in a snapshot). `consumed` increases
-are deliberately ignored — that is take activity, already covered by the transaction pollers.
-The first tick per maker is a quiet baseline (no boot-time spam of the standing book); make-order
-alerts carry no tx link (nothing is on-chain until an offer is taken) and are identified by
-group id + maker. A created-and-fully-consumed-between-polls offer is missed here by design — its
-take still shows in the tx pollers.
+The `make-orders` poller reads the **book**, not a maker allowlist. Each tick lists
+`/v0/midnight/books` (active markets only — past maturities excluded; `MARKET_IDS` narrows it via
+the `ids` filter, otherwise the cursor is walked to sweep everything), then expands each market's
+populated sides through `/v0/midnight/books/{id}/{side}/takeable-offers` to individual signed
+offers. A side with no price levels is skipped only if it was also empty last tick — levels are
+aggregated _executable_ liquidity from a different endpoint than the offers, and takeable-offers
+retains non-executable offers with `units: 0`, so a side can report zero levels while its offers
+still stand. Skipping unconditionally would close every bucket on it and re-open them next tick.
+
+Offers are off-chain EIP-712 signatures with no server-side id and no change feed, so the poller
+**diffs snapshots**. Identity is `(market, side, maker, group, tick)` — the fields that survive
+the cancel-and-re-sign a maker performs to change an offer; offers sharing those fields are one
+bucket with summed caps. Alert-worthy changes are new buckets, signed-cap changes
+(`max_units`/`max_assets`), and disappearances (cancelled / expired / fully consumed —
+indistinguishable in a snapshot). Expiry rolls and the takeable `units` field are deliberately
+ignored: offers re-sign constantly, and takes are already covered by the transaction pollers.
+Make-order alerts carry no tx link (nothing is on-chain until an offer is taken).
+
+Boundaries worth knowing:
+
+- The first tick per market is a quiet baseline — no boot-time spam of the standing book.
+- A market that leaves the book listing (matured, delisted, or a transient gap) has its snapshot
+  forgotten rather than reported as a wall of `closed` alerts, and re-baselines quietly if it
+  returns. Changes during such a gap are missed.
+- `takeable-offers` is unpaginated and trims to the best-priced 1000. A side at that limit is
+  treated as a **failed market** (snapshot carried, retried, `poll.offers_capped` logged) rather
+  than diffed — a truncated tail would fabricate `closed`/`created` pairs every tick.
+- A truncated book listing aborts the whole tick (snapshot untouched) for the same reason.
+- `FILTER_MIN_ASSETS` compares loan-token assets, and **binds narrowly here**. The books list
+  response carries only the **top 3 levels per side**, so a unit-capped offer (`max_assets` = 0)
+  can be sized only when its tick is among those 3 — otherwise it is passed through the filter
+  rather than dropped (a wrong drop loses an alert permanently; a wrong pass is only noise). Most
+  `closed` events are unpriced for this reason, since a bucket usually vanishes precisely because
+  its tick drained. Asset-capped offers always size exactly. Making the filter bind everywhere
+  needs full-depth levels (`books/{id}?depth=`, one request per market) — deferred, as the filter
+  defaults to off.
+- A created-and-fully-consumed-between-polls offer is missed by design — its take still shows in
+  the tx pollers.
 
 With no saved position (first tick, restart, new market) a poller anchors at _now_ — history is
 never replayed; the skipped window is logged as `poll.anchor`. Every fetch after the anchor tick

@@ -77,13 +77,13 @@ export class MarketTransactionsPoller extends Poller<TxCursor, TransactionItem> 
     // No saved position (first tick, restart, or newly-discovered market): anchor at now rather
     // than replaying history; the skipped window is surfaced via poll.anchor.
     const anchor = Math.floor((this.ext.now?.() ?? Date.now()) / 1000)
-    const nextCursor: TxCursor = {}
+    const nextState: TxCursor = {}
     const items: TransactionItem[] = []
     let failures = 0
     for (const batch of chunk(marketIds, MARKET_CONCURRENCY)) {
       const results = await Promise.all(batch.map(id => this.pollMarket(id, cursor, anchor)))
       for (const result of results) {
-        nextCursor[result.marketId] = result.cursor
+        nextState[result.marketId] = result.cursor
         if (result.fresh === null) failures++
         else items.push(...result.fresh)
       }
@@ -94,7 +94,7 @@ export class MarketTransactionsPoller extends Poller<TxCursor, TransactionItem> 
       throw new Error(`all ${failures} markets failed`)
     }
     items.sort((a, b) => a.created_at - b.created_at)
-    return { items, nextCursor }
+    return { items, nextState }
   }
 
   // One market's fetch, error-isolated: a market that persistently fails (e.g. delisted id
