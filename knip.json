@@ -7,12 +7,17 @@
     ".": {},
     "packages/typescript-config": {},
     "packages/utils": {},
-    "packages/contracts": {},
+    "packages/contracts": {
+      "entry": ["src/index.ts", "scripts/*.ts"]
+    },
     "packages/bot-kit": {},
     "packages/swaps": {},
     "bots/midnight-liquidation": {
+      "entry": ["src/index.ts", "scripts/*.ts", "scripts/seed/*.ts"],
       "ignore": ["src/generated/**"]
     },
-    "bots/blue-liquidation": {}
+    "bots/blue-liquidation": {
+      "entry": ["src/index.ts", "scripts/*.ts"]
+    }
   }
 }

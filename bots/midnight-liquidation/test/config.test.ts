@@ -1,9 +1,9 @@
 import type { Address } from 'viem'
 
 import { Executor } from '@repo/contracts'
-import { describe, expect, it } from 'bun:test'
 import { getAddress, parseGwei } from 'viem'
 import { mainnet } from 'viem/chains'
+import { describe, expect, it } from 'vitest'
 
 import type { ChainConfig, Config } from '../src/config'
 

@@ -58,7 +58,7 @@ Review the provided PR thoroughly and interactively guide the user through each 
      destructured object; omit inferable type annotations; helper-before-main ordering.
    - **Error Handling**: explicit handling, typed errors, structured logs with bot/operation/inputs
      context, `tryCatch` from `@repo/utils` for promise throws.
-   - **Environment Variables**: direct `Bun.env.VARIABLE_NAME` access; fail loudly at startup if a
+   - **Environment Variables**: direct `process.env.VARIABLE_NAME` access; fail loudly at startup if a
      required var is missing; never commit secrets.
    - **Performance Considerations**: batch on-chain reads (`readDeploylessBatchLens` for Lens-shaped
      data, `multicall` for heterogeneous reads); use explicit block tags for deterministic
@@ -116,7 +116,7 @@ Review the provided PR thoroughly and interactively guide the user through each 
 5. **Use Context7 MCP**: When reviewing implementation details, use the Context7 MCP tools to verify
    against official documentation for:
    - viem (contract interactions, encoding, decoding, transports)
-   - pnpm (workspaces, lockfile semantics) and bun (runtime, test runner)
+   - pnpm (workspaces, lockfile semantics), vitest, node + esbuild bundling
 
 6. **TIB Consideration**: Check if the PR introduces changes that warrant a Technical Intent Brief
    (TIB) (see `docs/GUIDANCE.md`). Flag as "Minor" severity if the PR:
@@ -194,7 +194,7 @@ Review the provided PR thoroughly and interactively guide the user through each 
      `--sandbox danger-full-access`, `git push --force`)? Flag any escalation of tool access or
      sandbox permissions.
    - **Evaluation completeness**: For review-type commands or checklists, are there gaps in
-     coverage given the codebase's stack (viem, multi-chain, pnpm, bun, oxlint)?
+     coverage given the codebase's stack (viem, multi-chain, pnpm, vitest, oxlint)?
    - **Cross-reference accuracy**: If the file references other files (TIBs, CONVENTIONS.md
      sections, other commands), verify those references are valid and up to date.
 

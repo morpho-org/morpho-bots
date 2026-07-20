@@ -17,11 +17,11 @@
  * offer/ratifier path before the other N-1 are touched). `--dry-run` runs discovery + all
  * cryptographic self-checks + prints the capital plan, and sends nothing.
  *
- * Run from the bot directory (so the bunfig soltag preload compiles the lens). `--config` is this
+ * Run via `pnpm run seed:positions` (bundles with the soltag transform first). `--config` is this
  * tool's OWN swap-route file (it needs a WETH route to fund the seed swaps); it is unrelated to the
  * bot's runtime, which no longer uses a swap-config file:
  *   RPC_URL=... PRIVATE_KEY_LENDER=0x... PRIVATE_KEY_BORROWER=0x... \
- *     bun scripts/seed-liquidatable-positions.ts \
+ *     pnpm run seed:positions -- \
  *       --config ./swap.config.json --pair WETH/USDC --count 100 --drawdown-bps 0 --dry-run
  *
  * Never prints secrets (keys, full RPC URL).
@@ -33,6 +33,7 @@ import { MidnightAbi } from '@repo/contracts'
 import { parseSwapConfig } from '@repo/swaps'
 import { delay as sleep, lensKey, tryCatch } from '@repo/utils'
 import { readFileSync } from 'node:fs'
+import { createInterface } from 'node:readline/promises'
 import { parseArgs } from 'node:util'
 import {
   createPublicClient,
@@ -591,6 +592,14 @@ async function txStep({
   return result
 }
 
+/** y/N prompt on stdin (replaces bun's global `confirm`). */
+async function confirmPrompt(question: string): Promise<boolean> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  const answer = await rl.question(`${question} [y/N] `)
+  rl.close()
+  return /^y(es)?$/i.test(answer.trim())
+}
+
 async function main() {
   const args = parseCliArgs()
   const logger = createLogger('info')
@@ -768,7 +777,7 @@ async function main() {
     logger.info('seed.dry_run_complete', { detail: 'self-checks passed; no transactions sent' })
     return
   }
-  if (!args.yes && !confirm('Proceed to send REAL transactions on Base mainnet?')) {
+  if (!args.yes && !(await confirmPrompt('Proceed to send REAL transactions on Base mainnet?'))) {
     logger.warn('seed.aborted', { detail: 'user declined' })
     return
   }

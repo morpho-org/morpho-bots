@@ -11,18 +11,20 @@
     }
   },
   "scripts": {
-    "generate": "bun run scripts/codegen.ts && oxfmt src/abis.ts src/contracts.ts",
-    "build": "soltag && bun run scripts/build.ts && tsc -p tsconfig.build.json --emitDeclarationOnly",
-    "deploy:executor": "bun run build && bun run scripts/deploy-executor.ts",
+    "generate": "tsx scripts/codegen.ts && oxfmt src/abis.ts src/contracts.ts",
+    "build": "soltag && tsx scripts/build.ts && tsc -p tsconfig.build.json --emitDeclarationOnly",
+    "deploy:executor": "pnpm run build && tsx scripts/deploy-executor.ts",
     "typecheck": "soltag && tsc --noEmit",
     "format:sol": "forge fmt",
     "format:sol:check": "forge fmt --check"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
-    "@types/bun": "catalog:",
+    "@types/node": "catalog:",
+    "esbuild": "catalog:",
     "solc": "catalog:",
     "soltag": "catalog:",
+    "tsx": "catalog:",
     "typescript": "catalog:",
     "viem": "catalog:"
   }

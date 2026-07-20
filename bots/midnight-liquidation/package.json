@@ -5,11 +5,12 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "deploy:railway": "bun run scripts/deploy-railway.ts",
-    "seed:positions": "bun run scripts/seed-liquidatable-positions.ts",
-    "prestart": "pnpm -r --parallel --if-present run build",
-    "start": "bun src/index.ts",
-    "typecheck": "soltag && tsc --noEmit"
+    "deploy:railway": "tsx scripts/deploy-railway.ts",
+    "seed:positions": "pnpm run build && node dist/scripts/seed-liquidatable-positions.js",
+    "prestart": "pnpm -r --if-present run build",
+    "start": "node dist/src/index.js",
+    "typecheck": "soltag && tsc --noEmit",
+    "build": "soltag && tsx scripts/build.ts"
   },
   "dependencies": {
     "@repo/bot-kit": "workspace:*",
@@ -24,7 +25,12 @@
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
-    "@types/bun": "catalog:",
-    "typescript": "catalog:"
+    "@types/node": "catalog:",
+    "esbuild": "catalog:",
+    "execa": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:"
   }
 }

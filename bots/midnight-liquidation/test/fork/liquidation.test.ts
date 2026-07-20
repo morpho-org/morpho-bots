@@ -10,9 +10,9 @@ import {
 } from '@repo/bot-kit'
 import { quoteUniswapV3 } from '@repo/swaps'
 import { lensKey } from '@repo/utils'
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
 import { erc20Abi, parseGwei } from 'viem'
 import { base } from 'viem/chains'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { encodeLiquidationExec } from '../../src/execution/encode-call'
 import { expectedLoanOut } from '../../src/execution/swap-step'

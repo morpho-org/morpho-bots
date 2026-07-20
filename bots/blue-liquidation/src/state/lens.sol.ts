@@ -24,7 +24,8 @@ import { marketId } from '../market'
 // re-derives the id from the supplied params on-chain, so mismatched params read an uncreated market
 // and return valid=false.
 //
-// Compiled to a deployless factory by the soltag bun preload (see ../../soltag.preload.ts); `sol```
+// Compiled to a deployless factory by the soltag transform (vitest plugin in tests, esbuild plugin
+// in the bundled build); `sol```
 // throws if not active.
 export const BlueLiquidationLens = sol('BlueLiquidationLens')`
 // SPDX-License-Identifier: GPL-2.0-or-later

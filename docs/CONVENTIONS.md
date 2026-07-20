@@ -54,7 +54,7 @@
 
 ### Environment Variables
 
-- **Direct `Bun.env` access**: Bots read `Bun.env.VARIABLE_NAME` directly at the point of use.
+- **Direct `process.env` access**: Bots read `process.env.VARIABLE_NAME` directly at the point of use.
   There is no helper wrapper and no runtime schema layer — if a required variable is missing,
   fail loudly at startup (throw and exit), don't silently degrade.
 - **Never committed**: Secrets and runtime config live in local `.env` files or deploy-time
@@ -99,7 +99,7 @@
 - **Assertion Precision**: Use exact matchers (`toBe`, `toEqual`, `toStrictEqual`); only use
   approximate matchers (e.g., floating-point arithmetic, time-dependent values) with a comment
   explaining why exact matching is not feasible.
-- **Bun test runner**: Tests run under `bun test`. The runner is Vitest-compatible; existing
+- **Vitest**: Tests run under `pnpm test` (vitest). Existing
   Vitest-style assertions and spies carry over.
 
 ### Testing Anti-Patterns

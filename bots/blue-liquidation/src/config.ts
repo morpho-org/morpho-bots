@@ -282,7 +282,7 @@ function addressListEnv(env: Env, name: string): Address[] {
  * singleton hold code) are performed in `index.ts` once a public client exists.
  */
 export function loadConfig(
-  env: Env = Bun.env,
+  env: Env = process.env,
   deps: { chainMap?: Record<number, ChainConfig> } = {}
 ): Config {
   const chainMap = deps.chainMap ?? CHAIN_MAP

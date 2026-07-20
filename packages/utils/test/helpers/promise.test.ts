@@ -1,4 +1,4 @@
-import { describe, expect, it, mock } from 'bun:test'
+import { describe, expect, it, vi } from 'vitest'
 
 import { allFulfilled } from '../../src/helpers/promise'
 
@@ -18,7 +18,7 @@ describe('allFulfilled', () => {
   })
 
   it('calls onRejected for each rejected promise with reason and index', async () => {
-    const onRejected = mock()
+    const onRejected = vi.fn()
     const error = new Error('boom')
 
     await allFulfilled([Promise.resolve(1), Promise.reject(error), Promise.resolve(3)], onRejected)
@@ -28,7 +28,7 @@ describe('allFulfilled', () => {
   })
 
   it('calls onRejected for multiple rejected promises with correct indices', async () => {
-    const onRejected = mock()
+    const onRejected = vi.fn()
     const error1 = new Error('first')
     const error2 = new Error('second')
 
@@ -44,7 +44,7 @@ describe('allFulfilled', () => {
   })
 
   it('calls onRejected with non-Error rejection reasons', async () => {
-    const onRejected = mock()
+    const onRejected = vi.fn()
 
     await allFulfilled([Promise.reject('string reason'), Promise.reject(42)], onRejected)
 
@@ -54,7 +54,7 @@ describe('allFulfilled', () => {
   })
 
   it('does not call onRejected when all promises fulfill', async () => {
-    const onRejected = mock()
+    const onRejected = vi.fn()
 
     await allFulfilled([Promise.resolve(1), Promise.resolve(2)], onRejected)
 

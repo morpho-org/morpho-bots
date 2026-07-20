@@ -1,7 +1,7 @@
 import { createLogger, createPendingQueue, createSigner, initialFees } from '@repo/bot-kit'
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
 import { parseGwei } from 'viem'
 import { base } from 'viem/chains'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import {
   type ForkHandle,

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Logger, LogLevel } from '../src/logger'
 
@@ -19,7 +19,7 @@ function captureLogger() {
 }
 
 describe('createHeartbeatMonitor', () => {
-  afterEach(() => mock.restore())
+  afterEach(() => vi.restoreAllMocks())
 
   it('is inert when the URL is unset', async () => {
     const { logger } = captureLogger()
@@ -40,7 +40,7 @@ describe('createHeartbeatMonitor', () => {
     const { logger } = captureLogger()
     const urls: string[] = []
     let callback: (() => void) | undefined
-    const setIntervalSpy = spyOn(globalThis, 'setInterval').mockImplementation(((
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval').mockImplementation(((
       ...args: Parameters<typeof setInterval>
     ) => {
       const [handler, delay] = args

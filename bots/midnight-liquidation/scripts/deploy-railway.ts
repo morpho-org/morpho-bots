@@ -26,16 +26,18 @@
  * its value; variable values are never logged.
  */
 import { delay, tryCatch } from '@repo/utils'
-import { $ } from 'bun'
+import { $ } from 'execa'
+import { dirname } from 'node:path'
 import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 // The target project is env-driven so no project identifier is baked into this (open-source) file.
 // RAILWAY_PROJECT_ID is required; RAILWAY_ENVIRONMENT defaults to the conventional `production`.
-const PROJECT_ID = required(Bun.env, 'RAILWAY_PROJECT_ID')
-const ENVIRONMENT = Bun.env.RAILWAY_ENVIRONMENT?.trim() || 'production'
+const PROJECT_ID = required(process.env, 'RAILWAY_PROJECT_ID')
+const ENVIRONMENT = process.env.RAILWAY_ENVIRONMENT?.trim() || 'production'
 const DOCKERFILE_PATH = 'bots/midnight-liquidation/Dockerfile'
 // Repo root is three levels up from this file (scripts → midnight-liquidation → bots → repo root).
-const REPO_ROOT = resolve(import.meta.dir, '..', '..', '..')
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 
 type Env = Record<string, string | undefined>
 type RailwayService = { id: string; name: string }
@@ -63,7 +65,7 @@ function str(value: unknown): string {
 }
 
 // Surface a failed `railway` command's stderr so failures are actionable (the CLI writes the real
-// reason — plan limits, auth, selection prompts — to stderr). Bun's ShellError carries `.stderr` as
+// reason — plan limits, auth, selection prompts — to stderr). execa's error carries `.stderr` as
 // bytes; fall back to the generic message. Safe for non-secret commands; never used on setSecret.
 function stderrOf(error: unknown): string {
   if (isRecord(error) && 'stderr' in error) {
@@ -108,7 +110,7 @@ function parseLatestStatus(raw: string): string {
 }
 
 async function assertCli(): Promise<void> {
-  const { error } = await tryCatch(Promise.resolve($`railway --version`.quiet()))
+  const { error } = await tryCatch(Promise.resolve($`railway --version`))
   if (error)
     throw new Error('Railway CLI not found. Install it: https://docs.railway.com/guides/cli')
 }
@@ -116,12 +118,12 @@ async function assertCli(): Promise<void> {
 // `railway add` has no --project/--environment flag, so it acts on the linked context. A project
 // token scopes every command implicitly; otherwise we link the project id once for this run.
 async function ensureContext(): Promise<void> {
-  if (Bun.env.RAILWAY_TOKEN) {
+  if (process.env.RAILWAY_TOKEN) {
     console.log('Using RAILWAY_TOKEN for project context.')
     return
   }
   const { error } = await tryCatch(
-    Promise.resolve($`railway link -p ${PROJECT_ID} -e ${ENVIRONMENT}`.quiet())
+    Promise.resolve($`railway link -p ${PROJECT_ID} -e ${ENVIRONMENT}`)
   )
   if (error) {
     throw new Error(
@@ -133,7 +135,7 @@ async function ensureContext(): Promise<void> {
 
 async function listServices(): Promise<RailwayService[]> {
   const { data, error } = await tryCatch(
-    Promise.resolve($`railway service list --json`.quiet().text())
+    Promise.resolve($`railway service list --json`.then(r => r.stdout))
   )
   return error || typeof data !== 'string' ? [] : parseServices(data)
 }
@@ -144,7 +146,7 @@ async function ensureService(name: string): Promise<void> {
     return
   }
   console.log(`Creating service ${name}…`)
-  const { error } = await tryCatch(Promise.resolve($`railway add --service ${name} --json`.quiet()))
+  const { error } = await tryCatch(Promise.resolve($`railway add --service ${name} --json`))
   if (error) throw new Error(`Failed to create service ${name}: ${stderrOf(error)}`)
 }
 
@@ -152,7 +154,7 @@ async function ensureService(name: string): Promise<void> {
 async function setVar(service: string, kv: string): Promise<void> {
   const key = kv.split('=')[0]
   const { error } = await tryCatch(
-    Promise.resolve($`railway variable set ${kv} -s ${service} --skip-deploys`.quiet())
+    Promise.resolve($`railway variable set ${kv} -s ${service} --skip-deploys`)
   )
   if (error) throw new Error(`Failed to set ${key} on ${service}: ${stderrOf(error)}`)
   console.log(`Set ${key} on ${service}.`)
@@ -162,7 +164,7 @@ async function setVar(service: string, kv: string): Promise<void> {
 async function setSecret(service: string, key: string, value: string): Promise<void> {
   const { error } = await tryCatch(
     Promise.resolve(
-      $`railway variable set ${key} --stdin -s ${service} --skip-deploys < ${Buffer.from(value, 'utf8')}`.quiet()
+      $({ input: value })`railway variable set ${key} --stdin -s ${service} --skip-deploys`
     )
   )
   if (error) throw new Error(`Failed to set ${key} on ${service}`)
@@ -172,13 +174,13 @@ async function setSecret(service: string, key: string, value: string): Promise<v
 async function deployService(service: string): Promise<void> {
   console.log(`Deploying ${service} from repo root…`)
   // `railway up` runs with cwd = REPO_ROOT (build context), but the script only ever links the
-  // *package* dir (ensureContext, which is where bun runs it). Railway links are per-directory, so
+  // *package* dir (ensureContext, which is where the script runs). Railway links are per-directory, so
   // without explicit flags `up` would inherit whatever REPO_ROOT happens to be linked to — e.g. a
   // sibling bot's project after its last deploy, which fails with "No environment specified" or, worse,
   // targets the wrong project. Scope the deploy explicitly so it never depends on ambient link state.
   const { error } = await tryCatch(
     Promise.resolve(
-      $`railway up -s ${service} -p ${PROJECT_ID} -e ${ENVIRONMENT} -d`.cwd(REPO_ROOT).quiet()
+      $({ cwd: REPO_ROOT })`railway up -s ${service} -p ${PROJECT_ID} -e ${ENVIRONMENT} -d`
     )
   )
   if (error) throw new Error(`Failed to start deploy for ${service}: ${stderrOf(error)}`)
@@ -186,21 +188,13 @@ async function deployService(service: string): Promise<void> {
 
 async function latestStatus(service: string): Promise<string> {
   // -e/-p explicit for the same reason as deployService: don't depend on ambient link state.
-  const args = [
-    'railway',
-    'deployment',
-    'list',
-    '-s',
-    service,
-    '-e',
-    ENVIRONMENT,
-    '-p',
-    PROJECT_ID,
-    '--limit',
-    '1',
-    '--json'
-  ]
-  const { data, error } = await tryCatch(Promise.resolve($`${args}`.quiet().text()))
+  const { data, error } = await tryCatch(
+    Promise.resolve(
+      $`railway deployment list -s ${service} -e ${ENVIRONMENT} -p ${PROJECT_ID} --limit 1 --json`.then(
+        r => r.stdout
+      )
+    )
+  )
   return error || typeof data !== 'string' ? 'UNKNOWN' : parseLatestStatus(data)
 }
 
@@ -228,7 +222,7 @@ const BOT_SERVICE = serviceName('bot')
 // stage GitHub Environment holds only RAILWAY_TOKEN + RAILWAY_PROJECT_ID, and the service/secrets
 // were provisioned once by a full (secret-bearing) run of this script. Skips the RPC/key/venue
 // requirements the full path enforces, so it never needs those secrets in CI.
-if (/^(1|true)$/i.test(Bun.env.DEPLOY_ONLY?.trim() ?? '')) {
+if (/^(1|true)$/i.test(process.env.DEPLOY_ONLY?.trim() ?? '')) {
   await ensureContext()
   await deployService(BOT_SERVICE) // `railway up` rebuilds it server-side
   const status = await waitForDeploy(BOT_SERVICE)
@@ -239,17 +233,17 @@ if (/^(1|true)$/i.test(Bun.env.DEPLOY_ONLY?.trim() ?? '')) {
 }
 
 // Secrets / config from this process's env (fail loud before mutating any Railway state).
-const rpcUrl = required(Bun.env, 'RPC_URL')
-const liquidatorPrivateKey = required(Bun.env, 'LIQUIDATOR_PRIVATE_KEY')
+const rpcUrl = required(process.env, 'RPC_URL')
+const liquidatorPrivateKey = required(process.env, 'LIQUIDATOR_PRIVATE_KEY')
 assertPrivateKey(liquidatorPrivateKey)
 
 // Venues are enabled by the presence of their API key. The bot hard-fails at boot with no key unless
 // ALLOW_BAD_DEBT_ONLY=true — so require the operator to pass a venue key (pushed as a secret) or
 // explicitly opt into bad-debt-only here, rather than deploying a service that crash-loops.
-const zeroxKey = Bun.env.ZEROX_API_KEY?.trim()
-const oneinchKey = Bun.env.ONEINCH_API_KEY?.trim()
-const lifiKey = Bun.env.LIFI_API_KEY?.trim()
-const allowBadDebtOnly = Bun.env.ALLOW_BAD_DEBT_ONLY?.trim().toLowerCase() === 'true'
+const zeroxKey = process.env.ZEROX_API_KEY?.trim()
+const oneinchKey = process.env.ONEINCH_API_KEY?.trim()
+const lifiKey = process.env.LIFI_API_KEY?.trim()
+const allowBadDebtOnly = process.env.ALLOW_BAD_DEBT_ONLY?.trim().toLowerCase() === 'true'
 if (!zeroxKey && !oneinchKey && !lifiKey && !allowBadDebtOnly) {
   throw new Error(
     'Set LIFI_API_KEY, ZEROX_API_KEY, and/or ONEINCH_API_KEY, or ALLOW_BAD_DEBT_ONLY=true to deploy bad-debt-only.'
@@ -258,9 +252,9 @@ if (!zeroxKey && !oneinchKey && !lifiKey && !allowBadDebtOnly) {
 
 // Optional BetterStack log shipping: host is a plain var, token is a secret. Off when unset — the
 // bot's in-process loglayer transport stays inert, so the container behaves exactly as before.
-const betterstackHost = Bun.env.BETTERSTACK_INGESTING_HOST?.trim()
-const betterstackToken = Bun.env.BETTERSTACK_SOURCE_TOKEN?.trim()
-const betterstackHeartbeatUrl = Bun.env.BETTERSTACK_HEARTBEAT_URL?.trim()
+const betterstackHost = process.env.BETTERSTACK_INGESTING_HOST?.trim()
+const betterstackToken = process.env.BETTERSTACK_SOURCE_TOKEN?.trim()
+const betterstackHeartbeatUrl = process.env.BETTERSTACK_HEARTBEAT_URL?.trim()
 
 await ensureContext()
 

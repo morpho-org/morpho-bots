@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'bun:test'
 import { encodeAbiParameters, keccak256 } from 'viem'
+import { describe, expect, it } from 'vitest'
 
 import type { MarketParams } from '../src/market'
 

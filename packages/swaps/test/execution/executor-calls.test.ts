@@ -1,7 +1,7 @@
 import type { Hex } from 'viem'
 
-import { describe, expect, it } from 'bun:test'
 import { decodeFunctionData, getAddress } from 'viem'
+import { describe, expect, it } from 'vitest'
 
 import type { SwapStep } from '../../src/types'
 

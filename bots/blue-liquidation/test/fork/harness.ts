@@ -1,8 +1,10 @@
-import type { Subprocess } from 'bun'
 import type { Address } from 'viem'
 
 import { Executor } from '@repo/contracts'
 import { ensureError } from '@repo/utils'
+import { type ChildProcess, spawn } from 'node:child_process'
+import { once } from 'node:events'
+import { setTimeout as sleep } from 'node:timers/promises'
 import {
   createTestClient,
   createWalletClient,
@@ -119,7 +121,7 @@ const DEPLOYER_KEY = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b
 export const LIQUIDATOR = privateKeyToAccount(LIQUIDATOR_KEY).address
 
 export type TestClient = ReturnType<typeof testClient>
-export type ForkHandle = Subprocess
+export type ForkHandle = ChildProcess
 
 /** Polls the JSON-RPC endpoint until it answers `eth_blockNumber`, so callers see a ready node. */
 async function waitForRpc(url: string, timeoutMs = 30_000): Promise<void> {
@@ -139,7 +141,7 @@ async function waitForRpc(url: string, timeoutMs = 30_000): Promise<void> {
     } catch (error) {
       lastError = ensureError(error)
     }
-    await Bun.sleep(100)
+    await sleep(100)
   }
   const detail = lastError ? `: ${lastError.message}` : ''
   throw new Error(`anvil RPC at ${url} not ready within ${timeoutMs}ms${detail}`)
@@ -147,7 +149,7 @@ async function waitForRpc(url: string, timeoutMs = 30_000): Promise<void> {
 
 /**
  * Boots an anvil instance forking Base at `forkBlock` (chain id pinned to Base so signatures match).
- * `port` is explicit so multiple fork test files can run in one `bun test` process without colliding.
+ * `port` is explicit so multiple fork test files can run in one test run without colliding.
  * Requires the `anvil` binary on PATH (Foundry locally; foundry-toolchain in CI) and `FORK_URL`.
  */
 export async function startFork(
@@ -155,9 +157,9 @@ export async function startFork(
   port = 8545
 ): Promise<{ anvil: ForkHandle; rpcUrl: string }> {
   if (!FORK_URL) throw new Error('RPC_URL_8453 is required to start the fork')
-  const anvil = Bun.spawn(
+  const anvil = spawn(
+    'anvil',
     [
-      'anvil',
       '--fork-url',
       FORK_URL,
       '--fork-block-number',
@@ -167,7 +169,7 @@ export async function startFork(
       '--port',
       String(port)
     ],
-    { stdout: 'ignore', stderr: 'ignore' }
+    { stdio: 'ignore' }
   )
   const rpcUrl = `http://127.0.0.1:${port}`
   await waitForRpc(rpcUrl)
@@ -177,8 +179,10 @@ export async function startFork(
 /** Teardown: SIGKILL the forked node and await its exit so the port is freed before the next suite. */
 export async function stopFork(anvil: ForkHandle | undefined): Promise<void> {
   if (!anvil) return
+  if (anvil.exitCode !== null || anvil.signalCode !== null) return
+  const exited = once(anvil, 'exit')
   anvil.kill('SIGKILL')
-  await anvil.exited
+  await exited
 }
 
 /** Anvil cheatcode client (setBalance / setNextBlockTimestamp / mine) + public reads. */

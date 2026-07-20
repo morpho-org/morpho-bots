@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'bun:test'
 import { decodeFunctionResult, encodeFunctionResult, getAddress } from 'viem'
+import { describe, expect, it } from 'vitest'
 
 import { BlueLiquidationLens } from '../../src/state/lens.sol'
 
@@ -7,7 +7,7 @@ const MORPHO = getAddress('0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb')
 
 describe('BlueLiquidationLens', () => {
   it('compiles via soltag and binds the Morpho address into the factory call', () => {
-    // Proves the soltag bun preload compiled the inline Solidity (sol``` would otherwise throw)
+    // Proves the soltag vitest plugin compiled the inline Solidity (sol``` would otherwise throw)
     // and that constructor binding produced a deployless factory call.
     const compiled = BlueLiquidationLens.with(MORPHO)
     expect(compiled.factoryData.length).toBeGreaterThan(2)

@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'bun:test'
 import { maxUint256 } from 'viem'
+import { describe, expect, it } from 'vitest'
 
 import { addressSchema, createOnchainAmountSchema } from '../../src/helpers/schema'
 

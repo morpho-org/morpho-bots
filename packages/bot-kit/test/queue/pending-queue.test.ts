@@ -1,7 +1,7 @@
 import type { Address, Hex } from 'viem'
 
-import { describe, expect, it } from 'bun:test'
 import { ExecutionRevertedError } from 'viem'
+import { describe, expect, it } from 'vitest'
 
 import type { Logger, LogLevel } from '../../src/logger'
 import type {

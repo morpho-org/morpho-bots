@@ -6,5 +6,8 @@
   "exports": {
     "./base": "./base.json",
     "./module": "./module.json"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:"
   }
 }

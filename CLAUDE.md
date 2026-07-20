@@ -64,7 +64,7 @@ commit/push):
 2. **Lint**: Run `pnpm lint` from the repo root — zero warnings policy. Lint is a workspace-level
    concern; oxlint walks the whole tree and per-package `lint` scripts are deliberately omitted.
 3. **Format**: Run `pnpm format` — auto-fixes formatting in place.
-4. **Existing tests**: Run `bun test` — all must pass.
+4. **Existing tests**: Run `pnpm test` — all must pass.
 
 **Escalation rule**: After 3 failed fix attempts for the same issue, STOP. Tell the user what you
 tried, what failed, and ask for guidance. Bad work is worse than no work — do not keep iterating
@@ -94,7 +94,7 @@ addressing PR feedback, etc.).
 - During multi-step work, if you're iterating on earlier changes (bug fixes, feedback), existing
   verification tests catch if the fix broke earlier changes.
 - Follow existing test conventions: place tests under `test/` mirroring `src/` as
-  `{module}.test.ts`, use `bun test`, follow patterns from the nearest existing test file.
+  `{module}.test.ts`, use `pnpm test` (vitest), follow patterns from the nearest existing test file.
 - If a test file already exists for the module, add to it rather than creating a new one.
 
 **When NOT to write tests:**
@@ -155,9 +155,9 @@ transparent JSON-Lines wire contract) was tried for ~a week and reverted — see
 which supersedes the now-historical
 [TIB-2026-07-13-bot-architecture](./docs/decisions/TIB-2026-07-13-bot-architecture.md).
 
-**Key technologies**: pnpm 11.1.1 (package manager + workspace task runner), bun 1.3.12 (runtime +
-test runner), Node.js 24.14.1, TypeScript 6.0, viem for Web3, oxlint + oxfmt for lint/format, knip
-for dead-code detection.
+**Key technologies**: pnpm 11.1.1 (package manager + workspace task runner), Node.js 24.14.1
+(runtime; bots bundle via esbuild and run `node dist/`), TypeScript 6.0, vitest, viem for Web3,
+oxlint + oxfmt for lint/format, knip for dead-code detection.
 
 **Node.js requirement**: `24.14.1` (see `.nvmrc`).
 

@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'bun:test'
 import { getAddress, zeroAddress } from 'viem'
+import { describe, expect, it } from 'vitest'
 
 import type { LiquidationPlan } from '../../src/sizing/plan'
 import type { LensOut } from '../../src/state/lens.sol'

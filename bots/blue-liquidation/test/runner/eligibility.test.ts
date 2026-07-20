@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test'
+import { describe, expect, it } from 'vitest'
 
 import type { MarketParams } from '../../src/market'
 import type { LensOut } from '../../src/state/lens.sol'

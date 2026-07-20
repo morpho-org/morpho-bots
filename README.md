@@ -3,7 +3,7 @@
 Off-chain Morpho curator bots — reallocators, liquidation monitors, and similar —
 and the shared packages they consume.
 
-This is a [pnpm workspaces](https://pnpm.io/workspaces) monorepo (bun remains the runtime + test runner):
+This is a [pnpm workspaces](https://pnpm.io/workspaces) monorepo:
 
 - `bots/` — individual bot apps (one per bot); each keeps its own `docs/`
 - `packages/` — shared libraries (`@repo/bot-kit`, `@repo/swaps`, `@repo/contracts`,
@@ -23,7 +23,7 @@ pnpm run lint        # oxlint, repo-wide
 pnpm run lint:fix    # oxlint with --fix
 pnpm format          # oxfmt, repo-wide
 pnpm run knip        # dead-code detection
-bun test            # bun's built-in test runner
+pnpm test           # vitest
 ```
 
 ## Pointers

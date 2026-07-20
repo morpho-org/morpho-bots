@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
+import { describe, expect, it } from 'vitest'
 
 import type { HttpVenue, RateLimitedClient } from '../../src/http-client'
 import type { QuoteLogger } from '../../src/quoting'
@@ -203,12 +203,14 @@ describe('createPendlePtUnwrapper', () => {
       }
     })
 
-    expect(unwrapper.resolve({ token: PT, amountIn: 1n, executor: EXECUTOR })).rejects.toThrow(
-      'pendle down'
-    )
+    await expect(
+      unwrapper.resolve({ token: PT, amountIn: 1n, executor: EXECUTOR })
+    ).rejects.toThrow('pendle down')
 
     // The failure was not cached: the next resolve fetches again.
-    expect(unwrapper.resolve({ token: PT, amountIn: 1n, executor: EXECUTOR })).rejects.toThrow()
+    await expect(
+      unwrapper.resolve({ token: PT, amountIn: 1n, executor: EXECUTOR })
+    ).rejects.toThrow()
     expect(calls).toHaveLength(2)
   })
 
@@ -224,7 +226,7 @@ describe('createPendlePtUnwrapper', () => {
       markets: () => marketsBody(FUTURE),
       convert: () => ({ tx: { to: ROUTER, data: 'nothex' }, data: { amountOut: '1' } })
     })
-    expect(
+    await expect(
       badData.unwrapper.resolve({ token: PT, amountIn: 1n, executor: EXECUTOR })
     ).rejects.toThrow(/malformed swap tx/)
 
@@ -232,7 +234,7 @@ describe('createPendlePtUnwrapper', () => {
       markets: () => marketsBody(FUTURE),
       convert: () => ({ tx: { to: ROUTER, data: '0xabc1' }, data: { amountOut: 'NaN' } })
     })
-    expect(
+    await expect(
       badAmount.unwrapper.resolve({ token: PT, amountIn: 1n, executor: EXECUTOR })
     ).rejects.toThrow(/malformed amountOut/)
   })

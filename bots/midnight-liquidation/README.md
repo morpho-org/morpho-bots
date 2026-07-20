@@ -29,7 +29,7 @@ This package is operational code, but it is still intentionally narrow:
 ## Prerequisites
 
 - Node.js `24.14.1` (`nvm use` from the repo root).
-- Bun `1.3.12`.
+- pnpm `11.1.1`, Node `24.14.1`.
 - A Base RPC URL.
 - A funded liquidator EOA private key.
 - A deployed permissionless Executor contract. If `EXECUTOOOR_ADDRESS` is unset, the bot uses the
@@ -146,12 +146,12 @@ Useful validation commands while developing:
 
 ```sh
 pnpm --filter @morpho-org/midnight-liquidation run typecheck
-bun test bots/midnight-liquidation/test
+pnpm test --project midnight-liquidation
 ```
 
 ## Testing
 
-- `bun test bots/midnight-liquidation/test` — unit tests for the sizing planner, the deployless lens,
+- `pnpm test --project midnight-liquidation` — unit tests for the sizing planner, the deployless lens,
   discovery (the candidate + markets APIs and their shared retry loop), quoting / venue selection, the
   pending queue, eligibility, and the exec encoder.
 - **Fork suite** (`test/fork/`) — end-to-end against a real Base fork. Unlike a fixture-gated suite it
@@ -249,7 +249,7 @@ it runs the same locally or in CI.
 Railway service names are project-wide: production uses `bot`, while non-production environments use
 an environment prefix (for example, `staging-bot`).
 
-The [Dockerfile](./Dockerfile) is a single-stage image (node + pnpm for installs, bun as runtime); `RAILWAY_DOCKERFILE_PATH` points Railway at
+The [Dockerfile](./Dockerfile) is a single-stage node image (pnpm installs, esbuild bundle, `node dist/`); `RAILWAY_DOCKERFILE_PATH` points Railway at
 it and `railway up` runs from the repo root so the pnpm workspace resolves.
 
 Authenticate the CLI first — set `RAILWAY_TOKEN` (a project token scoped to the target project /
