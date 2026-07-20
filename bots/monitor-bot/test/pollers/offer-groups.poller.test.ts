@@ -118,7 +118,7 @@ describe('OfferGroupsPoller', () => {
     // max_assets moved 1000 → 2000: resize alert.
     await poller.pollOnce()
     expect(dispatcher.sent).toHaveLength(1)
-    expect(dispatcher.sent[0]?.[0]?.key).toBe(`${GROUP_1}:resized:2000`)
+    expect(dispatcher.sent[0]?.[0]?.key).toBe(`${GROUP_1}:resized:1000->2000`)
     expect(dispatcher.sent[0]?.[0]?.title).toBe(
       'make order resized (lend): max 2000 assets (was 1000)'
     )
@@ -144,6 +144,29 @@ describe('OfferGroupsPoller', () => {
     await poller.pollOnce()
     await poller.pollOnce()
     expect(dispatcher.sent).toEqual([])
+  })
+
+  it('treats a pagination-capped maker as failed instead of diffing a truncated snapshot', async () => {
+    const { poller, dispatcher, client, logger } = makePoller([[offerGroup({ id: GROUP_1 })]])
+    await poller.pollOnce()
+
+    // Every page reports another cursor — fetchGroups hits MAX_PAGES and must not diff.
+    const mock = client.GET as ReturnType<typeof vi.fn>
+    mock.mockImplementation(() =>
+      Promise.resolve(apiPage({ cursor: 'more', data: [offerGroup({ id: GROUP_2 })] }))
+    )
+    await expect(poller.pollOnce()).rejects.toThrow('all 1 makers failed')
+    expect(logger.warn).toHaveBeenCalledWith(
+      'poll.pages_capped',
+      expect.objectContaining({ pollerId: 'make-orders', maker: USER_ONE })
+    )
+    expect(dispatcher.sent).toEqual([])
+
+    // Recovery: the next complete snapshot diffs against the CARRIED baseline, not truncated data.
+    mock.mockImplementation(() => Promise.resolve(apiPage({ cursor: null, data: [] })))
+    await poller.pollOnce()
+    expect(dispatcher.sent).toHaveLength(1)
+    expect(dispatcher.sent[0]?.[0]?.key).toBe(`${GROUP_1}:closed`)
   })
 
   it('keeps the previous snapshot when a maker fetch fails, then diffs against it', async () => {

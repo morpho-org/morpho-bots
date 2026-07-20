@@ -93,7 +93,8 @@ function formatOfferGroupAlert(event: OfferGroupEvent): Alert {
       }
     case 'resized':
       return {
-        key: `${event.groupId}:resized:${size}`,
+        // Previous size in the key so A→B→A→B resizes stay distinct for dedupe consumers.
+        key: `${event.groupId}:resized:${event.previous?.maxAssets}->${size}`,
         title: `make order resized (${sideOf(event.group)}): max ${size} assets (was ${event.previous?.maxAssets})`,
         lines,
         severity: 'info'
@@ -113,7 +114,10 @@ function formatOfferGroupAlert(event: OfferGroupEvent): Alert {
 // Watches configured makers' active offer groups (there is no protocol-wide make-order feed —
 // the endpoint is per-user and returns active groups only, so this poller diffs snapshots).
 // The first tick per maker is a quiet baseline: alerting the whole standing book on every boot
-// would be pure noise.
+// would be pure noise. Delivery nuance vs the base class's at-least-once: a failed dispatch
+// re-diffs against the stale snapshot next tick, which re-derives still-visible events — but an
+// ephemeral change (created then gone, or resized back) between the failure and the retry is
+// lost, same spirit as the documented created-and-consumed-between-polls miss.
 export class OfferGroupsPoller extends Poller<OfferGroupsCursor, OfferGroupEvent> {
   readonly id = 'make-orders'
   readonly cron: string
@@ -187,7 +191,10 @@ export class OfferGroupsPoller extends Poller<OfferGroupsCursor, OfferGroupEvent
       if (!body.cursor) return collected
       pageCursor = body.cursor
     }
+    // A truncated snapshot must NOT be diffed — missing groups would fabricate `closed` alerts
+    // (and re-fabricate `created` next tick). Throwing routes this maker through the failure
+    // path: previous snapshot carried, retried next tick.
     this.ext.logger.warn('poll.pages_capped', { pollerId: this.id, maker, maxPages: MAX_PAGES })
-    return collected
+    throw new Error(`offer-groups pagination capped at ${MAX_PAGES} pages for ${maker}`)
   }
 }
