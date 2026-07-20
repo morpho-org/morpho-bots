@@ -74,7 +74,8 @@ export class SlackDispatcher implements AlertDispatcher {
       },
       body: JSON.stringify({
         channel: this.deps.channel,
-        text: alerts.map(alert => alert.title).join(' | '),
+        // The notification-fallback text gets mrkdwn parsing too — escape it like the blocks.
+        text: alerts.map(alert => escapeSlack(alert.title)).join(' | '),
         blocks: alerts.map(alertBlock)
       }),
       signal: AbortSignal.timeout(10_000)

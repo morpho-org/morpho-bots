@@ -47,10 +47,13 @@ describe('SlackDispatcher', () => {
     expect((init.headers as Record<string, string>).authorization).toBe('Bearer xoxb-test')
     const body = JSON.parse(init.body as string) as {
       channel: string
+      text: string
       blocks: { text: { text: string } }[]
     }
     expect(body.channel).toBe('C123')
     expect(body.blocks[0]?.text.text).toBe('🚨 *big &lt;take&gt;*\nmaker: &lt;@evil&gt;')
+    // The fallback text field is mrkdwn-parsed too — it must be escaped like the blocks.
+    expect(body.text).toBe('big &lt;take&gt;')
   })
 
   it('chunks more than 10 alerts into multiple messages', async () => {
