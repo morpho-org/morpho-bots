@@ -14,9 +14,11 @@
     "@nestjs/common": "catalog:",
     "@nestjs/core": "catalog:",
     "@nestjs/platform-express": "catalog:",
+    "@nestjs/schedule": "catalog:",
     "@repo/bot-kit": "workspace:*",
     "@repo/utils": "workspace:*",
     "@t3-oss/env-core": "catalog:",
+    "cron": "catalog:",
     "reflect-metadata": "catalog:",
     "zod": "catalog:"
   },

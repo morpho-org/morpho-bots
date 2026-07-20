@@ -1,5 +1,9 @@
+import type { Provider } from '@nestjs/common'
+
 import { createEnv } from '@t3-oss/env-core'
 import { z } from 'zod'
+
+export const ENV = Symbol('ENV')
 
 // Validated at startup via t3-env — any missing/malformed variable throws before the app boots,
 // matching the repo's fail-loud convention. Secrets are never stored here; they are read at point
@@ -15,3 +19,7 @@ export function loadEnv(runtimeEnv: Record<string, string | undefined> = process
     emptyStringAsUndefined: true
   })
 }
+
+export type MonitorEnv = ReturnType<typeof loadEnv>
+
+export const envProvider: Provider = { provide: ENV, useFactory: loadEnv }

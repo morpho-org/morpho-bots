@@ -161,6 +161,19 @@ remains a separate and still-deferred surface.
 - If a future decision promotes NestJS / `vitest` / `t3-env` to a repo default, this TIB's scoped
   exception notes fold into that broader decision.
 
+## Addendum — @nestjs/schedule shutdown ordering (2026-07-20)
+
+The poller-service plan left open whether `ScheduleModule`'s shutdown path awaits in-flight cron
+ticks. Verified on `@nestjs/schedule` 6.1.3: it does not — `SchedulerOrchestrator` implements
+`beforeApplicationShutdown`, whose `closeCronJobs()` calls `deleteCronJob()` on **every**
+`SchedulerRegistry` entry (including manually-registered jobs) with a fire-and-forget `stop()`
+(`scheduler.orchestrator.js:29-33,82-89`; `scheduler.registry.js:76-80`) — and this phase runs
+before `onApplicationShutdown` hooks. A registrar that re-reads jobs from the registry at shutdown
+therefore awaits an empty list, silently voiding the graceful-shutdown guarantee. `PollerRegistrar`
+consequently holds its own `CronJob` references and awaits those on shutdown; registry registration
+is kept only for introspection. Caught by the registrar shutdown test
+(`test/polling/poller.registrar.test.ts`).
+
 ## References
 
 - [TIB-2026-04-16-bootstrap-curator-bots](./TIB-2026-04-16-bootstrap-curator-bots.md) — the baseline
