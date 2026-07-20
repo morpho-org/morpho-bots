@@ -229,6 +229,14 @@ if (/^(1|true)$/i.test(Bun.env.DEPLOY_ONLY?.trim() ?? '')) {
   process.exit(badStatus(status) ? 1 : 0)
 }
 
+// Slack config: the channel id is a plain var, the bot token a secret. Both-or-neither — the bot
+// fails loud at boot on a half-configured pair, so enforce it here before touching Railway state.
+const slackChannel = Bun.env.SLACK_CHANNEL?.trim()
+const slackToken = Bun.env.SLACK_BOT_TOKEN?.trim()
+if (Boolean(slackChannel) !== Boolean(slackToken)) {
+  throw new Error('Set both SLACK_CHANNEL and SLACK_BOT_TOKEN, or neither (log-only alerts).')
+}
+
 // Optional BetterStack log shipping: host is a plain var, token is a secret. Off when unset — the
 // bot's in-process loglayer transport stays inert, so the container behaves exactly as before.
 const betterstackHost = Bun.env.BETTERSTACK_INGESTING_HOST?.trim()
@@ -240,6 +248,10 @@ await ensureContext()
 await ensureService(BOT_SERVICE)
 await setVar(BOT_SERVICE, `RAILWAY_DOCKERFILE_PATH=${DOCKERFILE_PATH}`)
 await setVar(BOT_SERVICE, 'LOG_LEVEL=info')
+if (slackChannel && slackToken) {
+  await setVar(BOT_SERVICE, `SLACK_CHANNEL=${slackChannel}`)
+  await setSecret(BOT_SERVICE, 'SLACK_BOT_TOKEN', slackToken)
+}
 if (betterstackHost) await setVar(BOT_SERVICE, `BETTERSTACK_INGESTING_HOST=${betterstackHost}`)
 if (betterstackToken) await setSecret(BOT_SERVICE, 'BETTERSTACK_SOURCE_TOKEN', betterstackToken)
 if (betterstackHeartbeatUrl) {

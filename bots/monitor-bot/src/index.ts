@@ -11,7 +11,9 @@ import { NestLoggerAdapter } from './logging/nest-logger'
 async function main() {
   // bufferLogs holds framework logs until useLogger swaps in the DI-provided bot-kit logger —
   // one logger instance per process (a second instance would double the BetterStack transport).
-  const app = await NestFactory.create(AppModule, { bufferLogs: true })
+  // abortOnError: false lets a failed bootstrap reject into the structured startup.error path
+  // below instead of Nest exiting on its own.
+  const app = await NestFactory.create(AppModule, { bufferLogs: true, abortOnError: false })
   const logger = app.get<Logger>(LOGGER)
   app.useLogger(new NestLoggerAdapter(logger))
   app.enableShutdownHooks()

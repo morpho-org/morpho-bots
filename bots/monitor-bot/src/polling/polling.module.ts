@@ -9,6 +9,7 @@ import type { CursorStore } from '../cursor/cursor.store'
 import type { MidnightEventType } from '../midnight/client'
 
 import { ALERT_DISPATCHER, LogAlertDispatcher } from '../alerts/alert'
+import { SlackDispatcher } from '../alerts/slack.dispatcher'
 import { ENV } from '../config/env'
 import { CURSOR_STORE, InMemoryCursorStore } from '../cursor/cursor.store'
 import { LOGGER } from '../logging/logger.provider'
@@ -78,11 +79,29 @@ function buildPollers(
   return pollers
 }
 
+// Slack is opt-in: with SLACK_CHANNEL set, alerts post via chat.postMessage (the bot token is a
+// secret read at point of use, never stored on the env object); otherwise alerts stay log-only.
+// Setting exactly one of channel/token is a misconfiguration and fails the boot loudly.
+export function buildDispatcher(env: MonitorEnv, logger: Logger): AlertDispatcher {
+  const token = process.env.SLACK_BOT_TOKEN?.trim()
+  if (env.SLACK_CHANNEL && !token) {
+    throw new Error('SLACK_BOT_TOKEN is required when SLACK_CHANNEL is set')
+  }
+  if (!env.SLACK_CHANNEL && token) {
+    throw new Error('SLACK_CHANNEL is required when SLACK_BOT_TOKEN is set')
+  }
+  if (!env.SLACK_CHANNEL || !token) {
+    logger.info('slack.disabled', { reason: 'SLACK_CHANNEL is unset — alerts log only' })
+    return new LogAlertDispatcher(logger)
+  }
+  return new SlackDispatcher({ token, channel: env.SLACK_CHANNEL, logger })
+}
+
 @Module({
   imports: [ScheduleModule.forRoot()],
   providers: [
     { provide: CURSOR_STORE, useClass: InMemoryCursorStore },
-    { provide: ALERT_DISPATCHER, useClass: LogAlertDispatcher },
+    { provide: ALERT_DISPATCHER, useFactory: buildDispatcher, inject: [ENV, LOGGER] },
     {
       provide: POLLERS,
       useFactory: buildPollers,
