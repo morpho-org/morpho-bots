@@ -41,21 +41,16 @@ type MarketTransactionsPollerDependencies = PollerDependencies & {
 }
 
 // Advance the per-market watermark to the newest second seen. `fetched` is the FULL page walk
-// (including already-seen overlap items), so rebuilding seenIds from it covers the whole
-// [watermark − OVERLAP_SECONDS, watermark] window the next fetch will re-query.
+// (including already-seen overlap items), and its range is a superset of the next fetch's query
+// window — so seenIds rebuilt purely from it is complete for dedupe AND naturally bounded to
+// ~OVERLAP_SECONDS of ids (never carried forward, so it cannot accrete over the process life).
 function advance(prev: MarketCursor, fetched: TransactionItem[]): MarketCursor {
   const last = fetched.at(-1)
   if (!last) return prev
   // max() so a watermark can never regress if the newest item vanished from the feed.
   const lastCreatedAt = Math.max(prev.lastCreatedAt, last.created_at)
   const cutoff = lastCreatedAt - OVERLAP_SECONDS
-  const carried = prev.seenIds.length > 0 && prev.lastCreatedAt >= cutoff ? prev.seenIds : []
-  const seenIds = [
-    ...new Set([
-      ...carried,
-      ...fetched.filter(item => item.created_at >= cutoff).map(item => item.id)
-    ])
-  ]
+  const seenIds = fetched.filter(item => item.created_at >= cutoff).map(item => item.id)
   return { lastCreatedAt, seenIds }
 }
 
@@ -105,8 +100,11 @@ export class MarketTransactionsPoller extends Poller<TxCursor, TransactionItem> 
   // One market's fetch, error-isolated: a market that persistently fails (e.g. delisted id
   // returning 400) must not starve every other market's alerts forever.
   private async pollMarket(marketId: string, cursor: TxCursor | null, anchor: number) {
-    const prev = cursor?.[marketId] ?? this.anchorMarket(marketId, anchor)
-    const from = Math.max(prev.lastCreatedAt - OVERLAP_SECONDS, 0)
+    const saved = cursor?.[marketId]
+    const prev = saved ?? this.anchorMarket(marketId, anchor)
+    // No overlap on a fresh anchor: there is no previously-returned data to be late against, and
+    // start-from-boot must never replay pre-boot history.
+    const from = saved ? Math.max(prev.lastCreatedAt - OVERLAP_SECONDS, 0) : prev.lastCreatedAt
     const { data: fetched, error } = await tryCatch(this.fetchMarket(marketId, from))
     if (error) {
       this.ext.logger.warn('poll.market_error', {

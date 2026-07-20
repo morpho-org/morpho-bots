@@ -61,8 +61,8 @@ describe('MarketTransactionsPoller', () => {
     expect(calls).toHaveLength(1)
     expect(calls[0]?.query).toEqual({
       event_types: ['lend', 'borrow'],
-      // 60s overlap window below the anchor watermark (late-indexing defense).
-      created_at_gte: NOW_S - 60,
+      // A fresh anchor has no overlap window — pre-boot history is never replayed.
+      created_at_gte: NOW_S,
       sort_direction: 'asc',
       limit: 1000
     })
@@ -118,6 +118,29 @@ describe('MarketTransactionsPoller', () => {
       ['early'],
       ['late']
     ])
+  })
+
+  it('bounds seenIds to the overlap window — old ids expire instead of accreting', async () => {
+    const a1 = lendItem({ id: 'a1', created_at: NOW_S + 10 })
+    const a2 = lendItem({ id: 'a2', created_at: NOW_S + 30 })
+    const a3 = lendItem({ id: 'a3', created_at: NOW_S + 80 })
+    const { poller, cursors } = makePoller(
+      {
+        [MARKET_A]: [
+          { cursor: null, data: [a1] },
+          { cursor: null, data: [a1, a2] },
+          { cursor: null, data: [a1, a2, a3] }
+        ]
+      },
+      [MARKET_A]
+    )
+    await poller.pollOnce()
+    await poller.pollOnce()
+    await poller.pollOnce()
+    const saved =
+      await cursors.get<Record<string, { lastCreatedAt: number; seenIds: string[] }>>('take-orders')
+    // Watermark NOW_S+80, cutoff NOW_S+20 — a1 (NOW_S+10) must have expired from seenIds.
+    expect(saved?.[MARKET_A]).toEqual({ lastCreatedAt: NOW_S + 80, seenIds: ['a2', 'a3'] })
   })
 
   it('walks pagination cursors within one tick', async () => {
