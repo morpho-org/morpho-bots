@@ -54,6 +54,23 @@
         "typescript": "catalog:",
       },
     },
+    "bots/mm": {
+      "name": "@morpho-org/mm",
+      "version": "0.1.0",
+      "bin": {
+        "mm": "src/index.ts",
+      },
+      "dependencies": {
+        "@morpho-org/midnight-sdk": "1.1.1",
+        "@morpho-org/morpho-ts": "catalog:",
+        "viem": "catalog:",
+      },
+      "devDependencies": {
+        "@repo/typescript-config": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "packages/bot-kit": {
       "name": "@repo/bot-kit",
       "version": "0.0.0",
@@ -124,7 +141,7 @@
   "catalog": {
     "@internationalized/date": "^3.11.0",
     "@loglayer/transport-betterstack": "2.2.0",
-    "@morpho-org/morpho-ts": "2.5.0",
+    "@morpho-org/morpho-ts": "2.8.0",
     "@morpho-org/viem-dlc": "0.0.11",
     "@types/bun": "^1.3.0",
     "@types/lodash-es": "^4.17.12",
@@ -184,7 +201,11 @@
 
     "@morpho-org/midnight-liquidation": ["@morpho-org/midnight-liquidation@workspace:bots/midnight-liquidation"],
 
-    "@morpho-org/morpho-ts": ["@morpho-org/morpho-ts@2.5.0", "", {}, "sha512-eU0DYR5fJoacOEfHVNdQxt5wYCwjF7/YXGudPhpBrzd3M4ejPS0Gv3Gkr3imUiMKeIA6IBzRLuw7qiFAsqXvxA=="],
+    "@morpho-org/midnight-sdk": ["@morpho-org/midnight-sdk@1.1.1", "", { "peerDependencies": { "@morpho-org/morpho-ts": "^2.8.0", "viem": "^2.0.0" } }, "sha512-2jmiiNNLKJ3NafduaYP2dUaJ74LuqXnP9zKwCqH3HPfduerHuIkRV6v8B9pMnNGCYv03PjkA2D1d7j1sjE6+mA=="],
+
+    "@morpho-org/mm": ["@morpho-org/mm@workspace:bots/mm"],
+
+    "@morpho-org/morpho-ts": ["@morpho-org/morpho-ts@2.8.0", "", {}, "sha512-I+fSrYjx8VYHgzaTGUdGmxKM7qDrOWNBM4Yz/6hgum2tlCcgb5MN1sJVgztbO4nOk5C9Ly9I752CiyyYr2oeOg=="],
 
     "@morpho-org/viem-dlc": ["@morpho-org/viem-dlc@0.0.11", "", { "dependencies": { "valibot": "^1.2.0" }, "peerDependencies": { "@upstash/redis": "^1.0.0", "@vercel/blob": "^2.3.0", "viem": "^2.0.0" }, "optionalPeers": ["@upstash/redis", "@vercel/blob"] }, "sha512-aIam52kaN/Lt2eQuZpcDWPqKKyv/ltH7Di/HoNjdzlWN4ccuk4Keuw63RuP1pXtGAowmxNGblyPnHwja8QohsA=="],
 

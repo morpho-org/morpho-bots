@@ -1,0 +1,24 @@
+{
+  "name": "@morpho-org/mm",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "bin": {
+    "mm": "src/index.ts"
+  },
+  "type": "module",
+  "scripts": {
+    "start": "bun src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@morpho-org/midnight-sdk": "1.1.1",
+    "@morpho-org/morpho-ts": "catalog:",
+    "viem": "catalog:"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@types/bun": "catalog:",
+    "typescript": "catalog:"
+  }
+}

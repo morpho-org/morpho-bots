@@ -13,6 +13,7 @@
     "bots/midnight-liquidation": {
       "ignore": ["src/generated/**"]
     },
-    "bots/blue-liquidation": {}
+    "bots/blue-liquidation": {},
+    "bots/mm": {}
   }
 }
