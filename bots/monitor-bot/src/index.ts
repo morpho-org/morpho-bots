@@ -1,19 +1,21 @@
 import 'reflect-metadata'
 import { NestFactory } from '@nestjs/core'
-import { createHeartbeatMonitor, createLogger, railwayContext } from '@repo/bot-kit'
+import { createHeartbeatMonitor, type Logger } from '@repo/bot-kit'
 import { ensureError } from '@repo/utils'
 
 import { AppModule } from './app.module'
-import { loadEnv } from './config/env'
+import { ENV, type MonitorEnv } from './config/env'
+import { LOGGER } from './logging/logger.provider'
 import { NestLoggerAdapter } from './logging/nest-logger'
 
 async function main() {
-  const env = loadEnv()
-  const logger = createLogger(env.LOG_LEVEL, {
-    context: { bot: 'monitor-bot', ...railwayContext() }
-  })
-  const app = await NestFactory.create(AppModule, { logger: new NestLoggerAdapter(logger) })
+  // bufferLogs holds framework logs until useLogger swaps in the DI-provided bot-kit logger —
+  // one logger instance per process (a second instance would double the BetterStack transport).
+  const app = await NestFactory.create(AppModule, { bufferLogs: true })
+  const logger = app.get<Logger>(LOGGER)
+  app.useLogger(new NestLoggerAdapter(logger))
   app.enableShutdownHooks()
+  const env = app.get<MonitorEnv>(ENV)
   await app.listen(env.PORT)
   logger.info('startup.listening', { port: env.PORT })
 

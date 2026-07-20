@@ -95,6 +95,31 @@ shutdown lifecycle.
 `GET /health` returns `{ status: 'ok', uptime_s }` — used by Docker/Railway probes and the
 integration checks in later PRs.
 
+### Polling
+
+The generic polling foundation lives in `src/polling/`. Each endpoint poller extends
+`Poller<TCursor, TItem>` and supplies only `fetch` (cursor → items + next cursor) and `toAlerts`;
+the base class owns the invariant tick pipeline (`cursor → fetch → toAlerts → dispatch → save`).
+`PollerRegistrar` registers one `cron` job per poller (`waitForCompletion` — an overlapping tick
+is skipped, never run concurrently) and awaits every in-flight tick on shutdown.
+
+Locked-in semantics:
+
+| Guarantee              | Mechanism                                                       |
+| ---------------------- | --------------------------------------------------------------- |
+| At-least-once delivery | Cursor saves only after a successful dispatch                   |
+| Failed-request restart | A failed tick never advances the cursor; the next tick retries  |
+| No overlapping ticks   | `cron` `waitForCompletion` skips ticks while one runs           |
+| Graceful shutdown      | Registrar holds its own job refs and awaits `stop()` on SIGTERM |
+| Configurable period    | `cron` expression is an instance property, sourced from config  |
+
+Cursors are held in-process only (`InMemoryCursorStore`), matching the repo's
+cross-tick-state philosophy — nothing is persisted to disk and API truth wins on restart. The
+`CursorStore` interface keeps a file/db-backed store a drop-in replacement.
+
+Until the Slack dispatcher lands, alerts go through `LogAlertDispatcher` — one structured
+`alert` log line each.
+
 ## Important Operational Notes
 
 - The bot keeps no on-disk state; everything is re-derived at boot.
