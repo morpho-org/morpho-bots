@@ -184,14 +184,26 @@ request per `MARKETS_REFRESH_MS` still hydrates the registry, because ids alone 
 market is denominated in. If that request fails the configured ids are still returned, so a
 hydration outage never shrinks the polled scope, and the cache is cleared so the next tick retries.
 
-Alert delivery is pluggable behind the `ALERT_DISPATCHER` DI token. With `SLACK_CHANNEL` +
-`SLACK_BOT_TOKEN` set, `SlackDispatcher` posts to Slack via `chat.postMessage` (bot token, so the
-channel is env-configurable; the bot needs the `chat:write` scope and must be invited to the
-channel). Severity maps to a leading emoji (ℹ️ / ⚠️ / 🚨); every API-sourced string is escaped
-(`& < >`) so alert content can never inject a `<!channel>` or `<@id>` mention; ≤10 alerts per
-message keeps Slack's block limit clear; 429s honor `Retry-After`. A Slack failure (network,
-`ok:false`) logs `slack.error` AND throws — the poller keeps its state and re-sends the same
-window next tick (at-least-once; the alert `key` is the dedupe handle if consumers need it).
+Alert delivery is pluggable behind the `ALERT_DISPATCHER` DI token. Every alert is one sentence:
+
+```text
+($size $symbol $action)[explorer tx link] by ($address)[explorer address link] on midnight-base at $time
+ℹ️ 20M USDC lend by 0x958e…1917 on midnight-base at 2026-07-19 22:58:35 UTC
+```
+
+Amounts render compact (`20M`, `1.5K`) in the token resolved through the `TokenRegistry`, falling
+back to raw base units + `assets`/`units` when metadata is missing. Liquidations read `… of
+<borrower>` instead of `by`. Producers build the mrkdwn (`Alert.text`, links included) and escape
+every interpolated API-sourced string (`& < >`) via `alerts/mrkdwn.ts` so content can never inject
+a `<!channel>` or `<@id>` mention; the plain `Alert.title` is the notification fallback and the
+log line.
+
+With `SLACK_CHANNEL` + `SLACK_BOT_TOKEN` set, `SlackDispatcher` posts to Slack via
+`chat.postMessage` (bot token, so the channel is env-configurable; the bot needs the `chat:write`
+scope and must be invited to the channel). Severity maps to a leading emoji (ℹ️ / ⚠️ / 🚨);
+≤10 alerts per message keeps Slack's block limit clear; 429s honor `Retry-After`. A Slack failure
+(network, `ok:false`) logs `slack.error` AND throws — the poller keeps its state and re-sends the
+same window next tick (at-least-once; the alert `key` is the dedupe handle if consumers need it).
 Setting exactly one of channel/token fails the boot. With neither set, alerts go through
 `LogAlertDispatcher` — one structured `alert` log line each.
 
@@ -263,8 +275,9 @@ bad debt is socialized to lenders and is the curator signal.
 Note on `FILTER_MIN_ASSETS` denominations: the compared amount is loan-token base units for
 trades, **collateral-token** base units for collateral events, and face-value units for primary
 exits / repaid units for liquidations — one global threshold across markets with heterogeneous
-decimals is a blunt instrument; per-poller thresholds are a known follow-up. Amounts render as
-raw base units (this API exposes no token metadata); every alert carries a basescan tx link.
+decimals is a blunt instrument; per-poller thresholds are a known follow-up. Alert amounts render
+in human units via the `TokenRegistry` (raw base units when unresolved); every transaction alert
+links its basescan tx and acting address.
 
 ## Important Operational Notes
 

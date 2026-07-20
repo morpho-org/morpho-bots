@@ -1,55 +1,166 @@
 import { describe, expect, it } from 'vitest'
 
-import { explorerTxUrl, formatTransactionAlert } from '../../src/pollers/format'
+import {
+  chainLabel,
+  explorerAddressUrl,
+  explorerTxUrl,
+  formatTransactionAlert,
+  tokenAmount
+} from '../../src/pollers/format'
+import { TokenRegistry } from '../../src/tokens/registry'
 import {
   exitPrimaryItem,
   lendItem,
   liquidationItem,
   supplyCollateralItem,
+  MARKET_A,
+  TX_HASH,
   USER_ONE,
   USER_TWO
 } from '../midnight/fixtures'
 
-describe('explorerTxUrl', () => {
-  it('builds a basescan link for chain 8453 and falls back to the raw hash', () => {
-    expect(explorerTxUrl(8453, '0xabc')).toBe('https://basescan.org/tx/0xabc')
-    expect(explorerTxUrl(999, '0xabc')).toBe('0xabc')
+const LOAN_TOKEN = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
+
+/** MARKET_A with a 6-decimal USDC loan token and USER_TWO as an 18-decimal WETH collateral. */
+function registryWithTokens(symbol = 'USDC') {
+  const tokens = new TokenRegistry()
+  tokens.record({
+    market_id: MARKET_A,
+    chain_id: 8453,
+    loan_token: LOAN_TOKEN,
+    collaterals: [{ token: USER_TWO }]
+  })
+  tokens.recordToken({ chainId: 8453, address: LOAN_TOKEN, name: 'USD Coin', symbol, decimals: 6 })
+  tokens.recordToken({
+    chainId: 8453,
+    address: USER_TWO,
+    name: 'Wrapped Ether',
+    symbol: 'WETH',
+    decimals: 18
+  })
+  return tokens
+}
+
+describe('explorer urls', () => {
+  it('builds basescan links for chain 8453 and null for unknown chains', () => {
+    expect(explorerTxUrl(8453, TX_HASH)).toBe(`https://basescan.org/tx/${TX_HASH}`)
+    expect(explorerTxUrl(999, TX_HASH)).toBeNull()
+    expect(explorerAddressUrl(8453, USER_ONE)).toBe(`https://basescan.org/address/${USER_ONE}`)
+    expect(explorerAddressUrl(999, USER_ONE)).toBeNull()
+  })
+
+  it('refuses malformed hashes and addresses so they can never enter a link URL slot', () => {
+    expect(explorerTxUrl(8453, '0xabc')).toBeNull()
+    expect(explorerTxUrl(8453, `${TX_HASH}> <!channel`)).toBeNull()
+    expect(explorerAddressUrl(8453, 'not-an-address')).toBeNull()
+  })
+})
+
+describe('chainLabel', () => {
+  it('names known chains and falls back to the id', () => {
+    expect(chainLabel(8453)).toBe('midnight-base')
+    expect(chainLabel(999)).toBe('midnight-999')
+  })
+})
+
+describe('tokenAmount', () => {
+  it('shows a malformed amount verbatim instead of dropping the alert', () => {
+    const token = { chainId: 8453, address: LOAN_TOKEN, name: null, symbol: 'USDC', decimals: 6 }
+    expect(tokenAmount('not-a-number', token as never)).toBe('not-a-number USDC')
   })
 })
 
 describe('formatTransactionAlert', () => {
-  it('formats a lend take order', () => {
-    const alert = formatTransactionAlert(lendItem({ id: 'id-1', created_at: 1, assets: '500' }))
+  it('renders a lend as one linked sentence: size symbol action / by / on / at', () => {
+    const alert = formatTransactionAlert(
+      lendItem({ id: 'id-1', created_at: 1_700_000_000, assets: '20000000000000' }),
+      registryWithTokens()
+    )
     expect(alert.key).toBe('id-1')
-    expect(alert.title).toBe('take order (lend): 500 assets')
     expect(alert.severity).toBe('info')
-    expect(alert.lines).toContain(`maker: ${USER_ONE}`)
-    expect(alert.lines).toContain(`taker: ${USER_TWO}`)
-    expect(alert.lines.some(line => line.startsWith('tx: https://basescan.org/tx/'))).toBe(true)
+    expect(alert.title).toBe(
+      '20M USDC lend by 0x958e...1917 on midnight-base at 2023-11-14 22:13:20 UTC'
+    )
+    expect(alert.text).toBe(
+      `<https://basescan.org/tx/${TX_HASH}|20M USDC lend> ` +
+        `by <https://basescan.org/address/${USER_ONE}|0x958e...1917> ` +
+        'on midnight-base at 2023-11-14 22:13:20 UTC'
+    )
   })
 
-  it('labels primary repays as face value', () => {
-    const alert = formatTransactionAlert(exitPrimaryItem({ id: 'id-2', units: '42' }))
-    expect(alert.title).toBe('repay (primary): 42 units (face value)')
+  it('falls back to raw base units when the market is not in the registry', () => {
+    const alert = formatTransactionAlert(
+      lendItem({ id: 'id-2', created_at: 1_700_000_000 }),
+      new TokenRegistry()
+    )
+    expect(alert.title).toBe(
+      '1000 assets lend by 0x958e...1917 on midnight-base at 2023-11-14 22:13:20 UTC'
+    )
+  })
+
+  it('keeps unit-denominated primary repays labeled as units', () => {
+    const alert = formatTransactionAlert(
+      exitPrimaryItem({ id: 'id-3', units: '42000000' }),
+      registryWithTokens()
+    )
+    expect(alert.title).toBe(
+      '42 units repay (primary) by 0x958e...1917 on midnight-base at 1970-01-01 00:01:40 UTC'
+    )
     expect(alert.severity).toBe('info')
   })
 
-  it('formats collateral supply with the collateral token', () => {
-    const alert = formatTransactionAlert(supplyCollateralItem({ id: 'id-3', assets: '7' }))
-    expect(alert.title).toBe('collateral supplied: 7')
-    expect(alert.lines).toContain(`collateral: ${USER_TWO}`)
+  it("resolves collateral amounts against the event's own collateral token", () => {
+    const alert = formatTransactionAlert(
+      supplyCollateralItem({ id: 'id-4', assets: '5000000000000000000' }),
+      registryWithTokens()
+    )
+    expect(alert.title).toBe(
+      '5 WETH collateral supply by 0x958e...1917 on midnight-base at 1970-01-01 00:01:40 UTC'
+    )
   })
 
-  it('formats a clean liquidation as warning', () => {
-    const alert = formatTransactionAlert(liquidationItem({ id: 'id-4', repaid_units: '500' }))
-    expect(alert.title).toBe('full liquidation: 500 units repaid')
+  it('formats a clean liquidation as warning, naming the borrower', () => {
+    const alert = formatTransactionAlert(
+      liquidationItem({ id: 'id-5', repaid_units: '500000000' }),
+      registryWithTokens()
+    )
     expect(alert.severity).toBe('warning')
-    expect(alert.lines).toContain(`borrower: ${USER_TWO}`)
+    expect(alert.title).toBe(
+      '500 units full liquidation of 0x5356...4C91 on midnight-base at 1970-01-01 00:01:40 UTC'
+    )
   })
 
-  it('escalates bad-debt liquidations to critical with a BAD DEBT title', () => {
-    const alert = formatTransactionAlert(liquidationItem({ id: 'id-5', bad_debt: '123' }))
-    expect(alert.title).toBe('BAD DEBT — full liquidation: 123 bad debt')
+  it('escalates bad-debt liquidations to critical with a BAD DEBT headline', () => {
+    const alert = formatTransactionAlert(
+      liquidationItem({ id: 'id-6', bad_debt: '123000000' }),
+      registryWithTokens()
+    )
     expect(alert.severity).toBe('critical')
+    expect(alert.title).toBe(
+      'BAD DEBT — 123 units bad debt (full liquidation) of 0x5356...4C91 ' +
+        'on midnight-base at 1970-01-01 00:01:40 UTC'
+    )
+  })
+
+  it('degrades to plain escaped text when the tx hash and account are malformed', () => {
+    const item = {
+      ...lendItem({ id: 'id-8', created_at: 1_700_000_000, account: '<!channel>' }),
+      tx_hash: `${TX_HASH}> <!here`
+    }
+    const alert = formatTransactionAlert(item, registryWithTokens())
+    // No URL survives validation, so the sentence carries no mrkdwn link at all…
+    expect(alert.text).not.toContain('<https')
+    // …and every API-sourced fragment is escaped — nothing can form a control sequence.
+    expect(alert.text).not.toContain('<!')
+    expect(alert.text).toContain('&lt;!chan')
+  })
+
+  it('escapes API-sourced strings in the mrkdwn text but not the plain title', () => {
+    const alert = formatTransactionAlert(
+      lendItem({ id: 'id-7', created_at: 1_700_000_000 }),
+      registryWithTokens('<USDC>')
+    )
+    expect(alert.title).toContain('<USDC> lend')
+    expect(alert.text).toContain('&lt;USDC&gt; lend')
   })
 })

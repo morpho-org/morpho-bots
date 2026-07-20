@@ -36,7 +36,7 @@ class SamplePoller extends Poller<number, string> {
     return items.map(item => ({
       key: item,
       title: item,
-      lines: [],
+      text: item,
       severity: 'info' as const
     }))
   }
@@ -72,8 +72,8 @@ describe('Poller.pollOnce', () => {
     expect(await cursors.get('sample')).toBe(7)
     expect(dispatcher.sent).toEqual([
       [
-        { key: 'a', title: 'a', lines: [], severity: 'info' },
-        { key: 'b', title: 'b', lines: [], severity: 'info' }
+        { key: 'a', title: 'a', text: 'a', severity: 'info' },
+        { key: 'b', title: 'b', text: 'b', severity: 'info' }
       ]
     ])
   })

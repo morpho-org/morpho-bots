@@ -3,13 +3,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Alert } from '../../src/alerts/alert'
 
 import { LogAlertDispatcher } from '../../src/alerts/alert'
-import { escapeSlack, SlackDispatcher } from '../../src/alerts/slack.dispatcher'
+import { SlackDispatcher } from '../../src/alerts/slack.dispatcher'
 import { loadEnv } from '../../src/config/env'
 import { buildDispatcher } from '../../src/polling/polling.module'
 import { fakeLogger } from '../helpers'
 
 function alert(over: Partial<Alert> = {}): Alert {
-  return { key: 'k', title: 'title', lines: ['line-1'], severity: 'info', ...over }
+  return { key: 'k', title: 'title', text: 'text', severity: 'info', ...over }
 }
 
 function slackOk(body: object = { ok: true }) {
@@ -29,17 +29,15 @@ function makeDispatcher(fetchImpl: typeof fetch) {
   })
 }
 
-describe('escapeSlack', () => {
-  it('escapes the three Slack control characters', () => {
-    expect(escapeSlack('<!channel> & <@U1>')).toBe('&lt;!channel&gt; &amp; &lt;@U1&gt;')
-  })
-})
-
 describe('SlackDispatcher', () => {
-  it('posts one chat.postMessage with channel, escaped content, and auth header', async () => {
+  it('posts one chat.postMessage with channel, mrkdwn text, and auth header', async () => {
     const fetchImpl = vi.fn(() => Promise.resolve(slackOk()))
     await makeDispatcher(fetchImpl as unknown as typeof fetch).send([
-      alert({ title: 'big <take>', lines: ['maker: <@evil>'], severity: 'critical' })
+      alert({
+        title: 'big <take>',
+        text: '<https://basescan.org/tx/0xabc|big take> by 0x1234…abcd',
+        severity: 'critical'
+      })
     ])
     expect(fetchImpl).toHaveBeenCalledTimes(1)
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit]
@@ -51,8 +49,11 @@ describe('SlackDispatcher', () => {
       blocks: { text: { text: string } }[]
     }
     expect(body.channel).toBe('C123')
-    expect(body.blocks[0]?.text.text).toBe('🚨 *big &lt;take&gt;*\nmaker: &lt;@evil&gt;')
-    // The fallback text field is mrkdwn-parsed too — it must be escaped like the blocks.
+    // `text` is producer-escaped mrkdwn — rendered verbatim so its links survive.
+    expect(body.blocks[0]?.text.text).toBe(
+      '🚨 <https://basescan.org/tx/0xabc|big take> by 0x1234…abcd'
+    )
+    // The fallback text field is mrkdwn-parsed too — the plain title must be escaped.
     expect(body.text).toBe('big &lt;take&gt;')
   })
 

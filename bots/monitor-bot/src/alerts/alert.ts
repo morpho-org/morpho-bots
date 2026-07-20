@@ -7,8 +7,14 @@ import { LOGGER } from '../logging/logger.provider'
 export type Alert = {
   /** Stable idempotency key for downstream dedupe (e.g. the API's stable activity id). */
   key: string
+  /** The alert as one plain-text sentence — Slack's notification fallback and the log line. */
   title: string
-  lines: string[]
+  /**
+   * The same sentence as Slack mrkdwn with explorer links. Producers escape every interpolated
+   * API-sourced string via the `alerts/mrkdwn` helpers; dispatchers render this verbatim (escaping
+   * here would destroy the `<url|label>` links).
+   */
+  text: string
   severity: 'info' | 'warning' | 'critical'
 }
 
@@ -29,8 +35,7 @@ export class LogAlertDispatcher implements AlertDispatcher {
       this.logger.info('alert', {
         key: alert.key,
         title: alert.title,
-        severity: alert.severity,
-        lines: alert.lines
+        severity: alert.severity
       })
     }
     return Promise.resolve()

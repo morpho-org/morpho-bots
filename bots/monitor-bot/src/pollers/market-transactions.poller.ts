@@ -120,7 +120,9 @@ export class MarketTransactionsPoller extends Poller<TxCursor, TransactionItem> 
   }
 
   protected toAlerts(items: TransactionItem[]) {
-    return items.filter(item => this.ext.filter.matches(item)).map(formatTransactionAlert)
+    return items
+      .filter(item => this.ext.filter.matches(item))
+      .map(item => formatTransactionAlert(item, this.ext.tokens))
   }
 
   private anchorMarket(marketId: string, anchor: number): MarketCursor {
