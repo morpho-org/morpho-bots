@@ -243,6 +243,10 @@ const betterstackHost = Bun.env.BETTERSTACK_INGESTING_HOST?.trim()
 const betterstackToken = Bun.env.BETTERSTACK_SOURCE_TOKEN?.trim()
 const betterstackHeartbeatUrl = Bun.env.BETTERSTACK_HEARTBEAT_URL?.trim()
 
+// Optional core-API auth (sent as `x-api-key`, read at point of use by the bot). Off when unset —
+// token metadata enrichment falls back and the bot runs as before.
+const morphoApiKey = Bun.env.MORPHO_API_KEY?.trim()
+
 await ensureContext()
 
 await ensureService(BOT_SERVICE)
@@ -257,6 +261,7 @@ if (betterstackToken) await setSecret(BOT_SERVICE, 'BETTERSTACK_SOURCE_TOKEN', b
 if (betterstackHeartbeatUrl) {
   await setSecret(BOT_SERVICE, 'BETTERSTACK_HEARTBEAT_URL', betterstackHeartbeatUrl)
 }
+if (morphoApiKey) await setSecret(BOT_SERVICE, 'MORPHO_API_KEY', morphoApiKey)
 await deployService(BOT_SERVICE)
 
 const botStatus = await waitForDeploy(BOT_SERVICE)
