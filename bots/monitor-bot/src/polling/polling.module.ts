@@ -10,6 +10,7 @@ import type { MidnightEventType } from '../midnight/client'
 import type { BootSnapshotStore } from '../snapshot/boot-snapshot.store'
 
 import { ALERT_DISPATCHER, LogAlertDispatcher } from '../alerts/alert'
+import { LifecycleNotifier } from '../alerts/lifecycle.notifier'
 import { SlackDispatcher } from '../alerts/slack.dispatcher'
 import { ENV } from '../config/env'
 import { createCoreClient } from '../core/client'
@@ -143,7 +144,8 @@ export function buildDispatcher(env: MonitorEnv, logger: Logger): AlertDispatche
       useFactory: buildPollers,
       inject: [ENV, LOGGER, CURSOR_STORE, BOOT_SNAPSHOT_STORE, ALERT_DISPATCHER, TOKEN_REGISTRY]
     },
-    PollerRegistrar
+    PollerRegistrar,
+    LifecycleNotifier
   ]
 })
 export class PollingModule {}
