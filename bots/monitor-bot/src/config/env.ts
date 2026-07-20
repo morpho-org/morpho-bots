@@ -65,7 +65,8 @@ export function loadEnv(runtimeEnv: Record<string, string | undefined> = process
       MIDNIGHT_API_URL: z.string().url().default('https://api.morpho.org'),
       /** Fixed market scope; empty = auto-discover all active markets. */
       MARKET_IDS: marketIdListSchema,
-      MARKETS_REFRESH_SECONDS: z.coerce.number().int().min(1).default(600),
+      /** Same name and unit as midnight-liquidation's market-refresh knob. */
+      MARKETS_REFRESH_MS: z.coerce.number().int().min(1).default(600_000),
       /** Minimum attributed size (loan-token base units) for an alert; 0 = no size filter. */
       FILTER_MIN_ASSETS: z.string().regex(/^\d+$/).default('0').transform(BigInt),
       /** Position-owner allowlist; empty = all users. */

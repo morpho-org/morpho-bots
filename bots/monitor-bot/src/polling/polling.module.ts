@@ -53,7 +53,7 @@ function buildPollers(
     client,
     logger,
     fixedMarketIds: env.MARKET_IDS,
-    refreshMs: env.MARKETS_REFRESH_SECONDS * 1000
+    refreshMs: env.MARKETS_REFRESH_MS
   })
   const filter = new TransactionFilter({
     minAssets: env.FILTER_MIN_ASSETS,

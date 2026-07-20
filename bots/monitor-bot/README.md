@@ -32,7 +32,7 @@ missing or malformed.
 | `LOG_LEVEL`                   | no       | `info`                   | `debug` \| `info` \| `warn` \| `error`           |
 | `MIDNIGHT_API_URL`            | no       | `https://api.morpho.org` | Midnight API base URL                            |
 | `MARKET_IDS`                  | no       | — (auto-discover)        | Comma-separated market ids; empty = all active   |
-| `MARKETS_REFRESH_SECONDS`     | no       | `600`                    | Market-discovery cache TTL                       |
+| `MARKETS_REFRESH_MS`          | no       | `600000`                 | Market-discovery cache TTL                       |
 | `FILTER_MIN_ASSETS`           | no       | `0`                      | Min size (base units) for an alert; 0 = off      |
 | `FILTER_USERS`                | no       | — (all users)            | Comma-separated position-owner allowlist         |
 | `POLL_CRON_TAKE_ORDERS`       | no       | `*/30 * * * * *`         | Take-orders poller cadence (cron, seconds field) |
@@ -146,12 +146,20 @@ pagination cursors, dedupes by stable item id at the (inclusive) watermark secon
 **per-market** watermark — a global watermark would skip items in slower-indexed markets.
 
 With no saved position (first tick, restart, new market) a poller anchors at _now_ — history is
-never replayed; the skipped window is logged as `poll.anchor`. Alerts pass a `TransactionFilter`
-(size threshold on the per-type amount; position-owner allowlist), except **bad-debt
-liquidations** (`bad_debt > 0` or `pure_bad_debt_realization`) which bypass all filters and post
-as `critical` — bad debt is socialized to lenders and is the curator signal. Amounts are raw
-loan-token base units (this API exposes no token metadata); every alert carries a basescan tx
-link.
+never replayed; the skipped window is logged as `poll.anchor`. Every fetch re-covers a 60s
+overlap window below the watermark with stable-id dedupe, so items indexed up to 60s late are
+still caught exactly once (later than that is missed by design — the documented assumption
+boundary). Alerts pass a `TransactionFilter` (size threshold on the per-type amount; user
+allowlist matched on the affected account — for liquidations both `account` and `borrower`, so a
+watched borrower's liquidation can never be missed), except **bad-debt liquidations**
+(`bad_debt > 0` or `pure_bad_debt_realization`) which bypass all filters and post as `critical` —
+bad debt is socialized to lenders and is the curator signal.
+
+Note on `FILTER_MIN_ASSETS` denominations: the compared amount is loan-token base units for
+trades, **collateral-token** base units for collateral events, and face-value units for primary
+exits / repaid units for liquidations — one global threshold across markets with heterogeneous
+decimals is a blunt instrument; per-poller thresholds are a known follow-up. Amounts render as
+raw base units (this API exposes no token metadata); every alert carries a basescan tx link.
 
 ## Important Operational Notes
 

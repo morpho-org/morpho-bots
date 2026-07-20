@@ -52,6 +52,15 @@ describe('TransactionFilter', () => {
     expect(filter.matches(lendItem({ id: 'b', created_at: 1, account: USER_TWO }))).toBe(false)
   })
 
+  it('matches liquidations on the borrower even when account differs', () => {
+    const filter = new TransactionFilter({ minAssets: 0n, users: [USER_ONE] })
+    const item = liquidationItem({ id: 'a', account: USER_TWO })
+    item.data.borrower = USER_ONE
+    expect(filter.matches(item)).toBe(true)
+    item.data.borrower = USER_TWO
+    expect(filter.matches(item)).toBe(false)
+  })
+
   it('lets bad-debt liquidations bypass both size and user filters', () => {
     const filter = new TransactionFilter({ minAssets: 10_000n, users: [USER_ONE] })
     const badDebt = liquidationItem({

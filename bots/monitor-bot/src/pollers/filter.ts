@@ -44,6 +44,17 @@ export function sizeOf(item: TransactionItem): bigint {
   }
 }
 
+// The API documents the "affected account" per event type as buyer/seller for trades, on_behalf
+// for primary exits and collateral actions, and borrower for liquidations. `data.account` holds
+// the per-item attribution in observed samples, but liquidations match on borrower AS WELL so a
+// watched borrower's liquidation can never be missed if the two ever differ.
+function affectedAccounts(item: TransactionItem): string[] {
+  if (item.event_type === 'partial_liquidation' || item.event_type === 'full_liquidation') {
+    return [item.data.account, item.data.borrower]
+  }
+  return [item.data.account]
+}
+
 export class TransactionFilter {
   constructor(private readonly config: TransactionFilterConfig) {}
 
@@ -54,8 +65,9 @@ export class TransactionFilter {
 
   private matchesUser(item: TransactionItem) {
     if (this.config.users.length === 0) return true
-    const account = item.data.account
-    if (!isAddress(account)) return false
-    return this.config.users.some(user => isAddressEqual(user, account))
+    return affectedAccounts(item).some(
+      candidate =>
+        isAddress(candidate) && this.config.users.some(user => isAddressEqual(user, candidate))
+    )
   }
 }

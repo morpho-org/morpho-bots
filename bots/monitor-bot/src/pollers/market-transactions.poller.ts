@@ -10,10 +10,17 @@ import { MARKET_CONCURRENCY, MAX_PAGES, REQUEST_TIMEOUT_MS } from '../midnight/c
 import { Poller } from '../polling/poller'
 import { formatTransactionAlert } from './format'
 
+// The watermark design assumes items never appear in the feed with a created_at more than
+// OVERLAP_SECONDS below what has already been returned (late indexing / out-of-order ingestion).
+// Every fetch re-covers this window below the watermark and dedupes by stable id, so an item
+// indexed up to OVERLAP_SECONDS late is still caught exactly once; anything later than that is
+// missed by design (the assumption boundary).
+const OVERLAP_SECONDS = 60
+
 type MarketCursor = {
-  /** Watermark: everything strictly before this unix second has been processed. */
+  /** Watermark: the newest created_at second processed for this market. */
   lastCreatedAt: number
-  /** Item ids already alerted AT the watermark second (created_at_gte is inclusive). */
+  /** Item ids already alerted within [watermark − OVERLAP_SECONDS, watermark]. */
   seenIds: string[]
 }
 
@@ -33,17 +40,23 @@ type MarketTransactionsPollerDependencies = PollerDependencies & {
   sleep?: (ms: number) => Promise<void>
 }
 
-// Advance the per-market watermark to the newest second seen, carrying same-second ids so the
-// next (inclusive) created_at_gte query can drop already-processed items.
-function advance(prev: MarketCursor, items: TransactionItem[]): MarketCursor {
-  const last = items.at(-1)
+// Advance the per-market watermark to the newest second seen. `fetched` is the FULL page walk
+// (including already-seen overlap items), so rebuilding seenIds from it covers the whole
+// [watermark − OVERLAP_SECONDS, watermark] window the next fetch will re-query.
+function advance(prev: MarketCursor, fetched: TransactionItem[]): MarketCursor {
+  const last = fetched.at(-1)
   if (!last) return prev
-  const carried = prev.lastCreatedAt === last.created_at ? prev.seenIds : []
+  // max() so a watermark can never regress if the newest item vanished from the feed.
+  const lastCreatedAt = Math.max(prev.lastCreatedAt, last.created_at)
+  const cutoff = lastCreatedAt - OVERLAP_SECONDS
+  const carried = prev.seenIds.length > 0 && prev.lastCreatedAt >= cutoff ? prev.seenIds : []
   const seenIds = [
-    ...carried,
-    ...items.filter(item => item.created_at === last.created_at).map(item => item.id)
+    ...new Set([
+      ...carried,
+      ...fetched.filter(item => item.created_at >= cutoff).map(item => item.id)
+    ])
   ]
-  return { lastCreatedAt: last.created_at, seenIds }
+  return { lastCreatedAt, seenIds }
 }
 
 // One poller instance per observe target (take orders, repays, collateral, liquidations) — the
@@ -93,7 +106,8 @@ export class MarketTransactionsPoller extends Poller<TxCursor, TransactionItem> 
   // returning 400) must not starve every other market's alerts forever.
   private async pollMarket(marketId: string, cursor: TxCursor | null, anchor: number) {
     const prev = cursor?.[marketId] ?? this.anchorMarket(marketId, anchor)
-    const { data: fetched, error } = await tryCatch(this.fetchMarket(marketId, prev.lastCreatedAt))
+    const from = Math.max(prev.lastCreatedAt - OVERLAP_SECONDS, 0)
+    const { data: fetched, error } = await tryCatch(this.fetchMarket(marketId, from))
     if (error) {
       this.ext.logger.warn('poll.market_error', {
         pollerId: this.id,
@@ -104,7 +118,7 @@ export class MarketTransactionsPoller extends Poller<TxCursor, TransactionItem> 
     }
     const seen = new Set(prev.seenIds)
     const fresh = fetched.filter(item => !seen.has(item.id))
-    return { marketId, cursor: advance(prev, fresh), fresh }
+    return { marketId, cursor: advance(prev, fetched), fresh }
   }
 
   protected toAlerts(items: TransactionItem[]) {

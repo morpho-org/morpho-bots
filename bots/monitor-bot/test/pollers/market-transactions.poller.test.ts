@@ -61,7 +61,8 @@ describe('MarketTransactionsPoller', () => {
     expect(calls).toHaveLength(1)
     expect(calls[0]?.query).toEqual({
       event_types: ['lend', 'borrow'],
-      created_at_gte: NOW_S,
+      // 60s overlap window below the anchor watermark (late-indexing defense).
+      created_at_gte: NOW_S - 60,
       sort_direction: 'asc',
       limit: 1000
     })
@@ -91,9 +92,32 @@ describe('MarketTransactionsPoller', () => {
 
     // Second tick re-queries from the same (inclusive) watermark; only c is new.
     await poller.pollOnce()
-    expect(calls[1]?.query.created_at_gte).toBe(NOW_S + 5)
+    expect(calls[1]?.query.created_at_gte).toBe(NOW_S + 5 - 60)
     expect(dispatcher.sent).toHaveLength(2)
     expect(dispatcher.sent[1]?.map(alert => alert.key)).toEqual(['c'])
+  })
+
+  it('catches an item indexed late within the overlap window exactly once', async () => {
+    const early = lendItem({ id: 'early', created_at: NOW_S + 50 })
+    // Indexed AFTER the watermark advanced to NOW_S+50, with an older timestamp (30s late).
+    const late = lendItem({ id: 'late', created_at: NOW_S + 20 })
+    const { poller, dispatcher } = makePoller(
+      {
+        [MARKET_A]: [
+          { cursor: null, data: [early] },
+          { cursor: null, data: [late, early] },
+          { cursor: null, data: [late, early] }
+        ]
+      },
+      [MARKET_A]
+    )
+    await poller.pollOnce()
+    await poller.pollOnce()
+    await poller.pollOnce()
+    expect(dispatcher.sent.map(batch => batch.map(alert => alert.key))).toEqual([
+      ['early'],
+      ['late']
+    ])
   })
 
   it('walks pagination cursors within one tick', async () => {
@@ -133,8 +157,12 @@ describe('MarketTransactionsPoller', () => {
     await poller.pollOnce()
     await poller.pollOnce()
     const second = calls.slice(2)
-    expect(second.find(call => call.marketId === MARKET_A)?.query.created_at_gte).toBe(NOW_S + 100)
-    expect(second.find(call => call.marketId === MARKET_B)?.query.created_at_gte).toBe(NOW_S + 1)
+    expect(second.find(call => call.marketId === MARKET_A)?.query.created_at_gte).toBe(
+      NOW_S + 100 - 60
+    )
+    expect(second.find(call => call.marketId === MARKET_B)?.query.created_at_gte).toBe(
+      NOW_S + 1 - 60
+    )
   })
 
   it('caps pagination and logs when MAX_PAGES is hit', async () => {
@@ -195,8 +223,10 @@ describe('MarketTransactionsPoller', () => {
     const afterFirstTick = calls.length
     await poller.pollOnce()
     const second = calls.slice(afterFirstTick)
-    expect(second.find(call => call.marketId === MARKET_A)?.query.created_at_gte).toBe(NOW_S)
-    expect(second.find(call => call.marketId === MARKET_B)?.query.created_at_gte).toBe(NOW_S + 10)
+    expect(second.find(call => call.marketId === MARKET_A)?.query.created_at_gte).toBe(NOW_S - 60)
+    expect(second.find(call => call.marketId === MARKET_B)?.query.created_at_gte).toBe(
+      NOW_S + 10 - 60
+    )
   })
 
   it('throws when every market fails so the tick surfaces as poll.error', async () => {
