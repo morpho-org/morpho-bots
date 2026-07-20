@@ -1,7 +1,7 @@
 # Decisions (TIBs)
 
 Technical Intent Briefs (TIBs) — durable records of repo-wide architectural decisions for
-`curator-bots`. One file per decision.
+`morpho-bots`. One file per decision.
 
 ## Adding a TIB
 

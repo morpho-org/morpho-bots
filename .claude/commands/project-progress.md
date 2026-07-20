@@ -62,17 +62,17 @@ Check `$ARGUMENTS`:
 For each **incomplete** issue, look for linked PRs:
 
 1. Check the issue description and comments (fetched in Step 3.3) for GitHub PR URLs
-   (pattern: `github.com/morpho-org/curator-bots/pull/\d+`).
+   (pattern: `github.com/morpho-org/morpho-bots/pull/\d+`).
 2. Also check if the issue's `branchName` field has an associated open PR:
 
    ```bash
-   gh pr list --repo morpho-org/curator-bots --head <branchName> --json number,title,state,isDraft,reviewDecision,headRefName --limit 1
+   gh pr list --repo morpho-org/morpho-bots --head <branchName> --json number,title,state,isDraft,reviewDecision,headRefName --limit 1
    ```
 
 3. For each found PR, fetch its status:
 
    ```bash
-   gh pr view <number> --repo morpho-org/curator-bots --json number,state,isDraft,reviewDecision,title,url,statusCheckRollup,reviewRequests,reviews
+   gh pr view <number> --repo morpho-org/morpho-bots --json number,state,isDraft,reviewDecision,title,url,statusCheckRollup,reviewRequests,reviews
    ```
 
 4. Summarize each PR's status as a compact badge string:
@@ -199,7 +199,7 @@ Search for open PRs in the repo whose branch names or titles reference the proje
 were not already linked from any issue in Step 4:
 
 ```bash
-gh pr list --repo morpho-org/curator-bots --state open --json number,title,headRefName,url --limit 100
+gh pr list --repo morpho-org/morpho-bots --state open --json number,title,headRefName,url --limit 100
 ```
 
 Filter results for PRs whose `title` or `headRefName` contains a project issue identifier (e.g.,
