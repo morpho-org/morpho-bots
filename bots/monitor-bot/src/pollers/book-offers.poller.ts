@@ -1,15 +1,25 @@
 import type { Address } from 'viem'
 
-import { assertNever, delay, ensureError, fetchWithRetry, tryCatch } from '@repo/utils'
+import {
+  abbreviateAddress,
+  assertNever,
+  delay,
+  ensureError,
+  fetchWithRetry,
+  tryCatch
+} from '@repo/utils'
 import chunk from 'lodash-es/chunk'
 import { getAddress, isAddress, parseUnits } from 'viem'
 
 import type { Alert } from '../alerts/alert'
 import type { BookMarket, MidnightClient, TakeableOffer } from '../midnight/client'
 import type { PollerDependencies } from '../polling/poller'
+import type { TokenInfo, TokenRegistry } from '../tokens/registry'
 
+import { escapeSlack, slackLink } from '../alerts/mrkdwn'
 import { MARKET_CONCURRENCY, REQUEST_TIMEOUT_MS } from '../midnight/client'
 import { Poller } from '../polling/poller'
+import { chainLabel, explorerAddressUrl, tokenAmount, unitsAmount } from './format'
 
 /** `/v0/midnight/books` caps `limit` at 20 — far below the 1000 the other list endpoints allow. */
 const BOOK_PAGE_LIMIT = 20
@@ -199,8 +209,8 @@ function sideLabel(side: BookSide) {
   return side === 'bids' ? 'lend' : 'borrow'
 }
 
-function sizeLabel(bucket: OfferBucket, assets: bigint | null) {
-  return assets === null ? `${bucket.maxUnits} units` : `${assets} assets`
+function sizeLabel(bucket: OfferBucket, assets: bigint | null, loan: TokenInfo | null) {
+  return assets === null ? unitsAmount(bucket.maxUnits, loan) : tokenAmount(`${assets}`, loan)
 }
 
 /** Both caps in the dedupe key so an A→B→A→B resize cycle stays distinct for dedupe consumers. */
@@ -208,43 +218,51 @@ function capKey(bucket: OfferBucket) {
   return `${bucket.maxUnits}/${bucket.maxAssets}`
 }
 
-// Make orders are off-chain EIP-712 signatures — there is no tx to link until one is taken, so
-// identity is market + side + maker + group + tick.
-function formatOfferAlert(event: OfferEvent): Alert {
+// Same sentence shape as the transaction alerts, minus what an off-chain make order does not have:
+// EIP-712 signatures carry no tx to link and no on-chain timestamp, so the headline names the
+// market and tick instead, and identity stays market + side + maker + group + tick.
+function formatOfferAlert(event: OfferEvent, tokens: TokenRegistry): Alert {
   const { bucket, marketId } = event
+  const market = tokens.get(marketId)
+  const size = sizeLabel(bucket, event.assets, tokens.loanTokenInfo(marketId))
   const side = sideLabel(bucket.side)
-  const size = sizeLabel(bucket, event.assets)
   const key = bucketKey(bucket.side, bucket.maker, bucket.group, bucket.tick)
-  const lines = [
-    `maker: ${bucket.maker}`,
-    `market: ${shortId(marketId)}`,
-    `group: ${shortId(bucket.group)}`,
-    `tick: ${bucket.tick}${event.price ? ` (price ${event.price})` : ''}`,
-    `offers: ${bucket.count}`,
-    `expiry: ${bucket.expiry}`
-  ]
+  const maker = abbreviateAddress(bucket.maker)
+  // The registry learns every book market from this poller's own sweep (recordAll runs before the
+  // diff), so a miss only happens on drift — degrade to no chain segment rather than guessing.
+  const where = market ? ` on ${chainLabel(market.chainId)}` : ''
+  const makerUrl = market ? explorerAddressUrl(market.chainId, bucket.maker) : null
+  const sentence = (headline: string) => ({
+    title: `${headline} by ${maker}${where}`,
+    text: `${escapeSlack(headline)} by ${slackLink(makerUrl, maker)}${where}`
+  })
   switch (event.kind) {
     case 'created':
       return {
         key: `${marketId}:${key}:created`,
-        title: `make order posted (${side}): ${size} @ tick ${bucket.tick}`,
-        lines,
+        ...sentence(
+          `${size} ${side} make order posted @ tick ${bucket.tick} in ${shortId(marketId)}`
+        ),
         severity: 'info'
       }
     case 'resized': {
-      const was = event.previous ? sizeLabel(event.previous, event.previousAssets) : 'unknown'
+      const was = event.previous
+        ? sizeLabel(event.previous, event.previousAssets, tokens.loanTokenInfo(marketId))
+        : 'unknown'
       return {
         key: `${marketId}:${key}:resized:${event.previous ? capKey(event.previous) : '?'}->${capKey(bucket)}`,
-        title: `make order resized (${side}): ${size} @ tick ${bucket.tick} (was ${was})`,
-        lines,
+        ...sentence(
+          `${size} ${side} make order resized (was ${was}) @ tick ${bucket.tick} in ${shortId(marketId)}`
+        ),
         severity: 'info'
       }
     }
     case 'closed':
       return {
         key: `${marketId}:${key}:closed`,
-        title: `make order closed (${side}): ${size} @ tick ${bucket.tick}`,
-        lines,
+        ...sentence(
+          `${size} ${side} make order closed @ tick ${bucket.tick} in ${shortId(marketId)}`
+        ),
         severity: 'info'
       }
     default:
@@ -324,7 +342,7 @@ export class BookOffersPoller extends Poller<BookSnapshot, OfferEvent> {
   protected toAlerts(items: OfferEvent[]) {
     return items
       .filter(event => event.assets === null || event.assets >= this.ext.minAssets)
-      .map(formatOfferAlert)
+      .map(event => formatOfferAlert(event, this.ext.tokens))
   }
 
   // One market's expansion, error-isolated: a market that persistently fails must not starve every

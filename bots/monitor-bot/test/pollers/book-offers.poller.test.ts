@@ -13,6 +13,10 @@ const GROUP_1 = `0x${'1'.repeat(64)}`
 const GROUP_2 = `0x${'2'.repeat(64)}`
 const WAD = '1000000000000000000'
 const DEFAULT_TICK = 495
+/** MARKET_A through the alert formatter's shortId. */
+const MARKET_A_SHORT = '0xaaaaaaaa…aaaa'
+/** Every offer alert ends with the linked maker and the deployment label. */
+const TAIL = ' by 0x958e...1917 on midnight-base'
 
 type Side = 'asks' | 'bids'
 
@@ -165,7 +169,9 @@ describe('BookOffersPoller', () => {
     await poller.pollOnce()
     expect(dispatcher.sent).toHaveLength(1)
     expect(firstAlert(dispatcher)?.key).toBe(`${MARKET_A}:asks:${USER_ONE}:${GROUP_2}:500:created`)
-    expect(firstAlert(dispatcher)?.title).toBe('make order posted (borrow): 500 assets @ tick 500')
+    expect(firstAlert(dispatcher)?.title).toBe(
+      `500 assets borrow make order posted @ tick 500 in ${MARKET_A_SHORT}${TAIL}`
+    )
   })
 
   it('labels bid-side offers as lend', async () => {
@@ -175,7 +181,9 @@ describe('BookOffersPoller', () => {
     ])
     await poller.pollOnce()
     await poller.pollOnce()
-    expect(firstAlert(dispatcher)?.title).toBe('make order posted (lend): 1000 assets @ tick 495')
+    expect(firstAlert(dispatcher)?.title).toBe(
+      `1000 assets lend make order posted @ tick 495 in ${MARKET_A_SHORT}${TAIL}`
+    )
   })
 
   it('alerts when a bucket changes size', async () => {
@@ -187,7 +195,7 @@ describe('BookOffersPoller', () => {
     await poller.pollOnce()
     expect(dispatcher.sent).toHaveLength(1)
     expect(firstAlert(dispatcher)?.title).toBe(
-      'make order resized (borrow): 2000 assets @ tick 495 (was 1000 assets)'
+      `2000 assets borrow make order resized (was 1000 assets) @ tick 495 in ${MARKET_A_SHORT}${TAIL}`
     )
   })
 
@@ -209,9 +217,12 @@ describe('BookOffersPoller', () => {
     await poller.pollOnce()
     await poller.pollOnce()
     expect(firstAlert(dispatcher)?.title).toBe(
-      'make order resized (borrow): 1400 assets @ tick 495 (was 1000 assets)'
+      `1400 assets borrow make order resized (was 1000 assets) @ tick 495 in ${MARKET_A_SHORT}${TAIL}`
     )
-    expect(firstAlert(dispatcher)?.lines).toContain('offers: 2')
+    // The mrkdwn text carries the maker as a basescan link.
+    expect(firstAlert(dispatcher)?.text).toContain(
+      `<https://basescan.org/address/${USER_ONE}|0x958e...1917>`
+    )
   })
 
   it('keys buckets per maker so two makers at one tick stay distinct', async () => {
@@ -234,7 +245,9 @@ describe('BookOffersPoller', () => {
     await poller.pollOnce()
     expect(dispatcher.sent).toHaveLength(1)
     expect(firstAlert(dispatcher)?.key).toBe(`${MARKET_A}:asks:${USER_ONE}:${GROUP_1}:495:closed`)
-    expect(firstAlert(dispatcher)?.title).toBe('make order closed (borrow): 1000 units @ tick 495')
+    expect(firstAlert(dispatcher)?.title).toBe(
+      `1000 units borrow make order closed @ tick 495 in ${MARKET_A_SHORT}${TAIL}`
+    )
   })
 
   it('skips the takeable-offers request for a side with no price levels', async () => {
@@ -329,7 +342,9 @@ describe('BookOffersPoller', () => {
     await poller.pollOnce()
     expect(dispatcher.sent).toHaveLength(1)
     // Unpriced, so the title falls back to units rather than claiming an asset amount.
-    expect(firstAlert(dispatcher)?.title).toBe('make order posted (borrow): 5 units @ tick 900')
+    expect(firstAlert(dispatcher)?.title).toBe(
+      `5 units borrow make order posted @ tick 900 in ${MARKET_A_SHORT}${TAIL}`
+    )
   })
 
   it('skips an offer with a malformed maker without failing the whole market', async () => {
@@ -362,7 +377,9 @@ describe('BookOffersPoller', () => {
     await poller.pollOnce()
     await poller.pollOnce()
     expect(dispatcher.sent).toHaveLength(1)
-    expect(firstAlert(dispatcher)?.title).toBe('make order posted (borrow): 5000 assets @ tick 495')
+    expect(firstAlert(dispatcher)?.title).toBe(
+      `5000 assets borrow make order posted @ tick 495 in ${MARKET_A_SHORT}${TAIL}`
+    )
   })
 
   it('isolates a failing market so other markets still alert', async () => {

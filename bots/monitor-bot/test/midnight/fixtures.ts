@@ -4,7 +4,7 @@ export const MARKET_A = `0x${'a'.repeat(64)}`
 export const MARKET_B = `0x${'b'.repeat(64)}`
 export const USER_ONE = '0x958eB498a4172EA513c79b09E7f064070C5b1917'
 export const USER_TWO = '0x535690CB1330232dd4f2ac5B724040751bdF4C91'
-const TX_HASH = `0x${'c'.repeat(64)}`
+export const TX_HASH = `0x${'c'.repeat(64)}`
 
 type LendItem = Extract<TransactionItem, { event_type: 'lend' }>
 type LiquidationItem = Extract<TransactionItem, { event_type: 'full_liquidation' }>

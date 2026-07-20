@@ -8,21 +8,19 @@ describe('LogAlertDispatcher', () => {
     const logger = fakeLogger()
     const dispatcher = new LogAlertDispatcher(logger)
     await dispatcher.send([
-      { key: 'k1', title: 'first', lines: ['l1'], severity: 'info' },
-      { key: 'k2', title: 'second', lines: [], severity: 'critical' }
+      { key: 'k1', title: 'first', text: 'first <link>', severity: 'info' },
+      { key: 'k2', title: 'second', text: 'second', severity: 'critical' }
     ])
     expect(logger.info).toHaveBeenCalledTimes(2)
     expect(logger.info).toHaveBeenNthCalledWith(1, 'alert', {
       key: 'k1',
       title: 'first',
-      severity: 'info',
-      lines: ['l1']
+      severity: 'info'
     })
     expect(logger.info).toHaveBeenNthCalledWith(2, 'alert', {
       key: 'k2',
       title: 'second',
-      severity: 'critical',
-      lines: []
+      severity: 'critical'
     })
   })
 })
