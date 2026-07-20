@@ -1,0 +1,32 @@
+{
+  "name": "@morpho-org/monitor-bot",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "deploy:railway": "bun run scripts/deploy-railway.ts",
+    "start": "bun src/index.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@nestjs/common": "catalog:",
+    "@nestjs/core": "catalog:",
+    "@nestjs/platform-express": "catalog:",
+    "@repo/bot-kit": "workspace:*",
+    "@repo/utils": "workspace:*",
+    "@t3-oss/env-core": "catalog:",
+    "reflect-metadata": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@nestjs/testing": "catalog:",
+    "@repo/typescript-config": "workspace:*",
+    "@swc/core": "catalog:",
+    "@types/bun": "catalog:",
+    "typescript": "catalog:",
+    "unplugin-swc": "catalog:",
+    "vitest": "catalog:"
+  }
+}
