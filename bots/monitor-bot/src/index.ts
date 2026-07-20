@@ -29,5 +29,7 @@ main().catch(error => {
   console.error(
     JSON.stringify({ level: 'error', event: 'startup.error', error: ensureError(error).message })
   )
-  process.exitCode = 1
+  // exit(1), not just exitCode: a failed bootstrap can leave started cron timers or sockets
+  // keeping the event loop alive — a crash-looping container beats a zombie process.
+  process.exit(1)
 })

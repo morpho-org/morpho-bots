@@ -29,8 +29,14 @@ export class PollerRegistrar implements OnApplicationBootstrap, OnApplicationShu
   ) {}
 
   onApplicationBootstrap() {
+    // Validate ids before starting ANY job: a mid-loop throw would leave earlier pollers' cron
+    // timers running on a failed boot, keeping the event loop alive as a zombie.
+    const ids = new Set<string>()
     for (const poller of this.pollers) {
-      if (this.jobs.has(poller.id)) throw new Error(`Duplicate poller id: ${poller.id}`)
+      if (ids.has(poller.id)) throw new Error(`Duplicate poller id: ${poller.id}`)
+      ids.add(poller.id)
+    }
+    for (const poller of this.pollers) {
       const job = CronJob.from({
         cronTime: poller.cron,
         onTick: () => poller.pollOnce(),
