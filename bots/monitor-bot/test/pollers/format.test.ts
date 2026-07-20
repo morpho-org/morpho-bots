@@ -15,28 +15,22 @@ import {
   supplyCollateralItem,
   MARKET_A,
   TX_HASH,
+  USDC_TOKEN,
   USER_ONE,
-  USER_TWO
+  WETH_TOKEN
 } from '../midnight/fixtures'
 
-const LOAN_TOKEN = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
-
-/** MARKET_A with a 6-decimal USDC loan token and USER_TWO as an 18-decimal WETH collateral. */
-function registryWithTokens(symbol = 'USDC') {
+/**
+ * MARKET_A denominated in Base USDC with Base WETH collateral — both resolve through the
+ * registry's seeded KNOWN_TOKENS table, so no metadata is recorded here.
+ */
+function registryWithTokens(loanToken = USDC_TOKEN) {
   const tokens = new TokenRegistry()
   tokens.record({
     market_id: MARKET_A,
     chain_id: 8453,
-    loan_token: LOAN_TOKEN,
-    collaterals: [{ token: USER_TWO }]
-  })
-  tokens.recordToken({ chainId: 8453, address: LOAN_TOKEN, name: 'USD Coin', symbol, decimals: 6 })
-  tokens.recordToken({
-    chainId: 8453,
-    address: USER_TWO,
-    name: 'Wrapped Ether',
-    symbol: 'WETH',
-    decimals: 18
+    loan_token: loanToken,
+    collaterals: [{ token: WETH_TOKEN }]
   })
   return tokens
 }
@@ -65,8 +59,9 @@ describe('chainLabel', () => {
 
 describe('tokenAmount', () => {
   it('shows a malformed amount verbatim instead of dropping the alert', () => {
-    const token = { chainId: 8453, address: LOAN_TOKEN, name: null, symbol: 'USDC', decimals: 6 }
-    expect(tokenAmount('not-a-number', token as never)).toBe('not-a-number USDC')
+    expect(tokenAmount('not-a-number', { name: null, symbol: 'USDC', decimals: 6 })).toBe(
+      'not-a-number USDC'
+    )
   })
 })
 
@@ -92,6 +87,16 @@ describe('formatTransactionAlert', () => {
     const alert = formatTransactionAlert(
       lendItem({ id: 'id-2', created_at: 1_700_000_000 }),
       new TokenRegistry()
+    )
+    expect(alert.title).toBe(
+      '1000 assets lend by 0x958e...1917 on midnight-base at 2023-11-14 22:13:20 UTC'
+    )
+  })
+
+  it('falls back to raw base units when the loan token has no metadata', () => {
+    const alert = formatTransactionAlert(
+      lendItem({ id: 'id-9', created_at: 1_700_000_000 }),
+      registryWithTokens(USER_ONE)
     )
     expect(alert.title).toBe(
       '1000 assets lend by 0x958e...1917 on midnight-base at 2023-11-14 22:13:20 UTC'
@@ -156,11 +161,14 @@ describe('formatTransactionAlert', () => {
   })
 
   it('escapes API-sourced strings in the mrkdwn text but not the plain title', () => {
+    // The API-sourced fragment reaching the headline here is the raw amount itself — the
+    // unresolved-market fallback shows it verbatim. Fetched symbols take the same path: every
+    // label fragment goes through slackLink's escaping in the mrkdwn text.
     const alert = formatTransactionAlert(
-      lendItem({ id: 'id-7', created_at: 1_700_000_000 }),
-      registryWithTokens('<USDC>')
+      lendItem({ id: 'id-7', created_at: 1_700_000_000, assets: '<!channel>' }),
+      new TokenRegistry()
     )
-    expect(alert.title).toContain('<USDC> lend')
-    expect(alert.text).toContain('&lt;USDC&gt; lend')
+    expect(alert.title).toContain('<!channel> assets lend')
+    expect(alert.text).toContain('&lt;!channel&gt; assets lend')
   })
 })

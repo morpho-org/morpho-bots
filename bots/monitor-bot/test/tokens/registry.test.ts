@@ -88,6 +88,72 @@ describe('TokenRegistry', () => {
     expect(registry.loanToken(MARKET_A)).toBe(USDC)
   })
 
+  it('resolves seeded metadata for a market loan token, regardless of address casing', () => {
+    const registry = new TokenRegistry()
+    registry.record(market({ id: MARKET_A, loan: USDC.toLowerCase() }))
+    registry.record(market({ id: MARKET_B, loan: WETH }))
+    expect(registry.loanTokenInfo(MARKET_A)).toEqual({
+      name: 'USD Coin',
+      symbol: 'USDC',
+      decimals: 6
+    })
+    expect(registry.loanTokenInfo(MARKET_B)).toEqual({
+      name: 'Wrapped Ether',
+      symbol: 'WETH',
+      decimals: 18
+    })
+    expect(registry.token(8453, WETH.toLowerCase())?.symbol).toBe('WETH')
+  })
+
+  it('returns null metadata for tokens neither seeded nor recorded, never a guess', () => {
+    // A blanket USDC default would mislabel WETH-denominated markets by twelve decimals — an
+    // unknown token must fall back to raw units instead.
+    const registry = new TokenRegistry()
+    registry.record(market({ loan: CBBTC }))
+    expect(registry.loanTokenInfo(MARKET_A)).toBeNull()
+    expect(registry.token(1, USDC)).toBeNull()
+    expect(registry.loanTokenInfo(MARKET_B)).toBeNull()
+  })
+
+  it('stores fetched metadata via recordToken and resolves it case-insensitively', () => {
+    const registry = new TokenRegistry()
+    registry.record(market({ loan: CBBTC }))
+    registry.recordToken({
+      chainId: 8453,
+      address: CBBTC,
+      name: 'Coinbase Wrapped BTC',
+      symbol: 'cbBTC',
+      decimals: 8
+    })
+    expect(registry.loanTokenInfo(MARKET_A)).toEqual({
+      name: 'Coinbase Wrapped BTC',
+      symbol: 'cbBTC',
+      decimals: 8
+    })
+    expect(registry.token(8453, CBBTC.toLowerCase())?.symbol).toBe('cbBTC')
+  })
+
+  it('lists missing tokens deduped across markets, excluding seeds and recorded entries', () => {
+    const OTHER = '0x1111111111111111111111111111111111111111'
+    const registry = new TokenRegistry()
+    // WETH is seeded, CBBTC repeats across both markets, OTHER appears once as a collateral.
+    registry.record(market({ id: MARKET_A, loan: CBBTC, collaterals: [WETH, OTHER] }))
+    registry.record(market({ id: MARKET_B, loan: CBBTC, collaterals: [] }))
+    expect(registry.missingTokens()).toEqual([
+      { chainId: 8453, address: CBBTC },
+      { chainId: 8453, address: OTHER }
+    ])
+
+    registry.recordToken({
+      chainId: 8453,
+      address: CBBTC,
+      name: null,
+      symbol: 'cbBTC',
+      decimals: 8
+    })
+    expect(registry.missingTokens()).toEqual([{ chainId: 8453, address: OTHER }])
+  })
+
   it('accepts an address whose checksum casing is wrong rather than blanking the market', () => {
     // viem's isAddress defaults to strict checksum validation, which would reject an upstream
     // mixed-case address with a bad checksum — losing an otherwise usable market over casing.

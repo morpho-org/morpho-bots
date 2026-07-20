@@ -30,6 +30,8 @@ type FetchLike = (request: Request) => Promise<Response>
 type MidnightClientOptions = {
   fetchImpl?: FetchLike
   logger?: Logger
+  /** Sent as `x-api-key` on every request when set. */
+  apiKey?: string
   /**
    * Log a `midnight.response` line per response. Off by default because it costs a body clone +
    * parse per request; `PollingModule` enables it at LOG_LEVEL=debug. Request *failures* are
@@ -95,7 +97,11 @@ export function createMidnightClient(
   baseUrl: string,
   options: MidnightClientOptions = {}
 ): MidnightClient {
-  const client = createClient<paths>({ baseUrl, fetch: options.fetchImpl ?? fetch })
+  const client = createClient<paths>({
+    baseUrl,
+    fetch: options.fetchImpl ?? fetch,
+    headers: options.apiKey ? { 'x-api-key': options.apiKey } : undefined
+  })
   if (options.logger) client.use(responseLogger(options.logger, options.verbose ?? false))
   return client
 }

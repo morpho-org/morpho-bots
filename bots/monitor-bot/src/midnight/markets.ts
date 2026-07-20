@@ -3,6 +3,7 @@ import type { Logger } from '@repo/bot-kit'
 import { delay, ensureError, fetchWithRetry } from '@repo/utils'
 import chunk from 'lodash-es/chunk'
 
+import type { TokenMetadataLoader } from '../tokens/metadata'
 import type { TokenRegistry } from '../tokens/registry'
 
 import { MAX_PAGES, REQUEST_TIMEOUT_MS, type MidnightClient } from './client'
@@ -22,6 +23,8 @@ type MarketDirectoryDependencies = {
   refreshMs: number
   /** Populated from the sweep so transaction pollers can resolve a market's tokens. */
   tokens: TokenRegistry
+  /** Resolves ERC-20 metadata for whatever the sweep just recorded. */
+  tokenMetadata: TokenMetadataLoader
   now?: () => number
   sleep?: (ms: number) => Promise<void>
 }
@@ -38,13 +41,16 @@ export class MarketDirectory {
 
   marketIds() {
     // Fixed scope still sweeps — not for the ids, which are already known, but for the token
-    // addresses behind them. Without this the registry would stay empty whenever MARKET_IDS is
-    // set, and every transaction alert would silently fall back to raw units.
+    // metadata behind them. Without this the registry would stay empty whenever MARKET_IDS is set,
+    // and every transaction alert would silently fall back to raw units.
     if (this.deps.fixedMarketIds.length > 0) return this.fixedWithTokens()
     const now = this.deps.now?.() ?? Date.now()
     if (this.cache && now - this.cache.fetchedAt < this.deps.refreshMs) return this.cache.promise
-    const promise = this.discover().then(ids => {
+    const promise = this.discover().then(async ids => {
       this.deps.logger.info('markets.discovered', { count: ids.length })
+      // After recording, not before: the loader reads what the sweep just wrote. Failures inside
+      // are logged and swallowed there, so this can never fail market discovery.
+      await this.deps.tokenMetadata.ensure()
       // Ids at debug so the info line stays a one-glance count — the full list is ~78 entries and
       // would bury every other startup log.
       this.deps.logger.debug('markets.listed', {
@@ -71,10 +77,11 @@ export class MarketDirectory {
     const now = this.deps.now?.() ?? Date.now()
     if (this.cache && now - this.cache.fetchedAt < this.deps.refreshMs) return this.cache.promise
     const entry = {
-      // Ids resolve even when hydration fails: a hydration outage must never shrink the polled
-      // scope. The cache is cleared on failure so the next tick retries the hydration, matching
+      // Ids resolve even when hydration fails: a metadata outage must never shrink the polled
+      // scope. The cache is cleared on failure so the next tick retries the metadata, matching
       // `discover`'s policy — otherwise one blip would leave the registry empty for a full TTL.
       promise: this.hydrate(ids)
+        .then(() => this.deps.tokenMetadata.ensure())
         .then(() => [...ids])
         .catch(error => {
           this.deps.logger.warn('markets.tokens_unavailable', {

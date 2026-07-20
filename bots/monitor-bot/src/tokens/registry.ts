@@ -5,6 +5,48 @@ import { getAddress, isAddress } from 'viem'
 
 export const TOKEN_REGISTRY = Symbol('TOKEN_REGISTRY')
 
+/** ERC-20 identity for alert formatting: what a raw amount is divided by and labeled with. */
+export type TokenInfo = {
+  /** Nullable per the core API schema — informational only, never used for formatting. */
+  name: string | null
+  symbol: string
+  decimals: number
+}
+
+/** A token's registry entry paired with the `(chain, address)` identity that keys it. */
+export type TokenEntry = TokenInfo & {
+  chainId: number
+  address: Address
+}
+
+/**
+ * Boot seeds — the loan/collateral tokens the live midnight-base books carry today. Seeding them
+ * keeps alert denominations resolving from the first tick and without a MORPHO_API_KEY; every
+ * other token is fetched from the core API by `TokenMetadataLoader` after each market sweep.
+ */
+const KNOWN_TOKENS: TokenEntry[] = [
+  // Base
+  {
+    chainId: 8453,
+    address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+    name: 'USD Coin',
+    symbol: 'USDC',
+    decimals: 6
+  },
+  {
+    chainId: 8453,
+    address: '0x4200000000000000000000000000000000000006',
+    name: 'Wrapped Ether',
+    symbol: 'WETH',
+    decimals: 18
+  }
+]
+
+/** Matches the core API's own `<chain_id>:<address>` token selector, lowercased for lookup. */
+export function tokenKey(chainId: number, address: string) {
+  return `${chainId}:${address.toLowerCase()}`
+}
+
 /** The token addresses a market's amounts are denominated in. Inferred through `get()`. */
 type MarketTokens = {
   /** The chain the market lives on, per the listing response. */
@@ -45,6 +87,9 @@ type MarketLike = {
 @Injectable()
 export class TokenRegistry {
   private readonly byMarket = new Map<string, MarketTokens>()
+  private readonly byToken = new Map<string, TokenInfo>(
+    KNOWN_TOKENS.map(({ chainId, address, ...info }) => [tokenKey(chainId, address), info] as const)
+  )
 
   /**
    * Idempotent by design: a re-listed or re-discovered market simply overwrites, so the registry
@@ -82,6 +127,39 @@ export class TokenRegistry {
 
   loanToken(marketId: string): Address | null {
     return this.get(marketId)?.loanToken ?? null
+  }
+
+  /** Token metadata is immutable ERC-20 identity, so a hit is cached for the process lifetime. */
+  recordToken(entry: TokenEntry) {
+    const { chainId, address, ...info } = entry
+    this.byToken.set(tokenKey(chainId, address), info)
+  }
+
+  /** Null (raw-units fallback) for any token neither seeded in KNOWN_TOKENS nor fetched yet. */
+  token(chainId: number, address: string): TokenInfo | null {
+    return this.byToken.get(tokenKey(chainId, address)) ?? null
+  }
+
+  /** Metadata for the token a market's `assets` amounts are denominated in. */
+  loanTokenInfo(marketId: string): TokenInfo | null {
+    const market = this.get(marketId)
+    return market ? this.token(market.chainId, market.loanToken) : null
+  }
+
+  /**
+   * Every (chain, token) seen across recorded markets that has no metadata yet — the exact set a
+   * loader needs to fetch. Loan and collateral tokens both, deduped: the same token is typically
+   * the loan asset of several markets and the collateral of others.
+   */
+  missingTokens() {
+    const missing = new Map<string, { chainId: number; address: Address }>()
+    for (const market of this.byMarket.values()) {
+      for (const address of [market.loanToken, ...market.collaterals]) {
+        const key = tokenKey(market.chainId, address)
+        if (!this.byToken.has(key)) missing.set(key, { chainId: market.chainId, address })
+      }
+    }
+    return [...missing.values()]
   }
 
   get size() {

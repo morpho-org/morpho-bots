@@ -5,6 +5,9 @@ export const MARKET_B = `0x${'b'.repeat(64)}`
 export const USER_ONE = '0x958eB498a4172EA513c79b09E7f064070C5b1917'
 export const USER_TWO = '0x535690CB1330232dd4f2ac5B724040751bdF4C91'
 export const TX_HASH = `0x${'c'.repeat(64)}`
+/** Base mainnet USDC and WETH — seeded in the registry's KNOWN_TOKENS table. */
+export const USDC_TOKEN = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
+export const WETH_TOKEN = '0x4200000000000000000000000000000000000006'
 
 type LendItem = Extract<TransactionItem, { event_type: 'lend' }>
 type LiquidationItem = Extract<TransactionItem, { event_type: 'full_liquidation' }>
@@ -115,7 +118,7 @@ export function supplyCollateralItem(over: { id: string; assets?: string }): Sup
       account: USER_ONE,
       caller: USER_ONE,
       on_behalf: USER_ONE,
-      collateral: USER_TWO,
+      collateral: WETH_TOKEN,
       assets: over.assets ?? '1000'
     }
   }

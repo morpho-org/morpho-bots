@@ -31,8 +31,10 @@ missing or malformed.
 | `PORT`                        | no       | `3000`                   | HTTP port for `/health`                          |
 | `LOG_LEVEL`                   | no       | `info`                   | `debug` \| `info` \| `warn` \| `error`           |
 | `MIDNIGHT_API_URL`            | no       | `https://api.morpho.org` | Midnight API base URL                            |
+| `MORPHO_API_KEY`              | no       | —                        | Sent as `x-api-key` on API requests (secret)     |
+| `CORE_API_URL`                | no       | `https://private.api…`   | Core API base for `/v0/tokens` metadata          |
 | `MARKET_IDS`                  | no       | — (auto-discover)        | Comma-separated market ids; empty = all active   |
-| `MARKETS_REFRESH_MS`          | no       | `600000`                 | Market-discovery + token-registry cache TTL      |
+| `MARKETS_REFRESH_MS`          | no       | `600000`                 | Market-discovery + token-metadata cache TTL      |
 | `FILTER_MIN_ASSETS`           | no       | `0`                      | Min size (base units) for an alert; 0 = off      |
 | `FILTER_USERS`                | no       | — (all users)            | Comma-separated position-owner allowlist         |
 | `POLL_CRON_TAKE_ORDERS`       | no       | `*/30 * * * * *`         | Take-orders poller cadence (cron, seconds field) |
@@ -171,9 +173,15 @@ denominated in. `TokenRegistry` closes that gap: `market id → { loanToken, col
 recorded from `/markets` and `/books` responses the bot already fetches, so it costs no extra
 requests. It is injected into every poller via `PollerDependencies.tokens`.
 
-It is a passive store and never performs I/O, so injecting it cannot add latency or a failure mode
-to a tick. A miss returns `null` and the caller falls back to raw units rather than throwing —
-token denominations are a presentation nicety, alerting is the job that must not break.
+ERC-20 identity (name, symbol, decimals) comes from the Morpho **core** API: after each market
+sweep, `TokenMetadataLoader` fetches `GET /v0/tokens/{chain_id}:{address}` on `CORE_API_URL`
+(default `https://private.api.morpho.org`, authenticated with `MORPHO_API_KEY` as `x-api-key`)
+for every token the registry references but has no metadata for. The two live midnight-base loan/collateral tokens are seeded in code, so
+alerts render denominations from the first tick even before — or without — that fetch.
+
+The registry itself is a passive store and never performs I/O, so injecting it cannot add latency
+or a failure mode to a tick. A miss returns `null` and the caller falls back to raw units rather
+than throwing — token metadata is a presentation nicety, alerting is the job that must not break.
 
 `collaterals[]` lists what a market **accepts**, usually more than one token, so it cannot identify
 which token a given event moved. Collateral-denominated amounts (`supply_collateral`,
@@ -182,7 +190,7 @@ which token a given event moved. Collateral-denominated amounts (`supply_collate
 Setting `MARKET_IDS` fixes the polled scope but does **not** eliminate API calls: one `market_ids`
 request per `MARKETS_REFRESH_MS` still hydrates the registry, because ids alone do not say what a
 market is denominated in. If that request fails the configured ids are still returned, so a
-hydration outage never shrinks the polled scope, and the cache is cleared so the next tick retries.
+metadata outage never shrinks the polled scope, and the cache is cleared so the next tick retries.
 
 Alert delivery is pluggable behind the `ALERT_DISPATCHER` DI token. Every alert is one sentence:
 

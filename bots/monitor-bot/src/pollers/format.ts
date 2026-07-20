@@ -53,7 +53,7 @@ function compactAmount(raw: string, decimals: number) {
 /** Loan/collateral-token amount, e.g. `20M USDC`; raw base units + "assets" when unresolved. */
 export function tokenAmount(raw: string, token: TokenInfo | null) {
   if (!token) return `${raw} assets`
-  return `${compactAmount(raw, token.decimals)} ${token.symbol ?? abbreviateAddress(token.address)}`
+  return `${compactAmount(raw, token.decimals)} ${token.symbol}`
 }
 
 /**
