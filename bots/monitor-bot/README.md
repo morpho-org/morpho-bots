@@ -26,30 +26,26 @@ malformed value fails the boot loudly. The `BETTERSTACK_*` vars are read at poin
 `@repo/bot-kit`, which disables shipping/heartbeat with a warning (never a crash) when they are
 missing or malformed.
 
-| Var                           | Required | Default                  | Purpose                                          |
-| ----------------------------- | -------- | ------------------------ | ------------------------------------------------ |
-| `PORT`                        | no       | `3000`                   | HTTP port for `/health`                          |
-| `LOG_LEVEL`                   | no       | `info`                   | `debug` \| `info` \| `warn` \| `error`           |
-| `MIDNIGHT_API_URL`            | no       | `https://api.morpho.org` | Midnight API base URL                            |
-| `MORPHO_API_KEY`              | no       | —                        | Sent as `x-api-key` on API requests (secret)     |
-| `CORE_API_URL`                | no       | `https://private.api…`   | Core API base for `/v0/tokens` metadata          |
-| `MARKET_IDS`                  | no       | — (auto-discover)        | Comma-separated market ids; empty = all active   |
-| `MARKETS_REFRESH_MS`          | no       | `600000`                 | Market-discovery + token-metadata cache TTL      |
-| `FILTER_MIN_ASSETS`           | no       | `0`                      | Min size (base units) for an alert; 0 = off      |
-| `FILTER_USERS`                | no       | — (all users)            | Comma-separated position-owner allowlist         |
-| `POLL_CRON_TAKE_ORDERS`       | no       | `*/30 * * * * *`         | Take-orders poller cadence (cron, seconds field) |
-| `POLL_CRON_REPAYS`            | no       | `*/30 * * * * *`         | Repays poller cadence                            |
-| `POLL_CRON_COLLATERAL`        | no       | `*/30 * * * * *`         | Collateral poller cadence                        |
-| `POLL_CRON_LIQUIDATIONS`      | no       | `*/15 * * * * *`         | Liquidations poller cadence                      |
-| `REPAYS_INCLUDE_SECONDARY`    | no       | `false`                  | Also treat debt closed via trade as a repay      |
-| `COLLATERAL_INCLUDE_WITHDRAW` | no       | `true`                   | Also alert on collateral withdrawals             |
-| `POLL_CRON_MAKE_ORDERS`       | no       | `*/30 * * * * *`         | Make-orders poller cadence                       |
-| `SLACK_CHANNEL`               | no       | — (log-only alerts)      | Slack channel id for alerts                      |
-| `SLACK_BOT_TOKEN`             | no       | —                        | Slack bot token (secret, with `SLACK_CHANNEL`)   |
-| `WALLETS_CSV_PATH`            | no       | — (empty store)          | Attio wallet-CRM CSV export, loaded at boot      |
-| `BETTERSTACK_SOURCE_TOKEN`    | no       | —                        | Opt-in BetterStack log shipping (secret)         |
-| `BETTERSTACK_INGESTING_HOST`  | no       | —                        | BetterStack ingest host (with the token)         |
-| `BETTERSTACK_HEARTBEAT_URL`   | no       | —                        | Opt-in BetterStack uptime heartbeat              |
+| Var                           | Required | Default                  | Purpose                                        |
+| ----------------------------- | -------- | ------------------------ | ---------------------------------------------- |
+| `PORT`                        | no       | `3000`                   | HTTP port for `/health`                        |
+| `LOG_LEVEL`                   | no       | `info`                   | `debug` \| `info` \| `warn` \| `error`         |
+| `MIDNIGHT_API_URL`            | no       | `https://api.morpho.org` | Midnight API base URL                          |
+| `MORPHO_API_KEY`              | no       | —                        | Sent as `x-api-key` on API requests (secret)   |
+| `CORE_API_URL`                | no       | `https://private.api…`   | Core API base for `/v0/tokens` metadata        |
+| `MARKET_IDS`                  | no       | — (auto-discover)        | Comma-separated market ids; empty = all active |
+| `MARKETS_REFRESH_MS`          | no       | `600000`                 | Market-discovery + token-metadata cache TTL    |
+| `FILTER_MIN_ASSETS`           | no       | `0`                      | Min size (base units) for an alert; 0 = off    |
+| `FILTER_USERS`                | no       | — (all users)            | Comma-separated position-owner allowlist       |
+| `POLL_INTERVAL_SECONDS`       | no       | `30`                     | Poll cadence for every poller, in seconds      |
+| `REPAYS_INCLUDE_SECONDARY`    | no       | `false`                  | Also treat debt closed via trade as a repay    |
+| `COLLATERAL_INCLUDE_WITHDRAW` | no       | `true`                   | Also alert on collateral withdrawals           |
+| `SLACK_CHANNEL`               | no       | — (log-only alerts)      | Slack channel id for alerts                    |
+| `SLACK_BOT_TOKEN`             | no       | —                        | Slack bot token (secret, with `SLACK_CHANNEL`) |
+| `WALLETS_CSV_PATH`            | no       | — (empty store)          | Attio wallet-CRM CSV export, loaded at boot    |
+| `BETTERSTACK_SOURCE_TOKEN`    | no       | —                        | Opt-in BetterStack log shipping (secret)       |
+| `BETTERSTACK_INGESTING_HOST`  | no       | —                        | BetterStack ingest host (with the token)       |
+| `BETTERSTACK_HEARTBEAT_URL`   | no       | —                        | Opt-in BetterStack uptime heartbeat            |
 
 Example `.env` shape:
 
@@ -132,16 +128,16 @@ the base class owns the invariant tick pipeline (`state → fetch → toAlerts �
 `PollerRegistrar` registers one `cron` job per poller (`waitForCompletion` — an overlapping tick
 is skipped, never run concurrently) and awaits every in-flight tick on shutdown.
 
-The pollers at a glance (cadences are the defaults; each is a cron expression overridable via its
-env var):
+All pollers share one cadence: `POLL_INTERVAL_SECONDS` (default `30`), translated to a cron at boot
+by `intervalToCron`.
 
-| Event name                                                                               | Poller name    | Poll cadence                          | REST endpoint                                                                          |
-| ---------------------------------------------------------------------------------------- | -------------- | ------------------------------------- | -------------------------------------------------------------------------------------- |
-| `lend`, `borrow`                                                                         | `take-orders`  | every 30 s (`POLL_CRON_TAKE_ORDERS`)  | `GET /v0/midnight/markets/{market-id}/transactions`                                    |
-| `exit_borrow_primary` (+ `exit_borrow_secondary` when `REPAYS_INCLUDE_SECONDARY=true`)   | `repays`       | every 30 s (`POLL_CRON_REPAYS`)       | `GET /v0/midnight/markets/{market-id}/transactions`                                    |
-| `supply_collateral` (+ `withdraw_collateral` unless `COLLATERAL_INCLUDE_WITHDRAW=false`) | `collateral`   | every 30 s (`POLL_CRON_COLLATERAL`)   | `GET /v0/midnight/markets/{market-id}/transactions`                                    |
-| `partial_liquidation`, `full_liquidation`                                                | `liquidations` | every 15 s (`POLL_CRON_LIQUIDATIONS`) | `GET /v0/midnight/markets/{market-id}/transactions`                                    |
-| make-offer snapshot diff (`created` / `updated` / `closed` — no API event type)          | `make-orders`  | every 30 s (`POLL_CRON_MAKE_ORDERS`)  | `GET /v0/midnight/books` → `GET /v0/midnight/books/{market-id}/{side}/takeable-offers` |
+| Event name                                                                               | Poller name    | REST endpoint                                                                          |
+| ---------------------------------------------------------------------------------------- | -------------- | -------------------------------------------------------------------------------------- |
+| `lend`, `borrow`                                                                         | `take-orders`  | `GET /v0/midnight/markets/{market-id}/transactions`                                    |
+| `exit_borrow_primary` (+ `exit_borrow_secondary` when `REPAYS_INCLUDE_SECONDARY=true`)   | `repays`       | `GET /v0/midnight/markets/{market-id}/transactions`                                    |
+| `supply_collateral` (+ `withdraw_collateral` unless `COLLATERAL_INCLUDE_WITHDRAW=false`) | `collateral`   | `GET /v0/midnight/markets/{market-id}/transactions`                                    |
+| `partial_liquidation`, `full_liquidation`                                                | `liquidations` | `GET /v0/midnight/markets/{market-id}/transactions`                                    |
+| make-offer snapshot diff (`created` / `updated` / `closed` — no API event type)          | `make-orders`  | `GET /v0/midnight/books` → `GET /v0/midnight/books/{market-id}/{side}/takeable-offers` |
 
 Locked-in semantics:
 

@@ -48,9 +48,6 @@ const marketIdListSchema = z
     return parts
   })
 
-// Cron validity is enforced fail-loud at registrar boot (CronJob construction throws).
-const cronSchema = z.string().min(1)
-
 const boolSchema = z.enum(['true', 'false']).transform(value => value === 'true')
 
 // Validated at startup via t3-env — any missing/malformed variable throws before the app boots,
@@ -74,15 +71,15 @@ export function loadEnv(runtimeEnv: Record<string, string | undefined> = process
       FILTER_MIN_ASSETS: z.string().regex(/^\d+$/).default('0').transform(BigInt),
       /** Position-owner allowlist; empty = all users. */
       FILTER_USERS: addressListSchema,
-      POLL_CRON_TAKE_ORDERS: cronSchema.default('*/30 * * * * *'),
-      POLL_CRON_REPAYS: cronSchema.default('*/30 * * * * *'),
-      POLL_CRON_COLLATERAL: cronSchema.default('*/30 * * * * *'),
-      POLL_CRON_LIQUIDATIONS: cronSchema.default('*/15 * * * * *'),
+      /** The single polling cadence, in seconds — every poller ticks at this fixed interval. Only
+       *  intervals that yield a genuinely periodic schedule are accepted (a divisor of 60 for
+       *  sub-minute values, or a whole-minute multiple whose minute count divides 60); anything else
+       *  fails the boot loudly via `intervalToCron`. */
+      POLL_INTERVAL_SECONDS: z.coerce.number().int().min(1).default(30),
       /** Also treat exit_borrow_secondary (debt closed via trade) as a repay. */
       REPAYS_INCLUDE_SECONDARY: boolSchema.default('false'),
       /** Also alert on withdraw_collateral (borrower de-collateralizing — the risk signal). */
       COLLATERAL_INCLUDE_WITHDRAW: boolSchema.default('true'),
-      POLL_CRON_MAKE_ORDERS: cronSchema.default('*/30 * * * * *'),
       /** Slack channel id for alerts; unset falls back to log-only dispatch. The bot token is a
        *  secret read at point of use (SLACK_BOT_TOKEN), never stored on this object. */
       SLACK_CHANNEL: z.string().min(1).optional(),

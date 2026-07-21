@@ -28,6 +28,7 @@ import { TokenMetadataLoader } from '../tokens/metadata'
 import { TokenPriceCache } from '../tokens/prices'
 import { TOKEN_REGISTRY, TokenRegistry } from '../tokens/registry'
 import { WALLET_CRM_STORE } from '../wallets/wallet-crm.store'
+import { intervalToCron } from './cron-interval'
 import { POLLERS } from './poller'
 import { PollerRegistrar } from './poller.registrar'
 
@@ -39,16 +40,11 @@ function pollerDefinitions(env: MonitorEnv) {
     ? ['supply_collateral', 'withdraw_collateral']
     : ['supply_collateral']
   return [
-    {
-      id: 'take-orders',
-      cron: env.POLL_CRON_TAKE_ORDERS,
-      eventTypes: ['lend', 'borrow'] as MidnightEventType[]
-    },
-    { id: 'repays', cron: env.POLL_CRON_REPAYS, eventTypes: repays },
-    { id: 'collateral', cron: env.POLL_CRON_COLLATERAL, eventTypes: collateral },
+    { id: 'take-orders', eventTypes: ['lend', 'borrow'] as MidnightEventType[] },
+    { id: 'repays', eventTypes: repays },
+    { id: 'collateral', eventTypes: collateral },
     {
       id: 'liquidations',
-      cron: env.POLL_CRON_LIQUIDATIONS,
       eventTypes: ['partial_liquidation', 'full_liquidation'] as MidnightEventType[]
     }
   ]
@@ -63,6 +59,11 @@ function buildPollers(
   tokens: TokenRegistry,
   wallets: WalletCrmStore
 ) {
+  // One cadence for every poller: POLL_INTERVAL_SECONDS translated to the cron the scheduler engine
+  // drives (validated fail-loud). A single dial keeps the scheduler cron-only without per-endpoint
+  // knobs.
+  const pollCron = intervalToCron(env.POLL_INTERVAL_SECONDS)
+  logger.info('poll.interval', { seconds: env.POLL_INTERVAL_SECONDS, cron: pollCron })
   // A secret read at point of use (like SLACK_BOT_TOKEN), never stored on the env object. Sent to
   // both services: the core API requires it, the Midnight API tolerates it.
   const apiKey = process.env.MORPHO_API_KEY?.trim() || undefined
@@ -98,7 +99,7 @@ function buildPollers(
   // Transaction pollers resume from a watermark, so their state is a cursor.
   const deps = { state: cursors, dispatcher, logger, tokens, formatter, client, directory, filter }
   const pollers: (MarketTransactionsPoller | BookOffersPoller)[] = pollerDefinitions(env).map(
-    options => new MarketTransactionsPoller(options, deps)
+    options => new MarketTransactionsPoller({ ...options, cron: pollCron }, deps)
   )
   // Make orders are read straight off the books, so this poller is always on — it scopes itself
   // with MARKET_IDS when set and sweeps every active book otherwise. It does not use the
@@ -107,7 +108,7 @@ function buildPollers(
   // Its state is a BootSnapshotStore, not a cursor — the book has no change feed to resume within.
   pollers.push(
     new BookOffersPoller(
-      { cron: env.POLL_CRON_MAKE_ORDERS, marketIds: env.MARKET_IDS },
+      { cron: pollCron, marketIds: env.MARKET_IDS },
       {
         state: snapshots,
         dispatcher,
