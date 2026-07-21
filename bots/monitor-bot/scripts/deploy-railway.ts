@@ -247,6 +247,13 @@ const betterstackHeartbeatUrl = Bun.env.BETTERSTACK_HEARTBEAT_URL?.trim()
 // token metadata enrichment falls back and the bot runs as before.
 const morphoApiKey = Bun.env.MORPHO_API_KEY?.trim()
 
+// Optional wallet-CRM CSV path (a plain, non-secret path on the mounted volume, e.g.
+// /data/wallets.csv). Off when unset — the wallet store stays empty and lookups are no-ops. WARNING:
+// the bot reads this file at boot and fails loud if it is missing, so only set it once the volume is
+// mounted AND the CSV has been uploaded to it (the file is PII and is uploaded out-of-band via
+// `railway volume files upload`, never shipped in the build context). See the bot README.
+const walletsCsvPath = Bun.env.WALLETS_CSV_PATH?.trim()
+
 await ensureContext()
 
 await ensureService(BOT_SERVICE)
@@ -262,6 +269,7 @@ if (betterstackHeartbeatUrl) {
   await setSecret(BOT_SERVICE, 'BETTERSTACK_HEARTBEAT_URL', betterstackHeartbeatUrl)
 }
 if (morphoApiKey) await setSecret(BOT_SERVICE, 'MORPHO_API_KEY', morphoApiKey)
+if (walletsCsvPath) await setVar(BOT_SERVICE, `WALLETS_CSV_PATH=${walletsCsvPath}`)
 await deployService(BOT_SERVICE)
 
 const botStatus = await waitForDeploy(BOT_SERVICE)
