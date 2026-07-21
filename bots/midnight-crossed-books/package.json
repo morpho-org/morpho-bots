@@ -1,0 +1,24 @@
+{
+  "name": "@morpho-org/midnight-crossed-books",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "prestart": "bun run --parallel --workspaces --if-present build",
+    "start": "bun src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "deploy:railway": "bun run scripts/deploy-railway.ts"
+  },
+  "dependencies": {
+    "@repo/bot-kit": "workspace:*",
+    "@repo/contracts": "workspace:*",
+    "@repo/utils": "workspace:*",
+    "viem": "catalog:"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@types/bun": "catalog:",
+    "typescript": "catalog:"
+  }
+}

@@ -34,6 +34,21 @@
         "typescript": "catalog:",
       },
     },
+    "bots/midnight-crossed-books": {
+      "name": "@morpho-org/midnight-crossed-books",
+      "version": "0.1.0",
+      "dependencies": {
+        "@repo/bot-kit": "workspace:*",
+        "@repo/contracts": "workspace:*",
+        "@repo/utils": "workspace:*",
+        "viem": "catalog:",
+      },
+      "devDependencies": {
+        "@repo/typescript-config": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "bots/midnight-liquidation": {
       "name": "@morpho-org/midnight-liquidation",
       "version": "0.1.0",

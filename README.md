@@ -43,6 +43,7 @@ Bot docs:
 
 - `bots/midnight-liquidation/README.md` — how to run the Midnight liquidation bot and how it works
   end to end
+- `bots/midnight-crossed-books/README.md` — permissionless crossed-book matching bot and resolver
 - `bots/blue-liquidation/README.md` — how to run the Morpho Blue liquidation bot and how it works
   end to end
 

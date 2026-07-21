@@ -52,7 +52,13 @@ describe('evaluatePolicy', () => {
     expect(evaluatePolicy(POLICY, tx(overrides))).toMatchObject({ ok: false, check })
   })
 
-  it('hard-codes zero value and exec_606BaXt instead of making them configurable', () => {
+  it('accepts a caller-pinned selector', () => {
+    const selector = '0x12345678' as const
+    expect(evaluatePolicy({ ...POLICY, selector }, tx({ data: `${selector}deadbeef` }))).toEqual({ ok: true })
+    expect(evaluatePolicy({ ...POLICY, selector }, tx())).toMatchObject({ ok: false, check: 'selector' })
+  })
+
+  it('defaults to zero value and exec_606BaXt', () => {
     expect(evaluatePolicy(POLICY, tx({ value: 1n }))).toMatchObject({ check: 'value' })
     expect(evaluatePolicy(POLICY, tx({ data: '0xdeadbeef' }))).toMatchObject({ check: 'selector' })
   })

@@ -1,0 +1,11 @@
+services:
+  bot:
+    build:
+      context: ../..
+      dockerfile: bots/midnight-crossed-books/Dockerfile
+    environment:
+      CHAIN_ID: '8453'
+      RPC_URL: ${RPC_URL:?set RPC_URL}
+      RESOLVER_PRIVATE_KEY: ${RESOLVER_PRIVATE_KEY:?set RESOLVER_PRIVATE_KEY}
+      RESOLVER_ADDRESS: ${RESOLVER_ADDRESS:-}
+      MIN_PROFIT_ASSETS: ${MIN_PROFIT_ASSETS:-1}
