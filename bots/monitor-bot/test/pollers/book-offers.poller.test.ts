@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import type { MidnightClient } from '../../src/midnight/client'
-import type { MarketSnapshot, OfferBucket } from '../../src/pollers/book-offers.poller'
+import type { MarketSnapshot, OfferBucket } from '../../src/pollers/book-offers.model'
 
+import { AlertFormatter } from '../../src/alerts/formatter'
 import { BookOffersPoller, diffSnapshots } from '../../src/pollers/book-offers.poller'
 import { InMemoryBootSnapshotStore } from '../../src/snapshot/boot-snapshot.store'
 import { TokenRegistry } from '../../src/tokens/registry'
@@ -140,14 +141,16 @@ function makePoller(ticks: TickSpec[], minAssets = 0n, marketIds: string[] = [])
   const client = { GET } as unknown as MidnightClient
   const dispatcher = capturingDispatcher()
   const logger = fakeLogger()
+  // The formatter shares the poller's registry so the market `recordAll` records is visible to it.
+  const tokens = new TokenRegistry()
   const poller = new BookOffersPoller(
     { cron: '*/30 * * * * *', marketIds },
     {
       state: new InMemoryBootSnapshotStore(),
       dispatcher,
       logger,
-      tokens: new TokenRegistry(),
-      prices: NO_PRICES,
+      tokens,
+      formatter: new AlertFormatter({ tokens, prices: NO_PRICES }),
       client,
       minAssets,
       sleep: () => Promise.resolve(),
@@ -508,14 +511,15 @@ describe('BookOffersPoller', () => {
           : Promise.resolve(apiPage({ data: [] }))
       )
     } as unknown as MidnightClient
+    const tokens = new TokenRegistry()
     const poller = new BookOffersPoller(
       { cron: '*/30 * * * * *', marketIds: [] },
       {
         state: new InMemoryBootSnapshotStore(),
         dispatcher,
         logger,
-        tokens: new TokenRegistry(),
-        prices: NO_PRICES,
+        tokens,
+        formatter: new AlertFormatter({ tokens, prices: NO_PRICES }),
         client,
         minAssets: 0n,
         sleep: () => Promise.resolve()
