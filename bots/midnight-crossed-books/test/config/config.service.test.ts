@@ -22,15 +22,16 @@ describe('ConfigService', () => {
   })
 
   test('normalizes a trailing slash from the API URL', () => {
-    expect(ConfigService.from({ ...REQUIRED, API_BASE_URL: 'https://api.example/' }).apiBaseUrl).toBe(
-      'https://api.example'
-    )
+    expect(
+      ConfigService.from({ ...REQUIRED, API_BASE_URL: 'https://api.example/' }).apiBaseUrl
+    ).toBe('https://api.example')
   })
 
   test('accepts explicit resolver, fallback RPC, interval, profit, and fee values', () => {
     const config = ConfigService.from({
       ...REQUIRED,
       RPC_URL_FALLBACK: 'http://fallback.example',
+      ROUTER_API_BASE_URL: 'https://router.example',
       RESOLVER_ADDRESS: `0x${'22'.repeat(20)}`,
       SCAN_INTERVAL_MS: '30000',
       MIN_PROFIT_ASSETS: '100',

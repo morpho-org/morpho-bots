@@ -15,13 +15,13 @@
     "@repo/bot-kit": "workspace:*",
     "@repo/contracts": "workspace:*",
     "@repo/utils": "workspace:*",
-    "viem": "catalog:",
-    "openapi-fetch": "catalog:"
+    "openapi-fetch": "catalog:",
+    "viem": "catalog:"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
     "@types/bun": "catalog:",
-    "typescript": "catalog:",
-    "openapi-typescript": "catalog:"
+    "openapi-typescript": "catalog:",
+    "typescript": "catalog:"
   }
 }

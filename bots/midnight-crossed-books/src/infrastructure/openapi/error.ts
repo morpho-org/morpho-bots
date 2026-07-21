@@ -8,7 +8,11 @@ class UpstreamApiError extends Error {
   readonly endpoint: string
   readonly status: number | undefined
 
-  constructor(name: string, message: string, { endpoint, status, cause }: UpstreamApiErrorParameters) {
+  constructor(
+    name: string,
+    message: string,
+    { endpoint, status, cause }: UpstreamApiErrorParameters
+  ) {
     super(message, { cause })
     this.name = name
     this.endpoint = endpoint

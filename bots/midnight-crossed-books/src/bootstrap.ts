@@ -20,11 +20,11 @@ import { ConfigService } from './config/config.service'
 import { MatchingService } from './domain/matching.service'
 import { createMorphoApiClient } from './infrastructure/morpho-api/client'
 import { MorphoApiService } from './infrastructure/morpho-api/service'
+import { ViemResolverEncoder } from './infrastructure/resolver/resolver.encoder'
+import { ResolverExecutionService } from './infrastructure/resolver/resolver.service'
+import { ViemResolverTransport } from './infrastructure/resolver/resolver.transport'
 import { createRouterApiClient } from './infrastructure/router-api/client'
 import { RouterApiService } from './infrastructure/router-api/service'
-import { ResolverExecutionService } from './infrastructure/resolver/resolver.service'
-import { ViemResolverEncoder } from './infrastructure/resolver/resolver.encoder'
-import { ViemResolverTransport } from './infrastructure/resolver/resolver.transport'
 
 function resolverSelector() {
   const resolveAbi = getAbiItem({ abi: CrossedBooksResolver.abi, name: 'resolve' })

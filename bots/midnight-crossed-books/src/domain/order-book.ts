@@ -7,7 +7,7 @@ export interface ListedMarket {
   marketId: MarketId
 }
 
-export interface CollateralParameters {
+interface CollateralParameters {
   token: Address
   lltv: bigint
   liquidationCursor: bigint

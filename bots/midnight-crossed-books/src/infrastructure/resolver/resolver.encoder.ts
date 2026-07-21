@@ -26,11 +26,13 @@ export class ViemResolverEncoder implements ResolverEncoder {
     })
   }
 
-  decodeProfit(data: Hex) {
-    return decodeFunctionResult({
+  decodeProfit(data: Hex): bigint {
+    const profit = decodeFunctionResult({
       abi: CrossedBooksResolver.abi,
       functionName: 'resolve',
       data
     })
+    if (typeof profit !== 'bigint') throw new Error('Invalid resolver profit result')
+    return profit
   }
 }

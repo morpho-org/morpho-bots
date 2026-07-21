@@ -2,10 +2,12 @@ import type { Address, Hex } from 'viem'
 
 import type { TakeableOffer } from '../../src/domain/order-book'
 
-export const MARKET_ID = `0x${'11'.repeat(32)}` as Hex
-export const OTHER_MARKET_ID = `0x${'22'.repeat(32)}` as Hex
+export const MARKET_ID =
+  '0x1111111111111111111111111111111111111111111111111111111111111111' satisfies Hex
+export const OTHER_MARKET_ID =
+  '0x2222222222222222222222222222222222222222222222222222222222222222' satisfies Hex
 
-const ZERO_ADDRESS = `0x${'00'.repeat(20)}` as Address
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' satisfies Address
 
 export function makeOffer(
   side: 'ask' | 'bid',
@@ -22,8 +24,8 @@ export function makeOffer(
     offer: {
       market: {
         chainId: 8453n,
-        midnight: `0x${'33'.repeat(20)}`,
-        loanToken: `0x${'44'.repeat(20)}`,
+        midnight: '0x3333333333333333333333333333333333333333',
+        loanToken: '0x4444444444444444444444444444444444444444',
         collateralParams: [],
         maturity: 2_000_000_000n,
         rcfThreshold: 0n,
@@ -31,15 +33,15 @@ export function makeOffer(
         liquidatorGate: ZERO_ADDRESS
       },
       buy,
-      maker: `0x${'55'.repeat(20)}`,
+      maker: '0x5555555555555555555555555555555555555555',
       start: 0n,
       expiry: 2_000_000_000n,
       tick,
-      group: `0x${'66'.repeat(32)}`,
+      group: '0x6666666666666666666666666666666666666666666666666666666666666666',
       callback: ZERO_ADDRESS,
       callbackData: '0x',
-      receiverIfMakerIsSeller: buy ? ZERO_ADDRESS : `0x${'55'.repeat(20)}`,
-      ratifier: `0x${'77'.repeat(20)}`,
+      receiverIfMakerIsSeller: buy ? ZERO_ADDRESS : '0x5555555555555555555555555555555555555555',
+      ratifier: '0x7777777777777777777777777777777777777777',
       reduceOnly: false,
       maxUnits: units,
       maxAssets: 0n,

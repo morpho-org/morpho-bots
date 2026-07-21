@@ -1,5 +1,3 @@
-import type { Hex } from 'viem'
-
 import { isHex } from 'viem'
 
 import type { ListedMarketsService } from '../../application/crossed-books-bot.service'
@@ -17,7 +15,7 @@ function toMarketId(value: string): MarketId {
   if (!isHex(value, { strict: true }) || value.length !== 66) {
     throw new Error(`Invalid market id: ${value}`)
   }
-  return value as Hex
+  return value
 }
 
 export class MorphoApiService implements ListedMarketsService {

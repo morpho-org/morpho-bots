@@ -5,9 +5,15 @@ import type {
   OrderBookService,
   ResolverService
 } from '../../src/application/crossed-books-bot.service'
-import { CrossedBooksBotService } from '../../src/application/crossed-books-bot.service'
 import type { MatchingServicePort } from '../../src/domain/matching.service'
-import type { CrossedMatch, ListedMarket } from '../../src/domain/order-book'
+import type {
+  CrossedMatch,
+  ListedMarket,
+  PreparedResolution,
+  SimulationResult
+} from '../../src/domain/order-book'
+
+import { CrossedBooksBotService } from '../../src/application/crossed-books-bot.service'
 import { MARKET_ID, OTHER_MARKET_ID, makeOffer } from '../fixtures/offers'
 
 const MARKET: ListedMarket = { marketId: MARKET_ID }
@@ -18,34 +24,33 @@ const MATCH: CrossedMatch = {
   units: 2n
 }
 
-function setup(overrides: {
-  markets?: ListedMarket[]
-  inflight?: ReadonlySet<string>
-  matches?: CrossedMatch[]
-  simulation?: { status: 'ok'; prepared: { marketId: typeof MARKET_ID; data: '0x1234'; profit: bigint } } | { status: 'revert'; reason: string }
-  booksError?: Error
-} = {}) {
-  const markets: ListedMarketsService = {
-    listListedActiveMarkets: mock(async () => overrides.markets ?? [MARKET])
-  }
-  const books: OrderBookService = {
-    getTakeableBook: mock(async () => {
-      if (overrides.booksError) throw overrides.booksError
-      return { asks: [MATCH.ask], bids: [MATCH.bid] }
-    })
-  }
-  const matching: MatchingServicePort = {
-    match: mock(() => overrides.matches ?? [MATCH])
-  }
-  const resolver: ResolverService = {
-    simulate: mock(async () =>
+function setup(
+  overrides: {
+    markets?: ListedMarket[]
+    inflight?: ReadonlySet<string>
+    matches?: CrossedMatch[]
+    simulation?: SimulationResult
+    booksError?: Error
+  } = {}
+) {
+  const listListedActiveMarkets = mock(async () => overrides.markets ?? [MARKET])
+  const getTakeableBook = mock(async () => {
+    if (overrides.booksError) throw overrides.booksError
+    return { asks: [MATCH.ask], bids: [MATCH.bid] }
+  })
+  const match = mock(() => overrides.matches ?? [MATCH])
+  const simulate = mock(
+    async (): Promise<SimulationResult> =>
       overrides.simulation ?? {
-        status: 'ok' as const,
+        status: 'ok',
         prepared: { marketId: MARKET_ID, data: '0x1234', profit: 1n }
       }
-    ),
-    submit: mock(async () => undefined)
-  }
+  )
+  const submit = mock(async () => undefined)
+  const markets: ListedMarketsService = { listListedActiveMarkets }
+  const books: OrderBookService = { getTakeableBook }
+  const matching: MatchingServicePort = { match }
+  const resolver: ResolverService = { simulate, submit }
   const logger = {
     info: mock(() => undefined),
     warn: mock(() => undefined)
@@ -59,60 +64,73 @@ function setup(overrides: {
     logger
   )
 
-  return { service, markets, books, matching, resolver, logger }
+  return {
+    service,
+    books,
+    listListedActiveMarkets,
+    getTakeableBook,
+    simulate,
+    submit
+  }
 }
 
 describe('CrossedBooksBotService', () => {
   test('loads listed active markets once per run', async () => {
-    const { service, markets } = setup()
+    const { service, listListedActiveMarkets } = setup()
 
     await service.run({ blockNumber: 10n })
 
-    expect(markets.listListedActiveMarkets).toHaveBeenCalledTimes(1)
+    expect(listListedActiveMarkets).toHaveBeenCalledTimes(1)
   })
 
   test('skips a market with an in-flight transaction', async () => {
-    const { service, books, resolver } = setup({ inflight: new Set([MARKET_ID]) })
+    const { service, getTakeableBook, simulate } = setup({
+      inflight: new Set([MARKET_ID])
+    })
 
     const result = await service.run({ blockNumber: 10n })
 
     expect(result).toEqual({ submitted: false, markets: 1 })
-    expect(books.getTakeableBook).not.toHaveBeenCalled()
-    expect(resolver.simulate).not.toHaveBeenCalled()
+    expect(getTakeableBook).not.toHaveBeenCalled()
+    expect(simulate).not.toHaveBeenCalled()
   })
 
   test('does not simulate or submit when books do not cross', async () => {
-    const { service, resolver } = setup({ matches: [] })
+    const { service, simulate, submit } = setup({ matches: [] })
 
     await service.run({ blockNumber: 10n })
 
-    expect(resolver.simulate).not.toHaveBeenCalled()
-    expect(resolver.submit).not.toHaveBeenCalled()
+    expect(simulate).not.toHaveBeenCalled()
+    expect(submit).not.toHaveBeenCalled()
   })
 
   test('does not submit a reverted simulation', async () => {
-    const { service, resolver } = setup({
+    const { service, submit } = setup({
       simulation: { status: 'revert', reason: 'InsufficientProfit' }
     })
 
     await service.run({ blockNumber: 10n })
 
-    expect(resolver.submit).not.toHaveBeenCalled()
+    expect(submit).not.toHaveBeenCalled()
   })
 
   test('submits exactly the prepared request returned by simulation', async () => {
-    const prepared = { marketId: MARKET_ID, data: '0x1234' as const, profit: 42n }
-    const { service, resolver } = setup({ simulation: { status: 'ok', prepared } })
+    const prepared: PreparedResolution = {
+      marketId: MARKET_ID,
+      data: '0x1234',
+      profit: 42n
+    }
+    const { service, submit } = setup({ simulation: { status: 'ok', prepared } })
 
     const result = await service.run({ blockNumber: 10n })
 
-    expect(resolver.submit).toHaveBeenCalledWith(prepared, 10n)
+    expect(submit).toHaveBeenCalledWith(prepared, 10n)
     expect(result).toEqual({ submitted: true, markets: 1 })
   })
 
   test('isolates a book failure and continues to the next market', async () => {
     let calls = 0
-    const { service, books, resolver } = setup({ markets: [MARKET, OTHER_MARKET] })
+    const { service, books, submit } = setup({ markets: [MARKET, OTHER_MARKET] })
     books.getTakeableBook = mock(async marketId => {
       calls += 1
       if (marketId === MARKET_ID) throw new Error('router unavailable')
@@ -125,16 +143,16 @@ describe('CrossedBooksBotService', () => {
     const result = await service.run({ blockNumber: 10n })
 
     expect(calls).toBe(2)
-    expect(resolver.submit).toHaveBeenCalledTimes(1)
+    expect(submit).toHaveBeenCalledTimes(1)
     expect(result.submitted).toBe(true)
   })
 
   test('stops after the first successful submission', async () => {
-    const { service, books, resolver } = setup({ markets: [MARKET, OTHER_MARKET] })
+    const { service, getTakeableBook, submit } = setup({ markets: [MARKET, OTHER_MARKET] })
 
     await service.run({ blockNumber: 10n })
 
-    expect(books.getTakeableBook).toHaveBeenCalledTimes(1)
-    expect(resolver.submit).toHaveBeenCalledTimes(1)
+    expect(getTakeableBook).toHaveBeenCalledTimes(1)
+    expect(submit).toHaveBeenCalledTimes(1)
   })
 })

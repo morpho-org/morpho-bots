@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from 'bun:test'
 
-import { MorphoApiError } from '../../../src/infrastructure/openapi/error'
 import { MorphoApiService } from '../../../src/infrastructure/morpho-api/service'
+import { MorphoApiError } from '../../../src/infrastructure/openapi/error'
 import { MARKET_ID, OTHER_MARKET_ID } from '../../fixtures/offers'
 
 function response(body: unknown, status = 200) {

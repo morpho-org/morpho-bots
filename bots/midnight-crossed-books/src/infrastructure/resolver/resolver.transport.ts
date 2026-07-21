@@ -1,6 +1,6 @@
+import type { PendingQueue, Signer } from '@repo/bot-kit'
 import type { Address, Client, Hex } from 'viem'
 
-import type { PendingQueue, Signer } from '@repo/bot-kit'
 import { initialFees } from '@repo/bot-kit'
 import { tryCatch } from '@repo/utils'
 import { BaseError } from 'viem'
@@ -40,8 +40,7 @@ export class ViemResolverTransport implements ResolverTransport {
     if (result.error) {
       return {
         status: 'revert',
-        reason:
-          result.error instanceof BaseError ? result.error.shortMessage : result.error.message
+        reason: result.error instanceof BaseError ? result.error.shortMessage : result.error.message
       }
     }
     if (!result.data.data) return { status: 'revert', reason: 'empty simulation result' }

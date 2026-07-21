@@ -1,6 +1,5 @@
-import { describe, expect, test } from 'bun:test'
-
 import { CrossedBooksResolver } from '@repo/contracts'
+import { describe, expect, test } from 'bun:test'
 import { decodeFunctionData, encodeFunctionResult } from 'viem'
 
 import { ViemResolverEncoder } from '../../../src/infrastructure/resolver/resolver.encoder'

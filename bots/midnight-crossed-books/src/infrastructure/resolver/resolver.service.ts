@@ -1,9 +1,5 @@
 import type { ResolverService } from '../../application/crossed-books-bot.service'
-import type {
-  CrossedMatch,
-  PreparedResolution,
-  SimulationResult
-} from '../../domain/order-book'
+import type { CrossedMatch, PreparedResolution, SimulationResult } from '../../domain/order-book'
 import type { ResolverEncoder } from './resolver.encoder'
 import type { ResolverTransport } from './resolver.transport'
 

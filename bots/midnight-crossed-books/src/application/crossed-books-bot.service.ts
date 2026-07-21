@@ -23,7 +23,7 @@ export interface ResolverService {
   submit(prepared: PreparedResolution, blockNumber: bigint): Promise<void>
 }
 
-export interface BotLogger {
+interface BotLogger {
   info(event: string, fields: Record<string, unknown>): void
   warn(event: string, fields: Record<string, unknown>): void
 }
