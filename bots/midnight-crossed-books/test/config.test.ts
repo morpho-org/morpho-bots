@@ -1,3 +1,20 @@
-import { describe, expect, test } from 'bun:test'; import { loadConfig } from '../src/config'
-const KEY=`0x${'11'.repeat(32)}`
-describe('loadConfig',()=>{test('loads Base and derives resolver',()=>{const c=loadConfig({CHAIN_ID:'8453',RPC_URL:'http://rpc',RESOLVER_PRIVATE_KEY:KEY});expect(c.chainId).toBe(8453);expect(c.minimumProfit).toBe(1n);expect(c.resolver).toMatch(/^0x[0-9a-fA-F]{40}$/)});test('fails loud on bad key and chain',()=>{expect(()=>loadConfig({CHAIN_ID:'1',RPC_URL:'x',RESOLVER_PRIVATE_KEY:KEY})).toThrow('Unsupported CHAIN_ID');expect(()=>loadConfig({CHAIN_ID:'8453',RPC_URL:'x',RESOLVER_PRIVATE_KEY:'0x12'})).toThrow('RESOLVER_PRIVATE_KEY')})})
+import { describe, expect, test } from 'bun:test'
+
+import { loadConfig } from '../src/config'
+const KEY = `0x${'11'.repeat(32)}`
+describe('loadConfig', () => {
+  test('loads Base and derives resolver', () => {
+    const c = loadConfig({ CHAIN_ID: '8453', RPC_URL: 'http://rpc', RESOLVER_PRIVATE_KEY: KEY })
+    expect(c.chainId).toBe(8453)
+    expect(c.minimumProfit).toBe(1n)
+    expect(c.resolver).toMatch(/^0x[0-9a-fA-F]{40}$/)
+  })
+  test('fails loud on bad key and chain', () => {
+    expect(() => loadConfig({ CHAIN_ID: '1', RPC_URL: 'x', RESOLVER_PRIVATE_KEY: KEY })).toThrow(
+      'Unsupported CHAIN_ID'
+    )
+    expect(() =>
+      loadConfig({ CHAIN_ID: '8453', RPC_URL: 'x', RESOLVER_PRIVATE_KEY: '0x12' })
+    ).toThrow('RESOLVER_PRIVATE_KEY')
+  })
+})

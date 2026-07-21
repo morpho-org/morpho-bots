@@ -41,6 +41,16 @@ contract Actor {
     function approve(Token t, address s) external {
         t.approve(s, type(uint256).max);
     }
+
+    function resolve(
+        CrossedBooksResolver resolver,
+        Offer memory ask,
+        Offer memory bid,
+        uint256 units,
+        uint256 minProfit
+    ) external returns (uint256) {
+        return resolver.resolve(ask, "", bid, "", units, minProfit);
+    }
 }
 
 contract MidnightMock {
@@ -68,14 +78,14 @@ contract MidnightMock {
             credit[taker] -= units;
             sellerAssets = units * o.tick;
             buyerAssets = sellerAssets;
-            token.transferFrom(o.maker, receiver, sellerAssets);
+            require(token.transferFrom(o.maker, receiver, sellerAssets));
             return (buyerAssets, sellerAssets);
         }
         credit[taker] += units;
         buyerAssets = units * o.tick;
         sellerAssets = buyerAssets;
         require(IBuy(callback).onBuy(bytes32(0), o.market, buyerAssets, units, 0, taker, data) == OK);
-        token.transferFrom(taker, o.receiverIfMakerIsSeller, buyerAssets);
+        require(token.transferFrom(taker, o.receiverIfMakerIsSeller, buyerAssets));
     }
 }
 
@@ -106,6 +116,15 @@ contract CrossedBooksResolverTest {
         require(midnight.credit(address(resolver)) == 0);
     }
 
+    function testResolveIsPermissionlessAndPaysCaller() public {
+        Actor caller = new Actor();
+        (Offer memory ask, Offer memory bid) = offers(5, 7);
+        uint256 profit = caller.resolve(resolver, ask, bid, 10, 20);
+        require(profit == 20);
+        require(token.balanceOf(address(caller)) == 20);
+        require(token.balanceOf(address(resolver)) == 0);
+    }
+
     function testPreservesPreexistingBalance() public {
         token.mint(address(resolver), 3);
         (Offer memory ask, Offer memory bid) = offers(5, 7);
@@ -121,10 +140,32 @@ contract CrossedBooksResolverTest {
         require(midnight.credit(address(resolver)) == 0);
     }
 
+    function testRevertsWhenProfitIsZeroEvenWithZeroMinimum() public {
+        (Offer memory ask, Offer memory bid) = offers(5, 5);
+        (bool ok,) = address(resolver).call(abi.encodeCall(resolver.resolve, (ask, "", bid, "", 10, 0)));
+        require(!ok);
+        require(token.balanceOf(address(askMaker)) == 0);
+        require(midnight.credit(address(resolver)) == 0);
+    }
+
     function testRejectsWrongSides() public {
         (Offer memory ask, Offer memory bid) = offers(5, 7);
         ask.buy = true;
         (bool ok,) = address(resolver).call(abi.encodeCall(resolver.resolve, (ask, "", bid, "", 10, 0)));
+        require(!ok);
+    }
+
+    function testRejectsDifferentMarkets() public {
+        (Offer memory ask, Offer memory bid) = offers(5, 7);
+        bid.market.loanToken = address(0xdead);
+        (bool ok,) = address(resolver).call(abi.encodeCall(resolver.resolve, (ask, "", bid, "", 10, 0)));
+        require(!ok);
+    }
+
+    function testRejectsCallbackOutsideActiveResolution() public {
+        (Offer memory ask,) = offers(5, 7);
+        (bool ok,) = address(resolver)
+            .call(abi.encodeCall(resolver.onBuy, (bytes32(0), ask.market, 50, 10, 0, address(resolver), bytes(""))));
         require(!ok);
     }
 

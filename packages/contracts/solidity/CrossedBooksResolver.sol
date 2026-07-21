@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity ^0.8.25;
 
+// Kept self-contained because soltag compiles this file without an import callback. These structs
+// mirror the deployed Midnight interface vendored in interfaces/IMidnight.sol.
 struct CrossedBooksCollateralParams {
     address token;
     uint256 lltv;
@@ -107,14 +109,13 @@ contract CrossedBooksResolver {
         resolving = true;
         activeMarketHash = marketHash;
         activeUnits = units;
+        bytes memory callbackData = abi.encode(bid, bidRatifierData);
         ICrossedBooksMidnight(MIDNIGHT)
-            .take(
-                ask, askRatifierData, units, address(this), address(0), address(this), abi.encode(bid, bidRatifierData)
-            );
+            .take(ask, askRatifierData, units, address(this), address(0), address(this), callbackData);
         uint256 afterBalance = token.balanceOf(address(this));
         if (afterBalance < beforeBalance) revert NotCrossed(afterBalance, beforeBalance);
         profit = afterBalance - beforeBalance;
-        if (profit < minimumProfit) revert InsufficientProfit(profit, minimumProfit);
+        if (profit == 0 || profit < minimumProfit) revert InsufficientProfit(profit, minimumProfit);
         activeMarketHash = bytes32(0);
         activeUnits = 0;
         _callOptional(address(token), abi.encodeCall(token.transfer, (msg.sender, profit)));

@@ -54,8 +54,13 @@ describe('evaluatePolicy', () => {
 
   it('accepts a caller-pinned selector', () => {
     const selector = '0x12345678' as const
-    expect(evaluatePolicy({ ...POLICY, selector }, tx({ data: `${selector}deadbeef` }))).toEqual({ ok: true })
-    expect(evaluatePolicy({ ...POLICY, selector }, tx())).toMatchObject({ ok: false, check: 'selector' })
+    expect(evaluatePolicy({ ...POLICY, selector }, tx({ data: `${selector}deadbeef` }))).toEqual({
+      ok: true
+    })
+    expect(evaluatePolicy({ ...POLICY, selector }, tx())).toMatchObject({
+      ok: false,
+      check: 'selector'
+    })
   })
 
   it('defaults to zero value and exec_606BaXt', () => {

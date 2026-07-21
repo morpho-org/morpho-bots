@@ -1,5 +1,46 @@
 import type { Logger } from '@repo/bot-kit'
 import type { Address, Hex } from 'viem'
+
 import { tryCatch } from '@repo/utils'
-import type { TakeableOffer } from './api'; import type { CrossedMatch } from './matching'; import { matchBooks } from './matching'
-export async function runTick(d:{listMarkets:()=>Promise<{marketId:Hex}[]>;listSide:(id:Hex,s:'asks'|'bids')=>Promise<TakeableOffer[]>;simulate:(m:CrossedMatch)=>Promise<{ok:boolean;reason?:string}>;submit:(id:Hex,m:CrossedMatch)=>Promise<void>;inflight:()=>ReadonlySet<string>;resolver:Address;logger:Logger}){const markets=await d.listMarkets(),inflight=d.inflight();for(const {marketId} of markets){if(inflight.has(marketId))continue;const books=await tryCatch(Promise.all([d.listSide(marketId,'asks'),d.listSide(marketId,'bids')]));if(books.error){d.logger.warn('books.fetch_failed',{marketId,reason:books.error.message});continue}const match=matchBooks(books.data[0],books.data[1])[0];if(!match)continue;const sim=await d.simulate(match);if(!sim.ok){d.logger.info('match.not_profitable',{marketId,reason:sim.reason??'simulation reverted'});continue}await d.submit(marketId,match);d.logger.info('match.submitted',{marketId,units:match.units,resolver:d.resolver});return true}d.logger.info('tick.no_match',{markets:markets.length});return false}
+
+import type { TakeableOffer } from './api'
+import type { CrossedMatch } from './matching'
+
+import { matchBooks } from './matching'
+export async function runTick(d: {
+  listMarkets: () => Promise<{ marketId: Hex }[]>
+  listSide: (id: Hex, s: 'asks' | 'bids') => Promise<TakeableOffer[]>
+  simulate: (m: CrossedMatch) => Promise<{ ok: boolean; reason?: string }>
+  submit: (id: Hex, m: CrossedMatch) => Promise<void>
+  inflight: () => ReadonlySet<string>
+  resolver: Address
+  logger: Logger
+}) {
+  const markets = await d.listMarkets(),
+    inflight = d.inflight()
+  for (const { marketId } of markets) {
+    if (inflight.has(marketId)) continue
+    const books = await tryCatch(
+      Promise.all([d.listSide(marketId, 'asks'), d.listSide(marketId, 'bids')])
+    )
+    if (books.error) {
+      d.logger.warn('books.fetch_failed', { marketId, reason: books.error.message })
+      continue
+    }
+    const match = matchBooks(books.data[0], books.data[1])[0]
+    if (!match) continue
+    const sim = await d.simulate(match)
+    if (!sim.ok) {
+      d.logger.info('match.not_profitable', {
+        marketId,
+        reason: sim.reason ?? 'simulation reverted'
+      })
+      continue
+    }
+    await d.submit(marketId, match)
+    d.logger.info('match.submitted', { marketId, units: match.units, resolver: d.resolver })
+    return true
+  }
+  d.logger.info('tick.no_match', { markets: markets.length })
+  return false
+}

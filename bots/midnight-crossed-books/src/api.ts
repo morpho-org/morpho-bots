@@ -1,15 +1,156 @@
 import type { Address, Hex } from 'viem'
+
 import { fetchJsonResponse } from '@repo/utils'
 import { getAddress, isAddress, isHex } from 'viem'
-export type ApiCollateral={token:Address;lltv:bigint;liquidationCursor:bigint;oracle:Address}
-export type ApiOffer={market:{chainId:bigint;midnight:Address;loanToken:Address;collateralParams:ApiCollateral[];maturity:bigint;rcfThreshold:bigint;enterGate:Address;liquidatorGate:Address};buy:boolean;maker:Address;start:bigint;expiry:bigint;tick:bigint;group:Hex;callback:Address;callbackData:Hex;receiverIfMakerIsSeller:Address;ratifier:Address;reduceOnly:boolean;maxUnits:bigint;maxAssets:bigint;continuousFeeCap:bigint}
-export type TakeableOffer={marketId:Hex;units:bigint;offer:ApiOffer;ratifierData:Hex}
-type Row=Record<string,unknown>; const U128=2n**128n-1n
-function row(v:unknown,l:string):Row{if(typeof v!=='object'||v===null||Array.isArray(v))throw new Error(`${l} must be an object`);return v as Row}
-function str(r:Row,k:string){if(typeof r[k]!=='string')throw new Error(`${k} must be a string`);return r[k] as string}
-function uint(r:Row,k:string){const v=r[k];if((typeof v!=='string'&&typeof v!=='number')||!/^\d+$/.test(String(v)))throw new Error(`${k} must be uint`);return BigInt(v)}
-function addr(r:Row,k:string){const v=str(r,k);if(!isAddress(v,{strict:false}))throw new Error(`${k} must be address`);return getAddress(v)}
-function hx(r:Row,k:string,bytes?:number){const v=str(r,k);if(!isHex(v,{strict:true})||(bytes!==undefined&&v.length!==2+bytes*2))throw new Error(`${k} must be hex`);return v}
-function bool(r:Row,k:string){if(typeof r[k]!=='boolean')throw new Error(`${k} must be boolean`);return r[k] as boolean}
-function parse(v:unknown):TakeableOffer{const r=row(v,'takeable');const o=row(r.offer,'offer');const m=row(o.market,'market');if(!Array.isArray(m.collaterals))throw new Error('collaterals must be array');const maxUnits=uint(o,'max_units'),maxAssets=uint(o,'max_assets');if(maxUnits>U128||maxAssets>U128)throw new Error('caps exceed uint128');return{marketId:hx(r,'market_id',32),units:uint(r,'units'),ratifierData:hx(r,'ratifier_data'),offer:{market:{chainId:uint(m,'chain_id'),midnight:addr(m,'midnight'),loanToken:addr(m,'loan_token'),collateralParams:m.collaterals.map((v,i)=>{const c=row(v,`collateral ${i}`);return{token:addr(c,'token'),lltv:uint(c,'lltv'),liquidationCursor:uint(c,'liquidation_cursor'),oracle:addr(c,'oracle')}}),maturity:uint(m,'maturity'),rcfThreshold:uint(m,'rcf_threshold'),enterGate:addr(m,'enter_gate'),liquidatorGate:addr(m,'liquidator_gate')},buy:bool(o,'buy'),maker:addr(o,'maker'),start:uint(o,'start'),expiry:uint(o,'expiry'),tick:uint(o,'tick'),group:hx(o,'group',32),callback:addr(o,'callback'),callbackData:hx(o,'callback_data'),receiverIfMakerIsSeller:addr(o,'receiver_if_maker_is_seller'),ratifier:addr(o,'ratifier'),reduceOnly:bool(o,'reduce_only'),maxUnits,maxAssets,continuousFeeCap:uint(o,'continuous_fee_cap')}}}
-export function createMidnightApi(baseUrl:string,chainId:number){return{async listMarkets(){const out:{marketId:Hex}[]=[];let cursor:string|null=null;do{const url=new URL('/v0/midnight/markets',baseUrl);url.searchParams.set('chain_ids',String(chainId));url.searchParams.set('listed','true');url.searchParams.set('active_only','true');url.searchParams.set('limit','100');if(cursor)url.searchParams.set('cursor',cursor);const body=row(await fetchJsonResponse<unknown>(url.toString()),'markets');if(!Array.isArray(body.data))throw new Error('markets data must be array');for(const v of body.data)out.push({marketId:hx(row(v,'market'),'market_id',32)});if(body.cursor!==null&&typeof body.cursor!=='string')throw new Error('cursor must be string or null');cursor=body.cursor as string|null}while(cursor);return out},async listSide(marketId:Hex,side:'asks'|'bids'){const body=row(await fetchJsonResponse<unknown>(new URL(`/v0/midnight/books/${marketId}/${side}/takeable-offers`,baseUrl).toString()),side);if(!Array.isArray(body.data))throw new Error(`${side} data must be array`);return body.data.map(parse).filter(v=>v.units>0n)}}}
+type ApiCollateral = {
+  token: Address
+  lltv: bigint
+  liquidationCursor: bigint
+  oracle: Address
+}
+export type ApiOffer = {
+  market: {
+    chainId: bigint
+    midnight: Address
+    loanToken: Address
+    collateralParams: ApiCollateral[]
+    maturity: bigint
+    rcfThreshold: bigint
+    enterGate: Address
+    liquidatorGate: Address
+  }
+  buy: boolean
+  maker: Address
+  start: bigint
+  expiry: bigint
+  tick: bigint
+  group: Hex
+  callback: Address
+  callbackData: Hex
+  receiverIfMakerIsSeller: Address
+  ratifier: Address
+  reduceOnly: boolean
+  maxUnits: bigint
+  maxAssets: bigint
+  continuousFeeCap: bigint
+}
+export type TakeableOffer = { marketId: Hex; units: bigint; offer: ApiOffer; ratifierData: Hex }
+type Row = Record<string, unknown>
+const U128 = 2n ** 128n - 1n
+function row(v: unknown, l: string): Row {
+  if (typeof v !== 'object' || v === null || Array.isArray(v))
+    throw new Error(`${l} must be an object`)
+  return v as Row
+}
+function str(r: Row, k: string) {
+  if (typeof r[k] !== 'string') throw new Error(`${k} must be a string`)
+  return r[k]
+}
+function uint(r: Row, k: string) {
+  const v = r[k]
+  if (
+    (typeof v !== 'string' && typeof v !== 'number') ||
+    (typeof v === 'number' && !Number.isSafeInteger(v)) ||
+    !/^\d+$/.test(String(v))
+  )
+    throw new Error(`${k} must be uint`)
+  return BigInt(v)
+}
+function addr(r: Row, k: string) {
+  const v = str(r, k)
+  if (!isAddress(v, { strict: false })) throw new Error(`${k} must be address`)
+  return getAddress(v)
+}
+function hx(r: Row, k: string, bytes?: number) {
+  const v = str(r, k)
+  if (!isHex(v, { strict: true }) || (bytes !== undefined && v.length !== 2 + bytes * 2))
+    throw new Error(`${k} must be hex`)
+  return v
+}
+function bool(r: Row, k: string) {
+  if (typeof r[k] !== 'boolean') throw new Error(`${k} must be boolean`)
+  return r[k]
+}
+function parse(v: unknown): TakeableOffer {
+  const r = row(v, 'takeable')
+  const o = row(r.offer, 'offer')
+  const m = row(o.market, 'market')
+  if (!Array.isArray(m.collaterals)) throw new Error('collaterals must be array')
+  const maxUnits = uint(o, 'max_units'),
+    maxAssets = uint(o, 'max_assets')
+  if (maxUnits > U128 || maxAssets > U128) throw new Error('caps exceed uint128')
+  return {
+    marketId: hx(r, 'market_id', 32),
+    units: uint(r, 'units'),
+    ratifierData: hx(r, 'ratifier_data'),
+    offer: {
+      market: {
+        chainId: uint(m, 'chain_id'),
+        midnight: addr(m, 'midnight'),
+        loanToken: addr(m, 'loan_token'),
+        collateralParams: m.collaterals.map((v, i) => {
+          const c = row(v, `collateral ${i}`)
+          return {
+            token: addr(c, 'token'),
+            lltv: uint(c, 'lltv'),
+            liquidationCursor: uint(c, 'liquidation_cursor'),
+            oracle: addr(c, 'oracle')
+          }
+        }),
+        maturity: uint(m, 'maturity'),
+        rcfThreshold: uint(m, 'rcf_threshold'),
+        enterGate: addr(m, 'enter_gate'),
+        liquidatorGate: addr(m, 'liquidator_gate')
+      },
+      buy: bool(o, 'buy'),
+      maker: addr(o, 'maker'),
+      start: uint(o, 'start'),
+      expiry: uint(o, 'expiry'),
+      tick: uint(o, 'tick'),
+      group: hx(o, 'group', 32),
+      callback: addr(o, 'callback'),
+      callbackData: hx(o, 'callback_data'),
+      receiverIfMakerIsSeller: addr(o, 'receiver_if_maker_is_seller'),
+      ratifier: addr(o, 'ratifier'),
+      reduceOnly: bool(o, 'reduce_only'),
+      maxUnits,
+      maxAssets,
+      continuousFeeCap: uint(o, 'continuous_fee_cap')
+    }
+  }
+}
+export function createMidnightApi(baseUrl: string, chainId: number) {
+  return {
+    async listMarkets() {
+      const out: { marketId: Hex }[] = []
+      let cursor: string | null = null
+      do {
+        const url = new URL('/v0/midnight/markets', baseUrl)
+        url.searchParams.set('chain_ids', String(chainId))
+        url.searchParams.set('listed', 'true')
+        url.searchParams.set('active_only', 'true')
+        url.searchParams.set('limit', '100')
+        if (cursor) url.searchParams.set('cursor', cursor)
+        const body = row(await fetchJsonResponse<unknown>(url.toString()), 'markets')
+        if (!Array.isArray(body.data)) throw new Error('markets data must be array')
+        for (const v of body.data) out.push({ marketId: hx(row(v, 'market'), 'market_id', 32) })
+        if (body.cursor !== null && typeof body.cursor !== 'string')
+          throw new Error('cursor must be string or null')
+        cursor = body.cursor
+      } while (cursor)
+      return out
+    },
+    async listSide(marketId: Hex, side: 'asks' | 'bids') {
+      const body = row(
+        await fetchJsonResponse<unknown>(
+          new URL(`/v0/midnight/books/${marketId}/${side}/takeable-offers`, baseUrl).toString()
+        ),
+        side
+      )
+      if (!Array.isArray(body.data)) throw new Error(`${side} data must be array`)
+      return body.data
+        .map(parse)
+        .filter(v => v.units > 0n && v.marketId.toLowerCase() === marketId.toLowerCase())
+    }
+  }
+}

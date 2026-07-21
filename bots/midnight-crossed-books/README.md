@@ -6,7 +6,7 @@ The bot pages the Morpho API for `listed=true` and `active_only=true` Midnight m
 
 The permissionless `CrossedBooksResolver` needs no inventory. It takes the ask first. Midnight credits the resolver before `onBuy`; the callback sells those units into the bid, uses bid proceeds to pay the ask, and sends the positive loan-token balance delta to `msg.sender`. Same-market checks, settlement fees, rounding, stale offers, callbacks, and profit are atomic.
 
-*Environment*
+_Environment_
 
 • `CHAIN_ID` — required, currently `8453`.
 • `RPC_URL` — required. `RPC_URL_FALLBACK` optional.
@@ -17,7 +17,7 @@ The permissionless `CrossedBooksResolver` needs no inventory. It takes the ask f
 • `SCAN_INTERVAL_MS` — default `15000`.
 • `MAX_FEE_GWEI` — default `300`.
 
-*Deploy contract*
+_Deploy contract_
 
 ```sh
 RPC_URL=https://… DEPLOYER_PRIVATE_KEY=0x… \
@@ -25,7 +25,7 @@ MIDNIGHT_ADDRESS=0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A \
 bun run --filter @repo/contracts deploy:crossed-books-resolver
 ```
 
-*Run*
+_Run_
 
 ```sh
 CHAIN_ID=8453 RPC_URL=https://… RESOLVER_PRIVATE_KEY=0x… \

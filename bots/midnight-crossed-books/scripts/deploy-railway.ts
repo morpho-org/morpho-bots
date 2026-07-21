@@ -24,7 +24,9 @@ async function ensureContext() {
 async function ensureService() {
   const listed = await tryCatch(Promise.resolve($`railway service list --json`.quiet().text()))
   if (!listed.error && listed.data.includes(`"name":"${service}"`)) return
-  const { error } = await tryCatch(Promise.resolve($`railway add --service ${service} --json`.quiet()))
+  const { error } = await tryCatch(
+    Promise.resolve($`railway add --service ${service} --json`.quiet())
+  )
   if (error) throw new Error(`Failed to create Railway service ${service}`)
 }
 
