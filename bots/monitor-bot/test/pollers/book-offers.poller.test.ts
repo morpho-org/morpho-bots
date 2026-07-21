@@ -255,6 +255,10 @@ describe('BookOffersPoller', () => {
     expect(firstAlert(dispatcher)?.text).toContain(
       `<https://basescan.org/address/${USER_ONE}|0x958e...1917>`
     )
+    // The link row labels the maker's explorer-address and Debank portfolio pages.
+    expect(firstAlert(dispatcher)?.text).toContain(
+      `<https://basescan.org/address/${USER_ONE}|Basescan>  <https://debank.com/profile/${USER_ONE}|Debank>`
+    )
   })
 
   it('keys buckets per maker so two makers at one tick stay distinct', async () => {
