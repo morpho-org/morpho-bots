@@ -37,7 +37,7 @@ export function debankUrl(address: string) {
 }
 
 /** Explorer name for the link row, e.g. `Basescan`; only rendered when the URL builders resolve. */
-function explorerName(chainId: number) {
+export function explorerName(chainId: number) {
   return CHAINS[chainId]?.blockExplorers?.default.name ?? 'Explorer'
 }
 
@@ -221,6 +221,31 @@ function tradeDetail(data: { assets: string; units: string }, loan: TokenEntry |
   return [`${unitsAmount(data.units, loan)} @ ${PRICE.format(price)}`]
 }
 
+/**
+ * A Take detail line names the party that traded the leg — `lend: 0.20 units @ 0.996 by 0x…
+ * Basescan  Debank` — so the reader can tell lender from borrower without decoding the summary
+ * line's order. The amount text is escaped, but the trailing explorer/Debank links are raw mrkdwn,
+ * so this returns finished lines (bullet included) that the caller must not run through escapeSlack.
+ */
+function takeLegLines(
+  prefix: string,
+  leg: { chain_id: number; data: { assets: string; units: string; account: string } },
+  loan: TokenEntry | null
+) {
+  const { account } = leg.data
+  const links = [
+    { url: explorerAddressUrl(leg.chain_id, account), label: explorerName(leg.chain_id) },
+    { url: debankUrl(account), label: 'Debank' }
+  ]
+    .filter(link => link.url !== null)
+    .map(link => slackLink(link.url, link.label))
+    .join('  ')
+  const by = `by ${escapeSlack(abbreviateAddress(account))}${links ? `  ${links}` : ''}`
+  return tradeDetail(leg.data, loan).map(
+    detail => `        • ${escapeSlack(`${prefix}: ${detail}`)} ${by}`
+  )
+}
+
 type TransactionAlertParameters = {
   item: TransactionItem
   /** Slack emoji shortcode leading the headline, e.g. `:rocket:`. */
@@ -369,10 +394,7 @@ export function formatTakeAlert(
   const loan = loanTokenEntry(tokens, lend.market_id)
   const headline = `Take: ${assetsAmount(lend.data.assets, loan, prices)} lend + ${assetsAmount(borrow.data.assets, loan, prices)} borrow`
   const market = marketRef(tokens, lend.chain_id, lend.market_id)
-  const details = [
-    ...tradeDetail(lend.data, loan).map(detail => `lend: ${detail}`),
-    ...tradeDetail(borrow.data, loan).map(detail => `borrow: ${detail}`)
-  ]
+  const detailLines = [...takeLegLines('lend', lend, loan), ...takeLegLines('borrow', borrow, loan)]
   const time = formatUtcTime(lend.created_at)
   const where = `on ${chainLabel(lend.chain_id)}`
   const buyer = abbreviateAddress(lend.data.account)
@@ -383,7 +405,7 @@ export function formatTakeAlert(
     title: `${headline} in ${market.label} by ${buyer} + ${seller} ${where} at ${time}`,
     text: [
       `:handshake: ${escapeSlack(headline)} in ${slackLink(market.url, market.label)}`,
-      ...details.map(detail => `        • ${escapeSlack(detail)}`),
+      ...detailLines,
       `By ${slackLink(explorerAddressUrl(lend.chain_id, lend.data.account), buyer)} + ${slackLink(explorerAddressUrl(borrow.chain_id, borrow.data.account), seller)} ${where}, ${time}`,
       ...(txUrl ? [slackLink(txUrl, explorerName(lend.chain_id))] : [])
     ].join('\n'),

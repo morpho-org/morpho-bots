@@ -27,6 +27,7 @@ import {
   chainLabel,
   debankUrl,
   explorerAddressUrl,
+  explorerName,
   loanTokenEntry,
   marketRef,
   unitsAmount
@@ -237,9 +238,10 @@ const OFFER_EMOJI = { created: ':memo:', resized: ':arrows_counterclockwise:', c
 const OFFER_ACTION = { created: 'posted', resized: 'resized', closed: 'closed' }
 
 // Same block shape as the transaction alerts, minus what an off-chain make order does not have:
-// EIP-712 signatures carry no tx to link, so the link row is Debank only — and no on-chain
-// timestamp, so the footer carries the poller's observation time instead (at most one poll
-// interval after the change). Identity stays market + side + maker + group + tick.
+// EIP-712 signatures carry no tx to link, so the link row drops the tx entry and carries the
+// maker's explorer-address and Debank links instead — and no on-chain timestamp, so the footer
+// carries the poller's observation time instead (at most one poll interval after the change).
+// Identity stays market + side + maker + group + tick.
 function formatOfferAlert(
   event: OfferEvent,
   tokens: TokenRegistry,
@@ -268,14 +270,23 @@ function formatOfferAlert(
     event.kind === 'resized' && event.previous
       ? [`was ${sizeLabel(event.previous, event.previousAssets, loan, prices)}`]
       : []
-  const debank = debankUrl(bucket.maker)
+  // Explorer link labels the maker's address page (Basescan on base); Debank labels their
+  // cross-protocol portfolio. Same filtered pattern as the transaction alerts' link row: an entry
+  // whose URL fails to resolve is dropped rather than rendered as a dead plain-text label.
+  const linkRow = [
+    { url: makerUrl, label: market ? explorerName(market.chainId) : 'Explorer' },
+    { url: debankUrl(bucket.maker), label: 'Debank' }
+  ]
+    .filter(link => link.url !== null)
+    .map(link => slackLink(link.url, link.label))
+    .join('  ')
   const alert = {
     title: `${headline} in ${ref.label} by ${maker}${where} at ${time}`,
     text: [
       `${OFFER_EMOJI[event.kind]} ${escapeSlack(headline)} in ${slackLink(ref.url, ref.label)}`,
       ...details.map(detail => `        • ${escapeSlack(detail)}`),
       `By ${slackLink(makerUrl, maker)}${where}, ${time}`,
-      ...(debank ? [slackLink(debank, 'Debank')] : [])
+      ...(linkRow ? [linkRow] : [])
     ].join('\n'),
     severity: 'info' as const
   }

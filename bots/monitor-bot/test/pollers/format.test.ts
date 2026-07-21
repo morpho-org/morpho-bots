@@ -335,8 +335,12 @@ describe('formatTakeAlert', () => {
     expect(alert.text).toBe(
       [
         `:handshake: Take: 20M ($20M) lend + 20M ($20M) borrow in ${USDC_MARKET_LINK}`,
-        '        • lend: 20.02M units @ 0.999',
-        '        • borrow: 20.02M units @ 0.999',
+        '        • lend: 20.02M units @ 0.999 by 0x958e...1917  ' +
+          `<https://basescan.org/address/${USER_ONE}|Basescan>  ` +
+          `<https://debank.com/profile/${USER_ONE}|Debank>`,
+        '        • borrow: 20.02M units @ 0.999 by 0x5356...4C91  ' +
+          `<https://basescan.org/address/${USER_TWO}|Basescan>  ` +
+          `<https://debank.com/profile/${USER_TWO}|Debank>`,
         `By <https://basescan.org/address/${USER_ONE}|0x958e...1917> ` +
           `+ <https://basescan.org/address/${USER_TWO}|0x5356...4C91> ` +
           'on midnight-base, 14/11/2023 - 22:13:20 UTC',
