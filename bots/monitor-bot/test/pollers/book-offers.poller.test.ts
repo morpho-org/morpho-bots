@@ -14,8 +14,8 @@ const GROUP_2 = `0x${'2'.repeat(64)}`
 const WAD = '1000000000000000000'
 const DEFAULT_TICK = 495
 /** MARKET_A through the alert formatter's market label: the fixture books carry USER_TWO as an
- * unresolvable loan token and a maturity of 2000 unix seconds. */
-const MARKET_A_LABEL = '0x5356...4C91 (0xaaaa...aaaa, matures 01/01/1970)'
+ * unresolvable loan token, no collaterals, and a maturity of 2000 unix seconds. */
+const MARKET_A_LABEL = '0x5356...4C91 01/01/1970'
 /** Every offer alert ends with the linked maker and the deployment label. */
 const TAIL = ' by 0x958e...1917 on midnight-base'
 

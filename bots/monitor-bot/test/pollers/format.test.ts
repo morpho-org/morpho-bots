@@ -8,6 +8,7 @@ import {
   formatTakeAlert,
   formatTransactionAlert,
   marketLabel,
+  marketUrl,
   tokenAmount
 } from '../../src/pollers/format'
 import { TokenRegistry } from '../../src/tokens/registry'
@@ -44,8 +45,17 @@ function registryWithTokens(loanToken = USDC_TOKEN) {
   return tokens
 }
 
-/** MARKET_A's headline label when its loan token resolves: symbol, short id, maturity. */
-const USDC_MARKET = 'USDC (0xaaaa...aaaa, matures 30/09/2026)'
+/**
+ * MARKET_A's headline label when its tokens resolve: loan/collateral pair (WETH is the sole
+ * configured collateral, so it shows even when the event names none), LLTV, maturity.
+ */
+const USDC_MARKET = 'USDC/WETH (86.0%) 30/09/2026'
+
+/** The app page every market segment links to in mrkdwn, replacing the raw market id. */
+const MARKET_URL = `https://markets.morpho.org/fixed/base/${MARKET_A}`
+
+/** MARKET_A's market segment as it appears in mrkdwn text: the label linked to the app page. */
+const USDC_MARKET_LINK = `<${MARKET_URL}|${USDC_MARKET}>`
 
 describe('explorer urls', () => {
   it('builds basescan links for chain 8453 and null for unknown chains', () => {
@@ -89,24 +99,53 @@ describe('tokenAmount', () => {
 })
 
 describe('marketLabel', () => {
-  it('renders pair, LLTV, short id and maturity when the event names a collateral', () => {
-    expect(marketLabel(registryWithTokens(), MARKET_A, WETH_TOKEN)).toBe(
-      'WETH/USDC (86.0%, 0xaaaa...aaaa, matures 30/09/2026)'
-    )
+  it('renders loan/collateral pair, LLTV and maturity when the event names a collateral', () => {
+    expect(marketLabel(registryWithTokens(), MARKET_A, WETH_TOKEN)).toBe(USDC_MARKET)
   })
 
-  it('renders the loan token alone when no collateral is named', () => {
+  it('falls back to the sole configured collateral when no collateral is named', () => {
     expect(marketLabel(registryWithTokens(), MARKET_A)).toBe(USDC_MARKET)
+  })
+
+  it('renders the loan token alone when several collaterals leave none to single out', () => {
+    const tokens = new TokenRegistry()
+    tokens.record({
+      market_id: MARKET_A,
+      chain_id: 8453,
+      loan_token: USDC_TOKEN,
+      maturity: MATURITY,
+      collaterals: [
+        { token: WETH_TOKEN, lltv: '860000000000000000' },
+        { token: USER_ONE, lltv: '900000000000000000' }
+      ]
+    })
+    expect(marketLabel(tokens, MARKET_A)).toBe('USDC 30/09/2026')
   })
 
   it('omits the LLTV for a collateral the market does not list', () => {
     expect(marketLabel(registryWithTokens(), MARKET_A, USER_TWO)).toBe(
-      '0x5356...4C91/USDC (0xaaaa...aaaa, matures 30/09/2026)'
+      'USDC/0x5356...4C91 30/09/2026'
     )
   })
 
   it('degrades to the abbreviated market id when the registry has never seen it', () => {
     expect(marketLabel(new TokenRegistry(), MARKET_A)).toBe('0xaaaa...aaaa')
+  })
+})
+
+describe('marketUrl', () => {
+  it('builds the app market page for a known chain', () => {
+    expect(marketUrl(8453, MARKET_A)).toBe(MARKET_URL)
+  })
+
+  it('returns null for unknown chains', () => {
+    expect(marketUrl(999, MARKET_A)).toBeNull()
+    expect(marketUrl(undefined, MARKET_A)).toBeNull()
+  })
+
+  it('refuses non-hash market ids so they can never enter a link URL slot', () => {
+    expect(marketUrl(8453, '0xabc')).toBeNull()
+    expect(marketUrl(8453, `${MARKET_A}> <!channel`)).toBeNull()
   })
 })
 
@@ -130,7 +169,7 @@ describe('formatTransactionAlert', () => {
     )
     expect(alert.text).toBe(
       [
-        `:rocket: Lend: 20M ($20M) in ${USDC_MARKET}`,
+        `:rocket: Lend: 20M ($20M) in ${USDC_MARKET_LINK}`,
         '        • 20.02M units @ 0.999',
         `By <https://basescan.org/address/${USER_ONE}|0x958e...1917> ` +
           'on midnight-base, 14/11/2023 - 22:13:20 UTC',
@@ -160,6 +199,8 @@ describe('formatTransactionAlert', () => {
       'Lend: 1000 assets in 0xaaaa...aaaa ' +
         'by 0x958e...1917 on midnight-base at 14/11/2023 - 22:13:20 UTC'
     )
+    // The abbreviated-id fallback still links: the chain comes from the item, not the registry.
+    expect(alert.text).toContain(`<${MARKET_URL}|0xaaaa...aaaa>`)
   })
 
   it('falls back to raw base units when the loan token has no metadata', () => {
@@ -169,7 +210,7 @@ describe('formatTransactionAlert', () => {
       NO_PRICES
     )
     expect(alert.title).toBe(
-      'Lend: 1000 assets in 0x958e...1917 (0xaaaa...aaaa, matures 30/09/2026) ' +
+      'Lend: 1000 assets in 0x958e...1917/WETH (86.0%) 30/09/2026 ' +
         'by 0x958e...1917 on midnight-base at 14/11/2023 - 22:13:20 UTC'
     )
   })
@@ -195,7 +236,7 @@ describe('formatTransactionAlert', () => {
       priceLookup({ [`8453:${WETH_TOKEN.toLowerCase()}`]: 3000 })
     )
     expect(alert.title).toBe(
-      'Supply collateral: 5 ($15K) in WETH/USDC (86.0%, 0xaaaa...aaaa, matures 30/09/2026) ' +
+      `Supply collateral: 5 ($15K) in ${USDC_MARKET} ` +
         'by 0x958e...1917 on midnight-base at 01/01/1970 - 00:01:40 UTC'
     )
     expect(alert.text.startsWith(':sparkles:')).toBe(true)
@@ -214,8 +255,7 @@ describe('formatTransactionAlert', () => {
     )
     expect(alert.severity).toBe('warning')
     expect(alert.title).toBe(
-      'Liquidation (full): 500 units repaid in ' +
-        'WETH/USDC (86.0%, 0xaaaa...aaaa, matures 30/09/2026) ' +
+      `Liquidation (full): 500 units repaid in ${USDC_MARKET} ` +
         'of 0x5356...4C91 on midnight-base at 01/01/1970 - 00:01:40 UTC'
     )
     expect(alert.text.startsWith(':zap:')).toBe(true)
@@ -242,8 +282,10 @@ describe('formatTransactionAlert', () => {
       tx_hash: `${TX_HASH}> <!here`
     }
     const alert = formatTransactionAlert(item, registryWithTokens(), NO_PRICES)
-    // No URL survives validation, so the block carries no mrkdwn link at all…
-    expect(alert.text).not.toContain('<https')
+    // Neither malformed value survives URL validation — only the market link remains…
+    expect(alert.text).not.toContain('basescan')
+    expect(alert.text).not.toContain('debank')
+    expect(alert.text).toContain(USDC_MARKET_LINK)
     // …and every API-sourced fragment is escaped — nothing can form a control sequence.
     expect(alert.text).not.toContain('<!')
     expect(alert.text).toContain('&lt;!chan')
@@ -291,7 +333,7 @@ describe('formatTakeAlert', () => {
     )
     expect(alert.text).toBe(
       [
-        `:handshake: Take: 20M ($20M) lend + 20M ($20M) borrow in ${USDC_MARKET}`,
+        `:handshake: Take: 20M ($20M) lend + 20M ($20M) borrow in ${USDC_MARKET_LINK}`,
         '        • lend: 20.02M units @ 0.999',
         '        • borrow: 20.02M units @ 0.999',
         `By <https://basescan.org/address/${USER_ONE}|0x958e...1917> ` +

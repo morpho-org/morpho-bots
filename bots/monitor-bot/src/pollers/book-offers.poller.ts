@@ -26,7 +26,7 @@ import {
   debankUrl,
   explorerAddressUrl,
   loanTokenEntry,
-  marketLabel,
+  marketRef,
   unitsAmount
 } from './format'
 
@@ -248,18 +248,17 @@ function formatOfferAlert(event: OfferEvent, tokens: TokenRegistry, prices: Pric
   // diff), so a miss only happens on drift — degrade to no chain segment rather than guessing.
   const where = market ? ` on ${chainLabel(market.chainId)}` : ''
   const makerUrl = market ? explorerAddressUrl(market.chainId, bucket.maker) : null
-  const headline =
-    `Make order ${OFFER_ACTION[event.kind]}: ${size} ${side} @ tick ${bucket.tick} ` +
-    `in ${marketLabel(tokens, marketId)}`
+  const headline = `Make order ${OFFER_ACTION[event.kind]}: ${size} ${side} @ tick ${bucket.tick}`
+  const ref = marketRef(tokens, market?.chainId, marketId)
   const details =
     event.kind === 'resized' && event.previous
       ? [`was ${sizeLabel(event.previous, event.previousAssets, loan, prices)}`]
       : []
   const debank = debankUrl(bucket.maker)
   const alert = {
-    title: `${headline} by ${maker}${where}`,
+    title: `${headline} in ${ref.label} by ${maker}${where}`,
     text: [
-      `${OFFER_EMOJI[event.kind]} ${escapeSlack(headline)}`,
+      `${OFFER_EMOJI[event.kind]} ${escapeSlack(headline)} in ${slackLink(ref.url, ref.label)}`,
       ...details.map(detail => `        • ${escapeSlack(detail)}`),
       `By ${slackLink(makerUrl, maker)}${where}`,
       ...(debank ? [slackLink(debank, 'Debank')] : [])

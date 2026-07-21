@@ -154,29 +154,55 @@ function lltvPercent(lltv: string | undefined) {
 }
 
 /**
- * The market segment of a headline, shaped like the Morpho channel's
- * `weETH/WETH (94.5%, 0xbD...8a72, Adaptive curve)` — with midnight's fixed-term analog in the
- * rate-model slot: `WETH/USDC (86.0%, 0x6a...110b, matures 30/09/2026)`. The pair (and its LLTV)
- * appears only when the event names which collateral it moved; other events show the loan token
- * alone. Degrades tier by tier as registry knowledge thins, down to the bare abbreviated id.
+ * The market's fixed-market page on the Morpho app — what the market segment of every alert links
+ * to in place of showing the raw market id. Null when the chain has no configured name or the id
+ * is not hash-shaped, so an API-sourced string that could carry `|` or `>` never enters the URL
+ * slot (see the guard note above the explorer builders).
+ */
+export function marketUrl(chainId: number | undefined, marketId: string) {
+  const chain = chainId === undefined ? undefined : CHAINS[chainId]
+  return chain && isHash(marketId)
+    ? `https://markets.morpho.org/fixed/${chain.name.toLowerCase()}/${marketId}`
+    : null
+}
+
+/** The market segment of a headline: its display label and the app page it links to. */
+type MarketRef = { label: string; url: string | null }
+
+export function marketRef(
+  tokens: TokenRegistry,
+  chainId: number | undefined,
+  marketId: string,
+  collateral?: string
+): MarketRef {
+  return { label: marketLabel(tokens, marketId, collateral), url: marketUrl(chainId, marketId) }
+}
+
+/**
+ * The market segment of a headline: `USDC/WETH (86.0%) 30/09/2026` — loan/collateral pair with
+ * that collateral's LLTV, then the maturity date. The collateral slot takes the event's own
+ * collateral when the event names one, else the market's sole configured collateral; a market
+ * accepting several shows the loan token alone, since none can be singled out. Degrades tier by
+ * tier as registry knowledge thins, down to the bare abbreviated id. The raw market id lives in
+ * the link this label is rendered with (`marketUrl`), not in the label itself.
  */
 export function marketLabel(tokens: TokenRegistry, marketId: string, collateral?: string) {
   const market = tokens.get(marketId)
-  const shortId = abbreviateAddress(marketId)
-  if (!market) return shortId
+  if (!market) return abbreviateAddress(marketId)
 
   const symbolOf = (address: Address) =>
     tokens.token(market.chainId, address)?.symbol ?? abbreviateAddress(address)
 
-  const details: string[] = []
+  const sole = market.collaterals.length === 1 ? market.collaterals[0] : undefined
+  const chosen =
+    collateral && isAddress(collateral, { strict: false }) ? getAddress(collateral) : sole?.address
   let name = symbolOf(market.loanToken)
-  if (collateral && isAddress(collateral, { strict: false })) {
-    name = `${symbolOf(getAddress(collateral))}/${name}`
-    const lltv = lltvPercent(tokens.collateral(marketId, collateral)?.lltv)
-    if (lltv) details.push(lltv)
+  if (chosen) {
+    name = `${name}/${symbolOf(chosen)}`
+    const lltv = lltvPercent(tokens.collateral(marketId, chosen)?.lltv)
+    if (lltv) name = `${name} (${lltv})`
   }
-  details.push(shortId, `matures ${formatUtcDate(market.maturity)}`)
-  return `${name} (${details.join(', ')})`
+  return `${name} ${formatUtcDate(market.maturity)}`
 }
 
 /** `1.00K units @ 0.999` — the trade's unit volume and average loan-token-per-unit price. */
@@ -195,8 +221,10 @@ type TransactionAlertParameters = {
   item: TransactionItem
   /** Slack emoji shortcode leading the headline, e.g. `:rocket:`. */
   emoji: string
-  /** `Action: amount in market-label` — everything before the details/footer. */
+  /** `Action: amount` — the builder appends the market segment as `in <market>`. */
   headline: string
+  /** The market the headline's `in …` names — a mrkdwn link when its URL resolves. */
+  market: MarketRef
   /** Indented `•` lines under the headline; escaped here, so pass plain text. */
   details?: string[]
   actor: string
@@ -205,7 +233,7 @@ type TransactionAlertParameters = {
   severity: Alert['severity']
 }
 
-// :emoji: $headline
+// :emoji: $headline in ($market label)[app market page]
 //         • $detail
 // By ($actor)[explorer link] on midnight-<chain>, $time
 // (Basescan)[tx link]  (Debank)[actor portfolio]
@@ -213,6 +241,7 @@ function transactionAlert({
   item,
   emoji,
   headline,
+  market,
   details = [],
   actor,
   preposition = 'by',
@@ -231,9 +260,9 @@ function transactionAlert({
   const footer = preposition === 'by' ? 'By' : 'Of'
   return {
     key: item.id,
-    title: `${headline} ${preposition} ${short} ${where} at ${time}`,
+    title: `${headline} in ${market.label} ${preposition} ${short} ${where} at ${time}`,
     text: [
-      `${emoji} ${escapeSlack(headline)}`,
+      `${emoji} ${escapeSlack(headline)} in ${slackLink(market.url, market.label)}`,
       ...details.map(detail => `        • ${escapeSlack(detail)}`),
       `${footer} ${slackLink(explorerAddressUrl(item.chain_id, actor), short)} ${where}, ${time}`,
       ...(linkRow ? [linkRow] : [])
@@ -264,7 +293,8 @@ export function formatTransactionAlert(
       return transactionAlert({
         item,
         emoji,
-        headline: `${action}: ${assetsAmount(item.data.assets, loan, prices)} in ${marketLabel(tokens, item.market_id)}`,
+        headline: `${action}: ${assetsAmount(item.data.assets, loan, prices)}`,
+        market: marketRef(tokens, item.chain_id, item.market_id),
         details: tradeDetail(item.data, loan),
         actor: item.data.account,
         severity: 'info'
@@ -276,7 +306,8 @@ export function formatTransactionAlert(
       return transactionAlert({
         item,
         emoji: repay ? ':leftwards_arrow_with_hook:' : ':butterfly:',
-        headline: `${repay ? 'Repay' : 'Lend exit'} (primary): ${unitsAmount(item.data.units, loan)} in ${marketLabel(tokens, item.market_id)}`,
+        headline: `${repay ? 'Repay' : 'Lend exit'} (primary): ${unitsAmount(item.data.units, loan)}`,
+        market: marketRef(tokens, item.chain_id, item.market_id),
         actor: item.data.account,
         severity: 'info'
       })
@@ -289,7 +320,8 @@ export function formatTransactionAlert(
       return transactionAlert({
         item,
         emoji: ':sparkles:',
-        headline: `${action}: ${assetsAmount(item.data.assets, collateral, prices)} in ${marketLabel(tokens, item.market_id, item.data.collateral)}`,
+        headline: `${action}: ${assetsAmount(item.data.assets, collateral, prices)}`,
+        market: marketRef(tokens, item.chain_id, item.market_id, item.data.collateral),
         actor: item.data.account,
         severity: 'info'
       })
@@ -303,7 +335,8 @@ export function formatTransactionAlert(
       return transactionAlert({
         item,
         emoji: badDebt ? ':rotating_light:' : ':zap:',
-        headline: `${badDebt ? 'BAD DEBT — ' : ''}Liquidation (${kind}): ${unitsAmount(item.data.repaid_units, loan)} repaid in ${marketLabel(tokens, item.market_id, item.data.collateral)}`,
+        headline: `${badDebt ? 'BAD DEBT — ' : ''}Liquidation (${kind}): ${unitsAmount(item.data.repaid_units, loan)} repaid`,
+        market: marketRef(tokens, item.chain_id, item.market_id, item.data.collateral),
         details: [
           `seized: ${seized}${usdSuffix(item.data.seized_assets, collateral, prices)}`,
           ...(badDebt ? [`bad debt: ${unitsAmount(item.data.bad_debt, loan)}`] : [])
@@ -330,7 +363,8 @@ export function formatTakeAlert(
   prices: PriceLookup
 ): Alert {
   const loan = loanTokenEntry(tokens, lend.market_id)
-  const headline = `Take: ${assetsAmount(lend.data.assets, loan, prices)} lend + ${assetsAmount(borrow.data.assets, loan, prices)} borrow in ${marketLabel(tokens, lend.market_id)}`
+  const headline = `Take: ${assetsAmount(lend.data.assets, loan, prices)} lend + ${assetsAmount(borrow.data.assets, loan, prices)} borrow`
+  const market = marketRef(tokens, lend.chain_id, lend.market_id)
   const details = [
     ...tradeDetail(lend.data, loan).map(detail => `lend: ${detail}`),
     ...tradeDetail(borrow.data, loan).map(detail => `borrow: ${detail}`)
@@ -342,9 +376,9 @@ export function formatTakeAlert(
   const txUrl = explorerTxUrl(lend.chain_id, lend.tx_hash)
   return {
     key: `${lend.id}+${borrow.id}`,
-    title: `${headline} by ${buyer} + ${seller} ${where} at ${time}`,
+    title: `${headline} in ${market.label} by ${buyer} + ${seller} ${where} at ${time}`,
     text: [
-      `:handshake: ${escapeSlack(headline)}`,
+      `:handshake: ${escapeSlack(headline)} in ${slackLink(market.url, market.label)}`,
       ...details.map(detail => `        • ${escapeSlack(detail)}`),
       `By ${slackLink(explorerAddressUrl(lend.chain_id, lend.data.account), buyer)} + ${slackLink(explorerAddressUrl(borrow.chain_id, borrow.data.account), seller)} ${where}, ${time}`,
       ...(txUrl ? [slackLink(txUrl, explorerName(lend.chain_id))] : [])
