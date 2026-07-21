@@ -56,7 +56,7 @@ If the document doesn't follow any of these patterns, use your judgment to ident
 approach, and actionable work items.
 
 **Scope detection:** Use the document's scope field (if present) and file path to determine the
-target team. Default for curator-bots work is the **Curator** team
+target team. Default for morpho-bots work is the **Curator** team
 (`c07ff95f-03b7-4bee-aa17-c7e04fda8845`). Only route to the **Apps** team
 (`cc8fe27e-f516-45e8-921e-69b0562c7792`) when the scope is explicitly cross-repo work shared with
 morpho-apps.

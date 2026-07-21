@@ -1,6 +1,6 @@
 # Documentation Index
 
-Quick navigation for the curator-bots documentation.
+Quick navigation for the morpho-bots documentation.
 
 ---
 

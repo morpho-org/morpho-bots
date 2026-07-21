@@ -83,8 +83,8 @@ Format your analysis as markdown and post it as a sticky comment. Use the PR num
 > [!IMPORTANT]
 > | App | Old Version | New Version | Diff |
 > | --- | ----------- | ----------- | ---- |
-> | {app-name} | `{old-version}` | `{new-version}` | https://github.com/morpho-org/curator-bots/compare/{base-tag}...{head} |
-> | {another-app-name} | `{old-version}` | `{new-version}` | https://github.com/morpho-org/curator-bots/compare/{another-base-tag}...{head} |
+> | {app-name} | `{old-version}` | `{new-version}` | https://github.com/morpho-org/morpho-bots/compare/{base-tag}...{head} |
+> | {another-app-name} | `{old-version}` | `{new-version}` | https://github.com/morpho-org/morpho-bots/compare/{another-base-tag}...{head} |
 
 #### {app-name}
 
