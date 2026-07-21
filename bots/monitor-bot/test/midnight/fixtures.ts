@@ -1,4 +1,7 @@
+import type { Address } from 'viem'
+
 import type { TransactionItem } from '../../src/midnight/client'
+import type { OfferBucket, OfferEvent } from '../../src/pollers/book-offers.model'
 import type { PriceLookup } from '../../src/tokens/prices'
 
 export const MARKET_A = `0x${'a'.repeat(64)}`
@@ -155,6 +158,79 @@ export function supplyCollateralItem(over: { id: string; assets?: string }): Sup
       collateral: WETH_TOKEN,
       assets: over.assets ?? '1000'
     }
+  }
+}
+
+type WithdrawCollateralItem = Extract<TransactionItem, { event_type: 'withdraw_collateral' }>
+type ExitBorrowSecondaryItem = Extract<TransactionItem, { event_type: 'exit_borrow_secondary' }>
+
+export function withdrawCollateralItem(over: {
+  id: string
+  assets?: string
+  collateral?: string
+}): WithdrawCollateralItem {
+  return {
+    id: over.id,
+    chain_id: 8453,
+    market_id: MARKET_A,
+    created_at: 100,
+    tx_hash: TX_HASH,
+    event_type: 'withdraw_collateral',
+    data: {
+      account: USER_ONE,
+      caller: USER_ONE,
+      on_behalf: USER_ONE,
+      receiver: USER_ONE,
+      collateral: over.collateral ?? WETH_TOKEN,
+      assets: over.assets ?? '1000'
+    }
+  }
+}
+
+/** A secondary borrow exit (a repay that crosses the book) — same trade shape as a borrow leg. */
+export function exitBorrowSecondaryItem(over: TradeOverrides): ExitBorrowSecondaryItem {
+  return {
+    id: over.id,
+    chain_id: 8453,
+    market_id: over.market_id ?? MARKET_A,
+    created_at: over.created_at,
+    tx_hash: TX_HASH,
+    event_type: 'exit_borrow_secondary',
+    data: { account: over.account ?? USER_ONE, ...tradeData(over) }
+  }
+}
+
+/** The offer group both order fixtures share by default. */
+export const OFFER_GROUP = `0x${'d'.repeat(64)}`
+/** 28/08/2026 — the offer expiry rendered in an order alert's `Expiry` line. */
+const OFFER_EXPIRY = Date.UTC(2026, 7, 28) / 1000
+
+/** One book bucket; defaults to a lend-side (`bids`) offer at tick 4250 on MARKET_A. */
+export function offerBucket(over: Partial<OfferBucket> = {}): OfferBucket {
+  return {
+    side: 'bids',
+    maker: USER_ONE as Address,
+    group: OFFER_GROUP,
+    tick: 4250,
+    maxUnits: '1000',
+    maxAssets: '0',
+    count: 1,
+    expiry: OFFER_EXPIRY,
+    ...over
+  }
+}
+
+/** A book diff event; defaults to a freshly created, unpriced lend bucket on MARKET_A. */
+export function offerEvent(over: Partial<OfferEvent> = {}): OfferEvent {
+  return {
+    kind: 'created',
+    marketId: MARKET_A,
+    bucket: offerBucket(),
+    previous: null,
+    assets: null,
+    previousAssets: null,
+    price: null,
+    ...over
   }
 }
 

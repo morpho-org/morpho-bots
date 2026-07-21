@@ -1,9 +1,9 @@
 import type { Address } from 'viem'
 
 // The make-order book's domain model, shared by the poller that diffs it and the AlertFormatter
-// that renders its events. It lives apart from both so `bucketKey`/`sideLabel` have a single
-// definition (the poller keys its snapshot with `bucketKey`; the formatter builds the alert key
-// with it) and so the formatter never has to runtime-import the heavy stateful poller module.
+// that renders its events. It lives apart from both so `bucketKey` has a single definition (the
+// poller keys its snapshot with it; the formatter builds the alert key with it) and so the
+// formatter never has to runtime-import the heavy stateful poller module.
 
 export type BookSide = 'asks' | 'bids'
 
@@ -47,9 +47,4 @@ export type OfferEvent = {
 
 export function bucketKey(side: BookSide, maker: Address, group: string, tick: number) {
   return `${side}:${maker}:${group}:${tick}`
-}
-
-// Lending is buying units, so bids are lend-side offers and asks are borrow-side.
-export function sideLabel(side: BookSide) {
-  return side === 'bids' ? 'lend' : 'borrow'
 }

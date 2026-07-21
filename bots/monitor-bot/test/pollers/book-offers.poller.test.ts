@@ -16,8 +16,11 @@ const GROUP_2 = `0x${'2'.repeat(64)}`
 const WAD = '1000000000000000000'
 const DEFAULT_TICK = 495
 /** MARKET_A through the alert formatter's market label: the fixture books carry USER_TWO as an
- * unresolvable loan token, no collaterals, and a maturity of 2000 unix seconds. */
-const MARKET_A_LABEL = '0x5356...4C91 01/01/1970'
+ * unresolvable loan token and no collaterals, so the label degrades to the abbreviated loan token
+ * (the maturity now lives in each order's `Expiry` line, not the label). */
+const MARKET_A_LABEL = '0x5356...4C91'
+/** Every order alert carries the offer's own expiry; the fixtures default to 2000 unix seconds. */
+const EXPIRES = ', expires 01/01/1970'
 /** Every offer alert ends with the linked maker, the deployment label, and the observation time. */
 const TAIL = ' by 0x958e...1917 on midnight-base at 14/11/2023 - 22:13:20 UTC'
 
@@ -192,7 +195,7 @@ describe('BookOffersPoller', () => {
     expect(dispatcher.sent).toHaveLength(1)
     expect(firstAlert(dispatcher)?.key).toBe(`${MARKET_A}:asks:${USER_ONE}:${GROUP_2}:500:created`)
     expect(firstAlert(dispatcher)?.title).toBe(
-      `Make order posted: 500 assets borrow in ${MARKET_A_LABEL}${TAIL}`
+      `Borrow Order Posted: 500 assets in ${MARKET_A_LABEL}${EXPIRES}${TAIL}`
     )
   })
 
@@ -208,7 +211,7 @@ describe('BookOffersPoller', () => {
     await poller.pollOnce()
     await poller.pollOnce()
     expect(firstAlert(dispatcher)?.title).toBe(
-      `Make order posted: 1000 assets borrow @ 1.25% APR in 0x5356...4C91 13/11/2024${TAIL}`
+      `Borrow Order Posted: 1000 assets at 1.25% in ${MARKET_A_LABEL}${EXPIRES}${TAIL}`
     )
   })
 
@@ -220,7 +223,7 @@ describe('BookOffersPoller', () => {
     await poller.pollOnce()
     await poller.pollOnce()
     expect(firstAlert(dispatcher)?.title).toBe(
-      `Make order posted: 1000 assets lend in ${MARKET_A_LABEL}${TAIL}`
+      `Make Order Posted: 1000 assets in ${MARKET_A_LABEL}${EXPIRES}${TAIL}`
     )
   })
 
@@ -233,10 +236,10 @@ describe('BookOffersPoller', () => {
     await poller.pollOnce()
     expect(dispatcher.sent).toHaveLength(1)
     expect(firstAlert(dispatcher)?.title).toBe(
-      `Make order resized: 2000 assets borrow in ${MARKET_A_LABEL}${TAIL}`
+      `Borrow Order Resized: 2000 assets, was 1000 assets in ${MARKET_A_LABEL}${EXPIRES}${TAIL}`
     )
-    // The previous size lives in an indented detail line of the mrkdwn text, not the title.
-    expect(firstAlert(dispatcher)?.text).toContain('• was 1000 assets')
+    // The previous size renders as its own indented field line in the mrkdwn text.
+    expect(firstAlert(dispatcher)?.text).toContain('   ↩️ Previous: 1000 assets')
   })
 
   it('ignores a re-signed offer that only moves its expiry', async () => {
@@ -257,7 +260,7 @@ describe('BookOffersPoller', () => {
     await poller.pollOnce()
     await poller.pollOnce()
     expect(firstAlert(dispatcher)?.title).toBe(
-      `Make order resized: 1400 assets borrow in ${MARKET_A_LABEL}${TAIL}`
+      `Borrow Order Resized: 1400 assets, was 1000 assets in ${MARKET_A_LABEL}${EXPIRES}${TAIL}`
     )
     // The mrkdwn text carries the maker as a basescan link.
     expect(firstAlert(dispatcher)?.text).toContain(
@@ -290,7 +293,7 @@ describe('BookOffersPoller', () => {
     expect(dispatcher.sent).toHaveLength(1)
     expect(firstAlert(dispatcher)?.key).toBe(`${MARKET_A}:asks:${USER_ONE}:${GROUP_1}:495:closed`)
     expect(firstAlert(dispatcher)?.title).toBe(
-      `Make order closed: 1000 units borrow in ${MARKET_A_LABEL}${TAIL}`
+      `Borrow Order Closed: 1000 units in ${MARKET_A_LABEL}${EXPIRES}${TAIL}`
     )
   })
 
@@ -387,7 +390,7 @@ describe('BookOffersPoller', () => {
     expect(dispatcher.sent).toHaveLength(1)
     // Unpriced, so the title falls back to units rather than claiming an asset amount.
     expect(firstAlert(dispatcher)?.title).toBe(
-      `Make order posted: 5 units borrow in ${MARKET_A_LABEL}${TAIL}`
+      `Borrow Order Posted: 5 units in ${MARKET_A_LABEL}${EXPIRES}${TAIL}`
     )
   })
 
@@ -422,7 +425,7 @@ describe('BookOffersPoller', () => {
     await poller.pollOnce()
     expect(dispatcher.sent).toHaveLength(1)
     expect(firstAlert(dispatcher)?.title).toBe(
-      `Make order posted: 5000 assets borrow in ${MARKET_A_LABEL}${TAIL}`
+      `Borrow Order Posted: 5000 assets in ${MARKET_A_LABEL}${EXPIRES}${TAIL}`
     )
   })
 
