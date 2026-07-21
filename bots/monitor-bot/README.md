@@ -141,13 +141,22 @@ by `intervalToCron`.
 
 Locked-in semantics:
 
-| Guarantee              | Mechanism                                                       |
-| ---------------------- | --------------------------------------------------------------- |
-| At-least-once delivery | State saves only after a successful dispatch                    |
-| Failed-request restart | A failed tick never saves state; the next tick retries          |
-| No overlapping ticks   | `cron` `waitForCompletion` skips ticks while one runs           |
-| Graceful shutdown      | Registrar holds its own job refs and awaits `stop()` on SIGTERM |
-| Configurable period    | `cron` expression is an instance property, sourced from config  |
+| Guarantee              | Mechanism                                                         |
+| ---------------------- | ----------------------------------------------------------------- |
+| At-least-once delivery | State saves only after a successful dispatch                      |
+| Failed-request restart | A failed tick never saves state; the next tick retries            |
+| No overlapping ticks   | `cron` `waitForCompletion` skips ticks while one runs             |
+| Rate-limit recovery    | Requests are paced; 429 cooldowns fail ticks fast and retry later |
+| Graceful shutdown      | Registrar holds its own job refs and awaits `stop()` on SIGTERM   |
+| Configurable period    | `cron` expression is an instance property, sourced from config    |
+
+The Midnight client starts at most 250 requests/minute, leaving headroom below both the API's
+published 750/minute burst limit and its roughly 20,000/hour severe-abuse threshold. A 429 opens one
+process-wide cooldown for the response's `Retry-After` window and logs `midnight.rate_limited`;
+ticks fail quickly during that window without making upstream requests. This keeps the cron
+scheduler responsive instead of awaiting a 10-minute (or multi-day) sleep inside one tick. When a
+full sweep needs longer than the configured cadence at that safe rate, `waitForCompletion` skips the
+overlapping tick as usual.
 
 #### Cursors vs boot snapshots
 

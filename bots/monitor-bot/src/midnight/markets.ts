@@ -1,6 +1,6 @@
 import type { Logger } from '@repo/bot-kit'
 
-import { delay, ensureError, fetchWithRetry } from '@repo/utils'
+import { delay, ensureError } from '@repo/utils'
 import chunk from 'lodash-es/chunk'
 
 import type { TokenMetadataLoader } from '../tokens/metadata'
@@ -8,6 +8,7 @@ import type { TokenPriceCache } from '../tokens/prices'
 import type { TokenRegistry } from '../tokens/registry'
 
 import { MAX_PAGES, REQUEST_TIMEOUT_MS, type MidnightClient } from './client'
+import { fetchMidnightWithRetry } from './retry'
 
 /**
  * The spec caps `market_ids` at 100, but URL length binds first: each id costs ~78 bytes of query
@@ -103,7 +104,7 @@ export class MarketDirectory {
 
   private async hydrate(marketIds: string[]) {
     for (const batch of chunk(marketIds, MARKET_IDS_PER_REQUEST)) {
-      const body = await fetchWithRetry(
+      const body = await fetchMidnightWithRetry(
         () =>
           this.deps.client.GET('/v0/midnight/markets', {
             params: { query: { market_ids: batch, limit: 1000 } },
@@ -129,7 +130,7 @@ export class MarketDirectory {
     const ids: string[] = []
     let cursor: string | undefined
     for (let page = 0; page < MAX_PAGES; page++) {
-      const body = await fetchWithRetry(
+      const body = await fetchMidnightWithRetry(
         () =>
           this.deps.client.GET('/v0/midnight/markets', {
             params: {

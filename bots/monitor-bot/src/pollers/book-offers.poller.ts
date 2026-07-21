@@ -1,4 +1,4 @@
-import { delay, ensureError, fetchWithRetry, tryCatch } from '@repo/utils'
+import { delay, ensureError, tryCatch } from '@repo/utils'
 import chunk from 'lodash-es/chunk'
 import { getAddress, isAddress, parseUnits } from 'viem'
 
@@ -7,6 +7,7 @@ import type { PollerDependencies } from '../polling/poller'
 import type { BookSide, MarketSnapshot, OfferBucket, OfferEvent } from './book-offers.model'
 
 import { MARKET_CONCURRENCY, REQUEST_TIMEOUT_MS } from '../midnight/client'
+import { fetchMidnightWithRetry } from '../midnight/retry'
 import { Poller } from '../polling/poller'
 import { bucketKey } from './book-offers.model'
 
@@ -267,7 +268,7 @@ export class BookOffersPoller extends Poller<BookSnapshot, OfferEvent> {
     for (const side of SIDES.filter(
       candidate => book[candidate].length > 0 || held.has(candidate)
     )) {
-      const body = await fetchWithRetry(
+      const body = await fetchMidnightWithRetry(
         () =>
           this.ext.client.GET('/v0/midnight/books/{market-id}/{side}/takeable-offers', {
             params: { path: { 'market-id': book.market_id, side } },
@@ -341,7 +342,7 @@ export class BookOffersPoller extends Poller<BookSnapshot, OfferEvent> {
   }
 
   private getBooks(query: { ids?: string; limit: number; cursor?: string }) {
-    return fetchWithRetry(
+    return fetchMidnightWithRetry(
       () =>
         this.ext.client.GET('/v0/midnight/books', {
           params: { query },

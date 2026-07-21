@@ -1,4 +1,4 @@
-import { delay, ensureError, fetchWithRetry, tryCatch } from '@repo/utils'
+import { delay, ensureError, tryCatch } from '@repo/utils'
 import chunk from 'lodash-es/chunk'
 
 import type { MidnightClient, MidnightEventType, TransactionItem } from '../midnight/client'
@@ -7,6 +7,7 @@ import type { PollerDependencies } from '../polling/poller'
 import type { TransactionFilter } from './filter'
 
 import { MARKET_CONCURRENCY, MAX_PAGES, REQUEST_TIMEOUT_MS } from '../midnight/client'
+import { fetchMidnightWithRetry } from '../midnight/retry'
 import { Poller } from '../polling/poller'
 import { mergeTakeLegs } from './take'
 
@@ -141,7 +142,7 @@ export class MarketTransactionsPoller extends Poller<TxCursor, TransactionItem> 
     const collected: TransactionItem[] = []
     let pageCursor: string | undefined
     for (let page = 0; page < MAX_PAGES; page++) {
-      const body = await fetchWithRetry(
+      const body = await fetchMidnightWithRetry(
         () =>
           this.ext.client.GET('/v0/midnight/markets/{market-id}/transactions', {
             params: {
