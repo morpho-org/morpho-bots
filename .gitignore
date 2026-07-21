@@ -8,6 +8,9 @@ node_modules
 .env.*
 !.env.example
 
+# monitor-bot Attio wallet-CRM exports — PII, loaded from a Railway volume in prod, never commit
+bots/monitor-bot/*.csv
+
 # Testing
 coverage
 
