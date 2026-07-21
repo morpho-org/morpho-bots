@@ -1,5 +1,6 @@
 import type { Address, Chain } from 'viem'
 
+import { TickLib } from '@morpho-org/midnight-sdk'
 import { abbreviateAddress, assertNever, tryCatch } from '@repo/utils'
 import { formatUnits, getAddress, isAddress, isHash } from 'viem'
 import { base } from 'viem/chains'
@@ -65,6 +66,13 @@ const USD = new Intl.NumberFormat('en-US', {
 /** Average trade price (loan token per unit) — a ratio near 1, so plain significant digits. */
 const PRICE = new Intl.NumberFormat('en-US', { maximumSignificantDigits: 4 })
 
+/**
+ * `1.25% APR` — adjacent ticks sit ~2.5bp apart at typical rates, so 2 decimals resolves them.
+ * Not @repo/utils' formatUint256Percent, which truncates instead of rounding (2.5076% renders as
+ * `2.5%`), dropping the second decimal that separates neighbouring ticks.
+ */
+const APR = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 })
+
 function compactAmount(raw: string, decimals: number) {
   // A malformed amount from the API shows verbatim rather than dropping the alert.
   const { data } = tryCatch(() => COMPACT.format(Number(formatUnits(BigInt(raw), decimals))))
@@ -103,6 +111,21 @@ export function tokenAmount(raw: string, token: TokenEntry | null) {
  */
 export function unitsAmount(raw: string, loanToken: TokenEntry | null) {
   return loanToken ? `${compactAmount(raw, loanToken.decimals)} units` : `${raw} units`
+}
+
+/**
+ * A make order's tick annualized into the simple APR the Morpho fixed-rate app shows, e.g.
+ * `1.25% APR` — the maker's gross quote, annualized over the market's remaining term the same way
+ * `OfferUtils.getApr` does. Null — callers omit the rate — when the market has matured (nothing
+ * to annualize over) or when TickLib rejects the tick (out of Midnight's range, or ticks 0–1
+ * whose price snaps to zero).
+ */
+export function aprLabel(tick: number, maturity: number, observedAt: number) {
+  if (maturity <= observedAt) return null
+  const { data } = tryCatch(() => TickLib.tickToApr(BigInt(tick), BigInt(maturity - observedAt)))
+  if (data === null) return null
+  const percent = Number(formatUnits(data, 16))
+  return Number.isFinite(percent) ? `${APR.format(percent)}% APR` : null
 }
 
 /** The registry's loan-token metadata plus the (chain, address) identity price lookups need. */

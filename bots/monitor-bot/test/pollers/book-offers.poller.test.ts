@@ -35,12 +35,20 @@ type OfferSpec = {
  * can reproduce the real skew between the two endpoints (levels report executable liquidity;
  * takeable-offers keeps non-executable offers with units 0). Omitted, levels mirror the offers.
  */
-type MarketSpec = { asks?: OfferSpec[]; bids?: OfferSpec[]; levelsOnly?: OfferSpec[] }
+type MarketSpec = {
+  asks?: OfferSpec[]
+  bids?: OfferSpec[]
+  levelsOnly?: OfferSpec[]
+  /** Defaults to 2000 — already matured against the frozen clock, so titles omit the rate. */
+  maturity?: number
+}
 
 /** One poll tick's view of the world: every market's book and the offers behind each side. */
 type TickSpec = Record<string, MarketSpec>
 
-function takeableOffer(marketId: string, side: Side, spec: OfferSpec) {
+// `maturity` mirrors the book listing's so the embedded market never contradicts the book the
+// offer belongs to — the poller reads it from the listing, but the shapes must agree.
+function takeableOffer(marketId: string, side: Side, spec: OfferSpec, maturity = 2000) {
   return {
     units: spec.max_units ?? '1000',
     market_id: marketId,
@@ -51,7 +59,7 @@ function takeableOffer(marketId: string, side: Side, spec: OfferSpec) {
         midnight: USER_TWO,
         loan_token: USER_TWO,
         collaterals: [],
-        maturity: 2000,
+        maturity,
         rcf_threshold: '0',
         enter_gate: USER_TWO,
         liquidator_gate: USER_TWO
@@ -93,7 +101,7 @@ function bookEntry(marketId: string, spec: MarketSpec) {
     midnight: USER_TWO,
     loan_token: USER_TWO,
     collaterals: [],
-    maturity: 2000,
+    maturity: spec.maturity ?? 2000,
     rcf_threshold: '0',
     enter_gate: USER_TWO,
     liquidator_gate: USER_TWO,
@@ -124,7 +132,9 @@ function makePoller(ticks: TickSpec[], minAssets = 0n, marketIds: string[] = [])
     if (failing.has(marketId)) return Promise.reject(new Error('boom'))
     const offers = active[marketId]?.[side] ?? []
     return Promise.resolve(
-      apiPage({ data: offers.map(offer => takeableOffer(marketId, side, offer)) })
+      apiPage({
+        data: offers.map(offer => takeableOffer(marketId, side, offer, active[marketId]?.maturity))
+      })
     )
   })
   const client = { GET } as unknown as MidnightClient
@@ -174,7 +184,23 @@ describe('BookOffersPoller', () => {
     expect(dispatcher.sent).toHaveLength(1)
     expect(firstAlert(dispatcher)?.key).toBe(`${MARKET_A}:asks:${USER_ONE}:${GROUP_2}:500:created`)
     expect(firstAlert(dispatcher)?.title).toBe(
-      `Make order posted: 500 assets borrow @ tick 500 in ${MARKET_A_LABEL}${TAIL}`
+      `Make order posted: 500 assets borrow in ${MARKET_A_LABEL}${TAIL}`
+    )
+  })
+
+  it('quotes the tick as an APR when the market has not matured', async () => {
+    // One year past the frozen observation clock, so tick 4250's period rate annualizes to 1.25%.
+    // The fixture default of 2000 sits before the clock, which is why every other title in this
+    // file omits the rate clause.
+    const maturity = 1_700_000_000 + 31_536_000
+    const { poller, dispatcher } = makePoller([
+      { [MARKET_A]: { maturity, asks: [{}] } },
+      { [MARKET_A]: { maturity, asks: [{}, { group: GROUP_2, tick: 4250 }] } }
+    ])
+    await poller.pollOnce()
+    await poller.pollOnce()
+    expect(firstAlert(dispatcher)?.title).toBe(
+      `Make order posted: 1000 assets borrow @ 1.25% APR in 0x5356...4C91 13/11/2024${TAIL}`
     )
   })
 
@@ -186,7 +212,7 @@ describe('BookOffersPoller', () => {
     await poller.pollOnce()
     await poller.pollOnce()
     expect(firstAlert(dispatcher)?.title).toBe(
-      `Make order posted: 1000 assets lend @ tick 495 in ${MARKET_A_LABEL}${TAIL}`
+      `Make order posted: 1000 assets lend in ${MARKET_A_LABEL}${TAIL}`
     )
   })
 
@@ -199,7 +225,7 @@ describe('BookOffersPoller', () => {
     await poller.pollOnce()
     expect(dispatcher.sent).toHaveLength(1)
     expect(firstAlert(dispatcher)?.title).toBe(
-      `Make order resized: 2000 assets borrow @ tick 495 in ${MARKET_A_LABEL}${TAIL}`
+      `Make order resized: 2000 assets borrow in ${MARKET_A_LABEL}${TAIL}`
     )
     // The previous size lives in an indented detail line of the mrkdwn text, not the title.
     expect(firstAlert(dispatcher)?.text).toContain('• was 1000 assets')
@@ -223,7 +249,7 @@ describe('BookOffersPoller', () => {
     await poller.pollOnce()
     await poller.pollOnce()
     expect(firstAlert(dispatcher)?.title).toBe(
-      `Make order resized: 1400 assets borrow @ tick 495 in ${MARKET_A_LABEL}${TAIL}`
+      `Make order resized: 1400 assets borrow in ${MARKET_A_LABEL}${TAIL}`
     )
     // The mrkdwn text carries the maker as a basescan link.
     expect(firstAlert(dispatcher)?.text).toContain(
@@ -252,7 +278,7 @@ describe('BookOffersPoller', () => {
     expect(dispatcher.sent).toHaveLength(1)
     expect(firstAlert(dispatcher)?.key).toBe(`${MARKET_A}:asks:${USER_ONE}:${GROUP_1}:495:closed`)
     expect(firstAlert(dispatcher)?.title).toBe(
-      `Make order closed: 1000 units borrow @ tick 495 in ${MARKET_A_LABEL}${TAIL}`
+      `Make order closed: 1000 units borrow in ${MARKET_A_LABEL}${TAIL}`
     )
   })
 
@@ -349,7 +375,7 @@ describe('BookOffersPoller', () => {
     expect(dispatcher.sent).toHaveLength(1)
     // Unpriced, so the title falls back to units rather than claiming an asset amount.
     expect(firstAlert(dispatcher)?.title).toBe(
-      `Make order posted: 5 units borrow @ tick 900 in ${MARKET_A_LABEL}${TAIL}`
+      `Make order posted: 5 units borrow in ${MARKET_A_LABEL}${TAIL}`
     )
   })
 
@@ -384,7 +410,7 @@ describe('BookOffersPoller', () => {
     await poller.pollOnce()
     expect(dispatcher.sent).toHaveLength(1)
     expect(firstAlert(dispatcher)?.title).toBe(
-      `Make order posted: 5000 assets borrow @ tick 495 in ${MARKET_A_LABEL}${TAIL}`
+      `Make order posted: 5000 assets borrow in ${MARKET_A_LABEL}${TAIL}`
     )
   })
 

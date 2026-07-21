@@ -22,6 +22,7 @@ import { formatUtcTime } from '../alerts/time'
 import { MARKET_CONCURRENCY, REQUEST_TIMEOUT_MS } from '../midnight/client'
 import { Poller } from '../polling/poller'
 import {
+  aprLabel,
   assetsAmount,
   chainLabel,
   debankUrl,
@@ -257,7 +258,11 @@ function formatOfferAlert(
   // diff), so a miss only happens on drift — degrade to no chain segment rather than guessing.
   const where = market ? ` on ${chainLabel(market.chainId)}` : ''
   const makerUrl = market ? explorerAddressUrl(market.chainId, bucket.maker) : null
-  const headline = `Make order ${OFFER_ACTION[event.kind]}: ${size} ${side} @ tick ${bucket.tick}`
+  // Raw ticks never surface — operators read rates. When the rate cannot be annualized (registry
+  // miss, matured market, or a tick aprLabel declines) the `@ …` clause is omitted rather than
+  // falling back to the tick; the tick still disambiguates the bucket via the alert key.
+  const rate = market ? aprLabel(bucket.tick, market.maturity, observedAt) : null
+  const headline = `Make order ${OFFER_ACTION[event.kind]}: ${size} ${side}${rate ? ` @ ${rate}` : ''}`
   const ref = marketRef(tokens, market?.chainId, marketId)
   const details =
     event.kind === 'resized' && event.previous

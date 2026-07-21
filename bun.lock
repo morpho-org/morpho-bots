@@ -58,6 +58,7 @@
       "name": "@morpho-org/monitor-bot",
       "version": "0.1.0",
       "dependencies": {
+        "@morpho-org/midnight-sdk": "catalog:",
         "@nestjs/common": "catalog:",
         "@nestjs/core": "catalog:",
         "@nestjs/platform-express": "catalog:",
@@ -154,7 +155,8 @@
   "catalog": {
     "@internationalized/date": "^3.11.0",
     "@loglayer/transport-betterstack": "2.2.0",
-    "@morpho-org/morpho-ts": "2.5.0",
+    "@morpho-org/midnight-sdk": "1.2.0",
+    "@morpho-org/morpho-ts": "2.8.0",
     "@morpho-org/viem-dlc": "0.0.11",
     "@nestjs/common": "^11.0.0",
     "@nestjs/core": "^11.0.0",
@@ -286,9 +288,11 @@
 
     "@morpho-org/midnight-liquidation": ["@morpho-org/midnight-liquidation@workspace:bots/midnight-liquidation"],
 
+    "@morpho-org/midnight-sdk": ["@morpho-org/midnight-sdk@1.2.0", "", { "peerDependencies": { "@morpho-org/morpho-ts": "^2.8.0", "viem": "^2.0.0" } }, "sha512-QrpMXGvSBScuqB/nVaQEIlQaMlyr2ZFQxVQ/nfjX2MwlmpyGi+dECaEUL5dwlVq5RHbVysyo8kROK7hWTDaubQ=="],
+
     "@morpho-org/monitor-bot": ["@morpho-org/monitor-bot@workspace:bots/monitor-bot"],
 
-    "@morpho-org/morpho-ts": ["@morpho-org/morpho-ts@2.5.0", "", {}, "sha512-eU0DYR5fJoacOEfHVNdQxt5wYCwjF7/YXGudPhpBrzd3M4ejPS0Gv3Gkr3imUiMKeIA6IBzRLuw7qiFAsqXvxA=="],
+    "@morpho-org/morpho-ts": ["@morpho-org/morpho-ts@2.8.0", "", {}, "sha512-I+fSrYjx8VYHgzaTGUdGmxKM7qDrOWNBM4Yz/6hgum2tlCcgb5MN1sJVgztbO4nOk5C9Ly9I752CiyyYr2oeOg=="],
 
     "@morpho-org/viem-dlc": ["@morpho-org/viem-dlc@0.0.11", "", { "dependencies": { "valibot": "^1.2.0" }, "peerDependencies": { "@upstash/redis": "^1.0.0", "@vercel/blob": "^2.3.0", "viem": "^2.0.0" }, "optionalPeers": ["@upstash/redis", "@vercel/blob"] }, "sha512-aIam52kaN/Lt2eQuZpcDWPqKKyv/ltH7Di/HoNjdzlWN4ccuk4Keuw63RuP1pXtGAowmxNGblyPnHwja8QohsA=="],
 

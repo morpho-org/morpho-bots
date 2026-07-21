@@ -8,7 +8,8 @@
     ],
     "catalog": {
       "@internationalized/date": "^3.11.0",
-      "@morpho-org/morpho-ts": "2.5.0",
+      "@morpho-org/midnight-sdk": "1.2.0",
+      "@morpho-org/morpho-ts": "2.8.0",
       "@morpho-org/viem-dlc": "0.0.11",
       "@nestjs/common": "^11.0.0",
       "@nestjs/core": "^11.0.0",

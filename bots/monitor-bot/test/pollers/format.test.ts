@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  aprLabel,
   chainLabel,
   debankUrl,
   explorerAddressUrl,
@@ -366,5 +367,44 @@ describe('formatTakeAlert', () => {
     )
     expect(alert.title).toContain('<!channel> assets borrow')
     expect(alert.text).toContain('&lt;!channel&gt; assets borrow')
+  })
+})
+
+describe('aprLabel', () => {
+  const NOW = 1_700_000_000
+  const YEAR = 31_536_000
+
+  it('annualizes a tick over the remaining term', () => {
+    expect(aprLabel(4250, NOW + YEAR, NOW)).toBe('1.25% APR')
+  })
+
+  it('scales with the time left to maturity', () => {
+    // Same tick, half the term: the fixed period rate annualizes to twice the APR.
+    expect(aprLabel(4250, NOW + YEAR / 2, NOW)).toBe('2.51% APR')
+  })
+
+  it('renders the top of the tick range as a zero rate', () => {
+    // MAX_TICK's price snaps to exactly 1, a legitimate 0% quote — not a fallback case.
+    expect(aprLabel(6744, NOW + YEAR, NOW)).toBe('0% APR')
+  })
+
+  it('returns null for a matured market', () => {
+    expect(aprLabel(4250, NOW, NOW)).toBeNull()
+    expect(aprLabel(4250, NOW - 1, NOW)).toBeNull()
+  })
+
+  it('returns null when the tick price snaps to zero', () => {
+    // Ticks 0–1 round to a zero price, which TickLib rejects with DivisionByZeroError.
+    expect(aprLabel(0, NOW + YEAR, NOW)).toBeNull()
+  })
+
+  it('returns null for a tick beyond the deployed range', () => {
+    expect(aprLabel(6745, NOW + YEAR, NOW)).toBeNull()
+    expect(aprLabel(-1, NOW + YEAR, NOW)).toBeNull()
+  })
+
+  it('renders a deep low tick at face value, however extreme', () => {
+    // Tick 495 over a year — an astronomical quote, but still the offer's actual rate.
+    expect(aprLabel(495, NOW + YEAR, NOW)).toBe('166,666,566.67% APR')
   })
 })
