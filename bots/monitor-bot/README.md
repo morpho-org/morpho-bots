@@ -46,6 +46,7 @@ missing or malformed.
 | `POLL_CRON_MAKE_ORDERS`       | no       | `*/30 * * * * *`         | Make-orders poller cadence                       |
 | `SLACK_CHANNEL`               | no       | — (log-only alerts)      | Slack channel id for alerts                      |
 | `SLACK_BOT_TOKEN`             | no       | —                        | Slack bot token (secret, with `SLACK_CHANNEL`)   |
+| `WALLETS_CSV_PATH`            | no       | — (empty store)          | Attio wallet-CRM CSV export, loaded at boot      |
 | `BETTERSTACK_SOURCE_TOKEN`    | no       | —                        | Opt-in BetterStack log shipping (secret)         |
 | `BETTERSTACK_INGESTING_HOST`  | no       | —                        | BetterStack ingest host (with the token)         |
 | `BETTERSTACK_HEARTBEAT_URL`   | no       | —                        | Opt-in BetterStack uptime heartbeat              |
