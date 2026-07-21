@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { createMidnightClient } from '../../src/midnight/client'
+import { fakeLogger } from '../helpers'
 
 function captureFetch(requests: Request[]) {
   return async (request: Request) => {
@@ -40,5 +41,26 @@ describe('createMidnightClient', () => {
 
     expect(requests).toHaveLength(1)
     expect(requests[0]?.headers.get('x-api-key')).toBeNull()
+  })
+
+  it('logs the Retry-After duration when a request returns 429', async () => {
+    const logger = fakeLogger()
+    const client = createMidnightClient('https://api.example.test', {
+      fetchImpl: async () =>
+        new Response('{}', { status: 429, headers: { 'retry-after': '604800' } }),
+      logger
+    })
+
+    await client.GET('/v0/midnight/books', {
+      params: { query: { limit: 1 } }
+    })
+
+    expect(logger.warn).toHaveBeenCalledWith('midnight.rate_limited', {
+      method: 'GET',
+      path: '/v0/midnight/books',
+      retryAfter: '604800',
+      retryAfterSeconds: 604_800,
+      retryAfterDays: 7
+    })
   })
 })

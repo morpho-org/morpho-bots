@@ -1,6 +1,6 @@
 import type { Logger } from '@repo/bot-kit'
 
-import { ensureError, tryCatch } from '@repo/utils'
+import { ensureError, retryAfterMs, tryCatch } from '@repo/utils'
 import createClient, { type Client, type Middleware } from 'openapi-fetch'
 
 import type { components, paths } from '../generated/midnight-api'
@@ -46,6 +46,8 @@ type ListBody = { data?: unknown; cursor?: unknown }
 /** Query strings can run to kilobytes (a 50-id `market_ids` batch), so cap what reaches a log. */
 const MAX_LOGGED_QUERY = 200
 
+const MS_PER_DAY = 86_400_000
+
 /**
  * Logs responses and request failures. Every callback is wrapped in `tryCatch`: this middleware
  * runs inside the promise `fetchWithRetry` awaits, and that helper treats *any* throw as a
@@ -55,6 +57,22 @@ const MAX_LOGGED_QUERY = 200
 function responseLogger(logger: Logger, verbose: boolean): Middleware {
   return {
     async onResponse({ request, response, schemaPath }) {
+      if (response.status === 429) {
+        tryCatch(() => {
+          const url = new URL(request.url)
+          const retryAfter = response.headers.get('retry-after')
+          const retryAfterMilliseconds = retryAfterMs(retryAfter)
+          logger.warn('midnight.rate_limited', {
+            method: request.method,
+            path: url.pathname,
+            retryAfter,
+            retryAfterSeconds:
+              retryAfterMilliseconds === undefined ? null : retryAfterMilliseconds / 1000,
+            retryAfterDays:
+              retryAfterMilliseconds === undefined ? null : retryAfterMilliseconds / MS_PER_DAY
+          })
+        })
+      }
       if (!verbose) return undefined
       await tryCatch(
         (async () => {
