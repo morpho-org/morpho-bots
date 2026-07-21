@@ -4,6 +4,16 @@ import type { Logger } from '../src/logger'
 
 import { createLogger } from '../src/logger'
 
+/** `07-21 16:42:35` — the UTC stamp every stderr line must carry. */
+const TIME_SHAPE = /^\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/
+
+/** Parses a captured stderr line, asserts its `time` stamp, and returns the rest for `toEqual`. */
+function parseLine(raw: unknown) {
+  const { time, ...rest } = JSON.parse(String(raw)) as Record<string, unknown>
+  expect(time).toMatch(TIME_SHAPE)
+  return rest
+}
+
 describe('createLogger', () => {
   // Restore console spies even when an assertion throws first, so a failure in one test
   // cannot leak its captured calls into the next.
@@ -37,14 +47,28 @@ describe('createLogger', () => {
     expect(log).not.toHaveBeenCalled()
   })
 
+  it('stamps the current utc time onto every line', () => {
+    const logger = createLogger('debug')
+    const err = spyOn(console, 'error').mockImplementation(() => undefined)
+
+    const fmt = (date: Date) =>
+      `${date.toISOString().slice(5, 10)} ${date.toISOString().slice(11, 19)}`
+    const before = new Date()
+    logger.info('block.new')
+    const after = new Date()
+
+    const { time } = JSON.parse(String(err.mock.calls[0]?.[0])) as Record<string, unknown>
+    // Second-resolution stamp taken between the fences — it must equal one of them.
+    expect([fmt(before), fmt(after)]).toContain(String(time))
+  })
+
   it('serializes bigint fields as decimal strings', () => {
     const logger = createLogger('debug')
     const err = spyOn(console, 'error').mockImplementation(() => undefined)
 
     logger.info('tx.sent', { nonce: 7n, maxFee: 300_000_000_000n })
 
-    const line = String(err.mock.calls[0]?.[0])
-    expect(JSON.parse(line)).toEqual({
+    expect(parseLine(err.mock.calls[0]?.[0])).toEqual({
       level: 'info',
       event: 'tx.sent',
       nonce: '7',
@@ -58,8 +82,7 @@ describe('createLogger', () => {
 
     logger.info('tx.bumped', { tx: { nonce: 7n }, attempts: [1n, 2n] })
 
-    const line = String(err.mock.calls[0]?.[0])
-    expect(JSON.parse(line)).toEqual({
+    expect(parseLine(err.mock.calls[0]?.[0])).toEqual({
       level: 'info',
       event: 'tx.bumped',
       tx: { nonce: '7' },
@@ -74,8 +97,8 @@ describe('createLogger', () => {
     logger.info('block.new', { height: 42n })
     logger.warn('state.reset')
 
-    const first = JSON.parse(String(err.mock.calls[0]?.[0]))
-    const second = JSON.parse(String(err.mock.calls[1]?.[0]))
+    const first = parseLine(err.mock.calls[0]?.[0])
+    const second = parseLine(err.mock.calls[1]?.[0])
     expect(first).toEqual({
       level: 'info',
       event: 'block.new',
@@ -186,7 +209,8 @@ describe('createLogger BetterStack path', () => {
     // No serialization failure reached the BetterStack transport's onError.
     expect(lines.some(line => line.event === 'logship.error')).toBe(false)
     // The one structured line carries the bigints as decimal strings (correct string form).
-    const structured = lines.find(line => line.event === 'tx.bumped')
+    const { time, ...structured } = lines.find(line => line.event === 'tx.bumped') ?? {}
+    expect(time).toMatch(TIME_SHAPE)
     expect(structured).toEqual({
       level: 'info',
       event: 'tx.bumped',
