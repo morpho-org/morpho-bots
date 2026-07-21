@@ -1,6 +1,6 @@
 # Retrospectives
 
-Project- and initiative-level retrospectives for `curator-bots`. One file per retro.
+Project- and initiative-level retrospectives for `morpho-bots`. One file per retro.
 
 ## Naming
 

@@ -1,7 +1,7 @@
 # Docs
 
 This directory holds architectural decision records (TIBs), retrospectives, and templates for
-`curator-bots`.
+`morpho-bots`.
 
 ## Layout
 

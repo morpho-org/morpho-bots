@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@morpho-org/curator-bots",
+      "name": "@morpho-org/morpho-bots",
       "devDependencies": {
         "@repo/typescript-config": "workspace:*",
         "husky": "catalog:",

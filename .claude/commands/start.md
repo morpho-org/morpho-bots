@@ -49,7 +49,7 @@ Use the Linear MCP tools to create the issue:
 
 ```
 Refer to the Team IDs table in CLAUDE.md to select the appropriate team based on scope.
-The default team for curator-bots work is Curator (CRTR).
+The default team for morpho-bots work is Curator (CRTR).
 ```
 
 Use `mcp__linear__create_issue` with:
