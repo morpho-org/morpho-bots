@@ -148,6 +148,27 @@ contract CrossedBooksResolverTest {
         require(midnight.credit(address(resolver)) == 0);
     }
 
+    function testRejectsZeroUnits() public {
+        (Offer memory ask, Offer memory bid) = offers(5, 7);
+        (bool ok,) = address(resolver).call(abi.encodeCall(resolver.resolve, (ask, "", bid, "", 0, 0)));
+        require(!ok);
+    }
+
+    function testDoesNotUsePreexistingBalanceToSubsidizeUnprofitableCross() public {
+        token.mint(address(resolver), 100);
+        (Offer memory ask, Offer memory bid) = offers(5, 4);
+        (bool ok,) = address(resolver).call(abi.encodeCall(resolver.resolve, (ask, "", bid, "", 10, 0)));
+        require(!ok);
+        require(token.balanceOf(address(resolver)) == 100);
+        require(token.balanceOf(address(askMaker)) == 0);
+    }
+
+    function testConsumesTheExactMidnightAllowance() public {
+        (Offer memory ask, Offer memory bid) = offers(5, 7);
+        resolver.resolve(ask, "", bid, "", 10, 20);
+        require(token.allowance(address(resolver), address(midnight)) == 0);
+    }
+
     function testRejectsWrongSides() public {
         (Offer memory ask, Offer memory bid) = offers(5, 7);
         ask.buy = true;

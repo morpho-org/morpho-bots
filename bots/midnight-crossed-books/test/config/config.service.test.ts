@@ -15,6 +15,7 @@ describe('ConfigService', () => {
 
     expect(config.chainId).toBe(8453)
     expect(config.apiBaseUrl).toBe('https://api.morpho.org')
+    expect(config.routerApiBaseUrl).toBe('https://api.morpho.org')
     expect(config.scanIntervalMs).toBe(15_000)
     expect(config.minimumProfit).toBe(1n)
     expect(config.resolver).toMatch(/^0x[0-9a-fA-F]{40}$/)
@@ -37,6 +38,7 @@ describe('ConfigService', () => {
     })
 
     expect(config.rpcUrlFallback).toBe('http://fallback.example')
+    expect(config.routerApiBaseUrl).toBe('https://router.example')
     expect(config.scanIntervalMs).toBe(30_000)
     expect(config.minimumProfit).toBe(100n)
     expect(config.maxFeeWei).toBe(50_000_000_000n)
@@ -48,6 +50,7 @@ describe('ConfigService', () => {
     [{ ...REQUIRED, RESOLVER_PRIVATE_KEY: '0x12' }, 'RESOLVER_PRIVATE_KEY'],
     [{ ...REQUIRED, RESOLVER_ADDRESS: 'not-an-address' }, 'RESOLVER_ADDRESS'],
     [{ ...REQUIRED, API_BASE_URL: 'not-a-url' }, 'API_BASE_URL'],
+    [{ ...REQUIRED, ROUTER_API_BASE_URL: 'not-a-url' }, 'ROUTER_API_BASE_URL'],
     [{ ...REQUIRED, SCAN_INTERVAL_MS: '0' }, 'SCAN_INTERVAL_MS'],
     [{ ...REQUIRED, MIN_PROFIT_ASSETS: '-1' }, 'MIN_PROFIT_ASSETS']
   ])('rejects invalid configuration %#', (env, message) => {

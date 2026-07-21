@@ -2,22 +2,51 @@
 
 Implements [MKT-1379](https://linear.app/morpho-labs/issue/MKT-1379/crossed-books-resolver-bot).
 
-The bot pages the Morpho API for `listed=true` and `active_only=true` Midnight markets, then reads Router `asks` and `bids` takeable offers for each market. It greedily pairs the best raw crossed ticks, simulates the exact resolver call, and broadcasts only a simulation that clears `MIN_PROFIT_ASSETS`.
+The bot lists active, listed Midnight markets through the Morpho API, loads both takeable Router book sides, greedily pairs crossed asks and bids, simulates the exact resolver transaction, and submits only a profitable request.
 
-The permissionless `CrossedBooksResolver` needs no inventory. It takes the ask first. Midnight credits the resolver before `onBuy`; the callback sells those units into the bid, uses bid proceeds to pay the ask, and sends the positive loan-token balance delta to `msg.sender`. Same-market checks, settlement fees, rounding, stale offers, callbacks, and profit are atomic.
+## Architecture
 
-_Environment_
+The code follows the service and dependency-injection style used by `morpho-api` and the generated OpenAPI client pattern used by `morpho-apps`:
 
-• `CHAIN_ID` — required, currently `8453`.
-• `RPC_URL` — required. `RPC_URL_FALLBACK` optional.
-• `RESOLVER_PRIVATE_KEY` — required `0x`-prefixed 32-byte bot key.
-• `RESOLVER_ADDRESS` — optional deterministic deployment override.
-• `API_BASE_URL` — default `https://api.morpho.org`.
-• `MIN_PROFIT_ASSETS` — raw loan-token units, default `1`; one value applies to all markets.
-• `SCAN_INTERVAL_MS` — default `15000`.
-• `MAX_FEE_GWEI` — default `300`.
+- `CrossedBooksBotService` owns the application workflow and depends only on service interfaces.
+- `MorphoApiService` implements listed-market discovery through a generated `openapi-fetch` client.
+- `RouterApiService` implements takeable-book reads through a separate generated `openapi-fetch` client.
+- `MatchingService` is a pure domain service.
+- `ResolverExecutionService` prepares immutable calldata, simulates it, and submits the same bytes through an injected transport.
+- `bootstrap.ts` is the composition root. It wires concrete services, signer policy, nonce queue, monitors, and runner.
 
-_Deploy contract_
+The permissionless `CrossedBooksResolver` needs no inventory. It takes the ask first. Midnight credits the resolver before `onBuy`; the callback sells the same units into the bid, uses bid proceeds to pay the ask, and sends the positive loan-token balance delta to `msg.sender`. Same-market checks, settlement fees, rounding, stale offers, callbacks, and minimum profit remain atomic.
+
+## Generated API clients
+
+The upstream schemas are checked in so builds never depend on network access:
+
+- `morpho-api.json` — Morpho Midnight API market discovery schema.
+- `router-api.json` — Router book and takeable-offer schema.
+
+Regenerate types after updating either schema:
+
+```sh
+bun run --filter @morpho-org/midnight-crossed-books generate:api
+bun format
+bun run --filter @morpho-org/midnight-crossed-books typecheck
+```
+
+The generated files live under each infrastructure adapter's `generated/` directory and are not edited by hand.
+
+## Configuration
+
+- `CHAIN_ID` — required, currently `8453`.
+- `RPC_URL` — required. `RPC_URL_FALLBACK` is optional.
+- `RESOLVER_PRIVATE_KEY` — required `0x`-prefixed 32-byte bot key.
+- `RESOLVER_ADDRESS` — optional deterministic deployment override.
+- `API_BASE_URL` — Morpho API origin, default `https://api.morpho.org`.
+- `ROUTER_API_BASE_URL` — Router API origin, defaults to `API_BASE_URL` for the public gateway.
+- `MIN_PROFIT_ASSETS` — raw loan-token units, default `1`; one value applies to all markets.
+- `SCAN_INTERVAL_MS` — default `15000`.
+- `MAX_FEE_GWEI` — default `300`.
+
+## Deploy the contract
 
 ```sh
 RPC_URL=https://… DEPLOYER_PRIVATE_KEY=0x… \
@@ -25,11 +54,20 @@ MIDNIGHT_ADDRESS=0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A \
 bun run --filter @repo/contracts deploy:crossed-books-resolver
 ```
 
-_Run_
+## Run
 
 ```sh
 CHAIN_ID=8453 RPC_URL=https://… RESOLVER_PRIVATE_KEY=0x… \
 bun run --filter @morpho-org/midnight-crossed-books start
 ```
 
-The shared signer policy pins chain, resolver, `resolve` selector, zero ETH value, calldata, gas, and fee ceilings. The pending queue manages nonces and replacement. Every transaction is simulated byte-for-byte before submit.
+The signer policy pins chain, resolver, `resolve` selector, zero ETH value, calldata, gas, and fee ceilings. The pending queue manages nonces and replacement. Every transaction is simulated byte-for-byte before submission.
+
+## Test
+
+```sh
+bun test bots/midnight-crossed-books/test
+forge test --root packages/contracts -vv
+```
+
+Coverage includes configuration validation, generated-client request mapping, pagination, upstream failures, domain matching boundaries, dependency-injected orchestration, simulation-to-submit byte identity, ABI encoding, permissionless execution, atomic rollback, balance preservation, and allowance cleanup.

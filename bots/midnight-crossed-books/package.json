@@ -5,20 +5,23 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "prestart": "bun run --parallel --workspaces --if-present build",
+    "prestart": "bun run generate:api && bun run --parallel --workspaces --if-present build",
     "start": "bun src/index.ts",
-    "typecheck": "tsc --noEmit",
-    "deploy:railway": "bun run scripts/deploy-railway.ts"
+    "typecheck": "bun run generate:api && tsc --noEmit",
+    "deploy:railway": "bun run scripts/deploy-railway.ts",
+    "generate:api": "openapi-typescript morpho-api.json -o src/infrastructure/morpho-api/generated/morpho-api.types.ts && openapi-typescript router-api.json -o src/infrastructure/router-api/generated/router-api.types.ts"
   },
   "dependencies": {
     "@repo/bot-kit": "workspace:*",
     "@repo/contracts": "workspace:*",
     "@repo/utils": "workspace:*",
-    "viem": "catalog:"
+    "viem": "catalog:",
+    "openapi-fetch": "catalog:"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
     "@types/bun": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "openapi-typescript": "catalog:"
   }
 }
