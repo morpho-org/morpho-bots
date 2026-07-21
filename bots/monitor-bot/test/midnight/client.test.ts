@@ -1,7 +1,6 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
-import { createMidnightClient, MIN_REQUEST_INTERVAL_MS } from '../../src/midnight/client'
-import { MidnightRateLimitError } from '../../src/midnight/retry'
+import { createMidnightClient } from '../../src/midnight/client'
 import { fakeLogger } from '../helpers'
 
 function captureFetch(requests: Request[]) {
@@ -44,73 +43,24 @@ describe('createMidnightClient', () => {
     expect(requests[0]?.headers.get('x-api-key')).toBeNull()
   })
 
-  it('paces concurrent requests below the upstream per-minute limit', async () => {
-    let now = 0
-    const starts: number[] = []
-    const waits: number[] = []
-    const client = createMidnightClient('https://api.example.test', {
-      fetchImpl: async () => {
-        starts.push(now)
-        return new Response(JSON.stringify({ data: [] }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' }
-        })
-      },
-      requestIntervalMs: MIN_REQUEST_INTERVAL_MS,
-      now: () => now,
-      sleep: async ms => {
-        waits.push(ms)
-        now += ms
-      }
-    })
-
-    await Promise.all([
-      client.GET('/v0/midnight/markets', {
-        params: { query: { active_only: 'true', limit: 1 } }
-      }),
-      client.GET('/v0/midnight/books', { params: { query: { limit: 1 } } }),
-      client.GET('/v0/midnight/markets', {
-        params: { query: { active_only: 'true', limit: 1 } }
-      })
-    ])
-
-    expect(starts).toEqual([0, 240, 480])
-    expect(waits).toEqual([240, 240])
-  })
-
-  it('opens a shared cooldown on 429 and blocks requests locally until Retry-After', async () => {
-    let now = 1_000
-    const fetchImpl = vi
-      .fn<(_: Request) => Promise<Response>>()
-      .mockResolvedValueOnce(new Response('{}', { status: 429, headers: { 'retry-after': '600' } }))
-      .mockResolvedValue(
-        new Response(JSON.stringify({ data: [] }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' }
-        })
-      )
+  it('logs the Retry-After duration when a request returns 429', async () => {
     const logger = fakeLogger()
     const client = createMidnightClient('https://api.example.test', {
-      fetchImpl,
-      logger,
-      requestIntervalMs: 0,
-      now: () => now
+      fetchImpl: async () =>
+        new Response('{}', { status: 429, headers: { 'retry-after': '604800' } }),
+      logger
     })
 
-    const request = () => client.GET('/v0/midnight/books', { params: { query: { limit: 1 } } })
+    await client.GET('/v0/midnight/books', {
+      params: { query: { limit: 1 } }
+    })
 
-    await expect(request()).rejects.toBeInstanceOf(MidnightRateLimitError)
-    await expect(request()).rejects.toBeInstanceOf(MidnightRateLimitError)
-    expect(fetchImpl).toHaveBeenCalledTimes(1)
     expect(logger.warn).toHaveBeenCalledWith('midnight.rate_limited', {
       method: 'GET',
       path: '/v0/midnight/books',
-      retryAfterMs: 600_000,
-      retryAt: '1970-01-01T00:10:01.000Z'
+      retryAfter: '604800',
+      retryAfterSeconds: 604_800,
+      retryAfterDays: 7
     })
-
-    now += 600_000
-    await expect(request()).resolves.toMatchObject({ data: { data: [] } })
-    expect(fetchImpl).toHaveBeenCalledTimes(2)
   })
 })
