@@ -6,6 +6,7 @@ import { AlertFormatter } from '../../src/alerts/formatter'
 import { InMemoryCursorStore } from '../../src/cursor/cursor.store'
 import { Poller, type PollerDependencies } from '../../src/polling/poller'
 import { TokenRegistry } from '../../src/tokens/registry'
+import { InMemoryWalletCrmStore } from '../../src/wallets/wallet-crm.store'
 import { capturingDispatcher, fakeLogger } from '../helpers'
 import { NO_PRICES } from '../midnight/fixtures'
 
@@ -56,7 +57,11 @@ function makeDeps() {
       dispatcher,
       logger: fakeLogger(),
       tokens,
-      formatter: new AlertFormatter({ tokens, prices: NO_PRICES })
+      formatter: new AlertFormatter({
+        tokens,
+        prices: NO_PRICES,
+        wallets: new InMemoryWalletCrmStore()
+      })
     }
   }
 }

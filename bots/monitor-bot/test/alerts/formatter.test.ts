@@ -1,8 +1,11 @@
+import { getAddress } from 'viem'
 import { describe, expect, it } from 'vitest'
 
 import type { PriceLookup } from '../../src/tokens/prices'
+import type { WalletCrmRow } from '../../src/wallets/wallet-csv'
 
 import {
+  addressLabel,
   aprLabel,
   AlertFormatter,
   chainLabel,
@@ -14,6 +17,7 @@ import {
   tokenAmount
 } from '../../src/alerts/formatter'
 import { TokenRegistry } from '../../src/tokens/registry'
+import { InMemoryWalletCrmStore } from '../../src/wallets/wallet-crm.store'
 import {
   borrowItem,
   exitPrimaryItem,
@@ -31,8 +35,20 @@ import {
   WETH_TOKEN
 } from '../midnight/fixtures'
 
-/** The formatter under test, holding the given registry + price cache. */
-const fmt = (tokens: TokenRegistry, prices: PriceLookup) => new AlertFormatter({ tokens, prices })
+/** The formatter under test, holding the given registry + price cache (and optional wallet store). */
+const fmt = (tokens: TokenRegistry, prices: PriceLookup, wallets = new InMemoryWalletCrmStore()) =>
+  new AlertFormatter({ tokens, prices, wallets })
+
+/** A wallet CRM store mapping each address to a one-column `Company` record. */
+const crm = (companies: Record<string, string>) =>
+  new InMemoryWalletCrmStore(
+    Object.entries(companies).map(
+      ([address, company]): WalletCrmRow => ({
+        address: getAddress(address),
+        values: { Company: company }
+      })
+    )
+  )
 
 /**
  * MARKET_A denominated in Base USDC with Base WETH collateral — both resolve through the
@@ -86,6 +102,24 @@ describe('chainLabel', () => {
   it('names known chains and falls back to the id', () => {
     expect(chainLabel(8453)).toBe('midnight-base')
     expect(chainLabel(999)).toBe('midnight-999')
+  })
+})
+
+describe('addressLabel', () => {
+  it('returns the CRM company name when the wallet store tracks the address', () => {
+    expect(addressLabel(crm({ [USER_ONE]: 'Kraken' }), USER_ONE)).toBe('Kraken')
+  })
+
+  it('resolves case-insensitively, so a lowercase query still hits the checksummed key', () => {
+    expect(addressLabel(crm({ [USER_ONE]: 'Kraken' }), USER_ONE.toLowerCase())).toBe('Kraken')
+  })
+
+  it('falls back to the abbreviated hex for an untracked address', () => {
+    expect(addressLabel(new InMemoryWalletCrmStore(), USER_ONE)).toBe('0x958e...1917')
+  })
+
+  it('falls back to the abbreviated hex when the tracked Company cell is blank', () => {
+    expect(addressLabel(crm({ [USER_ONE]: '   ' }), USER_ONE)).toBe('0x958e...1917')
   })
 })
 
@@ -287,6 +321,28 @@ describe('AlertFormatter.transaction', () => {
     expect(alert.text).toContain('&lt;!chan')
   })
 
+  it('replaces a tracked counterparty hex with its CRM company name across the block', () => {
+    const alert = fmt(registryWithTokens(), NO_PRICES, crm({ [USER_ONE]: 'Kraken' })).transaction(
+      lendItem({ id: 'id-crm', created_at: 1_700_000_000 })
+    )
+    // Headline "by …" segment and the footer link label both name the company, not the hex.
+    expect(alert.title).toContain('by Kraken on midnight-base')
+    expect(alert.title).not.toContain('0x958e...1917')
+    expect(alert.text).toContain(`<https://basescan.org/address/${USER_ONE}|Kraken>`)
+    // The explorer/Debank URLs still carry the raw address — only the visible label changed.
+    expect(alert.text).toContain(`https://debank.com/profile/${USER_ONE}`)
+  })
+
+  it('names a tracked liquidated borrower by company after the "of" preposition', () => {
+    const alert = fmt(
+      registryWithTokens(),
+      NO_PRICES,
+      crm({ [USER_TWO]: 'Wintermute' })
+    ).transaction(liquidationItem({ id: 'id-crm-liq', collateral: WETH_TOKEN }))
+    expect(alert.title).toContain('of Wintermute on midnight-base')
+    expect(alert.text).toContain(`Of <https://basescan.org/address/${USER_TWO}|Wintermute>`)
+  })
+
   it('escapes API-sourced strings in the mrkdwn text but not the plain title', () => {
     // The API-sourced fragment reaching the headline here is the raw amount itself — the
     // unresolved-market fallback shows it verbatim. Fetched symbols take the same path: every
@@ -339,6 +395,24 @@ describe('AlertFormatter.take', () => {
         `<https://basescan.org/tx/${TX_HASH}|Basescan>`
       ].join('\n')
     )
+  })
+
+  it('names tracked buyer and seller by company in the headline, legs and footer', () => {
+    const alert = fmt(
+      registryWithTokens(),
+      NO_PRICES,
+      crm({ [USER_ONE]: 'Kraken', [USER_TWO]: 'Wintermute' })
+    ).take({
+      lend: lendItem({ id: 'l', created_at: 1_700_000_000 }),
+      borrow: borrowItem({ id: 'b', created_at: 1_700_000_000 })
+    })
+    expect(alert.title).toContain('by Kraken + Wintermute')
+    // Both leg detail lines and the footer carry the company names…
+    expect(alert.text).toContain('by Kraken')
+    expect(alert.text).toContain('by Wintermute')
+    // …and neither abbreviated hex survives anywhere in the block.
+    expect(alert.text).not.toContain('0x958e...1917')
+    expect(alert.text).not.toContain('0x5356...4C91')
   })
 
   it("keeps each leg's attributed amount when they diverge (position crossing)", () => {

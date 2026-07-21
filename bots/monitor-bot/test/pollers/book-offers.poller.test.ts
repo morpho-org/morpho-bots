@@ -7,6 +7,7 @@ import { AlertFormatter } from '../../src/alerts/formatter'
 import { BookOffersPoller, diffSnapshots } from '../../src/pollers/book-offers.poller'
 import { InMemoryBootSnapshotStore } from '../../src/snapshot/boot-snapshot.store'
 import { TokenRegistry } from '../../src/tokens/registry'
+import { InMemoryWalletCrmStore } from '../../src/wallets/wallet-crm.store'
 import { capturingDispatcher, fakeLogger } from '../helpers'
 import { apiPage, MARKET_A, MARKET_B, NO_PRICES, USER_ONE, USER_TWO } from '../midnight/fixtures'
 
@@ -150,7 +151,11 @@ function makePoller(ticks: TickSpec[], minAssets = 0n, marketIds: string[] = [])
       dispatcher,
       logger,
       tokens,
-      formatter: new AlertFormatter({ tokens, prices: NO_PRICES }),
+      formatter: new AlertFormatter({
+        tokens,
+        prices: NO_PRICES,
+        wallets: new InMemoryWalletCrmStore()
+      }),
       client,
       minAssets,
       sleep: () => Promise.resolve(),
@@ -519,7 +524,11 @@ describe('BookOffersPoller', () => {
         dispatcher,
         logger,
         tokens,
-        formatter: new AlertFormatter({ tokens, prices: NO_PRICES }),
+        formatter: new AlertFormatter({
+          tokens,
+          prices: NO_PRICES,
+          wallets: new InMemoryWalletCrmStore()
+        }),
         client,
         minAssets: 0n,
         sleep: () => Promise.resolve()

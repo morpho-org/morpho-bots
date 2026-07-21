@@ -10,6 +10,7 @@ import type { OfferBucket, OfferEvent } from '../pollers/book-offers.model'
 import type { TakePair } from '../pollers/take'
 import type { PriceLookup } from '../tokens/prices'
 import type { TokenEntry, TokenRegistry } from '../tokens/registry'
+import type { WalletCrmStore } from '../wallets/wallet-crm.store'
 import type { Alert } from './alert'
 
 import { bucketKey, sideLabel } from '../pollers/book-offers.model'
@@ -53,6 +54,20 @@ function explorerName(chainId: number) {
 /** Deployment label in alerts: the protocol plus the chain it runs on, e.g. `midnight-base`. */
 export function chainLabel(chainId: number) {
   return `midnight-${CHAINS[chainId]?.name.toLowerCase() ?? chainId}`
+}
+
+/** Header of the CRM column holding the counterparty's company name in the Attio wallet export. */
+const COMPANY_COLUMN = 'Company'
+
+/**
+ * The human label an address renders as in an alert: the CRM company name when the wallet store
+ * tracks that wallet (`Kraken`), else the abbreviated hex (`0x958e...1917`). An untracked address,
+ * or one whose `Company` cell is blank, degrades to the hex. Explorer/Debank links always carry the
+ * raw address regardless — only the visible label swaps, so a named counterparty stays clickable.
+ */
+export function addressLabel(wallets: WalletCrmStore, address: string) {
+  const company = wallets.get(address)?.[COMPANY_COLUMN]?.trim()
+  return company ? company : abbreviateAddress(address)
 }
 
 // Compact notation (20M, 1.5K) — headlines trade digits for glanceability; the linked explorer tx
@@ -188,14 +203,15 @@ function tradeDetail(data: { assets: string; units: string }, loan: TokenEntry |
 function takeLegLines(
   prefix: string,
   leg: { chain_id: number; data: { assets: string; units: string; account: string } },
-  loan: TokenEntry | null
+  loan: TokenEntry | null,
+  nameOf: (address: string) => string
 ) {
   const { account } = leg.data
   const links = linkRow([
     { url: explorerAddressUrl(leg.chain_id, account), label: explorerName(leg.chain_id) },
     { url: debankUrl(account), label: 'Debank' }
   ]).join('  ')
-  const by = `by ${escapeSlack(abbreviateAddress(account))}${links ? `  ${links}` : ''}`
+  const by = `by ${escapeSlack(nameOf(account))}${links ? `  ${links}` : ''}`
   return tradeDetail(leg.data, loan).map(
     detail => `        • ${escapeSlack(`${prefix}: ${detail}`)} ${by}`
   )
@@ -259,6 +275,8 @@ type TransactionAlertParameters = {
   /** Indented `•` lines under the headline; escaped here, so pass plain text. */
   details?: string[]
   actor: string
+  /** Resolves `actor` to its display label (CRM company name or abbreviated hex). */
+  nameOf: (address: string) => string
   /** "by" for the acting account; "of" when the address is the liquidated borrower. */
   preposition?: 'by' | 'of'
   severity: Alert['severity']
@@ -275,12 +293,13 @@ function transactionAlert({
   market,
   details = [],
   actor,
+  nameOf,
   preposition = 'by',
   severity
 }: TransactionAlertParameters): Alert {
   const time = formatUtcTime(item.created_at)
   const where = `on ${chainLabel(item.chain_id)}`
-  const short = abbreviateAddress(actor)
+  const short = nameOf(actor)
   const links = linkRow([
     { url: explorerTxUrl(item.chain_id, item.tx_hash), label: explorerName(item.chain_id) },
     { url: debankUrl(actor), label: 'Debank' }
@@ -322,7 +341,14 @@ function capKey(bucket: OfferBucket) {
  * instead of threading those two deps through a free function on every call.
  */
 export class AlertFormatter {
-  constructor(private readonly deps: { tokens: TokenRegistry; prices: PriceLookup }) {}
+  constructor(
+    private readonly deps: { tokens: TokenRegistry; prices: PriceLookup; wallets: WalletCrmStore }
+  ) {}
+
+  // Bound so it can be handed to the free builders (`transactionAlert`, `takeLegLines`) as a plain
+  // callback without losing `this`. Every counterparty address in an alert routes through here so a
+  // tracked wallet shows its company name in place of the raw hex.
+  private readonly nameOf = (address: string): string => addressLabel(this.deps.wallets, address)
 
   transaction(item: TransactionItem): Alert {
     const loan = this.loanTokenEntry(item.market_id)
@@ -339,6 +365,7 @@ export class AlertFormatter {
           market: this.marketRef(item.chain_id, item.market_id),
           details: tradeDetail(item.data, loan),
           actor: item.data.account,
+          nameOf: this.nameOf,
           severity: 'info'
         })
       }
@@ -351,6 +378,7 @@ export class AlertFormatter {
           headline: `${repay ? 'Repay' : 'Lend exit'} (primary): ${unitsAmount(item.data.units, loan)}`,
           market: this.marketRef(item.chain_id, item.market_id),
           actor: item.data.account,
+          nameOf: this.nameOf,
           severity: 'info'
         })
       }
@@ -365,6 +393,7 @@ export class AlertFormatter {
           headline: `${action}: ${this.assetsAmount(item.data.assets, collateral)}`,
           market: this.marketRef(item.chain_id, item.market_id, item.data.collateral),
           actor: item.data.account,
+          nameOf: this.nameOf,
           severity: 'info'
         })
       }
@@ -384,6 +413,7 @@ export class AlertFormatter {
             ...(badDebt ? [`bad debt: ${unitsAmount(item.data.bad_debt, loan)}`] : [])
           ],
           actor: item.data.borrower,
+          nameOf: this.nameOf,
           preposition: 'of',
           severity: badDebt ? 'critical' : 'warning'
         })
@@ -405,8 +435,8 @@ export class AlertFormatter {
     const market = this.marketRef(lend.chain_id, lend.market_id)
     const time = formatUtcTime(lend.created_at)
     const where = `on ${chainLabel(lend.chain_id)}`
-    const buyer = abbreviateAddress(lend.data.account)
-    const seller = abbreviateAddress(borrow.data.account)
+    const buyer = this.nameOf(lend.data.account)
+    const seller = this.nameOf(borrow.data.account)
     return {
       key: `${lend.id}+${borrow.id}`,
       title: `${headline} in ${market.label} by ${buyer} + ${seller} ${where} at ${time}`,
@@ -414,7 +444,10 @@ export class AlertFormatter {
         emoji: ':handshake:',
         headline,
         market,
-        details: [...takeLegLines('lend', lend, loan), ...takeLegLines('borrow', borrow, loan)],
+        details: [
+          ...takeLegLines('lend', lend, loan, this.nameOf),
+          ...takeLegLines('borrow', borrow, loan, this.nameOf)
+        ],
         footer: `By ${slackLink(explorerAddressUrl(lend.chain_id, lend.data.account), buyer)} + ${slackLink(explorerAddressUrl(borrow.chain_id, borrow.data.account), seller)} ${where}, ${time}`,
         links: linkRow([
           { url: explorerTxUrl(lend.chain_id, lend.tx_hash), label: explorerName(lend.chain_id) }
@@ -436,7 +469,7 @@ export class AlertFormatter {
     const size = this.sizeLabel(bucket, event.assets, loan)
     const side = sideLabel(bucket.side)
     const key = bucketKey(bucket.side, bucket.maker, bucket.group, bucket.tick)
-    const maker = abbreviateAddress(bucket.maker)
+    const maker = this.nameOf(bucket.maker)
     const time = formatUtcTime(observedAt)
     // The registry learns every book market from this poller's own sweep (recordAll runs before the
     // diff), so a miss only happens on drift — degrade to no chain segment rather than guessing.
