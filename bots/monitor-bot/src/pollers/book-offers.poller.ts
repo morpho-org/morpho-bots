@@ -1,37 +1,14 @@
-import type { Address } from 'viem'
-
-import {
-  abbreviateAddress,
-  assertNever,
-  delay,
-  ensureError,
-  fetchWithRetry,
-  tryCatch
-} from '@repo/utils'
+import { delay, ensureError, fetchWithRetry, tryCatch } from '@repo/utils'
 import chunk from 'lodash-es/chunk'
 import { getAddress, isAddress, parseUnits } from 'viem'
 
-import type { Alert } from '../alerts/alert'
 import type { BookMarket, MidnightClient, TakeableOffer } from '../midnight/client'
 import type { PollerDependencies } from '../polling/poller'
-import type { PriceLookup } from '../tokens/prices'
-import type { TokenEntry, TokenRegistry } from '../tokens/registry'
+import type { BookSide, MarketSnapshot, OfferBucket, OfferEvent } from './book-offers.model'
 
-import { escapeSlack, slackLink } from '../alerts/mrkdwn'
-import { formatUtcTime } from '../alerts/time'
 import { MARKET_CONCURRENCY, REQUEST_TIMEOUT_MS } from '../midnight/client'
 import { Poller } from '../polling/poller'
-import {
-  aprLabel,
-  assetsAmount,
-  chainLabel,
-  debankUrl,
-  explorerAddressUrl,
-  explorerName,
-  loanTokenEntry,
-  marketRef,
-  unitsAmount
-} from './format'
+import { bucketKey } from './book-offers.model'
 
 /** `/v0/midnight/books` caps `limit` at 20 — far below the 1000 the other list endpoints allow. */
 const BOOK_PAGE_LIMIT = 20
@@ -47,49 +24,10 @@ const TAKEABLE_OFFERS_LIMIT = 1000
 
 const WAD = parseUnits('1', 18)
 
-type BookSide = 'asks' | 'bids'
-
 const SIDES: BookSide[] = ['asks', 'bids']
-
-/**
- * One (side, maker, group, tick) bucket of a market's book. Offers carry no server-side id — they
- * are immutable signed payloads that makers cancel and re-sign to change — so identity is derived
- * from the fields that survive a re-sign. Several offers can share a bucket; their signed caps are
- * summed, which is also the number an operator cares about ("this maker has N at this tick").
- */
-export type OfferBucket = {
-  side: BookSide
-  maker: Address
-  group: string
-  tick: number
-  /** Summed `max_units` across the bucket's offers. Unit-capped offers populate this. */
-  maxUnits: string
-  /** Summed `max_assets` across the bucket's offers. Asset-capped offers populate this. */
-  maxAssets: string
-  count: number
-  /** Earliest expiry in the bucket. Display only — never compared (offers roll constantly). */
-  expiry: number
-}
-
-export type MarketSnapshot = Record<string, OfferBucket>
 
 /** Per-market boot snapshot — see `BootSnapshotStore` for why this is not a cursor. */
 type BookSnapshot = Record<string, MarketSnapshot>
-
-type OfferEvent = {
-  kind: 'created' | 'resized' | 'closed'
-  marketId: string
-  /** Current bucket for created/resized; the last known one for closed. */
-  bucket: OfferBucket
-  /** Bucket before the change; null unless resized. */
-  previous: OfferBucket | null
-  /** `bucket` sized in loan-token assets; null when the tick carries no local price. */
-  assets: bigint | null
-  /** `previous` sized in loan-token assets; null unless resized with a priced tick. */
-  previousAssets: bigint | null
-  /** 1e18-scaled book price at `bucket.tick`, when the tick is among the returned levels. */
-  price: string | null
-}
 
 type BookOffersPollerOptions = { cron: string; marketIds: string[] }
 
@@ -98,10 +36,6 @@ type BookOffersPollerDependencies = PollerDependencies & {
   minAssets: bigint
   sleep?: (ms: number) => Promise<void>
   now?: () => number
-}
-
-function bucketKey(side: BookSide, maker: Address, group: string, tick: number) {
-  return `${side}:${maker}:${group}:${tick}`
 }
 
 // Checksummed so a casing change in the API response cannot silently re-key every bucket (which
@@ -213,98 +147,6 @@ export function diffSnapshots(
   return events
 }
 
-// Lending is buying units, so bids are lend-side offers and asks are borrow-side.
-function sideLabel(side: BookSide) {
-  return side === 'bids' ? 'lend' : 'borrow'
-}
-
-function sizeLabel(
-  bucket: OfferBucket,
-  assets: bigint | null,
-  loan: TokenEntry | null,
-  prices: PriceLookup
-) {
-  return assets === null
-    ? unitsAmount(bucket.maxUnits, loan)
-    : assetsAmount(`${assets}`, loan, prices)
-}
-
-/** Both caps in the dedupe key so an A→B→A→B resize cycle stays distinct for dedupe consumers. */
-function capKey(bucket: OfferBucket) {
-  return `${bucket.maxUnits}/${bucket.maxAssets}`
-}
-
-const OFFER_EMOJI = { created: ':memo:', resized: ':arrows_counterclockwise:', closed: ':x:' }
-const OFFER_ACTION = { created: 'posted', resized: 'resized', closed: 'closed' }
-
-// Same block shape as the transaction alerts, minus what an off-chain make order does not have:
-// EIP-712 signatures carry no tx to link, so the link row drops the tx entry and carries the
-// maker's explorer-address and Debank links instead — and no on-chain timestamp, so the footer
-// carries the poller's observation time instead (at most one poll interval after the change).
-// Identity stays market + side + maker + group + tick.
-function formatOfferAlert(
-  event: OfferEvent,
-  tokens: TokenRegistry,
-  prices: PriceLookup,
-  observedAt: number
-): Alert {
-  const { bucket, marketId } = event
-  const market = tokens.get(marketId)
-  const loan = loanTokenEntry(tokens, marketId)
-  const size = sizeLabel(bucket, event.assets, loan, prices)
-  const side = sideLabel(bucket.side)
-  const key = bucketKey(bucket.side, bucket.maker, bucket.group, bucket.tick)
-  const maker = abbreviateAddress(bucket.maker)
-  const time = formatUtcTime(observedAt)
-  // The registry learns every book market from this poller's own sweep (recordAll runs before the
-  // diff), so a miss only happens on drift — degrade to no chain segment rather than guessing.
-  const where = market ? ` on ${chainLabel(market.chainId)}` : ''
-  const makerUrl = market ? explorerAddressUrl(market.chainId, bucket.maker) : null
-  // Raw ticks never surface — operators read rates. When the rate cannot be annualized (registry
-  // miss, matured market, or a tick aprLabel declines) the `@ …` clause is omitted rather than
-  // falling back to the tick; the tick still disambiguates the bucket via the alert key.
-  const rate = market ? aprLabel(bucket.tick, market.maturity, observedAt) : null
-  const headline = `Make order ${OFFER_ACTION[event.kind]}: ${size} ${side}${rate ? ` @ ${rate}` : ''}`
-  const ref = marketRef(tokens, market?.chainId, marketId)
-  const details =
-    event.kind === 'resized' && event.previous
-      ? [`was ${sizeLabel(event.previous, event.previousAssets, loan, prices)}`]
-      : []
-  // Explorer link labels the maker's address page (Basescan on base); Debank labels their
-  // cross-protocol portfolio. Same filtered pattern as the transaction alerts' link row: an entry
-  // whose URL fails to resolve is dropped rather than rendered as a dead plain-text label.
-  const linkRow = [
-    { url: makerUrl, label: market ? explorerName(market.chainId) : 'Explorer' },
-    { url: debankUrl(bucket.maker), label: 'Debank' }
-  ]
-    .filter(link => link.url !== null)
-    .map(link => slackLink(link.url, link.label))
-    .join('  ')
-  const alert = {
-    title: `${headline} in ${ref.label} by ${maker}${where} at ${time}`,
-    text: [
-      `${OFFER_EMOJI[event.kind]} ${escapeSlack(headline)} in ${slackLink(ref.url, ref.label)}`,
-      ...details.map(detail => `        • ${escapeSlack(detail)}`),
-      `By ${slackLink(makerUrl, maker)}${where}, ${time}`,
-      ...(linkRow ? [linkRow] : [])
-    ].join('\n'),
-    severity: 'info' as const
-  }
-  switch (event.kind) {
-    case 'created':
-      return { key: `${marketId}:${key}:created`, ...alert }
-    case 'resized':
-      return {
-        key: `${marketId}:${key}:resized:${event.previous ? capKey(event.previous) : '?'}->${capKey(bucket)}`,
-        ...alert
-      }
-    case 'closed':
-      return { key: `${marketId}:${key}:closed`, ...alert }
-    default:
-      return assertNever(event.kind)
-  }
-}
-
 /**
  * Watches the protocol-wide make-order book. `/v0/midnight/books` supplies the active-market
  * universe (past maturities excluded) and the top price levels; each market's populated sides are
@@ -378,7 +220,7 @@ export class BookOffersPoller extends Poller<BookSnapshot, OfferEvent> {
     const observedAt = Math.floor((this.ext.now?.() ?? Date.now()) / 1000)
     return items
       .filter(event => event.assets === null || event.assets >= this.ext.minAssets)
-      .map(event => formatOfferAlert(event, this.ext.tokens, this.ext.prices, observedAt))
+      .map(event => this.ext.formatter.offer(event, observedAt))
   }
 
   // One market's expansion, error-isolated: a market that persistently fails must not starve every

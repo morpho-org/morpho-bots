@@ -4,6 +4,7 @@ import { SchedulerRegistry, ScheduleModule } from '@nestjs/schedule'
 import { Test } from '@nestjs/testing'
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { AlertFormatter } from '../../src/alerts/formatter'
 import { InMemoryCursorStore } from '../../src/cursor/cursor.store'
 import { LOGGER } from '../../src/logging/logger.provider'
 import { Poller, POLLERS } from '../../src/polling/poller'
@@ -69,7 +70,7 @@ describe('PollerRegistrar', () => {
       dispatcher: capturingDispatcher(),
       logger: fakeLogger(),
       tokens: new TokenRegistry(),
-      prices: NO_PRICES
+      formatter: new AlertFormatter({ tokens: new TokenRegistry(), prices: NO_PRICES })
     }
     const first = new BlockingPoller(deps)
     const second = new BlockingPoller(deps)
@@ -93,7 +94,7 @@ describe('PollerRegistrar', () => {
       dispatcher: capturingDispatcher(),
       logger: fakeLogger(),
       tokens: new TokenRegistry(),
-      prices: NO_PRICES
+      formatter: new AlertFormatter({ tokens: new TokenRegistry(), prices: NO_PRICES })
     }
     const poller = new BlockingPoller(deps)
     app = await createApp(poller)
@@ -110,7 +111,7 @@ describe('PollerRegistrar', () => {
       dispatcher: capturingDispatcher(),
       logger: fakeLogger(),
       tokens: new TokenRegistry(),
-      prices: NO_PRICES
+      formatter: new AlertFormatter({ tokens: new TokenRegistry(), prices: NO_PRICES })
     }
     const poller = new BlockingPoller(deps)
     app = await createApp(poller)

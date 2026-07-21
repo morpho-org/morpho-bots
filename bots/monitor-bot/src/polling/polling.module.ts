@@ -10,6 +10,7 @@ import type { MidnightEventType } from '../midnight/client'
 import type { BootSnapshotStore } from '../snapshot/boot-snapshot.store'
 
 import { ALERT_DISPATCHER, LogAlertDispatcher } from '../alerts/alert'
+import { AlertFormatter } from '../alerts/formatter'
 import { LifecycleNotifier } from '../alerts/lifecycle.notifier'
 import { SlackDispatcher } from '../alerts/slack.dispatcher'
 import { ENV } from '../config/env'
@@ -87,8 +88,11 @@ function buildPollers(
     minAssets: env.FILTER_MIN_ASSETS,
     users: env.FILTER_USERS
   })
+  // Every poller hands its items to the formatter to build alerts — it holds the token registry
+  // and price cache so the pollers no longer thread those through each format call.
+  const formatter = new AlertFormatter({ tokens, prices })
   // Transaction pollers resume from a watermark, so their state is a cursor.
-  const deps = { state: cursors, dispatcher, logger, tokens, prices, client, directory, filter }
+  const deps = { state: cursors, dispatcher, logger, tokens, formatter, client, directory, filter }
   const pollers: (MarketTransactionsPoller | BookOffersPoller)[] = pollerDefinitions(env).map(
     options => new MarketTransactionsPoller(options, deps)
   )
@@ -105,7 +109,7 @@ function buildPollers(
         dispatcher,
         logger,
         tokens,
-        prices,
+        formatter,
         client,
         minAssets: env.FILTER_MIN_ASSETS
       }

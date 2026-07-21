@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { Alert } from '../../src/alerts/alert'
 
+import { AlertFormatter } from '../../src/alerts/formatter'
 import { InMemoryCursorStore } from '../../src/cursor/cursor.store'
 import { Poller, type PollerDependencies } from '../../src/polling/poller'
 import { TokenRegistry } from '../../src/tokens/registry'
@@ -46,6 +47,7 @@ class SamplePoller extends Poller<number, string> {
 function makeDeps() {
   const cursors = new InMemoryCursorStore()
   const dispatcher = capturingDispatcher()
+  const tokens = new TokenRegistry()
   return {
     cursors,
     dispatcher,
@@ -53,8 +55,8 @@ function makeDeps() {
       state: cursors,
       dispatcher,
       logger: fakeLogger(),
-      tokens: new TokenRegistry(),
-      prices: NO_PRICES
+      tokens,
+      formatter: new AlertFormatter({ tokens, prices: NO_PRICES })
     }
   }
 }

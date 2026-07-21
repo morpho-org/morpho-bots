@@ -1,7 +1,7 @@
 import type { Logger } from '@repo/bot-kit'
 
 import type { Alert, AlertDispatcher } from '../alerts/alert'
-import type { PriceLookup } from '../tokens/prices'
+import type { AlertFormatter } from '../alerts/formatter'
 import type { TokenRegistry } from '../tokens/registry'
 
 /** Injection token for the array of registered pollers (Nest has no multi-providers). */
@@ -33,11 +33,12 @@ export type PollerDependencies = {
   logger: Logger
   /**
    * market id → token addresses. Shared by every poller: transaction items carry only a
-   * `market_id`, so this is the only way to learn what their amounts are denominated in.
+   * `market_id`, so this is the only way to learn what their amounts are denominated in. Book
+   * offers still call `recordAll` on it; alert denomination lookups now live behind `formatter`.
    */
   tokens: TokenRegistry
-  /** USD spot prices for those tokens — the $-figures alerts print next to token amounts. */
-  prices: PriceLookup
+  /** Constructs each poller's `Alert`s from its items — holds the token registry and price cache. */
+  formatter: AlertFormatter
 }
 
 // Template method: subclasses supply fetch + toAlerts, the base class owns the invariant tick

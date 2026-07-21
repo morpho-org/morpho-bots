@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { MidnightClient, TransactionItem } from '../../src/midnight/client'
 import type { MarketDirectory } from '../../src/midnight/markets'
 
+import { AlertFormatter } from '../../src/alerts/formatter'
 import { InMemoryCursorStore } from '../../src/cursor/cursor.store'
 import { TransactionFilter } from '../../src/pollers/filter'
 import { MarketTransactionsPoller } from '../../src/pollers/market-transactions.poller'
@@ -49,14 +50,15 @@ function makePoller(
   const cursors = new InMemoryCursorStore()
   const dispatcher = capturingDispatcher()
   const logger = fakeLogger()
+  const tokens = new TokenRegistry()
   const poller = new MarketTransactionsPoller(
     { id: 'take-orders', cron: '*/30 * * * * *', eventTypes: ['lend', 'borrow'] },
     {
       state: cursors,
       dispatcher,
       logger,
-      tokens: new TokenRegistry(),
-      prices: NO_PRICES,
+      tokens,
+      formatter: new AlertFormatter({ tokens, prices: NO_PRICES }),
       client,
       directory,
       filter,
