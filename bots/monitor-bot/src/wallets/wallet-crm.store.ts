@@ -12,7 +12,7 @@ export const WALLET_CRM_STORE = Symbol('WALLET_CRM_STORE')
  * any valid address casing resolves to the same checksummed key, so callers holding viem-style
  * checksummed addresses hit the lowercase-keyed export without pre-normalizing.
  */
-interface WalletCrmStore {
+export interface WalletCrmStore {
   /** The CRM columns for `address` (excluding the address itself), or `null` if not tracked. */
   get(address: string): WalletCrmRecord | null
   has(address: string): boolean

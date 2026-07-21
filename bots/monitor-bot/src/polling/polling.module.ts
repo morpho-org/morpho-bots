@@ -8,6 +8,7 @@ import type { MonitorEnv } from '../config/env'
 import type { CursorStore } from '../cursor/cursor.store'
 import type { MidnightEventType } from '../midnight/client'
 import type { BootSnapshotStore } from '../snapshot/boot-snapshot.store'
+import type { WalletCrmStore } from '../wallets/wallet-crm.store'
 
 import { ALERT_DISPATCHER, LogAlertDispatcher } from '../alerts/alert'
 import { AlertFormatter } from '../alerts/formatter'
@@ -26,6 +27,7 @@ import { BOOT_SNAPSHOT_STORE, InMemoryBootSnapshotStore } from '../snapshot/boot
 import { TokenMetadataLoader } from '../tokens/metadata'
 import { TokenPriceCache } from '../tokens/prices'
 import { TOKEN_REGISTRY, TokenRegistry } from '../tokens/registry'
+import { WALLET_CRM_STORE } from '../wallets/wallet-crm.store'
 import { POLLERS } from './poller'
 import { PollerRegistrar } from './poller.registrar'
 
@@ -58,7 +60,8 @@ function buildPollers(
   cursors: CursorStore,
   snapshots: BootSnapshotStore,
   dispatcher: AlertDispatcher,
-  tokens: TokenRegistry
+  tokens: TokenRegistry,
+  wallets: WalletCrmStore
 ) {
   // A secret read at point of use (like SLACK_BOT_TOKEN), never stored on the env object. Sent to
   // both services: the core API requires it, the Midnight API tolerates it.
@@ -88,9 +91,10 @@ function buildPollers(
     minAssets: env.FILTER_MIN_ASSETS,
     users: env.FILTER_USERS
   })
-  // Every poller hands its items to the formatter to build alerts — it holds the token registry
-  // and price cache so the pollers no longer thread those through each format call.
-  const formatter = new AlertFormatter({ tokens, prices })
+  // Every poller hands its items to the formatter to build alerts — it holds the token registry,
+  // price cache, and wallet CRM store so the pollers no longer thread those through each format
+  // call. The wallet store lets the formatter swap a tracked counterparty's hex for its company name.
+  const formatter = new AlertFormatter({ tokens, prices, wallets })
   // Transaction pollers resume from a watermark, so their state is a cursor.
   const deps = { state: cursors, dispatcher, logger, tokens, formatter, client, directory, filter }
   const pollers: (MarketTransactionsPoller | BookOffersPoller)[] = pollerDefinitions(env).map(
@@ -146,7 +150,15 @@ export function buildDispatcher(env: MonitorEnv, logger: Logger): AlertDispatche
     {
       provide: POLLERS,
       useFactory: buildPollers,
-      inject: [ENV, LOGGER, CURSOR_STORE, BOOT_SNAPSHOT_STORE, ALERT_DISPATCHER, TOKEN_REGISTRY]
+      inject: [
+        ENV,
+        LOGGER,
+        CURSOR_STORE,
+        BOOT_SNAPSHOT_STORE,
+        ALERT_DISPATCHER,
+        TOKEN_REGISTRY,
+        WALLET_CRM_STORE
+      ]
     },
     PollerRegistrar,
     LifecycleNotifier

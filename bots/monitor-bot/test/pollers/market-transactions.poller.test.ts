@@ -8,6 +8,7 @@ import { InMemoryCursorStore } from '../../src/cursor/cursor.store'
 import { TransactionFilter } from '../../src/pollers/filter'
 import { MarketTransactionsPoller } from '../../src/pollers/market-transactions.poller'
 import { TokenRegistry } from '../../src/tokens/registry'
+import { InMemoryWalletCrmStore } from '../../src/wallets/wallet-crm.store'
 import { capturingDispatcher, fakeLogger } from '../helpers'
 import {
   apiPage,
@@ -58,7 +59,11 @@ function makePoller(
       dispatcher,
       logger,
       tokens,
-      formatter: new AlertFormatter({ tokens, prices: NO_PRICES }),
+      formatter: new AlertFormatter({
+        tokens,
+        prices: NO_PRICES,
+        wallets: new InMemoryWalletCrmStore()
+      }),
       client,
       directory,
       filter,

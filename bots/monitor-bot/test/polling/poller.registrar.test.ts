@@ -10,6 +10,7 @@ import { LOGGER } from '../../src/logging/logger.provider'
 import { Poller, POLLERS } from '../../src/polling/poller'
 import { PollerRegistrar } from '../../src/polling/poller.registrar'
 import { TokenRegistry } from '../../src/tokens/registry'
+import { InMemoryWalletCrmStore } from '../../src/wallets/wallet-crm.store'
 import { capturingDispatcher, fakeLogger } from '../helpers'
 import { NO_PRICES } from '../midnight/fixtures'
 
@@ -70,7 +71,11 @@ describe('PollerRegistrar', () => {
       dispatcher: capturingDispatcher(),
       logger: fakeLogger(),
       tokens: new TokenRegistry(),
-      formatter: new AlertFormatter({ tokens: new TokenRegistry(), prices: NO_PRICES })
+      formatter: new AlertFormatter({
+        tokens: new TokenRegistry(),
+        prices: NO_PRICES,
+        wallets: new InMemoryWalletCrmStore()
+      })
     }
     const first = new BlockingPoller(deps)
     const second = new BlockingPoller(deps)
@@ -94,7 +99,11 @@ describe('PollerRegistrar', () => {
       dispatcher: capturingDispatcher(),
       logger: fakeLogger(),
       tokens: new TokenRegistry(),
-      formatter: new AlertFormatter({ tokens: new TokenRegistry(), prices: NO_PRICES })
+      formatter: new AlertFormatter({
+        tokens: new TokenRegistry(),
+        prices: NO_PRICES,
+        wallets: new InMemoryWalletCrmStore()
+      })
     }
     const poller = new BlockingPoller(deps)
     app = await createApp(poller)
@@ -111,7 +120,11 @@ describe('PollerRegistrar', () => {
       dispatcher: capturingDispatcher(),
       logger: fakeLogger(),
       tokens: new TokenRegistry(),
-      formatter: new AlertFormatter({ tokens: new TokenRegistry(), prices: NO_PRICES })
+      formatter: new AlertFormatter({
+        tokens: new TokenRegistry(),
+        prices: NO_PRICES,
+        wallets: new InMemoryWalletCrmStore()
+      })
     }
     const poller = new BlockingPoller(deps)
     app = await createApp(poller)
