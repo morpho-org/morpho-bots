@@ -13,6 +13,8 @@ describe('LifecycleNotifier', () => {
     expect(alert?.key).toBe('lifecycle:startup')
     expect(alert?.severity).toBe('info')
     expect(alert?.text).toContain('monitor-bot started')
+    // Slack renders its own timestamps in local time, so the text itself must carry UTC.
+    expect(alert?.text).toMatch(/ at \d{2}\/\d{2}\/\d{4} - \d{2}:\d{2}:\d{2} UTC$/)
   })
 
   it('dispatches a shutdown alert carrying the signal', async () => {

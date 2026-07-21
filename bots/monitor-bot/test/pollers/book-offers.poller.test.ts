@@ -16,8 +16,8 @@ const DEFAULT_TICK = 495
 /** MARKET_A through the alert formatter's market label: the fixture books carry USER_TWO as an
  * unresolvable loan token, no collaterals, and a maturity of 2000 unix seconds. */
 const MARKET_A_LABEL = '0x5356...4C91 01/01/1970'
-/** Every offer alert ends with the linked maker and the deployment label. */
-const TAIL = ' by 0x958e...1917 on midnight-base'
+/** Every offer alert ends with the linked maker, the deployment label, and the observation time. */
+const TAIL = ' by 0x958e...1917 on midnight-base at 14/11/2023 - 22:13:20 UTC'
 
 type Side = 'asks' | 'bids'
 
@@ -140,7 +140,9 @@ function makePoller(ticks: TickSpec[], minAssets = 0n, marketIds: string[] = [])
       prices: NO_PRICES,
       client,
       minAssets,
-      sleep: () => Promise.resolve()
+      sleep: () => Promise.resolve(),
+      // Frozen observation clock so alert titles are deterministic (TAIL's timestamp).
+      now: () => 1_700_000_000_000
     }
   )
   return { poller, dispatcher, logger, client, failing, GET }

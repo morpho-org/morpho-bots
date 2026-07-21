@@ -18,6 +18,7 @@ import type { PriceLookup } from '../tokens/prices'
 import type { TokenEntry, TokenRegistry } from '../tokens/registry'
 
 import { escapeSlack, slackLink } from '../alerts/mrkdwn'
+import { formatUtcTime } from '../alerts/time'
 import { MARKET_CONCURRENCY, REQUEST_TIMEOUT_MS } from '../midnight/client'
 import { Poller } from '../polling/poller'
 import {
@@ -94,6 +95,7 @@ type BookOffersPollerDependencies = PollerDependencies & {
   client: MidnightClient
   minAssets: bigint
   sleep?: (ms: number) => Promise<void>
+  now?: () => number
 }
 
 function bucketKey(side: BookSide, maker: Address, group: string, tick: number) {
@@ -234,9 +236,15 @@ const OFFER_EMOJI = { created: ':memo:', resized: ':arrows_counterclockwise:', c
 const OFFER_ACTION = { created: 'posted', resized: 'resized', closed: 'closed' }
 
 // Same block shape as the transaction alerts, minus what an off-chain make order does not have:
-// EIP-712 signatures carry no tx to link and no on-chain timestamp, so the link row is Debank
-// only and the footer has no time. Identity stays market + side + maker + group + tick.
-function formatOfferAlert(event: OfferEvent, tokens: TokenRegistry, prices: PriceLookup): Alert {
+// EIP-712 signatures carry no tx to link, so the link row is Debank only — and no on-chain
+// timestamp, so the footer carries the poller's observation time instead (at most one poll
+// interval after the change). Identity stays market + side + maker + group + tick.
+function formatOfferAlert(
+  event: OfferEvent,
+  tokens: TokenRegistry,
+  prices: PriceLookup,
+  observedAt: number
+): Alert {
   const { bucket, marketId } = event
   const market = tokens.get(marketId)
   const loan = loanTokenEntry(tokens, marketId)
@@ -244,6 +252,7 @@ function formatOfferAlert(event: OfferEvent, tokens: TokenRegistry, prices: Pric
   const side = sideLabel(bucket.side)
   const key = bucketKey(bucket.side, bucket.maker, bucket.group, bucket.tick)
   const maker = abbreviateAddress(bucket.maker)
+  const time = formatUtcTime(observedAt)
   // The registry learns every book market from this poller's own sweep (recordAll runs before the
   // diff), so a miss only happens on drift — degrade to no chain segment rather than guessing.
   const where = market ? ` on ${chainLabel(market.chainId)}` : ''
@@ -256,11 +265,11 @@ function formatOfferAlert(event: OfferEvent, tokens: TokenRegistry, prices: Pric
       : []
   const debank = debankUrl(bucket.maker)
   const alert = {
-    title: `${headline} in ${ref.label} by ${maker}${where}`,
+    title: `${headline} in ${ref.label} by ${maker}${where} at ${time}`,
     text: [
       `${OFFER_EMOJI[event.kind]} ${escapeSlack(headline)} in ${slackLink(ref.url, ref.label)}`,
       ...details.map(detail => `        • ${escapeSlack(detail)}`),
-      `By ${slackLink(makerUrl, maker)}${where}`,
+      `By ${slackLink(makerUrl, maker)}${where}, ${time}`,
       ...(debank ? [slackLink(debank, 'Debank')] : [])
     ].join('\n'),
     severity: 'info' as const
@@ -350,9 +359,10 @@ export class BookOffersPoller extends Poller<BookSnapshot, OfferEvent> {
   }
 
   protected toAlerts(items: OfferEvent[]) {
+    const observedAt = Math.floor((this.ext.now?.() ?? Date.now()) / 1000)
     return items
       .filter(event => event.assets === null || event.assets >= this.ext.minAssets)
-      .map(event => formatOfferAlert(event, this.ext.tokens, this.ext.prices))
+      .map(event => formatOfferAlert(event, this.ext.tokens, this.ext.prices, observedAt))
   }
 
   // One market's expansion, error-isolated: a market that persistently fails must not starve every

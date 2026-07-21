@@ -8,6 +8,7 @@ import type { Alert, AlertDispatcher } from './alert'
 
 import { LOGGER } from '../logging/logger.provider'
 import { ALERT_DISPATCHER } from './alert'
+import { formatUtcTime } from './time'
 
 // Lifecycle breadcrumbs through the regular alert pipeline: posted to Slack when it is configured,
 // log-only otherwise. Delivery is best-effort — unlike poller alerts (at-least-once via cursor
@@ -33,11 +34,13 @@ export class LifecycleNotifier implements OnApplicationBootstrap, BeforeApplicat
   }
 
   private async notify(event: 'startup' | 'shutdown', message: string) {
-    // Static producer-owned copy — nothing API-sourced, so no mrkdwn escaping is needed.
+    // Static producer-owned copy — nothing API-sourced, so no mrkdwn escaping is needed. Slack's
+    // own message timestamp renders in each reader's local timezone, so the text carries UTC.
+    const stamped = `${message} at ${formatUtcTime(Math.floor(Date.now() / 1000))}`
     const alert: Alert = {
       key: `lifecycle:${event}`,
-      title: message,
-      text: message,
+      title: stamped,
+      text: stamped,
       severity: 'info'
     }
     await this.dispatcher.send([alert]).catch(error => {
