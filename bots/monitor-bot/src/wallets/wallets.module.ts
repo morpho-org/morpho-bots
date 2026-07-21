@@ -26,14 +26,17 @@ export function buildWalletCrmStore(env: MonitorEnv, logger: Logger): InMemoryWa
     return new InMemoryWalletCrmStore()
   }
 
+  logger.info('wallets.reading', { path })
   let content: string
   try {
     content = readFileSync(path, 'utf8')
   } catch (error) {
+    logger.error('wallets.read_failed', { path, error: ensureError(error).message })
     throw new Error(`failed to read WALLETS_CSV_PATH (${path}): ${ensureError(error).message}`, {
       cause: error
     })
   }
+  logger.info('wallets.read', { path, bytes: content.length })
 
   const parsed = parseWalletCrmCsv(content)
   logger.info('wallets.loaded', {
