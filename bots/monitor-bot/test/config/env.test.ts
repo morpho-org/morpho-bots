@@ -32,4 +32,11 @@ describe('loadEnv', () => {
   it('throws on an unknown LOG_LEVEL', () => {
     expect(() => loadEnv({ LOG_LEVEL: 'loud' })).toThrow()
   })
+
+  it('leaves WALLETS_CSV_PATH undefined when unset and passes it through when set', () => {
+    expect(loadEnv({}).WALLETS_CSV_PATH).toBeUndefined()
+    expect(loadEnv({ WALLETS_CSV_PATH: '/data/wallets.csv' }).WALLETS_CSV_PATH).toBe(
+      '/data/wallets.csv'
+    )
+  })
 })

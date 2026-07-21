@@ -85,7 +85,11 @@ export function loadEnv(runtimeEnv: Record<string, string | undefined> = process
       POLL_CRON_MAKE_ORDERS: cronSchema.default('*/30 * * * * *'),
       /** Slack channel id for alerts; unset falls back to log-only dispatch. The bot token is a
        *  secret read at point of use (SLACK_BOT_TOKEN), never stored on this object. */
-      SLACK_CHANNEL: z.string().min(1).optional()
+      SLACK_CHANNEL: z.string().min(1).optional(),
+      /** Path to the Attio wallet-CRM CSV export, loaded into the address-keyed wallet store at
+       *  boot. Unset = empty store (wallet lookups are no-ops); set but unreadable/malformed fails
+       *  the boot loudly. Pass it as `WALLETS_CSV_PATH=<path> bun src/index.ts`. */
+      WALLETS_CSV_PATH: z.string().min(1).optional()
     },
     runtimeEnv,
     emptyStringAsUndefined: true
