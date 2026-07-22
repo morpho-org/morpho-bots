@@ -50,16 +50,29 @@ export function railwayContext(env: Record<string, string | undefined> = process
   return context
 }
 
-// The stderr sink: one `{ level, event, ...fields }` JSON line per call, ALL levels to stderr (so log
-// capture can never silently miss a level and stdout stays reserved for program output). loglayer's
-// built-in console transport reshapes the line, so this custom BlankTransport reproduces the exact
-// legacy shape. `data` already carries context + the (bigint-flattened) fields, merged by loglayer.
+/**
+ * `07-21 16:42:35` — UTC, stamped onto every stderr line so local runs and Railway's viewer show a
+ * scan-friendly event time (Railway's own prefix is nanosecond ISO; local runs get nothing at all).
+ * Year deliberately omitted for line width; the shipped BetterStack record keeps its own full `dt`.
+ */
+function formatTime(date: Date) {
+  const iso = date.toISOString()
+  return `${iso.slice(5, 10)} ${iso.slice(11, 19)}`
+}
+
+// The stderr sink: one `{ level, time, event, ...fields }` JSON line per call, ALL levels to stderr
+// (so log capture can never silently miss a level and stdout stays reserved for program output).
+// loglayer's built-in console transport reshapes the line, so this custom BlankTransport keeps the
+// legacy shape (plus `time`). `data` already carries context + the (bigint-flattened) fields,
+// merged by loglayer.
 function stderrTransport(): LogLayerTransport {
   return new BlankTransport({
     id: 'stderr',
     shipToLogger: ({ logLevel, messages, data }: LogLayerTransportParams) => {
       const event = messages.map(part => String(part)).join(' ')
-      console.error(JSON.stringify({ level: logLevel, event, ...data }))
+      console.error(
+        JSON.stringify({ level: logLevel, time: formatTime(new Date()), event, ...data })
+      )
       return messages
     }
   })
@@ -92,6 +105,7 @@ function betterStackTransport(
       console.error(
         JSON.stringify({
           level: 'error',
+          time: formatTime(new Date()),
           event: 'logship.misconfigured',
           detail: `partial BetterStack config: ${missing} is unset — shipping nothing`
         })
@@ -105,14 +119,22 @@ function betterStackTransport(
     url,
     onError: error => {
       const detail = error instanceof Error ? error.message : String(error)
-      console.error(JSON.stringify({ level: 'error', event: 'logship.error', detail }))
+      console.error(
+        JSON.stringify({
+          level: 'error',
+          time: formatTime(new Date()),
+          event: 'logship.error',
+          detail
+        })
+      )
     }
   })
 }
 
 /**
- * JSON-line structured logger. Each call emits a single `{ level, event, ...context, ...fields }`
- * line to stderr; `event` is one of the stable keys documented in the bot's observability table.
+ * JSON-line structured logger. Each call emits a single
+ * `{ level, time, event, ...context, ...fields }` line to stderr (`time` is `MM-DD HH:MM:SS` UTC);
+ * `event` is one of the stable keys documented in the bot's observability table.
  * Lines below `minLevel` are dropped before they reach any sink. When both `BETTERSTACK_SOURCE_TOKEN`
  * and `BETTERSTACK_INGESTING_HOST` are set, the same records are ALSO shipped to BetterStack
  * in-process (best-effort, off the critical path); unset ⇒ no transport, no network. Bind wide-log

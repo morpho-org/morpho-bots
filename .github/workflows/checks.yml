@@ -58,6 +58,11 @@ jobs:
           # pinned block and fails loud if this is unset. See test/fork/harness.ts.
           RPC_URL_8453: ${{ secrets.RPC_URL_8453 }}
 
+      - name: Run monitor-bot unit tests (vitest)
+        # monitor-bot is excluded from `bun test` (root bunfig [test].pathIgnorePatterns) because
+        # its NestJS suite needs vitest's SWC transform for decorator metadata.
+        run: bun run --filter @morpho-org/monitor-bot test
+
   Dead-Code:
     runs-on: ubuntu-latest
     steps:

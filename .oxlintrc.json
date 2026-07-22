@@ -8,6 +8,7 @@
   "rules": {
     "no-console": "off",
     "no-shadow": "off",
+    "typescript/no-extraneous-class": ["error", { "allowWithDecorator": true }],
     "typescript/switch-exhaustiveness-check": "error",
     "typescript/no-misused-promises": "error",
     "typescript/no-floating-promises": "error",
