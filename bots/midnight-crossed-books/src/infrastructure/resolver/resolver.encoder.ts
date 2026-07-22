@@ -10,15 +10,32 @@ export interface ResolverEncoder {
   decodeProfit(data: Hex): bigint
 }
 
+function takeKey(takeable: TakeableOffer) {
+  return encodeFunctionData({
+    abi: CrossedBooksResolver.abi,
+    functionName: 'resolve',
+    args: [
+      [{ offer: takeable.offer, ratifierData: takeable.ratifierData, units: 0n }],
+      [],
+      0n
+    ]
+  })
+}
+
 function aggregate(matches: readonly CrossedMatch[], side: 'ask' | 'bid') {
-  const unitsByOffer = new Map<TakeableOffer, bigint>()
+  const takesByKey = new Map<Hex, { takeable: TakeableOffer; units: bigint }>()
 
   for (const match of matches) {
-    const offer = match[side]
-    unitsByOffer.set(offer, (unitsByOffer.get(offer) ?? 0n) + match.units)
+    const takeable = match[side]
+    const key = takeKey(takeable)
+    const existing = takesByKey.get(key)
+    takesByKey.set(key, {
+      takeable,
+      units: (existing?.units ?? 0n) + match.units
+    })
   }
 
-  return Array.from(unitsByOffer, ([takeable, units]) => ({
+  return Array.from(takesByKey.values(), ({ takeable, units }) => ({
     offer: takeable.offer,
     ratifierData: takeable.ratifierData,
     units

@@ -63,12 +63,14 @@ interface ICrossedBooksToken {
 /// sell cost, and lets the nested callbacks unwind. Positive loan-token balance delta goes to caller.
 contract CrossedBooksResolver {
     bytes32 public constant CALLBACK_SUCCESS = keccak256("morpho.midnight.callbackSuccess");
+    bytes private constant SSTORE2_PREFIX = hex"600b380380600b5f395ff3";
     address public immutable MIDNIGHT;
     bool private resolving;
     bytes32 private activeMarketHash;
     bytes32 private activePlanHash;
     uint256 private activeSellIndex;
     uint256 private activeBuyerAssets;
+    bool private activeCallbackPending;
 
     error InactiveCallback();
     error InsufficientProfit(uint256 profit, uint256 minimum);
@@ -123,13 +125,14 @@ contract CrossedBooksResolver {
         activePlanHash = bytes32(0);
         activeSellIndex = 0;
         activeBuyerAssets = 0;
+        activeCallbackPending = false;
         _callOptional(address(token), abi.encodeCall(token.transfer, (msg.sender, profit)));
         resolving = false;
         emit Resolve(msg.sender, marketHash, sellOffers.length, buyOffers.length, units, profit);
     }
 
     function onBuy(
-        bytes32,
+        bytes32 id,
         CrossedBooksMarket calldata market,
         uint256 buyerAssets,
         uint256 units,
@@ -140,7 +143,7 @@ contract CrossedBooksResolver {
         if (msg.sender != MIDNIGHT) revert UnauthorizedCallback();
         if (!resolving) revert InactiveCallback();
         if (buyer != address(this)) revert UnexpectedBuyer();
-        if (keccak256(abi.encode(market)) != activeMarketHash) revert InvalidMarket();
+        if (id != _marketId(market) || keccak256(abi.encode(market)) != activeMarketHash) revert InvalidMarket();
         _onBuy(market.loanToken, buyerAssets, units, data);
         return CALLBACK_SUCCESS;
     }
@@ -148,11 +151,13 @@ contract CrossedBooksResolver {
     function _onBuy(address loanToken, uint256 buyerAssets, uint256 units, bytes calldata data) internal {
         (CrossedBooksTake[] memory sellOffers, CrossedBooksTake[] memory buyOffers, uint256 sellIndex) =
             abi.decode(data, (CrossedBooksTake[], CrossedBooksTake[], uint256));
-        if (keccak256(abi.encode(sellOffers, buyOffers)) != activePlanHash || sellIndex != activeSellIndex) {
-            revert UnexpectedCallback();
-        }
+        if (
+            !activeCallbackPending || keccak256(abi.encode(sellOffers, buyOffers)) != activePlanHash
+                || sellIndex != activeSellIndex
+        ) revert UnexpectedCallback();
         if (units != sellOffers[sellIndex].units) revert UnexpectedUnits();
 
+        activeCallbackPending = false;
         activeBuyerAssets += buyerAssets;
         if (sellIndex + 1 < sellOffers.length) {
             _takeSell(sellOffers, buyOffers, sellIndex + 1);
@@ -165,6 +170,7 @@ contract CrossedBooksResolver {
         internal
     {
         activeSellIndex = sellIndex;
+        activeCallbackPending = true;
         CrossedBooksTake memory sell = sellOffers[sellIndex];
         ICrossedBooksMidnight(MIDNIGHT)
             .take(
@@ -176,6 +182,7 @@ contract CrossedBooksResolver {
                 address(this),
                 abi.encode(sellOffers, buyOffers, sellIndex)
             );
+        if (activeCallbackPending) revert UnexpectedCallback();
     }
 
     function _sellCredits(CrossedBooksTake[] memory buyOffers, address loanToken, uint256 sellCost) internal {
@@ -223,6 +230,18 @@ contract CrossedBooksResolver {
         if (offer.offer.market.midnight != MIDNIGHT || keccak256(abi.encode(offer.offer.market)) != marketHash) {
             revert InvalidMarket();
         }
+    }
+
+    /// @dev Mirrors Midnight's IdLib.toId for the deployed market-id callback argument.
+    function _marketId(CrossedBooksMarket memory market) internal pure returns (bytes32) {
+        return keccak256(
+            abi.encodePacked(
+                uint8(0xff),
+                market.midnight,
+                uint256(0),
+                keccak256(abi.encodePacked(SSTORE2_PREFIX, abi.encode(market)))
+            )
+        );
     }
 
     function _callOptional(address target, bytes memory data) internal {

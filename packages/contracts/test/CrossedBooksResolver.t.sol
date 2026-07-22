@@ -53,11 +53,34 @@ contract Actor {
 
 contract MidnightMock {
     bytes32 constant OK = keccak256("morpho.midnight.callbackSuccess");
+    bytes constant SSTORE2_PREFIX = hex"600b380380600b5f395ff3";
     Token immutable token;
     mapping(address => uint256) public credit;
+    bool public replayCallback;
+    bool public wrongMarketId;
+    bytes4 public replayError;
 
     constructor(Token t) {
         token = t;
+    }
+
+    function setReplayCallback(bool newReplayCallback) external {
+        replayCallback = newReplayCallback;
+    }
+
+    function setWrongMarketId(bool newWrongMarketId) external {
+        wrongMarketId = newWrongMarketId;
+    }
+
+    function marketId(Market memory market) public pure returns (bytes32) {
+        return keccak256(
+            abi.encodePacked(
+                uint8(0xff),
+                market.midnight,
+                uint256(0),
+                keccak256(abi.encodePacked(SSTORE2_PREFIX, abi.encode(market)))
+            )
+        );
     }
 
     function take(
@@ -82,7 +105,22 @@ contract MidnightMock {
         credit[taker] += units;
         buyerAssets = units * o.tick;
         sellerAssets = buyerAssets;
-        require(IBuy(callback).onBuy(bytes32(0), o.market, buyerAssets, units, 0, taker, data) == OK);
+        bytes32 id = marketId(o.market);
+        if (wrongMarketId) id = bytes32(uint256(id) + 1);
+        bytes memory callbackCall = abi.encodeCall(IBuy.onBuy, (id, o.market, buyerAssets, units, 0, taker, data));
+        (bool callbackSuccess, bytes memory callbackResult) = callback.call(callbackCall);
+        require(callbackSuccess && abi.decode(callbackResult, (bytes32)) == OK);
+        if (replayCallback) {
+            (bool replaySuccess, bytes memory replayResult) = callback.call(callbackCall);
+            require(!replaySuccess);
+            if (replayResult.length >= 4) {
+                bytes4 selector;
+                assembly ("memory-safe") {
+                    selector := mload(add(replayResult, 0x20))
+                }
+                replayError = selector;
+            }
+        }
         require(token.transferFrom(taker, o.receiverIfMakerIsSeller, buyerAssets));
     }
 }
@@ -124,6 +162,20 @@ contract CrossedBooksResolverTest {
         require(token.balanceOf(address(resolver)) == 0);
         require(token.allowance(address(resolver), address(midnight)) == 0);
         require(midnight.credit(address(resolver)) == 0);
+    }
+
+    function testRejectsWrongMarketIdCallback() public {
+        midnight.setWrongMarketId(true);
+        (Take[] memory sells, Take[] memory buys) = plan(5, 7, 10);
+        (bool ok,) = address(resolver).call(abi.encodeCall(resolver.resolve, (sells, buys, 20)));
+        require(!ok);
+    }
+
+    function testConsumesCallbackBeforeExternalCalls() public {
+        midnight.setReplayCallback(true);
+        (Take[] memory sells, Take[] memory buys) = plan(5, 7, 10);
+        resolver.resolve(sells, buys, 20);
+        require(midnight.replayError() == bytes4(keccak256("UnexpectedCallback()")));
     }
 
     function testResolveReturnsProfitAndNoUnits() public {

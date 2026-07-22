@@ -8,9 +8,10 @@ import { makeOffer } from '../../fixtures/offers'
 const ASK_0 = makeOffer('ask', 5n, 2n)
 const ASK_1 = makeOffer('ask', 6n, 3n)
 const BID = makeOffer('bid', 7n, 5n)
+const BID_COPY = structuredClone(BID)
 const MATCHES = [
   { ask: ASK_0, bid: BID, units: 2n },
-  { ask: ASK_1, bid: BID, units: 3n }
+  { ask: ASK_1, bid: BID_COPY, units: 3n }
 ]
 
 const encoder = new ViemResolverEncoder()
