@@ -4,6 +4,10 @@
 
 import { sol, solFile } from 'soltag'
 
+export const CrossedBooksResolver = sol('CrossedBooksResolver')`
+  ${solFile('../solidity/CrossedBooksResolver.sol', { raw: true })}
+`
+
 export const Executor = sol('Executor')`
   ${solFile('../solidity/Executor.sol', { raw: true })}
 `

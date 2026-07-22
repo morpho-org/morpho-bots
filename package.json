@@ -28,7 +28,8 @@
       "soltag": "^0.0.17",
       "typescript": "6.0.2",
       "viem": "2.47.17",
-      "zod": "3.25.76"
+      "zod": "3.25.76",
+      "openapi-typescript": "7.10.1"
     }
   },
   "scripts": {

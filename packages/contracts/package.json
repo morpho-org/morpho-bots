@@ -16,7 +16,8 @@
     "deploy:executor": "bun run build && bun run scripts/deploy-executor.ts",
     "typecheck": "soltag && tsc --noEmit",
     "format:sol": "forge fmt",
-    "format:sol:check": "forge fmt --check"
+    "format:sol:check": "forge fmt --check",
+    "deploy:crossed-books-resolver": "bun run build && bun run scripts/deploy-crossed-books-resolver.ts"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
