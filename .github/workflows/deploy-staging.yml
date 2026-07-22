@@ -1,6 +1,6 @@
 name: Deploy staging
 
-# Every commit that lands on main redeploys both bots to their Railway staging environment.
+# Every commit that lands on main redeploys all bots to their Railway staging environment.
 # Main is already green (the merge queue gates checks.yml); the queue's gh-readonly-queue/* refs
 # fire merge_group, not push, so this runs once per merged PR.
 
@@ -31,4 +31,13 @@ jobs:
     with:
       bot: midnight-liq
       stage: staging
+      ref: ${{ github.sha }}
+
+  crossed-books:
+    uses: ./.github/workflows/deploy-bot.yml
+    secrets: inherit
+    with:
+      bot: crossed-books
+      stage: staging
+      github_environment: crossed-books-staging
       ref: ${{ github.sha }}

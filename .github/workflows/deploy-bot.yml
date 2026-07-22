@@ -2,7 +2,7 @@ name: Deploy bot
 
 # Reusable deploy-only job. Ships the checked-out working tree to a bot's Railway environment via
 # `railway up` (Railway builds server-side). Sets no variables or secrets — the environment must
-# already be provisioned by a full run of that bot's bots/<bot-liquidation>/scripts/deploy-railway.ts.
+# already be provisioned by a full run of that bot's bots/<bot>/scripts/deploy-railway.ts.
 # It runs that same script in DEPLOY_ONLY mode, which re-ships services and touches nothing else. The
 # only credential is a RAILWAY_TOKEN scoped to the target project + environment, read from the
 # per-bot-per-stage GitHub Environment (never passed by callers, never a fork-readable repo secret).
@@ -11,13 +11,18 @@ on:
   workflow_call:
     inputs:
       bot:
-        description: Which bot to deploy (blue-liq | midnight-liq)
+        description: Which bot to deploy (blue-liq | midnight-liq | crossed-books)
         required: true
         type: string
       stage:
         description: Target stage (staging | production)
         required: true
         type: string
+      github_environment:
+        description: GitHub Environment override (defaults to <bot>-<stage>)
+        required: false
+        type: string
+        default: ''
       ref:
         description: Git SHA/ref to deploy (defaults to the triggering ref)
         required: false
@@ -30,10 +35,10 @@ permissions:
 jobs:
   Deploy:
     runs-on: ubuntu-latest
-    # GitHub Environment named "<bot>-<stage>" (e.g. blue-staging). Holds secret RAILWAY_TOKEN and
-    # var RAILWAY_PROJECT_ID; scope its deployment branches to `main` so the token is unreachable
-    # from arbitrary PR branches.
-    environment: ${{ inputs.bot }}-${{ inputs.stage }}
+    # The GitHub Environment defaults to "<bot>-<stage>" and can be overridden for an established
+    # environment name. It holds secret RAILWAY_TOKEN and var RAILWAY_PROJECT_ID; scope its
+    # deployment branches to `main` so the token is unreachable from arbitrary PR branches.
+    environment: ${{ inputs.github_environment || format('{0}-{1}', inputs.bot, inputs.stage) }}
     concurrency:
       group: deploy-${{ inputs.bot }}-${{ inputs.stage }}
       cancel-in-progress: false
@@ -65,6 +70,7 @@ jobs:
           case "$BOT" in
             blue-liq) pkg='@morpho-org/blue-liquidation' ;;
             midnight-liq) pkg='@morpho-org/midnight-liquidation' ;;
+            crossed-books) pkg='@morpho-org/midnight-crossed-books' ;;
             *) echo "Unknown bot: $BOT" >&2; exit 1 ;;
           esac
           bun run --filter "$pkg" deploy:railway

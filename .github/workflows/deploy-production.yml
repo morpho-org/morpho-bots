@@ -19,6 +19,7 @@ on:
         options:
           - blue-liq
           - midnight-liq
+          - crossed-books
 
 permissions:
   contents: read
@@ -38,6 +39,7 @@ jobs:
       # Output keys use underscores — a `-` in an Actions expression is the subtraction operator.
       blue_liq: ${{ steps.pick.outputs.blue_liq }}
       midnight_liq: ${{ steps.pick.outputs.midnight_liq }}
+      crossed_books: ${{ steps.pick.outputs.crossed_books }}
     steps:
       - id: pick
         env:
@@ -58,6 +60,7 @@ jobs:
           {
             echo "blue_liq=$(has blue-liq)"
             echo "midnight_liq=$(has midnight-liq)"
+            echo "crossed_books=$(has crossed-books)"
           } >> "$GITHUB_OUTPUT"
 
   Blue:
@@ -82,6 +85,17 @@ jobs:
     with:
       bot: midnight-liq
       stage: production
+      ref: ${{ github.sha }}
+
+  Crossed-books:
+    needs: Select
+    if: ${{ needs.Select.outputs.crossed_books == 'true' }}
+    uses: ./.github/workflows/deploy-bot.yml
+    secrets: inherit
+    with:
+      bot: crossed-books
+      stage: production
+      github_environment: crossed-books-prod
       ref: ${{ github.sha }}
 
   Release-blue:
@@ -128,6 +142,34 @@ jobs:
       - name: Create release
         env:
           BOT: midnight-liq
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          date="$(date -u +%Y.%m.%d)"
+          n=$(( $(git tag -l "${BOT}-${date}-*" | wc -l) + 1 ))
+          tag="${BOT}-${date}-${n}"
+          # `|| true` guards against SIGPIPE aborting the job under `set -o pipefail` (git is
+          # killed when head closes the pipe early once there are many tags).
+          prev="$(git tag -l "${BOT}-*" --sort=-version:refname | head -n 1 || true)"
+          echo "Creating release $tag (previous: ${prev:-none})"
+          gh release create "$tag" --target "$SHA" --title "$tag" --generate-notes \
+            ${prev:+--notes-start-tag "$prev"}
+
+  Release-crossed-books:
+    needs: Crossed-books
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Create release
+        env:
+          BOT: crossed-books
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail

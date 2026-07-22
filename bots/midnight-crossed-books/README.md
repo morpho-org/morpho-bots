@@ -64,6 +64,24 @@ bun run --filter @morpho-org/midnight-crossed-books start
 
 The signer policy pins chain, resolver, `resolve` selector, zero ETH value, calldata, gas, and fee ceilings. The pending queue manages nonces and replacement. Every transaction is simulated byte-for-byte before submission.
 
+## Deploy
+
+The first deployment provisions the Railway service and writes the runtime secrets directly to
+Railway:
+
+```sh
+RAILWAY_PROJECT_ID=… RAILWAY_ENVIRONMENT=staging \
+RPC_URL=https://… RESOLVER_PRIVATE_KEY=0x… \
+bun run --filter @morpho-org/midnight-crossed-books deploy:railway
+```
+
+CI subsequently runs the same command with `DEPLOY_ONLY=true`, so GitHub holds only a
+project/environment-scoped Railway token. Pushes to `main` deploy staging through the
+`crossed-books-staging` GitHub Environment. Production deploys use the `release-crossed-books`
+label or a manual production workflow dispatch and the `crossed-books-prod` GitHub Environment.
+Each GitHub Environment defines `RAILWAY_PROJECT_ID` as a variable and `RAILWAY_TOKEN` as a secret;
+bot runtime secrets remain on Railway.
+
 ## Test
 
 ```sh
