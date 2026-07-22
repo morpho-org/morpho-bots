@@ -11,3 +11,4 @@ services:
       API_BASE_URL: ${API_BASE_URL:-https://api.morpho.org}
       ROUTER_API_BASE_URL: ${ROUTER_API_BASE_URL:-}
       MIN_PROFIT_ASSETS: ${MIN_PROFIT_ASSETS:-1}
+      MAX_MATCHES: ${MAX_MATCHES:-10}

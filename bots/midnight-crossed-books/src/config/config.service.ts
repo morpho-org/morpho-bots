@@ -4,6 +4,8 @@ import { CrossedBooksResolver } from '@repo/contracts'
 import { getAddress, isAddress, isHex, parseGwei } from 'viem'
 import { base } from 'viem/chains'
 
+import { DEFAULT_MAX_MATCHES } from '../domain/matching.service'
+
 const MIDNIGHT = getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A')
 const PRIVATE_KEY_HEX_LENGTH = 66
 
@@ -57,6 +59,13 @@ export class ConfigService {
 
     const minimumProfit = BigInt(unsignedDecimal(environment, 'MIN_PROFIT_ASSETS', '1'))
 
+    const maxMatches = Number(
+      unsignedDecimal(environment, 'MAX_MATCHES', String(DEFAULT_MAX_MATCHES))
+    )
+    if (!Number.isSafeInteger(maxMatches) || maxMatches <= 0) {
+      throw new Error('MAX_MATCHES must be a positive safe integer')
+    }
+
     return new ConfigService({
       chain: base,
       midnight: MIDNIGHT,
@@ -70,6 +79,7 @@ export class ConfigService {
       routerApiBaseUrl,
       scanIntervalMs,
       minimumProfit,
+      maxMatches,
       maxFeeWei: parseGwei(environment.MAX_FEE_GWEI?.trim() || '300')
     })
   }
@@ -88,6 +98,7 @@ export class ConfigService {
       routerApiBaseUrl: string
       scanIntervalMs: number
       minimumProfit: bigint
+      maxMatches: number
       maxFeeWei: bigint
     }
   ) {
@@ -132,6 +143,10 @@ export class ConfigService {
 
   get minimumProfit() {
     return this.values.minimumProfit
+  }
+
+  get maxMatches() {
+    return this.values.maxMatches
   }
 
   get maxFeeWei() {

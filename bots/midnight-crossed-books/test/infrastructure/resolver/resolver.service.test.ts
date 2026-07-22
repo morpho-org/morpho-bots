@@ -11,6 +11,7 @@ const MATCH = {
   bid: makeOffer('bid', 7n, 2n),
   units: 2n
 }
+const MATCHES = [MATCH]
 
 function setup(result: Awaited<ReturnType<ResolverTransport['simulate']>>) {
   const simulate = mock(async () => result)
@@ -26,19 +27,28 @@ function setup(result: Awaited<ReturnType<ResolverTransport['simulate']>>) {
 }
 
 describe('ResolverExecutionService', () => {
+  test('rejects an empty match plan without simulating', async () => {
+    const { service, simulate } = setup({ status: 'success', data: '0xabcd' })
+
+    const result = await service.simulate([])
+
+    expect(result).toEqual({ status: 'revert', reason: 'empty match plan' })
+    expect(simulate).not.toHaveBeenCalled()
+  })
+
   test('encodes and simulates with the configured minimum profit', async () => {
     const { service, encoder, simulate } = setup({ status: 'success', data: '0xabcd' })
 
-    await service.simulate(MATCH)
+    await service.simulate(MATCHES)
 
-    expect(encoder.encode).toHaveBeenCalledWith(MATCH, 10n)
+    expect(encoder.encode).toHaveBeenCalledWith(MATCHES, 10n)
     expect(simulate).toHaveBeenCalledWith('0x1234')
   })
 
   test('returns a prepared immutable request after successful simulation', async () => {
     const { service } = setup({ status: 'success', data: '0xabcd' })
 
-    const result = await service.simulate(MATCH)
+    const result = await service.simulate(MATCHES)
 
     expect(result).toEqual({
       status: 'ok',
@@ -49,7 +59,7 @@ describe('ResolverExecutionService', () => {
   test('does not decode a reverted simulation', async () => {
     const { service, encoder } = setup({ status: 'revert', reason: 'InsufficientProfit' })
 
-    const result = await service.simulate(MATCH)
+    const result = await service.simulate(MATCHES)
 
     expect(result).toEqual({ status: 'revert', reason: 'InsufficientProfit' })
     expect(encoder.decodeProfit).not.toHaveBeenCalled()

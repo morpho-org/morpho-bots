@@ -19,7 +19,7 @@ export interface OrderBookService {
 }
 
 export interface ResolverService {
-  simulate(match: CrossedMatch): Promise<SimulationResult>
+  simulate(matches: readonly CrossedMatch[]): Promise<SimulationResult>
   submit(prepared: PreparedResolution, blockNumber: bigint): Promise<void>
 }
 
@@ -34,6 +34,7 @@ export class CrossedBooksBotService {
     private readonly books: OrderBookService,
     private readonly matching: MatchingServicePort,
     private readonly resolver: ResolverService,
+    private readonly maxMatches: number,
     private readonly inflightMarketIds: () => ReadonlySet<string>,
     private readonly logger: BotLogger
   ) {}
@@ -48,10 +49,14 @@ export class CrossedBooksBotService {
       const book = await this._getBook(marketId)
       if (!book) continue
 
-      const match = this.matching.match({ asks: book.asks, bids: book.bids, maxMatches: 1 })[0]
-      if (!match) continue
+      const matches = this.matching.match({
+        asks: book.asks,
+        bids: book.bids,
+        maxMatches: this.maxMatches
+      })
+      if (matches.length === 0) continue
 
-      const simulation = await this.resolver.simulate(match)
+      const simulation = await this.resolver.simulate(matches)
       if (simulation.status === 'revert') {
         this.logger.info('match.not_profitable', {
           marketId,
@@ -63,7 +68,7 @@ export class CrossedBooksBotService {
       await this.resolver.submit(simulation.prepared, blockNumber)
       this.logger.info('match.submitted', {
         marketId,
-        units: match.units,
+        units: matches.reduce((total, match) => total + match.units, 0n),
         profit: simulation.prepared.profit
       })
 

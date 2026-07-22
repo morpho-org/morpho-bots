@@ -10,8 +10,11 @@ export class ResolverExecutionService implements ResolverService {
     private readonly minimumProfit: bigint
   ) {}
 
-  async simulate(match: CrossedMatch): Promise<SimulationResult> {
-    const data = this.encoder.encode(match, this.minimumProfit)
+  async simulate(matches: readonly CrossedMatch[]): Promise<SimulationResult> {
+    const firstMatch = matches[0]
+    if (!firstMatch) return { status: 'revert', reason: 'empty match plan' }
+
+    const data = this.encoder.encode(matches, this.minimumProfit)
     const simulation = await this.transport.simulate(data)
 
     if (simulation.status === 'revert') return simulation
@@ -19,7 +22,7 @@ export class ResolverExecutionService implements ResolverService {
     return {
       status: 'ok',
       prepared: {
-        marketId: match.ask.marketId,
+        marketId: firstMatch.ask.marketId,
         data,
         profit: this.encoder.decodeProfit(simulation.data)
       }

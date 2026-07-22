@@ -23,6 +23,11 @@ const MATCH: CrossedMatch = {
   bid: makeOffer('bid', 7n, 2n),
   units: 2n
 }
+const SECOND_MATCH: CrossedMatch = {
+  ask: makeOffer('ask', 6n, 3n),
+  bid: makeOffer('bid', 7n, 3n),
+  units: 3n
+}
 
 function setup(
   overrides: {
@@ -31,6 +36,7 @@ function setup(
     matches?: CrossedMatch[]
     simulation?: SimulationResult
     booksError?: Error
+    maxMatches?: number
   } = {}
 ) {
   const listListedActiveMarkets = mock(async () => overrides.markets ?? [MARKET])
@@ -38,7 +44,7 @@ function setup(
     if (overrides.booksError) throw overrides.booksError
     return { asks: [MATCH.ask], bids: [MATCH.bid] }
   })
-  const match = mock(() => overrides.matches ?? [MATCH])
+  const match = mock(() => overrides.matches ?? [MATCH, SECOND_MATCH])
   const simulate = mock(
     async (): Promise<SimulationResult> =>
       overrides.simulation ?? {
@@ -60,6 +66,7 @@ function setup(
     books,
     matching,
     resolver,
+    overrides.maxMatches ?? 10,
     () => overrides.inflight ?? new Set(),
     logger
   )
@@ -69,6 +76,7 @@ function setup(
     books,
     listListedActiveMarkets,
     getTakeableBook,
+    match,
     simulate,
     submit
   }
@@ -112,6 +120,31 @@ describe('CrossedBooksBotService', () => {
     await service.run({ blockNumber: 10n })
 
     expect(submit).not.toHaveBeenCalled()
+  })
+
+  test('simulates every crossed offer in one resolution', async () => {
+    const { service, match, simulate } = setup()
+
+    await service.run({ blockNumber: 10n })
+
+    expect(match).toHaveBeenCalledWith({
+      asks: [MATCH.ask],
+      bids: [MATCH.bid],
+      maxMatches: 10
+    })
+    expect(simulate).toHaveBeenCalledWith([MATCH, SECOND_MATCH])
+  })
+
+  test('uses the configured match cap', async () => {
+    const { service, match } = setup({ maxMatches: 3 })
+
+    await service.run({ blockNumber: 10n })
+
+    expect(match).toHaveBeenCalledWith({
+      asks: [MATCH.ask],
+      bids: [MATCH.bid],
+      maxMatches: 3
+    })
   })
 
   test('submits exactly the prepared request returned by simulation', async () => {
