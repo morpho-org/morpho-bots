@@ -15,7 +15,7 @@ The code follows the service and dependency-injection style used by `morpho-api`
 - `ResolverExecutionService` prepares immutable calldata, simulates it, and submits the same bytes through an injected transport.
 - `bootstrap.ts` is the composition root. It wires concrete services, signer policy, nonce queue, monitors, and runner.
 
-The permissionless `CrossedBooksResolver` needs no inventory. It takes the ask first. Midnight credits the resolver before `onBuy`; the callback sells the same units into the bid, uses bid proceeds to pay the ask, and sends the positive loan-token balance delta to `msg.sender`. Same-market checks, settlement fees, rounding, stale offers, callbacks, and minimum profit remain atomic.
+The permissionless `CrossedBooksResolver` needs no inventory. It recursively takes every crossed sell offer through nested `onBuy` callbacks. The deepest callback sells all received units into the crossed buy offers, approves the aggregate sell cost, and lets the callbacks unwind. The positive loan-token balance delta goes to `msg.sender`. Same-market checks, balanced units, settlement fees, rounding, stale offers, callbacks, and minimum profit remain atomic.
 
 ## Generated API clients
 

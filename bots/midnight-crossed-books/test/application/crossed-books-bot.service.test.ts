@@ -23,6 +23,11 @@ const MATCH: CrossedMatch = {
   bid: makeOffer('bid', 7n, 2n),
   units: 2n
 }
+const SECOND_MATCH: CrossedMatch = {
+  ask: makeOffer('ask', 6n, 3n),
+  bid: makeOffer('bid', 7n, 3n),
+  units: 3n
+}
 
 function setup(
   overrides: {
@@ -38,7 +43,7 @@ function setup(
     if (overrides.booksError) throw overrides.booksError
     return { asks: [MATCH.ask], bids: [MATCH.bid] }
   })
-  const match = mock(() => overrides.matches ?? [MATCH])
+  const match = mock(() => overrides.matches ?? [MATCH, SECOND_MATCH])
   const simulate = mock(
     async (): Promise<SimulationResult> =>
       overrides.simulation ?? {
@@ -69,6 +74,7 @@ function setup(
     books,
     listListedActiveMarkets,
     getTakeableBook,
+    match,
     simulate,
     submit
   }
@@ -112,6 +118,19 @@ describe('CrossedBooksBotService', () => {
     await service.run({ blockNumber: 10n })
 
     expect(submit).not.toHaveBeenCalled()
+  })
+
+  test('simulates every crossed offer in one resolution', async () => {
+    const { service, match, simulate } = setup()
+
+    await service.run({ blockNumber: 10n })
+
+    expect(match).toHaveBeenCalledWith({
+      asks: [MATCH.ask],
+      bids: [MATCH.bid],
+      maxMatches: Number.MAX_SAFE_INTEGER
+    })
+    expect(simulate).toHaveBeenCalledWith([MATCH, SECOND_MATCH])
   })
 
   test('submits exactly the prepared request returned by simulation', async () => {
