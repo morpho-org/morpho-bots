@@ -14,11 +14,7 @@ function takeKey(takeable: TakeableOffer) {
   return encodeFunctionData({
     abi: CrossedBooksResolver.abi,
     functionName: 'resolve',
-    args: [
-      [{ offer: takeable.offer, ratifierData: takeable.ratifierData, units: 0n }],
-      [],
-      0n
-    ]
+    args: [[{ offer: takeable.offer, ratifierData: takeable.ratifierData, units: 0n }], [], 0n]
   })
 }
 
