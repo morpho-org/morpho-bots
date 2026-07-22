@@ -18,6 +18,7 @@ describe('ConfigService', () => {
     expect(config.routerApiBaseUrl).toBe('https://api.morpho.org')
     expect(config.scanIntervalMs).toBe(15_000)
     expect(config.minimumProfit).toBe(1n)
+    expect(config.maxMatches).toBe(10)
     expect(config.resolver).toMatch(/^0x[0-9a-fA-F]{40}$/)
   })
 
@@ -35,13 +36,15 @@ describe('ConfigService', () => {
       RESOLVER_ADDRESS: `0x${'22'.repeat(20)}`,
       SCAN_INTERVAL_MS: '30000',
       MIN_PROFIT_ASSETS: '100',
-      MAX_FEE_GWEI: '50'
+      MAX_FEE_GWEI: '50',
+      MAX_MATCHES: '4'
     })
 
     expect(config.rpcUrlFallback).toBe('http://fallback.example')
     expect(config.routerApiBaseUrl).toBe('https://router.example')
     expect(config.scanIntervalMs).toBe(30_000)
     expect(config.minimumProfit).toBe(100n)
+    expect(config.maxMatches).toBe(4)
     expect(config.maxFeeWei).toBe(50_000_000_000n)
   })
 
@@ -53,7 +56,9 @@ describe('ConfigService', () => {
     [{ ...REQUIRED, API_BASE_URL: 'not-a-url' }, 'API_BASE_URL'],
     [{ ...REQUIRED, ROUTER_API_BASE_URL: 'not-a-url' }, 'ROUTER_API_BASE_URL'],
     [{ ...REQUIRED, SCAN_INTERVAL_MS: '0' }, 'SCAN_INTERVAL_MS'],
-    [{ ...REQUIRED, MIN_PROFIT_ASSETS: '-1' }, 'MIN_PROFIT_ASSETS']
+    [{ ...REQUIRED, MIN_PROFIT_ASSETS: '-1' }, 'MIN_PROFIT_ASSETS'],
+    [{ ...REQUIRED, MAX_MATCHES: '0' }, 'MAX_MATCHES'],
+    [{ ...REQUIRED, MAX_MATCHES: '9007199254740992' }, 'MAX_MATCHES']
   ])('rejects invalid configuration %#', (env, message) => {
     expect(() => ConfigService.from(env)).toThrow(message)
   })

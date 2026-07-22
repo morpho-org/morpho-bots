@@ -76,6 +76,15 @@ describe('MatchingService', () => {
     expect(service.match({ asks: [makeOffer('ask', 5n, 2n)], bids: [bid] })).toEqual([])
   })
 
+  test('caps matches at 10 by default', () => {
+    const matches = service.match({
+      asks: Array.from({ length: 11 }, () => makeOffer('ask', 5n, 1n)),
+      bids: [makeOffer('bid', 7n, 11n)]
+    })
+
+    expect(matches).toHaveLength(10)
+  })
+
   test('respects the requested match cap', () => {
     const matches = service.match({
       asks: [makeOffer('ask', 5n, 2n), makeOffer('ask', 6n, 2n)],

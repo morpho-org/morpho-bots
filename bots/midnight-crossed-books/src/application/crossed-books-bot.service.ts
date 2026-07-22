@@ -34,6 +34,7 @@ export class CrossedBooksBotService {
     private readonly books: OrderBookService,
     private readonly matching: MatchingServicePort,
     private readonly resolver: ResolverService,
+    private readonly maxMatches: number,
     private readonly inflightMarketIds: () => ReadonlySet<string>,
     private readonly logger: BotLogger
   ) {}
@@ -51,7 +52,7 @@ export class CrossedBooksBotService {
       const matches = this.matching.match({
         asks: book.asks,
         bids: book.bids,
-        maxMatches: Number.MAX_SAFE_INTEGER
+        maxMatches: this.maxMatches
       })
       if (matches.length === 0) continue
 

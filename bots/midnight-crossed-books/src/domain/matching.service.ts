@@ -1,5 +1,7 @@
 import type { CrossedMatch, TakeableOffer } from './order-book'
 
+export const DEFAULT_MAX_MATCHES = 10
+
 export interface MatchingServicePort {
   match(parameters: {
     asks: readonly TakeableOffer[]
@@ -22,7 +24,7 @@ export class MatchingService implements MatchingServicePort {
   match({
     asks,
     bids,
-    maxMatches = 1
+    maxMatches = DEFAULT_MAX_MATCHES
   }: {
     asks: readonly TakeableOffer[]
     bids: readonly TakeableOffer[]

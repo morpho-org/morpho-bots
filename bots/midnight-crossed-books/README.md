@@ -43,6 +43,7 @@ The generated files live under each infrastructure adapter's `generated/` direct
 - `API_BASE_URL` — Morpho API origin, default `https://api.morpho.org`.
 - `ROUTER_API_BASE_URL` — Router API origin, defaults to `API_BASE_URL` for the public gateway.
 - `MIN_PROFIT_ASSETS` — raw loan-token units, default `1`; one value applies to all markets.
+- `MAX_MATCHES` — maximum crossed matches per resolver transaction, default `10`.
 - `SCAN_INTERVAL_MS` — default `15000`.
 - `MAX_FEE_GWEI` — default `300`.
 

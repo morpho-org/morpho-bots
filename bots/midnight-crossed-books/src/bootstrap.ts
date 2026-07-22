@@ -100,6 +100,7 @@ export async function createApplication(environment: Record<string, string | und
     books,
     matching,
     resolver,
+    config.maxMatches,
     () => queue.inflightLabels(),
     logger
   )
@@ -130,7 +131,8 @@ export async function createApplication(environment: Record<string, string | und
         sender,
         midnight: config.midnight,
         resolver: config.resolver,
-        minimumProfit: config.minimumProfit
+        minimumProfit: config.minimumProfit,
+        maxMatches: config.maxMatches
       })
       void heartbeat.start()
       await runner.poll()

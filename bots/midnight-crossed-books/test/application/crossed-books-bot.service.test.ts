@@ -36,6 +36,7 @@ function setup(
     matches?: CrossedMatch[]
     simulation?: SimulationResult
     booksError?: Error
+    maxMatches?: number
   } = {}
 ) {
   const listListedActiveMarkets = mock(async () => overrides.markets ?? [MARKET])
@@ -65,6 +66,7 @@ function setup(
     books,
     matching,
     resolver,
+    overrides.maxMatches ?? 10,
     () => overrides.inflight ?? new Set(),
     logger
   )
@@ -128,9 +130,21 @@ describe('CrossedBooksBotService', () => {
     expect(match).toHaveBeenCalledWith({
       asks: [MATCH.ask],
       bids: [MATCH.bid],
-      maxMatches: Number.MAX_SAFE_INTEGER
+      maxMatches: 10
     })
     expect(simulate).toHaveBeenCalledWith([MATCH, SECOND_MATCH])
+  })
+
+  test('uses the configured match cap', async () => {
+    const { service, match } = setup({ maxMatches: 3 })
+
+    await service.run({ blockNumber: 10n })
+
+    expect(match).toHaveBeenCalledWith({
+      asks: [MATCH.ask],
+      bids: [MATCH.bid],
+      maxMatches: 3
+    })
   })
 
   test('submits exactly the prepared request returned by simulation', async () => {
