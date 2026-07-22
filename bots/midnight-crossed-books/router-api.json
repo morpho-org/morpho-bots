@@ -1,0 +1,1728 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Router API",
+    "version": "1.0.0",
+    "description": "API for the Morpho Router"
+  },
+  "servers": [
+    {
+      "url": "https://api.morpho.org",
+      "description": "Production server"
+    },
+    {
+      "url": "http://localhost:7891",
+      "description": "Local development server"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Books",
+      "description": "A book is the set of takeable offers for a single market, split into bid and ask sides; each market has exactly one book.\n\nA takeable offer is an offer that has been submitted to the mempool, validated, and checked against its maker's live on-chain liquidity. A book therefore reflects liquidity that is executable right now, giving a comprehensive view of what is available per market.\n\nThese read-only endpoints expose a book at three levels of detail:\n\n- **Level 1 overview:** `GET /v0/midnight/books` lists books across markets with market metadata and the top ask and bid levels.\n- **Level 2 price levels:** `GET /v0/midnight/books/{market-id}` returns a full snapshot of both sides; `GET /v0/midnight/books/{market-id}/{side}` returns one side aggregated into price levels by tick.\n- **Level 3 offers:** `GET /v0/midnight/books/{market-id}/{side}/takeable-offers` returns the individual takeable offers behind those levels, ready to execute.\n\nTo turn a target size into an executable plan, `GET /v0/midnight/books/{market-id}/{side}/quote` returns a bundle-ready quote with expected price bounds and the takeable offers to execute.\n\nTo read one maker's takeable offers across every market (their portfolio), use `GET /v0/midnight/takeable-offers?maker={address}`."
+    },
+    {
+      "name": "Mempool",
+      "description": "Endpoints for validating mempool submissions before they are indexed."
+    }
+  ],
+  "paths": {
+    "/v0/midnight/books": {
+      "get": {
+        "tags": ["Books"],
+        "summary": "List books",
+        "description": "Returns books for active markets with market metadata and the top 3 ask/bid levels. Past maturities are excluded, even when requested with `ids`. Supports filtering, sorting, and pagination; default sort is `id` ascending.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookCursorListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BadRequestResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceUnavailableResponse"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "example": "-ask,bid,maturity",
+            "description": "Sort by comma-separated fields (`id`, `ask`, `bid`, `maturity`). Prefix a field with `-` for descending. Max 3 fields.",
+            "style": "form",
+            "explode": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "maturities",
+            "required": false,
+            "example": "1761922800,1764524800",
+            "description": "Exact maturity timestamp filter in unix seconds (comma-separated). Maximum 20 values.",
+            "style": "form",
+            "explode": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            }
+          },
+          {
+            "in": "query",
+            "name": "collateral_tokens",
+            "required": false,
+            "example": "0x34Cf890dB685FC536E05652FB41f02090c3fb751,0xC9A9C45C0eB717f8b5F193Af6bAa05A1c0Ac5078",
+            "description": "Collateral token filter (comma-separated, matches any collateral). Maximum 20 values.",
+            "style": "form",
+            "explode": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "in": "query",
+            "name": "loan_tokens",
+            "required": false,
+            "example": "0xC9A9C45C0eB717f8b5F193Af6bAa05A1c0Ac5078,0x34Cf890dB685FC536E05652FB41f02090c3fb751",
+            "description": "Loan token address filter (comma-separated). Maximum 20 values.",
+            "style": "form",
+            "explode": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "in": "query",
+            "name": "chain_ids",
+            "required": false,
+            "example": "1",
+            "description": "Chain ID filter (comma-separated). Currently accepts at most one chain id.",
+            "style": "form",
+            "explode": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            }
+          },
+          {
+            "in": "query",
+            "name": "ids",
+            "required": false,
+            "example": "0x12590ae1aee324a005be565f3bcdd16dbf8daf7969b26c181c8b8f467dad9f67,0x22590ae1aee324a005be565f3bcdd16dbf8daf7969b26c181c8b8f467dad9f68",
+            "description": "Market ID filter as a single comma-separated query parameter. Returns books for the matching markets. Maximum 20 IDs.",
+            "style": "form",
+            "explode": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "example": 10,
+            "description": "Maximum number of items to return (max 20, default 10).",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "example": "eyJzb3J0IjpbImlkIl0sImlkIjoiMHgxMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExIiwiYXNrIjoiMCIsImJpZCI6IjAiLCJtYXR1cml0eSI6MTc2MTkyMjgwMH0",
+            "description": "Opaque pagination cursor from a previous response.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": []
+      }
+    },
+    "/v0/midnight/books/{market-id}": {
+      "get": {
+        "tags": ["Books"],
+        "summary": "Get book",
+        "description": "Returns one book snapshot with market metadata and both sides. Each side returns up to `depth` levels, sorted best price first.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BookDataResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BadRequestResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Book not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceUnavailableResponse"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "in": "query",
+            "name": "depth",
+            "required": false,
+            "example": 100,
+            "description": "Maximum levels returned per side. Default: 100. Maximum: 5821.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "in": "path",
+            "name": "market-id",
+            "example": "0x12590ae1aee324a005be565f3bcdd16dbf8daf7969b26c181c8b8f467dad9f67",
+            "description": "Market ID whose book to read (`market_id` in responses).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": []
+      }
+    },
+    "/v0/midnight/books/{market-id}/{side}": {
+      "get": {
+        "tags": ["Books"],
+        "summary": "List book price levels",
+        "description": "Returns one side of a book as price levels grouped by tick with total units, assets, and price, sorted best price first.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListBookPriceLevelResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BadRequestResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceUnavailableResponse"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "in": "query",
+            "name": "depth",
+            "required": false,
+            "example": 100,
+            "description": "Maximum levels returned. Default: 100. Maximum: 5821.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "in": "path",
+            "name": "side",
+            "example": "asks",
+            "description": "Book side to query (`asks` or `bids`).",
+            "schema": {
+              "type": "string",
+              "enum": ["asks", "bids"]
+            }
+          },
+          {
+            "in": "path",
+            "name": "market-id",
+            "example": "0x12590ae1aee324a005be565f3bcdd16dbf8daf7969b26c181c8b8f467dad9f67",
+            "description": "Market ID whose book side to read (`market_id` in responses).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": []
+      }
+    },
+    "/v0/midnight/books/{market-id}/{side}/takeable-offers": {
+      "get": {
+        "tags": ["Books"],
+        "summary": "List book takeable offers",
+        "description": "Returns up to 1,000 executable offers for one book side, sorted best price first. This endpoint is not paginated and does not accept a limit or cursor.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListBookTakeableOfferResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BadRequestResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceUnavailableResponse"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "side",
+            "example": "asks",
+            "description": "Book side to query (`asks` or `bids`).",
+            "schema": {
+              "type": "string",
+              "enum": ["asks", "bids"]
+            }
+          },
+          {
+            "in": "path",
+            "name": "market-id",
+            "example": "0x12590ae1aee324a005be565f3bcdd16dbf8daf7969b26c181c8b8f467dad9f67",
+            "description": "Market ID whose book side to read (`market_id` in responses).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": []
+      }
+    },
+    "/v0/midnight/books/{market-id}/{side}/quote": {
+      "get": {
+        "tags": ["Books"],
+        "summary": "Get quote",
+        "description": "Returns a bundle-ready quote for the requested assets or units, plus expected best/worst average prices and maximum executable liquidity.\n\nThe endpoint optimizes for successful target-aware bundle execution under contention: `takeable_offers` are best-priced per-offer caps and their total can exceed the requested target, giving a bundle executor fallback liquidity when earlier offers are partially consumed or skipped.\n\nAt most the 10,000 best-priced takeable offers are returned, which is far above any executable fill and only trims a flooded tail.\n\nUse the returned takeable offers with a bundle abstraction that stops at your requested target and applies your max/min asset or unit protections. If you execute takeable offers independently with Midnight.take, do not submit every returned unit blindly: clamp each offer to your remaining target and current takeability, or you may execute more than intended.\n\nIf the requested size cannot be fully satisfied at quote time under the selected guard, the endpoint returns 422.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuoteDataResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BadRequestResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Requested quote size cannot be fully satisfied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InsufficientLiquidityResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceUnavailableResponse"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "in": "query",
+            "name": "average_worst_price",
+            "required": false,
+            "example": "1000000000000000000",
+            "description": "Optional average weighted-price guard for the requested target. `asks` must execute at or below this value; `bids` must execute at or above it. The guard applies to the expected target fill, not to the sum of all returned takeable-offer caps. Mutually exclusive with `slippage`.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "slippage",
+            "required": false,
+            "example": "0.5",
+            "description": "Optional slippage percentage used to derive `average_worst_price` from the quoted `average_best_price` for the requested target. Slippage constrains the expected target fill, not the sum of all returned takeable-offer caps. For `asks`, the guard increases by slippage; for `bids`, it decreases by slippage. Range: 0.1 to 100, with at most one decimal place. Mutually exclusive with `average_worst_price`.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "units",
+            "required": false,
+            "example": "1000000000000000000",
+            "description": "Target unit amount. Provide exactly one of `assets` or `units`.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "assets",
+            "required": false,
+            "example": "1000000000000000000",
+            "description": "Target assets amount. Provide exactly one of `assets` or `units`.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "side",
+            "example": "asks",
+            "description": "Book side to quote (`asks` or `bids`).",
+            "schema": {
+              "type": "string",
+              "enum": ["asks", "bids"]
+            }
+          },
+          {
+            "in": "path",
+            "name": "market-id",
+            "example": "0x1234567890123456789012345678901234567890123456789012345678901234",
+            "description": "Market ID whose book to quote (`market_id` in responses).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": []
+      }
+    },
+    "/v0/midnight/takeable-offers": {
+      "get": {
+        "tags": ["Books"],
+        "summary": "List maker takeable offers",
+        "description": "Returns one maker's unexpired, unmatured offers. A fresh offer is withheld until its takeable amount has been measured. Once measured, offers that are not executable remain in the response with `units` set to `0`.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListTakeableOfferResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BadRequestResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceUnavailableResponse"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "in": "query",
+            "name": "maker",
+            "required": true,
+            "example": "0x7b093658BE7f90B63D7c359e8f408e503c2D9401",
+            "description": "Maker EVM address. Matching is case-insensitive.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "market_ids",
+            "required": false,
+            "example": "0x0000000000000000000000000000000000000000000000000000000000000001,0x0000000000000000000000000000000000000000000000000000000000000002",
+            "description": "Comma-separated market IDs (32-byte hex). Matches takeable offers in any of the provided markets. Maximum 20 IDs. Combined with `groups` using AND semantics.",
+            "style": "form",
+            "explode": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "groups",
+            "required": false,
+            "example": "0x0000000000000000000000000000000000000000000000000000000000000001,0x0000000000000000000000000000000000000000000000000000000000000002",
+            "description": "Comma-separated group IDs (32-byte hex). Matches takeable offers in any of the provided groups. Maximum 20 IDs.",
+            "style": "form",
+            "explode": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "example": 10,
+            "description": "Maximum number of items to return.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "example": "eyJncm91cCI6IjB4MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMSIsImhhc2giOiIweDIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIiLCJtYXJrZXRJZCI6IjB4MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMyJ9",
+            "description": "Opaque pagination cursor from a previous response.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": []
+      }
+    },
+    "/v0/midnight/mempool/validate": {
+      "post": {
+        "tags": ["Mempool"],
+        "summary": "Validate a mempool payload",
+        "description": "Use this endpoint before submitting an encoded payload to the mempool. It checks whether the router would accept the payload for indexing; it does not prove a later on-chain transaction will succeed. `data.issues` is empty when the payload passes. When issues are returned, each `rule` appears once for the whole payload, not once per offer. `details` is normally null; for `min_offer_assets_usd`, the first below-minimum offer includes its loan token and configured raw-asset floor.\n\nIssue names you may see:\n\n**Payload format**\n- `payload_version`: payload uses an unsupported version.\n- `payload_frame`: payload is not valid hex or is missing required framing bytes.\n- `payload_gzip_length`: declared compressed length does not match the payload bytes.\n- `payload_suffix_too_large`: trailing attribution or suffix bytes exceed the allowed size.\n- `payload_decompression`: compressed bytes cannot be decompressed or exceed size limits.\n- `payload_abi_decode`: decompressed bytes are not a valid offer list.\n- `empty_payload`: payload contains no offers.\n- `max_offers_per_tree`: payload contains more offers than the chain allows.\n- `duplicate_offer_hash`: the same offer appears more than once.\n\n**Chain and market support**\n- `unsupported_chain`: `chain_id` is not supported.\n- `market_chain_mismatch`: an offer embeds a chain id or Morpho V2 deployment address that does not match the requested chain.\n- `maturity`: market maturity is outside the allowed maturity windows.\n- `loan_token`: loan token is not supported on this chain.\n- `collateral_token`: collateral token is not supported on this chain.\n- `oracle`: oracle is not supported on this chain.\n- `market_triplet`: loan token, collateral token, and oracle combination is not supported.\n- `rcf_threshold`: market RCF threshold does not match its loan token and highest collateral LLTV.\n- `collateral_lltv`: collateral loan-to-value tier is not enabled.\n- `max_lif`: liquidation incentive setting is not enabled.\n- `max_collaterals`: an offer uses too many collateral entries.\n\n**Offer terms**\n- `amount_missing`: neither `max_units` nor `max_assets` is set.\n- `amount_conflict`: both `max_units` and `max_assets` are set; choose one.\n- `min_offer_assets_usd`: the loan token has no configured minimum, or offer size is below the chain's minimum value floor.\n- `min_tick`: price tick is below the allowed range.\n- `max_tick`: price tick is above the allowed range.\n- `tick_spacing`: price tick is not on the allowed tick grid.\n- `min_duration`: offer start/expiry window is too short.\n- `ratifier`: ratifier contract is not accepted for the chain.\n\n**Batch consistency**\n- `mixed_maker`: offers in one payload use different makers.\n- `mixed_ratifier`: offers in one payload use different ratifiers.\n- `group_identity`: group id does not match the offers in that group.\n- `group_consistency`: offers sharing a group have conflicting terms or overlapping active windows.\n\n**Callbacks**\n- `non_empty_callback`: callbacks with custom address or data are not accepted.",
+        "responses": {
+          "200": {
+            "description": "Validation result. Check `data.issues`; an empty list means the payload passes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationSuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BadRequestResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Payload Too Large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PayloadTooLargeResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceUnavailableResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ValidateMempoolPayloadRequest"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "in": "query",
+            "name": "timestamp",
+            "required": false,
+            "example": "2026-06-01T16:00:00Z",
+            "description": "Optional ISO-8601 UTC timestamp. Uses the policy snapshot active at the latest 15:00 UTC boundary at or before this timestamp; omitted uses the current time.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": []
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "BookCursorListResponse": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "nullable": true,
+            "example": "eyJzb3J0IjpbImlkIl0sImlkIjoiMHgxMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExIiwiYXNrIjoiMCIsImJpZCI6IjAiLCJtYXR1cml0eSI6MTc2MTkyMjgwMH0",
+            "description": "Opaque pagination cursor."
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BookMarketResponse"
+            },
+            "description": "Books with market metadata and the top 3 ask/bid levels."
+          }
+        },
+        "required": ["cursor", "data"]
+      },
+      "BookMarketResponse": {
+        "type": "object",
+        "properties": {
+          "market_id": {
+            "type": "string",
+            "example": "0x12590ae1aee324a005be565f3bcdd16dbf8daf7969b26c181c8b8f467dad9f67",
+            "description": "Market id (32-byte hex) this book belongs to."
+          },
+          "chain_id": {
+            "type": "number",
+            "example": 1
+          },
+          "midnight": {
+            "type": "string",
+            "example": "0x2F7a3AA739ba5792Ce1b4eA046117f2C0095BCA6",
+            "description": "Address of the MorphoV2 (Midnight) contract that owns the market."
+          },
+          "loan_token": {
+            "type": "string",
+            "example": "0xC9A9C45C0eB717f8b5F193Af6bAa05A1c0Ac5078"
+          },
+          "collaterals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CollateralResponse"
+            }
+          },
+          "maturity": {
+            "type": "number",
+            "example": 1761922800
+          },
+          "rcf_threshold": {
+            "type": "string",
+            "example": "0"
+          },
+          "enter_gate": {
+            "type": "string",
+            "example": "0x0000000000000000000000000000000000000000"
+          },
+          "liquidator_gate": {
+            "type": "string",
+            "example": "0x0000000000000000000000000000000000000000"
+          },
+          "asks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PriceLevel"
+            },
+            "description": "Ask levels, sorted best first. List responses include up to the top 3 asks."
+          },
+          "bids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PriceLevel"
+            },
+            "description": "Bid levels, sorted best first. List responses include up to the top 3 bids."
+          }
+        },
+        "required": [
+          "market_id",
+          "chain_id",
+          "midnight",
+          "loan_token",
+          "collaterals",
+          "maturity",
+          "rcf_threshold",
+          "enter_gate",
+          "liquidator_gate",
+          "asks",
+          "bids"
+        ]
+      },
+      "CollateralResponse": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "example": "0x34Cf890dB685FC536E05652FB41f02090c3fb751",
+            "description": "Collateral token address."
+          },
+          "lltv": {
+            "type": "string",
+            "example": "860000000000000000",
+            "description": "Liquidation loan-to-value for this collateral, scaled by 1e18."
+          },
+          "liquidation_cursor": {
+            "type": "string",
+            "example": "300000000000000000",
+            "description": "Liquidation cursor for this collateral, scaled by 1e18. The protocol derives the maximum liquidation incentive factor from it."
+          },
+          "oracle": {
+            "type": "string",
+            "example": "0x45093658BE7f90B63D7c359e8f408e503c2D9401",
+            "description": "Oracle address used to price this collateral."
+          }
+        },
+        "required": ["token", "lltv", "liquidation_cursor", "oracle"]
+      },
+      "PriceLevel": {
+        "type": "object",
+        "properties": {
+          "tick": {
+            "type": "number",
+            "example": 495,
+            "minimum": 0,
+            "maximum": 6744
+          },
+          "price": {
+            "type": "string",
+            "example": "500000000000000000",
+            "description": "Price at this tick (scaled by 1e18)."
+          },
+          "units": {
+            "type": "string",
+            "example": "369216000000000000000000",
+            "description": "Total executable units at this tick."
+          },
+          "assets": {
+            "type": "string",
+            "example": "184608000000000000000000",
+            "description": "Total maker-side assets at this tick, using onchain rounding per offer (buy books floor, sell books ceil)."
+          },
+          "count": {
+            "type": "number",
+            "example": 5
+          }
+        },
+        "required": ["tick", "price", "units", "assets", "count"]
+      },
+      "BadRequestResponse": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorResponse"
+          }
+        },
+        "required": ["error"]
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "VALIDATION_ERROR",
+              "NOT_FOUND",
+              "INTERNAL_SERVER_ERROR",
+              "BAD_REQUEST",
+              "INVALID_PAYLOAD",
+              "PAYLOAD_TOO_LARGE",
+              "INSUFFICIENT_LIQUIDITY",
+              "NOT_IMPLEMENTED",
+              "SERVICE_UNAVAILABLE"
+            ],
+            "example": "VALIDATION_ERROR",
+            "description": "Machine-readable error code."
+          },
+          "message": {
+            "type": "string",
+            "example": "Limit must be greater than 0.",
+            "description": "Human-readable error message."
+          },
+          "details": {
+            "type": "object",
+            "nullable": true,
+            "example": [
+              {
+                "field": "limit",
+                "issue": "Limit must be greater than 0."
+              }
+            ],
+            "description": "Structured error details, or null when no details are available."
+          },
+          "request_id": {
+            "type": "string",
+            "example": "req-123",
+            "description": "Request ID to include when reporting the error."
+          }
+        },
+        "required": ["code", "message", "details", "request_id"]
+      },
+      "ServiceUnavailableResponse": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorResponse"
+          }
+        },
+        "required": ["error"]
+      },
+      "BookDataResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/BookMarketResponse",
+            "description": "Book snapshot with market metadata and both sides."
+          }
+        },
+        "required": ["data"]
+      },
+      "NotFoundResponse": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorResponse"
+          }
+        },
+        "required": ["error"]
+      },
+      "ListBookPriceLevelResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PriceLevel"
+            },
+            "description": "Book price levels grouped by tick, sorted best first."
+          }
+        },
+        "required": ["data"]
+      },
+      "ListBookTakeableOfferResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TakeableOfferResponse"
+            },
+            "description": "Takeable offers for this book side.",
+            "example": [
+              {
+                "market_id": "0x25690ae1aee324a005be565f3bcdd16dbf8daf7969b26c181c8b8f467dad9f67",
+                "units": "369216000000000000000000",
+                "offer": {
+                  "market": {
+                    "chain_id": 8453,
+                    "midnight": "0x2F7a3AA739ba5792Ce1b4eA046117f2C0095BCA6",
+                    "loan_token": "0xC9A9C45C0eB717f8b5F193Af6bAa05A1c0Ac5078",
+                    "collaterals": [
+                      {
+                        "token": "0x34Cf890dB685FC536E05652FB41f02090c3fb751",
+                        "lltv": "860000000000000000",
+                        "liquidation_cursor": "300000000000000000",
+                        "oracle": "0x45093658BE7f90B63D7c359e8f408e503c2D9401"
+                      }
+                    ],
+                    "maturity": 1761922799,
+                    "rcf_threshold": "0",
+                    "enter_gate": "0x0000000000000000000000000000000000000000",
+                    "liquidator_gate": "0x0000000000000000000000000000000000000000"
+                  },
+                  "buy": false,
+                  "maker": "0x7b093658BE7f90B63D7c359e8f408e503c2D9401",
+                  "max_units": "369216000000000000000000",
+                  "start": 1761922790,
+                  "expiry": 1761922799,
+                  "tick": 495,
+                  "group": "0x000000000000000000000000000000000000000000000000000000000008b8f4",
+                  "callback": "0x0000000000000000000000000000000000000000",
+                  "callback_data": "0x",
+                  "receiver_if_maker_is_seller": "0x7b093658BE7f90B63D7c359e8f408e503c2D9401",
+                  "ratifier": "0x0000000000000000000000000000000000000002",
+                  "reduce_only": false,
+                  "max_assets": "0",
+                  "continuous_fee_cap": "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+                },
+                "ratifier_data": "0x000000000000000000000000000000000000000000000000000000000000001b12121212121212121212121212121212121212121212121212121212121212123434343434343434343434343434343434343434343434343434343434343434"
+              }
+            ]
+          }
+        },
+        "required": ["data"]
+      },
+      "TakeableOfferResponse": {
+        "type": "object",
+        "properties": {
+          "units": {
+            "type": "string",
+            "example": "369216000000000000000000",
+            "description": "Executable or currently reserved offer size in units."
+          },
+          "offer": {
+            "$ref": "#/components/schemas/OfferDataResponse",
+            "example": {
+              "market": {
+                "chain_id": 8453,
+                "midnight": "0x2F7a3AA739ba5792Ce1b4eA046117f2C0095BCA6",
+                "loan_token": "0xC9A9C45C0eB717f8b5F193Af6bAa05A1c0Ac5078",
+                "collaterals": [
+                  {
+                    "token": "0x34Cf890dB685FC536E05652FB41f02090c3fb751",
+                    "lltv": "860000000000000000",
+                    "liquidation_cursor": "300000000000000000",
+                    "oracle": "0x45093658BE7f90B63D7c359e8f408e503c2D9401"
+                  }
+                ],
+                "maturity": 1761922799,
+                "rcf_threshold": "0",
+                "enter_gate": "0x0000000000000000000000000000000000000000",
+                "liquidator_gate": "0x0000000000000000000000000000000000000000"
+              },
+              "buy": false,
+              "maker": "0x7b093658BE7f90B63D7c359e8f408e503c2D9401",
+              "max_units": "369216000000000000000000",
+              "start": 1761922790,
+              "expiry": 1761922799,
+              "tick": 495,
+              "group": "0x000000000000000000000000000000000000000000000000000000000008b8f4",
+              "callback": "0x0000000000000000000000000000000000000000",
+              "callback_data": "0x",
+              "receiver_if_maker_is_seller": "0x7b093658BE7f90B63D7c359e8f408e503c2D9401",
+              "ratifier": "0x0000000000000000000000000000000000000002",
+              "reduce_only": false,
+              "max_assets": "0",
+              "continuous_fee_cap": "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+            }
+          },
+          "ratifier_data": {
+            "type": "string",
+            "example": "0x000000000000000000000000000000000000000000000000000000000000001b12121212121212121212121212121212121212121212121212121212121212123434343434343434343434343434343434343434343434343434343434343434",
+            "description": "Mandatory data generated by the maker to verify the offer onchain."
+          },
+          "market_id": {
+            "type": "string",
+            "example": "0x25690ae1aee324a005be565f3bcdd16dbf8daf7969b26c181c8b8f467dad9f67",
+            "description": "Market id (32-byte hex) the offer belongs to."
+          }
+        },
+        "required": ["units", "offer", "ratifier_data", "market_id"]
+      },
+      "OfferDataResponse": {
+        "type": "object",
+        "properties": {
+          "market": {
+            "$ref": "#/components/schemas/MarketOfferResponse",
+            "example": {
+              "chain_id": 8453,
+              "midnight": "0x2F7a3AA739ba5792Ce1b4eA046117f2C0095BCA6",
+              "loan_token": "0xC9A9C45C0eB717f8b5F193Af6bAa05A1c0Ac5078",
+              "collaterals": [
+                {
+                  "token": "0x34Cf890dB685FC536E05652FB41f02090c3fb751",
+                  "lltv": "860000000000000000",
+                  "liquidation_cursor": "300000000000000000",
+                  "oracle": "0x45093658BE7f90B63D7c359e8f408e503c2D9401"
+                }
+              ],
+              "maturity": 1761922799,
+              "rcf_threshold": "0",
+              "enter_gate": "0x0000000000000000000000000000000000000000",
+              "liquidator_gate": "0x0000000000000000000000000000000000000000"
+            }
+          },
+          "buy": {
+            "type": "boolean",
+            "example": false
+          },
+          "maker": {
+            "type": "string",
+            "example": "0x7b093658BE7f90B63D7c359e8f408e503c2D9401"
+          },
+          "max_units": {
+            "type": "string",
+            "example": "369216000000000000000000"
+          },
+          "start": {
+            "type": "number",
+            "example": 1761922790
+          },
+          "expiry": {
+            "type": "number",
+            "example": 1761922799
+          },
+          "tick": {
+            "type": "number",
+            "example": 495,
+            "minimum": 0,
+            "maximum": 6744
+          },
+          "group": {
+            "type": "string",
+            "example": "0x000000000000000000000000000000000000000000000000000000000008b8f4"
+          },
+          "callback": {
+            "type": "string",
+            "example": "0x0000000000000000000000000000000000000000"
+          },
+          "callback_data": {
+            "type": "string",
+            "example": "0x"
+          },
+          "receiver_if_maker_is_seller": {
+            "type": "string",
+            "example": "0x7b093658BE7f90B63D7c359e8f408e503c2D9401"
+          },
+          "ratifier": {
+            "type": "string",
+            "example": "0x0000000000000000000000000000000000000002"
+          },
+          "reduce_only": {
+            "type": "boolean",
+            "example": false
+          },
+          "max_assets": {
+            "type": "string",
+            "example": "0"
+          },
+          "continuous_fee_cap": {
+            "type": "string",
+            "description": "Maximum market continuous fee the maker accepts; the offer is not takeable while the market continuous fee exceeds it. Decimal uint256 string.",
+            "example": "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+          }
+        },
+        "required": [
+          "market",
+          "buy",
+          "maker",
+          "max_units",
+          "start",
+          "expiry",
+          "tick",
+          "group",
+          "callback",
+          "callback_data",
+          "receiver_if_maker_is_seller",
+          "ratifier",
+          "reduce_only",
+          "max_assets",
+          "continuous_fee_cap"
+        ]
+      },
+      "MarketOfferResponse": {
+        "type": "object",
+        "properties": {
+          "chain_id": {
+            "type": "number",
+            "example": 8453,
+            "description": "EVM chain id the market lives on."
+          },
+          "midnight": {
+            "type": "string",
+            "example": "0x2F7a3AA739ba5792Ce1b4eA046117f2C0095BCA6",
+            "description": "Address of the MorphoV2 (Midnight) contract that owns the market."
+          },
+          "loan_token": {
+            "type": "string",
+            "example": "0xC9A9C45C0eB717f8b5F193Af6bAa05A1c0Ac5078"
+          },
+          "collaterals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CollateralResponse"
+            },
+            "example": [
+              {
+                "token": "0x34Cf890dB685FC536E05652FB41f02090c3fb751",
+                "lltv": "860000000000000000",
+                "liquidation_cursor": "300000000000000000",
+                "oracle": "0x45093658BE7f90B63D7c359e8f408e503c2D9401"
+              }
+            ]
+          },
+          "maturity": {
+            "type": "number",
+            "example": 1761922799
+          },
+          "rcf_threshold": {
+            "type": "string",
+            "example": "0"
+          },
+          "enter_gate": {
+            "type": "string",
+            "example": "0x0000000000000000000000000000000000000000"
+          },
+          "liquidator_gate": {
+            "type": "string",
+            "example": "0x0000000000000000000000000000000000000000"
+          }
+        },
+        "required": [
+          "chain_id",
+          "midnight",
+          "loan_token",
+          "collaterals",
+          "maturity",
+          "rcf_threshold",
+          "enter_gate",
+          "liquidator_gate"
+        ]
+      },
+      "QuoteDataResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/QuotePayloadResponse",
+            "description": "Quote result and signed takeable-offer instructions.",
+            "example": {
+              "average_best_price": "1000000000000000000",
+              "average_worst_price": "1000000000000000000",
+              "available_assets": "1500000000000000000",
+              "available_units": "1500000000000000000",
+              "takeable_offers": [
+                {
+                  "market_id": "0x25690ae1aee324a005be565f3bcdd16dbf8daf7969b26c181c8b8f467dad9f67",
+                  "units": "369216000000000000000000",
+                  "offer": {
+                    "market": {
+                      "chain_id": 8453,
+                      "midnight": "0x2F7a3AA739ba5792Ce1b4eA046117f2C0095BCA6",
+                      "loan_token": "0xC9A9C45C0eB717f8b5F193Af6bAa05A1c0Ac5078",
+                      "collaterals": [
+                        {
+                          "token": "0x34Cf890dB685FC536E05652FB41f02090c3fb751",
+                          "lltv": "860000000000000000",
+                          "liquidation_cursor": "300000000000000000",
+                          "oracle": "0x45093658BE7f90B63D7c359e8f408e503c2D9401"
+                        }
+                      ],
+                      "maturity": 1761922799,
+                      "rcf_threshold": "0",
+                      "enter_gate": "0x0000000000000000000000000000000000000000",
+                      "liquidator_gate": "0x0000000000000000000000000000000000000000"
+                    },
+                    "buy": false,
+                    "maker": "0x7b093658BE7f90B63D7c359e8f408e503c2D9401",
+                    "max_units": "369216000000000000000000",
+                    "start": 1761922790,
+                    "expiry": 1761922799,
+                    "tick": 495,
+                    "group": "0x000000000000000000000000000000000000000000000000000000000008b8f4",
+                    "callback": "0x0000000000000000000000000000000000000000",
+                    "callback_data": "0x",
+                    "receiver_if_maker_is_seller": "0x7b093658BE7f90B63D7c359e8f408e503c2D9401",
+                    "ratifier": "0x0000000000000000000000000000000000000002",
+                    "reduce_only": false,
+                    "max_assets": "0",
+                    "continuous_fee_cap": "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+                  },
+                  "ratifier_data": "0x000000000000000000000000000000000000000000000000000000000000001b12121212121212121212121212121212121212121212121212121212121212123434343434343434343434343434343434343434343434343434343434343434"
+                }
+              ]
+            }
+          }
+        },
+        "required": ["data"]
+      },
+      "QuotePayloadResponse": {
+        "type": "object",
+        "properties": {
+          "average_best_price": {
+            "type": "string",
+            "description": "Weighted average price for the requested size before any guard is applied.",
+            "example": "1000000000000000000"
+          },
+          "average_worst_price": {
+            "type": "string",
+            "description": "Effective weighted average-price guard for the returned instructions.",
+            "example": "1000000000000000000"
+          },
+          "available_assets": {
+            "type": "string",
+            "description": "Maximum assets available from the returned takeable-offer caps if they remain executable. This can exceed the requested target so bundle execution has fallback liquidity.",
+            "example": "1500000000000000000"
+          },
+          "available_units": {
+            "type": "string",
+            "description": "Maximum units available from the returned takeable-offer caps if they remain executable. This can exceed the requested target so bundle execution has fallback liquidity.",
+            "example": "1500000000000000000"
+          },
+          "takeable_offers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TakeableOfferResponse"
+            },
+            "description": "Best-priced signed takeable-offer caps intended for target-aware bundle execution. Each `units` value is the maximum that offer may contribute, not an exact allocation for the requested target; the sum can exceed the requested size so a bundle executor can skip stale offers and still fill the target. If you call Midnight.take directly instead of using target-aware bundle execution, clamp each offer to your remaining target and current takeability, otherwise you may execute more than intended.",
+            "example": [
+              {
+                "market_id": "0x25690ae1aee324a005be565f3bcdd16dbf8daf7969b26c181c8b8f467dad9f67",
+                "units": "369216000000000000000000",
+                "offer": {
+                  "market": {
+                    "chain_id": 8453,
+                    "midnight": "0x2F7a3AA739ba5792Ce1b4eA046117f2C0095BCA6",
+                    "loan_token": "0xC9A9C45C0eB717f8b5F193Af6bAa05A1c0Ac5078",
+                    "collaterals": [
+                      {
+                        "token": "0x34Cf890dB685FC536E05652FB41f02090c3fb751",
+                        "lltv": "860000000000000000",
+                        "liquidation_cursor": "300000000000000000",
+                        "oracle": "0x45093658BE7f90B63D7c359e8f408e503c2D9401"
+                      }
+                    ],
+                    "maturity": 1761922799,
+                    "rcf_threshold": "0",
+                    "enter_gate": "0x0000000000000000000000000000000000000000",
+                    "liquidator_gate": "0x0000000000000000000000000000000000000000"
+                  },
+                  "buy": false,
+                  "maker": "0x7b093658BE7f90B63D7c359e8f408e503c2D9401",
+                  "max_units": "369216000000000000000000",
+                  "start": 1761922790,
+                  "expiry": 1761922799,
+                  "tick": 495,
+                  "group": "0x000000000000000000000000000000000000000000000000000000000008b8f4",
+                  "callback": "0x0000000000000000000000000000000000000000",
+                  "callback_data": "0x",
+                  "receiver_if_maker_is_seller": "0x7b093658BE7f90B63D7c359e8f408e503c2D9401",
+                  "ratifier": "0x0000000000000000000000000000000000000002",
+                  "reduce_only": false,
+                  "max_assets": "0",
+                  "continuous_fee_cap": "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+                },
+                "ratifier_data": "0x000000000000000000000000000000000000000000000000000000000000001b12121212121212121212121212121212121212121212121212121212121212123434343434343434343434343434343434343434343434343434343434343434"
+              }
+            ]
+          }
+        },
+        "required": [
+          "average_best_price",
+          "average_worst_price",
+          "available_assets",
+          "available_units",
+          "takeable_offers"
+        ]
+      },
+      "InsufficientLiquidityResponse": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorResponse"
+          }
+        },
+        "required": ["error"]
+      },
+      "ListTakeableOfferResponse": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "nullable": true,
+            "example": "eyJncm91cCI6IjB4MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMSIsImhhc2giOiIweDIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIiLCJtYXJrZXRJZCI6IjB4MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMyJ9",
+            "description": "Opaque pagination cursor."
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TakeableOfferResponse"
+            },
+            "description": "Takeable offers for this maker.",
+            "example": [
+              {
+                "market_id": "0x25690ae1aee324a005be565f3bcdd16dbf8daf7969b26c181c8b8f467dad9f67",
+                "units": "369216000000000000000000",
+                "offer": {
+                  "market": {
+                    "chain_id": 8453,
+                    "midnight": "0x2F7a3AA739ba5792Ce1b4eA046117f2C0095BCA6",
+                    "loan_token": "0xC9A9C45C0eB717f8b5F193Af6bAa05A1c0Ac5078",
+                    "collaterals": [
+                      {
+                        "token": "0x34Cf890dB685FC536E05652FB41f02090c3fb751",
+                        "lltv": "860000000000000000",
+                        "liquidation_cursor": "300000000000000000",
+                        "oracle": "0x45093658BE7f90B63D7c359e8f408e503c2D9401"
+                      }
+                    ],
+                    "maturity": 1761922799,
+                    "rcf_threshold": "0",
+                    "enter_gate": "0x0000000000000000000000000000000000000000",
+                    "liquidator_gate": "0x0000000000000000000000000000000000000000"
+                  },
+                  "buy": false,
+                  "maker": "0x7b093658BE7f90B63D7c359e8f408e503c2D9401",
+                  "max_units": "369216000000000000000000",
+                  "start": 1761922790,
+                  "expiry": 1761922799,
+                  "tick": 495,
+                  "group": "0x000000000000000000000000000000000000000000000000000000000008b8f4",
+                  "callback": "0x0000000000000000000000000000000000000000",
+                  "callback_data": "0x",
+                  "receiver_if_maker_is_seller": "0x7b093658BE7f90B63D7c359e8f408e503c2D9401",
+                  "ratifier": "0x0000000000000000000000000000000000000002",
+                  "reduce_only": false,
+                  "max_assets": "0",
+                  "continuous_fee_cap": "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+                },
+                "ratifier_data": "0x000000000000000000000000000000000000000000000000000000000000001b12121212121212121212121212121212121212121212121212121212121212123434343434343434343434343434343434343434343434343434343434343434"
+              }
+            ]
+          }
+        },
+        "required": ["cursor", "data"]
+      },
+      "ValidateMempoolPayloadRequest": {
+        "type": "object",
+        "properties": {
+          "chain_id": {
+            "type": "number",
+            "description": "Chain ID used for validation rules.",
+            "example": 1
+          },
+          "payload": {
+            "type": "string",
+            "description": "Hex-encoded mempool payload produced by Midnight tooling: version byte, 4-byte big-endian gzip length, then gzip-compressed ABI `(Offer, bytes ratifierData)[]`. Trailing attribution bytes are allowed up to the payload suffix limit.",
+            "maxLength": 2000002,
+            "example": "0x01000000..."
+          }
+        },
+        "required": ["chain_id", "payload"]
+      },
+      "ValidationSuccessResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ValidationSuccessDataResponse",
+            "description": "Validation result. HTTP 200 can still include issues; check `data.issues`."
+          }
+        },
+        "required": ["data"]
+      },
+      "ValidationSuccessDataResponse": {
+        "type": "object",
+        "properties": {
+          "issues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValidationIssueResponse"
+            },
+            "description": "Validation issues. Empty when validation passes. Each rule appears at most once for the whole payload.",
+            "example": [
+              {
+                "rule": "min_offer_assets_usd",
+                "details": {
+                  "loan_token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                  "min_assets": "100014791"
+                }
+              },
+              {
+                "rule": "tick_spacing",
+                "details": null
+              }
+            ]
+          }
+        },
+        "required": ["issues"]
+      },
+      "ValidationIssueResponse": {
+        "type": "object",
+        "properties": {
+          "rule": {
+            "type": "string",
+            "example": "amount_conflict",
+            "description": "Machine-readable issue name. See the validate endpoint description for meanings."
+          },
+          "details": {
+            "example": null,
+            "description": "First below-minimum loan token and configured floor for `min_offer_assets_usd`; otherwise null.",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MinOfferAssetsUsdIssueDetailsResponse"
+              },
+              {
+                "enum": [null]
+              }
+            ]
+          }
+        },
+        "required": ["rule", "details"]
+      },
+      "MinOfferAssetsUsdIssueDetailsResponse": {
+        "type": "object",
+        "properties": {
+          "loan_token": {
+            "type": "string",
+            "example": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "description": "Loan token of the first offer below its configured minimum."
+          },
+          "min_assets": {
+            "type": "string",
+            "example": "100014791",
+            "description": "Configured minimum in raw loan-token assets."
+          }
+        },
+        "required": ["loan_token", "min_assets"]
+      },
+      "PayloadTooLargeResponse": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorResponse"
+          }
+        },
+        "required": ["error"]
+      },
+      "ConfigContractsSuccessResponse": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "nullable": true,
+            "example": null
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConfigContractResponse"
+            },
+            "description": "Contract addresses used by the router on indexed chains.",
+            "example": [
+              {
+                "chain_id": 505050505,
+                "address": "0xD946246695A9259F3B33a78629026F61B3Ab40aF",
+                "name": "bundler"
+              },
+              {
+                "chain_id": 505050505,
+                "address": "0xb400B400B400B400B400B400B400B400B400B400",
+                "name": "mempool"
+              },
+              {
+                "chain_id": 505050505,
+                "address": "0x8A409D5D6394fC197c596d4E6E2c35e5d13f8a4d",
+                "name": "multicall"
+              },
+              {
+                "chain_id": 505050505,
+                "address": "0x23DFBc4B8B80C14CC5e25011B8491f268395BAd6",
+                "name": "midnight"
+              }
+            ]
+          }
+        },
+        "required": ["cursor", "data"]
+      },
+      "ConfigContractResponse": {
+        "type": "object",
+        "properties": {
+          "chain_id": {
+            "type": "number",
+            "example": 505050505
+          },
+          "address": {
+            "type": "string",
+            "example": "0xD946246695A9259F3B33a78629026F61B3Ab40aF"
+          },
+          "name": {
+            "type": "string",
+            "enum": [
+              "setterRatifier",
+              "bundler",
+              "ecrecoverAuthorizer",
+              "ecrecoverRatifier",
+              "mempool",
+              "multicall",
+              "midnight"
+            ],
+            "example": "bundler"
+          }
+        },
+        "required": ["chain_id", "address", "name"]
+      },
+      "ConfigRulesSuccessResponse": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "nullable": true,
+            "example": null
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConfigRulesRuleResponse"
+            },
+            "description": "Rules currently configured in the router.",
+            "example": [
+              {
+                "type": "maturity",
+                "chain_id": 1,
+                "name": "end_of_next_month",
+                "timestamp": 1764342000
+              },
+              {
+                "type": "loan_token",
+                "chain_id": 1,
+                "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+              },
+              {
+                "type": "collateral_token",
+                "chain_id": 1,
+                "address": "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"
+              },
+              {
+                "type": "oracle",
+                "chain_id": 1,
+                "address": "0xDddd770BADd886dF3864029e4B377B5F6a2B6b83"
+              },
+              {
+                "type": "market_triplet",
+                "chain_id": 8453,
+                "description": "Each collateral must use a supported loan token, collateral token, and oracle combination"
+              },
+              {
+                "type": "rcf_threshold",
+                "chain_id": 8453,
+                "description": "Market RCF threshold must match the configured loan-token and highest-LLTV threshold"
+              },
+              {
+                "type": "callback",
+                "chain_id": 1,
+                "callback_type": "buy_with_empty_callback",
+                "address": "0x0000000000000000000000000000000000000000",
+                "data": "0x"
+              },
+              {
+                "type": "min_offer_assets_usd",
+                "chain_id": 8453,
+                "usd_threshold": "100",
+                "description": "Offers must use a loan token with a configured minimum and be at least $100 of it"
+              },
+              {
+                "type": "min_tick",
+                "chain_id": 1,
+                "min_tick": 495
+              },
+              {
+                "type": "max_tick",
+                "chain_id": 1,
+                "max_tick": 6744
+              },
+              {
+                "type": "tick_spacing",
+                "chain_id": 1,
+                "tick_spacing": 4
+              },
+              {
+                "type": "ratifier",
+                "chain_id": 1,
+                "address": "0x0000000000000000000000000000000000000002"
+              },
+              {
+                "type": "collateral_lltv",
+                "chain_id": 1,
+                "allowed_lltvs": [
+                  "385000000000000000",
+                  "625000000000000000",
+                  "770000000000000000",
+                  "860000000000000000",
+                  "915000000000000000",
+                  "945000000000000000",
+                  "965000000000000000",
+                  "980000000000000000",
+                  "1000000000000000000"
+                ]
+              }
+            ]
+          }
+        },
+        "required": ["cursor", "data"]
+      },
+      "ConfigRulesRuleResponse": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "example": "maturity"
+          },
+          "chain_id": {
+            "type": "number",
+            "example": 1
+          },
+          "name": {
+            "type": "string",
+            "enum": ["end_of_month", "end_of_next_month"],
+            "example": "end_of_next_month"
+          },
+          "timestamp": {
+            "type": "number",
+            "example": 1764342000
+          },
+          "address": {
+            "type": "string",
+            "example": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+          },
+          "usd_threshold": {
+            "type": "string",
+            "example": "100"
+          },
+          "callback_type": {
+            "type": "string",
+            "example": "buy_with_empty_callback"
+          },
+          "data": {
+            "type": "string",
+            "example": "0x"
+          },
+          "min_tick": {
+            "type": "number",
+            "example": 495
+          },
+          "max_tick": {
+            "type": "number",
+            "example": 6744
+          },
+          "tick_spacing": {
+            "type": "number",
+            "example": 4
+          },
+          "max": {
+            "type": "number",
+            "example": 128
+          },
+          "min_seconds": {
+            "type": "number",
+            "example": 10
+          },
+          "allowed_lltvs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "385000000000000000",
+              "625000000000000000",
+              "770000000000000000",
+              "860000000000000000",
+              "915000000000000000",
+              "945000000000000000",
+              "965000000000000000",
+              "980000000000000000",
+              "1000000000000000000"
+            ]
+          },
+          "description": {
+            "type": "string",
+            "example": "All offers in a submitted batch must share the same maker address"
+          }
+        },
+        "required": ["type", "chain_id"]
+      },
+      "DebugOfferGroupSuccessResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "description": "Offer-group diagnosis: group state, offers with read-side gate facts, validation status and history, authorization/root flags, raw backing inputs, production backing measurements, the book_events log, the fill journal, and per-(market, side) takeable-zero reasons."
+          }
+        },
+        "required": ["data"]
+      }
+    }
+  }
+}

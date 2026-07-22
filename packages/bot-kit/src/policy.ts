@@ -11,13 +11,15 @@ export const DEFAULT_MAX_GAS_LIMIT = 15_000_000n
 /** Default calldata byte ceiling (matches the daemon-era signer policy default). */
 export const DEFAULT_MAX_DATA_BYTES = 65_536
 
-/** One signer authorizes one Executor on one chain, under fixed fee/gas/size ceilings. */
+/** One signer authorizes one contract entrypoint on one chain, under fixed fee/gas/size ceilings. */
 export type Policy = {
   chainId: number
   executor: Address
   maxFeePerGasWei: bigint
   maxGasLimit: bigint
   maxDataBytes: number
+  /** Allowed outer selector; defaults to Executor.exec_606BaXt. */
+  selector?: Hex
 }
 
 /** The prepared-transaction fields the pre-broadcast guard evaluates against a {@link Policy}. */
@@ -55,18 +57,14 @@ export class PolicyViolationError extends Error {
 }
 
 /**
- * Default-deny authorization for a prepared transaction, with zero value and the `exec_606BaXt`
- * selector fixed as non-configurable invariants and the fee/gas/size ceilings taken from the
+ * Default-deny authorization for a prepared transaction, with zero value and a caller-pinned selector
+ * (`exec_606BaXt` by default) and the fee/gas/size ceilings taken from the
  * {@link Policy}. Every field must satisfy its rule; the first failure decides. In-process, this
  * runs between prepare and broadcast — the cheap defense-in-depth against an upstream encoding bug
  * ever sending value, hitting the wrong contract, or exceeding a ceiling.
  *
- * OUTER-ENVELOPE guard, by deliberate scope: it pins only the OUTER call — target is the Executor,
- * selector is `exec_606BaXt`, value is 0, and the fee/gas/size ceilings hold. It does NOT decode or
- * allowlist the inner `bytes[]` program the Executor executes; the integrity of those inner calls
- * rests elsewhere — venue response handling (including the 1inch router pin), quote validation, and
- * the mandatory pre-send simulation that reverts an unprofitable or malformed program before it can
- * be broadcast.
+ * OUTER-ENVELOPE guard: target, selector, zero value, and fee/gas/size ceilings are pinned. It does
+ * not interpret calldata beyond the selector; each bot simulates its exact request before submit.
  */
 export function evaluatePolicy(policy: Policy, tx: PolicyTx): PolicyDecision {
   const deny = (check: PolicyCheck, message: string): PolicyDecision => ({
@@ -78,7 +76,7 @@ export function evaluatePolicy(policy: Policy, tx: PolicyTx): PolicyDecision {
     return deny('chainId', `chainId ${tx.chainId} does not equal ${policy.chainId}`)
   }
   if (!isAddressEqual(tx.to, policy.executor)) {
-    return deny('executor', `target ${tx.to} is not the configured Executor`)
+    return deny('executor', `target ${tx.to} is not the configured contract`)
   }
   if (tx.value !== 0n) return deny('value', 'transaction value must be zero')
   if (tx.maxFeePerGas > policy.maxFeePerGasWei) {
@@ -91,8 +89,9 @@ export function evaluatePolicy(policy: Policy, tx: PolicyTx): PolicyDecision {
   if (dataBytes > policy.maxDataBytes) {
     return deny('maxDataBytes', `calldata size ${dataBytes} exceeds policy ceiling`)
   }
-  if (tx.data.slice(0, 10).toLowerCase() !== EXECUTOR_SELECTOR) {
-    return deny('selector', `calldata must call Executor selector ${EXECUTOR_SELECTOR}`)
+  const selector = (policy.selector ?? EXECUTOR_SELECTOR).toLowerCase()
+  if (tx.data.slice(0, 10).toLowerCase() !== selector) {
+    return deny('selector', `calldata must call configured selector ${selector}`)
   }
   return { ok: true }
 }

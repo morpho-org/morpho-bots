@@ -48,6 +48,9 @@ jobs:
           # breaks the pending-queue bump/replace fork test (real nodes + anvil >=1.5 accept them).
           version: v1.5.1
 
+      - name: Run contract tests
+        run: forge test --root packages/contracts -vv
+
       - name: Run unit tests
         run: bun test
         env:

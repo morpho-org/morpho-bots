@@ -1,0 +1,4296 @@
+{
+  "components": {
+    "schemas": {
+      "MarketDetailResponse": {
+        "properties": {
+          "data": {
+            "description": "Midnight market configuration payload.",
+            "properties": {
+              "chain_id": {
+                "description": "Chain id where the market exists.",
+                "type": "number"
+              },
+              "collaterals": {
+                "description": "Collateral configuration for the market.",
+                "items": {
+                  "properties": {
+                    "liquidation_cursor": {
+                      "description": "Liquidation cursor for this collateral, WAD-scaled.",
+                      "internalType": "bigint",
+                      "type": "string"
+                    },
+                    "lltv": {
+                      "description": "Liquidation loan-to-value for this collateral, WAD-scaled.",
+                      "internalType": "bigint",
+                      "type": "string"
+                    },
+                    "oracle": {
+                      "description": "Oracle address used for this collateral.",
+                      "type": "string"
+                    },
+                    "token": {
+                      "description": "Collateral token address.",
+                      "type": "string"
+                    }
+                  },
+                  "required": ["token", "lltv", "liquidation_cursor", "oracle"],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "enter_gate": {
+                "description": "Enter gate address.",
+                "type": "string"
+              },
+              "liquidator_gate": {
+                "description": "Liquidator gate address.",
+                "type": "string"
+              },
+              "loan_token": {
+                "description": "Loan token address.",
+                "type": "string"
+              },
+              "market_id": {
+                "description": "Globally unique Midnight market id.",
+                "type": "string"
+              },
+              "maturity": {
+                "description": "Maturity timestamp in unix seconds.",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "rcf_threshold": {
+                "description": "Recovery close factor threshold.",
+                "internalType": "bigint",
+                "type": "string"
+              }
+            },
+            "required": [
+              "chain_id",
+              "market_id",
+              "loan_token",
+              "maturity",
+              "rcf_threshold",
+              "enter_gate",
+              "liquidator_gate",
+              "collaterals"
+            ],
+            "type": "object"
+          }
+        },
+        "required": ["data"],
+        "type": "object"
+      },
+      "MarketsResponse": {
+        "properties": {
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Opaque cursor for the next page, or null when there is none."
+          },
+          "data": {
+            "description": "Page of returned items.",
+            "items": {
+              "properties": {
+                "chain_id": {
+                  "description": "Chain id where the market exists.",
+                  "type": "number"
+                },
+                "collaterals": {
+                  "description": "Collateral configuration for the market.",
+                  "items": {
+                    "properties": {
+                      "liquidation_cursor": {
+                        "description": "Liquidation cursor for this collateral, WAD-scaled.",
+                        "internalType": "bigint",
+                        "type": "string"
+                      },
+                      "lltv": {
+                        "description": "Liquidation loan-to-value for this collateral, WAD-scaled.",
+                        "internalType": "bigint",
+                        "type": "string"
+                      },
+                      "oracle": {
+                        "description": "Oracle address used for this collateral.",
+                        "type": "string"
+                      },
+                      "token": {
+                        "description": "Collateral token address.",
+                        "type": "string"
+                      }
+                    },
+                    "required": ["token", "lltv", "liquidation_cursor", "oracle"],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "continuous_fee_rate": {
+                  "description": "Per-second continuous fee rate, WAD-scaled.",
+                  "internalType": "bigint",
+                  "type": "string"
+                },
+                "current_settlement_fee_cbp": {
+                  "description": "Current settlement fee in cbp. May include decimals because the current fee is interpolated.",
+                  "pattern": "^\\d+(\\.\\d+)?$",
+                  "type": "string"
+                },
+                "current_settlement_fee_wad": {
+                  "description": "Current settlement fee, WAD-scaled, based on time to maturity.",
+                  "internalType": "bigint",
+                  "type": "string"
+                },
+                "enter_gate": {
+                  "description": "Enter gate address.",
+                  "type": "string"
+                },
+                "liquidator_gate": {
+                  "description": "Liquidator gate address.",
+                  "type": "string"
+                },
+                "listed": {
+                  "description": "Whether this market is surfaced by the app trust layer (curated listing).",
+                  "type": "boolean"
+                },
+                "loan_token": {
+                  "description": "Loan token address.",
+                  "type": "string"
+                },
+                "market_id": {
+                  "description": "Globally unique Midnight market id.",
+                  "type": "string"
+                },
+                "maturity": {
+                  "description": "Maturity timestamp in unix seconds.",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "rcf_threshold": {
+                  "description": "Recovery close factor threshold.",
+                  "internalType": "bigint",
+                  "type": "string"
+                },
+                "settlement_fee_schedule": {
+                  "description": "Settlement fee schedule at [0d, 1d, 7d, 30d, 90d, 180d, 360d] time-to-maturity breakpoints.",
+                  "items": {
+                    "properties": {
+                      "fee_cbp": {
+                        "description": "Settlement fee at this breakpoint, in cbp (1 cbp = 1e-6 WAD = 0.01 bps).",
+                        "internalType": "bigint",
+                        "type": "string"
+                      },
+                      "time_to_maturity_days": {
+                        "description": "Settlement fee breakpoint time to maturity, in days.",
+                        "maximum": 9007199254740991,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": ["time_to_maturity_days", "fee_cbp"],
+                    "type": "object"
+                  },
+                  "maxItems": 7,
+                  "minItems": 7,
+                  "type": "array"
+                },
+                "tick_granularity": {
+                  "description": "Offer tick granularity for this market. Valid offer ticks are multiples of this value.",
+                  "maximum": 9007199254740991,
+                  "minimum": -9007199254740991,
+                  "type": "integer"
+                },
+                "total_units": {
+                  "description": "Current total units.",
+                  "internalType": "bigint",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "chain_id",
+                "market_id",
+                "loan_token",
+                "maturity",
+                "rcf_threshold",
+                "enter_gate",
+                "liquidator_gate",
+                "total_units",
+                "tick_granularity",
+                "settlement_fee_schedule",
+                "current_settlement_fee_wad",
+                "current_settlement_fee_cbp",
+                "continuous_fee_rate",
+                "listed",
+                "collaterals"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": ["cursor", "data"],
+        "type": "object"
+      },
+      "MarketStateResponse": {
+        "properties": {
+          "data": {
+            "description": "Midnight market dynamic state payload.",
+            "properties": {
+              "chain_id": {
+                "description": "Chain id where the market exists.",
+                "type": "number"
+              },
+              "continuous_fee_rate": {
+                "description": "Per-second continuous fee rate, WAD-scaled.",
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "current_settlement_fee_cbp": {
+                "description": "Current settlement fee in cbp. May include decimals because the current fee is interpolated.",
+                "pattern": "^\\d+(\\.\\d+)?$",
+                "type": "string"
+              },
+              "current_settlement_fee_wad": {
+                "description": "Current settlement fee, WAD-scaled, based on time to maturity.",
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "last_indexed_block": {
+                "description": "Latest block covered by the API when this market state payload was computed.",
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "market_id": {
+                "description": "Globally unique Midnight market id.",
+                "type": "string"
+              },
+              "settlement_fee_schedule": {
+                "description": "Settlement fee schedule at [0d, 1d, 7d, 30d, 90d, 180d, 360d] time-to-maturity breakpoints.",
+                "items": {
+                  "properties": {
+                    "fee_cbp": {
+                      "description": "Settlement fee at this breakpoint, in cbp (1 cbp = 1e-6 WAD = 0.01 bps).",
+                      "internalType": "bigint",
+                      "type": "string"
+                    },
+                    "time_to_maturity_days": {
+                      "description": "Settlement fee breakpoint time to maturity, in days.",
+                      "maximum": 9007199254740991,
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": ["time_to_maturity_days", "fee_cbp"],
+                  "type": "object"
+                },
+                "maxItems": 7,
+                "minItems": 7,
+                "type": "array"
+              },
+              "tick_granularity": {
+                "description": "Offer tick granularity for this market. Valid offer ticks are multiples of this value.",
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              "total_units": {
+                "description": "Current total units.",
+                "internalType": "bigint",
+                "type": "string"
+              }
+            },
+            "required": [
+              "chain_id",
+              "market_id",
+              "last_indexed_block",
+              "total_units",
+              "tick_granularity",
+              "settlement_fee_schedule",
+              "current_settlement_fee_wad",
+              "current_settlement_fee_cbp",
+              "continuous_fee_rate"
+            ],
+            "type": "object"
+          }
+        },
+        "required": ["data"],
+        "type": "object"
+      },
+      "MidnightErrorResponse": {
+        "properties": {
+          "error": {
+            "properties": {
+              "code": {
+                "description": "Stable, machine-readable error code (e.g. INVALID_CURSOR, MARKET_NOT_FOUND).",
+                "type": "string"
+              },
+              "details": {
+                "anyOf": [
+                  {},
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Optional structured error context (e.g. validation breakdowns); null when none."
+              },
+              "message": {
+                "description": "Human-readable error description.",
+                "type": "string"
+              },
+              "request_id": {
+                "description": "Server-assigned request id, echoed via the `X-Request-Id` response header.",
+                "type": "string"
+              }
+            },
+            "required": ["code", "message", "details", "request_id"],
+            "type": "object"
+          }
+        },
+        "required": ["error"],
+        "type": "object"
+      },
+      "OfferGroupsResponse": {
+        "properties": {
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Opaque cursor for the next page, or null when there is none."
+          },
+          "data": {
+            "description": "Page of returned items.",
+            "items": {
+              "properties": {
+                "chain_id": {
+                  "description": "Chain id where the group exists.",
+                  "type": "number"
+                },
+                "consumed": {
+                  "description": "Latest consumed amount for this group.",
+                  "internalType": "bigint",
+                  "type": "string"
+                },
+                "created_at": {
+                  "description": "Timestamp of the first active matching offer created in this group.",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "expiry": {
+                  "description": "Maximum expiry across all unexpired and unmatured offers in the whole group, including future-start offers.",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "id": {
+                  "description": "Offer group id.",
+                  "type": "string"
+                },
+                "max_assets": {
+                  "description": "Representative active offer max assets for this group.",
+                  "internalType": "bigint",
+                  "type": "string"
+                },
+                "max_units": {
+                  "description": "Representative active offer max units for this group.",
+                  "internalType": "bigint",
+                  "type": "string"
+                },
+                "offers": {
+                  "description": "Active offers in this group matching the non-market request filters.",
+                  "items": {
+                    "properties": {
+                      "buy": {
+                        "description": "Whether the offer is a buy offer.",
+                        "type": "boolean"
+                      },
+                      "callback": {
+                        "description": "Callback address.",
+                        "type": "string"
+                      },
+                      "callback_data": {
+                        "description": "Callback data.",
+                        "pattern": "^0x[0-9a-fA-F]*$",
+                        "type": "string"
+                      },
+                      "continuous_fee_cap": {
+                        "description": "Maximum continuous fee accepted by the maker.",
+                        "internalType": "bigint",
+                        "type": "string"
+                      },
+                      "created_at": {
+                        "description": "Offer creation block timestamp.",
+                        "maximum": 9007199254740991,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "expiry": {
+                        "description": "Offer expiry timestamp.",
+                        "maximum": 9007199254740991,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "maker": {
+                        "description": "Offer maker address.",
+                        "type": "string"
+                      },
+                      "market": {
+                        "description": "Immutable market configuration used to derive market_id. This is included because market_id is a one-way hash and uncreated markets cannot be decoded from it.",
+                        "properties": {
+                          "collaterals": {
+                            "description": "Collateral configuration used to derive the market id.",
+                            "items": {
+                              "properties": {
+                                "liquidation_cursor": {
+                                  "description": "Liquidation cursor for this collateral, WAD-scaled.",
+                                  "internalType": "bigint",
+                                  "type": "string"
+                                },
+                                "lltv": {
+                                  "description": "Liquidation loan-to-value for this collateral, WAD-scaled.",
+                                  "internalType": "bigint",
+                                  "type": "string"
+                                },
+                                "oracle": {
+                                  "description": "Oracle address used for this collateral.",
+                                  "type": "string"
+                                },
+                                "token": {
+                                  "description": "Collateral token address.",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["token", "lltv", "liquidation_cursor", "oracle"],
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "enter_gate": {
+                            "description": "Enter gate address.",
+                            "type": "string"
+                          },
+                          "liquidator_gate": {
+                            "description": "Liquidator gate address.",
+                            "type": "string"
+                          },
+                          "loan_token": {
+                            "description": "Loan token address.",
+                            "type": "string"
+                          },
+                          "maturity": {
+                            "description": "Market maturity timestamp in unix seconds.",
+                            "maximum": 9007199254740991,
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "rcf_threshold": {
+                            "description": "Recovery close factor threshold.",
+                            "internalType": "bigint",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "loan_token",
+                          "maturity",
+                          "rcf_threshold",
+                          "enter_gate",
+                          "liquidator_gate",
+                          "collaterals"
+                        ],
+                        "type": "object"
+                      },
+                      "market_id": {
+                        "description": "Midnight market id.",
+                        "type": "string"
+                      },
+                      "max_assets": {
+                        "description": "Maximum assets.",
+                        "internalType": "bigint",
+                        "type": "string"
+                      },
+                      "max_units": {
+                        "description": "Maximum units.",
+                        "internalType": "bigint",
+                        "type": "string"
+                      },
+                      "ratifier": {
+                        "description": "Offer ratifier address.",
+                        "type": "string"
+                      },
+                      "receiver_if_maker_is_seller": {
+                        "description": "Receiver when the maker is the seller.",
+                        "type": "string"
+                      },
+                      "reduce_only": {
+                        "description": "Whether the offer is reduce-only.",
+                        "type": "boolean"
+                      },
+                      "start": {
+                        "description": "Offer start timestamp.",
+                        "maximum": 9007199254740991,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "tick": {
+                        "description": "Offer tick.",
+                        "maximum": 9007199254740991,
+                        "minimum": -9007199254740991,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "market_id",
+                      "market",
+                      "created_at",
+                      "buy",
+                      "maker",
+                      "max_units",
+                      "max_assets",
+                      "continuous_fee_cap",
+                      "start",
+                      "expiry",
+                      "tick",
+                      "callback",
+                      "callback_data",
+                      "receiver_if_maker_is_seller",
+                      "ratifier",
+                      "reduce_only"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "id",
+                "chain_id",
+                "created_at",
+                "expiry",
+                "max_units",
+                "max_assets",
+                "consumed",
+                "offers"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": ["cursor", "data"],
+        "type": "object"
+      },
+      "PositionDetailResponse": {
+        "properties": {
+          "data": {
+            "description": "Position payload. Positions with zero balances are returned with null type.",
+            "properties": {
+              "chain_id": {
+                "description": "Chain id where the position exists.",
+                "type": "number"
+              },
+              "collaterals": {
+                "description": "Collateral balances for the position.",
+                "items": {
+                  "properties": {
+                    "amount": {
+                      "description": "Collateral amount for this token.",
+                      "internalType": "bigint",
+                      "type": "string"
+                    },
+                    "token": {
+                      "description": "Collateral token address.",
+                      "type": "string"
+                    }
+                  },
+                  "required": ["token", "amount"],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "credit": {
+                "description": "Current credit amount.",
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "debt": {
+                "description": "Current debt amount.",
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "last_indexed_block": {
+                "description": "Latest block covered by the API when this position payload was computed.",
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "last_loss_factor": {
+                "description": "Loss factor last applied to this position.",
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "loan_token": {
+                "description": "Loan token address.",
+                "type": "string"
+              },
+              "loss_factor": {
+                "description": "Market loss factor.",
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "market_id": {
+                "description": "Midnight market id.",
+                "type": "string"
+              },
+              "maturity": {
+                "description": "Maturity timestamp in unix seconds.",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "pending_fee": {
+                "description": "Current pending fee amount.",
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "type": {
+                "anyOf": [
+                  {
+                    "enum": ["lend", "borrow", "collateral_only"],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Position type, or null when the position has zero credit, zero debt, and no remaining collateral."
+              },
+              "user_address": {
+                "description": "User address.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "chain_id",
+              "market_id",
+              "user_address",
+              "loan_token",
+              "maturity",
+              "credit",
+              "pending_fee",
+              "last_loss_factor",
+              "loss_factor",
+              "debt",
+              "collaterals",
+              "type",
+              "last_indexed_block"
+            ],
+            "type": "object"
+          }
+        },
+        "required": ["data"],
+        "type": "object"
+      },
+      "PositionPerformanceResponse": {
+        "properties": {
+          "data": {
+            "description": "Position performance payload. Positions with zero balances are returned with null type and null analytics.",
+            "properties": {
+              "accounting_method": {
+                "description": "Accounting method used to compute cost basis.",
+                "enum": ["average_cost"],
+                "type": "string"
+              },
+              "chain_id": {
+                "description": "Chain id where the position exists.",
+                "type": "number"
+              },
+              "cost_basis": {
+                "anyOf": [
+                  {
+                    "internalType": "bigint",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Cost basis in loan-token units, WAD-scaled, when available."
+              },
+              "effective_rate_wad": {
+                "anyOf": [
+                  {
+                    "internalType": "bigint",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Annualized effective rate, WAD-scaled, when available."
+              },
+              "last_indexed_block": {
+                "description": "Latest block covered by the API when this position payload was computed.",
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "market_id": {
+                "description": "Midnight market id.",
+                "type": "string"
+              },
+              "type": {
+                "anyOf": [
+                  {
+                    "enum": ["lend", "borrow", "collateral_only"],
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Position type, or null when the position has zero credit, zero debt, and no remaining collateral."
+              },
+              "user_address": {
+                "description": "User address.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "chain_id",
+              "market_id",
+              "user_address",
+              "type",
+              "cost_basis",
+              "effective_rate_wad",
+              "last_indexed_block",
+              "accounting_method"
+            ],
+            "type": "object"
+          }
+        },
+        "required": ["data"],
+        "type": "object"
+      },
+      "PositionsResponse": {
+        "properties": {
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Opaque cursor for the next page, or null when there is none."
+          },
+          "data": {
+            "description": "Page of returned items.",
+            "items": {
+              "properties": {
+                "chain_id": {
+                  "description": "Chain id where the position exists.",
+                  "type": "number"
+                },
+                "collaterals": {
+                  "description": "Collateral balances for the position.",
+                  "items": {
+                    "properties": {
+                      "amount": {
+                        "description": "Collateral amount for this token.",
+                        "internalType": "bigint",
+                        "type": "string"
+                      },
+                      "token": {
+                        "description": "Collateral token address.",
+                        "type": "string"
+                      }
+                    },
+                    "required": ["token", "amount"],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "cost_basis": {
+                  "anyOf": [
+                    {
+                      "internalType": "bigint",
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Cost basis in loan-token units, WAD-scaled, when available."
+                },
+                "credit": {
+                  "description": "Current credit amount.",
+                  "internalType": "bigint",
+                  "type": "string"
+                },
+                "debt": {
+                  "description": "Current debt amount.",
+                  "internalType": "bigint",
+                  "type": "string"
+                },
+                "effective_rate_wad": {
+                  "anyOf": [
+                    {
+                      "internalType": "bigint",
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Annualized effective rate, WAD-scaled, when available."
+                },
+                "last_loss_factor": {
+                  "description": "Loss factor last applied to this position.",
+                  "internalType": "bigint",
+                  "type": "string"
+                },
+                "loan_token": {
+                  "description": "Loan token address.",
+                  "type": "string"
+                },
+                "loss_factor": {
+                  "description": "Market loss factor.",
+                  "internalType": "bigint",
+                  "type": "string"
+                },
+                "market_id": {
+                  "description": "Midnight market id.",
+                  "type": "string"
+                },
+                "maturity": {
+                  "description": "Maturity timestamp in unix seconds.",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "pending_fee": {
+                  "description": "Current pending fee amount.",
+                  "internalType": "bigint",
+                  "type": "string"
+                },
+                "type": {
+                  "description": "Position type.",
+                  "enum": ["lend", "borrow", "collateral_only"],
+                  "type": "string"
+                },
+                "user_address": {
+                  "description": "User address.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "chain_id",
+                "market_id",
+                "user_address",
+                "loan_token",
+                "maturity",
+                "credit",
+                "pending_fee",
+                "last_loss_factor",
+                "loss_factor",
+                "debt",
+                "cost_basis",
+                "effective_rate_wad",
+                "collaterals",
+                "type"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": ["cursor", "data"],
+        "type": "object"
+      },
+      "TransactionBorrow": {
+        "properties": {
+          "chain_id": {
+            "description": "Chain id where the activity happened.",
+            "type": "number"
+          },
+          "created_at": {
+            "description": "Transaction timestamp in unix seconds.",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "data": {
+            "description": "Borrow action payload.",
+            "properties": {
+              "account": {
+                "type": "string"
+              },
+              "assets": {
+                "description": "Loan-token amount attributed to this transaction item.",
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "buyer": {
+                "type": "string"
+              },
+              "buyer_assets": {
+                "description": "Total loan-token amount paid by the buyer in the trade.",
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "buyer_pending_fee_increase": {
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "caller": {
+                "type": "string"
+              },
+              "consumed": {
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "group": {
+                "type": "string"
+              },
+              "maker": {
+                "type": "string"
+              },
+              "payer": {
+                "type": "string"
+              },
+              "receiver": {
+                "type": "string"
+              },
+              "seller": {
+                "type": "string"
+              },
+              "seller_assets": {
+                "description": "Total loan-token amount received by the seller in the trade.",
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "seller_pending_fee_decrease": {
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "take_units": {
+                "description": "Total units in the trade.",
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "taker": {
+                "type": "string"
+              },
+              "total_units_delta": {
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "units": {
+                "description": "Units attributed to this item.",
+                "internalType": "bigint",
+                "type": "string"
+              }
+            },
+            "required": [
+              "account",
+              "caller",
+              "maker",
+              "taker",
+              "buyer",
+              "seller",
+              "buyer_assets",
+              "seller_assets",
+              "assets",
+              "units",
+              "take_units",
+              "buyer_pending_fee_increase",
+              "seller_pending_fee_decrease",
+              "total_units_delta",
+              "payer",
+              "receiver",
+              "group",
+              "consumed"
+            ],
+            "type": "object"
+          },
+          "event_type": {
+            "enum": ["borrow"],
+            "type": "string"
+          },
+          "id": {
+            "description": "Stable activity id.",
+            "type": "string"
+          },
+          "market_id": {
+            "description": "Midnight market id.",
+            "type": "string"
+          },
+          "tx_hash": {
+            "description": "Transaction hash.",
+            "type": "string"
+          }
+        },
+        "required": ["id", "chain_id", "market_id", "created_at", "tx_hash", "event_type", "data"],
+        "title": "Borrow",
+        "type": "object"
+      },
+      "TransactionExitBorrowPrimary": {
+        "properties": {
+          "chain_id": {
+            "description": "Chain id where the activity happened.",
+            "type": "number"
+          },
+          "created_at": {
+            "description": "Transaction timestamp in unix seconds.",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "data": {
+            "description": "Primary borrow exit payload.",
+            "properties": {
+              "account": {
+                "type": "string"
+              },
+              "caller": {
+                "type": "string"
+              },
+              "on_behalf": {
+                "type": "string"
+              },
+              "payer": {
+                "type": "string"
+              },
+              "units": {
+                "internalType": "bigint",
+                "type": "string"
+              }
+            },
+            "required": ["account", "caller", "on_behalf", "units", "payer"],
+            "type": "object"
+          },
+          "event_type": {
+            "enum": ["exit_borrow_primary"],
+            "type": "string"
+          },
+          "id": {
+            "description": "Stable activity id.",
+            "type": "string"
+          },
+          "market_id": {
+            "description": "Midnight market id.",
+            "type": "string"
+          },
+          "tx_hash": {
+            "description": "Transaction hash.",
+            "type": "string"
+          }
+        },
+        "required": ["id", "chain_id", "market_id", "created_at", "tx_hash", "event_type", "data"],
+        "title": "ExitBorrowPrimary",
+        "type": "object"
+      },
+      "TransactionExitBorrowSecondary": {
+        "properties": {
+          "chain_id": {
+            "description": "Chain id where the activity happened.",
+            "type": "number"
+          },
+          "created_at": {
+            "description": "Transaction timestamp in unix seconds.",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "data": {
+            "description": "Secondary borrow exit payload.",
+            "properties": {
+              "account": {
+                "type": "string"
+              },
+              "assets": {
+                "description": "Loan-token amount attributed to this transaction item.",
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "buyer": {
+                "type": "string"
+              },
+              "buyer_assets": {
+                "description": "Total loan-token amount paid by the buyer in the trade.",
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "buyer_pending_fee_increase": {
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "caller": {
+                "type": "string"
+              },
+              "consumed": {
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "group": {
+                "type": "string"
+              },
+              "maker": {
+                "type": "string"
+              },
+              "payer": {
+                "type": "string"
+              },
+              "receiver": {
+                "type": "string"
+              },
+              "seller": {
+                "type": "string"
+              },
+              "seller_assets": {
+                "description": "Total loan-token amount received by the seller in the trade.",
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "seller_pending_fee_decrease": {
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "take_units": {
+                "description": "Total units in the trade.",
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "taker": {
+                "type": "string"
+              },
+              "total_units_delta": {
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "units": {
+                "description": "Units attributed to this item.",
+                "internalType": "bigint",
+                "type": "string"
+              }
+            },
+            "required": [
+              "account",
+              "caller",
+              "maker",
+              "taker",
+              "buyer",
+              "seller",
+              "buyer_assets",
+              "seller_assets",
+              "assets",
+              "units",
+              "take_units",
+              "buyer_pending_fee_increase",
+              "seller_pending_fee_decrease",
+              "total_units_delta",
+              "payer",
+              "receiver",
+              "group",
+              "consumed"
+            ],
+            "type": "object"
+          },
+          "event_type": {
+            "enum": ["exit_borrow_secondary"],
+            "type": "string"
+          },
+          "id": {
+            "description": "Stable activity id.",
+            "type": "string"
+          },
+          "market_id": {
+            "description": "Midnight market id.",
+            "type": "string"
+          },
+          "tx_hash": {
+            "description": "Transaction hash.",
+            "type": "string"
+          }
+        },
+        "required": ["id", "chain_id", "market_id", "created_at", "tx_hash", "event_type", "data"],
+        "title": "ExitBorrowSecondary",
+        "type": "object"
+      },
+      "TransactionExitLendPrimary": {
+        "properties": {
+          "chain_id": {
+            "description": "Chain id where the activity happened.",
+            "type": "number"
+          },
+          "created_at": {
+            "description": "Transaction timestamp in unix seconds.",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "data": {
+            "description": "Primary lend exit payload.",
+            "properties": {
+              "account": {
+                "type": "string"
+              },
+              "caller": {
+                "type": "string"
+              },
+              "on_behalf": {
+                "type": "string"
+              },
+              "pending_fee_decrease": {
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "receiver": {
+                "type": "string"
+              },
+              "units": {
+                "internalType": "bigint",
+                "type": "string"
+              }
+            },
+            "required": [
+              "account",
+              "caller",
+              "on_behalf",
+              "receiver",
+              "units",
+              "pending_fee_decrease"
+            ],
+            "type": "object"
+          },
+          "event_type": {
+            "enum": ["exit_lend_primary"],
+            "type": "string"
+          },
+          "id": {
+            "description": "Stable activity id.",
+            "type": "string"
+          },
+          "market_id": {
+            "description": "Midnight market id.",
+            "type": "string"
+          },
+          "tx_hash": {
+            "description": "Transaction hash.",
+            "type": "string"
+          }
+        },
+        "required": ["id", "chain_id", "market_id", "created_at", "tx_hash", "event_type", "data"],
+        "title": "ExitLendPrimary",
+        "type": "object"
+      },
+      "TransactionExitLendSecondary": {
+        "properties": {
+          "chain_id": {
+            "description": "Chain id where the activity happened.",
+            "type": "number"
+          },
+          "created_at": {
+            "description": "Transaction timestamp in unix seconds.",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "data": {
+            "description": "Secondary lend exit payload.",
+            "properties": {
+              "account": {
+                "type": "string"
+              },
+              "assets": {
+                "description": "Loan-token amount attributed to this transaction item.",
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "buyer": {
+                "type": "string"
+              },
+              "buyer_assets": {
+                "description": "Total loan-token amount paid by the buyer in the trade.",
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "buyer_pending_fee_increase": {
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "caller": {
+                "type": "string"
+              },
+              "consumed": {
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "group": {
+                "type": "string"
+              },
+              "maker": {
+                "type": "string"
+              },
+              "payer": {
+                "type": "string"
+              },
+              "receiver": {
+                "type": "string"
+              },
+              "seller": {
+                "type": "string"
+              },
+              "seller_assets": {
+                "description": "Total loan-token amount received by the seller in the trade.",
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "seller_pending_fee_decrease": {
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "take_units": {
+                "description": "Total units in the trade.",
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "taker": {
+                "type": "string"
+              },
+              "total_units_delta": {
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "units": {
+                "description": "Units attributed to this item.",
+                "internalType": "bigint",
+                "type": "string"
+              }
+            },
+            "required": [
+              "account",
+              "caller",
+              "maker",
+              "taker",
+              "buyer",
+              "seller",
+              "buyer_assets",
+              "seller_assets",
+              "assets",
+              "units",
+              "take_units",
+              "buyer_pending_fee_increase",
+              "seller_pending_fee_decrease",
+              "total_units_delta",
+              "payer",
+              "receiver",
+              "group",
+              "consumed"
+            ],
+            "type": "object"
+          },
+          "event_type": {
+            "enum": ["exit_lend_secondary"],
+            "type": "string"
+          },
+          "id": {
+            "description": "Stable activity id.",
+            "type": "string"
+          },
+          "market_id": {
+            "description": "Midnight market id.",
+            "type": "string"
+          },
+          "tx_hash": {
+            "description": "Transaction hash.",
+            "type": "string"
+          }
+        },
+        "required": ["id", "chain_id", "market_id", "created_at", "tx_hash", "event_type", "data"],
+        "title": "ExitLendSecondary",
+        "type": "object"
+      },
+      "TransactionFullLiquidation": {
+        "properties": {
+          "chain_id": {
+            "description": "Chain id where the activity happened.",
+            "type": "number"
+          },
+          "created_at": {
+            "description": "Transaction timestamp in unix seconds.",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "data": {
+            "description": "Full liquidation payload.",
+            "properties": {
+              "account": {
+                "type": "string"
+              },
+              "bad_debt": {
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "borrower": {
+                "type": "string"
+              },
+              "caller": {
+                "type": "string"
+              },
+              "collateral": {
+                "type": "string"
+              },
+              "latest_continuous_fee_credit": {
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "latest_loss_factor": {
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "payer": {
+                "type": "string"
+              },
+              "post_maturity_mode": {
+                "type": "boolean"
+              },
+              "pure_bad_debt_realization": {
+                "type": "boolean"
+              },
+              "receiver": {
+                "type": "string"
+              },
+              "repaid_units": {
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "seized_assets": {
+                "internalType": "bigint",
+                "type": "string"
+              }
+            },
+            "required": [
+              "account",
+              "caller",
+              "borrower",
+              "collateral",
+              "seized_assets",
+              "repaid_units",
+              "post_maturity_mode",
+              "bad_debt",
+              "latest_loss_factor",
+              "latest_continuous_fee_credit",
+              "payer",
+              "receiver",
+              "pure_bad_debt_realization"
+            ],
+            "type": "object"
+          },
+          "event_type": {
+            "enum": ["full_liquidation"],
+            "type": "string"
+          },
+          "id": {
+            "description": "Stable activity id.",
+            "type": "string"
+          },
+          "market_id": {
+            "description": "Midnight market id.",
+            "type": "string"
+          },
+          "tx_hash": {
+            "description": "Transaction hash.",
+            "type": "string"
+          }
+        },
+        "required": ["id", "chain_id", "market_id", "created_at", "tx_hash", "event_type", "data"],
+        "title": "FullLiquidation",
+        "type": "object"
+      },
+      "TransactionLend": {
+        "properties": {
+          "chain_id": {
+            "description": "Chain id where the activity happened.",
+            "type": "number"
+          },
+          "created_at": {
+            "description": "Transaction timestamp in unix seconds.",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "data": {
+            "description": "Lend action payload.",
+            "properties": {
+              "account": {
+                "type": "string"
+              },
+              "assets": {
+                "description": "Loan-token amount attributed to this transaction item.",
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "buyer": {
+                "type": "string"
+              },
+              "buyer_assets": {
+                "description": "Total loan-token amount paid by the buyer in the trade.",
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "buyer_pending_fee_increase": {
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "caller": {
+                "type": "string"
+              },
+              "consumed": {
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "group": {
+                "type": "string"
+              },
+              "maker": {
+                "type": "string"
+              },
+              "payer": {
+                "type": "string"
+              },
+              "receiver": {
+                "type": "string"
+              },
+              "seller": {
+                "type": "string"
+              },
+              "seller_assets": {
+                "description": "Total loan-token amount received by the seller in the trade.",
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "seller_pending_fee_decrease": {
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "take_units": {
+                "description": "Total units in the trade.",
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "taker": {
+                "type": "string"
+              },
+              "total_units_delta": {
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "units": {
+                "description": "Units attributed to this item.",
+                "internalType": "bigint",
+                "type": "string"
+              }
+            },
+            "required": [
+              "account",
+              "caller",
+              "maker",
+              "taker",
+              "buyer",
+              "seller",
+              "buyer_assets",
+              "seller_assets",
+              "assets",
+              "units",
+              "take_units",
+              "buyer_pending_fee_increase",
+              "seller_pending_fee_decrease",
+              "total_units_delta",
+              "payer",
+              "receiver",
+              "group",
+              "consumed"
+            ],
+            "type": "object"
+          },
+          "event_type": {
+            "enum": ["lend"],
+            "type": "string"
+          },
+          "id": {
+            "description": "Stable activity id.",
+            "type": "string"
+          },
+          "market_id": {
+            "description": "Midnight market id.",
+            "type": "string"
+          },
+          "tx_hash": {
+            "description": "Transaction hash.",
+            "type": "string"
+          }
+        },
+        "required": ["id", "chain_id", "market_id", "created_at", "tx_hash", "event_type", "data"],
+        "title": "Lend",
+        "type": "object"
+      },
+      "TransactionPartialLiquidation": {
+        "properties": {
+          "chain_id": {
+            "description": "Chain id where the activity happened.",
+            "type": "number"
+          },
+          "created_at": {
+            "description": "Transaction timestamp in unix seconds.",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "data": {
+            "description": "Partial liquidation payload.",
+            "properties": {
+              "account": {
+                "type": "string"
+              },
+              "bad_debt": {
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "borrower": {
+                "type": "string"
+              },
+              "caller": {
+                "type": "string"
+              },
+              "collateral": {
+                "type": "string"
+              },
+              "latest_continuous_fee_credit": {
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "latest_loss_factor": {
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "payer": {
+                "type": "string"
+              },
+              "post_maturity_mode": {
+                "type": "boolean"
+              },
+              "pure_bad_debt_realization": {
+                "type": "boolean"
+              },
+              "receiver": {
+                "type": "string"
+              },
+              "repaid_units": {
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "seized_assets": {
+                "internalType": "bigint",
+                "type": "string"
+              }
+            },
+            "required": [
+              "account",
+              "caller",
+              "borrower",
+              "collateral",
+              "seized_assets",
+              "repaid_units",
+              "post_maturity_mode",
+              "bad_debt",
+              "latest_loss_factor",
+              "latest_continuous_fee_credit",
+              "payer",
+              "receiver",
+              "pure_bad_debt_realization"
+            ],
+            "type": "object"
+          },
+          "event_type": {
+            "enum": ["partial_liquidation"],
+            "type": "string"
+          },
+          "id": {
+            "description": "Stable activity id.",
+            "type": "string"
+          },
+          "market_id": {
+            "description": "Midnight market id.",
+            "type": "string"
+          },
+          "tx_hash": {
+            "description": "Transaction hash.",
+            "type": "string"
+          }
+        },
+        "required": ["id", "chain_id", "market_id", "created_at", "tx_hash", "event_type", "data"],
+        "title": "PartialLiquidation",
+        "type": "object"
+      },
+      "TransactionsResponse": {
+        "properties": {
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Opaque cursor for the next page, or null when there is none."
+          },
+          "data": {
+            "description": "Page of returned items.",
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "borrow": "#/components/schemas/TransactionBorrow",
+                  "exit_borrow_primary": "#/components/schemas/TransactionExitBorrowPrimary",
+                  "exit_borrow_secondary": "#/components/schemas/TransactionExitBorrowSecondary",
+                  "exit_lend_primary": "#/components/schemas/TransactionExitLendPrimary",
+                  "exit_lend_secondary": "#/components/schemas/TransactionExitLendSecondary",
+                  "full_liquidation": "#/components/schemas/TransactionFullLiquidation",
+                  "lend": "#/components/schemas/TransactionLend",
+                  "partial_liquidation": "#/components/schemas/TransactionPartialLiquidation",
+                  "supply_collateral": "#/components/schemas/TransactionSupplyCollateral",
+                  "withdraw_collateral": "#/components/schemas/TransactionWithdrawCollateral"
+                },
+                "propertyName": "event_type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/TransactionBorrow"
+                },
+                {
+                  "$ref": "#/components/schemas/TransactionLend"
+                },
+                {
+                  "$ref": "#/components/schemas/TransactionExitLendPrimary"
+                },
+                {
+                  "$ref": "#/components/schemas/TransactionExitLendSecondary"
+                },
+                {
+                  "$ref": "#/components/schemas/TransactionExitBorrowPrimary"
+                },
+                {
+                  "$ref": "#/components/schemas/TransactionExitBorrowSecondary"
+                },
+                {
+                  "$ref": "#/components/schemas/TransactionPartialLiquidation"
+                },
+                {
+                  "$ref": "#/components/schemas/TransactionFullLiquidation"
+                },
+                {
+                  "$ref": "#/components/schemas/TransactionWithdrawCollateral"
+                },
+                {
+                  "$ref": "#/components/schemas/TransactionSupplyCollateral"
+                }
+              ]
+            },
+            "type": "array"
+          }
+        },
+        "required": ["cursor", "data"],
+        "type": "object"
+      },
+      "TransactionSupplyCollateral": {
+        "properties": {
+          "chain_id": {
+            "description": "Chain id where the activity happened.",
+            "type": "number"
+          },
+          "created_at": {
+            "description": "Transaction timestamp in unix seconds.",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "data": {
+            "description": "Supply collateral payload.",
+            "properties": {
+              "account": {
+                "type": "string"
+              },
+              "assets": {
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "caller": {
+                "type": "string"
+              },
+              "collateral": {
+                "type": "string"
+              },
+              "on_behalf": {
+                "type": "string"
+              }
+            },
+            "required": ["account", "caller", "on_behalf", "collateral", "assets"],
+            "type": "object"
+          },
+          "event_type": {
+            "enum": ["supply_collateral"],
+            "type": "string"
+          },
+          "id": {
+            "description": "Stable activity id.",
+            "type": "string"
+          },
+          "market_id": {
+            "description": "Midnight market id.",
+            "type": "string"
+          },
+          "tx_hash": {
+            "description": "Transaction hash.",
+            "type": "string"
+          }
+        },
+        "required": ["id", "chain_id", "market_id", "created_at", "tx_hash", "event_type", "data"],
+        "title": "SupplyCollateral",
+        "type": "object"
+      },
+      "TransactionWithdrawCollateral": {
+        "properties": {
+          "chain_id": {
+            "description": "Chain id where the activity happened.",
+            "type": "number"
+          },
+          "created_at": {
+            "description": "Transaction timestamp in unix seconds.",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "data": {
+            "description": "Withdraw collateral payload.",
+            "properties": {
+              "account": {
+                "type": "string"
+              },
+              "assets": {
+                "internalType": "bigint",
+                "type": "string"
+              },
+              "caller": {
+                "type": "string"
+              },
+              "collateral": {
+                "type": "string"
+              },
+              "on_behalf": {
+                "type": "string"
+              },
+              "receiver": {
+                "type": "string"
+              }
+            },
+            "required": ["account", "caller", "on_behalf", "receiver", "collateral", "assets"],
+            "type": "object"
+          },
+          "event_type": {
+            "enum": ["withdraw_collateral"],
+            "type": "string"
+          },
+          "id": {
+            "description": "Stable activity id.",
+            "type": "string"
+          },
+          "market_id": {
+            "description": "Midnight market id.",
+            "type": "string"
+          },
+          "tx_hash": {
+            "description": "Transaction hash.",
+            "type": "string"
+          }
+        },
+        "required": ["id", "chain_id", "market_id", "created_at", "tx_hash", "event_type", "data"],
+        "title": "WithdrawCollateral",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "contact": {},
+    "description": "> [!warning]\n> The Midnight API is in alpha. Expect frequent breaking changes and unstable behavior.\n\nREST API for Morpho Midnight, the fixed-rate lending protocol.",
+    "title": "Midnight API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.0.0",
+  "paths": {
+    "/v0/midnight/markets": {
+      "get": {
+        "description": "Cursor-paginated list of Midnight markets.\n\n**Use this to discover markets.** For a given user's positions on those markets, follow up with `GET /v0/midnight/users/{user-address}/positions`.\n\n**Filters.** Address filters (`loan_assets`, `collateral_assets`, `oracle_addresses`, `enter_gates`, `liquidator_gates`) must be combined with `chain_ids` — an address alone is not chain-unique. Lowercase addresses are checksummed server-side. Pass `active_only=true` to exclude markets past maturity.\n\n**Pagination.** Response follows the list envelope: `{ cursor, data }`. Pass back `cursor` verbatim on the next call. A `null` `cursor` means the last page.\n\n**Cache.** `public, max-age=5, stale-while-revalidate=2`.",
+        "operationId": "MidnightMarketsController_list",
+        "parameters": [
+          {
+            "description": "Filter by chain ids. Supported chains: Base (8453). Required when any address filter is provided.",
+            "in": "query",
+            "name": "chain_ids",
+            "required": false,
+            "schema": {
+              "items": {
+                "enum": [8453],
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          },
+          {
+            "description": "Filter by Midnight market ids. These ids are globally unique.",
+            "in": "query",
+            "name": "market_ids",
+            "required": false,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          },
+          {
+            "description": "Filter by loan token addresses. Combine with chain_ids; lowercase input is checksummed.",
+            "in": "query",
+            "name": "loan_assets",
+            "required": false,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          },
+          {
+            "description": "Filter by collateral token addresses. Combine with chain_ids; lowercase input is checksummed.",
+            "in": "query",
+            "name": "collateral_assets",
+            "required": false,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          },
+          {
+            "description": "Filter by collateral oracle addresses. Combine with chain_ids; lowercase input is checksummed.",
+            "in": "query",
+            "name": "oracle_addresses",
+            "required": false,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          },
+          {
+            "description": "Filter by enter gate addresses. Combine with chain_ids; lowercase input is checksummed.",
+            "in": "query",
+            "name": "enter_gates",
+            "required": false,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          },
+          {
+            "description": "Filter by liquidator gate addresses. Combine with chain_ids; lowercase input is checksummed.",
+            "in": "query",
+            "name": "liquidator_gates",
+            "required": false,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          },
+          {
+            "description": "Filter by exact maturity timestamps, in unix seconds.",
+            "in": "query",
+            "name": "maturities",
+            "required": false,
+            "schema": {
+              "items": {
+                "anyOf": [
+                  {
+                    "maxLength": 16,
+                    "pattern": "^\\d+$",
+                    "type": "string"
+                  },
+                  {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                ]
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          },
+          {
+            "description": "When true, enforces maturity strictly after the current timestamp.",
+            "in": "query",
+            "name": "active_only",
+            "required": false,
+            "schema": {
+              "enum": ["true", "false"],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter for maturities greater than or equal to this unix timestamp.",
+            "in": "query",
+            "name": "maturity_gte",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "pattern": "^\\d+$",
+                  "type": "string"
+                },
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              ]
+            }
+          },
+          {
+            "description": "Filter for maturities less than or equal to this unix timestamp.",
+            "in": "query",
+            "name": "maturity_lte",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "pattern": "^\\d+$",
+                  "type": "string"
+                },
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              ]
+            }
+          },
+          {
+            "description": "Filter for total units greater than or equal to this value.",
+            "in": "query",
+            "name": "total_units_gte",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{1,78}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter for total units less than or equal to this value.",
+            "in": "query",
+            "name": "total_units_lte",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{1,78}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by listing status. When true, returns only markets surfaced by the app trust layer; when false, only unlisted markets. Omit to return both.",
+            "in": "query",
+            "name": "listed",
+            "required": false,
+            "schema": {
+              "enum": ["true", "false"],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort field for cursor pagination.",
+            "in": "query",
+            "name": "sort_by",
+            "required": false,
+            "schema": {
+              "default": "total_units",
+              "enum": ["total_units", "maturity"],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort direction for cursor pagination.",
+            "in": "query",
+            "name": "sort_direction",
+            "required": false,
+            "schema": {
+              "default": "desc",
+              "enum": ["asc", "desc"],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Maximum number of items to return.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque cursor from a previous page response.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "cursor": "eyJzIjoidG90YWxfdW5pdHMiLCJkIjoiZGVzYyIsInYiOiIxNDgxNDM5OTkyMDIwMDEzIiwidk51bGwiOmZhbHNlLCJpIjpbODQ1MywiMHhjYzk0MThlYTU5NGM2ZTY1ODY1MGFlZGQyMDVjZTQ1NDRiMjY2YjY5NDkzZjU2ZmQyYWRjNjVjMTRiZDA2NzM4Il0sImYiOiJSQk52bzFXelo0b1JScTBXOS1oa25wIn0",
+                  "data": [
+                    {
+                      "chain_id": 8453,
+                      "collaterals": [
+                        {
+                          "liquidation_cursor": "300000000000000000",
+                          "lltv": "860000000000000000",
+                          "oracle": "0xD09048c8B568Dbf5f189302beA26c9edABFC4858",
+                          "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+                        }
+                      ],
+                      "continuous_fee_rate": "0",
+                      "current_settlement_fee_cbp": "0",
+                      "current_settlement_fee_wad": "0",
+                      "enter_gate": "0x0000000000000000000000000000000000000000",
+                      "liquidator_gate": "0x0000000000000000000000000000000000000000",
+                      "listed": false,
+                      "loan_token": "0x4200000000000000000000000000000000000006",
+                      "market_id": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+                      "maturity": 1784300400,
+                      "rcf_threshold": "0",
+                      "settlement_fee_schedule": [
+                        {
+                          "fee_cbp": "0",
+                          "time_to_maturity_days": 0
+                        },
+                        {
+                          "fee_cbp": "0",
+                          "time_to_maturity_days": 1
+                        },
+                        {
+                          "fee_cbp": "0",
+                          "time_to_maturity_days": 7
+                        },
+                        {
+                          "fee_cbp": "0",
+                          "time_to_maturity_days": 30
+                        },
+                        {
+                          "fee_cbp": "0",
+                          "time_to_maturity_days": 90
+                        },
+                        {
+                          "fee_cbp": "0",
+                          "time_to_maturity_days": 180
+                        },
+                        {
+                          "fee_cbp": "0",
+                          "time_to_maturity_days": 360
+                        }
+                      ],
+                      "tick_granularity": 4,
+                      "total_units": "1481439992020013"
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/MarketsResponse"
+                }
+              }
+            },
+            "description": "Cursor-paginated list of Midnight markets."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "code": "INVALID_CURSOR",
+                    "details": null,
+                    "message": "cursor sort/direction does not match request sort/direction",
+                    "request_id": "f0e1d2c3-b4a5-4968-8728-1c0d1e2f3a4b"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/MidnightErrorResponse"
+                }
+              }
+            },
+            "description": "`INVALID_CURSOR` — the provided cursor is malformed or was produced by a different sort configuration."
+          }
+        },
+        "summary": "List markets",
+        "tags": ["Markets"]
+      }
+    },
+    "/v0/midnight/markets/{market-id}": {
+      "get": {
+        "description": "Detail lookup for a single market. `:market-id` is the stable Midnight market id and is unique across supported chains, so no chain id is required.\n\nReturns the immutable market configuration inside a `data` envelope. Use `GET /v0/midnight/markets/{market-id}/state` for dynamic market state. 404s when the id is unknown.",
+        "operationId": "MidnightMarketsController_detail",
+        "parameters": [
+          {
+            "description": "Midnight market id.",
+            "example": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+            "in": "path",
+            "name": "market-id",
+            "required": true,
+            "schema": {
+              "example": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "data": {
+                    "chain_id": 8453,
+                    "collaterals": [
+                      {
+                        "liquidation_cursor": "300000000000000000",
+                        "lltv": "860000000000000000",
+                        "oracle": "0xD09048c8B568Dbf5f189302beA26c9edABFC4858",
+                        "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+                      }
+                    ],
+                    "enter_gate": "0x0000000000000000000000000000000000000000",
+                    "liquidator_gate": "0x0000000000000000000000000000000000000000",
+                    "loan_token": "0x4200000000000000000000000000000000000006",
+                    "market_id": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+                    "maturity": 1784300400,
+                    "rcf_threshold": "0"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/MarketDetailResponse"
+                }
+              }
+            },
+            "description": "Midnight market detail."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "code": "MARKET_NOT_FOUND",
+                    "details": null,
+                    "message": "Market 0x0000000000000000000000000000000000000000000000000000000000000000 not found",
+                    "request_id": "f0e1d2c3-b4a5-4968-8728-1c0d1e2f3a4b"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/MidnightErrorResponse"
+                }
+              }
+            },
+            "description": "`MARKET_NOT_FOUND` — no market exists for this id."
+          }
+        },
+        "summary": "Get market",
+        "tags": ["Markets"]
+      }
+    },
+    "/v0/midnight/markets/{market-id}/positions": {
+      "get": {
+        "description": "Cursor-paginated list of current Midnight positions for a market.\n\n`:market-id` is the stable Midnight market id and is globally unique across supported chains.\n\nThe response uses the same public position item shape as `GET /v0/midnight/users/{user-address}/positions`: `{ cursor, data }`, with `type`, state fields, collateral balances, and performance analytics.\n\n**Filters.** Range filters exist on `credit`, `debt`, `cost_basis`, and `effective_rate_wad`. `active_only=true` excludes matured markets. The path market id is always enforced.\n\n**Pagination.** Pass back `cursor` verbatim on the next call.\n\n**Cache.** `public, max-age=2, stale-while-revalidate=1`.",
+        "operationId": "MidnightPositionsController_listMarket",
+        "parameters": [
+          {
+            "description": "Midnight market id.",
+            "example": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+            "in": "path",
+            "name": "market-id",
+            "required": true,
+            "schema": {
+              "example": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by chain ids. Supported chains: Base (8453). Required when loan_assets is provided.",
+            "in": "query",
+            "name": "chain_ids",
+            "required": false,
+            "schema": {
+              "items": {
+                "enum": [8453],
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          },
+          {
+            "description": "Filter by position type.",
+            "in": "query",
+            "name": "types",
+            "required": false,
+            "schema": {
+              "items": {
+                "enum": ["lend", "borrow", "collateral_only"],
+                "type": "string"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          },
+          {
+            "description": "Filter by loan token addresses. Combine with chain_ids; lowercase input is checksummed.",
+            "in": "query",
+            "name": "loan_assets",
+            "required": false,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          },
+          {
+            "description": "Filter by exact maturity timestamps, in unix seconds.",
+            "in": "query",
+            "name": "maturities",
+            "required": false,
+            "schema": {
+              "items": {
+                "anyOf": [
+                  {
+                    "maxLength": 16,
+                    "pattern": "^\\d+$",
+                    "type": "string"
+                  },
+                  {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                ]
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          },
+          {
+            "description": "When true, keep only positions whose market has not matured yet.",
+            "in": "query",
+            "name": "active_only",
+            "required": false,
+            "schema": {
+              "enum": ["true", "false"],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter for maturities greater than or equal to this unix timestamp.",
+            "in": "query",
+            "name": "maturity_gte",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "pattern": "^\\d+$",
+                  "type": "string"
+                },
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              ]
+            }
+          },
+          {
+            "description": "Filter for maturities less than or equal to this unix timestamp.",
+            "in": "query",
+            "name": "maturity_lte",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "pattern": "^\\d+$",
+                  "type": "string"
+                },
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              ]
+            }
+          },
+          {
+            "description": "Filter for credit greater than or equal to this value.",
+            "in": "query",
+            "name": "credit_gte",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{1,78}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter for credit less than or equal to this value.",
+            "in": "query",
+            "name": "credit_lte",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{1,78}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter for pending fee greater than or equal to this value.",
+            "in": "query",
+            "name": "pending_fee_gte",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{1,78}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter for pending fee less than or equal to this value.",
+            "in": "query",
+            "name": "pending_fee_lte",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{1,78}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter for debt greater than or equal to this value.",
+            "in": "query",
+            "name": "debt_gte",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{1,78}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter for debt less than or equal to this value.",
+            "in": "query",
+            "name": "debt_lte",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{1,78}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter for cost basis greater than or equal to this value.",
+            "in": "query",
+            "name": "cost_basis_gte",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{1,78}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter for cost basis less than or equal to this value.",
+            "in": "query",
+            "name": "cost_basis_lte",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{1,78}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter for effective rate WAD greater than or equal to this value.",
+            "in": "query",
+            "name": "effective_rate_wad_gte",
+            "required": false,
+            "schema": {
+              "pattern": "^-?\\d{1,78}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter for effective rate WAD less than or equal to this value.",
+            "in": "query",
+            "name": "effective_rate_wad_lte",
+            "required": false,
+            "schema": {
+              "pattern": "^-?\\d{1,78}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort field for cursor pagination.",
+            "in": "query",
+            "name": "sort_by",
+            "required": false,
+            "schema": {
+              "default": "maturity",
+              "enum": ["credit", "debt", "maturity", "cost_basis", "effective_rate_wad"],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort direction for cursor pagination.",
+            "in": "query",
+            "name": "sort_direction",
+            "required": false,
+            "schema": {
+              "default": "desc",
+              "enum": ["asc", "desc"],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Maximum number of items to return.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque cursor from a previous page response.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "cursor": "eyJzIjoibWF0dXJpdHkiLCJkIjoiZGVzYyIsInYiOiIxNzg0MzAwNDAwIiwidk51bGwiOmZhbHNlLCJpIjp7ImNoYWluSWQiOjg0NTMsIm1hcmtldElkIjoiMHhjYzk0MThlYTU5NGM2ZTY1ODY1MGFlZGQyMDVjZTQ1NDRiMjY2YjY5NDkzZjU2ZmQyYWRjNjVjMTRiZDA2NzM4IiwidXNlckFkZHJlc3MiOiIweDUzNTY5MENCMTMzMDIzMmRkNGYyYWM1QjcyNDA0MDc1MWJkRjRDOTEifSwiZiI6IkJxUlZKdHRYR2R4VjVQbWQyWnVUUUUifQ",
+                  "data": [
+                    {
+                      "chain_id": 8453,
+                      "collaterals": [
+                        {
+                          "amount": "4000000",
+                          "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+                        }
+                      ],
+                      "cost_basis": "1046483736229728000000000000000000",
+                      "credit": "0",
+                      "debt": "1046492040981691",
+                      "effective_rate_wad": "327402597840809",
+                      "last_loss_factor": "0",
+                      "loan_token": "0x4200000000000000000000000000000000000006",
+                      "loss_factor": "0",
+                      "market_id": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+                      "maturity": 1784300400,
+                      "pending_fee": "0",
+                      "type": "borrow",
+                      "user_address": "0xd4F43105098845fFE89B16E7A3DCdd0A31898118"
+                    },
+                    {
+                      "chain_id": 8453,
+                      "collaterals": [],
+                      "cost_basis": "1480000000000000000000000000000000",
+                      "credit": "1481439992020013",
+                      "debt": "0",
+                      "effective_rate_wad": "41189691462004744",
+                      "last_loss_factor": "0",
+                      "loan_token": "0x4200000000000000000000000000000000000006",
+                      "loss_factor": "0",
+                      "market_id": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+                      "maturity": 1784300400,
+                      "pending_fee": "0",
+                      "type": "lend",
+                      "user_address": "0x958eB498a4172EA513c79b09E7f064070C5b1917"
+                    },
+                    {
+                      "chain_id": 8453,
+                      "collaterals": [
+                        {
+                          "amount": "1000000",
+                          "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+                        }
+                      ],
+                      "cost_basis": "80000000000000000000000000000000",
+                      "credit": "0",
+                      "debt": "80001344022580",
+                      "effective_rate_wad": "763977389592662",
+                      "last_loss_factor": "0",
+                      "loan_token": "0x4200000000000000000000000000000000000006",
+                      "loss_factor": "0",
+                      "market_id": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+                      "maturity": 1784300400,
+                      "pending_fee": "0",
+                      "type": "borrow",
+                      "user_address": "0x535690CB1330232dd4f2ac5B724040751bdF4C91"
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/PositionsResponse"
+                }
+              }
+            },
+            "description": "Cursor-paginated list of Midnight positions for a market."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "code": "INVALID_CURSOR",
+                    "details": null,
+                    "message": "cursor sort/direction does not match request sort/direction",
+                    "request_id": "f0e1d2c3-b4a5-4968-8728-1c0d1e2f3a4b"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/MidnightErrorResponse"
+                }
+              }
+            },
+            "description": "`INVALID_CURSOR` — the provided cursor is malformed or was produced by a different sort/filter configuration."
+          }
+        },
+        "summary": "List market positions",
+        "tags": ["Positions"]
+      }
+    },
+    "/v0/midnight/markets/{market-id}/state": {
+      "get": {
+        "description": "Dynamic state lookup for a single market. `:market-id` is the stable Midnight market id and is unique across supported chains, so no chain id is required.\n\nReturns the market state inside a `data` envelope. Use `GET /v0/midnight/markets/{market-id}` for immutable market configuration. 404s when the id is unknown.",
+        "operationId": "MidnightMarketsController_state",
+        "parameters": [
+          {
+            "description": "Midnight market id.",
+            "example": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+            "in": "path",
+            "name": "market-id",
+            "required": true,
+            "schema": {
+              "example": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "data": {
+                    "chain_id": 8453,
+                    "continuous_fee_rate": "0",
+                    "current_settlement_fee_cbp": "0",
+                    "current_settlement_fee_wad": "0",
+                    "last_indexed_block": "48408699",
+                    "market_id": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+                    "settlement_fee_schedule": [
+                      {
+                        "fee_cbp": "0",
+                        "time_to_maturity_days": 0
+                      },
+                      {
+                        "fee_cbp": "0",
+                        "time_to_maturity_days": 1
+                      },
+                      {
+                        "fee_cbp": "0",
+                        "time_to_maturity_days": 7
+                      },
+                      {
+                        "fee_cbp": "0",
+                        "time_to_maturity_days": 30
+                      },
+                      {
+                        "fee_cbp": "0",
+                        "time_to_maturity_days": 90
+                      },
+                      {
+                        "fee_cbp": "0",
+                        "time_to_maturity_days": 180
+                      },
+                      {
+                        "fee_cbp": "0",
+                        "time_to_maturity_days": 360
+                      }
+                    ],
+                    "tick_granularity": 4,
+                    "total_units": "1481439992020013"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/MarketStateResponse"
+                }
+              }
+            },
+            "description": "Midnight market state."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "code": "MARKET_NOT_FOUND",
+                    "details": null,
+                    "message": "Market 0x0000000000000000000000000000000000000000000000000000000000000000 not found",
+                    "request_id": "f0e1d2c3-b4a5-4968-8728-1c0d1e2f3a4b"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/MidnightErrorResponse"
+                }
+              }
+            },
+            "description": "`MARKET_NOT_FOUND` — no market exists for this id."
+          }
+        },
+        "summary": "Get market state",
+        "tags": ["Markets"]
+      }
+    },
+    "/v0/midnight/markets/{market-id}/transactions": {
+      "get": {
+        "description": "Cursor-paginated feed of Midnight economic transactions for one market.\n\n**Scope.** Includes `borrow`, `lend`, `exit_lend_primary`, `exit_lend_secondary`, `exit_borrow_primary`, `exit_borrow_secondary`, `partial_liquidation`, `full_liquidation`, `withdraw_collateral`, and `supply_collateral`. Admin, authorization, fee, flashloan, accounting-only, and market creation activity is excluded from v0.\n\n**Trade actions.** A single trade can affect both the lender and borrower side. Market-level queries can therefore return multiple API items for the same transaction, while account queries return only the items affecting that account. For trade items, `data.assets` is the loan-token amount attributed to the item; `buyer_assets`, `seller_assets`, `take_units`, and `total_units_delta` describe the full trade.\n\n**Filters.** `:market-id` constrains the market and is globally unique across chains. `chain_ids` is optional and can further narrow the query.\n\n**Pagination.** Response follows the list envelope: `{ cursor, data }`. Pass back `cursor` verbatim on the next call. A `null` cursor means the last page. Ordering is fixed to `created_at` with deterministic tie-breakers.\n\n**Cache.** `public, max-age=2, stale-while-revalidate=1`.",
+        "operationId": "MidnightActivityController_listMarketTransactions",
+        "parameters": [
+          {
+            "description": "Midnight market id.",
+            "example": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+            "in": "path",
+            "name": "market-id",
+            "required": true,
+            "schema": {
+              "example": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by chain ids. Supported chains: Base (8453).",
+            "in": "query",
+            "name": "chain_ids",
+            "required": false,
+            "schema": {
+              "items": {
+                "enum": [8453],
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          },
+          {
+            "description": "Filter by transaction event type.",
+            "in": "query",
+            "name": "event_types",
+            "required": false,
+            "schema": {
+              "items": {
+                "enum": [
+                  "borrow",
+                  "lend",
+                  "exit_lend_primary",
+                  "exit_lend_secondary",
+                  "exit_borrow_primary",
+                  "exit_borrow_secondary",
+                  "partial_liquidation",
+                  "full_liquidation",
+                  "withdraw_collateral",
+                  "supply_collateral"
+                ],
+                "type": "string"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          },
+          {
+            "description": "Filter by market loan token addresses. Combine with chain_ids.",
+            "in": "query",
+            "name": "loan_assets",
+            "required": false,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          },
+          {
+            "description": "Filter by collateral token addresses. Combine with chain_ids.",
+            "in": "query",
+            "name": "collateral_assets",
+            "required": false,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          },
+          {
+            "description": "Filter for transaction timestamps greater than or equal to this unix timestamp.",
+            "in": "query",
+            "name": "created_at_gte",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "pattern": "^\\d+$",
+                  "type": "string"
+                },
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              ]
+            }
+          },
+          {
+            "description": "Filter for transaction timestamps less than or equal to this unix timestamp.",
+            "in": "query",
+            "name": "created_at_lte",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "pattern": "^\\d+$",
+                  "type": "string"
+                },
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              ]
+            }
+          },
+          {
+            "description": "Filter by tx hash.",
+            "in": "query",
+            "name": "tx_hash",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort direction for cursor pagination. Ordering is by created_at with deterministic tie-breakers.",
+            "in": "query",
+            "name": "sort_direction",
+            "required": false,
+            "schema": {
+              "default": "desc",
+              "enum": ["asc", "desc"],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Maximum number of transactions to return.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque cursor from a previous page response.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "cursor": "eyJkIjoiZGVzYyIsInQiOiIxNzgzNjA2NjQ3IiwiYyI6ODQ1MywiYiI6IjQ4NDA4NjUwIiwieCI6MTgyLCJsIjo0NTcsImEiOjEsImgiOiIweDMzN2JiYWNhYTJkMDE0ODc0ZjBhMjRlOGIwODdlNTY2MmRjZmExN2Y2ZmNmYjFhNTNhZTE0ODcyMTg3MjYxNjciLCJlIjoic3VwcGx5X2NvbGxhdGVyYWwifQ",
+                  "data": [
+                    {
+                      "chain_id": 8453,
+                      "created_at": 1783606647,
+                      "data": {
+                        "account": "0x535690CB1330232dd4f2ac5B724040751bdF4C91",
+                        "assets": "80000000000000",
+                        "buyer": "0x958eB498a4172EA513c79b09E7f064070C5b1917",
+                        "buyer_assets": "80000000000000",
+                        "buyer_pending_fee_increase": "0",
+                        "caller": "0x3f60566413487406F80572A4Eb91163aC097E415",
+                        "consumed": "80000000000000",
+                        "group": "0xe6ceb8a150e3da1ade87bc6308a293149b1f6d10a204bb7883dd6e328b9bf674",
+                        "maker": "0x958eB498a4172EA513c79b09E7f064070C5b1917",
+                        "payer": "0x958eB498a4172EA513c79b09E7f064070C5b1917",
+                        "receiver": "0x535690CB1330232dd4f2ac5B724040751bdF4C91",
+                        "seller": "0x535690CB1330232dd4f2ac5B724040751bdF4C91",
+                        "seller_assets": "80000000000000",
+                        "seller_pending_fee_decrease": "0",
+                        "take_units": "80001344022580",
+                        "taker": "0x535690CB1330232dd4f2ac5B724040751bdF4C91",
+                        "total_units_delta": "80001344022580",
+                        "units": "80001344022580"
+                      },
+                      "event_type": "borrow",
+                      "id": "0048408650-fe33f-000460:4",
+                      "market_id": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+                      "tx_hash": "0x337bbacaa2d014874f0a24e8b087e5662dcfa17f6fcfb1a53ae1487218726167"
+                    },
+                    {
+                      "chain_id": 8453,
+                      "created_at": 1783606647,
+                      "data": {
+                        "account": "0x958eB498a4172EA513c79b09E7f064070C5b1917",
+                        "assets": "80000000000000",
+                        "buyer": "0x958eB498a4172EA513c79b09E7f064070C5b1917",
+                        "buyer_assets": "80000000000000",
+                        "buyer_pending_fee_increase": "0",
+                        "caller": "0x3f60566413487406F80572A4Eb91163aC097E415",
+                        "consumed": "80000000000000",
+                        "group": "0xe6ceb8a150e3da1ade87bc6308a293149b1f6d10a204bb7883dd6e328b9bf674",
+                        "maker": "0x958eB498a4172EA513c79b09E7f064070C5b1917",
+                        "payer": "0x958eB498a4172EA513c79b09E7f064070C5b1917",
+                        "receiver": "0x535690CB1330232dd4f2ac5B724040751bdF4C91",
+                        "seller": "0x535690CB1330232dd4f2ac5B724040751bdF4C91",
+                        "seller_assets": "80000000000000",
+                        "seller_pending_fee_decrease": "0",
+                        "take_units": "80001344022580",
+                        "taker": "0x535690CB1330232dd4f2ac5B724040751bdF4C91",
+                        "total_units_delta": "80001344022580",
+                        "units": "80001344022580"
+                      },
+                      "event_type": "lend",
+                      "id": "0048408650-fe33f-000460:2",
+                      "market_id": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+                      "tx_hash": "0x337bbacaa2d014874f0a24e8b087e5662dcfa17f6fcfb1a53ae1487218726167"
+                    },
+                    {
+                      "chain_id": 8453,
+                      "created_at": 1783606647,
+                      "data": {
+                        "account": "0x535690CB1330232dd4f2ac5B724040751bdF4C91",
+                        "assets": "1000000",
+                        "caller": "0x3f60566413487406F80572A4Eb91163aC097E415",
+                        "collateral": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                        "on_behalf": "0x535690CB1330232dd4f2ac5B724040751bdF4C91"
+                      },
+                      "event_type": "supply_collateral",
+                      "id": "0048408650-fe33f-000457:1",
+                      "market_id": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+                      "tx_hash": "0x337bbacaa2d014874f0a24e8b087e5662dcfa17f6fcfb1a53ae1487218726167"
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/TransactionsResponse"
+                }
+              }
+            },
+            "description": "Cursor-paginated list of Midnight market transactions."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "code": "INVALID_CURSOR",
+                    "details": null,
+                    "message": "cursor sort direction does not match request sort direction",
+                    "request_id": "f0e1d2c3-b4a5-4968-8728-1c0d1e2f3a4b"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/MidnightErrorResponse"
+                }
+              }
+            },
+            "description": "`INVALID_CURSOR` — the provided cursor is malformed or was produced by a different sort direction."
+          }
+        },
+        "summary": "List market transactions",
+        "tags": ["Transactions"]
+      }
+    },
+    "/v0/midnight/markets/{market-id}/users/{user-address}/position": {
+      "get": {
+        "description": "Detail lookup for a single position by `(market-id, user-address)`.\n\n`:market-id` is the stable Midnight market id and is globally unique across supported chains. `:user-address` accepts any casing and is checksummed server-side.\n\nReturns the position inside a `data` envelope. When the position is **closed** (no credit, no debt, no remaining collateral) or has never existed for a known market, the endpoint returns zero balances with `type: null`. Positions with `credit == 0 && debt == 0` but non-empty `collaterals` are returned as `type: \"collateral_only\"`.",
+        "operationId": "MidnightPositionsController_detail",
+        "parameters": [
+          {
+            "description": "Midnight market id.",
+            "example": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+            "in": "path",
+            "name": "market-id",
+            "required": true,
+            "schema": {
+              "example": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+              "type": "string"
+            }
+          },
+          {
+            "description": "User address for the requested position. Lowercase input is checksummed.",
+            "example": "0xd4F43105098845fFE89B16E7A3DCdd0A31898118",
+            "in": "path",
+            "name": "user-address",
+            "required": true,
+            "schema": {
+              "example": "0xd4F43105098845fFE89B16E7A3DCdd0A31898118",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "data": {
+                    "chain_id": 8453,
+                    "collaterals": [
+                      {
+                        "amount": "4000000",
+                        "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+                      }
+                    ],
+                    "credit": "0",
+                    "debt": "1046492040981691",
+                    "last_indexed_block": "48408699",
+                    "last_loss_factor": "0",
+                    "loan_token": "0x4200000000000000000000000000000000000006",
+                    "loss_factor": "0",
+                    "market_id": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+                    "maturity": 1784300400,
+                    "pending_fee": "0",
+                    "type": "borrow",
+                    "user_address": "0xd4F43105098845fFE89B16E7A3DCdd0A31898118"
+                  }
+                },
+                "examples": {
+                  "active": {
+                    "summary": "Open position",
+                    "value": {
+                      "data": {
+                        "chain_id": 8453,
+                        "collaterals": [
+                          {
+                            "amount": "4000000",
+                            "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+                          }
+                        ],
+                        "credit": "0",
+                        "debt": "1046492040981691",
+                        "last_indexed_block": "48408699",
+                        "last_loss_factor": "0",
+                        "loan_token": "0x4200000000000000000000000000000000000006",
+                        "loss_factor": "0",
+                        "market_id": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+                        "maturity": 1784300400,
+                        "pending_fee": "0",
+                        "type": "borrow",
+                        "user_address": "0xd4F43105098845fFE89B16E7A3DCdd0A31898118"
+                      }
+                    }
+                  },
+                  "empty": {
+                    "summary": "Closed or missing position on a known market",
+                    "value": {
+                      "data": {
+                        "chain_id": 8453,
+                        "collaterals": [],
+                        "credit": "0",
+                        "debt": "0",
+                        "last_indexed_block": "48408699",
+                        "last_loss_factor": "0",
+                        "loan_token": "0x4200000000000000000000000000000000000006",
+                        "loss_factor": "0",
+                        "market_id": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+                        "maturity": 1784300400,
+                        "pending_fee": "0",
+                        "type": null,
+                        "user_address": "0xd4F43105098845fFE89B16E7A3DCdd0A31898118"
+                      }
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/PositionDetailResponse"
+                }
+              }
+            },
+            "description": "Midnight position detail."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "code": "MARKET_NOT_FOUND",
+                    "details": null,
+                    "message": "Market 0x0000000000000000000000000000000000000000000000000000000000000000 not found",
+                    "request_id": "f0e1d2c3-b4a5-4968-8728-1c0d1e2f3a4b"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/MidnightErrorResponse"
+                }
+              }
+            },
+            "description": "`MARKET_NOT_FOUND` — no market exists for this id."
+          }
+        },
+        "summary": "Get position",
+        "tags": ["Positions"]
+      }
+    },
+    "/v0/midnight/markets/{market-id}/users/{user-address}/position/performance": {
+      "get": {
+        "description": "Performance-only lookup for a single position by `(market-id, user-address)`.\n\nReturns performance analytics inside a `data` envelope. The position detail endpoint omits these fields to keep state and performance concerns separate. When the position is closed or has never existed for a known market, this endpoint returns `type: null` and null analytics.",
+        "operationId": "MidnightPositionsController_performance",
+        "parameters": [
+          {
+            "description": "Midnight market id.",
+            "example": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+            "in": "path",
+            "name": "market-id",
+            "required": true,
+            "schema": {
+              "example": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+              "type": "string"
+            }
+          },
+          {
+            "description": "User address for the requested position. Lowercase input is checksummed.",
+            "example": "0xd4F43105098845fFE89B16E7A3DCdd0A31898118",
+            "in": "path",
+            "name": "user-address",
+            "required": true,
+            "schema": {
+              "example": "0xd4F43105098845fFE89B16E7A3DCdd0A31898118",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "data": {
+                    "accounting_method": "average_cost",
+                    "chain_id": 8453,
+                    "cost_basis": "1046483736229728000000000000000000",
+                    "effective_rate_wad": "327402597840809",
+                    "last_indexed_block": "48408699",
+                    "market_id": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+                    "type": "borrow",
+                    "user_address": "0xd4F43105098845fFE89B16E7A3DCdd0A31898118"
+                  }
+                },
+                "examples": {
+                  "active": {
+                    "summary": "Open position performance",
+                    "value": {
+                      "data": {
+                        "accounting_method": "average_cost",
+                        "chain_id": 8453,
+                        "cost_basis": "1046483736229728000000000000000000",
+                        "effective_rate_wad": "327402597840809",
+                        "last_indexed_block": "48408699",
+                        "market_id": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+                        "type": "borrow",
+                        "user_address": "0xd4F43105098845fFE89B16E7A3DCdd0A31898118"
+                      }
+                    }
+                  },
+                  "empty": {
+                    "summary": "Closed or missing position on a known market",
+                    "value": {
+                      "data": {
+                        "accounting_method": "average_cost",
+                        "chain_id": 8453,
+                        "cost_basis": null,
+                        "effective_rate_wad": null,
+                        "last_indexed_block": "48408699",
+                        "market_id": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+                        "type": null,
+                        "user_address": "0xd4F43105098845fFE89B16E7A3DCdd0A31898118"
+                      }
+                    }
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/PositionPerformanceResponse"
+                }
+              }
+            },
+            "description": "Midnight position performance analytics."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "code": "MARKET_NOT_FOUND",
+                    "details": null,
+                    "message": "Market 0x0000000000000000000000000000000000000000000000000000000000000000 not found",
+                    "request_id": "f0e1d2c3-b4a5-4968-8728-1c0d1e2f3a4b"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/MidnightErrorResponse"
+                }
+              }
+            },
+            "description": "`MARKET_NOT_FOUND` — no market exists for this id."
+          }
+        },
+        "summary": "Get Midnight position performance",
+        "tags": ["Positions"]
+      }
+    },
+    "/v0/midnight/users/{user-address}/offer-groups": {
+      "get": {
+        "description": "Cursor-paginated list of a user's active offer groups with nested active offers.\n\nActive offers have started, have not passed their offer expiry or market maturity, and still have remaining group capacity. Asset-capped offers are considered fully consumed when `consumed >= max_assets`; unit-capped offers are fully consumed when `consumed >= max_units`. Fully consumed offers are excluded, and a group is omitted entirely when no active offers remain in it. Each group returns the max `expiry` across all unexpired and unmatured offers in the whole group, including future-start offers, one deterministic representative offer limit (`max_units`, `max_assets`), the latest group-level `consumed` value, and all active offers in that group matching the non-market request filters. Each offer includes both `market_id` and the immutable `market` config used to derive it, because uncreated markets cannot be decoded from `market_id` alone.\n\n**Filters.** `market_ids` filters the group page to groups containing at least one active offer in any requested market, but nested offers are not narrowed by `market_ids`; all active sibling offers in each returned group remain visible. `chain_ids`, `loan_assets`, and `groups` filter both the group page and nested offers. `listed=true` returns only groups where every active offer is on a listed market; `listed=false` returns groups with at least one active offer on an unlisted market. `loan_assets` matches loan token addresses across all chains unless `chain_ids` is also provided. The group-level `expiry` is computed for the whole offer group and is not narrowed by `market_ids` or `loan_assets`. `created_at_gte` and `created_at_lte` filter by the first active matching offer created in each group. `market_ids`, `loan_assets`, and `groups` are capped at 20 values.\n\n**Pagination.** Response follows the list envelope: `{ cursor, data }`. Pagination is over groups; nested offers are not split across pages. Sort groups with `sort_by=id|created_at` and `sort_direction=asc|desc`.",
+        "operationId": "MidnightOfferGroupsController_list",
+        "parameters": [
+          {
+            "description": "User address whose active offer groups should be listed.",
+            "example": "0x958eB498a4172EA513c79b09E7f064070C5b1917",
+            "in": "path",
+            "name": "user-address",
+            "required": true,
+            "schema": {
+              "example": "0x958eB498a4172EA513c79b09E7f064070C5b1917",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by chain ids. Supported chains: Base (8453).",
+            "in": "query",
+            "name": "chain_ids",
+            "required": false,
+            "schema": {
+              "items": {
+                "enum": [8453],
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          },
+          {
+            "description": "Filter groups to those containing active offers in these Midnight markets. Nested offers are not narrowed by this filter.",
+            "in": "query",
+            "name": "market_ids",
+            "required": false,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 20,
+              "type": "array"
+            }
+          },
+          {
+            "description": "Filter nested active offers by loan token addresses. Combined with market_ids and groups using AND semantics.",
+            "in": "query",
+            "name": "loan_assets",
+            "required": false,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 20,
+              "type": "array"
+            }
+          },
+          {
+            "description": "Filter by offer group ids. Combined with market_ids and loan_assets using AND semantics.",
+            "in": "query",
+            "name": "groups",
+            "required": false,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 20,
+              "type": "array"
+            }
+          },
+          {
+            "description": "Filter for group created_at greater than or equal to this unix timestamp.",
+            "in": "query",
+            "name": "created_at_gte",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "pattern": "^\\d+$",
+                  "type": "string"
+                },
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              ]
+            }
+          },
+          {
+            "description": "Filter for group created_at less than or equal to this unix timestamp.",
+            "in": "query",
+            "name": "created_at_lte",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "pattern": "^\\d+$",
+                  "type": "string"
+                },
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              ]
+            }
+          },
+          {
+            "description": "Filter by market listing status. When true, returns only groups where every active offer is on a listed market; when false, groups with at least one active offer on an unlisted market. Omit to return both.",
+            "in": "query",
+            "name": "listed",
+            "required": false,
+            "schema": {
+              "enum": ["true", "false"],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort field for group cursor pagination.",
+            "in": "query",
+            "name": "sort_by",
+            "required": false,
+            "schema": {
+              "default": "id",
+              "enum": ["id", "created_at"],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort direction for group cursor pagination.",
+            "in": "query",
+            "name": "sort_direction",
+            "required": false,
+            "schema": {
+              "default": "asc",
+              "enum": ["asc", "desc"],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Maximum number of groups to return.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque cursor from a previous page response.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "cursor": "eyJzb3J0QnkiOiJpZCIsInNvcnREaXJlY3Rpb24iOiJhc2MiLCJjaGFpbklkIjo4NDUzLCJncm91cCI6IjB4MGJhYjUxZmFiNjQxNTdiYzEwMTFjZTY1YjliZjliMmIxMWYyMDJiOGE3YWI3NmI0MDhjZjQwYjhhZGYwNjlkMyJ9",
+                  "data": [
+                    {
+                      "chain_id": 8453,
+                      "consumed": "0",
+                      "created_at": 1783584485,
+                      "expiry": 1784300399,
+                      "id": "0x0bab51fab64157bc1011ce65b9bf9b2b11f202b8a7ab76b408cf40b8adf069d3",
+                      "max_assets": "80000000000000",
+                      "max_units": "0",
+                      "offers": [
+                        {
+                          "buy": true,
+                          "callback": "0x0000000000000000000000000000000000000000",
+                          "callback_data": "0x",
+                          "continuous_fee_cap": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+                          "created_at": 1783584485,
+                          "expiry": 1784300399,
+                          "maker": "0x958eB498a4172EA513c79b09E7f064070C5b1917",
+                          "market": {
+                            "collaterals": [
+                              {
+                                "liquidation_cursor": "300000000000000000",
+                                "lltv": "860000000000000000",
+                                "oracle": "0xD09048c8B568Dbf5f189302beA26c9edABFC4858",
+                                "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+                              }
+                            ],
+                            "enter_gate": "0x0000000000000000000000000000000000000000",
+                            "liquidator_gate": "0x0000000000000000000000000000000000000000",
+                            "loan_token": "0x4200000000000000000000000000000000000006",
+                            "maturity": 1784300400,
+                            "rcf_threshold": "0"
+                          },
+                          "market_id": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+                          "max_assets": "80000000000000",
+                          "max_units": "0",
+                          "ratifier": "0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E",
+                          "receiver_if_maker_is_seller": "0x0000000000000000000000000000000000000000",
+                          "reduce_only": false,
+                          "start": 1783584483,
+                          "tick": 4408
+                        }
+                      ]
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/OfferGroupsResponse"
+                }
+              }
+            },
+            "description": "Cursor-paginated list of active Midnight offer groups."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "code": "INVALID_CURSOR",
+                    "details": null,
+                    "message": "Invalid user group cursor",
+                    "request_id": "f0e1d2c3-b4a5-4968-8728-1c0d1e2f3a4b"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/MidnightErrorResponse"
+                }
+              }
+            },
+            "description": "`INVALID_CURSOR` — the provided cursor is malformed."
+          }
+        },
+        "summary": "List active Midnight offer groups for a user",
+        "tags": ["Offer Groups"]
+      }
+    },
+    "/v0/midnight/users/{user-address}/positions": {
+      "get": {
+        "description": "Cursor-paginated list of a user's current Midnight positions.\n\n**Position type.** `type` is `lend` for positions with credit, `borrow` for positions with debt, or `collateral_only` for positions with no credit or debt but remaining collateral. Closed positions with no credit, no debt, and no remaining collateral are excluded.\n\n**Performance fields.** `cost_basis` uses the average cost method and is returned as a WAD-scaled bigint string in loan-token units. `effective_rate_wad` is a WAD-scaled annualized effective rate. Either field can be `null` when there is not enough attributable history.\n\n**Filters.** `chain_ids` is required when `loan_assets` is provided. Range filters exist on `credit`, `debt`, `cost_basis`, and `effective_rate_wad`. `active_only=true` excludes matured markets. `listed=true` keeps only positions on listed markets; `listed=false` keeps only positions on unlisted markets.\n\n**Pagination.** Response envelope: `{ cursor, data }`.\n\n**Cache.** `public, max-age=2, stale-while-revalidate=1`.",
+        "operationId": "MidnightPositionsController_list",
+        "parameters": [
+          {
+            "description": "User address to list positions for. Lowercase input is checksummed.",
+            "example": "0xd4F43105098845fFE89B16E7A3DCdd0A31898118",
+            "in": "path",
+            "name": "user-address",
+            "required": true,
+            "schema": {
+              "example": "0xd4F43105098845fFE89B16E7A3DCdd0A31898118",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by chain ids. Supported chains: Base (8453). Required when loan_assets is provided.",
+            "in": "query",
+            "name": "chain_ids",
+            "required": false,
+            "schema": {
+              "items": {
+                "enum": [8453],
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          },
+          {
+            "description": "Filter by Midnight market ids.",
+            "in": "query",
+            "name": "market_ids",
+            "required": false,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          },
+          {
+            "description": "Filter by position type.",
+            "in": "query",
+            "name": "types",
+            "required": false,
+            "schema": {
+              "items": {
+                "enum": ["lend", "borrow", "collateral_only"],
+                "type": "string"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          },
+          {
+            "description": "Filter by loan token addresses. Combine with chain_ids; lowercase input is checksummed.",
+            "in": "query",
+            "name": "loan_assets",
+            "required": false,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          },
+          {
+            "description": "Filter by exact maturity timestamps, in unix seconds.",
+            "in": "query",
+            "name": "maturities",
+            "required": false,
+            "schema": {
+              "items": {
+                "anyOf": [
+                  {
+                    "maxLength": 16,
+                    "pattern": "^\\d+$",
+                    "type": "string"
+                  },
+                  {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                ]
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          },
+          {
+            "description": "When true, keep only positions whose market has not matured yet.",
+            "in": "query",
+            "name": "active_only",
+            "required": false,
+            "schema": {
+              "enum": ["true", "false"],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter for maturities greater than or equal to this unix timestamp.",
+            "in": "query",
+            "name": "maturity_gte",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "pattern": "^\\d+$",
+                  "type": "string"
+                },
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              ]
+            }
+          },
+          {
+            "description": "Filter for maturities less than or equal to this unix timestamp.",
+            "in": "query",
+            "name": "maturity_lte",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "pattern": "^\\d+$",
+                  "type": "string"
+                },
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              ]
+            }
+          },
+          {
+            "description": "Filter for credit greater than or equal to this value.",
+            "in": "query",
+            "name": "credit_gte",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{1,78}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter for credit less than or equal to this value.",
+            "in": "query",
+            "name": "credit_lte",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{1,78}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter for pending fee greater than or equal to this value.",
+            "in": "query",
+            "name": "pending_fee_gte",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{1,78}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter for pending fee less than or equal to this value.",
+            "in": "query",
+            "name": "pending_fee_lte",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{1,78}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter for debt greater than or equal to this value.",
+            "in": "query",
+            "name": "debt_gte",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{1,78}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter for debt less than or equal to this value.",
+            "in": "query",
+            "name": "debt_lte",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{1,78}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter for cost basis greater than or equal to this value.",
+            "in": "query",
+            "name": "cost_basis_gte",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{1,78}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter for cost basis less than or equal to this value.",
+            "in": "query",
+            "name": "cost_basis_lte",
+            "required": false,
+            "schema": {
+              "pattern": "^\\d{1,78}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter for effective rate WAD greater than or equal to this value.",
+            "in": "query",
+            "name": "effective_rate_wad_gte",
+            "required": false,
+            "schema": {
+              "pattern": "^-?\\d{1,78}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter for effective rate WAD less than or equal to this value.",
+            "in": "query",
+            "name": "effective_rate_wad_lte",
+            "required": false,
+            "schema": {
+              "pattern": "^-?\\d{1,78}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort field for cursor pagination.",
+            "in": "query",
+            "name": "sort_by",
+            "required": false,
+            "schema": {
+              "default": "maturity",
+              "enum": ["credit", "debt", "maturity", "cost_basis", "effective_rate_wad"],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort direction for cursor pagination.",
+            "in": "query",
+            "name": "sort_direction",
+            "required": false,
+            "schema": {
+              "default": "desc",
+              "enum": ["asc", "desc"],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Maximum number of items to return.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque cursor from a previous page response.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by market listing status. When true, returns only positions on listed markets; when false, only positions on unlisted markets. Omit to return both.",
+            "in": "query",
+            "name": "listed",
+            "required": false,
+            "schema": {
+              "enum": ["true", "false"],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "cursor": null,
+                  "data": [
+                    {
+                      "chain_id": 8453,
+                      "collaterals": [],
+                      "cost_basis": "1684382000000000000000000",
+                      "credit": "1691361",
+                      "debt": "0",
+                      "effective_rate_wad": "51269234716454728",
+                      "last_loss_factor": "0",
+                      "loan_token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                      "loss_factor": "0",
+                      "market_id": "0x56b822d7d8be6bded8e1782277989fe5dc4e5b0a4f7f9d349482bc933bd5436c",
+                      "maturity": 1786147200,
+                      "pending_fee": "0",
+                      "type": "lend",
+                      "user_address": "0xd4F43105098845fFE89B16E7A3DCdd0A31898118"
+                    },
+                    {
+                      "chain_id": 8453,
+                      "collaterals": [
+                        {
+                          "amount": "4000000",
+                          "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+                        }
+                      ],
+                      "cost_basis": "1046483736229728000000000000000000",
+                      "credit": "0",
+                      "debt": "1046492040981691",
+                      "effective_rate_wad": "327402597840809",
+                      "last_loss_factor": "0",
+                      "loan_token": "0x4200000000000000000000000000000000000006",
+                      "loss_factor": "0",
+                      "market_id": "0xcc9418ea594c6e658650aedd205ce4544b266b69493f56fd2adc65c14bd06738",
+                      "maturity": 1784300400,
+                      "pending_fee": "0",
+                      "type": "borrow",
+                      "user_address": "0xd4F43105098845fFE89B16E7A3DCdd0A31898118"
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/PositionsResponse"
+                }
+              }
+            },
+            "description": "Cursor-paginated list of Midnight positions."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "code": "INVALID_CURSOR",
+                    "details": null,
+                    "message": "cursor sort/direction does not match request sort/direction",
+                    "request_id": "f0e1d2c3-b4a5-4968-8728-1c0d1e2f3a4b"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/MidnightErrorResponse"
+                }
+              }
+            },
+            "description": "`INVALID_CURSOR` — the provided cursor is malformed or was produced by a different sort configuration."
+          }
+        },
+        "summary": "List positions",
+        "tags": ["Positions"]
+      }
+    },
+    "/v0/midnight/users/{user-address}/transactions": {
+      "get": {
+        "description": "Cursor-paginated feed of Midnight economic transactions affecting one user.\n\n**Scope.** Includes `borrow`, `lend`, `exit_lend_primary`, `exit_lend_secondary`, `exit_borrow_primary`, `exit_borrow_secondary`, `partial_liquidation`, `full_liquidation`, `withdraw_collateral`, and `supply_collateral`. Admin, authorization, fee, flashloan, accounting-only, and market creation activity is excluded from v0.\n\n**Affected account.** This endpoint returns only items affecting `:user-address`: buyer/seller for trades, `on_behalf` for primary exits and collateral actions, and borrower for liquidations. For trade items, `data.assets` is the loan-token amount attributed to the item; `buyer_assets`, `seller_assets`, `take_units`, and `total_units_delta` describe the full trade.\n\n**Filters.** `:user-address` constrains the affected account across supported chains. `chain_ids` is optional and can further narrow the query. `listed=true` keeps only transactions on listed markets; `listed=false` keeps only transactions on unlisted markets.\n\n**Pagination.** Response follows the list envelope: `{ cursor, data }`. Pass back `cursor` verbatim on the next call. A `null` cursor means the last page. Ordering is fixed to `created_at` with deterministic tie-breakers.\n\n**Cache.** `public, max-age=2, stale-while-revalidate=1`.",
+        "operationId": "MidnightActivityController_listUserTransactions",
+        "parameters": [
+          {
+            "description": "User address whose transactions should be listed.",
+            "example": "0xd4F43105098845fFE89B16E7A3DCdd0A31898118",
+            "in": "path",
+            "name": "user-address",
+            "required": true,
+            "schema": {
+              "example": "0xd4F43105098845fFE89B16E7A3DCdd0A31898118",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by chain ids. Supported chains: Base (8453).",
+            "in": "query",
+            "name": "chain_ids",
+            "required": false,
+            "schema": {
+              "items": {
+                "enum": [8453],
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          },
+          {
+            "description": "Filter by transaction event type.",
+            "in": "query",
+            "name": "event_types",
+            "required": false,
+            "schema": {
+              "items": {
+                "enum": [
+                  "borrow",
+                  "lend",
+                  "exit_lend_primary",
+                  "exit_lend_secondary",
+                  "exit_borrow_primary",
+                  "exit_borrow_secondary",
+                  "partial_liquidation",
+                  "full_liquidation",
+                  "withdraw_collateral",
+                  "supply_collateral"
+                ],
+                "type": "string"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          },
+          {
+            "description": "Filter by market loan token addresses. Combine with chain_ids.",
+            "in": "query",
+            "name": "loan_assets",
+            "required": false,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          },
+          {
+            "description": "Filter by collateral token addresses. Combine with chain_ids.",
+            "in": "query",
+            "name": "collateral_assets",
+            "required": false,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          },
+          {
+            "description": "Filter for transaction timestamps greater than or equal to this unix timestamp.",
+            "in": "query",
+            "name": "created_at_gte",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "pattern": "^\\d+$",
+                  "type": "string"
+                },
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              ]
+            }
+          },
+          {
+            "description": "Filter for transaction timestamps less than or equal to this unix timestamp.",
+            "in": "query",
+            "name": "created_at_lte",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 16,
+                  "pattern": "^\\d+$",
+                  "type": "string"
+                },
+                {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              ]
+            }
+          },
+          {
+            "description": "Filter by tx hash.",
+            "in": "query",
+            "name": "tx_hash",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort direction for cursor pagination. Ordering is by created_at with deterministic tie-breakers.",
+            "in": "query",
+            "name": "sort_direction",
+            "required": false,
+            "schema": {
+              "default": "desc",
+              "enum": ["asc", "desc"],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Maximum number of transactions to return.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque cursor from a previous page response.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by Midnight market ids.",
+            "in": "query",
+            "name": "market_ids",
+            "required": false,
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "type": "array"
+            }
+          },
+          {
+            "description": "Filter by market listing status. When true, returns only transactions on listed markets; when false, only transactions on unlisted markets. Omit to return both.",
+            "in": "query",
+            "name": "listed",
+            "required": false,
+            "schema": {
+              "enum": ["true", "false"],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "cursor": "eyJkIjoiZGVzYyIsInQiOiIxNzgzNTQ1MDE3IiwiYyI6ODQ1MywiYiI6IjQ4Mzc3ODM1IiwieCI6MzM4LCJsIjozNTIsImEiOjIsImgiOiIweDljMGI5Y2UxNTE5ZjMzMDhiZDViNmI1NmMxMTc4MDgwODhjNDhmOTNhMGY5N2JlMDQ3ZTVlZjkxYjZkYjY4YTAiLCJlIjoibGVuZCJ9",
+                  "data": [
+                    {
+                      "chain_id": 8453,
+                      "created_at": 1783546093,
+                      "data": {
+                        "account": "0xd4F43105098845fFE89B16E7A3DCdd0A31898118",
+                        "assets": "309631",
+                        "buyer": "0xd4F43105098845fFE89B16E7A3DCdd0A31898118",
+                        "buyer_assets": "309631",
+                        "buyer_pending_fee_increase": "0",
+                        "caller": "0x3f60566413487406F80572A4Eb91163aC097E415",
+                        "consumed": "23999631",
+                        "group": "0x74656e6f720101869f52995f061617c55e88ad1ab1211d2e85ff9715bb72c22e",
+                        "maker": "0xd4F43105098845fFE89B16E7A3DCdd0A31898118",
+                        "payer": "0xc0b438Bbf5a8cC4e57C0D81e1818C069e413DdDf",
+                        "receiver": "0x0388895353b98B81234347E17D1eE6c9268F3D50",
+                        "seller": "0x0388895353b98B81234347E17D1eE6c9268F3D50",
+                        "seller_assets": "309631",
+                        "seller_pending_fee_decrease": "0",
+                        "take_units": "309641",
+                        "taker": "0x0388895353b98B81234347E17D1eE6c9268F3D50",
+                        "total_units_delta": "309641",
+                        "units": "309641"
+                      },
+                      "event_type": "lend",
+                      "id": "0048378373-743cf-000167:2",
+                      "market_id": "0x9ce1a0a9e5ca28a5333cec7a14d08afbab7fe1eb3a55024b3ae88f2d3bdcc229",
+                      "tx_hash": "0x59a11252d53e57e6b00f74362ee0cc73007168916fff4988fd16cf8eeb4cf95d"
+                    },
+                    {
+                      "chain_id": 8453,
+                      "created_at": 1783545345,
+                      "data": {
+                        "account": "0xd4F43105098845fFE89B16E7A3DCdd0A31898118",
+                        "assets": "5002955",
+                        "buyer": "0xd4F43105098845fFE89B16E7A3DCdd0A31898118",
+                        "buyer_assets": "5002955",
+                        "buyer_pending_fee_increase": "0",
+                        "caller": "0x3f60566413487406F80572A4Eb91163aC097E415",
+                        "consumed": "23305627",
+                        "group": "0x74656e6f720100c34faf17861d5cc43cc10dc4920f7bb61267d86efa6898954c",
+                        "maker": "0xd4F43105098845fFE89B16E7A3DCdd0A31898118",
+                        "payer": "0xd4F43105098845fFE89B16E7A3DCdd0A31898118",
+                        "receiver": "0x3f60566413487406F80572A4Eb91163aC097E415",
+                        "seller": "0x5F2F456266831DbbE57D3845187A93e1BD5EF1ba",
+                        "seller_assets": "5002955",
+                        "seller_pending_fee_decrease": "0",
+                        "take_units": "5007884",
+                        "taker": "0x5F2F456266831DbbE57D3845187A93e1BD5EF1ba",
+                        "total_units_delta": "5007884",
+                        "units": "5007884"
+                      },
+                      "event_type": "lend",
+                      "id": "0048377999-c6f6f-000097:2",
+                      "market_id": "0xa4030043fce4483aa527a225608e6eb27be7c16a062073b297941c5f72c032d2",
+                      "tx_hash": "0xfa76a9faf38f0281cdd826f8f18325eed940cfa2b05ec811194635041848fbb4"
+                    },
+                    {
+                      "chain_id": 8453,
+                      "created_at": 1783545017,
+                      "data": {
+                        "account": "0xd4F43105098845fFE89B16E7A3DCdd0A31898118",
+                        "assets": "16009469",
+                        "buyer": "0xd4F43105098845fFE89B16E7A3DCdd0A31898118",
+                        "buyer_assets": "16009469",
+                        "buyer_pending_fee_increase": "0",
+                        "caller": "0x3f60566413487406F80572A4Eb91163aC097E415",
+                        "consumed": "18302672",
+                        "group": "0x74656e6f720100c34faf17861d5cc43cc10dc4920f7bb61267d86efa6898954c",
+                        "maker": "0xd4F43105098845fFE89B16E7A3DCdd0A31898118",
+                        "payer": "0xd4F43105098845fFE89B16E7A3DCdd0A31898118",
+                        "receiver": "0x3f60566413487406F80572A4Eb91163aC097E415",
+                        "seller": "0x5F2F456266831DbbE57D3845187A93e1BD5EF1ba",
+                        "seller_assets": "16009469",
+                        "seller_pending_fee_decrease": "0",
+                        "take_units": "16025242",
+                        "taker": "0x5F2F456266831DbbE57D3845187A93e1BD5EF1ba",
+                        "total_units_delta": "16025242",
+                        "units": "16025242"
+                      },
+                      "event_type": "lend",
+                      "id": "0048377835-7aee7-000352:2",
+                      "market_id": "0xa4030043fce4483aa527a225608e6eb27be7c16a062073b297941c5f72c032d2",
+                      "tx_hash": "0x9c0b9ce1519f3308bd5b6b56c117808088c48f93a0f97be047e5ef91b6db68a0"
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/TransactionsResponse"
+                }
+              }
+            },
+            "description": "Cursor-paginated list of Midnight user transactions."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": {
+                    "code": "INVALID_CURSOR",
+                    "details": null,
+                    "message": "cursor sort direction does not match request sort direction",
+                    "request_id": "f0e1d2c3-b4a5-4968-8728-1c0d1e2f3a4b"
+                  }
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/MidnightErrorResponse"
+                }
+              }
+            },
+            "description": "`INVALID_CURSOR` — the provided cursor is malformed or was produced by a different sort direction."
+          }
+        },
+        "summary": "List user transactions",
+        "tags": ["Transactions"]
+      }
+    }
+  },
+  "servers": [],
+  "tags": [
+    {
+      "description": "A **Midnight transaction** item is one economic action that changed a market or account. One onchain transaction can appear as multiple API items when it affects more than one side of a trade or more than one account.\n\n### Event types\n\n`borrow`, `lend`, `exit_lend_primary`, `exit_lend_secondary`, `exit_borrow_primary`, `exit_borrow_secondary`, `partial_liquidation`, `full_liquidation`, `withdraw_collateral`, and `supply_collateral`.\n\nAdmin, authorization, fee, flashloan, market creation, and accounting-only events are intentionally excluded from v0.\n\n### Amounts\n\nFor trade actions, `data.assets` is the loan-token amount attributed to that API item. `buyer_assets`, `seller_assets`, `take_units`, and `total_units_delta` describe the full trade when present.\n\n### User-scoped transactions\n\n`GET /v0/midnight/users/{user-address}/transactions` matches the affected account, not only the transaction caller: buyer/seller for trades, `on_behalf` for primary exits and collateral actions, and borrower for liquidations.\n\n### Market-scoped transactions\n\n`GET /v0/midnight/markets/{market-id}/transactions` returns every economic action for that market, so one onchain transaction can appear as multiple API items when multiple accounts are affected.\n\n### Filters\n\n`chain_ids` is optional on transaction endpoints and can narrow results to supported chains. Currently supported: Base (`8453`). `event_types`, `created_at` ranges, `tx_hash`, `loan_assets`, and `collateral_assets` can further narrow results. User-scoped transactions also accept `market_ids`.\n\n### Sorting\n\nOrdering is fixed to `created_at` with deterministic tie-breakers. Use `sort_direction` to switch between newest-first and oldest-first.",
+      "name": "Transactions"
+    },
+    {
+      "description": "A **Midnight market** defines a fixed-rate lending venue: one loan token, one maturity timestamp, optional entry/liquidator gates, and a sorted collateral list with LLTV, liquidation cursor, and oracle for each collateral. The `market_id` is stable and unique across supported chains, so it is enough to address a market.\n\n### Filters\n\nSupported chain: Base (`8453`).\n\nAddress filters (`loan_assets`, `collateral_assets`, `oracle_addresses`, `enter_gates`, `liquidator_gates`) require `chain_ids` because the same address can exist on multiple chains. Time filters (`maturity_gte`, `maturity_lte`) accept unix seconds; `active_only=true` keeps markets whose maturity is still in the future.\n\n### Sortable fields\n\n`total_units` (default), `maturity`.",
+      "name": "Markets"
+    },
+    {
+      "description": "A **Midnight position** is a user's current state on a given market: credit, debt, pending fee, loss factor, collateral balances, and — when available — performance analytics.\n\n### Lender vs borrower\n\nA position's `type` is `lend` when `credit > 0`, `borrow` when `debt > 0`, or `collateral_only` when only collateral remains. A position with no credit, no debt, and no remaining collateral is considered **closed** — the detail endpoint returns 200 with zero balances and `type: null` for known markets.\n\n### Cost basis & effective rate\n\n- `cost_basis` uses the **average cost method**: entries add to the basis, exits reduce it proportionally. WAD-scaled bigint in loan-asset units; `null` when the position has no history attributable to the user (e.g. received via transfer).\n- `effective_rate_wad` is **IRR+** — the single annualized rate that compounds each remaining buy's capital from entry time to maturity to produce the current face value. WAD-scaled; `null` until sufficient history is available.\n\nThe single-position state endpoint omits these two analytics. Use `/position/performance` when you need performance fields.\n\n### Filters\n\n`chain_ids` is required when `loan_assets` is provided. Currently supported: Base (`8453`). Range filters exist on `credit`, `debt`, `cost_basis`, and `effective_rate_wad`.\n\n### Sortable fields\n\n`maturity` (default), `credit`, `debt`, `cost_basis`, `effective_rate_wad`.",
+      "name": "Positions"
+    },
+    {
+      "description": "Active offer groups for a user.\n\n### Response\n\nList envelope: `{ cursor, data: [...] }`. Pagination is over groups. Filters include `chain_ids`, `market_ids`, `loan_assets`, and `groups`; `chain_ids` currently supports Base (`8453`). `market_ids` selects groups containing at least one active offer in any requested market, but does not hide sibling offers from other markets inside each returned group. `loan_assets` matches loan token addresses across all chains unless `chain_ids` also narrows the query. Active offers have remaining group capacity: asset-capped offers are excluded when `consumed >= max_assets`, and unit-capped offers are excluded when `consumed >= max_units`. A fully consumed group is omitted when no active offers remain in it. Each item contains the group id, chain id, `created_at` from the first active matching offer, `expiry` as the max expiry across unexpired and unmatured offers in the whole group including future-start offers, representative active offer limits, the latest consumed amount for the group, and a nested `offers` array. Nested offers expose the fields needed to display and take an offer; proof metadata and offer hashes are intentionally excluded.",
+      "name": "Offer Groups"
+    }
+  ]
+}
