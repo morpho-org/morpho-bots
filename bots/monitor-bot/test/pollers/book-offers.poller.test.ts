@@ -223,7 +223,7 @@ describe('BookOffersPoller', () => {
     await poller.pollOnce()
     await poller.pollOnce()
     expect(firstAlert(dispatcher)?.title).toBe(
-      `Make Order Posted: 1000 assets in ${MARKET_A_LABEL}${EXPIRES}${TAIL}`
+      `Lend Order Posted: 1000 assets in ${MARKET_A_LABEL}${EXPIRES}${TAIL}`
     )
   })
 

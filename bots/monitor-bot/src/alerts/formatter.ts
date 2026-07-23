@@ -498,8 +498,10 @@ export class AlertFormatter {
     const market = this.deps.tokens.get(marketId)
     const loan = this.loanTokenEntry(marketId)
     const size = this.sizeLabel(bucket, event.assets, loan)
-    const borrow = bucket.side === 'asks'
-    const title = `${borrow ? 'Borrow Order' : 'Make Order'} ${OFFER_KIND[event.kind]}`
+    // The maker's side is the order's intent: `bids` are buy offers (the maker lends), `asks` are
+    // sell offers (the maker borrows) — so the title names it outright rather than a bare "Make
+    // Order" that hides which way the maker is quoting.
+    const title = `${bucket.side === 'asks' ? 'Borrow' : 'Lend'} Order ${OFFER_KIND[event.kind]}`
     const ref = this.marketRef(market?.chainId, marketId)
     const maker = this.nameOf(bucket.maker)
     const time = formatUtcTime(observedAt)

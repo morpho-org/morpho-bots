@@ -489,17 +489,17 @@ describe('AlertFormatter.offer', () => {
   const registry = () => registryWithTokens()
   const priced = () => priceLookup({ [`8453:${USDC_TOKEN.toLowerCase()}`]: 1 })
 
-  it('renders a make order posted as the full order block with APR and expiry', () => {
+  it('renders a lend order posted as the full order block with APR and expiry', () => {
     const alert = fmt(registry(), priced()).offer(offerEvent({ assets: 150000000n }), OBSERVED)
     expect(alert.key).toBe(`${MARKET_A}:bids:${USER_ONE}:${OFFER_GROUP}:4250:created`)
     expect(alert.severity).toBe('info')
     expect(alert.title).toBe(
-      'Make Order Posted: 150 USDC ($150) at 1.25% in USDC/WETH (86.0%), ' +
+      'Lend Order Posted: 150 USDC ($150) at 1.25% in USDC/WETH (86.0%), ' +
         `expires 28/08/2026 by 0x958e...1917 on midnight-base at ${OBSERVED_TIME}`
     )
     expect(alert.text).toBe(
       [
-        '📝 Make Order Posted',
+        '📝 Lend Order Posted',
         '   💰 Amount: 150 USDC ($150)',
         `   📈 APR: 1.25% in ${USDC_MARKET_LINK}`,
         '   📅 Expiry: 28/08/2026',
@@ -532,7 +532,7 @@ describe('AlertFormatter.offer', () => {
     expect(alert.key).toBe(
       `${MARKET_A}:bids:${USER_ONE}:${OFFER_GROUP}:4250:resized:1000/0->2000/0`
     )
-    expect(alert.text.startsWith('🔀 Make Order Resized\n')).toBe(true)
+    expect(alert.text.startsWith('🔀 Lend Order Resized\n')).toBe(true)
     expect(alert.text).toContain('   💰 Amount: 200 USDC ($200)')
     expect(alert.text).toContain('   ↩️ Previous: 100 USDC ($100)')
   })
@@ -543,7 +543,7 @@ describe('AlertFormatter.offer', () => {
       OBSERVED
     )
     expect(alert.key).toBe(`${MARKET_A}:bids:${USER_ONE}:${OFFER_GROUP}:4250:closed`)
-    expect(alert.text.startsWith('❌ Make Order Closed\n')).toBe(true)
+    expect(alert.text.startsWith('❌ Lend Order Closed\n')).toBe(true)
     expect(alert.text).toContain('   💰 Amount: 1,000 units')
   })
 
@@ -551,7 +551,7 @@ describe('AlertFormatter.offer', () => {
     const alert = fmt(new TokenRegistry(), NO_PRICES).offer(offerEvent(), OBSERVED)
     expect(alert.text).toBe(
       [
-        '📝 Make Order Posted',
+        '📝 Lend Order Posted',
         '   💰 Amount: 1000 units',
         '   🏦 Market: 0xaaaa...aaaa',
         '   📅 Expiry: 28/08/2026',
