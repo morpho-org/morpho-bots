@@ -1,4 +1,4 @@
-/** Forces TS to recompute `T` -- useful for collapsing a mapped type back to a readable alias. */
+/** Forces TS to recompute `T` -- collapses a `keyof`/union alias into its resolved members. */
 export type Id<T> = T extends infer U ? U : never
 
 export type Success<T> = {

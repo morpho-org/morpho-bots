@@ -8,8 +8,10 @@
     ".": {},
     "packages/typescript-config": {},
     "packages/utils": {},
+    // Consumers resolve this package through its gitignored `dist`, so knip reads every entry
+    // export as unused.
     "packages/contracts": {
-      "ignore": ["src/abis.ts", "src/contracts.ts"]
+      "includeEntryExports": false
     },
     "packages/bot-kit": {},
     "packages/swaps": {},
