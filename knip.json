@@ -1,13 +1,16 @@
 {
   "$schema": "https://unpkg.com/knip@5/schema.json",
   "exclude": ["enumMembers", "classMembers"],
+  "includeEntryExports": true,
   "ignore": [".claude/**"],
   "ignoreBinaries": ["forge", "railway"],
   "workspaces": {
     ".": {},
     "packages/typescript-config": {},
     "packages/utils": {},
-    "packages/contracts": {},
+    "packages/contracts": {
+      "ignore": ["src/abis.ts", "src/contracts.ts"]
+    },
     "packages/bot-kit": {},
     "packages/swaps": {},
     "bots/midnight-liquidation": {

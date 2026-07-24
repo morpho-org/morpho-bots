@@ -9,7 +9,7 @@ import type { Logger } from './logger'
  * Default block cadence for the signer-balance metric. On ~2s Base blocks this ships roughly every
  * 60s — matching the daemon-era wall-clock cadence — so operators see EOA gas drain at a steady rate.
  */
-export const BALANCE_EVERY_BLOCKS = 30n
+const BALANCE_EVERY_BLOCKS = 30n
 
 /**
  * Emits the signer EOA's native balance as the `signer.balance` metric on a fixed block cadence.

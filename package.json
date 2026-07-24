@@ -7,9 +7,7 @@
       "packages/*"
     ],
     "catalog": {
-      "@internationalized/date": "^3.11.0",
       "@morpho-org/midnight-sdk": "1.2.0",
-      "@morpho-org/morpho-ts": "2.8.0",
       "@morpho-org/viem-dlc": "0.0.11",
       "@nestjs/common": "^11.0.0",
       "@nestjs/core": "^11.0.0",
@@ -21,7 +19,6 @@
       "@types/bun": "^1.3.0",
       "@types/lodash-es": "^4.17.12",
       "cron": "^4.4.0",
-      "date-fns": "^4.1.0",
       "executooor-viem": "^1.3.3",
       "husky": "^9.1.5",
       "knip": "^5.86.0",

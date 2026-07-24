@@ -10,9 +10,9 @@ export type Logger = Record<LogLevel, (event: string, fields?: Record<string, un
 const LEVEL_RANK: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 }
 
 /** Fields bound once and stamped onto every line — the wide-log context (e.g. bot, chainId). */
-export type LogContext = Record<string, unknown>
+type LogContext = Record<string, unknown>
 
-export type CreateLoggerOptions = {
+type CreateLoggerOptions = {
   /** Persistent fields stamped onto every line (see {@link LogContext}). */
   context?: LogContext
   /** Env source for the BetterStack opt-in vars; defaults to `process.env`. Injectable for tests. */

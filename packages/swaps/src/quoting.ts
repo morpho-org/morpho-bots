@@ -31,7 +31,7 @@ import { priceZerox, quoteZerox } from './venues/zerox'
 // Dispatches one firm quote to the configured venue's adapter. Uniswap is local; aggregators hit the
 // API. `async` so a SYNCHRONOUS throw from the local Uniswap arm (e.g. calldata encoding) becomes a
 // rejection caught by the caller's tryCatch — not an escape that aborts the whole tick.
-export async function quoteByVenue(
+async function quoteByVenue(
   client: RateLimitedClient,
   entry: SwapConfigEntry,
   params: QuoteParameters

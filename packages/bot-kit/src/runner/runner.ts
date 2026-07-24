@@ -6,7 +6,7 @@ import { revertReason as defaultRevertReason } from '../tx-error'
 import { BLOCK_POLL_MS, createBlockWatcher } from './watcher'
 
 /** The long-running lifecycle handle {@link createRunner} returns. */
-export type Runner = {
+type Runner = {
   /** Run one poll cycle now (delegates to the watcher) — for tests / an explicit boot trigger. */
   poll: () => Promise<void>
   start: () => void

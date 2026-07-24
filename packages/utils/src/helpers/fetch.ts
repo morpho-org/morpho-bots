@@ -52,7 +52,7 @@ const MAX_REQUEST_RETRIES = 3
  * throw only on network/abort failures, so both stay reachable — plain `fetch` and `openapi-fetch`
  * clients both satisfy this.
  */
-export type ApiResult<T> = { data?: T; response: Response }
+type ApiResult<T> = { data?: T; response: Response }
 
 /**
  * Runs one HTTP request under a small self-contained retry policy: 429/5xx/network-error retries up
@@ -97,19 +97,4 @@ export async function fetchWithRetry<T>(
     if (!body) throw new Error(`${deps.label} parse error: empty body`)
     return body
   }
-}
-
-export async function fetchJsonResponse<T>(url: string, requestInit?: RequestInit): Promise<T> {
-  const { data: response, error: fetchError } = await tryCatch(fetch(url, requestInit))
-
-  if (fetchError || !response?.ok) {
-    throw Error(`HTTP ${response?.status ?? 'network error'}: ${url}`, { cause: fetchError })
-  }
-
-  const { data, error: parseError } = await parseJsonResponse<T>(response)
-  if (parseError) {
-    throw Error(`Failed to parse JSON: ${url}`, { cause: parseError })
-  }
-
-  return data
 }

@@ -8,16 +8,16 @@ import { isExecutionRevert, revertReason as defaultRevertReason, TxSendError } f
 import { bumpFees } from './fee-policy'
 
 /** Default blocks a pending tx may sit unconfirmed before the queue bumps its fee and replaces it. */
-export const STUCK_BLOCKS = 4n
+const STUCK_BLOCKS = 4n
 
 /** Default fee-bump attempts the queue makes on a stuck tx before dropping it. */
-export const MAX_BUMP_ATTEMPTS = 3
+const MAX_BUMP_ATTEMPTS = 3
 
 /**
  * Default `onBlock` cadence for the nonce-consumed reconciler. On ~2s Base blocks this fires roughly
  * every 6s — comparable to the daemon-era sweep reconcile (every 3 sweeps at a 2s active cadence).
  */
-export const RECONCILE_EVERY_BLOCKS = 3
+const RECONCILE_EVERY_BLOCKS = 3
 
 export type TxRequest = { to: Address; data: Hex }
 

@@ -69,7 +69,7 @@ const swapConfigSchema = z.record(
 )
 
 /** The full parsed swap-routing file: chainId → collateral address → venue entry. */
-export type SwapConfig = z.infer<typeof swapConfigSchema>
+type SwapConfig = z.infer<typeof swapConfigSchema>
 
 /**
  * Parses (and validates) the raw JSON swap-routing config. Throws a `ZodError` on any malformed

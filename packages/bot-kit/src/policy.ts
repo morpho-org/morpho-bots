@@ -32,7 +32,7 @@ export type PolicyTx = {
   maxFeePerGas: bigint
 }
 
-export type PolicyCheck =
+type PolicyCheck =
   | 'chainId'
   | 'executor'
   | 'value'
@@ -41,7 +41,7 @@ export type PolicyCheck =
   | 'maxDataBytes'
   | 'selector'
 
-export type PolicyDecision = { ok: true } | { ok: false; check: PolicyCheck; message: string }
+type PolicyDecision = { ok: true } | { ok: false; check: PolicyCheck; message: string }
 
 /** Raised when a prepared transaction fails the default-deny policy — an upstream bug, never sent. */
 export class PolicyViolationError extends Error {

@@ -48,7 +48,7 @@ function revertData(error: BaseError): Hex | undefined {
  * Decodes an ABI-encoded revert payload to a log-safe string. May throw on an unknown selector —
  * {@link revertReason} falls through to viem's short message when it does.
  */
-export type RevertDecoder = (data: Hex) => string
+type RevertDecoder = (data: Hex) => string
 
 // Standard Solidity reverts: `Error(string)` (require/revert strings) and `Panic(uint256)`
 // (arithmetic underflow etc.). Protocols without custom ABI errors revert exclusively with these.
