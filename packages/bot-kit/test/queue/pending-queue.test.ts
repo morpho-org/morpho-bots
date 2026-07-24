@@ -100,6 +100,11 @@ function setup(
   }
 }
 
+/** First onBlock sighting stamps the stuck-age baseline (at block 0); tests advance from there. */
+function stampBaseline(queue: PendingQueue) {
+  return queue.onBlock(0n)
+}
+
 function submitOne(queue: PendingQueue) {
   return queue.submit({
     request: REQUEST,
@@ -128,7 +133,7 @@ describe('createPendingQueue', () => {
   it('leaves a tx pending until it is stuck past stuckBlocks', async () => {
     const { queue, sends } = setup()
     await submitOne(queue)
-    await queue.onBlock(0n) // first sighting stamps the stuck-age baseline
+    await stampBaseline(queue)
     await queue.onBlock(4n) // age 4, not yet > 4
     expect(queue.size).toBe(1)
     expect(sends).toHaveLength(1) // no replacement
@@ -137,7 +142,7 @@ describe('createPendingQueue', () => {
   it('bumps and replaces a stuck tx at the same nonce', async () => {
     const { queue, sends } = setup({ baseFee: 100n })
     await submitOne(queue)
-    await queue.onBlock(0n) // first sighting stamps the stuck-age baseline
+    await stampBaseline(queue)
     await queue.onBlock(5n) // age 5 > 4 → bump
     expect(sends).toHaveLength(2)
     expect(sends[1]?.nonce).toBe(7) // replacement pins the original nonce
@@ -149,7 +154,7 @@ describe('createPendingQueue', () => {
   it('drops a tx after maxBumpAttempts bumps', async () => {
     const { queue } = setup()
     await submitOne(queue)
-    await queue.onBlock(0n) // first sighting stamps the stuck-age baseline
+    await stampBaseline(queue)
     await queue.onBlock(5n) // attempt 1
     await queue.onBlock(10n) // attempt 2
     await queue.onBlock(15n) // attempt 3
@@ -161,7 +166,7 @@ describe('createPendingQueue', () => {
   it('drops a stuck tx when the bump would breach the fee ceiling', async () => {
     const { queue } = setup({ maxFeeWei: 1000n })
     await submitOne(queue)
-    await queue.onBlock(0n) // first sighting stamps the stuck-age baseline
+    await stampBaseline(queue)
     await queue.onBlock(5n)
     expect(queue.size).toBe(0)
   })
@@ -198,7 +203,7 @@ describe('createPendingQueue', () => {
     }
     const { queue } = setup({ send, logger })
     await submitOne(queue)
-    await queue.onBlock(0n) // first sighting stamps the stuck-age baseline
+    await stampBaseline(queue)
     await queue.onBlock(5n) // stuck → replace → reverts → drop
     expect(queue.size).toBe(0)
     expect(events.find(e => e.event === 'tx.dropped')?.fields?.reason).toBe('reverts_on_replace')
@@ -214,7 +219,7 @@ describe('createPendingQueue', () => {
     }
     const { queue } = setup({ send, logger })
     await submitOne(queue)
-    await queue.onBlock(0n) // first sighting stamps the stuck-age baseline
+    await stampBaseline(queue)
     await queue.onBlock(5n) // attempt 1
     await queue.onBlock(6n) // attempt 2
     await queue.onBlock(7n) // attempt 3
@@ -350,7 +355,7 @@ describe('createPendingQueue', () => {
   it('also cools down a dropped (max-bump) label', async () => {
     const { queue } = setup()
     await submitOne(queue)
-    await queue.onBlock(0n) // first sighting stamps the stuck-age baseline
+    await stampBaseline(queue)
     await queue.onBlock(5n) // attempt 1
     await queue.onBlock(10n) // attempt 2
     await queue.onBlock(15n) // attempt 3
@@ -403,7 +408,7 @@ describe('multi-hash receipt tracking', () => {
       ...opts
     })
     await submitOne(queue)
-    await queue.onBlock(0n) // first sighting stamps the stuck-age baseline
+    await stampBaseline(queue)
     await queue.onBlock(5n) // age 5 > 4 → bump: hashOf(2) replaces hashOf(1) at the same nonce
     expect(queue.snapshot()[0]).toEqual({ nonce: 7, txHash: hashOf(2), attempt: 1 })
     return { queue, events, sends, failReceiptFor }
