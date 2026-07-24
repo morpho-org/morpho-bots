@@ -1,15 +1,13 @@
 import { parseUnits } from 'viem'
 
 /**
- * Parses a string value to a bigint with the specified decimals or return null if the value is invalid.
- * Handles "" and "." as 0n.
- * @param value - The value to parse.
- * @param decimals - The number of decimals to use for parsing.
- * @returns The parsed value as a bigint, or null if the value is invalid.
+ * Scales a decimal string to a bigint, or `null` when it does not parse. `""` and `"."` yield `0n`.
+ *
+ * Excess precision is ROUNDED half-away-from-zero, not truncated — `"1.9999999"` at 6 decimals is
+ * `2000000n`, so a value derived from a balance can round above that balance.
  */
 export function safeParseUnits(value: string, decimals: number): bigint | null {
   try {
-    // parseUnits handles "" and "." as 0n (desired behavior)
     return parseUnits(value.trim(), decimals)
   } catch {
     return null

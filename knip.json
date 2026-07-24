@@ -8,8 +8,6 @@
     ".": {},
     "packages/typescript-config": {},
     "packages/utils": {},
-    // Consumers resolve this package through its gitignored `dist`, so knip reads every entry
-    // export as unused.
     "packages/contracts": {
       "includeEntryExports": false
     },

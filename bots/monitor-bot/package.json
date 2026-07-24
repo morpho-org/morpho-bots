@@ -15,7 +15,6 @@
   },
   "dependencies": {
     "@morpho-org/midnight-sdk": "catalog:",
-    "@morpho-org/morpho-ts": "catalog:",
     "@nestjs/common": "catalog:",
     "@nestjs/core": "catalog:",
     "@nestjs/platform-express": "catalog:",
