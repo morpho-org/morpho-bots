@@ -393,8 +393,12 @@ describe('multi-hash receipt tracking', () => {
     opts: { getConsumedNonce?: GetConsumedNonce; reconcileEveryBlocks?: number } = {}
   ) {
     const { logger, events } = captureLogger()
+    const failReceiptFor = new Set<Hex>()
     const { queue, sends } = setup({
-      getReceipt: async txHash => receipts.get(txHash) ?? null,
+      getReceipt: async txHash => {
+        if (failReceiptFor.has(txHash)) throw new Error('rpc hiccup')
+        return receipts.get(txHash) ?? null
+      },
       logger,
       ...opts
     })
@@ -402,7 +406,7 @@ describe('multi-hash receipt tracking', () => {
     await queue.onBlock(0n) // first sighting stamps the stuck-age baseline
     await queue.onBlock(5n) // age 5 > 4 → bump: hashOf(2) replaces hashOf(1) at the same nonce
     expect(queue.snapshot()[0]).toEqual({ nonce: 7, txHash: hashOf(2), attempt: 1 })
-    return { queue, events, sends }
+    return { queue, events, sends, failReceiptFor }
   }
 
   it('emits tx.confirmed with the ORIGINAL hash when it mines after a replacement was broadcast', async () => {
@@ -426,6 +430,19 @@ describe('multi-hash receipt tracking', () => {
     expect(reverted?.level).toBe('warn')
     expect(reverted?.fields).toMatchObject({ nonce: 7, txHash: hashOf(1), blockNumber: 42n })
     expect(ctx.events.some(e => e.event === 'tx.dropped')).toBe(false)
+  })
+
+  it('still confirms the mined original when reading the replacement hash fails', async () => {
+    const receipts = new Map<Hex, TxReceiptLite>()
+    const ctx = await bumpOnce(receipts)
+    receipts.set(hashOf(1), { status: 'success', blockNumber: 42n })
+    ctx.failReceiptFor.add(hashOf(2)) // transient RPC error on the newest hash must not mask it
+    await ctx.queue.onBlock(6n)
+    expect(ctx.queue.size).toBe(0)
+    expect(ctx.events.find(e => e.event === 'tx.confirmed')?.fields).toMatchObject({
+      txHash: hashOf(1),
+      blockNumber: 42n
+    })
   })
 
   it('emits tx.confirmed with the replacement hash when the replacement mines', async () => {

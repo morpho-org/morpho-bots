@@ -196,13 +196,21 @@ export function createPendingQueue({
     return entry.txHashes[entry.txHashes.length - 1] as Hex
   }
 
+  // One hash's read failure must not mask a mined sibling, so the scan continues past errors; a
+  // receipt-free scan that hit one still throws, so a transport failure is never misread as pending.
   async function findReceipt(
     entry: Pending
   ): Promise<{ receipt: TxReceiptLite; txHash: Hex } | null> {
+    let readError: unknown
     for (const txHash of entry.txHashes.toReversed()) {
-      const receipt = await getReceipt(txHash)
-      if (receipt) return { receipt, txHash }
+      const receipt = await tryCatch(getReceipt(txHash))
+      if (receipt.error) {
+        readError ??= receipt.error
+        continue
+      }
+      if (receipt.data) return { receipt: receipt.data, txHash }
     }
+    if (readError) throw readError
     return null
   }
 
