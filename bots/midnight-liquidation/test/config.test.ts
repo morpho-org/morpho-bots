@@ -57,6 +57,7 @@ describe('loadConfig', () => {
 
     // Market whitelist + probe defaults.
     expect(config.markets.apiUrl).toBe('https://api.morpho.org/v0/midnight/markets')
+    expect(config.markets.listing).toBe('listed')
     expect(config.markets.refreshMs).toBe(60_000)
     expect(config.probe.staleMs).toBe(600_000)
     expect(config.probe.httpRps).toBe(1)
@@ -246,6 +247,17 @@ describe('loadConfig', () => {
     expect(() => loadConfig(baseEnv({ MARKETS_API_URL: 'not a url' }), deps)).toThrow(
       /MARKETS_API_URL is not a valid URL/
     )
+  })
+
+  it('parses MARKET_LISTING (unlisted / all) for a canary environment', () => {
+    expect(loadConfig(baseEnv({ MARKET_LISTING: 'unlisted' }), deps).markets.listing).toBe(
+      'unlisted'
+    )
+    expect(loadConfig(baseEnv({ MARKET_LISTING: 'all' }), deps).markets.listing).toBe('all')
+  })
+
+  it('throws on an unknown MARKET_LISTING', () => {
+    expect(() => loadConfig(baseEnv({ MARKET_LISTING: 'bogus' }), deps)).toThrow(/MARKET_LISTING/)
   })
 
   it('parses PROBE_LADDER into raw string sizes and rejects a malformed element', () => {

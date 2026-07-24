@@ -31,6 +31,14 @@ const CHAIN_MAP: Record<number, ChainConfig> = {
 // Env table
 // ---------------------------------------------------------------------------
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
+// Which slice of the Midnight markets API the whitelist pulls: `listed` (markets surfaced by the app
+// trust layer — the production default), `unlisted` (only unlisted markets — for a staging/canary bot
+// exercising markets before they are listed), or `all` (both). Maps to the `?listed=` query in the
+// markets fetch (`all` omits the param). `unlisted`/`all` widen the set beyond the trust layer, so
+// they are appropriate only for a thin-canary deployment where the wallet caps the blast radius.
+const MARKET_LISTINGS = ['listed', 'unlisted', 'all'] as const
+export type MarketListing = (typeof MARKET_LISTINGS)[number]
+const DEFAULT_MARKET_LISTING: MarketListing = 'listed'
 const DEFAULT_MAX_FEE_GWEI = '300'
 const PRIVATE_KEY_HEX_LENGTH = 66 // '0x' + 32 bytes
 
@@ -123,12 +131,14 @@ export type VenueConfig = {
 }
 
 /**
- * The Midnight markets API used as the market WHITELIST: only listed markets are discovered, probed,
- * and liquidated. Over-inclusion is impossible (fail-closed); the on-chain lens remains the
+ * The Midnight markets API used as the market WHITELIST: the markets discovered, probed, and
+ * liquidated. `listing` selects which slice the whitelist pulls — `listed` (the production default),
+ * `unlisted`, or `all`. Over-inclusion is impossible (fail-closed); the on-chain lens remains the
  * correctness boundary. `refreshMs` caps how often the (cheap, non-rate-limited) endpoint is polled.
  */
 export type MarketsConfig = {
   apiUrl: string
+  listing: MarketListing
   refreshMs: number
 }
 
@@ -227,6 +237,10 @@ function numberEnv(env: Env, name: string, def: number, bounds: { min?: number }
 
 function isLogLevel(value: string): value is LogLevel {
   return (LOG_LEVELS as readonly string[]).includes(value)
+}
+
+function isMarketListing(value: string): value is MarketListing {
+  return (MARKET_LISTINGS as readonly string[]).includes(value)
 }
 
 // Parses an optional boolean env var (`true`/`false`, case-insensitive), with a default. Any other
@@ -375,8 +389,17 @@ export function loadConfig(
   if (tryCatch(() => new URL(marketsApiUrl)).error) {
     throw new Error(`MARKETS_API_URL is not a valid URL: ${marketsApiUrl}`)
   }
+  // Which listing slice the whitelist pulls. Defaults to `listed` (production posture); a staging
+  // canary sets `unlisted` (or `all`) to act on markets not yet surfaced by the app trust layer.
+  const marketListing = env.MARKET_LISTING?.trim() || DEFAULT_MARKET_LISTING
+  if (!isMarketListing(marketListing)) {
+    throw new Error(
+      `MARKET_LISTING must be one of ${MARKET_LISTINGS.join(', ')}, got: ${env.MARKET_LISTING}`
+    )
+  }
   const markets: MarketsConfig = {
     apiUrl: marketsApiUrl,
+    listing: marketListing,
     refreshMs: intEnv(env, 'MARKETS_REFRESH_MS', DEFAULT_MARKETS_REFRESH_MS, { min: 1 })
   }
 

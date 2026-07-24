@@ -148,11 +148,13 @@ async function main() {
     logger
   })
 
-  // Market whitelist: only listed markets are discovered / probed / liquidated. Refresh once at
-  // startup (non-fatal — a failed first fetch leaves the set empty = fail-closed, and the timer below
+  // Market whitelist: only markets in the configured listing slice (MARKET_LISTING — listed by
+  // default; unlisted/all for a canary) are discovered / probed / liquidated. Refresh once at startup
+  // (non-fatal — a failed first fetch leaves the set empty = fail-closed, and the timer below
   // retries), then poll on an interval.
   const listedMarkets = createListedMarketFilter({
     apiUrl: config.markets.apiUrl,
+    listing: config.markets.listing,
     chainId: config.chainId,
     logger
   })

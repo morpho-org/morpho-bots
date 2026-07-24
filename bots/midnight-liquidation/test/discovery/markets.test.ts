@@ -130,4 +130,73 @@ describe('createListedMarketFilter', () => {
     expect(attempts).toBe(2)
     expect(filter.isListed(LISTED)).toBe(true)
   })
+
+  it('requests listed=false when listing is unlisted', async () => {
+    let requested = ''
+    const fetchImpl = async (request: Request) => {
+      requested = request.url
+      return jsonResponse({ data: [market(UNLISTED)] })
+    }
+    const filter = createListedMarketFilter({
+      apiUrl: API_URL,
+      listing: 'unlisted',
+      chainId: 8453,
+      logger: NOOP_LOGGER,
+      fetchImpl
+    })
+    await filter.refresh()
+
+    expect(new URL(requested).searchParams.get('listed')).toBe('false')
+    expect(filter.isListed(UNLISTED)).toBe(true)
+  })
+
+  it('omits the listed param when listing is all', async () => {
+    let requested = ''
+    const fetchImpl = async (request: Request) => {
+      requested = request.url
+      return jsonResponse({ data: [market(LISTED), market(UNLISTED)] })
+    }
+    const filter = createListedMarketFilter({
+      apiUrl: API_URL,
+      listing: 'all',
+      chainId: 8453,
+      logger: NOOP_LOGGER,
+      fetchImpl
+    })
+    await filter.refresh()
+
+    expect(new URL(requested).searchParams.has('listed')).toBe(false)
+    expect(filter.isListed(LISTED)).toBe(true)
+    expect(filter.isListed(UNLISTED)).toBe(true)
+  })
+
+  it('follows the cursor across pages and unions every market', async () => {
+    let firstUrl = ''
+    let secondUrl = ''
+    let call = 0
+    const fetchImpl = async (request: Request) => {
+      call += 1
+      if (call === 1) {
+        firstUrl = request.url
+        return jsonResponse({ cursor: 'page2', data: [market(LISTED)] })
+      }
+      secondUrl = request.url
+      return jsonResponse({ cursor: null, data: [market(UNLISTED)] })
+    }
+    const filter = createListedMarketFilter({
+      apiUrl: API_URL,
+      listing: 'all',
+      chainId: 8453,
+      logger: NOOP_LOGGER,
+      fetchImpl
+    })
+    await filter.refresh()
+
+    expect(call).toBe(2)
+    expect(new URL(firstUrl).searchParams.has('cursor')).toBe(false)
+    expect(new URL(secondUrl).searchParams.get('cursor')).toBe('page2')
+    expect(filter.isListed(LISTED)).toBe(true)
+    expect(filter.isListed(UNLISTED)).toBe(true)
+    expect(filter.snapshot().markets).toBe(2)
+  })
 })
