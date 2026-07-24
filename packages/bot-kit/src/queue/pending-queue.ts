@@ -7,7 +7,12 @@ import type { Logger } from '../logger'
 import { isExecutionRevert, revertReason as defaultRevertReason, TxSendError } from '../tx-error'
 import { bumpFees } from './fee-policy'
 
-/** Default blocks a pending tx may sit unconfirmed before the queue bumps its fee and replaces it. */
+/**
+ * Default blocks a pending tx may sit unconfirmed before the queue bumps its fee and replaces it.
+ * Age is measured from the first `onBlock` that observes the broadcast — never from the (possibly
+ * stale) chain head a slow tick captured before quoting, which once aged a fresh tx straight into
+ * an immediate replacement.
+ */
 export const STUCK_BLOCKS = 4n
 
 /** Default fee-bump attempts the queue makes on a stuck tx before dropping it. */
@@ -42,10 +47,16 @@ export type GetConsumedNonce = () => Promise<number>
 /** One tracked tx — the queue's full per-nonce record. */
 type Pending = {
   nonce: number
-  txHash: Hex
+  /**
+   * Every hash broadcast for this nonce, oldest first; the last is the current replacement target.
+   * ANY of them can mine — a replacement does not guarantee the original was evicted from the
+   * mempool — so receipt checks and nonce reconciliation must scan them all.
+   */
+  txHashes: Hex[]
   request: TxRequest
   label: string
-  submittedAtBlock: bigint
+  /** Head at the first `onBlock` that saw this broadcast; `null` until then. Stuck-age baseline. */
+  observedAtBlock: bigint | null
   maxFeePerGas: bigint
   maxPriorityFeePerGas: bigint
   attempt: number
@@ -57,7 +68,6 @@ export type PendingQueue = {
     label: string
     maxFeePerGas: bigint
     maxPriorityFeePerGas: bigint
-    blockNumber: bigint
   }): Promise<void>
   onBlock(blockNumber: bigint): Promise<void>
   readonly size: number
@@ -183,12 +193,46 @@ export function createPendingQueue({
     }
   }
 
+  function latestHash(entry: Pending): Hex {
+    return entry.txHashes[entry.txHashes.length - 1] as Hex
+  }
+
+  // Newest-first receipt scan across every hash broadcast for the nonce — the latest replacement is
+  // the likeliest to have mined, but an earlier one may have landed instead.
+  async function findReceipt(
+    entry: Pending
+  ): Promise<{ receipt: TxReceiptLite; txHash: Hex } | null> {
+    for (const txHash of entry.txHashes.toReversed()) {
+      const receipt = await getReceipt(txHash)
+      if (receipt) return { receipt, txHash }
+    }
+    return null
+  }
+
+  function settleWithReceipt(
+    entry: Pending,
+    mined: { receipt: TxReceiptLite; txHash: Hex },
+    blockNumber: bigint
+  ): void {
+    settle(entry, blockNumber)
+    const fields = {
+      label: entry.label,
+      nonce: entry.nonce,
+      txHash: mined.txHash,
+      blockNumber: mined.receipt.blockNumber
+    }
+    if (mined.receipt.status === 'success') {
+      logger.info('tx.confirmed', fields)
+    } else {
+      logger.warn('tx.reverted', fields)
+    }
+  }
+
   async function submit(args: {
     request: TxRequest
     label: string
     maxFeePerGas: bigint
     maxPriorityFeePerGas: bigint
-    blockNumber: bigint
   }): Promise<void> {
     // Latched by a prior hashless send: skip until the next `onBlock` clears it. The signer has
     // rolled its cursor back, so broadcasting again now would race that rollback.
@@ -245,10 +289,10 @@ export function createPendingQueue({
     const { nonce, txHash } = sent.data
     pending.set(nonce, {
       nonce,
-      txHash,
+      txHashes: [txHash],
       request: args.request,
       label: args.label,
-      submittedAtBlock: args.blockNumber,
+      observedAtBlock: null,
       maxFeePerGas: args.maxFeePerGas,
       maxPriorityFeePerGas: args.maxPriorityFeePerGas,
       attempt: 0
@@ -269,7 +313,7 @@ export function createPendingQueue({
       logger.warn('tx.dropped', {
         label: entry.label,
         nonce: entry.nonce,
-        txHash: entry.txHash,
+        txHash: latestHash(entry),
         reason: 'max_bump_attempts'
       })
       return
@@ -286,7 +330,7 @@ export function createPendingQueue({
       logger.warn('tx.dropped', {
         label: entry.label,
         nonce: entry.nonce,
-        txHash: entry.txHash,
+        txHash: latestHash(entry),
         reason: 'fee_ceiling'
       })
       return
@@ -302,7 +346,7 @@ export function createPendingQueue({
         logger.warn('tx.dropped', {
           label: entry.label,
           nonce: entry.nonce,
-          txHash: entry.txHash,
+          txHash: latestHash(entry),
           reason: 'reverts_on_replace',
           detail: revertReason(replaced.error)
         })
@@ -311,18 +355,18 @@ export function createPendingQueue({
         logger.warn('tx.replace_failed', {
           label: entry.label,
           nonce: entry.nonce,
-          txHash: entry.txHash,
+          txHash: latestHash(entry),
           attempt: entry.attempt,
           reason: revertReason(replaced.error)
         })
       }
       return
     }
-    const oldHash = entry.txHash
-    entry.txHash = replaced.data.txHash
+    const oldHash = latestHash(entry)
+    entry.txHashes.push(replaced.data.txHash)
     entry.maxFeePerGas = result.fees.maxFeePerGas
     entry.maxPriorityFeePerGas = result.fees.maxPriorityFeePerGas
-    entry.submittedAtBlock = blockNumber
+    entry.observedAtBlock = blockNumber
     entry.attempt += 1
     logger.info('tx.bumped', {
       label: entry.label,
@@ -335,20 +379,27 @@ export function createPendingQueue({
     })
   }
 
-  // Drops tracked txs whose nonce is already consumed on-chain but that never produced a receipt for
-  // us — an external send, competing signer, or reorg claimed the nonce, so our tx can never mine.
-  async function reconcile(): Promise<void> {
+  // Settles tracked txs whose nonce is already consumed on-chain. If ANY of our broadcast hashes
+  // for the nonce mined, that receipt is the settlement (confirm/revert); only when none did was
+  // the nonce claimed by an external send, competing signer, or reorg — our tx can never mine, so
+  // drop it as `nonce_consumed`.
+  async function reconcile(blockNumber: bigint): Promise<void> {
     if (!getConsumedNonce || pending.size === 0) return
     const count = await tryCatch(getConsumedNonce())
     if (count.error) {
       logger.warn('reconcile.failed', { reason: revertReason(count.error) })
       return
     }
-    // Deleting the current key mid-iteration (via `drop`) is well-defined for a Map.
+    // Deleting the current key mid-iteration (via settle/`drop`) is well-defined for a Map.
     for (const entry of pending.values()) {
       if (entry.nonce >= count.data) continue
-      const receipt = await tryCatch(getReceipt(entry.txHash))
-      if (!receipt.error && !receipt.data) drop(entry.nonce, 'nonce_consumed')
+      const mined = await tryCatch(findReceipt(entry))
+      if (mined.error) continue // transient receipt-read failure: retry on the next cadence
+      if (mined.data) {
+        settleWithReceipt(entry, mined.data, blockNumber)
+      } else {
+        drop(entry.nonce, 'nonce_consumed')
+      }
     }
   }
 
@@ -368,9 +419,9 @@ export function createPendingQueue({
 
   // Nonce-consumed reconciliation on a fixed block cadence (chain truth cleaning up entries the
   // receipt loop can't see — an external/competing send under the same nonce).
-  async function reconcileOnCadence(): Promise<void> {
+  async function reconcileOnCadence(blockNumber: bigint): Promise<void> {
     blocksSeen += 1
-    if (blocksSeen % reconcileEveryBlocks === 0) await reconcile()
+    if (blocksSeen % reconcileEveryBlocks === 0) await reconcile(blockNumber)
   }
 
   // Expire cooldowns so a position the bot acted on long ago is eligible again. By now the read RPC
@@ -393,33 +444,22 @@ export function createPendingQueue({
       // Per-entry isolation: one entry's transient read failure (getReceipt/getBaseFee) must not
       // abort the sweep for the rest of the queue. replaceStuck owns its own send-error handling.
       try {
-        const receipt = await getReceipt(entry.txHash)
-        if (receipt) {
+        const mined = await findReceipt(entry)
+        if (mined) {
           // One-block receipt finality: a receipt is treated as terminal (confirm or revert) the
           // moment it appears — accepted for the L2s these bots target (Base, Robinhood /
           // Arbitrum-Orbit), which do not reorg confirmed transactions in practice. If a receipt
           // were ever orphaned, the consequence is benign: the position simply reappears in the
           // next discovery pass and is re-liquidated — never a queue entry stuck waiting on a
           // vanished tx.
-          settle(entry, blockNumber)
-          if (receipt.status === 'success') {
-            logger.info('tx.confirmed', {
-              label: entry.label,
-              nonce: entry.nonce,
-              txHash: entry.txHash,
-              blockNumber: receipt.blockNumber
-            })
-          } else {
-            logger.warn('tx.reverted', {
-              label: entry.label,
-              nonce: entry.nonce,
-              txHash: entry.txHash,
-              blockNumber: receipt.blockNumber
-            })
-          }
+          settleWithReceipt(entry, mined, blockNumber)
           continue
         }
-        if (blockNumber - entry.submittedAtBlock > stuckBlocks) {
+        if (entry.observedAtBlock === null) {
+          entry.observedAtBlock = blockNumber
+          continue
+        }
+        if (blockNumber - entry.observedAtBlock > stuckBlocks) {
           baseFee ??= await getBaseFee()
           await replaceStuck(entry, blockNumber, baseFee)
         }
@@ -427,12 +467,12 @@ export function createPendingQueue({
         logger.warn('tx.onblock_error', {
           label: entry.label,
           nonce: entry.nonce,
-          txHash: entry.txHash,
+          txHash: latestHash(entry),
           reason: revertReason(error)
         })
       }
     }
-    await reconcileOnCadence()
+    await reconcileOnCadence(blockNumber)
     // While a nonce hole is latched, check every block whether the chain has caught up past it.
     await clearNonceHoleIfFilled()
     pruneSettledCooldowns(blockNumber)
@@ -445,7 +485,7 @@ export function createPendingQueue({
     logger.warn('tx.dropped', {
       label: entry.label,
       nonce: entry.nonce,
-      txHash: entry.txHash,
+      txHash: latestHash(entry),
       reason
     })
     settle(entry)
@@ -461,7 +501,7 @@ export function createPendingQueue({
     snapshot() {
       return [...pending.values()].map(entry => ({
         nonce: entry.nonce,
-        txHash: entry.txHash,
+        txHash: latestHash(entry),
         attempt: entry.attempt
       }))
     },

@@ -11,6 +11,7 @@ import type {
   PendingQueue,
   SendTx,
   SyncNonce,
+  TxReceiptLite,
   TxRequest
 } from '../../src/queue/pending-queue'
 
@@ -99,13 +100,12 @@ function setup(
   }
 }
 
-function submitOne(queue: PendingQueue, blockNumber = 0n) {
+function submitOne(queue: PendingQueue) {
   return queue.submit({
     request: REQUEST,
     label: 'market:borrower',
     maxFeePerGas: 1000n,
-    maxPriorityFeePerGas: 1000n,
-    blockNumber
+    maxPriorityFeePerGas: 1000n
   })
 }
 
@@ -127,7 +127,8 @@ describe('createPendingQueue', () => {
 
   it('leaves a tx pending until it is stuck past stuckBlocks', async () => {
     const { queue, sends } = setup()
-    await submitOne(queue, 0n)
+    await submitOne(queue)
+    await queue.onBlock(0n) // first sighting stamps the stuck-age baseline
     await queue.onBlock(4n) // age 4, not yet > 4
     expect(queue.size).toBe(1)
     expect(sends).toHaveLength(1) // no replacement
@@ -135,7 +136,8 @@ describe('createPendingQueue', () => {
 
   it('bumps and replaces a stuck tx at the same nonce', async () => {
     const { queue, sends } = setup({ baseFee: 100n })
-    await submitOne(queue, 0n)
+    await submitOne(queue)
+    await queue.onBlock(0n) // first sighting stamps the stuck-age baseline
     await queue.onBlock(5n) // age 5 > 4 → bump
     expect(sends).toHaveLength(2)
     expect(sends[1]?.nonce).toBe(7) // replacement pins the original nonce
@@ -146,7 +148,8 @@ describe('createPendingQueue', () => {
 
   it('drops a tx after maxBumpAttempts bumps', async () => {
     const { queue } = setup()
-    await submitOne(queue, 0n)
+    await submitOne(queue)
+    await queue.onBlock(0n) // first sighting stamps the stuck-age baseline
     await queue.onBlock(5n) // attempt 1
     await queue.onBlock(10n) // attempt 2
     await queue.onBlock(15n) // attempt 3
@@ -157,7 +160,8 @@ describe('createPendingQueue', () => {
 
   it('drops a stuck tx when the bump would breach the fee ceiling', async () => {
     const { queue } = setup({ maxFeeWei: 1000n })
-    await submitOne(queue, 0n)
+    await submitOne(queue)
+    await queue.onBlock(0n) // first sighting stamps the stuck-age baseline
     await queue.onBlock(5n)
     expect(queue.size).toBe(0)
   })
@@ -193,7 +197,8 @@ describe('createPendingQueue', () => {
       throw new ExecutionRevertedError({}) // the re-broadcast reverts
     }
     const { queue } = setup({ send, logger })
-    await submitOne(queue, 0n)
+    await submitOne(queue)
+    await queue.onBlock(0n) // first sighting stamps the stuck-age baseline
     await queue.onBlock(5n) // stuck → replace → reverts → drop
     expect(queue.size).toBe(0)
     expect(events.find(e => e.event === 'tx.dropped')?.fields?.reason).toBe('reverts_on_replace')
@@ -208,7 +213,8 @@ describe('createPendingQueue', () => {
       throw new Error('connection reset') // every replacement is a transient failure
     }
     const { queue } = setup({ send, logger })
-    await submitOne(queue, 0n)
+    await submitOne(queue)
+    await queue.onBlock(0n) // first sighting stamps the stuck-age baseline
     await queue.onBlock(5n) // attempt 1
     await queue.onBlock(6n) // attempt 2
     await queue.onBlock(7n) // attempt 3
@@ -235,15 +241,13 @@ describe('createPendingQueue', () => {
       request: REQUEST,
       label: 'a',
       maxFeePerGas: 1000n,
-      maxPriorityFeePerGas: 1000n,
-      blockNumber: 0n
+      maxPriorityFeePerGas: 1000n
     })
     await queue.submit({
       request: REQUEST,
       label: 'b',
       maxFeePerGas: 1000n,
-      maxPriorityFeePerGas: 1000n,
-      blockNumber: 0n
+      maxPriorityFeePerGas: 1000n
     })
     expect(queue.size).toBe(2)
     await queue.onBlock(1n) // entry #1 getReceipt throws (caught), entry #2 confirms → evicted
@@ -268,15 +272,13 @@ describe('createPendingQueue', () => {
       request: REQUEST,
       label: 'a',
       maxFeePerGas: 1000n,
-      maxPriorityFeePerGas: 1000n,
-      blockNumber: 0n
+      maxPriorityFeePerGas: 1000n
     })
     await ctx.queue.submit({
       request: REQUEST,
       label: 'b',
       maxFeePerGas: 1000n,
-      maxPriorityFeePerGas: 1000n,
-      blockNumber: 0n
+      maxPriorityFeePerGas: 1000n
     })
     // First submit synced (queue was empty); the second must NOT — the cursor is legitimately ahead
     // by the in-flight tx, and re-reading chain would hand out a colliding nonce.
@@ -325,7 +327,7 @@ describe('createPendingQueue', () => {
 
   it('keeps a confirmed label in the backpressure set for the cooldown, then releases it', async () => {
     const { queue } = setup({ getReceipt: async () => ({ status: 'success', blockNumber: 10n }) })
-    await submitOne(queue, 0n)
+    await submitOne(queue)
     await queue.onBlock(1n) // confirms → leaves `pending`, enters cooldown
     expect(queue.size).toBe(0)
     // Still suppressed: the read RPC may not yet reflect the cleared position, so re-submitting now
@@ -339,7 +341,7 @@ describe('createPendingQueue', () => {
 
   it('also cools down a reverted label', async () => {
     const { queue } = setup({ getReceipt: async () => ({ status: 'reverted', blockNumber: 10n }) })
-    await submitOne(queue, 0n)
+    await submitOne(queue)
     await queue.onBlock(1n)
     expect(queue.size).toBe(0)
     expect(queue.inflightLabels().has('market:borrower')).toBe(true)
@@ -347,7 +349,8 @@ describe('createPendingQueue', () => {
 
   it('also cools down a dropped (max-bump) label', async () => {
     const { queue } = setup()
-    await submitOne(queue, 0n)
+    await submitOne(queue)
+    await queue.onBlock(0n) // first sighting stamps the stuck-age baseline
     await queue.onBlock(5n) // attempt 1
     await queue.onBlock(10n) // attempt 2
     await queue.onBlock(15n) // attempt 3
@@ -361,10 +364,114 @@ describe('createPendingQueue', () => {
       getReceipt: async () => ({ status: 'success', blockNumber: 10n }),
       withCooldown: false
     })
-    await submitOne(queue, 0n)
+    await submitOne(queue)
     await queue.onBlock(1n) // confirms → with no cooldown the label leaves the set right away
     expect(queue.size).toBe(0)
     expect(queue.inflightLabels().size).toBe(0)
+  })
+})
+
+describe('stuck-age baseline (slow pre-submit quote)', () => {
+  it('does not bump a tx on the first onBlock after broadcast, however late the tick began', async () => {
+    const { queue, sends } = setup()
+    // The tick captured its chain head long ago and quoting was slow — the queue must age the tx
+    // from its broadcast, not from the tick's stale head.
+    await submitOne(queue)
+    await queue.onBlock(100n) // first sighting: stamps the baseline, never bumps
+    expect(sends).toHaveLength(1)
+    expect(queue.size).toBe(1)
+    await queue.onBlock(105n) // genuinely stuck now (age 5 > 4) → bump
+    expect(sends).toHaveLength(2)
+  })
+})
+
+describe('multi-hash receipt tracking', () => {
+  // Drives one entry through submit (hashOf(1)) → stuck → bump (hashOf(2)), receipts controlled
+  // per-hash so a test can then mine EITHER hash and observe the settlement.
+  async function bumpOnce(
+    receipts: Map<Hex, TxReceiptLite>,
+    opts: { getConsumedNonce?: GetConsumedNonce; reconcileEveryBlocks?: number } = {}
+  ) {
+    const { logger, events } = captureLogger()
+    const { queue, sends } = setup({
+      getReceipt: async txHash => receipts.get(txHash) ?? null,
+      logger,
+      ...opts
+    })
+    await submitOne(queue)
+    await queue.onBlock(0n) // first sighting stamps the stuck-age baseline
+    await queue.onBlock(5n) // age 5 > 4 → bump: hashOf(2) replaces hashOf(1) at the same nonce
+    expect(queue.snapshot()[0]).toEqual({ nonce: 7, txHash: hashOf(2), attempt: 1 })
+    return { queue, events, sends }
+  }
+
+  it('emits tx.confirmed with the ORIGINAL hash when it mines after a replacement was broadcast', async () => {
+    const receipts = new Map<Hex, TxReceiptLite>()
+    const ctx = await bumpOnce(receipts)
+    receipts.set(hashOf(1), { status: 'success', blockNumber: 42n })
+    await ctx.queue.onBlock(6n)
+    expect(ctx.queue.size).toBe(0)
+    const confirmed = ctx.events.find(e => e.event === 'tx.confirmed')
+    expect(confirmed?.fields).toMatchObject({ nonce: 7, txHash: hashOf(1), blockNumber: 42n })
+    expect(ctx.events.some(e => e.event === 'tx.dropped')).toBe(false)
+  })
+
+  it('emits tx.reverted with the ORIGINAL hash when it reverts after a replacement was broadcast', async () => {
+    const receipts = new Map<Hex, TxReceiptLite>()
+    const ctx = await bumpOnce(receipts)
+    receipts.set(hashOf(1), { status: 'reverted', blockNumber: 42n })
+    await ctx.queue.onBlock(6n)
+    expect(ctx.queue.size).toBe(0)
+    const reverted = ctx.events.find(e => e.event === 'tx.reverted')
+    expect(reverted?.level).toBe('warn')
+    expect(reverted?.fields).toMatchObject({ nonce: 7, txHash: hashOf(1), blockNumber: 42n })
+    expect(ctx.events.some(e => e.event === 'tx.dropped')).toBe(false)
+  })
+
+  it('emits tx.confirmed with the replacement hash when the replacement mines', async () => {
+    const receipts = new Map<Hex, TxReceiptLite>()
+    const ctx = await bumpOnce(receipts)
+    receipts.set(hashOf(2), { status: 'success', blockNumber: 43n })
+    await ctx.queue.onBlock(6n)
+    expect(ctx.queue.size).toBe(0)
+    const confirmed = ctx.events.find(e => e.event === 'tx.confirmed')
+    expect(confirmed?.fields).toMatchObject({ nonce: 7, txHash: hashOf(2), blockNumber: 43n })
+  })
+
+  it('drops as nonce_consumed only when NO tracked hash has a receipt', async () => {
+    const receipts = new Map<Hex, TxReceiptLite>() // never populated: an external send took the nonce
+    const consumed = { value: 7 } // nonce 7 unconsumed while the bump plays out
+    const ctx = await bumpOnce(receipts, {
+      getConsumedNonce: async () => consumed.value,
+      reconcileEveryBlocks: 1
+    })
+    consumed.value = 8
+    await ctx.queue.onBlock(6n)
+    expect(ctx.queue.size).toBe(0)
+    expect(ctx.events.find(e => e.event === 'tx.dropped')?.fields).toMatchObject({
+      nonce: 7,
+      reason: 'nonce_consumed'
+    })
+    expect(ctx.events.some(e => e.event === 'tx.confirmed')).toBe(false)
+    expect(ctx.events.some(e => e.event === 'tx.reverted')).toBe(false)
+  })
+
+  it('settles a consumed nonce as confirmed via the reconciler when an earlier hash mined', async () => {
+    const receipts = new Map<Hex, TxReceiptLite>()
+    const consumed = { value: 7 } // nonce 7 unconsumed while the bump plays out
+    const ctx = await bumpOnce(receipts, {
+      getConsumedNonce: async () => consumed.value,
+      reconcileEveryBlocks: 1
+    })
+    consumed.value = 8
+    receipts.set(hashOf(1), { status: 'success', blockNumber: 42n })
+    await ctx.queue.onBlock(6n)
+    expect(ctx.queue.size).toBe(0)
+    expect(ctx.events.find(e => e.event === 'tx.confirmed')?.fields).toMatchObject({
+      txHash: hashOf(1),
+      blockNumber: 42n
+    })
+    expect(ctx.events.some(e => e.event === 'tx.dropped')).toBe(false)
   })
 })
 
@@ -372,7 +479,7 @@ describe('drop', () => {
   it('settles the tracked nonce as dropped and logs tx.dropped with the reason', async () => {
     const { logger, events } = captureLogger()
     const { queue } = setup({ logger })
-    await submitOne(queue, 0n)
+    await submitOne(queue)
     expect(queue.drop(7, 'nonce_consumed')).toBe(true)
     expect(queue.size).toBe(0)
     const dropped = events.find(e => e.event === 'tx.dropped')
@@ -387,7 +494,7 @@ describe('drop', () => {
 
   it('releases the label from the inflight set', async () => {
     const { queue } = setup()
-    await submitOne(queue, 0n)
+    await submitOne(queue)
     queue.drop(7, 'nonce_consumed')
     expect(queue.inflightLabels().has('market:borrower')).toBe(false)
   })
@@ -395,7 +502,7 @@ describe('drop', () => {
   it('returns false for a nonce that is not tracked (nothing to reconcile)', async () => {
     const { logger, events } = captureLogger()
     const { queue } = setup({ logger })
-    await submitOne(queue, 0n)
+    await submitOne(queue)
     expect(queue.drop(999, 'nonce_consumed')).toBe(false)
     expect(queue.size).toBe(1) // the real entry is untouched
     expect(events.some(e => e.event === 'tx.dropped')).toBe(false) // nothing dropped for a phantom nonce
@@ -412,7 +519,7 @@ describe('nonce-consumed reconciliation', () => {
       reconcileEveryBlocks: 1,
       logger
     })
-    await submitOne(queue, 0n)
+    await submitOne(queue)
     await queue.onBlock(1n)
     expect(queue.size).toBe(0)
     expect(events.find(e => e.event === 'tx.dropped')?.fields).toMatchObject({
@@ -425,7 +532,7 @@ describe('nonce-consumed reconciliation', () => {
 
   it('keeps a tracked tx whose nonce is not yet consumed', async () => {
     const { queue } = setup({ getConsumedNonce: async () => 7, reconcileEveryBlocks: 1 })
-    await submitOne(queue, 0n) // nonce 7; consumed count 7 means nonce 7 is not yet mined
+    await submitOne(queue) // nonce 7; consumed count 7 means nonce 7 is not yet mined
     await queue.onBlock(1n)
     expect(queue.size).toBe(1)
   })
@@ -439,7 +546,7 @@ describe('nonce-consumed reconciliation', () => {
       },
       reconcileEveryBlocks: 3
     })
-    await submitOne(queue, 0n)
+    await submitOne(queue)
     await queue.onBlock(1n) // block 1 — no reconcile
     await queue.onBlock(2n) // block 2 — no reconcile
     expect(calls).toBe(0)
@@ -449,7 +556,7 @@ describe('nonce-consumed reconciliation', () => {
 
   it('does not reconcile when no getConsumedNonce hook is provided', async () => {
     const { queue } = setup({ reconcileEveryBlocks: 1 })
-    await submitOne(queue, 0n)
+    await submitOne(queue)
     await queue.onBlock(1n) // no hook → nothing to reconcile, tx stays
     expect(queue.size).toBe(1)
   })
@@ -465,15 +572,15 @@ describe('send-aborted latch', () => {
     }
     const { queue } = setup({ send })
     // First submit claims a nonce but fails hashless → rethrows and latches.
-    await expect(submitOne(queue, 0n)).rejects.toThrow(/rpc timeout after broadcast/)
+    await expect(submitOne(queue)).rejects.toThrow(/rpc timeout after broadcast/)
     expect(calls).toBe(1)
     // While latched, further submits are skipped (no new send attempts).
-    await submitOne(queue, 0n)
+    await submitOne(queue)
     expect(calls).toBe(1)
     expect(queue.size).toBe(0)
     // The settlement pass clears the latch.
     await queue.onBlock(1n)
-    await submitOne(queue, 0n)
+    await submitOne(queue)
     expect(calls).toBe(2)
     expect(queue.size).toBe(1)
   })
@@ -484,8 +591,8 @@ describe('send-aborted latch', () => {
       throw new TxSendError(new Error('broadcast lost'), 7)
     }
     const { queue } = setup({ send, logger })
-    await expect(submitOne(queue, 0n)).rejects.toThrow()
-    await submitOne(queue, 0n) // latched → skipped
+    await expect(submitOne(queue)).rejects.toThrow()
+    await submitOne(queue) // latched → skipped
     expect(events.find(e => e.event === 'tx.send_aborted')?.level).toBe('warn')
   })
 })
@@ -519,13 +626,12 @@ describe('nonce-hole latch', () => {
       maxFeeWei: opts.maxFeeWei ?? 10_000_000_000_000n,
       logger
     })
-    const submit = (label: string, blockNumber: bigint) =>
+    const submit = (label: string) =>
       queue.submit({
         request: REQUEST,
         label,
         maxFeePerGas: 1000n,
-        maxPriorityFeePerGas: 1000n,
-        blockNumber
+        maxPriorityFeePerGas: 1000n
       })
     return {
       queue,
@@ -541,8 +647,10 @@ describe('nonce-hole latch', () => {
 
   it('refuses new first-sends after dropping an unconsumed nonce, then resumes once the chain consumes past it', async () => {
     const ctx = setupSeq({ maxFeeWei: 1000n }) // low ceiling so a bump breaches → fee_ceiling drop
-    await ctx.submit('a', 0n) // nonce 7 at block 0
-    await ctx.submit('b', 3n) // nonce 8 at block 3 (queue not empty → no extra sync)
+    await ctx.submit('a') // nonce 7
+    await ctx.queue.onBlock(0n) // stamps a's stuck-age baseline at block 0
+    await ctx.submit('b') // nonce 8 (queue not empty → no extra sync)
+    await ctx.queue.onBlock(3n) // stamps b's baseline at block 3; a (age 3) not yet stuck
     expect(ctx.queue.size).toBe(2)
     // Block 5: nonce 7 (age 5 > 4) is stuck; its bump breaches the ceiling → dropped fee_ceiling and
     // its (still-unconsumed) nonce is latched as a hole. nonce 8 (age 2) is not stuck → stays.
@@ -554,7 +662,7 @@ describe('nonce-hole latch', () => {
     const sendsAfterDrop = ctx.sends.length
     // A NEW first-send is refused while the hole is latched (nonce 8 still pending → queue not empty,
     // so the empty-queue sync can't clear it).
-    await ctx.submit('c', 6n)
+    await ctx.submit('c')
     expect(ctx.sends.length).toBe(sendsAfterDrop) // no new broadcast
     expect(ctx.queue.size).toBe(1)
     expect(ctx.events.some(e => e.event === 'queue.nonce_hole' && e.fields?.label === 'c')).toBe(
@@ -565,18 +673,19 @@ describe('nonce-hole latch', () => {
     await ctx.queue.onBlock(7n)
     expect(ctx.events.some(e => e.event === 'queue.nonce_hole_cleared')).toBe(true)
     // Sends flow again.
-    await ctx.submit('d', 8n)
+    await ctx.submit('d')
     expect(ctx.sends.length).toBe(sendsAfterDrop + 1)
   })
 
   it('clears the latch when the queue empties and syncNonce re-derives the cursor', async () => {
     const ctx = setupSeq({ maxFeeWei: 1000n })
-    await ctx.submit('a', 0n) // nonce 7, sole entry (sync #1 on the empty queue)
+    await ctx.submit('a') // nonce 7, sole entry (sync #1 on the empty queue)
+    await ctx.queue.onBlock(0n) // stamps the stuck-age baseline
     await ctx.queue.onBlock(5n) // stuck → fee_ceiling drop → latched; queue now empty
     expect(ctx.queue.size).toBe(0)
     const syncsBefore = ctx.syncNonceCalls
     // Queue empty → the next first-send syncs the cursor from chain and clears the hole in one step.
-    await ctx.submit('b', 6n)
+    await ctx.submit('b')
     expect(ctx.syncNonceCalls).toBe(syncsBefore + 1)
     expect(
       ctx.events.some(e => e.event === 'queue.nonce_hole_cleared' && e.fields?.via === 'sync')
@@ -586,8 +695,8 @@ describe('nonce-hole latch', () => {
 
   it('does not latch a hole when the reconciler drops a consumed nonce', async () => {
     const ctx = setupSeq()
-    await ctx.submit('a', 0n) // nonce 7
-    await ctx.submit('b', 0n) // nonce 8 (queue not empty → no extra sync)
+    await ctx.submit('a') // nonce 7
+    await ctx.submit('b') // nonce 8 (queue not empty → no extra sync)
     expect(ctx.queue.size).toBe(2)
     // Chain shows nonce 7 consumed by an external send (count 8); the reconciler drops our tracked
     // nonce 7 as nonce_consumed — a BY-DEFINITION-consumed retirement that must NOT latch a hole.
@@ -599,15 +708,17 @@ describe('nonce-hole latch', () => {
     ).toBe(true)
     const sendsBefore = ctx.sends.length
     // No hole latched → a new first-send proceeds (it would be refused had the reconciler latched).
-    await ctx.submit('c', 2n)
+    await ctx.submit('c')
     expect(ctx.sends.length).toBe(sendsBefore + 1)
     expect(ctx.events.some(e => e.event === 'queue.nonce_hole')).toBe(false)
   })
 
   it('widens the hole span across multiple drops and clears only past the highest', async () => {
     const ctx = setupSeq({ maxFeeWei: 1000n })
-    await ctx.submit('a', 0n) // nonce 7 at block 0
-    await ctx.submit('b', 2n) // nonce 8 at block 2
+    await ctx.submit('a') // nonce 7
+    await ctx.queue.onBlock(0n) // stamps a's baseline at block 0
+    await ctx.submit('b') // nonce 8
+    await ctx.queue.onBlock(2n) // stamps b's baseline at block 2
     await ctx.queue.onBlock(5n) // a (age 5) stuck → drop → hole {7}
     await ctx.queue.onBlock(7n) // b (age 5) stuck → drop → hole widens to {7, 8}
     expect(ctx.queue.size).toBe(0)

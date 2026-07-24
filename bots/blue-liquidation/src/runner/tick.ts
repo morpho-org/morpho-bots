@@ -41,7 +41,7 @@ type TickCounters = {
  */
 export async function runTick(deps: {
   discover: () => Promise<BorrowerCandidate[]>
-  /** Chain head the runner just polled — the queue's `submittedAtBlock`. */
+  /** Chain head the runner just polled — the backoff clock (not the queue's stuck-age baseline). */
   chainHead: bigint
   readLens: (pairs: LensInput[]) => Promise<Map<string, LensOut>>
   /**
@@ -62,7 +62,6 @@ export async function runTick(deps: {
     borrower: Address
     plan: LiquidationPlan
     swapPlan: SwapPlan
-    blockNumber: bigint
     label: string
   }) => Promise<void>
   /** Per-position exponential backoff suppressing repeated quote/simulate failures (rate-limit defense). */
@@ -202,7 +201,6 @@ export async function runTick(deps: {
         borrower: pair.borrower,
         plan: liquidationPlan,
         swapPlan,
-        blockNumber: chainHead,
         label
       })
       backoff.clear(label)
