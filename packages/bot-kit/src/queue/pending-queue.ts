@@ -9,9 +9,8 @@ import { bumpFees } from './fee-policy'
 
 /**
  * Default blocks a pending tx may sit unconfirmed before the queue bumps its fee and replaces it.
- * Age is measured from the first `onBlock` that observes the broadcast — never from the (possibly
- * stale) chain head a slow tick captured before quoting, which once aged a fresh tx straight into
- * an immediate replacement.
+ * Age is measured from the first `onBlock` that observes the broadcast, never from a caller-
+ * supplied block, so a broadcast delayed by slow pre-submit work is not born already stuck.
  */
 export const STUCK_BLOCKS = 4n
 
@@ -197,8 +196,6 @@ export function createPendingQueue({
     return entry.txHashes[entry.txHashes.length - 1] as Hex
   }
 
-  // Newest-first receipt scan across every hash broadcast for the nonce — the latest replacement is
-  // the likeliest to have mined, but an earlier one may have landed instead.
   async function findReceipt(
     entry: Pending
   ): Promise<{ receipt: TxReceiptLite; txHash: Hex } | null> {
@@ -379,10 +376,9 @@ export function createPendingQueue({
     })
   }
 
-  // Settles tracked txs whose nonce is already consumed on-chain. If ANY of our broadcast hashes
-  // for the nonce mined, that receipt is the settlement (confirm/revert); only when none did was
-  // the nonce claimed by an external send, competing signer, or reorg — our tx can never mine, so
-  // drop it as `nonce_consumed`.
+  // Settles tracked txs whose nonce is already consumed on-chain: a receipt for any of our hashes
+  // is the settlement (confirm/revert); with none, an external send / competing signer / reorg
+  // claimed the nonce and our tx can never mine → drop as `nonce_consumed`.
   async function reconcile(blockNumber: bigint): Promise<void> {
     if (!getConsumedNonce || pending.size === 0) return
     const count = await tryCatch(getConsumedNonce())

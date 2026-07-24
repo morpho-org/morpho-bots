@@ -460,11 +460,15 @@ describe('multi-hash receipt tracking', () => {
     const receipts = new Map<Hex, TxReceiptLite>()
     const consumed = { value: 7 } // nonce 7 unconsumed while the bump plays out
     const ctx = await bumpOnce(receipts, {
-      getConsumedNonce: async () => consumed.value,
+      // The receipt lands between the receipt sweep and the reconciler (getConsumedNonce runs after
+      // the sweep), so the reconciler — not the sweep — must recognize the mined original.
+      getConsumedNonce: async () => {
+        if (consumed.value === 8) receipts.set(hashOf(1), { status: 'success', blockNumber: 42n })
+        return consumed.value
+      },
       reconcileEveryBlocks: 1
     })
     consumed.value = 8
-    receipts.set(hashOf(1), { status: 'success', blockNumber: 42n })
     await ctx.queue.onBlock(6n)
     expect(ctx.queue.size).toBe(0)
     expect(ctx.events.find(e => e.event === 'tx.confirmed')?.fields).toMatchObject({
