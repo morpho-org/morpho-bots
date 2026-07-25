@@ -47,6 +47,25 @@ export async function parseJsonResponse<T>(response: Response): Promise<Result<T
 const MAX_REQUEST_RETRIES = 3
 
 /**
+ * Thrown by {@link fetchWithRetry} when the retry budget is exhausted on an HTTP 429/5xx. Carries
+ * the final `status` and the server's parsed `Retry-After` (ms, `undefined` if not sent) so a
+ * caller can seed a cross-call cooldown from the server's own signal instead of guessing. The
+ * message is byte-identical to the plain-`Error` throw it replaced (`${label} HTTP ${status}`), so
+ * message-matching callers are unaffected.
+ */
+export class HttpRetryExhaustedError extends Error {
+  readonly status: number
+  readonly retryAfterMs: number | undefined
+
+  constructor(label: string, status: number, retryAfterMs: number | undefined) {
+    super(`${label} HTTP ${status}`)
+    this.name = 'HttpRetryExhaustedError'
+    this.status = status
+    this.retryAfterMs = retryAfterMs
+  }
+}
+
+/**
  * The subset of an HTTP request result {@link fetchWithRetry} reads: the parsed body and the raw
  * `Response` (for `status`/`Retry-After`). The request callback must resolve on HTTP errors and
  * throw only on network/abort failures, so both stay reachable — plain `fetch` and `openapi-fetch`
@@ -84,11 +103,12 @@ export async function fetchWithRetry<T>(
     const { data: body, response } = call.data
 
     if (response.status === 429 || response.status >= 500) {
+      const serverRetryAfterMs = retryAfterMs(response.headers.get('retry-after'))
       if (attempt < maxRetries) {
-        await deps.sleep(retryAfterMs(response.headers.get('retry-after')) ?? backoffMs(attempt))
+        await deps.sleep(serverRetryAfterMs ?? backoffMs(attempt))
         continue
       }
-      throw new Error(`${deps.label} HTTP ${response.status}`)
+      throw new HttpRetryExhaustedError(deps.label, response.status, serverRetryAfterMs)
     }
 
     // A non-429 4xx (e.g. 400 bad params) is a request-level rejection — not worth retrying with

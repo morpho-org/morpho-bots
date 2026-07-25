@@ -55,6 +55,9 @@ Environment variables:
 | `EXECUTOOOR_ADDRESS`                                      | no       | derived             | Override for the shared Executor address.                                                                                                                                                                          |
 | `LIQUIDATION_CANDIDATES_API_URL`                          | no       | public              | Liquidation-candidates endpoint polled for borrower discovery. Defaults to the public Morpho markets API; validated as a URL at startup (fail-loud).                                                               |
 | `HEALTH_FACTOR_LTE`                                       | no       | `1.02`              | Health-factor cutoff sent to discovery (`health_factor_lte`); matured positions are always included regardless. Floored at `1.0`. Over-inclusive by design — the on-chain lens is the source of truth.             |
+| `DISCOVERY_COOLDOWN_BASE_MS`                              | no       | `60000`             | First-failure window of the cross-tick discovery cooldown (exponential base; see Discovery below). `0` disables the exponential floor — a server `Retry-After` is still honored.                                   |
+| `DISCOVERY_COOLDOWN_MAX_MS`                               | no       | `600000`            | Cap on the discovery-cooldown window. Must be >= `DISCOVERY_COOLDOWN_BASE_MS` (validated fail-loud at startup); keep it above the WAF's 300s `Retry-After`.                                                        |
+| `DISCOVERY_HTTP_RPS` / `DISCOVERY_HTTP_BURST`             | no       | `2` / `4`           | Token-bucket refill rate and burst for candidate-page requests, retries included. The endpoint's server-side GraphQL fan-out shares ONE global WAF budget across all bot instances — keep these conservative.      |
 | `MARKETS_API_URL`                                         | no       | public              | Midnight markets endpoint used as the market whitelist (`listed=true`). Defaults to the public Morpho markets API; validated as a URL at startup.                                                                  |
 | `MARKETS_REFRESH_MS`                                      | no       | `60000`             | How often the whitelist is refreshed. The endpoint is Morpho's own (not rate-limited); last-known-good is served on a transient failure.                                                                           |
 | `ZEROX_API_KEY`                                           | cond.    | —                   | Enables the `0x` venue when set. Read at point of use; never stored on config or logged.                                                                                                                           |
@@ -319,6 +322,18 @@ Discovery failure is tolerated: a transient API error logs `discover.error` and 
 zero new candidates so the pending queue (confirmations / fee bumps) is still driven that block. A
 runaway paginated response is capped at `MAX_DISCOVERY_PAGES` and logs `discover.max_pages` rather than
 silently truncating (which would be under-inclusion — a liquidation missed).
+
+Discovery is additionally throttle-hardened (CRTR-2857), in two layers
+([src/discovery/cooldown.ts](./src/discovery/cooldown.ts)):
+
+- **Cross-tick cooldown breaker**: a failed discovery pass latches discovery off for
+  `min(DISCOVERY_COOLDOWN_MAX_MS, max(server Retry-After, DISCOVERY_COOLDOWN_BASE_MS · 2^(failures−1)))`
+  — logged as `discover.cooldown_start`. Latched ticks log `discover.cooldown` and run with zero
+  candidates instead of re-firing a full scan every ~2s block against an already-throttled endpoint;
+  the first successful pass resets the latch (`discover.cooldown_reset`).
+- **Request-rate cap**: a token bucket (`DISCOVERY_HTTP_RPS` / `DISCOVERY_HTTP_BURST`) gates every
+  candidate-page request, retries included, so volume stays bounded even when the endpoint's CDN
+  masks a throttled origin as a `200` and no error ever trips the breaker.
 
 ### State Lens
 

@@ -40,6 +40,17 @@ const PRIVATE_KEY_HEX_LENGTH = 66 // '0x' + 32 bytes
 const DEFAULT_CANDIDATES_API_URL = 'https://api.morpho.org/markets/midnight/liquidation-candidates'
 const DEFAULT_HEALTH_FACTOR_LTE = 1.02
 
+// Discovery throttle hardening (CRTR-2857). The candidates endpoint's server-side GraphQL fan-out
+// shares ONE global WAF budget (~33 rps) across ALL bot instances, so both knobs err conservative:
+// the cross-tick cooldown latches discovery off after a failed pass (exponential from base, seeded
+// from the server's `Retry-After` when sent, capped at max — the WAF's own `Retry-After` is 300s,
+// so the cap must sit above that), and the request-rate cap bounds candidate-page fetches even when
+// the endpoint masks a throttled origin as a `200` (its CDN serves stale-while-revalidate).
+const DEFAULT_DISCOVERY_COOLDOWN_BASE_MS = 60_000
+const DEFAULT_DISCOVERY_COOLDOWN_MAX_MS = 600_000
+const DEFAULT_DISCOVERY_HTTP_RPS = 2
+const DEFAULT_DISCOVERY_HTTP_BURST = 4
+
 // Quoting tunables, all optional with safe defaults so existing deployments are unaffected.
 const DEFAULT_QUOTE_TIMEOUT_MS = 2500
 const DEFAULT_HTTP_RPS = 2 // per-venue token-bucket refill; 1inch free tier is 1 RPS — set HTTP_RPS=1
@@ -105,6 +116,17 @@ export type DiscoveryConfig = {
    * soon-to-be-liquidatable positions from the HF-triggered set.
    */
   healthFactorLte: number
+  /**
+   * Cross-tick discovery-cooldown ramp (see `withDiscoveryCooldown`): after a failed discovery
+   * pass, discovery is latched off for `min(cooldownMaxMs, max(serverRetryAfter,
+   * cooldownBaseMs · 2^(failures−1)))`. `cooldownBaseMs = 0` disables the exponential floor (a
+   * server `Retry-After` is still honored).
+   */
+  cooldownBaseMs: number
+  cooldownMaxMs: number
+  /** Token-bucket cap on candidate-page requests (refill rps / burst), retries included. */
+  httpRps: number
+  httpBurst: number
 }
 
 /**
@@ -413,9 +435,30 @@ export function loadConfig(
   if (tryCatch(() => new URL(apiUrl)).error) {
     throw new Error(`LIQUIDATION_CANDIDATES_API_URL is not a valid URL: ${apiUrl}`)
   }
+  const cooldownBaseMs = intEnv(
+    env,
+    'DISCOVERY_COOLDOWN_BASE_MS',
+    DEFAULT_DISCOVERY_COOLDOWN_BASE_MS,
+    { min: 0 }
+  )
+  const cooldownMaxMs = intEnv(
+    env,
+    'DISCOVERY_COOLDOWN_MAX_MS',
+    DEFAULT_DISCOVERY_COOLDOWN_MAX_MS,
+    { min: 0 }
+  )
+  if (cooldownMaxMs < cooldownBaseMs) {
+    throw new Error(
+      `DISCOVERY_COOLDOWN_MAX_MS (${cooldownMaxMs}) must be >= DISCOVERY_COOLDOWN_BASE_MS (${cooldownBaseMs})`
+    )
+  }
   const discovery: DiscoveryConfig = {
     apiUrl,
-    healthFactorLte: numberEnv(env, 'HEALTH_FACTOR_LTE', DEFAULT_HEALTH_FACTOR_LTE, { min: 1 })
+    healthFactorLte: numberEnv(env, 'HEALTH_FACTOR_LTE', DEFAULT_HEALTH_FACTOR_LTE, { min: 1 }),
+    cooldownBaseMs,
+    cooldownMaxMs,
+    httpRps: intEnv(env, 'DISCOVERY_HTTP_RPS', DEFAULT_DISCOVERY_HTTP_RPS, { min: 1 }),
+    httpBurst: intEnv(env, 'DISCOVERY_HTTP_BURST', DEFAULT_DISCOVERY_HTTP_BURST, { min: 1 })
   }
 
   return {

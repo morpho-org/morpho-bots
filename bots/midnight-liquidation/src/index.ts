@@ -26,7 +26,7 @@ import {
   PENDLE_CHAIN_IDS,
   priceByVenue
 } from '@repo/swaps'
-import { delay, ensureError, tryCatch } from '@repo/utils'
+import { createTokenBucket, delay, ensureError, tryCatch } from '@repo/utils'
 import { erc20Abi } from 'viem'
 import { getBlockNumber, readContract } from 'viem/actions'
 
@@ -40,6 +40,7 @@ import {
   discoverBorrowers,
   MAX_DISCOVERY_PAGES
 } from './discovery/borrowers'
+import { withDiscoveryCooldown } from './discovery/cooldown'
 import { createListedMarketFilter } from './discovery/markets'
 import { encodeLiquidationExec } from './execution/encode-call'
 import { composeQuoting } from './quotes'
@@ -219,10 +220,20 @@ async function main() {
   // Borrower discovery: poll the markets liquidation-candidates endpoint (cursor-paginated,
   // over-inclusive). The lens re-reads every returned pair fresh on-chain, so this is a coverage
   // source, never the source of truth.
+  // Request-rate cap on candidate-page fetches (CRTR-2857): the endpoint's server-side GraphQL
+  // fan-out shares ONE global WAF budget across all bot instances, so page volume is bounded here
+  // regardless of what the endpoint returns.
+  const discoveryBucket = createTokenBucket({
+    rps: config.discovery.httpRps,
+    burst: config.discovery.httpBurst,
+    now: () => Date.now(),
+    sleep: delay
+  })
   const fetchPage = createApiCandidateSource({
     url: config.discovery.apiUrl,
     chainId: config.chainId,
-    healthFactorLte: config.discovery.healthFactorLte
+    healthFactorLte: config.discovery.healthFactorLte,
+    waitForSlot: discoveryBucket.take
   })
   // Age of the whitelist since its last successful refresh — the caller's staleness signal. `Infinity`
   // before the first successful fetch (never-refreshed = fail-closed).
@@ -234,24 +245,38 @@ async function main() {
   // touched (fail-closed), and this also shrinks the lens batch. Past the fail-closed max-age (a
   // sustained markets-API outage the refresh loop could not recover from) the whitelist is treated as
   // EMPTY so a since-delisted market can never linger in scope on the back of a stale set.
-  const discover = async () => {
-    const candidates = await discoverBorrowers(fetchPage, { logger, maxPages: MAX_DISCOVERY_PAGES })
-    const whitelistExpired = whitelistAge() > LISTED_MARKETS_MAX_AGE_MS
-    if (whitelistExpired) {
-      logger.warn('markets.whitelist_expired', {
-        ageMs: whitelistAge(),
-        detail:
-          'whitelist older than max age — treating as empty (fail-closed) until a refresh lands'
+  // Cross-tick discovery circuit breaker (CRTR-2857): a failed pass latches discovery off until a
+  // backoff window expires (seeded from the server's Retry-After when sent), instead of re-firing a
+  // full scan every ~2s block against an already-throttled endpoint. Latched ticks run with zero
+  // candidates — the tick tolerates that — and the startup probe below shares the latch.
+  const discover = withDiscoveryCooldown(
+    async () => {
+      const candidates = await discoverBorrowers(fetchPage, {
+        logger,
+        maxPages: MAX_DISCOVERY_PAGES
       })
+      const whitelistExpired = whitelistAge() > LISTED_MARKETS_MAX_AGE_MS
+      if (whitelistExpired) {
+        logger.warn('markets.whitelist_expired', {
+          ageMs: whitelistAge(),
+          detail:
+            'whitelist older than max age — treating as empty (fail-closed) until a refresh lands'
+        })
+      }
+      const listed = whitelistExpired
+        ? []
+        : candidates.filter(candidate => listedMarkets.isListed(candidate.marketId))
+      if (listed.length < candidates.length) {
+        logger.info('discover.filtered', { total: candidates.length, listed: listed.length })
+      }
+      return listed
+    },
+    {
+      logger,
+      baseMs: config.discovery.cooldownBaseMs,
+      maxMs: config.discovery.cooldownMaxMs
     }
-    const listed = whitelistExpired
-      ? []
-      : candidates.filter(candidate => listedMarkets.isListed(candidate.marketId))
-    if (listed.length < candidates.length) {
-      logger.info('discover.filtered', { total: candidates.length, listed: listed.length })
-    }
-    return listed
-  }
+  )
 
   // Startup discovery self-check (non-fatal): run one discovery pass at boot so a bad candidates-API
   // URL, an auth failure, or a stale/empty whitelist is diagnosable from Railway logs at boot, rather
