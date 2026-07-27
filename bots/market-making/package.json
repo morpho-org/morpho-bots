@@ -11,6 +11,9 @@
     "start": "bun src/index.ts",
     "typecheck": "tsc --noEmit"
   },
+  "dependencies": {
+    "commander": "^14.0.3"
+  },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
     "@types/bun": "catalog:",

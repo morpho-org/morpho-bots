@@ -4,7 +4,7 @@ import { VersionService } from '../../../src/application/version.service'
 import { Cli } from '../../../src/infrastructure/cli/cli'
 
 describe('Cli', () => {
-  test('mm --version returns v0.0.0', () => {
+  test('mm --version returns 0.0.0', () => {
     expect(new Cli(new VersionService()).run(['--version'])).toBe('0.0.0')
   })
 
@@ -13,7 +13,7 @@ describe('Cli', () => {
   })
 
   test('rejects an unknown command', () => {
-    expect(() => new Cli(new VersionService()).run(['bogus'])).toThrow('Unknown command: bogus')
+    expect(() => new Cli(new VersionService()).run(['bogus'])).toThrow(/too many arguments/)
   })
 
   test('rejects an empty argv', () => {
