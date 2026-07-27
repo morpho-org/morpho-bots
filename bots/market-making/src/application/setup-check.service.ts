@@ -1,8 +1,12 @@
+import type { Address, Hex } from 'viem'
+
+import { isAddress, isAddressEqual } from 'viem'
+
 type SetupCheckStatus = 'passed' | 'failed' | 'not-required'
 
-type SetupRemediation = string | { to: string; functionName: string; args: readonly unknown[] }
+type SetupRemediation = string | { to: Address; functionName: string; args: readonly unknown[] }
 
-type SetupCheck = {
+export type SetupCheck = {
   name:
     | 'chain'
     | 'maker'
@@ -19,7 +23,7 @@ type SetupCheck = {
   remediation?: SetupRemediation
 }
 
-type SetupCheckReport = {
+export type SetupCheckReport = {
   ready: boolean
   checks: SetupCheck[]
 }
@@ -34,48 +38,68 @@ export class SetupCheckError extends Error {
 
 export type SetupCheckConfig = {
   chainId: number
-  maker: string
-  midnight: string
+  maker: Address
+  midnight: Address
   nativeReserve: bigint
-  loanAsset: string
+  loanAsset: Address
   maximumLendExposure: bigint
-  ratifier: string
-  marketIds: readonly string[]
+  ratifier: Address
+  marketIds: readonly Hex[]
 }
 
 export type BookSetup = {
-  id: string
+  id: Hex
   allowlisted: boolean
   active: boolean
-  loanAsset: string
+  loanAsset: Address
   tickSpacing: number
   maturity: bigint
 }
 
 export interface SetupStateService {
   getChainId(): Promise<number>
-  getCode(address: string): Promise<string>
-  getDerivedMaker(): Promise<string>
-  getNativeBalance(address: string): Promise<bigint>
-  getLoanAllowance(owner: string, loanAsset: string): Promise<{ spender: string; amount: bigint }>
+  getCode(address: Address): Promise<Hex | undefined>
+  getDerivedMaker(): Promise<Address>
+  getNativeBalance(address: Address): Promise<bigint>
+  getLoanAllowance(
+    owner: Address,
+    loanAsset: Address
+  ): Promise<{ spender: Address; amount: bigint }>
   getRatifier(
-    maker: string,
-    ratifier: string
+    maker: Address,
+    ratifier: Address
   ): Promise<{ listed: boolean; supportsEcrecover: boolean; authorized: boolean }>
-  getBook(id: string): Promise<BookSetup>
+  getBook(id: Hex): Promise<BookSetup>
   getLatestTimestamp(): Promise<bigint>
   checkReference(): Promise<{ referenceReadable: boolean; archiveReadable: boolean }>
-  inspectOffers(maker: string): Promise<{
+  inspectOffers(maker: Address): Promise<{
     unknownNamespaces: readonly string[]
-    invertedMarketIds: readonly string[]
+    invertedMarketIds: readonly Hex[]
   }>
   checkPositionHealth(): Promise<{ status: 'not-required'; reason: string }>
 }
 
 const BASE_CHAIN_ID = 8453
 
+type Captured<T> = { ok: true; value: T } | { ok: false; error: string }
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function capture<T>(read: () => Promise<T>): Promise<Captured<T>> {
+  try {
+    return read().then(
+      value => ({ ok: true, value }),
+      error => ({ ok: false, error: errorMessage(error) })
+    )
+  } catch (error) {
+    return Promise.resolve({ ok: false, error: errorMessage(error) })
+  }
+}
+
 function sameAddress(left: string, right: string) {
-  return left.toLowerCase() === right.toLowerCase()
+  return isAddress(left) && isAddress(right) && isAddressEqual(left, right)
 }
 
 function result(
@@ -94,9 +118,18 @@ function result(
   }
 }
 
-function bookProblems(book: BookSetup, config: SetupCheckConfig, latestTimestamp: bigint) {
+function providerFailure(name: SetupCheck['name'], error: string, required: unknown) {
+  return result(name, false, { error }, required)
+}
+
+function bookProblems(
+  requestedId: Hex,
+  book: BookSetup,
+  config: SetupCheckConfig,
+  latestTimestamp: bigint
+) {
   const reasons: string[] = []
-  if (!config.marketIds.includes(book.id)) reasons.push('not configured')
+  if (book.id !== requestedId) reasons.push(`provider returned ${book.id}`)
   if (!book.allowlisted) reasons.push('not allowlisted')
   if (!book.active) reasons.push('inactive')
   if (!sameAddress(book.loanAsset, config.loanAsset)) {
@@ -104,7 +137,48 @@ function bookProblems(book: BookSetup, config: SetupCheckConfig, latestTimestamp
   }
   if (book.tickSpacing <= 0) reasons.push('tick spacing is inaccessible')
   if (book.maturity <= latestTimestamp) reasons.push(`matured at ${book.maturity}`)
-  return { id: book.id, reasons }
+  return { id: requestedId, reasons }
+}
+
+function chainCheck(
+  config: SetupCheckConfig,
+  chainId: Captured<number>,
+  midnightCode: Captured<Hex | undefined>
+) {
+  const required = { chainId: BASE_CHAIN_ID, midnightCode: 'deployed' }
+  if (!chainId.ok) return providerFailure('chain', chainId.error, required)
+  if (!midnightCode.ok) return providerFailure('chain', midnightCode.error, required)
+  const observed = {
+    configured: config.chainId,
+    connected: chainId.value,
+    midnightCode: midnightCode.value
+  }
+  const ready =
+    config.chainId === BASE_CHAIN_ID &&
+    chainId.value === BASE_CHAIN_ID &&
+    midnightCode.value !== undefined &&
+    midnightCode.value !== '0x'
+  return result('chain', ready, observed, required)
+}
+
+function booksCheck(
+  config: SetupCheckConfig,
+  timestamp: Captured<bigint>,
+  books: readonly { requestedId: Hex; response: Captured<BookSetup> }[]
+) {
+  const required = 'all configured books valid'
+  if (config.marketIds.length === 0) {
+    return result('books', false, [{ id: '(none)', reasons: ['no markets configured'] }], required)
+  }
+  const invalidBooks = books.flatMap(({ requestedId, response }) => {
+    if (!response.ok) return [{ id: requestedId, reasons: [`provider error: ${response.error}`] }]
+    if (!timestamp.ok) {
+      return [{ id: requestedId, reasons: [`timestamp provider error: ${timestamp.error}`] }]
+    }
+    const problem = bookProblems(requestedId, response.value, config, timestamp.value)
+    return problem.reasons.length === 0 ? [] : [problem]
+  })
+  return result('books', invalidBooks.length === 0, invalidBooks, required)
 }
 
 export class SetupCheckService {
@@ -120,99 +194,127 @@ export class SetupCheckService {
   }
 
   async check(): Promise<SetupCheckReport> {
-    const chainId = await this.state.getChainId()
-    const midnightCode = await this.state.getCode(this.config.midnight)
-    const derivedMaker = await this.state.getDerivedMaker()
-    const nativeBalance = await this.state.getNativeBalance(this.config.maker)
-    const allowance = await this.state.getLoanAllowance(this.config.maker, this.config.loanAsset)
-    const ratifier = await this.state.getRatifier(this.config.maker, this.config.ratifier)
-    const latestTimestamp = await this.state.getLatestTimestamp()
-    const books = await Promise.all(this.config.marketIds.map(id => this.state.getBook(id)))
-    let reference: { referenceReadable: boolean; archiveReadable: boolean } | undefined
-    let referenceError: string | undefined
-    try {
-      reference = await this.state.checkReference()
-    } catch (error) {
-      referenceError = error instanceof Error ? error.message : String(error)
-    }
-    const offers = await this.state.inspectOffers(this.config.maker)
-    const positionHealth = await this.state.checkPositionHealth()
+    const bookReads = this.config.marketIds.map(requestedId => ({
+      requestedId,
+      response: capture(() => this.state.getBook(requestedId))
+    }))
+    const reads = await Promise.all([
+      capture(() => this.state.getChainId()),
+      capture(() => this.state.getCode(this.config.midnight)),
+      capture(() => this.state.getDerivedMaker()),
+      capture(() => this.state.getNativeBalance(this.config.maker)),
+      capture(() => this.state.getLoanAllowance(this.config.maker, this.config.loanAsset)),
+      capture(() => this.state.getRatifier(this.config.maker, this.config.ratifier)),
+      capture(() => this.state.getLatestTimestamp()),
+      Promise.all(bookReads.map(async book => ({ ...book, response: await book.response }))),
+      capture(() => this.state.checkReference()),
+      capture(() => this.state.inspectOffers(this.config.maker)),
+      capture(() => this.state.checkPositionHealth())
+    ])
+    const [
+      chainId,
+      midnightCode,
+      derivedMaker,
+      nativeBalance,
+      allowance,
+      ratifier,
+      latestTimestamp,
+      books,
+      reference,
+      offers,
+      positionHealth
+    ] = reads
 
-    const chainReady =
-      this.config.chainId === BASE_CHAIN_ID && chainId === BASE_CHAIN_ID && midnightCode !== '0x'
-    const makerReady = sameAddress(derivedMaker, this.config.maker)
-    const nativeBalanceReady = nativeBalance >= this.config.nativeReserve
-    const allowanceReady =
-      sameAddress(allowance.spender, this.config.midnight) &&
-      allowance.amount >= this.config.maximumLendExposure
-    const ratifierReady = ratifier.listed && ratifier.supportsEcrecover && ratifier.authorized
-    const invalidBooks = books
-      .map(book => bookProblems(book, this.config, latestTimestamp))
-      .filter(book => book.reasons.length > 0)
-    const referenceReady =
-      reference !== undefined && reference.referenceReadable && reference.archiveReadable
-    const offersReady =
-      offers.unknownNamespaces.length === 0 && offers.invertedMarketIds.length === 0
+    const makerCheck = !derivedMaker.ok
+      ? providerFailure('maker', derivedMaker.error, this.config.maker)
+      : result(
+          'maker',
+          sameAddress(derivedMaker.value, this.config.maker),
+          derivedMaker.value,
+          this.config.maker
+        )
+    const nativeCheck = !nativeBalance.ok
+      ? providerFailure('native-balance', nativeBalance.error, this.config.nativeReserve)
+      : result(
+          'native-balance',
+          nativeBalance.value >= this.config.nativeReserve,
+          nativeBalance.value,
+          this.config.nativeReserve,
+          `fund ${this.config.maker} with native token to at least ${this.config.nativeReserve}`
+        )
+    const allowanceRequired = {
+      spender: this.config.midnight,
+      minimum: this.config.maximumLendExposure
+    }
+    const allowanceCheck = !allowance.ok
+      ? providerFailure('loan-allowance', allowance.error, allowanceRequired)
+      : result(
+          'loan-allowance',
+          sameAddress(allowance.value.spender, this.config.midnight) &&
+            allowance.value.amount >= this.config.maximumLendExposure,
+          allowance.value,
+          allowanceRequired,
+          {
+            to: this.config.loanAsset,
+            functionName: 'approve',
+            args: [this.config.midnight, this.config.maximumLendExposure]
+          }
+        )
+    const ratifierRequired = { listed: true, supportsEcrecover: true, authorized: true }
+    const ratifierCheck = !ratifier.ok
+      ? providerFailure('ratifier', ratifier.error, ratifierRequired)
+      : result(
+          'ratifier',
+          ratifier.value.listed && ratifier.value.supportsEcrecover && ratifier.value.authorized,
+          ratifier.value,
+          ratifierRequired,
+          ratifier.value.listed && ratifier.value.supportsEcrecover && !ratifier.value.authorized
+            ? {
+                to: this.config.midnight,
+                functionName: 'setIsAuthorized',
+                args: [this.config.ratifier, true, this.config.maker]
+              }
+            : 'select a Router-listed Ecrecover ratifier with the expected deployed surface'
+        )
+    const referenceRequired = { referenceReadable: true, archiveReadable: true }
+    const referenceCheck = !reference.ok
+      ? providerFailure('reference', reference.error, referenceRequired)
+      : result(
+          'reference',
+          reference.value.referenceReadable && reference.value.archiveReadable,
+          reference.value,
+          referenceRequired
+        )
+    const offersRequired = { unknownNamespaces: [], invertedMarketIds: [] }
+    const offersCheck = !offers.ok
+      ? providerFailure('offers', offers.error, offersRequired)
+      : result(
+          'offers',
+          offers.value.unknownNamespaces.length === 0 &&
+            offers.value.invertedMarketIds.length === 0,
+          offers.value,
+          offersRequired
+        )
+    const positionCheck = !positionHealth.ok
+      ? providerFailure('position-health', positionHealth.error, 'not-required for V0')
+      : {
+          name: 'position-health' as const,
+          status: positionHealth.value.status,
+          observed: positionHealth.value,
+          required: 'not-required for V0'
+        }
 
     const checks: SetupCheck[] = [
-      result(
-        'chain',
-        chainReady,
-        { configured: this.config.chainId, connected: chainId, midnightCode },
-        {
-          chainId: BASE_CHAIN_ID,
-          midnightCode: 'deployed'
-        }
-      ),
-      result('maker', makerReady, derivedMaker, this.config.maker),
-      result(
-        'native-balance',
-        nativeBalanceReady,
-        nativeBalance,
-        this.config.nativeReserve,
-        `fund ${this.config.maker} with native token to at least ${this.config.nativeReserve}`
-      ),
-      result(
-        'loan-allowance',
-        allowanceReady,
-        allowance,
-        { spender: this.config.midnight, minimum: this.config.maximumLendExposure },
-        {
-          to: this.config.loanAsset,
-          functionName: 'approve',
-          args: [this.config.midnight, this.config.maximumLendExposure]
-        }
-      ),
-      result(
-        'ratifier',
-        ratifierReady,
-        ratifier,
-        { listed: true, supportsEcrecover: true, authorized: true },
-        ratifier.listed && ratifier.supportsEcrecover && !ratifier.authorized
-          ? {
-              to: this.config.midnight,
-              functionName: 'setIsAuthorized',
-              args: [this.config.ratifier, true, this.config.maker]
-            }
-          : 'select a Router-listed Ecrecover ratifier with the expected deployed surface'
-      ),
-      result('books', invalidBooks.length === 0, invalidBooks, 'all configured books valid'),
-      result('reference', referenceReady, reference ?? { error: referenceError }, {
-        referenceReadable: true,
-        archiveReadable: true
-      }),
-      result('offers', offersReady, offers, {
-        unknownNamespaces: [],
-        invertedMarketIds: []
-      }),
-      {
-        name: 'position-health',
-        status: positionHealth.status,
-        observed: positionHealth,
-        required: 'not-required for V0'
-      }
+      chainCheck(this.config, chainId, midnightCode),
+      makerCheck,
+      nativeCheck,
+      allowanceCheck,
+      ratifierCheck,
+      booksCheck(this.config, latestTimestamp, books),
+      referenceCheck,
+      offersCheck,
+      positionCheck
     ]
-
     return { ready: checks.every(check => check.status !== 'failed'), checks }
   }
 }

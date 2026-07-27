@@ -1,3 +1,5 @@
+import type { Hex } from 'viem'
+
 import { describe, expect, test } from 'bun:test'
 
 import {
@@ -11,7 +13,8 @@ const maker = '0x1111111111111111111111111111111111111111'
 const midnight = '0x2222222222222222222222222222222222222222'
 const loanAsset = '0x3333333333333333333333333333333333333333'
 const ratifier = '0x4444444444444444444444444444444444444444'
-const marketId = `0x${'55'.repeat(32)}`
+const marketId: Hex = `0x${'55'.repeat(32)}`
+const secondMarketId: Hex = `0x${'66'.repeat(32)}`
 
 const config: SetupCheckConfig = {
   chainId: 8453,
@@ -104,6 +107,161 @@ describe('SetupCheckService', () => {
       required: { referenceReadable: true, archiveReadable: true }
     })
     expect(report.checks.find(check => check.name === 'offers')?.status).toBe('passed')
+  })
+
+  test('runs independent reads concurrently and keeps a complete report after rejections', async () => {
+    const started: string[] = []
+    let release!: () => void
+    const gate = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const wait = async <T>(name: string, value: T) => {
+      started.push(name)
+      await gate
+      return value
+    }
+    const state = readyState()
+    state.getChainId = () => wait('chain-id', 8453)
+    state.getCode = () => wait('code', '0x1234')
+    state.getDerivedMaker = () => wait('maker', maker)
+    state.getNativeBalance = () => wait('balance', 10n)
+    state.getLoanAllowance = () => wait('allowance', { spender: midnight, amount: 100n })
+    state.getRatifier = () =>
+      wait('ratifier', { listed: true, supportsEcrecover: true, authorized: true })
+    state.getLatestTimestamp = () => wait('timestamp', 1_000n)
+    state.getBook = id =>
+      wait(`book:${id}`, {
+        id,
+        allowlisted: true,
+        active: true,
+        loanAsset,
+        tickSpacing: 1,
+        maturity: 2_000n
+      })
+    state.checkReference = async () => {
+      started.push('reference')
+      await gate
+      throw new Error('archive unavailable')
+    }
+    state.inspectOffers = () => wait('offers', { unknownNamespaces: [], invertedMarketIds: [] })
+    state.checkPositionHealth = () =>
+      wait('position-health', { status: 'not-required' as const, reason: 'V0 has no debt' })
+
+    const reportPromise = new SetupCheckService(state, config).check()
+    await Promise.resolve()
+
+    expect(started.toSorted()).toEqual(
+      [
+        'chain-id',
+        'code',
+        'maker',
+        'balance',
+        'allowance',
+        'ratifier',
+        'timestamp',
+        `book:${marketId}`,
+        'reference',
+        'offers',
+        'position-health'
+      ].toSorted()
+    )
+    release()
+
+    const report = await reportPromise
+    expect(report.checks.find(check => check.name === 'reference')?.status).toBe('failed')
+    expect(report.checks.find(check => check.name === 'offers')?.status).toBe('passed')
+  })
+
+  test('converts every rejected provider surface into its named report item', async () => {
+    const unavailable = async () => {
+      throw new Error('provider unavailable')
+    }
+    const state = readyState()
+    state.getChainId = unavailable
+    state.getCode = unavailable
+    state.getDerivedMaker = unavailable
+    state.getNativeBalance = unavailable
+    state.getLoanAllowance = unavailable
+    state.getRatifier = unavailable
+    state.getLatestTimestamp = unavailable
+    state.getBook = unavailable
+    state.checkReference = unavailable
+    state.inspectOffers = unavailable
+    state.checkPositionHealth = unavailable
+
+    const error = await new SetupCheckService(state, config).assertReady().catch(value => value)
+
+    expect(error).toBeInstanceOf(SetupCheckError)
+    expect(
+      error.report.checks.map((check: { name: string; status: string }) => [
+        check.name,
+        check.status
+      ])
+    ).toEqual([
+      ['chain', 'failed'],
+      ['maker', 'failed'],
+      ['native-balance', 'failed'],
+      ['loan-allowance', 'failed'],
+      ['ratifier', 'failed'],
+      ['books', 'failed'],
+      ['reference', 'failed'],
+      ['offers', 'failed'],
+      ['position-health', 'failed']
+    ])
+  })
+
+  test('rejects a book response whose id differs from the requested configured market', async () => {
+    const state = readyState()
+    state.getBook = async () => ({
+      id: secondMarketId,
+      allowlisted: true,
+      active: true,
+      loanAsset,
+      tickSpacing: 1,
+      maturity: 2_000n
+    })
+
+    const report = await new SetupCheckService(state, config).check()
+
+    expect(report.checks.find(check => check.name === 'books')?.observed).toEqual([
+      { id: marketId, reasons: [`provider returned ${secondMarketId}`] }
+    ])
+  })
+
+  test('fails books when no market is configured', async () => {
+    const report = await new SetupCheckService(readyState(), { ...config, marketIds: [] }).check()
+
+    expect(report.checks.find(check => check.name === 'books')).toEqual({
+      name: 'books',
+      status: 'failed',
+      observed: [{ id: '(none)', reasons: ['no markets configured'] }],
+      required: 'all configured books valid'
+    })
+  })
+
+  test('accepts exact funding thresholds and rejects maturity at the current timestamp', async () => {
+    const exactThresholds = await new SetupCheckService(readyState(), config).check()
+    expect(exactThresholds.checks.find(check => check.name === 'native-balance')?.status).toBe(
+      'passed'
+    )
+    expect(exactThresholds.checks.find(check => check.name === 'loan-allowance')?.status).toBe(
+      'passed'
+    )
+
+    const state = readyState()
+    state.getBook = async id => ({
+      id,
+      allowlisted: true,
+      active: true,
+      loanAsset,
+      tickSpacing: 1,
+      maturity: 1_000n
+    })
+    const maturityBoundary = await new SetupCheckService(state, config).check()
+
+    expect(maturityBoundary.checks.find(check => check.name === 'books')?.observed).toEqual([
+      { id: marketId, reasons: ['matured at 1000'] }
+    ])
   })
 
   test('reports every unsafe book property so the operator can remediate it', async () => {
