@@ -69,7 +69,8 @@ boundaries.
   `MakeService`, including a prospective-book check that rejects inverted spreads with a typed
   `NEGATIVE_SPREAD` error.
 - Support explicit startup cleanup of every maker offer or one group, plus opt-in cleanup of both
-  strategy namespaces during graceful shutdown.
+  strategy namespaces through on-chain invalidation transactions during graceful shutdown, followed
+  by a terminal report.
 - Reconcile the desired quote set against chain and Mempool truth on every cycle. Restarts must not
   depend on a database or local state.
 - Support the V-1 ladder inputs: center/target rate, spread, step increment, rung count, size skew,
@@ -161,9 +162,12 @@ Startup supports two explicit destructive controls before readiness is emitted:
 After cleanup, normal startup continues only when invalidation is confirmed. A cleanup failure exits
 non-zero and lets the deployment supervisor retry. On `SIGINT`/`SIGTERM`,
 `SHUTDOWN_CLEANUP=true` makes the runtime stop accepting new make jobs, drain the current job, try
-to invalidate the bootstrap and ladder groups, and only then exit. Cleanup is best effort under a
-bounded timeout and its incomplete roots are logged; when the option is false, shutdown stops the
-workflows without invalidating resting offers.
+to invalidate every active bootstrap and ladder group through on-chain transaction(s), wait for
+their receipts, and only then exit. Cleanup is best effort under a bounded timeout. Every shutdown
+prints a final report to the terminal with whether cleanup was enabled, the attempted groups,
+transaction hashes and receipt statuses, confirmed invalidations, incomplete groups, elapsed time,
+and final exit status. When the option is false, shutdown stops the workflows without invalidating
+resting offers and the report records that cleanup was disabled.
 
 Each workflow owns a deterministic group namespace derived from at least:
 
@@ -496,7 +500,7 @@ nonce and on-chain invalidation state before accepting another job from either w
 | Credit below target, auto-refill on         | Bootstrap resumes capped top-up publication                                       |
 | Maker key or ratifier authorization changes | Treat as setup drift and crash-loop                                               |
 | Runtime restart                             | Rebuild from chain/Mempool and reconcile; no local-state recovery                 |
-| `SHUTDOWN_CLEANUP=true`                     | Drain current make, try to invalidate both namespaces, log incomplete cleanup     |
+| `SHUTDOWN_CLEANUP=true`                     | Drain make, submit on-chain group invalidation(s), await receipts, print report   |
 
 ### 10. Configuration contract
 
@@ -673,27 +677,27 @@ applicable.
 
 Required events include:
 
-| Event                        | Minimum fields                                                               |
-| ---------------------------- | ---------------------------------------------------------------------------- |
-| `setup.checked`              | each check, pass/fail, observed value, required value                        |
-| `reference.observed`         | mode, market, rate, blocks/timestamps, window, age, bounds                   |
-| `reference.rejected`         | precise stale/calculation/bounds reason                                      |
-| `bootstrap.evaluated`        | credit, target, deficit, premium, size, auto-refill                          |
-| `bootstrap.published`        | market, root, rate/tick, cap, expiry                                         |
-| `ladder.evaluated`           | center, spread, step, rungs, skew, desired/actual counts                     |
-| `ladder.unchanged`           | reference movement and tolerance                                             |
-| `ladder.reconciled`          | roots invalidated/published/retained                                         |
-| `make.queued`                | workflow, market, operation, queue depth                                     |
-| `make.rejected`              | typed reason including `NEGATIVE_SPREAD`, live/proposed best rates           |
-| `cleanup.started`            | trigger, all/group/strategy scope, root count                                |
-| `cleanup.completed`          | invalidated and incomplete roots, elapsed time                               |
-| `strategy.halted`            | triggering invariant and invalidation coverage                               |
-| `offer.filled`               | market, side, group/root, units/assets, rate, resulting credit/debt          |
-| `position.observed`          | cash, credit, debt, exposure, conservative cost basis                        |
-| `pnl.estimated`              | realized/unrealized components, methodology/version, loss-budget consumption |
-| `invalidation.submitted`     | root/group, transaction hash, nonce                                          |
-| `invalidation.settled`       | transaction hash, receipt status                                             |
-| `reconciliation.unknownRoot` | root, namespace decode failure                                               |
+| Event                        | Minimum fields                                                                   |
+| ---------------------------- | -------------------------------------------------------------------------------- |
+| `setup.checked`              | each check, pass/fail, observed value, required value                            |
+| `reference.observed`         | mode, market, rate, blocks/timestamps, window, age, bounds                       |
+| `reference.rejected`         | precise stale/calculation/bounds reason                                          |
+| `bootstrap.evaluated`        | credit, target, deficit, premium, size, auto-refill                              |
+| `bootstrap.published`        | market, root, rate/tick, cap, expiry                                             |
+| `ladder.evaluated`           | center, spread, step, rungs, skew, desired/actual counts                         |
+| `ladder.unchanged`           | reference movement and tolerance                                                 |
+| `ladder.reconciled`          | roots invalidated/published/retained                                             |
+| `make.queued`                | workflow, market, operation, queue depth                                         |
+| `make.rejected`              | typed reason including `NEGATIVE_SPREAD`, live/proposed best rates               |
+| `cleanup.started`            | trigger, all/group/strategy scope, root count                                    |
+| `cleanup.completed`          | transaction hashes/receipts, invalidated/incomplete groups, elapsed, exit status |
+| `strategy.halted`            | triggering invariant and invalidation coverage                                   |
+| `offer.filled`               | market, side, group/root, units/assets, rate, resulting credit/debt              |
+| `position.observed`          | cash, credit, debt, exposure, conservative cost basis                            |
+| `pnl.estimated`              | realized/unrealized components, methodology/version, loss-budget consumption     |
+| `invalidation.submitted`     | root/group, transaction hash, nonce                                              |
+| `invalidation.settled`       | transaction hash, receipt status                                                 |
+| `reconciliation.unknownRoot` | root, namespace decode failure                                                   |
 
 The daily Linear update is a manual summary built from these events: deployed version, live
 markets, current mode, reference rate, credit versus target, ladder coverage, fills, estimated P&L,
@@ -841,7 +845,8 @@ Implementation tests mirror the source layers:
   restart, nonce reconciliation, and balance/position changes.
 - **Runtime:** all three workflows run concurrently through one `MakeService` without
   cross-namespace mutation, inverted spreads, or duplicate on-chain nonces; failed readiness enters
-  the supervisor crash loop before either writer starts.
+  the supervisor crash loop before either writer starts; shutdown cleanup submits the expected
+  group invalidation transaction(s) and prints a complete terminal report.
 - **Live canary:** bootstrap-to-quote transition, at least one organic fill, restart reconciliation,
   and a rehearsed invalidate-all.
 
