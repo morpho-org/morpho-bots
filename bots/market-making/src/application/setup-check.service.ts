@@ -90,10 +90,11 @@ const BASE_CHAIN_ID = 8453
 
 type SafeProviderFailure = {
   kind: 'provider-error'
+  provider: 'rpc' | 'archive-rpc' | 'morpho-api' | 'router-api'
   name: string
   code?: string
   status?: number
-  origin?: string
+  context?: 'read' | 'request'
 }
 
 export class SafeProviderError extends Error {
@@ -111,7 +112,9 @@ const SAFE_ERROR_NAMES = new Set([
   'RangeError',
   'AbortError',
   'TimeoutError',
-  'NetworkError'
+  'NetworkError',
+  'HttpError',
+  'ProviderError'
 ])
 const SAFE_ERROR_CODES = new Set([
   'ECONNREFUSED',
@@ -122,9 +125,36 @@ const SAFE_ERROR_CODES = new Set([
   'UND_ERR_CONNECT_TIMEOUT',
   'UND_ERR_HEADERS_TIMEOUT'
 ])
+const SAFE_PROVIDER_IDS = new Set(['rpc', 'archive-rpc', 'morpho-api', 'router-api'])
 
-function safeProviderFailure(error: unknown): SafeProviderFailure {
-  if (error instanceof SafeProviderError) return error.failure
+function safeProviderFailure(
+  error: unknown,
+  provider: SafeProviderFailure['provider']
+): SafeProviderFailure {
+  if (error instanceof SafeProviderError) {
+    const safeProvider = SAFE_PROVIDER_IDS.has(error.failure.provider)
+      ? error.failure.provider
+      : provider
+    const name = SAFE_ERROR_NAMES.has(error.failure.name) ? error.failure.name : 'ProviderError'
+    const code =
+      error.failure.code === 'REQUEST_TIMEOUT' ||
+      (error.failure.code !== undefined && SAFE_ERROR_CODES.has(error.failure.code))
+        ? error.failure.code
+        : undefined
+    const status = Number.isSafeInteger(error.failure.status) ? error.failure.status : undefined
+    const context =
+      error.failure.context === 'request' || error.failure.context === 'read'
+        ? error.failure.context
+        : undefined
+    return {
+      kind: 'provider-error',
+      provider: safeProvider,
+      name,
+      ...(code ? { code } : {}),
+      ...(status ? { status } : {}),
+      ...(context ? { context } : {})
+    }
+  }
   const candidate =
     typeof error === 'object' && error !== null ? (error as Record<string, unknown>) : undefined
   const name =
@@ -139,17 +169,27 @@ function safeProviderFailure(error: unknown): SafeProviderFailure {
     typeof candidate?.status === 'number' && Number.isSafeInteger(candidate.status)
       ? candidate.status
       : undefined
-  return { kind: 'provider-error', name, ...(code ? { code } : {}), ...(status ? { status } : {}) }
+  return {
+    kind: 'provider-error',
+    provider,
+    name,
+    ...(code ? { code } : {}),
+    ...(status ? { status } : {}),
+    context: 'read'
+  }
 }
 
-function capture<T>(read: () => Promise<T>): Promise<Captured<T>> {
+function capture<T>(
+  read: () => Promise<T>,
+  provider: SafeProviderFailure['provider'] = 'rpc'
+): Promise<Captured<T>> {
   try {
     return read().then(
       value => ({ ok: true, value }),
-      error => ({ ok: false, error: safeProviderFailure(error) })
+      error => ({ ok: false, error: safeProviderFailure(error, provider) })
     )
   } catch (error) {
-    return Promise.resolve({ ok: false, error: safeProviderFailure(error) })
+    return Promise.resolve({ ok: false, error: safeProviderFailure(error, provider) })
   }
 }
 
@@ -262,8 +302,8 @@ export class SetupCheckService {
       capture(() => this.state.getRatifier(this.config.maker, this.config.ratifier)),
       capture(() => this.state.getLatestTimestamp()),
       Promise.all(bookReads.map(async book => ({ ...book, response: await book.response }))),
-      capture(() => this.state.checkReference()),
-      capture(() => this.state.inspectOffers(this.config.maker)),
+      capture(() => this.state.checkReference(), 'archive-rpc'),
+      capture(() => this.state.inspectOffers(this.config.maker), 'router-api'),
       capture(() => this.state.checkPositionHealth())
     ])
     const [

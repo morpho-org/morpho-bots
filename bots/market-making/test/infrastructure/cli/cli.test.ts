@@ -47,7 +47,16 @@ describe('Cli', () => {
       'rpc-token',
       'archive-token',
       'morpho-key',
-      'router-key'
+      'router-key',
+      '127.0.0.1',
+      '/rpc',
+      '/archive',
+      '/morpho',
+      '/router',
+      'http://',
+      'https://',
+      'fragment',
+      '"origin"'
     ]
     const process = Bun.spawn(
       [Bun.which('bun') ?? 'bun', 'bots/market-making/src/index.ts', 'setup-check'],
@@ -56,7 +65,7 @@ describe('Cli', () => {
         env: {
           PATH: Bun.env.PATH,
           CHAIN_ID: '8453',
-          RPC_URL: `http://${markers[0]}:${markers[1]}@127.0.0.1:1/rpc?key=${markers[2]}`,
+          RPC_URL: `https://${markers[0]}:${markers[1]}@127.0.0.1:1/rpc?key=${markers[2]}#fragment`,
           REFERENCE_RPC_URL: `http://127.0.0.1:1/archive?token=${markers[3]}`,
           MAKER_PRIVATE_KEY: `0x${'11'.repeat(32)}`,
           MAKER_ADDRESS: '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A',

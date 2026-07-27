@@ -38,7 +38,7 @@ function defaultState(config: ConfigService) {
   return new ViemSetupStateService(
     chainReader(config.rpcUrl, config.requestTimeoutMs),
     chainReader(config.referenceRpcUrl, config.requestTimeoutMs),
-    url => requestJson(url, config.requestTimeoutMs),
+    (url, provider) => requestJson(url, provider, config.requestTimeoutMs),
     {
       privateKey: config.privateKey,
       midnight: config.setup.midnight,

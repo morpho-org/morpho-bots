@@ -1,6 +1,7 @@
 import type { Address, Hex } from 'viem'
 
 import { describe, expect, test } from 'bun:test'
+import { keccak256 } from 'viem'
 
 import {
   requestJson,
@@ -15,6 +16,11 @@ const marketId: Hex = `0x${'55'.repeat(32)}`
 const referenceMarketId: Hex = `0x${'88'.repeat(32)}`
 const knownGroup: Hex = `0x${'66'.repeat(32)}`
 const unknownGroup: Hex = `0x${'77'.repeat(32)}`
+const authoritativeRatifierRuntime = (
+  await Bun.file(new URL('../../fixtures/ecrecover-ratifier-base.hex', import.meta.url)).text()
+).trim() as Hex
+const authoritativeRatifierRuntimeHash =
+  '0xcce1e0dd38ae831e81a9270627af2c24c208409ec03d5654a28a33ead53b1ac1'
 
 function createState(
   responses: Record<string, unknown>,
@@ -24,12 +30,13 @@ function createState(
     rootCanceled?: unknown
     missingReferenceMarket?: boolean
     routerRatifier?: Address
+    requestLimit?: number
   } = {}
 ) {
   const calls: string[] = []
   const chain = {
     getChainId: async () => 8453,
-    getCode: async () => overrides.code ?? ('0x1234' as Hex),
+    getCode: async () => overrides.code ?? authoritativeRatifierRuntime,
     getBalance: async () => 10n,
     getBlock: async () => ({ number: 100n, timestamp: 1_000n }),
     readContract: async ({ functionName }: { functionName: string }) => {
@@ -88,6 +95,9 @@ function createState(
   }
   const request = async (url: string) => {
     calls.push(url)
+    if (overrides.requestLimit !== undefined && calls.length > overrides.requestLimit) {
+      throw new Error('test request limit reached')
+    }
     if (url.includes('/v0/config/contracts')) {
       return {
         data: [
@@ -121,7 +131,7 @@ function createState(
 }
 
 describe('ViemSetupStateService', () => {
-  test('reports HTTP failures with status and credential-free origin only', async () => {
+  test('reports HTTP failures with a fixed provider id and no URL fields', async () => {
     const server = Bun.serve({
       port: 0,
       fetch: () => new Response('private body', { status: 503 })
@@ -130,19 +140,22 @@ describe('ViemSetupStateService', () => {
 
     try {
       const error = await requestJson(
-        `http://localhost:${server.port}/private?apiKey=${secret}`
+        `http://localhost:${server.port}/private?apiKey=${secret}`,
+        'router-api'
       ).catch(value => value)
       const serialized = JSON.stringify(error)
 
       expect(error).toMatchObject({
         failure: {
           kind: 'provider-error',
+          provider: 'router-api',
           name: 'HttpError',
-          status: 503,
-          origin: `http://localhost:${server.port}`
+          status: 503
         }
       })
       expect(serialized).not.toContain(secret)
+      expect(serialized).not.toContain('localhost')
+      expect(serialized).not.toContain(String(server.port))
       expect(serialized).not.toContain('/private')
       expect(serialized).not.toContain('private body')
     } finally {
@@ -163,6 +176,7 @@ describe('ViemSetupStateService', () => {
     try {
       const error = await requestJson(
         `http://localhost:${server.port}/slow?apiKey=${secret}`,
+        'morpho-api',
         10
       ).catch(value => value)
       const serialized = JSON.stringify(error)
@@ -170,12 +184,14 @@ describe('ViemSetupStateService', () => {
       expect(error).toMatchObject({
         failure: {
           kind: 'provider-error',
+          provider: 'morpho-api',
           name: 'TimeoutError',
-          code: 'REQUEST_TIMEOUT',
-          origin: `http://localhost:${server.port}`
+          code: 'REQUEST_TIMEOUT'
         }
       })
       expect(serialized).not.toContain(secret)
+      expect(serialized).not.toContain('localhost')
+      expect(serialized).not.toContain(String(server.port))
       expect(serialized).not.toContain('/slow')
     } finally {
       await server.stop(true)
@@ -233,6 +249,15 @@ describe('ViemSetupStateService', () => {
     ).toBe(false)
   })
 
+  test('rejects arbitrary getter-compatible bytecode and accepts the authoritative Base runtime', async () => {
+    expect(keccak256(authoritativeRatifierRuntime)).toBe(authoritativeRatifierRuntimeHash)
+    expect(
+      (await createState({}, { code: '0x1234' }).state.getRatifier(maker, ratifier))
+        .ecrecoverSurface
+    ).toBe(false)
+    expect((await createState({}).state.getRatifier(maker, ratifier)).ecrecoverSurface).toBe(true)
+  })
+
   test('proves the exact configured Blue reference market is readable at the historical block', async () => {
     const { state, calls } = createState({})
 
@@ -273,5 +298,44 @@ describe('ViemSetupStateService', () => {
       unknownNamespaces: [unknownGroup],
       invertedMarketIds: [marketId]
     })
+  })
+
+  test('fails closed when Router repeats an offer cursor', async () => {
+    const { state } = createState(
+      {
+        'cursor=loop': { cursor: 'loop', data: [] },
+        '/v0/midnight/takeable-offers': { cursor: 'loop', data: [] }
+      },
+      { requestLimit: 3 }
+    )
+
+    expect(state.inspectOffers(maker)).rejects.toThrow('Router cursor repeated')
+  })
+
+  test('fails closed when Router exceeds the offer page limit with unique cursors', async () => {
+    const page = (index: number) => `page-${String(index).padStart(3, '0')}`
+    const responses = Object.fromEntries(
+      Array.from({ length: 101 }, (_, index) => [
+        `cursor=${page(index)}`,
+        { cursor: index === 100 ? null : page(index + 1), data: [] }
+      ])
+    )
+    responses['/v0/midnight/takeable-offers'] = { cursor: page(0), data: [] }
+
+    expect(createState(responses).state.inspectOffers(maker)).rejects.toThrow(
+      'Router offer page limit exceeded'
+    )
+  })
+
+  test('fails closed when Router exceeds the offer item limit', async () => {
+    const offer = {
+      market_id: marketId,
+      offer: { maker, group: knownGroup, buy: true, tick: 20 }
+    }
+    const { state } = createState({
+      '/v0/midnight/takeable-offers': { cursor: null, data: Array(100_001).fill(offer) }
+    })
+
+    expect(state.inspectOffers(maker)).rejects.toThrow('Router offer item limit exceeded')
   })
 })

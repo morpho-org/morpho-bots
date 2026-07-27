@@ -1,7 +1,16 @@
 import type { Address, Hex } from 'viem'
 
 import { getChainAddress } from '@morpho-org/morpho-ts'
-import { erc20Abi, getAddress, isAddress, isAddressEqual, isHex, parseAbi, zeroAddress } from 'viem'
+import {
+  erc20Abi,
+  getAddress,
+  isAddress,
+  isAddressEqual,
+  isHex,
+  keccak256,
+  parseAbi,
+  zeroAddress
+} from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
 import type { BookSetup, SetupStateService } from '../../application/setup-check.service'
@@ -10,6 +19,14 @@ import { SafeProviderError } from '../../application/setup-check.service'
 
 const BASE_CHAIN_ID = 8453
 const PAGE_SIZE = 1_000
+const MAX_OFFER_PAGES = 100
+const MAX_OFFER_ITEMS = PAGE_SIZE * MAX_OFFER_PAGES
+// morpho-org/deployments@24c04410 address-book.json, Base EcrecoverRatifier
+// 0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E. eth_getCode at Base block 49198997
+// through Morpho eRPC; this deployment-specific hash includes immutable MIDNIGHT
+// 0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A.
+const BASE_ECRECOVER_RATIFIER_RUNTIME_HASH =
+  '0xcce1e0dd38ae831e81a9270627af2c24c208409ec03d5654a28a33ead53b1ac1'
 const MIDNIGHT_SETUP_ABI = parseAbi([
   'function isAuthorized(address authorizer, address authorized) view returns (bool)',
   'function tickSpacing(bytes32 id) view returns (uint8)',
@@ -36,7 +53,8 @@ export interface ChainReader {
   readContract(parameters: Record<string, unknown>): Promise<unknown>
 }
 
-type JsonRequest = (url: string) => Promise<unknown>
+type ProviderId = 'morpho-api' | 'router-api'
+type JsonRequest = (url: string, provider: ProviderId) => Promise<unknown>
 
 type SetupStateOptions = {
   privateKey: Hex
@@ -143,17 +161,17 @@ function invertedMarketIds(
   })
 }
 
-export async function requestJson(url: string, timeoutMs = 10_000) {
-  const origin = new URL(url).origin
+export async function requestJson(url: string, provider: ProviderId, timeoutMs = 10_000) {
   const signal = AbortSignal.timeout(timeoutMs)
   try {
     const response = await fetch(url, { headers: { accept: 'application/json' }, signal })
     if (!response.ok) {
       throw new SafeProviderError({
         kind: 'provider-error',
+        provider,
         name: 'HttpError',
         status: response.status,
-        origin
+        context: 'request'
       })
     }
     return await response.json()
@@ -161,9 +179,10 @@ export async function requestJson(url: string, timeoutMs = 10_000) {
     if (error instanceof SafeProviderError) throw error
     throw new SafeProviderError({
       kind: 'provider-error',
+      provider,
       name: signal.aborted ? 'TimeoutError' : 'NetworkError',
       ...(signal.aborted ? { code: 'REQUEST_TIMEOUT' } : {}),
-      origin
+      context: 'request'
     })
   }
 }
@@ -210,7 +229,8 @@ export class ViemSetupStateService implements SetupStateService {
   async getRatifier(maker: Address, ratifier: Address) {
     const [routerContracts, code, ratifierMidnight, rootCanceled, authorized] = await Promise.all([
       this.request(
-        `${this.options.routerApiBaseUrl}/v0/config/contracts?chains=${BASE_CHAIN_ID}&limit=100`
+        `${this.options.routerApiBaseUrl}/v0/config/contracts?chains=${BASE_CHAIN_ID}&limit=100`,
+        'router-api'
       ),
       this.chain.getCode({ address: ratifier }),
       this.chain.readContract({
@@ -246,7 +266,10 @@ export class ViemSetupStateService implements SetupStateService {
       ),
       deployed: code !== undefined && code !== '0x',
       midnightMatches: isAddressEqual(ratifierMidnight, this.options.midnight),
-      ecrecoverSurface: true,
+      ecrecoverSurface:
+        code !== undefined &&
+        code !== '0x' &&
+        keccak256(code) === BASE_ECRECOVER_RATIFIER_RUNTIME_HASH,
       authorized
     }
   }
@@ -260,7 +283,10 @@ export class ViemSetupStateService implements SetupStateService {
       limit: '1'
     })
     const [apiResponse, contractResponse, tickSpacing] = await Promise.all([
-      this.request(`${this.options.morphoApiBaseUrl}/v0/midnight/markets?${query.toString()}`),
+      this.request(
+        `${this.options.morphoApiBaseUrl}/v0/midnight/markets?${query.toString()}`,
+        'morpho-api'
+      ),
       this.chain.readContract({
         address: this.options.midnight,
         abi: MIDNIGHT_SETUP_ABI,
@@ -348,17 +374,26 @@ export class ViemSetupStateService implements SetupStateService {
 
   async inspectOffers(maker: Address) {
     const offers: ReturnType<typeof offerFromApi>[] = []
+    const seenCursors = new Set<string>()
+    let pageCount = 0
     let cursor: string | undefined
     do {
+      if (pageCount >= MAX_OFFER_PAGES) throw new Error('Router offer page limit exceeded')
+      pageCount += 1
       const query = new URLSearchParams({ maker, limit: String(PAGE_SIZE) })
       if (cursor) query.set('cursor', cursor)
       const response = object(
         await this.request(
-          `${this.options.routerApiBaseUrl}/v0/midnight/takeable-offers?${query.toString()}`
+          `${this.options.routerApiBaseUrl}/v0/midnight/takeable-offers?${query.toString()}`,
+          'router-api'
         ),
         'Router response'
       )
-      offers.push(...array(response.data, 'Router data').map(offerFromApi))
+      const data = array(response.data, 'Router data')
+      if (offers.length + data.length > MAX_OFFER_ITEMS) {
+        throw new Error('Router offer item limit exceeded')
+      }
+      offers.push(...data.map(offerFromApi))
       if (
         response.cursor !== null &&
         response.cursor !== undefined &&
@@ -367,6 +402,8 @@ export class ViemSetupStateService implements SetupStateService {
         throw new Error('Router cursor must be a string or null')
       }
       cursor = response.cursor ?? undefined
+      if (cursor && seenCursors.has(cursor)) throw new Error('Router cursor repeated')
+      if (cursor) seenCursors.add(cursor)
     } while (cursor)
 
     const makerOffers = offers.filter(offer => isAddressEqual(offer.maker, maker))

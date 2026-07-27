@@ -130,7 +130,14 @@ describe('SetupCheckService', () => {
     expect(report.checks.find(check => check.name === 'reference')).toEqual({
       name: 'reference',
       status: 'failed',
-      observed: { error: { kind: 'provider-error', name: 'ProviderError' } },
+      observed: {
+        error: {
+          kind: 'provider-error',
+          provider: 'archive-rpc',
+          name: 'ProviderError',
+          context: 'read'
+        }
+      },
       required: {
         marketId: referenceMarketId,
         referenceReadable: true,
