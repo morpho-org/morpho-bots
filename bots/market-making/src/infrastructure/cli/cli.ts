@@ -1,6 +1,6 @@
-import type { VersionService } from '../../application/version.service'
-
 import { Command, CommanderError } from 'commander'
+
+import type { VersionService } from '../../application/version.service'
 
 /** Infrastructure adapter: wires the `mm` CLI (commander) to application services. */
 export class Cli {
@@ -25,7 +25,7 @@ export class Cli {
       if (error instanceof CommanderError && error.code === 'commander.version') {
         return error.message
       }
-      throw new Error(error instanceof Error ? error.message : String(error))
+      throw new Error(error instanceof Error ? error.message : String(error), { cause: error })
     }
 
     throw new Error('Unknown command: (none)')
