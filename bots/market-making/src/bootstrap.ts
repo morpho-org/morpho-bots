@@ -38,7 +38,8 @@ function defaultState(config: ConfigService) {
   return new ViemSetupStateService(
     chainReader(config.rpcUrl, config.requestTimeoutMs),
     chainReader(config.referenceRpcUrl, config.requestTimeoutMs),
-    (url, provider) => requestJson(url, provider, config.requestTimeoutMs),
+    (url, provider, timeoutMs) =>
+      requestJson(url, provider, Math.min(config.requestTimeoutMs, timeoutMs ?? Infinity)),
     {
       privateKey: config.privateKey,
       midnight: config.setup.midnight,
@@ -47,7 +48,8 @@ function defaultState(config: ConfigService) {
       routerApiBaseUrl: config.routerApiBaseUrl,
       marketIds: config.setup.marketIds,
       referenceMarketId: config.setup.referenceMarketId,
-      v0OfferGroupIds: config.v0OfferGroupIds
+      v0OfferGroupIds: config.v0OfferGroupIds,
+      requestTimeoutMs: config.requestTimeoutMs
     }
   )
 }

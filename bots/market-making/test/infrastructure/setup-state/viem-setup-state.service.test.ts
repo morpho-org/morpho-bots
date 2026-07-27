@@ -31,9 +31,13 @@ function createState(
     missingReferenceMarket?: boolean
     routerRatifier?: Address
     requestLimit?: number
+    requestTimeoutMs?: number
+    now?: () => number
+    onRequest?: (url: string, timeoutMs: number | undefined) => unknown
   } = {}
 ) {
   const calls: string[] = []
+  const requestBudgets: (number | undefined)[] = []
   const chain = {
     getChainId: async () => 8453,
     getCode: async () => overrides.code ?? authoritativeRatifierRuntime,
@@ -93,11 +97,13 @@ function createState(
       throw new Error(`unexpected reference function ${String(functionName)}`)
     }
   }
-  const request = async (url: string) => {
+  const request = async (url: string, _provider: unknown, timeoutMs?: number) => {
     calls.push(url)
+    requestBudgets.push(timeoutMs)
     if (overrides.requestLimit !== undefined && calls.length > overrides.requestLimit) {
       throw new Error('test request limit reached')
     }
+    if (overrides.onRequest) return overrides.onRequest(url, timeoutMs)
     if (url.includes('/v0/config/contracts')) {
       return {
         data: [
@@ -116,6 +122,7 @@ function createState(
   }
   return {
     calls,
+    requestBudgets,
     state: new ViemSetupStateService(chain, reference, request, {
       privateKey: `0x${'11'.repeat(32)}`,
       midnight,
@@ -125,7 +132,9 @@ function createState(
       marketIds: [marketId],
       referenceMarketId,
       v0OfferGroupIds: [knownGroup],
-      referenceLookbackBlocks: 1n
+      referenceLookbackBlocks: 1n,
+      requestTimeoutMs: overrides.requestTimeoutMs,
+      now: overrides.now
     })
   }
 }
@@ -298,6 +307,58 @@ describe('ViemSetupStateService', () => {
       unknownNamespaces: [unknownGroup],
       invertedMarketIds: [marketId]
     })
+  })
+
+  test('fails closed at one aggregate deadline while traversing delayed unique cursors', async () => {
+    let now = 0
+    let page = 0
+    const { state, requestBudgets } = createState(
+      {},
+      {
+        requestTimeoutMs: 10,
+        now: () => now,
+        onRequest: () => {
+          now += 4
+          page += 1
+          return { cursor: `unique-${page}`, data: [] }
+        }
+      }
+    )
+
+    const error = await state.inspectOffers(maker).catch(value => value)
+
+    expect(error).toMatchObject({
+      failure: {
+        kind: 'provider-error',
+        provider: 'router-api',
+        name: 'TimeoutError',
+        code: 'REQUEST_TIMEOUT',
+        context: 'request'
+      }
+    })
+    expect(page).toBe(3)
+    expect(requestBudgets).toEqual([10, 6, 2])
+  })
+
+  test('does not start another cursor request at the exact aggregate deadline', async () => {
+    let now = 5
+    let page = 0
+    const { state, requestBudgets } = createState(
+      {},
+      {
+        requestTimeoutMs: 10,
+        now: () => now,
+        onRequest: () => {
+          now = 15
+          page += 1
+          return { cursor: `boundary-${page}`, data: [] }
+        }
+      }
+    )
+
+    await expect(state.inspectOffers(maker)).rejects.toThrow('TimeoutError')
+    expect(page).toBe(1)
+    expect(requestBudgets).toEqual([10])
   })
 
   test('fails closed when Router repeats an offer cursor', async () => {

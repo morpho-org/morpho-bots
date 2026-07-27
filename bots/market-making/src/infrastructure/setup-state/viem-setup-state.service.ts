@@ -21,6 +21,7 @@ const BASE_CHAIN_ID = 8453
 const PAGE_SIZE = 1_000
 const MAX_OFFER_PAGES = 100
 const MAX_OFFER_ITEMS = PAGE_SIZE * MAX_OFFER_PAGES
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000
 // morpho-org/deployments@24c04410 address-book.json, Base EcrecoverRatifier
 // 0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E. eth_getCode at Base block 49198997
 // through Morpho eRPC; this deployment-specific hash includes immutable MIDNIGHT
@@ -54,7 +55,7 @@ export interface ChainReader {
 }
 
 type ProviderId = 'morpho-api' | 'router-api'
-type JsonRequest = (url: string, provider: ProviderId) => Promise<unknown>
+type JsonRequest = (url: string, provider: ProviderId, timeoutMs?: number) => Promise<unknown>
 
 type SetupStateOptions = {
   privateKey: Hex
@@ -66,6 +67,8 @@ type SetupStateOptions = {
   v0OfferGroupIds: readonly Hex[]
   referenceMarketId: Hex
   referenceLookbackBlocks?: bigint
+  requestTimeoutMs?: number
+  now?: () => number
 }
 
 function object(value: unknown, label: string): Record<string, unknown> {
@@ -158,6 +161,16 @@ function invertedMarketIds(
     const buys = marketOffers.filter(offer => offer.buy).map(offer => offer.tick)
     const sells = marketOffers.filter(offer => !offer.buy).map(offer => offer.tick)
     return buys.length > 0 && sells.length > 0 && Math.max(...buys) >= Math.min(...sells)
+  })
+}
+
+function routerTimeout() {
+  return new SafeProviderError({
+    kind: 'provider-error',
+    provider: 'router-api',
+    name: 'TimeoutError',
+    code: 'REQUEST_TIMEOUT',
+    context: 'request'
   })
 }
 
@@ -375,17 +388,23 @@ export class ViemSetupStateService implements SetupStateService {
   async inspectOffers(maker: Address) {
     const offers: ReturnType<typeof offerFromApi>[] = []
     const seenCursors = new Set<string>()
+    const requestTimeoutMs = this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
+    const now = this.options.now ?? performance.now.bind(performance)
+    const deadline = now() + requestTimeoutMs
     let pageCount = 0
     let cursor: string | undefined
     do {
       if (pageCount >= MAX_OFFER_PAGES) throw new Error('Router offer page limit exceeded')
+      const remainingMs = Math.floor(deadline - now())
+      if (remainingMs <= 0) throw routerTimeout()
       pageCount += 1
       const query = new URLSearchParams({ maker, limit: String(PAGE_SIZE) })
       if (cursor) query.set('cursor', cursor)
       const response = object(
         await this.request(
           `${this.options.routerApiBaseUrl}/v0/midnight/takeable-offers?${query.toString()}`,
-          'router-api'
+          'router-api',
+          Math.min(requestTimeoutMs, remainingMs)
         ),
         'Router response'
       )
