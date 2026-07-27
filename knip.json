@@ -19,6 +19,7 @@
     },
     "bots/monitor-bot": {
       "ignore": ["src/generated/**"]
-    }
+    },
+    "bots/market-making": {}
   }
 }
