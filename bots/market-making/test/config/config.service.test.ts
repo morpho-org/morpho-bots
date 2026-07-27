@@ -9,6 +9,7 @@ const midnight: Address = '0x2222222222222222222222222222222222222222'
 const loanAsset: Address = '0x3333333333333333333333333333333333333333'
 const ratifier: Address = '0x4444444444444444444444444444444444444444'
 const marketId: Hex = `0x${'55'.repeat(32)}`
+const referenceMarketId: Hex = `0x${'77'.repeat(32)}`
 const groupId: Hex = `0x${'66'.repeat(32)}`
 const environment = {
   CHAIN_ID: '8453',
@@ -20,6 +21,7 @@ const environment = {
   LOAN_ASSET_ADDRESS: loanAsset,
   RATIFIER_ADDRESS: ratifier,
   MARKET_IDS: marketId,
+  REFERENCE_MARKET_ID: referenceMarketId,
   NATIVE_RESERVE_WEI: '10',
   MAXIMUM_LEND_EXPOSURE_ASSETS: '100',
   MORPHO_API_BASE_URL: 'https://api.example',
@@ -39,9 +41,11 @@ describe('ConfigService', () => {
       loanAsset: environment.LOAN_ASSET_ADDRESS,
       maximumLendExposure: 100n,
       ratifier: environment.RATIFIER_ADDRESS,
-      marketIds: [marketId]
+      marketIds: [marketId],
+      referenceMarketId
     })
     expect(config.v0OfferGroupIds).toEqual([groupId])
+    expect(config.requestTimeoutMs).toBe(10_000)
   })
 
   test.each([
@@ -60,6 +64,24 @@ describe('ConfigService', () => {
   test('rejects an empty market allowlist', () => {
     expect(() => ConfigService.from({ ...environment, MARKET_IDS: ' , ' })).toThrow(
       'MARKET_IDS must contain at least one market id'
+    )
+  })
+
+  test('requires one exact Blue reference market id', () => {
+    expect(() => ConfigService.from({ ...environment, REFERENCE_MARKET_ID: undefined })).toThrow(
+      'Missing required env var: REFERENCE_MARKET_ID'
+    )
+    expect(() => ConfigService.from({ ...environment, REFERENCE_MARKET_ID: '0x1234' })).toThrow(
+      'REFERENCE_MARKET_ID must be a 0x-prefixed 32-byte hex value'
+    )
+  })
+
+  test('loads a bounded provider timeout and rejects unsafe values', () => {
+    expect(
+      ConfigService.from({ ...environment, REQUEST_TIMEOUT_MS: '2500' }).requestTimeoutMs
+    ).toBe(2_500)
+    expect(() => ConfigService.from({ ...environment, REQUEST_TIMEOUT_MS: '0' })).toThrow(
+      'REQUEST_TIMEOUT_MS must be between 1 and 120000'
     )
   })
 

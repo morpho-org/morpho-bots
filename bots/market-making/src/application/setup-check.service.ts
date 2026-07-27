@@ -45,6 +45,7 @@ export type SetupCheckConfig = {
   maximumLendExposure: bigint
   ratifier: Address
   marketIds: readonly Hex[]
+  referenceMarketId: Hex
 }
 
 export type BookSetup = {
@@ -68,10 +69,16 @@ export interface SetupStateService {
   getRatifier(
     maker: Address,
     ratifier: Address
-  ): Promise<{ listed: boolean; supportsEcrecover: boolean; authorized: boolean }>
+  ): Promise<{
+    listed: boolean
+    deployed: boolean
+    midnightMatches: boolean
+    ecrecoverSurface: boolean
+    authorized: boolean
+  }>
   getBook(id: Hex): Promise<BookSetup>
   getLatestTimestamp(): Promise<bigint>
-  checkReference(): Promise<{ referenceReadable: boolean; archiveReadable: boolean }>
+  checkReference(): Promise<{ marketId: Hex; referenceReadable: boolean; archiveReadable: boolean }>
   inspectOffers(maker: Address): Promise<{
     unknownNamespaces: readonly string[]
     invertedMarketIds: readonly Hex[]
@@ -81,20 +88,68 @@ export interface SetupStateService {
 
 const BASE_CHAIN_ID = 8453
 
-type Captured<T> = { ok: true; value: T } | { ok: false; error: string }
+type SafeProviderFailure = {
+  kind: 'provider-error'
+  name: string
+  code?: string
+  status?: number
+  origin?: string
+}
 
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error)
+export class SafeProviderError extends Error {
+  constructor(readonly failure: SafeProviderFailure) {
+    super(failure.name)
+    this.name = 'SafeProviderError'
+  }
+}
+
+type Captured<T> = { ok: true; value: T } | { ok: false; error: SafeProviderFailure }
+
+const SAFE_ERROR_NAMES = new Set([
+  'Error',
+  'TypeError',
+  'RangeError',
+  'AbortError',
+  'TimeoutError',
+  'NetworkError'
+])
+const SAFE_ERROR_CODES = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ENETUNREACH',
+  'ETIMEDOUT',
+  'ABORT_ERR',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT'
+])
+
+function safeProviderFailure(error: unknown): SafeProviderFailure {
+  if (error instanceof SafeProviderError) return error.failure
+  const candidate =
+    typeof error === 'object' && error !== null ? (error as Record<string, unknown>) : undefined
+  const name =
+    typeof candidate?.name === 'string' && SAFE_ERROR_NAMES.has(candidate.name)
+      ? candidate.name
+      : 'ProviderError'
+  const code =
+    typeof candidate?.code === 'string' && SAFE_ERROR_CODES.has(candidate.code)
+      ? candidate.code
+      : undefined
+  const status =
+    typeof candidate?.status === 'number' && Number.isSafeInteger(candidate.status)
+      ? candidate.status
+      : undefined
+  return { kind: 'provider-error', name, ...(code ? { code } : {}), ...(status ? { status } : {}) }
 }
 
 function capture<T>(read: () => Promise<T>): Promise<Captured<T>> {
   try {
     return read().then(
       value => ({ ok: true, value }),
-      error => ({ ok: false, error: errorMessage(error) })
+      error => ({ ok: false, error: safeProviderFailure(error) })
     )
   } catch (error) {
-    return Promise.resolve({ ok: false, error: errorMessage(error) })
+    return Promise.resolve({ ok: false, error: safeProviderFailure(error) })
   }
 }
 
@@ -118,7 +173,7 @@ function result(
   }
 }
 
-function providerFailure(name: SetupCheck['name'], error: string, required: unknown) {
+function providerFailure(name: SetupCheck['name'], error: SafeProviderFailure, required: unknown) {
   return result(name, false, { error }, required)
 }
 
@@ -128,7 +183,7 @@ function bookProblems(
   config: SetupCheckConfig,
   latestTimestamp: bigint
 ) {
-  const reasons: string[] = []
+  const reasons: unknown[] = []
   if (book.id !== requestedId) reasons.push(`provider returned ${book.id}`)
   if (!book.allowlisted) reasons.push('not allowlisted')
   if (!book.active) reasons.push('inactive')
@@ -171,9 +226,9 @@ function booksCheck(
     return result('books', false, [{ id: '(none)', reasons: ['no markets configured'] }], required)
   }
   const invalidBooks = books.flatMap(({ requestedId, response }) => {
-    if (!response.ok) return [{ id: requestedId, reasons: [`provider error: ${response.error}`] }]
+    if (!response.ok) return [{ id: requestedId, reasons: [{ providerError: response.error }] }]
     if (!timestamp.ok) {
-      return [{ id: requestedId, reasons: [`timestamp provider error: ${timestamp.error}`] }]
+      return [{ id: requestedId, reasons: [{ timestampProviderError: timestamp.error }] }]
     }
     const problem = bookProblems(requestedId, response.value, config, timestamp.value)
     return problem.reasons.length === 0 ? [] : [problem]
@@ -260,15 +315,29 @@ export class SetupCheckService {
             args: [this.config.midnight, this.config.maximumLendExposure]
           }
         )
-    const ratifierRequired = { listed: true, supportsEcrecover: true, authorized: true }
+    const ratifierRequired = {
+      listed: true,
+      deployed: true,
+      midnightMatches: true,
+      ecrecoverSurface: true,
+      authorized: true
+    }
     const ratifierCheck = !ratifier.ok
       ? providerFailure('ratifier', ratifier.error, ratifierRequired)
       : result(
           'ratifier',
-          ratifier.value.listed && ratifier.value.supportsEcrecover && ratifier.value.authorized,
+          ratifier.value.listed &&
+            ratifier.value.deployed &&
+            ratifier.value.midnightMatches &&
+            ratifier.value.ecrecoverSurface &&
+            ratifier.value.authorized,
           ratifier.value,
           ratifierRequired,
-          ratifier.value.listed && ratifier.value.supportsEcrecover && !ratifier.value.authorized
+          ratifier.value.listed &&
+            ratifier.value.deployed &&
+            ratifier.value.midnightMatches &&
+            ratifier.value.ecrecoverSurface &&
+            !ratifier.value.authorized
             ? {
                 to: this.config.midnight,
                 functionName: 'setIsAuthorized',
@@ -276,12 +345,18 @@ export class SetupCheckService {
               }
             : 'select a Router-listed Ecrecover ratifier with the expected deployed surface'
         )
-    const referenceRequired = { referenceReadable: true, archiveReadable: true }
+    const referenceRequired = {
+      marketId: this.config.referenceMarketId,
+      referenceReadable: true,
+      archiveReadable: true
+    }
     const referenceCheck = !reference.ok
       ? providerFailure('reference', reference.error, referenceRequired)
       : result(
           'reference',
-          reference.value.referenceReadable && reference.value.archiveReadable,
+          reference.value.marketId === this.config.referenceMarketId &&
+            reference.value.referenceReadable &&
+            reference.value.archiveReadable,
           reference.value,
           referenceRequired
         )

@@ -9,6 +9,8 @@ type Environment = Record<string, string | undefined>
 
 const PRIVATE_KEY_HEX_LENGTH = 66
 const BYTES_32_HEX_LENGTH = 66
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000
+const MAXIMUM_REQUEST_TIMEOUT_MS = 120_000
 
 function required(environment: Environment, name: string) {
   const value = environment[name]?.trim()
@@ -28,6 +30,15 @@ function unsignedBigInt(environment: Environment, name: string) {
   return BigInt(value)
 }
 
+function requestTimeout(environment: Environment) {
+  const raw = environment.REQUEST_TIMEOUT_MS?.trim() ?? String(DEFAULT_REQUEST_TIMEOUT_MS)
+  const value = Number(raw)
+  if (!Number.isSafeInteger(value) || value < 1 || value > MAXIMUM_REQUEST_TIMEOUT_MS) {
+    throw new Error(`REQUEST_TIMEOUT_MS must be between 1 and ${MAXIMUM_REQUEST_TIMEOUT_MS}`)
+  }
+  return value
+}
+
 function hexList(environment: Environment, name: string, requiredList: boolean): Hex[] {
   const raw = requiredList ? required(environment, name) : (environment[name]?.trim() ?? '')
   const values = raw
@@ -43,6 +54,14 @@ function hexList(environment: Environment, name: string, requiredList: boolean):
   }
   if (new Set(values).size !== values.length) throw new Error(`${name} must not contain duplicates`)
   return values as Hex[]
+}
+
+function bytes32(environment: Environment, name: string): Hex {
+  const value = required(environment, name)
+  if (!isHex(value, { strict: true }) || value.length !== BYTES_32_HEX_LENGTH) {
+    throw new Error(`${name} must be a 0x-prefixed 32-byte hex value`)
+  }
+  return value
 }
 
 function url(environment: Environment, name: string) {
@@ -71,14 +90,16 @@ export class ConfigService {
         loanAsset: address(environment, 'LOAN_ASSET_ADDRESS'),
         maximumLendExposure: unsignedBigInt(environment, 'MAXIMUM_LEND_EXPOSURE_ASSETS'),
         ratifier: address(environment, 'RATIFIER_ADDRESS'),
-        marketIds: hexList(environment, 'MARKET_IDS', true)
+        marketIds: hexList(environment, 'MARKET_IDS', true),
+        referenceMarketId: bytes32(environment, 'REFERENCE_MARKET_ID')
       },
       rpcUrl: url(environment, 'RPC_URL'),
       referenceRpcUrl: url(environment, 'REFERENCE_RPC_URL'),
       privateKey,
       morphoApiBaseUrl: url(environment, 'MORPHO_API_BASE_URL'),
       routerApiBaseUrl: url(environment, 'ROUTER_API_BASE_URL'),
-      v0OfferGroupIds: hexList(environment, 'V0_OFFER_GROUP_IDS', false)
+      v0OfferGroupIds: hexList(environment, 'V0_OFFER_GROUP_IDS', false),
+      requestTimeoutMs: requestTimeout(environment)
     })
   }
 
@@ -91,6 +112,7 @@ export class ConfigService {
       morphoApiBaseUrl: string
       routerApiBaseUrl: string
       v0OfferGroupIds: readonly Hex[]
+      requestTimeoutMs: number
     }
   ) {}
 
@@ -120,5 +142,9 @@ export class ConfigService {
 
   get v0OfferGroupIds() {
     return this.values.v0OfferGroupIds
+  }
+
+  get requestTimeoutMs() {
+    return this.values.requestTimeoutMs
   }
 }

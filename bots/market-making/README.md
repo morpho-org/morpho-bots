@@ -27,23 +27,29 @@ reusable readiness gate without inventing a quote loop in this change.
 
 ## Setup-check configuration
 
-All values are required except `V0_OFFER_GROUP_IDS`:
+All values are required except `V0_OFFER_GROUP_IDS` and `REQUEST_TIMEOUT_MS`:
 
 - `CHAIN_ID`: must be `8453` (Base).
 - `RPC_URL`: Base RPC used for current chain state.
-- `REFERENCE_RPC_URL`: archive-capable Base RPC. Setup verifies a latest read and a historical read
-  approximately 10,800 blocks earlier.
+- `REFERENCE_RPC_URL`: archive-capable Base RPC. Setup verifies a latest block and reads the exact
+  configured Blue reference market at a historical block approximately 10,800 blocks earlier.
+- `REFERENCE_MARKET_ID`: 32-byte Morpho Blue market ID used by the variable-rate strategy. Setup
+  fails closed when its immutable parameters or historical market state are missing or unreadable.
 - `MAKER_PRIVATE_KEY`: 0x-prefixed 32-byte private key; never logged.
 - `MAKER_ADDRESS`: configured maker address. Setup verifies that the private key derives it.
 - `MIDNIGHT_ADDRESS`: expected Midnight singleton.
 - `LOAN_ASSET_ADDRESS`: expected market loan asset.
-- `RATIFIER_ADDRESS`: selected Base Ecrecover ratifier. V0 accepts the repository-reviewed official
-  Base deployment and verifies deployed code plus `Midnight.isAuthorized(maker, ratifier)`.
+- `RATIFIER_ADDRESS`: selected Base Ecrecover ratifier. V0 requires the address in the official
+  Router `/v0/config/contracts` registry, verifies deployed code and the `MIDNIGHT` /
+  `isRootCanceled` Ecrecover surface, checks that its immutable Midnight target matches, and verifies
+  `Midnight.isAuthorized(maker, ratifier)`.
 - `MARKET_IDS`: comma-separated allowlisted 32-byte market IDs; at least one is required.
 - `NATIVE_RESERVE_WEI`: minimum native balance in wei.
 - `MAXIMUM_LEND_EXPOSURE_ASSETS`: minimum loan-token allowance in raw assets.
 - `MORPHO_API_BASE_URL`: Morpho API origin used to verify listed, active markets.
 - `ROUTER_API_BASE_URL`: official Router API origin used to inspect all active maker offers.
+- `REQUEST_TIMEOUT_MS`: optional bounded fetch/RPC timeout in milliseconds; defaults to `10000` and
+  must be between `1` and `120000`.
 - `V0_OFFER_GROUP_IDS`: optional comma-separated strategy-owned group IDs. Any active maker group not
   listed here fails readiness as an unknown namespace.
 

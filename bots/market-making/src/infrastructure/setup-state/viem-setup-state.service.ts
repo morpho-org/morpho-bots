@@ -1,18 +1,29 @@
 import type { Address, Hex } from 'viem'
 
-import { erc20Abi, getAddress, isAddress, isAddressEqual, isHex, parseAbi } from 'viem'
+import { getChainAddress } from '@morpho-org/morpho-ts'
+import { erc20Abi, getAddress, isAddress, isAddressEqual, isHex, parseAbi, zeroAddress } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
 import type { BookSetup, SetupStateService } from '../../application/setup-check.service'
 
+import { SafeProviderError } from '../../application/setup-check.service'
+
 const BASE_CHAIN_ID = 8453
-const OFFICIAL_BASE_ECRECOVER_RATIFIER = getAddress('0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E')
 const PAGE_SIZE = 1_000
 const MIDNIGHT_SETUP_ABI = parseAbi([
   'function isAuthorized(address authorizer, address authorized) view returns (bool)',
   'function tickSpacing(bytes32 id) view returns (uint8)',
   'function toMarket(bytes32 id) view returns ((uint256 chainId,address midnight,address loanToken,(address token,uint256 lltv,uint256 liquidationCursor,address oracle)[] collateralParams,uint256 maturity,uint256 rcfThreshold,address enterGate,address liquidatorGate))'
 ])
+const ECRECOVER_RATIFIER_ABI = parseAbi([
+  'function MIDNIGHT() view returns (address)',
+  'function isRootCanceled(address maker, bytes32 root) view returns (bool)'
+])
+const MORPHO_BLUE_SETUP_ABI = parseAbi([
+  'function idToMarketParams(bytes32 id) view returns ((address loanToken,address collateralToken,address oracle,address irm,uint256 lltv))',
+  'function market(bytes32 id) view returns ((uint128 totalSupplyAssets,uint128 totalSupplyShares,uint128 totalBorrowAssets,uint128 totalBorrowShares,uint128 lastUpdate,uint128 fee))'
+])
+const EMPTY_ROOT = `0x${'00'.repeat(32)}`
 
 export interface ChainReader {
   getChainId(): Promise<number>
@@ -35,6 +46,7 @@ type SetupStateOptions = {
   routerApiBaseUrl: string
   marketIds: readonly Hex[]
   v0OfferGroupIds: readonly Hex[]
+  referenceMarketId: Hex
   referenceLookbackBlocks?: bigint
 }
 
@@ -106,6 +118,19 @@ function offerFromApi(value: unknown) {
   }
 }
 
+function routerEcrecoverRatifiers(value: unknown) {
+  const data = array(
+    object(value, 'Router config contracts response').data,
+    'Router config contracts'
+  )
+  return data.flatMap(item => {
+    const contract = object(item, 'Router config contract')
+    if (integer(contract.chain_id, 'config contract chain_id') !== BASE_CHAIN_ID) return []
+    if (contract.name !== 'ecrecoverRatifier') return []
+    return [address(contract.address, 'config contract address')]
+  })
+}
+
 function invertedMarketIds(
   offers: readonly ReturnType<typeof offerFromApi>[],
   configuredMarkets: readonly Hex[]
@@ -118,10 +143,29 @@ function invertedMarketIds(
   })
 }
 
-export async function requestJson(url: string) {
-  const response = await fetch(url, { headers: { accept: 'application/json' } })
-  if (!response.ok) throw new Error(`GET ${url} failed with HTTP ${response.status}`)
-  return response.json()
+export async function requestJson(url: string, timeoutMs = 10_000) {
+  const origin = new URL(url).origin
+  const signal = AbortSignal.timeout(timeoutMs)
+  try {
+    const response = await fetch(url, { headers: { accept: 'application/json' }, signal })
+    if (!response.ok) {
+      throw new SafeProviderError({
+        kind: 'provider-error',
+        name: 'HttpError',
+        status: response.status,
+        origin
+      })
+    }
+    return await response.json()
+  } catch (error) {
+    if (error instanceof SafeProviderError) throw error
+    throw new SafeProviderError({
+      kind: 'provider-error',
+      name: signal.aborted ? 'TimeoutError' : 'NetworkError',
+      ...(signal.aborted ? { code: 'REQUEST_TIMEOUT' } : {}),
+      origin
+    })
+  }
 }
 
 export class ViemSetupStateService implements SetupStateService {
@@ -129,7 +173,7 @@ export class ViemSetupStateService implements SetupStateService {
 
   constructor(
     private readonly chain: ChainReader,
-    private readonly reference: Pick<ChainReader, 'getBlock'>,
+    private readonly reference: Pick<ChainReader, 'getBlock' | 'readContract'>,
     private readonly request: JsonRequest,
     private readonly options: SetupStateOptions
   ) {
@@ -164,8 +208,22 @@ export class ViemSetupStateService implements SetupStateService {
   }
 
   async getRatifier(maker: Address, ratifier: Address) {
-    const [code, authorized] = await Promise.all([
+    const [routerContracts, code, ratifierMidnight, rootCanceled, authorized] = await Promise.all([
+      this.request(
+        `${this.options.routerApiBaseUrl}/v0/config/contracts?chains=${BASE_CHAIN_ID}&limit=100`
+      ),
       this.chain.getCode({ address: ratifier }),
+      this.chain.readContract({
+        address: ratifier,
+        abi: ECRECOVER_RATIFIER_ABI,
+        functionName: 'MIDNIGHT'
+      }),
+      this.chain.readContract({
+        address: ratifier,
+        abi: ECRECOVER_RATIFIER_ABI,
+        functionName: 'isRootCanceled',
+        args: [maker, EMPTY_ROOT]
+      }),
       this.chain.readContract({
         address: this.options.midnight,
         abi: MIDNIGHT_SETUP_ABI,
@@ -176,9 +234,19 @@ export class ViemSetupStateService implements SetupStateService {
     if (typeof authorized !== 'boolean') {
       throw new Error('Midnight isAuthorized response must be boolean')
     }
+    if (typeof ratifierMidnight !== 'string' || !isAddress(ratifierMidnight)) {
+      throw new Error('EcrecoverRatifier MIDNIGHT response must be an address')
+    }
+    if (typeof rootCanceled !== 'boolean') {
+      throw new Error('EcrecoverRatifier isRootCanceled response must be boolean')
+    }
     return {
-      listed: isAddressEqual(ratifier, OFFICIAL_BASE_ECRECOVER_RATIFIER),
-      supportsEcrecover: code !== undefined && code !== '0x',
+      listed: routerEcrecoverRatifiers(routerContracts).some(listed =>
+        isAddressEqual(ratifier, listed)
+      ),
+      deployed: code !== undefined && code !== '0x',
+      midnightMatches: isAddressEqual(ratifierMidnight, this.options.midnight),
+      ecrecoverSurface: true,
       authorized
     }
   }
@@ -242,8 +310,40 @@ export class ViemSetupStateService implements SetupStateService {
     if (latest.number === null) throw new Error('reference RPC latest block has no number')
     const lookback = this.options.referenceLookbackBlocks ?? 10_800n
     if (latest.number < lookback) throw new Error('reference RPC has insufficient history')
-    await this.reference.getBlock({ blockNumber: latest.number - lookback })
-    return { referenceReadable: true, archiveReadable: true }
+    const historicalBlock = latest.number - lookback
+    await this.reference.getBlock({ blockNumber: historicalBlock })
+    const [paramsResponse, marketResponse] = await Promise.all([
+      this.reference.readContract({
+        address: getChainAddress(BASE_CHAIN_ID, 'morpho'),
+        abi: MORPHO_BLUE_SETUP_ABI,
+        functionName: 'idToMarketParams',
+        args: [this.options.referenceMarketId],
+        blockNumber: historicalBlock
+      }),
+      this.reference.readContract({
+        address: getChainAddress(BASE_CHAIN_ID, 'morpho'),
+        abi: MORPHO_BLUE_SETUP_ABI,
+        functionName: 'market',
+        args: [this.options.referenceMarketId],
+        blockNumber: historicalBlock
+      })
+    ])
+    const params = object(paramsResponse, 'Morpho Blue reference market params')
+    const market = object(marketResponse, 'Morpho Blue reference market state')
+    if (address(params.loanToken, 'reference market loanToken') === zeroAddress) {
+      throw new Error('configured reference market does not exist')
+    }
+    if (bigint(market.totalSupplyShares, 'reference market totalSupplyShares') === 0n) {
+      throw new Error('configured reference market has zero supply shares')
+    }
+    if (bigint(market.lastUpdate, 'reference market lastUpdate') === 0n) {
+      throw new Error('configured reference market state is uninitialized')
+    }
+    return {
+      marketId: this.options.referenceMarketId,
+      referenceReadable: true,
+      archiveReadable: true
+    }
   }
 
   async inspectOffers(maker: Address) {

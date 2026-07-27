@@ -20,8 +20,8 @@ type Dependencies = {
   createState?: (config: ConfigService) => SetupStateService
 }
 
-function chainReader(rpcUrl: string): ChainReader {
-  const client = createPublicClient({ chain: base, transport: http(rpcUrl) })
+function chainReader(rpcUrl: string, timeout: number): ChainReader {
+  const client = createPublicClient({ chain: base, transport: http(rpcUrl, { timeout }) })
   return {
     getChainId: () => client.getChainId(),
     getCode: parameters => client.getCode(parameters),
@@ -36,9 +36,9 @@ function chainReader(rpcUrl: string): ChainReader {
 
 function defaultState(config: ConfigService) {
   return new ViemSetupStateService(
-    chainReader(config.rpcUrl),
-    chainReader(config.referenceRpcUrl),
-    requestJson,
+    chainReader(config.rpcUrl, config.requestTimeoutMs),
+    chainReader(config.referenceRpcUrl, config.requestTimeoutMs),
+    url => requestJson(url, config.requestTimeoutMs),
     {
       privateKey: config.privateKey,
       midnight: config.setup.midnight,
@@ -46,6 +46,7 @@ function defaultState(config: ConfigService) {
       morphoApiBaseUrl: config.morphoApiBaseUrl,
       routerApiBaseUrl: config.routerApiBaseUrl,
       marketIds: config.setup.marketIds,
+      referenceMarketId: config.setup.referenceMarketId,
       v0OfferGroupIds: config.v0OfferGroupIds
     }
   )
@@ -55,10 +56,11 @@ export function createApplication(
   environment: Environment = Bun.env,
   dependencies: Dependencies = {}
 ) {
-  const config = RuntimeConfigService.from(environment)
-  const state = dependencies.createState?.(config) ?? defaultState(config)
-  const setup = new SetupCheckService(state, config.setup)
-  const cli = new Cli(new VersionService(), setup)
+  const cli = new Cli(new VersionService(), () => {
+    const config = RuntimeConfigService.from(environment)
+    const state = dependencies.createState?.(config) ?? defaultState(config)
+    return new SetupCheckService(state, config.setup)
+  })
 
   return {
     run: (argv: readonly string[]) => cli.run(argv)

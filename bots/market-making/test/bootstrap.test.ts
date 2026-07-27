@@ -12,6 +12,7 @@ const midnight: Address = '0x2222222222222222222222222222222222222222'
 const loanAsset: Address = '0x3333333333333333333333333333333333333333'
 const ratifier: Address = '0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E'
 const marketId: Hex = `0x${'55'.repeat(32)}`
+const referenceMarketId: Hex = `0x${'77'.repeat(32)}`
 const environment = {
   CHAIN_ID: '8453',
   RPC_URL: 'https://rpc.example',
@@ -22,6 +23,7 @@ const environment = {
   LOAN_ASSET_ADDRESS: loanAsset,
   RATIFIER_ADDRESS: ratifier,
   MARKET_IDS: marketId,
+  REFERENCE_MARKET_ID: referenceMarketId,
   NATIVE_RESERVE_WEI: '10',
   MAXIMUM_LEND_EXPOSURE_ASSETS: '100',
   MORPHO_API_BASE_URL: 'https://api.example',
@@ -35,7 +37,13 @@ function readyState(): SetupStateService {
     getDerivedMaker: async () => maker,
     getNativeBalance: async () => 10n,
     getLoanAllowance: async () => ({ spender: midnight, amount: 100n }),
-    getRatifier: async () => ({ listed: true, supportsEcrecover: true, authorized: true }),
+    getRatifier: async () => ({
+      listed: true,
+      deployed: true,
+      midnightMatches: true,
+      ecrecoverSurface: true,
+      authorized: true
+    }),
     getBook: async id => ({
       id,
       allowlisted: true,
@@ -45,7 +53,11 @@ function readyState(): SetupStateService {
       maturity: 2_000n
     }),
     getLatestTimestamp: async () => 1_000n,
-    checkReference: async () => ({ referenceReadable: true, archiveReadable: true }),
+    checkReference: async () => ({
+      marketId: referenceMarketId,
+      referenceReadable: true,
+      archiveReadable: true
+    }),
     inspectOffers: async () => ({ unknownNamespaces: [], invertedMarketIds: [] }),
     checkPositionHealth: async () => ({ status: 'not-required', reason: 'V0 has no debt' })
   }

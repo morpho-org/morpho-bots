@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@morpho-org/morpho-ts": "catalog:",
     "commander": "^14.0.3",
     "viem": "catalog:"
   },

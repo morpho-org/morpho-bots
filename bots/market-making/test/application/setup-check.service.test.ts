@@ -15,6 +15,7 @@ const loanAsset = '0x3333333333333333333333333333333333333333'
 const ratifier = '0x4444444444444444444444444444444444444444'
 const marketId: Hex = `0x${'55'.repeat(32)}`
 const secondMarketId: Hex = `0x${'66'.repeat(32)}`
+const referenceMarketId: Hex = `0x${'77'.repeat(32)}`
 
 const config: SetupCheckConfig = {
   chainId: 8453,
@@ -24,7 +25,8 @@ const config: SetupCheckConfig = {
   loanAsset,
   maximumLendExposure: 100n,
   ratifier,
-  marketIds: [marketId]
+  marketIds: [marketId],
+  referenceMarketId
 }
 
 function readyState(): SetupStateService {
@@ -34,7 +36,13 @@ function readyState(): SetupStateService {
     getDerivedMaker: async () => maker,
     getNativeBalance: async () => 10n,
     getLoanAllowance: async () => ({ spender: midnight, amount: 100n }),
-    getRatifier: async () => ({ listed: true, supportsEcrecover: true, authorized: true }),
+    getRatifier: async () => ({
+      listed: true,
+      deployed: true,
+      midnightMatches: true,
+      ecrecoverSurface: true,
+      authorized: true
+    }),
     getBook: async id => ({
       id,
       allowlisted: true,
@@ -44,7 +52,11 @@ function readyState(): SetupStateService {
       maturity: 2_000n
     }),
     getLatestTimestamp: async () => 1_000n,
-    checkReference: async () => ({ referenceReadable: true, archiveReadable: true }),
+    checkReference: async () => ({
+      marketId: referenceMarketId,
+      referenceReadable: true,
+      archiveReadable: true
+    }),
     inspectOffers: async () => ({ unknownNamespaces: [], invertedMarketIds: [] }),
     checkPositionHealth: async () => ({ status: 'not-required', reason: 'V0 has no debt' })
   }
@@ -91,21 +103,50 @@ describe('SetupCheckService', () => {
     })
   })
 
-  test('records a provider failure against the exact check instead of losing the report', async () => {
+  test('records a provider failure against the exact check without exposing nested credentials', async () => {
     const state = readyState()
     state.checkReference = async () => {
-      throw new Error('archive state unavailable')
+      const providerError = new Error(
+        'archive https://rpc-user:rpc-pass@rpc.example/path?apiKey=rpc-secret failed',
+        {
+          cause: new AggregateError([
+            new Error('https://archive.example/path?token=archive-secret'),
+            new Error('https://api.example/path?key=morpho-secret'),
+            new Error('https://router.example/path?apikey=router-secret')
+          ])
+        }
+      ) as Error & { code: string }
+      providerError.name = 'rpc-secret'
+      providerError.code = 'archive-secret'
+      throw providerError
     }
 
     const report = await new SetupCheckService(state, config).check()
+    const serialized = JSON.stringify(report, (_, value) =>
+      typeof value === 'bigint' ? value.toString() : value
+    )
 
     expect(report.ready).toBe(false)
     expect(report.checks.find(check => check.name === 'reference')).toEqual({
       name: 'reference',
       status: 'failed',
-      observed: { error: 'archive state unavailable' },
-      required: { referenceReadable: true, archiveReadable: true }
+      observed: { error: { kind: 'provider-error', name: 'ProviderError' } },
+      required: {
+        marketId: referenceMarketId,
+        referenceReadable: true,
+        archiveReadable: true
+      }
     })
+    for (const marker of [
+      'rpc-user',
+      'rpc-pass',
+      'rpc-secret',
+      'archive-secret',
+      'morpho-secret',
+      'router-secret'
+    ]) {
+      expect(serialized).not.toContain(marker)
+    }
     expect(report.checks.find(check => check.name === 'offers')?.status).toBe('passed')
   })
 
@@ -127,7 +168,13 @@ describe('SetupCheckService', () => {
     state.getNativeBalance = () => wait('balance', 10n)
     state.getLoanAllowance = () => wait('allowance', { spender: midnight, amount: 100n })
     state.getRatifier = () =>
-      wait('ratifier', { listed: true, supportsEcrecover: true, authorized: true })
+      wait('ratifier', {
+        listed: true,
+        deployed: true,
+        midnightMatches: true,
+        ecrecoverSurface: true,
+        authorized: true
+      })
     state.getLatestTimestamp = () => wait('timestamp', 1_000n)
     state.getBook = id =>
       wait(`book:${id}`, {
@@ -239,6 +286,24 @@ describe('SetupCheckService', () => {
     })
   })
 
+  test('fails the named reference check when the provider reads a different market', async () => {
+    const state = readyState()
+    state.checkReference = async () => ({
+      marketId,
+      referenceReadable: true,
+      archiveReadable: true
+    })
+
+    const report = await new SetupCheckService(state, config).check()
+
+    expect(report.checks.find(check => check.name === 'reference')).toMatchObject({
+      name: 'reference',
+      status: 'failed',
+      observed: { marketId },
+      required: { marketId: referenceMarketId }
+    })
+  })
+
   test('accepts exact funding thresholds and rejects maturity at the current timestamp', async () => {
     const exactThresholds = await new SetupCheckService(readyState(), config).check()
     expect(exactThresholds.checks.find(check => check.name === 'native-balance')?.status).toBe(
@@ -301,7 +366,9 @@ describe('SetupCheckService', () => {
     state.getLoanAllowance = async () => ({ spender: midnight, amount: 99n })
     state.getRatifier = async () => ({
       listed: true,
-      supportsEcrecover: true,
+      deployed: true,
+      midnightMatches: true,
+      ecrecoverSurface: true,
       authorized: false
     })
 
@@ -328,7 +395,9 @@ describe('SetupCheckService', () => {
     state.getLoanAllowance = async () => ({ spender: ratifier, amount: 99n })
     state.getRatifier = async () => ({
       listed: false,
-      supportsEcrecover: false,
+      deployed: false,
+      midnightMatches: false,
+      ecrecoverSurface: false,
       authorized: false
     })
     state.getBook = async id => ({
@@ -339,7 +408,11 @@ describe('SetupCheckService', () => {
       tickSpacing: 0,
       maturity: 1_000n
     })
-    state.checkReference = async () => ({ referenceReadable: false, archiveReadable: false })
+    state.checkReference = async () => ({
+      marketId: referenceMarketId,
+      referenceReadable: false,
+      archiveReadable: false
+    })
     state.inspectOffers = async () => ({
       unknownNamespaces: ['v0:unknown'],
       invertedMarketIds: [marketId]

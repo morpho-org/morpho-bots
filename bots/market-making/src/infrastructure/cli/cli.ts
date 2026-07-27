@@ -16,7 +16,7 @@ export class Cli {
   private readonly program: Command
   private output: string | undefined
 
-  constructor(version: VersionService, setup: SetupReadinessService) {
+  constructor(version: VersionService, setup: () => SetupReadinessService) {
     this.program = new Command()
       .name('mm')
       .description('Morpho market making bot CLI')
@@ -28,7 +28,7 @@ export class Cli {
       .command('setup-check')
       .description('run the read-only market-maker readiness checks')
       .action(async () => {
-        this.output = formatSetupCheckReport(await setup.assertReady())
+        this.output = formatSetupCheckReport(await setup().assertReady())
       })
   }
 

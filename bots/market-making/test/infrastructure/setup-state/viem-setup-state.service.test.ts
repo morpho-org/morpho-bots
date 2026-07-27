@@ -2,26 +2,41 @@ import type { Address, Hex } from 'viem'
 
 import { describe, expect, test } from 'bun:test'
 
-import { ViemSetupStateService } from '../../../src/infrastructure/setup-state/viem-setup-state.service'
+import {
+  requestJson,
+  ViemSetupStateService
+} from '../../../src/infrastructure/setup-state/viem-setup-state.service'
 
 const maker: Address = '0x1111111111111111111111111111111111111111'
 const midnight: Address = '0x2222222222222222222222222222222222222222'
 const loanAsset: Address = '0x3333333333333333333333333333333333333333'
 const ratifier: Address = '0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E'
 const marketId: Hex = `0x${'55'.repeat(32)}`
+const referenceMarketId: Hex = `0x${'88'.repeat(32)}`
 const knownGroup: Hex = `0x${'66'.repeat(32)}`
 const unknownGroup: Hex = `0x${'77'.repeat(32)}`
 
-function createState(responses: Record<string, unknown>) {
+function createState(
+  responses: Record<string, unknown>,
+  overrides: {
+    code?: Hex
+    ratifierMidnight?: Address
+    rootCanceled?: unknown
+    missingReferenceMarket?: boolean
+    routerRatifier?: Address
+  } = {}
+) {
   const calls: string[] = []
   const chain = {
     getChainId: async () => 8453,
-    getCode: async () => '0x1234' as Hex,
+    getCode: async () => overrides.code ?? ('0x1234' as Hex),
     getBalance: async () => 10n,
     getBlock: async () => ({ number: 100n, timestamp: 1_000n }),
     readContract: async ({ functionName }: { functionName: string }) => {
       if (functionName === 'allowance') return 100n
       if (functionName === 'isAuthorized') return true
+      if (functionName === 'MIDNIGHT') return overrides.ratifierMidnight ?? midnight
+      if (functionName === 'isRootCanceled') return overrides.rootCanceled ?? false
       if (functionName === 'toMarket') {
         return {
           chainId: 8453n,
@@ -44,10 +59,47 @@ function createState(responses: Record<string, unknown>) {
       return blockTag === 'latest'
         ? { number: 100n, timestamp: 1_000n }
         : { number: blockNumber ?? null, timestamp: 998n }
+    },
+    readContract: async ({ functionName, args, blockNumber }: Record<string, unknown>) => {
+      calls.push(`${String(functionName)}:${String((args as unknown[])[0])}:${String(blockNumber)}`)
+      if (functionName === 'idToMarketParams') {
+        return {
+          loanToken: overrides.missingReferenceMarket
+            ? '0x0000000000000000000000000000000000000000'
+            : loanAsset,
+          collateralToken: maker,
+          oracle: midnight,
+          irm: ratifier,
+          lltv: 860_000_000_000_000_000n
+        }
+      }
+      if (functionName === 'market') {
+        return {
+          totalSupplyAssets: 1_000n,
+          totalSupplyShares: overrides.missingReferenceMarket ? 0n : 1_000n,
+          totalBorrowAssets: 500n,
+          totalBorrowShares: 500n,
+          lastUpdate: overrides.missingReferenceMarket ? 0n : 900n,
+          fee: 0n
+        }
+      }
+      throw new Error(`unexpected reference function ${String(functionName)}`)
     }
   }
   const request = async (url: string) => {
     calls.push(url)
+    if (url.includes('/v0/config/contracts')) {
+      return {
+        data: [
+          {
+            chain_id: 8453,
+            name: 'ecrecoverRatifier',
+            address: overrides.routerRatifier ?? ratifier
+          }
+        ],
+        cursor: null
+      }
+    }
     const match = Object.entries(responses).find(([path]) => url.includes(path))
     if (!match) throw new Error(`unexpected URL ${url}`)
     return match[1]
@@ -61,6 +113,7 @@ function createState(responses: Record<string, unknown>) {
       morphoApiBaseUrl: 'https://api.example',
       routerApiBaseUrl: 'https://router.example',
       marketIds: [marketId],
+      referenceMarketId,
       v0OfferGroupIds: [knownGroup],
       referenceLookbackBlocks: 1n
     })
@@ -68,6 +121,67 @@ function createState(responses: Record<string, unknown>) {
 }
 
 describe('ViemSetupStateService', () => {
+  test('reports HTTP failures with status and credential-free origin only', async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => new Response('private body', { status: 503 })
+    })
+    const secret = 'provider-api-key'
+
+    try {
+      const error = await requestJson(
+        `http://localhost:${server.port}/private?apiKey=${secret}`
+      ).catch(value => value)
+      const serialized = JSON.stringify(error)
+
+      expect(error).toMatchObject({
+        failure: {
+          kind: 'provider-error',
+          name: 'HttpError',
+          status: 503,
+          origin: `http://localhost:${server.port}`
+        }
+      })
+      expect(serialized).not.toContain(secret)
+      expect(serialized).not.toContain('/private')
+      expect(serialized).not.toContain('private body')
+    } finally {
+      await server.stop(true)
+    }
+  })
+
+  test('classifies a bounded request timeout without exposing URL credentials', async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch: async () => {
+        await Bun.sleep(100)
+        return Response.json({ ok: true })
+      }
+    })
+    const secret = 'timeout-provider-key'
+
+    try {
+      const error = await requestJson(
+        `http://localhost:${server.port}/slow?apiKey=${secret}`,
+        10
+      ).catch(value => value)
+      const serialized = JSON.stringify(error)
+
+      expect(error).toMatchObject({
+        failure: {
+          kind: 'provider-error',
+          name: 'TimeoutError',
+          code: 'REQUEST_TIMEOUT',
+          origin: `http://localhost:${server.port}`
+        }
+      })
+      expect(serialized).not.toContain(secret)
+      expect(serialized).not.toContain('/slow')
+    } finally {
+      await server.stop(true)
+    }
+  })
+
   test('reads a configured book from API allowlist and on-chain state concurrently', async () => {
     const { state } = createState({
       '/v0/midnight/markets': {
@@ -93,24 +207,52 @@ describe('ViemSetupStateService', () => {
     })
   })
 
-  test('checks official ratifier identity, deployed code, and authorization', async () => {
+  test('accepts only the registry-listed Ecrecover ratifier with its exact deployed interface', async () => {
     const { state } = createState({})
 
     expect(await state.getRatifier(maker, ratifier)).toEqual({
       listed: true,
-      supportsEcrecover: true,
+      deployed: true,
+      midnightMatches: true,
+      ecrecoverSurface: true,
       authorized: true
     })
+
+    expect(
+      (await createState({}, { routerRatifier: maker }).state.getRatifier(maker, ratifier)).listed
+    ).toBe(false)
+    expect(
+      await state.getRatifier(maker, '0x4444444444444444444444444444444444444444')
+    ).toMatchObject({ listed: false })
+    expect(
+      (await createState({}, { code: '0x' }).state.getRatifier(maker, ratifier)).deployed
+    ).toBe(false)
+    expect(
+      (await createState({}, { ratifierMidnight: maker }).state.getRatifier(maker, ratifier))
+        .midnightMatches
+    ).toBe(false)
   })
 
-  test('proves the reference RPC serves latest and historical blocks', async () => {
+  test('proves the exact configured Blue reference market is readable at the historical block', async () => {
     const { state, calls } = createState({})
 
     expect(await state.checkReference()).toEqual({
+      marketId: referenceMarketId,
       referenceReadable: true,
       archiveReadable: true
     })
-    expect(calls).toEqual(['latest', '99'])
+    expect(calls).toEqual([
+      'latest',
+      '99',
+      `idToMarketParams:${referenceMarketId}:99`,
+      `market:${referenceMarketId}:99`
+    ])
+  })
+
+  test('fails closed when the configured reference market has no historical state', async () => {
+    const { state } = createState({}, { missingReferenceMarket: true })
+
+    expect(state.checkReference()).rejects.toThrow('configured reference market does not exist')
   })
 
   test('reports unknown groups and inverted maker offers from every page', async () => {
