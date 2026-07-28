@@ -58,6 +58,99 @@ const setup = ({
 }
 
 describe('PositionBootstrapService', () => {
+  test('preflights a positive premium before a target-reached position or reference read', async () => {
+    const { service, readPosition, readRate, reconcile, hardHalt } = setup({
+      configs: [{ ...config(), premiumBps: 1n }],
+      credit: 900n
+    })
+
+    expect(await service.runOnce()).toEqual([
+      {
+        marketId,
+        status: 'halted',
+        stage: 'configuration',
+        strategyInvalidated: true,
+        errorName: 'BootstrapConfigurationError'
+      }
+    ])
+    expect(hardHalt).toHaveBeenCalledWith({ reason: 'bootstrap-configuration-failed' })
+    expect(readPosition).not.toHaveBeenCalled()
+    expect(readRate).not.toHaveBeenCalled()
+    expect(reconcile).not.toHaveBeenCalled()
+  })
+
+  test('preflights a positive premium after auto-refill false completion', async () => {
+    const mutableConfig = config()
+    const { service, readPosition, readRate, reconcile, hardHalt } = setup({
+      configs: [mutableConfig],
+      credit: 900n
+    })
+    expect(await service.runOnce()).toEqual([
+      { marketId, status: 'observed', action: 'target-reached' }
+    ])
+    mutableConfig.premiumBps = 1n
+    readPosition.mockClear()
+
+    expect(await service.runOnce()).toEqual([
+      {
+        marketId,
+        status: 'halted',
+        stage: 'configuration',
+        strategyInvalidated: true,
+        errorName: 'BootstrapConfigurationError'
+      }
+    ])
+    expect(hardHalt).toHaveBeenCalledWith({ reason: 'bootstrap-configuration-failed' })
+    expect(readPosition).not.toHaveBeenCalled()
+    expect(readRate).not.toHaveBeenCalled()
+    expect(reconcile).not.toHaveBeenCalled()
+  })
+
+  test('preflights every market before an earlier valid market can publish', async () => {
+    const { service, readPosition, readRate, reconcile, hardHalt } = setup({
+      configs: [config(), { ...config(secondMarketId), offerSize: 0n }]
+    })
+
+    expect(await service.runOnce()).toEqual([
+      {
+        marketId: secondMarketId,
+        status: 'halted',
+        stage: 'configuration',
+        strategyInvalidated: true,
+        errorName: 'BootstrapConfigurationError'
+      }
+    ])
+    expect(hardHalt).toHaveBeenCalledWith({ reason: 'bootstrap-configuration-failed' })
+    expect(readPosition).not.toHaveBeenCalled()
+    expect(readRate).not.toHaveBeenCalled()
+    expect(reconcile).not.toHaveBeenCalled()
+  })
+
+  test('preserves configuration and cleanup failure evidence during preflight', async () => {
+    const { service, make, readPosition, readRate, reconcile } = setup({
+      configs: [{ ...config(), maximumTotalExposure: 0n }]
+    })
+    const hardHalt = mock(async () => {
+      throw new RangeError('cleanup reverted')
+    })
+    make.hardHalt = hardHalt
+
+    expect(await service.runOnce()).toEqual([
+      {
+        marketId,
+        status: 'halted',
+        stage: 'configuration',
+        strategyInvalidated: false,
+        errorName: 'BootstrapConfigurationError',
+        invalidationErrorName: 'RangeError'
+      }
+    ])
+    expect(hardHalt).toHaveBeenCalledWith({ reason: 'bootstrap-configuration-failed' })
+    expect(readPosition).not.toHaveBeenCalled()
+    expect(readRate).not.toHaveBeenCalled()
+    expect(reconcile).not.toHaveBeenCalled()
+  })
+
   test('publishes the capped desired offer from fresh position and reference reads', async () => {
     const { service, readPosition, readRate, reconcile } = setup()
 
@@ -268,7 +361,7 @@ describe('PositionBootstrapService', () => {
     expect(hardHalt).toHaveBeenCalledWith({ reason: 'bootstrap-decision-failed' })
   })
 
-  test('halts a live offer when a negative acceptance threshold rejects the transition', async () => {
+  test('preflights a negative acceptance threshold before reading a live offer', async () => {
     const { service, positions, readRate, reconcile, hardHalt } = setup({
       configs: [{ ...config(), acceptanceAssets: -1n }, config(secondMarketId)]
     })
@@ -291,19 +384,19 @@ describe('PositionBootstrapService', () => {
       {
         marketId,
         status: 'halted',
-        stage: 'decision',
+        stage: 'configuration',
         strategyInvalidated: true,
         errorName: 'BootstrapConfigurationError'
       }
     ])
     expect(hardHalt).toHaveBeenCalledTimes(1)
-    expect(hardHalt).toHaveBeenCalledWith({ reason: 'bootstrap-decision-failed' })
-    expect(readPosition).toHaveBeenCalledTimes(1)
+    expect(hardHalt).toHaveBeenCalledWith({ reason: 'bootstrap-configuration-failed' })
+    expect(readPosition).not.toHaveBeenCalled()
     expect(readRate).not.toHaveBeenCalled()
     expect(reconcile).not.toHaveBeenCalled()
   })
 
-  test('preserves cleanup evidence when an excessive acceptance threshold halts a live offer', async () => {
+  test('preserves cleanup evidence when an excessive acceptance threshold fails preflight', async () => {
     const { service, positions, make, readRate, reconcile } = setup({
       configs: [{ ...config(), acceptanceAssets: 1_001n }, config(secondMarketId)]
     })
@@ -330,15 +423,15 @@ describe('PositionBootstrapService', () => {
       {
         marketId,
         status: 'halted',
-        stage: 'decision',
+        stage: 'configuration',
         strategyInvalidated: false,
         errorName: 'BootstrapConfigurationError',
         invalidationErrorName: 'RangeError'
       }
     ])
     expect(hardHalt).toHaveBeenCalledTimes(1)
-    expect(hardHalt).toHaveBeenCalledWith({ reason: 'bootstrap-decision-failed' })
-    expect(readPosition).toHaveBeenCalledTimes(1)
+    expect(hardHalt).toHaveBeenCalledWith({ reason: 'bootstrap-configuration-failed' })
+    expect(readPosition).not.toHaveBeenCalled()
     expect(readRate).not.toHaveBeenCalled()
     expect(reconcile).not.toHaveBeenCalled()
   })

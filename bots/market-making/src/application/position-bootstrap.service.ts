@@ -10,7 +10,8 @@ import type {
 
 import {
   decidePositionBootstrap,
-  decidePositionBootstrapTransition
+  decidePositionBootstrapTransition,
+  validateBootstrapConfig
 } from '../domain/position-bootstrap'
 
 const errorName = (error: unknown) => (error instanceof Error ? error.name : 'UnknownError')
@@ -41,7 +42,7 @@ export interface BootstrapMakeService {
       | 'market-read-failed'
   }): Promise<void>
   hardHalt(parameters: {
-    reason: 'reference-read-failed' | 'bootstrap-decision-failed'
+    reason: 'reference-read-failed' | 'bootstrap-decision-failed' | 'bootstrap-configuration-failed'
   }): Promise<void>
 }
 
@@ -63,7 +64,7 @@ type BootstrapRunResult =
   | {
       marketId: Hex
       status: 'halted'
-      stage: 'reference-read' | 'decision'
+      stage: 'configuration' | 'reference-read' | 'decision'
       strategyInvalidated: boolean
       errorName: string
       invalidationErrorName?: string
@@ -80,8 +81,32 @@ export class PositionBootstrapService {
     private readonly configs: readonly BootstrapConfig[]
   ) {}
 
+  /**
+   * Validates all configured markets, then applies one fresh bootstrap cycle per market.
+   * @returns Ordered market outcomes, stopping after a strategy-wide configuration, reference, or
+   *   decision halt.
+   * @throws Never for handled provider, configuration, or make failures; their classifications and
+   *   cleanup evidence are returned in the structured result.
+   * @remarks Invalid configuration hard-halts before any position/reference read or publication.
+   */
   async runOnce() {
     const results: BootstrapRunResult[] = []
+    for (const config of this.configs) {
+      try {
+        validateBootstrapConfig(config)
+      } catch (error) {
+        results.push(
+          await this.haltStrategy(
+            config.marketId,
+            'configuration',
+            error,
+            'bootstrap-configuration-failed'
+          )
+        )
+        return results
+      }
+    }
+
     for (const config of this.configs) {
       let position: Awaited<ReturnType<BootstrapPositionService['readPosition']>>
       try {
@@ -246,9 +271,9 @@ export class PositionBootstrapService {
 
   private async haltStrategy(
     marketId: Hex,
-    stage: 'reference-read' | 'decision',
+    stage: 'configuration' | 'reference-read' | 'decision',
     failure: unknown,
-    reason: 'reference-read-failed' | 'bootstrap-decision-failed'
+    reason: 'reference-read-failed' | 'bootstrap-decision-failed' | 'bootstrap-configuration-failed'
   ) {
     try {
       await this.make.hardHalt({ reason })

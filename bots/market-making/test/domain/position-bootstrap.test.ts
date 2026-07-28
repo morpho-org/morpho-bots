@@ -3,7 +3,10 @@ import type { Hex } from 'viem'
 import { describe, expect, test } from 'bun:test'
 
 import { BootstrapConfigurationError } from '../../src/domain/bootstrap-configuration.error'
-import { decidePositionBootstrap } from '../../src/domain/position-bootstrap'
+import {
+  decidePositionBootstrap,
+  validateBootstrapConfig
+} from '../../src/domain/position-bootstrap'
 
 const marketId: Hex = `0x${'11'.repeat(32)}`
 
@@ -34,6 +37,109 @@ const parameters = {
   activeOffer: undefined,
   initialTargetCompleted: false
 }
+
+describe('validateBootstrapConfig', () => {
+  test('rejects a non-positive credit target', () => {
+    expect(() => validateBootstrapConfig({ ...parameters.config, creditTarget: 0n })).toThrow(
+      new BootstrapConfigurationError('creditTarget', 'must be positive')
+    )
+  })
+
+  test('rejects a negative acceptance threshold', () => {
+    expect(() => validateBootstrapConfig({ ...parameters.config, acceptanceAssets: -1n })).toThrow(
+      new BootstrapConfigurationError('acceptanceAssets', 'must not be negative')
+    )
+  })
+
+  test('rejects an acceptance threshold greater than the credit target', () => {
+    expect(() =>
+      validateBootstrapConfig({ ...parameters.config, acceptanceAssets: 1_001n })
+    ).toThrow(new BootstrapConfigurationError('acceptanceAssets', 'must not exceed creditTarget'))
+  })
+
+  test('rejects a non-positive offer size', () => {
+    expect(() => validateBootstrapConfig({ ...parameters.config, offerSize: 0n })).toThrow(
+      new BootstrapConfigurationError('offerSize', 'must be positive')
+    )
+  })
+
+  test('rejects a positive bootstrap premium', () => {
+    expect(() => validateBootstrapConfig({ ...parameters.config, premiumBps: 1n })).toThrow(
+      new BootstrapConfigurationError('premiumBps', 'must be zero or negative')
+    )
+  })
+
+  test('rejects a negative minimum rate', () => {
+    expect(() => validateBootstrapConfig({ ...parameters.config, minimumRateBps: -1n })).toThrow(
+      new BootstrapConfigurationError('minimumRateBps', 'must not be negative')
+    )
+  })
+
+  test('rejects a negative maximum rate', () => {
+    expect(() => validateBootstrapConfig({ ...parameters.config, maximumRateBps: -1n })).toThrow(
+      new BootstrapConfigurationError('maximumRateBps', 'must not be negative')
+    )
+  })
+
+  test('rejects a minimum rate greater than the maximum rate', () => {
+    expect(() =>
+      validateBootstrapConfig({
+        ...parameters.config,
+        minimumRateBps: 801n,
+        maximumRateBps: 800n
+      })
+    ).toThrow(new BootstrapConfigurationError('minimumRateBps', 'must not exceed maximumRateBps'))
+  })
+
+  test('rejects a non-positive maximum market exposure', () => {
+    expect(() =>
+      validateBootstrapConfig({ ...parameters.config, maximumMarketExposure: 0n })
+    ).toThrow(new BootstrapConfigurationError('maximumMarketExposure', 'must be positive'))
+  })
+
+  test('rejects a non-positive maximum total exposure', () => {
+    expect(() =>
+      validateBootstrapConfig({ ...parameters.config, maximumTotalExposure: 0n })
+    ).toThrow(new BootstrapConfigurationError('maximumTotalExposure', 'must be positive'))
+  })
+
+  test('rejects a maximum market exposure greater than maximum total exposure', () => {
+    expect(() =>
+      validateBootstrapConfig({
+        ...parameters.config,
+        maximumMarketExposure: 4_001n,
+        maximumTotalExposure: 4_000n
+      })
+    ).toThrow(
+      new BootstrapConfigurationError(
+        'maximumMarketExposure',
+        'must not exceed maximumTotalExposure'
+      )
+    )
+  })
+
+  test('accepts inclusive structural boundaries', () => {
+    expect(
+      validateBootstrapConfig({
+        ...parameters.config,
+        creditTarget: 1n,
+        acceptanceAssets: 0n,
+        offerSize: 1n,
+        premiumBps: 0n,
+        minimumRateBps: 0n,
+        maximumRateBps: 0n,
+        maximumMarketExposure: 1n,
+        maximumTotalExposure: 1n
+      })
+    ).toBeUndefined()
+    expect(
+      validateBootstrapConfig({
+        ...parameters.config,
+        acceptanceAssets: parameters.config.creditTarget
+      })
+    ).toBeUndefined()
+  })
+})
 
 describe('decidePositionBootstrap', () => {
   test('accepts the credit target at the configured threshold', () => {

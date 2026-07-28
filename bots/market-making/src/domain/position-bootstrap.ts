@@ -71,6 +71,52 @@ const sameOffer = (left: BootstrapOffer, right: BootstrapOffer, mode: BootstrapR
   left.rateBps === right.rateBps &&
   (mode === 'static' || left.referenceObservationId === right.referenceObservationId)
 
+/**
+ * Validates the static bounds required by a market bootstrap strategy.
+ * @param config - Bootstrap configuration to validate without reading dynamic position data.
+ * @returns Nothing when every structural invariant is valid.
+ * @throws BootstrapConfigurationError when a configured amount, rate, or exposure bound is unsafe.
+ * @remarks This pure validation has no publication, persistence, or provider side effects.
+ */
+export const validateBootstrapConfig = (config: BootstrapConfig): void => {
+  if (config.creditTarget <= 0n) {
+    throw new BootstrapConfigurationError('creditTarget', 'must be positive')
+  }
+  if (config.acceptanceAssets < 0n) {
+    throw new BootstrapConfigurationError('acceptanceAssets', 'must not be negative')
+  }
+  if (config.acceptanceAssets > config.creditTarget) {
+    throw new BootstrapConfigurationError('acceptanceAssets', 'must not exceed creditTarget')
+  }
+  if (config.offerSize <= 0n) {
+    throw new BootstrapConfigurationError('offerSize', 'must be positive')
+  }
+  if (config.premiumBps > 0n) {
+    throw new BootstrapConfigurationError('premiumBps', 'must be zero or negative')
+  }
+  if (config.minimumRateBps < 0n) {
+    throw new BootstrapConfigurationError('minimumRateBps', 'must not be negative')
+  }
+  if (config.maximumRateBps < 0n) {
+    throw new BootstrapConfigurationError('maximumRateBps', 'must not be negative')
+  }
+  if (config.minimumRateBps > config.maximumRateBps) {
+    throw new BootstrapConfigurationError('minimumRateBps', 'must not exceed maximumRateBps')
+  }
+  if (config.maximumMarketExposure <= 0n) {
+    throw new BootstrapConfigurationError('maximumMarketExposure', 'must be positive')
+  }
+  if (config.maximumTotalExposure <= 0n) {
+    throw new BootstrapConfigurationError('maximumTotalExposure', 'must be positive')
+  }
+  if (config.maximumMarketExposure > config.maximumTotalExposure) {
+    throw new BootstrapConfigurationError(
+      'maximumMarketExposure',
+      'must not exceed maximumTotalExposure'
+    )
+  }
+}
+
 /** Decides completion and one-shot transitions that do not require a reference-rate read. */
 export const decidePositionBootstrapTransition = ({
   config,
@@ -78,12 +124,7 @@ export const decidePositionBootstrapTransition = ({
   activeOffer,
   initialTargetCompleted
 }: PositionBootstrapTransitionParameters): PositionBootstrapTransitionDecision | undefined => {
-  if (config.acceptanceAssets < 0n) {
-    throw new BootstrapConfigurationError('acceptanceAssets', 'must not be negative')
-  }
-  if (config.acceptanceAssets > config.creditTarget) {
-    throw new BootstrapConfigurationError('acceptanceAssets', 'must not exceed creditTarget')
-  }
+  validateBootstrapConfig(config)
 
   const acceptedCredit = config.creditTarget - config.acceptanceAssets
 
@@ -131,10 +172,6 @@ export const decidePositionBootstrap = ({
   activeOffer,
   initialTargetCompleted
 }: PositionBootstrapParameters): PositionBootstrapDecision => {
-  if (config.premiumBps > 0n) {
-    throw new BootstrapConfigurationError('premiumBps', 'must be zero or negative')
-  }
-
   const transition = decidePositionBootstrapTransition({
     config,
     position,
