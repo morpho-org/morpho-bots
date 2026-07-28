@@ -52,7 +52,6 @@ _None yet — copy [`templates/DATA-FLOW.md`](./templates/DATA-FLOW.md) into a b
 
 - [TIB-2026-06-30: Blue liquidation bot — v0](./decisions/TIB-2026-06-30-blue-liquidation-bot.md) — Morpho Blue ecosystem-backstop liquidator (accrual-aware soltag lens, multi-venue swaps, generic Executor, Railway; the TIB's rindexer discovery has since been replaced by Morpho GraphQL API discovery) — implemented
 - [TIB-2026-07-09: Midnight market whitelist and venue selection](./decisions/TIB-2026-07-09-midnight-market-and-venue-selection.md) — API-sourced market whitelist + best-of-venues probe selection replacing the hand-maintained routing file; Uniswap dropped as a direct venue — implemented
-- [TIB-2026-07-20: Core-API token metadata for monitor-bot](./decisions/TIB-2026-07-20-core-api-token-metadata.md) — resurrects the metadata loader removed in `81481b2` now that `x-api-key` access to `private.api.morpho.org/v0/tokens` is verified live; `KNOWN_TOKENS` demoted to boot seeds, symbol-required storage, raw-units degradation preserved — implemented
 
 _Bot-scoped TIBs move under `packages/<bot>/docs/decisions/` once a bot lands; proposal TIBs for
 not-yet-built bots sit in `docs/decisions/` alongside their siblings._

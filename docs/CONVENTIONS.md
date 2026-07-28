@@ -57,10 +57,6 @@
 - **Direct `Bun.env` access**: Bots read `Bun.env.VARIABLE_NAME` directly at the point of use.
   There is no helper wrapper and no runtime schema layer — if a required variable is missing,
   fail loudly at startup (throw and exit), don't silently degrade.
-- **Exception — `bots/monitor-bot`**: validates its config at startup with t3-env + zod (still
-  fail-loud) and reads `process.env` in test-reachable code, since its vitest suite executes under
-  Node where the `Bun` global does not exist. See
-  [TIB-2026-07-20-monitor-bot-nestjs-stack](./decisions/TIB-2026-07-20-monitor-bot-nestjs-stack.md).
 - **Never committed**: Secrets and runtime config live in local `.env` files or deploy-time
   environment — never in committed code. The repo's Strict Rules enforce this.
 
@@ -105,11 +101,6 @@
   explaining why exact matching is not feasible.
 - **Bun test runner**: Tests run under `bun test`. The runner is Vitest-compatible; existing
   Vitest-style assertions and spies carry over.
-- **Exception — `bots/monitor-bot`**: its suite runs under vitest
-  (`bun run --filter @morpho-org/monitor-bot test`) because NestJS constructor injection needs
-  decorator metadata that only the SWC transform emits; the package is excluded from `bun test`
-  via the root `bunfig.toml`. See
-  [TIB-2026-07-20-monitor-bot-nestjs-stack](./decisions/TIB-2026-07-20-monitor-bot-nestjs-stack.md).
 
 ### Testing Anti-Patterns
 

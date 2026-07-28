@@ -16,9 +16,6 @@
     "bots/blue-liquidation": {},
     "bots/midnight-crossed-books": {
       "ignore": ["src/infrastructure/*/generated/**"]
-    },
-    "bots/monitor-bot": {
-      "ignore": ["src/generated/**"]
     }
   }
 }

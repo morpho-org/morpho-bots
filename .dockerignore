@@ -8,6 +8,3 @@
 **/*.log
 **/.env
 **/.env.*
-# PII data files (e.g. monitor-bot Attio wallet-CRM exports) — never bake into the image; prod loads
-# them from a mounted Railway volume, not the build context.
-**/*.csv
