@@ -34,6 +34,7 @@ const createState = (
     rootCanceled?: unknown
     rejectRatifierReads?: boolean
     missingReferenceMarket?: boolean
+    referenceLoanAsset?: Address
     routerRatifier?: Address
     requestLimit?: number
     requestTimeoutMs?: number
@@ -93,7 +94,7 @@ const createState = (
         return {
           loanToken: overrides.missingReferenceMarket
             ? '0x0000000000000000000000000000000000000000'
-            : loanAsset,
+            : (overrides.referenceLoanAsset ?? loanAsset),
           collateralToken: maker,
           oracle: midnight,
           irm: ratifier,
@@ -392,8 +393,8 @@ describe('ViemSetupStateService', () => {
     })
   })
 
-  test('fails closed when the Morpho API cannot prove a book is allowlisted', async () => {
-    const { state } = createState({
+  test('requests the curated book filter without requiring a mapped listing field', async () => {
+    const { state, calls } = createState({
       '/v0/midnight/books': {
         cursor: null,
         data: [
@@ -407,7 +408,6 @@ describe('ViemSetupStateService', () => {
             rcf_threshold: '0',
             enter_gate: maker,
             liquidator_gate: maker,
-            listed: false,
             asks: [],
             bids: []
           }
@@ -415,10 +415,8 @@ describe('ViemSetupStateService', () => {
       }
     })
 
-    const error = await state.getBook(marketId).catch(value => value)
-
-    expect(error).toBeInstanceOf(ProviderResponseError)
-    expect(error).toMatchObject({ provider: 'morpho-api', operation: 'book-listing' })
+    await expect(state.getBook(marketId)).resolves.toMatchObject({ allowlisted: true })
+    expect(calls.some(call => call.includes('listed=true'))).toBe(true)
   })
 
   test('accepts only the registry-listed Ecrecover ratifier with its exact deployed interface', async () => {
@@ -497,6 +495,15 @@ describe('ViemSetupStateService', () => {
       operation: 'reference-market'
     })
     expect(error.message).toBe('configured reference market does not exist')
+  })
+
+  test('rejects a reference market for a different loan asset', async () => {
+    const { state } = createState({}, { referenceLoanAsset: maker })
+
+    const error = await state.checkReference().catch(value => value)
+
+    expect(error).toBeInstanceOf(ProviderResponseError)
+    expect(error).toMatchObject({ provider: 'archive-rpc', operation: 'reference-loan-asset' })
   })
 
   test('reports fresh non-takeable active offers from every offer-group page', async () => {

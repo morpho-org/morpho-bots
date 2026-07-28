@@ -163,6 +163,20 @@ describe('SetupCheckService', () => {
     ])
   })
 
+  test('attributes untyped offer pagination failures to the Morpho API', async () => {
+    const state = readyState()
+    state.inspectOffers = async () => {
+      throw new Error('pagination failed')
+    }
+
+    const report = await new SetupCheckService(state, config).check()
+    const offers = report.checks.find(check => check.name === 'offers')
+
+    expect(offers?.observed).toMatchObject({
+      error: { provider: 'morpho-api', context: 'read' }
+    })
+  })
+
   test('rejects readiness with the failed check and remediation when setup is unsafe', async () => {
     const state = readyState()
     state.getNativeBalance = async () => 9n

@@ -440,11 +440,19 @@ export class ViemSetupStateService implements SetupStateService {
     ])
     const params = objectRecord(paramsResponse, 'Morpho Blue reference market params')
     const market = objectRecord(marketResponse, 'Morpho Blue reference market state')
-    if (addressValue(params.loanToken, 'reference market loanToken') === zeroAddress) {
+    const referenceLoanAsset = addressValue(params.loanToken, 'reference market loanToken')
+    if (referenceLoanAsset === zeroAddress) {
       throw new ProviderResponseError(
         'archive-rpc',
         'reference-market',
         'configured reference market does not exist'
+      )
+    }
+    if (!isAddressEqual(referenceLoanAsset, this.options.loanAsset)) {
+      throw new ProviderResponseError(
+        'archive-rpc',
+        'reference-loan-asset',
+        'configured reference market uses an unexpected loan asset'
       )
     }
     if (providerBigInt(market.totalSupplyShares, 'reference market totalSupplyShares') === 0n) {

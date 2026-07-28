@@ -1,5 +1,4 @@
 import { SafeProviderError } from '../../application/safe-provider.error'
-import { ProviderResponseError } from './provider-response.error'
 
 /** Stable HTTP provider identifiers safe to include in reports. */
 export type ProviderId = 'morpho-api' | 'router-api'
@@ -50,10 +49,10 @@ export const requestJson = async (url: string, provider: ProviderId, timeoutMs =
  * Adapts the JSON transport for the SDK books endpoint while requiring curated listing evidence.
  * @param request - Existing provider-safe JSON transport.
  * @param timeoutMs - Explicit per-request timeout passed to the transport.
- * @returns A fetch-compatible function that requests `listed=true` and rejects non-listed rows.
- * @throws `ProviderResponseError` when the response cannot prove every returned book is listed.
+ * @returns A fetch-compatible function that requests the API's `listed=true` trust-layer filter.
+ * @throws The transport's sanitized provider error when the filtered request fails.
  * @remarks The Midnight SDK continues to own endpoint construction and book mapping; this adapter
- * only adds the API's curated-listing filter and validates that trust signal before SDK mapping.
+ * only adds the API's curated-listing filter before SDK mapping.
  */
 export const listedBooksJsonRequestFetch = (
   request: JsonRequest,
@@ -64,26 +63,6 @@ export const listedBooksJsonRequestFetch = (
     const url = new URL(inputUrl)
     url.searchParams.set('listed', 'true')
     const value = await request(url.toString(), 'morpho-api', timeoutMs)
-    const response =
-      typeof value === 'object' && value !== null && !Array.isArray(value)
-        ? (value as Record<string, unknown>)
-        : undefined
-    if (
-      !Array.isArray(response?.data) ||
-      response.data.some(
-        book =>
-          typeof book !== 'object' ||
-          book === null ||
-          Array.isArray(book) ||
-          (book as Record<string, unknown>).listed !== true
-      )
-    ) {
-      throw new ProviderResponseError(
-        'morpho-api',
-        'book-listing',
-        'Morpho API book listing status must be true'
-      )
-    }
     return Response.json(value)
   }
   return Object.assign(adapter, { preconnect: fetch.preconnect })
