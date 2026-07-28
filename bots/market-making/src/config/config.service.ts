@@ -5,6 +5,7 @@ import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
 
 import type { SetupCheckConfig } from '../application/setup-check.service'
+import type { LadderConfig } from '../domain/ladder'
 import type { BootstrapConfig } from '../domain/position-bootstrap'
 import type { ConfigurationLoadOptions, ConfigurationSource } from './config-source.utils'
 import type { Environment } from './config.utils'
@@ -16,6 +17,7 @@ import {
   bootstrapConfigsValue,
   bytes32Value,
   hexListValue,
+  ladderConfigsValue,
   requestTimeoutValue,
   requiredValue,
   unsignedBigIntValue,
@@ -101,7 +103,8 @@ export class ConfigService {
       bootstrap: bootstrapConfigsValue(
         source.bootstrap,
         hexListValue(environment, 'MARKET_IDS', true)
-      )
+      ),
+      ladder: ladderConfigsValue(source.ladder, hexListValue(environment, 'MARKET_IDS', true))
     })
   }
 
@@ -116,6 +119,7 @@ export class ConfigService {
       v0OfferGroupIds: readonly Hex[]
       requestTimeoutMs: number
       bootstrap: readonly BootstrapConfig[]
+      ladder: readonly LadderConfig[]
     }
   ) {}
 
@@ -162,5 +166,10 @@ export class ConfigService {
   /** Exposes position-bootstrap settings. @returns The validated ordered market list; `BOOTSTRAP_MARKETS` replaces YAML `bootstrap` as a whole. */
   get bootstrap() {
     return this.values.bootstrap
+  }
+
+  /** Exposes ladder settings. @returns Validated ordered markets; `LADDER_MARKETS` replaces YAML `ladder` as a whole. */
+  get ladder() {
+    return this.values.ladder
   }
 }

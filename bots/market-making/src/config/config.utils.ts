@@ -2,9 +2,12 @@ import type { Address, Hex } from 'viem'
 
 import { bytesToHex, getAddress, hexToBytes, isAddress, isHex, size } from 'viem'
 
+import type { LadderConfig } from '../domain/ladder'
 import type { BootstrapConfig } from '../domain/position-bootstrap'
 
 import { BootstrapConfigurationError } from '../domain/bootstrap-configuration.error'
+import { validateLadderConfig } from '../domain/ladder'
+import { LadderConfigurationError } from '../domain/ladder-configuration.error'
 import { validateBootstrapConfig } from '../domain/position-bootstrap'
 import { ConfigValidationError } from './config-validation.error'
 
@@ -198,11 +201,7 @@ const bootstrapRecord = (value: unknown, field: string): Record<string, unknown>
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new ConfigValidationError(field, 'wrong-type', `${field} must be an object`)
   }
-  const result = value as Record<string, unknown>
-  if (Object.keys(result).some(key => !bootstrapFields.includes(key as never))) {
-    throw new ConfigValidationError(field, 'unknown-key', `${field} contains an unsupported key`)
-  }
-  return result
+  return value as Record<string, unknown>
 }
 
 const integerBigInt = (value: unknown, field: string, signed: boolean) => {
@@ -234,6 +233,13 @@ export const bootstrapConfigsValue = (
   const configs = value.map((item, index) => {
     const prefix = `bootstrap[${index}]`
     const itemRecord = bootstrapRecord(item, prefix)
+    if (Object.keys(itemRecord).some(key => !bootstrapFields.includes(key as never))) {
+      throw new ConfigValidationError(
+        prefix,
+        'unknown-key',
+        `${prefix} contains an unsupported key`
+      )
+    }
     const required = (name: (typeof bootstrapFields)[number]) => {
       if (itemRecord[name] === undefined) {
         throw new ConfigValidationError(
@@ -306,6 +312,151 @@ export const bootstrapConfigsValue = (
   })
   if (new Set(configs.map(config => config.marketId)).size !== configs.length) {
     throw new ConfigValidationError('bootstrap', 'duplicate', 'bootstrap market IDs must be unique')
+  }
+  return configs
+}
+
+const ladderFields = [
+  'marketId',
+  'quotePremiumBps',
+  'spreadBps',
+  'stepBps',
+  'rungCount',
+  'sizeSkewBps',
+  'lowerRateBudgetAssets',
+  'higherRateBudgetAssets',
+  'targetMarketExposureAssets',
+  'maximumTotalExposureAssets',
+  'groupMode',
+  'loopIntervalSeconds',
+  'movementToleranceBps',
+  'minimumRateBps',
+  'maximumRateBps'
+] as const
+
+const safeInteger = (value: unknown, field: string) => {
+  const parsed = integerBigInt(value, field, false)
+  const number = Number(parsed)
+  if (!Number.isSafeInteger(number) || number <= 0) {
+    throw new ConfigValidationError(
+      field,
+      'out-of-range',
+      `${field} must be a positive safe integer`
+    )
+  }
+  return number
+}
+
+/**
+ * Parses and validates the complete replacement list used by YAML or `LADDER_MARKETS`.
+ * @param value - Untrusted YAML/JSON ladder list.
+ * @param allowlistedMarkets - Canonical market IDs permitted by setup configuration.
+ * @returns Ordered, exact ladder settings accepted by domain preflight.
+ * @throws ConfigValidationError for unsupported fields, malformed values, duplicates, or unsafe shape.
+ */
+export const ladderConfigsValue = (
+  value: unknown,
+  allowlistedMarkets: readonly Hex[]
+): LadderConfig[] => {
+  if (!Array.isArray(value)) {
+    throw new ConfigValidationError('ladder', 'wrong-type', 'ladder must be a list')
+  }
+  const configs = value.map((item, index) => {
+    const prefix = `ladder[${index}]`
+    const itemRecord = bootstrapRecord(item, prefix)
+    if (Object.keys(itemRecord).some(key => !ladderFields.includes(key as never))) {
+      throw new ConfigValidationError(
+        prefix,
+        'unknown-key',
+        `${prefix} contains an unsupported key`
+      )
+    }
+    const required = (name: (typeof ladderFields)[number]) => {
+      if (itemRecord[name] === undefined) {
+        throw new ConfigValidationError(
+          `${prefix}.${name}`,
+          'missing',
+          `${prefix}.${name} is required`
+        )
+      }
+      return itemRecord[name]
+    }
+    const marketValue = required('marketId')
+    const groupMode = required('groupMode')
+    if (typeof marketValue !== 'string' || typeof groupMode !== 'string') {
+      throw new ConfigValidationError(
+        prefix,
+        'wrong-type',
+        `${prefix} string fields must be strings`
+      )
+    }
+    const config: LadderConfig = {
+      marketId: parseBytes32(marketValue, `${prefix}.marketId`),
+      quotePremiumBps: integerBigInt(
+        required('quotePremiumBps'),
+        `${prefix}.quotePremiumBps`,
+        true
+      ),
+      spreadBps: integerBigInt(required('spreadBps'), `${prefix}.spreadBps`, false),
+      stepBps: integerBigInt(required('stepBps'), `${prefix}.stepBps`, false),
+      rungCount: safeInteger(required('rungCount'), `${prefix}.rungCount`),
+      sizeSkewBps: integerBigInt(required('sizeSkewBps'), `${prefix}.sizeSkewBps`, true),
+      lowerRateBudgetAssets: integerBigInt(
+        required('lowerRateBudgetAssets'),
+        `${prefix}.lowerRateBudgetAssets`,
+        false
+      ),
+      higherRateBudgetAssets: integerBigInt(
+        required('higherRateBudgetAssets'),
+        `${prefix}.higherRateBudgetAssets`,
+        false
+      ),
+      targetMarketExposureAssets: integerBigInt(
+        required('targetMarketExposureAssets'),
+        `${prefix}.targetMarketExposureAssets`,
+        false
+      ),
+      maximumTotalExposureAssets: integerBigInt(
+        required('maximumTotalExposureAssets'),
+        `${prefix}.maximumTotalExposureAssets`,
+        false
+      ),
+      groupMode: groupMode as LadderConfig['groupMode'],
+      loopIntervalSeconds: safeInteger(
+        required('loopIntervalSeconds'),
+        `${prefix}.loopIntervalSeconds`
+      ),
+      movementToleranceBps: integerBigInt(
+        required('movementToleranceBps'),
+        `${prefix}.movementToleranceBps`,
+        false
+      ),
+      minimumRateBps: integerBigInt(required('minimumRateBps'), `${prefix}.minimumRateBps`, false),
+      maximumRateBps: integerBigInt(required('maximumRateBps'), `${prefix}.maximumRateBps`, false)
+    }
+    if (!allowlistedMarkets.includes(config.marketId)) {
+      throw new ConfigValidationError(
+        `${prefix}.marketId`,
+        'not-allowlisted',
+        `${prefix}.marketId must be allowlisted`
+      )
+    }
+    try {
+      validateLadderConfig(config)
+    } catch (error) {
+      if (error instanceof LadderConfigurationError) {
+        throw new ConfigValidationError(
+          `${prefix}.${error.field}`,
+          'invalid-ladder',
+          `${prefix}.${error.field} ${error.reason}`
+        )
+      }
+      throw error
+    }
+    return config
+  })
+  if (new Set(configs.map(config => config.marketId)).size !== configs.length) {
+    throw new ConfigValidationError('ladder', 'duplicate', 'ladder market IDs must be unique')
   }
   return configs
 }

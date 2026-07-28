@@ -2,6 +2,8 @@
   "$schema": "https://typedoc.org/schema.json",
   "entryPoints": [
     "src/application/operator-error-name.utils.ts",
+    "src/application/ladder-market-maker.service.ts",
+    "src/application/ladder-market-maker.utils.ts",
     "src/application/position-bootstrap.service.ts",
     "src/application/setup-check.service.ts",
     "src/application/setup-check.utils.ts",
@@ -14,6 +16,8 @@
     "src/config/config.service.ts",
     "src/config/config.utils.ts",
     "src/domain/bootstrap-configuration.error.ts",
+    "src/domain/ladder-configuration.error.ts",
+    "src/domain/ladder.ts",
     "src/domain/position-bootstrap.ts",
     "src/infrastructure/cli/cli-usage.error.ts",
     "src/infrastructure/cli/cli.ts",

@@ -289,6 +289,8 @@ const packageRoot = resolve(import.meta.dir, '..')
 const sourceRoot = resolve(packageRoot, 'src')
 const sourceFiles = [
   'application/operator-error-name.utils.ts',
+  'application/ladder-market-maker.service.ts',
+  'application/ladder-market-maker.utils.ts',
   'application/position-bootstrap.service.ts',
   'application/setup-check.service.ts',
   'application/setup-check.utils.ts',
@@ -301,6 +303,8 @@ const sourceFiles = [
   'config/config.service.ts',
   'config/config.utils.ts',
   'domain/bootstrap-configuration.error.ts',
+  'domain/ladder-configuration.error.ts',
+  'domain/ladder.ts',
   'domain/position-bootstrap.ts',
   'infrastructure/cli/cli-usage.error.ts',
   'infrastructure/cli/cli.ts',
