@@ -2,10 +2,16 @@
   "$schema": "https://typedoc.org/schema.json",
   "entryPoints": [
     "src/application/setup-check.service.ts",
+    "src/application/setup-check.utils.ts",
+    "src/application/safe-provider.error.ts",
     "src/bootstrap.ts",
     "src/config/config.service.ts",
+    "src/config/config.utils.ts",
     "src/infrastructure/cli/cli.ts",
-    "src/infrastructure/setup-state/viem-setup-state.service.ts"
+    "src/infrastructure/cli/cli.utils.ts",
+    "src/infrastructure/setup-state/http-json.utils.ts",
+    "src/infrastructure/setup-state/viem-setup-state.service.ts",
+    "src/infrastructure/setup-state/viem-setup-state.utils.ts"
   ],
   "tsconfig": "tsconfig.json",
   "out": "build/jsdoc",

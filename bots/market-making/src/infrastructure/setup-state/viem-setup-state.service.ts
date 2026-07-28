@@ -1,70 +1,73 @@
 import type { Address, Hex } from 'viem'
 
+import { ecrecoverRatifierAbi, midnightAbi } from '@morpho-org/midnight-sdk'
 import { getChainAddress } from '@morpho-org/morpho-ts'
-import {
-  erc20Abi,
-  getAddress,
-  isAddress,
-  isAddressEqual,
-  isHex,
-  keccak256,
-  parseAbi,
-  zeroAddress
-} from 'viem'
+import { erc20Abi, isAddress, isAddressEqual, keccak256, zeroAddress, zeroHash } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
 import type { BookSetup, SetupStateService } from '../../application/setup-check.service'
+import type { JsonRequest } from './http-json.utils'
 
-import { SafeProviderError } from '../../application/setup-check.service'
-
-const BASE_CHAIN_ID = 8453
-const PAGE_SIZE = 1_000
-const MAX_OFFER_PAGES = 100
-const MAX_OFFER_ITEMS = PAGE_SIZE * MAX_OFFER_PAGES
-const DEFAULT_REQUEST_TIMEOUT_MS = 10_000
-// morpho-org/deployments@24c04410 address-book.json, Base EcrecoverRatifier
-// 0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E. eth_getCode at Base block 49198997
-// through Morpho eRPC; this deployment-specific hash includes immutable MIDNIGHT
-// 0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A.
-const BASE_ECRECOVER_RATIFIER_RUNTIME_HASH =
-  '0xcce1e0dd38ae831e81a9270627af2c24c208409ec03d5654a28a33ead53b1ac1'
-const MIDNIGHT_SETUP_ABI = parseAbi([
-  'function isAuthorized(address authorizer, address authorized) view returns (bool)',
-  'function tickSpacing(bytes32 id) view returns (uint8)',
-  'function toMarket(bytes32 id) view returns ((uint256 chainId,address midnight,address loanToken,(address token,uint256 lltv,uint256 liquidationCursor,address oracle)[] collateralParams,uint256 maturity,uint256 rcfThreshold,address enterGate,address liquidatorGate))'
-])
-const ECRECOVER_RATIFIER_ABI = parseAbi([
-  'function MIDNIGHT() view returns (address)',
-  'function isRootCanceled(address maker, bytes32 root) view returns (bool)'
-])
-const MORPHO_BLUE_SETUP_ABI = parseAbi([
-  'function idToMarketParams(bytes32 id) view returns ((address loanToken,address collateralToken,address oracle,address irm,uint256 lltv))',
-  'function market(bytes32 id) view returns ((uint128 totalSupplyAssets,uint128 totalSupplyShares,uint128 totalBorrowAssets,uint128 totalBorrowShares,uint128 lastUpdate,uint128 fee))'
-])
-const EMPTY_ROOT = `0x${'00'.repeat(32)}`
+import {
+  addressValue,
+  arrayValue,
+  BASE_CHAIN_ID,
+  BASE_ECRECOVER_RATIFIER_RUNTIME_HASH,
+  DEFAULT_REQUEST_TIMEOUT_MS,
+  invertedMarketIds,
+  marketFromApi,
+  marketFromContract,
+  MAX_OFFER_ITEMS,
+  MAX_OFFER_PAGES,
+  MORPHO_BLUE_SETUP_ABI,
+  objectRecord,
+  offerFromApi,
+  PAGE_SIZE,
+  providerBigInt,
+  routerEcrecoverRatifiers,
+  routerTimeout
+} from './viem-setup-state.utils'
 
 /** Minimal read-only viem surface required by the setup-state adapter. */
 export interface ChainReader {
-  /** @returns Connected EVM chain ID. */
+  /**
+   * Reads the connected chain identity from the RPC provider.
+   * @returns Connected EVM chain ID.
+   * @throws When the RPC transport rejects or returns an invalid chain-id response.
+   */
   getChainId(): Promise<number>
-  /** @param parameters - Contract address. @returns Runtime bytecode when deployed. */
+  /**
+   * Reads runtime bytecode from the RPC provider.
+   * @param parameters - Contract address.
+   * @returns Runtime bytecode when deployed.
+   * @throws When the RPC transport rejects or returns malformed bytecode.
+   */
   getCode(parameters: { address: Address }): Promise<Hex | undefined>
-  /** @param parameters - Account address. @returns Native-token balance in wei. */
+  /**
+   * Reads native-token balance from the RPC provider.
+   * @param parameters - Account address.
+   * @returns Native-token balance in wei.
+   * @throws When the RPC transport rejects or returns a malformed balance.
+   */
   getBalance(parameters: { address: Address }): Promise<bigint>
   /**
+   * Reads a latest or historical block from the RPC provider.
    * @param parameters - Latest-block tag or exact historical block number.
    * @returns Block number and timestamp without mutating chain state.
+   * @throws When the RPC transport rejects, history is unavailable, or the block is malformed.
    */
   getBlock(parameters: { blockTag?: 'latest'; blockNumber?: bigint }): Promise<{
     number: bigint | null
     timestamp: bigint
   }>
-  /** @param parameters - Viem read-contract request. @returns ABI-decoded contract result. */
+  /**
+   * Executes one read-only ABI-decoded contract call through the RPC provider.
+   * @param parameters - Viem read-contract request.
+   * @returns ABI-decoded contract result.
+   * @throws When the RPC rejects, the call reverts, or ABI decoding fails.
+   */
   readContract(parameters: Record<string, unknown>): Promise<unknown>
 }
-
-type ProviderId = 'morpho-api' | 'router-api'
-type JsonRequest = (url: string, provider: ProviderId, timeoutMs?: number) => Promise<unknown>
 
 type SetupStateOptions = {
   privateKey: Hex
@@ -78,145 +81,6 @@ type SetupStateOptions = {
   referenceLookbackBlocks?: bigint
   requestTimeoutMs?: number
   now?: () => number
-}
-
-function object(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new Error(`${label} must be an object`)
-  }
-  return value as Record<string, unknown>
-}
-
-function array(value: unknown, label: string) {
-  if (!Array.isArray(value)) throw new Error(`${label} must be an array`)
-  return value
-}
-
-function address(value: unknown, label: string) {
-  if (typeof value !== 'string' || !isAddress(value)) throw new Error(`${label} must be an address`)
-  return getAddress(value)
-}
-
-function bytes32(value: unknown, label: string): Hex {
-  if (typeof value !== 'string' || !isHex(value, { strict: true }) || value.length !== 66) {
-    throw new Error(`${label} must be a 32-byte hex value`)
-  }
-  return value
-}
-
-function integer(value: unknown, label: string) {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
-    throw new Error(`${label} must be a safe integer`)
-  }
-  return value
-}
-
-function bigint(value: unknown, label: string) {
-  if (typeof value !== 'bigint') throw new Error(`${label} must be a bigint`)
-  return value
-}
-
-function marketFromContract(value: unknown) {
-  const market = object(value, 'Midnight.toMarket response')
-  return {
-    chainId: bigint(market.chainId, 'market.chainId'),
-    midnight: address(market.midnight, 'market.midnight'),
-    loanToken: address(market.loanToken, 'market.loanToken'),
-    maturity: bigint(market.maturity, 'market.maturity')
-  }
-}
-
-function marketFromApi(value: unknown) {
-  const market = object(value, 'Morpho API market')
-  return {
-    id: bytes32(market.market_id, 'market_id'),
-    listed: market.listed === true,
-    loanToken: address(market.loan_token, 'loan_token'),
-    maturity: BigInt(integer(market.maturity, 'maturity'))
-  }
-}
-
-function offerFromApi(value: unknown) {
-  const item = object(value, 'Router offer item')
-  const offer = object(item.offer, 'Router offer')
-  return {
-    marketId: bytes32(item.market_id, 'offer market_id'),
-    maker: address(offer.maker, 'offer maker'),
-    group: bytes32(offer.group, 'offer group'),
-    buy: offer.buy === true,
-    tick: integer(offer.tick, 'offer tick')
-  }
-}
-
-function routerEcrecoverRatifiers(value: unknown) {
-  const data = array(
-    object(value, 'Router config contracts response').data,
-    'Router config contracts'
-  )
-  return data.flatMap(item => {
-    const contract = object(item, 'Router config contract')
-    if (integer(contract.chain_id, 'config contract chain_id') !== BASE_CHAIN_ID) return []
-    if (contract.name !== 'ecrecoverRatifier') return []
-    return [address(contract.address, 'config contract address')]
-  })
-}
-
-function invertedMarketIds(
-  offers: readonly ReturnType<typeof offerFromApi>[],
-  configuredMarkets: readonly Hex[]
-) {
-  return configuredMarkets.filter(marketId => {
-    const marketOffers = offers.filter(offer => offer.marketId === marketId)
-    const buys = marketOffers.filter(offer => offer.buy).map(offer => offer.tick)
-    const sells = marketOffers.filter(offer => !offer.buy).map(offer => offer.tick)
-    return buys.length > 0 && sells.length > 0 && Math.max(...buys) >= Math.min(...sells)
-  })
-}
-
-function routerTimeout() {
-  return new SafeProviderError({
-    kind: 'provider-error',
-    provider: 'router-api',
-    name: 'TimeoutError',
-    code: 'REQUEST_TIMEOUT',
-    context: 'request'
-  })
-}
-
-/**
- * Fetches and decodes JSON under a per-request timeout while redacting unsafe failure details.
- * @param url - Provider endpoint; it is used for the request but never copied into thrown metadata.
- * @param provider - Fixed provider identifier safe for reports.
- * @param timeoutMs - Abort timeout in milliseconds, defaulting to 10 seconds.
- * @returns Parsed JSON response value.
- * @throws `SafeProviderError` with allowlisted provider/status/context metadata on HTTP,
- * timeout, network, or JSON failures; raw URLs and response bodies are not exposed.
- * @remarks Performs one read-only HTTP GET and has no chain or filesystem side effects.
- */
-export async function requestJson(url: string, provider: ProviderId, timeoutMs = 10_000) {
-  const signal = AbortSignal.timeout(timeoutMs)
-  try {
-    const response = await fetch(url, { headers: { accept: 'application/json' }, signal })
-    if (!response.ok) {
-      throw new SafeProviderError({
-        kind: 'provider-error',
-        provider,
-        name: 'HttpError',
-        status: response.status,
-        context: 'request'
-      })
-    }
-    return await response.json()
-  } catch (error) {
-    if (error instanceof SafeProviderError) throw error
-    throw new SafeProviderError({
-      kind: 'provider-error',
-      provider,
-      name: signal.aborted ? 'TimeoutError' : 'NetworkError',
-      ...(signal.aborted ? { code: 'REQUEST_TIMEOUT' } : {}),
-      context: 'request'
-    })
-  }
 }
 
 /** Read-only viem/API adapter that gathers setup facts and validates provider agreement. */
@@ -240,22 +104,39 @@ export class ViemSetupStateService implements SetupStateService {
     this.derivedMaker = privateKeyToAccount(options.privateKey).address
   }
 
-  /** @returns The connected chain ID from the current-state RPC. */
+  /**
+   * Reads the connected chain identity through the current-state provider.
+   * @returns The connected chain ID from the current-state RPC.
+   * @throws When the current-state RPC rejects or returns an invalid chain ID.
+   * @remarks Read-only; performs no writes.
+   */
   getChainId() {
     return this.chain.getChainId()
   }
 
-  /** @param target - Address to inspect. @returns Runtime bytecode when deployed. */
+  /**
+   * Reads target runtime bytecode through the current-state provider.
+   * @param target - Address to inspect.
+   * @returns Runtime bytecode when deployed.
+   * @throws When the current-state RPC rejects or returns malformed bytecode.
+   * @remarks Read-only; performs no writes.
+   */
   getCode(target: Address) {
     return this.chain.getCode({ address: target })
   }
 
-  /** @returns The locally derived maker; no signing or provider request occurs. */
+  /** Derives no new state and returns the cached local maker. @returns The locally derived maker; no signing or provider request occurs. */
   async getDerivedMaker() {
     return this.derivedMaker
   }
 
-  /** @param owner - Account to inspect. @returns Its current native-token balance. */
+  /**
+   * Reads an account native-token balance through the current-state provider.
+   * @param owner - Account to inspect.
+   * @returns Its current native-token balance.
+   * @throws When the current-state RPC rejects or returns a malformed balance.
+   * @remarks Read-only; performs no writes.
+   */
   getNativeBalance(owner: Address) {
     return this.chain.getBalance({ address: owner })
   }
@@ -265,7 +146,8 @@ export class ViemSetupStateService implements SetupStateService {
    * @param owner - Token owner.
    * @param loanAsset - ERC-20 contract.
    * @returns Configured Midnight spender and decoded allowance.
-   * @throws When the provider response is not a bigint.
+   * @throws When the provider rejects, the call reverts, or the response is not a bigint.
+   * @remarks Read-only; performs no writes.
    */
   async getLoanAllowance(owner: Address, loanAsset: Address) {
     const amount = await this.chain.readContract({
@@ -284,7 +166,7 @@ export class ViemSetupStateService implements SetupStateService {
    * @param maker - Maker whose authorization/root surface is read.
    * @param ratifier - Candidate ratifier address.
    * @returns Five readiness facts without exposing provider URLs or bytecode.
-   * @throws On malformed provider/contract responses or failed reads.
+   * @throws On provider rejection, malformed provider/contract responses, or failed reads.
    * @remarks All five independent reads start concurrently through `Promise.all`; this is read-only.
    */
   async getRatifier(maker: Address, ratifier: Address) {
@@ -296,18 +178,18 @@ export class ViemSetupStateService implements SetupStateService {
       this.chain.getCode({ address: ratifier }),
       this.chain.readContract({
         address: ratifier,
-        abi: ECRECOVER_RATIFIER_ABI,
+        abi: ecrecoverRatifierAbi,
         functionName: 'MIDNIGHT'
       }),
       this.chain.readContract({
         address: ratifier,
-        abi: ECRECOVER_RATIFIER_ABI,
+        abi: ecrecoverRatifierAbi,
         functionName: 'isRootCanceled',
-        args: [maker, EMPTY_ROOT]
+        args: [maker, zeroHash]
       }),
       this.chain.readContract({
         address: this.options.midnight,
-        abi: MIDNIGHT_SETUP_ABI,
+        abi: midnightAbi,
         functionName: 'isAuthorized',
         args: [maker, ratifier]
       })
@@ -339,7 +221,8 @@ export class ViemSetupStateService implements SetupStateService {
    * Cross-checks one Midnight market between the Morpho API and on-chain state.
    * @param id - Configured market ID.
    * @returns Validated listing, activity, loan asset, tick spacing, and maturity.
-   * @throws On missing/extra API rows, malformed values, identity disagreement, or invalid chain data.
+   * @throws On provider rejection, missing/extra API rows, malformed values, identity disagreement,
+   * or invalid chain data.
    * @remarks API, market, and tick-spacing reads run concurrently through `Promise.all`; no writes.
    */
   async getBook(id: Hex): Promise<BookSetup> {
@@ -357,18 +240,21 @@ export class ViemSetupStateService implements SetupStateService {
       ),
       this.chain.readContract({
         address: this.options.midnight,
-        abi: MIDNIGHT_SETUP_ABI,
+        abi: midnightAbi,
         functionName: 'toMarket',
         args: [id]
       }),
       this.chain.readContract({
         address: this.options.midnight,
-        abi: MIDNIGHT_SETUP_ABI,
+        abi: midnightAbi,
         functionName: 'tickSpacing',
         args: [id]
       })
     ])
-    const data = array(object(apiResponse, 'Morpho API response').data, 'Morpho API data')
+    const data = arrayValue(
+      objectRecord(apiResponse, 'Morpho API response').data,
+      'Morpho API data'
+    )
     if (data.length !== 1) throw new Error(`Morpho API returned ${data.length} markets for ${id}`)
     const apiMarket = marketFromApi(data[0])
     const contractMarket = marketFromContract(contractResponse)
@@ -395,7 +281,12 @@ export class ViemSetupStateService implements SetupStateService {
     }
   }
 
-  /** @returns Latest current-state block timestamp from a read-only RPC call. */
+  /**
+   * Reads the latest timestamp through the current-state provider.
+   * @returns Latest current-state block timestamp from a read-only RPC call.
+   * @throws When the current-state RPC rejects or returns a malformed block.
+   * @remarks Read-only; performs no writes.
+   */
   async getLatestTimestamp() {
     return (await this.chain.getBlock({ blockTag: 'latest' })).timestamp
   }
@@ -403,7 +294,7 @@ export class ViemSetupStateService implements SetupStateService {
   /**
    * Proves the exact reference market is readable at a historical archive block.
    * @returns Reference-market identity plus current and archive readability flags.
-   * @throws When history is insufficient or market parameters/state are absent, zero, or malformed.
+   * @throws On provider rejection, insufficient history, or absent, zero, or malformed market state.
    * @remarks After locating the historical block, independent parameter and state reads run through
    * `Promise.all`; the method is read-only.
    */
@@ -430,15 +321,15 @@ export class ViemSetupStateService implements SetupStateService {
         blockNumber: historicalBlock
       })
     ])
-    const params = object(paramsResponse, 'Morpho Blue reference market params')
-    const market = object(marketResponse, 'Morpho Blue reference market state')
-    if (address(params.loanToken, 'reference market loanToken') === zeroAddress) {
+    const params = objectRecord(paramsResponse, 'Morpho Blue reference market params')
+    const market = objectRecord(marketResponse, 'Morpho Blue reference market state')
+    if (addressValue(params.loanToken, 'reference market loanToken') === zeroAddress) {
       throw new Error('configured reference market does not exist')
     }
-    if (bigint(market.totalSupplyShares, 'reference market totalSupplyShares') === 0n) {
+    if (providerBigInt(market.totalSupplyShares, 'reference market totalSupplyShares') === 0n) {
       throw new Error('configured reference market has zero supply shares')
     }
-    if (bigint(market.lastUpdate, 'reference market lastUpdate') === 0n) {
+    if (providerBigInt(market.lastUpdate, 'reference market lastUpdate') === 0n) {
       throw new Error('configured reference market state is uninitialized')
     }
     return {
@@ -455,7 +346,8 @@ export class ViemSetupStateService implements SetupStateService {
    * @throws On malformed responses, repeated cursors, more than 100 pages or 100,000 items, or when
    * the single absolute request deadline expires.
    * @remarks Pagination is necessarily sequential because each cursor depends on the previous page;
-   * the deadline covers the whole traversal. This method never creates, cancels, or takes an offer.
+   * the deadline covers the whole traversal. This read-only method never creates, cancels, or takes
+   * an offer.
    */
   async inspectOffers(maker: Address) {
     const offers: ReturnType<typeof offerFromApi>[] = []
@@ -472,7 +364,7 @@ export class ViemSetupStateService implements SetupStateService {
       pageCount += 1
       const query = new URLSearchParams({ maker, limit: String(PAGE_SIZE) })
       if (cursor) query.set('cursor', cursor)
-      const response = object(
+      const response = objectRecord(
         await this.request(
           `${this.options.routerApiBaseUrl}/v0/midnight/takeable-offers?${query.toString()}`,
           'router-api',
@@ -480,7 +372,7 @@ export class ViemSetupStateService implements SetupStateService {
         ),
         'Router response'
       )
-      const data = array(response.data, 'Router data')
+      const data = arrayValue(response.data, 'Router data')
       if (offers.length + data.length > MAX_OFFER_ITEMS) {
         throw new Error('Router offer item limit exceeded')
       }

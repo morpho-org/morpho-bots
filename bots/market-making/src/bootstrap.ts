@@ -9,10 +9,8 @@ import { SetupCheckService } from './application/setup-check.service'
 import { VersionService } from './application/version.service'
 import { ConfigService as RuntimeConfigService } from './config/config.service'
 import { Cli } from './infrastructure/cli/cli'
-import {
-  requestJson,
-  ViemSetupStateService
-} from './infrastructure/setup-state/viem-setup-state.service'
+import { requestJson } from './infrastructure/setup-state/http-json.utils'
+import { ViemSetupStateService } from './infrastructure/setup-state/viem-setup-state.service'
 
 type Environment = Record<string, string | undefined>
 
@@ -20,7 +18,7 @@ type Dependencies = {
   createState?: (config: ConfigService) => SetupStateService
 }
 
-function chainReader(rpcUrl: string, timeout: number): ChainReader {
+const chainReader = (rpcUrl: string, timeout: number): ChainReader => {
   const client = createPublicClient({ chain: base, transport: http(rpcUrl, { timeout }) })
   return {
     getChainId: () => client.getChainId(),
@@ -34,7 +32,7 @@ function chainReader(rpcUrl: string, timeout: number): ChainReader {
   }
 }
 
-function defaultState(config: ConfigService) {
+const defaultState = (config: ConfigService) => {
   return new ViemSetupStateService(
     chainReader(config.rpcUrl, config.requestTimeoutMs),
     chainReader(config.referenceRpcUrl, config.requestTimeoutMs),
@@ -59,12 +57,11 @@ function defaultState(config: ConfigService) {
  * @param environment - Environment map used for lazy validated configuration.
  * @param dependencies - Optional test adapters; production defaults to viem and HTTP readers.
  * @returns An application exposing a single asynchronous CLI `run` boundary.
- * @throws When `run` encounters invalid configuration, provider failure, or failed readiness.
  * @remarks Composition is side-effect free. Configuration and provider construction occur lazily
  * for `setup-check`; the setup implementation is read-only and preserves concurrent independent
  * reads through `Promise.all`.
  */
-export function createApplication(
+export const createApplication = (
   environment: Environment = Bun.env,
   dependencies: Dependencies = {}
 ): {
@@ -75,7 +72,7 @@ export function createApplication(
    * @throws On invalid configuration, unknown commands, provider failures, or failed readiness.
    */
   run(argv: readonly string[]): Promise<string>
-} {
+} => {
   const cli = new Cli(new VersionService(), () => {
     const config = RuntimeConfigService.from(environment)
     const state = dependencies.createState?.(config) ?? defaultState(config)

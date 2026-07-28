@@ -3,19 +3,10 @@ import { Command, CommanderError } from 'commander'
 import type { SetupCheckReport } from '../../application/setup-check.service'
 import type { VersionService } from '../../application/version.service'
 
+import { formatSetupCheckReport } from './cli.utils'
+
 interface SetupReadinessService {
   assertReady(): Promise<SetupCheckReport>
-}
-
-/**
- * Serializes a sanitized setup report for the CLI, converting bigint values to decimal strings.
- * @param report - Complete setup report containing no raw provider URLs or secrets.
- * @returns Compact JSON suitable for standard output or error output.
- * @throws When an unexpected cyclic value prevents JSON serialization.
- * @remarks Pure formatting only; no provider, filesystem, or chain side effects occur.
- */
-export function formatSetupCheckReport(report: SetupCheckReport) {
-  return JSON.stringify(report, (_, item) => (typeof item === 'bigint' ? item.toString() : item))
 }
 
 /** Infrastructure adapter: wires the `mm` CLI (commander) to application services. */

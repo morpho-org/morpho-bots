@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 
 import { VersionService } from '../../../src/application/version.service'
-import { Cli, formatSetupCheckReport } from '../../../src/infrastructure/cli/cli'
+import { Cli } from '../../../src/infrastructure/cli/cli'
+import { formatSetupCheckReport } from '../../../src/infrastructure/cli/cli.utils'
 
 const readyReport = {
   ready: true,

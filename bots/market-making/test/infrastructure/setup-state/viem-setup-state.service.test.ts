@@ -3,10 +3,8 @@ import type { Address, Hex } from 'viem'
 import { describe, expect, test } from 'bun:test'
 import { keccak256 } from 'viem'
 
-import {
-  requestJson,
-  ViemSetupStateService
-} from '../../../src/infrastructure/setup-state/viem-setup-state.service'
+import { requestJson } from '../../../src/infrastructure/setup-state/http-json.utils'
+import { ViemSetupStateService } from '../../../src/infrastructure/setup-state/viem-setup-state.service'
 
 const maker: Address = '0x1111111111111111111111111111111111111111'
 const midnight: Address = '0x2222222222222222222222222222222222222222'

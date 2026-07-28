@@ -32,8 +32,19 @@ Agent conventions:
 - **JSDoc public surface**: Every externally facing function and public method changed in TypeScript
   requires substantive JSDoc covering its applicable parameters, return value, failures, and side
   effects. Before completion, follow `.agents/skills/build-jsdoc/SKILL.md` and run
-  `bun run --filter @morpho-org/market-making-bot jsdoc:build`; independent checks must continue to
-  run concurrently through `Promise.all` where possible.
+  `bun run --filter @morpho-org/market-making-bot jsdoc:build`; `.claude/skills` must be the real
+  symlink `../.agents/skills`, and independent checks must continue to run concurrently through
+  `Promise.all` where possible.
+- **Utility isolation**: Utility functions must live in a different file from every file containing
+  a class; use focused `*.utils.ts` or dedicated modules.
+- **Arrow utilities**: Declare utilities as arrow constants (`export const helper = () => {}` or
+  `const helper = () => {}`), never as function declarations.
+- **Viem first**: Prefer viem for Hex/address parsing, validation, normalization, equality, hashing,
+  byte size, and conversions instead of local regex, lowercase, or parsing equivalents.
+- **SDK first**: Inspect installed package exports/source and repository usage, then reuse real
+  `@morpho-org/midnight-sdk` and Morpho SDK helpers, entities, ABIs, types, and constants when their
+  semantics match. Never invent exports or dependencies; document evidence for each justified local
+  helper.
 - **Agent transparency**: When invoking a subagent, always tell the user which agent is being
   triggered and why (e.g., "Invoking the protocol engineer because this task modifies contract
   interaction code").

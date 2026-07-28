@@ -1,10 +1,24 @@
 import type { Address, Hex } from 'viem'
 
-import { isAddress, isAddressEqual } from 'viem'
+import {
+  booksCheck,
+  capture,
+  chainCheck,
+  providerFailure,
+  sameAddress,
+  setupResult
+} from './setup-check.utils'
 
 type SetupCheckStatus = 'passed' | 'failed' | 'not-required'
 
-type SetupRemediation = string | { to: Address; functionName: string; args: readonly unknown[] }
+/** Read-only operator instruction or exact transaction description; never executed by the checker. */
+export type SetupRemediation =
+  | string
+  | {
+      to: Address
+      functionName: string
+      args: readonly unknown[]
+    }
 
 /** A single sanitized, read-only readiness observation and its optional operator remediation. */
 export type SetupCheck = {
@@ -37,7 +51,7 @@ export type SetupCheckReport = {
   checks: SetupCheck[]
 }
 
-/** Error raised by the fail-fast readiness gate while retaining the complete sanitized report. */
+/** Error raised after a complete fail-closed readiness report has been collected. */
 export class SetupCheckError extends Error {
   /**
    * Creates an error naming every failed check.
@@ -95,15 +109,16 @@ export type BookSetup = {
  * failures and continues collecting independent observations concurrently.
  */
 export interface SetupStateService {
-  /** @returns The connected RPC chain identifier. */
+  /** Reads the connected RPC chain identifier. @returns The connected RPC chain identifier. */
   getChainId(): Promise<number>
-  /** @param address - Contract address to inspect. @returns Runtime bytecode, if deployed. */
+  /** Reads deployed runtime bytecode. @param address - Contract address to inspect. @returns Runtime bytecode, if deployed. */
   getCode(address: Address): Promise<Hex | undefined>
-  /** @returns The maker derived from the configured signing key without signing or broadcasting. */
+  /** Derives the configured maker locally. @returns The maker derived from the configured signing key without signing or broadcasting. */
   getDerivedMaker(): Promise<Address>
-  /** @param address - Account to inspect. @returns Its native-token balance. */
+  /** Reads an account native-token balance. @param address - Account to inspect. @returns Its native-token balance. */
   getNativeBalance(address: Address): Promise<bigint>
   /**
+   * Reads the configured ERC-20 allowance without writes.
    * @param owner - Token owner whose allowance is read.
    * @param loanAsset - ERC-20 contract queried.
    * @returns The configured spender and current allowance.
@@ -129,11 +144,11 @@ export interface SetupStateService {
     ecrecoverSurface: boolean
     authorized: boolean
   }>
-  /** @param id - Midnight market identifier. @returns Cross-checked API and on-chain market facts. */
+  /** Cross-checks one Midnight market. @param id - Midnight market identifier. @returns Cross-checked API and on-chain market facts. */
   getBook(id: Hex): Promise<BookSetup>
-  /** @returns Timestamp of the latest connected-chain block. */
+  /** Reads the latest connected-chain block timestamp. @returns Timestamp of the latest connected-chain block. */
   getLatestTimestamp(): Promise<bigint>
-  /** @returns Archive-readability and exact reference-market identity facts. */
+  /** Checks historical reference-market readability. @returns Archive-readability and exact reference-market identity facts. */
   checkReference(): Promise<{ marketId: Hex; referenceReadable: boolean; archiveReadable: boolean }>
   /**
    * Traverses all active offers under one absolute request deadline.
@@ -145,203 +160,8 @@ export interface SetupStateService {
     unknownNamespaces: readonly string[]
     invertedMarketIds: readonly Hex[]
   }>
-  /** @returns The explicit V0 not-required result; performs no writes. */
+  /** Reports the intentionally excluded V0 health surface. @returns The explicit V0 not-required result; performs no writes. */
   checkPositionHealth(): Promise<{ status: 'not-required'; reason: string }>
-}
-
-const BASE_CHAIN_ID = 8453
-
-type SafeProviderFailure = {
-  kind: 'provider-error'
-  provider: 'rpc' | 'archive-rpc' | 'morpho-api' | 'router-api'
-  name: string
-  code?: string
-  status?: number
-  context?: 'read' | 'request'
-}
-
-/** Allowlisted provider failure safe to place in reports without leaking URLs or response bodies. */
-export class SafeProviderError extends Error {
-  /**
-   * Creates a provider error from already-sanitized metadata.
-   * @param failure - Provider ID and allowlisted status, code, name, and context only.
-   */
-  constructor(readonly failure: SafeProviderFailure) {
-    super(failure.name)
-    this.name = 'SafeProviderError'
-  }
-}
-
-type Captured<T> = { ok: true; value: T } | { ok: false; error: SafeProviderFailure }
-
-const SAFE_ERROR_NAMES = new Set([
-  'Error',
-  'TypeError',
-  'RangeError',
-  'AbortError',
-  'TimeoutError',
-  'NetworkError',
-  'HttpError',
-  'ProviderError'
-])
-const SAFE_ERROR_CODES = new Set([
-  'ECONNREFUSED',
-  'ECONNRESET',
-  'ENETUNREACH',
-  'ETIMEDOUT',
-  'ABORT_ERR',
-  'UND_ERR_CONNECT_TIMEOUT',
-  'UND_ERR_HEADERS_TIMEOUT'
-])
-const SAFE_PROVIDER_IDS = new Set(['rpc', 'archive-rpc', 'morpho-api', 'router-api'])
-
-function safeProviderFailure(
-  error: unknown,
-  provider: SafeProviderFailure['provider']
-): SafeProviderFailure {
-  if (error instanceof SafeProviderError) {
-    const safeProvider = SAFE_PROVIDER_IDS.has(error.failure.provider)
-      ? error.failure.provider
-      : provider
-    const name = SAFE_ERROR_NAMES.has(error.failure.name) ? error.failure.name : 'ProviderError'
-    const code =
-      error.failure.code === 'REQUEST_TIMEOUT' ||
-      (error.failure.code !== undefined && SAFE_ERROR_CODES.has(error.failure.code))
-        ? error.failure.code
-        : undefined
-    const status = Number.isSafeInteger(error.failure.status) ? error.failure.status : undefined
-    const context =
-      error.failure.context === 'request' || error.failure.context === 'read'
-        ? error.failure.context
-        : undefined
-    return {
-      kind: 'provider-error',
-      provider: safeProvider,
-      name,
-      ...(code ? { code } : {}),
-      ...(status ? { status } : {}),
-      ...(context ? { context } : {})
-    }
-  }
-  const candidate =
-    typeof error === 'object' && error !== null ? (error as Record<string, unknown>) : undefined
-  const name =
-    typeof candidate?.name === 'string' && SAFE_ERROR_NAMES.has(candidate.name)
-      ? candidate.name
-      : 'ProviderError'
-  const code =
-    typeof candidate?.code === 'string' && SAFE_ERROR_CODES.has(candidate.code)
-      ? candidate.code
-      : undefined
-  const status =
-    typeof candidate?.status === 'number' && Number.isSafeInteger(candidate.status)
-      ? candidate.status
-      : undefined
-  return {
-    kind: 'provider-error',
-    provider,
-    name,
-    ...(code ? { code } : {}),
-    ...(status ? { status } : {}),
-    context: 'read'
-  }
-}
-
-function capture<T>(
-  read: () => Promise<T>,
-  provider: SafeProviderFailure['provider'] = 'rpc'
-): Promise<Captured<T>> {
-  try {
-    return read().then(
-      value => ({ ok: true, value }),
-      error => ({ ok: false, error: safeProviderFailure(error, provider) })
-    )
-  } catch (error) {
-    return Promise.resolve({ ok: false, error: safeProviderFailure(error, provider) })
-  }
-}
-
-function sameAddress(left: string, right: string) {
-  return isAddress(left) && isAddress(right) && isAddressEqual(left, right)
-}
-
-function result(
-  name: SetupCheck['name'],
-  passed: boolean,
-  observed: unknown,
-  required: unknown,
-  remediation?: SetupRemediation
-): SetupCheck {
-  return {
-    name,
-    status: passed ? 'passed' : 'failed',
-    observed,
-    required,
-    ...(passed || !remediation ? {} : { remediation })
-  }
-}
-
-function providerFailure(name: SetupCheck['name'], error: SafeProviderFailure, required: unknown) {
-  return result(name, false, { error }, required)
-}
-
-function bookProblems(
-  requestedId: Hex,
-  book: BookSetup,
-  config: SetupCheckConfig,
-  latestTimestamp: bigint
-) {
-  const reasons: unknown[] = []
-  if (book.id !== requestedId) reasons.push(`provider returned ${book.id}`)
-  if (!book.allowlisted) reasons.push('not allowlisted')
-  if (!book.active) reasons.push('inactive')
-  if (!sameAddress(book.loanAsset, config.loanAsset)) {
-    reasons.push(`unexpected loan asset ${book.loanAsset}`)
-  }
-  if (book.tickSpacing <= 0) reasons.push('tick spacing is inaccessible')
-  if (book.maturity <= latestTimestamp) reasons.push(`matured at ${book.maturity}`)
-  return { id: requestedId, reasons }
-}
-
-function chainCheck(
-  config: SetupCheckConfig,
-  chainId: Captured<number>,
-  midnightCode: Captured<Hex | undefined>
-) {
-  const required = { chainId: BASE_CHAIN_ID, midnightCode: 'deployed' }
-  if (!chainId.ok) return providerFailure('chain', chainId.error, required)
-  if (!midnightCode.ok) return providerFailure('chain', midnightCode.error, required)
-  const observed = {
-    configured: config.chainId,
-    connected: chainId.value,
-    midnightCode: midnightCode.value
-  }
-  const ready =
-    config.chainId === BASE_CHAIN_ID &&
-    chainId.value === BASE_CHAIN_ID &&
-    midnightCode.value !== undefined &&
-    midnightCode.value !== '0x'
-  return result('chain', ready, observed, required)
-}
-
-function booksCheck(
-  config: SetupCheckConfig,
-  timestamp: Captured<bigint>,
-  books: readonly { requestedId: Hex; response: Captured<BookSetup> }[]
-) {
-  const required = 'all configured books valid'
-  if (config.marketIds.length === 0) {
-    return result('books', false, [{ id: '(none)', reasons: ['no markets configured'] }], required)
-  }
-  const invalidBooks = books.flatMap(({ requestedId, response }) => {
-    if (!response.ok) return [{ id: requestedId, reasons: [{ providerError: response.error }] }]
-    if (!timestamp.ok) {
-      return [{ id: requestedId, reasons: [{ timestampProviderError: timestamp.error }] }]
-    }
-    const problem = bookProblems(requestedId, response.value, config, timestamp.value)
-    return problem.reasons.length === 0 ? [] : [problem]
-  })
-  return result('books', invalidBooks.length === 0, invalidBooks, required)
 }
 
 /** Application service that evaluates every V0 market-maker readiness requirement without writes. */
@@ -408,7 +228,7 @@ export class SetupCheckService {
 
     const makerCheck = !derivedMaker.ok
       ? providerFailure('maker', derivedMaker.error, this.config.maker)
-      : result(
+      : setupResult(
           'maker',
           sameAddress(derivedMaker.value, this.config.maker),
           derivedMaker.value,
@@ -416,7 +236,7 @@ export class SetupCheckService {
         )
     const nativeCheck = !nativeBalance.ok
       ? providerFailure('native-balance', nativeBalance.error, this.config.nativeReserve)
-      : result(
+      : setupResult(
           'native-balance',
           nativeBalance.value >= this.config.nativeReserve,
           nativeBalance.value,
@@ -429,7 +249,7 @@ export class SetupCheckService {
     }
     const allowanceCheck = !allowance.ok
       ? providerFailure('loan-allowance', allowance.error, allowanceRequired)
-      : result(
+      : setupResult(
           'loan-allowance',
           sameAddress(allowance.value.spender, this.config.midnight) &&
             allowance.value.amount >= this.config.maximumLendExposure,
@@ -450,7 +270,7 @@ export class SetupCheckService {
     }
     const ratifierCheck = !ratifier.ok
       ? providerFailure('ratifier', ratifier.error, ratifierRequired)
-      : result(
+      : setupResult(
           'ratifier',
           ratifier.value.listed &&
             ratifier.value.deployed &&
@@ -478,7 +298,7 @@ export class SetupCheckService {
     }
     const referenceCheck = !reference.ok
       ? providerFailure('reference', reference.error, referenceRequired)
-      : result(
+      : setupResult(
           'reference',
           reference.value.marketId === this.config.referenceMarketId &&
             reference.value.referenceReadable &&
@@ -489,7 +309,7 @@ export class SetupCheckService {
     const offersRequired = { unknownNamespaces: [], invertedMarketIds: [] }
     const offersCheck = !offers.ok
       ? providerFailure('offers', offers.error, offersRequired)
-      : result(
+      : setupResult(
           'offers',
           offers.value.unknownNamespaces.length === 0 &&
             offers.value.invertedMarketIds.length === 0,

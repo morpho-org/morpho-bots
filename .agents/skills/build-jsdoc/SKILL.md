@@ -1,7 +1,7 @@
 ---
 name: build-jsdoc
 description: Use when changing externally facing TypeScript in the market-making bot. Inventory public callables, enforce substantive JSDoc, and build browsable TypeDoc output before completion.
-version: 1.0.0
+version: 1.1.0
 author: Morpho
 license: Apache-2.0
 metadata:
@@ -30,22 +30,22 @@ be understood from the public contract.
 
 ## Canonical Files and Symlinks
 
-`.agents/skills/build-jsdoc/SKILL.md` is canonical. Keep any `.claude` exposure as a symlink to the
-canonical `.agents` tree; never create a divergent copy under `.claude`. Some historical checkouts,
-including the MKT-1459 branch point, have a regular `.claude` directory and no `.claude/skills` link;
-do not overwrite that directory. `AGENTS.md` points to `CLAUDE.md`, so edit `CLAUDE.md` once and
-preserve the link.
+`.agents/skills/build-jsdoc/SKILL.md` is canonical. `.claude/skills` is required exposure and must be
+a real symlink to `../.agents/skills`; never create a divergent file or directory copy under
+`.claude`. Preserve the existing `.claude` directory and create only its `skills` entry. `AGENTS.md`
+points to `CLAUDE.md`, so edit `CLAUDE.md` once and preserve the link.
 
 Verify before editing:
 
 ```sh
-test ! -e .claude/skills || readlink .claude/skills
+test -L .claude/skills
+test "$(readlink .claude/skills)" = ../.agents/skills
 readlink AGENTS.md
 stat .agents/skills .claude AGENTS.md CLAUDE.md
 ```
 
-Completion criterion: no divergent `.claude` skill copy exists, any existing `.claude/skills` link
-resolves to `.agents/skills`, and `AGENTS.md` resolves to `CLAUDE.md`.
+Completion criterion: `.claude/skills` exists as mode `120000`, reads `../.agents/skills`, resolves to
+the canonical tree, and `AGENTS.md` resolves to `CLAUDE.md`.
 
 ## Install and Build
 
@@ -67,19 +67,41 @@ Completion criterion: the AST inventory exits zero, TypeDoc emits zero warnings/
 
 ## Public-Surface Inventory
 
-The coverage script inventories these setup-check boundary files:
+The coverage script inventories these setup-check boundary and utility files:
 
 - `src/application/setup-check.service.ts`
+- `src/application/setup-check.utils.ts`
+- `src/application/safe-provider.error.ts`
 - `src/bootstrap.ts`
 - `src/config/config.service.ts`
+- `src/config/config.utils.ts`
 - `src/infrastructure/cli/cli.ts`
+- `src/infrastructure/cli/cli.utils.ts`
+- `src/infrastructure/setup-state/http-json.utils.ts`
 - `src/infrastructure/setup-state/viem-setup-state.service.ts`
+- `src/infrastructure/setup-state/viem-setup-state.utils.ts`
 
 It checks exported functions/classes/interfaces/type aliases, interface methods, callable members of
 exported type literals, and public constructors/methods/accessors. Every listed declaration needs a
-substantive `/** ... */` block. Public callables should document applicable `@param`, `@returns`, and
-`@throws` contracts plus read/write side effects, redaction/failure semantics, deadlines, and
-`Promise.all` concurrency. Do not satisfy coverage with a restatement of the declaration.
+substantive `/** ... */` block. The checker requires a non-filler summary, exact `@param` names,
+`@returns` for non-void callables, and `@throws` at its provider-boundary rule. Scoped rules also
+enforce read-only, aggregate-deadline, and `Promise.all` concurrency semantics. Do not satisfy
+coverage with a restatement of the declaration.
+
+## TypeScript Utility and SDK Discipline
+
+- Keep every utility function out of files containing classes; move it to a focused `*.utils.ts` or
+  dedicated module.
+- Write every utility as an arrow constant, never a function declaration.
+- Prefer viem validation and conversion utilities (`isAddress`, `getAddress`, `isAddressEqual`,
+  `isHex`, `size`, `keccak256`, and typed conversions) over equivalent local parsing.
+- Inspect installed `@morpho-org/midnight-sdk` and Morpho SDK exports and source before reuse. Import
+  only APIs that exist and preserve semantics. Record why any protocol ABI/entity/parser remains
+  local; never add a dependency for an imagined export.
+
+Completion criterion: no named utility function declaration remains in changed source, no utility
+shares a file with a class, and each protocol/viem reuse or local exception is evidenced in code or
+the change report.
 
 When adding another boundary file, add it to both `scripts/check-jsdoc.ts` and `typedoc.json` in the
 same change. Completion criterion: the command's printed inventory contains every added public
@@ -120,4 +142,4 @@ URL, default runtime environment, raw provider response, or generated source-map
 - [ ] Generated output is ignored and absent from `git status`.
 - [ ] Public docs explain failure, side-effect, timeout/deadline, and concurrency behavior where relevant.
 - [ ] Independent checks still run concurrently through `Promise.all` where possible.
-- [ ] No divergent `.claude` skill exists; any skill link and the `AGENTS.md` link resolve canonically.
+- [ ] `.claude/skills` is a real `../.agents/skills` symlink and `AGENTS.md` resolves to `CLAUDE.md`.

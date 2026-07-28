@@ -41,6 +41,7 @@
         "mm": "./src/index.ts",
       },
       "dependencies": {
+        "@morpho-org/midnight-sdk": "catalog:",
         "@morpho-org/morpho-ts": "catalog:",
         "commander": "^14.0.3",
         "viem": "catalog:",

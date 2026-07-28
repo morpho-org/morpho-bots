@@ -1,6 +1,6 @@
 import { SetupCheckError } from './application/setup-check.service'
 import { createApplication } from './bootstrap'
-import { formatSetupCheckReport } from './infrastructure/cli/cli'
+import { formatSetupCheckReport } from './infrastructure/cli/cli.utils'
 
 try {
   const application = createApplication()
