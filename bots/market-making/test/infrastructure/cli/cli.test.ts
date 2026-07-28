@@ -16,6 +16,24 @@ const cli = (assertReady = async () => readyReport) => {
   return new Cli(new VersionService(), () => ({ assertReady }))
 }
 
+const runEntrypoint = async (argv: readonly string[]) => {
+  const process = Bun.spawn(
+    [Bun.which('bun') ?? 'bun', 'bots/market-making/src/index.ts', ...argv],
+    {
+      cwd: `${import.meta.dir}/../../../../..`,
+      env: { PATH: Bun.env.PATH },
+      stdout: 'pipe',
+      stderr: 'pipe'
+    }
+  )
+  const [exitCode, stdout, stderr] = await Promise.all([
+    process.exited,
+    new Response(process.stdout).text(),
+    new Response(process.stderr).text()
+  ])
+  return { exitCode, output: stdout + stderr }
+}
+
 describe('Cli', () => {
   test('mm --version returns 0.0.0', async () => {
     expect(await cli().run(['--version'])).toBe('0.0.0')
@@ -103,7 +121,17 @@ describe('Cli', () => {
   })
 
   test('rejects an unknown command', async () => {
-    expect(cli().run(['bogus'])).rejects.toThrow(/unknown command/)
+    const error = await cli()
+      .run(['bogus'])
+      .catch(value => value)
+
+    expect(error).toBeInstanceOf(CliUsageError)
+    expect(error).toEqual(
+      expect.objectContaining({ name: 'CliUsageError', code: 'INVALID_USAGE', kind: 'usage' })
+    )
+    expect(error.message).toBe('Invalid command-line usage')
+    expect(error).not.toHaveProperty('cause')
+    expect(error).not.toHaveProperty('command')
   })
 
   test('rejects an empty argv', async () => {
@@ -111,8 +139,40 @@ describe('Cli', () => {
       .run([])
       .catch(value => value)
     expect(error).toBeInstanceOf(CliUsageError)
-    expect(error).toMatchObject({ name: 'CliUsageError', command: '(none)' })
-    expect(error.message).toBe('Unknown command: (none)')
+    expect(error).toMatchObject({
+      name: 'CliUsageError',
+      code: 'INVALID_USAGE',
+      kind: 'usage'
+    })
+    expect(error.message).toBe('Invalid command-line usage')
+    expect(error).not.toHaveProperty('cause')
+    expect(error).not.toHaveProperty('command')
+  })
+
+  test.each([
+    ['hostile unknown option', ['--token=option-secret-7f3a']],
+    [
+      'URL-shaped unknown command',
+      ['https://url-user:url-pass@host-secret.example/private/path?apiKey=query-secret#fragment']
+    ]
+  ])('entrypoint sanitizes %s', async (_name, argv) => {
+    const markers = [
+      'option-secret-7f3a',
+      'url-user',
+      'url-pass',
+      'host-secret.example',
+      '/private/path',
+      'query-secret',
+      'fragment',
+      'CommanderError',
+      'unknown option',
+      'unknown command'
+    ]
+    const { exitCode, output } = await runEntrypoint(argv)
+
+    expect(exitCode).toBe(1)
+    expect(output.trim()).toBe('Invalid command-line usage')
+    for (const marker of markers) expect(output).not.toContain(marker)
   })
 
   test('runs setup-check and returns a structured bigint-safe report', async () => {

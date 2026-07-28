@@ -12,6 +12,7 @@ import type { JsonRequest } from './http-json.utils'
 
 import { jsonRequestFetch } from './http-json.utils'
 import { ProviderPaginationError } from './provider-pagination.error'
+import { executeProviderRead } from './provider-read.utils'
 import { ProviderResponseError } from './provider-response.error'
 import {
   addressValue,
@@ -111,22 +112,24 @@ export class ViemSetupStateService implements SetupStateService {
   /**
    * Reads the connected chain identity through the current-state provider.
    * @returns The connected chain ID from the current-state RPC.
-   * @throws When the current-state RPC rejects or returns an invalid chain ID.
+   * @throws `ProviderReadError` on a sanitized RPC rejection.
    * @remarks Read-only; performs no writes.
    */
   getChainId() {
-    return this.chain.getChainId()
+    return executeProviderRead('rpc', 'chain-id', () => this.chain.getChainId())
   }
 
   /**
    * Reads target runtime bytecode through the current-state provider.
    * @param target - Address to inspect.
    * @returns Runtime bytecode when deployed.
-   * @throws When the current-state RPC rejects or returns malformed bytecode.
+   * @throws `ProviderReadError` on a sanitized RPC rejection.
    * @remarks Read-only; performs no writes.
    */
   getCode(target: Address) {
-    return this.chain.getCode({ address: target })
+    return executeProviderRead('rpc', 'contract-code', () =>
+      this.chain.getCode({ address: target })
+    )
   }
 
   /** Derives no new state and returns the cached local maker. @returns The locally derived maker; no signing or provider request occurs. */
@@ -138,11 +141,13 @@ export class ViemSetupStateService implements SetupStateService {
    * Reads an account native-token balance through the current-state provider.
    * @param owner - Account to inspect.
    * @returns Its current native-token balance.
-   * @throws When the current-state RPC rejects or returns a malformed balance.
+   * @throws `ProviderReadError` on a sanitized RPC rejection.
    * @remarks Read-only; performs no writes.
    */
   getNativeBalance(owner: Address) {
-    return this.chain.getBalance({ address: owner })
+    return executeProviderRead('rpc', 'native-balance', () =>
+      this.chain.getBalance({ address: owner })
+    )
   }
 
   /**
@@ -150,16 +155,19 @@ export class ViemSetupStateService implements SetupStateService {
    * @param owner - Token owner.
    * @param loanAsset - ERC-20 contract.
    * @returns Configured Midnight spender and decoded allowance.
-   * @throws When the provider rejects, the call reverts, or the response is not a bigint.
+   * @throws `ProviderReadError` on a sanitized RPC rejection, or `ProviderResponseError` when the
+   * decoded allowance is not a bigint.
    * @remarks Read-only; performs no writes.
    */
   async getLoanAllowance(owner: Address, loanAsset: Address) {
-    const amount = await this.chain.readContract({
-      address: loanAsset,
-      abi: erc20Abi,
-      functionName: 'allowance',
-      args: [owner, this.options.midnight]
-    })
+    const amount = await executeProviderRead('rpc', 'loan-allowance', () =>
+      this.chain.readContract({
+        address: loanAsset,
+        abi: erc20Abi,
+        functionName: 'allowance',
+        args: [owner, this.options.midnight]
+      })
+    )
     if (typeof amount !== 'bigint') {
       throw new ProviderResponseError(
         'rpc',
@@ -176,33 +184,42 @@ export class ViemSetupStateService implements SetupStateService {
    * @param maker - Maker whose authorization/root surface is read.
    * @param ratifier - Candidate ratifier address.
    * @returns Five readiness facts without exposing provider URLs or bytecode.
-   * @throws On provider rejection, malformed provider/contract responses, or failed reads.
+   * @throws `ProviderReadError` on a sanitized Router/RPC rejection, or `ProviderResponseError` for
+   * malformed provider or contract responses.
    * @remarks All five independent reads start concurrently through `Promise.all`; this is read-only.
    */
   async getRatifier(maker: Address, ratifier: Address) {
     const [routerContracts, code, ratifierMidnight, rootCanceled, authorized] = await Promise.all([
-      this.request(
-        `${this.options.routerApiBaseUrl}/v0/config/contracts?chains=${BASE_CHAIN_ID}&limit=100`,
-        'router-api'
+      executeProviderRead('router-api', 'ratifier-registry', () =>
+        this.request(
+          `${this.options.routerApiBaseUrl}/v0/config/contracts?chains=${BASE_CHAIN_ID}&limit=100`,
+          'router-api'
+        )
       ),
-      this.chain.getCode({ address: ratifier }),
-      this.chain.readContract({
-        address: ratifier,
-        abi: ecrecoverRatifierAbi,
-        functionName: 'MIDNIGHT'
-      }),
-      this.chain.readContract({
-        address: ratifier,
-        abi: ecrecoverRatifierAbi,
-        functionName: 'isRootCanceled',
-        args: [maker, zeroHash]
-      }),
-      this.chain.readContract({
-        address: this.options.midnight,
-        abi: midnightAbi,
-        functionName: 'isAuthorized',
-        args: [maker, ratifier]
-      })
+      executeProviderRead('rpc', 'ratifier-code', () => this.chain.getCode({ address: ratifier })),
+      executeProviderRead('rpc', 'ratifier-midnight', () =>
+        this.chain.readContract({
+          address: ratifier,
+          abi: ecrecoverRatifierAbi,
+          functionName: 'MIDNIGHT'
+        })
+      ),
+      executeProviderRead('rpc', 'ratifier-root', () =>
+        this.chain.readContract({
+          address: ratifier,
+          abi: ecrecoverRatifierAbi,
+          functionName: 'isRootCanceled',
+          args: [maker, zeroHash]
+        })
+      ),
+      executeProviderRead('rpc', 'ratifier-authorization', () =>
+        this.chain.readContract({
+          address: this.options.midnight,
+          abi: midnightAbi,
+          functionName: 'isAuthorized',
+          args: [maker, ratifier]
+        })
+      )
     ])
     if (typeof authorized !== 'boolean') {
       throw new ProviderResponseError(
@@ -243,32 +260,38 @@ export class ViemSetupStateService implements SetupStateService {
    * Cross-checks one Midnight market between the Morpho API and on-chain state.
    * @param id - Configured market ID.
    * @returns Validated listing, activity, loan asset, tick spacing, and maturity.
-   * @throws On provider rejection, missing/extra API rows, malformed values, identity disagreement,
-   * or invalid chain data.
+   * @throws `ProviderReadError` on a sanitized API/RPC rejection, or `ProviderResponseError` for
+   * missing/extra rows, malformed values, identity disagreement, or invalid chain data.
    * @remarks API, market, and tick-spacing reads run concurrently through `Promise.all`; no writes.
    */
   async getBook(id: Hex): Promise<BookSetup> {
     const requestTimeoutMs = this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
     const [apiResponse, contractResponse, tickSpacing] = await Promise.all([
-      MidnightApi.fetchBooks({
-        baseUrl: `${this.options.morphoApiBaseUrl}/v0/midnight`,
-        chainIds: [BASE_CHAIN_ID],
-        marketIds: [id],
-        limit: 1,
-        fetch: jsonRequestFetch(this.request, 'morpho-api', requestTimeoutMs)
-      }),
-      this.chain.readContract({
-        address: this.options.midnight,
-        abi: midnightAbi,
-        functionName: 'toMarket',
-        args: [id]
-      }),
-      this.chain.readContract({
-        address: this.options.midnight,
-        abi: midnightAbi,
-        functionName: 'tickSpacing',
-        args: [id]
-      })
+      executeProviderRead('morpho-api', 'book-api', () =>
+        MidnightApi.fetchBooks({
+          baseUrl: `${this.options.morphoApiBaseUrl}/v0/midnight`,
+          chainIds: [BASE_CHAIN_ID],
+          marketIds: [id],
+          limit: 1,
+          fetch: jsonRequestFetch(this.request, 'morpho-api', requestTimeoutMs)
+        })
+      ),
+      executeProviderRead('rpc', 'book-market', () =>
+        this.chain.readContract({
+          address: this.options.midnight,
+          abi: midnightAbi,
+          functionName: 'toMarket',
+          args: [id]
+        })
+      ),
+      executeProviderRead('rpc', 'book-tick-spacing', () =>
+        this.chain.readContract({
+          address: this.options.midnight,
+          abi: midnightAbi,
+          functionName: 'tickSpacing',
+          args: [id]
+        })
+      )
     ])
     if (apiResponse.data.length !== 1) {
       throw new ProviderResponseError(
@@ -340,22 +363,29 @@ export class ViemSetupStateService implements SetupStateService {
   /**
    * Reads the latest timestamp through the current-state provider.
    * @returns Latest current-state block timestamp from a read-only RPC call.
-   * @throws When the current-state RPC rejects or returns a malformed block.
+   * @throws `ProviderReadError` on a sanitized RPC rejection.
    * @remarks Read-only; performs no writes.
    */
   async getLatestTimestamp() {
-    return (await this.chain.getBlock({ blockTag: 'latest' })).timestamp
+    return (
+      await executeProviderRead('rpc', 'latest-timestamp', () =>
+        this.chain.getBlock({ blockTag: 'latest' })
+      )
+    ).timestamp
   }
 
   /**
    * Proves the exact reference market is readable at a historical archive block.
    * @returns Reference-market identity plus current and archive readability flags.
-   * @throws On provider rejection, insufficient history, or absent, zero, or malformed market state.
+   * @throws `ProviderReadError` on a sanitized archive-RPC rejection, or `ProviderResponseError` for
+   * insufficient history and absent, zero, or malformed market state.
    * @remarks After locating the historical block, independent parameter and state reads run through
    * `Promise.all`; the method is read-only.
    */
   async checkReference() {
-    const latest = await this.reference.getBlock({ blockTag: 'latest' })
+    const latest = await executeProviderRead('archive-rpc', 'reference-latest-block', () =>
+      this.reference.getBlock({ blockTag: 'latest' })
+    )
     if (latest.number === null) {
       throw new ProviderResponseError(
         'archive-rpc',
@@ -372,22 +402,28 @@ export class ViemSetupStateService implements SetupStateService {
       )
     }
     const historicalBlock = latest.number - lookback
-    await this.reference.getBlock({ blockNumber: historicalBlock })
+    await executeProviderRead('archive-rpc', 'reference-historical-block', () =>
+      this.reference.getBlock({ blockNumber: historicalBlock })
+    )
     const [paramsResponse, marketResponse] = await Promise.all([
-      this.reference.readContract({
-        address: getChainAddress(BASE_CHAIN_ID, 'morpho'),
-        abi: blueAbi,
-        functionName: 'idToMarketParams',
-        args: [this.options.referenceMarketId],
-        blockNumber: historicalBlock
-      }),
-      this.reference.readContract({
-        address: getChainAddress(BASE_CHAIN_ID, 'morpho'),
-        abi: blueAbi,
-        functionName: 'market',
-        args: [this.options.referenceMarketId],
-        blockNumber: historicalBlock
-      })
+      executeProviderRead('archive-rpc', 'reference-market-params', () =>
+        this.reference.readContract({
+          address: getChainAddress(BASE_CHAIN_ID, 'morpho'),
+          abi: blueAbi,
+          functionName: 'idToMarketParams',
+          args: [this.options.referenceMarketId],
+          blockNumber: historicalBlock
+        })
+      ),
+      executeProviderRead('archive-rpc', 'reference-market-state', () =>
+        this.reference.readContract({
+          address: getChainAddress(BASE_CHAIN_ID, 'morpho'),
+          abi: blueAbi,
+          functionName: 'market',
+          args: [this.options.referenceMarketId],
+          blockNumber: historicalBlock
+        })
+      )
     ])
     const params = objectRecord(paramsResponse, 'Morpho Blue reference market params')
     const market = objectRecord(marketResponse, 'Morpho Blue reference market state')
@@ -424,8 +460,9 @@ export class ViemSetupStateService implements SetupStateService {
    * or crossed books, including fresh offers whose takeable amount has not been measured yet.
    * @param maker - Maker whose complete active offer-group set is inspected.
    * @returns Deduplicated unknown namespaces, unconfigured markets, and all crossed market IDs.
-   * @throws On malformed responses, oversized pages, repeated cursors, more than 100 pages or
-   * 100,000 nested offers, maker mismatch, or expiry of the single absolute request deadline.
+   * @throws `ProviderReadError` on a sanitized Router rejection; `ProviderResponseError` or
+   * `ProviderPaginationError` on malformed or unbounded data; or a safe timeout error when the
+   * single absolute request deadline expires.
    * @remarks Uses the authoritative cursor-paginated `/users/{maker}/offer-groups` source. Pagination
    * is necessarily sequential because each cursor depends on the previous page; one aggregate
    * absolute deadline covers the whole read-only traversal. midnight-sdk 1.2.0 has no offer-group
@@ -453,10 +490,12 @@ export class ViemSetupStateService implements SetupStateService {
       const query = new URLSearchParams({ limit: String(PAGE_SIZE) })
       if (cursor) query.set('cursor', cursor)
       const response = objectRecord(
-        await this.request(
-          `${this.options.routerApiBaseUrl}/v0/midnight/users/${encodeURIComponent(maker)}/offer-groups?${query.toString()}`,
-          'router-api',
-          Math.min(requestTimeoutMs, remainingMs)
+        await executeProviderRead('router-api', 'offer-groups', () =>
+          this.request(
+            `${this.options.routerApiBaseUrl}/v0/midnight/users/${encodeURIComponent(maker)}/offer-groups?${query.toString()}`,
+            'router-api',
+            Math.min(requestTimeoutMs, remainingMs)
+          )
         ),
         'Router response'
       )

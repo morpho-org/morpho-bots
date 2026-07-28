@@ -1,17 +1,14 @@
-/** Signals invalid CLI usage while preserving only a safe command label and optional internal cause. */
+/** Signals invalid CLI usage without retaining user-controlled arguments or Commander details. */
 export class CliUsageError extends Error {
+  readonly code = 'INVALID_USAGE' as const
+  readonly kind = 'usage' as const
+
   /**
-   * Creates a deterministic CLI usage failure suitable for the process boundary.
-   * @param command - Safe command label, never raw arguments that may contain credentials.
-   * @param message - Commander-compatible operator-facing usage message.
-   * @param options - Optional internal cause; it is not included in serialized CLI output.
+   * Creates a deterministic usage failure containing only stable allowlisted fields.
+   * @remarks Raw arguments, command text, option names/values, URLs, and nested causes are discarded.
    */
-  constructor(
-    readonly command: string,
-    message: string,
-    options?: ErrorOptions
-  ) {
-    super(message, options)
+  constructor() {
+    super('Invalid command-line usage')
     this.name = 'CliUsageError'
   }
 }

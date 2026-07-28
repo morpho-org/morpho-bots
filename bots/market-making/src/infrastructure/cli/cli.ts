@@ -41,11 +41,13 @@ export class Cli {
    * Parses one CLI invocation and returns its captured output.
    * @param argv - User arguments without the executable/runtime prefix.
    * @returns Version text or the serialized complete setup report.
-   * @throws `CliUsageError` on invalid usage; provider and readiness errors pass through.
+   * @throws `CliUsageError` with a constant message and stable code on invalid usage; raw Commander
+   * arguments, messages, option details, URLs, and causes are deliberately discarded. Provider and
+   * readiness errors pass through.
    * @remarks `setup-check` remains read-only; any remediation is descriptive and never executed.
    */
   async run(argv: readonly string[]): Promise<string> {
-    if (argv.length === 0) throw new CliUsageError('(none)', 'Unknown command: (none)')
+    if (argv.length === 0) throw new CliUsageError()
     this.output = undefined
     try {
       await this.program.parseAsync(argv, { from: 'user' })
@@ -54,12 +56,12 @@ export class Cli {
         return error.message
       }
       if (error instanceof CommanderError) {
-        throw new CliUsageError('(unknown)', error.message, { cause: error })
+        throw new CliUsageError()
       }
       throw error
     }
 
     if (this.output !== undefined) return this.output
-    throw new CliUsageError('(none)', 'Unknown command: (none)')
+    throw new CliUsageError()
   }
 }

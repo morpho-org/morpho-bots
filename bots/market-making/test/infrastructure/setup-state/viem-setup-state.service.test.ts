@@ -7,6 +7,7 @@ import { bytesToHex, hexToBytes, keccak256 } from 'viem'
 import { SafeProviderError } from '../../../src/application/safe-provider.error'
 import { requestJson } from '../../../src/infrastructure/setup-state/http-json.utils'
 import { ProviderPaginationError } from '../../../src/infrastructure/setup-state/provider-pagination.error'
+import { ProviderReadError } from '../../../src/infrastructure/setup-state/provider-read.error'
 import { ProviderResponseError } from '../../../src/infrastructure/setup-state/provider-response.error'
 import { ViemSetupStateService } from '../../../src/infrastructure/setup-state/viem-setup-state.service'
 
@@ -149,6 +150,139 @@ const createState = (
 }
 
 describe('ViemSetupStateService', () => {
+  test.each([
+    [
+      'getChainId',
+      'chain-id',
+      'rpc',
+      'chain-id',
+      (state: ViemSetupStateService) => state.getChainId()
+    ],
+    [
+      'getCode',
+      'code',
+      'rpc',
+      'contract-code',
+      (state: ViemSetupStateService) => state.getCode(ratifier)
+    ],
+    [
+      'getNativeBalance',
+      'balance',
+      'rpc',
+      'native-balance',
+      (state: ViemSetupStateService) => state.getNativeBalance(maker)
+    ],
+    [
+      'getLoanAllowance',
+      'allowance',
+      'rpc',
+      'loan-allowance',
+      (state: ViemSetupStateService) => state.getLoanAllowance(maker, loanAsset)
+    ],
+    [
+      'getLatestTimestamp',
+      'latest',
+      'rpc',
+      'latest-timestamp',
+      (state: ViemSetupStateService) => state.getLatestTimestamp()
+    ],
+    [
+      'getRatifier compound reads',
+      'request',
+      'router-api',
+      'ratifier-registry',
+      (state: ViemSetupStateService) => state.getRatifier(maker, ratifier)
+    ],
+    [
+      'getBook compound reads',
+      'request',
+      'morpho-api',
+      'book-api',
+      (state: ViemSetupStateService) => state.getBook(marketId)
+    ],
+    [
+      'checkReference compound reads',
+      'reference',
+      'archive-rpc',
+      'reference-latest-block',
+      (state: ViemSetupStateService) => state.checkReference()
+    ],
+    [
+      'inspectOffers compound reads',
+      'request',
+      'router-api',
+      'offer-groups',
+      (state: ViemSetupStateService) => state.inspectOffers(maker)
+    ]
+  ])(
+    'sanitizes third-party rejection at %s boundary',
+    async (_name, surface, provider, operation, run) => {
+      const raw = new Error(
+        'provider https://reader-user:reader-pass@rpc-secret.example/private?apiKey=credential-secret',
+        { cause: new Error('nested-body-secret') }
+      )
+      const rejectAt = async <T>(selected: string, value: T) => {
+        if (surface === selected) throw raw
+        return value
+      }
+      const chain = {
+        getChainId: () => rejectAt('chain-id', 8453),
+        getCode: () => rejectAt('code', authoritativeRatifierRuntime),
+        getBalance: () => rejectAt('balance', 10n),
+        getBlock: () => rejectAt('latest', { number: 100n, timestamp: 1_000n }),
+        readContract: ({ functionName }: { functionName?: unknown }) =>
+          rejectAt(
+            functionName === 'allowance' ? 'allowance' : 'other-contract',
+            functionName === 'allowance' ? 100n : true
+          )
+      }
+      const reference = {
+        getBlock: () => rejectAt('reference', { number: 100n, timestamp: 1_000n }),
+        readContract: () => rejectAt('reference-contract', {})
+      }
+      const request = () => rejectAt('request', { cursor: null, data: [] })
+      const state = new ViemSetupStateService(chain, reference, request, {
+        privateKey: `0x${'11'.repeat(32)}`,
+        midnight,
+        loanAsset,
+        morphoApiBaseUrl: 'https://api.example',
+        routerApiBaseUrl: 'https://router.example',
+        marketIds: [marketId],
+        v0OfferGroupIds: [knownGroup],
+        referenceMarketId,
+        referenceLookbackBlocks: 1n
+      })
+
+      const error = await run(state).catch((value: unknown) => value)
+      const serialized = JSON.stringify(error)
+
+      expect(error).not.toBe(raw)
+      expect(error).toBeInstanceOf(ProviderReadError)
+      if (!(error instanceof ProviderReadError)) throw error
+      expect(error).toEqual(
+        expect.objectContaining({
+          name: 'ProviderReadError',
+          provider,
+          operation,
+          code: 'PROVIDER_READ_FAILED'
+        })
+      )
+      expect(error.message).toBe('Provider read failed')
+      expect(error).not.toHaveProperty('cause')
+      for (const marker of [
+        'reader-user',
+        'reader-pass',
+        'rpc-secret.example',
+        '/private',
+        'credential-secret',
+        'nested-body-secret'
+      ]) {
+        expect(serialized).not.toContain(marker)
+        expect(String(error)).not.toContain(marker)
+      }
+    }
+  )
+
   test('reports HTTP failures with a fixed provider id and no URL fields', async () => {
     const server = Bun.serve({
       port: 0,

@@ -5,15 +5,14 @@ export class ProviderResponseError extends Error {
    * @param provider - Fixed provider identifier safe for operator-visible reports.
    * @param operation - Stable operation identifier that contains no request data.
    * @param message - Sanitized invariant failure message containing no untrusted provider text.
-   * @param options - Optional internal cause; callers must not serialize nested third-party errors.
+   * @remarks Response bodies, URLs, credentials, and nested third-party causes are never retained.
    */
   constructor(
     readonly provider: 'provider' | 'rpc' | 'archive-rpc' | 'morpho-api' | 'router-api',
     readonly operation: string,
-    message: string,
-    options?: ErrorOptions
+    message: string
   ) {
-    super(message, options)
+    super(message)
     this.name = 'ProviderResponseError'
   }
 }

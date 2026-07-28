@@ -301,6 +301,8 @@ const sourceFiles = [
   'infrastructure/cli/cli.utils.ts',
   'infrastructure/setup-state/http-json.utils.ts',
   'infrastructure/setup-state/provider-pagination.error.ts',
+  'infrastructure/setup-state/provider-read.error.ts',
+  'infrastructure/setup-state/provider-read.utils.ts',
   'infrastructure/setup-state/provider-response.error.ts',
   'infrastructure/setup-state/viem-setup-state.service.ts',
   'infrastructure/setup-state/viem-setup-state.utils.ts'

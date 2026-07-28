@@ -96,4 +96,16 @@ describe('market-making error convention', () => {
     )
     expect(failures).toEqual([])
   })
+
+  test('does not propagate raw Commander failures into CLI usage errors', () => {
+    const cli = readFileSync(join(packageRoot, 'src/infrastructure/cli/cli.ts'), 'utf8')
+    const error = readFileSync(
+      join(packageRoot, 'src/infrastructure/cli/cli-usage.error.ts'),
+      'utf8'
+    )
+
+    expect(cli).not.toMatch(/new CliUsageError\([^)]*error\.message/s)
+    expect(cli).not.toMatch(/new CliUsageError\([^)]*cause/s)
+    expect(error).not.toMatch(/ErrorOptions|readonly command|message: string|super\([^)]*,/)
+  })
 })
