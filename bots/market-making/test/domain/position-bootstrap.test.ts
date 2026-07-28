@@ -45,6 +45,55 @@ describe('decidePositionBootstrap', () => {
     })
   })
 
+  test('rejects a negative acceptance threshold', () => {
+    expect(() =>
+      decidePositionBootstrap({
+        ...parameters,
+        config: { ...parameters.config, acceptanceAssets: -1n }
+      })
+    ).toThrow(new BootstrapConfigurationError('acceptanceAssets', 'must not be negative'))
+  })
+
+  test('rejects an acceptance threshold greater than the credit target', () => {
+    expect(() =>
+      decidePositionBootstrap({
+        ...parameters,
+        config: { ...parameters.config, acceptanceAssets: 1_001n },
+        position: { ...parameters.position, credit: 0n }
+      })
+    ).toThrow(new BootstrapConfigurationError('acceptanceAssets', 'must not exceed creditTarget'))
+  })
+
+  test('allows a zero acceptance threshold', () => {
+    expect(
+      decidePositionBootstrap({
+        ...parameters,
+        config: { ...parameters.config, acceptanceAssets: 0n },
+        position: { ...parameters.position, credit: 1_000n }
+      })
+    ).toEqual({
+      kind: 'target-reached',
+      completesInitialTarget: true,
+      credit: 1_000n,
+      acceptedCredit: 1_000n
+    })
+  })
+
+  test('allows an acceptance threshold equal to the credit target', () => {
+    expect(
+      decidePositionBootstrap({
+        ...parameters,
+        config: { ...parameters.config, acceptanceAssets: 1_000n },
+        position: { ...parameters.position, credit: 0n }
+      })
+    ).toEqual({
+      kind: 'target-reached',
+      completesInitialTarget: true,
+      credit: 0n,
+      acceptedCredit: 0n
+    })
+  })
+
   test('invalidates a live bootstrap offer when the accepted target is reached', () => {
     expect(
       decidePositionBootstrap({

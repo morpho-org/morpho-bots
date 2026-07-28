@@ -78,6 +78,13 @@ export const decidePositionBootstrapTransition = ({
   activeOffer,
   initialTargetCompleted
 }: PositionBootstrapTransitionParameters): PositionBootstrapTransitionDecision | undefined => {
+  if (config.acceptanceAssets < 0n) {
+    throw new BootstrapConfigurationError('acceptanceAssets', 'must not be negative')
+  }
+  if (config.acceptanceAssets > config.creditTarget) {
+    throw new BootstrapConfigurationError('acceptanceAssets', 'must not exceed creditTarget')
+  }
+
   const acceptedCredit = config.creditTarget - config.acceptanceAssets
 
   if (position.credit >= acceptedCredit) {
