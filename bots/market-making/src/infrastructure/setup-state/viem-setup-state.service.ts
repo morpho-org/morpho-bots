@@ -10,7 +10,7 @@ import { privateKeyToAccount } from 'viem/accounts'
 import type { BookSetup, SetupStateService } from '../../application/setup-check.service'
 import type { JsonRequest } from './http-json.utils'
 
-import { listedBooksJsonRequestFetch } from './http-json.utils'
+import { booksJsonRequestFetch } from './http-json.utils'
 import { ProviderPaginationError } from './provider-pagination.error'
 import { executeProviderRead } from './provider-read.utils'
 import { ProviderResponseError } from './provider-response.error'
@@ -20,6 +20,7 @@ import {
   BASE_ECRECOVER_RATIFIER_RUNTIME_HASH,
   DEFAULT_REQUEST_TIMEOUT_MS,
   invertedMarketIds,
+  listedBaseMarketIds,
   marketFromApi,
   marketFromContract,
   MAX_OFFER_ITEMS,
@@ -275,19 +276,34 @@ export class ViemSetupStateService implements SetupStateService {
    * @returns Validated listing, activity, loan asset, tick spacing, and maturity.
    * @throws `ProviderReadError` on a sanitized API/RPC rejection, or `ProviderResponseError` for
    * missing/extra rows, malformed values, identity disagreement, or invalid chain data.
-   * @remarks API, market, and tick-spacing reads run concurrently through `Promise.all`; no writes.
+   * @remarks Book API, explicit listing, market, and tick-spacing reads run concurrently through
+   * `Promise.all`; no writes. Listing is proven only by the canonical ID in the documented
+   * `listed=true` markets result set, never inferred from book availability.
    */
   async getBook(id: Hex): Promise<BookSetup> {
     const requestTimeoutMs = this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
-    const [apiResponse, contractResponse, tickSpacing] = await Promise.all([
+    const listingQuery = new URLSearchParams({
+      chain_ids: String(BASE_CHAIN_ID),
+      market_ids: id,
+      listed: 'true',
+      limit: String(PAGE_SIZE)
+    })
+    const [apiResponse, listingResponse, contractResponse, tickSpacing] = await Promise.all([
       executeProviderRead('morpho-api', 'book-api', () =>
         MidnightApi.fetchBooks({
           baseUrl: `${this.options.morphoApiBaseUrl}/v0/midnight`,
           chainIds: [BASE_CHAIN_ID],
           marketIds: [id],
           limit: 1,
-          fetch: listedBooksJsonRequestFetch(this.request, requestTimeoutMs)
+          fetch: booksJsonRequestFetch(this.request, requestTimeoutMs)
         })
+      ),
+      executeProviderRead('morpho-api', 'market-listing', () =>
+        this.request(
+          `${this.options.morphoApiBaseUrl}/v0/midnight/markets?${listingQuery.toString()}`,
+          'morpho-api',
+          requestTimeoutMs
+        )
       ),
       executeProviderRead('rpc', 'book-market', () =>
         this.chain.readContract({
@@ -314,6 +330,7 @@ export class ViemSetupStateService implements SetupStateService {
       )
     }
     const apiMarket = marketFromApi(apiResponse.data[0])
+    const allowlisted = listedBaseMarketIds(listingResponse).includes(id)
     const contractMarket = marketFromContract(contractResponse)
     if (apiMarket.id !== id) {
       throw new ProviderResponseError(
@@ -365,7 +382,7 @@ export class ViemSetupStateService implements SetupStateService {
     }
     return {
       id,
-      allowlisted: true,
+      allowlisted,
       active: true,
       loanAsset: contractMarket.loanToken,
       tickSpacing,
@@ -484,10 +501,12 @@ export class ViemSetupStateService implements SetupStateService {
    * @throws `ProviderReadError` on a sanitized Morpho API rejection; `ProviderResponseError` or
    * `ProviderPaginationError` on malformed or unbounded data; or a safe timeout error when the
    * single absolute request deadline expires.
-   * @remarks Uses the authoritative cursor-paginated `/users/{maker}/offer-groups` source. Pagination
-   * is necessarily sequential because each cursor depends on the previous page; one aggregate
-   * absolute deadline covers the whole read-only traversal. midnight-sdk 1.2.0 has no offer-group
-   * endpoint/entity, so only this bounded transport and strict response projection remain local.
+   * @remarks Uses the authoritative cursor-paginated `/users/{maker}/offer-groups` source with an
+   * explicit Base chain filter and validates each returned group chain before projecting offers.
+   * Pagination is necessarily sequential because each cursor depends on the previous page; only
+   * explicit null terminates traversal, and one aggregate absolute deadline covers the whole
+   * read-only traversal. midnight-sdk 1.2.0 has no offer-group endpoint/entity, so only this bounded
+   * transport and strict response projection remain local.
    */
   async inspectOffers(maker: Address) {
     const offers: ReturnType<typeof offerFromApi>[] = []
@@ -496,7 +515,7 @@ export class ViemSetupStateService implements SetupStateService {
     const now = this.options.now ?? performance.now.bind(performance)
     const deadline = now() + requestTimeoutMs
     let pageCount = 0
-    let cursor: string | undefined
+    let cursor: string | null = null
     do {
       if (pageCount >= MAX_OFFER_PAGES) {
         throw new ProviderPaginationError(
@@ -508,8 +527,11 @@ export class ViemSetupStateService implements SetupStateService {
       const remainingMs = Math.floor(deadline - now())
       if (remainingMs <= 0) throw morphoApiTimeout()
       pageCount += 1
-      const query = new URLSearchParams({ limit: String(PAGE_SIZE) })
-      if (cursor) query.set('cursor', cursor)
+      const query = new URLSearchParams({
+        chain_ids: String(BASE_CHAIN_ID),
+        limit: String(PAGE_SIZE)
+      })
+      if (cursor !== null) query.set('cursor', cursor)
       const response = objectRecord(
         await executeProviderRead('morpho-api', 'offer-groups', () =>
           this.request(
@@ -545,27 +567,30 @@ export class ViemSetupStateService implements SetupStateService {
         )
       }
       offers.push(...pageOffers)
-      if (
-        response.cursor !== null &&
-        response.cursor !== undefined &&
-        typeof response.cursor !== 'string'
-      ) {
+      if (response.cursor !== null && typeof response.cursor !== 'string') {
         throw new ProviderResponseError(
           'morpho-api',
           'cursor',
           'Morpho API cursor must be a string or null'
         )
       }
-      cursor = response.cursor ?? undefined
-      if (cursor && seenCursors.has(cursor)) {
+      if (typeof response.cursor === 'string' && response.cursor.trim().length === 0) {
+        throw new ProviderResponseError(
+          'morpho-api',
+          'cursor',
+          'Morpho API cursor must be a non-empty opaque string or null'
+        )
+      }
+      cursor = typeof response.cursor === 'string' ? response.cursor : null
+      if (cursor !== null && seenCursors.has(cursor)) {
         throw new ProviderPaginationError(
           'morpho-api',
           'repeated-cursor',
           'Morpho API cursor repeated'
         )
       }
-      if (cursor) seenCursors.add(cursor)
-    } while (cursor)
+      if (cursor !== null) seenCursors.add(cursor)
+    } while (cursor !== null)
 
     if (offers.some(offer => !isAddressEqual(offer.maker, maker))) {
       throw new ProviderResponseError(

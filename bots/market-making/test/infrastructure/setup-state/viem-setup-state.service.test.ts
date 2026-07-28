@@ -134,8 +134,14 @@ const createState = (
       }
     }
     const match = Object.entries(responses).find(([path]) => url.includes(path))
-    if (!match) throw new Error(`unexpected URL ${url}`)
-    return match[1]
+    if (match) return match[1]
+    if (url.includes('/v0/midnight/markets')) {
+      return {
+        cursor: null,
+        data: [{ market_id: marketId, chain_id: 8453, listed: true }]
+      }
+    }
+    throw new Error(`unexpected URL ${url}`)
   }
   return {
     calls,
@@ -209,6 +215,13 @@ describe('ViemSetupStateService', () => {
       (state: ViemSetupStateService) => state.getBook(marketId)
     ],
     [
+      'getBook listing read',
+      'market-listing',
+      'morpho-api',
+      'market-listing',
+      (state: ViemSetupStateService) => state.getBook(marketId)
+    ],
+    [
       'checkReference compound reads',
       'reference',
       'archive-rpc',
@@ -248,7 +261,13 @@ describe('ViemSetupStateService', () => {
         getBlock: () => rejectAt('reference', { number: 100n, timestamp: 1_000n }),
         readContract: () => rejectAt('reference-contract', {})
       }
-      const request = () => rejectAt('request', { cursor: null, data: [] })
+      const request = (url: string) =>
+        url.includes('/v0/midnight/markets') && surface !== 'market-listing'
+          ? Promise.resolve({ cursor: null, data: [] })
+          : rejectAt(url.includes('/v0/midnight/markets') ? 'market-listing' : 'request', {
+              cursor: null,
+              data: []
+            })
       const state = new ViemSetupStateService(chain, reference, request, {
         privateKey: `0x${'11'.repeat(32)}`,
         midnight,
@@ -393,7 +412,7 @@ describe('ViemSetupStateService', () => {
     })
   })
 
-  test('requests the curated book filter without requiring a mapped listing field', async () => {
+  test('verifies the canonical market in the documented listed market result set', async () => {
     const { state, calls } = createState({
       '/v0/midnight/books': {
         cursor: null,
@@ -416,7 +435,72 @@ describe('ViemSetupStateService', () => {
     })
 
     await expect(state.getBook(marketId)).resolves.toMatchObject({ allowlisted: true })
-    expect(calls.some(call => call.includes('listed=true'))).toBe(true)
+    expect(calls).toContain(
+      `https://api.example/v0/midnight/markets?chain_ids=8453&market_ids=${marketId}&listed=true&limit=100`
+    )
+    expect(
+      calls
+        .filter(call => call.includes('/v0/midnight/books'))
+        .every(call => !call.includes('listed='))
+    ).toBe(true)
+  })
+
+  test('reports an explicitly unlisted canonical market as not allowlisted', async () => {
+    const { state } = createState({
+      '/v0/midnight/markets': {
+        cursor: null,
+        data: [{ market_id: marketId, chain_id: 8453, listed: false }]
+      },
+      '/v0/midnight/books': {
+        cursor: null,
+        data: [
+          {
+            market_id: marketId,
+            chain_id: 8453,
+            midnight,
+            loan_token: loanAsset,
+            maturity: 2_000,
+            collaterals: [],
+            rcf_threshold: '0',
+            enter_gate: maker,
+            liquidator_gate: maker,
+            asks: [],
+            bids: []
+          }
+        ]
+      }
+    })
+
+    await expect(state.getBook(marketId)).resolves.toMatchObject({ allowlisted: false })
+  })
+
+  test('does not trust a listed filter when the result omits the requested canonical market', async () => {
+    const { state } = createState({
+      '/v0/midnight/markets': {
+        cursor: null,
+        data: [{ market_id: removedMarketId, chain_id: 8453, listed: true }]
+      },
+      '/v0/midnight/books': {
+        cursor: null,
+        data: [
+          {
+            market_id: marketId,
+            chain_id: 8453,
+            midnight,
+            loan_token: loanAsset,
+            maturity: 2_000,
+            collaterals: [],
+            rcf_threshold: '0',
+            enter_gate: maker,
+            liquidator_gate: maker,
+            asks: [],
+            bids: []
+          }
+        ]
+      }
+    })
+
+    await expect(state.getBook(marketId)).resolves.toMatchObject({ allowlisted: false })
   })
 
   test('accepts only the registry-listed Ecrecover ratifier with its exact deployed interface', async () => {
@@ -510,10 +594,13 @@ describe('ViemSetupStateService', () => {
     const firstOffer = { market_id: marketId, maker, buy: true, tick: 20 }
     const secondOffer = { market_id: marketId, maker, buy: false, tick: 10 }
     const { state } = createState({
-      'cursor=next': { cursor: null, data: [{ id: unknownGroup, offers: [secondOffer] }] },
+      'cursor=next': {
+        cursor: null,
+        data: [{ id: unknownGroup, chain_id: 8453, offers: [secondOffer] }]
+      },
       '/v0/midnight/users/': {
         cursor: 'next',
-        data: [{ id: knownGroup, offers: [firstOffer] }]
+        data: [{ id: knownGroup, chain_id: 8453, offers: [firstOffer] }]
       }
     })
 
@@ -531,7 +618,9 @@ describe('ViemSetupStateService', () => {
 
     await state.inspectOffers(maker)
 
-    expect(calls).toContain(`https://api.example/v0/midnight/users/${maker}/offer-groups?limit=100`)
+    expect(calls).toContain(
+      `https://api.example/v0/midnight/users/${maker}/offer-groups?chain_ids=8453&limit=100`
+    )
     expect(calls.some(call => call.startsWith('https://router.example/v0/midnight/users/'))).toBe(
       false
     )
@@ -544,6 +633,7 @@ describe('ViemSetupStateService', () => {
         data: [
           {
             id: knownGroup,
+            chain_id: 8453,
             offers: [{ market_id: removedMarketId, maker, buy: true, tick: 20 }]
           }
         ]
@@ -569,6 +659,7 @@ describe('ViemSetupStateService', () => {
           data: [
             {
               id: mixedGroup,
+              chain_id: 8453,
               offers: [
                 { market_id: mixedMarket, maker, buy: true, tick: 20 },
                 { market_id: canonicalMarket, maker, buy: false, tick: 10 }
@@ -594,6 +685,7 @@ describe('ViemSetupStateService', () => {
         data: [
           {
             id: knownGroup,
+            chain_id: 8453,
             offers: [{ market_id: marketId, maker, buy: 'true', tick: 20 }]
           }
         ]
@@ -677,6 +769,56 @@ describe('ViemSetupStateService', () => {
     expect(error.message).toBe('Morpho API cursor repeated')
   })
 
+  test.each(['', '   ', 42])(
+    'rejects malformed non-null cursor %p without early success',
+    async cursor => {
+      const { state } = createState({
+        '/v0/midnight/users/': {
+          cursor,
+          data: [{ id: knownGroup, chain_id: 8453, offers: [] }]
+        }
+      })
+
+      const error = await state.inspectOffers(maker).catch(value => value)
+      expect(error).toBeInstanceOf(ProviderResponseError)
+      expect(error).toMatchObject({ provider: 'morpho-api', operation: 'cursor' })
+    }
+  )
+
+  test('ignores well-formed non-Base groups returned despite the Base filter', async () => {
+    const { state } = createState({
+      '/v0/midnight/users/': {
+        cursor: null,
+        data: [
+          {
+            id: unknownGroup,
+            chain_id: 1,
+            offers: [{ market_id: removedMarketId, maker, buy: true, tick: 20 }]
+          }
+        ]
+      }
+    })
+
+    expect(await state.inspectOffers(maker)).toEqual({
+      unknownNamespaces: [],
+      unknownMarketIds: [],
+      invertedMarketIds: []
+    })
+  })
+
+  test('fails safely when a returned offer group has malformed chain identity', async () => {
+    const { state } = createState({
+      '/v0/midnight/users/': {
+        cursor: null,
+        data: [{ id: knownGroup, chain_id: '8453', offers: [] }]
+      }
+    })
+
+    const error = await state.inspectOffers(maker).catch(value => value)
+    expect(error).toBeInstanceOf(ProviderResponseError)
+    expect(error).toMatchObject({ provider: 'provider', operation: 'decode' })
+  })
+
   test('fails closed when Morpho API exceeds the offer page limit with unique cursors', async () => {
     const page = (index: number) => `page-${String(index).padStart(3, '0')}`
     const responses = Object.fromEntries(
@@ -696,7 +838,7 @@ describe('ViemSetupStateService', () => {
     const { state } = createState({
       '/v0/midnight/users/': {
         cursor: null,
-        data: Array.from({ length: 101 }, () => ({ id: knownGroup, offers: [] }))
+        data: Array.from({ length: 101 }, () => ({ id: knownGroup, chain_id: 8453, offers: [] }))
       }
     })
 
@@ -713,7 +855,7 @@ describe('ViemSetupStateService', () => {
     const { state } = createState({
       '/v0/midnight/users/': {
         cursor: null,
-        data: [{ id: knownGroup, offers: Array(100_001).fill(offer) }]
+        data: [{ id: knownGroup, chain_id: 8453, offers: Array(100_001).fill(offer) }]
       }
     })
 

@@ -14,6 +14,7 @@ export type ProviderOperation =
   | 'ratifier-root'
   | 'ratifier-authorization'
   | 'book-api'
+  | 'market-listing'
   | 'book-market'
   | 'book-tick-spacing'
   | 'reference-latest-block'
