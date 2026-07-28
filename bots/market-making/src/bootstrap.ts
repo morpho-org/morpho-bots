@@ -16,6 +16,8 @@ type Environment = Record<string, string | undefined>
 
 type Dependencies = {
   createState?: (config: ConfigService) => SetupStateService
+  /** Overrides the process working directory used for default configuration discovery. */
+  cwd?: string
 }
 
 const chainReader = (rpcUrl: string, timeout: number): ChainReader => {
@@ -73,8 +75,11 @@ export const createApplication = (
    */
   run(argv: readonly string[]): Promise<string>
 } => {
-  const cli = new Cli(new VersionService(), () => {
-    const config = RuntimeConfigService.from(environment)
+  const cli = new Cli(new VersionService(), async options => {
+    const config = await RuntimeConfigService.load(environment, {
+      configPath: options.configPath,
+      cwd: dependencies.cwd
+    })
     const state = dependencies.createState?.(config) ?? defaultState(config)
     return new SetupCheckService(state, config.setup)
   })

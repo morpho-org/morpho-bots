@@ -214,6 +214,171 @@ describe('PositionBootstrapService', () => {
     ])
   })
 
+  test.each([
+    {
+      reason: 'target-reached' as const,
+      position: { credit: 900n, cashBalance: 2_000n },
+      warmup: false
+    },
+    {
+      reason: 'no-capacity' as const,
+      position: { credit: 0n, cashBalance: 0n },
+      warmup: false
+    },
+    {
+      reason: 'auto-refill-disabled' as const,
+      position: { credit: 500n, cashBalance: 2_000n },
+      warmup: true
+    }
+  ])(
+    'hard-halts immediately when a $reason decision invalidation fails',
+    async ({ reason, position, warmup }) => {
+      const { service, positions, make, reconcile, hardHalt } = setup({
+        configs: [config(), config(secondMarketId, true)]
+      })
+      let preparingCompletion = warmup
+      positions.readPosition = mock(async id => {
+        if (preparingCompletion) {
+          return {
+            credit: 900n,
+            debt: 0n,
+            cashBalance: 2_000n,
+            marketExposure: 0n,
+            totalExposure: 0n,
+            activeOffer: undefined
+          }
+        }
+        return {
+          credit: id === marketId ? position.credit : 0n,
+          debt: 0n,
+          cashBalance: id === marketId ? position.cashBalance : 2_000n,
+          marketExposure: 0n,
+          totalExposure: 0n,
+          activeOffer:
+            id === marketId
+              ? {
+                  marketId,
+                  assets: 100n,
+                  rateBps: 450n,
+                  referenceObservationId: 'static:500'
+                }
+              : undefined
+        }
+      })
+      if (warmup) {
+        await service.runOnce()
+        preparingCompletion = false
+        reconcile.mockClear()
+        hardHalt.mockClear()
+      }
+      const failedReconcile = mock(async request => {
+        if (request.marketId === marketId && request.desiredOffer === undefined) {
+          throw new RangeError('market invalidation reverted')
+        }
+      })
+      make.reconcile = failedReconcile
+
+      expect(await service.runOnce()).toEqual([
+        {
+          marketId,
+          status: 'halted',
+          stage: 'make',
+          action: 'invalidate',
+          reason,
+          strategyInvalidated: true,
+          invalidationErrorName: 'RangeError'
+        }
+      ])
+      expect(failedReconcile).toHaveBeenCalledTimes(1)
+      expect(hardHalt).toHaveBeenCalledTimes(1)
+      expect(hardHalt).toHaveBeenCalledWith({ reason: 'market-invalidation-failed' })
+    }
+  )
+
+  test('preserves decision invalidation and hard-halt failure classifications', async () => {
+    const { service, positions, make } = setup({
+      configs: [config(), config(secondMarketId)]
+    })
+    positions.readPosition = mock(async id => ({
+      credit: id === marketId ? 900n : 0n,
+      debt: 0n,
+      cashBalance: 2_000n,
+      marketExposure: 0n,
+      totalExposure: 0n,
+      activeOffer:
+        id === marketId
+          ? {
+              marketId,
+              assets: 100n,
+              rateBps: 450n,
+              referenceObservationId: 'static:500'
+            }
+          : undefined
+    }))
+    const failedReconcile = mock(async request => {
+      if (request.marketId === marketId) {
+        const hostileInvalidation = new Error('market invalidation reverted')
+        hostileInvalidation.name = 'https://invalidator.example/?token=secret-invalidation'
+        throw hostileInvalidation
+      }
+    })
+    make.reconcile = failedReconcile
+    const hardHalt = mock(async () => {
+      const hostileCleanup = new Error('hard halt reverted')
+      hostileCleanup.name = 'https://cleanup.example/?token=secret-cleanup'
+      throw hostileCleanup
+    })
+    make.hardHalt = hardHalt
+
+    const result = await service.runOnce()
+
+    expect(result).toEqual([
+      {
+        marketId,
+        status: 'halted',
+        stage: 'make',
+        action: 'invalidate',
+        reason: 'target-reached',
+        strategyInvalidated: false,
+        invalidationErrorName: 'UnknownError',
+        hardHaltErrorName: 'UnknownError'
+      }
+    ])
+    expect(failedReconcile).toHaveBeenCalledTimes(1)
+    expect(hardHalt).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(result)).not.toContain('secret-invalidation')
+    expect(JSON.stringify(result)).not.toContain('secret-cleanup')
+  })
+
+  test('continues to a later publishable market after a successful decision invalidation', async () => {
+    const { service, positions, reconcile, hardHalt } = setup({
+      configs: [config(), config(secondMarketId)]
+    })
+    positions.readPosition = mock(async id => ({
+      credit: id === marketId ? 900n : 0n,
+      debt: 0n,
+      cashBalance: 2_000n,
+      marketExposure: 0n,
+      totalExposure: 0n,
+      activeOffer:
+        id === marketId
+          ? {
+              marketId,
+              assets: 100n,
+              rateBps: 450n,
+              referenceObservationId: 'static:500'
+            }
+          : undefined
+    }))
+
+    expect(await service.runOnce()).toEqual([
+      { marketId, status: 'applied', action: 'invalidate' },
+      { marketId: secondMarketId, status: 'applied', action: 'publish' }
+    ])
+    expect(reconcile).toHaveBeenCalledTimes(2)
+    expect(hardHalt).not.toHaveBeenCalled()
+  })
+
   test('invalidates a failed market read and continues bootstrapping other markets', async () => {
     const { service, positions, reconcile } = setup({
       configs: [config(), config(secondMarketId)]
@@ -253,14 +418,14 @@ describe('PositionBootstrapService', () => {
         status: 'failed',
         stage: 'position-read',
         invalidated: true,
-        errorName: 'Error'
+        errorName: 'UnknownError'
       },
       { marketId: secondMarketId, status: 'applied', action: 'publish' }
     ])
   })
 
-  test('reports an invalidation failure without hiding the original position read failure', async () => {
-    const { service, positions, make } = setup()
+  test('halts after market invalidation fails while preserving the read failure', async () => {
+    const { service, positions, make, hardHalt } = setup()
     positions.readPosition = mock(async () => {
       throw new TypeError('position unavailable')
     })
@@ -268,19 +433,129 @@ describe('PositionBootstrapService', () => {
       throw new RangeError('invalidation reverted')
     })
 
-    const result = await service.runOnce()
+    expect(await service.runOnce()).toEqual([
+      {
+        marketId,
+        status: 'halted',
+        stage: 'position-read',
+        strategyInvalidated: true,
+        errorName: 'TypeError',
+        invalidationErrorName: 'RangeError'
+      }
+    ])
+    expect(hardHalt).toHaveBeenCalledWith({ reason: 'market-invalidation-failed' })
+  })
 
+  test('stops later publication when market invalidation fails', async () => {
+    const { service, positions, make } = setup({
+      configs: [config(), config(secondMarketId)]
+    })
+    positions.readPosition = mock(async id => {
+      if (id === marketId) throw new TypeError('position unavailable')
+      return {
+        credit: 0n,
+        debt: 0n,
+        cashBalance: 2_000n,
+        marketExposure: 0n,
+        totalExposure: 0n,
+        activeOffer: undefined
+      }
+    })
+    const failedReconcile = mock(async request => {
+      if (request.marketId === marketId) throw new RangeError('invalidation reverted')
+    })
+    make.reconcile = failedReconcile
+
+    expect(await service.runOnce()).toEqual([
+      {
+        marketId,
+        status: 'halted',
+        stage: 'position-read',
+        strategyInvalidated: true,
+        errorName: 'TypeError',
+        invalidationErrorName: 'RangeError'
+      }
+    ])
+    expect(failedReconcile).toHaveBeenCalledTimes(1)
+  })
+
+  test('preserves market invalidation and hard-halt failure classifications', async () => {
+    const { service, positions, make } = setup()
+    positions.readPosition = mock(async () => {
+      throw new TypeError('position unavailable')
+    })
+    make.reconcile = mock(async () => {
+      throw new RangeError('invalidation reverted')
+    })
+    make.hardHalt = mock(async () => {
+      throw new URIError('hard halt reverted')
+    })
+
+    expect(await service.runOnce()).toEqual([
+      {
+        marketId,
+        status: 'halted',
+        stage: 'position-read',
+        strategyInvalidated: false,
+        errorName: 'TypeError',
+        invalidationErrorName: 'RangeError',
+        hardHaltErrorName: 'URIError'
+      }
+    ])
+  })
+
+  test('does not expose hostile injected error names', async () => {
+    const { service, positions } = setup()
+    const hostile = new Error('provider failed')
+    hostile.name = 'https://rpc.example/?token=secret-token'
+    positions.readPosition = mock(async () => {
+      throw hostile
+    })
+
+    const result = await service.runOnce()
     expect(result).toEqual([
       {
         marketId,
         status: 'failed',
         stage: 'position-read',
-        invalidated: false,
-        errorName: 'TypeError',
-        invalidationErrorName: 'RangeError'
+        invalidated: true,
+        errorName: 'UnknownError'
       }
     ])
+    expect(JSON.stringify(result)).not.toContain('secret-token')
   })
+
+  test.each([100n, 900n])(
+    'hard-halts an out-of-bounds rate with zero capacity (%s BPS)',
+    async rateBps => {
+      const { service, positions, rates, reconcile, hardHalt } = setup()
+      positions.readPosition = mock(async () => ({
+        credit: 0n,
+        debt: 0n,
+        cashBalance: 0n,
+        marketExposure: 0n,
+        totalExposure: 0n,
+        activeOffer: undefined
+      }))
+      rates.readRate = mock(async () => ({
+        mode: 'static' as const,
+        rateBps,
+        observationId: `static:${rateBps}`
+      }))
+
+      expect(await service.runOnce()).toEqual([
+        {
+          marketId,
+          status: 'halted',
+          stage: 'decision',
+          strategyInvalidated: true,
+          errorName: 'BootstrapConfigurationError'
+        }
+      ])
+      expect(hardHalt).toHaveBeenCalledWith({ reason: 'bootstrap-decision-failed' })
+      expect(reconcile).not.toHaveBeenCalled()
+    }
+  )
 
   test('halts the strategy on a reference failure and prevents later market publication', async () => {
     const { service, rates, reconcile, hardHalt } = setup({

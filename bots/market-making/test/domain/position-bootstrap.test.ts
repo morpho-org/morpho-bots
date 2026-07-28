@@ -39,6 +39,29 @@ const parameters = {
 }
 
 describe('validateBootstrapConfig', () => {
+  test.each(['0x12', `0x${'gg'.repeat(32)}`, `0x${'11'.repeat(31)}`])(
+    'rejects malformed market id %s',
+    malformedMarketId => {
+      expect(() =>
+        validateBootstrapConfig({
+          ...parameters.config,
+          marketId: malformedMarketId
+        })
+      ).toThrow(
+        new BootstrapConfigurationError('marketId', 'must be a 0x-prefixed bytes32 hex value')
+      )
+    }
+  )
+
+  test('accepts an exact mixed-case bytes32 market id', () => {
+    expect(
+      validateBootstrapConfig({
+        ...parameters.config,
+        marketId: `0x${'aB'.repeat(32)}`
+      })
+    ).toBeUndefined()
+  })
+
   test('rejects a non-positive credit target', () => {
     expect(() => validateBootstrapConfig({ ...parameters.config, creditTarget: 0n })).toThrow(
       new BootstrapConfigurationError('creditTarget', 'must be positive')
@@ -346,6 +369,53 @@ describe('decidePositionBootstrap', () => {
         config: { ...parameters.config, premiumBps: 0n }
       })
     ).toThrow(new BootstrapConfigurationError('requestedRateBps', 'must be at most maximumRateBps'))
+  })
+
+  test.each([
+    {
+      label: 'below minimum',
+      rateBps: 100n,
+      error: new BootstrapConfigurationError('requestedRateBps', 'must be at least minimumRateBps')
+    },
+    {
+      label: 'above maximum',
+      rateBps: 900n,
+      error: new BootstrapConfigurationError('requestedRateBps', 'must be at most maximumRateBps')
+    }
+  ])('rejects an out-of-bounds rate with zero capacity: $label', ({ rateBps, error }) => {
+    const zeroCapacityPositions = [
+      { label: 'cash', values: { cashBalance: 0n } },
+      {
+        label: 'market exposure',
+        values: { marketExposure: parameters.config.maximumMarketExposure }
+      },
+      {
+        label: 'total exposure',
+        values: { totalExposure: parameters.config.maximumTotalExposure }
+      }
+    ] as const
+
+    for (const capacity of zeroCapacityPositions) {
+      expect(
+        () =>
+          decidePositionBootstrap({
+            ...parameters,
+            position: { ...parameters.position, credit: 0n, ...capacity.values },
+            rate: { mode: 'static', rateBps, observationId: `static:${rateBps}` },
+            config: { ...parameters.config, premiumBps: 0n }
+          }),
+        capacity.label
+      ).toThrow(error)
+    }
+  })
+
+  test('keeps an in-bounds zero-capacity position observational', () => {
+    expect(
+      decidePositionBootstrap({
+        ...parameters,
+        position: { ...parameters.position, credit: 0n, cashBalance: 0n }
+      })
+    ).toEqual({ kind: 'observe', reason: 'no-capacity', assets: 0n })
   })
 
   test('stays observational after initial completion when auto-refill is disabled', () => {

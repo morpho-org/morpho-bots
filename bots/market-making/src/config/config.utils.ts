@@ -2,6 +2,10 @@ import type { Address, Hex } from 'viem'
 
 import { bytesToHex, getAddress, hexToBytes, isAddress, isHex, size } from 'viem'
 
+import type { BootstrapConfig } from '../domain/position-bootstrap'
+
+import { BootstrapConfigurationError } from '../domain/bootstrap-configuration.error'
+import { validateBootstrapConfig } from '../domain/position-bootstrap'
 import { ConfigValidationError } from './config-validation.error'
 
 /** String-valued runtime environment boundary accepted by configuration parsing. */
@@ -71,10 +75,17 @@ export const unsignedBigIntValue = (environment: Environment, name: string) => {
  * Reads the bounded aggregate provider timeout.
  * @param environment - Environment map to inspect.
  * @returns A timeout from 1 through 120,000 milliseconds.
- * @throws When the value is not a safe integer in the supported range.
+ * @throws When the trimmed value is not decimal digits or is outside the supported safe-integer range.
  */
 export const requestTimeoutValue = (environment: Environment) => {
   const raw = environment.REQUEST_TIMEOUT_MS?.trim() ?? String(DEFAULT_REQUEST_TIMEOUT_MS)
+  if (!/^\d+$/.test(raw)) {
+    throw new ConfigValidationError(
+      'REQUEST_TIMEOUT_MS',
+      'invalid-integer',
+      'REQUEST_TIMEOUT_MS must be a decimal integer'
+    )
+  }
   const value = Number(raw)
   if (!Number.isSafeInteger(value) || value < 1 || value > MAXIMUM_REQUEST_TIMEOUT_MS) {
     throw new ConfigValidationError(
@@ -168,4 +179,133 @@ export const urlValue = (environment: Environment, name: string) => {
     throw new ConfigValidationError(name, 'invalid-url', `${name} must be a valid URL`)
   }
   return raw.endsWith('/') ? raw.slice(0, -1) : raw
+}
+
+const bootstrapFields = [
+  'marketId',
+  'creditTarget',
+  'acceptanceAssets',
+  'offerSize',
+  'premiumBps',
+  'maximumMarketExposure',
+  'maximumTotalExposure',
+  'minimumRateBps',
+  'maximumRateBps',
+  'autoRefill'
+] as const
+
+const bootstrapRecord = (value: unknown, field: string): Record<string, unknown> => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new ConfigValidationError(field, 'wrong-type', `${field} must be an object`)
+  }
+  const result = value as Record<string, unknown>
+  if (Object.keys(result).some(key => !bootstrapFields.includes(key as never))) {
+    throw new ConfigValidationError(field, 'unknown-key', `${field} contains an unsupported key`)
+  }
+  return result
+}
+
+const integerBigInt = (value: unknown, field: string, signed: boolean) => {
+  if (typeof value !== 'string') {
+    throw new ConfigValidationError(field, 'invalid-integer', `${field} must be an integer`)
+  }
+  const syntax = signed ? /^-?\d+$/ : /^\d+$/
+  if (!syntax.test(value)) {
+    throw new ConfigValidationError(field, 'invalid-integer', `${field} must be an integer`)
+  }
+  return BigInt(value)
+}
+
+/**
+ * Parses and validates the complete replacement list used by YAML or `BOOTSTRAP_MARKETS`.
+ * @param value - Untrusted YAML/JSON bootstrap list.
+ * @param allowlistedMarkets - Canonical market IDs permitted by the setup configuration.
+ * @returns Ordered, exact bigint bootstrap settings accepted by domain validation.
+ * @throws `ConfigValidationError` for wrong types, unsupported fields, duplicates, unsafe numbers,
+ * non-allowlisted markets, or domain-invalid values.
+ */
+export const bootstrapConfigsValue = (
+  value: unknown,
+  allowlistedMarkets: readonly Hex[]
+): BootstrapConfig[] => {
+  if (!Array.isArray(value)) {
+    throw new ConfigValidationError('bootstrap', 'wrong-type', 'bootstrap must be a list')
+  }
+  const configs = value.map((item, index) => {
+    const prefix = `bootstrap[${index}]`
+    const itemRecord = bootstrapRecord(item, prefix)
+    const required = (name: (typeof bootstrapFields)[number]) => {
+      if (itemRecord[name] === undefined) {
+        throw new ConfigValidationError(
+          `${prefix}.${name}`,
+          'missing',
+          `${prefix}.${name} is required`
+        )
+      }
+      return itemRecord[name]
+    }
+    const marketValue = required('marketId')
+    if (typeof marketValue !== 'string') {
+      throw new ConfigValidationError(
+        `${prefix}.marketId`,
+        'wrong-type',
+        `${prefix}.marketId must be a string`
+      )
+    }
+    const config: BootstrapConfig = {
+      marketId: parseBytes32(marketValue, `${prefix}.marketId`),
+      creditTarget: integerBigInt(required('creditTarget'), `${prefix}.creditTarget`, false),
+      acceptanceAssets: integerBigInt(
+        required('acceptanceAssets'),
+        `${prefix}.acceptanceAssets`,
+        false
+      ),
+      offerSize: integerBigInt(required('offerSize'), `${prefix}.offerSize`, false),
+      premiumBps: integerBigInt(required('premiumBps'), `${prefix}.premiumBps`, true),
+      maximumMarketExposure: integerBigInt(
+        required('maximumMarketExposure'),
+        `${prefix}.maximumMarketExposure`,
+        false
+      ),
+      maximumTotalExposure: integerBigInt(
+        required('maximumTotalExposure'),
+        `${prefix}.maximumTotalExposure`,
+        false
+      ),
+      minimumRateBps: integerBigInt(required('minimumRateBps'), `${prefix}.minimumRateBps`, false),
+      maximumRateBps: integerBigInt(required('maximumRateBps'), `${prefix}.maximumRateBps`, false),
+      autoRefill: required('autoRefill') as boolean
+    }
+    if (typeof config.autoRefill !== 'boolean') {
+      throw new ConfigValidationError(
+        `${prefix}.autoRefill`,
+        'wrong-type',
+        `${prefix}.autoRefill must be a boolean`
+      )
+    }
+    if (!allowlistedMarkets.includes(config.marketId)) {
+      throw new ConfigValidationError(
+        `${prefix}.marketId`,
+        'not-allowlisted',
+        `${prefix}.marketId must appear in markets.allowlist or MARKET_IDS`
+      )
+    }
+    try {
+      validateBootstrapConfig(config)
+    } catch (error) {
+      if (error instanceof BootstrapConfigurationError) {
+        throw new ConfigValidationError(
+          `${prefix}.${error.field}`,
+          'invalid-bootstrap',
+          `${prefix}.${error.field} ${error.reason}`
+        )
+      }
+      throw error
+    }
+    return config
+  })
+  if (new Set(configs.map(config => config.marketId)).size !== configs.length) {
+    throw new ConfigValidationError('bootstrap', 'duplicate', 'bootstrap market IDs must be unique')
+  }
+  return configs
 }

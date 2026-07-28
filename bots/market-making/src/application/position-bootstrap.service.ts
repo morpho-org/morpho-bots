@@ -13,10 +13,24 @@ import {
   decidePositionBootstrapTransition,
   validateBootstrapConfig
 } from '../domain/position-bootstrap'
+import { operatorErrorName } from './operator-error-name.utils'
 
-const errorName = (error: unknown) => (error instanceof Error ? error.name : 'UnknownError')
+type DecisionInvalidationReason = Extract<
+  PositionBootstrapDecision,
+  { kind: 'invalidate' }
+>['reason']
 
+type FailedInvalidationContext =
+  | { stage: 'position-read'; error: unknown }
+  | { stage: 'make'; reason: DecisionInvalidationReason }
+
+/** Port for reading the fresh chain position and active bootstrap offer for one market. */
 export interface BootstrapPositionService {
+  /**
+   * Reads the complete position state required for one bootstrap decision.
+   * @param marketId - Canonical market identifier to inspect.
+   * @returns Fresh credit, debt, capacity inputs, and any active bootstrap offer.
+   */
   readPosition(marketId: Hex): Promise<
     BootstrapPosition & {
       debt: bigint
@@ -25,11 +39,23 @@ export interface BootstrapPositionService {
   >
 }
 
+/** Port for reading a stable reference-rate observation for one bootstrap market. */
 export interface BootstrapReferenceRateService {
+  /**
+   * Reads the current reference rate used to derive a requested bootstrap rate.
+   * @param marketId - Canonical market identifier whose reference is required.
+   * @returns Static or variable rate and its stable observation identifier.
+   */
   readRate(marketId: Hex): Promise<BootstrapRate>
 }
 
+/** Port for reconciling market offers and invalidating the complete bootstrap strategy. */
 export interface BootstrapMakeService {
+  /**
+   * Reconciles one market's desired bootstrap offer or invalidates that market group.
+   * @param parameters - Canonical market, optional desired offer, and stable action reason.
+   * @returns Completion after the requested publication or invalidation is confirmed.
+   */
   reconcile(parameters: {
     marketId: Hex
     desiredOffer?: BootstrapOffer
@@ -41,8 +67,17 @@ export interface BootstrapMakeService {
       | 'auto-refill-disabled'
       | 'market-read-failed'
   }): Promise<void>
+  /**
+   * Invalidates all strategy-owned bootstrap groups after a cycle-level safety failure.
+   * @param parameters - Fixed safety reason that triggered strategy-wide invalidation.
+   * @returns Completion after every strategy-owned group is invalidated.
+   */
   hardHalt(parameters: {
-    reason: 'reference-read-failed' | 'bootstrap-decision-failed' | 'bootstrap-configuration-failed'
+    reason:
+      | 'reference-read-failed'
+      | 'bootstrap-decision-failed'
+      | 'bootstrap-configuration-failed'
+      | 'market-invalidation-failed'
   }): Promise<void>
 }
 
@@ -69,11 +104,37 @@ type BootstrapRunResult =
       errorName: string
       invalidationErrorName?: string
     }
+  | {
+      marketId: Hex
+      status: 'halted'
+      stage: 'position-read'
+      strategyInvalidated: boolean
+      errorName: string
+      invalidationErrorName: string
+      hardHaltErrorName?: string
+    }
+  | {
+      marketId: Hex
+      status: 'halted'
+      stage: 'make'
+      action: 'invalidate'
+      reason: DecisionInvalidationReason
+      strategyInvalidated: boolean
+      invalidationErrorName: string
+      hardHaltErrorName?: string
+    }
 
 /** Applies position-bootstrap cycles. Its in-memory one-shot gate resets on service recreation. */
 export class PositionBootstrapService {
   private readonly completedMarkets = new Set<Hex>()
 
+  /**
+   * Creates a bootstrap coordinator around injected read and publication ports.
+   * @param positions - Fresh position and active-offer reader.
+   * @param rates - Reference-rate observation reader.
+   * @param make - Market reconciliation and strategy hard-halt writer.
+   * @param configs - Ordered validated-at-runtime market strategies.
+   */
   constructor(
     private readonly positions: BootstrapPositionService,
     private readonly rates: BootstrapReferenceRateService,
@@ -83,8 +144,7 @@ export class PositionBootstrapService {
 
   /**
    * Validates all configured markets, then applies one fresh bootstrap cycle per market.
-   * @returns Ordered market outcomes, stopping after a strategy-wide configuration, reference, or
-   *   decision halt.
+   * @returns Ordered market outcomes, stopping after any strategy-wide safety halt.
    * @throws Never for handled provider, configuration, or make failures; their classifications and
    *   cleanup evidence are returned in the structured result.
    * @remarks Invalid configuration hard-halts before any position/reference read or publication.
@@ -112,9 +172,14 @@ export class PositionBootstrapService {
       try {
         position = await this.positions.readPosition(config.marketId)
       } catch (error) {
-        results.push(
-          await this.failedMarketRead(config.marketId, 'position-read', error, 'market-read-failed')
+        const result = await this.failedMarketRead(
+          config.marketId,
+          'position-read',
+          error,
+          'market-read-failed'
         )
+        results.push(result)
+        if (result.status === 'halted') return results
         continue
       }
 
@@ -204,14 +269,14 @@ export class PositionBootstrapService {
             reason: decision.reason
           })
         } catch (error) {
-          results.push({
-            marketId: config.marketId,
-            status: 'failed' as const,
-            stage: 'make' as const,
-            invalidated: false,
-            errorName: errorName(error)
-          })
-          continue
+          results.push(
+            await this.haltAfterInvalidationFailure(
+              config.marketId,
+              { stage: 'make', reason: decision.reason },
+              error
+            )
+          )
+          return results
         }
         results.push({
           marketId: config.marketId,
@@ -233,7 +298,7 @@ export class PositionBootstrapService {
           status: 'failed' as const,
           stage: 'make' as const,
           invalidated: false,
-          errorName: errorName(error)
+          errorName: operatorErrorName(error)
         })
         continue
       }
@@ -247,7 +312,7 @@ export class PositionBootstrapService {
     stage: 'position-read',
     readError: unknown,
     reason: 'market-read-failed'
-  ) {
+  ): Promise<BootstrapRunResult> {
     try {
       await this.make.reconcile({ marketId, desiredOffer: undefined, reason })
       return {
@@ -255,17 +320,52 @@ export class PositionBootstrapService {
         status: 'failed' as const,
         stage,
         invalidated: true,
-        errorName: errorName(readError)
+        errorName: operatorErrorName(readError)
       }
     } catch (invalidationError) {
+      return this.haltAfterInvalidationFailure(
+        marketId,
+        { stage, error: readError },
+        invalidationError
+      )
+    }
+  }
+
+  private async haltAfterInvalidationFailure(
+    marketId: Hex,
+    context: FailedInvalidationContext,
+    invalidationError: unknown
+  ): Promise<BootstrapRunResult> {
+    let hardHaltError: unknown
+    try {
+      await this.make.hardHalt({ reason: 'market-invalidation-failed' })
+    } catch (error) {
+      hardHaltError = error
+    }
+    const strategyInvalidated = hardHaltError === undefined
+    const cleanupFailure = strategyInvalidated
+      ? {}
+      : { hardHaltErrorName: operatorErrorName(hardHaltError) }
+    if (context.stage === 'position-read') {
       return {
         marketId,
-        status: 'failed' as const,
-        stage,
-        invalidated: false,
-        errorName: errorName(readError),
-        invalidationErrorName: errorName(invalidationError)
+        status: 'halted' as const,
+        stage: context.stage,
+        strategyInvalidated,
+        errorName: operatorErrorName(context.error),
+        invalidationErrorName: operatorErrorName(invalidationError),
+        ...cleanupFailure
       }
+    }
+    return {
+      marketId,
+      status: 'halted' as const,
+      stage: context.stage,
+      action: 'invalidate' as const,
+      reason: context.reason,
+      strategyInvalidated,
+      invalidationErrorName: operatorErrorName(invalidationError),
+      ...cleanupFailure
     }
   }
 
@@ -282,7 +382,7 @@ export class PositionBootstrapService {
         status: 'halted' as const,
         stage,
         strategyInvalidated: true,
-        errorName: errorName(failure)
+        errorName: operatorErrorName(failure)
       }
     } catch (invalidationError) {
       return {
@@ -290,8 +390,8 @@ export class PositionBootstrapService {
         status: 'halted' as const,
         stage,
         strategyInvalidated: false,
-        errorName: errorName(failure),
-        invalidationErrorName: errorName(invalidationError)
+        errorName: operatorErrorName(failure),
+        invalidationErrorName: operatorErrorName(invalidationError)
       }
     }
   }

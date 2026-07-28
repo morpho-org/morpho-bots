@@ -1,7 +1,10 @@
 import type { Hex } from 'viem'
 
+import { isHex, size } from 'viem'
+
 import { BootstrapConfigurationError } from './bootstrap-configuration.error'
 
+/** Static safety bounds and behavior for bootstrapping one canonical market. */
 export type BootstrapConfig = {
   marketId: Hex
   creditTarget: bigint
@@ -15,6 +18,7 @@ export type BootstrapConfig = {
   autoRefill: boolean
 }
 
+/** Fresh balance, credit, and exposure inputs used to cap a bootstrap offer. */
 export type BootstrapPosition = {
   credit: bigint
   cashBalance: bigint
@@ -22,12 +26,14 @@ export type BootstrapPosition = {
   totalExposure: bigint
 }
 
+/** Reference-rate observation and replacement semantics used for offer derivation. */
 export type BootstrapRate = {
   mode: 'static' | 'variable'
   rateBps: bigint
   observationId: string
 }
 
+/** Fully derived market offer suitable for application-port reconciliation. */
 export type BootstrapOffer = {
   marketId: Hex
   assets: bigint
@@ -48,12 +54,14 @@ type PositionBootstrapTransitionParameters = Pick<
   'config' | 'position' | 'activeOffer' | 'initialTargetCompleted'
 >
 
+/** Bootstrap decisions that need no reference-rate read. */
 export type PositionBootstrapTransitionDecision =
   | { kind: 'invalidate'; reason: 'target-reached'; completesInitialTarget: true }
   | { kind: 'target-reached'; completesInitialTarget: true; credit: bigint; acceptedCredit: bigint }
   | { kind: 'invalidate'; reason: 'auto-refill-disabled'; completesInitialTarget: false }
   | { kind: 'observe'; reason: 'auto-refill-disabled'; credit: bigint; acceptedCredit: bigint }
 
+/** Complete deterministic action returned for one fresh bootstrap market snapshot. */
 export type PositionBootstrapDecision =
   | PositionBootstrapTransitionDecision
   | { kind: 'invalidate'; reason: 'no-capacity'; completesInitialTarget: false }
@@ -79,6 +87,9 @@ const sameOffer = (left: BootstrapOffer, right: BootstrapOffer, mode: BootstrapR
  * @remarks This pure validation has no publication, persistence, or provider side effects.
  */
 export const validateBootstrapConfig = (config: BootstrapConfig): void => {
+  if (!isHex(config.marketId, { strict: true }) || size(config.marketId) !== 32) {
+    throw new BootstrapConfigurationError('marketId', 'must be a 0x-prefixed bytes32 hex value')
+  }
   if (config.creditTarget <= 0n) {
     throw new BootstrapConfigurationError('creditTarget', 'must be positive')
   }
@@ -117,7 +128,10 @@ export const validateBootstrapConfig = (config: BootstrapConfig): void => {
   }
 }
 
-/** Decides completion and one-shot transitions that do not require a reference-rate read. */
+/**
+ * Decides completion and one-shot transitions that do not require a reference-rate read.
+ * @returns A transition decision, or `undefined` when reference-rate derivation is still required.
+ */
 export const decidePositionBootstrapTransition = ({
   config,
   position,
@@ -164,7 +178,11 @@ export const decidePositionBootstrapTransition = ({
   return undefined
 }
 
-/** Computes the deterministic bootstrap action from current chain and Mempool truth. */
+/**
+ * Computes the deterministic bootstrap action from current chain and Mempool truth.
+ * @returns The exact observe, invalidate, rest, replace, or publish action for this snapshot.
+ * @throws BootstrapConfigurationError when the final premium-adjusted rate is outside hard bounds.
+ */
 export const decidePositionBootstrap = ({
   config,
   position,
@@ -179,6 +197,14 @@ export const decidePositionBootstrap = ({
     initialTargetCompleted
   })
   if (transition) return transition
+
+  const requestedRateBps = rate.rateBps + config.premiumBps
+  if (requestedRateBps < config.minimumRateBps) {
+    throw new BootstrapConfigurationError('requestedRateBps', 'must be at least minimumRateBps')
+  }
+  if (requestedRateBps > config.maximumRateBps) {
+    throw new BootstrapConfigurationError('requestedRateBps', 'must be at most maximumRateBps')
+  }
 
   const assets = minimum([
     config.offerSize,
@@ -197,14 +223,6 @@ export const decidePositionBootstrap = ({
       }
     }
     return { kind: 'observe' as const, reason: 'no-capacity' as const, assets: 0n }
-  }
-
-  const requestedRateBps = rate.rateBps + config.premiumBps
-  if (requestedRateBps < config.minimumRateBps) {
-    throw new BootstrapConfigurationError('requestedRateBps', 'must be at least minimumRateBps')
-  }
-  if (requestedRateBps > config.maximumRateBps) {
-    throw new BootstrapConfigurationError('requestedRateBps', 'must be at most maximumRateBps')
   }
 
   const offer: BootstrapOffer = {

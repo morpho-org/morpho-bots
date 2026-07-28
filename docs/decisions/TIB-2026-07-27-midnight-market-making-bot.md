@@ -62,7 +62,8 @@ boundaries.
     accrual-aware supply-share value over six hours using historical RPC reads; and
   - a static implementation for the rate at which the operator is willing to acquire credit.
 - Reject stale, incomplete, or out-of-bounds reference rates. The default hard range is 2%–8% APR,
-  configurable through environment variables or an `mm.yaml` file passed on the command line.
+  configurable through environment variables or `market-making.yaml` / `market-making.yml` selected
+  by working-directory discovery or `--config`.
 - Publish a temporary bootstrap offer with a negative premium until the credit target is met, while
   maintaining the ordinary bid and ask ladders from the first quote cycle.
 - Serialize every bootstrap and ladder invalidation/sign/publication through one blocking
@@ -232,9 +233,11 @@ The names are illustrative; ownership is the decision:
 - **Infrastructure** owns viem reads, historical-block lookup, Midnight SDK conversion, Mempool and
   Router clients, EIP-712/Merkle-root construction, provider DTO validation, and invalidation
   transport.
-- **Configuration** loads strategy settings from either environment variables or the `mm.yaml` path
-  supplied by `--config`, merges in environment-only secrets, validates once, and fails loudly.
-  Business decisions do not read environment variables or YAML directly.
+- **Configuration** loads strategy settings from environment variables, discovered
+  `market-making.yaml` / `market-making.yml`, or a YAML path supplied by `--config`. Environment values
+  override corresponding YAML values. Secrets may use either source, but operators should prefer the
+  deployment secret store/environment; any local YAML containing a key must be ignored and permission
+  restricted. Business decisions do not read environment variables or YAML directly.
 - **Bootstrap** manually wires concrete adapters into application services. No dependency-injection
   framework is added.
 - **Entrypoint** parses `--config`, `--cleanup`, and `--cleanup-group`, creates the application,
@@ -507,14 +510,20 @@ nonce and on-chain invalidation state before accepting another job from either w
 
 ### 10. Configuration contract
 
-Strategy configuration is supplied either through environment variables or an `mm.yaml` file passed
-as `--config <path>`. Secrets and provider credentials remain environment-only even when YAML is
-used. Supplying the same non-secret setting in both sources is an error rather than an implicit
-precedence rule. Both sources map into one typed validation path and produce the same non-secret
-configuration digest.
+Strategy configuration may be supplied through environment variables, an explicit YAML file passed as
+`--config <path>`, or both. Without an explicit path, the CLI discovers `market-making.yaml` and then
+`market-making.yml` in its invocation working directory; `.yaml` wins when both exist, and no file
+preserves environment-only startup. Environment variables always override corresponding YAML values,
+including whole-list replacement for market and bootstrap arrays. Both sources map into one typed
+validation path and produce the same validated runtime configuration.
 
-The public README, `.env.example`, and `mm.example.yaml` document every setting, unit, default, and
-safety interaction. The expected groups are:
+The public README, `.env.example`, and `market-making.example.yaml` document every currently implemented
+setting, unit, default, precedence rule, and safety interaction. The current YAML schema is limited to
+`chain`, `identity`, `contracts`, `apis`, `markets`, `setup`, and `bootstrap`. In that schema,
+`MORPHO_API_BASE_URL` serves book and cursor-paginated offer-group reads, while
+`ROUTER_API_BASE_URL` serves the contract registry; neither current client has a configurable API-key
+header. The groups below describe the full V0 destination; settings not present in the current README
+schema remain explicitly planned until their workflows are implemented:
 
 - **Chain and identity:** `CHAIN_ID`, `RPC_URL`, optional fallback RPC, `MAKER_PRIVATE_KEY`,
   Midnight address, Router origin, and ratifier selection. The ratifier address is accepted only
@@ -531,16 +540,20 @@ safety interaction. The expected groups are:
   fixed top-up size, bootstrap premium, auto-refill.
 - **Ladder:** quote premium, spread, step, rungs, size skew, side budgets, loop interval, movement
   tolerance.
-- **Transport:** official Mempool/Router origins, request timeout/retry limits, maximum fee and gas
-  bounds for invalidation.
+- **Transport:** official API/Router origins, request timeout/retry limits, maximum fee and gas bounds
+  for invalidation.
 - **Lifecycle:** startup `--cleanup` / `--cleanup-group` CLI options, `SHUTDOWN_CLEANUP`, and cleanup
   timeout.
 - **Observability:** log level and optional BetterStack fields; logging works to stdout without a
   vendor.
 
 All rates use one documented unit at the configuration boundary, proposed as integer basis points.
-Asset amounts use human-readable decimal strings that are parsed with the configured token
-decimals. Floating-point numbers are not used for pricing, sizing, or invariant checks.
+For the implemented V0 bootstrap contract, asset, credit, and exposure amounts are exact raw loan-asset
+base-unit integers; no human-readable token-decimal scaling occurs. YAML accepts decimal integer strings
+or bare decimal integers. `BOOTSTRAP_MARKETS` requires every integer-valued property to be a quoted
+decimal string and rejects JSON number tokens. Floating-point and exponent notation are not used for
+pricing, sizing, or invariant checks. Any future human-readable amount setting must be introduced as a
+separate, explicitly scaled contract rather than reinterpreting these fields.
 
 ### 11. Implementation phases and deadline
 
@@ -794,8 +807,8 @@ ever exposed is rotated before visibility changes.
   bounds, failure posture, known weaknesses, and non-competitive intent;
 - `.env.example`: placeholders only, with units/defaults and no real keys, RPC credentials, project
   IDs, or operator-specific addresses;
-- `mm.example.yaml`: the equivalent non-secret strategy configuration, with documented
-  `--config` usage and duplicate-source failure behavior;
+- `market-making.example.yaml`: the equivalent configuration schema, with documented `--config`,
+  default discovery, and environment-over-YAML precedence behavior;
 - `Dockerfile`, `docker-compose.yml`, and environment-driven deployment tooling with no baked-in
   Morpho project;
 - a configuration reference and an example for the initial Base pilot;

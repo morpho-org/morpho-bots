@@ -288,14 +288,20 @@ export const inspectJSDocSource = (file: string, source: string): JSDocInspectio
 const packageRoot = resolve(import.meta.dir, '..')
 const sourceRoot = resolve(packageRoot, 'src')
 const sourceFiles = [
+  'application/operator-error-name.utils.ts',
+  'application/position-bootstrap.service.ts',
   'application/setup-check.service.ts',
   'application/setup-check.utils.ts',
   'application/safe-provider.error.ts',
   'application/setup-failed.error.ts',
   'bootstrap.ts',
+  'config/config-file.error.ts',
+  'config/config-source.utils.ts',
   'config/config-validation.error.ts',
   'config/config.service.ts',
   'config/config.utils.ts',
+  'domain/bootstrap-configuration.error.ts',
+  'domain/position-bootstrap.ts',
   'infrastructure/cli/cli-usage.error.ts',
   'infrastructure/cli/cli.ts',
   'infrastructure/cli/cli.utils.ts',

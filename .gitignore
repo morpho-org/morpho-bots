@@ -8,6 +8,12 @@ node_modules
 .env.*
 !.env.example
 
+# Local market-making configuration (examples remain trackable)
+**/market-making.yaml
+**/market-making.yml
+!**/market-making.example.yaml
+!**/market-making.example.yml
+
 
 # Testing
 coverage

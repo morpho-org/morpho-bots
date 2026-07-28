@@ -102,6 +102,16 @@ describe('ConfigService', () => {
     )
   })
 
+  test.each([
+    ['CHAIN_ID', '8453.0'],
+    ['CHAIN_ID', '8.453e3'],
+    ['REQUEST_TIMEOUT_MS', '10000.0'],
+    ['REQUEST_TIMEOUT_MS', '1e4'],
+    ['REQUEST_TIMEOUT_MS', '1E+4']
+  ])('rejects non-decimal-integer syntax for %s', (name, value) => {
+    expect(() => ConfigService.from({ ...environment, [name]: value })).toThrow()
+  })
+
   test('rejects malformed private keys and unsigned integer settings', () => {
     expect(() => ConfigService.from({ ...environment, MAKER_PRIVATE_KEY: '0x12' })).toThrow(
       'MAKER_PRIVATE_KEY must be a 0x-prefixed 32-byte hex string'
@@ -109,6 +119,29 @@ describe('ConfigService', () => {
     expect(() => ConfigService.from({ ...environment, NATIVE_RESERVE_WEI: '-1' })).toThrow(
       'NATIVE_RESERVE_WEI must be an unsigned decimal integer'
     )
+  })
+
+  test.each([
+    [`0x${'00'.repeat(32)}`, 'zero'],
+    ['0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141', 'curve order']
+  ])('rejects an unusable secp256k1 private key (%s, %s)', privateKey => {
+    let error: unknown
+    try {
+      ConfigService.from({ ...environment, MAKER_PRIVATE_KEY: privateKey })
+    } catch (value) {
+      error = value
+    }
+
+    expect(error).toBeInstanceOf(ConfigValidationError)
+    expect(error).toMatchObject({
+      field: 'MAKER_PRIVATE_KEY',
+      reason: 'invalid-private-key'
+    })
+    expect(JSON.stringify(error)).not.toContain(privateKey)
+  })
+
+  test('accepts a usable secp256k1 private key', () => {
+    expect(ConfigService.from(environment).privateKey).toBe(environment.MAKER_PRIVATE_KEY as Hex)
   })
 
   test('uses a stable typed config error with safe field and reason metadata', () => {

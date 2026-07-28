@@ -10,6 +10,9 @@ interface SetupReadinessService {
   assertReady(): Promise<SetupCheckReport>
 }
 
+/** CLI-selected configuration file, if the operator bypasses default discovery. */
+type CliConfigurationOptions = { configPath?: string }
+
 /** Infrastructure adapter: wires the `mm` CLI (commander) to application services. */
 export class Cli {
   private readonly program: Command
@@ -21,11 +24,17 @@ export class Cli {
    * @param setup - Lazy readiness-service factory, invoked only for `setup-check`.
    * @remarks Construction performs no provider calls and does not start writer workflows.
    */
-  constructor(version: VersionService, setup: () => SetupReadinessService) {
+  constructor(
+    version: VersionService,
+    setup: (
+      options: CliConfigurationOptions
+    ) => SetupReadinessService | Promise<SetupReadinessService>
+  ) {
     this.program = new Command()
       .name('mm')
       .description('Morpho market making bot CLI')
       .version(version.getVersion(), '-v, --version', 'output the current version')
+      .option('-c, --config <path>', 'load configuration from an explicit .yaml or .yml file')
       .exitOverride()
       .configureOutput({ writeOut: () => {}, writeErr: () => {} })
 
@@ -33,7 +42,9 @@ export class Cli {
       .command('setup-check')
       .description('run the read-only market-maker readiness checks')
       .action(async () => {
-        this.output = formatSetupCheckReport(await setup().assertReady())
+        const options = this.program.opts<{ config?: string }>()
+        const setupService = await setup({ configPath: options.config })
+        this.output = formatSetupCheckReport(await setupService.assertReady())
       })
   }
 
