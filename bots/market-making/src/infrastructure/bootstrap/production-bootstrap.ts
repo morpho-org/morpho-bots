@@ -188,42 +188,39 @@ export const createProductionBootstrapAdapters = (
     })
   }
 
-  const make = new MidnightBootstrapMakeService(
-    {
-      listActiveGroups: activeGroups,
-      listBookOffers: async () => (await readGroups()).flatMap(group => group.offers),
-      toProspectiveBookOffer: async offer => {
-        const created = await prepareOffer(offer)
-        preparedOffers.set(offer.marketId, created)
-        return { marketId: offer.marketId, buy: true, tick: created.tick }
-      },
-      invalidate: async group => {
-        await execute(midnight.cancelOffer({ group, accountAddress: account.address }).buildTx())
-      },
-      publish: async (offer: BootstrapOffer) => {
-        const created = preparedOffers.get(offer.marketId)
-        preparedOffers.delete(offer.marketId)
-        if (!created) throw new BootstrapAdapterError('prospective-offer-missing')
-        const output = await midnight.makeLend({
-          accountAddress: account.address,
-          offers: [created],
-          validation: { apiUrl: `${config.morphoApiBaseUrl}/v0/midnight` },
-          loanToken: config.setup.loanAsset,
-          loanAssets: offer.assets
-        })
-        const signatures = await signBootstrapRequirements(
-          await output.getRequirements(),
-          requirement =>
-            requirement.sign(wallet, account.address) as Promise<
-              import('@morpho-org/morpho-sdk').MidnightOfferRootSignature
-            >
-        )
-        await execute(output.buildTx(signatures))
-        return output.groups[0] as Hex
-      }
+  const make = new MidnightBootstrapMakeService({
+    listActiveGroups: activeGroups,
+    listBookOffers: async () => (await readGroups()).flatMap(group => group.offers),
+    toProspectiveBookOffer: async offer => {
+      const created = await prepareOffer(offer)
+      preparedOffers.set(offer.marketId, created)
+      return { marketId: offer.marketId, buy: true, tick: created.tick }
     },
-    config.v0OfferGroupIds
-  )
+    invalidate: async group => {
+      await execute(midnight.cancelOffer({ group, accountAddress: account.address }).buildTx())
+    },
+    publish: async (offer: BootstrapOffer) => {
+      const created = preparedOffers.get(offer.marketId)
+      preparedOffers.delete(offer.marketId)
+      if (!created) throw new BootstrapAdapterError('prospective-offer-missing')
+      const output = await midnight.makeLend({
+        accountAddress: account.address,
+        offers: [created],
+        validation: { apiUrl: `${config.morphoApiBaseUrl}/v0/midnight` },
+        loanToken: config.setup.loanAsset,
+        loanAssets: offer.assets
+      })
+      const signatures = await signBootstrapRequirements(
+        await output.getRequirements(),
+        requirement =>
+          requirement.sign(wallet, account.address) as Promise<
+            import('@morpho-org/morpho-sdk').MidnightOfferRootSignature
+          >
+      )
+      await execute(output.buildTx(signatures))
+      return output.groups[0] as Hex
+    }
+  })
 
   return {
     positions: new MidnightBootstrapPositionService(inventory, account.address),

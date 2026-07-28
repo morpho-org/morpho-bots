@@ -25,7 +25,13 @@ describe('MidnightBootstrapPositionService', () => {
 
     const position = await service.readPosition(marketId)
 
-    expect(position.activeOffer).toBeUndefined()
+    expect(position.activeOffer).toEqual({
+      marketId,
+      assets: 20n,
+      rateBps: 500n,
+      referenceObservationId: `group:${firstGroup}`
+    })
+    expect(position.requiresReconciliation).toBe(true)
     expect(position.marketExposure).toBe(50n)
   })
 })

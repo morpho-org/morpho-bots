@@ -50,6 +50,19 @@ describe('readBootstrapGroups', () => {
     expect(error).toMatchObject({ operation: 'offer-groups-repeated-cursor' })
   })
 
+  test.each([null, true, 1, 'invalid'])(
+    'classifies a malformed top-level response %p',
+    async response => {
+      const error = await readBootstrapGroups(
+        { maker, requestTimeoutMs: 1_000 },
+        { request: async () => response }
+      ).catch(value => value)
+
+      expect(error).toBeInstanceOf(BootstrapAdapterError)
+      expect(error).toMatchObject({ operation: 'offer-groups-response' })
+    }
+  )
+
   test('fails closed when aggregate pagination exceeds its deadline', async () => {
     let time = 0
     const request = async () => {

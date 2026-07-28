@@ -25,13 +25,9 @@ interface BootstrapOfferTransport {
 /** Serialized production adapter for one-cycle bootstrap publication and hard halts. */
 export class MidnightBootstrapMakeService implements BootstrapMakeService {
   private queue = Promise.resolve()
-  private readonly sessionGroups = new Set<Hex>()
 
-  /** Creates a singleton mutation queue. @param transport - Midnight SDK transport. @param configuredGroups - Strategy-owned group IDs. */
-  constructor(
-    private readonly transport: BootstrapOfferTransport,
-    private readonly configuredGroups: readonly Hex[]
-  ) {}
+  /** Creates a singleton mutation queue. @param transport - Midnight SDK transport. */
+  constructor(private readonly transport: BootstrapOfferTransport) {}
 
   /**
    * Reconciles one market after reloading Mempool truth inside the mutation queue.
@@ -53,10 +49,6 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
   }) {
     return this.enqueue(async () => {
       const groups = await this.strategyGroups()
-      for (const group of groups.filter(item => item.marketId === parameters.marketId)) {
-        await this.transport.invalidate(group.id)
-        this.sessionGroups.delete(group.id)
-      }
       if (parameters.desiredOffer) {
         const prospective = await this.transport.toProspectiveBookOffer(parameters.desiredOffer)
         const book = [...(await this.transport.listBookOffers()), prospective].filter(
@@ -72,13 +64,18 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
         ) {
           throw new BootstrapAdapterError('negative-spread')
         }
-        this.sessionGroups.add(await this.transport.publish(parameters.desiredOffer))
+      }
+      for (const group of groups.filter(item => item.marketId === parameters.marketId)) {
+        await this.transport.invalidate(group.id)
+      }
+      if (parameters.desiredOffer) {
+        await this.transport.publish(parameters.desiredOffer)
       }
     })
   }
 
   /**
-   * Invalidates every configured or session-published bootstrap group serially.
+   * Invalidates every currently re-derived strategy bootstrap group serially.
    * @param parameters - Stable strategy-wide halt reason.
    * @returns Completion after all active groups have confirmed invalidation.
    * @throws When listing or invalidating any group fails.
@@ -94,14 +91,12 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
     return this.enqueue(async () => {
       for (const group of await this.strategyGroups()) {
         await this.transport.invalidate(group.id)
-        this.sessionGroups.delete(group.id)
       }
     })
   }
 
   private strategyGroups = async () => {
-    const owned = new Set([...this.configuredGroups, ...this.sessionGroups])
-    return (await this.transport.listActiveGroups()).filter(group => owned.has(group.id))
+    return this.transport.listActiveGroups()
   }
 
   private enqueue<Result>(job: () => Promise<Result>): Promise<Result> {

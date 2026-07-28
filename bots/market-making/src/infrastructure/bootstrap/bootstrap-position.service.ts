@@ -37,7 +37,8 @@ export class MidnightBootstrapPositionService implements BootstrapPositionServic
   /**
    * Reads one market position and aggregate strategy exposure.
    * @param marketId - Configured Midnight market identifier.
-   * @returns Fresh credit, debt, wallet capacity, exposure, and active offer.
+   * @returns Fresh credit, debt, wallet capacity, exposure, representative active offer, and whether
+   *   duplicate groups require reconciliation.
    * @throws When chain/API inventory reads fail or the market is absent.
    * @remarks The maker address is retained only to bind this adapter instance to one operator.
    */
@@ -51,7 +52,7 @@ export class MidnightBootstrapPositionService implements BootstrapPositionServic
     const position = positions.find(item => item.marketId === marketId)
     if (!position) throw new BootstrapAdapterError('position-unavailable')
     const marketGroups = groups.filter(group => group.marketId === marketId)
-    const activeGroup = marketGroups.length === 1 ? marketGroups[0] : undefined
+    const activeGroup = marketGroups[0]
     const reservedByMarket = marketGroups.reduce((total, group) => total + group.assets, 0n)
     const totalExposure =
       positions.reduce((total, item) => total + item.credit, 0n) +
@@ -71,7 +72,8 @@ export class MidnightBootstrapPositionService implements BootstrapPositionServic
       cashBalance,
       marketExposure: position.credit + reservedByMarket,
       totalExposure,
-      ...(activeOffer ? { activeOffer } : {})
+      ...(activeOffer ? { activeOffer } : {}),
+      requiresReconciliation: marketGroups.length > 1
     }
   }
 }

@@ -2,11 +2,18 @@ import { describe, expect, test } from 'bun:test'
 
 import { operatorErrorName } from '../../src/application/operator-error-name.utils'
 import { BootstrapConfigurationError } from '../../src/domain/bootstrap-configuration.error'
+import { BootstrapAdapterError } from '../../src/infrastructure/bootstrap/bootstrap-adapter.error'
 
 describe('operatorErrorName', () => {
   test('keeps a fixed known domain classification', () => {
     expect(operatorErrorName(new BootstrapConfigurationError('marketId', 'is invalid'))).toBe(
       'BootstrapConfigurationError'
+    )
+  })
+
+  test('keeps the bootstrap adapter classification', () => {
+    expect(operatorErrorName(new BootstrapAdapterError('position-unavailable'))).toBe(
+      'BootstrapAdapterError'
     )
   })
 

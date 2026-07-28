@@ -29,12 +29,14 @@ export interface BootstrapPositionService {
   /**
    * Reads the complete position state required for one bootstrap decision.
    * @param marketId - Canonical market identifier to inspect.
-   * @returns Fresh credit, debt, capacity inputs, and any active bootstrap offer.
+   * @returns Fresh credit, debt, capacity inputs, any representative active bootstrap offer, and a
+   *   reconciliation marker when duplicate groups exist.
    */
   readPosition(marketId: Hex): Promise<
     BootstrapPosition & {
       debt: bigint
       activeOffer?: BootstrapOffer
+      requiresReconciliation?: boolean
     }
   >
 }
@@ -223,6 +225,7 @@ export class PositionBootstrapService {
             position,
             rate,
             activeOffer: position.activeOffer,
+            requiresReconciliation: position.requiresReconciliation,
             initialTargetCompleted: this.completedMarkets.has(config.marketId)
           })
         } catch (error) {

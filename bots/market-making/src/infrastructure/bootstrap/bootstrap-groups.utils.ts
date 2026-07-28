@@ -143,11 +143,15 @@ export const readBootstrapGroups = async (
     pageCount += 1
     const query = new URLSearchParams({ limit: String(PAGE_SIZE) })
     if (cursor) query.set('cursor', cursor)
-    const response = (await request(
+    const rawResponse = await request(
       `${config.morphoApiBaseUrl ?? ''}/v0/midnight/users/${config.maker}/offer-groups?${query.toString()}`,
       'morpho-api',
       Math.min(config.requestTimeoutMs, remainingMs)
-    )) as { data?: unknown; cursor?: unknown }
+    )
+    if (typeof rawResponse !== 'object' || rawResponse === null || Array.isArray(rawResponse)) {
+      throw new BootstrapAdapterError('offer-groups-response')
+    }
+    const response = rawResponse as { data?: unknown; cursor?: unknown }
     if (!Array.isArray(response.data)) throw new BootstrapAdapterError('offer-groups-response')
     if (response.data.length > PAGE_SIZE) throw new BootstrapAdapterError('offer-groups-page-size')
     for (const value of response.data) {
