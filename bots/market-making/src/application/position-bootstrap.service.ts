@@ -4,10 +4,14 @@ import type {
   BootstrapConfig,
   BootstrapOffer,
   BootstrapPosition,
-  BootstrapRate
+  BootstrapRate,
+  PositionBootstrapDecision
 } from '../domain/position-bootstrap'
 
-import { decidePositionBootstrap } from '../domain/position-bootstrap'
+import {
+  decidePositionBootstrap,
+  decidePositionBootstrapTransition
+} from '../domain/position-bootstrap'
 
 const errorName = (error: unknown) => (error instanceof Error ? error.name : 'UnknownError')
 
@@ -35,11 +39,37 @@ export interface BootstrapMakeService {
       | 'no-capacity'
       | 'auto-refill-disabled'
       | 'market-read-failed'
-      | 'reference-read-failed'
+  }): Promise<void>
+  hardHalt(parameters: {
+    reason: 'reference-read-failed' | 'bootstrap-decision-failed'
   }): Promise<void>
 }
 
-/** Applies one position-bootstrap reconciliation cycle using fresh provider truth. */
+type BootstrapRunResult =
+  | {
+      marketId: Hex
+      status: 'observed'
+      action: 'target-reached' | 'auto-refill-disabled' | 'no-capacity' | 'rest'
+    }
+  | { marketId: Hex; status: 'applied'; action: 'invalidate' | 'publish' | 'replace' }
+  | {
+      marketId: Hex
+      status: 'failed'
+      stage: 'position-read' | 'make'
+      invalidated: boolean
+      errorName: string
+      invalidationErrorName?: string
+    }
+  | {
+      marketId: Hex
+      status: 'halted'
+      stage: 'reference-read' | 'decision'
+      strategyInvalidated: boolean
+      errorName: string
+      invalidationErrorName?: string
+    }
+
+/** Applies position-bootstrap cycles. Its in-memory one-shot gate resets on service recreation. */
 export class PositionBootstrapService {
   private readonly completedMarkets = new Set<Hex>()
 
@@ -51,33 +81,59 @@ export class PositionBootstrapService {
   ) {}
 
   async runOnce() {
-    const results = []
+    const results: BootstrapRunResult[] = []
     for (const config of this.configs) {
       let position: Awaited<ReturnType<BootstrapPositionService['readPosition']>>
       try {
         position = await this.positions.readPosition(config.marketId)
       } catch (error) {
         results.push(
-          await this.failedRead(config.marketId, 'position-read', error, 'market-read-failed')
+          await this.failedMarketRead(config.marketId, 'position-read', error, 'market-read-failed')
         )
         continue
       }
-      let rate: BootstrapRate
-      try {
-        rate = await this.rates.readRate(config.marketId)
-      } catch (error) {
-        results.push(
-          await this.failedRead(config.marketId, 'reference-read', error, 'reference-read-failed')
-        )
-        continue
-      }
-      const decision = decidePositionBootstrap({
+
+      const transition = decidePositionBootstrapTransition({
         config,
         position,
-        rate,
         activeOffer: position.activeOffer,
         initialTargetCompleted: this.completedMarkets.has(config.marketId)
       })
+      let decision: PositionBootstrapDecision
+
+      if (transition) {
+        decision = transition
+      } else {
+        let rate: BootstrapRate
+        try {
+          rate = await this.rates.readRate(config.marketId)
+        } catch (error) {
+          results.push(
+            await this.haltStrategy(
+              config.marketId,
+              'reference-read',
+              error,
+              'reference-read-failed'
+            )
+          )
+          return results
+        }
+
+        try {
+          decision = decidePositionBootstrap({
+            config,
+            position,
+            rate,
+            activeOffer: position.activeOffer,
+            initialTargetCompleted: this.completedMarkets.has(config.marketId)
+          })
+        } catch (error) {
+          results.push(
+            await this.haltStrategy(config.marketId, 'decision', error, 'bootstrap-decision-failed')
+          )
+          return results
+        }
+      }
 
       if ('completesInitialTarget' in decision && decision.completesInitialTarget) {
         this.completedMarkets.add(config.marketId)
@@ -120,7 +176,7 @@ export class PositionBootstrapService {
             status: 'failed' as const,
             stage: 'make' as const,
             invalidated: false,
-            errorName: error instanceof Error ? error.name : 'UnknownError'
+            errorName: errorName(error)
           })
           continue
         }
@@ -144,7 +200,7 @@ export class PositionBootstrapService {
           status: 'failed' as const,
           stage: 'make' as const,
           invalidated: false,
-          errorName: error instanceof Error ? error.name : 'UnknownError'
+          errorName: errorName(error)
         })
         continue
       }
@@ -153,11 +209,11 @@ export class PositionBootstrapService {
     return results
   }
 
-  private async failedRead(
+  private async failedMarketRead(
     marketId: Hex,
-    stage: 'position-read' | 'reference-read',
+    stage: 'position-read',
     readError: unknown,
-    reason: 'market-read-failed' | 'reference-read-failed'
+    reason: 'market-read-failed'
   ) {
     try {
       await this.make.reconcile({ marketId, desiredOffer: undefined, reason })
@@ -175,6 +231,33 @@ export class PositionBootstrapService {
         stage,
         invalidated: false,
         errorName: errorName(readError),
+        invalidationErrorName: errorName(invalidationError)
+      }
+    }
+  }
+
+  private async haltStrategy(
+    marketId: Hex,
+    stage: 'reference-read' | 'decision',
+    failure: unknown,
+    reason: 'reference-read-failed' | 'bootstrap-decision-failed'
+  ) {
+    try {
+      await this.make.hardHalt({ reason })
+      return {
+        marketId,
+        status: 'halted' as const,
+        stage,
+        strategyInvalidated: true,
+        errorName: errorName(failure)
+      }
+    } catch (invalidationError) {
+      return {
+        marketId,
+        status: 'halted' as const,
+        stage,
+        strategyInvalidated: false,
+        errorName: errorName(failure),
         invalidationErrorName: errorName(invalidationError)
       }
     }

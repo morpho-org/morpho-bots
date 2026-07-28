@@ -16,6 +16,8 @@ const parameters = {
     premiumBps: -50n,
     maximumMarketExposure: 2_000n,
     maximumTotalExposure: 4_000n,
+    minimumRateBps: 200n,
+    maximumRateBps: 800n,
     autoRefill: false
   },
   position: {
@@ -108,6 +110,24 @@ describe('decidePositionBootstrap', () => {
     ).toEqual({ kind: 'rest', offer })
   })
 
+  test('leaves a static offer resting when only observation metadata changes', () => {
+    const activeOffer = {
+      marketId,
+      assets: 500n,
+      rateBps: 450n,
+      referenceObservationId: 'static:old-observation'
+    }
+
+    expect(
+      decidePositionBootstrap({
+        ...parameters,
+        position: { ...parameters.position, credit: 0n },
+        rate: { mode: 'static', rateBps: 500n, observationId: 'static:new-observation' },
+        activeOffer
+      })
+    ).toEqual({ kind: 'rest', offer: activeOffer })
+  })
+
   test('replaces a variable bootstrap offer after a new reference observation', () => {
     const activeOffer = {
       marketId,
@@ -125,6 +145,52 @@ describe('decidePositionBootstrap', () => {
         activeOffer
       })
     ).toEqual({ kind: 'replace', activeOffer, offer })
+  })
+
+  test('leaves a variable offer resting within the same reference observation', () => {
+    const activeOffer = {
+      marketId,
+      assets: 500n,
+      rateBps: 450n,
+      referenceObservationId: 'block:200'
+    }
+
+    expect(
+      decidePositionBootstrap({
+        ...parameters,
+        position: { ...parameters.position, credit: 0n },
+        rate: { mode: 'variable', rateBps: 500n, observationId: 'block:200' },
+        activeOffer
+      })
+    ).toEqual({ kind: 'rest', offer: activeOffer })
+  })
+
+  test('rejects a premium-adjusted requested rate below the configured minimum', () => {
+    expect(() =>
+      decidePositionBootstrap({
+        ...parameters,
+        position: { ...parameters.position, credit: 0n },
+        config: {
+          ...parameters.config,
+          minimumRateBps: 200n,
+          maximumRateBps: 800n,
+          premiumBps: -350n
+        }
+      })
+    ).toThrow(
+      new BootstrapConfigurationError('requestedRateBps', 'must be at least minimumRateBps')
+    )
+  })
+
+  test('rejects a premium-adjusted requested rate above the configured maximum', () => {
+    expect(() =>
+      decidePositionBootstrap({
+        ...parameters,
+        position: { ...parameters.position, credit: 0n },
+        rate: { mode: 'static', rateBps: 850n, observationId: 'static:850' },
+        config: { ...parameters.config, premiumBps: 0n }
+      })
+    ).toThrow(new BootstrapConfigurationError('requestedRateBps', 'must be at most maximumRateBps'))
   })
 
   test('stays observational after initial completion when auto-refill is disabled', () => {
@@ -177,14 +243,16 @@ describe('decidePositionBootstrap', () => {
     })
   })
 
-  test('rejects a premium that would produce a negative requested rate', () => {
+  test('rejects a premium that would produce a requested rate below the minimum', () => {
     expect(() =>
       decidePositionBootstrap({
         ...parameters,
         position: { ...parameters.position, credit: 0n },
         config: { ...parameters.config, premiumBps: -501n }
       })
-    ).toThrow(new BootstrapConfigurationError('requestedRateBps', 'must not be negative'))
+    ).toThrow(
+      new BootstrapConfigurationError('requestedRateBps', 'must be at least minimumRateBps')
+    )
   })
 
   test('rejects a positive bootstrap premium', () => {

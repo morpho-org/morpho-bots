@@ -366,7 +366,9 @@ once the acceptance threshold is met; it never assumes that only its own fills m
 
 When `AUTO_REFILL=true`, the workflow resumes this behavior whenever credit falls below target. When
 false, bootstrap runs until the initial target transition and then remains observational until
-restarted with an explicit operator decision.
+restarted with an explicit operator decision. The one-shot completion gate is intentionally scoped
+to the in-memory bootstrap service lifetime: recreating the service resets the gate, then fresh
+chain and Mempool reads reconcile active roots without restoring bot-owned state or using a database.
 
 Bootstrap does not proactively take standing offers. That avoids a separate taker transaction,
 and supersedes the original 10,000 USDC active-take sketch. A later iteration may opportunistically

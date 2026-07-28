@@ -22,6 +22,8 @@ const config = (id = marketId, autoRefill = false): BootstrapConfig => ({
   premiumBps: -50n,
   maximumMarketExposure: 2_000n,
   maximumTotalExposure: 4_000n,
+  minimumRateBps: 200n,
+  maximumRateBps: 800n,
   autoRefill
 })
 
@@ -46,12 +48,13 @@ const setup = ({
     observationId: 'static:500'
   }))
   const reconcile = mock(async () => undefined)
+  const hardHalt = mock(async () => undefined)
   const positions: BootstrapPositionService = { readPosition }
   const rates: BootstrapReferenceRateService = { readRate }
-  const make: BootstrapMakeService = { reconcile }
+  const make: BootstrapMakeService = { reconcile, hardHalt }
   const service = new PositionBootstrapService(positions, rates, make, configs)
 
-  return { service, positions, rates, make, readPosition, readRate, reconcile }
+  return { service, positions, rates, make, readPosition, readRate, reconcile, hardHalt }
 }
 
 describe('PositionBootstrapService', () => {
@@ -186,27 +189,129 @@ describe('PositionBootstrapService', () => {
     ])
   })
 
-  test('invalidates the market when its reference read fails', async () => {
-    const { service, rates, reconcile } = setup()
+  test('halts the strategy on a reference failure and prevents later market publication', async () => {
+    const { service, rates, reconcile, hardHalt } = setup({
+      configs: [config(), config(secondMarketId)]
+    })
     rates.readRate = mock(async () => {
       throw new TypeError('stale reference')
     })
 
     const result = await service.runOnce()
 
-    expect(reconcile).toHaveBeenCalledWith({
-      marketId,
-      desiredOffer: undefined,
+    expect(hardHalt).toHaveBeenCalledWith({
       reason: 'reference-read-failed'
     })
+    expect(reconcile).not.toHaveBeenCalled()
     expect(result).toEqual([
       {
         marketId,
-        status: 'failed',
+        status: 'halted',
         stage: 'reference-read',
-        invalidated: true,
+        strategyInvalidated: true,
         errorName: 'TypeError'
       }
+    ])
+  })
+
+  test('preserves the reference failure classification when strategy cleanup also fails', async () => {
+    const { service, rates, make } = setup()
+    rates.readRate = mock(async () => {
+      throw new TypeError('stale reference')
+    })
+    make.hardHalt = mock(async () => {
+      throw new RangeError('cleanup reverted')
+    })
+
+    expect(await service.runOnce()).toEqual([
+      {
+        marketId,
+        status: 'halted',
+        stage: 'reference-read',
+        strategyInvalidated: false,
+        errorName: 'TypeError',
+        invalidationErrorName: 'RangeError'
+      }
+    ])
+  })
+
+  test('halts and invalidates the strategy when the bootstrap decision rejects active offers', async () => {
+    const { service, positions, rates, hardHalt } = setup()
+    positions.readPosition = mock(async () => ({
+      credit: 0n,
+      debt: 0n,
+      cashBalance: 2_000n,
+      marketExposure: 0n,
+      totalExposure: 0n,
+      activeOffer: {
+        marketId,
+        assets: 500n,
+        rateBps: 450n,
+        referenceObservationId: 'static:500'
+      }
+    }))
+    rates.readRate = mock(async () => ({
+      mode: 'static' as const,
+      rateBps: 100n,
+      observationId: 'static:100'
+    }))
+
+    expect(await service.runOnce()).toEqual([
+      {
+        marketId,
+        status: 'halted',
+        stage: 'decision',
+        strategyInvalidated: true,
+        errorName: 'BootstrapConfigurationError'
+      }
+    ])
+    expect(hardHalt).toHaveBeenCalledWith({ reason: 'bootstrap-decision-failed' })
+  })
+
+  test('completes before a failed reference read and stays stopped with auto-refill disabled', async () => {
+    const { service, positions, rates, reconcile } = setup()
+    let cycle = 0
+    positions.readPosition = mock(async () => {
+      cycle += 1
+      return {
+        credit: cycle === 1 ? 900n : 500n,
+        debt: 0n,
+        cashBalance: 2_000n,
+        marketExposure: 0n,
+        totalExposure: 0n,
+        activeOffer:
+          cycle === 1
+            ? {
+                marketId,
+                assets: 100n,
+                rateBps: 450n,
+                referenceObservationId: 'static:500'
+              }
+            : undefined
+      }
+    })
+    const failedReadRate = mock(async () => {
+      throw new TypeError('reference unavailable')
+    })
+    rates.readRate = failedReadRate
+
+    expect(await service.runOnce()).toEqual([{ marketId, status: 'applied', action: 'invalidate' }])
+    expect(await service.runOnce()).toEqual([
+      { marketId, status: 'observed', action: 'auto-refill-disabled' }
+    ])
+    expect(failedReadRate).not.toHaveBeenCalled()
+    expect(reconcile).toHaveBeenCalledTimes(1)
+  })
+
+  test('service recreation intentionally resets the auto-refill false one-shot gate', async () => {
+    const first = setup({ credit: 900n })
+    expect(await first.service.runOnce()).toEqual([
+      { marketId, status: 'observed', action: 'target-reached' }
+    ])
+
+    const restarted = setup({ credit: 500n })
+    expect(await restarted.service.runOnce()).toEqual([
+      { marketId, status: 'applied', action: 'publish' }
     ])
   })
 

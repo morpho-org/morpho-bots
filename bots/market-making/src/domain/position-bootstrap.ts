@@ -10,6 +10,8 @@ export type BootstrapConfig = {
   premiumBps: bigint
   maximumMarketExposure: bigint
   maximumTotalExposure: bigint
+  minimumRateBps: bigint
+  maximumRateBps: bigint
   autoRefill: boolean
 }
 
@@ -41,27 +43,41 @@ type PositionBootstrapParameters = {
   initialTargetCompleted: boolean
 }
 
+type PositionBootstrapTransitionParameters = Pick<
+  PositionBootstrapParameters,
+  'config' | 'position' | 'activeOffer' | 'initialTargetCompleted'
+>
+
+export type PositionBootstrapTransitionDecision =
+  | { kind: 'invalidate'; reason: 'target-reached'; completesInitialTarget: true }
+  | { kind: 'target-reached'; completesInitialTarget: true; credit: bigint; acceptedCredit: bigint }
+  | { kind: 'invalidate'; reason: 'auto-refill-disabled'; completesInitialTarget: false }
+  | { kind: 'observe'; reason: 'auto-refill-disabled'; credit: bigint; acceptedCredit: bigint }
+
+export type PositionBootstrapDecision =
+  | PositionBootstrapTransitionDecision
+  | { kind: 'invalidate'; reason: 'no-capacity'; completesInitialTarget: false }
+  | { kind: 'observe'; reason: 'no-capacity'; assets: 0n }
+  | { kind: 'rest'; offer: BootstrapOffer }
+  | { kind: 'replace'; activeOffer: BootstrapOffer; offer: BootstrapOffer }
+  | { kind: 'publish'; offer: BootstrapOffer }
+
 const minimum = (values: readonly bigint[]) =>
   values.reduce((smallest, value) => (value < smallest ? value : smallest))
 
-const sameOffer = (left: BootstrapOffer, right: BootstrapOffer) =>
+const sameOffer = (left: BootstrapOffer, right: BootstrapOffer, mode: BootstrapRate['mode']) =>
   left.marketId === right.marketId &&
   left.assets === right.assets &&
   left.rateBps === right.rateBps &&
-  left.referenceObservationId === right.referenceObservationId
+  (mode === 'static' || left.referenceObservationId === right.referenceObservationId)
 
-/** Computes the deterministic bootstrap action from current chain and Mempool truth. */
-export const decidePositionBootstrap = ({
+/** Decides completion and one-shot transitions that do not require a reference-rate read. */
+export const decidePositionBootstrapTransition = ({
   config,
   position,
-  rate,
   activeOffer,
   initialTargetCompleted
-}: PositionBootstrapParameters) => {
-  if (config.premiumBps > 0n) {
-    throw new BootstrapConfigurationError('premiumBps', 'must be zero or negative')
-  }
-
+}: PositionBootstrapTransitionParameters): PositionBootstrapTransitionDecision | undefined => {
   const acceptedCredit = config.creditTarget - config.acceptanceAssets
 
   if (position.credit >= acceptedCredit) {
@@ -97,6 +113,29 @@ export const decidePositionBootstrap = ({
     }
   }
 
+  return undefined
+}
+
+/** Computes the deterministic bootstrap action from current chain and Mempool truth. */
+export const decidePositionBootstrap = ({
+  config,
+  position,
+  rate,
+  activeOffer,
+  initialTargetCompleted
+}: PositionBootstrapParameters): PositionBootstrapDecision => {
+  if (config.premiumBps > 0n) {
+    throw new BootstrapConfigurationError('premiumBps', 'must be zero or negative')
+  }
+
+  const transition = decidePositionBootstrapTransition({
+    config,
+    position,
+    activeOffer,
+    initialTargetCompleted
+  })
+  if (transition) return transition
+
   const assets = minimum([
     config.offerSize,
     config.creditTarget - position.credit,
@@ -117,8 +156,11 @@ export const decidePositionBootstrap = ({
   }
 
   const requestedRateBps = rate.rateBps + config.premiumBps
-  if (requestedRateBps < 0n) {
-    throw new BootstrapConfigurationError('requestedRateBps', 'must not be negative')
+  if (requestedRateBps < config.minimumRateBps) {
+    throw new BootstrapConfigurationError('requestedRateBps', 'must be at least minimumRateBps')
+  }
+  if (requestedRateBps > config.maximumRateBps) {
+    throw new BootstrapConfigurationError('requestedRateBps', 'must be at most maximumRateBps')
   }
 
   const offer: BootstrapOffer = {
@@ -128,7 +170,7 @@ export const decidePositionBootstrap = ({
     referenceObservationId: rate.observationId
   }
 
-  if (activeOffer && sameOffer(activeOffer, offer)) {
+  if (activeOffer && sameOffer(activeOffer, offer, rate.mode)) {
     return { kind: 'rest' as const, offer: activeOffer }
   }
   if (activeOffer) return { kind: 'replace' as const, activeOffer, offer }
