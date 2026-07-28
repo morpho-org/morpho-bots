@@ -93,12 +93,20 @@ export class PositionBootstrapService {
         continue
       }
 
-      const transition = decidePositionBootstrapTransition({
-        config,
-        position,
-        activeOffer: position.activeOffer,
-        initialTargetCompleted: this.completedMarkets.has(config.marketId)
-      })
+      let transition: ReturnType<typeof decidePositionBootstrapTransition>
+      try {
+        transition = decidePositionBootstrapTransition({
+          config,
+          position,
+          activeOffer: position.activeOffer,
+          initialTargetCompleted: this.completedMarkets.has(config.marketId)
+        })
+      } catch (error) {
+        results.push(
+          await this.haltStrategy(config.marketId, 'decision', error, 'bootstrap-decision-failed')
+        )
+        return results
+      }
       let decision: PositionBootstrapDecision
 
       if (transition) {

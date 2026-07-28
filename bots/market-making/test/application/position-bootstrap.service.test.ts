@@ -268,6 +268,81 @@ describe('PositionBootstrapService', () => {
     expect(hardHalt).toHaveBeenCalledWith({ reason: 'bootstrap-decision-failed' })
   })
 
+  test('halts a live offer when a negative acceptance threshold rejects the transition', async () => {
+    const { service, positions, readRate, reconcile, hardHalt } = setup({
+      configs: [{ ...config(), acceptanceAssets: -1n }, config(secondMarketId)]
+    })
+    const readPosition = mock(async (id: Hex) => ({
+      credit: 0n,
+      debt: 0n,
+      cashBalance: 2_000n,
+      marketExposure: 0n,
+      totalExposure: 0n,
+      activeOffer: {
+        marketId: id,
+        assets: 500n,
+        rateBps: 450n,
+        referenceObservationId: 'static:500'
+      }
+    }))
+    positions.readPosition = readPosition
+
+    expect(await service.runOnce()).toEqual([
+      {
+        marketId,
+        status: 'halted',
+        stage: 'decision',
+        strategyInvalidated: true,
+        errorName: 'BootstrapConfigurationError'
+      }
+    ])
+    expect(hardHalt).toHaveBeenCalledTimes(1)
+    expect(hardHalt).toHaveBeenCalledWith({ reason: 'bootstrap-decision-failed' })
+    expect(readPosition).toHaveBeenCalledTimes(1)
+    expect(readRate).not.toHaveBeenCalled()
+    expect(reconcile).not.toHaveBeenCalled()
+  })
+
+  test('preserves cleanup evidence when an excessive acceptance threshold halts a live offer', async () => {
+    const { service, positions, make, readRate, reconcile } = setup({
+      configs: [{ ...config(), acceptanceAssets: 1_001n }, config(secondMarketId)]
+    })
+    const readPosition = mock(async (id: Hex) => ({
+      credit: 0n,
+      debt: 0n,
+      cashBalance: 2_000n,
+      marketExposure: 0n,
+      totalExposure: 0n,
+      activeOffer: {
+        marketId: id,
+        assets: 500n,
+        rateBps: 450n,
+        referenceObservationId: 'static:500'
+      }
+    }))
+    positions.readPosition = readPosition
+    const hardHalt = mock(async () => {
+      throw new RangeError('cleanup reverted')
+    })
+    make.hardHalt = hardHalt
+
+    expect(await service.runOnce()).toEqual([
+      {
+        marketId,
+        status: 'halted',
+        stage: 'decision',
+        strategyInvalidated: false,
+        errorName: 'BootstrapConfigurationError',
+        invalidationErrorName: 'RangeError'
+      }
+    ])
+    expect(hardHalt).toHaveBeenCalledTimes(1)
+    expect(hardHalt).toHaveBeenCalledWith({ reason: 'bootstrap-decision-failed' })
+    expect(readPosition).toHaveBeenCalledTimes(1)
+    expect(readRate).not.toHaveBeenCalled()
+    expect(reconcile).not.toHaveBeenCalled()
+  })
+
   test('completes before a failed reference read and stays stopped with auto-refill disabled', async () => {
     const { service, positions, rates, reconcile } = setup()
     let cycle = 0
