@@ -263,7 +263,10 @@ V0 checks:
 6. every configured book is on the explicit allowlist, is active, uses the expected loan asset, has
    accessible tick spacing, and has not matured;
 7. the reference-market configuration and archive RPC are readable; and
-8. no unknown active V0 offer namespace or already-live inverted spread is present for the maker.
+8. the complete active maker offer-group set contains no unknown V0 namespace, no offer on a removed
+   or unconfigured market, and no already-live inverted spread. The check uses the cursor-paginated
+   `/v0/midnight/users/{maker}/offer-groups` source rather than takeable offers, so fresh active
+   offers are visible before executable amount measurement.
 
 The check is read-only. It reports the exact remediation transaction but does not approve tokens,
 authorize a ratifier, move funds, or invalidate offers. Setup remains an explicit operator action.
@@ -653,7 +656,11 @@ easier to operate and explain, and accepting bounded staleness is an explicit pr
 
 ## Dependencies
 
-- `@morpho-org/midnight-sdk` for protocol-exact tick/price/rate and offer utilities.
+- `@morpho-org/midnight-sdk` for protocol-exact tick/price/rate and offer utilities and
+  `MidnightApi.fetchBooks` endpoint/mapping reuse. Version 1.2.0 does not expose the active
+  offer-group endpoint or entity, so that cursor traversal keeps a minimal local, deadline-bounded,
+  strictly validated response projection.
+- `@morpho-org/morpho-sdk/abis` for the exported `blueAbi` used by reference-market reads.
 - `@morpho-org/morpho-ts`, satisfying the SDK peer range.
 - `viem` for deterministic current/historical RPC reads, contract reads, simulation, and
   invalidation submission.

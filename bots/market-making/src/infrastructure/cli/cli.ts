@@ -1,33 +1,67 @@
 import { Command, CommanderError } from 'commander'
 
+import type { SetupCheckReport } from '../../application/setup-check.service'
 import type { VersionService } from '../../application/version.service'
+
+import { CliUsageError } from './cli-usage.error'
+import { formatSetupCheckReport } from './cli.utils'
+
+interface SetupReadinessService {
+  assertReady(): Promise<SetupCheckReport>
+}
 
 /** Infrastructure adapter: wires the `mm` CLI (commander) to application services. */
 export class Cli {
   private readonly program: Command
+  private output: string | undefined
 
-  constructor(version: VersionService) {
+  /**
+   * Configures the version and read-only setup-check commands.
+   * @param version - Application version provider.
+   * @param setup - Lazy readiness-service factory, invoked only for `setup-check`.
+   * @remarks Construction performs no provider calls and does not start writer workflows.
+   */
+  constructor(version: VersionService, setup: () => SetupReadinessService) {
     this.program = new Command()
       .name('mm')
       .description('Morpho market making bot CLI')
       .version(version.getVersion(), '-v, --version', 'output the current version')
       .exitOverride()
-      .configureOutput({
-        writeOut: () => {},
-        writeErr: () => {}
+      .configureOutput({ writeOut: () => {}, writeErr: () => {} })
+
+    this.program
+      .command('setup-check')
+      .description('run the read-only market-maker readiness checks')
+      .action(async () => {
+        this.output = formatSetupCheckReport(await setup().assertReady())
       })
   }
 
-  run(argv: readonly string[]): string {
+  /**
+   * Parses one CLI invocation and returns its captured output.
+   * @param argv - User arguments without the executable/runtime prefix.
+   * @returns Version text or the serialized complete setup report.
+   * @throws `CliUsageError` with a constant message and stable code on invalid usage; raw Commander
+   * arguments, messages, option details, URLs, and causes are deliberately discarded. Provider and
+   * readiness errors pass through.
+   * @remarks `setup-check` remains read-only; any remediation is descriptive and never executed.
+   */
+  async run(argv: readonly string[]): Promise<string> {
+    if (argv.length === 0) throw new CliUsageError()
+    this.output = undefined
     try {
-      this.program.parse(argv, { from: 'user' })
+      await this.program.parseAsync(argv, { from: 'user' })
     } catch (error) {
       if (error instanceof CommanderError && error.code === 'commander.version') {
         return error.message
       }
-      throw new Error(error instanceof Error ? error.message : String(error), { cause: error })
+      if (error instanceof CommanderError) {
+        throw new CliUsageError()
+      }
+      throw error
     }
 
-    throw new Error('Unknown command: (none)')
+    if (this.output !== undefined) return this.output
+    throw new CliUsageError()
   }
 }

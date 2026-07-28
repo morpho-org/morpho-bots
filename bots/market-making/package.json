@@ -9,14 +9,21 @@
   "type": "module",
   "scripts": {
     "start": "bun src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "jsdoc:check": "bun scripts/check-jsdoc.ts",
+    "jsdoc:build": "bun run jsdoc:check && typedoc --options typedoc.json"
   },
   "dependencies": {
-    "commander": "^14.0.3"
+    "@morpho-org/midnight-sdk": "catalog:",
+    "@morpho-org/morpho-sdk": "5.4.1",
+    "@morpho-org/morpho-ts": "catalog:",
+    "commander": "^14.0.3",
+    "viem": "catalog:"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
     "@types/bun": "catalog:",
+    "typedoc": "0.28.20",
     "typescript": "catalog:"
   }
 }

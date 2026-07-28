@@ -1,11 +1,17 @@
-import { VersionService } from './application/version.service'
-import { Cli } from './infrastructure/cli/cli'
-
-const cli = new Cli(new VersionService())
+import { SetupFailedError } from './application/setup-failed.error'
+import { createApplication } from './bootstrap'
+import { formatSetupCheckReport } from './infrastructure/cli/cli.utils'
 
 try {
-  console.log(cli.run(Bun.argv.slice(2)))
+  const application = createApplication()
+  console.log(await application.run(Bun.argv.slice(2)))
 } catch (error) {
-  console.error(error instanceof Error ? error.message : error)
+  console.error(
+    error instanceof SetupFailedError
+      ? formatSetupCheckReport(error.report)
+      : error instanceof Error
+        ? error.message
+        : error
+  )
   process.exit(1)
 }
