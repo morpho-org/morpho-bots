@@ -8,7 +8,3 @@ preload = [
   "./bots/midnight-liquidation/soltag.preload.ts",
   "./bots/blue-liquidation/soltag.preload.ts"
 ]
-# monitor-bot's suite is vitest-based (NestJS decorator metadata needs the SWC transform); without
-# this exclusion `bun test` would shim its `vitest` imports and run the files with the vitest
-# config ignored. Run it via `bun run --filter @morpho-org/monitor-bot test`.
-pathIgnorePatterns = ["bots/monitor-bot/**"]
