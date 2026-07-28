@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, mock, test } from 'bun:test'
 
 import { VersionService } from '../../../src/application/version.service'
 import { Cli } from '../../../src/infrastructure/cli/cli'
@@ -13,7 +13,11 @@ const readyReport = {
 }
 
 const cli = (assertReady = async () => readyReport) => {
-  return new Cli(new VersionService(), () => ({ assertReady }))
+  return new Cli(
+    new VersionService(),
+    () => ({ assertReady }),
+    () => ({ runOnce: async () => [] })
+  )
 }
 
 const runEntrypoint = async (argv: readonly string[]) => {
@@ -177,10 +181,14 @@ describe('Cli', () => {
 
   test('passes an explicit --config path to the command configuration boundary', async () => {
     let configPath: string | undefined
-    const application = new Cli(new VersionService(), options => {
-      configPath = options.configPath
-      return { assertReady: async () => readyReport }
-    })
+    const application = new Cli(
+      new VersionService(),
+      options => {
+        configPath = options.configPath
+        return { assertReady: async () => readyReport }
+      },
+      () => ({ runOnce: async () => [] })
+    )
 
     await application.run(['--config', 'operator.yml', 'setup-check'])
 
@@ -191,6 +199,22 @@ describe('Cli', () => {
     expect(await cli().run(['setup-check'])).toBe(
       '{"ready":true,"checks":[{"name":"native-balance","status":"passed","observed":"10","required":"10"}]}'
     )
+  })
+
+  test('mm bootstrap triggers one explicit position-bootstrap run', async () => {
+    const runOnce = mock(async () => [
+      { marketId: `0x${'11'.repeat(32)}`, status: 'applied', action: 'publish', assets: 10n }
+    ])
+    const application = new Cli(
+      new VersionService(),
+      () => ({ assertReady: async () => readyReport }),
+      () => ({ runOnce })
+    )
+
+    expect(await application.run(['bootstrap'])).toBe(
+      `[{"marketId":"0x${'11'.repeat(32)}","status":"applied","action":"publish","assets":"10"}]`
+    )
+    expect(runOnce).toHaveBeenCalledTimes(1)
   })
 
   test('propagates a readiness failure for a deterministic non-zero entrypoint exit', async () => {

@@ -4,10 +4,14 @@ import type { SetupCheckReport } from '../../application/setup-check.service'
 import type { VersionService } from '../../application/version.service'
 
 import { CliUsageError } from './cli-usage.error'
-import { formatSetupCheckReport } from './cli.utils'
+import { formatCliResult, formatSetupCheckReport } from './cli.utils'
 
 interface SetupReadinessService {
   assertReady(): Promise<SetupCheckReport>
+}
+
+interface PositionBootstrapService {
+  runOnce(): Promise<unknown>
 }
 
 /** CLI-selected configuration file, if the operator bypasses default discovery. */
@@ -19,16 +23,20 @@ export class Cli {
   private output: string | undefined
 
   /**
-   * Configures the version and read-only setup-check commands.
+   * Configures the version, setup-check, and explicit bootstrap commands.
    * @param version - Application version provider.
    * @param setup - Lazy readiness-service factory, invoked only for `setup-check`.
+   * @param bootstrap - Lazy position-bootstrap factory, invoked only for `bootstrap`.
    * @remarks Construction performs no provider calls and does not start writer workflows.
    */
   constructor(
     version: VersionService,
     setup: (
       options: CliConfigurationOptions
-    ) => SetupReadinessService | Promise<SetupReadinessService>
+    ) => SetupReadinessService | Promise<SetupReadinessService>,
+    bootstrap: (
+      options: CliConfigurationOptions
+    ) => PositionBootstrapService | Promise<PositionBootstrapService>
   ) {
     this.program = new Command()
       .name('mm')
@@ -46,16 +54,26 @@ export class Cli {
         const setupService = await setup({ configPath: options.config })
         this.output = formatSetupCheckReport(await setupService.assertReady())
       })
+
+    this.program
+      .command('bootstrap')
+      .description('run one explicit market-maker position-bootstrap cycle')
+      .action(async () => {
+        const options = this.program.opts<{ config?: string }>()
+        const bootstrapService = await bootstrap({ configPath: options.config })
+        this.output = formatCliResult(await bootstrapService.runOnce())
+      })
   }
 
   /**
    * Parses one CLI invocation and returns its captured output.
    * @param argv - User arguments without the executable/runtime prefix.
-   * @returns Version text or the serialized complete setup report.
+   * @returns Version text, the serialized complete setup report, or the serialized bootstrap result.
    * @throws `CliUsageError` with a constant message and stable code on invalid usage; raw Commander
    * arguments, messages, option details, URLs, and causes are deliberately discarded. Provider and
    * readiness errors pass through.
-   * @remarks `setup-check` remains read-only; any remediation is descriptive and never executed.
+   * @remarks `setup-check` remains read-only. Position bootstrap runs only for the explicit
+   * `bootstrap` command; parsing or invoking any other command cannot start it.
    */
   async run(argv: readonly string[]): Promise<string> {
     if (argv.length === 0) throw new CliUsageError()

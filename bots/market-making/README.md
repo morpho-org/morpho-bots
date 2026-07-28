@@ -213,6 +213,10 @@ when integral; `marketId` remains a string and `autoRefill` remains a JSON boole
 every YAML bootstrap entry, which avoids ambiguous partial-array merge behavior. See
 [`.env.example`](./.env.example) for exact syntax.
 
+`mm bootstrap` is the only CLI path that invokes `runOnce()`. It first runs the same readiness gate as
+`setup-check`, then executes exactly one position-bootstrap cycle and prints its bigint-safe JSON result.
+Version output, `setup-check`, invalid usage, and application construction do not start bootstrap.
+
 `runOnce()` validates every market before any position/reference read or publication. Invalid
 configuration, reference failures, and decision failures invoke strategy-wide `hardHalt`; ordinary
 position-read failure requests market-local invalidation and permits other markets to continue.
@@ -233,6 +237,7 @@ the supplied path. Runtime setup reports identify providers by stable IDs only.
 
 ```sh
 bun run --filter @morpho-org/market-making-bot start -- setup-check
+bun run --filter @morpho-org/market-making-bot start -- bootstrap
 bun run --filter @morpho-org/market-making-bot start -- --version
 ```
 

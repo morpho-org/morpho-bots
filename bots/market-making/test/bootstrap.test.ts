@@ -80,6 +80,29 @@ describe('createApplication', () => {
     expect(output.checks).toHaveLength(9)
   })
 
+  test('mm bootstrap passes readiness before running one bootstrap cycle', async () => {
+    const events: string[] = []
+    const state = readyState()
+    state.getChainId = async () => {
+      events.push('readiness')
+      return 8453
+    }
+    const application = createApplication(environment, {
+      createState: () => state,
+      createBootstrap: () => ({
+        runOnce: async () => {
+          events.push('bootstrap')
+          return [{ marketId, status: 'observed', action: 'target-reached' }]
+        }
+      })
+    })
+
+    expect(JSON.parse(await application.run(['bootstrap']))).toEqual([
+      { marketId, status: 'observed', action: 'target-reached' }
+    ])
+    expect(events).toEqual(['readiness', 'bootstrap'])
+  })
+
   test('wires explicit --config and default working-directory discovery into startup', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'market-making-bootstrap-'))
     const configuration = `
