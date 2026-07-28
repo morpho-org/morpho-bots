@@ -1,9 +1,9 @@
 import { describe, expect, mock, test } from 'bun:test'
 
+import { PositionBootstrapHaltedError } from '../../../src/application/position-bootstrap-halted.error'
 import { VersionService } from '../../../src/application/version.service'
 import { Cli } from '../../../src/infrastructure/cli/cli'
 import { CliUsageError } from '../../../src/infrastructure/cli/cli-usage.error'
-import { formatSetupCheckReport } from '../../../src/infrastructure/cli/cli.utils'
 
 const readyReport = {
   ready: true,
@@ -133,7 +133,7 @@ describe('Cli', () => {
     expect(error).toEqual(
       expect.objectContaining({ name: 'CliUsageError', code: 'INVALID_USAGE', kind: 'usage' })
     )
-    expect(error.message).toBe('Invalid command-line usage')
+    expect((error as Error).message).toBe('Invalid command-line usage')
     expect(error).not.toHaveProperty('cause')
     expect(error).not.toHaveProperty('command')
   })
@@ -148,7 +148,7 @@ describe('Cli', () => {
       code: 'INVALID_USAGE',
       kind: 'usage'
     })
-    expect(error.message).toBe('Invalid command-line usage')
+    expect((error as Error).message).toBe('Invalid command-line usage')
     expect(error).not.toHaveProperty('cause')
     expect(error).not.toHaveProperty('command')
   })
@@ -195,10 +195,8 @@ describe('Cli', () => {
     expect(configPath).toBe('operator.yml')
   })
 
-  test('runs setup-check and returns a structured bigint-safe report', async () => {
-    expect(await cli().run(['setup-check'])).toBe(
-      '{"ready":true,"checks":[{"name":"native-balance","status":"passed","observed":"10","required":"10"}]}'
-    )
+  test('runs setup-check and returns the complete structured report', async () => {
+    expect(await cli().run(['setup-check'])).toEqual(readyReport)
   })
 
   test('mm bootstrap triggers one explicit position-bootstrap run', async () => {
@@ -211,19 +209,39 @@ describe('Cli', () => {
       () => ({ runOnce })
     )
 
-    expect(await application.run(['bootstrap'])).toBe(
-      `[{"marketId":"0x${'11'.repeat(32)}","status":"applied","action":"publish","assets":"10"}]`
-    )
+    expect(await application.run(['bootstrap'])).toEqual([
+      { marketId: `0x${'11'.repeat(32)}`, status: 'applied', action: 'publish', assets: 10n }
+    ])
     expect(runOnce).toHaveBeenCalledTimes(1)
+  })
+
+  test('rejects a bootstrap cycle containing a strategy-wide safety halt', async () => {
+    const application = new Cli(
+      new VersionService(),
+      () => ({ assertReady: async () => readyReport }),
+      () => ({
+        runOnce: async () => [
+          {
+            marketId: `0x${'11'.repeat(32)}`,
+            status: 'halted',
+            stage: 'reference-read',
+            strategyInvalidated: true,
+            errorName: 'ProviderReadError'
+          }
+        ]
+      })
+    )
+
+    const error = await application.run(['bootstrap']).catch(value => value)
+
+    expect(error).toBeInstanceOf(PositionBootstrapHaltedError)
+    expect(error).toMatchObject({ code: 'POSITION_BOOTSTRAP_HALTED', kind: 'safety-halt' })
+    expect((error as Error).message).toBe('Position bootstrap halted for safety')
   })
 
   test('propagates a readiness failure for a deterministic non-zero entrypoint exit', async () => {
     const failure = new Error('Setup check failed: chain')
 
     expect(cli(async () => Promise.reject(failure)).run(['setup-check'])).rejects.toBe(failure)
-  })
-
-  test('formats the complete failed report for the non-zero entrypoint path', () => {
-    expect(formatSetupCheckReport({ ...readyReport, ready: false })).toContain('"observed":"10"')
   })
 })

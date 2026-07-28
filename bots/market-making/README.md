@@ -111,7 +111,7 @@ example filename.
 
 ```sh
 # Explicit file; relative paths resolve from the invocation working directory.
-bun run --filter @morpho-org/market-making-bot start -- --config ./operator.yml setup-check
+bun run --filter @morpho-org/market-making-bot start -- --config ./market-making.yml setup-check
 
 # Default discovery in the current working directory.
 bun run --filter @morpho-org/market-making-bot start -- setup-check

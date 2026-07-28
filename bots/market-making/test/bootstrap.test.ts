@@ -74,10 +74,10 @@ describe('createApplication', () => {
   test('wires configuration, setup service, and operator CLI through the composition root', async () => {
     const application = createApplication(environment, { createState: readyState })
 
-    const output = JSON.parse(await application.run(['setup-check']))
+    const output = await application.run(['setup-check'])
 
-    expect(output.ready).toBe(true)
-    expect(output.checks).toHaveLength(9)
+    expect(output).toMatchObject({ ready: true })
+    expect((output as { checks: unknown[] }).checks).toHaveLength(9)
   })
 
   test('mm bootstrap passes readiness before running one bootstrap cycle', async () => {
@@ -97,10 +97,33 @@ describe('createApplication', () => {
       })
     })
 
-    expect(JSON.parse(await application.run(['bootstrap']))).toEqual([
+    expect(await application.run(['bootstrap'])).toEqual([
       { marketId, status: 'observed', action: 'target-reached' }
     ])
     expect(events).toEqual(['readiness', 'bootstrap'])
+  })
+
+  test('default-composes PositionBootstrapService when only its production ports are replaced', async () => {
+    const application = createApplication(environment, {
+      createState: readyState,
+      createBootstrapAdapters: () => ({
+        positions: {
+          readPosition: async () => ({
+            credit: 1_000n,
+            debt: 0n,
+            cashBalance: 1_000n,
+            marketExposure: 0n,
+            totalExposure: 0n
+          })
+        },
+        rates: {
+          readRate: async () => ({ mode: 'static', rateBps: 500n, observationId: 'static:500' })
+        },
+        make: { reconcile: async () => {}, hardHalt: async () => {} }
+      })
+    })
+
+    expect(await application.run(['bootstrap'])).toEqual([])
   })
 
   test('wires explicit --config and default working-directory discovery into startup', async () => {

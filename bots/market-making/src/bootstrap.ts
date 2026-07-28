@@ -1,14 +1,20 @@
 import { createPublicClient, http } from 'viem'
 import { base } from 'viem/chains'
 
+import type {
+  BootstrapMakeService,
+  BootstrapPositionService,
+  BootstrapReferenceRateService
+} from './application/position-bootstrap.service'
 import type { SetupStateService } from './application/setup-check.service'
 import type { ConfigService } from './config/config.service'
 import type { ChainReader } from './infrastructure/setup-state/viem-setup-state.service'
 
-import { PositionBootstrapUnavailableError } from './application/position-bootstrap-unavailable.error'
+import { PositionBootstrapService } from './application/position-bootstrap.service'
 import { SetupCheckService } from './application/setup-check.service'
 import { VersionService } from './application/version.service'
 import { ConfigService as RuntimeConfigService } from './config/config.service'
+import { createProductionBootstrapAdapters } from './infrastructure/bootstrap/production-bootstrap'
 import { Cli } from './infrastructure/cli/cli'
 import { requestJson } from './infrastructure/setup-state/http-json.utils'
 import { ViemSetupStateService } from './infrastructure/setup-state/viem-setup-state.service'
@@ -23,6 +29,12 @@ type Dependencies = {
   createState?: (config: ConfigService) => SetupStateService
   /** Creates the position-bootstrap application service after CLI configuration is loaded. */
   createBootstrap?: (config: ConfigService) => PositionBootstrapRunner
+  /** Replaces provider ports while retaining default application-service composition. */
+  createBootstrapAdapters?: (config: ConfigService) => {
+    positions: BootstrapPositionService
+    rates: BootstrapReferenceRateService
+    make: BootstrapMakeService
+  }
   /** Overrides the process working directory used for default configuration discovery. */
   cwd?: string
 }
@@ -81,7 +93,7 @@ export const createApplication = (
    * @returns Captured version text, setup-check JSON, or position-bootstrap JSON.
    * @throws On invalid configuration, unknown commands, provider failures, or failed readiness.
    */
-  run(argv: readonly string[]): Promise<string>
+  run(argv: readonly string[]): Promise<unknown>
 } => {
   const loadConfig = (configPath?: string) =>
     RuntimeConfigService.load(environment, { configPath, cwd: dependencies.cwd })
@@ -96,9 +108,15 @@ export const createApplication = (
       const config = await loadConfig(options.configPath)
       const state = dependencies.createState?.(config) ?? defaultState(config)
       await new SetupCheckService(state, config.setup).assertReady()
-      const bootstrap = dependencies.createBootstrap?.(config)
-      if (bootstrap === undefined) throw new PositionBootstrapUnavailableError()
-      return bootstrap
+      if (dependencies.createBootstrap) return dependencies.createBootstrap(config)
+      const adapters =
+        dependencies.createBootstrapAdapters?.(config) ?? createProductionBootstrapAdapters(config)
+      return new PositionBootstrapService(
+        adapters.positions,
+        adapters.rates,
+        adapters.make,
+        config.bootstrap
+      )
     }
   )
 

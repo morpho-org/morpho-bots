@@ -3,8 +3,8 @@ import { Command, CommanderError } from 'commander'
 import type { SetupCheckReport } from '../../application/setup-check.service'
 import type { VersionService } from '../../application/version.service'
 
+import { PositionBootstrapHaltedError } from '../../application/position-bootstrap-halted.error'
 import { CliUsageError } from './cli-usage.error'
-import { formatCliResult, formatSetupCheckReport } from './cli.utils'
 
 interface SetupReadinessService {
   assertReady(): Promise<SetupCheckReport>
@@ -20,7 +20,8 @@ type CliConfigurationOptions = { configPath?: string }
 /** Infrastructure adapter: wires the `mm` CLI (commander) to application services. */
 export class Cli {
   private readonly program: Command
-  private output: string | undefined
+  private output: unknown
+  private hasOutput = false
 
   /**
    * Configures the version, setup-check, and explicit bootstrap commands.
@@ -52,7 +53,8 @@ export class Cli {
       .action(async () => {
         const options = this.program.opts<{ config?: string }>()
         const setupService = await setup({ configPath: options.config })
-        this.output = formatSetupCheckReport(await setupService.assertReady())
+        this.output = await setupService.assertReady()
+        this.hasOutput = true
       })
 
     this.program
@@ -61,23 +63,36 @@ export class Cli {
       .action(async () => {
         const options = this.program.opts<{ config?: string }>()
         const bootstrapService = await bootstrap({ configPath: options.config })
-        this.output = formatCliResult(await bootstrapService.runOnce())
+        const result = await bootstrapService.runOnce()
+        if (
+          Array.isArray(result) &&
+          result.some(item =>
+            typeof item === 'object' && item !== null && 'status' in item
+              ? item.status === 'halted'
+              : false
+          )
+        ) {
+          throw new PositionBootstrapHaltedError()
+        }
+        this.output = result
+        this.hasOutput = true
       })
   }
 
   /**
    * Parses one CLI invocation and returns its captured output.
    * @param argv - User arguments without the executable/runtime prefix.
-   * @returns Version text, the serialized complete setup report, or the serialized bootstrap result.
+   * @returns Version text, the complete setup report, or the structured bootstrap result.
    * @throws `CliUsageError` with a constant message and stable code on invalid usage; raw Commander
    * arguments, messages, option details, URLs, and causes are deliberately discarded. Provider and
    * readiness errors pass through.
    * @remarks `setup-check` remains read-only. Position bootstrap runs only for the explicit
    * `bootstrap` command; parsing or invoking any other command cannot start it.
    */
-  async run(argv: readonly string[]): Promise<string> {
+  async run(argv: readonly string[]): Promise<unknown> {
     if (argv.length === 0) throw new CliUsageError()
     this.output = undefined
+    this.hasOutput = false
     try {
       await this.program.parseAsync(argv, { from: 'user' })
     } catch (error) {
@@ -90,7 +105,7 @@ export class Cli {
       throw error
     }
 
-    if (this.output !== undefined) return this.output
+    if (this.hasOutput) return this.output
     throw new CliUsageError()
   }
 }
