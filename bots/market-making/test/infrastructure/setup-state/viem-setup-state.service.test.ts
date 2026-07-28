@@ -32,6 +32,7 @@ const createState = (
     code?: Hex
     ratifierMidnight?: Address
     rootCanceled?: unknown
+    rejectRatifierReads?: boolean
     missingReferenceMarket?: boolean
     routerRatifier?: Address
     requestLimit?: number
@@ -53,8 +54,14 @@ const createState = (
     readContract: async ({ functionName }: { functionName: string }) => {
       if (functionName === 'allowance') return 100n
       if (functionName === 'isAuthorized') return true
-      if (functionName === 'MIDNIGHT') return overrides.ratifierMidnight ?? midnight
-      if (functionName === 'isRootCanceled') return overrides.rootCanceled ?? false
+      if (functionName === 'MIDNIGHT') {
+        if (overrides.rejectRatifierReads) throw new Error('undeployed ratifier')
+        return overrides.ratifierMidnight ?? midnight
+      }
+      if (functionName === 'isRootCanceled') {
+        if (overrides.rejectRatifierReads) throw new Error('undeployed ratifier')
+        return overrides.rootCanceled ?? false
+      }
       if (functionName === 'toMarket') {
         return {
           chainId: 8453n,
@@ -447,6 +454,19 @@ describe('ViemSetupStateService', () => {
         .ecrecoverSurface
     ).toBe(false)
     expect((await createState({}).state.getRatifier(maker, ratifier)).ecrecoverSurface).toBe(true)
+  })
+
+  test('reports an undeployed ratifier without calling its ABI surface', async () => {
+    const result = await createState(
+      {},
+      { code: '0x', rejectRatifierReads: true }
+    ).state.getRatifier(maker, ratifier)
+
+    expect(result).toMatchObject({
+      deployed: false,
+      midnightMatches: false,
+      ecrecoverSurface: false
+    })
   })
 
   test('proves the exact configured Blue reference market is readable at the historical block', async () => {

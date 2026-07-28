@@ -111,6 +111,18 @@ describe('ConfigService', () => {
     )
   })
 
+  test('rejects a 32-byte value that is not a valid secp256k1 private key', () => {
+    let error: unknown
+    try {
+      ConfigService.from({ ...environment, MAKER_PRIVATE_KEY: `0x${'00'.repeat(32)}` })
+    } catch (value) {
+      error = value
+    }
+
+    expect(error).toBeInstanceOf(ConfigValidationError)
+    expect(error).toMatchObject({ field: 'MAKER_PRIVATE_KEY', reason: 'invalid-private-key' })
+  })
+
   test('uses a stable typed config error with safe field and reason metadata', () => {
     let error: unknown
     try {

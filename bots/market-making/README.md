@@ -47,11 +47,11 @@ All values are required except `V0_OFFER_GROUP_IDS` and `REQUEST_TIMEOUT_MS`:
   canonicalized by bytes, so equivalent mixed-case hex values compare identically.
 - `NATIVE_RESERVE_WEI`: minimum native balance in wei.
 - `MAXIMUM_LEND_EXPOSURE_ASSETS`: minimum loan-token allowance in raw assets.
-- `MORPHO_API_BASE_URL`: Morpho API origin used by `MidnightApi.fetchBooks` to verify active books.
-- `ROUTER_API_BASE_URL`: official Router API origin used to traverse the maker's complete
-  `/v0/midnight/users/{maker}/offer-groups` source. This includes fresh active offers before a
-  takeable amount is measured; repeated cursors, oversized pages, excessive items, and aggregate
-  deadline expiry fail closed.
+- `MORPHO_API_BASE_URL`: Morpho API origin used by `MidnightApi.fetchBooks` to verify active books
+  and to traverse the maker's complete `/v0/midnight/users/{maker}/offer-groups` source. The latter
+  includes fresh active offers before a takeable amount is measured; repeated cursors, oversized
+  pages, excessive items, and aggregate deadline expiry fail closed.
+- `ROUTER_API_BASE_URL`: official Router API origin used to verify the ratifier registry.
 - `REQUEST_TIMEOUT_MS`: optional bounded fetch/RPC timeout in milliseconds; defaults to `10000` and
   must be between `1` and `120000`.
 - `V0_OFFER_GROUP_IDS`: optional comma-separated strategy-owned group IDs. Any active maker group not

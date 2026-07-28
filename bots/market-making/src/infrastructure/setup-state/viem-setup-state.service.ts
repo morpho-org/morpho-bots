@@ -186,10 +186,11 @@ export class ViemSetupStateService implements SetupStateService {
    * @returns Five readiness facts without exposing provider URLs or bytecode.
    * @throws `ProviderReadError` on a sanitized Router/RPC rejection, or `ProviderResponseError` for
    * malformed provider or contract responses.
-   * @remarks All five independent reads start concurrently through `Promise.all`; this is read-only.
+   * @remarks Registry, bytecode, and authorization reads start concurrently. Ratifier ABI reads then
+   * run concurrently only after the exact Ecrecover runtime is proven; this is read-only.
    */
   async getRatifier(maker: Address, ratifier: Address) {
-    const [routerContracts, code, ratifierMidnight, rootCanceled, authorized] = await Promise.all([
+    const [routerContracts, code, authorized] = await Promise.all([
       executeProviderRead('router-api', 'ratifier-registry', () =>
         this.request(
           `${this.options.routerApiBaseUrl}/v0/config/contracts?chains=${BASE_CHAIN_ID}&limit=100`,
@@ -197,21 +198,6 @@ export class ViemSetupStateService implements SetupStateService {
         )
       ),
       executeProviderRead('rpc', 'ratifier-code', () => this.chain.getCode({ address: ratifier })),
-      executeProviderRead('rpc', 'ratifier-midnight', () =>
-        this.chain.readContract({
-          address: ratifier,
-          abi: ecrecoverRatifierAbi,
-          functionName: 'MIDNIGHT'
-        })
-      ),
-      executeProviderRead('rpc', 'ratifier-root', () =>
-        this.chain.readContract({
-          address: ratifier,
-          abi: ecrecoverRatifierAbi,
-          functionName: 'isRootCanceled',
-          args: [maker, zeroHash]
-        })
-      ),
       executeProviderRead('rpc', 'ratifier-authorization', () =>
         this.chain.readContract({
           address: this.options.midnight,
@@ -228,6 +214,38 @@ export class ViemSetupStateService implements SetupStateService {
         'Midnight isAuthorized response must be boolean'
       )
     }
+    const listed = routerEcrecoverRatifiers(routerContracts).some(listedRatifier =>
+      isAddressEqual(ratifier, listedRatifier)
+    )
+    const deployed = code !== undefined && code !== '0x'
+    const ecrecoverSurface =
+      deployed && code !== undefined && keccak256(code) === BASE_ECRECOVER_RATIFIER_RUNTIME_HASH
+    if (!ecrecoverSurface) {
+      return {
+        listed,
+        deployed,
+        midnightMatches: false,
+        ecrecoverSurface: false,
+        authorized
+      }
+    }
+    const [ratifierMidnight, rootCanceled] = await Promise.all([
+      executeProviderRead('rpc', 'ratifier-midnight', () =>
+        this.chain.readContract({
+          address: ratifier,
+          abi: ecrecoverRatifierAbi,
+          functionName: 'MIDNIGHT'
+        })
+      ),
+      executeProviderRead('rpc', 'ratifier-root', () =>
+        this.chain.readContract({
+          address: ratifier,
+          abi: ecrecoverRatifierAbi,
+          functionName: 'isRootCanceled',
+          args: [maker, zeroHash]
+        })
+      )
+    ])
     if (typeof ratifierMidnight !== 'string' || !isAddress(ratifierMidnight)) {
       throw new ProviderResponseError(
         'rpc',
@@ -243,15 +261,10 @@ export class ViemSetupStateService implements SetupStateService {
       )
     }
     return {
-      listed: routerEcrecoverRatifiers(routerContracts).some(listed =>
-        isAddressEqual(ratifier, listed)
-      ),
-      deployed: code !== undefined && code !== '0x',
+      listed,
+      deployed,
       midnightMatches: isAddressEqual(ratifierMidnight, this.options.midnight),
-      ecrecoverSurface:
-        code !== undefined &&
-        code !== '0x' &&
-        keccak256(code) === BASE_ECRECOVER_RATIFIER_RUNTIME_HASH,
+      ecrecoverSurface,
       authorized
     }
   }

@@ -30,7 +30,7 @@ const SAFE_ERROR_CODES = new Set([
   'UND_ERR_CONNECT_TIMEOUT',
   'UND_ERR_HEADERS_TIMEOUT'
 ])
-const SAFE_PROVIDER_IDS = new Set(['rpc', 'archive-rpc', 'morpho-api', 'router-api'])
+const SAFE_PROVIDER_IDS = new Set(['provider', 'rpc', 'archive-rpc', 'morpho-api', 'router-api'])
 
 /** Fulfilled provider value or sanitized provider failure captured without short-circuiting peers. */
 type Captured<T> = { ok: true; value: T } | { ok: false; error: SafeProviderFailure }
@@ -199,16 +199,13 @@ export const chainCheck = (
   const required = { chainId: BASE_CHAIN_ID, midnightCode: 'deployed' }
   if (!chainId.ok) return providerFailure('chain', chainId.error, required)
   if (!midnightCode.ok) return providerFailure('chain', midnightCode.error, required)
+  const deployed = midnightCode.value !== undefined && midnightCode.value !== '0x'
   const observed = {
     configured: config.chainId,
     connected: chainId.value,
-    midnightCode: midnightCode.value
+    midnightCode: deployed ? 'deployed' : 'missing'
   }
-  const ready =
-    config.chainId === BASE_CHAIN_ID &&
-    chainId.value === BASE_CHAIN_ID &&
-    midnightCode.value !== undefined &&
-    midnightCode.value !== '0x'
+  const ready = config.chainId === BASE_CHAIN_ID && chainId.value === BASE_CHAIN_ID && deployed
   return setupResult('chain', ready, observed, required)
 }
 

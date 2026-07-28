@@ -1,7 +1,7 @@
 /** Allowlisted provider failure metadata safe for operator-visible reports. */
 export type SafeProviderFailure = {
   kind: 'provider-error'
-  provider: 'rpc' | 'archive-rpc' | 'morpho-api' | 'router-api'
+  provider: 'provider' | 'rpc' | 'archive-rpc' | 'morpho-api' | 'router-api'
   name: string
   code?: string
   status?: number

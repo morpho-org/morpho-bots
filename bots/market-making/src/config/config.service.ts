@@ -1,6 +1,7 @@
 import type { Hex } from 'viem'
 
 import { isHex, size } from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
 
 import type { SetupCheckConfig } from '../application/setup-check.service'
@@ -42,6 +43,15 @@ export class ConfigService {
         'MAKER_PRIVATE_KEY',
         'invalid-bytes32',
         'MAKER_PRIVATE_KEY must be a 0x-prefixed 32-byte hex string'
+      )
+    }
+    try {
+      privateKeyToAccount(privateKey)
+    } catch {
+      throw new ConfigValidationError(
+        'MAKER_PRIVATE_KEY',
+        'invalid-private-key',
+        'MAKER_PRIVATE_KEY must be a valid secp256k1 private key'
       )
     }
 
