@@ -4,7 +4,10 @@ import { blueAbi } from '@morpho-org/morpho-sdk/abis'
 import { describe, expect, test } from 'bun:test'
 import { bytesToHex, hexToBytes, keccak256 } from 'viem'
 
+import { SafeProviderError } from '../../../src/application/safe-provider.error'
 import { requestJson } from '../../../src/infrastructure/setup-state/http-json.utils'
+import { ProviderPaginationError } from '../../../src/infrastructure/setup-state/provider-pagination.error'
+import { ProviderResponseError } from '../../../src/infrastructure/setup-state/provider-response.error'
 import { ViemSetupStateService } from '../../../src/infrastructure/setup-state/viem-setup-state.service'
 
 const maker: Address = '0x1111111111111111111111111111111111111111'
@@ -160,6 +163,8 @@ describe('ViemSetupStateService', () => {
       ).catch(value => value)
       const serialized = JSON.stringify(error)
 
+      expect(error).toBeInstanceOf(SafeProviderError)
+      expect((error as SafeProviderError).name).toBe('SafeProviderError')
       expect(error).toMatchObject({
         failure: {
           kind: 'provider-error',
@@ -300,7 +305,14 @@ describe('ViemSetupStateService', () => {
   test('fails closed when the configured reference market has no historical state', async () => {
     const { state } = createState({}, { missingReferenceMarket: true })
 
-    expect(state.checkReference()).rejects.toThrow('configured reference market does not exist')
+    const error = await state.checkReference().catch(value => value)
+    expect(error).toBeInstanceOf(ProviderResponseError)
+    expect(error).toMatchObject({
+      name: 'ProviderResponseError',
+      provider: 'archive-rpc',
+      operation: 'reference-market'
+    })
+    expect(error.message).toBe('configured reference market does not exist')
   })
 
   test('reports fresh non-takeable active offers from every offer-group page', async () => {
@@ -432,7 +444,14 @@ describe('ViemSetupStateService', () => {
       { requestLimit: 3 }
     )
 
-    expect(state.inspectOffers(maker)).rejects.toThrow('Router cursor repeated')
+    const error = await state.inspectOffers(maker).catch(value => value)
+    expect(error).toBeInstanceOf(ProviderPaginationError)
+    expect(error).toMatchObject({
+      name: 'ProviderPaginationError',
+      provider: 'router-api',
+      reason: 'repeated-cursor'
+    })
+    expect(error.message).toBe('Router cursor repeated')
   })
 
   test('fails closed when Router exceeds the offer page limit with unique cursors', async () => {

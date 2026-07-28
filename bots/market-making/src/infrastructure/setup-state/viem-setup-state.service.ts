@@ -11,6 +11,8 @@ import type { BookSetup, SetupStateService } from '../../application/setup-check
 import type { JsonRequest } from './http-json.utils'
 
 import { jsonRequestFetch } from './http-json.utils'
+import { ProviderPaginationError } from './provider-pagination.error'
+import { ProviderResponseError } from './provider-response.error'
 import {
   addressValue,
   BASE_CHAIN_ID,
@@ -158,7 +160,13 @@ export class ViemSetupStateService implements SetupStateService {
       functionName: 'allowance',
       args: [owner, this.options.midnight]
     })
-    if (typeof amount !== 'bigint') throw new Error('ERC20 allowance response must be bigint')
+    if (typeof amount !== 'bigint') {
+      throw new ProviderResponseError(
+        'rpc',
+        'erc20-allowance',
+        'ERC20 allowance response must be bigint'
+      )
+    }
     return { spender: this.options.midnight, amount }
   }
 
@@ -197,13 +205,25 @@ export class ViemSetupStateService implements SetupStateService {
       })
     ])
     if (typeof authorized !== 'boolean') {
-      throw new Error('Midnight isAuthorized response must be boolean')
+      throw new ProviderResponseError(
+        'rpc',
+        'ratifier-authorization',
+        'Midnight isAuthorized response must be boolean'
+      )
     }
     if (typeof ratifierMidnight !== 'string' || !isAddress(ratifierMidnight)) {
-      throw new Error('EcrecoverRatifier MIDNIGHT response must be an address')
+      throw new ProviderResponseError(
+        'rpc',
+        'ratifier-midnight',
+        'EcrecoverRatifier MIDNIGHT response must be an address'
+      )
     }
     if (typeof rootCanceled !== 'boolean') {
-      throw new Error('EcrecoverRatifier isRootCanceled response must be boolean')
+      throw new ProviderResponseError(
+        'rpc',
+        'ratifier-root',
+        'EcrecoverRatifier isRootCanceled response must be boolean'
+      )
     }
     return {
       listed: routerEcrecoverRatifiers(routerContracts).some(listed =>
@@ -251,28 +271,62 @@ export class ViemSetupStateService implements SetupStateService {
       })
     ])
     if (apiResponse.data.length !== 1) {
-      throw new Error(`Morpho API returned ${apiResponse.data.length} books for ${id}`)
+      throw new ProviderResponseError(
+        'morpho-api',
+        'book-count',
+        `Morpho API returned ${apiResponse.data.length} books for ${id}`
+      )
     }
     const apiMarket = marketFromApi(apiResponse.data[0])
     const contractMarket = marketFromContract(contractResponse)
-    if (apiMarket.id !== id) throw new Error(`Morpho API returned ${apiMarket.id} for ${id}`)
-    if (apiMarket.chainId !== BASE_CHAIN_ID) throw new Error('API market chain id is not Base')
+    if (apiMarket.id !== id) {
+      throw new ProviderResponseError(
+        'morpho-api',
+        'book-identity',
+        `Morpho API returned ${apiMarket.id} for ${id}`
+      )
+    }
+    if (apiMarket.chainId !== BASE_CHAIN_ID) {
+      throw new ProviderResponseError('morpho-api', 'book-chain', 'API market chain id is not Base')
+    }
     if (!isAddressEqual(apiMarket.midnight, this.options.midnight)) {
-      throw new Error('API market points at an unexpected Midnight contract')
+      throw new ProviderResponseError(
+        'morpho-api',
+        'book-midnight',
+        'API market points at an unexpected Midnight contract'
+      )
     }
     if (contractMarket.chainId !== BigInt(BASE_CHAIN_ID)) {
-      throw new Error('market chain id is not Base')
+      throw new ProviderResponseError('rpc', 'book-chain', 'market chain id is not Base')
     }
     if (!isAddressEqual(contractMarket.midnight, this.options.midnight)) {
-      throw new Error('market points at an unexpected Midnight contract')
+      throw new ProviderResponseError(
+        'rpc',
+        'book-midnight',
+        'market points at an unexpected Midnight contract'
+      )
     }
     if (!isAddressEqual(apiMarket.loanToken, contractMarket.loanToken)) {
-      throw new Error('API and chain disagree on the market loan asset')
+      throw new ProviderResponseError(
+        'provider',
+        'book-loan-asset',
+        'API and chain disagree on the market loan asset'
+      )
     }
     if (apiMarket.maturity !== contractMarket.maturity) {
-      throw new Error('API and chain disagree on market maturity')
+      throw new ProviderResponseError(
+        'provider',
+        'book-maturity',
+        'API and chain disagree on market maturity'
+      )
     }
-    if (typeof tickSpacing !== 'number') throw new Error('tickSpacing response must be a number')
+    if (typeof tickSpacing !== 'number') {
+      throw new ProviderResponseError(
+        'rpc',
+        'book-tick-spacing',
+        'tickSpacing response must be a number'
+      )
+    }
     return {
       id,
       allowlisted: true,
@@ -302,9 +356,21 @@ export class ViemSetupStateService implements SetupStateService {
    */
   async checkReference() {
     const latest = await this.reference.getBlock({ blockTag: 'latest' })
-    if (latest.number === null) throw new Error('reference RPC latest block has no number')
+    if (latest.number === null) {
+      throw new ProviderResponseError(
+        'archive-rpc',
+        'reference-block',
+        'reference RPC latest block has no number'
+      )
+    }
     const lookback = this.options.referenceLookbackBlocks ?? 10_800n
-    if (latest.number < lookback) throw new Error('reference RPC has insufficient history')
+    if (latest.number < lookback) {
+      throw new ProviderResponseError(
+        'archive-rpc',
+        'reference-history',
+        'reference RPC has insufficient history'
+      )
+    }
     const historicalBlock = latest.number - lookback
     await this.reference.getBlock({ blockNumber: historicalBlock })
     const [paramsResponse, marketResponse] = await Promise.all([
@@ -326,13 +392,25 @@ export class ViemSetupStateService implements SetupStateService {
     const params = objectRecord(paramsResponse, 'Morpho Blue reference market params')
     const market = objectRecord(marketResponse, 'Morpho Blue reference market state')
     if (addressValue(params.loanToken, 'reference market loanToken') === zeroAddress) {
-      throw new Error('configured reference market does not exist')
+      throw new ProviderResponseError(
+        'archive-rpc',
+        'reference-market',
+        'configured reference market does not exist'
+      )
     }
     if (providerBigInt(market.totalSupplyShares, 'reference market totalSupplyShares') === 0n) {
-      throw new Error('configured reference market has zero supply shares')
+      throw new ProviderResponseError(
+        'archive-rpc',
+        'reference-market',
+        'configured reference market has zero supply shares'
+      )
     }
     if (providerBigInt(market.lastUpdate, 'reference market lastUpdate') === 0n) {
-      throw new Error('configured reference market state is uninitialized')
+      throw new ProviderResponseError(
+        'archive-rpc',
+        'reference-market',
+        'configured reference market state is uninitialized'
+      )
     }
     return {
       marketId: this.options.referenceMarketId,
@@ -362,7 +440,13 @@ export class ViemSetupStateService implements SetupStateService {
     let pageCount = 0
     let cursor: string | undefined
     do {
-      if (pageCount >= MAX_OFFER_PAGES) throw new Error('Router offer page limit exceeded')
+      if (pageCount >= MAX_OFFER_PAGES) {
+        throw new ProviderPaginationError(
+          'router-api',
+          'page-limit',
+          'Router offer page limit exceeded'
+        )
+      }
       const remainingMs = Math.floor(deadline - now())
       if (remainingMs <= 0) throw routerTimeout()
       pageCount += 1
@@ -378,11 +462,27 @@ export class ViemSetupStateService implements SetupStateService {
       )
       const groupData = response.data
       const groups = Array.isArray(groupData) ? groupData : []
-      if (!Array.isArray(groupData)) throw new Error('Router data must be an array')
-      if (groups.length > PAGE_SIZE) throw new Error('Router offer-group page size exceeded')
+      if (!Array.isArray(groupData)) {
+        throw new ProviderResponseError(
+          'router-api',
+          'offer-groups',
+          'Router data must be an array'
+        )
+      }
+      if (groups.length > PAGE_SIZE) {
+        throw new ProviderPaginationError(
+          'router-api',
+          'page-size',
+          'Router offer-group page size exceeded'
+        )
+      }
       const pageOffers = offersFromGroups(groups)
       if (offers.length + pageOffers.length > MAX_OFFER_ITEMS) {
-        throw new Error('Router offer item limit exceeded')
+        throw new ProviderPaginationError(
+          'router-api',
+          'item-limit',
+          'Router offer item limit exceeded'
+        )
       }
       offers.push(...pageOffers)
       if (
@@ -390,15 +490,25 @@ export class ViemSetupStateService implements SetupStateService {
         response.cursor !== undefined &&
         typeof response.cursor !== 'string'
       ) {
-        throw new Error('Router cursor must be a string or null')
+        throw new ProviderResponseError(
+          'router-api',
+          'cursor',
+          'Router cursor must be a string or null'
+        )
       }
       cursor = response.cursor ?? undefined
-      if (cursor && seenCursors.has(cursor)) throw new Error('Router cursor repeated')
+      if (cursor && seenCursors.has(cursor)) {
+        throw new ProviderPaginationError('router-api', 'repeated-cursor', 'Router cursor repeated')
+      }
       if (cursor) seenCursors.add(cursor)
     } while (cursor)
 
     if (offers.some(offer => !isAddressEqual(offer.maker, maker))) {
-      throw new Error('Router active offer maker does not match requested maker')
+      throw new ProviderResponseError(
+        'router-api',
+        'offer-maker',
+        'Router active offer maker does not match requested maker'
+      )
     }
     const knownGroups = new Set(this.options.v0OfferGroupIds)
     const configuredMarkets = new Set(this.options.marketIds)

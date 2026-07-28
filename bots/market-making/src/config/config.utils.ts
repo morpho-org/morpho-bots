@@ -2,6 +2,8 @@ import type { Address, Hex } from 'viem'
 
 import { bytesToHex, getAddress, hexToBytes, isAddress, isHex, size } from 'viem'
 
+import { ConfigValidationError } from './config-validation.error'
+
 /** String-valued runtime environment boundary accepted by configuration parsing. */
 export type Environment = Record<string, string | undefined>
 
@@ -17,7 +19,7 @@ const MAXIMUM_REQUEST_TIMEOUT_MS = 120_000
  */
 export const requiredValue = (environment: Environment, name: string) => {
   const value = environment[name]?.trim()
-  if (!value) throw new Error(`Missing required env var: ${name}`)
+  if (!value) throw new ConfigValidationError(name, 'missing', `Missing required env var: ${name}`)
   return value
 }
 
@@ -29,7 +31,9 @@ export const requiredValue = (environment: Environment, name: string) => {
  * @throws When viem rejects the address, including invalid mixed-case checksums.
  */
 export const parseAddress = (value: string, name: string): Address => {
-  if (!isAddress(value, { strict: false })) throw new Error(`${name} must be an EVM address`)
+  if (!isAddress(value, { strict: false })) {
+    throw new ConfigValidationError(name, 'invalid-address', `${name} must be an EVM address`)
+  }
   return getAddress(value)
 }
 
@@ -53,7 +57,13 @@ export const addressValue = (environment: Environment, name: string) =>
 export const unsignedBigIntValue = (environment: Environment, name: string) => {
   const value = requiredValue(environment, name)
   // Viem conversion helpers cover hex values; no viem API validates unsigned decimal env syntax.
-  if (!/^\d+$/.test(value)) throw new Error(`${name} must be an unsigned decimal integer`)
+  if (!/^\d+$/.test(value)) {
+    throw new ConfigValidationError(
+      name,
+      'invalid-unsigned-integer',
+      `${name} must be an unsigned decimal integer`
+    )
+  }
   return BigInt(value)
 }
 
@@ -67,7 +77,11 @@ export const requestTimeoutValue = (environment: Environment) => {
   const raw = environment.REQUEST_TIMEOUT_MS?.trim() ?? String(DEFAULT_REQUEST_TIMEOUT_MS)
   const value = Number(raw)
   if (!Number.isSafeInteger(value) || value < 1 || value > MAXIMUM_REQUEST_TIMEOUT_MS) {
-    throw new Error(`REQUEST_TIMEOUT_MS must be between 1 and ${MAXIMUM_REQUEST_TIMEOUT_MS}`)
+    throw new ConfigValidationError(
+      'REQUEST_TIMEOUT_MS',
+      'out-of-range',
+      `REQUEST_TIMEOUT_MS must be between 1 and ${MAXIMUM_REQUEST_TIMEOUT_MS}`
+    )
   }
   return value
 }
@@ -81,7 +95,11 @@ export const requestTimeoutValue = (environment: Environment) => {
  */
 export const parseBytes32 = (value: string, name: string): Hex => {
   if (!isHex(value, { strict: true }) || size(value) !== 32) {
-    throw new Error(`${name} must be a 0x-prefixed 32-byte hex value`)
+    throw new ConfigValidationError(
+      name,
+      'invalid-bytes32',
+      `${name} must be a 0x-prefixed 32-byte hex value`
+    )
   }
   return bytesToHex(hexToBytes(value))
 }
@@ -105,16 +123,24 @@ export const hexListValue = (
     .map(value => value.trim())
     .filter(Boolean)
   if (requiredList && values.length === 0) {
-    throw new Error(`${name} must contain at least one market id`)
+    throw new ConfigValidationError(
+      name,
+      'empty-list',
+      `${name} must contain at least one market id`
+    )
   }
   let normalized: Hex[]
   try {
     normalized = values.map(value => parseBytes32(value, name))
   } catch {
-    throw new Error(`${name} must contain 0x-prefixed 32-byte hex values`)
+    throw new ConfigValidationError(
+      name,
+      'invalid-list-item',
+      `${name} must contain 0x-prefixed 32-byte hex values`
+    )
   }
   if (new Set(normalized).size !== normalized.length) {
-    throw new Error(`${name} must not contain duplicates`)
+    throw new ConfigValidationError(name, 'duplicate', `${name} must not contain duplicates`)
   }
   return normalized
 }
@@ -138,6 +164,8 @@ export const bytes32Value = (environment: Environment, name: string) =>
  */
 export const urlValue = (environment: Environment, name: string) => {
   const raw = requiredValue(environment, name)
-  if (!URL.canParse(raw)) throw new Error(`${name} must be a valid URL`)
+  if (!URL.canParse(raw)) {
+    throw new ConfigValidationError(name, 'invalid-url', `${name} must be a valid URL`)
+  }
   return raw.endsWith('/') ? raw.slice(0, -1) : raw
 }

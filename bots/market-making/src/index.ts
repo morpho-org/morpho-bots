@@ -1,4 +1,4 @@
-import { SetupCheckError } from './application/setup-check.service'
+import { SetupFailedError } from './application/setup-failed.error'
 import { createApplication } from './bootstrap'
 import { formatSetupCheckReport } from './infrastructure/cli/cli.utils'
 
@@ -7,7 +7,7 @@ try {
   console.log(await application.run(Bun.argv.slice(2)))
 } catch (error) {
   console.error(
-    error instanceof SetupCheckError
+    error instanceof SetupFailedError
       ? formatSetupCheckReport(error.report)
       : error instanceof Error
         ? error.message

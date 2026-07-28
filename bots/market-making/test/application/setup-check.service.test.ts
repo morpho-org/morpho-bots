@@ -3,11 +3,11 @@ import type { Hex } from 'viem'
 import { describe, expect, test } from 'bun:test'
 
 import {
-  SetupCheckError,
   SetupCheckService,
   type SetupCheckConfig,
   type SetupStateService
 } from '../../src/application/setup-check.service'
+import { SetupFailedError } from '../../src/application/setup-failed.error'
 
 const maker = '0x1111111111111111111111111111111111111111'
 const midnight = '0x2222222222222222222222222222222222222222'
@@ -90,7 +90,7 @@ describe('SetupCheckService', () => {
 
     const readiness = new SetupCheckService(state, config).assertReady()
 
-    expect(readiness).rejects.toBeInstanceOf(SetupCheckError)
+    expect(readiness).rejects.toBeInstanceOf(SetupFailedError)
     expect(readiness).rejects.toMatchObject({
       report: {
         ready: false,
@@ -250,7 +250,8 @@ describe('SetupCheckService', () => {
 
     const error = await new SetupCheckService(state, config).assertReady().catch(value => value)
 
-    expect(error).toBeInstanceOf(SetupCheckError)
+    expect(error).toBeInstanceOf(SetupFailedError)
+    expect(error.name).toBe('SetupFailedError')
     expect(
       error.report.checks.map((check: { name: string; status: string }) => [
         check.name,

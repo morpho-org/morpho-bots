@@ -6,6 +6,7 @@ import { base } from 'viem/chains'
 import type { SetupCheckConfig } from '../application/setup-check.service'
 import type { Environment } from './config.utils'
 
+import { ConfigValidationError } from './config-validation.error'
 import {
   addressValue,
   bytes32Value,
@@ -22,17 +23,26 @@ export class ConfigService {
    * Parses and validates every setup-check environment variable before provider access begins.
    * @param environment - Environment map; defaults to `Bun.env` at the runtime boundary.
    * @returns An immutable configuration with checksummed addresses and narrowed IDs.
-   * @throws On missing, malformed, duplicated, unsupported, or out-of-range values.
+   * @throws `ConfigValidationError` on missing, malformed, duplicated, unsupported, or out-of-range
+   * values; rejected values and secrets are not retained by the error.
    * @remarks Read-only apart from reading the supplied map; values and secrets are never logged.
    */
   static from(environment: Environment = Bun.env) {
     const chainId = Number(requiredValue(environment, 'CHAIN_ID'))
     if (chainId !== base.id)
-      throw new Error(`Unsupported CHAIN_ID ${chainId}; supported: ${base.id}`)
+      throw new ConfigValidationError(
+        'CHAIN_ID',
+        'unsupported-chain',
+        `Unsupported CHAIN_ID ${chainId}; supported: ${base.id}`
+      )
 
     const privateKey = requiredValue(environment, 'MAKER_PRIVATE_KEY')
     if (!isHex(privateKey, { strict: true }) || size(privateKey) !== 32) {
-      throw new Error('MAKER_PRIVATE_KEY must be a 0x-prefixed 32-byte hex string')
+      throw new ConfigValidationError(
+        'MAKER_PRIVATE_KEY',
+        'invalid-bytes32',
+        'MAKER_PRIVATE_KEY must be a 0x-prefixed 32-byte hex string'
+      )
     }
 
     return new ConfigService({

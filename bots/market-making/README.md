@@ -65,7 +65,7 @@ bun run --filter @morpho-org/market-making-bot start -- setup-check
 ```
 
 Success prints one JSON report and exits zero. Bigints are serialized as decimal strings. Any failed
-check throws `SetupCheckError`, prints the failed check names, and exits non-zero. The check is strictly
+check throws `SetupFailedError`, prints the failed check names, and exits non-zero. The check is strictly
 read-only; remediation transaction descriptions are reported but never submitted.
 
 Version output remains available:

@@ -1,6 +1,8 @@
 import { relative, resolve } from 'node:path'
 import ts from 'typescript'
 
+import { JSDocValidationError } from './js-doc-validation.error'
+
 type Rule = 'summary' | 'params' | 'returns' | 'throws' | 'concurrency' | 'deadline' | 'read-only'
 
 export type JSDocFailure = {
@@ -112,7 +114,7 @@ const commentText = (comment: string | ts.NodeArray<ts.JSDocComment> | undefined
 const tagNames = (doc: ts.JSDoc, kind: ts.SyntaxKind) =>
   (doc.tags ?? [])
     .filter(tag => tag.kind === kind)
-    .map(tag => ('name' in tag && tag.name ? tag.name.getText() : ''))
+    .map(tag => (tag as ts.JSDocTag & { name?: ts.Node }).name?.getText() ?? '')
 
 const hasTag = (doc: ts.JSDoc, kind: ts.SyntaxKind) =>
   (doc.tags ?? []).some(tag => tag.kind === kind)
@@ -289,15 +291,21 @@ const sourceFiles = [
   'application/setup-check.service.ts',
   'application/setup-check.utils.ts',
   'application/safe-provider.error.ts',
+  'application/setup-failed.error.ts',
   'bootstrap.ts',
+  'config/config-validation.error.ts',
   'config/config.service.ts',
   'config/config.utils.ts',
+  'infrastructure/cli/cli-usage.error.ts',
   'infrastructure/cli/cli.ts',
   'infrastructure/cli/cli.utils.ts',
   'infrastructure/setup-state/http-json.utils.ts',
+  'infrastructure/setup-state/provider-pagination.error.ts',
+  'infrastructure/setup-state/provider-response.error.ts',
   'infrastructure/setup-state/viem-setup-state.service.ts',
   'infrastructure/setup-state/viem-setup-state.utils.ts'
 ].map(path => resolve(sourceRoot, path))
+sourceFiles.push(resolve(packageRoot, 'scripts/js-doc-validation.error.ts'))
 
 const run = async () => {
   const failures: JSDocFailure[] = []
@@ -320,7 +328,7 @@ const run = async () => {
         `- ${failure.file}:${failure.line} ${failure.declaration} [${failure.rule}] ${failure.message}`
       )
     }
-    throw new Error(`JSDoc contract coverage failed for ${failures.length} rules`)
+    throw new JSDocValidationError(failures.length)
   }
 }
 

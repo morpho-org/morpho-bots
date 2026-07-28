@@ -3,6 +3,7 @@ import type { Hex } from 'viem'
 import { bytesToHex, getAddress, hexToBytes, isAddress, isHex, size } from 'viem'
 
 import { SafeProviderError } from '../../application/safe-provider.error'
+import { ProviderResponseError } from './provider-response.error'
 
 export const BASE_CHAIN_ID = 8453
 export const PAGE_SIZE = 100
@@ -13,9 +14,11 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 10_000
 // The deployment-specific runtime hash includes the immutable Midnight target.
 export const BASE_ECRECOVER_RATIFIER_RUNTIME_HASH =
   '0xcce1e0dd38ae831e81a9270627af2c24c208409ec03d5654a28a33ead53b1ac1'
+const invalidProviderValue = (message: string) =>
+  new ProviderResponseError('provider', 'decode', message)
 const objectValue = (value: unknown, label: string): Record<string, unknown> => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new Error(`${label} must be an object`)
+    throw invalidProviderValue(`${label} must be an object`)
   }
   return value as Record<string, unknown>
 }
@@ -28,7 +31,7 @@ const objectValue = (value: unknown, label: string): Record<string, unknown> => 
  * @throws When the provider value is not an array.
  */
 const arrayValue = (value: unknown, label: string) => {
-  if (!Array.isArray(value)) throw new Error(`${label} must be an array`)
+  if (!Array.isArray(value)) throw invalidProviderValue(`${label} must be an array`)
   return value
 }
 
@@ -40,7 +43,9 @@ const arrayValue = (value: unknown, label: string) => {
  * @throws When viem rejects the address syntax or mixed-case checksum.
  */
 export const addressValue = (value: unknown, label: string) => {
-  if (typeof value !== 'string' || !isAddress(value)) throw new Error(`${label} must be an address`)
+  if (typeof value !== 'string' || !isAddress(value)) {
+    throw invalidProviderValue(`${label} must be an address`)
+  }
   return getAddress(value)
 }
 
@@ -53,20 +58,20 @@ export const addressValue = (value: unknown, label: string) => {
  */
 const bytes32Value = (value: unknown, label: string): Hex => {
   if (typeof value !== 'string' || !isHex(value, { strict: true }) || size(value) !== 32) {
-    throw new Error(`${label} must be a 32-byte hex value`)
+    throw invalidProviderValue(`${label} must be a 32-byte hex value`)
   }
   return bytesToHex(hexToBytes(value))
 }
 
 const integerValue = (value: unknown, label: string) => {
   if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
-    throw new Error(`${label} must be a safe integer`)
+    throw invalidProviderValue(`${label} must be a safe integer`)
   }
   return value
 }
 
 const bigintValue = (value: unknown, label: string) => {
-  if (typeof value !== 'bigint') throw new Error(`${label} must be a bigint`)
+  if (typeof value !== 'bigint') throw invalidProviderValue(`${label} must be a bigint`)
   return value
 }
 

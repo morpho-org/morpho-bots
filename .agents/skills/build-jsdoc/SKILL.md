@@ -72,14 +72,20 @@ The coverage script inventories these setup-check boundary and utility files:
 - `src/application/setup-check.service.ts`
 - `src/application/setup-check.utils.ts`
 - `src/application/safe-provider.error.ts`
+- `src/application/setup-failed.error.ts`
 - `src/bootstrap.ts`
+- `src/config/config-validation.error.ts`
 - `src/config/config.service.ts`
 - `src/config/config.utils.ts`
+- `src/infrastructure/cli/cli-usage.error.ts`
 - `src/infrastructure/cli/cli.ts`
 - `src/infrastructure/cli/cli.utils.ts`
 - `src/infrastructure/setup-state/http-json.utils.ts`
+- `src/infrastructure/setup-state/provider-pagination.error.ts`
+- `src/infrastructure/setup-state/provider-response.error.ts`
 - `src/infrastructure/setup-state/viem-setup-state.service.ts`
 - `src/infrastructure/setup-state/viem-setup-state.utils.ts`
+- `scripts/js-doc-validation.error.ts`
 
 It checks exported functions/classes/interfaces/type aliases, interface methods, callable members of
 exported type literals, and public constructors/methods/accessors. Every listed declaration needs a

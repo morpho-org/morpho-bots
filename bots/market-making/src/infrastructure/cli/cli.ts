@@ -3,6 +3,7 @@ import { Command, CommanderError } from 'commander'
 import type { SetupCheckReport } from '../../application/setup-check.service'
 import type { VersionService } from '../../application/version.service'
 
+import { CliUsageError } from './cli-usage.error'
 import { formatSetupCheckReport } from './cli.utils'
 
 interface SetupReadinessService {
@@ -40,11 +41,11 @@ export class Cli {
    * Parses one CLI invocation and returns its captured output.
    * @param argv - User arguments without the executable/runtime prefix.
    * @returns Version text or the serialized complete setup report.
-   * @throws On unknown commands, command parsing failures, provider failures, or failed readiness.
+   * @throws `CliUsageError` on invalid usage; provider and readiness errors pass through.
    * @remarks `setup-check` remains read-only; any remediation is descriptive and never executed.
    */
   async run(argv: readonly string[]): Promise<string> {
-    if (argv.length === 0) throw new Error('Unknown command: (none)')
+    if (argv.length === 0) throw new CliUsageError('(none)', 'Unknown command: (none)')
     this.output = undefined
     try {
       await this.program.parseAsync(argv, { from: 'user' })
@@ -52,11 +53,13 @@ export class Cli {
       if (error instanceof CommanderError && error.code === 'commander.version') {
         return error.message
       }
-      if (error instanceof CommanderError) throw new Error(error.message, { cause: error })
+      if (error instanceof CommanderError) {
+        throw new CliUsageError('(unknown)', error.message, { cause: error })
+      }
       throw error
     }
 
     if (this.output !== undefined) return this.output
-    throw new Error('Unknown command: (none)')
+    throw new CliUsageError('(none)', 'Unknown command: (none)')
   }
 }

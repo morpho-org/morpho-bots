@@ -4,7 +4,7 @@ import { describe, expect, test } from 'bun:test'
 
 import type { SetupStateService } from '../src/application/setup-check.service'
 
-import { SetupCheckError } from '../src/application/setup-check.service'
+import { SetupFailedError } from '../src/application/setup-failed.error'
 import { createApplication } from '../src/bootstrap'
 
 const maker: Address = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
@@ -82,6 +82,6 @@ describe('createApplication', () => {
     state.getChainId = async () => 1
     const application = createApplication(environment, { createState: () => state })
 
-    expect(application.run(['setup-check'])).rejects.toBeInstanceOf(SetupCheckError)
+    expect(application.run(['setup-check'])).rejects.toBeInstanceOf(SetupFailedError)
   })
 })

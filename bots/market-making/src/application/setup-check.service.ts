@@ -8,6 +8,7 @@ import {
   sameAddress,
   setupResult
 } from './setup-check.utils'
+import { SetupFailedError } from './setup-failed.error'
 
 type SetupCheckStatus = 'passed' | 'failed' | 'not-required'
 
@@ -49,20 +50,6 @@ export type SetupCheckReport = {
   ready: boolean
   /** All V0 checks in stable operator-facing order. */
   checks: SetupCheck[]
-}
-
-/** Error raised after a complete fail-closed readiness report has been collected. */
-export class SetupCheckError extends Error {
-  /**
-   * Creates an error naming every failed check.
-   *
-   * @param report - Complete read-only report that failed readiness.
-   */
-  constructor(readonly report: SetupCheckReport) {
-    const failed = report.checks.filter(check => check.status === 'failed')
-    super(`Setup check failed: ${failed.map(check => check.name).join(', ')}`)
-    this.name = 'SetupCheckError'
-  }
 }
 
 /** Validated configuration required to evaluate market-maker readiness on Base. */
@@ -180,12 +167,12 @@ export class SetupCheckService {
   /**
    * Evaluates the complete report and enforces readiness for downstream writers.
    * @returns The complete ready report.
-   * @throws {@link SetupCheckError} when any check fails; the error retains every check result.
+   * @throws `SetupFailedError` when any check fails; the error retains every check result.
    * @remarks Read-only. Independent provider checks run concurrently through `Promise.all`.
    */
   async assertReady() {
     const report = await this.check()
-    if (!report.ready) throw new SetupCheckError(report)
+    if (!report.ready) throw new SetupFailedError(report)
     return report
   }
 

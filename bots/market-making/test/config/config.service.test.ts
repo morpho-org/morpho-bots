@@ -3,6 +3,7 @@ import type { Address, Hex } from 'viem'
 import { describe, expect, test } from 'bun:test'
 import { bytesToHex, hexToBytes } from 'viem'
 
+import { ConfigValidationError } from '../../src/config/config-validation.error'
 import { ConfigService } from '../../src/config/config.service'
 
 const maker: Address = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
@@ -108,5 +109,22 @@ describe('ConfigService', () => {
     expect(() => ConfigService.from({ ...environment, NATIVE_RESERVE_WEI: '-1' })).toThrow(
       'NATIVE_RESERVE_WEI must be an unsigned decimal integer'
     )
+  })
+
+  test('uses a stable typed config error with safe field and reason metadata', () => {
+    let error: unknown
+    try {
+      ConfigService.from({ ...environment, MAKER_PRIVATE_KEY: 'private-secret' })
+    } catch (value) {
+      error = value
+    }
+
+    expect(error).toBeInstanceOf(ConfigValidationError)
+    expect(error).toMatchObject({
+      name: 'ConfigValidationError',
+      field: 'MAKER_PRIVATE_KEY',
+      reason: 'invalid-bytes32'
+    })
+    expect(JSON.stringify(error)).not.toContain('private-secret')
   })
 })

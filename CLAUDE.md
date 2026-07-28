@@ -37,6 +37,14 @@ Agent conventions:
   `Promise.all` where possible.
 - **Utility isolation**: Utility functions must live in a different file from every file containing
   a class; use focused `*.utils.ts` or dedicated modules.
+- **Typed error isolation**: Every expected domain, application, infrastructure, configuration, CLI,
+  provider, or tooling failure must use a named exported `Error` subclass. Put exactly one error
+  class in its own kebab-case `*.error.ts` file named for the class (for example,
+  `SetupFailedError` in `setup-failed.error.ts`); error files may contain only imports and supporting
+  types besides that class. Never define error classes in services, utilities, configuration, CLI,
+  or script files, and never use plain `Error` for expected failures. Boundary wrappers may retain
+  an unexpected third-party error as `cause`, but operator-visible fields and messages must exclude
+  credentials, URLs, response bodies, and other untrusted data.
 - **Arrow utilities**: Declare utilities as arrow constants (`export const helper = () => {}` or
   `const helper = () => {}`), never as function declarations.
 - **Viem first**: Prefer viem for Hex/address parsing, validation, normalization, equality, hashing,

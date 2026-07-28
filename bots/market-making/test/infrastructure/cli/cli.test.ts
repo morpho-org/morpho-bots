@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 
 import { VersionService } from '../../../src/application/version.service'
 import { Cli } from '../../../src/infrastructure/cli/cli'
+import { CliUsageError } from '../../../src/infrastructure/cli/cli-usage.error'
 import { formatSetupCheckReport } from '../../../src/infrastructure/cli/cli.utils'
 
 const readyReport = {
@@ -106,7 +107,12 @@ describe('Cli', () => {
   })
 
   test('rejects an empty argv', async () => {
-    expect(cli().run([])).rejects.toThrow('Unknown command: (none)')
+    const error = await cli()
+      .run([])
+      .catch(value => value)
+    expect(error).toBeInstanceOf(CliUsageError)
+    expect(error).toMatchObject({ name: 'CliUsageError', command: '(none)' })
+    expect(error.message).toBe('Unknown command: (none)')
   })
 
   test('runs setup-check and returns a structured bigint-safe report', async () => {
