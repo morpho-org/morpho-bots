@@ -79,20 +79,18 @@ export class ConfigService {
       )
     }
 
-    const setup: SetupCheckConfig = {
-      chainId,
-      maker: addressValue(environment, 'MAKER_ADDRESS'),
-      midnight: addressValue(environment, 'MIDNIGHT_ADDRESS'),
-      nativeReserve: unsignedBigIntValue(environment, 'NATIVE_RESERVE_WEI'),
-      loanAsset: addressValue(environment, 'LOAN_ASSET_ADDRESS'),
-      maximumLendExposure: unsignedBigIntValue(environment, 'MAXIMUM_LEND_EXPOSURE_ASSETS'),
-      ratifier: addressValue(environment, 'RATIFIER_ADDRESS'),
-      marketIds: hexListValue(environment, 'MARKET_IDS', true),
-      referenceMarketId: bytes32Value(environment, 'REFERENCE_MARKET_ID')
-    }
-
     return new ConfigService({
-      setup,
+      setup: {
+        chainId,
+        maker: addressValue(environment, 'MAKER_ADDRESS'),
+        midnight: addressValue(environment, 'MIDNIGHT_ADDRESS'),
+        nativeReserve: unsignedBigIntValue(environment, 'NATIVE_RESERVE_WEI'),
+        loanAsset: addressValue(environment, 'LOAN_ASSET_ADDRESS'),
+        maximumLendExposure: unsignedBigIntValue(environment, 'MAXIMUM_LEND_EXPOSURE_ASSETS'),
+        ratifier: addressValue(environment, 'RATIFIER_ADDRESS'),
+        marketIds: hexListValue(environment, 'MARKET_IDS', true),
+        referenceMarketId: bytes32Value(environment, 'REFERENCE_MARKET_ID')
+      },
       rpcUrl: urlValue(environment, 'RPC_URL'),
       referenceRpcUrl: urlValue(environment, 'REFERENCE_RPC_URL'),
       privateKey,
@@ -100,7 +98,10 @@ export class ConfigService {
       routerApiBaseUrl: urlValue(environment, 'ROUTER_API_BASE_URL'),
       v0OfferGroupIds: hexListValue(environment, 'V0_OFFER_GROUP_IDS', false),
       requestTimeoutMs: requestTimeoutValue(environment),
-      bootstrap: bootstrapConfigsValue(source.bootstrap, setup.marketIds)
+      bootstrap: bootstrapConfigsValue(
+        source.bootstrap,
+        hexListValue(environment, 'MARKET_IDS', true)
+      )
     })
   }
 
