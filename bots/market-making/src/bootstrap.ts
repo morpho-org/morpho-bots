@@ -54,10 +54,28 @@ function defaultState(config: ConfigService) {
   )
 }
 
+/**
+ * Composes the market-making CLI and its setup-check dependencies.
+ * @param environment - Environment map used for lazy validated configuration.
+ * @param dependencies - Optional test adapters; production defaults to viem and HTTP readers.
+ * @returns An application exposing a single asynchronous CLI `run` boundary.
+ * @throws When `run` encounters invalid configuration, provider failure, or failed readiness.
+ * @remarks Composition is side-effect free. Configuration and provider construction occur lazily
+ * for `setup-check`; the setup implementation is read-only and preserves concurrent independent
+ * reads through `Promise.all`.
+ */
 export function createApplication(
   environment: Environment = Bun.env,
   dependencies: Dependencies = {}
-) {
+): {
+  /**
+   * Executes one CLI invocation.
+   * @param argv - User arguments without runtime/executable prefixes.
+   * @returns Captured version text or setup-check JSON.
+   * @throws On invalid configuration, unknown commands, provider failures, or failed readiness.
+   */
+  run(argv: readonly string[]): Promise<string>
+} {
   const cli = new Cli(new VersionService(), () => {
     const config = RuntimeConfigService.from(environment)
     const state = dependencies.createState?.(config) ?? defaultState(config)

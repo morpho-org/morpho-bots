@@ -9,7 +9,9 @@
   "type": "module",
   "scripts": {
     "start": "bun src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "jsdoc:check": "bun scripts/check-jsdoc.ts",
+    "jsdoc:build": "bun run jsdoc:check && typedoc --options typedoc.json"
   },
   "dependencies": {
     "@morpho-org/morpho-ts": "catalog:",
@@ -19,6 +21,7 @@
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
     "@types/bun": "catalog:",
+    "typedoc": "0.28.20",
     "typescript": "catalog:"
   }
 }

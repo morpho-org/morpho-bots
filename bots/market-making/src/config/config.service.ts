@@ -70,7 +70,15 @@ function url(environment: Environment, name: string) {
   return value
 }
 
+/** Immutable, validated market-making runtime configuration loaded from environment values. */
 export class ConfigService {
+  /**
+   * Parses and validates every setup-check environment variable before provider access begins.
+   * @param environment - Environment map; defaults to `Bun.env` at the runtime boundary.
+   * @returns An immutable configuration with checksummed addresses and narrowed IDs.
+   * @throws On missing, malformed, duplicated, unsupported, or out-of-range values.
+   * @remarks Read-only apart from reading the supplied map; values and secrets are never logged.
+   */
   static from(environment: Environment = Bun.env) {
     const chainId = Number(required(environment, 'CHAIN_ID'))
     if (chainId !== base.id)
@@ -116,34 +124,42 @@ export class ConfigService {
     }
   ) {}
 
+  /** @returns The complete validated requirements consumed by `SetupCheckService`. */
   get setup() {
     return this.values.setup
   }
 
+  /** @returns Current-state Base RPC URL; callers must not include it in reports or logs. */
   get rpcUrl() {
     return this.values.rpcUrl
   }
 
+  /** @returns Archive-capable Base RPC URL; callers must keep it out of errors and reports. */
   get referenceRpcUrl() {
     return this.values.referenceRpcUrl
   }
 
+  /** @returns Maker private key for local address derivation; callers must never log it. */
   get privateKey() {
     return this.values.privateKey
   }
 
+  /** @returns Validated Morpho API origin; reports identify it only as `morpho-api`. */
   get morphoApiBaseUrl() {
     return this.values.morphoApiBaseUrl
   }
 
+  /** @returns Validated Router API origin; reports identify it only as `router-api`. */
   get routerApiBaseUrl() {
     return this.values.routerApiBaseUrl
   }
 
+  /** @returns Strategy-owned V0 offer-group IDs used to reject unknown namespaces. */
   get v0OfferGroupIds() {
     return this.values.v0OfferGroupIds
   }
 
+  /** @returns Bounded provider timeout in milliseconds, between 1 and 120,000 inclusive. */
   get requestTimeoutMs() {
     return this.values.requestTimeoutMs
   }

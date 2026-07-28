@@ -43,14 +43,23 @@ const MORPHO_BLUE_SETUP_ABI = parseAbi([
 ])
 const EMPTY_ROOT = `0x${'00'.repeat(32)}`
 
+/** Minimal read-only viem surface required by the setup-state adapter. */
 export interface ChainReader {
+  /** @returns Connected EVM chain ID. */
   getChainId(): Promise<number>
+  /** @param parameters - Contract address. @returns Runtime bytecode when deployed. */
   getCode(parameters: { address: Address }): Promise<Hex | undefined>
+  /** @param parameters - Account address. @returns Native-token balance in wei. */
   getBalance(parameters: { address: Address }): Promise<bigint>
+  /**
+   * @param parameters - Latest-block tag or exact historical block number.
+   * @returns Block number and timestamp without mutating chain state.
+   */
   getBlock(parameters: { blockTag?: 'latest'; blockNumber?: bigint }): Promise<{
     number: bigint | null
     timestamp: bigint
   }>
+  /** @param parameters - Viem read-contract request. @returns ABI-decoded contract result. */
   readContract(parameters: Record<string, unknown>): Promise<unknown>
 }
 
@@ -174,6 +183,16 @@ function routerTimeout() {
   })
 }
 
+/**
+ * Fetches and decodes JSON under a per-request timeout while redacting unsafe failure details.
+ * @param url - Provider endpoint; it is used for the request but never copied into thrown metadata.
+ * @param provider - Fixed provider identifier safe for reports.
+ * @param timeoutMs - Abort timeout in milliseconds, defaulting to 10 seconds.
+ * @returns Parsed JSON response value.
+ * @throws `SafeProviderError` with allowlisted provider/status/context metadata on HTTP,
+ * timeout, network, or JSON failures; raw URLs and response bodies are not exposed.
+ * @remarks Performs one read-only HTTP GET and has no chain or filesystem side effects.
+ */
 export async function requestJson(url: string, provider: ProviderId, timeoutMs = 10_000) {
   const signal = AbortSignal.timeout(timeoutMs)
   try {
@@ -200,9 +219,18 @@ export async function requestJson(url: string, provider: ProviderId, timeoutMs =
   }
 }
 
+/** Read-only viem/API adapter that gathers setup facts and validates provider agreement. */
 export class ViemSetupStateService implements SetupStateService {
   private readonly derivedMaker: Address
 
+  /**
+   * Creates a state adapter and derives the maker address locally from the configured private key.
+   * @param chain - Current-state Base reader.
+   * @param reference - Archive-capable Base reader.
+   * @param request - JSON transport receiving only fixed provider IDs and explicit timeouts.
+   * @param options - Validated addresses, IDs, endpoints, deadline, and test clock.
+   * @remarks Construction does not contact providers, sign data, log secrets, or execute writes.
+   */
   constructor(
     private readonly chain: ChainReader,
     private readonly reference: Pick<ChainReader, 'getBlock' | 'readContract'>,
@@ -212,22 +240,33 @@ export class ViemSetupStateService implements SetupStateService {
     this.derivedMaker = privateKeyToAccount(options.privateKey).address
   }
 
+  /** @returns The connected chain ID from the current-state RPC. */
   getChainId() {
     return this.chain.getChainId()
   }
 
+  /** @param target - Address to inspect. @returns Runtime bytecode when deployed. */
   getCode(target: Address) {
     return this.chain.getCode({ address: target })
   }
 
+  /** @returns The locally derived maker; no signing or provider request occurs. */
   async getDerivedMaker() {
     return this.derivedMaker
   }
 
+  /** @param owner - Account to inspect. @returns Its current native-token balance. */
   getNativeBalance(owner: Address) {
     return this.chain.getBalance({ address: owner })
   }
 
+  /**
+   * Reads the maker's ERC-20 allowance for the configured Midnight singleton.
+   * @param owner - Token owner.
+   * @param loanAsset - ERC-20 contract.
+   * @returns Configured Midnight spender and decoded allowance.
+   * @throws When the provider response is not a bigint.
+   */
   async getLoanAllowance(owner: Address, loanAsset: Address) {
     const amount = await this.chain.readContract({
       address: loanAsset,
@@ -239,6 +278,15 @@ export class ViemSetupStateService implements SetupStateService {
     return { spender: this.options.midnight, amount }
   }
 
+  /**
+   * Cross-checks a ratifier against Router registry, exact runtime hash, immutable target, callable
+   * Ecrecover surface, and Midnight authorization.
+   * @param maker - Maker whose authorization/root surface is read.
+   * @param ratifier - Candidate ratifier address.
+   * @returns Five readiness facts without exposing provider URLs or bytecode.
+   * @throws On malformed provider/contract responses or failed reads.
+   * @remarks All five independent reads start concurrently through `Promise.all`; this is read-only.
+   */
   async getRatifier(maker: Address, ratifier: Address) {
     const [routerContracts, code, ratifierMidnight, rootCanceled, authorized] = await Promise.all([
       this.request(
@@ -287,6 +335,13 @@ export class ViemSetupStateService implements SetupStateService {
     }
   }
 
+  /**
+   * Cross-checks one Midnight market between the Morpho API and on-chain state.
+   * @param id - Configured market ID.
+   * @returns Validated listing, activity, loan asset, tick spacing, and maturity.
+   * @throws On missing/extra API rows, malformed values, identity disagreement, or invalid chain data.
+   * @remarks API, market, and tick-spacing reads run concurrently through `Promise.all`; no writes.
+   */
   async getBook(id: Hex): Promise<BookSetup> {
     const query = new URLSearchParams({
       chain_ids: String(BASE_CHAIN_ID),
@@ -340,10 +395,18 @@ export class ViemSetupStateService implements SetupStateService {
     }
   }
 
+  /** @returns Latest current-state block timestamp from a read-only RPC call. */
   async getLatestTimestamp() {
     return (await this.chain.getBlock({ blockTag: 'latest' })).timestamp
   }
 
+  /**
+   * Proves the exact reference market is readable at a historical archive block.
+   * @returns Reference-market identity plus current and archive readability flags.
+   * @throws When history is insufficient or market parameters/state are absent, zero, or malformed.
+   * @remarks After locating the historical block, independent parameter and state reads run through
+   * `Promise.all`; the method is read-only.
+   */
   async checkReference() {
     const latest = await this.reference.getBlock({ blockTag: 'latest' })
     if (latest.number === null) throw new Error('reference RPC latest block has no number')
@@ -385,6 +448,15 @@ export class ViemSetupStateService implements SetupStateService {
     }
   }
 
+  /**
+   * Traverses all takeable offers for a maker and detects unknown groups or inverted books.
+   * @param maker - Maker whose active offers are inspected.
+   * @returns Deduplicated unknown namespaces and configured markets with crossed buy/sell ticks.
+   * @throws On malformed responses, repeated cursors, more than 100 pages or 100,000 items, or when
+   * the single absolute request deadline expires.
+   * @remarks Pagination is necessarily sequential because each cursor depends on the previous page;
+   * the deadline covers the whole traversal. This method never creates, cancels, or takes an offer.
+   */
   async inspectOffers(maker: Address) {
     const offers: ReturnType<typeof offerFromApi>[] = []
     const seenCursors = new Set<string>()
@@ -436,6 +508,11 @@ export class ViemSetupStateService implements SetupStateService {
     }
   }
 
+  /**
+   * Reports the intentionally excluded V0 position-health surface.
+   * @returns A stable not-required result because V0 creates no collateralized debt.
+   * @remarks Pure and read-only; no provider request is made.
+   */
   async checkPositionHealth() {
     return { status: 'not-required' as const, reason: 'V0 does not create collateralized debt' }
   }

@@ -29,6 +29,11 @@ Agent conventions:
   that pass vacuously.
 - **Format**: Run `bun format` directly in the validation suite (see Self-Verification) — do not
   run `bun format:check` first, just auto-format.
+- **JSDoc public surface**: Every externally facing function and public method changed in TypeScript
+  requires substantive JSDoc covering its applicable parameters, return value, failures, and side
+  effects. Before completion, follow `.agents/skills/build-jsdoc/SKILL.md` and run
+  `bun run --filter @morpho-org/market-making-bot jsdoc:build`; independent checks must continue to
+  run concurrently through `Promise.all` where possible.
 - **Agent transparency**: When invoking a subagent, always tell the user which agent is being
   triggered and why (e.g., "Invoking the protocol engineer because this task modifies contract
   interaction code").

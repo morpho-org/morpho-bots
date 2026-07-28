@@ -6,7 +6,9 @@ type SetupCheckStatus = 'passed' | 'failed' | 'not-required'
 
 type SetupRemediation = string | { to: Address; functionName: string; args: readonly unknown[] }
 
+/** A single sanitized, read-only readiness observation and its optional operator remediation. */
 export type SetupCheck = {
+  /** Stable identifier for the setup surface being checked. */
   name:
     | 'chain'
     | 'maker'
@@ -17,18 +19,31 @@ export type SetupCheck = {
     | 'reference'
     | 'offers'
     | 'position-health'
+  /** Whether the requirement passed, failed, or is intentionally outside the V0 scope. */
   status: SetupCheckStatus
+  /** Sanitized provider-derived value; URLs, credentials, and raw provider messages are excluded. */
   observed: unknown
+  /** Expected value or invariant used to evaluate the observation. */
   required: unknown
+  /** Read-only transaction description or operator instruction; this service never executes it. */
   remediation?: SetupRemediation
 }
 
+/** Complete setup-check result returned even when one or more independent reads fail. */
 export type SetupCheckReport = {
+  /** True only when no check has the `failed` status. */
   ready: boolean
+  /** All V0 checks in stable operator-facing order. */
   checks: SetupCheck[]
 }
 
+/** Error raised by the fail-fast readiness gate while retaining the complete sanitized report. */
 export class SetupCheckError extends Error {
+  /**
+   * Creates an error naming every failed check.
+   *
+   * @param report - Complete read-only report that failed readiness.
+   */
   constructor(readonly report: SetupCheckReport) {
     const failed = report.checks.filter(check => check.status === 'failed')
     super(`Setup check failed: ${failed.map(check => check.name).join(', ')}`)
@@ -36,36 +51,74 @@ export class SetupCheckError extends Error {
   }
 }
 
+/** Validated configuration required to evaluate market-maker readiness on Base. */
 export type SetupCheckConfig = {
+  /** Configured EVM chain identifier; V0 requires Base (`8453`). */
   chainId: number
+  /** Expected maker derived from the configured signing key. */
   maker: Address
+  /** Expected Midnight singleton address. */
   midnight: Address
+  /** Minimum native-token balance retained for transaction fees. */
   nativeReserve: bigint
+  /** ERC-20 asset lent by every configured market. */
   loanAsset: Address
+  /** Minimum allowance granted to Midnight. */
   maximumLendExposure: bigint
+  /** Router-listed Ecrecover ratifier expected to authorize the maker. */
   ratifier: Address
+  /** Non-empty set of Midnight market identifiers to validate concurrently. */
   marketIds: readonly Hex[]
+  /** Morpho Blue market read through the archive-capable reference provider. */
   referenceMarketId: Hex
 }
 
+/** API and on-chain facts used to validate one configured Midnight market. */
 export type BookSetup = {
+  /** Market identifier returned by the provider. */
   id: Hex
+  /** Whether the Morpho API lists the market. */
   allowlisted: boolean
+  /** Whether the API reports the market as active. */
   active: boolean
+  /** Loan asset returned by Midnight. */
   loanAsset: Address
+  /** On-chain tick spacing; must be positive. */
   tickSpacing: number
+  /** On-chain maturity timestamp. */
   maturity: bigint
 }
 
+/**
+ * Consumer-owned, read-only port for every provider observation used by the setup gate.
+ * Implementations may reject individual reads; {@link SetupCheckService.check} captures those
+ * failures and continues collecting independent observations concurrently.
+ */
 export interface SetupStateService {
+  /** @returns The connected RPC chain identifier. */
   getChainId(): Promise<number>
+  /** @param address - Contract address to inspect. @returns Runtime bytecode, if deployed. */
   getCode(address: Address): Promise<Hex | undefined>
+  /** @returns The maker derived from the configured signing key without signing or broadcasting. */
   getDerivedMaker(): Promise<Address>
+  /** @param address - Account to inspect. @returns Its native-token balance. */
   getNativeBalance(address: Address): Promise<bigint>
+  /**
+   * @param owner - Token owner whose allowance is read.
+   * @param loanAsset - ERC-20 contract queried.
+   * @returns The configured spender and current allowance.
+   */
   getLoanAllowance(
     owner: Address,
     loanAsset: Address
   ): Promise<{ spender: Address; amount: bigint }>
+  /**
+   * Reads Router registry, runtime-code, immutable-target, callable-surface, and authorization facts.
+   * Independent provider and contract reads should run concurrently with `Promise.all`.
+   * @param maker - Maker whose authorization is checked.
+   * @param ratifier - Candidate Ecrecover ratifier.
+   * @returns Sanitized ratifier readiness facts.
+   */
   getRatifier(
     maker: Address,
     ratifier: Address
@@ -76,13 +129,23 @@ export interface SetupStateService {
     ecrecoverSurface: boolean
     authorized: boolean
   }>
+  /** @param id - Midnight market identifier. @returns Cross-checked API and on-chain market facts. */
   getBook(id: Hex): Promise<BookSetup>
+  /** @returns Timestamp of the latest connected-chain block. */
   getLatestTimestamp(): Promise<bigint>
+  /** @returns Archive-readability and exact reference-market identity facts. */
   checkReference(): Promise<{ marketId: Hex; referenceReadable: boolean; archiveReadable: boolean }>
+  /**
+   * Traverses all active offers under one absolute request deadline.
+   * @param maker - Maker whose offers are inspected.
+   * @returns Unknown namespaces and crossed/inverted configured markets.
+   * @throws When pagination repeats a cursor, exceeds 100 pages or 100,000 items, or the deadline.
+   */
   inspectOffers(maker: Address): Promise<{
     unknownNamespaces: readonly string[]
     invertedMarketIds: readonly Hex[]
   }>
+  /** @returns The explicit V0 not-required result; performs no writes. */
   checkPositionHealth(): Promise<{ status: 'not-required'; reason: string }>
 }
 
@@ -97,7 +160,12 @@ type SafeProviderFailure = {
   context?: 'read' | 'request'
 }
 
+/** Allowlisted provider failure safe to place in reports without leaking URLs or response bodies. */
 export class SafeProviderError extends Error {
+  /**
+   * Creates a provider error from already-sanitized metadata.
+   * @param failure - Provider ID and allowlisted status, code, name, and context only.
+   */
   constructor(readonly failure: SafeProviderFailure) {
     super(failure.name)
     this.name = 'SafeProviderError'
@@ -276,18 +344,36 @@ function booksCheck(
   return result('books', invalidBooks.length === 0, invalidBooks, required)
 }
 
+/** Application service that evaluates every V0 market-maker readiness requirement without writes. */
 export class SetupCheckService {
+  /**
+   * Creates the setup readiness gate.
+   * @param state - Read-only provider port.
+   * @param config - Validated setup requirements.
+   */
   constructor(
     private readonly state: SetupStateService,
     private readonly config: SetupCheckConfig
   ) {}
 
+  /**
+   * Evaluates the complete report and enforces readiness for downstream writers.
+   * @returns The complete ready report.
+   * @throws {@link SetupCheckError} when any check fails; the error retains every check result.
+   * @remarks Read-only. Independent provider checks run concurrently through `Promise.all`.
+   */
   async assertReady() {
     const report = await this.check()
     if (!report.ready) throw new SetupCheckError(report)
     return report
   }
 
+  /**
+   * Evaluates all setup surfaces while isolating provider failures into sanitized report entries.
+   * @returns A complete report in stable check order; provider rejection does not short-circuit peers.
+   * @remarks Read-only. All independent reads, including per-book reads, start before the outer
+   * `Promise.all` is awaited so latency is bounded by the slowest check rather than their sum.
+   */
   async check(): Promise<SetupCheckReport> {
     const bookReads = this.config.marketIds.map(requestedId => ({
       requestedId,

@@ -7,6 +7,13 @@ interface SetupReadinessService {
   assertReady(): Promise<SetupCheckReport>
 }
 
+/**
+ * Serializes a sanitized setup report for the CLI, converting bigint values to decimal strings.
+ * @param report - Complete setup report containing no raw provider URLs or secrets.
+ * @returns Compact JSON suitable for standard output or error output.
+ * @throws When an unexpected cyclic value prevents JSON serialization.
+ * @remarks Pure formatting only; no provider, filesystem, or chain side effects occur.
+ */
 export function formatSetupCheckReport(report: SetupCheckReport) {
   return JSON.stringify(report, (_, item) => (typeof item === 'bigint' ? item.toString() : item))
 }
@@ -16,6 +23,12 @@ export class Cli {
   private readonly program: Command
   private output: string | undefined
 
+  /**
+   * Configures the version and read-only setup-check commands.
+   * @param version - Application version provider.
+   * @param setup - Lazy readiness-service factory, invoked only for `setup-check`.
+   * @remarks Construction performs no provider calls and does not start writer workflows.
+   */
   constructor(version: VersionService, setup: () => SetupReadinessService) {
     this.program = new Command()
       .name('mm')
@@ -32,6 +45,13 @@ export class Cli {
       })
   }
 
+  /**
+   * Parses one CLI invocation and returns its captured output.
+   * @param argv - User arguments without the executable/runtime prefix.
+   * @returns Version text or the serialized complete setup report.
+   * @throws On unknown commands, command parsing failures, provider failures, or failed readiness.
+   * @remarks `setup-check` remains read-only; any remediation is descriptive and never executed.
+   */
   async run(argv: readonly string[]): Promise<string> {
     if (argv.length === 0) throw new Error('Unknown command: (none)')
     this.output = undefined
