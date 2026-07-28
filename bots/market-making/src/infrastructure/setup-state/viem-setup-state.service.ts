@@ -555,9 +555,22 @@ export class ViemSetupStateService implements SetupStateService {
     }
     const knownGroups = new Set(this.options.v0OfferGroupIds)
     const configuredMarkets = new Set(this.options.marketIds)
+    const derivedGroups = new Set(
+      offers
+        .map(offer => offer.group)
+        .filter(group =>
+          offers
+            .filter(offer => offer.group === group)
+            .every(offer => configuredMarkets.has(offer.marketId))
+        )
+    )
     return {
       unknownNamespaces: [
-        ...new Set(offers.map(offer => offer.group).filter(group => !knownGroups.has(group)))
+        ...new Set(
+          offers
+            .map(offer => offer.group)
+            .filter(group => !knownGroups.has(group) && !derivedGroups.has(group))
+        )
       ],
       unknownMarketIds: [
         ...new Set(

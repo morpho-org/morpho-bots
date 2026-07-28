@@ -4,10 +4,18 @@ import type { BootstrapMakeService } from '../../application/position-bootstrap.
 import type { BootstrapOffer } from '../../domain/position-bootstrap'
 import type { BootstrapActiveGroup } from './bootstrap-position.service'
 
+import { BootstrapAdapterError } from './bootstrap-adapter.error'
+
+type BootstrapBookOffer = { marketId: Hex; buy: boolean; tick: bigint }
+
 /** Protocol transport for confirmed Midnight publication and group invalidation. */
 interface BootstrapOfferTransport {
   /** Lists active strategy groups from Mempool truth. @returns Current active group projections. */
   listActiveGroups(): Promise<readonly BootstrapActiveGroup[]>
+  /** Lists the maker's complete current book. @returns Every active offer needed for spread safety. */
+  listBookOffers(): Promise<readonly BootstrapBookOffer[]>
+  /** Projects a domain offer into its exact protocol tick. @param offer - Desired offer. @returns Prospective book offer. */
+  toProspectiveBookOffer(offer: BootstrapOffer): Promise<BootstrapBookOffer>
   /** Builds, signs, validates, and publishes one lend offer. @param offer - Desired domain offer. @returns Published group ID after confirmation. */
   publish(offer: BootstrapOffer): Promise<Hex>
   /** Invalidates one active group onchain. @param group - Active group ID. @returns Completion after receipt confirmation. */
@@ -50,6 +58,20 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
         this.sessionGroups.delete(group.id)
       }
       if (parameters.desiredOffer) {
+        const prospective = await this.transport.toProspectiveBookOffer(parameters.desiredOffer)
+        const book = [...(await this.transport.listBookOffers()), prospective].filter(
+          offer => offer.marketId === parameters.marketId
+        )
+        const buys = book.filter(offer => offer.buy).map(offer => offer.tick)
+        const sells = book.filter(offer => !offer.buy).map(offer => offer.tick)
+        if (
+          buys.length > 0 &&
+          sells.length > 0 &&
+          buys.reduce((highest, tick) => (tick > highest ? tick : highest)) >=
+            sells.reduce((lowest, tick) => (tick < lowest ? tick : lowest))
+        ) {
+          throw new BootstrapAdapterError('negative-spread')
+        }
         this.sessionGroups.add(await this.transport.publish(parameters.desiredOffer))
       }
     })

@@ -491,7 +491,7 @@ describe('ViemSetupStateService', () => {
     })
 
     expect(await state.inspectOffers(maker)).toEqual({
-      unknownNamespaces: [unknownGroup],
+      unknownNamespaces: [],
       unknownMarketIds: [],
       invertedMarketIds: [marketId]
     })
@@ -508,6 +508,27 @@ describe('ViemSetupStateService', () => {
     expect(calls.some(call => call.startsWith('https://router.example/v0/midnight/users/'))).toBe(
       false
     )
+  })
+
+  test('re-derives a published maker group on a configured market across invocations', async () => {
+    const publishedGroup: Hex = `0x${'ef'.repeat(32)}`
+    const { state } = createState({
+      '/v0/midnight/users/': {
+        cursor: null,
+        data: [
+          {
+            id: publishedGroup,
+            offers: [{ market_id: marketId, maker, buy: true, tick: 20 }]
+          }
+        ]
+      }
+    })
+
+    expect(await state.inspectOffers(maker)).toEqual({
+      unknownNamespaces: [],
+      unknownMarketIds: [],
+      invertedMarketIds: []
+    })
   })
 
   test('fails readiness for a known group that remains active on a removed market', async () => {

@@ -1,7 +1,5 @@
-import type { MidnightOfferRootSignature } from '@morpho-org/morpho-sdk'
-
 import { Offer, TickLib } from '@morpho-org/midnight-sdk'
-import { isRequirementSignature, morphoViemExtension } from '@morpho-org/morpho-sdk'
+import { morphoViemExtension } from '@morpho-org/morpho-sdk'
 import { fetchMarket } from '@morpho-org/morpho-sdk/fetch'
 import {
   createPublicClient,
@@ -24,85 +22,21 @@ import type { BootstrapOffer } from '../../domain/position-bootstrap'
 import type { BootstrapActiveGroup, BootstrapInventoryReader } from './bootstrap-position.service'
 import type { BlueReferenceReader, BlueSupplyCheckpoint } from './bootstrap-reference-rate.service'
 
-import { requestJson } from '../setup-state/http-json.utils'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
+import { readBootstrapGroups, strategyBootstrapGroups } from './bootstrap-groups.utils'
 import { MidnightBootstrapMakeService } from './bootstrap-make.service'
 import { MidnightBootstrapPositionService } from './bootstrap-position.service'
 import { BlueBootstrapReferenceRateService } from './bootstrap-reference-rate.service'
+import { signBootstrapRequirements } from './bootstrap-requirements.utils'
 
 const WAD = 10n ** 18n
 const YEAR_SECONDS = 31_536_000n
-const PAGE_SIZE = 100
-
-type RawGroup = {
-  id: Hex
-  marketId: Hex
-  consumed: bigint
-  maxAssets: bigint
-  tick: bigint
-  maturity: bigint
-}
 
 type HistoricalBlockReader = {
   getBlock(parameters: { blockTag: 'latest' } | { blockNumber: bigint }): Promise<{
     number: bigint | null
     timestamp: bigint
   }>
-}
-
-const readGroups = async (config: ConfigService): Promise<RawGroup[]> => {
-  const groups: RawGroup[] = []
-  let cursor: string | undefined
-  do {
-    const query = new URLSearchParams({ limit: String(PAGE_SIZE) })
-    if (cursor) query.set('cursor', cursor)
-    const response = (await requestJson(
-      `${config.morphoApiBaseUrl}/v0/midnight/users/${config.setup.maker}/offer-groups?${query.toString()}`,
-      'morpho-api',
-      config.requestTimeoutMs
-    )) as { data?: unknown; cursor?: unknown }
-    if (!Array.isArray(response.data)) throw new BootstrapAdapterError('offer-groups-response')
-    for (const value of response.data) {
-      const group = value as Record<string, unknown>
-      if (!Array.isArray(group.offers)) throw new BootstrapAdapterError('offer-groups-response')
-      const offer = group.offers.find(item => (item as Record<string, unknown>).buy === true) as
-        | Record<string, unknown>
-        | undefined
-      if (!offer) continue
-      if (
-        typeof group.id !== 'string' ||
-        typeof group.consumed !== 'string' ||
-        typeof group.max_assets !== 'string' ||
-        typeof offer.market_id !== 'string' ||
-        typeof offer.tick !== 'number' ||
-        typeof offer.market !== 'object' ||
-        offer.market === null
-      ) {
-        throw new BootstrapAdapterError('offer-groups-response')
-      }
-      const market = offer.market as Record<string, unknown>
-      if (typeof market.maturity !== 'number') {
-        throw new BootstrapAdapterError('offer-groups-response')
-      }
-      groups.push({
-        id: group.id as Hex,
-        marketId: offer.market_id as Hex,
-        consumed: BigInt(group.consumed),
-        maxAssets: BigInt(group.max_assets),
-        tick: BigInt(offer.tick),
-        maturity: BigInt(market.maturity)
-      })
-    }
-    if (
-      response.cursor !== null &&
-      response.cursor !== undefined &&
-      typeof response.cursor !== 'string'
-    ) {
-      throw new BootstrapAdapterError('offer-groups-cursor')
-    }
-    cursor = response.cursor ?? undefined
-  } while (cursor)
-  return groups
 }
 
 const createBlueReader = (
@@ -175,17 +109,31 @@ export const createProductionBootstrapAdapters = (
     transport: http(config.referenceRpcUrl, { timeout: config.requestTimeoutMs })
   })
   const midnight = wallet.morpho.midnight(base.id)
-  const ownedGroups = new Set(config.v0OfferGroupIds)
+  const configuredMarkets = config.bootstrap.map(strategy => strategy.marketId)
+  const readGroups = () =>
+    readBootstrapGroups({
+      maker: account.address,
+      morphoApiBaseUrl: config.morphoApiBaseUrl,
+      requestTimeoutMs: config.requestTimeoutMs
+    })
 
   const activeGroups = async (): Promise<BootstrapActiveGroup[]> => {
     const now = (await wallet.getBlock({ blockTag: 'latest' })).timestamp
-    return (await readGroups(config))
-      .filter(group => ownedGroups.has(group.id) && group.maxAssets > group.consumed)
+    return strategyBootstrapGroups(await readGroups(), configuredMarkets)
+      .filter(
+        group =>
+          group.marketId !== undefined &&
+          group.tick !== undefined &&
+          group.maturity !== undefined &&
+          group.maxAssets > group.consumed
+      )
       .map(group => ({
         id: group.id,
-        marketId: group.marketId,
+        marketId: group.marketId as Hex,
         assets: group.maxAssets - group.consumed,
-        rateBps: TickLib.tickToApr(group.tick, group.maturity - now) / (WAD / 10_000n)
+        rateBps:
+          TickLib.tickToApr(group.tick as bigint, (group.maturity as bigint) - now) /
+          (WAD / 10_000n)
       }))
   }
 
@@ -221,29 +169,41 @@ export const createProductionBootstrapAdapters = (
     if (receipt.status !== 'success') throw new BootstrapAdapterError('transaction-reverted')
   }
 
+  const preparedOffers = new Map<Hex, Offer>()
+  const prepareOffer = async (offer: BootstrapOffer) => {
+    const [market, block] = await Promise.all([
+      midnight.getMarketData(offer.marketId),
+      wallet.getBlock({ blockTag: 'latest' })
+    ])
+    const periodRateWad =
+      (offer.rateBps * (WAD / 10_000n) * (market.params.maturity - block.timestamp)) / YEAR_SECONDS
+    return Offer.create({
+      market: market.params,
+      buy: true,
+      maker: account.address,
+      tick: TickLib.priceToTick(TickLib.rateToPrice(periodRateWad), BigInt(market.tickSpacing)),
+      expiry: market.params.maturity,
+      ratifier: config.setup.ratifier,
+      maxAssets: offer.assets
+    })
+  }
+
   const make = new MidnightBootstrapMakeService(
     {
       listActiveGroups: activeGroups,
+      listBookOffers: async () => (await readGroups()).flatMap(group => group.offers),
+      toProspectiveBookOffer: async offer => {
+        const created = await prepareOffer(offer)
+        preparedOffers.set(offer.marketId, created)
+        return { marketId: offer.marketId, buy: true, tick: created.tick }
+      },
       invalidate: async group => {
         await execute(midnight.cancelOffer({ group, accountAddress: account.address }).buildTx())
       },
       publish: async (offer: BootstrapOffer) => {
-        const [market, block] = await Promise.all([
-          midnight.getMarketData(offer.marketId),
-          wallet.getBlock({ blockTag: 'latest' })
-        ])
-        const periodRateWad =
-          (offer.rateBps * (WAD / 10_000n) * (market.params.maturity - block.timestamp)) /
-          YEAR_SECONDS
-        const created = Offer.create({
-          market: market.params,
-          buy: true,
-          maker: account.address,
-          tick: TickLib.priceToTick(TickLib.rateToPrice(periodRateWad), BigInt(market.tickSpacing)),
-          expiry: market.params.maturity,
-          ratifier: config.setup.ratifier,
-          maxAssets: offer.assets
-        })
+        const created = preparedOffers.get(offer.marketId)
+        preparedOffers.delete(offer.marketId)
+        if (!created) throw new BootstrapAdapterError('prospective-offer-missing')
         const output = await midnight.makeLend({
           accountAddress: account.address,
           offers: [created],
@@ -251,27 +211,14 @@ export const createProductionBootstrapAdapters = (
           loanToken: config.setup.loanAsset,
           loanAssets: offer.assets
         })
-        const signatures: MidnightOfferRootSignature[] = []
-        for (const requirement of await output.getRequirements()) {
-          if (
-            isRequirementSignature(requirement) &&
-            requirement.action.type === 'midnightOfferRootSignature'
-          ) {
-            signatures.push(
-              (await requirement.sign(
-                wallet as never,
-                account.address
-              )) as MidnightOfferRootSignature
-            )
-          } else {
-            if (isRequirementSignature(requirement)) {
-              throw new BootstrapAdapterError('unexpected-signature-requirement')
-            }
-            await execute(requirement)
-          }
-        }
+        const signatures = await signBootstrapRequirements(
+          await output.getRequirements(),
+          requirement =>
+            requirement.sign(wallet, account.address) as Promise<
+              import('@morpho-org/morpho-sdk').MidnightOfferRootSignature
+            >
+        )
         await execute(output.buildTx(signatures))
-        ownedGroups.add(output.groups[0] as Hex)
         return output.groups[0] as Hex
       }
     },
