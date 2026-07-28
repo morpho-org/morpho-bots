@@ -210,7 +210,7 @@ describe('ViemSetupStateService', () => {
     [
       'inspectOffers compound reads',
       'request',
-      'router-api',
+      'morpho-api',
       'offer-groups',
       (state: ViemSetupStateService) => state.inspectOffers(maker)
     ]
@@ -367,6 +367,7 @@ describe('ViemSetupStateService', () => {
             rcf_threshold: '0',
             enter_gate: maker,
             liquidator_gate: maker,
+            listed: true,
             asks: [],
             bids: []
           }
@@ -382,6 +383,35 @@ describe('ViemSetupStateService', () => {
       tickSpacing: 4,
       maturity: 2_000n
     })
+  })
+
+  test('fails closed when the Morpho API cannot prove a book is allowlisted', async () => {
+    const { state } = createState({
+      '/v0/midnight/books': {
+        cursor: null,
+        data: [
+          {
+            market_id: marketId,
+            chain_id: 8453,
+            midnight,
+            loan_token: loanAsset,
+            maturity: 2_000,
+            collaterals: [],
+            rcf_threshold: '0',
+            enter_gate: maker,
+            liquidator_gate: maker,
+            listed: false,
+            asks: [],
+            bids: []
+          }
+        ]
+      }
+    })
+
+    const error = await state.getBook(marketId).catch(value => value)
+
+    expect(error).toBeInstanceOf(ProviderResponseError)
+    expect(error).toMatchObject({ provider: 'morpho-api', operation: 'book-listing' })
   })
 
   test('accepts only the registry-listed Ecrecover ratifier with its exact deployed interface', async () => {
@@ -467,6 +497,19 @@ describe('ViemSetupStateService', () => {
     })
   })
 
+  test('reads active offer groups from the Morpho API origin', async () => {
+    const { state, calls } = createState({
+      '/v0/midnight/users/': { cursor: null, data: [] }
+    })
+
+    await state.inspectOffers(maker)
+
+    expect(calls).toContain(`https://api.example/v0/midnight/users/${maker}/offer-groups?limit=100`)
+    expect(calls.some(call => call.startsWith('https://router.example/v0/midnight/users/'))).toBe(
+      false
+    )
+  })
+
   test('fails readiness for a known group that remains active on a removed market', async () => {
     const { state } = createState({
       '/v0/midnight/users/': {
@@ -517,6 +560,25 @@ describe('ViemSetupStateService', () => {
     })
   })
 
+  test('fails closed when an active offer side is not boolean', async () => {
+    const { state } = createState({
+      '/v0/midnight/users/': {
+        cursor: null,
+        data: [
+          {
+            id: knownGroup,
+            offers: [{ market_id: marketId, maker, buy: 'true', tick: 20 }]
+          }
+        ]
+      }
+    })
+
+    const error = await state.inspectOffers(maker).catch(value => value)
+
+    expect(error).toBeInstanceOf(ProviderResponseError)
+    expect(error).toMatchObject({ provider: 'provider', operation: 'decode' })
+  })
+
   test('fails closed at one aggregate deadline while traversing delayed unique cursors', async () => {
     let now = 0
     let page = 0
@@ -538,7 +600,7 @@ describe('ViemSetupStateService', () => {
     expect(error).toMatchObject({
       failure: {
         kind: 'provider-error',
-        provider: 'router-api',
+        provider: 'morpho-api',
         name: 'TimeoutError',
         code: 'REQUEST_TIMEOUT',
         context: 'request'
@@ -569,7 +631,7 @@ describe('ViemSetupStateService', () => {
     expect(requestBudgets).toEqual([10])
   })
 
-  test('fails closed when Router repeats an offer cursor', async () => {
+  test('fails closed when Morpho API repeats an offer cursor', async () => {
     const { state } = createState(
       {
         'cursor=loop': { cursor: 'loop', data: [] },
@@ -582,13 +644,13 @@ describe('ViemSetupStateService', () => {
     expect(error).toBeInstanceOf(ProviderPaginationError)
     expect(error).toMatchObject({
       name: 'ProviderPaginationError',
-      provider: 'router-api',
+      provider: 'morpho-api',
       reason: 'repeated-cursor'
     })
-    expect(error.message).toBe('Router cursor repeated')
+    expect(error.message).toBe('Morpho API cursor repeated')
   })
 
-  test('fails closed when Router exceeds the offer page limit with unique cursors', async () => {
+  test('fails closed when Morpho API exceeds the offer page limit with unique cursors', async () => {
     const page = (index: number) => `page-${String(index).padStart(3, '0')}`
     const responses = Object.fromEntries(
       Array.from({ length: 101 }, (_, index) => [
@@ -599,11 +661,11 @@ describe('ViemSetupStateService', () => {
     responses['/v0/midnight/users/'] = { cursor: page(0), data: [] }
 
     expect(createState(responses).state.inspectOffers(maker)).rejects.toThrow(
-      'Router offer page limit exceeded'
+      'Morpho API offer page limit exceeded'
     )
   })
 
-  test('fails closed when Router returns more groups than one requested page', async () => {
+  test('fails closed when Morpho API returns more groups than one requested page', async () => {
     const { state } = createState({
       '/v0/midnight/users/': {
         cursor: null,
@@ -611,10 +673,10 @@ describe('ViemSetupStateService', () => {
       }
     })
 
-    expect(state.inspectOffers(maker)).rejects.toThrow('Router offer-group page size exceeded')
+    expect(state.inspectOffers(maker)).rejects.toThrow('Morpho API offer-group page size exceeded')
   })
 
-  test('fails closed when Router exceeds the offer item limit', async () => {
+  test('fails closed when Morpho API exceeds the offer item limit', async () => {
     const offer = {
       market_id: marketId,
       maker,
@@ -628,6 +690,6 @@ describe('ViemSetupStateService', () => {
       }
     })
 
-    expect(state.inspectOffers(maker)).rejects.toThrow('Router offer item limit exceeded')
+    expect(state.inspectOffers(maker)).rejects.toThrow('Morpho API offer item limit exceeded')
   })
 })

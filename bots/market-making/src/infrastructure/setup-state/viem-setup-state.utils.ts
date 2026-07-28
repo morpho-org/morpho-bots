@@ -75,6 +75,11 @@ const bigintValue = (value: unknown, label: string) => {
   return value
 }
 
+const booleanValue = (value: unknown, label: string) => {
+  if (typeof value !== 'boolean') throw invalidProviderValue(`${label} must be a boolean`)
+  return value
+}
+
 /**
  * Parses the subset of a Midnight `toMarket` response required by setup checking.
  * @param value - ABI-decoded response from the SDK-owned `midnightAbi`.
@@ -123,7 +128,7 @@ export const offerFromApi = (value: unknown, group: Hex) => {
     marketId: bytes32Value(offer.market_id, 'offer market_id'),
     maker: addressValue(offer.maker, 'offer maker'),
     group,
-    buy: offer.buy === true,
+    buy: booleanValue(offer.buy, 'offer buy'),
     tick: integerValue(offer.tick, 'offer tick')
   }
 }
@@ -176,13 +181,13 @@ export const invertedMarketIds = (offers: readonly ReturnType<typeof offerFromAp
   })
 
 /**
- * Creates a sanitized aggregate Router deadline failure.
+ * Creates a sanitized aggregate Morpho API deadline failure.
  * @returns A provider-safe timeout error without URL or response metadata.
  */
-export const routerTimeout = () =>
+export const morphoApiTimeout = () =>
   new SafeProviderError({
     kind: 'provider-error',
-    provider: 'router-api',
+    provider: 'morpho-api',
     name: 'TimeoutError',
     code: 'REQUEST_TIMEOUT',
     context: 'request'

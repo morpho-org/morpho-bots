@@ -8,6 +8,8 @@ import {
   type SetupStateService
 } from '../../src/application/setup-check.service'
 import { SetupFailedError } from '../../src/application/setup-failed.error'
+import { ProviderReadError } from '../../src/infrastructure/setup-state/provider-read.error'
+import { ProviderResponseError } from '../../src/infrastructure/setup-state/provider-response.error'
 
 const maker = '0x1111111111111111111111111111111111111111'
 const midnight = '0x2222222222222222222222222222222222222222'
@@ -81,6 +83,54 @@ describe('SetupCheckService', () => {
       ['reference', 'passed'],
       ['offers', 'passed'],
       ['position-health', 'not-required']
+    ])
+  })
+
+  test('preserves a typed provider id when a compound setup read fails', async () => {
+    const state = readyState()
+    state.getBook = async () => {
+      throw new ProviderReadError('morpho-api', 'book-api')
+    }
+
+    const report = await new SetupCheckService(state, config).check()
+    const books = report.checks.find(check => check.name === 'books')
+
+    expect(books?.observed).toEqual([
+      {
+        id: marketId,
+        reasons: [
+          {
+            providerError: expect.objectContaining({
+              provider: 'morpho-api',
+              context: 'read'
+            })
+          }
+        ]
+      }
+    ])
+  })
+
+  test('preserves a typed response-error provider id in the setup report', async () => {
+    const state = readyState()
+    state.getBook = async () => {
+      throw new ProviderResponseError('morpho-api', 'book-count', 'invalid count')
+    }
+
+    const report = await new SetupCheckService(state, config).check()
+    const books = report.checks.find(check => check.name === 'books')
+
+    expect(books?.observed).toEqual([
+      {
+        id: marketId,
+        reasons: [
+          {
+            providerError: expect.objectContaining({
+              provider: 'morpho-api',
+              context: 'read'
+            })
+          }
+        ]
+      }
     ])
   })
 

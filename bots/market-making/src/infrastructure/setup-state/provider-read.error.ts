@@ -25,6 +25,9 @@ export type ProviderOperation =
 /** Signals a sanitized failure at a public read-only provider boundary. */
 export class ProviderReadError extends Error {
   readonly code = 'PROVIDER_READ_FAILED' as const
+  readonly failure: Record<string, unknown>
+  readonly provider: ProviderId
+  readonly operation: ProviderOperation
 
   /**
    * Creates a deterministic provider-read failure from allowlisted identifiers only.
@@ -32,11 +35,17 @@ export class ProviderReadError extends Error {
    * @param operation - Stable code for the attempted read; never request or response content.
    * @remarks The rejected value is deliberately discarded, including its message, stack, and cause.
    */
-  constructor(
-    readonly provider: ProviderId,
-    readonly operation: ProviderOperation
-  ) {
+  constructor(provider: ProviderId, operation: ProviderOperation) {
     super('Provider read failed')
     this.name = 'ProviderReadError'
+    this.provider = provider
+    this.operation = operation
+    this.failure = {
+      kind: 'provider-error',
+      provider,
+      name: 'ProviderError',
+      code: this.code,
+      context: 'read'
+    }
   }
 }

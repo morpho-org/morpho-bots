@@ -1,6 +1,8 @@
 import type { ProviderId, ProviderOperation } from './provider-read.error'
 
+import { SafeProviderError } from '../../application/safe-provider.error'
 import { ProviderReadError } from './provider-read.error'
+import { ProviderResponseError } from './provider-response.error'
 
 /**
  * Executes one provider read and replaces unknown rejection data with safe fixed metadata.
@@ -17,7 +19,8 @@ export const executeProviderRead = async <Result>(
 ): Promise<Result> => {
   try {
     return await read()
-  } catch {
+  } catch (error) {
+    if (error instanceof SafeProviderError || error instanceof ProviderResponseError) throw error
     throw new ProviderReadError(provider, operation)
   }
 }

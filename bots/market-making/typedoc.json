@@ -14,6 +14,8 @@
     "src/infrastructure/cli/cli.utils.ts",
     "src/infrastructure/setup-state/http-json.utils.ts",
     "src/infrastructure/setup-state/provider-pagination.error.ts",
+    "src/infrastructure/setup-state/provider-read.error.ts",
+    "src/infrastructure/setup-state/provider-read.utils.ts",
     "src/infrastructure/setup-state/provider-response.error.ts",
     "src/infrastructure/setup-state/viem-setup-state.service.ts",
     "src/infrastructure/setup-state/viem-setup-state.utils.ts",

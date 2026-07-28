@@ -39,20 +39,34 @@ const safeProviderFailure = (
   error: unknown,
   provider: SafeProviderFailure['provider']
 ): SafeProviderFailure => {
-  if (error instanceof SafeProviderError) {
-    const safeProvider = SAFE_PROVIDER_IDS.has(error.failure.provider)
-      ? error.failure.provider
-      : provider
-    const name = SAFE_ERROR_NAMES.has(error.failure.name) ? error.failure.name : 'ProviderError'
-    const code =
-      error.failure.code === 'REQUEST_TIMEOUT' ||
-      (error.failure.code !== undefined && SAFE_ERROR_CODES.has(error.failure.code))
-        ? error.failure.code
+  const errorRecord =
+    typeof error === 'object' && error !== null ? (error as Record<string, unknown>) : undefined
+  const typedFailure =
+    error instanceof SafeProviderError
+      ? error.failure
+      : typeof errorRecord?.failure === 'object' && errorRecord.failure !== null
+        ? (errorRecord.failure as Record<string, unknown>)
         : undefined
-    const status = Number.isSafeInteger(error.failure.status) ? error.failure.status : undefined
+  if (typedFailure) {
+    const safeProvider =
+      typeof typedFailure.provider === 'string' && SAFE_PROVIDER_IDS.has(typedFailure.provider)
+        ? (typedFailure.provider as SafeProviderFailure['provider'])
+        : provider
+    const name =
+      typeof typedFailure.name === 'string' && SAFE_ERROR_NAMES.has(typedFailure.name)
+        ? typedFailure.name
+        : 'ProviderError'
+    const code =
+      typedFailure.code === 'REQUEST_TIMEOUT' ||
+      (typeof typedFailure.code === 'string' && SAFE_ERROR_CODES.has(typedFailure.code))
+        ? typedFailure.code
+        : undefined
+    const status = Number.isSafeInteger(typedFailure.status)
+      ? (typedFailure.status as number)
+      : undefined
     const context =
-      error.failure.context === 'request' || error.failure.context === 'read'
-        ? error.failure.context
+      typedFailure.context === 'request' || typedFailure.context === 'read'
+        ? typedFailure.context
         : undefined
     return {
       kind: 'provider-error',
@@ -63,8 +77,7 @@ const safeProviderFailure = (
       ...(context ? { context } : {})
     }
   }
-  const candidate =
-    typeof error === 'object' && error !== null ? (error as Record<string, unknown>) : undefined
+  const candidate = errorRecord
   const name =
     typeof candidate?.name === 'string' && SAFE_ERROR_NAMES.has(candidate.name)
       ? candidate.name

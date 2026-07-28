@@ -1,4 +1,5 @@
 import { SafeProviderError } from '../../application/safe-provider.error'
+import { ProviderResponseError } from './provider-response.error'
 
 /** Stable HTTP provider identifiers safe to include in reports. */
 export type ProviderId = 'morpho-api' | 'router-api'
@@ -46,23 +47,43 @@ export const requestJson = async (url: string, provider: ProviderId, timeoutMs =
 }
 
 /**
- * Adapts the sanitized JSON transport to an SDK-compatible fetch implementation.
+ * Adapts the JSON transport for the SDK books endpoint while requiring curated listing evidence.
  * @param request - Existing provider-safe JSON transport.
- * @param provider - Fixed provider identifier used for sanitized failures.
  * @param timeoutMs - Explicit per-request timeout passed to the transport.
- * @returns A fetch-compatible function for SDK endpoint and response mapping reuse.
- * @throws The transport's sanitized provider error when the request fails.
- * @remarks The SDK still owns URL construction and mapping; this adapter only preserves the bot's
- * timeout and redaction boundary. It performs no request until the returned function is called.
+ * @returns A fetch-compatible function that requests `listed=true` and rejects non-listed rows.
+ * @throws `ProviderResponseError` when the response cannot prove every returned book is listed.
+ * @remarks The Midnight SDK continues to own endpoint construction and book mapping; this adapter
+ * only adds the API's curated-listing filter and validates that trust signal before SDK mapping.
  */
-export const jsonRequestFetch = (
+export const listedBooksJsonRequestFetch = (
   request: JsonRequest,
-  provider: ProviderId,
   timeoutMs: number
 ): typeof fetch => {
   const adapter = async (input: Parameters<typeof fetch>[0]) => {
-    const url = input instanceof Request ? input.url : String(input)
-    const value = await request(url, provider, timeoutMs)
+    const inputUrl = input instanceof Request ? input.url : String(input)
+    const url = new URL(inputUrl)
+    url.searchParams.set('listed', 'true')
+    const value = await request(url.toString(), 'morpho-api', timeoutMs)
+    const response =
+      typeof value === 'object' && value !== null && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : undefined
+    if (
+      !Array.isArray(response?.data) ||
+      response.data.some(
+        book =>
+          typeof book !== 'object' ||
+          book === null ||
+          Array.isArray(book) ||
+          (book as Record<string, unknown>).listed !== true
+      )
+    ) {
+      throw new ProviderResponseError(
+        'morpho-api',
+        'book-listing',
+        'Morpho API book listing status must be true'
+      )
+    }
     return Response.json(value)
   }
   return Object.assign(adapter, { preconnect: fetch.preconnect })

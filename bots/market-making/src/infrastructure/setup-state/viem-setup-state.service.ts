@@ -10,7 +10,7 @@ import { privateKeyToAccount } from 'viem/accounts'
 import type { BookSetup, SetupStateService } from '../../application/setup-check.service'
 import type { JsonRequest } from './http-json.utils'
 
-import { jsonRequestFetch } from './http-json.utils'
+import { listedBooksJsonRequestFetch } from './http-json.utils'
 import { ProviderPaginationError } from './provider-pagination.error'
 import { executeProviderRead } from './provider-read.utils'
 import { ProviderResponseError } from './provider-response.error'
@@ -30,7 +30,7 @@ import {
   PAGE_SIZE,
   providerBigInt,
   routerEcrecoverRatifiers,
-  routerTimeout
+  morphoApiTimeout
 } from './viem-setup-state.utils'
 
 /** Minimal read-only viem surface required by the setup-state adapter. */
@@ -273,7 +273,7 @@ export class ViemSetupStateService implements SetupStateService {
           chainIds: [BASE_CHAIN_ID],
           marketIds: [id],
           limit: 1,
-          fetch: jsonRequestFetch(this.request, 'morpho-api', requestTimeoutMs)
+          fetch: listedBooksJsonRequestFetch(this.request, requestTimeoutMs)
         })
       ),
       executeProviderRead('rpc', 'book-market', () =>
@@ -460,7 +460,7 @@ export class ViemSetupStateService implements SetupStateService {
    * or crossed books, including fresh offers whose takeable amount has not been measured yet.
    * @param maker - Maker whose complete active offer-group set is inspected.
    * @returns Deduplicated unknown namespaces, unconfigured markets, and all crossed market IDs.
-   * @throws `ProviderReadError` on a sanitized Router rejection; `ProviderResponseError` or
+   * @throws `ProviderReadError` on a sanitized Morpho API rejection; `ProviderResponseError` or
    * `ProviderPaginationError` on malformed or unbounded data; or a safe timeout error when the
    * single absolute request deadline expires.
    * @remarks Uses the authoritative cursor-paginated `/users/{maker}/offer-groups` source. Pagination
@@ -479,48 +479,48 @@ export class ViemSetupStateService implements SetupStateService {
     do {
       if (pageCount >= MAX_OFFER_PAGES) {
         throw new ProviderPaginationError(
-          'router-api',
+          'morpho-api',
           'page-limit',
-          'Router offer page limit exceeded'
+          'Morpho API offer page limit exceeded'
         )
       }
       const remainingMs = Math.floor(deadline - now())
-      if (remainingMs <= 0) throw routerTimeout()
+      if (remainingMs <= 0) throw morphoApiTimeout()
       pageCount += 1
       const query = new URLSearchParams({ limit: String(PAGE_SIZE) })
       if (cursor) query.set('cursor', cursor)
       const response = objectRecord(
-        await executeProviderRead('router-api', 'offer-groups', () =>
+        await executeProviderRead('morpho-api', 'offer-groups', () =>
           this.request(
-            `${this.options.routerApiBaseUrl}/v0/midnight/users/${encodeURIComponent(maker)}/offer-groups?${query.toString()}`,
-            'router-api',
+            `${this.options.morphoApiBaseUrl}/v0/midnight/users/${encodeURIComponent(maker)}/offer-groups?${query.toString()}`,
+            'morpho-api',
             Math.min(requestTimeoutMs, remainingMs)
           )
         ),
-        'Router response'
+        'Morpho API response'
       )
       const groupData = response.data
       const groups = Array.isArray(groupData) ? groupData : []
       if (!Array.isArray(groupData)) {
         throw new ProviderResponseError(
-          'router-api',
+          'morpho-api',
           'offer-groups',
-          'Router data must be an array'
+          'Morpho API data must be an array'
         )
       }
       if (groups.length > PAGE_SIZE) {
         throw new ProviderPaginationError(
-          'router-api',
+          'morpho-api',
           'page-size',
-          'Router offer-group page size exceeded'
+          'Morpho API offer-group page size exceeded'
         )
       }
       const pageOffers = offersFromGroups(groups)
       if (offers.length + pageOffers.length > MAX_OFFER_ITEMS) {
         throw new ProviderPaginationError(
-          'router-api',
+          'morpho-api',
           'item-limit',
-          'Router offer item limit exceeded'
+          'Morpho API offer item limit exceeded'
         )
       }
       offers.push(...pageOffers)
@@ -530,23 +530,27 @@ export class ViemSetupStateService implements SetupStateService {
         typeof response.cursor !== 'string'
       ) {
         throw new ProviderResponseError(
-          'router-api',
+          'morpho-api',
           'cursor',
-          'Router cursor must be a string or null'
+          'Morpho API cursor must be a string or null'
         )
       }
       cursor = response.cursor ?? undefined
       if (cursor && seenCursors.has(cursor)) {
-        throw new ProviderPaginationError('router-api', 'repeated-cursor', 'Router cursor repeated')
+        throw new ProviderPaginationError(
+          'morpho-api',
+          'repeated-cursor',
+          'Morpho API cursor repeated'
+        )
       }
       if (cursor) seenCursors.add(cursor)
     } while (cursor)
 
     if (offers.some(offer => !isAddressEqual(offer.maker, maker))) {
       throw new ProviderResponseError(
-        'router-api',
+        'morpho-api',
         'offer-maker',
-        'Router active offer maker does not match requested maker'
+        'Morpho API active offer maker does not match requested maker'
       )
     }
     const knownGroups = new Set(this.options.v0OfferGroupIds)
