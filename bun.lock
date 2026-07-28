@@ -34,6 +34,21 @@
         "typescript": "catalog:",
       },
     },
+    "bots/market-making": {
+      "name": "@morpho-org/market-making-bot",
+      "version": "0.0.0",
+      "bin": {
+        "mm": "./src/index.ts",
+      },
+      "dependencies": {
+        "commander": "^14.0.3",
+      },
+      "devDependencies": {
+        "@repo/typescript-config": "workspace:*",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "bots/midnight-crossed-books": {
       "name": "@morpho-org/midnight-crossed-books",
       "version": "0.1.0",
@@ -203,6 +218,8 @@
     "@loglayer/transport-http": ["@loglayer/transport-http@2.3.0", "", { "dependencies": { "@loglayer/transport": "3.2.0" } }, "sha512-VkEqfMWAPffQf3VmKxGO7y48acBnsNxZCwOrt2FcbsnrYsxo0ske+cGkRC2yAUri4I2mKvB9mOy6bxn/Ez+Ztw=="],
 
     "@morpho-org/blue-liquidation": ["@morpho-org/blue-liquidation@workspace:bots/blue-liquidation"],
+
+    "@morpho-org/market-making-bot": ["@morpho-org/market-making-bot@workspace:bots/market-making"],
 
     "@morpho-org/midnight-crossed-books": ["@morpho-org/midnight-crossed-books@workspace:bots/midnight-crossed-books"],
 
