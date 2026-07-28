@@ -1,6 +1,8 @@
 import type { Address, Hex } from 'viem'
 
 import { ecrecoverRatifierAbi, midnightAbi } from '@morpho-org/midnight-sdk'
+import { MidnightApi } from '@morpho-org/midnight-sdk/api'
+import { blueAbi } from '@morpho-org/morpho-sdk/abis'
 import { getChainAddress } from '@morpho-org/morpho-ts'
 import { erc20Abi, isAddress, isAddressEqual, keccak256, zeroAddress, zeroHash } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
@@ -8,9 +10,9 @@ import { privateKeyToAccount } from 'viem/accounts'
 import type { BookSetup, SetupStateService } from '../../application/setup-check.service'
 import type { JsonRequest } from './http-json.utils'
 
+import { jsonRequestFetch } from './http-json.utils'
 import {
   addressValue,
-  arrayValue,
   BASE_CHAIN_ID,
   BASE_ECRECOVER_RATIFIER_RUNTIME_HASH,
   DEFAULT_REQUEST_TIMEOUT_MS,
@@ -19,9 +21,9 @@ import {
   marketFromContract,
   MAX_OFFER_ITEMS,
   MAX_OFFER_PAGES,
-  MORPHO_BLUE_SETUP_ABI,
   objectRecord,
   offerFromApi,
+  offersFromGroups,
   PAGE_SIZE,
   providerBigInt,
   routerEcrecoverRatifiers,
@@ -226,18 +228,15 @@ export class ViemSetupStateService implements SetupStateService {
    * @remarks API, market, and tick-spacing reads run concurrently through `Promise.all`; no writes.
    */
   async getBook(id: Hex): Promise<BookSetup> {
-    const query = new URLSearchParams({
-      chain_ids: String(BASE_CHAIN_ID),
-      market_ids: id,
-      listed: 'true',
-      active_only: 'true',
-      limit: '1'
-    })
+    const requestTimeoutMs = this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
     const [apiResponse, contractResponse, tickSpacing] = await Promise.all([
-      this.request(
-        `${this.options.morphoApiBaseUrl}/v0/midnight/markets?${query.toString()}`,
-        'morpho-api'
-      ),
+      MidnightApi.fetchBooks({
+        baseUrl: `${this.options.morphoApiBaseUrl}/v0/midnight`,
+        chainIds: [BASE_CHAIN_ID],
+        marketIds: [id],
+        limit: 1,
+        fetch: jsonRequestFetch(this.request, 'morpho-api', requestTimeoutMs)
+      }),
       this.chain.readContract({
         address: this.options.midnight,
         abi: midnightAbi,
@@ -251,16 +250,19 @@ export class ViemSetupStateService implements SetupStateService {
         args: [id]
       })
     ])
-    const data = arrayValue(
-      objectRecord(apiResponse, 'Morpho API response').data,
-      'Morpho API data'
-    )
-    if (data.length !== 1) throw new Error(`Morpho API returned ${data.length} markets for ${id}`)
-    const apiMarket = marketFromApi(data[0])
+    if (apiResponse.data.length !== 1) {
+      throw new Error(`Morpho API returned ${apiResponse.data.length} books for ${id}`)
+    }
+    const apiMarket = marketFromApi(apiResponse.data[0])
     const contractMarket = marketFromContract(contractResponse)
     if (apiMarket.id !== id) throw new Error(`Morpho API returned ${apiMarket.id} for ${id}`)
-    if (contractMarket.chainId !== BigInt(BASE_CHAIN_ID))
+    if (apiMarket.chainId !== BASE_CHAIN_ID) throw new Error('API market chain id is not Base')
+    if (!isAddressEqual(apiMarket.midnight, this.options.midnight)) {
+      throw new Error('API market points at an unexpected Midnight contract')
+    }
+    if (contractMarket.chainId !== BigInt(BASE_CHAIN_ID)) {
       throw new Error('market chain id is not Base')
+    }
     if (!isAddressEqual(contractMarket.midnight, this.options.midnight)) {
       throw new Error('market points at an unexpected Midnight contract')
     }
@@ -273,7 +275,7 @@ export class ViemSetupStateService implements SetupStateService {
     if (typeof tickSpacing !== 'number') throw new Error('tickSpacing response must be a number')
     return {
       id,
-      allowlisted: apiMarket.listed,
+      allowlisted: true,
       active: true,
       loanAsset: contractMarket.loanToken,
       tickSpacing,
@@ -308,14 +310,14 @@ export class ViemSetupStateService implements SetupStateService {
     const [paramsResponse, marketResponse] = await Promise.all([
       this.reference.readContract({
         address: getChainAddress(BASE_CHAIN_ID, 'morpho'),
-        abi: MORPHO_BLUE_SETUP_ABI,
+        abi: blueAbi,
         functionName: 'idToMarketParams',
         args: [this.options.referenceMarketId],
         blockNumber: historicalBlock
       }),
       this.reference.readContract({
         address: getChainAddress(BASE_CHAIN_ID, 'morpho'),
-        abi: MORPHO_BLUE_SETUP_ABI,
+        abi: blueAbi,
         functionName: 'market',
         args: [this.options.referenceMarketId],
         blockNumber: historicalBlock
@@ -340,14 +342,16 @@ export class ViemSetupStateService implements SetupStateService {
   }
 
   /**
-   * Traverses all takeable offers for a maker and detects unknown groups or inverted books.
-   * @param maker - Maker whose active offers are inspected.
-   * @returns Deduplicated unknown namespaces and configured markets with crossed buy/sell ticks.
-   * @throws On malformed responses, repeated cursors, more than 100 pages or 100,000 items, or when
-   * the single absolute request deadline expires.
-   * @remarks Pagination is necessarily sequential because each cursor depends on the previous page;
-   * the deadline covers the whole traversal. This read-only method never creates, cancels, or takes
-   * an offer.
+   * Traverses every active offer group for a maker and detects unknown groups, unconfigured markets,
+   * or crossed books, including fresh offers whose takeable amount has not been measured yet.
+   * @param maker - Maker whose complete active offer-group set is inspected.
+   * @returns Deduplicated unknown namespaces, unconfigured markets, and all crossed market IDs.
+   * @throws On malformed responses, oversized pages, repeated cursors, more than 100 pages or
+   * 100,000 nested offers, maker mismatch, or expiry of the single absolute request deadline.
+   * @remarks Uses the authoritative cursor-paginated `/users/{maker}/offer-groups` source. Pagination
+   * is necessarily sequential because each cursor depends on the previous page; one aggregate
+   * absolute deadline covers the whole read-only traversal. midnight-sdk 1.2.0 has no offer-group
+   * endpoint/entity, so only this bounded transport and strict response projection remain local.
    */
   async inspectOffers(maker: Address) {
     const offers: ReturnType<typeof offerFromApi>[] = []
@@ -362,21 +366,25 @@ export class ViemSetupStateService implements SetupStateService {
       const remainingMs = Math.floor(deadline - now())
       if (remainingMs <= 0) throw routerTimeout()
       pageCount += 1
-      const query = new URLSearchParams({ maker, limit: String(PAGE_SIZE) })
+      const query = new URLSearchParams({ limit: String(PAGE_SIZE) })
       if (cursor) query.set('cursor', cursor)
       const response = objectRecord(
         await this.request(
-          `${this.options.routerApiBaseUrl}/v0/midnight/takeable-offers?${query.toString()}`,
+          `${this.options.routerApiBaseUrl}/v0/midnight/users/${encodeURIComponent(maker)}/offer-groups?${query.toString()}`,
           'router-api',
           Math.min(requestTimeoutMs, remainingMs)
         ),
         'Router response'
       )
-      const data = arrayValue(response.data, 'Router data')
-      if (offers.length + data.length > MAX_OFFER_ITEMS) {
+      const groupData = response.data
+      const groups = Array.isArray(groupData) ? groupData : []
+      if (!Array.isArray(groupData)) throw new Error('Router data must be an array')
+      if (groups.length > PAGE_SIZE) throw new Error('Router offer-group page size exceeded')
+      const pageOffers = offersFromGroups(groups)
+      if (offers.length + pageOffers.length > MAX_OFFER_ITEMS) {
         throw new Error('Router offer item limit exceeded')
       }
-      offers.push(...data.map(offerFromApi))
+      offers.push(...pageOffers)
       if (
         response.cursor !== null &&
         response.cursor !== undefined &&
@@ -389,14 +397,21 @@ export class ViemSetupStateService implements SetupStateService {
       if (cursor) seenCursors.add(cursor)
     } while (cursor)
 
-    const makerOffers = offers.filter(offer => isAddressEqual(offer.maker, maker))
+    if (offers.some(offer => !isAddressEqual(offer.maker, maker))) {
+      throw new Error('Router active offer maker does not match requested maker')
+    }
     const knownGroups = new Set(this.options.v0OfferGroupIds)
-    const unknownNamespaces = [
-      ...new Set(makerOffers.map(offer => offer.group).filter(group => !knownGroups.has(group)))
-    ]
+    const configuredMarkets = new Set(this.options.marketIds)
     return {
-      unknownNamespaces,
-      invertedMarketIds: invertedMarketIds(makerOffers, this.options.marketIds)
+      unknownNamespaces: [
+        ...new Set(offers.map(offer => offer.group).filter(group => !knownGroups.has(group)))
+      ],
+      unknownMarketIds: [
+        ...new Set(
+          offers.map(offer => offer.marketId).filter(marketId => !configuredMarkets.has(marketId))
+        )
+      ],
+      invertedMarketIds: invertedMarketIds(offers)
     }
   }
 

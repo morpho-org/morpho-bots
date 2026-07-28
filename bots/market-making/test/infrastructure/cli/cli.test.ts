@@ -11,7 +11,7 @@ const readyReport = {
   ]
 }
 
-function cli(assertReady = async () => readyReport) {
+const cli = (assertReady = async () => readyReport) => {
   return new Cli(new VersionService(), () => ({ assertReady }))
 }
 

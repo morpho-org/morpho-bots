@@ -1,5 +1,7 @@
+import type { Hex } from 'viem'
+
 import { describe, expect, test } from 'bun:test'
-import { getAddress } from 'viem'
+import { bytesToHex, getAddress, hexToBytes } from 'viem'
 
 import { parseAddress, parseBytes32 } from '../../src/config/config.utils'
 
@@ -25,5 +27,11 @@ describe('config viem parsing utilities', () => {
     expect(() => parseBytes32(`0x${'11'.repeat(31)}`, 'ID')).toThrow('32-byte')
     expect(() => parseBytes32(`0x${'11'.repeat(33)}`, 'ID')).toThrow('32-byte')
     expect(() => parseBytes32('0xzz', 'ID')).toThrow('32-byte')
+  })
+
+  test('canonicalizes mixed-case bytes32 values through viem', () => {
+    const mixedCase: Hex = `0x${'aB'.repeat(32)}`
+
+    expect(parseBytes32(mixedCase, 'ID')).toBe(bytesToHex(hexToBytes(mixedCase)))
   })
 })

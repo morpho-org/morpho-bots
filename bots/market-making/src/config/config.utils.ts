@@ -1,6 +1,6 @@
 import type { Address, Hex } from 'viem'
 
-import { getAddress, isAddress, isHex, size } from 'viem'
+import { bytesToHex, getAddress, hexToBytes, isAddress, isHex, size } from 'viem'
 
 /** String-valued runtime environment boundary accepted by configuration parsing. */
 export type Environment = Record<string, string | undefined>
@@ -83,7 +83,7 @@ export const parseBytes32 = (value: string, name: string): Hex => {
   if (!isHex(value, { strict: true }) || size(value) !== 32) {
     throw new Error(`${name} must be a 0x-prefixed 32-byte hex value`)
   }
-  return value
+  return bytesToHex(hexToBytes(value))
 }
 
 /**
@@ -107,13 +107,16 @@ export const hexListValue = (
   if (requiredList && values.length === 0) {
     throw new Error(`${name} must contain at least one market id`)
   }
+  let normalized: Hex[]
   try {
-    values.forEach(value => parseBytes32(value, name))
+    normalized = values.map(value => parseBytes32(value, name))
   } catch {
     throw new Error(`${name} must contain 0x-prefixed 32-byte hex values`)
   }
-  if (new Set(values).size !== values.length) throw new Error(`${name} must not contain duplicates`)
-  return values as Hex[]
+  if (new Set(normalized).size !== normalized.length) {
+    throw new Error(`${name} must not contain duplicates`)
+  }
+  return normalized
 }
 
 /**

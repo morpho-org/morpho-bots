@@ -29,7 +29,7 @@ const config: SetupCheckConfig = {
   referenceMarketId
 }
 
-function readyState(): SetupStateService {
+const readyState = (): SetupStateService => {
   return {
     getChainId: async () => 8453,
     getCode: async () => '0x1234',
@@ -57,7 +57,11 @@ function readyState(): SetupStateService {
       referenceReadable: true,
       archiveReadable: true
     }),
-    inspectOffers: async () => ({ unknownNamespaces: [], invertedMarketIds: [] }),
+    inspectOffers: async () => ({
+      unknownNamespaces: [],
+      unknownMarketIds: [],
+      invertedMarketIds: []
+    }),
     checkPositionHealth: async () => ({ status: 'not-required', reason: 'V0 has no debt' })
   }
 }
@@ -197,7 +201,8 @@ describe('SetupCheckService', () => {
       await gate
       throw new Error('archive unavailable')
     }
-    state.inspectOffers = () => wait('offers', { unknownNamespaces: [], invertedMarketIds: [] })
+    state.inspectOffers = () =>
+      wait('offers', { unknownNamespaces: [], unknownMarketIds: [], invertedMarketIds: [] })
     state.checkPositionHealth = () =>
       wait('position-health', { status: 'not-required' as const, reason: 'V0 has no debt' })
 
@@ -422,6 +427,7 @@ describe('SetupCheckService', () => {
     })
     state.inspectOffers = async () => ({
       unknownNamespaces: ['v0:unknown'],
+      unknownMarketIds: [marketId],
       invertedMarketIds: [marketId]
     })
 
@@ -443,6 +449,23 @@ describe('SetupCheckService', () => {
     expect(report.checks.find(check => check.name === 'position-health')?.status).toBe(
       'not-required'
     )
+  })
+
+  test('fails the offers check when an active group remains on an unconfigured market', async () => {
+    const state = readyState()
+    state.inspectOffers = async () => ({
+      unknownNamespaces: [],
+      unknownMarketIds: [marketId],
+      invertedMarketIds: []
+    })
+
+    const report = await new SetupCheckService(state, config).check()
+
+    expect(report.ready).toBe(false)
+    expect(report.checks.find(check => check.name === 'offers')).toMatchObject({
+      status: 'failed',
+      observed: { unknownMarketIds: [marketId] }
+    })
   })
 
   test('obtains the V0 position-health result through its reserved port', async () => {

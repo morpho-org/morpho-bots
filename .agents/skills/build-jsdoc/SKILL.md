@@ -103,6 +103,20 @@ Completion criterion: no named utility function declaration remains in changed s
 shares a file with a class, and each protocol/viem reuse or local exception is evidenced in code or
 the change report.
 
+For the current setup-check implementation, preserve these verified package boundaries:
+
+- `@morpho-org/midnight-sdk@1.2.0/api` owns active-book URL construction and mapping through
+  `MidnightApi.fetchBooks`; inject the package's sanitized timeout-aware fetch adapter.
+- `@morpho-org/morpho-sdk@5.4.1/abis` owns Morpho Blue's `blueAbi`; do not recreate a local
+  `idToMarketParams` / `market` ABI subset.
+- Midnight SDK 1.2.0 has no `/users/{maker}/offer-groups` client, entity, or mapper. Keep only the
+  local cursor/deadline/page/item guard and strict nested-offer projection until an equivalent SDK
+  export exists; never substitute `fetchTakeableOffers`, because it omits fresh active offers whose
+  takeable amount has not been measured.
+
+Completion criterion: package source/exports still support each imported symbol, the active-offer
+source remains complete, and every local exception has a concrete missing-SDK-export justification.
+
 When adding another boundary file, add it to both `scripts/check-jsdoc.ts` and `typedoc.json` in the
 same change. Completion criterion: the command's printed inventory contains every added public
 callable exactly once.

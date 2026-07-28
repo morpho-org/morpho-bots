@@ -1,7 +1,8 @@
 import type { Address, Hex } from 'viem'
 
+import { blueAbi } from '@morpho-org/morpho-sdk/abis'
 import { describe, expect, test } from 'bun:test'
-import { keccak256 } from 'viem'
+import { bytesToHex, hexToBytes, keccak256 } from 'viem'
 
 import { requestJson } from '../../../src/infrastructure/setup-state/http-json.utils'
 import { ViemSetupStateService } from '../../../src/infrastructure/setup-state/viem-setup-state.service'
@@ -14,13 +15,14 @@ const marketId: Hex = `0x${'55'.repeat(32)}`
 const referenceMarketId: Hex = `0x${'88'.repeat(32)}`
 const knownGroup: Hex = `0x${'66'.repeat(32)}`
 const unknownGroup: Hex = `0x${'77'.repeat(32)}`
+const removedMarketId: Hex = `0x${'ab'.repeat(32)}`
 const authoritativeRatifierRuntime = (
   await Bun.file(new URL('../../fixtures/ecrecover-ratifier-base.hex', import.meta.url)).text()
 ).trim() as Hex
 const authoritativeRatifierRuntimeHash =
   '0xcce1e0dd38ae831e81a9270627af2c24c208409ec03d5654a28a33ead53b1ac1'
 
-function createState(
+const createState = (
   responses: Record<string, unknown>,
   overrides: {
     code?: Hex
@@ -32,10 +34,13 @@ function createState(
     requestTimeoutMs?: number
     now?: () => number
     onRequest?: (url: string, timeoutMs: number | undefined) => unknown
+    marketIds?: readonly Hex[]
+    v0OfferGroupIds?: readonly Hex[]
   } = {}
-) {
+) => {
   const calls: string[] = []
   const requestBudgets: (number | undefined)[] = []
+  const referenceAbis: unknown[] = []
   const chain = {
     getChainId: async () => 8453,
     getCode: async () => overrides.code ?? authoritativeRatifierRuntime,
@@ -69,7 +74,9 @@ function createState(
         ? { number: 100n, timestamp: 1_000n }
         : { number: blockNumber ?? null, timestamp: 998n }
     },
-    readContract: async ({ functionName, args, blockNumber }: Record<string, unknown>) => {
+    readContract: async (parameters: Record<string, unknown>) => {
+      const { functionName, args, blockNumber } = parameters
+      referenceAbis.push(parameters.abi)
       calls.push(`${String(functionName)}:${String((args as unknown[])[0])}:${String(blockNumber)}`)
       if (functionName === 'idToMarketParams') {
         return {
@@ -121,15 +128,16 @@ function createState(
   return {
     calls,
     requestBudgets,
+    referenceAbis,
     state: new ViemSetupStateService(chain, reference, request, {
       privateKey: `0x${'11'.repeat(32)}`,
       midnight,
       loanAsset,
       morphoApiBaseUrl: 'https://api.example',
       routerApiBaseUrl: 'https://router.example',
-      marketIds: [marketId],
+      marketIds: overrides.marketIds ?? [marketId],
       referenceMarketId,
-      v0OfferGroupIds: [knownGroup],
+      v0OfferGroupIds: overrides.v0OfferGroupIds ?? [knownGroup],
       referenceLookbackBlocks: 1n,
       requestTimeoutMs: overrides.requestTimeoutMs,
       now: overrides.now
@@ -207,14 +215,21 @@ describe('ViemSetupStateService', () => {
 
   test('reads a configured book from API allowlist and on-chain state concurrently', async () => {
     const { state } = createState({
-      '/v0/midnight/markets': {
+      '/v0/midnight/books': {
+        cursor: null,
         data: [
           {
             market_id: marketId,
-            listed: true,
+            chain_id: 8453,
+            midnight,
             loan_token: loanAsset,
             maturity: 2_000,
-            tick_granularity: 4
+            collaterals: [],
+            rcf_threshold: '0',
+            enter_gate: maker,
+            liquidator_gate: maker,
+            asks: [],
+            bids: []
           }
         ]
       }
@@ -266,7 +281,7 @@ describe('ViemSetupStateService', () => {
   })
 
   test('proves the exact configured Blue reference market is readable at the historical block', async () => {
-    const { state, calls } = createState({})
+    const { state, calls, referenceAbis } = createState({})
 
     expect(await state.checkReference()).toEqual({
       marketId: referenceMarketId,
@@ -279,6 +294,7 @@ describe('ViemSetupStateService', () => {
       `idToMarketParams:${referenceMarketId}:99`,
       `market:${referenceMarketId}:99`
     ])
+    expect(referenceAbis).toEqual([blueAbi, blueAbi])
   })
 
   test('fails closed when the configured reference market has no historical state', async () => {
@@ -287,23 +303,71 @@ describe('ViemSetupStateService', () => {
     expect(state.checkReference()).rejects.toThrow('configured reference market does not exist')
   })
 
-  test('reports unknown groups and inverted maker offers from every page', async () => {
-    const firstOffer = {
-      market_id: marketId,
-      offer: { maker, group: knownGroup, buy: true, tick: 20 }
-    }
-    const secondOffer = {
-      market_id: marketId,
-      offer: { maker, group: unknownGroup, buy: false, tick: 10 }
-    }
+  test('reports fresh non-takeable active offers from every offer-group page', async () => {
+    const firstOffer = { market_id: marketId, maker, buy: true, tick: 20 }
+    const secondOffer = { market_id: marketId, maker, buy: false, tick: 10 }
     const { state } = createState({
-      'cursor=next': { cursor: null, data: [secondOffer] },
-      '/v0/midnight/takeable-offers': { cursor: 'next', data: [firstOffer] }
+      'cursor=next': { cursor: null, data: [{ id: unknownGroup, offers: [secondOffer] }] },
+      '/v0/midnight/users/': {
+        cursor: 'next',
+        data: [{ id: knownGroup, offers: [firstOffer] }]
+      }
     })
 
     expect(await state.inspectOffers(maker)).toEqual({
       unknownNamespaces: [unknownGroup],
+      unknownMarketIds: [],
       invertedMarketIds: [marketId]
+    })
+  })
+
+  test('fails readiness for a known group that remains active on a removed market', async () => {
+    const { state } = createState({
+      '/v0/midnight/users/': {
+        cursor: null,
+        data: [
+          {
+            id: knownGroup,
+            offers: [{ market_id: removedMarketId, maker, buy: true, tick: 20 }]
+          }
+        ]
+      }
+    })
+
+    expect(await state.inspectOffers(maker)).toEqual({
+      unknownNamespaces: [],
+      unknownMarketIds: [removedMarketId],
+      invertedMarketIds: []
+    })
+  })
+
+  test('compares mixed-case market and group IDs by canonical bytes', async () => {
+    const mixedMarket: Hex = `0x${'aB'.repeat(32)}`
+    const mixedGroup: Hex = `0x${'cD'.repeat(32)}`
+    const canonicalMarket = bytesToHex(hexToBytes(mixedMarket))
+    const canonicalGroup = bytesToHex(hexToBytes(mixedGroup))
+    const { state } = createState(
+      {
+        '/v0/midnight/users/': {
+          cursor: null,
+          data: [
+            {
+              id: mixedGroup,
+              offers: [
+                { market_id: mixedMarket, maker, buy: true, tick: 20 },
+                { market_id: canonicalMarket, maker, buy: false, tick: 10 }
+              ]
+            }
+          ]
+        }
+      },
+      { marketIds: [canonicalMarket], v0OfferGroupIds: [canonicalGroup] }
+    )
+
+    expect(await state.inspectOffers(maker)).toEqual({
+      unknownNamespaces: [],
+      unknownMarketIds: [],
+      invertedMarketIds: [canonicalMarket]
     })
   })
 
@@ -363,7 +427,7 @@ describe('ViemSetupStateService', () => {
     const { state } = createState(
       {
         'cursor=loop': { cursor: 'loop', data: [] },
-        '/v0/midnight/takeable-offers': { cursor: 'loop', data: [] }
+        '/v0/midnight/users/': { cursor: 'loop', data: [] }
       },
       { requestLimit: 3 }
     )
@@ -379,20 +443,36 @@ describe('ViemSetupStateService', () => {
         { cursor: index === 100 ? null : page(index + 1), data: [] }
       ])
     )
-    responses['/v0/midnight/takeable-offers'] = { cursor: page(0), data: [] }
+    responses['/v0/midnight/users/'] = { cursor: page(0), data: [] }
 
     expect(createState(responses).state.inspectOffers(maker)).rejects.toThrow(
       'Router offer page limit exceeded'
     )
   })
 
+  test('fails closed when Router returns more groups than one requested page', async () => {
+    const { state } = createState({
+      '/v0/midnight/users/': {
+        cursor: null,
+        data: Array.from({ length: 101 }, () => ({ id: knownGroup, offers: [] }))
+      }
+    })
+
+    expect(state.inspectOffers(maker)).rejects.toThrow('Router offer-group page size exceeded')
+  })
+
   test('fails closed when Router exceeds the offer item limit', async () => {
     const offer = {
       market_id: marketId,
-      offer: { maker, group: knownGroup, buy: true, tick: 20 }
+      maker,
+      buy: true,
+      tick: 20
     }
     const { state } = createState({
-      '/v0/midnight/takeable-offers': { cursor: null, data: Array(100_001).fill(offer) }
+      '/v0/midnight/users/': {
+        cursor: null,
+        data: [{ id: knownGroup, offers: Array(100_001).fill(offer) }]
+      }
     })
 
     expect(state.inspectOffers(maker)).rejects.toThrow('Router offer item limit exceeded')

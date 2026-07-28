@@ -151,13 +151,14 @@ export interface SetupStateService {
   /** Checks historical reference-market readability. @returns Archive-readability and exact reference-market identity facts. */
   checkReference(): Promise<{ marketId: Hex; referenceReadable: boolean; archiveReadable: boolean }>
   /**
-   * Traverses all active offers under one absolute request deadline.
+   * Traverses all active offer groups under one absolute request deadline.
    * @param maker - Maker whose offers are inspected.
-   * @returns Unknown namespaces and crossed/inverted configured markets.
-   * @throws When pagination repeats a cursor, exceeds 100 pages or 100,000 items, or the deadline.
+   * @returns Unknown namespaces, unconfigured markets, and every crossed/inverted active market.
+   * @throws When pagination repeats a cursor, exceeds safe page/item bounds, or the deadline.
    */
   inspectOffers(maker: Address): Promise<{
     unknownNamespaces: readonly string[]
+    unknownMarketIds: readonly Hex[]
     invertedMarketIds: readonly Hex[]
   }>
   /** Reports the intentionally excluded V0 health surface. @returns The explicit V0 not-required result; performs no writes. */
@@ -306,12 +307,13 @@ export class SetupCheckService {
           reference.value,
           referenceRequired
         )
-    const offersRequired = { unknownNamespaces: [], invertedMarketIds: [] }
+    const offersRequired = { unknownNamespaces: [], unknownMarketIds: [], invertedMarketIds: [] }
     const offersCheck = !offers.ok
       ? providerFailure('offers', offers.error, offersRequired)
       : setupResult(
           'offers',
           offers.value.unknownNamespaces.length === 0 &&
+            offers.value.unknownMarketIds.length === 0 &&
             offers.value.invertedMarketIds.length === 0,
           offers.value,
           offersRequired

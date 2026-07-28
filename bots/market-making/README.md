@@ -43,15 +43,20 @@ All values are required except `V0_OFFER_GROUP_IDS` and `REQUEST_TIMEOUT_MS`:
   Router `/v0/config/contracts` registry, verifies deployed code and the `MIDNIGHT` /
   `isRootCanceled` Ecrecover surface, checks that its immutable Midnight target matches, and verifies
   `Midnight.isAuthorized(maker, ratifier)`.
-- `MARKET_IDS`: comma-separated allowlisted 32-byte market IDs; at least one is required.
+- `MARKET_IDS`: comma-separated allowlisted 32-byte market IDs; at least one is required. IDs are
+  canonicalized by bytes, so equivalent mixed-case hex values compare identically.
 - `NATIVE_RESERVE_WEI`: minimum native balance in wei.
 - `MAXIMUM_LEND_EXPOSURE_ASSETS`: minimum loan-token allowance in raw assets.
-- `MORPHO_API_BASE_URL`: Morpho API origin used to verify listed, active markets.
-- `ROUTER_API_BASE_URL`: official Router API origin used to inspect all active maker offers.
+- `MORPHO_API_BASE_URL`: Morpho API origin used by `MidnightApi.fetchBooks` to verify active books.
+- `ROUTER_API_BASE_URL`: official Router API origin used to traverse the maker's complete
+  `/v0/midnight/users/{maker}/offer-groups` source. This includes fresh active offers before a
+  takeable amount is measured; repeated cursors, oversized pages, excessive items, and aggregate
+  deadline expiry fail closed.
 - `REQUEST_TIMEOUT_MS`: optional bounded fetch/RPC timeout in milliseconds; defaults to `10000` and
   must be between `1` and `120000`.
 - `V0_OFFER_GROUP_IDS`: optional comma-separated strategy-owned group IDs. Any active maker group not
-  listed here fails readiness as an unknown namespace.
+  listed here, or any active offer on a market outside `MARKET_IDS` even when its group is known,
+  fails readiness. Group IDs are canonicalized by bytes.
 
 ## Run
 

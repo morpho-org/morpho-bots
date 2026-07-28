@@ -30,7 +30,7 @@ const environment = {
   ROUTER_API_BASE_URL: 'https://router.example'
 }
 
-function readyState(): SetupStateService {
+const readyState = (): SetupStateService => {
   return {
     getChainId: async () => 8453,
     getCode: async () => '0x1234',
@@ -58,7 +58,11 @@ function readyState(): SetupStateService {
       referenceReadable: true,
       archiveReadable: true
     }),
-    inspectOffers: async () => ({ unknownNamespaces: [], invertedMarketIds: [] }),
+    inspectOffers: async () => ({
+      unknownNamespaces: [],
+      unknownMarketIds: [],
+      invertedMarketIds: []
+    }),
     checkPositionHealth: async () => ({ status: 'not-required', reason: 'V0 has no debt' })
   }
 }

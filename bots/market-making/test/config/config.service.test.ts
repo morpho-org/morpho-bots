@@ -1,6 +1,7 @@
 import type { Address, Hex } from 'viem'
 
 import { describe, expect, test } from 'bun:test'
+import { bytesToHex, hexToBytes } from 'viem'
 
 import { ConfigService } from '../../src/config/config.service'
 
@@ -46,6 +47,21 @@ describe('ConfigService', () => {
     })
     expect(config.v0OfferGroupIds).toEqual([groupId])
     expect(config.requestTimeoutMs).toBe(10_000)
+  })
+
+  test('canonicalizes equivalent mixed-case market, group, and reference IDs', () => {
+    const mixedCase: Hex = `0x${'aB'.repeat(32)}`
+    const canonical = bytesToHex(hexToBytes(mixedCase))
+    const config = ConfigService.from({
+      ...environment,
+      MARKET_IDS: mixedCase,
+      V0_OFFER_GROUP_IDS: mixedCase,
+      REFERENCE_MARKET_ID: mixedCase
+    })
+
+    expect(config.setup.marketIds).toEqual([canonical])
+    expect(config.v0OfferGroupIds).toEqual([canonical])
+    expect(config.setup.referenceMarketId).toBe(canonical)
   })
 
   test.each([

@@ -44,3 +44,26 @@ export const requestJson = async (url: string, provider: ProviderId, timeoutMs =
     })
   }
 }
+
+/**
+ * Adapts the sanitized JSON transport to an SDK-compatible fetch implementation.
+ * @param request - Existing provider-safe JSON transport.
+ * @param provider - Fixed provider identifier used for sanitized failures.
+ * @param timeoutMs - Explicit per-request timeout passed to the transport.
+ * @returns A fetch-compatible function for SDK endpoint and response mapping reuse.
+ * @throws The transport's sanitized provider error when the request fails.
+ * @remarks The SDK still owns URL construction and mapping; this adapter only preserves the bot's
+ * timeout and redaction boundary. It performs no request until the returned function is called.
+ */
+export const jsonRequestFetch = (
+  request: JsonRequest,
+  provider: ProviderId,
+  timeoutMs: number
+): typeof fetch => {
+  const adapter = async (input: Parameters<typeof fetch>[0]) => {
+    const url = input instanceof Request ? input.url : String(input)
+    const value = await request(url, provider, timeoutMs)
+    return Response.json(value)
+  }
+  return Object.assign(adapter, { preconnect: fetch.preconnect })
+}

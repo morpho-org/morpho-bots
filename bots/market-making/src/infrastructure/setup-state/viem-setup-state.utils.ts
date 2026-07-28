@@ -1,25 +1,18 @@
 import type { Hex } from 'viem'
 
-import { getAddress, isAddress, isHex, parseAbi, size } from 'viem'
+import { bytesToHex, getAddress, hexToBytes, isAddress, isHex, size } from 'viem'
 
 import { SafeProviderError } from '../../application/safe-provider.error'
 
 export const BASE_CHAIN_ID = 8453
-export const PAGE_SIZE = 1_000
+export const PAGE_SIZE = 100
 export const MAX_OFFER_PAGES = 100
-export const MAX_OFFER_ITEMS = PAGE_SIZE * MAX_OFFER_PAGES
+export const MAX_OFFER_ITEMS = 100_000
 export const DEFAULT_REQUEST_TIMEOUT_MS = 10_000
 // morpho-org/deployments@24c04410 address-book.json, Base EcrecoverRatifier.
 // The deployment-specific runtime hash includes the immutable Midnight target.
 export const BASE_ECRECOVER_RATIFIER_RUNTIME_HASH =
   '0xcce1e0dd38ae831e81a9270627af2c24c208409ec03d5654a28a33ead53b1ac1'
-// morpho-ts 2.8.0 exposes chain addresses but no Morpho Blue ABI, and midnight-sdk 1.2.0
-// intentionally covers Midnight only. Keep the minimal read-only Blue surface local.
-export const MORPHO_BLUE_SETUP_ABI = parseAbi([
-  'function idToMarketParams(bytes32 id) view returns ((address loanToken,address collateralToken,address oracle,address irm,uint256 lltv))',
-  'function market(bytes32 id) view returns ((uint128 totalSupplyAssets,uint128 totalSupplyShares,uint128 totalBorrowAssets,uint128 totalBorrowShares,uint128 lastUpdate,uint128 fee))'
-])
-
 const objectValue = (value: unknown, label: string): Record<string, unknown> => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new Error(`${label} must be an object`)
@@ -34,7 +27,7 @@ const objectValue = (value: unknown, label: string): Record<string, unknown> => 
  * @returns The narrowed array.
  * @throws When the provider value is not an array.
  */
-export const arrayValue = (value: unknown, label: string) => {
+const arrayValue = (value: unknown, label: string) => {
   if (!Array.isArray(value)) throw new Error(`${label} must be an array`)
   return value
 }
@@ -62,7 +55,7 @@ const bytes32Value = (value: unknown, label: string): Hex => {
   if (typeof value !== 'string' || !isHex(value, { strict: true }) || size(value) !== 32) {
     throw new Error(`${label} must be a 32-byte hex value`)
   }
-  return value
+  return bytesToHex(hexToBytes(value))
 }
 
 const integerValue = (value: unknown, label: string) => {
@@ -96,38 +89,54 @@ export const marketFromContract = (value: unknown) => {
 }
 
 /**
- * Parses the Morpho API Midnight market projection used by setup checking.
- * @param value - One untrusted API market object.
- * @returns Normalized identity, listing, asset, and maturity fields.
- * @throws When required API fields are malformed.
+ * Validates the SDK-mapped Midnight book projection used by setup checking.
+ * @param value - One `MidnightApi.fetchBooks` result item.
+ * @returns Canonical identity, chain, singleton, asset, and maturity fields.
+ * @throws When the SDK-trusted response contains malformed runtime values.
  */
 export const marketFromApi = (value: unknown) => {
-  const market = objectValue(value, 'Morpho API market')
+  const market = objectValue(value, 'Midnight SDK book')
   return {
-    id: bytes32Value(market.market_id, 'market_id'),
-    listed: market.listed === true,
-    loanToken: addressValue(market.loan_token, 'loan_token'),
+    id: bytes32Value(market.marketId, 'marketId'),
+    chainId: integerValue(market.chainId, 'chainId'),
+    midnight: addressValue(market.midnight, 'midnight'),
+    loanToken: addressValue(market.loanToken, 'loanToken'),
     maturity: BigInt(integerValue(market.maturity, 'maturity'))
   }
 }
 
 /**
- * Parses one Router offer item needed for setup safety checks.
- * @param value - One untrusted Router offer item.
- * @returns Normalized market, maker, group, side, and tick fields.
+ * Parses one nested active offer needed for setup safety checks.
+ * @param value - One untrusted active offer from an offer group.
+ * @param group - Canonical parent offer-group ID.
+ * @returns Canonical market, maker, group, side, and tick fields.
  * @throws When required Router fields are malformed.
  */
-export const offerFromApi = (value: unknown) => {
-  const item = objectValue(value, 'Router offer item')
-  const offer = objectValue(item.offer, 'Router offer')
+export const offerFromApi = (value: unknown, group: Hex) => {
+  const offer = objectValue(value, 'Router active offer')
   return {
-    marketId: bytes32Value(item.market_id, 'offer market_id'),
+    marketId: bytes32Value(offer.market_id, 'offer market_id'),
     maker: addressValue(offer.maker, 'offer maker'),
-    group: bytes32Value(offer.group, 'offer group'),
+    group,
     buy: offer.buy === true,
     tick: integerValue(offer.tick, 'offer tick')
   }
 }
+
+/**
+ * Parses and flattens one active offer-group page from the Router endpoint.
+ * @param value - Untrusted page data array.
+ * @returns Canonical group IDs paired with every nested active offer.
+ * @throws When a group ID, nested offer list, or offer field is malformed.
+ */
+export const offersFromGroups = (value: unknown) =>
+  arrayValue(value, 'Router data').flatMap(groupValue => {
+    const group = objectValue(groupValue, 'Router offer group')
+    const groupId = bytes32Value(group.id, 'offer group id')
+    return arrayValue(group.offers, 'Router active offers').map(offer =>
+      offerFromApi(offer, groupId)
+    )
+  })
 
 /**
  * Extracts Base Ecrecover ratifier addresses from Router configuration.
@@ -149,16 +158,12 @@ export const routerEcrecoverRatifiers = (value: unknown) => {
 }
 
 /**
- * Detects configured markets whose maker buy and sell ticks cross.
- * @param offers - Validated maker offers.
- * @param configuredMarkets - Market IDs within setup-check scope.
- * @returns Configured IDs having a highest buy tick at or above the lowest sell tick.
+ * Detects every active market whose maker buy and sell ticks cross.
+ * @param offers - All validated active maker offers, including unconfigured markets.
+ * @returns Canonical IDs having a highest buy tick at or above the lowest sell tick.
  */
-export const invertedMarketIds = (
-  offers: readonly ReturnType<typeof offerFromApi>[],
-  configuredMarkets: readonly Hex[]
-) =>
-  configuredMarkets.filter(marketId => {
+export const invertedMarketIds = (offers: readonly ReturnType<typeof offerFromApi>[]) =>
+  [...new Set(offers.map(offer => offer.marketId))].filter(marketId => {
     const marketOffers = offers.filter(offer => offer.marketId === marketId)
     const buys = marketOffers.filter(offer => offer.buy).map(offer => offer.tick)
     const sells = marketOffers.filter(offer => !offer.buy).map(offer => offer.tick)
