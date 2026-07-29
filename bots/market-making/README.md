@@ -84,8 +84,12 @@ bun run --filter @morpho-org/market-making-bot start -- --version
 
 ```sh
 bun test bots/market-making/test
+bun run --filter @morpho-org/market-making-bot test:e2e
 bun run --filter @morpho-org/market-making-bot typecheck
 ```
+
+The e2e suite starts its own Anvil fork of Base at a pinned historical block. It requires the
+`anvil` binary on `PATH` and an archive-capable `RPC_URL_8453`.
 
 ## YAML and position-bootstrap configuration
 
@@ -293,6 +297,10 @@ is read-only; remediation transaction descriptions are reported but never submit
 
 ```sh
 bun test bots/market-making/test
+bun run --filter @morpho-org/market-making-bot test:e2e
 bun run --filter @morpho-org/market-making-bot typecheck
 bun run --filter @morpho-org/market-making-bot jsdoc:build
 ```
+
+The e2e suite starts its own Anvil fork of Base at a pinned historical block. It requires the
+`anvil` binary on `PATH` and an archive-capable `RPC_URL_8453`.
