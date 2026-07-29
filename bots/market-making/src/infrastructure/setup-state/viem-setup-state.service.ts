@@ -3,6 +3,7 @@ import type { Address, Hex } from 'viem'
 import { ecrecoverRatifierAbi, midnightAbi } from '@morpho-org/midnight-sdk'
 import { MidnightApi } from '@morpho-org/midnight-sdk/api'
 import { blueAbi } from '@morpho-org/morpho-sdk/abis'
+import { restructure } from '@morpho-org/morpho-sdk/utils'
 import { getChainAddress } from '@morpho-org/morpho-ts'
 import { erc20Abi, isAddress, isAddressEqual, keccak256, zeroAddress, zeroHash } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
@@ -457,8 +458,28 @@ export class ViemSetupStateService implements SetupStateService {
         })
       )
     ])
-    const params = objectRecord(paramsResponse, 'Morpho Blue reference market params')
-    const market = objectRecord(marketResponse, 'Morpho Blue reference market state')
+    // Morpho's ABI exposes named tuple outputs, which viem decodes as arrays. Reuse the SDK's
+    // canonical tuple mapper instead of maintaining positional field mapping locally.
+    const params = objectRecord(
+      Array.isArray(paramsResponse)
+        ? restructure(paramsResponse, {
+            abi: blueAbi,
+            name: 'idToMarketParams',
+            args: [this.options.referenceMarketId]
+          })
+        : paramsResponse,
+      'Morpho Blue reference market params'
+    )
+    const market = objectRecord(
+      Array.isArray(marketResponse)
+        ? restructure(marketResponse, {
+            abi: blueAbi,
+            name: 'market',
+            args: [this.options.referenceMarketId]
+          })
+        : marketResponse,
+      'Morpho Blue reference market state'
+    )
     const referenceLoanAsset = addressValue(params.loanToken, 'reference market loanToken')
     if (referenceLoanAsset === zeroAddress) {
       throw new ProviderResponseError(
