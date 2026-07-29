@@ -23,6 +23,7 @@
     "src/domain/position-bootstrap.ts",
     "src/infrastructure/bootstrap/bootstrap-hard-halt.error.ts",
     "src/infrastructure/bootstrap/bootstrap-make.service.ts",
+    "src/infrastructure/bootstrap/bootstrap-offer.utils.ts",
     "src/infrastructure/bootstrap/bootstrap-adapter.error.ts",
     "src/infrastructure/bootstrap/bootstrap-group-ownership.utils.ts",
     "src/infrastructure/bootstrap/bootstrap-groups.utils.ts",

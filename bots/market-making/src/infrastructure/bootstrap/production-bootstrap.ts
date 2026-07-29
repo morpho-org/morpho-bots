@@ -26,6 +26,7 @@ import { BootstrapAdapterError } from './bootstrap-adapter.error'
 import { createBootstrapGroupOwnership } from './bootstrap-group-ownership.utils'
 import { readBootstrapGroups, strategyBootstrapGroups } from './bootstrap-groups.utils'
 import { MidnightBootstrapMakeService } from './bootstrap-make.service'
+import { bootstrapContinuousFeeCap } from './bootstrap-offer.utils'
 import { MidnightBootstrapPositionService } from './bootstrap-position.service'
 import { BlueBootstrapReferenceRateService } from './bootstrap-reference-rate.service'
 import { signBootstrapRequirements } from './bootstrap-requirements.utils'
@@ -155,6 +156,11 @@ export const createProductionBootstrapAdapters = (
       })
   }
 
+  const ownedGroupIds = async () => {
+    const [groups, ownedIds] = await Promise.all([readGroups(), ownership.read()])
+    return strategyBootstrapGroups(groups, ownedIds).map(group => group.id)
+  }
+
   const inventory: BootstrapInventoryReader = {
     readPositions: async () => {
       const block = await wallet.getBlock({ blockTag: 'latest' })
@@ -202,12 +208,14 @@ export const createProductionBootstrapAdapters = (
       tick: TickLib.priceToTick(TickLib.rateToPrice(periodRateWad), BigInt(market.tickSpacing)),
       expiry: market.params.maturity,
       ratifier: config.setup.ratifier,
-      maxAssets: offer.assets
+      maxAssets: offer.assets,
+      continuousFeeCap: bootstrapContinuousFeeCap(market)
     })
   }
 
   const make = new MidnightBootstrapMakeService({
     listActiveGroups: activeGroups,
+    listOwnedGroupIds: ownedGroupIds,
     listBookOffers: async () =>
       (await readGroups()).flatMap(group =>
         group.offers.map(offer => ({ ...offer, groupId: group.id }))
@@ -241,9 +249,10 @@ export const createProductionBootstrapAdapters = (
             import('@morpho-org/morpho-sdk').MidnightOfferRootSignature
           >
       )
+      const transaction = output.buildTx(signatures)
       return {
         groupId: output.groups[0] as Hex,
-        publish: () => execute(output.buildTx(signatures))
+        publish: () => execute(transaction)
       }
     }
   })

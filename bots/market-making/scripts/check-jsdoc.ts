@@ -310,6 +310,7 @@ const sourceFiles = [
   'domain/position-bootstrap.ts',
   'infrastructure/bootstrap/bootstrap-hard-halt.error.ts',
   'infrastructure/bootstrap/bootstrap-make.service.ts',
+  'infrastructure/bootstrap/bootstrap-offer.utils.ts',
   'infrastructure/bootstrap/bootstrap-adapter.error.ts',
   'infrastructure/bootstrap/bootstrap-group-ownership.utils.ts',
   'infrastructure/bootstrap/bootstrap-groups.utils.ts',

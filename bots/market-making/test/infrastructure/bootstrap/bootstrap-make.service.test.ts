@@ -171,6 +171,43 @@ describe('MidnightBootstrapMakeService', () => {
     expect(events).toEqual(['reserve', 'publish', 'release'])
   })
 
+  test('retains the durable reservation when publication outcome is ambiguous', async () => {
+    const tracked = new Set<Hex>()
+    const events: string[] = []
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [],
+      listBookOffers: async () => [],
+      toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
+      preparePublication: async () => ({
+        groupId: publishedGroupId,
+        publish: async () => {
+          events.push('publish')
+          throw new Error('receipt unavailable')
+        }
+      }),
+      reserveGroup: async id => {
+        tracked.add(id)
+        events.push('reserve')
+      },
+      confirmPublishedGroup: async () => {
+        events.push('confirm')
+      },
+      releaseGroupReservation: async id => {
+        tracked.delete(id)
+        events.push('release')
+      },
+      invalidate: async () => {}
+    })
+
+    const error = await service
+      .reconcile({ marketId, desiredOffer, reason: 'publish' })
+      .catch(value => value)
+
+    expect(error).toBeInstanceOf(Error)
+    expect(events).toEqual(['reserve', 'publish'])
+    expect([...tracked]).toEqual([publishedGroupId])
+  })
+
   test('keeps a published group tracked when finalization fails', async () => {
     const tracked = new Set<Hex>()
     const events: string[] = []
@@ -300,6 +337,27 @@ describe('MidnightBootstrapMakeService', () => {
         { id: groupId, marketId, assets: 100n, rateBps: 500n },
         { id: groupId, marketId: secondMarketId, assets: 100n, rateBps: 600n }
       ],
+      listBookOffers: async () => [],
+      toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
+      preparePublication: async () => ({ groupId, publish: async () => {} }),
+      reserveGroup: async () => {},
+      confirmPublishedGroup: async () => {},
+      releaseGroupReservation: async () => {},
+      invalidate: async id => {
+        attempted.push(id)
+      }
+    })
+
+    await service.hardHalt({ reason: 'reference-read-failed' })
+
+    expect(attempted).toEqual([groupId])
+  })
+
+  test('cancels an explicitly owned fully consumed group during a hard halt', async () => {
+    const attempted: Hex[] = []
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [],
+      listOwnedGroupIds: async () => [groupId],
       listBookOffers: async () => [],
       toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
       preparePublication: async () => ({ groupId, publish: async () => {} }),

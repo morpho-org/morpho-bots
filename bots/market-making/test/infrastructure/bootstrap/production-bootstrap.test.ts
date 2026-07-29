@@ -11,6 +11,7 @@ import {
   readBootstrapGroups,
   strategyBootstrapGroups
 } from '../../../src/infrastructure/bootstrap/bootstrap-groups.utils'
+import { bootstrapContinuousFeeCap } from '../../../src/infrastructure/bootstrap/bootstrap-offer.utils'
 import { signBootstrapRequirements } from '../../../src/infrastructure/bootstrap/bootstrap-requirements.utils'
 
 const maker: Address = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
@@ -33,6 +34,21 @@ const group = (overrides: Record<string, unknown> = {}) => ({
     }
   ],
   ...overrides
+})
+
+describe('bootstrapContinuousFeeCap', () => {
+  test('uses the authoritative live market continuous fee', () => {
+    expect(bootstrapContinuousFeeCap({ continuousFee: 17 })).toBe(17n)
+  })
+
+  test.each([undefined, Number.NaN, -1, 1.5, 0x1_0000_0000])(
+    'fails closed when the live market continuous fee is unavailable or invalid: %p',
+    continuousFee => {
+      expect(() => bootstrapContinuousFeeCap({ continuousFee })).toThrow(
+        expect.objectContaining({ operation: 'market-continuous-fee' })
+      )
+    }
+  )
 })
 
 describe('readBootstrapGroups', () => {

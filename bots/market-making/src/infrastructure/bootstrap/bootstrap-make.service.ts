@@ -14,6 +14,8 @@ type BootstrapBookOffer = { groupId?: Hex; marketId: Hex; buy: boolean; tick: bi
 interface BootstrapOfferTransport {
   /** Lists active strategy groups from Mempool truth. @returns Current active group projections. */
   listActiveGroups(): Promise<readonly BootstrapActiveGroup[]>
+  /** Lists every explicitly owned group, including fully consumed groups. @returns Owned group IDs for exhaustive cleanup. */
+  listOwnedGroupIds?(): Promise<readonly Hex[]>
   /** Lists the maker's complete current book. @returns Every active offer needed for spread safety. */
   listBookOffers(): Promise<readonly BootstrapBookOffer[]>
   /** Projects a domain offer into its exact protocol tick. @param offer - Desired offer. @returns Prospective book offer. */
@@ -95,10 +97,15 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
         try {
           await publication.publish()
         } catch (error) {
-          try {
-            await this.transport.releaseGroupReservation(publication.groupId)
-          } catch {
-            throw new BootstrapAdapterError('publication-reservation-cleanup')
+          if (
+            error instanceof BootstrapAdapterError &&
+            error.operation === 'transaction-reverted'
+          ) {
+            try {
+              await this.transport.releaseGroupReservation(publication.groupId)
+            } catch {
+              throw new BootstrapAdapterError('publication-reservation-cleanup')
+            }
           }
           throw error
         }
@@ -123,7 +130,11 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
     void parameters
     return this.enqueue(async () => {
       const failures = []
-      const groupIds = new Set((await this.strategyGroups()).map(group => group.id))
+      const groupIds = new Set(
+        this.transport.listOwnedGroupIds
+          ? await this.transport.listOwnedGroupIds()
+          : (await this.strategyGroups()).map(group => group.id)
+      )
       for (const groupId of groupIds) {
         try {
           await this.transport.invalidate(groupId)
