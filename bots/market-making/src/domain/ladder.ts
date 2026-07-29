@@ -207,32 +207,17 @@ export const generateLadder = (parameters: GenerateLadderParameters): LadderQuot
   const lowerAllocations = allocateBudget(budgets.lower, weights)
   const higherAllocations = allocateBudget(budgets.higher, weights)
   const halfSpread = config.spreadBps / 2n
-  const lowerRates = weights.map((_weight, index) => {
-    const rateBps = centerRateBps - halfSpread - BigInt(index) * config.stepBps
-    assertRungBounds(rateBps, 'lower', config)
-    return rateBps
-  })
-  const higherRates = weights.map((_weight, index) => {
-    const rateBps = centerRateBps + halfSpread + BigInt(index) * config.stepBps
-    assertRungBounds(rateBps, 'higher', config)
-    return rateBps
-  })
-  const lower =
-    budgets.lower === 0n
-      ? []
-      : lowerRates.map((rateBps, index) => ({
-          index,
-          rateBps,
-          assets: lowerAllocations[index] ?? 0n
-        }))
-  const higher =
-    budgets.higher === 0n
-      ? []
-      : higherRates.map((rateBps, index) => ({
-          index,
-          rateBps,
-          assets: higherAllocations[index] ?? 0n
-        }))
+  const buildRungs = (side: 'lower' | 'higher', allocations: readonly bigint[]) =>
+    weights.flatMap((_weight, index) => {
+      const assets = allocations[index] ?? 0n
+      if (assets === 0n) return []
+      const offset = halfSpread + BigInt(index) * config.stepBps
+      const rateBps = side === 'lower' ? centerRateBps - offset : centerRateBps + offset
+      assertRungBounds(rateBps, side, config)
+      return [{ index, rateBps, assets }]
+    })
+  const lower = buildRungs('lower', lowerAllocations)
+  const higher = buildRungs('higher', higherAllocations)
   return { marketId: config.marketId, centerRateBps, groupMode: config.groupMode, lower, higher }
 }
 

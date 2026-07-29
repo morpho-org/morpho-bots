@@ -79,6 +79,7 @@ type LadderRunResult =
       stage: 'configuration' | 'reference-read' | 'decision' | 'market-invalidation'
       strategyInvalidated: boolean
       errorName: string
+      marketInvalidationErrorName?: string
       invalidationErrorName?: string
     }
 
@@ -142,8 +143,9 @@ export class LadderMarketMakerService {
             await this.halt(
               config.marketId,
               'market-invalidation',
-              invalidationError,
-              'market-invalidation-failed'
+              error,
+              'market-invalidation-failed',
+              invalidationError
             )
           )
           return results
@@ -216,8 +218,13 @@ export class LadderMarketMakerService {
     marketId: Hex,
     stage: Extract<LadderRunResult, { status: 'halted' }>['stage'],
     error: unknown,
-    reason: Parameters<LadderMakeService['hardHalt']>[0]['reason']
+    reason: Parameters<LadderMakeService['hardHalt']>[0]['reason'],
+    marketInvalidationError?: unknown
   ): Promise<LadderRunResult> {
+    const marketInvalidationFailure =
+      marketInvalidationError === undefined
+        ? {}
+        : { marketInvalidationErrorName: operatorErrorName(marketInvalidationError) }
     try {
       await this.make.hardHalt({ reason })
       return {
@@ -225,7 +232,8 @@ export class LadderMarketMakerService {
         status: 'halted',
         stage,
         strategyInvalidated: true,
-        errorName: operatorErrorName(error)
+        errorName: operatorErrorName(error),
+        ...marketInvalidationFailure
       }
     } catch (invalidationError) {
       return {
@@ -234,6 +242,7 @@ export class LadderMarketMakerService {
         stage,
         strategyInvalidated: false,
         errorName: operatorErrorName(error),
+        ...marketInvalidationFailure,
         invalidationErrorName: operatorErrorName(invalidationError)
       }
     }

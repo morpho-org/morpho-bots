@@ -70,7 +70,7 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
     },
     async reconcile(parameters) {
       if (parameters.marketId === reconcileFailure)
-        throw new TypeError('private publication detail')
+        throw new RangeError('private publication detail')
       reconciliations.push(parameters)
       if (parameters.desired) liveDesired.set(parameters.marketId, parameters.desired)
       else liveDesired.delete(parameters.marketId)
@@ -188,6 +188,22 @@ describe('LadderMarketMakerService', () => {
       desired: undefined,
       reason: 'market-read-failed'
     })
+  })
+
+  test('preserves the market read and local invalidation failures before hard halt', async () => {
+    const subject = harness()
+    subject.failMarket(marketId)
+    subject.failReconcile(marketId)
+
+    expect(await subject.service.runOnce()).toMatchObject([
+      {
+        status: 'halted',
+        stage: 'market-invalidation',
+        strategyInvalidated: true,
+        errorName: 'TypeError',
+        marketInvalidationErrorName: 'RangeError'
+      }
+    ])
   })
 
   test.each([

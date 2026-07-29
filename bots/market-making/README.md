@@ -253,7 +253,9 @@ fresh target-market and strategy-total capacities then cap both sides in aggrega
 binds, capacity is split proportionally between the requested side budgets with the bigint remainder
 assigned to the higher-rate side. Exact bigint proportional division allocates each nonzero side
 across its rungs, and the outermost rung receives the remainder so the side sums exactly to its capped
-budget. A side with zero fresh capacity produces no rungs. `targetMarketExposureAssets` must not
+budget. A side with zero fresh capacity produces no rungs, and any individual rung whose bigint
+allocation rounds to zero is omitted. Hard-rate bounds apply to every nonzero rung that can be
+published; an exhausted side cannot trigger a bound failure. `targetMarketExposureAssets` must not
 exceed `maximumTotalExposureAssets`.
 
 `LADDER_MARKETS` is exact JSON with the same fields. Every integer-valued property must be a quoted

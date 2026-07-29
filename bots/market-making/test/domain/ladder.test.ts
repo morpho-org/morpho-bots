@@ -102,6 +102,28 @@ describe('ladder domain', () => {
     expect(ladder.higher.reduce((sum, rung) => sum + rung.assets, 0n)).toBe(10n)
   })
 
+  test('omits individual rungs whose proportional allocation rounds to zero', () => {
+    const ladder = generateLadder({
+      config: config(),
+      referenceRateBps: 500n,
+      capacities: { lowerRateCapacityAssets: 1n, higherRateCapacityAssets: 0n }
+    })
+
+    expect(ladder.lower).toEqual([{ index: 2, rateBps: 200n, assets: 1n }])
+    expect(ladder.higher).toEqual([])
+  })
+
+  test('does not apply rate bounds to an exhausted side that emits no rungs', () => {
+    const ladder = generateLadder({
+      config: config(),
+      referenceRateBps: 150n,
+      capacities: { lowerRateCapacityAssets: 0n, higherRateCapacityAssets: 10n }
+    })
+
+    expect(ladder.lower).toEqual([])
+    expect(ladder.higher.map(rung => rung.rateBps)).toEqual([250n, 350n, 450n])
+  })
+
   test('rejects a static shape that cannot fit the hard range', () => {
     expect(() => validateLadderConfig(config({ maximumRateBps: 700n }))).toThrow(
       LadderConfigurationError
