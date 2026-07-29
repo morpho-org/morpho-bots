@@ -17,6 +17,7 @@ const cli = (assertReady = async () => readyReport) => {
   return new Cli(
     new VersionService(),
     () => ({ assertReady }),
+    () => ({ runOnce: async () => [] }),
     () => ({ runOnce: async () => [] })
   )
 }
@@ -188,6 +189,7 @@ describe('Cli', () => {
         configPath = options.configPath
         return { assertReady: async () => readyReport }
       },
+      () => ({ runOnce: async () => [] }),
       () => ({ runOnce: async () => [] })
     )
 
@@ -207,13 +209,35 @@ describe('Cli', () => {
     const application = new Cli(
       new VersionService(),
       () => ({ assertReady: async () => readyReport }),
-      () => ({ runOnce })
+      () => ({ runOnce }),
+      () => ({ runOnce: async () => [] })
     )
 
     expect(await application.run(['bootstrap'])).toEqual([
       { marketId: `0x${'11'.repeat(32)}`, status: 'applied', action: 'publish', assets: 10n }
     ])
     expect(runOnce).toHaveBeenCalledTimes(1)
+  })
+
+  test('mm ladder is exposed alongside setup-check and bootstrap', async () => {
+    const assertReady = mock(async () => readyReport)
+    const bootstrap = mock(async () => [])
+    const runOnce = mock(async () => [
+      { marketId: `0x${'11'.repeat(32)}`, status: 'observed', action: 'rest' }
+    ])
+    const application = new Cli(
+      new VersionService(),
+      () => ({ assertReady }),
+      () => ({ runOnce: bootstrap }),
+      () => ({ runOnce })
+    )
+
+    expect(await application.run(['ladder'])).toEqual([
+      { marketId: `0x${'11'.repeat(32)}`, status: 'observed', action: 'rest' }
+    ])
+    expect(runOnce).toHaveBeenCalledTimes(1)
+    expect(assertReady).not.toHaveBeenCalled()
+    expect(bootstrap).not.toHaveBeenCalled()
   })
 
   test('rejects a bootstrap cycle containing a failed market result', async () => {
@@ -229,7 +253,8 @@ describe('Cli', () => {
     const application = new Cli(
       new VersionService(),
       () => ({ assertReady: async () => readyReport }),
-      () => ({ runOnce: async () => report })
+      () => ({ runOnce: async () => report }),
+      () => ({ runOnce: async () => [] })
     )
 
     const error = await application.run(['bootstrap']).catch(value => value)
@@ -253,7 +278,8 @@ describe('Cli', () => {
       () => ({ assertReady: async () => readyReport }),
       () => ({
         runOnce: async () => report
-      })
+      }),
+      () => ({ runOnce: async () => [] })
     )
 
     const error = await application.run(['bootstrap']).catch(value => value)

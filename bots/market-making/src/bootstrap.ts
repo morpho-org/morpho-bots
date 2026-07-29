@@ -10,6 +10,7 @@ import type { SetupStateService } from './application/setup-check.service'
 import type { ConfigService } from './config/config.service'
 import type { ChainReader } from './infrastructure/setup-state/viem-setup-state.service'
 
+import { LadderRuntimeUnavailableError } from './application/ladder-runtime-unavailable.error'
 import { PositionBootstrapService } from './application/position-bootstrap.service'
 import { SetupCheckService } from './application/setup-check.service'
 import { VersionService } from './application/version.service'
@@ -26,10 +27,16 @@ type PositionBootstrapRunner = {
   runOnce(): Promise<unknown>
 }
 
+type LadderRunner = {
+  runOnce(): Promise<unknown>
+}
+
 type Dependencies = {
   createState?: (config: ConfigService) => SetupStateService
   /** Creates the position-bootstrap application service after CLI configuration is loaded. */
   createBootstrap?: (config: ConfigService) => PositionBootstrapRunner
+  /** Creates the ladder market-maker application service after CLI configuration is loaded. */
+  createLadder?: (config: ConfigService) => LadderRunner
   /** Replaces provider ports while retaining default application-service composition. */
   createBootstrapAdapters?: (config: ConfigService) => {
     positions: BootstrapPositionService
@@ -124,6 +131,13 @@ export const createApplication = (
         adapters.make,
         config.bootstrap
       )
+    },
+    async options => {
+      const config = await loadConfig(options.configPath)
+      const state = dependencies.createState?.(config) ?? defaultState(config)
+      await new SetupCheckService(state, config.setup).assertReady()
+      if (!dependencies.createLadder) throw new LadderRuntimeUnavailableError()
+      return dependencies.createLadder(config)
     }
   )
 

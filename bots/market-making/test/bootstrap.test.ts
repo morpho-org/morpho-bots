@@ -103,6 +103,29 @@ describe('createApplication', () => {
     expect(events).toEqual(['readiness', 'bootstrap'])
   })
 
+  test('mm ladder passes readiness before running one ladder cycle', async () => {
+    const events: string[] = []
+    const state = readyState()
+    state.getChainId = async () => {
+      events.push('readiness')
+      return 8453
+    }
+    const application = createApplication(environment, {
+      createState: () => state,
+      createLadder: () => ({
+        runOnce: async () => {
+          events.push('ladder')
+          return [{ marketId, status: 'observed', action: 'rest' }]
+        }
+      })
+    })
+
+    expect(await application.run(['ladder'])).toEqual([
+      { marketId, status: 'observed', action: 'rest' }
+    ])
+    expect(events).toEqual(['readiness', 'ladder'])
+  })
+
   test('default-composes PositionBootstrapService when only its production ports are replaced', async () => {
     const application = createApplication(environment, {
       createState: readyState,
