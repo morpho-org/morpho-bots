@@ -10,6 +10,46 @@ const firstGroup: Hex = `0x${'22'.repeat(32)}`
 const secondGroup: Hex = `0x${'33'.repeat(32)}`
 
 describe('MidnightBootstrapPositionService', () => {
+  test('excludes a live group from the capacity available to replace itself', async () => {
+    const service = new MidnightBootstrapPositionService(
+      {
+        readPositions: async () => [{ marketId, credit: 0n, debt: 0n }],
+        readCashBalance: async () => 100n,
+        readActiveGroups: async () => [{ id: firstGroup, marketId, assets: 100n, rateBps: 500n }]
+      },
+      maker
+    )
+
+    const position = await service.readPosition(marketId)
+
+    expect(position.marketExposure).toBe(0n)
+    expect(position.totalExposure).toBe(0n)
+  })
+
+  test('keeps every other group in replacement exposure', async () => {
+    const otherMarketId: Hex = `0x${'44'.repeat(32)}`
+    const service = new MidnightBootstrapPositionService(
+      {
+        readPositions: async () => [
+          { marketId, credit: 10n, debt: 0n },
+          { marketId: otherMarketId, credit: 5n, debt: 0n }
+        ],
+        readCashBalance: async () => 100n,
+        readActiveGroups: async () => [
+          { id: firstGroup, marketId, assets: 20n, rateBps: 500n },
+          { id: secondGroup, marketId, assets: 30n, rateBps: 500n },
+          { id: `0x${'55'.repeat(32)}`, marketId: otherMarketId, assets: 40n, rateBps: 500n }
+        ]
+      },
+      maker
+    )
+
+    const position = await service.readPosition(marketId)
+
+    expect(position.marketExposure).toBe(40n)
+    expect(position.totalExposure).toBe(85n)
+  })
+
   test('forces reconciliation when duplicate active groups exist for one market', async () => {
     const service = new MidnightBootstrapPositionService(
       {
@@ -32,6 +72,6 @@ describe('MidnightBootstrapPositionService', () => {
       referenceObservationId: `group:${firstGroup}`
     })
     expect(position.requiresReconciliation).toBe(true)
-    expect(position.marketExposure).toBe(50n)
+    expect(position.marketExposure).toBe(30n)
   })
 })

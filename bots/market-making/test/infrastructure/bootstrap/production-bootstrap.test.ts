@@ -49,6 +49,38 @@ describe('readBootstrapGroups', () => {
     expect(strategyBootstrapGroups(groups, [groupId]).map(value => value.id)).toEqual([groupId])
   })
 
+  test.each([
+    ['negative', '-1'],
+    ['hexadecimal', '0x10'],
+    ['explicitly signed', '+1'],
+    ['decimal', '1.5'],
+    ['exponent', '1e3'],
+    ['whitespace padded', ' 1'],
+    ['leading-zero', '01'],
+    ['empty', ''],
+    ['malformed', 'one']
+  ])('rejects %s asset strings before bigint conversion', async (_label, assets) => {
+    for (const field of ['consumed', 'max_assets'] as const) {
+      const error = await readBootstrapGroups(
+        { maker, requestTimeoutMs: 1_000 },
+        { request: async () => ({ data: [group({ [field]: assets })], cursor: null }) }
+      ).catch(value => value)
+
+      expect(error).toBeInstanceOf(BootstrapAdapterError)
+      expect(error).toMatchObject({ operation: 'offer-groups-response' })
+    }
+  })
+
+  test('rejects consumed assets above maximum assets', async () => {
+    const error = await readBootstrapGroups(
+      { maker, requestTimeoutMs: 1_000 },
+      { request: async () => ({ data: [group({ consumed: '101' })], cursor: null }) }
+    ).catch(value => value)
+
+    expect(error).toBeInstanceOf(BootstrapAdapterError)
+    expect(error).toMatchObject({ operation: 'offer-groups-response' })
+  })
+
   test('fails closed when a pagination cursor repeats', async () => {
     const request = async () => ({ data: [group()], cursor: 'repeat' })
 
@@ -144,6 +176,28 @@ describe('readBootstrapGroups', () => {
 })
 
 describe('createBootstrapGroupOwnership', () => {
+  test('persists reservations across instances and removes unpublished IDs safely', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'market-making-reservation-'))
+    const ownership = createBootstrapGroupOwnership(
+      { maker, marketIds: [marketId], configuredGroupIds: [] },
+      { stateDirectory: directory }
+    )
+    try {
+      await ownership.reserve(groupId)
+
+      const restarted = createBootstrapGroupOwnership(
+        { maker, marketIds: [marketId], configuredGroupIds: [] },
+        { stateDirectory: directory }
+      )
+      expect(await restarted.read()).toEqual([groupId])
+
+      await restarted.release(groupId)
+      expect(await ownership.read()).toEqual([])
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
   test('retains bot-issued IDs across instances without sharing them with another strategy', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'market-making-ownership-'))
     const ownership = createBootstrapGroupOwnership(
@@ -151,7 +205,8 @@ describe('createBootstrapGroupOwnership', () => {
       { stateDirectory: directory }
     )
     try {
-      await ownership.remember(groupId)
+      await ownership.reserve(groupId)
+      await ownership.confirm(groupId)
 
       const restarted = createBootstrapGroupOwnership(
         { maker, marketIds: [marketId], configuredGroupIds: [] },

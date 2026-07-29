@@ -483,10 +483,13 @@ Unknown roots signed by the maker are never silently adopted or invalidated duri
 reconciliation. They fail the setup check and require an operator decision. During a configured
 hard halt, `MakeService` invalidates only roots that decode as this V0 strategy's namespaces.
 
-Mempool publication failures do not mutate an assumed local state. The rejected make promise carries
-the typed reason and the next cycle reloads the active set. `MakeService` owns the in-process signing
-queue, pending transaction queue, and signer-policy guard. After a restart it reconciles the pending
-nonce and on-chain invalidation state before accepting another job from either workflow.
+Mempool publication failures do not mutate an assumed live state. Before broadcast, the bot durably
+reserves the SDK-derived group ID; a failed broadcast removes that reservation, while a successful
+broadcast is promoted to confirmed ownership. If finalization storage fails, the reservation remains an
+ownership candidate and is considered active only when fresh provider data contains that ID. The rejected
+make promise carries the typed reason and the next cycle reloads the active set. `MakeService` owns the
+in-process signing queue, pending transaction queue, and signer-policy guard. After a restart it reconciles
+the pending nonce and on-chain invalidation state before accepting another job from either workflow.
 
 ### 9. Failure posture
 

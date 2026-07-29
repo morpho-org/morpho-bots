@@ -72,7 +72,7 @@ export class Cli {
               : false
           )
         ) {
-          throw new PositionBootstrapHaltedError()
+          throw new PositionBootstrapHaltedError(result)
         }
         this.output = result
         this.hasOutput = true

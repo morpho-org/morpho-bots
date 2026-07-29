@@ -304,6 +304,7 @@ const sourceFiles = [
   'config/config.utils.ts',
   'domain/bootstrap-configuration.error.ts',
   'domain/position-bootstrap.ts',
+  'infrastructure/bootstrap/bootstrap-hard-halt.error.ts',
   'infrastructure/bootstrap/bootstrap-make.service.ts',
   'infrastructure/bootstrap/bootstrap-adapter.error.ts',
   'infrastructure/bootstrap/bootstrap-group-ownership.utils.ts',
@@ -314,7 +315,7 @@ const sourceFiles = [
   'infrastructure/bootstrap/production-bootstrap.ts',
   'infrastructure/cli/cli-usage.error.ts',
   'infrastructure/cli/cli.ts',
-
+  'infrastructure/cli/market-making-entrypoint.ts',
   'infrastructure/setup-state/http-json.utils.ts',
   'infrastructure/setup-state/provider-pagination.error.ts',
   'infrastructure/setup-state/provider-read.error.ts',

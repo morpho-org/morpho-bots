@@ -1,5 +1,5 @@
-import { SetupFailedError } from './application/setup-failed.error'
 import { createApplication } from './bootstrap'
+import { runMarketMakingEntrypoint } from './infrastructure/cli/market-making-entrypoint'
 
 // oxlint-disable-next-line eslint/no-extend-native -- CLI root policy requested by maintainers.
 Object.defineProperty(BigInt.prototype, 'toJSON', {
@@ -9,17 +9,7 @@ Object.defineProperty(BigInt.prototype, 'toJSON', {
   }
 })
 
-try {
-  const application = createApplication()
-  const result = await application.run(Bun.argv.slice(2))
-  console.log(typeof result === 'string' ? result : JSON.stringify(result))
-} catch (error) {
-  console.error(
-    error instanceof SetupFailedError
-      ? JSON.stringify(error.report)
-      : error instanceof Error
-        ? error.message
-        : error
-  )
-  process.exit(1)
-}
+process.exitCode = await runMarketMakingEntrypoint(createApplication(), Bun.argv.slice(2), {
+  writeOut: value => console.log(value),
+  writeError: value => console.error(value)
+})

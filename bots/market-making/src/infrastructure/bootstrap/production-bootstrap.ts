@@ -204,8 +204,10 @@ export const createProductionBootstrapAdapters = (
     invalidate: async group => {
       await execute(midnight.cancelOffer({ group, accountAddress: account.address }).buildTx())
     },
-    rememberPublishedGroup: ownership.remember,
-    publish: async (offer: BootstrapOffer) => {
+    reserveGroup: ownership.reserve,
+    confirmPublishedGroup: ownership.confirm,
+    releaseGroupReservation: ownership.release,
+    preparePublication: async (offer: BootstrapOffer) => {
       const created = preparedOffers.get(offer.marketId)
       preparedOffers.delete(offer.marketId)
       if (!created) throw new BootstrapAdapterError('prospective-offer-missing')
@@ -223,8 +225,10 @@ export const createProductionBootstrapAdapters = (
             import('@morpho-org/morpho-sdk').MidnightOfferRootSignature
           >
       )
-      await execute(output.buildTx(signatures))
-      return output.groups[0] as Hex
+      return {
+        groupId: output.groups[0] as Hex,
+        publish: () => execute(output.buildTx(signatures))
+      }
     }
   })
 

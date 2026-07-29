@@ -185,10 +185,14 @@ Setup verifies all of the following from the typed configuration:
 - Active offer groups belong to configured namespaces and markets and are not crossed/inverted.
 
 `V0_OFFER_GROUP_IDS` is optional. Readiness and every writer use the same explicit ownership source:
-configured IDs plus confirmed bot-issued IDs from the maker-and-market-bound state file. A same-market
-maker group absent from both sources remains unknown, fails readiness, and requires an operator decision;
-market membership alone never permits reconciliation or hard-halt cancellation. The request timeout is
-an aggregate fetch/RPC bound and does not reveal endpoint details in failures.
+configured IDs plus bot-issued IDs from the maker-and-market-bound state file. Publication first durably
+reserves the SDK-derived group ID, broadcasts only after that write succeeds, and then promotes the
+reservation to confirmed ownership. A failed broadcast removes its reservation; if confirmation storage
+fails after a successful broadcast, the reservation remains sufficient to recognize the group from fresh
+provider data without claiming that an absent group is live. A same-market maker group absent from these
+sources remains unknown, fails readiness, and requires an operator decision; market membership alone never
+permits reconciliation or hard-halt cancellation. The request timeout is an aggregate fetch/RPC bound and
+does not reveal endpoint details in failures.
 
 ### Position-bootstrap fields
 
@@ -208,9 +212,10 @@ Each `bootstrap` entry must use a unique `marketId` present in `markets.allowlis
 | `autoRefill`            | Resume after first observed completion if credit later falls    | Boolean; completion memory lasts for one service instance |
 
 For a market below its accepted target, desired assets are the minimum of `offerSize`, remaining
-credit target, cash balance, remaining per-market exposure, and remaining total exposure. Zero or
-negative capacity leaves no offer. The final requested rate is `reference rate + premiumBps`; an
-out-of-bounds result is rejected rather than clamped.
+credit target, cash balance, remaining per-market exposure, and remaining total exposure. Replacement
+capacity excludes that market's representative live group while retaining every other active group's
+exposure. Zero or negative capacity leaves no offer. The final requested rate is `reference rate +
+premiumBps`; an out-of-bounds result is rejected rather than clamped.
 
 `BOOTSTRAP_MARKETS` uses an exact JSON array with the same fields; YAML syntax, duplicate object keys,
 and prototype keys are rejected. Every integer-valued property—including asset amounts, exposure caps,
@@ -248,8 +253,9 @@ bun run --filter @morpho-org/market-making-bot start -- --version
 ```
 
 Success prints one JSON report and exits zero. Bigints are serialized as decimal strings. Any failed
-check throws `SetupFailedError`, prints the complete sanitized report, and exits non-zero. The check
-is read-only; remediation transaction descriptions are reported but never submitted.
+check throws `SetupFailedError`, prints the complete sanitized report, and exits non-zero. A bootstrap
+safety halt likewise prints its sanitized per-market cleanup report before exiting non-zero. The check is
+read-only; remediation transaction descriptions are reported but never submitted.
 
 ## Test
 

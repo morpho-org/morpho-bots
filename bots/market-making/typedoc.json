@@ -17,6 +17,7 @@
     "src/config/config.utils.ts",
     "src/domain/bootstrap-configuration.error.ts",
     "src/domain/position-bootstrap.ts",
+    "src/infrastructure/bootstrap/bootstrap-hard-halt.error.ts",
     "src/infrastructure/bootstrap/bootstrap-make.service.ts",
     "src/infrastructure/bootstrap/bootstrap-adapter.error.ts",
     "src/infrastructure/bootstrap/bootstrap-group-ownership.utils.ts",
@@ -27,7 +28,7 @@
     "src/infrastructure/bootstrap/production-bootstrap.ts",
     "src/infrastructure/cli/cli-usage.error.ts",
     "src/infrastructure/cli/cli.ts",
-
+    "src/infrastructure/cli/market-making-entrypoint.ts",
     "src/infrastructure/setup-state/http-json.utils.ts",
     "src/infrastructure/setup-state/provider-pagination.error.ts",
     "src/infrastructure/setup-state/provider-read.error.ts",

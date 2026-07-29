@@ -53,10 +53,15 @@ export class MidnightBootstrapPositionService implements BootstrapPositionServic
     if (!position) throw new BootstrapAdapterError('position-unavailable')
     const marketGroups = groups.filter(group => group.marketId === marketId)
     const activeGroup = marketGroups[0]
-    const reservedByMarket = marketGroups.reduce((total, group) => total + group.assets, 0n)
+    const replacementGroups = activeGroup
+      ? groups.filter(group => group.id !== activeGroup.id)
+      : groups
+    const reservedByMarket = replacementGroups
+      .filter(group => group.marketId === marketId)
+      .reduce((total, group) => total + group.assets, 0n)
     const totalExposure =
       positions.reduce((total, item) => total + item.credit, 0n) +
-      groups.reduce((total, group) => total + group.assets, 0n)
+      replacementGroups.reduce((total, group) => total + group.assets, 0n)
     const activeOffer: BootstrapOffer | undefined = activeGroup
       ? {
           marketId,

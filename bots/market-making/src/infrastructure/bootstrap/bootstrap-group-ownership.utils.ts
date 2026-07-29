@@ -17,10 +17,13 @@ type BootstrapGroupOwnershipDependencies = {
   stateDirectory?: string
 }
 
-type OwnershipState = {
-  version: 1
-  strategy: string
-  groupIds: string[]
+type OwnershipState =
+  | { version: 1; strategy: string; groupIds: string[] }
+  | { version: 2; strategy: string; confirmedGroupIds: string[]; reservedGroupIds: string[] }
+
+type CanonicalOwnershipState = {
+  confirmedGroupIds: Hex[]
+  reservedGroupIds: Hex[]
 }
 
 const canonicalId = (value: unknown) => {
@@ -59,12 +62,14 @@ export const createBootstrapGroupOwnership = (
   const path = join(directory, `${strategy}.json`)
   const configured = config.configuredGroupIds.map(canonicalId)
 
-  const readPersisted = async (): Promise<Hex[]> => {
+  const readPersisted = async (): Promise<CanonicalOwnershipState> => {
     let metadata
     try {
       metadata = await lstat(path)
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return { confirmedGroupIds: [], reservedGroupIds: [] }
+      }
       throw new BootstrapAdapterError('group-ownership-state')
     }
     if (!metadata.isFile() || metadata.isSymbolicLink() || (metadata.mode & 0o077) !== 0) {
@@ -75,36 +80,75 @@ export const createBootstrapGroupOwnership = (
     }
     try {
       const value = JSON.parse(await readFile(path, 'utf8')) as Partial<OwnershipState>
-      if (value.version !== 1 || value.strategy !== strategy || !Array.isArray(value.groupIds)) {
-        throw new BootstrapAdapterError('group-ownership-state')
+      if (value.strategy !== strategy) throw new BootstrapAdapterError('group-ownership-state')
+      if (value.version === 1 && Array.isArray(value.groupIds)) {
+        return { confirmedGroupIds: value.groupIds.map(canonicalId), reservedGroupIds: [] }
       }
-      return value.groupIds.map(canonicalId)
+      if (
+        value.version === 2 &&
+        Array.isArray(value.confirmedGroupIds) &&
+        Array.isArray(value.reservedGroupIds)
+      ) {
+        return {
+          confirmedGroupIds: value.confirmedGroupIds.map(canonicalId),
+          reservedGroupIds: value.reservedGroupIds.map(canonicalId)
+        }
+      }
+      throw new BootstrapAdapterError('group-ownership-state')
     } catch (error) {
       if (error instanceof BootstrapAdapterError) throw error
       throw new BootstrapAdapterError('group-ownership-state')
     }
   }
 
-  const read = async () => [...new Set([...configured, ...(await readPersisted())])]
+  const writePersisted = async (state: CanonicalOwnershipState) => {
+    await mkdir(directory, { recursive: true, mode: 0o700 })
+    const temporary = `${path}.${process.pid}.${crypto.randomUUID()}.tmp`
+    try {
+      await writeFile(
+        temporary,
+        JSON.stringify({ version: 2, strategy, ...state } satisfies OwnershipState),
+        { encoding: 'utf8', mode: 0o600, flag: 'wx' }
+      )
+      await rename(temporary, path)
+    } finally {
+      await rm(temporary, { force: true })
+    }
+  }
+
+  const read = async () => {
+    const state = await readPersisted()
+    return [...new Set([...configured, ...state.confirmedGroupIds, ...state.reservedGroupIds])]
+  }
 
   return {
-    /** Reads configured and safely persisted strategy-owned group IDs. @returns Canonical explicit ownership IDs. */
+    /** Reads configured, confirmed, and reserved group IDs as ownership candidates. @returns Canonical explicit ownership IDs. */
     read,
-    /** Atomically records one confirmed bot-issued group for later invocations. @param groupId - Confirmed published group ID. @returns Completion after durable replacement. */
-    remember: async (groupId: Hex) => {
-      const groupIds = [...new Set([...(await read()), canonicalId(groupId)])]
-      await mkdir(directory, { recursive: true, mode: 0o700 })
-      const temporary = `${path}.${process.pid}.${crypto.randomUUID()}.tmp`
-      try {
-        await writeFile(temporary, JSON.stringify({ version: 1, strategy, groupIds }), {
-          encoding: 'utf8',
-          mode: 0o600,
-          flag: 'wx'
-        })
-        await rename(temporary, path)
-      } finally {
-        await rm(temporary, { force: true })
-      }
+    /** Durably reserves a group ID before publication. @param groupId - Prepared group ID. @returns Completion after atomic storage. */
+    reserve: async (groupId: Hex) => {
+      const state = await readPersisted()
+      await writePersisted({
+        ...state,
+        reservedGroupIds: [...new Set([...state.reservedGroupIds, canonicalId(groupId)])]
+      })
+    },
+    /** Converts a reservation to confirmed ownership after publication. @param groupId - Published group ID. @returns Completion after atomic storage. */
+    confirm: async (groupId: Hex) => {
+      const state = await readPersisted()
+      const id = canonicalId(groupId)
+      await writePersisted({
+        confirmedGroupIds: [...new Set([...state.confirmedGroupIds, id])],
+        reservedGroupIds: state.reservedGroupIds.filter(value => value !== id)
+      })
+    },
+    /** Removes an unpublished group reservation. @param groupId - Prepared group ID. @returns Completion after atomic storage. */
+    release: async (groupId: Hex) => {
+      const state = await readPersisted()
+      const id = canonicalId(groupId)
+      await writePersisted({
+        ...state,
+        reservedGroupIds: state.reservedGroupIds.filter(value => value !== id)
+      })
     }
   }
 }

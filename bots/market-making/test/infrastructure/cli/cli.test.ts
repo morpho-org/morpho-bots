@@ -4,6 +4,7 @@ import { PositionBootstrapHaltedError } from '../../../src/application/position-
 import { VersionService } from '../../../src/application/version.service'
 import { Cli } from '../../../src/infrastructure/cli/cli'
 import { CliUsageError } from '../../../src/infrastructure/cli/cli-usage.error'
+import { runMarketMakingEntrypoint } from '../../../src/infrastructure/cli/market-making-entrypoint'
 
 const readyReport = {
   ready: true,
@@ -216,27 +217,56 @@ describe('Cli', () => {
   })
 
   test('rejects a bootstrap cycle containing a strategy-wide safety halt', async () => {
+    const report = [
+      {
+        marketId: `0x${'11'.repeat(32)}`,
+        status: 'halted',
+        stage: 'reference-read',
+        strategyInvalidated: true,
+        errorName: 'ProviderReadError'
+      }
+    ]
     const application = new Cli(
       new VersionService(),
       () => ({ assertReady: async () => readyReport }),
       () => ({
-        runOnce: async () => [
-          {
-            marketId: `0x${'11'.repeat(32)}`,
-            status: 'halted',
-            stage: 'reference-read',
-            strategyInvalidated: true,
-            errorName: 'ProviderReadError'
-          }
-        ]
+        runOnce: async () => report
       })
     )
 
     const error = await application.run(['bootstrap']).catch(value => value)
 
     expect(error).toBeInstanceOf(PositionBootstrapHaltedError)
-    expect(error).toMatchObject({ code: 'POSITION_BOOTSTRAP_HALTED', kind: 'safety-halt' })
+    expect(error).toMatchObject({
+      code: 'POSITION_BOOTSTRAP_HALTED',
+      kind: 'safety-halt',
+      report
+    })
     expect((error as Error).message).toBe('Position bootstrap halted for safety')
+  })
+
+  test('entrypoint emits a halted report and returns a non-zero exit code', async () => {
+    const report = [
+      {
+        marketId: `0x${'11'.repeat(32)}`,
+        status: 'halted',
+        stage: 'reference-read',
+        strategyInvalidated: true,
+        errorName: 'ProviderReadError'
+      }
+    ]
+    const stdout: string[] = []
+    const stderr: string[] = []
+
+    const exitCode = await runMarketMakingEntrypoint(
+      { run: async () => Promise.reject(new PositionBootstrapHaltedError(report)) },
+      ['bootstrap'],
+      { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) }
+    )
+
+    expect(exitCode).toBe(1)
+    expect(stdout).toEqual([])
+    expect(stderr).toEqual([JSON.stringify(report)])
   })
 
   test('propagates a readiness failure for a deterministic non-zero entrypoint exit', async () => {

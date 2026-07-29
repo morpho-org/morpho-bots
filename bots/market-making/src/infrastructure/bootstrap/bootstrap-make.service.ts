@@ -4,7 +4,9 @@ import type { BootstrapMakeService } from '../../application/position-bootstrap.
 import type { BootstrapOffer } from '../../domain/position-bootstrap'
 import type { BootstrapActiveGroup } from './bootstrap-position.service'
 
+import { operatorErrorName } from '../../application/operator-error-name.utils'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
+import { BootstrapHardHaltError } from './bootstrap-hard-halt.error'
 
 type BootstrapBookOffer = { marketId: Hex; buy: boolean; tick: bigint }
 
@@ -16,10 +18,14 @@ interface BootstrapOfferTransport {
   listBookOffers(): Promise<readonly BootstrapBookOffer[]>
   /** Projects a domain offer into its exact protocol tick. @param offer - Desired offer. @returns Prospective book offer. */
   toProspectiveBookOffer(offer: BootstrapOffer): Promise<BootstrapBookOffer>
-  /** Builds, signs, validates, and publishes one lend offer. @param offer - Desired offer. @returns Published group ID after confirmation. */
-  publish(offer: BootstrapOffer): Promise<Hex>
-  /** Durably records a confirmed bot-issued group. @param group - Published group ID. @returns Completion after durable storage. */
-  rememberPublishedGroup(group: Hex): Promise<void>
+  /** Builds and signs one publication without broadcasting it. @param offer - Desired offer. @returns Reserved group ID and a one-shot confirmed publisher. */
+  preparePublication(offer: BootstrapOffer): Promise<{ groupId: Hex; publish(): Promise<void> }>
+  /** Durably records publication intent before broadcast. @param group - Future group ID. @returns Completion after durable storage. */
+  reserveGroup(group: Hex): Promise<void>
+  /** Finalizes a confirmed group while retaining ownership. @param group - Confirmed group ID. @returns Completion after durable storage. */
+  confirmPublishedGroup(group: Hex): Promise<void>
+  /** Removes intent after publication fails. @param group - Unpublished group ID. @returns Completion after durable storage. */
+  releaseGroupReservation(group: Hex): Promise<void>
   /** Invalidates one active group onchain. @param group - Active group ID. @returns Completion after receipt confirmation. */
   invalidate(group: Hex): Promise<void>
 }
@@ -71,8 +77,19 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
         await this.transport.invalidate(group.id)
       }
       if (parameters.desiredOffer) {
-        const publishedGroup = await this.transport.publish(parameters.desiredOffer)
-        await this.transport.rememberPublishedGroup(publishedGroup)
+        const publication = await this.transport.preparePublication(parameters.desiredOffer)
+        await this.transport.reserveGroup(publication.groupId)
+        try {
+          await publication.publish()
+        } catch (error) {
+          try {
+            await this.transport.releaseGroupReservation(publication.groupId)
+          } catch {
+            throw new BootstrapAdapterError('publication-reservation-cleanup')
+          }
+          throw error
+        }
+        await this.transport.confirmPublishedGroup(publication.groupId)
       }
     })
   }
@@ -92,9 +109,15 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
   }) {
     void parameters
     return this.enqueue(async () => {
+      const failures = []
       for (const group of await this.strategyGroups()) {
-        await this.transport.invalidate(group.id)
+        try {
+          await this.transport.invalidate(group.id)
+        } catch (error) {
+          failures.push({ groupId: group.id, errorName: operatorErrorName(error) })
+        }
       }
+      if (failures.length > 0) throw new BootstrapHardHaltError(failures)
     })
   }
 

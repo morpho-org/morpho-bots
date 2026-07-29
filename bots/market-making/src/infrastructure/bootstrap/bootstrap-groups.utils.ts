@@ -46,6 +46,13 @@ const bytes32 = (value: unknown) => {
   return bytesToHex(hexToBytes(value))
 }
 
+const unsignedDecimal = (value: unknown) => {
+  if (typeof value !== 'string' || !/^(0|[1-9]\d*)$/.test(value)) {
+    throw new BootstrapAdapterError('offer-groups-response')
+  }
+  return BigInt(value)
+}
+
 const parseOffer = (value: unknown, maker: Address): BootstrapBookOffer => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new BootstrapAdapterError('offer-groups-response')
@@ -77,15 +84,15 @@ const parseGroup = (value: unknown, maker: Address) => {
   const group = value as Record<string, unknown>
   if (!Array.isArray(group.offers)) throw new BootstrapAdapterError('offer-groups-response')
   const offers = group.offers.map(offer => parseOffer(offer, maker))
-  if (typeof group.consumed !== 'string' || typeof group.max_assets !== 'string') {
-    throw new BootstrapAdapterError('offer-groups-response')
-  }
   let common: Pick<BootstrapRawGroup, 'id' | 'consumed' | 'maxAssets' | 'offers'>
   try {
+    const consumed = unsignedDecimal(group.consumed)
+    const maxAssets = unsignedDecimal(group.max_assets)
+    if (consumed > maxAssets) throw new BootstrapAdapterError('offer-groups-response')
     common = {
       id: bytes32(group.id),
-      consumed: BigInt(group.consumed),
-      maxAssets: BigInt(group.max_assets),
+      consumed,
+      maxAssets,
       offers
     }
   } catch (error) {
