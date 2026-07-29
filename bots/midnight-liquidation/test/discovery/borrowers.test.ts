@@ -194,6 +194,30 @@ describe('createApiCandidateSource', () => {
     expect(page.data).toHaveLength(1)
   })
 
+  it('awaits waitForSlot before every attempt, retries included (the discovery rate cap)', async () => {
+    const order: string[] = []
+    let attempts = 0
+    const fetchImpl = async () => {
+      order.push('fetch')
+      attempts += 1
+      if (attempts === 1) return jsonResponse({}, 429, { 'retry-after': '0' })
+      return jsonResponse({ cursor: null, data: [row(MARKET, BORROWER)] })
+    }
+    const source = createApiCandidateSource({
+      url: BASE_URL,
+      chainId: 8453,
+      healthFactorLte: 1.02,
+      fetchImpl,
+      waitForSlot: async () => {
+        order.push('slot')
+      },
+      sleep: async () => {}
+    })
+    await source(null)
+    // Both the first attempt and its retry take a token BEFORE hitting the network.
+    expect(order).toEqual(['slot', 'fetch', 'slot', 'fetch'])
+  })
+
   it('coerces a null cursor and missing data to a safe empty page', async () => {
     const fetchImpl = async () => jsonResponse({ cursor: null })
     const source = createApiCandidateSource({

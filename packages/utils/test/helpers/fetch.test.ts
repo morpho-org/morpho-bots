@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
 
-import { fetchJsonResponse, fetchWithRetry, parseJsonResponse } from '../../src/helpers/fetch'
+import {
+  fetchJsonResponse,
+  fetchWithRetry,
+  HttpRetryExhaustedError,
+  parseJsonResponse
+} from '../../src/helpers/fetch'
 
 function mockResponse(body: string, status = 200): Response {
   return new Response(body, { status })
@@ -136,6 +141,36 @@ describe('fetchWithRetry', () => {
         maxRetries: 1
       })
     ).rejects.toThrow('markets HTTP 500')
+  })
+
+  it('throws HttpRetryExhaustedError carrying status + Retry-After on a persistent 429', async () => {
+    const error = await fetchWithRetry(async () => ok({}, 429, { 'retry-after': '300' }), {
+      label: 'liquidation-candidates',
+      sleep: async () => {},
+      maxRetries: 1
+    }).then(
+      () => null,
+      caught => caught as HttpRetryExhaustedError
+    )
+    expect(error).toBeInstanceOf(HttpRetryExhaustedError)
+    // The message stays byte-identical to the plain-Error era for message-matching callers.
+    expect(error?.message).toBe('liquidation-candidates HTTP 429')
+    expect(error?.status).toBe(429)
+    expect(error?.retryAfterMs).toBe(300_000)
+  })
+
+  it('leaves retryAfterMs undefined when the exhausted 5xx sent no Retry-After', async () => {
+    const error = await fetchWithRetry(async () => ok({}, 503), {
+      label: 'markets',
+      sleep: async () => {},
+      maxRetries: 0
+    }).then(
+      () => null,
+      caught => caught as HttpRetryExhaustedError
+    )
+    expect(error).toBeInstanceOf(HttpRetryExhaustedError)
+    expect(error?.status).toBe(503)
+    expect(error?.retryAfterMs).toBeUndefined()
   })
 
   it('throws immediately on a non-retryable 4xx (no sleep)', async () => {

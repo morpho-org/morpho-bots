@@ -304,4 +304,43 @@ describe('loadConfig', () => {
       /HEALTH_FACTOR_LTE must be >= 1/
     )
   })
+
+  it('applies conservative defaults for the discovery cooldown and rate cap', () => {
+    const config = loadConfig(baseEnv(), deps)
+    expect(config.discovery.cooldownBaseMs).toBe(60_000)
+    expect(config.discovery.cooldownMaxMs).toBe(600_000)
+    expect(config.discovery.httpRps).toBe(2)
+    expect(config.discovery.httpBurst).toBe(4)
+  })
+
+  it('overrides the discovery cooldown and rate-cap knobs from env', () => {
+    const config = loadConfig(
+      baseEnv({
+        DISCOVERY_COOLDOWN_BASE_MS: '30000',
+        DISCOVERY_COOLDOWN_MAX_MS: '900000',
+        DISCOVERY_HTTP_RPS: '1',
+        DISCOVERY_HTTP_BURST: '2'
+      }),
+      deps
+    )
+    expect(config.discovery.cooldownBaseMs).toBe(30_000)
+    expect(config.discovery.cooldownMaxMs).toBe(900_000)
+    expect(config.discovery.httpRps).toBe(1)
+    expect(config.discovery.httpBurst).toBe(2)
+  })
+
+  it('throws when DISCOVERY_COOLDOWN_MAX_MS is below DISCOVERY_COOLDOWN_BASE_MS', () => {
+    expect(() =>
+      loadConfig(
+        baseEnv({ DISCOVERY_COOLDOWN_BASE_MS: '60000', DISCOVERY_COOLDOWN_MAX_MS: '1000' }),
+        deps
+      )
+    ).toThrow(/DISCOVERY_COOLDOWN_MAX_MS \(1000\) must be >= DISCOVERY_COOLDOWN_BASE_MS \(60000\)/)
+  })
+
+  it('rejects a zero DISCOVERY_HTTP_RPS (the cap cannot disable discovery outright)', () => {
+    expect(() => loadConfig(baseEnv({ DISCOVERY_HTTP_RPS: '0' }), deps)).toThrow(
+      /DISCOVERY_HTTP_RPS must be >= 1/
+    )
+  })
 })

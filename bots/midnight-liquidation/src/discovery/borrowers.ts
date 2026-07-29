@@ -116,12 +116,19 @@ type FetchLike = (request: Request) => Promise<Response>
  * fixed {@link PATH} suffix (falling back to the origin). An operator override of
  * `LIQUIDATION_CANDIDATES_API_URL` therefore changes host/prefix, but the request path is fixed by
  * the typed client.
+ *
+ * `waitForSlot` (a token-bucket `take`, see `DISCOVERY_HTTP_RPS`) gates EVERY attempt — retries
+ * included — so request volume stays bounded regardless of what the endpoint returns (CRTR-2857:
+ * its CDN can mask a throttled origin as a `200`, in which case no error ever surfaces to trip the
+ * cross-tick cooldown). It is awaited inside the retry callback, after any backoff sleep and
+ * before the per-request deadline starts, so waiting for a slot never eats the timeout.
  */
 export function createApiCandidateSource(deps: {
   url: string
   chainId: number
   healthFactorLte: number
   limit?: number
+  waitForSlot?: () => Promise<void>
   fetchImpl?: FetchLike
   sleep?: (ms: number) => Promise<void>
 }): FetchCandidatePage {
@@ -133,8 +140,9 @@ export function createApiCandidateSource(deps: {
 
   return async cursor => {
     const body = await fetchWithRetry(
-      () =>
-        client.GET(PATH, {
+      async () => {
+        await deps.waitForSlot?.()
+        return client.GET(PATH, {
           params: {
             query: {
               chain_ids: [deps.chainId],
@@ -148,7 +156,8 @@ export function createApiCandidateSource(deps: {
             }
           },
           signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
-        }),
+        })
+      },
       { label: 'liquidation-candidates', sleep }
     )
 
