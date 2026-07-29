@@ -175,6 +175,18 @@ describe('Cli', () => {
     for (const marker of markers) expect(output).not.toContain(marker)
   })
 
+  test('passes an explicit --config path to the command configuration boundary', async () => {
+    let configPath: string | undefined
+    const application = new Cli(new VersionService(), options => {
+      configPath = options.configPath
+      return { assertReady: async () => readyReport }
+    })
+
+    await application.run(['--config', 'operator.yml', 'setup-check'])
+
+    expect(configPath).toBe('operator.yml')
+  })
+
   test('runs setup-check and returns a structured bigint-safe report', async () => {
     expect(await cli().run(['setup-check'])).toBe(
       '{"ready":true,"checks":[{"name":"native-balance","status":"passed","observed":"10","required":"10"}]}'

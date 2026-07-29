@@ -1,6 +1,9 @@
 import type { Address, Hex } from 'viem'
 
 import { describe, expect, test } from 'bun:test'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import type { SetupStateService } from '../src/application/setup-check.service'
 
@@ -75,6 +78,57 @@ describe('createApplication', () => {
 
     expect(output.ready).toBe(true)
     expect(output.checks).toHaveLength(9)
+  })
+
+  test('wires explicit --config and default working-directory discovery into startup', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'market-making-bootstrap-'))
+    const configuration = `
+chain:
+  id: 8453
+  rpcUrl: https://yaml-rpc.example
+  archiveRpcUrl: https://archive.example
+identity:
+  makerAddress: "${maker}"
+  makerPrivateKey: "${environment.MAKER_PRIVATE_KEY}"
+contracts:
+  midnightAddress: "${midnight}"
+  loanAssetAddress: "${loanAsset}"
+  ratifierAddress: "${ratifier}"
+apis:
+  morphoBaseUrl: https://api.example
+  routerBaseUrl: https://router.example
+markets:
+  allowlist: ["${marketId}"]
+  referenceMarketId: "${referenceMarketId}"
+setup:
+  nativeReserveWei: "10"
+  maximumLendExposureAssets: "100"
+`
+    try {
+      await writeFile(join(directory, 'market-making.yml'), configuration)
+      await writeFile(
+        join(directory, 'explicit.yaml'),
+        configuration.replace('yaml-rpc', 'explicit-rpc')
+      )
+      const observed: string[] = []
+      const application = createApplication(
+        {},
+        {
+          cwd: directory,
+          createState: config => {
+            observed.push(config.rpcUrl)
+            return readyState()
+          }
+        }
+      )
+
+      await application.run(['setup-check'])
+      await application.run(['--config', 'explicit.yaml', 'setup-check'])
+
+      expect(observed).toEqual(['https://yaml-rpc.example', 'https://explicit-rpc.example'])
+    } finally {
+      await rm(directory, { recursive: true })
+    }
   })
 
   test('rejects setup-check readiness before any writer workflow can start', async () => {

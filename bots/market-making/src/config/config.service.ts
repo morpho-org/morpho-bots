@@ -5,11 +5,15 @@ import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
 
 import type { SetupCheckConfig } from '../application/setup-check.service'
+import type { BootstrapConfig } from '../domain/position-bootstrap'
+import type { ConfigurationLoadOptions, ConfigurationSource } from './config-source.utils'
 import type { Environment } from './config.utils'
 
+import { configurationFromEnvironment, loadConfigurationSources } from './config-source.utils'
 import { ConfigValidationError } from './config-validation.error'
 import {
   addressValue,
+  bootstrapConfigsValue,
   bytes32Value,
   hexListValue,
   requestTimeoutValue,
@@ -18,24 +22,44 @@ import {
   urlValue
 } from './config.utils'
 
-/** Immutable, validated market-making runtime configuration loaded from environment values. */
+/** Immutable, validated market-making runtime configuration loaded from YAML and environment values. */
 export class ConfigService {
   /**
-   * Parses and validates every setup-check environment variable before provider access begins.
+   * Parses the existing environment-only representation through the shared validation path.
    * @param environment - Environment map; defaults to `Bun.env` at the runtime boundary.
    * @returns An immutable configuration with checksummed addresses and narrowed IDs.
    * @throws `ConfigValidationError` on missing, malformed, duplicated, unsupported, or out-of-range
    * values; rejected values and secrets are not retained by the error.
-   * @remarks Read-only apart from reading the supplied map; values and secrets are never logged.
    */
   static from(environment: Environment = Bun.env) {
-    const chainId = Number(requiredValue(environment, 'CHAIN_ID'))
-    if (chainId !== base.id)
+    return ConfigService.fromSource(configurationFromEnvironment(environment))
+  }
+
+  /**
+   * Loads an explicit or discovered YAML file, overlays environment values, and validates once.
+   * @param environment - Environment values; supplied keys always override corresponding YAML.
+   * @param options - Optional explicit path and invocation working directory.
+   * @returns A single immutable configuration shared by setup and bootstrap consumers.
+   * @throws `ConfigFileError` or `ConfigValidationError` with no rejected values attached.
+   * @remarks Without an explicit path, discovery securely opens `market-making.yaml` before
+   * `market-making.yml` in `options.cwd` (or `process.cwd()`). Only an absent higher-precedence path
+   * permits fallback; unsafe entries fail closed. No file means env-only loading.
+   */
+  static async load(environment: Environment = Bun.env, options: ConfigurationLoadOptions = {}) {
+    return ConfigService.fromSource(await loadConfigurationSources(environment, options))
+  }
+
+  private static fromSource(source: ConfigurationSource) {
+    const environment = source.values as Environment
+    const rawChainId = requiredValue(environment, 'CHAIN_ID')
+    const chainId = /^\d+$/.test(rawChainId) ? Number(rawChainId) : Number.NaN
+    if (!Number.isSafeInteger(chainId) || chainId !== base.id) {
       throw new ConfigValidationError(
         'CHAIN_ID',
         'unsupported-chain',
-        `Unsupported CHAIN_ID ${chainId}; supported: ${base.id}`
+        `Unsupported CHAIN_ID; supported: ${base.id}`
       )
+    }
 
     const privateKey = requiredValue(environment, 'MAKER_PRIVATE_KEY')
     if (!isHex(privateKey, { strict: true }) || size(privateKey) !== 32) {
@@ -73,7 +97,11 @@ export class ConfigService {
       morphoApiBaseUrl: urlValue(environment, 'MORPHO_API_BASE_URL'),
       routerApiBaseUrl: urlValue(environment, 'ROUTER_API_BASE_URL'),
       v0OfferGroupIds: hexListValue(environment, 'V0_OFFER_GROUP_IDS', false),
-      requestTimeoutMs: requestTimeoutValue(environment)
+      requestTimeoutMs: requestTimeoutValue(environment),
+      bootstrap: bootstrapConfigsValue(
+        source.bootstrap,
+        hexListValue(environment, 'MARKET_IDS', true)
+      )
     })
   }
 
@@ -87,6 +115,7 @@ export class ConfigService {
       routerApiBaseUrl: string
       v0OfferGroupIds: readonly Hex[]
       requestTimeoutMs: number
+      bootstrap: readonly BootstrapConfig[]
     }
   ) {}
 
@@ -128,5 +157,10 @@ export class ConfigService {
   /** Exposes the aggregate provider timeout. @returns Bounded provider timeout in milliseconds, between 1 and 120,000 inclusive. */
   get requestTimeoutMs() {
     return this.values.requestTimeoutMs
+  }
+
+  /** Exposes position-bootstrap settings. @returns The validated ordered market list; `BOOTSTRAP_MARKETS` replaces YAML `bootstrap` as a whole. */
+  get bootstrap() {
+    return this.values.bootstrap
   }
 }
