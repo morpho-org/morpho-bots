@@ -197,7 +197,7 @@ export class SetupCheckService {
       capture(() => this.state.getLatestTimestamp()),
       Promise.all(bookReads.map(async book => ({ ...book, response: await book.response }))),
       capture(() => this.state.checkReference(), 'archive-rpc'),
-      capture(() => this.state.inspectOffers(this.config.maker), 'router-api'),
+      capture(() => this.state.inspectOffers(this.config.maker), 'morpho-api'),
       capture(() => this.state.checkPositionHealth())
     ])
     const [

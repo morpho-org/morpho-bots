@@ -31,6 +31,8 @@ export interface BootstrapPositionService {
    * @param marketId - Canonical market identifier to inspect.
    * @returns Fresh credit, debt, capacity inputs, any representative active bootstrap offer, and a
    *   reconciliation marker when duplicate groups exist.
+   * @throws Error when the position provider cannot return a fresh, valid snapshot.
+   * @remarks This read-only port must not publish, replace, or invalidate offers.
    */
   readPosition(marketId: Hex): Promise<
     BootstrapPosition & {
@@ -47,6 +49,8 @@ export interface BootstrapReferenceRateService {
    * Reads the current reference rate used to derive a requested bootstrap rate.
    * @param marketId - Canonical market identifier whose reference is required.
    * @returns Static or variable rate and its stable observation identifier.
+   * @throws Error when the reference provider cannot return a fresh, valid observation.
+   * @remarks This read-only port must not publish, replace, or invalidate offers.
    */
   readRate(marketId: Hex): Promise<BootstrapRate>
 }
@@ -57,6 +61,8 @@ export interface BootstrapMakeService {
    * Reconciles one market's desired bootstrap offer or invalidates that market group.
    * @param parameters - Canonical market, optional desired offer, and stable action reason.
    * @returns Completion after the requested publication or invalidation is confirmed.
+   * @throws Error when simulation, publication, replacement, or invalidation fails.
+   * @remarks This mutating port may change only the requested strategy-owned market group.
    */
   reconcile(parameters: {
     marketId: Hex
@@ -73,6 +79,8 @@ export interface BootstrapMakeService {
    * Invalidates all strategy-owned bootstrap groups after a cycle-level safety failure.
    * @param parameters - Fixed safety reason that triggered strategy-wide invalidation.
    * @returns Completion after every strategy-owned group is invalidated.
+   * @throws Error when one or more strategy-owned groups cannot be invalidated.
+   * @remarks This mutating port performs strategy-wide cleanup and must not publish offers.
    */
   hardHalt(parameters: {
     reason:
@@ -126,6 +134,10 @@ type BootstrapRunResult =
       hardHaltErrorName?: string
     }
 
+type BootstrapRunPlan =
+  | { config: BootstrapConfig; decision: PositionBootstrapDecision }
+  | { result: BootstrapRunResult }
+
 /** Applies position-bootstrap cycles. Its in-memory one-shot gate resets on service recreation. */
 export class PositionBootstrapService {
   private readonly completedMarkets = new Set<Hex>()
@@ -169,6 +181,9 @@ export class PositionBootstrapService {
       }
     }
 
+    const plans: BootstrapRunPlan[] = []
+    const preflightResults = () => plans.flatMap(plan => ('result' in plan ? [plan.result] : []))
+
     for (const config of this.configs) {
       let position: Awaited<ReturnType<BootstrapPositionService['readPosition']>>
       try {
@@ -180,8 +195,8 @@ export class PositionBootstrapService {
           error,
           'market-read-failed'
         )
-        results.push(result)
-        if (result.status === 'halted') return results
+        if (result.status === 'halted') return [...preflightResults(), result]
+        plans.push({ result })
         continue
       }
 
@@ -194,10 +209,13 @@ export class PositionBootstrapService {
           initialTargetCompleted: this.completedMarkets.has(config.marketId)
         })
       } catch (error) {
-        results.push(
-          await this.haltStrategy(config.marketId, 'decision', error, 'bootstrap-decision-failed')
+        const result = await this.haltStrategy(
+          config.marketId,
+          'decision',
+          error,
+          'bootstrap-decision-failed'
         )
-        return results
+        return [...preflightResults(), result]
       }
       let decision: PositionBootstrapDecision
 
@@ -208,15 +226,13 @@ export class PositionBootstrapService {
         try {
           rate = await this.rates.readRate(config.marketId)
         } catch (error) {
-          results.push(
-            await this.haltStrategy(
-              config.marketId,
-              'reference-read',
-              error,
-              'reference-read-failed'
-            )
+          const result = await this.haltStrategy(
+            config.marketId,
+            'reference-read',
+            error,
+            'reference-read-failed'
           )
-          return results
+          return [...preflightResults(), result]
         }
 
         try {
@@ -229,12 +245,25 @@ export class PositionBootstrapService {
             initialTargetCompleted: this.completedMarkets.has(config.marketId)
           })
         } catch (error) {
-          results.push(
-            await this.haltStrategy(config.marketId, 'decision', error, 'bootstrap-decision-failed')
+          const result = await this.haltStrategy(
+            config.marketId,
+            'decision',
+            error,
+            'bootstrap-decision-failed'
           )
-          return results
+          return [...preflightResults(), result]
         }
       }
+
+      plans.push({ config, decision })
+    }
+
+    for (const plan of plans) {
+      if ('result' in plan) {
+        results.push(plan.result)
+        continue
+      }
+      const { config, decision } = plan
 
       if ('completesInitialTarget' in decision && decision.completesInitialTarget) {
         this.completedMarkets.add(config.marketId)

@@ -116,6 +116,23 @@ export const marketFromApi = (value: unknown) => {
 }
 
 /**
+ * Extracts canonical Base market IDs proven listed by the documented markets endpoint.
+ * @param value - Untrusted `listed=true` markets response.
+ * @returns Canonical IDs whose rows explicitly identify Base and `listed: true`.
+ * @throws When the response envelope or any listing identity field is malformed.
+ */
+export const listedBaseMarketIds = (value: unknown) => {
+  const response = objectValue(value, 'Morpho API markets response')
+  return arrayValue(response.data, 'Morpho API markets data').flatMap(item => {
+    const market = objectValue(item, 'Morpho API listed market')
+    const id = bytes32Value(market.market_id, 'listed market_id')
+    const chainId = integerValue(market.chain_id, 'listed market chain_id')
+    const listed = booleanValue(market.listed, 'listed market flag')
+    return chainId === BASE_CHAIN_ID && listed ? [id] : []
+  })
+}
+
+/**
  * Parses one nested active offer needed for setup safety checks.
  * @param value - One untrusted active offer from an offer group.
  * @param group - Canonical parent offer-group ID.
@@ -142,6 +159,8 @@ export const offerFromApi = (value: unknown, group: Hex) => {
 export const offersFromGroups = (value: unknown) =>
   arrayValue(value, 'Router data').flatMap(groupValue => {
     const group = objectValue(groupValue, 'Router offer group')
+    const chainId = integerValue(group.chain_id, 'offer group chain_id')
+    if (chainId !== BASE_CHAIN_ID) return []
     const groupId = bytes32Value(group.id, 'offer group id')
     return arrayValue(group.offers, 'Router active offers').map(offer =>
       offerFromApi(offer, groupId)

@@ -86,6 +86,14 @@ describe('SetupCheckService', () => {
     ])
   })
 
+  test('reports compact deployment status instead of Midnight runtime bytecode', async () => {
+    const report = await new SetupCheckService(readyState(), config).check()
+    const chain = report.checks.find(check => check.name === 'chain')
+
+    expect(chain?.observed).toMatchObject({ midnightCode: 'deployed' })
+    expect(JSON.stringify(chain)).not.toContain('0x1234')
+  })
+
   test('preserves a typed provider id when a compound setup read fails', async () => {
     const state = readyState()
     state.getBook = async () => {
@@ -132,6 +140,41 @@ describe('SetupCheckService', () => {
         ]
       }
     ])
+  })
+
+  test('preserves a neutral typed provider id for cross-provider validation', async () => {
+    const state = readyState()
+    state.getBook = async () => {
+      throw new ProviderResponseError('provider', 'book-loan-asset', 'providers disagree')
+    }
+
+    const report = await new SetupCheckService(state, config).check()
+    const books = report.checks.find(check => check.name === 'books')
+
+    expect(books?.observed).toEqual([
+      {
+        id: marketId,
+        reasons: [
+          {
+            providerError: expect.objectContaining({ provider: 'provider', context: 'read' })
+          }
+        ]
+      }
+    ])
+  })
+
+  test('attributes untyped offer pagination failures to the Morpho API', async () => {
+    const state = readyState()
+    state.inspectOffers = async () => {
+      throw new Error('pagination failed')
+    }
+
+    const report = await new SetupCheckService(state, config).check()
+    const offers = report.checks.find(check => check.name === 'offers')
+
+    expect(offers?.observed).toMatchObject({
+      error: { provider: 'morpho-api', context: 'read' }
+    })
   })
 
   test('rejects readiness with the failed check and remediation when setup is unsafe', async () => {

@@ -582,6 +582,28 @@ describe('PositionBootstrapService', () => {
     ])
   })
 
+  test('preflights every reference decision before publishing an earlier market', async () => {
+    const { service, rates, reconcile, hardHalt } = setup({
+      configs: [config(), config(secondMarketId)]
+    })
+    rates.readRate = mock(async id => {
+      if (id === secondMarketId) throw new TypeError('stale reference')
+      return { mode: 'static' as const, rateBps: 500n, observationId: 'static:500' }
+    })
+
+    expect(await service.runOnce()).toEqual([
+      {
+        marketId: secondMarketId,
+        status: 'halted',
+        stage: 'reference-read',
+        strategyInvalidated: true,
+        errorName: 'TypeError'
+      }
+    ])
+    expect(hardHalt).toHaveBeenCalledWith({ reason: 'reference-read-failed' })
+    expect(reconcile).not.toHaveBeenCalled()
+  })
+
   test('preserves the reference failure classification when strategy cleanup also fails', async () => {
     const { service, rates, make } = setup()
     rates.readRate = mock(async () => {
