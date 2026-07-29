@@ -50,6 +50,28 @@ describe('MidnightBootstrapPositionService', () => {
     expect(position.totalExposure).toBe(85n)
   })
 
+  test('subtracts other outstanding lend groups from wallet cash capacity', async () => {
+    const otherMarketId: Hex = `0x${'44'.repeat(32)}`
+    const service = new MidnightBootstrapPositionService(
+      {
+        readPositions: async () => [
+          { marketId, credit: 0n, debt: 0n },
+          { marketId: otherMarketId, credit: 0n, debt: 0n }
+        ],
+        readCashBalance: async () => 100n,
+        readActiveGroups: async () => [
+          { id: firstGroup, marketId, assets: 20n, rateBps: 500n },
+          { id: secondGroup, marketId: otherMarketId, assets: 70n, rateBps: 500n }
+        ]
+      },
+      maker
+    )
+
+    const position = await service.readPosition(marketId)
+
+    expect(position.cashBalance).toBe(30n)
+  })
+
   test('counts a shared multi-market group once in aggregate exposure', async () => {
     const otherMarketId: Hex = `0x${'44'.repeat(32)}`
     const inspectionMarketId: Hex = `0x${'55'.repeat(32)}`
@@ -76,6 +98,32 @@ describe('MidnightBootstrapPositionService', () => {
     expect(first.activeOffer?.referenceObservationId).toBe(`group:${firstGroup}`)
     expect(second.activeOffer?.referenceObservationId).toBe(`group:${firstGroup}`)
     expect(aggregate.totalExposure).toBe(100n)
+  })
+
+  test('rehydrates persisted intended rate and reference observation', async () => {
+    const service = new MidnightBootstrapPositionService(
+      {
+        readPositions: async () => [{ marketId, credit: 0n, debt: 0n }],
+        readCashBalance: async () => 100n,
+        readActiveGroups: async () => [
+          {
+            id: firstGroup,
+            marketId,
+            assets: 100n,
+            rateBps: 450n,
+            referenceObservationId: 'blocks:100-200'
+          }
+        ]
+      },
+      maker
+    )
+
+    expect((await service.readPosition(marketId)).activeOffer).toEqual({
+      marketId,
+      assets: 100n,
+      rateBps: 450n,
+      referenceObservationId: 'blocks:100-200'
+    })
   })
 
   test('forces reconciliation when duplicate active groups exist for one market', async () => {

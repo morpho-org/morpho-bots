@@ -264,6 +264,34 @@ describe('MidnightBootstrapMakeService', () => {
     expect(events).toEqual([])
   })
 
+  test('refuses market-local replacement of a group shared with another market', async () => {
+    const secondMarketId: Hex = `0x${'44'.repeat(32)}`
+    const events: string[] = []
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [
+        { id: groupId, marketId, assets: 100n, rateBps: 500n },
+        { id: groupId, marketId: secondMarketId, assets: 100n, rateBps: 600n }
+      ],
+      listBookOffers: async () => [],
+      toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
+      preparePublication: async () => ({ groupId: publishedGroupId, publish: async () => {} }),
+      reserveGroup: async () => {},
+      confirmPublishedGroup: async () => {},
+      releaseGroupReservation: async () => {},
+      invalidate: async () => {
+        events.push('invalidate')
+      }
+    })
+
+    const error = await service
+      .reconcile({ marketId, desiredOffer, reason: 'replace' })
+      .catch(value => value)
+
+    expect(error).toBeInstanceOf(BootstrapAdapterError)
+    expect(error).toMatchObject({ operation: 'shared-group-reconciliation' })
+    expect(events).toEqual([])
+  })
+
   test('cancels a shared multi-market group only once during a hard halt', async () => {
     const secondMarketId: Hex = `0x${'44'.repeat(32)}`
     const attempted: Hex[] = []

@@ -14,6 +14,7 @@ export type BootstrapActiveGroup = {
   marketId: Hex
   assets: bigint
   rateBps: bigint
+  referenceObservationId?: string
 }
 
 /** Read boundary used by the position adapter to combine chain and Mempool truth. */
@@ -61,6 +62,8 @@ export class MidnightBootstrapPositionService implements BootstrapPositionServic
     const replacementGroups = activeGroup
       ? uniqueGroups.filter(group => group.id !== activeGroup.id)
       : uniqueGroups
+    const reservedCash = replacementGroups.reduce((total, group) => total + group.assets, 0n)
+    const availableCash = cashBalance > reservedCash ? cashBalance - reservedCash : 0n
     const reservedByMarket = replacementGroups
       .filter(group => group.marketId === marketId)
       .reduce((total, group) => total + group.assets, 0n)
@@ -72,14 +75,14 @@ export class MidnightBootstrapPositionService implements BootstrapPositionServic
           marketId,
           assets: activeGroup.assets,
           rateBps: activeGroup.rateBps,
-          referenceObservationId: `group:${activeGroup.id}`
+          referenceObservationId: activeGroup.referenceObservationId ?? `group:${activeGroup.id}`
         }
       : undefined
 
     return {
       credit: position.credit,
       debt: position.debt,
-      cashBalance,
+      cashBalance: availableCash,
       marketExposure: position.credit + reservedByMarket,
       totalExposure,
       ...(activeOffer ? { activeOffer } : {}),

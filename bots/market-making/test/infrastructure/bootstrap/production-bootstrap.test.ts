@@ -272,6 +272,32 @@ describe('createBootstrapGroupOwnership', () => {
     }
   })
 
+  test('persists the intended offer metadata used to rehydrate a confirmed group', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'market-making-offer-metadata-'))
+    const ownership = createBootstrapGroupOwnership(
+      { maker, marketIds: [marketId], configuredGroupIds: [] },
+      { stateDirectory: directory }
+    )
+    const offer = {
+      marketId,
+      assets: 100n,
+      rateBps: 450n,
+      referenceObservationId: 'blocks:100-200'
+    }
+    try {
+      await ownership.reserve(groupId, offer)
+      await ownership.confirm(groupId)
+
+      const restarted = createBootstrapGroupOwnership(
+        { maker, marketIds: [marketId], configuredGroupIds: [] },
+        { stateDirectory: directory }
+      )
+      expect(await restarted.readOffers()).toEqual([{ groupId, ...offer }])
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
   test('retains bot-issued IDs across instances without sharing them with another strategy', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'market-making-ownership-'))
     const ownership = createBootstrapGroupOwnership(

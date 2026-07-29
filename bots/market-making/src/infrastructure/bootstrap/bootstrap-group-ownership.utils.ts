@@ -5,6 +5,8 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { bytesToHex, hexToBytes, isHex, keccak256, size, stringToHex } from 'viem'
 
+import type { BootstrapOffer } from '../../domain/position-bootstrap'
+
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 
 type BootstrapGroupOwnershipConfig = {
@@ -17,13 +19,31 @@ type BootstrapGroupOwnershipDependencies = {
   stateDirectory?: string
 }
 
+type PersistedOffer = {
+  groupId: string
+  marketId: string
+  assets: string
+  rateBps: string
+  referenceObservationId: string
+}
+
 type OwnershipState =
   | { version: 1; strategy: string; groupIds: string[] }
   | { version: 2; strategy: string; confirmedGroupIds: string[]; reservedGroupIds: string[] }
+  | {
+      version: 3
+      strategy: string
+      confirmedGroupIds: string[]
+      reservedGroupIds: string[]
+      offers: PersistedOffer[]
+    }
+
+type OwnedOffer = BootstrapOffer & { groupId: Hex }
 
 type CanonicalOwnershipState = {
   confirmedGroupIds: Hex[]
   reservedGroupIds: Hex[]
+  offers: OwnedOffer[]
 }
 
 const canonicalId = (value: unknown) => {
@@ -31,6 +51,30 @@ const canonicalId = (value: unknown) => {
     throw new BootstrapAdapterError('group-ownership-state')
   }
   return bytesToHex(hexToBytes(value))
+}
+
+const canonicalAmount = (value: unknown) => {
+  if (typeof value !== 'string' || !/^(0|[1-9]\d*)$/.test(value)) {
+    throw new BootstrapAdapterError('group-ownership-state')
+  }
+  return BigInt(value)
+}
+
+const canonicalOffer = (value: unknown): OwnedOffer => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new BootstrapAdapterError('group-ownership-state')
+  }
+  const offer = value as Partial<PersistedOffer>
+  if (typeof offer.referenceObservationId !== 'string') {
+    throw new BootstrapAdapterError('group-ownership-state')
+  }
+  return {
+    groupId: canonicalId(offer.groupId),
+    marketId: canonicalId(offer.marketId),
+    assets: canonicalAmount(offer.assets),
+    rateBps: canonicalAmount(offer.rateBps),
+    referenceObservationId: offer.referenceObservationId
+  }
 }
 
 const strategyId = (config: BootstrapGroupOwnershipConfig) =>
@@ -47,7 +91,7 @@ const strategyId = (config: BootstrapGroupOwnershipConfig) =>
  * Creates the durable explicit ownership source shared by setup readiness, position reads, and writes.
  * @param config - Maker, configured markets, and operator-configured group IDs defining one strategy.
  * @param dependencies - Optional state directory override used by isolated tests.
- * @returns A source that reads explicit IDs and atomically remembers confirmed bot-issued IDs.
+ * @returns A source that reads explicit IDs and atomically remembers confirmed bot-issued IDs and offer intent.
  * @throws `BootstrapAdapterError` when persisted ownership state is malformed or insecurely permissioned.
  * @remarks State is namespaced by maker and configured markets, stored mode `0600`, and never infers ownership from market membership.
  */
@@ -68,7 +112,7 @@ export const createBootstrapGroupOwnership = (
       metadata = await lstat(path)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return { confirmedGroupIds: [], reservedGroupIds: [] }
+        return { confirmedGroupIds: [], reservedGroupIds: [], offers: [] }
       }
       throw new BootstrapAdapterError('group-ownership-state')
     }
@@ -79,10 +123,14 @@ export const createBootstrapGroupOwnership = (
       throw new BootstrapAdapterError('group-ownership-state')
     }
     try {
-      const value = JSON.parse(await readFile(path, 'utf8')) as Partial<OwnershipState>
+      const value = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>
       if (value.strategy !== strategy) throw new BootstrapAdapterError('group-ownership-state')
       if (value.version === 1 && Array.isArray(value.groupIds)) {
-        return { confirmedGroupIds: value.groupIds.map(canonicalId), reservedGroupIds: [] }
+        return {
+          confirmedGroupIds: value.groupIds.map(canonicalId),
+          reservedGroupIds: [],
+          offers: []
+        }
       }
       if (
         value.version === 2 &&
@@ -91,7 +139,20 @@ export const createBootstrapGroupOwnership = (
       ) {
         return {
           confirmedGroupIds: value.confirmedGroupIds.map(canonicalId),
-          reservedGroupIds: value.reservedGroupIds.map(canonicalId)
+          reservedGroupIds: value.reservedGroupIds.map(canonicalId),
+          offers: []
+        }
+      }
+      if (
+        value.version === 3 &&
+        Array.isArray(value.confirmedGroupIds) &&
+        Array.isArray(value.reservedGroupIds) &&
+        Array.isArray(value.offers)
+      ) {
+        return {
+          confirmedGroupIds: value.confirmedGroupIds.map(canonicalId),
+          reservedGroupIds: value.reservedGroupIds.map(canonicalId),
+          offers: value.offers.map(canonicalOffer)
         }
       }
       throw new BootstrapAdapterError('group-ownership-state')
@@ -107,7 +168,17 @@ export const createBootstrapGroupOwnership = (
     try {
       await writeFile(
         temporary,
-        JSON.stringify({ version: 2, strategy, ...state } satisfies OwnershipState),
+        JSON.stringify({
+          version: 3,
+          strategy,
+          confirmedGroupIds: state.confirmedGroupIds,
+          reservedGroupIds: state.reservedGroupIds,
+          offers: state.offers.map(offer => ({
+            ...offer,
+            assets: String(offer.assets),
+            rateBps: String(offer.rateBps)
+          }))
+        } satisfies OwnershipState),
         { encoding: 'utf8', mode: 0o600, flag: 'wx' }
       )
       await rename(temporary, path)
@@ -124,12 +195,18 @@ export const createBootstrapGroupOwnership = (
   return {
     /** Reads configured, confirmed, and reserved group IDs as ownership candidates. @returns Canonical explicit ownership IDs. */
     read,
-    /** Durably reserves a group ID before publication. @param groupId - Prepared group ID. @returns Completion after atomic storage. */
-    reserve: async (groupId: Hex) => {
+    /** Reads persisted offer intent for safe live-offer comparison. @returns Confirmed or reserved offers with their group IDs. */
+    readOffers: async () => (await readPersisted()).offers,
+    /** Durably reserves a group ID and offer intent before publication. @param groupId - Prepared group ID. @param offer - Intended offer semantics. @returns Completion after atomic storage. */
+    reserve: async (groupId: Hex, offer?: BootstrapOffer) => {
       const state = await readPersisted()
+      const id = canonicalId(groupId)
       await writePersisted({
         ...state,
-        reservedGroupIds: [...new Set([...state.reservedGroupIds, canonicalId(groupId)])]
+        reservedGroupIds: [...new Set([...state.reservedGroupIds, id])],
+        offers: offer
+          ? [...state.offers.filter(item => item.groupId !== id), { groupId: id, ...offer }]
+          : state.offers
       })
     },
     /** Converts a reservation to confirmed ownership after publication. @param groupId - Published group ID. @returns Completion after atomic storage. */
@@ -138,16 +215,18 @@ export const createBootstrapGroupOwnership = (
       const id = canonicalId(groupId)
       await writePersisted({
         confirmedGroupIds: [...new Set([...state.confirmedGroupIds, id])],
-        reservedGroupIds: state.reservedGroupIds.filter(value => value !== id)
+        reservedGroupIds: state.reservedGroupIds.filter(value => value !== id),
+        offers: state.offers
       })
     },
-    /** Removes an unpublished group reservation. @param groupId - Prepared group ID. @returns Completion after atomic storage. */
+    /** Removes an unpublished group reservation and its offer intent. @param groupId - Prepared group ID. @returns Completion after atomic storage. */
     release: async (groupId: Hex) => {
       const state = await readPersisted()
       const id = canonicalId(groupId)
       await writePersisted({
         ...state,
-        reservedGroupIds: state.reservedGroupIds.filter(value => value !== id)
+        reservedGroupIds: state.reservedGroupIds.filter(value => value !== id),
+        offers: state.offers.filter(value => value.groupId !== id)
       })
     }
   }

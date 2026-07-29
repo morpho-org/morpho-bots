@@ -216,6 +216,28 @@ describe('Cli', () => {
     expect(runOnce).toHaveBeenCalledTimes(1)
   })
 
+  test('rejects a bootstrap cycle containing a failed market result', async () => {
+    const report = [
+      {
+        marketId: `0x${'11'.repeat(32)}`,
+        status: 'failed',
+        stage: 'make',
+        invalidated: false,
+        errorName: 'ProviderWriteError'
+      }
+    ]
+    const application = new Cli(
+      new VersionService(),
+      () => ({ assertReady: async () => readyReport }),
+      () => ({ runOnce: async () => report })
+    )
+
+    const error = await application.run(['bootstrap']).catch(value => value)
+
+    expect(error).toBeInstanceOf(PositionBootstrapHaltedError)
+    expect(error).toMatchObject({ report })
+  })
+
   test('rejects a bootstrap cycle containing a strategy-wide safety halt', async () => {
     const report = [
       {

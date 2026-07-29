@@ -68,7 +68,7 @@ export class Cli {
           Array.isArray(result) &&
           result.some(item =>
             typeof item === 'object' && item !== null && 'status' in item
-              ? item.status === 'halted'
+              ? item.status === 'halted' || item.status === 'failed'
               : false
           )
         ) {

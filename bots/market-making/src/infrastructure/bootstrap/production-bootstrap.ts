@@ -123,8 +123,16 @@ export const createProductionBootstrapAdapters = (
     })
 
   const activeGroups = async (): Promise<BootstrapActiveGroup[]> => {
-    const now = (await wallet.getBlock({ blockTag: 'latest' })).timestamp
-    return strategyBootstrapGroups(await readGroups(), await ownership.read())
+    const [block, groups, ownedIds, ownedOffers] = await Promise.all([
+      wallet.getBlock({ blockTag: 'latest' }),
+      readGroups(),
+      ownership.read(),
+      ownership.readOffers()
+    ])
+    const intended = new Map(
+      ownedOffers.map(offer => [`${offer.groupId}:${offer.marketId}`, offer] as const)
+    )
+    return strategyBootstrapGroups(groups, ownedIds)
       .filter(
         group =>
           group.marketId !== undefined &&
@@ -132,14 +140,19 @@ export const createProductionBootstrapAdapters = (
           group.maturity !== undefined &&
           group.maxAssets > group.consumed
       )
-      .map(group => ({
-        id: group.id,
-        marketId: group.marketId as Hex,
-        assets: group.maxAssets - group.consumed,
-        rateBps:
-          TickLib.tickToApr(group.tick as bigint, (group.maturity as bigint) - now) /
-          (WAD / 10_000n)
-      }))
+      .map(group => {
+        const persisted = intended.get(`${group.id}:${group.marketId as Hex}`)
+        return {
+          id: group.id,
+          marketId: group.marketId as Hex,
+          assets: group.maxAssets - group.consumed,
+          rateBps:
+            persisted?.rateBps ??
+            TickLib.tickToApr(group.tick as bigint, (group.maturity as bigint) - block.timestamp) /
+              (WAD / 10_000n),
+          ...(persisted ? { referenceObservationId: persisted.referenceObservationId } : {})
+        }
+      })
   }
 
   const inventory: BootstrapInventoryReader = {

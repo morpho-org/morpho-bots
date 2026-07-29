@@ -21,7 +21,7 @@ interface BootstrapOfferTransport {
   /** Builds and signs one publication without broadcasting it. @param offer - Desired offer. @returns Reserved group ID and a one-shot confirmed publisher. */
   preparePublication(offer: BootstrapOffer): Promise<{ groupId: Hex; publish(): Promise<void> }>
   /** Durably records publication intent before broadcast. @param group - Future group ID. @returns Completion after durable storage. */
-  reserveGroup(group: Hex): Promise<void>
+  reserveGroup(group: Hex, offer: BootstrapOffer): Promise<void>
   /** Finalizes a confirmed group while retaining ownership. @param group - Confirmed group ID. @returns Completion after durable storage. */
   confirmPublishedGroup(group: Hex): Promise<void>
   /** Removes intent after publication fails. @param group - Unpublished group ID. @returns Completion after durable storage. */
@@ -57,6 +57,14 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
   }) {
     return this.enqueue(async () => {
       const groups = await this.strategyGroups()
+      const marketGroupIds = new Set(
+        groups.filter(item => item.marketId === parameters.marketId).map(group => group.id)
+      )
+      if (
+        groups.some(group => group.marketId !== parameters.marketId && marketGroupIds.has(group.id))
+      ) {
+        throw new BootstrapAdapterError('shared-group-reconciliation')
+      }
       if (parameters.desiredOffer) {
         const prospective = await this.transport.toProspectiveBookOffer(parameters.desiredOffer)
         const replacedGroupIds = new Set(
@@ -78,15 +86,12 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
           throw new BootstrapAdapterError('negative-spread')
         }
       }
-      const marketGroupIds = new Set(
-        groups.filter(item => item.marketId === parameters.marketId).map(group => group.id)
-      )
       for (const groupId of marketGroupIds) {
         await this.transport.invalidate(groupId)
       }
       if (parameters.desiredOffer) {
         const publication = await this.transport.preparePublication(parameters.desiredOffer)
-        await this.transport.reserveGroup(publication.groupId)
+        await this.transport.reserveGroup(publication.groupId, parameters.desiredOffer)
         try {
           await publication.publish()
         } catch (error) {
