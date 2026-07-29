@@ -23,6 +23,7 @@ import type { BootstrapActiveGroup, BootstrapInventoryReader } from './bootstrap
 import type { BlueReferenceReader, BlueSupplyCheckpoint } from './bootstrap-reference-rate.service'
 
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
+import { createBootstrapGroupOwnership } from './bootstrap-group-ownership.utils'
 import { readBootstrapGroups, strategyBootstrapGroups } from './bootstrap-groups.utils'
 import { MidnightBootstrapMakeService } from './bootstrap-make.service'
 import { MidnightBootstrapPositionService } from './bootstrap-position.service'
@@ -109,7 +110,11 @@ export const createProductionBootstrapAdapters = (
     transport: http(config.referenceRpcUrl, { timeout: config.requestTimeoutMs })
   })
   const midnight = wallet.morpho.midnight(base.id)
-  const configuredMarkets = config.bootstrap.map(strategy => strategy.marketId)
+  const ownership = createBootstrapGroupOwnership({
+    maker: account.address,
+    marketIds: config.setup.marketIds,
+    configuredGroupIds: config.v0OfferGroupIds
+  })
   const readGroups = () =>
     readBootstrapGroups({
       maker: account.address,
@@ -119,7 +124,7 @@ export const createProductionBootstrapAdapters = (
 
   const activeGroups = async (): Promise<BootstrapActiveGroup[]> => {
     const now = (await wallet.getBlock({ blockTag: 'latest' })).timestamp
-    return strategyBootstrapGroups(await readGroups(), configuredMarkets)
+    return strategyBootstrapGroups(await readGroups(), await ownership.read())
       .filter(
         group =>
           group.marketId !== undefined &&
@@ -199,6 +204,7 @@ export const createProductionBootstrapAdapters = (
     invalidate: async group => {
       await execute(midnight.cancelOffer({ group, accountAddress: account.address }).buildTx())
     },
+    rememberPublishedGroup: ownership.remember,
     publish: async (offer: BootstrapOffer) => {
       const created = preparedOffers.get(offer.marketId)
       preparedOffers.delete(offer.marketId)

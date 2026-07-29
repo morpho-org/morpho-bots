@@ -82,6 +82,7 @@ type SetupStateOptions = {
   routerApiBaseUrl: string
   marketIds: readonly Hex[]
   v0OfferGroupIds: readonly Hex[]
+  readOwnedGroupIds: () => Promise<readonly Hex[]>
   referenceMarketId: Hex
   referenceLookbackBlocks?: bigint
   requestTimeoutMs?: number
@@ -553,24 +554,14 @@ export class ViemSetupStateService implements SetupStateService {
         'Morpho API active offer maker does not match requested maker'
       )
     }
-    const knownGroups = new Set(this.options.v0OfferGroupIds)
+    const knownGroups = new Set([
+      ...this.options.v0OfferGroupIds,
+      ...(await this.options.readOwnedGroupIds())
+    ])
     const configuredMarkets = new Set(this.options.marketIds)
-    const derivedGroups = new Set(
-      offers
-        .map(offer => offer.group)
-        .filter(group =>
-          offers
-            .filter(offer => offer.group === group)
-            .every(offer => configuredMarkets.has(offer.marketId))
-        )
-    )
     return {
       unknownNamespaces: [
-        ...new Set(
-          offers
-            .map(offer => offer.group)
-            .filter(group => !knownGroups.has(group) && !derivedGroups.has(group))
-        )
+        ...new Set(offers.map(offer => offer.group).filter(group => !knownGroups.has(group)))
       ],
       unknownMarketIds: [
         ...new Set(

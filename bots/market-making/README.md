@@ -54,9 +54,12 @@ All values are required except `V0_OFFER_GROUP_IDS` and `REQUEST_TIMEOUT_MS`:
 - `ROUTER_API_BASE_URL`: official Router API origin used to verify the ratifier registry.
 - `REQUEST_TIMEOUT_MS`: optional bounded fetch/RPC timeout in milliseconds; defaults to `10000` and
   must be between `1` and `120000`.
-- `V0_OFFER_GROUP_IDS`: optional comma-separated strategy-owned group IDs. Any active maker group not
-  listed here, or any active offer on a market outside `MARKET_IDS` even when its group is known,
-  fails readiness. Group IDs are canonicalized by bytes.
+- `V0_OFFER_GROUP_IDS`: optional comma-separated strategy-owned group IDs. Confirmed groups published
+  by this bot are also recorded mode `0600` under
+  `$XDG_STATE_HOME/morpho-market-making` (or `~/.local/state/morpho-market-making`) using a maker-and-
+  market-bound namespace, so deployments must persist that directory across restarts. Any active
+  maker group absent from both explicit sources, or any active offer on a market outside `MARKET_IDS`
+  even when its group is known, fails readiness. Group IDs are canonicalized by bytes.
 
 ## Run
 
@@ -181,8 +184,11 @@ Setup verifies all of the following from the typed configuration:
 - The exact Blue reference market is readable from the archive provider.
 - Active offer groups belong to configured namespaces and markets and are not crossed/inverted.
 
-`V0_OFFER_GROUP_IDS` is optional, but any active maker group not listed there fails readiness. The
-request timeout is an aggregate fetch/RPC bound and does not reveal endpoint details in failures.
+`V0_OFFER_GROUP_IDS` is optional. Readiness and every writer use the same explicit ownership source:
+configured IDs plus confirmed bot-issued IDs from the maker-and-market-bound state file. A same-market
+maker group absent from both sources remains unknown, fails readiness, and requires an operator decision;
+market membership alone never permits reconciliation or hard-halt cancellation. The request timeout is
+an aggregate fetch/RPC bound and does not reveal endpoint details in failures.
 
 ### Position-bootstrap fields
 

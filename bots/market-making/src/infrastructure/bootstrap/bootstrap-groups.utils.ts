@@ -179,23 +179,23 @@ export const readBootstrapGroups = async (
 }
 
 /**
- * Re-derives strategy ownership from maker-authenticated offers on configured markets.
+ * Selects strategy groups using durable explicit ownership evidence.
  * @param groups - Canonical groups read from the maker-scoped API endpoint.
- * @param marketIds - Markets owned by the configured V0 strategy.
- * @returns Active lend groups whose complete offer set remains inside the strategy allowlist.
- * @remarks This deterministic projection survives one-shot CLI process boundaries without local state.
+ * @param ownedGroupIds - Configured or safely persisted group IDs issued for this strategy.
+ * @returns Active lend groups whose IDs are explicitly owned and whose projections are complete.
+ * @remarks Market membership is deliberately not ownership evidence; unknown same-market groups stay unknown.
  */
 export const strategyBootstrapGroups = (
   groups: readonly BootstrapRawGroup[],
-  marketIds: readonly Hex[]
+  ownedGroupIds: readonly Hex[]
 ) => {
-  const configuredMarkets = new Set(marketIds)
+  const ownedGroups = new Set(ownedGroupIds)
   return groups.filter(
     group =>
+      ownedGroups.has(group.id) &&
       group.marketId !== undefined &&
       group.tick !== undefined &&
       group.maturity !== undefined &&
-      group.offers.length > 0 &&
-      group.offers.every(offer => configuredMarkets.has(offer.marketId))
+      group.offers.length > 0
   )
 }

@@ -26,6 +26,7 @@ describe('MidnightBootstrapMakeService', () => {
         published = true
         return publishedGroupId
       },
+      rememberPublishedGroup: async () => {},
       invalidate: async () => {}
     })
 
@@ -51,6 +52,7 @@ describe('MidnightBootstrapMakeService', () => {
         events.push('publish')
         return publishedGroupId
       },
+      rememberPublishedGroup: async () => {},
       invalidate: async () => {}
     })
 
@@ -59,22 +61,36 @@ describe('MidnightBootstrapMakeService', () => {
     expect(events).toEqual(['book', 'publish'])
   })
 
-  test('invalidates re-derived strategy groups after a process restart', async () => {
+  test('persists a published group for ownership after a process restart', async () => {
+    const owned = new Set<Hex>()
     const invalidated: Hex[] = []
-    const service = new MidnightBootstrapMakeService({
-      listActiveGroups: async () => [
-        { id: publishedGroupId, marketId, assets: 100n, rateBps: 500n }
-      ],
+    const transport = {
+      listActiveGroups: async () =>
+        owned.has(publishedGroupId)
+          ? [{ id: publishedGroupId, marketId, assets: 100n, rateBps: 500n }]
+          : [],
       listBookOffers: async () => [],
       toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
       publish: async () => publishedGroupId,
-      invalidate: async id => {
+      rememberPublishedGroup: async (id: Hex) => {
+        owned.add(id)
+      },
+      invalidate: async (id: Hex) => {
         invalidated.push(id)
       }
+    }
+
+    await new MidnightBootstrapMakeService(transport).reconcile({
+      marketId,
+      desiredOffer,
+      reason: 'publish'
+    })
+    await new MidnightBootstrapMakeService(transport).reconcile({
+      marketId,
+      reason: 'target-reached'
     })
 
-    await service.reconcile({ marketId, reason: 'target-reached' })
-
+    expect([...owned]).toEqual([publishedGroupId])
     expect(invalidated).toEqual([publishedGroupId])
   })
 
@@ -88,6 +104,7 @@ describe('MidnightBootstrapMakeService', () => {
         events.push('publish')
         return publishedGroupId
       },
+      rememberPublishedGroup: async () => {},
       invalidate: async () => {
         events.push('invalidate')
       }

@@ -16,8 +16,10 @@ interface BootstrapOfferTransport {
   listBookOffers(): Promise<readonly BootstrapBookOffer[]>
   /** Projects a domain offer into its exact protocol tick. @param offer - Desired offer. @returns Prospective book offer. */
   toProspectiveBookOffer(offer: BootstrapOffer): Promise<BootstrapBookOffer>
-  /** Builds, signs, validates, and publishes one lend offer. @param offer - Desired domain offer. @returns Published group ID after confirmation. */
+  /** Builds, signs, validates, and publishes one lend offer. @param offer - Desired offer. @returns Published group ID after confirmation. */
   publish(offer: BootstrapOffer): Promise<Hex>
+  /** Durably records a confirmed bot-issued group. @param group - Published group ID. @returns Completion after durable storage. */
+  rememberPublishedGroup(group: Hex): Promise<void>
   /** Invalidates one active group onchain. @param group - Active group ID. @returns Completion after receipt confirmation. */
   invalidate(group: Hex): Promise<void>
 }
@@ -69,7 +71,8 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
         await this.transport.invalidate(group.id)
       }
       if (parameters.desiredOffer) {
-        await this.transport.publish(parameters.desiredOffer)
+        const publishedGroup = await this.transport.publish(parameters.desiredOffer)
+        await this.transport.rememberPublishedGroup(publishedGroup)
       }
     })
   }

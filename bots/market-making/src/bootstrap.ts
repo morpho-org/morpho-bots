@@ -14,6 +14,7 @@ import { PositionBootstrapService } from './application/position-bootstrap.servi
 import { SetupCheckService } from './application/setup-check.service'
 import { VersionService } from './application/version.service'
 import { ConfigService as RuntimeConfigService } from './config/config.service'
+import { createBootstrapGroupOwnership } from './infrastructure/bootstrap/bootstrap-group-ownership.utils'
 import { createProductionBootstrapAdapters } from './infrastructure/bootstrap/production-bootstrap'
 import { Cli } from './infrastructure/cli/cli'
 import { requestJson } from './infrastructure/setup-state/http-json.utils'
@@ -54,6 +55,11 @@ const chainReader = (rpcUrl: string, timeout: number): ChainReader => {
 }
 
 const defaultState = (config: ConfigService) => {
+  const ownership = createBootstrapGroupOwnership({
+    maker: config.setup.maker,
+    marketIds: config.setup.marketIds,
+    configuredGroupIds: config.v0OfferGroupIds
+  })
   return new ViemSetupStateService(
     chainReader(config.rpcUrl, config.requestTimeoutMs),
     chainReader(config.referenceRpcUrl, config.requestTimeoutMs),
@@ -68,6 +74,7 @@ const defaultState = (config: ConfigService) => {
       marketIds: config.setup.marketIds,
       referenceMarketId: config.setup.referenceMarketId,
       v0OfferGroupIds: config.v0OfferGroupIds,
+      readOwnedGroupIds: ownership.read,
       requestTimeoutMs: config.requestTimeoutMs
     }
   )

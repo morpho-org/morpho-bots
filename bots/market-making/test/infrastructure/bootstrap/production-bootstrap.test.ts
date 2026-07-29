@@ -1,8 +1,12 @@
 import type { Address, Hex } from 'viem'
 
 import { describe, expect, test } from 'bun:test'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/bootstrap-adapter.error'
+import { createBootstrapGroupOwnership } from '../../../src/infrastructure/bootstrap/bootstrap-group-ownership.utils'
 import {
   readBootstrapGroups,
   strategyBootstrapGroups
@@ -30,13 +34,19 @@ const group = (overrides: Record<string, unknown> = {}) => ({
 })
 
 describe('readBootstrapGroups', () => {
-  test('re-derives a previously published maker group for a configured market', async () => {
+  test('derives ownership only from explicit durable group IDs', async () => {
+    const unrelatedGroupId: Hex = `0x${'ef'.repeat(32)}`
     const groups = await readBootstrapGroups(
       { maker, requestTimeoutMs: 1_000 },
-      { request: async () => ({ data: [group()], cursor: null }) }
+      {
+        request: async () => ({
+          data: [group(), group({ id: unrelatedGroupId })],
+          cursor: null
+        })
+      }
     )
 
-    expect(strategyBootstrapGroups(groups, [marketId]).map(value => value.id)).toEqual([groupId])
+    expect(strategyBootstrapGroups(groups, [groupId]).map(value => value.id)).toEqual([groupId])
   })
 
   test('fails closed when a pagination cursor repeats', async () => {
@@ -130,6 +140,33 @@ describe('readBootstrapGroups', () => {
     ).catch(value => value)
     expect(error).toBeInstanceOf(BootstrapAdapterError)
     expect(error).toMatchObject({ operation: 'offer-groups-response' })
+  })
+})
+
+describe('createBootstrapGroupOwnership', () => {
+  test('retains bot-issued IDs across instances without sharing them with another strategy', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'market-making-ownership-'))
+    const ownership = createBootstrapGroupOwnership(
+      { maker, marketIds: [marketId], configuredGroupIds: [] },
+      { stateDirectory: directory }
+    )
+    try {
+      await ownership.remember(groupId)
+
+      const restarted = createBootstrapGroupOwnership(
+        { maker, marketIds: [marketId], configuredGroupIds: [] },
+        { stateDirectory: directory }
+      )
+      const otherStrategy = createBootstrapGroupOwnership(
+        { maker, marketIds: [`0x${'12'.repeat(32)}`], configuredGroupIds: [] },
+        { stateDirectory: directory }
+      )
+
+      expect(await restarted.read()).toEqual([groupId])
+      expect(await otherStrategy.read()).toEqual([])
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
   })
 })
 

@@ -306,6 +306,7 @@ const sourceFiles = [
   'domain/position-bootstrap.ts',
   'infrastructure/bootstrap/bootstrap-make.service.ts',
   'infrastructure/bootstrap/bootstrap-adapter.error.ts',
+  'infrastructure/bootstrap/bootstrap-group-ownership.utils.ts',
   'infrastructure/bootstrap/bootstrap-groups.utils.ts',
   'infrastructure/bootstrap/bootstrap-position.service.ts',
   'infrastructure/bootstrap/bootstrap-reference-rate.service.ts',
