@@ -91,25 +91,25 @@ const createState = (
       referenceAbis.push(parameters.abi)
       calls.push(`${String(functionName)}:${String((args as unknown[])[0])}:${String(blockNumber)}`)
       if (functionName === 'idToMarketParams') {
-        return {
-          loanToken: overrides.missingReferenceMarket
+        return [
+          overrides.missingReferenceMarket
             ? '0x0000000000000000000000000000000000000000'
             : (overrides.referenceLoanAsset ?? loanAsset),
-          collateralToken: maker,
-          oracle: midnight,
-          irm: ratifier,
-          lltv: 860_000_000_000_000_000n
-        }
+          maker,
+          midnight,
+          ratifier,
+          860_000_000_000_000_000n
+        ]
       }
       if (functionName === 'market') {
-        return {
-          totalSupplyAssets: 1_000n,
-          totalSupplyShares: overrides.missingReferenceMarket ? 0n : 1_000n,
-          totalBorrowAssets: 500n,
-          totalBorrowShares: 500n,
-          lastUpdate: overrides.missingReferenceMarket ? 0n : 900n,
-          fee: 0n
-        }
+        return [
+          1_000n,
+          overrides.missingReferenceMarket ? 0n : 1_000n,
+          500n,
+          500n,
+          overrides.missingReferenceMarket ? 0n : 900n,
+          0n
+        ]
       }
       throw new Error(`unexpected reference function ${String(functionName)}`)
     }
