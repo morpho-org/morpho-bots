@@ -229,8 +229,10 @@ These are application-port guarantees until the deferred adapters and compositio
 Each `ladder` entry has a unique allowlisted `marketId`. Rates are integer BPS and asset/exposure
 amounts are exact raw loan-asset units. `quotePremiumBps` and `sizeSkewBps` are signed; all other
 integer fields are nonnegative or positive as shown by the example. `spreadBps` is a positive even
-full spread, `stepBps` is positive, `rungCount` and `loopIntervalSeconds` are positive safe integers,
-`movementToleranceBps` is nonnegative, and `groupMode` is `shared-rung` or `per-book`.
+full spread, `stepBps` is positive, `rungCount` is a positive safe integer no greater than 512, and
+`loopIntervalSeconds` is a positive safe integer. `movementToleranceBps` is nonnegative, and
+`groupMode` is `shared-rung` or `per-book`. The rung limit bounds local allocation to 1,024 offers
+for a two-sided ladder, a height-10 tree below the Midnight SDK's height-20 protocol limit.
 
 For reference `R`, effective center `C = R + quotePremiumBps`. With zero-based rung `k`:
 

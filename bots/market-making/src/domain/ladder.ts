@@ -6,6 +6,13 @@ import { LadderConfigurationError } from './ladder-configuration.error'
 
 const WEIGHT_SCALE_BPS = 10_000n
 
+/**
+ * Highest supported rung count per ladder side.
+ * @remarks A two-sided ladder at this limit creates 1,024 offers, a height-10 tree. This remains
+ * comfortably below Midnight SDK 1.2.0's height-20 tree limit while bounding local allocation.
+ */
+const MAX_LADDER_RUNG_COUNT = 512
+
 /** Static shape, inventory limits, cadence, and hard rate range for one ladder market. */
 export type LadderConfig = {
   marketId: Hex
@@ -132,6 +139,9 @@ export const validateLadderConfig = (config: LadderConfig): void => {
   }
   positive(config.stepBps, 'stepBps')
   safePositive(config.rungCount, 'rungCount')
+  if (config.rungCount > MAX_LADDER_RUNG_COUNT) {
+    throw new LadderConfigurationError('rungCount', `must not exceed ${MAX_LADDER_RUNG_COUNT}`)
+  }
   positive(config.lowerRateBudgetAssets, 'lowerRateBudgetAssets')
   positive(config.higherRateBudgetAssets, 'higherRateBudgetAssets')
   positive(config.targetMarketExposureAssets, 'targetMarketExposureAssets')
@@ -167,16 +177,17 @@ export const validateLadderConfig = (config: LadderConfig): void => {
 
 /**
  * Generates exact lower/higher rates and deterministic bigint allocations for one market snapshot.
+ * @param parameters - Input object: `config` defines the static shape, budgets, cadence, and hard
+ * rate range; `referenceRateBps` is the fresh reference in integer basis points; `capacities`
+ * optionally supplies fresh side, market, and total budget caps; and `retainedCenterRateBps`
+ * optionally keeps a previously active center inside movement tolerance while still requiring every
+ * resulting rung to satisfy the configured hard range.
  * @returns Exact desired quote set; outer rungs receive integer-division remainders.
  * @throws LadderConfigurationError for invalid config, capacities, or any out-of-bounds runtime rung.
  * @remarks This domain operation never clamps rates and performs no protocol direction/tick mapping.
  */
-export const generateLadder = ({
-  config,
-  referenceRateBps,
-  capacities = {},
-  retainedCenterRateBps
-}: GenerateLadderParameters): LadderQuoteSet => {
+export const generateLadder = (parameters: GenerateLadderParameters): LadderQuoteSet => {
+  const { config, referenceRateBps, capacities = {}, retainedCenterRateBps } = parameters
   validateLadderConfig(config)
   const centerRateBps = retainedCenterRateBps ?? referenceRateBps + config.quotePremiumBps
   const weights = rungWeights(config)

@@ -104,6 +104,19 @@ describe('ladder domain', () => {
     )
   })
 
+  test('rejects rung counts above the practical ladder limit before allocating weights', () => {
+    expect(() =>
+      validateLadderConfig(
+        config({
+          rungCount: 513,
+          stepBps: 1n,
+          minimumRateBps: 0n,
+          maximumRateBps: 2_000n
+        })
+      )
+    ).toThrow('rungCount must not exceed 512')
+  })
+
   test('recenters only when absolute movement is strictly greater than tolerance', () => {
     expect(shouldRecenter(500n, 510n, 10n)).toBe(false)
     expect(shouldRecenter(500n, 490n, 10n)).toBe(false)

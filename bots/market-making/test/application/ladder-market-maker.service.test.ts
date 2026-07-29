@@ -48,6 +48,7 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
     desired?: LadderQuoteSet
     reason: string
   }> = []
+  const liveDesired = new Map<Hex, LadderQuoteSet>()
   const halts: string[] = []
   const positions: LadderPositionService = {
     async readMarket(id) {
@@ -65,6 +66,8 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
   const make: LadderMakeService = {
     async reconcile(parameters) {
       reconciliations.push(parameters)
+      if (parameters.desired) liveDesired.set(parameters.marketId, parameters.desired)
+      else liveDesired.delete(parameters.marketId)
     },
     async hardHalt(parameters) {
       halts.push(parameters.reason)
@@ -80,10 +83,12 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
     },
     reads,
     reconciliations,
+    liveDesired,
     halts,
     setRate: (value: bigint) => (rate = value),
     setCapacity: (value: bigint) => (marketState = state(value)),
-    failMarket: (id: Hex) => (readFailure = id)
+    failMarket: (id: Hex) => (readFailure = id),
+    expireRoots: (id: Hex) => liveDesired.delete(id)
   }
 }
 
@@ -110,7 +115,35 @@ describe('LadderMarketMakerService', () => {
     subject.setRate(510n)
     subject.setCapacity(5n)
     expect(await subject.service.runOnce()).toMatchObject([{ action: 'replace', reason: 'resize' }])
-    expect(subject.reconciliations).toHaveLength(3)
+    expect(subject.reconciliations).toHaveLength(4)
+  })
+
+  test('reconciles an unchanged desired set so externally expired roots are restored', async () => {
+    const subject = harness()
+    await subject.service.runOnce()
+    subject.expireRoots(marketId)
+
+    expect(await subject.service.runOnce()).toMatchObject([{ action: 'rest' }])
+    expect(subject.liveDesired.get(marketId)).toEqual(subject.reconciliations[0]?.desired)
+    expect(subject.reconciliations).toHaveLength(2)
+  })
+
+  test('hard-halts when a fresh effective center is unsafe inside a wide tolerance', async () => {
+    const subject = harness([
+      {
+        ...config(),
+        minimumRateBps: 200n,
+        maximumRateBps: 800n,
+        movementToleranceBps: 600n
+      }
+    ])
+    await subject.service.runOnce()
+    subject.setRate(900n)
+
+    expect(await subject.service.runOnce()).toMatchObject([
+      { status: 'halted', stage: 'decision', strategyInvalidated: true }
+    ])
+    expect(subject.halts).toEqual(['ladder-decision-failed'])
   })
 
   test('invalidates one failed market read and continues other markets', async () => {

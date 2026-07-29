@@ -29,14 +29,14 @@ export interface LadderReferenceRateService {
 /** Consumer-owned blocking make boundary for ladder reconciliation and safety invalidation. */
 export interface LadderMakeService {
   /**
-   * Publishes, replaces, or invalidates one strategy-owned market quote set.
+   * Reconciles one strategy-owned market quote set against fresh active roots.
    * @param parameters - Market, optional exact desired set, and stable reconciliation reason.
    * @returns Completion only after blocking reconciliation settles.
    */
   reconcile(parameters: {
     marketId: Hex
     desired?: LadderQuoteSet
-    reason: 'publish' | 'recenter' | 'resize' | 'market-read-failed'
+    reason: 'publish' | 'recenter' | 'resize' | 'rest' | 'market-read-failed'
   }): Promise<void>
   /**
    * Invalidates all strategy-owned roots after an unsafe cycle-level failure.
@@ -151,24 +151,26 @@ export class LadderMarketMakerService {
       }
 
       let desired: LadderQuoteSet
-      let reason: 'publish' | 'recenter' | 'resize'
+      let reason: 'publish' | 'recenter' | 'resize' | 'rest'
       try {
         const active = this.activeDesired.get(config.marketId)
         const effectiveCenter = referenceRateBps + config.quotePremiumBps
+        const freshDesired = generateLadder({ config, referenceRateBps, capacities: market })
         const recenter = active
           ? shouldRecenter(active.centerRateBps, effectiveCenter, config.movementToleranceBps)
           : true
-        desired = generateLadder({
-          config,
-          referenceRateBps,
-          capacities: market,
-          retainedCenterRateBps: active && !recenter ? active.centerRateBps : undefined
-        })
-        if (active && sameLadderQuoteSet(active, desired)) {
-          results.push({ marketId: config.marketId, status: 'observed', action: 'rest' })
-          continue
-        }
-        reason = active ? (recenter ? 'recenter' : 'resize') : 'publish'
+        desired =
+          active && !recenter
+            ? generateLadder({
+                config,
+                referenceRateBps,
+                capacities: market,
+                retainedCenterRateBps: active.centerRateBps
+              })
+            : freshDesired
+        if (!active) reason = 'publish'
+        else if (sameLadderQuoteSet(active, desired)) reason = 'rest'
+        else reason = recenter ? 'recenter' : 'resize'
       } catch (error) {
         results.push(await this.halt(config.marketId, 'decision', error, 'ladder-decision-failed'))
         return results
@@ -181,6 +183,10 @@ export class LadderMarketMakerService {
         return results
       }
       this.activeDesired.set(config.marketId, desired)
+      if (reason === 'rest') {
+        results.push({ marketId: config.marketId, status: 'observed', action: 'rest' })
+        continue
+      }
       results.push({
         marketId: config.marketId,
         status: 'applied',
