@@ -42,4 +42,21 @@ describe('ConfigService private-key validation', () => {
   test('accepts a usable secp256k1 private key', () => {
     expect(ConfigService.from(environment).privateKey).toBe(environment.MAKER_PRIVATE_KEY as Hex)
   })
+
+  test('uses only the maker address in read-only mode', () => {
+    const config = ConfigService.from(
+      { ...environment, MAKER_PRIVATE_KEY: 'ignored-private-key' },
+      { readOnly: true }
+    )
+
+    expect(config.readOnly).toBe(true)
+    expect(config.identity).toEqual({ readOnly: true, maker: environment.MAKER_ADDRESS })
+    expect(config.privateKey).toBeUndefined()
+  })
+
+  test('still requires the private key when read-only mode is absent', () => {
+    expect(() => ConfigService.from({ ...environment, MAKER_PRIVATE_KEY: undefined })).toThrow(
+      'Missing required env var: MAKER_PRIVATE_KEY'
+    )
+  })
 })

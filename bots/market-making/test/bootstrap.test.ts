@@ -80,6 +80,30 @@ describe('createApplication', () => {
     expect(output.checks).toHaveLength(9)
   })
 
+  test('wires --readonly without loading a maker private key', async () => {
+    const observedModes: boolean[] = []
+    const application = createApplication(
+      { ...environment, MAKER_PRIVATE_KEY: undefined },
+      {
+        createState: config => {
+          observedModes.push(config.readOnly)
+          return readyState()
+        }
+      }
+    )
+
+    const output = JSON.parse(await application.run(['--readonly', 'setup-check']))
+
+    expect(observedModes).toEqual([true])
+    expect(output.ready).toBe(true)
+    expect(output.checks.slice(1, 5).map((check: { status: string }) => check.status)).toEqual([
+      'not-required',
+      'passed',
+      'passed',
+      'passed'
+    ])
+  })
+
   test('wires explicit --config and default working-directory discovery into startup', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'market-making-bootstrap-'))
     const configuration = `

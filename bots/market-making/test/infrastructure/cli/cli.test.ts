@@ -187,6 +187,18 @@ describe('Cli', () => {
     expect(configPath).toBe('operator.yml')
   })
 
+  test('passes --readonly as an explicit address-only runtime mode', async () => {
+    let readOnly: boolean | undefined
+    const application = new Cli(new VersionService(), options => {
+      readOnly = options.readOnly
+      return { assertReady: async () => readyReport }
+    })
+
+    await application.run(['--readonly', 'setup-check'])
+
+    expect(readOnly).toBe(true)
+  })
+
   test('runs setup-check and returns a structured bigint-safe report', async () => {
     expect(await cli().run(['setup-check'])).toBe(
       '{"ready":true,"checks":[{"name":"native-balance","status":"passed","observed":"10","required":"10"}]}'

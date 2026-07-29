@@ -35,13 +35,17 @@ const chainReader = (rpcUrl: string, timeout: number): ChainReader => {
 }
 
 const defaultState = (config: ConfigService) => {
+  const identityOptions = config.identity.readOnly
+    ? { readOnly: true as const, maker: config.identity.maker }
+    : { readOnly: false as const, privateKey: config.identity.privateKey }
+
   return new ViemSetupStateService(
     chainReader(config.rpcUrl, config.requestTimeoutMs),
     chainReader(config.referenceRpcUrl, config.requestTimeoutMs),
     (url, provider, timeoutMs) =>
       requestJson(url, provider, Math.min(config.requestTimeoutMs, timeoutMs ?? Infinity)),
     {
-      privateKey: config.privateKey,
+      ...identityOptions,
       midnight: config.setup.midnight,
       loanAsset: config.setup.loanAsset,
       morphoApiBaseUrl: config.morphoApiBaseUrl,
@@ -60,8 +64,9 @@ const defaultState = (config: ConfigService) => {
  * @param dependencies - Optional test adapters; production defaults to viem and HTTP readers.
  * @returns An application exposing a single asynchronous CLI `run` boundary.
  * @remarks Composition is side-effect free. Configuration and provider construction occur lazily
- * for `setup-check`; the setup implementation is read-only and preserves concurrent independent
- * reads through `Promise.all`.
+ * for `setup-check`; `--readonly` selects address-only identity before any private-key validation.
+ * The setup implementation is read-only and preserves concurrent independent reads through
+ * `Promise.all`.
  */
 export const createApplication = (
   environment: Environment = Bun.env,
@@ -78,10 +83,11 @@ export const createApplication = (
   const cli = new Cli(new VersionService(), async options => {
     const config = await RuntimeConfigService.load(environment, {
       configPath: options.configPath,
-      cwd: dependencies.cwd
+      cwd: dependencies.cwd,
+      readOnly: options.readOnly
     })
     const state = dependencies.createState?.(config) ?? defaultState(config)
-    return new SetupCheckService(state, config.setup)
+    return new SetupCheckService(state, config.setup, config.readOnly)
   })
 
   return {

@@ -1,3 +1,5 @@
+import type { Address } from 'viem'
+
 import { isAddress, isAddressEqual } from 'viem'
 
 import type { SafeProviderFailure } from './safe-provider.error'
@@ -165,6 +167,19 @@ export const providerFailure = (
   error: SafeProviderFailure,
   required: unknown
 ) => setupResult(name, false, { error }, required)
+
+/**
+ * Builds the signer-identity check skipped by address-only read-only operation.
+ * @param maker - Validated maker address used by the read-only runtime.
+ * @returns A not-required maker identity check.
+ * @remarks No provider reads, signing, or mutation side effects occur.
+ */
+export const readOnlyMakerCheck = (maker: Address): SetupCheck => ({
+  name: 'maker',
+  status: 'not-required',
+  observed: maker,
+  required: 'maker address provided in read-only mode'
+})
 
 const bookProblems = (
   requestedId: `0x${string}`,

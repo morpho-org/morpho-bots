@@ -18,6 +18,8 @@ The package follows the repository's hexagonal architecture:
   IDs, bootstrap settings, and ladder settings.
 - `PositionBootstrapService` and `LadderMarketMakerService` define the current application/domain
   boundary through consumer-owned fresh-state, reference-rate, and blocking make ports.
+- `ReadOnlyBootstrapMakeService` and `ReadOnlyLadderMakeService` implement those make ports with
+  terminal JSON output and no signing or mutation.
 - `bootstrap.ts` is the manual composition root.
 - `Cli` is the operator adapter and `index.ts` is a thin entrypoint.
 
@@ -26,14 +28,16 @@ boundary, so a rejected provider call becomes the corresponding failed report it
 other checks. Book reads also run concurrently; book validation waits only for the latest timestamp it
 needs for maturity comparison.
 
-Concrete ladder tick conversion, lower/higher-to-buy/sell mapping, offer encoding, publication,
-invalidation, and runtime loop composition do not exist yet. Those protocol-specific concerns remain
-deferred infrastructure adapters. The current ladder implementation is deliberately limited to pure
-generation and application-port reconciliation; it does not claim to quote live markets.
+Concrete ladder tick conversion, lower/higher-to-buy/sell mapping, offer encoding, live publication,
+and runtime loop composition do not exist yet. Those protocol-specific concerns remain deferred
+infrastructure adapters. The current ladder implementation is deliberately limited to pure generation
+and application-port reconciliation; its read-only make adapter can render requested operations, but
+the current CLI does not yet run a quoting cycle.
 
 ## Setup-check configuration
 
-All values are required except `V0_OFFER_GROUP_IDS` and `REQUEST_TIMEOUT_MS`:
+All values are required except `V0_OFFER_GROUP_IDS`, `REQUEST_TIMEOUT_MS`, and
+`MAKER_PRIVATE_KEY` when `--readonly` is set:
 
 - `CHAIN_ID`: must be `8453` (Base).
 - `RPC_URL`: Base RPC used for current chain state.
@@ -41,8 +45,10 @@ All values are required except `V0_OFFER_GROUP_IDS` and `REQUEST_TIMEOUT_MS`:
   configured Blue reference market at a historical block approximately 10,800 blocks earlier.
 - `REFERENCE_MARKET_ID`: 32-byte Morpho Blue market ID used by the variable-rate strategy. Setup
   fails closed when its immutable parameters or historical market state are missing or unreadable.
-- `MAKER_PRIVATE_KEY`: 0x-prefixed 32-byte private key; never logged.
-- `MAKER_ADDRESS`: configured maker address. Setup verifies that the private key derives it.
+- `MAKER_PRIVATE_KEY`: 0x-prefixed 32-byte private key; never logged. It is not loaded, validated, or
+  required in `--readonly` mode.
+- `MAKER_ADDRESS`: configured maker address. Write mode verifies that the private key derives it;
+  read-only mode uses the address directly.
 - `MIDNIGHT_ADDRESS`: expected Midnight singleton.
 - `LOAN_ASSET_ADDRESS`: expected market loan asset.
 - `RATIFIER_ADDRESS`: selected Base Ecrecover ratifier. V0 requires the address in the official
@@ -68,11 +74,20 @@ All values are required except `V0_OFFER_GROUP_IDS` and `REQUEST_TIMEOUT_MS`:
 
 ```sh
 bun run --filter @morpho-org/market-making-bot start -- setup-check
+
+# Address-only setup inspection: MAKER_PRIVATE_KEY may be omitted.
+bun run --filter @morpho-org/market-making-bot start -- --readonly setup-check
 ```
 
 Success prints one JSON report and exits zero. Bigints are serialized as decimal strings. Any failed
 check throws `SetupFailedError`, prints the failed check names, and exits non-zero. The check is strictly
-read-only; remediation transaction descriptions are reported but never submitted.
+read-only; remediation transaction descriptions are reported but never submitted. With `--readonly`,
+only private-key/maker agreement is reported as `not-required`; balance, allowance, ratifier, chain,
+market, reference, and active-offer observations still run against the configured maker address.
+
+Read-only make adapters serialize desired bootstrap and ladder reconcile/hard-halt requests as one
+JSON line with event name `readonly.make`. They never sign or submit an operation. The current CLI
+only exposes `setup-check`, so it prints the setup report but does not yet execute an offer cycle.
 
 Version output remains available:
 
@@ -122,6 +137,9 @@ bun run --filter @morpho-org/market-making-bot start -- --config ./operator.yml 
 
 # Default discovery in the current working directory.
 bun run --filter @morpho-org/market-making-bot start -- setup-check
+
+# Address-only mode works with either configuration source.
+bun run --filter @morpho-org/market-making-bot start -- --readonly setup-check
 ```
 
 ### Environment mapping
@@ -132,7 +150,7 @@ bun run --filter @morpho-org/market-making-bot start -- setup-check
 | `RPC_URL`                      | `chain.rpcUrl`                    | Required current-state Base RPC URL                              |
 | `REFERENCE_RPC_URL`            | `chain.archiveRpcUrl`             | Required archive-capable Base RPC URL                            |
 | `MAKER_ADDRESS`                | `identity.makerAddress`           | Required maker EVM address                                       |
-| `MAKER_PRIVATE_KEY`            | `identity.makerPrivateKey`        | Required 0x-prefixed 32-byte key                                 |
+| `MAKER_PRIVATE_KEY`            | `identity.makerPrivateKey`        | Required write-mode key; omitted with `--readonly`               |
 | `MIDNIGHT_ADDRESS`             | `contracts.midnightAddress`       | Required Midnight singleton address                              |
 | `LOAN_ASSET_ADDRESS`           | `contracts.loanAssetAddress`      | Required loan-token address                                      |
 | `RATIFIER_ADDRESS`             | `contracts.ratifierAddress`       | Required Router-listed Ecrecover ratifier                        |
@@ -181,10 +199,10 @@ decimal syntax after outer environment whitespace is trimmed.
 
 Setup verifies all of the following from the typed configuration:
 
-- Base chain identity, maker/private-key agreement, configured Midnight bytecode, native reserve, and
-  loan-token allowance.
-- The selected ratifier is listed by Router, deployed with the expected Ecrecover surface and
-  Midnight immutable target, and authorized for the maker.
+- Base chain identity and configured Midnight bytecode.
+- Native reserve, loan-token allowance, and ratifier readiness for the configured maker address.
+- Maker/private-key agreement in write mode; only this signer-identity check is `not-required` with
+  `--readonly`.
 - Every allowlisted market is active, uses the configured loan asset, has valid tick spacing and
   maturity, and agrees between API and chain state.
 - The exact Blue reference market is readable from the archive provider.
@@ -282,12 +300,15 @@ the supplied path. Runtime setup reports identify providers by stable IDs only.
 
 ```sh
 bun run --filter @morpho-org/market-making-bot start -- setup-check
+bun run --filter @morpho-org/market-making-bot start -- --readonly setup-check
 bun run --filter @morpho-org/market-making-bot start -- --version
 ```
 
 Success prints one JSON report and exits zero. Bigints are serialized as decimal strings. Any failed
 check throws `SetupFailedError`, prints the complete sanitized report, and exits non-zero. The check
-is read-only; remediation transaction descriptions are reported but never submitted.
+is read-only; remediation transaction descriptions are reported but never submitted. `--readonly`
+also removes the private-key requirement and marks only maker/private-key agreement as
+`not-required`.
 
 ## Test
 

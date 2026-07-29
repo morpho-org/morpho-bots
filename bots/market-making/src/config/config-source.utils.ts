@@ -21,6 +21,8 @@ export type ConfigurationLoadOptions = {
   configPath?: string
   cwd?: string
   fileSystem?: ConfigurationFileSystem
+  /** Selects address-only configuration and suppresses maker private-key loading. */
+  readOnly?: boolean
 }
 
 type ConfigurationFileMetadata = {

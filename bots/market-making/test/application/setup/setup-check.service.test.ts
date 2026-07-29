@@ -86,6 +86,45 @@ describe('SetupCheckService', () => {
     ])
   })
 
+  test('skips only private-key derivation and preserves maker observations in read-only mode', async () => {
+    const reads: string[] = []
+    const unavailable = async (): Promise<never> => {
+      reads.push('maker-derivation')
+      throw new Error('signer-only read must not run')
+    }
+    const state = readyState()
+    state.getDerivedMaker = unavailable
+    state.getNativeBalance = async () => {
+      reads.push('native-balance')
+      return 10n
+    }
+    state.getLoanAllowance = async () => {
+      reads.push('loan-allowance')
+      return { spender: midnight, amount: 100n }
+    }
+    state.getRatifier = async () => {
+      reads.push('ratifier')
+      return {
+        listed: true,
+        deployed: true,
+        midnightMatches: true,
+        ecrecoverSurface: true,
+        authorized: true
+      }
+    }
+
+    const report = await new SetupCheckService(state, config, true).check()
+
+    expect(reads).toEqual(['native-balance', 'loan-allowance', 'ratifier'])
+    expect(report.ready).toBe(true)
+    expect(report.checks.slice(1, 5).map(check => [check.name, check.status])).toEqual([
+      ['maker', 'not-required'],
+      ['native-balance', 'passed'],
+      ['loan-allowance', 'passed'],
+      ['ratifier', 'passed']
+    ])
+  })
+
   test('reports compact deployment status instead of Midnight runtime bytecode', async () => {
     const report = await new SetupCheckService(readyState(), config).check()
     const chain = report.checks.find(check => check.name === 'chain')

@@ -42,6 +42,7 @@ const createState = (
     onRequest?: (url: string, timeoutMs: number | undefined) => unknown
     marketIds?: readonly Hex[]
     v0OfferGroupIds?: readonly Hex[]
+    readOnly?: boolean
   } = {}
 ) => {
   const calls: string[] = []
@@ -148,7 +149,9 @@ const createState = (
     requestBudgets,
     referenceAbis,
     state: new ViemSetupStateService(chain, reference, request, {
-      privateKey: `0x${'11'.repeat(32)}`,
+      ...(overrides.readOnly
+        ? { readOnly: true as const, maker }
+        : { readOnly: false as const, privateKey: `0x${'11'.repeat(32)}` }),
       midnight,
       loanAsset,
       morphoApiBaseUrl: 'https://api.example',
@@ -164,6 +167,12 @@ const createState = (
 }
 
 describe('ViemSetupStateService', () => {
+  test('does not derive or retain a signer identity in read-only mode', async () => {
+    const { state } = createState({}, { readOnly: true })
+
+    expect(await state.getDerivedMaker()).toBeUndefined()
+  })
+
   test.each([
     [
       'getChainId',
