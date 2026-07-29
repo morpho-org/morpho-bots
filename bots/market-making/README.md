@@ -14,7 +14,10 @@ The package follows the repository's hexagonal architecture:
 - `SetupCheckService` owns the read-only readiness workflow and its consumer-owned `SetupStateService`
   port.
 - `ViemSetupStateService` is the concrete RPC/Morpho API/Router API adapter.
-- `ConfigService` validates environment configuration once and narrows addresses and bytes32 IDs.
+- `ConfigService` validates YAML plus environment configuration once and narrows addresses, bytes32
+  IDs, bootstrap settings, and ladder settings.
+- `PositionBootstrapService` and `LadderMarketMakerService` define the current application/domain
+  boundary through consumer-owned fresh-state, reference-rate, and blocking make ports.
 - `bootstrap.ts` is the manual composition root.
 - `Cli` is the operator adapter and `index.ts` is a thin entrypoint.
 
@@ -23,10 +26,10 @@ boundary, so a rejected provider call becomes the corresponding failed report it
 other checks. Book reads also run concurrently; book validation waits only for the latest timestamp it
 needs for maturity comparison.
 
-Bootstrap and ladder writer workflows do not exist in this package yet. When they are implemented,
-the runtime must construct them in `bootstrap.ts` but await `SetupCheckService.assertReady()` before
-starting either writer, as required by the TIB. The existing `setup-check` command exposes that same
-reusable readiness gate without inventing a quote loop in this change.
+Concrete ladder tick conversion, lower/higher-to-buy/sell mapping, offer encoding, publication,
+invalidation, and runtime loop composition do not exist yet. Those protocol-specific concerns remain
+deferred infrastructure adapters. The current ladder implementation is deliberately limited to pure
+generation and application-port reconciliation; it does not claim to quote live markets.
 
 ## Setup-check configuration
 
@@ -91,7 +94,7 @@ The following configuration contract extends the environment-only setup gate abo
 ## Configuration sources and precedence
 
 Configuration can come from environment variables, a YAML file, or both. YAML files and the
-`BOOTSTRAP_MARKETS` value are each limited to 1 MiB before parsing.
+`BOOTSTRAP_MARKETS` and `LADDER_MARKETS` values are each limited to 1 MiB before parsing.
 
 1. `--config <path>` selects that exact `.yaml` or `.yml` file. Other path extensions and a missing,
    unreadable, empty, oversized, malformed, symlinked, or non-regular explicitly named file fail
@@ -103,8 +106,9 @@ Configuration can come from environment variables, a YAML file, or both. YAML fi
    never an error.
 
 Scalar fields override independently. `MARKET_IDS` and `V0_OFFER_GROUP_IDS` each replace their
-complete YAML list. `BOOTSTRAP_MARKETS` replaces the complete YAML `bootstrap` list; bootstrap arrays
-are never partially or positionally merged. YAML syntax and source-safety checks run before overlay,
+complete YAML list. `BOOTSTRAP_MARKETS` and `LADDER_MARKETS` replace the complete YAML `bootstrap` and
+`ladder` lists respectively; arrays are never partially or positionally merged. YAML syntax and
+source-safety checks run before overlay,
 then only the effective merged configuration is semantically validated, so replaced invalid values do
 not block startup while parser hazards in replaced sections still do.
 
@@ -141,6 +145,7 @@ bun run --filter @morpho-org/market-making-bot start -- setup-check
 | `MAXIMUM_LEND_EXPOSURE_ASSETS` | `setup.maximumLendExposureAssets` | Required unsigned raw loan-asset units                           |
 | `REQUEST_TIMEOUT_MS`           | `setup.requestTimeoutMs`          | Optional; default `10000`, range `1..120000`                     |
 | `BOOTSTRAP_MARKETS`            | `bootstrap`                       | Optional JSON array; whole-list replacement; defaults `[]`       |
+| `LADDER_MARKETS`               | `ladder`                          | Optional JSON array; whole-list replacement; defaults `[]`       |
 
 There is no separate Mempool endpoint or API-key field in the current clients. Books and cursor-paginated
 maker offer groups are read through `MORPHO_API_BASE_URL`; `ROUTER_API_BASE_URL` is used only for the
@@ -149,8 +154,8 @@ headers. No unused credential setting is exposed.
 
 ### YAML schema
 
-The root accepts exactly `chain`, `identity`, `contracts`, `apis`, `markets`, `setup`, and
-`bootstrap`; unknown keys at any level are rejected. Every supported key appears in
+The root accepts exactly `chain`, `identity`, `contracts`, `apis`, `markets`, `setup`, `bootstrap`,
+and `ladder`; unknown keys at any level are rejected. Every supported key appears in
 [`market-making.example.yaml`](./market-making.example.yaml).
 
 - `chain`: `id`, `rpcUrl`, `archiveRpcUrl`.
@@ -160,6 +165,7 @@ The root accepts exactly `chain`, `identity`, `contracts`, `apis`, `markets`, `s
 - `markets`: `allowlist`, `referenceMarketId`, `v0OfferGroupIds`.
 - `setup`: `nativeReserveWei`, `maximumLendExposureAssets`, `requestTimeoutMs`.
 - `bootstrap`: an ordered list of the exact per-market objects documented below.
+- `ladder`: an ordered list of the exact per-market objects documented below.
 
 Addresses and bytes32 IDs should be quoted YAML strings. Every integer field uses exact decimal-integer
 syntax: unsigned fields accept digits only, while `premiumBps` additionally accepts one leading minus.
@@ -220,6 +226,46 @@ every YAML bootstrap entry, which avoids ambiguous partial-array merge behavior.
 configuration, reference failures, and decision failures invoke strategy-wide `hardHalt`; ordinary
 position-read failure requests market-local invalidation and permits other markets to continue.
 These are application-port guarantees until the deferred adapters and composition are implemented.
+
+### Ladder fields and formulas
+
+Each `ladder` entry has a unique allowlisted `marketId`. Rates are integer BPS and asset/exposure
+amounts are exact raw loan-asset units. `quotePremiumBps` and `sizeSkewBps` are signed; all other
+integer fields are nonnegative or positive as shown by the example. `spreadBps` is a positive even
+full spread, `stepBps` is positive, `rungCount` is a positive safe integer no greater than 512, and
+`loopIntervalSeconds` is a positive safe integer. `movementToleranceBps` is nonnegative, and
+`groupMode` is `shared-rung` or `per-book`. The rung limit bounds local allocation to 1,024 offers
+for a two-sided ladder, a height-10 tree below the Midnight SDK's height-20 protocol limit.
+
+For reference `R`, effective center `C = R + quotePremiumBps`. With zero-based rung `k`:
+
+```text
+lower rate = C - spreadBps / 2 - k * stepBps
+higher rate = C + spreadBps / 2 + k * stepBps
+```
+
+The complete static shape must fit between `minimumRateBps` and `maximumRateBps`. Every runtime rung
+must also remain inside that inclusive hard range; values are rejected, never clamped. A retained
+center is recentered only when absolute effective-center movement is strictly greater than
+`movementToleranceBps`; capacity changes still resize quotes inside that tolerance.
+
+Rung weight `k` is `10000 + k * sizeSkewBps`, and every weight must stay positive. Positive skew
+weights outer rungs more heavily; negative skew weights inner rungs more heavily. Each configured
+`lowerRateBudgetAssets` / `higherRateBudgetAssets` is first capped by its fresh side capacity. The
+fresh target-market and strategy-total capacities then cap both sides in aggregate; when that cap
+binds, capacity is split proportionally between the requested side budgets with the bigint remainder
+assigned to the higher-rate side. Exact bigint proportional division allocates each nonzero side
+across its rungs, and the outermost rung receives the remainder so the side sums exactly to its capped
+budget. A side with zero fresh capacity produces no rungs, and any individual rung whose bigint
+allocation rounds to zero is omitted. Hard-rate bounds apply to every nonzero rung that can be
+published; an exhausted side cannot trigger a bound failure. `targetMarketExposureAssets` must not
+exceed `maximumTotalExposureAssets`.
+
+`LADDER_MARKETS` is exact JSON with the same fields. Every integer-valued property must be a quoted
+decimal string; JSON number tokens, floats, exponents, malformed values, unknown fields, duplicate
+markets, and markets outside `MARKET_IDS` are rejected. The variable replaces the YAML list before
+semantic validation, so a valid environment list can replace semantically invalid YAML while YAML
+parser hazards still fail closed.
 
 ### Secrets and failure behavior
 

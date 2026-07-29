@@ -1,6 +1,7 @@
 /** Stable operator-visible error classifications permitted at injected application boundaries. */
 type OperatorErrorName =
   | 'BootstrapConfigurationError'
+  | 'LadderConfigurationError'
   | 'ConfigFileError'
   | 'ConfigValidationError'
   | 'ProviderPaginationError'
@@ -15,6 +16,7 @@ type OperatorErrorName =
 
 const knownNames: Readonly<Record<string, OperatorErrorName>> = {
   BootstrapConfigurationError: 'BootstrapConfigurationError',
+  LadderConfigurationError: 'LadderConfigurationError',
   ConfigFileError: 'ConfigFileError',
   ConfigValidationError: 'ConfigValidationError',
   ProviderPaginationError: 'ProviderPaginationError',
