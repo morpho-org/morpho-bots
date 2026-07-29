@@ -235,7 +235,9 @@ export const createProductionBootstrapAdapters = (
     invalidate: async group => {
       await execute(midnight.cancelOffer({ group, accountAddress: account.address }).buildTx(), {
         kind: 'cancel',
-        target: config.setup.midnight
+        target: config.setup.midnight,
+        groupId: group,
+        account: account.address
       })
     },
     reserveGroup: ownership.reserve,

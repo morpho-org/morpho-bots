@@ -1,15 +1,14 @@
 import type { Address, Hex } from 'viem'
 
 import { midnightAbi, Payload } from '@morpho-org/midnight-sdk'
-import { getAbiItem, isAddressEqual, isHex, size, slice, toFunctionSelector } from 'viem'
+import { decodeFunctionData, isAddressEqual, isHex, size } from 'viem'
 
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 
 type BootstrapTransaction = { to: Address; data: Hex; value: bigint }
-type BootstrapTransactionPolicy = {
-  kind: 'cancel' | 'publication'
-  target: Address
-}
+type BootstrapTransactionPolicy =
+  | { kind: 'cancel'; target: Address; groupId: Hex; account: Address }
+  | { kind: 'publication'; target: Address }
 
 /**
  * Enforces the hot-key signer policy before any Midnight transaction is broadcast.
@@ -36,8 +35,20 @@ export const assertBootstrapTransaction = async (
     throw new BootstrapAdapterError('transaction-policy')
   }
   if (policy.kind === 'cancel') {
-    const selector = toFunctionSelector(getAbiItem({ abi: midnightAbi, name: 'setConsumed' }))
-    if (size(transaction.data) !== 100 || slice(transaction.data, 0, 4) !== selector) {
+    if (size(transaction.data) !== 100) {
+      throw new BootstrapAdapterError('transaction-policy')
+    }
+    try {
+      const decoded = decodeFunctionData({ abi: midnightAbi, data: transaction.data })
+      if (decoded.functionName !== 'setConsumed') {
+        throw new BootstrapAdapterError('transaction-policy')
+      }
+      const [groupId, , account] = decoded.args
+      if (groupId !== policy.groupId || !isAddressEqual(account, policy.account)) {
+        throw new BootstrapAdapterError('transaction-policy')
+      }
+    } catch (error) {
+      if (error instanceof BootstrapAdapterError) throw error
       throw new BootstrapAdapterError('transaction-policy')
     }
     return

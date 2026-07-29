@@ -64,17 +64,37 @@ describe('assertBootstrapTransaction', () => {
 
   test('accepts the exact zero-value Midnight cancellation call', async () => {
     await expect(
-      assertBootstrapTransaction(cancellation, { kind: 'cancel', target: maker })
+      assertBootstrapTransaction(cancellation, {
+        kind: 'cancel',
+        target: maker,
+        groupId,
+        account: maker
+      })
     ).resolves.toBeUndefined()
   })
 
   test.each([
     [{ ...cancellation, to: '0x1111111111111111111111111111111111111111' as Address }],
     [{ ...cancellation, value: 1n }],
-    [{ ...cancellation, data: '0xdeadbeef' as Hex }]
+    [{ ...cancellation, data: '0xdeadbeef' as Hex }],
+    [
+      {
+        ...cancellation,
+        data: encodeFunctionData({
+          abi: midnightAbi,
+          functionName: 'setConsumed',
+          args: [secondMarketId, 100n, maker]
+        })
+      }
+    ]
   ])('rejects cancellation transactions outside the signer policy', async transaction => {
     await expect(
-      assertBootstrapTransaction(transaction, { kind: 'cancel', target: maker })
+      assertBootstrapTransaction(transaction, {
+        kind: 'cancel',
+        target: maker,
+        groupId,
+        account: maker
+      })
     ).rejects.toMatchObject({ operation: 'transaction-policy' })
   })
 

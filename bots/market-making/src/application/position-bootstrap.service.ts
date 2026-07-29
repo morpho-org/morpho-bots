@@ -286,6 +286,10 @@ export class PositionBootstrapService {
         const exposureDelta = decision.offer.assets - replacedAssets
         reservedAssetsDelta += exposureDelta
         reservedAssetsDeltaByMarket.set(config.marketId, marketReservationDelta + exposureDelta)
+      } else if (decision.kind === 'invalidate' && position.activeOffer) {
+        const exposureDelta = -position.activeOffer.assets
+        reservedAssetsDelta += exposureDelta
+        reservedAssetsDeltaByMarket.set(config.marketId, marketReservationDelta + exposureDelta)
       }
     }
 
