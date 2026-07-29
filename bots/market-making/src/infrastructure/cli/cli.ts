@@ -3,6 +3,7 @@ import { Command, CommanderError } from 'commander'
 import type { SetupCheckReport } from '../../application/setup-check.service'
 import type { VersionService } from '../../application/version.service'
 
+import { LadderCycleHaltedError } from '../../application/ladder-cycle-halted.error'
 import { PositionBootstrapHaltedError } from '../../application/position-bootstrap-halted.error'
 import { CliUsageError } from './cli-usage.error'
 
@@ -92,7 +93,18 @@ export class Cli {
       .action(async () => {
         const options = this.program.opts<{ config?: string }>()
         const ladderService = await ladder({ configPath: options.config })
-        this.output = await ladderService.runOnce()
+        const result = await ladderService.runOnce()
+        if (
+          Array.isArray(result) &&
+          result.some(item =>
+            typeof item === 'object' && item !== null && 'status' in item
+              ? item.status === 'halted' || item.status === 'failed'
+              : false
+          )
+        ) {
+          throw new LadderCycleHaltedError(result)
+        }
+        this.output = result
         this.hasOutput = true
       })
   }

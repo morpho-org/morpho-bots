@@ -2,8 +2,10 @@
   "$schema": "https://typedoc.org/schema.json",
   "entryPoints": [
     "src/application/operator-error-name.utils.ts",
+    "src/application/ladder-cycle-halted.error.ts",
     "src/application/ladder-market-maker.service.ts",
     "src/application/ladder-market-maker.utils.ts",
+    "src/application/ladder-runtime-unavailable.error.ts",
     "src/application/position-bootstrap-halted.error.ts",
     "src/application/position-bootstrap.service.ts",
     "src/application/setup-check.service.ts",

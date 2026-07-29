@@ -289,7 +289,9 @@ const packageRoot = resolve(import.meta.dir, '..')
 const sourceRoot = resolve(packageRoot, 'src')
 const sourceFiles = [
   'application/operator-error-name.utils.ts',
+  'application/ladder-cycle-halted.error.ts',
   'application/ladder-market-maker.service.ts',
+  'application/ladder-runtime-unavailable.error.ts',
   'application/ladder-market-maker.utils.ts',
   'application/position-bootstrap-halted.error.ts',
   'application/position-bootstrap.service.ts',
