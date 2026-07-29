@@ -33,7 +33,8 @@ export class Cli {
    * @param version - Application version provider.
    * @param setup - Lazy readiness-service factory, invoked only for `setup-check`.
    * @param bootstrap - Lazy position-bootstrap factory, invoked only for `bootstrap`.
-   * @param ladder - Lazy ladder market-maker factory, invoked only for `ladder`.
+   * @param ladder - Optional lazy ladder factory; omit it to keep `ladder` hidden until runtime
+   * adapters are composed.
    * @remarks Construction performs no provider calls and does not start writer workflows.
    */
   constructor(
@@ -44,7 +45,7 @@ export class Cli {
     bootstrap: (
       options: CliConfigurationOptions
     ) => PositionBootstrapService | Promise<PositionBootstrapService>,
-    ladder: (
+    ladder?: (
       options: CliConfigurationOptions
     ) => LadderMarketMakerService | Promise<LadderMarketMakerService>
   ) {
@@ -87,26 +88,28 @@ export class Cli {
         this.hasOutput = true
       })
 
-    this.program
-      .command('ladder')
-      .description('run one explicit market-maker ladder cycle')
-      .action(async () => {
-        const options = this.program.opts<{ config?: string }>()
-        const ladderService = await ladder({ configPath: options.config })
-        const result = await ladderService.runOnce()
-        if (
-          Array.isArray(result) &&
-          result.some(item =>
-            typeof item === 'object' && item !== null && 'status' in item
-              ? item.status === 'halted' || item.status === 'failed'
-              : false
-          )
-        ) {
-          throw new LadderCycleHaltedError(result)
-        }
-        this.output = result
-        this.hasOutput = true
-      })
+    if (ladder) {
+      this.program
+        .command('ladder')
+        .description('run one explicit market-maker ladder cycle')
+        .action(async () => {
+          const options = this.program.opts<{ config?: string }>()
+          const ladderService = await ladder({ configPath: options.config })
+          const result = await ladderService.runOnce()
+          if (
+            Array.isArray(result) &&
+            result.some(item =>
+              typeof item === 'object' && item !== null && 'status' in item
+                ? item.status === 'halted' || item.status === 'failed'
+                : false
+            )
+          ) {
+            throw new LadderCycleHaltedError(result)
+          }
+          this.output = result
+          this.hasOutput = true
+        })
+    }
   }
 
   /**

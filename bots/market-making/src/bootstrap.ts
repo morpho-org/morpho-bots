@@ -10,7 +10,6 @@ import type { SetupStateService } from './application/setup-check.service'
 import type { ConfigService } from './config/config.service'
 import type { ChainReader } from './infrastructure/setup-state/viem-setup-state.service'
 
-import { LadderRuntimeUnavailableError } from './application/ladder-runtime-unavailable.error'
 import { PositionBootstrapService } from './application/position-bootstrap.service'
 import { SetupCheckService } from './application/setup-check.service'
 import { VersionService } from './application/version.service'
@@ -111,6 +110,7 @@ export const createApplication = (
 } => {
   const loadConfig = (configPath?: string) =>
     RuntimeConfigService.load(environment, { configPath, cwd: dependencies.cwd })
+  const createLadder = dependencies.createLadder
   const cli = new Cli(
     new VersionService(),
     async options => {
@@ -132,13 +132,14 @@ export const createApplication = (
         config.bootstrap
       )
     },
-    async options => {
-      const config = await loadConfig(options.configPath)
-      const state = dependencies.createState?.(config) ?? defaultState(config)
-      await new SetupCheckService(state, config.setup).assertReady()
-      if (!dependencies.createLadder) throw new LadderRuntimeUnavailableError()
-      return dependencies.createLadder(config)
-    }
+    createLadder
+      ? async options => {
+          const config = await loadConfig(options.configPath)
+          const state = dependencies.createState?.(config) ?? defaultState(config)
+          await new SetupCheckService(state, config.setup).assertReady()
+          return createLadder(config)
+        }
+      : undefined
   )
 
   return {
