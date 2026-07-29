@@ -8,6 +8,7 @@ import {
   erc20Abi,
   http,
   publicActions,
+  type Address,
   type Hex
 } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
@@ -27,6 +28,7 @@ import { BootstrapAdapterError } from './bootstrap-adapter.error'
 import { bootstrapExposureMarketIds } from './bootstrap-exposure.utils'
 import { createBootstrapGroupOwnership } from './bootstrap-group-ownership.utils'
 import {
+  bootstrapBookOffers,
   bootstrapReservedLoanAssets,
   readBootstrapGroups,
   strategyBootstrapGroups
@@ -40,6 +42,24 @@ import { assertBootstrapTransaction } from './bootstrap-transaction.utils'
 
 const WAD = 10n ** 18n
 const YEAR_SECONDS = 31_536_000n
+
+type BootstrapMakeLendArguments = {
+  accountAddress: Address
+  offers: [Offer]
+  validation: { apiUrl: string }
+  loanToken: Address
+  loanAssets: bigint
+  reservedLoanAssets: bigint
+}
+
+/**
+ * Builds the exact bounded argument object passed to Midnight `makeLend`.
+ * @param parameters - Publication identity, offer, API endpoint, assets, and existing reserve.
+ * @returns A single-offer publication request with the complete pre-existing owned reserve.
+ */
+export const bootstrapMakeLendArguments = (
+  parameters: BootstrapMakeLendArguments
+): BootstrapMakeLendArguments => parameters
 
 type HistoricalBlockReader = {
   getBlock(parameters: { blockTag: 'latest' } | { blockNumber: bigint }): Promise<{
@@ -224,10 +244,7 @@ export const createProductionBootstrapAdapters = (
   const make = new MidnightBootstrapMakeService({
     listActiveGroups: activeGroups,
     listOwnedGroupIds: ownedGroupIds,
-    listBookOffers: async () =>
-      (await readGroups()).flatMap(group =>
-        group.offers.map(offer => ({ ...offer, groupId: group.id }))
-      ),
+    listBookOffers: async () => bootstrapBookOffers(await readGroups()),
     toProspectiveBookOffer: async offer => {
       const created = await prepareOffer(offer)
       preparedOffers.set(offer.marketId, created)
@@ -249,14 +266,16 @@ export const createProductionBootstrapAdapters = (
       preparedOffers.delete(offer.marketId)
       if (!created) throw new BootstrapAdapterError('prospective-offer-missing')
       const [groups, ownedIds] = await Promise.all([readGroups(), ownership.read()])
-      const output = await midnight.makeLend({
-        accountAddress: account.address,
-        offers: [created],
-        validation: { apiUrl: `${config.morphoApiBaseUrl}/v0/midnight` },
-        loanToken: config.setup.loanAsset,
-        loanAssets: offer.assets,
-        reservedLoanAssets: bootstrapReservedLoanAssets(groups, ownedIds)
-      })
+      const output = await midnight.makeLend(
+        bootstrapMakeLendArguments({
+          accountAddress: account.address,
+          offers: [created],
+          validation: { apiUrl: `${config.morphoApiBaseUrl}/v0/midnight` },
+          loanToken: config.setup.loanAsset,
+          loanAssets: offer.assets,
+          reservedLoanAssets: bootstrapReservedLoanAssets(groups, ownedIds)
+        })
+      )
       const signatures = await signBootstrapRequirements(
         await output.getRequirements(),
         requirement =>

@@ -11,6 +11,7 @@ import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/boo
 import { bootstrapExposureMarketIds } from '../../../src/infrastructure/bootstrap/bootstrap-exposure.utils'
 import { createBootstrapGroupOwnership } from '../../../src/infrastructure/bootstrap/bootstrap-group-ownership.utils'
 import {
+  bootstrapBookOffers,
   bootstrapReservedLoanAssets,
   readBootstrapGroups,
   strategyBootstrapGroups
@@ -18,6 +19,7 @@ import {
 import { bootstrapContinuousFeeCap } from '../../../src/infrastructure/bootstrap/bootstrap-offer.utils'
 import { signBootstrapRequirements } from '../../../src/infrastructure/bootstrap/bootstrap-requirements.utils'
 import { assertBootstrapTransaction } from '../../../src/infrastructure/bootstrap/bootstrap-transaction.utils'
+import { bootstrapMakeLendArguments } from '../../../src/infrastructure/bootstrap/production-bootstrap'
 
 const maker: Address = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
 const marketId: Hex = `0x${'ab'.repeat(32)}`
@@ -161,6 +163,21 @@ describe('assertBootstrapTransaction', () => {
     ).resolves.toBeUndefined()
   })
 
+  test('rejects a publication payload containing two offers', async () => {
+    const offer = publicationOffer()
+    const data = await Payload.encode([
+      { offer, ratifierData: '0x' },
+      { offer: publicationOffer(104n), ratifierData: '0x' }
+    ])
+
+    await expect(
+      assertBootstrapTransaction(
+        { to: maker, value: 0n, data },
+        { kind: 'publication', target: maker, offer }
+      )
+    ).rejects.toMatchObject({ operation: 'transaction-policy' })
+  })
+
   test('rejects a valid publication payload whose offer differs from the signed intent', async () => {
     const offer = publicationOffer()
     const data = await Payload.encode([{ offer: publicationOffer(104n), ratifierData: '0x' }])
@@ -214,6 +231,75 @@ describe('readBootstrapGroups', () => {
     )
 
     expect(bootstrapReservedLoanAssets(groups, [groupId])).toBe(125n)
+  })
+
+  test('reserves every distinct durably owned API group even without a buy projection', async () => {
+    const secondGroupId: Hex = `0x${'ef'.repeat(32)}`
+    const sellOnly = { ...group().offers[0], buy: false }
+    const groups = await readBootstrapGroups(
+      { maker, requestTimeoutMs: 1_000 },
+      {
+        request: async () => ({
+          data: [
+            group({ max_assets: '125', offers: [] }),
+            group({ id: secondGroupId, max_assets: '75', offers: [sellOnly] })
+          ],
+          cursor: null
+        })
+      }
+    )
+
+    expect(strategyBootstrapGroups(groups, [groupId, secondGroupId])).toEqual([])
+    expect(bootstrapReservedLoanAssets(groups, [groupId, secondGroupId])).toBe(200n)
+  })
+
+  test('passes the full distinct owned reserve in the actual makeLend argument shape', async () => {
+    const secondGroupId: Hex = `0x${'ef'.repeat(32)}`
+    const groups = await readBootstrapGroups(
+      { maker, requestTimeoutMs: 1_000 },
+      {
+        request: async () => ({
+          data: [group({ max_assets: '125' }), group({ id: secondGroupId, max_assets: '75' })],
+          cursor: null
+        })
+      }
+    )
+    const offer = publicationOffer()
+    const captured: unknown[] = []
+    const makeLend = async (arguments_: unknown) => {
+      captured.push(arguments_)
+    }
+
+    await makeLend(
+      bootstrapMakeLendArguments({
+        accountAddress: maker,
+        offers: [offer],
+        validation: { apiUrl: 'https://api.example/v0/midnight' },
+        loanToken,
+        loanAssets: 100n,
+        reservedLoanAssets: bootstrapReservedLoanAssets(groups, [groupId, secondGroupId])
+      })
+    )
+
+    expect(captured).toEqual([
+      expect.objectContaining({ offers: [offer], loanAssets: 100n, reservedLoanAssets: 200n })
+    ])
+  })
+
+  test('flattens multi-market group projections without quadratic offer expansion', async () => {
+    const offers = Array.from({ length: 1_000 }, (_, index) => ({
+      ...group().offers[0],
+      market_id: `0x${index.toString(16).padStart(64, '0')}`,
+      tick: index,
+      market: { maturity: 3_000 + index }
+    }))
+    const groups = await readBootstrapGroups(
+      { maker, requestTimeoutMs: 1_000 },
+      { request: async () => ({ data: [group({ offers })], cursor: null }) }
+    )
+
+    expect(groups).toHaveLength(1_000)
+    expect(bootstrapBookOffers(groups)).toHaveLength(1_000)
   })
 
   test('requests only Base offer groups', async () => {

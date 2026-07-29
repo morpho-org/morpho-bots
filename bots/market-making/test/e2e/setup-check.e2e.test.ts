@@ -21,6 +21,14 @@ import {
 import { startSetupApi, stopSetupApi } from './setup-api'
 import { setupMaker } from './setup-maker'
 
+const isSetupCheckReport = (value: unknown): value is SetupCheckReport =>
+  typeof value === 'object' &&
+  value !== null &&
+  'ready' in value &&
+  typeof value.ready === 'boolean' &&
+  'checks' in value &&
+  Array.isArray(value.checks)
+
 describe('market-making setup check on a pinned Base fork', () => {
   let anvil: AnvilHandle | undefined
   let api: SetupApiHandle | undefined
@@ -60,7 +68,9 @@ describe('market-making setup check on a pinned Base fork', () => {
       ROUTER_API_BASE_URL: api.baseUrl,
       REQUEST_TIMEOUT_MS: '30000'
     }).run(['setup-check'])
-    const report = output as SetupCheckReport
+    expect(isSetupCheckReport(output)).toBe(true)
+    if (!isSetupCheckReport(output)) throw new Error('Expected setup-check report')
+    const report = output
 
     expect(report.ready).toBe(true)
     expect(report.checks.map(check => [check.name, check.status])).toStrictEqual([

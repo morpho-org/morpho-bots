@@ -226,11 +226,32 @@ export const strategyBootstrapGroups = (
 export const bootstrapReservedLoanAssets = (
   groups: readonly BootstrapRawGroup[],
   ownedGroupIds: readonly Hex[]
-) =>
-  [
+) => {
+  const ownedGroups = new Set(ownedGroupIds)
+  return [
     ...new Map(
-      strategyBootstrapGroups(groups, ownedGroupIds).map(group => [group.id, group])
+      groups.filter(group => ownedGroups.has(group.id)).map(group => [group.id, group])
     ).values()
   ]
     .map(group => group.maxAssets)
     .reduce((total, assets) => total + assets, 0n)
+}
+
+/**
+ * Flattens the provider book without re-expanding each multi-market group projection.
+ * @param groups - Canonical groups, potentially repeated once per buy-offer market.
+ * @returns Distinct offers annotated with their owning group ID in linear space and time.
+ */
+export const bootstrapBookOffers = (groups: readonly BootstrapRawGroup[]) => {
+  const visitedGroups = new Set<Hex>()
+  const offers = new Map<string, BootstrapBookOffer & { groupId: Hex }>()
+  for (const group of groups) {
+    if (visitedGroups.has(group.id)) continue
+    visitedGroups.add(group.id)
+    for (const offer of group.offers) {
+      const key = `${group.id}:${offer.marketId}:${offer.buy ? 'buy' : 'sell'}:${offer.tick}`
+      offers.set(key, { ...offer, groupId: group.id })
+    }
+  }
+  return [...offers.values()]
+}
