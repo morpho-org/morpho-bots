@@ -3,6 +3,7 @@ import { Command, CommanderError } from 'commander'
 import type { SetupCheckReport } from '../../application/setup-check.service'
 import type { VersionService } from '../../application/version.service'
 
+import { LadderCycleHaltedError } from '../../application/ladder-cycle-halted.error'
 import { PositionBootstrapHaltedError } from '../../application/position-bootstrap-halted.error'
 import { CliUsageError } from './cli-usage.error'
 
@@ -11,6 +12,10 @@ interface SetupReadinessService {
 }
 
 interface PositionBootstrapService {
+  runOnce(): Promise<unknown>
+}
+
+interface LadderMarketMakerService {
   runOnce(): Promise<unknown>
 }
 
@@ -24,10 +29,12 @@ export class Cli {
   private hasOutput = false
 
   /**
-   * Configures the version, setup-check, and explicit bootstrap commands.
+   * Configures the version, setup-check, bootstrap, and ladder commands.
    * @param version - Application version provider.
    * @param setup - Lazy readiness-service factory, invoked only for `setup-check`.
    * @param bootstrap - Lazy position-bootstrap factory, invoked only for `bootstrap`.
+   * @param ladder - Optional lazy ladder factory; omit it to keep `ladder` hidden until runtime
+   * adapters are composed.
    * @remarks Construction performs no provider calls and does not start writer workflows.
    */
   constructor(
@@ -37,7 +44,10 @@ export class Cli {
     ) => SetupReadinessService | Promise<SetupReadinessService>,
     bootstrap: (
       options: CliConfigurationOptions
-    ) => PositionBootstrapService | Promise<PositionBootstrapService>
+    ) => PositionBootstrapService | Promise<PositionBootstrapService>,
+    ladder?: (
+      options: CliConfigurationOptions
+    ) => LadderMarketMakerService | Promise<LadderMarketMakerService>
   ) {
     this.program = new Command()
       .name('mm')
@@ -77,17 +87,40 @@ export class Cli {
         this.output = result
         this.hasOutput = true
       })
+
+    if (ladder) {
+      this.program
+        .command('ladder')
+        .description('run one explicit market-maker ladder cycle')
+        .action(async () => {
+          const options = this.program.opts<{ config?: string }>()
+          const ladderService = await ladder({ configPath: options.config })
+          const result = await ladderService.runOnce()
+          if (
+            Array.isArray(result) &&
+            result.some(item =>
+              typeof item === 'object' && item !== null && 'status' in item
+                ? item.status === 'halted' || item.status === 'failed'
+                : false
+            )
+          ) {
+            throw new LadderCycleHaltedError(result)
+          }
+          this.output = result
+          this.hasOutput = true
+        })
+    }
   }
 
   /**
    * Parses one CLI invocation and returns its captured output.
    * @param argv - User arguments without the executable/runtime prefix.
-   * @returns Version text, the complete setup report, or the structured bootstrap result.
+   * @returns Version text, the complete setup report, or a structured writer-cycle result.
    * @throws `CliUsageError` with a constant message and stable code on invalid usage; raw Commander
    * arguments, messages, option details, URLs, and causes are deliberately discarded. Provider and
    * readiness errors pass through.
    * @remarks `setup-check` remains read-only. Position bootstrap runs only for the explicit
-   * `bootstrap` command; parsing or invoking any other command cannot start it.
+   * `bootstrap` command. Ladder reconciliation runs only for the explicit `ladder` command.
    */
   async run(argv: readonly string[]): Promise<unknown> {
     if (argv.length === 0) throw new CliUsageError()

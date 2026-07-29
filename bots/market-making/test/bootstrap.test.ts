@@ -9,6 +9,7 @@ import type { SetupStateService } from '../src/application/setup-check.service'
 
 import { SetupFailedError } from '../src/application/setup-failed.error'
 import { createApplication } from '../src/bootstrap'
+import { CliUsageError } from '../src/infrastructure/cli/cli-usage.error'
 
 const maker: Address = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
 const midnight: Address = '0x2222222222222222222222222222222222222222'
@@ -101,6 +102,44 @@ describe('createApplication', () => {
       { marketId, status: 'observed', action: 'target-reached' }
     ])
     expect(events).toEqual(['readiness', 'bootstrap'])
+  })
+
+  test('mm ladder passes readiness before running one ladder cycle', async () => {
+    const events: string[] = []
+    const state = readyState()
+    state.getChainId = async () => {
+      events.push('readiness')
+      return 8453
+    }
+    const application = createApplication(environment, {
+      createState: () => state,
+      createLadder: () => ({
+        runOnce: async () => {
+          events.push('ladder')
+          return [{ marketId, status: 'observed', action: 'rest' }]
+        }
+      })
+    })
+
+    expect(await application.run(['ladder'])).toEqual([
+      { marketId, status: 'observed', action: 'rest' }
+    ])
+    expect(events).toEqual(['readiness', 'ladder'])
+  })
+
+  test('keeps the ladder command hidden until runtime adapters are composed', async () => {
+    let readinessReads = 0
+    const state = readyState()
+    state.getChainId = async () => {
+      readinessReads += 1
+      return 8453
+    }
+    const application = createApplication(environment, { createState: () => state })
+
+    const error = await application.run(['ladder']).catch(value => value)
+
+    expect(error).toBeInstanceOf(CliUsageError)
+    expect(readinessReads).toBe(0)
   })
 
   test('default-composes PositionBootstrapService when only its production ports are replaced', async () => {

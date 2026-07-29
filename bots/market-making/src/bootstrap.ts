@@ -26,10 +26,16 @@ type PositionBootstrapRunner = {
   runOnce(): Promise<unknown>
 }
 
+type LadderRunner = {
+  runOnce(): Promise<unknown>
+}
+
 type Dependencies = {
   createState?: (config: ConfigService) => SetupStateService
   /** Creates the position-bootstrap application service after CLI configuration is loaded. */
   createBootstrap?: (config: ConfigService) => PositionBootstrapRunner
+  /** Creates the ladder market-maker application service after CLI configuration is loaded. */
+  createLadder?: (config: ConfigService) => LadderRunner
   /** Replaces provider ports while retaining default application-service composition. */
   createBootstrapAdapters?: (config: ConfigService) => {
     positions: BootstrapPositionService
@@ -104,6 +110,7 @@ export const createApplication = (
 } => {
   const loadConfig = (configPath?: string) =>
     RuntimeConfigService.load(environment, { configPath, cwd: dependencies.cwd })
+  const createLadder = dependencies.createLadder
   const cli = new Cli(
     new VersionService(),
     async options => {
@@ -124,7 +131,15 @@ export const createApplication = (
         adapters.make,
         config.bootstrap
       )
-    }
+    },
+    createLadder
+      ? async options => {
+          const config = await loadConfig(options.configPath)
+          const state = dependencies.createState?.(config) ?? defaultState(config)
+          await new SetupCheckService(state, config.setup).assertReady()
+          return createLadder(config)
+        }
+      : undefined
   )
 
   return {

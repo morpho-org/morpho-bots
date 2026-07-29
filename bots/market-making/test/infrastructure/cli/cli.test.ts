@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from 'bun:test'
 
+import { LadderCycleHaltedError } from '../../../src/application/ladder-cycle-halted.error'
 import { PositionBootstrapHaltedError } from '../../../src/application/position-bootstrap-halted.error'
 import { VersionService } from '../../../src/application/version.service'
 import { Cli } from '../../../src/infrastructure/cli/cli'
@@ -17,6 +18,7 @@ const cli = (assertReady = async () => readyReport) => {
   return new Cli(
     new VersionService(),
     () => ({ assertReady }),
+    () => ({ runOnce: async () => [] }),
     () => ({ runOnce: async () => [] })
   )
 }
@@ -188,6 +190,7 @@ describe('Cli', () => {
         configPath = options.configPath
         return { assertReady: async () => readyReport }
       },
+      () => ({ runOnce: async () => [] }),
       () => ({ runOnce: async () => [] })
     )
 
@@ -207,7 +210,8 @@ describe('Cli', () => {
     const application = new Cli(
       new VersionService(),
       () => ({ assertReady: async () => readyReport }),
-      () => ({ runOnce })
+      () => ({ runOnce }),
+      () => ({ runOnce: async () => [] })
     )
 
     expect(await application.run(['bootstrap'])).toEqual([
@@ -215,6 +219,58 @@ describe('Cli', () => {
     ])
     expect(runOnce).toHaveBeenCalledTimes(1)
   })
+
+  test('mm ladder is exposed alongside setup-check and bootstrap', async () => {
+    const assertReady = mock(async () => readyReport)
+    const bootstrap = mock(async () => [])
+    const runOnce = mock(async () => [
+      { marketId: `0x${'11'.repeat(32)}`, status: 'observed', action: 'rest' }
+    ])
+    const application = new Cli(
+      new VersionService(),
+      () => ({ assertReady }),
+      () => ({ runOnce: bootstrap }),
+      () => ({ runOnce })
+    )
+
+    expect(await application.run(['ladder'])).toEqual([
+      { marketId: `0x${'11'.repeat(32)}`, status: 'observed', action: 'rest' }
+    ])
+    expect(runOnce).toHaveBeenCalledTimes(1)
+    expect(assertReady).not.toHaveBeenCalled()
+    expect(bootstrap).not.toHaveBeenCalled()
+  })
+
+  test.each(['failed', 'halted'] as const)(
+    'rejects a ladder cycle containing a %s market result',
+    async status => {
+      const report = [
+        {
+          marketId: `0x${'11'.repeat(32)}`,
+          status,
+          stage: 'make',
+          invalidated: status === 'halted',
+          errorName: 'ProviderWriteError'
+        }
+      ]
+      const application = new Cli(
+        new VersionService(),
+        () => ({ assertReady: async () => readyReport }),
+        () => ({ runOnce: async () => [] }),
+        () => ({ runOnce: async () => report })
+      )
+
+      const error = await application.run(['ladder']).catch(value => value)
+
+      expect(error).toMatchObject({
+        name: 'LadderCycleHaltedError',
+        code: 'LADDER_CYCLE_HALTED',
+        kind: 'safety-halt',
+        report
+      })
+      expect((error as Error).message).toBe('Ladder cycle halted for safety')
+    }
+  )
 
   test('rejects a bootstrap cycle containing a failed market result', async () => {
     const report = [
@@ -229,7 +285,8 @@ describe('Cli', () => {
     const application = new Cli(
       new VersionService(),
       () => ({ assertReady: async () => readyReport }),
-      () => ({ runOnce: async () => report })
+      () => ({ runOnce: async () => report }),
+      () => ({ runOnce: async () => [] })
     )
 
     const error = await application.run(['bootstrap']).catch(value => value)
@@ -253,7 +310,8 @@ describe('Cli', () => {
       () => ({ assertReady: async () => readyReport }),
       () => ({
         runOnce: async () => report
-      })
+      }),
+      () => ({ runOnce: async () => [] })
     )
 
     const error = await application.run(['bootstrap']).catch(value => value)
@@ -283,6 +341,30 @@ describe('Cli', () => {
     const exitCode = await runMarketMakingEntrypoint(
       { run: async () => Promise.reject(new PositionBootstrapHaltedError(report)) },
       ['bootstrap'],
+      { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) }
+    )
+
+    expect(exitCode).toBe(1)
+    expect(stdout).toEqual([])
+    expect(stderr).toEqual([JSON.stringify(report)])
+  })
+
+  test('entrypoint emits a failed ladder report and returns a non-zero exit code', async () => {
+    const report = [
+      {
+        marketId: `0x${'11'.repeat(32)}`,
+        status: 'failed',
+        stage: 'make',
+        invalidated: false,
+        errorName: 'ProviderWriteError'
+      }
+    ]
+    const stdout: string[] = []
+    const stderr: string[] = []
+
+    const exitCode = await runMarketMakingEntrypoint(
+      { run: async () => Promise.reject(new LadderCycleHaltedError(report)) },
+      ['ladder'],
       { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) }
     )
 

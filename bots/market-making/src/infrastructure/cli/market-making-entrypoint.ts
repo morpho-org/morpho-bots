@@ -1,3 +1,4 @@
+import { LadderCycleHaltedError } from '../../application/ladder-cycle-halted.error'
 import { PositionBootstrapHaltedError } from '../../application/position-bootstrap-halted.error'
 import { SetupFailedError } from '../../application/setup-failed.error'
 
@@ -10,7 +11,7 @@ type EntrypointOutput = { writeOut(value: string): void; writeError(value: strin
  * @param argv - User arguments without runtime/executable prefixes.
  * @param output - Standard output and error writers.
  * @returns Zero on success and one after a sanitized failure has been emitted.
- * @remarks Halted bootstrap reports are emitted without causes, provider payloads, or credentials.
+ * @remarks Halted writer reports are emitted without causes, provider payloads, or credentials.
  */
 export const runMarketMakingEntrypoint = async (
   application: MarketMakingApplication,
@@ -23,13 +24,15 @@ export const runMarketMakingEntrypoint = async (
     return 0
   } catch (error) {
     const message =
-      error instanceof PositionBootstrapHaltedError
+      error instanceof LadderCycleHaltedError
         ? JSON.stringify(error.report)
-        : error instanceof SetupFailedError
+        : error instanceof PositionBootstrapHaltedError
           ? JSON.stringify(error.report)
-          : error instanceof Error
-            ? error.message
-            : 'Unknown failure'
+          : error instanceof SetupFailedError
+            ? JSON.stringify(error.report)
+            : error instanceof Error
+              ? error.message
+              : 'Unknown failure'
     output.writeError(message)
     return 1
   }
