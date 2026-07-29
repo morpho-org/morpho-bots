@@ -307,10 +307,10 @@ describe('ConfigService YAML and environment loading', () => {
     const directory = await temporaryDirectory()
     const unreadablePath = join(directory, 'unreadable.yaml')
     await mkdir(unreadablePath)
-    expect(
+    await expect(
       ConfigService.load(environment, { configPath: 'missing.yaml', cwd: directory })
     ).rejects.toThrow('Explicit configuration file does not exist')
-    expect(
+    await expect(
       ConfigService.load(environment, { configPath: unreadablePath, cwd: directory })
     ).rejects.toThrow('Explicit configuration file is unreadable')
   })
@@ -549,7 +549,9 @@ describe('ConfigService YAML and environment loading', () => {
     const directory = await temporaryDirectory()
     const path = join(directory, 'operator.yaml')
     await writeFile(path, contents)
-    expect(ConfigService.load({}, { configPath: path, cwd: directory })).rejects.toThrow(message)
+    await expect(ConfigService.load({}, { configPath: path, cwd: directory })).rejects.toThrow(
+      message
+    )
   })
 
   test('preserves bigint precision from YAML integer values', async () => {
@@ -576,7 +578,7 @@ describe('ConfigService YAML and environment loading', () => {
     const path = join(directory, 'operator.yaml')
     await writeFile(path, yaml().replace('autoRefill: false', `autoRefill: ${spelling}`))
 
-    expect(ConfigService.load({}, { configPath: path })).rejects.toThrow(
+    await expect(ConfigService.load({}, { configPath: path })).rejects.toThrow(
       'bootstrap[0].autoRefill must be a boolean'
     )
   })
@@ -625,7 +627,7 @@ describe('ConfigService YAML and environment loading', () => {
           : '"10000000000000000001"'
     await writeFile(path, yaml().replace(`${field}: ${original}`, `${field}: ${spelling}`))
 
-    expect(ConfigService.load({}, { configPath: path })).rejects.toThrow()
+    await expect(ConfigService.load({}, { configPath: path })).rejects.toThrow()
   })
 
   test('accepts canonical decimal integer strings and bare YAML integers', async () => {
@@ -779,7 +781,7 @@ describe('ConfigService YAML and environment loading', () => {
     'rejects BOOTSTRAP_MARKETS JSON number token %s for integer fields',
     async numberToken => {
       const raw = `[{"marketId":"${marketId}","creditTarget":${numberToken},"acceptanceAssets":"1","offerSize":"2","premiumBps":"-50","maximumMarketExposure":"10","maximumTotalExposure":"20","minimumRateBps":"200","maximumRateBps":"800","autoRefill":false}]`
-      expect(
+      await expect(
         ConfigService.load(
           { ...environment, BOOTSTRAP_MARKETS: raw },
           { cwd: await temporaryDirectory() }
