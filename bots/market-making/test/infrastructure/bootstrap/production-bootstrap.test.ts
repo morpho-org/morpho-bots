@@ -19,6 +19,7 @@ const groupId: Hex = `0x${'cd'.repeat(32)}`
 
 const group = (overrides: Record<string, unknown> = {}) => ({
   id: groupId,
+  chain_id: 8453,
   consumed: '0',
   max_assets: '100',
   offers: [
@@ -34,6 +35,30 @@ const group = (overrides: Record<string, unknown> = {}) => ({
 })
 
 describe('readBootstrapGroups', () => {
+  test('requests only Base offer groups', async () => {
+    let requestedUrl = ''
+    await readBootstrapGroups(
+      { maker, requestTimeoutMs: 1_000 },
+      {
+        request: async url => {
+          requestedUrl = url
+          return { data: [], cursor: null }
+        }
+      }
+    )
+
+    expect(new URL(requestedUrl, 'https://morpho.test').searchParams.get('chain_ids')).toBe('8453')
+  })
+
+  test('ignores non-Base groups returned by the provider', async () => {
+    const groups = await readBootstrapGroups(
+      { maker, requestTimeoutMs: 1_000 },
+      { request: async () => ({ data: [group({ chain_id: 1 }), group()], cursor: null }) }
+    )
+
+    expect(groups.map(value => value.id)).toEqual([groupId])
+  })
+
   test('derives ownership only from explicit durable group IDs', async () => {
     const unrelatedGroupId: Hex = `0x${'ef'.repeat(32)}`
     const groups = await readBootstrapGroups(
@@ -79,6 +104,16 @@ describe('readBootstrapGroups', () => {
 
     expect(error).toBeInstanceOf(BootstrapAdapterError)
     expect(error).toMatchObject({ operation: 'offer-groups-response' })
+  })
+
+  test.each(['', '   '])('fails closed on an empty pagination cursor %p', async cursor => {
+    const error = await readBootstrapGroups(
+      { maker, requestTimeoutMs: 1_000 },
+      { request: async () => ({ data: [], cursor }) }
+    ).catch(value => value)
+
+    expect(error).toBeInstanceOf(BootstrapAdapterError)
+    expect(error).toMatchObject({ operation: 'offer-groups-cursor' })
   })
 
   test('fails closed when a pagination cursor repeats', async () => {

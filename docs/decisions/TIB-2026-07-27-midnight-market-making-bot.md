@@ -301,7 +301,8 @@ market:
 4. compute the loan-asset value of one supply share at each checkpoint; and
 5. annualize the share-value return over the observed interval using fixed-point arithmetic.
 
-The default lookback is six hours (`21600` seconds). Historical block lookup and state reads require
+The default lookback is six hours (`21600` seconds), and the latest reference checkpoint must be no
+more than five minutes behind wall-clock time. Historical block lookup and state reads require
 an archive-capable RPC. A reference market with less than six hours of observable history, missing
 historical state, a non-positive interval, zero share supply, negative/undefined return, or an
 incomplete accrual result is a hard reference failure.

@@ -8,7 +8,7 @@ import { operatorErrorName } from '../../application/operator-error-name.utils'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 import { BootstrapHardHaltError } from './bootstrap-hard-halt.error'
 
-type BootstrapBookOffer = { marketId: Hex; buy: boolean; tick: bigint }
+type BootstrapBookOffer = { groupId?: Hex; marketId: Hex; buy: boolean; tick: bigint }
 
 /** Protocol transport for confirmed Midnight publication and group invalidation. */
 interface BootstrapOfferTransport {
@@ -59,8 +59,13 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
       const groups = await this.strategyGroups()
       if (parameters.desiredOffer) {
         const prospective = await this.transport.toProspectiveBookOffer(parameters.desiredOffer)
+        const replacedGroupIds = new Set(
+          groups.filter(group => group.marketId === parameters.marketId).map(group => group.id)
+        )
         const book = [...(await this.transport.listBookOffers()), prospective].filter(
-          offer => offer.marketId === parameters.marketId
+          offer =>
+            offer.marketId === parameters.marketId &&
+            (offer.groupId === undefined || !replacedGroupIds.has(offer.groupId))
         )
         const buys = book.filter(offer => offer.buy).map(offer => offer.tick)
         const sells = book.filter(offer => !offer.buy).map(offer => offer.tick)

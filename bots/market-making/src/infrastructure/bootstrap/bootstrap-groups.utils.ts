@@ -148,7 +148,7 @@ export const readBootstrapGroups = async (
     const remainingMs = Math.floor(deadline - now())
     if (remainingMs <= 0) throw new BootstrapAdapterError('offer-groups-timeout')
     pageCount += 1
-    const query = new URLSearchParams({ limit: String(PAGE_SIZE) })
+    const query = new URLSearchParams({ chain_ids: '8453', limit: String(PAGE_SIZE) })
     if (cursor) query.set('cursor', cursor)
     const rawResponse = await request(
       `${config.morphoApiBaseUrl ?? ''}/v0/midnight/users/${config.maker}/offer-groups?${query.toString()}`,
@@ -162,7 +162,15 @@ export const readBootstrapGroups = async (
     if (!Array.isArray(response.data)) throw new BootstrapAdapterError('offer-groups-response')
     if (response.data.length > PAGE_SIZE) throw new BootstrapAdapterError('offer-groups-page-size')
     for (const value of response.data) {
-      const rawOffers = (value as Record<string, unknown>)?.offers
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        throw new BootstrapAdapterError('offer-groups-response')
+      }
+      const rawGroup = value as Record<string, unknown>
+      if (typeof rawGroup.chain_id !== 'number' || !Number.isSafeInteger(rawGroup.chain_id)) {
+        throw new BootstrapAdapterError('offer-groups-response')
+      }
+      if (rawGroup.chain_id !== 8453) continue
+      const rawOffers = rawGroup.offers
       if (!Array.isArray(rawOffers)) throw new BootstrapAdapterError('offer-groups-response')
       itemCount += rawOffers.length
       if (itemCount > MAX_OFFER_ITEMS) throw new BootstrapAdapterError('offer-groups-item-limit')
@@ -172,7 +180,7 @@ export const readBootstrapGroups = async (
     if (
       response.cursor !== null &&
       response.cursor !== undefined &&
-      typeof response.cursor !== 'string'
+      (typeof response.cursor !== 'string' || response.cursor.trim().length === 0)
     ) {
       throw new BootstrapAdapterError('offer-groups-cursor')
     }

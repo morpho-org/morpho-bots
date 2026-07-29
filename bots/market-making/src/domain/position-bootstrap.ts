@@ -231,7 +231,14 @@ export const decidePositionBootstrap = ({
     referenceObservationId: rate.observationId
   }
 
-  if (activeOffer && !requiresReconciliation && sameOffer(activeOffer, offer)) {
+  const observationMatches =
+    rate.mode === 'static' || activeOffer?.referenceObservationId === offer.referenceObservationId
+  if (
+    activeOffer &&
+    !requiresReconciliation &&
+    observationMatches &&
+    sameOffer(activeOffer, offer)
+  ) {
     return { kind: 'rest' as const, offer: activeOffer }
   }
   if (activeOffer) return { kind: 'replace' as const, activeOffer, offer }

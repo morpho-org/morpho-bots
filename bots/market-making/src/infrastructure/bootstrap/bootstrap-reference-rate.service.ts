@@ -7,6 +7,7 @@ import { BootstrapAdapterError } from './bootstrap-adapter.error'
 const WAD = 10n ** 18n
 const BPS = 10_000n
 const YEAR_SECONDS = 31_536_000n
+const MAX_REFERENCE_STALENESS_SECONDS = 300n
 
 /** Accrual-aware Morpho Blue supply-share checkpoint. */
 export type BlueSupplyCheckpoint = {
@@ -25,10 +26,11 @@ export interface BlueReferenceReader {
 
 /** Default six-hour, RPC-derived Morpho Blue supply-share reference adapter. */
 export class BlueBootstrapReferenceRateService implements BootstrapReferenceRateService {
-  /** Creates a variable-rate adapter. @param reader - Historical Blue reader. @param lookbackSeconds - Observation window in seconds. */
+  /** Creates a variable-rate adapter. @param reader - Historical Blue reader. @param lookbackSeconds - Observation window in seconds. @param nowSeconds - Wall-clock unix time source used for freshness checks. */
   constructor(
     private readonly reader: BlueReferenceReader,
-    private readonly lookbackSeconds = 21_600n
+    private readonly lookbackSeconds = 21_600n,
+    private readonly nowSeconds = () => BigInt(Math.floor(Date.now() / 1_000))
   ) {}
 
   /**
@@ -41,6 +43,10 @@ export class BlueBootstrapReferenceRateService implements BootstrapReferenceRate
   async readRate(marketId: Hex) {
     void marketId
     const latest = await this.reader.readLatest()
+    const latestAge = this.nowSeconds() - latest.timestamp
+    if (latestAge < 0n || latestAge > MAX_REFERENCE_STALENESS_SECONDS) {
+      throw new BootstrapAdapterError('reference-stale')
+    }
     const start = await this.reader.readAtOrBefore(latest.timestamp - this.lookbackSeconds)
     const elapsed = latest.timestamp - start.timestamp
     if (

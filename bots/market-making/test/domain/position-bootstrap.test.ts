@@ -325,7 +325,7 @@ describe('decidePositionBootstrap', () => {
     ).toEqual({ kind: 'rest', offer: activeOffer })
   })
 
-  test('rests a rehydrated variable offer when its protocol terms are unchanged', () => {
+  test('refreshes a rehydrated variable offer for a new observation', () => {
     const activeOffer = {
       marketId,
       assets: 500n,
@@ -333,14 +333,18 @@ describe('decidePositionBootstrap', () => {
       referenceObservationId: 'group:rehydrated'
     }
 
-    expect(
-      decidePositionBootstrap({
-        ...parameters,
-        position: { ...parameters.position, credit: 0n },
-        rate: { mode: 'variable', rateBps: 500n, observationId: 'blocks:100-200' },
-        activeOffer
-      })
-    ).toEqual({ kind: 'rest', offer: activeOffer })
+    const decision = decidePositionBootstrap({
+      ...parameters,
+      position: { ...parameters.position, credit: 0n },
+      rate: { mode: 'variable', rateBps: 500n, observationId: 'blocks:100-200' },
+      activeOffer
+    })
+
+    expect(decision).toMatchObject({
+      kind: 'replace',
+      activeOffer,
+      offer: { referenceObservationId: 'blocks:100-200' }
+    })
   })
 
   test('leaves a variable offer resting within the same reference observation', () => {

@@ -194,6 +194,10 @@ sources remains unknown, fails readiness, and requires an operator decision; mar
 permits reconciliation or hard-halt cancellation. The request timeout is an aggregate fetch/RPC bound and
 does not reveal endpoint details in failures.
 
+Bootstrap offer-group reads request Base explicitly, ignore well-formed rows from other chains, and fail
+closed on malformed chain identity, asset strings, or empty/repeated pagination cursors. The variable Blue
+reference hard-fails when its latest checkpoint is more than five minutes behind wall-clock time.
+
 ### Position-bootstrap fields
 
 Each `bootstrap` entry must use a unique `marketId` present in `markets.allowlist`.

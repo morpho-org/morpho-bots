@@ -208,6 +208,34 @@ describe('MidnightBootstrapMakeService', () => {
     expect([...tracked]).toEqual([publishedGroupId])
   })
 
+  test('excludes groups being replaced from prospective spread validation', async () => {
+    const events: string[] = []
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [{ id: groupId, marketId, assets: 100n, rateBps: 500n }],
+      listBookOffers: async () => [
+        { groupId, marketId, buy: true, tick: 101n },
+        { marketId, buy: false, tick: 100n }
+      ],
+      toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 99n }),
+      preparePublication: async () => ({
+        groupId: publishedGroupId,
+        publish: async () => {
+          events.push('publish')
+        }
+      }),
+      reserveGroup: async () => {},
+      confirmPublishedGroup: async () => {},
+      releaseGroupReservation: async () => {},
+      invalidate: async () => {
+        events.push('invalidate')
+      }
+    })
+
+    await service.reconcile({ marketId, desiredOffer, reason: 'replace' })
+
+    expect(events).toEqual(['invalidate', 'publish'])
+  })
+
   test('validates a replacement spread before invalidating its live group', async () => {
     const events: string[] = []
     const service = new MidnightBootstrapMakeService({

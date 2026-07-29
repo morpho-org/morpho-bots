@@ -195,7 +195,10 @@ export const createProductionBootstrapAdapters = (
 
   const make = new MidnightBootstrapMakeService({
     listActiveGroups: activeGroups,
-    listBookOffers: async () => (await readGroups()).flatMap(group => group.offers),
+    listBookOffers: async () =>
+      (await readGroups()).flatMap(group =>
+        group.offers.map(offer => ({ ...offer, groupId: group.id }))
+      ),
     toProspectiveBookOffer: async offer => {
       const created = await prepareOffer(offer)
       preparedOffers.set(offer.marketId, created)
