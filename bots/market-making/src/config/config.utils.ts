@@ -2,13 +2,13 @@ import type { Address, Hex } from 'viem'
 
 import { bytesToHex, getAddress, hexToBytes, isAddress, isHex, size } from 'viem'
 
-import type { LadderConfig } from '../domain/ladder'
-import type { BootstrapConfig } from '../domain/position-bootstrap'
+import type { BootstrapConfig } from '../domain/bootstrap/position-bootstrap'
+import type { LadderConfig } from '../domain/ladder/ladder'
 
-import { BootstrapConfigurationError } from '../domain/bootstrap-configuration.error'
-import { validateLadderConfig } from '../domain/ladder'
-import { LadderConfigurationError } from '../domain/ladder-configuration.error'
-import { validateBootstrapConfig } from '../domain/position-bootstrap'
+import { BootstrapConfigurationError } from '../domain/bootstrap/bootstrap-configuration.error'
+import { validateBootstrapConfig } from '../domain/bootstrap/position-bootstrap'
+import { validateLadderConfig } from '../domain/ladder/ladder'
+import { LadderConfigurationError } from '../domain/ladder/ladder-configuration.error'
 import { ConfigValidationError } from './config-validation.error'
 
 /** String-valued runtime environment boundary accepted by configuration parsing. */

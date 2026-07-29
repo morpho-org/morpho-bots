@@ -4,7 +4,7 @@ import { blueAbi } from '@morpho-org/morpho-sdk/abis'
 import { describe, expect, test } from 'bun:test'
 import { bytesToHex, hexToBytes, keccak256 } from 'viem'
 
-import { SafeProviderError } from '../../../src/application/safe-provider.error'
+import { SafeProviderError } from '../../../src/application/setup/safe-provider.error'
 import { requestJson } from '../../../src/infrastructure/setup-state/http-json.utils'
 import { ProviderPaginationError } from '../../../src/infrastructure/setup-state/provider-pagination.error'
 import { ProviderReadError } from '../../../src/infrastructure/setup-state/provider-read.error'

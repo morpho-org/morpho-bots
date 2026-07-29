@@ -1,4 +1,4 @@
-import { SetupFailedError } from './application/setup-failed.error'
+import { SetupFailedError } from './application/setup/setup-failed.error'
 import { createApplication } from './bootstrap'
 import { formatSetupCheckReport } from './infrastructure/cli/cli.utils'
 

@@ -6,14 +6,14 @@ import type {
   BootstrapPosition,
   BootstrapRate,
   PositionBootstrapDecision
-} from '../domain/position-bootstrap'
+} from '../../domain/bootstrap/position-bootstrap'
 
 import {
   decidePositionBootstrap,
   decidePositionBootstrapTransition,
   validateBootstrapConfig
-} from '../domain/position-bootstrap'
-import { operatorErrorName } from './operator-error-name.utils'
+} from '../../domain/bootstrap/position-bootstrap'
+import { operatorErrorName } from '../operator-error-name.utils'
 
 type DecisionInvalidationReason = Extract<
   PositionBootstrapDecision,

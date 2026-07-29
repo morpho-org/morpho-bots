@@ -6,10 +6,10 @@ import {
   SetupCheckService,
   type SetupCheckConfig,
   type SetupStateService
-} from '../../src/application/setup-check.service'
-import { SetupFailedError } from '../../src/application/setup-failed.error'
-import { ProviderReadError } from '../../src/infrastructure/setup-state/provider-read.error'
-import { ProviderResponseError } from '../../src/infrastructure/setup-state/provider-response.error'
+} from '../../../src/application/setup/setup-check.service'
+import { SetupFailedError } from '../../../src/application/setup/setup-failed.error'
+import { ProviderReadError } from '../../../src/infrastructure/setup-state/provider-read.error'
+import { ProviderResponseError } from '../../../src/infrastructure/setup-state/provider-response.error'
 
 const maker = '0x1111111111111111111111111111111111111111'
 const midnight = '0x2222222222222222222222222222222222222222'

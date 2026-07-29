@@ -7,7 +7,7 @@ import { getChainAddress } from '@morpho-org/morpho-ts'
 import { erc20Abi, isAddress, isAddressEqual, keccak256, zeroAddress, zeroHash } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
-import type { BookSetup, SetupStateService } from '../../application/setup-check.service'
+import type { BookSetup, SetupStateService } from '../../application/setup/setup-check.service'
 import type { JsonRequest } from './http-json.utils'
 
 import { booksJsonRequestFetch } from './http-json.utils'

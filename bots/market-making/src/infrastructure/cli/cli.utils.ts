@@ -1,4 +1,4 @@
-import type { SetupCheckReport } from '../../application/setup-check.service'
+import type { SetupCheckReport } from '../../application/setup/setup-check.service'
 
 /**
  * Serializes a sanitized setup report for the CLI, converting bigint values to decimal strings.

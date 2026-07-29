@@ -1,10 +1,10 @@
 import type { Hex } from 'viem'
 
-import type { LadderConfig, LadderMarketState, LadderQuoteSet } from '../domain/ladder'
+import type { LadderConfig, LadderMarketState, LadderQuoteSet } from '../../domain/ladder/ladder'
 
-import { generateLadder, shouldRecenter, validateLadderConfig } from '../domain/ladder'
+import { generateLadder, shouldRecenter, validateLadderConfig } from '../../domain/ladder/ladder'
+import { operatorErrorName } from '../operator-error-name.utils'
 import { sameLadderQuoteSet } from './ladder-market-maker.utils'
-import { operatorErrorName } from './operator-error-name.utils'
 
 /** Consumer-owned port for fresh position and capacity inputs for one ladder market. */
 export interface LadderPositionService {

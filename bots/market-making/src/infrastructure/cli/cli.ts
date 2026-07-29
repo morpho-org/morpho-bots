@@ -1,6 +1,6 @@
 import { Command, CommanderError } from 'commander'
 
-import type { SetupCheckReport } from '../../application/setup-check.service'
+import type { SetupCheckReport } from '../../application/setup/setup-check.service'
 import type { VersionService } from '../../application/version.service'
 
 import { CliUsageError } from './cli-usage.error'

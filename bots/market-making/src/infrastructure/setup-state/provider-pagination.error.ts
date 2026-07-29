@@ -1,4 +1,4 @@
-import type { SafeProviderFailure } from '../../application/safe-provider.error'
+import type { SafeProviderFailure } from '../../application/setup/safe-provider.error'
 
 /** Signals that bounded provider pagination violated a stable safety invariant. */
 export class ProviderPaginationError extends Error {

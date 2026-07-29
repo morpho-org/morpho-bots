@@ -7,8 +7,8 @@ import {
   shouldRecenter,
   validateLadderConfig,
   type LadderConfig
-} from '../../src/domain/ladder'
-import { LadderConfigurationError } from '../../src/domain/ladder-configuration.error'
+} from '../../../src/domain/ladder/ladder'
+import { LadderConfigurationError } from '../../../src/domain/ladder/ladder-configuration.error'
 
 const marketId: Hex = `0x${'55'.repeat(32)}`
 const config = (overrides: Partial<LadderConfig> = {}): LadderConfig => ({

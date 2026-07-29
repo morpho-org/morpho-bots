@@ -6,10 +6,14 @@ import type {
   LadderMakeService,
   LadderPositionService,
   LadderReferenceRateService
-} from '../../src/application/ladder-market-maker.service'
-import type { LadderConfig, LadderMarketState, LadderQuoteSet } from '../../src/domain/ladder'
+} from '../../../src/application/ladder/ladder-market-maker.service'
+import type {
+  LadderConfig,
+  LadderMarketState,
+  LadderQuoteSet
+} from '../../../src/domain/ladder/ladder'
 
-import { LadderMarketMakerService } from '../../src/application/ladder-market-maker.service'
+import { LadderMarketMakerService } from '../../../src/application/ladder/ladder-market-maker.service'
 
 const marketId: Hex = `0x${'55'.repeat(32)}`
 const secondMarketId: Hex = `0x${'66'.repeat(32)}`

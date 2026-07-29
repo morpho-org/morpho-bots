@@ -6,10 +6,10 @@ import type {
   BootstrapMakeService,
   BootstrapPositionService,
   BootstrapReferenceRateService
-} from '../../src/application/position-bootstrap.service'
-import type { BootstrapConfig } from '../../src/domain/position-bootstrap'
+} from '../../../src/application/bootstrap/position-bootstrap.service'
+import type { BootstrapConfig } from '../../../src/domain/bootstrap/position-bootstrap'
 
-import { PositionBootstrapService } from '../../src/application/position-bootstrap.service'
+import { PositionBootstrapService } from '../../../src/application/bootstrap/position-bootstrap.service'
 
 const marketId: Hex = `0x${'11'.repeat(32)}`
 const secondMarketId: Hex = `0x${'22'.repeat(32)}`

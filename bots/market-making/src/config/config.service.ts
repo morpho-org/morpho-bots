@@ -4,9 +4,9 @@ import { isHex, size } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
 
-import type { SetupCheckConfig } from '../application/setup-check.service'
-import type { LadderConfig } from '../domain/ladder'
-import type { BootstrapConfig } from '../domain/position-bootstrap'
+import type { SetupCheckConfig } from '../application/setup/setup-check.service'
+import type { BootstrapConfig } from '../domain/bootstrap/position-bootstrap'
+import type { LadderConfig } from '../domain/ladder/ladder'
 import type { ConfigurationLoadOptions, ConfigurationSource } from './config-source.utils'
 import type { Environment } from './config.utils'
 

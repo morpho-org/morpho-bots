@@ -5,9 +5,9 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import type { SetupStateService } from '../src/application/setup-check.service'
+import type { SetupStateService } from '../src/application/setup/setup-check.service'
 
-import { SetupFailedError } from '../src/application/setup-failed.error'
+import { SetupFailedError } from '../src/application/setup/setup-failed.error'
 import { createApplication } from '../src/bootstrap'
 
 const maker: Address = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'

@@ -1,11 +1,11 @@
 import { createPublicClient, http } from 'viem'
 import { base } from 'viem/chains'
 
-import type { SetupStateService } from './application/setup-check.service'
+import type { SetupStateService } from './application/setup/setup-check.service'
 import type { ConfigService } from './config/config.service'
 import type { ChainReader } from './infrastructure/setup-state/viem-setup-state.service'
 
-import { SetupCheckService } from './application/setup-check.service'
+import { SetupCheckService } from './application/setup/setup-check.service'
 import { VersionService } from './application/version.service'
 import { ConfigService as RuntimeConfigService } from './config/config.service'
 import { Cli } from './infrastructure/cli/cli'
