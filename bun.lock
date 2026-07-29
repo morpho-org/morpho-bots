@@ -162,7 +162,7 @@
   "catalog": {
     "@internationalized/date": "^3.11.0",
     "@loglayer/transport-betterstack": "2.2.0",
-    "@morpho-org/midnight-sdk": "1.2.0",
+    "@morpho-org/midnight-sdk": "1.3.0",
     "@morpho-org/morpho-ts": "2.8.0",
     "@morpho-org/viem-dlc": "0.0.11",
     "@types/bun": "^1.3.0",
@@ -238,7 +238,7 @@
 
     "@morpho-org/midnight-liquidation": ["@morpho-org/midnight-liquidation@workspace:bots/midnight-liquidation"],
 
-    "@morpho-org/midnight-sdk": ["@morpho-org/midnight-sdk@1.2.0", "", { "peerDependencies": { "@morpho-org/morpho-ts": "^2.8.0", "viem": "^2.0.0" } }, "sha512-QrpMXGvSBScuqB/nVaQEIlQaMlyr2ZFQxVQ/nfjX2MwlmpyGi+dECaEUL5dwlVq5RHbVysyo8kROK7hWTDaubQ=="],
+    "@morpho-org/midnight-sdk": ["@morpho-org/midnight-sdk@1.3.0", "", { "peerDependencies": { "@morpho-org/morpho-ts": "^2.8.0", "viem": "^2.0.0" } }, "sha512-O96+FFzku6m2eZPL1vUjyUS+U+I+HLP9w/dOYLMzNiRo76/79glh+ThprKMqDeNVvk2AXB7ZefnKP3JFaDIj2A=="],
 
     "@morpho-org/morpho-sdk": ["@morpho-org/morpho-sdk@5.4.1", "", { "dependencies": { "@morpho-org/blue-sdk": "^6.4.0", "@morpho-org/blue-sdk-viem": "^5.2.1", "@morpho-org/midnight-sdk": "^1.3.0", "@morpho-org/morpho-ts": "^2.8.0", "zod": "^4.4.3" }, "peerDependencies": { "viem": "^2.0.0" } }, "sha512-sUyoaXjCBDkm/lB6lvXBu6UDuUQkmk1HWj4Ov6g0N8l6LgEfGXMa2uuenmS3pTErlwzlQCESEbNDZBPY4+kjTQ=="],
 
@@ -677,8 +677,6 @@
     "zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
 
     "@morpho-org/blue-sdk/@noble/hashes": ["@noble/hashes@2.2.0", "", {}, "sha512-IYqDGiTXab6FniAgnSdZwgWbomxpy9FtYvLKs7wCUs2a8RkITG+DFGO1DM9cr+E3/RgADRpFjrKVaJ1z6sjtEg=="],
-
-    "@morpho-org/morpho-sdk/@morpho-org/midnight-sdk": ["@morpho-org/midnight-sdk@1.3.0", "", { "peerDependencies": { "@morpho-org/morpho-ts": "^2.8.0", "viem": "^2.0.0" } }, "sha512-O96+FFzku6m2eZPL1vUjyUS+U+I+HLP9w/dOYLMzNiRo76/79glh+ThprKMqDeNVvk2AXB7ZefnKP3JFaDIj2A=="],
 
     "@morpho-org/morpho-sdk/zod": ["zod@4.4.3", "", {}, "sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ=="],
 

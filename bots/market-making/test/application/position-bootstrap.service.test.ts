@@ -858,11 +858,12 @@ describe('PositionBootstrapService', () => {
     ])
   })
 
-  test('does not assume publication after a make failure and continues other markets', async () => {
+  test('stops dependent plans after a make failure', async () => {
     const { service, make } = setup({ configs: [config(), config(secondMarketId)] })
-    make.reconcile = mock(async request => {
+    const failedReconcile = mock(async request => {
       if (request.marketId === marketId) throw new RangeError('publish rejected')
     })
+    make.reconcile = failedReconcile
 
     const result = await service.runOnce()
 
@@ -873,9 +874,9 @@ describe('PositionBootstrapService', () => {
         stage: 'make',
         invalidated: false,
         errorName: 'RangeError'
-      },
-      { marketId: secondMarketId, status: 'applied', action: 'publish' }
+      }
     ])
+    expect(failedReconcile).toHaveBeenCalledTimes(1)
   })
 
   test('resumes after initial completion when auto-refill is enabled', async () => {

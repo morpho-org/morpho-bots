@@ -67,6 +67,9 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
       ) {
         throw new BootstrapAdapterError('shared-group-reconciliation')
       }
+      let publication:
+        | Awaited<ReturnType<BootstrapOfferTransport['preparePublication']>>
+        | undefined
       if (parameters.desiredOffer) {
         const prospective = await this.transport.toProspectiveBookOffer(parameters.desiredOffer)
         const replacedGroupIds = new Set(
@@ -87,13 +90,24 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
         ) {
           throw new BootstrapAdapterError('negative-spread')
         }
-      }
-      for (const groupId of marketGroupIds) {
-        await this.transport.invalidate(groupId)
-      }
-      if (parameters.desiredOffer) {
-        const publication = await this.transport.preparePublication(parameters.desiredOffer)
+        publication = await this.transport.preparePublication(parameters.desiredOffer)
         await this.transport.reserveGroup(publication.groupId, parameters.desiredOffer)
+      }
+      try {
+        for (const groupId of marketGroupIds) {
+          await this.transport.invalidate(groupId)
+        }
+      } catch (error) {
+        if (publication) {
+          try {
+            await this.transport.releaseGroupReservation(publication.groupId)
+          } catch {
+            throw new BootstrapAdapterError('publication-reservation-cleanup')
+          }
+        }
+        throw error
+      }
+      if (publication) {
         try {
           await publication.publish()
         } catch (error) {

@@ -26,7 +26,7 @@ describe('BlueBootstrapReferenceRateService', () => {
 
     expect(await service.readRate(marketId)).toMatchObject({
       mode: 'variable',
-      observationId: 'blocks:100-200'
+      observationId: 'hour:0'
     })
   })
 

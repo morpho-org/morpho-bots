@@ -273,6 +273,42 @@ describe('MidnightBootstrapMakeService', () => {
     expect(events).toEqual(['invalidate', 'publish'])
   })
 
+  test('prepares and reserves a replacement before invalidation and releases it if invalidation fails', async () => {
+    const events: string[] = []
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [{ id: groupId, marketId, assets: 100n, rateBps: 500n }],
+      listBookOffers: async () => [],
+      toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
+      preparePublication: async () => {
+        events.push('prepare')
+        return {
+          groupId: publishedGroupId,
+          publish: async () => {
+            events.push('publish')
+          }
+        }
+      },
+      reserveGroup: async () => {
+        events.push('reserve')
+      },
+      confirmPublishedGroup: async () => {},
+      releaseGroupReservation: async () => {
+        events.push('release')
+      },
+      invalidate: async () => {
+        events.push('invalidate')
+        throw new BootstrapAdapterError('transaction-reverted')
+      }
+    })
+
+    const error = await service
+      .reconcile({ marketId, desiredOffer, reason: 'replace' })
+      .catch(value => value)
+
+    expect(error).toMatchObject({ operation: 'transaction-reverted' })
+    expect(events).toEqual(['prepare', 'reserve', 'invalidate', 'release'])
+  })
+
   test('validates a replacement spread before invalidating its live group', async () => {
     const events: string[] = []
     const service = new MidnightBootstrapMakeService({

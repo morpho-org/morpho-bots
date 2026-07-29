@@ -8,6 +8,7 @@ const WAD = 10n ** 18n
 const BPS = 10_000n
 const YEAR_SECONDS = 31_536_000n
 const MAX_REFERENCE_STALENESS_SECONDS = 300n
+const REFERENCE_REFRESH_SECONDS = 3_600n
 
 /** Accrual-aware Morpho Blue supply-share checkpoint. */
 export type BlueSupplyCheckpoint = {
@@ -36,7 +37,7 @@ export class BlueBootstrapReferenceRateService implements BootstrapReferenceRate
   /**
    * Derives annualized BPS from two accrual-aware supply-share values.
    * @param marketId - Bootstrap market requesting the shared configured Blue reference.
-   * @returns Variable rate and stable block-range observation identity.
+   * @returns Variable rate and stable hourly observation identity.
    * @throws When history, time, or supply-share values cannot produce a positive reference.
    * @remarks Reads only historical RPC state; no API fallback or static fallback is used.
    */
@@ -64,7 +65,7 @@ export class BlueBootstrapReferenceRateService implements BootstrapReferenceRate
     return {
       mode: 'variable' as const,
       rateBps,
-      observationId: `blocks:${start.blockNumber}-${latest.blockNumber}`
+      observationId: `hour:${latest.timestamp / REFERENCE_REFRESH_SECONDS}`
     }
   }
 }

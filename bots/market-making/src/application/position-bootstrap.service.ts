@@ -363,7 +363,7 @@ export class PositionBootstrapService {
           invalidated: false,
           errorName: operatorErrorName(error)
         })
-        continue
+        return results
       }
       results.push({ marketId: config.marketId, status: 'applied' as const, action: decision.kind })
     }
