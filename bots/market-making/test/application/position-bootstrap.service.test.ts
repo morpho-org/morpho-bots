@@ -212,6 +212,48 @@ describe('PositionBootstrapService', () => {
     })
   })
 
+  test('reserves only the net replacement delta before deciding a later market', async () => {
+    const capped = {
+      ...config(),
+      maximumMarketExposure: 600n,
+      maximumTotalExposure: 600n
+    }
+    const { service, positions, reconcile } = setup({
+      configs: [capped, { ...capped, marketId: secondMarketId }]
+    })
+    positions.readPosition = mock(async id => ({
+      credit: 0n,
+      debt: 0n,
+      cashBalance: id === marketId ? 1_000n : 500n,
+      marketExposure: 0n,
+      totalExposure: id === marketId ? 0n : 500n,
+      activeOffer:
+        id === marketId
+          ? {
+              marketId,
+              assets: 500n,
+              rateBps: 400n,
+              referenceObservationId: 'static:old'
+            }
+          : undefined
+    }))
+
+    expect(await service.runOnce()).toEqual([
+      { marketId, status: 'applied', action: 'replace' },
+      { marketId: secondMarketId, status: 'applied', action: 'publish' }
+    ])
+    expect(reconcile).toHaveBeenNthCalledWith(2, {
+      marketId: secondMarketId,
+      desiredOffer: {
+        marketId: secondMarketId,
+        assets: 100n,
+        rateBps: 450n,
+        referenceObservationId: 'static:500'
+      },
+      reason: 'publish'
+    })
+  })
+
   test('invalidates at target and stays observational after completion when auto-refill is off', async () => {
     const { service, positions, reconcile } = setup()
     let cycle = 0

@@ -183,8 +183,8 @@ export class PositionBootstrapService {
 
     const plans: BootstrapRunPlan[] = []
     const preflightResults = () => plans.flatMap(plan => ('result' in plan ? [plan.result] : []))
-    let reservedAssets = 0n
-    const reservedAssetsByMarket = new Map<Hex, bigint>()
+    let reservedAssetsDelta = 0n
+    const reservedAssetsDeltaByMarket = new Map<Hex, bigint>()
 
     for (const config of this.configs) {
       let position: Awaited<ReturnType<BootstrapPositionService['readPosition']>>
@@ -201,13 +201,27 @@ export class PositionBootstrapService {
         plans.push({ result })
         continue
       }
-      const marketReservation = reservedAssetsByMarket.get(config.marketId) ?? 0n
+      const marketReservationDelta = reservedAssetsDeltaByMarket.get(config.marketId) ?? 0n
       position = {
         ...position,
         cashBalance:
-          position.cashBalance > reservedAssets ? position.cashBalance - reservedAssets : 0n,
-        marketExposure: position.marketExposure + marketReservation,
-        totalExposure: position.totalExposure + reservedAssets
+          reservedAssetsDelta >= 0n
+            ? position.cashBalance > reservedAssetsDelta
+              ? position.cashBalance - reservedAssetsDelta
+              : 0n
+            : position.cashBalance - reservedAssetsDelta,
+        marketExposure:
+          marketReservationDelta >= 0n
+            ? position.marketExposure + marketReservationDelta
+            : position.marketExposure > -marketReservationDelta
+              ? position.marketExposure + marketReservationDelta
+              : 0n,
+        totalExposure:
+          reservedAssetsDelta >= 0n
+            ? position.totalExposure + reservedAssetsDelta
+            : position.totalExposure > -reservedAssetsDelta
+              ? position.totalExposure + reservedAssetsDelta
+              : 0n
       }
 
       let transition: ReturnType<typeof decidePositionBootstrapTransition>
@@ -267,8 +281,11 @@ export class PositionBootstrapService {
 
       plans.push({ config, decision })
       if (decision.kind === 'publish' || decision.kind === 'replace') {
-        reservedAssets += decision.offer.assets
-        reservedAssetsByMarket.set(config.marketId, marketReservation + decision.offer.assets)
+        const replacedAssets =
+          decision.kind === 'replace' ? (position.activeOffer?.assets ?? 0n) : 0n
+        const exposureDelta = decision.offer.assets - replacedAssets
+        reservedAssetsDelta += exposureDelta
+        reservedAssetsDeltaByMarket.set(config.marketId, marketReservationDelta + exposureDelta)
       }
     }
 

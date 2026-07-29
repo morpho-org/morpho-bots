@@ -1,11 +1,14 @@
 import type { Address, Hex } from 'viem'
 
+import { midnightAbi } from '@morpho-org/midnight-sdk'
 import { describe, expect, test } from 'bun:test'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { encodeFunctionData } from 'viem'
 
 import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/bootstrap-adapter.error'
+import { bootstrapExposureMarketIds } from '../../../src/infrastructure/bootstrap/bootstrap-exposure.utils'
 import { createBootstrapGroupOwnership } from '../../../src/infrastructure/bootstrap/bootstrap-group-ownership.utils'
 import {
   readBootstrapGroups,
@@ -13,6 +16,7 @@ import {
 } from '../../../src/infrastructure/bootstrap/bootstrap-groups.utils'
 import { bootstrapContinuousFeeCap } from '../../../src/infrastructure/bootstrap/bootstrap-offer.utils'
 import { signBootstrapRequirements } from '../../../src/infrastructure/bootstrap/bootstrap-requirements.utils'
+import { assertBootstrapTransaction } from '../../../src/infrastructure/bootstrap/bootstrap-transaction.utils'
 
 const maker: Address = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
 const marketId: Hex = `0x${'ab'.repeat(32)}`
@@ -34,6 +38,54 @@ const group = (overrides: Record<string, unknown> = {}) => ({
     }
   ],
   ...overrides
+})
+
+describe('bootstrapExposureMarketIds', () => {
+  test('includes allowlisted markets without bootstrap entries in aggregate exposure reads', () => {
+    expect(
+      bootstrapExposureMarketIds({
+        setup: { marketIds: [marketId, secondMarketId] },
+        bootstrap: [{ marketId }]
+      })
+    ).toEqual([marketId, secondMarketId])
+  })
+})
+
+describe('assertBootstrapTransaction', () => {
+  const cancellation = {
+    to: maker,
+    value: 0n,
+    data: encodeFunctionData({
+      abi: midnightAbi,
+      functionName: 'setConsumed',
+      args: [groupId, 100n, maker]
+    })
+  }
+
+  test('accepts the exact zero-value Midnight cancellation call', async () => {
+    await expect(
+      assertBootstrapTransaction(cancellation, { kind: 'cancel', target: maker })
+    ).resolves.toBeUndefined()
+  })
+
+  test.each([
+    [{ ...cancellation, to: '0x1111111111111111111111111111111111111111' as Address }],
+    [{ ...cancellation, value: 1n }],
+    [{ ...cancellation, data: '0xdeadbeef' as Hex }]
+  ])('rejects cancellation transactions outside the signer policy', async transaction => {
+    await expect(
+      assertBootstrapTransaction(transaction, { kind: 'cancel', target: maker })
+    ).rejects.toMatchObject({ operation: 'transaction-policy' })
+  })
+
+  test('rejects malformed Midnight mempool publication payloads', async () => {
+    await expect(
+      assertBootstrapTransaction(
+        { to: maker, value: 0n, data: '0xdeadbeef' },
+        { kind: 'publication', target: maker }
+      )
+    ).rejects.toMatchObject({ operation: 'transaction-policy' })
+  })
 })
 
 describe('bootstrapContinuousFeeCap', () => {

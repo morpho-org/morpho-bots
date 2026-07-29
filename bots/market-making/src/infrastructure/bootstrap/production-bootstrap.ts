@@ -1,6 +1,7 @@
 import { Offer, TickLib } from '@morpho-org/midnight-sdk'
 import { morphoViemExtension } from '@morpho-org/morpho-sdk'
 import { fetchMarket } from '@morpho-org/morpho-sdk/fetch'
+import { getChainAddress } from '@morpho-org/morpho-ts'
 import {
   createPublicClient,
   createWalletClient,
@@ -23,6 +24,7 @@ import type { BootstrapActiveGroup, BootstrapInventoryReader } from './bootstrap
 import type { BlueReferenceReader, BlueSupplyCheckpoint } from './bootstrap-reference-rate.service'
 
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
+import { bootstrapExposureMarketIds } from './bootstrap-exposure.utils'
 import { createBootstrapGroupOwnership } from './bootstrap-group-ownership.utils'
 import { readBootstrapGroups, strategyBootstrapGroups } from './bootstrap-groups.utils'
 import { MidnightBootstrapMakeService } from './bootstrap-make.service'
@@ -30,6 +32,7 @@ import { bootstrapContinuousFeeCap } from './bootstrap-offer.utils'
 import { MidnightBootstrapPositionService } from './bootstrap-position.service'
 import { BlueBootstrapReferenceRateService } from './bootstrap-reference-rate.service'
 import { signBootstrapRequirements } from './bootstrap-requirements.utils'
+import { assertBootstrapTransaction } from './bootstrap-transaction.utils'
 
 const WAD = 10n ** 18n
 const YEAR_SECONDS = 31_536_000n
@@ -165,15 +168,15 @@ export const createProductionBootstrapAdapters = (
     readPositions: async () => {
       const block = await wallet.getBlock({ blockTag: 'latest' })
       return Promise.all(
-        config.bootstrap.map(async strategy => {
+        bootstrapExposureMarketIds(config).map(async marketId => {
           const position = (
             await midnight.getPositionData({
-              marketId: strategy.marketId,
+              marketId,
               accountAddress: account.address,
               parameters: { blockNumber: block.number }
             })
           ).accrueInterest(block.timestamp)
-          return { marketId: strategy.marketId, credit: position.credit, debt: position.debt }
+          return { marketId, credit: position.credit, debt: position.debt }
         })
       )
     },
@@ -187,7 +190,11 @@ export const createProductionBootstrapAdapters = (
     readActiveGroups: activeGroups
   }
 
-  const execute = async (transaction: { to: `0x${string}`; data: Hex; value: bigint }) => {
+  const execute = async (
+    transaction: { to: `0x${string}`; data: Hex; value: bigint },
+    policy: Parameters<typeof assertBootstrapTransaction>[1]
+  ) => {
+    await assertBootstrapTransaction(transaction, policy)
     const hash = await wallet.sendTransaction(transaction)
     const receipt = await wallet.waitForTransactionReceipt({ hash })
     if (receipt.status !== 'success') throw new BootstrapAdapterError('transaction-reverted')
@@ -226,7 +233,10 @@ export const createProductionBootstrapAdapters = (
       return { marketId: offer.marketId, buy: true, tick: created.tick }
     },
     invalidate: async group => {
-      await execute(midnight.cancelOffer({ group, accountAddress: account.address }).buildTx())
+      await execute(midnight.cancelOffer({ group, accountAddress: account.address }).buildTx(), {
+        kind: 'cancel',
+        target: config.setup.midnight
+      })
     },
     reserveGroup: ownership.reserve,
     confirmPublishedGroup: ownership.confirm,
@@ -250,9 +260,14 @@ export const createProductionBootstrapAdapters = (
           >
       )
       const transaction = output.buildTx(signatures)
+      const publicationPolicy = {
+        kind: 'publication' as const,
+        target: getChainAddress(base.id, 'midnightMempool')
+      }
+      await assertBootstrapTransaction(transaction, publicationPolicy)
       return {
         groupId: output.groups[0] as Hex,
-        publish: () => execute(transaction)
+        publish: () => execute(transaction, publicationPolicy)
       }
     }
   })
