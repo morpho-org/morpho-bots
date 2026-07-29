@@ -248,9 +248,12 @@ center is recentered only when absolute effective-center movement is strictly gr
 
 Rung weight `k` is `10000 + k * sizeSkewBps`, and every weight must stay positive. Positive skew
 weights outer rungs more heavily; negative skew weights inner rungs more heavily. Each configured
-`lowerRateBudgetAssets` / `higherRateBudgetAssets` is capped by fresh side, target-market, and
-strategy-total capacity. Exact bigint proportional division is used and the outermost rung receives
-the remainder so each side sums exactly to its capped budget. `targetMarketExposureAssets` must not
+`lowerRateBudgetAssets` / `higherRateBudgetAssets` is first capped by its fresh side capacity. The
+fresh target-market and strategy-total capacities then cap both sides in aggregate; when that cap
+binds, capacity is split proportionally between the requested side budgets with the bigint remainder
+assigned to the higher-rate side. Exact bigint proportional division allocates each nonzero side
+across its rungs, and the outermost rung receives the remainder so the side sums exactly to its capped
+budget. A side with zero fresh capacity produces no rungs. `targetMarketExposureAssets` must not
 exceed `maximumTotalExposureAssets`.
 
 `LADDER_MARKETS` is exact JSON with the same fields. Every integer-valued property must be a quoted

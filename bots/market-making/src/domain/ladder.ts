@@ -94,14 +94,15 @@ const allocateBudget = (budget: bigint, weights: readonly bigint[]) => {
   return allocations
 }
 
-const cappedBudget = (
-  configured: bigint,
-  sideCapacity: bigint | undefined,
-  capacities: LadderMarketState
-) => {
-  const values = [configured]
+const sideBudget = (configured: bigint, capacity: bigint | undefined) => {
+  if (capacity === undefined) return configured
+  nonnegative(capacity, 'capacityAssets')
+  return minimum([configured, capacity])
+}
+
+const aggregateBudget = (config: LadderConfig, capacities: LadderMarketState) => {
+  const values = [config.targetMarketExposureAssets, config.maximumTotalExposureAssets]
   for (const capacity of [
-    sideCapacity,
     capacities.targetMarketCapacityAssets,
     capacities.maximumTotalCapacityAssets
   ]) {
@@ -111,6 +112,13 @@ const cappedBudget = (
     }
   }
   return minimum(values)
+}
+
+const splitBudget = (lower: bigint, higher: bigint, aggregate: bigint) => {
+  const requested = lower + higher
+  if (requested <= aggregate) return { lower, higher }
+  const lowerShare = (aggregate * lower) / requested
+  return { lower: lowerShare, higher: aggregate - lowerShare }
 }
 
 const assertRungBounds = (rate: bigint, side: 'lower' | 'higher', config: LadderConfig) => {
@@ -191,37 +199,40 @@ export const generateLadder = (parameters: GenerateLadderParameters): LadderQuot
   validateLadderConfig(config)
   const centerRateBps = retainedCenterRateBps ?? referenceRateBps + config.quotePremiumBps
   const weights = rungWeights(config)
-  const lowerBudget = cappedBudget(
-    minimum([
-      config.lowerRateBudgetAssets,
-      config.targetMarketExposureAssets,
-      config.maximumTotalExposureAssets
-    ]),
-    capacities.lowerRateCapacityAssets,
-    capacities
+  const budgets = splitBudget(
+    sideBudget(config.lowerRateBudgetAssets, capacities.lowerRateCapacityAssets),
+    sideBudget(config.higherRateBudgetAssets, capacities.higherRateCapacityAssets),
+    aggregateBudget(config, capacities)
   )
-  const higherBudget = cappedBudget(
-    minimum([
-      config.higherRateBudgetAssets,
-      config.targetMarketExposureAssets,
-      config.maximumTotalExposureAssets
-    ]),
-    capacities.higherRateCapacityAssets,
-    capacities
-  )
-  const lowerAllocations = allocateBudget(lowerBudget, weights)
-  const higherAllocations = allocateBudget(higherBudget, weights)
+  const lowerAllocations = allocateBudget(budgets.lower, weights)
+  const higherAllocations = allocateBudget(budgets.higher, weights)
   const halfSpread = config.spreadBps / 2n
-  const lower = weights.map((_weight, index) => {
+  const lowerRates = weights.map((_weight, index) => {
     const rateBps = centerRateBps - halfSpread - BigInt(index) * config.stepBps
     assertRungBounds(rateBps, 'lower', config)
-    return { index, rateBps, assets: lowerAllocations[index] ?? 0n }
+    return rateBps
   })
-  const higher = weights.map((_weight, index) => {
+  const higherRates = weights.map((_weight, index) => {
     const rateBps = centerRateBps + halfSpread + BigInt(index) * config.stepBps
     assertRungBounds(rateBps, 'higher', config)
-    return { index, rateBps, assets: higherAllocations[index] ?? 0n }
+    return rateBps
   })
+  const lower =
+    budgets.lower === 0n
+      ? []
+      : lowerRates.map((rateBps, index) => ({
+          index,
+          rateBps,
+          assets: lowerAllocations[index] ?? 0n
+        }))
+  const higher =
+    budgets.higher === 0n
+      ? []
+      : higherRates.map((rateBps, index) => ({
+          index,
+          rateBps,
+          assets: higherAllocations[index] ?? 0n
+        }))
   return { marketId: config.marketId, centerRateBps, groupMode: config.groupMode, lower, higher }
 }
 

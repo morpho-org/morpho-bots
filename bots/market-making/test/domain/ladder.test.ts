@@ -60,8 +60,8 @@ describe('ladder domain', () => {
         sizeSkewBps,
         lowerRateBudgetAssets: 100n,
         higherRateBudgetAssets: 100n,
-        targetMarketExposureAssets: 100n,
-        maximumTotalExposureAssets: 100n,
+        targetMarketExposureAssets: 200n,
+        maximumTotalExposureAssets: 200n,
         minimumRateBps: 0n,
         maximumRateBps: 1_000n
       }),
@@ -71,19 +71,35 @@ describe('ladder domain', () => {
     expect(ladder.lower.reduce((sum, rung) => sum + rung.assets, 0n)).toBe(100n)
   })
 
-  test('caps both side budgets with fresh side and exposure capacities', () => {
+  test('shares fresh aggregate exposure capacity across both ladder sides', () => {
     const ladder = generateLadder({
-      config: config({ lowerRateBudgetAssets: 100n, higherRateBudgetAssets: 100n }),
+      config: config({
+        lowerRateBudgetAssets: 100n,
+        higherRateBudgetAssets: 100n,
+        targetMarketExposureAssets: 100n,
+        maximumTotalExposureAssets: 100n
+      }),
       referenceRateBps: 500n,
       capacities: {
-        lowerRateCapacityAssets: 40n,
-        higherRateCapacityAssets: 30n,
-        targetMarketCapacityAssets: 25n,
+        lowerRateCapacityAssets: 100n,
+        higherRateCapacityAssets: 100n,
+        targetMarketCapacityAssets: 50n,
         maximumTotalCapacityAssets: 20n
       }
     })
-    expect(ladder.lower.reduce((sum, rung) => sum + rung.assets, 0n)).toBe(20n)
-    expect(ladder.higher.reduce((sum, rung) => sum + rung.assets, 0n)).toBe(20n)
+    expect(ladder.lower.reduce((sum, rung) => sum + rung.assets, 0n)).toBe(10n)
+    expect(ladder.higher.reduce((sum, rung) => sum + rung.assets, 0n)).toBe(10n)
+  })
+
+  test('omits a side whose fresh capacity is zero', () => {
+    const ladder = generateLadder({
+      config: config(),
+      referenceRateBps: 500n,
+      capacities: { lowerRateCapacityAssets: 0n, higherRateCapacityAssets: 10n }
+    })
+
+    expect(ladder.lower).toEqual([])
+    expect(ladder.higher.reduce((sum, rung) => sum + rung.assets, 0n)).toBe(10n)
   })
 
   test('rejects a static shape that cannot fit the hard range', () => {

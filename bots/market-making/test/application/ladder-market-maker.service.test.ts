@@ -42,6 +42,7 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
   let rate = 500n
   let marketState = state()
   let readFailure: Hex | undefined
+  let reconcileFailure: Hex | undefined
   const reads: string[] = []
   const reconciliations: Array<{
     marketId: Hex
@@ -64,7 +65,12 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
     }
   }
   const make: LadderMakeService = {
+    async readActive(id) {
+      return liveDesired.get(id)
+    },
     async reconcile(parameters) {
+      if (parameters.marketId === reconcileFailure)
+        throw new TypeError('private publication detail')
       reconciliations.push(parameters)
       if (parameters.desired) liveDesired.set(parameters.marketId, parameters.desired)
       else liveDesired.delete(parameters.marketId)
@@ -88,7 +94,9 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
     setRate: (value: bigint) => (rate = value),
     setCapacity: (value: bigint) => (marketState = state(value)),
     failMarket: (id: Hex) => (readFailure = id),
-    expireRoots: (id: Hex) => liveDesired.delete(id)
+    failReconcile: (id: Hex) => (reconcileFailure = id),
+    expireRoots: (id: Hex) => liveDesired.delete(id),
+    recreateService: () => (service = new LadderMarketMakerService(positions, rates, make, configs))
   }
 }
 
@@ -118,14 +126,35 @@ describe('LadderMarketMakerService', () => {
     expect(subject.reconciliations).toHaveLength(4)
   })
 
-  test('reconciles an unchanged desired set so externally expired roots are restored', async () => {
+  test('reloads live roots so externally expired roots are republished', async () => {
     const subject = harness()
     await subject.service.runOnce()
     subject.expireRoots(marketId)
 
-    expect(await subject.service.runOnce()).toMatchObject([{ action: 'rest' }])
+    expect(await subject.service.runOnce()).toMatchObject([{ action: 'publish' }])
     expect(subject.liveDesired.get(marketId)).toEqual(subject.reconciliations[0]?.desired)
     expect(subject.reconciliations).toHaveLength(2)
+  })
+
+  test('rebuilds the active center from live roots after service recreation', async () => {
+    const subject = harness([{ ...config(), movementToleranceBps: 10n }])
+    await subject.service.runOnce()
+    subject.setRate(505n)
+    subject.recreateService()
+
+    expect(await subject.service.runOnce()).toMatchObject([{ action: 'rest' }])
+    expect(subject.reconciliations.at(-1)?.desired?.centerRateBps).toBe(500n)
+  })
+
+  test('reports an ordinary reconcile failure and continues other markets', async () => {
+    const subject = harness([config(), config(secondMarketId)])
+    subject.failReconcile(marketId)
+
+    expect(await subject.service.runOnce()).toMatchObject([
+      { marketId, status: 'failed', stage: 'reconcile', invalidated: false },
+      { marketId: secondMarketId, action: 'publish' }
+    ])
+    expect(subject.halts).toEqual([])
   })
 
   test('hard-halts when a fresh effective center is unsafe inside a wide tolerance', async () => {
@@ -179,6 +208,9 @@ describe('LadderMarketMakerService', () => {
           }
         },
         {
+          async readActive() {
+            return undefined
+          },
           async reconcile() {},
           async hardHalt(parameters) {
             subject.halts.push(parameters.reason)

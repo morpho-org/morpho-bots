@@ -12,6 +12,7 @@ export interface LadderPositionService {
    * Reads current side, market, and total capacities.
    * @param marketId - Canonical market identifier to inspect.
    * @returns Fresh capacities used to resize both sides before reconciliation.
+   * @throws When the position provider cannot return a complete current market snapshot.
    */
   readMarket(marketId: Hex): Promise<LadderMarketState>
 }
@@ -22,6 +23,7 @@ export interface LadderReferenceRateService {
    * Reads the current fixed-point reference rate.
    * @param marketId - Canonical market identifier whose reference is required.
    * @returns Current rate in integer basis points.
+   * @throws When the rate provider cannot return a fresh valid reference.
    */
   readRate(marketId: Hex): Promise<bigint>
 }
@@ -29,9 +31,17 @@ export interface LadderReferenceRateService {
 /** Consumer-owned blocking make boundary for ladder reconciliation and safety invalidation. */
 export interface LadderMakeService {
   /**
+   * Reads the currently active strategy-owned quote set from live book truth.
+   * @param marketId - Canonical market identifier whose active roots must be reconstructed.
+   * @returns Exact active quote set, or `undefined` when no strategy roots remain live.
+   * @throws When active roots cannot be loaded or decoded safely.
+   */
+  readActive(marketId: Hex): Promise<LadderQuoteSet | undefined>
+  /**
    * Reconciles one strategy-owned market quote set against fresh active roots.
    * @param parameters - Market, optional exact desired set, and stable reconciliation reason.
    * @returns Completion only after blocking reconciliation settles.
+   * @throws When publication, replacement, or invalidation does not settle successfully.
    */
   reconcile(parameters: {
     marketId: Hex
@@ -42,6 +52,7 @@ export interface LadderMakeService {
    * Invalidates all strategy-owned roots after an unsafe cycle-level failure.
    * @param parameters - Stable safety reason without provider-controlled text.
    * @returns Completion after strategy invalidation settles.
+   * @throws When complete strategy-root invalidation cannot be confirmed.
    */
   hardHalt(parameters: {
     reason:
@@ -61,6 +72,7 @@ type LadderRunResult =
       reason: 'publish' | 'recenter' | 'resize'
     }
   | { marketId: Hex; status: 'failed'; stage: 'market-read'; invalidated: true; errorName: string }
+  | { marketId: Hex; status: 'failed'; stage: 'reconcile'; invalidated: false; errorName: string }
   | {
       marketId: Hex
       status: 'halted'
@@ -72,8 +84,6 @@ type LadderRunResult =
 
 /** Coordinates deterministic ladder decisions through fresh read and blocking make ports. */
 export class LadderMarketMakerService {
-  private readonly activeDesired = new Map<Hex, LadderQuoteSet>()
-
   /**
    * Creates one ladder application coordinator.
    * @param positions - Fresh position/capacity reader.
@@ -118,7 +128,7 @@ export class LadderMarketMakerService {
             desired: undefined,
             reason: 'market-read-failed'
           })
-          this.activeDesired.delete(config.marketId)
+
           results.push({
             marketId: config.marketId,
             status: 'failed',
@@ -153,7 +163,7 @@ export class LadderMarketMakerService {
       let desired: LadderQuoteSet
       let reason: 'publish' | 'recenter' | 'resize' | 'rest'
       try {
-        const active = this.activeDesired.get(config.marketId)
+        const active = await this.make.readActive(config.marketId)
         const effectiveCenter = referenceRateBps + config.quotePremiumBps
         const freshDesired = generateLadder({ config, referenceRateBps, capacities: market })
         const recenter = active
@@ -179,10 +189,15 @@ export class LadderMarketMakerService {
       try {
         await this.make.reconcile({ marketId: config.marketId, desired, reason })
       } catch (error) {
-        results.push(await this.halt(config.marketId, 'decision', error, 'ladder-decision-failed'))
-        return results
+        results.push({
+          marketId: config.marketId,
+          status: 'failed',
+          stage: 'reconcile',
+          invalidated: false,
+          errorName: operatorErrorName(error)
+        })
+        continue
       }
-      this.activeDesired.set(config.marketId, desired)
       if (reason === 'rest') {
         results.push({ marketId: config.marketId, status: 'observed', action: 'rest' })
         continue
@@ -205,7 +220,6 @@ export class LadderMarketMakerService {
   ): Promise<LadderRunResult> {
     try {
       await this.make.hardHalt({ reason })
-      this.activeDesired.clear()
       return {
         marketId,
         status: 'halted',
