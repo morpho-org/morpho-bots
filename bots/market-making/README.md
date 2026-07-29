@@ -1,5 +1,8 @@
 # Market making bot
 
+> [!WARNING]
+> The market-making bot is a work in progress, must not be used yet, and is expected to be ready for use around August 12, 2026.
+
 Implements the market-maker setup readiness gate from
 [TIB-2026-07-27](../../docs/decisions/TIB-2026-07-27-midnight-market-making-bot.md) for
 [MKT-1459](https://linear.app/morpho-labs/issue/MKT-1459).
