@@ -15,6 +15,7 @@ import { signBootstrapRequirements } from '../../../src/infrastructure/bootstrap
 
 const maker: Address = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
 const marketId: Hex = `0x${'ab'.repeat(32)}`
+const secondMarketId: Hex = `0x${'12'.repeat(32)}`
 const groupId: Hex = `0x${'cd'.repeat(32)}`
 
 const group = (overrides: Record<string, unknown> = {}) => ({
@@ -74,6 +75,34 @@ describe('readBootstrapGroups', () => {
     expect(strategyBootstrapGroups(groups, [groupId]).map(value => value.id)).toEqual([groupId])
   })
 
+  test('projects an explicitly owned shared group into every buy-offer market', async () => {
+    const secondOffer = {
+      ...group().offers[0],
+      market_id: secondMarketId,
+      tick: 200,
+      market: { maturity: 3_000 }
+    }
+    const groups = await readBootstrapGroups(
+      { maker, requestTimeoutMs: 1_000 },
+      {
+        request: async () => ({
+          data: [group({ offers: [...group().offers, secondOffer] })],
+          cursor: null
+        })
+      }
+    )
+
+    expect(strategyBootstrapGroups(groups, [groupId])).toEqual([
+      expect.objectContaining({ id: groupId, marketId, tick: 100n, maturity: 2_000n }),
+      expect.objectContaining({
+        id: groupId,
+        marketId: secondMarketId,
+        tick: 200n,
+        maturity: 3_000n
+      })
+    ])
+  })
+
   test.each([
     ['negative', '-1'],
     ['hexadecimal', '0x10'],
@@ -110,6 +139,16 @@ describe('readBootstrapGroups', () => {
     const error = await readBootstrapGroups(
       { maker, requestTimeoutMs: 1_000 },
       { request: async () => ({ data: [], cursor }) }
+    ).catch(value => value)
+
+    expect(error).toBeInstanceOf(BootstrapAdapterError)
+    expect(error).toMatchObject({ operation: 'offer-groups-cursor' })
+  })
+
+  test('fails closed when the pagination cursor is missing', async () => {
+    const error = await readBootstrapGroups(
+      { maker, requestTimeoutMs: 1_000 },
+      { request: async () => ({ data: [group()] }) }
     ).catch(value => value)
 
     expect(error).toBeInstanceOf(BootstrapAdapterError)

@@ -99,27 +99,29 @@ const parseGroup = (value: unknown, maker: Address) => {
     if (error instanceof BootstrapAdapterError) throw error
     throw new BootstrapAdapterError('offer-groups-response')
   }
-  const rawBuy = group.offers.find(item => (item as Record<string, unknown>).buy === true)
-  if (!rawBuy) return common
-  const buy = rawBuy as Record<string, unknown>
-  if (typeof buy.tick !== 'number' || typeof buy.market !== 'object' || buy.market === null) {
-    throw new BootstrapAdapterError('offer-groups-response')
-  }
-  const market = buy.market as Record<string, unknown>
-  if (typeof market.maturity !== 'number' || !Number.isSafeInteger(market.maturity)) {
-    throw new BootstrapAdapterError('offer-groups-response')
-  }
-  try {
-    return {
-      ...common,
-      marketId: bytes32(buy.market_id),
-      tick: BigInt(buy.tick),
-      maturity: BigInt(market.maturity)
+  const rawBuys = group.offers.filter(item => (item as Record<string, unknown>).buy === true)
+  if (rawBuys.length === 0) return [common]
+  return rawBuys.map(rawBuy => {
+    const buy = rawBuy as Record<string, unknown>
+    if (typeof buy.tick !== 'number' || typeof buy.market !== 'object' || buy.market === null) {
+      throw new BootstrapAdapterError('offer-groups-response')
     }
-  } catch (error) {
-    if (error instanceof BootstrapAdapterError) throw error
-    throw new BootstrapAdapterError('offer-groups-response')
-  }
+    const market = buy.market as Record<string, unknown>
+    if (typeof market.maturity !== 'number' || !Number.isSafeInteger(market.maturity)) {
+      throw new BootstrapAdapterError('offer-groups-response')
+    }
+    try {
+      return {
+        ...common,
+        marketId: bytes32(buy.market_id),
+        tick: BigInt(buy.tick),
+        maturity: BigInt(market.maturity)
+      }
+    } catch (error) {
+      if (error instanceof BootstrapAdapterError) throw error
+      throw new BootstrapAdapterError('offer-groups-response')
+    }
+  })
 }
 
 /**
@@ -175,16 +177,16 @@ export const readBootstrapGroups = async (
       itemCount += rawOffers.length
       if (itemCount > MAX_OFFER_ITEMS) throw new BootstrapAdapterError('offer-groups-item-limit')
       const parsed = parseGroup(value, config.maker)
-      groups.push(parsed)
+      groups.push(...parsed)
     }
     if (
-      response.cursor !== null &&
-      response.cursor !== undefined &&
-      (typeof response.cursor !== 'string' || response.cursor.trim().length === 0)
+      !Object.hasOwn(response, 'cursor') ||
+      (response.cursor !== null &&
+        (typeof response.cursor !== 'string' || response.cursor.trim().length === 0))
     ) {
       throw new BootstrapAdapterError('offer-groups-cursor')
     }
-    cursor = response.cursor ?? undefined
+    cursor = response.cursor === null ? undefined : response.cursor
     if (cursor && seenCursors.has(cursor)) {
       throw new BootstrapAdapterError('offer-groups-repeated-cursor')
     }

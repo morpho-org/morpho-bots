@@ -264,6 +264,30 @@ describe('MidnightBootstrapMakeService', () => {
     expect(events).toEqual([])
   })
 
+  test('cancels a shared multi-market group only once during a hard halt', async () => {
+    const secondMarketId: Hex = `0x${'44'.repeat(32)}`
+    const attempted: Hex[] = []
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [
+        { id: groupId, marketId, assets: 100n, rateBps: 500n },
+        { id: groupId, marketId: secondMarketId, assets: 100n, rateBps: 600n }
+      ],
+      listBookOffers: async () => [],
+      toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
+      preparePublication: async () => ({ groupId, publish: async () => {} }),
+      reserveGroup: async () => {},
+      confirmPublishedGroup: async () => {},
+      releaseGroupReservation: async () => {},
+      invalidate: async id => {
+        attempted.push(id)
+      }
+    })
+
+    await service.hardHalt({ reason: 'reference-read-failed' })
+
+    expect(attempted).toEqual([groupId])
+  })
+
   test('attempts every hard-halt cancellation and reports failures deterministically', async () => {
     const lastGroupId: Hex = `0x${'44'.repeat(32)}`
     const attempted: Hex[] = []

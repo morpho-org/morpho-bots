@@ -176,6 +176,42 @@ describe('PositionBootstrapService', () => {
       }
     ])
   })
+  test('reserves planned exposure before deciding a later under-target market', async () => {
+    const capped = {
+      ...config(),
+      maximumMarketExposure: 600n,
+      maximumTotalExposure: 600n
+    }
+    const { service, reconcile } = setup({
+      configs: [capped, { ...capped, marketId: secondMarketId }]
+    })
+
+    expect(await service.runOnce()).toEqual([
+      { marketId, status: 'applied', action: 'publish' },
+      { marketId: secondMarketId, status: 'applied', action: 'publish' }
+    ])
+    expect(reconcile).toHaveBeenNthCalledWith(1, {
+      marketId,
+      desiredOffer: {
+        marketId,
+        assets: 500n,
+        rateBps: 450n,
+        referenceObservationId: 'static:500'
+      },
+      reason: 'publish'
+    })
+    expect(reconcile).toHaveBeenNthCalledWith(2, {
+      marketId: secondMarketId,
+      desiredOffer: {
+        marketId: secondMarketId,
+        assets: 100n,
+        rateBps: 450n,
+        referenceObservationId: 'static:500'
+      },
+      reason: 'publish'
+    })
+  })
+
   test('invalidates at target and stays observational after completion when auto-refill is off', async () => {
     const { service, positions, reconcile } = setup()
     let cycle = 0

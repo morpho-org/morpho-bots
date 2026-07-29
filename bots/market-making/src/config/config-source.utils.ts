@@ -12,6 +12,7 @@ import { ConfigValidationError } from './config-validation.error'
 export type ConfigurationSource = {
   values: Record<string, unknown>
   bootstrap: unknown
+  ladder: unknown
   path?: string
 }
 
@@ -69,7 +70,7 @@ const environmentKeys = [
 ] as const
 
 const yamlKeys = {
-  root: ['chain', 'identity', 'contracts', 'apis', 'markets', 'setup', 'bootstrap'],
+  root: ['chain', 'identity', 'contracts', 'apis', 'markets', 'setup', 'bootstrap', 'ladder'],
   chain: ['id', 'rpcUrl', 'archiveRpcUrl'],
   identity: ['makerAddress', 'makerPrivateKey'],
   contracts: ['midnightAddress', 'loanAssetAddress', 'ratifierAddress'],
@@ -87,6 +88,23 @@ const yamlKeys = {
     'minimumRateBps',
     'maximumRateBps',
     'autoRefill'
+  ],
+  ladder: [
+    'marketId',
+    'quotePremiumBps',
+    'spreadBps',
+    'stepBps',
+    'rungCount',
+    'sizeSkewBps',
+    'lowerRateBudgetAssets',
+    'higherRateBudgetAssets',
+    'targetMarketExposureAssets',
+    'maximumTotalExposureAssets',
+    'groupMode',
+    'loopIntervalSeconds',
+    'movementToleranceBps',
+    'minimumRateBps',
+    'maximumRateBps'
   ]
 } as const
 
@@ -221,7 +239,19 @@ const yamlSource = (input: unknown): ConfigurationSource => {
     })
   }
 
-  return { values, bootstrap }
+  let ladder: unknown = []
+  if (root.ladder !== undefined) {
+    if (!Array.isArray(root.ladder)) {
+      throw new ConfigValidationError('ladder', 'wrong-type', 'ladder must be a list')
+    }
+    ladder = root.ladder.map(item => {
+      const mapped = record(item, 'ladder item')
+      rejectUnknownKeys(mapped, yamlKeys.ladder)
+      return mapped
+    })
+  }
+
+  return { values, bootstrap, ladder }
 }
 
 const parseYaml = (text: string) => {
@@ -308,6 +338,7 @@ const removeOverriddenYamlValues = (input: unknown, environment: Environment) =>
     }
   }
   if (environment.BOOTSTRAP_MARKETS !== undefined) delete root.bootstrap
+  if (environment.LADDER_MARKETS !== undefined) delete root.ladder
 }
 
 const parseBootstrapMarkets = (text: string) => {
@@ -329,6 +360,29 @@ const parseBootstrapMarkets = (text: string) => {
       'BOOTSTRAP_MARKETS',
       'malformed-json',
       'BOOTSTRAP_MARKETS must be a JSON array with unique object keys'
+    )
+  }
+}
+
+const parseLadderMarkets = (text: string) => {
+  if (Buffer.byteLength(text, 'utf8') > MAX_CONFIGURATION_SOURCE_BYTES) {
+    throw new ConfigValidationError(
+      'LADDER_MARKETS',
+      'too-large',
+      'LADDER_MARKETS exceeds the maximum supported size'
+    )
+  }
+  try {
+    JSON.parse(text)
+    const document = parseDocument(text, { intAsBigInt: true, uniqueKeys: true })
+    if (document.errors.length > 0) throw document.errors
+    rejectUnsafeYamlNodes(document)
+    return document.toJS({ maxAliasCount: 0 }) as unknown
+  } catch {
+    throw new ConfigValidationError(
+      'LADDER_MARKETS',
+      'malformed-json',
+      'LADDER_MARKETS must be a JSON array with unique object keys'
     )
   }
 }
@@ -445,6 +499,9 @@ export const loadConfigurationSources = async (
   if (environment.BOOTSTRAP_MARKETS !== undefined) {
     source.bootstrap = parseBootstrapMarkets(environment.BOOTSTRAP_MARKETS)
   }
+  if (environment.LADDER_MARKETS !== undefined) {
+    source.ladder = parseLadderMarkets(environment.LADDER_MARKETS)
+  }
   return { ...source, path }
 }
 
@@ -464,5 +521,7 @@ export const configurationFromEnvironment = (environment: Environment): Configur
   if (environment.BOOTSTRAP_MARKETS !== undefined) {
     bootstrap = parseBootstrapMarkets(environment.BOOTSTRAP_MARKETS)
   }
-  return { values, bootstrap }
+  const ladder =
+    environment.LADDER_MARKETS === undefined ? [] : parseLadderMarkets(environment.LADDER_MARKETS)
+  return { values, bootstrap, ladder }
 }

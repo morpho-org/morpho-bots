@@ -50,6 +50,34 @@ describe('MidnightBootstrapPositionService', () => {
     expect(position.totalExposure).toBe(85n)
   })
 
+  test('counts a shared multi-market group once in aggregate exposure', async () => {
+    const otherMarketId: Hex = `0x${'44'.repeat(32)}`
+    const inspectionMarketId: Hex = `0x${'55'.repeat(32)}`
+    const service = new MidnightBootstrapPositionService(
+      {
+        readPositions: async () => [
+          { marketId, credit: 0n, debt: 0n },
+          { marketId: otherMarketId, credit: 0n, debt: 0n },
+          { marketId: inspectionMarketId, credit: 0n, debt: 0n }
+        ],
+        readCashBalance: async () => 100n,
+        readActiveGroups: async () => [
+          { id: firstGroup, marketId, assets: 100n, rateBps: 500n },
+          { id: firstGroup, marketId: otherMarketId, assets: 100n, rateBps: 600n }
+        ]
+      },
+      maker
+    )
+
+    const first = await service.readPosition(marketId)
+    const second = await service.readPosition(otherMarketId)
+    const aggregate = await service.readPosition(inspectionMarketId)
+
+    expect(first.activeOffer?.referenceObservationId).toBe(`group:${firstGroup}`)
+    expect(second.activeOffer?.referenceObservationId).toBe(`group:${firstGroup}`)
+    expect(aggregate.totalExposure).toBe(100n)
+  })
+
   test('forces reconciliation when duplicate active groups exist for one market', async () => {
     const service = new MidnightBootstrapPositionService(
       {

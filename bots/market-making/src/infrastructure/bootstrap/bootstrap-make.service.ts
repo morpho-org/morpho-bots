@@ -78,8 +78,11 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
           throw new BootstrapAdapterError('negative-spread')
         }
       }
-      for (const group of groups.filter(item => item.marketId === parameters.marketId)) {
-        await this.transport.invalidate(group.id)
+      const marketGroupIds = new Set(
+        groups.filter(item => item.marketId === parameters.marketId).map(group => group.id)
+      )
+      for (const groupId of marketGroupIds) {
+        await this.transport.invalidate(groupId)
       }
       if (parameters.desiredOffer) {
         const publication = await this.transport.preparePublication(parameters.desiredOffer)
@@ -115,11 +118,12 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
     void parameters
     return this.enqueue(async () => {
       const failures = []
-      for (const group of await this.strategyGroups()) {
+      const groupIds = new Set((await this.strategyGroups()).map(group => group.id))
+      for (const groupId of groupIds) {
         try {
-          await this.transport.invalidate(group.id)
+          await this.transport.invalidate(groupId)
         } catch (error) {
-          failures.push({ groupId: group.id, errorName: operatorErrorName(error) })
+          failures.push({ groupId, errorName: operatorErrorName(error) })
         }
       }
       if (failures.length > 0) throw new BootstrapHardHaltError(failures)
