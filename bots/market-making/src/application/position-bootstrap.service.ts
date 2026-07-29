@@ -29,7 +29,8 @@ export interface BootstrapPositionService {
   /**
    * Reads the complete position state required for one bootstrap decision.
    * @param marketId - Canonical market identifier to inspect.
-   * @returns Fresh credit, debt, capacity inputs, and any active bootstrap offer.
+   * @returns Fresh credit, debt, capacity inputs, any representative active bootstrap offer, and a
+   *   reconciliation marker when duplicate groups exist.
    * @throws Error when the position provider cannot return a fresh, valid snapshot.
    * @remarks This read-only port must not publish, replace, or invalidate offers.
    */
@@ -37,6 +38,7 @@ export interface BootstrapPositionService {
     BootstrapPosition & {
       debt: bigint
       activeOffer?: BootstrapOffer
+      requiresReconciliation?: boolean
     }
   >
 }
@@ -181,6 +183,8 @@ export class PositionBootstrapService {
 
     const plans: BootstrapRunPlan[] = []
     const preflightResults = () => plans.flatMap(plan => ('result' in plan ? [plan.result] : []))
+    let reservedAssetsDelta = 0n
+    const reservedAssetsDeltaByMarket = new Map<Hex, bigint>()
 
     for (const config of this.configs) {
       let position: Awaited<ReturnType<BootstrapPositionService['readPosition']>>
@@ -196,6 +200,28 @@ export class PositionBootstrapService {
         if (result.status === 'halted') return [...preflightResults(), result]
         plans.push({ result })
         continue
+      }
+      const marketReservationDelta = reservedAssetsDeltaByMarket.get(config.marketId) ?? 0n
+      position = {
+        ...position,
+        cashBalance:
+          reservedAssetsDelta >= 0n
+            ? position.cashBalance > reservedAssetsDelta
+              ? position.cashBalance - reservedAssetsDelta
+              : 0n
+            : position.cashBalance - reservedAssetsDelta,
+        marketExposure:
+          marketReservationDelta >= 0n
+            ? position.marketExposure + marketReservationDelta
+            : position.marketExposure > -marketReservationDelta
+              ? position.marketExposure + marketReservationDelta
+              : 0n,
+        totalExposure:
+          reservedAssetsDelta >= 0n
+            ? position.totalExposure + reservedAssetsDelta
+            : position.totalExposure > -reservedAssetsDelta
+              ? position.totalExposure + reservedAssetsDelta
+              : 0n
       }
 
       let transition: ReturnType<typeof decidePositionBootstrapTransition>
@@ -239,6 +265,7 @@ export class PositionBootstrapService {
             position,
             rate,
             activeOffer: position.activeOffer,
+            requiresReconciliation: position.requiresReconciliation,
             initialTargetCompleted: this.completedMarkets.has(config.marketId)
           })
         } catch (error) {
@@ -253,6 +280,17 @@ export class PositionBootstrapService {
       }
 
       plans.push({ config, decision })
+      if (decision.kind === 'publish' || decision.kind === 'replace') {
+        const replacedAssets =
+          decision.kind === 'replace' ? (position.activeOffer?.assets ?? 0n) : 0n
+        const exposureDelta = decision.offer.assets - replacedAssets
+        reservedAssetsDelta += exposureDelta
+        reservedAssetsDeltaByMarket.set(config.marketId, marketReservationDelta + exposureDelta)
+      } else if (decision.kind === 'invalidate' && position.activeOffer) {
+        const exposureDelta = -position.activeOffer.assets
+        reservedAssetsDelta += exposureDelta
+        reservedAssetsDeltaByMarket.set(config.marketId, marketReservationDelta + exposureDelta)
+      }
     }
 
     for (const plan of plans) {
@@ -329,7 +367,7 @@ export class PositionBootstrapService {
           invalidated: false,
           errorName: operatorErrorName(error)
         })
-        continue
+        return results
       }
       results.push({ marketId: config.marketId, status: 'applied' as const, action: decision.kind })
     }

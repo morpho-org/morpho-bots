@@ -301,7 +301,8 @@ market:
 4. compute the loan-asset value of one supply share at each checkpoint; and
 5. annualize the share-value return over the observed interval using fixed-point arithmetic.
 
-The default lookback is six hours (`21600` seconds). Historical block lookup and state reads require
+The default lookback is six hours (`21600` seconds), and the latest reference checkpoint must be no
+more than five minutes behind wall-clock time. Historical block lookup and state reads require
 an archive-capable RPC. A reference market with less than six hours of observable history, missing
 historical state, a non-positive interval, zero share supply, negative/undefined return, or an
 incomplete accrual result is a hard reference failure.
@@ -483,10 +484,13 @@ Unknown roots signed by the maker are never silently adopted or invalidated duri
 reconciliation. They fail the setup check and require an operator decision. During a configured
 hard halt, `MakeService` invalidates only roots that decode as this V0 strategy's namespaces.
 
-Mempool publication failures do not mutate an assumed local state. The rejected make promise carries
-the typed reason and the next cycle reloads the active set. `MakeService` owns the in-process signing
-queue, pending transaction queue, and signer-policy guard. After a restart it reconciles the pending
-nonce and on-chain invalidation state before accepting another job from either workflow.
+Mempool publication failures do not mutate an assumed live state. Before broadcast, the bot durably
+reserves the SDK-derived group ID; a failed broadcast removes that reservation, while a successful
+broadcast is promoted to confirmed ownership. If finalization storage fails, the reservation remains an
+ownership candidate and is considered active only when fresh provider data contains that ID. The rejected
+make promise carries the typed reason and the next cycle reloads the active set. `MakeService` owns the
+in-process signing queue, pending transaction queue, and signer-policy guard. After a restart it reconciles
+the pending nonce and on-chain invalidation state before accepting another job from either workflow.
 
 ### 9. Failure posture
 

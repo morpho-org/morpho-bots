@@ -1,9 +1,10 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, mock, test } from 'bun:test'
 
+import { PositionBootstrapHaltedError } from '../../../src/application/position-bootstrap-halted.error'
 import { VersionService } from '../../../src/application/version.service'
 import { Cli } from '../../../src/infrastructure/cli/cli'
 import { CliUsageError } from '../../../src/infrastructure/cli/cli-usage.error'
-import { formatSetupCheckReport } from '../../../src/infrastructure/cli/cli.utils'
+import { runMarketMakingEntrypoint } from '../../../src/infrastructure/cli/market-making-entrypoint'
 
 const readyReport = {
   ready: true,
@@ -13,7 +14,11 @@ const readyReport = {
 }
 
 const cli = (assertReady = async () => readyReport) => {
-  return new Cli(new VersionService(), () => ({ assertReady }))
+  return new Cli(
+    new VersionService(),
+    () => ({ assertReady }),
+    () => ({ runOnce: async () => [] })
+  )
 }
 
 const runEntrypoint = async (argv: readonly string[]) => {
@@ -129,7 +134,7 @@ describe('Cli', () => {
     expect(error).toEqual(
       expect.objectContaining({ name: 'CliUsageError', code: 'INVALID_USAGE', kind: 'usage' })
     )
-    expect(error.message).toBe('Invalid command-line usage')
+    expect((error as Error).message).toBe('Invalid command-line usage')
     expect(error).not.toHaveProperty('cause')
     expect(error).not.toHaveProperty('command')
   })
@@ -144,7 +149,7 @@ describe('Cli', () => {
       code: 'INVALID_USAGE',
       kind: 'usage'
     })
-    expect(error.message).toBe('Invalid command-line usage')
+    expect((error as Error).message).toBe('Invalid command-line usage')
     expect(error).not.toHaveProperty('cause')
     expect(error).not.toHaveProperty('command')
   })
@@ -177,29 +182,118 @@ describe('Cli', () => {
 
   test('passes an explicit --config path to the command configuration boundary', async () => {
     let configPath: string | undefined
-    const application = new Cli(new VersionService(), options => {
-      configPath = options.configPath
-      return { assertReady: async () => readyReport }
-    })
+    const application = new Cli(
+      new VersionService(),
+      options => {
+        configPath = options.configPath
+        return { assertReady: async () => readyReport }
+      },
+      () => ({ runOnce: async () => [] })
+    )
 
     await application.run(['--config', 'operator.yml', 'setup-check'])
 
     expect(configPath).toBe('operator.yml')
   })
 
-  test('runs setup-check and returns a structured bigint-safe report', async () => {
-    expect(await cli().run(['setup-check'])).toBe(
-      '{"ready":true,"checks":[{"name":"native-balance","status":"passed","observed":"10","required":"10"}]}'
+  test('runs setup-check and returns the complete structured report', async () => {
+    expect(await cli().run(['setup-check'])).toEqual(readyReport)
+  })
+
+  test('mm bootstrap triggers one explicit position-bootstrap run', async () => {
+    const runOnce = mock(async () => [
+      { marketId: `0x${'11'.repeat(32)}`, status: 'applied', action: 'publish', assets: 10n }
+    ])
+    const application = new Cli(
+      new VersionService(),
+      () => ({ assertReady: async () => readyReport }),
+      () => ({ runOnce })
     )
+
+    expect(await application.run(['bootstrap'])).toEqual([
+      { marketId: `0x${'11'.repeat(32)}`, status: 'applied', action: 'publish', assets: 10n }
+    ])
+    expect(runOnce).toHaveBeenCalledTimes(1)
+  })
+
+  test('rejects a bootstrap cycle containing a failed market result', async () => {
+    const report = [
+      {
+        marketId: `0x${'11'.repeat(32)}`,
+        status: 'failed',
+        stage: 'make',
+        invalidated: false,
+        errorName: 'ProviderWriteError'
+      }
+    ]
+    const application = new Cli(
+      new VersionService(),
+      () => ({ assertReady: async () => readyReport }),
+      () => ({ runOnce: async () => report })
+    )
+
+    const error = await application.run(['bootstrap']).catch(value => value)
+
+    expect(error).toBeInstanceOf(PositionBootstrapHaltedError)
+    expect(error).toMatchObject({ report })
+  })
+
+  test('rejects a bootstrap cycle containing a strategy-wide safety halt', async () => {
+    const report = [
+      {
+        marketId: `0x${'11'.repeat(32)}`,
+        status: 'halted',
+        stage: 'reference-read',
+        strategyInvalidated: true,
+        errorName: 'ProviderReadError'
+      }
+    ]
+    const application = new Cli(
+      new VersionService(),
+      () => ({ assertReady: async () => readyReport }),
+      () => ({
+        runOnce: async () => report
+      })
+    )
+
+    const error = await application.run(['bootstrap']).catch(value => value)
+
+    expect(error).toBeInstanceOf(PositionBootstrapHaltedError)
+    expect(error).toMatchObject({
+      code: 'POSITION_BOOTSTRAP_HALTED',
+      kind: 'safety-halt',
+      report
+    })
+    expect((error as Error).message).toBe('Position bootstrap halted for safety')
+  })
+
+  test('entrypoint emits a halted report and returns a non-zero exit code', async () => {
+    const report = [
+      {
+        marketId: `0x${'11'.repeat(32)}`,
+        status: 'halted',
+        stage: 'reference-read',
+        strategyInvalidated: true,
+        errorName: 'ProviderReadError'
+      }
+    ]
+    const stdout: string[] = []
+    const stderr: string[] = []
+
+    const exitCode = await runMarketMakingEntrypoint(
+      { run: async () => Promise.reject(new PositionBootstrapHaltedError(report)) },
+      ['bootstrap'],
+      { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) }
+    )
+
+    expect(exitCode).toBe(1)
+    expect(stdout).toEqual([])
+    expect(stderr).toEqual([JSON.stringify(report)])
   })
 
   test('propagates a readiness failure for a deterministic non-zero entrypoint exit', async () => {
     const failure = new Error('Setup check failed: chain')
 
     expect(cli(async () => Promise.reject(failure)).run(['setup-check'])).rejects.toBe(failure)
-  })
-
-  test('formats the complete failed report for the non-zero entrypoint path', () => {
-    expect(formatSetupCheckReport({ ...readyReport, ready: false })).toContain('"observed":"10"')
   })
 })
