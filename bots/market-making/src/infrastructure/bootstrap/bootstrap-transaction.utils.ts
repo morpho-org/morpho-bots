@@ -1,6 +1,7 @@
+import type { IOffer } from '@morpho-org/midnight-sdk'
 import type { Address, Hex } from 'viem'
 
-import { midnightAbi, Payload } from '@morpho-org/midnight-sdk'
+import { MAX_OFFER_CAP, midnightAbi, Offer, Payload } from '@morpho-org/midnight-sdk'
 import { decodeFunctionData, isAddressEqual, isHex, size } from 'viem'
 
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
@@ -8,7 +9,7 @@ import { BootstrapAdapterError } from './bootstrap-adapter.error'
 type BootstrapTransaction = { to: Address; data: Hex; value: bigint }
 type BootstrapTransactionPolicy =
   | { kind: 'cancel'; target: Address; groupId: Hex; account: Address }
-  | { kind: 'publication'; target: Address }
+  | { kind: 'publication'; target: Address; offer: IOffer }
 
 /**
  * Enforces the hot-key signer policy before any Midnight transaction is broadcast.
@@ -43,8 +44,12 @@ export const assertBootstrapTransaction = async (
       if (decoded.functionName !== 'setConsumed') {
         throw new BootstrapAdapterError('transaction-policy')
       }
-      const [groupId, , account] = decoded.args
-      if (groupId !== policy.groupId || !isAddressEqual(account, policy.account)) {
+      const [groupId, amount, account] = decoded.args
+      if (
+        groupId !== policy.groupId ||
+        amount !== MAX_OFFER_CAP ||
+        !isAddressEqual(account, policy.account)
+      ) {
         throw new BootstrapAdapterError('transaction-policy')
       }
     } catch (error) {
@@ -54,8 +59,11 @@ export const assertBootstrapTransaction = async (
     return
   }
   try {
-    const items = await Payload.decode(transaction.data)
-    if (items.length === 0) throw new BootstrapAdapterError('transaction-policy')
+    const items = await Payload.decode(transaction.data, { maxItems: 1 })
+    const [item] = items
+    if (!item || Offer.from(item.offer).hash !== Offer.from(policy.offer).hash) {
+      throw new BootstrapAdapterError('transaction-policy')
+    }
   } catch (error) {
     if (error instanceof BootstrapAdapterError) throw error
     throw new BootstrapAdapterError('transaction-policy')

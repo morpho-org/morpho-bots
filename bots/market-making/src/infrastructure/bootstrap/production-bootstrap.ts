@@ -26,7 +26,11 @@ import type { BlueReferenceReader, BlueSupplyCheckpoint } from './bootstrap-refe
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 import { bootstrapExposureMarketIds } from './bootstrap-exposure.utils'
 import { createBootstrapGroupOwnership } from './bootstrap-group-ownership.utils'
-import { readBootstrapGroups, strategyBootstrapGroups } from './bootstrap-groups.utils'
+import {
+  bootstrapReservedLoanAssets,
+  readBootstrapGroups,
+  strategyBootstrapGroups
+} from './bootstrap-groups.utils'
 import { MidnightBootstrapMakeService } from './bootstrap-make.service'
 import { bootstrapContinuousFeeCap } from './bootstrap-offer.utils'
 import { MidnightBootstrapPositionService } from './bootstrap-position.service'
@@ -159,10 +163,7 @@ export const createProductionBootstrapAdapters = (
       })
   }
 
-  const ownedGroupIds = async () => {
-    const [groups, ownedIds] = await Promise.all([readGroups(), ownership.read()])
-    return strategyBootstrapGroups(groups, ownedIds).map(group => group.id)
-  }
+  const ownedGroupIds = () => ownership.read()
 
   const inventory: BootstrapInventoryReader = {
     readPositions: async () => {
@@ -247,12 +248,14 @@ export const createProductionBootstrapAdapters = (
       const created = preparedOffers.get(offer.marketId)
       preparedOffers.delete(offer.marketId)
       if (!created) throw new BootstrapAdapterError('prospective-offer-missing')
+      const [groups, ownedIds] = await Promise.all([readGroups(), ownership.read()])
       const output = await midnight.makeLend({
         accountAddress: account.address,
         offers: [created],
         validation: { apiUrl: `${config.morphoApiBaseUrl}/v0/midnight` },
         loanToken: config.setup.loanAsset,
-        loanAssets: offer.assets
+        loanAssets: offer.assets,
+        reservedLoanAssets: bootstrapReservedLoanAssets(groups, ownedIds)
       })
       const signatures = await signBootstrapRequirements(
         await output.getRequirements(),
@@ -264,7 +267,8 @@ export const createProductionBootstrapAdapters = (
       const transaction = output.buildTx(signatures)
       const publicationPolicy = {
         kind: 'publication' as const,
-        target: getChainAddress(base.id, 'midnightMempool')
+        target: getChainAddress(base.id, 'midnightMempool'),
+        offer: created
       }
       await assertBootstrapTransaction(transaction, publicationPolicy)
       return {

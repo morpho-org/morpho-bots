@@ -1,6 +1,6 @@
 import type { Address, Hex } from 'viem'
 
-import { midnightAbi } from '@morpho-org/midnight-sdk'
+import { MAX_OFFER_CAP, midnightAbi, Offer, Payload } from '@morpho-org/midnight-sdk'
 import { describe, expect, test } from 'bun:test'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -11,6 +11,7 @@ import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/boo
 import { bootstrapExposureMarketIds } from '../../../src/infrastructure/bootstrap/bootstrap-exposure.utils'
 import { createBootstrapGroupOwnership } from '../../../src/infrastructure/bootstrap/bootstrap-group-ownership.utils'
 import {
+  bootstrapReservedLoanAssets,
   readBootstrapGroups,
   strategyBootstrapGroups
 } from '../../../src/infrastructure/bootstrap/bootstrap-groups.utils'
@@ -22,6 +23,37 @@ const maker: Address = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
 const marketId: Hex = `0x${'ab'.repeat(32)}`
 const secondMarketId: Hex = `0x${'12'.repeat(32)}`
 const groupId: Hex = `0x${'cd'.repeat(32)}`
+const collateral: Address = '0x1111111111111111111111111111111111111111'
+const loanToken: Address = '0x2222222222222222222222222222222222222222'
+const oracle: Address = '0x3333333333333333333333333333333333333333'
+const ratifier: Address = '0x4444444444444444444444444444444444444444'
+
+const publicationOffer = (tick = 100n) =>
+  Offer.create({
+    market: {
+      chainId: 8453,
+      midnight: maker,
+      loanToken,
+      collateralParams: [
+        {
+          token: collateral,
+          lltv: 800_000_000_000_000_000n,
+          liquidationCursor: 0n,
+          oracle
+        }
+      ],
+      maturity: 54_000n,
+      rcfThreshold: 0n,
+      enterGate: '0x0000000000000000000000000000000000000000',
+      liquidatorGate: '0x0000000000000000000000000000000000000000'
+    },
+    buy: true,
+    maker,
+    tick,
+    expiry: 54_000n,
+    ratifier,
+    maxAssets: 100n
+  })
 
 const group = (overrides: Record<string, unknown> = {}) => ({
   id: groupId,
@@ -58,7 +90,7 @@ describe('assertBootstrapTransaction', () => {
     data: encodeFunctionData({
       abi: midnightAbi,
       functionName: 'setConsumed',
-      args: [groupId, 100n, maker]
+      args: [groupId, MAX_OFFER_CAP, maker]
     })
   }
 
@@ -83,7 +115,17 @@ describe('assertBootstrapTransaction', () => {
         data: encodeFunctionData({
           abi: midnightAbi,
           functionName: 'setConsumed',
-          args: [secondMarketId, 100n, maker]
+          args: [secondMarketId, MAX_OFFER_CAP, maker]
+        })
+      }
+    ],
+    [
+      {
+        ...cancellation,
+        data: encodeFunctionData({
+          abi: midnightAbi,
+          functionName: 'setConsumed',
+          args: [groupId, MAX_OFFER_CAP - 1n, maker]
         })
       }
     ]
@@ -102,7 +144,31 @@ describe('assertBootstrapTransaction', () => {
     await expect(
       assertBootstrapTransaction(
         { to: maker, value: 0n, data: '0xdeadbeef' },
-        { kind: 'publication', target: maker }
+        { kind: 'publication', target: maker, offer: publicationOffer() }
+      )
+    ).rejects.toMatchObject({ operation: 'transaction-policy' })
+  })
+
+  test('accepts exactly one intended Midnight offer in a publication payload', async () => {
+    const offer = publicationOffer()
+    const data = await Payload.encode([{ offer, ratifierData: '0x' }])
+
+    await expect(
+      assertBootstrapTransaction(
+        { to: maker, value: 0n, data },
+        { kind: 'publication', target: maker, offer }
+      )
+    ).resolves.toBeUndefined()
+  })
+
+  test('rejects a valid publication payload whose offer differs from the signed intent', async () => {
+    const offer = publicationOffer()
+    const data = await Payload.encode([{ offer: publicationOffer(104n), ratifierData: '0x' }])
+
+    await expect(
+      assertBootstrapTransaction(
+        { to: maker, value: 0n, data },
+        { kind: 'publication', target: maker, offer }
       )
     ).rejects.toMatchObject({ operation: 'transaction-policy' })
   })
@@ -124,6 +190,32 @@ describe('bootstrapContinuousFeeCap', () => {
 })
 
 describe('readBootstrapGroups', () => {
+  test('counts each owned group full reserve once across multi-market projections', async () => {
+    const secondOffer = {
+      ...group().offers[0],
+      market_id: secondMarketId,
+      tick: 200,
+      market: { maturity: 3_000 }
+    }
+    const groups = await readBootstrapGroups(
+      { maker, requestTimeoutMs: 1_000 },
+      {
+        request: async () => ({
+          data: [
+            group({
+              max_assets: '125',
+              consumed: '25',
+              offers: [...group().offers, secondOffer]
+            })
+          ],
+          cursor: null
+        })
+      }
+    )
+
+    expect(bootstrapReservedLoanAssets(groups, [groupId])).toBe(125n)
+  })
+
   test('requests only Base offer groups', async () => {
     let requestedUrl = ''
     await readBootstrapGroups(
