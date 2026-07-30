@@ -125,6 +125,21 @@ describe('SetupCheckService', () => {
     ])
   })
 
+  test('fails maker readiness when write mode receives no derived signer identity', async () => {
+    const state = readyState()
+    state.getDerivedMaker = async () => undefined
+
+    const report = await new SetupCheckService(state, config).check()
+
+    expect(report.ready).toBe(false)
+    expect(report.checks.find(check => check.name === 'maker')).toEqual({
+      name: 'maker',
+      status: 'failed',
+      observed: undefined,
+      required: maker
+    })
+  })
+
   test('reports compact deployment status instead of Midnight runtime bytecode', async () => {
     const report = await new SetupCheckService(readyState(), config).check()
     const chain = report.checks.find(check => check.name === 'chain')

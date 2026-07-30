@@ -88,7 +88,7 @@ type SetupStateOptions = {
   referenceLookbackBlocks?: bigint
   requestTimeoutMs?: number
   now?: () => number
-} & ({ readOnly: true; maker: Address } | { readOnly?: false; privateKey: Hex })
+} & ({ readOnly: true } | { readOnly?: false; privateKey: Hex })
 
 /** Read-only viem/API adapter that gathers setup facts and validates provider agreement. */
 export class ViemSetupStateService implements SetupStateService {
@@ -101,7 +101,7 @@ export class ViemSetupStateService implements SetupStateService {
    * @param request - JSON transport receiving only fixed provider IDs and explicit timeouts.
    * @param options - Validated identity mode, addresses, IDs, endpoints, deadline, and test clock.
    * @remarks Construction does not contact providers, sign data, log secrets, or execute writes.
-   * Read-only options carry only the public maker address and never load a private key.
+   * Read-only options carry no signer identity and never load a private key.
    */
   constructor(
     private readonly chain: ChainReader,

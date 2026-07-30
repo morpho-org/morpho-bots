@@ -42,18 +42,22 @@ export class ConfigService {
     environment: Environment = Bun.env,
     options: Pick<ConfigurationLoadOptions, 'readOnly'> = {}
   ) {
-    return ConfigService.fromSource(configurationFromEnvironment(environment), options.readOnly)
+    return ConfigService.fromSource(
+      configurationFromEnvironment(environment, options),
+      options.readOnly
+    )
   }
 
   /**
    * Loads an explicit or discovered YAML file, overlays environment values, and validates once.
    * @param environment - Environment values; supplied keys always override corresponding YAML.
-   * @param options - Optional explicit path and invocation working directory.
+   * @param options - Optional path, invocation directory, file reader, and identity-loading mode.
    * @returns A single immutable configuration shared by setup and bootstrap consumers.
    * @throws `ConfigFileError` or `ConfigValidationError` with no rejected values attached.
    * @remarks Without an explicit path, discovery securely opens `market-making.yaml` before
    * `market-making.yml` in `options.cwd` (or `process.cwd()`). Only an absent higher-precedence path
-   * permits fallback; unsafe entries fail closed. No file means env-only loading.
+   * permits fallback; unsafe entries fail closed. No file means env-only loading. Read-only mode
+   * omits YAML and environment private-key values before typed validation.
    */
   static async load(environment: Environment = Bun.env, options: ConfigurationLoadOptions = {}) {
     return ConfigService.fromSource(

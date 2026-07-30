@@ -6,8 +6,9 @@ import { formatReadOnlyMakeEvent } from './read-only-make.utils'
 export class ReadOnlyBootstrapMakeService implements BootstrapMakeService {
   /**
    * Creates a bootstrap dry-run adapter.
-   * @param write - Terminal line writer; defaults to standard output.
-   * @remarks Construction performs no signing, provider calls, or offer mutations.
+   * @param write - JSON Lines terminal writer; defaults to standard output.
+   * @remarks Construction performs no signing, provider calls, or offer mutations. Each later make
+   * request is emitted as one independently parseable JSON record.
    */
   constructor(private readonly write: (line: string) => void = console.log) {}
 

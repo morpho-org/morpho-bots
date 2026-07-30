@@ -7,8 +7,9 @@ export class ReadOnlyLadderMakeService implements LadderMakeService {
   /**
    * Creates a ladder dry-run adapter around an active-quote reader.
    * @param activeQuotes - Read-only live quote-set source used for accurate reconciliation decisions.
-   * @param write - Terminal line writer; defaults to standard output.
-   * @remarks Construction performs no signing, provider calls, or offer mutations.
+   * @param write - JSON Lines terminal writer; defaults to standard output.
+   * @remarks Construction performs no signing, provider calls, or offer mutations. Each later make
+   * request is emitted as one independently parseable JSON record.
    */
   constructor(
     private readonly activeQuotes: Pick<LadderMakeService, 'readActive'>,

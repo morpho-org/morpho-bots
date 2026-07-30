@@ -104,6 +104,35 @@ describe('createProductionBootstrapAdapters', () => {
 
     expect(adapters.make).toBeInstanceOf(ReadOnlyBootstrapMakeService)
   })
+
+  test('rejects a write configuration whose private key does not match the maker', () => {
+    const config = ConfigService.from({
+      CHAIN_ID: '8453',
+      RPC_URL: 'https://rpc.example',
+      REFERENCE_RPC_URL: 'https://archive.example',
+      MAKER_PRIVATE_KEY: `0x${'11'.repeat(32)}`,
+      MAKER_ADDRESS: collateral,
+      MIDNIGHT_ADDRESS: maker,
+      LOAN_ASSET_ADDRESS: loanToken,
+      RATIFIER_ADDRESS: ratifier,
+      MARKET_IDS: marketId,
+      REFERENCE_MARKET_ID: secondMarketId,
+      NATIVE_RESERVE_WEI: '10',
+      MAXIMUM_LEND_EXPOSURE_ASSETS: '100',
+      MORPHO_API_BASE_URL: 'https://api.example',
+      ROUTER_API_BASE_URL: 'https://router.example'
+    })
+
+    let error: unknown
+    try {
+      createProductionBootstrapAdapters(config)
+    } catch (value) {
+      error = value
+    }
+
+    expect(error).toBeInstanceOf(BootstrapAdapterError)
+    expect(error).toMatchObject({ operation: 'maker-private-key-mismatch' })
+  })
 })
 
 describe('bootstrapExposureMarketIds', () => {

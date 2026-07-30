@@ -88,11 +88,14 @@ bun run --filter @morpho-org/market-making-bot start -- bootstrap
 bun run --filter @morpho-org/market-making-bot start -- --readonly bootstrap
 ```
 
-Success prints one JSON report and exits zero. Bigints are serialized as decimal strings. Any failed
-check throws `SetupFailedError`, prints the failed check names, and exits non-zero. The check is strictly
-read-only; remediation transaction descriptions are reported but never submitted. With `--readonly`,
-only private-key/maker agreement is reported as `not-required`; balance, allowance, ratifier, chain,
-market, reference, and active-offer observations still run against the configured maker address.
+Success exits zero and writes JSON Lines to standard output. Ordinary commands emit one report record;
+a read-only writer command emits zero or more `readonly.make` records followed by its final cycle
+report. Consumers must parse stdout one line at a time rather than as one JSON document. Bigints are
+serialized as decimal strings. Any failed check throws `SetupFailedError`, prints the failed check
+names, and exits non-zero. The check is strictly read-only; remediation transaction descriptions are
+reported but never submitted. With `--readonly`, only private-key/maker agreement is reported as
+`not-required`; balance, allowance, ratifier, chain, market, reference, and active-offer observations
+still run against the configured maker address.
 
 Read-only make adapters serialize desired bootstrap and ladder reconcile/hard-halt requests as one
 JSON line with event name `readonly.make`. They never sign or submit an operation. The
@@ -338,12 +341,15 @@ bun run --filter @morpho-org/market-making-bot start -- --readonly bootstrap
 bun run --filter @morpho-org/market-making-bot start -- --version
 ```
 
-Success prints one JSON report and exits zero. Bigints are serialized as decimal strings. Any failed
-check throws `SetupFailedError`, prints the complete sanitized report, and exits non-zero. A bootstrap
-safety halt likewise prints its sanitized per-market cleanup report before exiting non-zero. The check is
-read-only; remediation transaction descriptions are reported but never submitted. `--readonly`
-also removes the private-key requirement, marks only maker/private-key agreement as `not-required`,
-and replaces bootstrap submission with `readonly.make` terminal output.
+Success exits zero and writes JSON Lines to standard output. Ordinary commands emit one report record;
+a read-only writer command emits zero or more `readonly.make` records followed by its final cycle
+report. Consumers must parse stdout one line at a time rather than as one JSON document. Bigints are
+serialized as decimal strings. Any failed check throws `SetupFailedError`, prints the complete
+sanitized report, and exits non-zero. A bootstrap safety halt likewise prints its sanitized per-market
+cleanup report before exiting non-zero. The check is read-only; remediation transaction descriptions
+are reported but never submitted. `--readonly` also removes the private-key requirement, marks only
+maker/private-key agreement as `not-required`, and replaces bootstrap submission with
+`readonly.make` terminal output.
 
 ## Test
 

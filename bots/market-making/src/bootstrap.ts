@@ -6,11 +6,17 @@ import type {
   BootstrapPositionService,
   BootstrapReferenceRateService
 } from './application/bootstrap/position-bootstrap.service'
+import type {
+  LadderMakeService,
+  LadderPositionService,
+  LadderReferenceRateService
+} from './application/ladder/ladder-market-maker.service'
 import type { SetupStateService } from './application/setup/setup-check.service'
 import type { ConfigService } from './config/config.service'
 import type { ChainReader } from './infrastructure/setup-state/viem-setup-state.service'
 
 import { PositionBootstrapService } from './application/bootstrap/position-bootstrap.service'
+import { LadderMarketMakerService } from './application/ladder/ladder-market-maker.service'
 import { SetupCheckService } from './application/setup/setup-check.service'
 import { VersionService } from './application/version.service'
 import { ConfigService as RuntimeConfigService } from './config/config.service'
@@ -18,30 +24,25 @@ import { createBootstrapGroupOwnership } from './infrastructure/bootstrap/bootst
 import { createProductionBootstrapAdapters } from './infrastructure/bootstrap/production-bootstrap'
 import { Cli } from './infrastructure/cli/cli'
 import { ReadOnlyBootstrapMakeService } from './infrastructure/make/read-only-bootstrap-make.service'
+import { ReadOnlyLadderMakeService } from './infrastructure/make/read-only-ladder-make.service'
 import { requestJson } from './infrastructure/setup-state/http-json.utils'
 import { ViemSetupStateService } from './infrastructure/setup-state/viem-setup-state.service'
 
 type Environment = Record<string, string | undefined>
 
-type PositionBootstrapRunner = {
-  runOnce(): Promise<unknown>
-}
-
-type LadderRunner = {
-  runOnce(): Promise<unknown>
-}
-
 type Dependencies = {
   createState?: (config: ConfigService) => SetupStateService
-  /** Creates the write-enabled position-bootstrap service; read-only mode always composes guarded ports. */
-  createBootstrap?: (config: ConfigService) => PositionBootstrapRunner
-  /** Creates the ladder market-maker application service after CLI configuration is loaded. */
-  createLadder?: (config: ConfigService) => LadderRunner
   /** Replaces provider ports while retaining default application-service composition. */
   createBootstrapAdapters?: (config: ConfigService) => {
     positions: BootstrapPositionService
     rates: BootstrapReferenceRateService
     make: BootstrapMakeService
+  }
+  /** Exposes the ladder command through ports retained under read-only make composition. */
+  createLadderAdapters?: (config: ConfigService) => {
+    positions: LadderPositionService
+    rates: LadderReferenceRateService
+    make: LadderMakeService
   }
   /** Overrides the process working directory used for default configuration discovery. */
   cwd?: string
@@ -63,7 +64,7 @@ const chainReader = (rpcUrl: string, timeout: number): ChainReader => {
 
 const defaultState = (config: ConfigService) => {
   const identityOptions = config.identity.readOnly
-    ? { readOnly: true as const, maker: config.identity.maker }
+    ? { readOnly: true as const }
     : { readOnly: false as const, privateKey: config.identity.privateKey }
   const ownership = createBootstrapGroupOwnership({
     maker: config.setup.maker,
@@ -94,12 +95,12 @@ const defaultState = (config: ConfigService) => {
 /**
  * Composes the market-making CLI, setup-check, position-bootstrap, and optional ladder dependencies.
  * @param environment - Environment map used for lazy validated configuration.
- * @param dependencies - Optional adapters; `createLadder` exposes the ladder application path.
+ * @param dependencies - Optional state and workflow-port factories; ladder ports expose its command.
  * @returns An application exposing a single asynchronous CLI `run` boundary.
  * @remarks Composition is side-effect free. Configuration and provider construction occur lazily
  * for `setup-check`, `bootstrap`, or an exposed `ladder` command. Setup is read-only and preserves
  * concurrent independent reads through `Promise.all`. `--readonly` selects address-only identity
- * before any private-key validation and replaces the bootstrap mutation port with terminal output.
+ * before any private-key validation and replaces every workflow mutation port with terminal output.
  * Writer commands assert readiness before constructing or running their application service; failed
  * readiness rejects without starting the writer. Bootstrap and ladder cycles run only for their
  * respective explicit commands.
@@ -123,7 +124,7 @@ export const createApplication = (
       cwd: dependencies.cwd,
       readOnly: options.readOnly
     })
-  const createLadder = dependencies.createLadder
+  const createLadderAdapters = dependencies.createLadderAdapters
   const cli = new Cli(
     new VersionService(),
     async options => {
@@ -135,9 +136,6 @@ export const createApplication = (
       const config = await loadConfig(options)
       const state = dependencies.createState?.(config) ?? defaultState(config)
       await new SetupCheckService(state, config.setup, config.readOnly).assertReady()
-      if (dependencies.createBootstrap && !config.readOnly) {
-        return dependencies.createBootstrap(config)
-      }
       const injectedAdapters = dependencies.createBootstrapAdapters?.(config)
       const adapters = injectedAdapters ?? createProductionBootstrapAdapters(config)
       const make =
@@ -149,12 +147,21 @@ export const createApplication = (
         config.bootstrap
       )
     },
-    createLadder
+    createLadderAdapters
       ? async options => {
           const config = await loadConfig(options)
           const state = dependencies.createState?.(config) ?? defaultState(config)
           await new SetupCheckService(state, config.setup, config.readOnly).assertReady()
-          return createLadder(config)
+          const adapters = createLadderAdapters(config)
+          const make = config.readOnly
+            ? new ReadOnlyLadderMakeService(adapters.make)
+            : adapters.make
+          return new LadderMarketMakerService(
+            adapters.positions,
+            adapters.rates,
+            make,
+            config.ladder
+          )
         }
       : undefined
   )

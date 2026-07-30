@@ -6,6 +6,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { ConfigFileError } from '../../src/config/config-file.error'
+import {
+  configurationFromEnvironment,
+  loadConfigurationSources
+} from '../../src/config/config-source.utils'
 import { ConfigValidationError } from '../../src/config/config-validation.error'
 import { ConfigService } from '../../src/config/config.service'
 
@@ -143,6 +147,25 @@ describe('ConfigService YAML and environment loading', () => {
     const config = await ConfigService.load(environment, { cwd: directory })
     expect(config.rpcUrl).toBe(environment.RPC_URL)
     expect(config.bootstrap).toEqual([])
+  })
+
+  test('omits YAML and environment private keys from read-only configuration sources', async () => {
+    const directory = await temporaryDirectory()
+    const path = join(directory, 'operator.yaml')
+    const yamlSecret = 'yaml-private-key-marker'
+    const environmentSecret = 'environment-private-key-marker'
+    await writeFile(path, yaml().replace(`0x${'11'.repeat(32)}`, yamlSecret))
+
+    const yamlSource = await loadConfigurationSources({}, { configPath: path, readOnly: true })
+    const environmentSource = configurationFromEnvironment(
+      { ...environment, MAKER_PRIVATE_KEY: environmentSecret },
+      { readOnly: true }
+    )
+
+    expect(yamlSource.values).not.toHaveProperty('MAKER_PRIVATE_KEY')
+    expect(environmentSource.values).not.toHaveProperty('MAKER_PRIVATE_KEY')
+    expect(JSON.stringify(yamlSource)).not.toContain(yamlSecret)
+    expect(JSON.stringify(environmentSource)).not.toContain(environmentSecret)
   })
 
   test('environment values override YAML scalars, endpoints, keys, and the bootstrap list', async () => {

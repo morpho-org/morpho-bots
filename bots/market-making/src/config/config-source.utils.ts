@@ -16,7 +16,7 @@ export type ConfigurationSource = {
   path?: string
 }
 
-/** Optional explicit configuration path and invocation directory used during secure discovery. */
+/** Optional configuration path, invocation directory, file reader, and identity-loading mode. */
 export type ConfigurationLoadOptions = {
   configPath?: string
   cwd?: string
@@ -168,7 +168,7 @@ const stringList = (value: unknown, field: string) => {
   return value.map(item => scalar(item, field)).join(',')
 }
 
-const yamlSource = (input: unknown): ConfigurationSource => {
+const yamlSource = (input: unknown, readOnly: boolean): ConfigurationSource => {
   const root = record(input, 'configuration')
   rejectUnknownKeys(root, yamlKeys.root)
   const values: Record<string, unknown> = {}
@@ -199,10 +199,15 @@ const yamlSource = (input: unknown): ConfigurationSource => {
     rpcUrl: 'RPC_URL',
     archiveRpcUrl: 'REFERENCE_RPC_URL'
   })
-  mapGroup('identity', {
-    makerAddress: 'MAKER_ADDRESS',
-    makerPrivateKey: 'MAKER_PRIVATE_KEY'
-  })
+  mapGroup(
+    'identity',
+    readOnly
+      ? { makerAddress: 'MAKER_ADDRESS' }
+      : {
+          makerAddress: 'MAKER_ADDRESS',
+          makerPrivateKey: 'MAKER_PRIVATE_KEY'
+        }
+  )
   mapGroup('contracts', {
     midnightAddress: 'MIDNIGHT_ADDRESS',
     loanAssetAddress: 'LOAN_ASSET_ADDRESS',
@@ -493,9 +498,11 @@ export const loadConfigurationSources = async (
     ? yamlDocumentValue(document, environment.BOOTSTRAP_MARKETS === undefined)
     : {}
   removeOverriddenYamlValues(raw, environment)
-  const source = yamlSource(raw)
+  const readOnly = options.readOnly === true
+  const source = yamlSource(raw, readOnly)
 
   for (const key of environmentKeys) {
+    if (readOnly && key === 'MAKER_PRIVATE_KEY') continue
     if (environment[key] !== undefined) source.values[key] = environment[key]
   }
   if (environment.BOOTSTRAP_MARKETS !== undefined) {
@@ -510,13 +517,19 @@ export const loadConfigurationSources = async (
 /**
  * Converts environment-only input into the shared source representation.
  * @param environment - Untrusted process environment values.
+ * @param options - Runtime mode; read-only loading omits the private-key value entirely.
  * @returns An unvalidated source with no selected YAML path.
  * @throws `ConfigValidationError` when `BOOTSTRAP_MARKETS` is oversized or malformed JSON.
- * @remarks Performs no I/O and does not mutate the supplied environment.
+ * @remarks Performs no I/O and does not mutate the supplied environment. Read-only output never
+ * retains `MAKER_PRIVATE_KEY`, even when the environment contains it.
  */
-export const configurationFromEnvironment = (environment: Environment): ConfigurationSource => {
+export const configurationFromEnvironment = (
+  environment: Environment,
+  options: Pick<ConfigurationLoadOptions, 'readOnly'> = {}
+): ConfigurationSource => {
   const values: Record<string, unknown> = {}
   for (const key of environmentKeys) {
+    if (options.readOnly && key === 'MAKER_PRIVATE_KEY') continue
     if (environment[key] !== undefined) values[key] = environment[key]
   }
   let bootstrap: unknown = []

@@ -33,6 +33,23 @@ const environment = {
   MORPHO_API_BASE_URL: 'https://api.example',
   ROUTER_API_BASE_URL: 'https://router.example'
 }
+const ladderConfiguration = {
+  marketId,
+  quotePremiumBps: '0',
+  spreadBps: '200',
+  stepBps: '100',
+  rungCount: '2',
+  sizeSkewBps: '0',
+  lowerRateBudgetAssets: '10',
+  higherRateBudgetAssets: '10',
+  targetMarketExposureAssets: '20',
+  maximumTotalExposureAssets: '20',
+  groupMode: 'shared-rung',
+  loopIntervalSeconds: '3600',
+  movementToleranceBps: '10',
+  minimumRateBps: '100',
+  maximumRateBps: '1000'
+}
 
 const readyState = (): SetupStateService => {
   return {
@@ -81,7 +98,7 @@ describe('createApplication', () => {
     expect((output as { checks: unknown[] }).checks).toHaveLength(9)
   })
 
-  test('mm bootstrap passes readiness before running one bootstrap cycle', async () => {
+  test('mm bootstrap passes readiness before composing one bootstrap cycle', async () => {
     const events: string[] = []
     const state = readyState()
     state.getChainId = async () => {
@@ -90,17 +107,31 @@ describe('createApplication', () => {
     }
     const application = createApplication(environment, {
       createState: () => state,
-      createBootstrap: () => ({
-        runOnce: async () => {
-          events.push('bootstrap')
-          return [{ marketId, status: 'observed', action: 'target-reached' }]
+      createBootstrapAdapters: () => {
+        events.push('bootstrap')
+        return {
+          positions: {
+            readPosition: async () => ({
+              credit: 0n,
+              debt: 0n,
+              cashBalance: 0n,
+              marketExposure: 0n,
+              totalExposure: 0n
+            })
+          },
+          rates: {
+            readRate: async () => ({
+              mode: 'static',
+              rateBps: 500n,
+              observationId: 'static:500'
+            })
+          },
+          make: { reconcile: async () => {}, hardHalt: async () => {} }
         }
-      })
+      }
     })
 
-    expect(await application.run(['bootstrap'])).toEqual([
-      { marketId, status: 'observed', action: 'target-reached' }
-    ])
+    expect(await application.run(['bootstrap'])).toEqual([])
     expect(events).toEqual(['readiness', 'bootstrap'])
   })
 
@@ -111,18 +142,29 @@ describe('createApplication', () => {
       events.push('readiness')
       return 8453
     }
-    const application = createApplication(environment, {
-      createState: () => state,
-      createLadder: () => ({
-        runOnce: async () => {
-          events.push('ladder')
-          return [{ marketId, status: 'observed', action: 'rest' }]
-        }
-      })
-    })
+    const application = createApplication(
+      { ...environment, LADDER_MARKETS: JSON.stringify([ladderConfiguration]) },
+      {
+        createState: () => state,
+        createLadderAdapters: () => ({
+          positions: {
+            readMarket: async () => {
+              events.push('ladder')
+              return {}
+            }
+          },
+          rates: { readRate: async () => 500n },
+          make: {
+            readActive: async () => undefined,
+            reconcile: async () => {},
+            hardHalt: async () => {}
+          }
+        })
+      }
+    )
 
     expect(await application.run(['ladder'])).toEqual([
-      { marketId, status: 'observed', action: 'rest' }
+      { marketId, status: 'applied', action: 'publish', reason: 'publish' }
     ])
     expect(events).toEqual(['readiness', 'ladder'])
   })
@@ -234,6 +276,44 @@ describe('createApplication', () => {
       expect(reconcile).not.toHaveBeenCalled()
       expect(hardHalt).not.toHaveBeenCalled()
       expect(terminal).toHaveBeenCalledWith(expect.stringContaining('"event":"readonly.make"'))
+    } finally {
+      terminal.mockRestore()
+    }
+  })
+
+  test('routes --readonly ladder make operations to terminal output', async () => {
+    const reconcile = mock(async () => {})
+    const hardHalt = mock(async () => {})
+    const terminal = spyOn(console, 'log').mockImplementation(() => {})
+    const application = createApplication(
+      {
+        ...environment,
+        MAKER_PRIVATE_KEY: undefined,
+        LADDER_MARKETS: JSON.stringify([ladderConfiguration])
+      },
+      {
+        createState: readyState,
+        createLadderAdapters: () => ({
+          positions: { readMarket: async () => ({}) },
+          rates: { readRate: async () => 500n },
+          make: {
+            readActive: async () => undefined,
+            reconcile,
+            hardHalt
+          }
+        })
+      }
+    )
+
+    try {
+      expect(await application.run(['--readonly', 'ladder'])).toEqual([
+        { marketId, status: 'applied', action: 'publish', reason: 'publish' }
+      ])
+      expect(reconcile).not.toHaveBeenCalled()
+      expect(hardHalt).not.toHaveBeenCalled()
+      expect(terminal).toHaveBeenCalledWith(
+        expect.stringContaining('"event":"readonly.make","workflow":"ladder"')
+      )
     } finally {
       terminal.mockRestore()
     }

@@ -7,6 +7,7 @@ import {
   createWalletClient,
   erc20Abi,
   http,
+  isAddressEqual,
   publicActions,
   type Address,
   type Hex
@@ -120,9 +121,11 @@ type ProductionBootstrapAdapters = {
  * Composes concrete viem, Morpho SDK, Midnight SDK, and Mempool adapters.
  * @param config - Fully validated runtime configuration.
  * @returns Production read ports and either a live mutation queue or terminal-only make adapter.
- * @throws Only during later provider reads, signing, publication, or invalidation; composition is lazy.
+ * @throws `BootstrapAdapterError` when write-mode signer identity differs from the configured maker;
+ * later provider reads, signing, publication, or invalidation may also fail.
  * @remarks No provider request or write occurs while this function constructs the adapters.
- * Read-only configuration never derives an account or constructs a wallet client.
+ * Read-only configuration never derives an account or constructs a wallet client. Write mode checks
+ * the key-derived account before constructing any maker action, independently of the setup gate.
  */
 export const createProductionBootstrapAdapters = (
   config: ConfigService
@@ -219,6 +222,9 @@ export const createProductionBootstrapAdapters = (
   }
 
   const account = privateKeyToAccount(config.identity.privateKey)
+  if (!isAddressEqual(account.address, maker)) {
+    throw new BootstrapAdapterError('maker-private-key-mismatch')
+  }
   const wallet = createWalletClient({
     account,
     chain: base,

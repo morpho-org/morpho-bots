@@ -151,7 +151,7 @@ const createState = (
     referenceAbis,
     state: new ViemSetupStateService(chain, reference, request, {
       ...(overrides.readOnly
-        ? { readOnly: true as const, maker }
+        ? { readOnly: true as const }
         : { readOnly: false as const, privateKey: `0x${'11'.repeat(32)}` }),
       midnight,
       loanAsset,

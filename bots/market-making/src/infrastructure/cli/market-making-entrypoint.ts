@@ -11,7 +11,8 @@ type EntrypointOutput = { writeOut(value: string): void; writeError(value: strin
  * @param argv - User arguments without runtime/executable prefixes.
  * @param output - Standard output and error writers.
  * @returns Zero on success and one after a sanitized failure has been emitted.
- * @remarks Halted writer reports are emitted without causes, provider payloads, or credentials.
+ * @remarks Each output value is one JSON Lines record. Read-only make records may precede the final
+ * cycle report on standard output. Halted reports exclude causes, provider payloads, and credentials.
  */
 export const runMarketMakingEntrypoint = async (
   application: MarketMakingApplication,
