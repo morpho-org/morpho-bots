@@ -173,7 +173,9 @@ Mempool-validated before and after signing and is submitted in one transaction. 
 reserves the future group IDs durably, verifies the resulting whole maker book has positive spread,
 confirms cancellation receipts for old owned groups, and only then broadcasts the replacement.
 `ladder --readonly` performs the same readiness, state, rate, and decision reads, reconstructs any
-active owned quote set, and emits the requested reconciliation without signing or writing.
+active owned quote set, builds the exact prospective tree, applies unsigned Mempool policy and
+whole-book spread validation, and only then emits the requested reconciliation without signing or
+writing.
 
 `ladder --monitor` repeats non-overlapping checks at the shortest `loopIntervalSeconds` configured
 across its markets. `SIGINT` or `SIGTERM` lets the current cycle and receipt handling finish, then

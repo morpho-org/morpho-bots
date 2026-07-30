@@ -332,6 +332,7 @@ describe('createApplication', () => {
   test('routes --readonly ladder make operations to terminal output', async () => {
     const reconcile = mock(async () => {})
     const hardHalt = mock(async () => {})
+    const validateReconcile = mock(async () => {})
     const terminal = spyOn(console, 'log').mockImplementation(() => {})
     const application = createApplication(
       {
@@ -349,7 +350,8 @@ describe('createApplication', () => {
             reconcile,
             hardHalt,
             cleanup: async () => {}
-          }
+          },
+          validateReconcile
         })
       }
     )
@@ -360,6 +362,9 @@ describe('createApplication', () => {
       ])
       expect(reconcile).not.toHaveBeenCalled()
       expect(hardHalt).not.toHaveBeenCalled()
+      expect(validateReconcile).toHaveBeenCalledWith(
+        expect.objectContaining({ marketId, reason: 'publish' })
+      )
       expect(terminal).toHaveBeenCalledWith(
         expect.stringContaining('"event":"readonly.make","workflow":"ladder"')
       )

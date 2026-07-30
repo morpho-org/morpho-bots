@@ -8,12 +8,16 @@ export class ReadOnlyLadderMakeService implements LadderMakeService {
    * Creates a ladder dry-run adapter around an active-quote reader.
    * @param activeQuotes - Read-only live quote-set source used for accurate reconciliation decisions.
    * @param write - JSON Lines terminal writer; defaults to standard output.
+   * @param validate - Optional live-equivalent tree, spread, and unsigned Mempool validation.
    * @remarks Construction performs no signing, provider calls, or offer mutations. Each later make
-   * request is emitted as one independently parseable JSON record.
+   * request is validated and emitted as one independently parseable JSON record.
    */
   constructor(
     private readonly activeQuotes: Pick<LadderMakeService, 'readActive'>,
-    private readonly write: (line: string) => void = console.log
+    private readonly write: (line: string) => void = console.log,
+    private readonly validate: (
+      parameters: Parameters<LadderMakeService['reconcile']>[0]
+    ) => Promise<void> = async () => {}
   ) {}
 
   /**
@@ -31,10 +35,13 @@ export class ReadOnlyLadderMakeService implements LadderMakeService {
    * Logs the exact desired ladder reconciliation instead of submitting it.
    * @param parameters - Market, desired quote set or invalidation, and reconciliation reason.
    * @returns `logged` after the terminal writer accepts one JSON line.
-   * @throws When the injected terminal writer rejects the line.
-   * @remarks No signing, publication, replacement, or invalidation occurs.
+   * @throws When live-equivalent validation fails or the injected terminal writer rejects the line.
+   * @remarks Production read-only composition builds the exact protocol tree, validates its
+   * unsigned Mempool policy and prospective whole-book spread, then logs it. No signing,
+   * publication, replacement, or invalidation occurs.
    */
   async reconcile(parameters: Parameters<LadderMakeService['reconcile']>[0]) {
+    await this.validate(parameters)
     this.write(formatReadOnlyMakeEvent('ladder', 'reconcile', parameters))
     return 'logged' as const
   }

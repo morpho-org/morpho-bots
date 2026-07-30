@@ -49,6 +49,7 @@ type Dependencies = {
     positions: LadderPositionService
     rates: LadderReferenceRateService
     make: LadderMakeService
+    validateReconcile?: (parameters: Parameters<LadderMakeService['reconcile']>[0]) => Promise<void>
   }
   /** Replaces the provider, signer, and ownership port for explicit offer invalidation. */
   createInvalidationPort?: (config: ConfigService) => OfferInvalidationPort
@@ -172,7 +173,9 @@ export const createApplication = (
       await new SetupCheckService(state, config.setup, config.readOnly).assertReady()
       const adapters =
         dependencies.createLadderAdapters?.(config) ?? createProductionLadderAdapters(config)
-      const make = config.readOnly ? new ReadOnlyLadderMakeService(adapters.make) : adapters.make
+      const make = config.readOnly
+        ? new ReadOnlyLadderMakeService(adapters.make, console.log, adapters.validateReconcile)
+        : adapters.make
       return new LadderMarketMakerService(adapters.positions, adapters.rates, make, config.ladder)
     },
     async options => {

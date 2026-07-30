@@ -38,6 +38,7 @@ import { createLadderGroupOwnership } from './ladder-group-ownership.utils'
 import { MidnightLadderMakeService, type LadderOfferTransport } from './ladder-make.service'
 import { buildLadderTree } from './ladder-offer.utils'
 import { signLadderTree } from './ladder-signature.utils'
+import { assertLadderProspectiveSpread } from './ladder-spread.utils'
 import {
   assertLadderCancellationTransaction,
   assertLadderPublicationTransaction
@@ -48,6 +49,7 @@ type ProductionLadderAdapters = {
   positions: LadderPositionService
   rates: LadderReferenceRateService
   make: LadderMakeService
+  validateReconcile: (parameters: Parameters<LadderMakeService['reconcile']>[0]) => Promise<void>
 }
 
 const minimum = (left: bigint, right: bigint) => (left < right ? left : right)
@@ -276,6 +278,37 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
     return publication ? reconstructPublication(publication, liveGroups) : undefined
   }
 
+  const prepareUnsignedPublication = async (quote: LadderQuoteSet) => {
+    const [market, block] = await Promise.all([
+      midnight.getMarketData(quote.marketId),
+      client.getBlock({ blockTag: 'latest' })
+    ])
+    const prepared = buildLadderTree({
+      quote,
+      market,
+      maker,
+      ratifier: config.setup.ratifier,
+      now: block.timestamp
+    })
+    await prepared.tree.mempoolValidate({
+      chainId: base.id,
+      apiUrl: `${config.morphoApiBaseUrl}/v0/midnight`
+    })
+    return prepared
+  }
+
+  const validateReconcile: ProductionLadderAdapters['validateReconcile'] = async parameters => {
+    if (parameters.reason === 'rest' || !parameters.desired) return
+    const prepared = await prepareUnsignedPublication(parameters.desired)
+    const [groups, publications] = await Promise.all([readGroups(), ladderOwnership.read()])
+    assertLadderProspectiveSpread({
+      marketId: parameters.marketId,
+      replacedGroupIds: new Set(activeOwnedGroupIds(publications, groups, parameters.marketId)),
+      book: bootstrapBookOffers(groups),
+      prospective: prepared.bookOffers
+    })
+  }
+
   const readOnlyMake: LadderMakeService = {
     readActive,
     reconcile: async () => {
@@ -288,7 +321,9 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
       throw new LadderAdapterError('readonly-mutation')
     }
   }
-  if (config.identity.readOnly) return { positions, rates, make: readOnlyMake }
+  if (config.identity.readOnly) {
+    return { positions, rates, make: readOnlyMake, validateReconcile }
+  }
 
   const account = createManagedMakerAccount(config.identity.privateKey)
   if (!isAddressEqual(account.address, maker)) {
@@ -319,21 +354,7 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
     },
     listBookOffers: async () => bootstrapBookOffers(await readGroups()),
     preparePublication: async quote => {
-      const [market, block] = await Promise.all([
-        midnight.getMarketData(quote.marketId),
-        client.getBlock({ blockTag: 'latest' })
-      ])
-      const prepared = buildLadderTree({
-        quote,
-        market,
-        maker,
-        ratifier: config.setup.ratifier,
-        now: block.timestamp
-      })
-      await prepared.tree.mempoolValidate({
-        chainId: base.id,
-        apiUrl: `${config.morphoApiBaseUrl}/v0/midnight`
-      })
+      const prepared = await prepareUnsignedPublication(quote)
       const signature = await signLadderTree({
         tree: prepared.tree,
         client: wallet,
@@ -402,6 +423,7 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
   return {
     positions,
     rates,
-    make: new MidnightLadderMakeService(transport)
+    make: new MidnightLadderMakeService(transport),
+    validateReconcile
   }
 }
