@@ -158,8 +158,11 @@ describe('loadConfig', () => {
     )
   })
 
-  it('throws on a non-numeric PRIORITY_FEE_GWEI', () => {
+  it('throws on a non-numeric or zero PRIORITY_FEE_GWEI', () => {
     expect(() => loadConfig(baseEnv({ PRIORITY_FEE_GWEI: 'abc' }), deps)).toThrow(
+      /PRIORITY_FEE_GWEI must be a positive number/
+    )
+    expect(() => loadConfig(baseEnv({ PRIORITY_FEE_GWEI: '0' }), deps)).toThrow(
       /PRIORITY_FEE_GWEI must be a positive number/
     )
   })

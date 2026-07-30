@@ -335,7 +335,7 @@ export function loadConfig(
   }
 
   const priorityFeeGwei = env.PRIORITY_FEE_GWEI?.trim() || DEFAULT_PRIORITY_FEE_GWEI
-  if (!/^\d+(\.\d+)?$/.test(priorityFeeGwei)) {
+  if (!/^\d+(\.\d+)?$/.test(priorityFeeGwei) || Number(priorityFeeGwei) <= 0) {
     throw new Error(`PRIORITY_FEE_GWEI must be a positive number, got: ${env.PRIORITY_FEE_GWEI}`)
   }
   const priorityFeeWei = parseGwei(priorityFeeGwei)
