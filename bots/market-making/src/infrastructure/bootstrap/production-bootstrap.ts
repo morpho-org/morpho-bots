@@ -106,7 +106,7 @@ export const createProductionBootstrapAdapters = (
   })
   const ladderOwnership = createLadderGroupOwnership({
     maker,
-    marketIds: config.setup.marketIds
+    strategyMarketIds: config.ladder.map(item => item.marketId)
   })
   const readGroups = () =>
     readBootstrapGroups({

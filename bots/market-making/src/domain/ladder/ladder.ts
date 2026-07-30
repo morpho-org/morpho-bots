@@ -33,7 +33,12 @@ export type LadderConfig = {
   maximumRateBps: bigint
 }
 
-/** Fresh side inventory plus exposure-increasing lend capacity for one ladder market. */
+/**
+ * Fresh inventory by rate side plus exposure-increasing lend capacity for one ladder market.
+ * @remarks Lower-rate capacity is accrued credit for reduce-only sells. Higher-rate capacity is
+ * available loan-token balance and allowance for lend buys; target and total capacities cap only
+ * that higher-rate exposure-increasing side.
+ */
 export type LadderMarketState = {
   lowerRateCapacityAssets?: bigint
   higherRateCapacityAssets?: bigint
@@ -215,14 +220,11 @@ export const generateLadder = (parameters: GenerateLadderParameters): LadderQuot
   validateLadderConfig(config)
   const centerRateBps = retainedCenterRateBps ?? referenceRateBps + config.quotePremiumBps
   const weights = rungWeights(config)
-  const lowerBudget = minimum([
-    sideBudget(config.lowerRateBudgetAssets, capacities.lowerRateCapacityAssets),
+  const lowerBudget = sideBudget(config.lowerRateBudgetAssets, capacities.lowerRateCapacityAssets)
+  const higherBudget = minimum([
+    sideBudget(config.higherRateBudgetAssets, capacities.higherRateCapacityAssets),
     aggregateBudget(config, capacities)
   ])
-  const higherBudget = sideBudget(
-    config.higherRateBudgetAssets,
-    capacities.higherRateCapacityAssets
-  )
   const lowerAllocations = allocateBudget(lowerBudget, weights, config.minimumOfferAssets)
   const higherAllocations = allocateBudget(higherBudget, weights, config.minimumOfferAssets)
   const halfSpread = config.spreadBps / 2n

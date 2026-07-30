@@ -22,11 +22,11 @@ const quote: LadderQuoteSet = {
 }
 
 describe('createLadderGroupOwnership', () => {
-  test('persists reservation semantics, confirms them, and forgets canceled groups', async () => {
+  test('persists ownership keyed only by maker and ladder strategy markets', async () => {
     const stateDirectory = await mkdtemp(join(tmpdir(), 'ladder-ownership-'))
     try {
       const ownership = createLadderGroupOwnership(
-        { maker, marketIds: [marketId] },
+        { maker, strategyMarketIds: [marketId] },
         { stateDirectory }
       )
       await ownership.reserve({
@@ -43,6 +43,15 @@ describe('createLadderGroupOwnership', () => {
 
       await ownership.confirm([lowerGroup, higherGroup])
       expect(await ownership.read()).toMatchObject([{ status: 'confirmed' }])
+
+      const ownershipAfterUnrelatedAllowlistEdit = createLadderGroupOwnership(
+        { maker, strategyMarketIds: [marketId] },
+        { stateDirectory }
+      )
+      expect(await ownershipAfterUnrelatedAllowlistEdit.readGroupIds()).toEqual([
+        lowerGroup,
+        higherGroup
+      ])
 
       await ownership.forget([lowerGroup])
       expect(await ownership.readGroupIds()).toEqual([higherGroup])

@@ -106,6 +106,27 @@ describe('PositionBootstrapService', () => {
     expect(cleanup).toHaveBeenCalledTimes(1)
   })
 
+  test('counts only cycles successfully delivered to the output callback', async () => {
+    const { service, cleanup } = setup()
+
+    const report = await service.runContinuously({
+      signal: new AbortController().signal,
+      intervalMs: 1,
+      onCycle: () => {
+        throw new TypeError('private output failure')
+      }
+    })
+
+    expect(report).toEqual({
+      status: 'halted',
+      reason: 'cycle-error',
+      cycles: 0,
+      cleanup: { status: 'applied' },
+      cycleErrorName: 'TypeError'
+    })
+    expect(cleanup).toHaveBeenCalledTimes(1)
+  })
+
   test('stops monitoring on a handled failed cycle and still cleans owned groups', async () => {
     const controller = new AbortController()
     const { service, make } = setup()

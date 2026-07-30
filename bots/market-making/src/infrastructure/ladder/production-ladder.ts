@@ -144,7 +144,7 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
   })
   const ladderOwnership = createLadderGroupOwnership({
     maker,
-    marketIds: config.setup.marketIds
+    strategyMarketIds: config.ladder.map(item => item.marketId)
   })
   const configByMarket = new Map(config.ladder.map(item => [item.marketId, item]))
   const readGroups = () =>
@@ -225,8 +225,8 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
       const totalExposure = totalCredit + reservedCash
 
       return {
-        lowerRateCapacityAssets: availableCash,
-        higherRateCapacityAssets: selectedPosition.credit,
+        lowerRateCapacityAssets: selectedPosition.credit,
+        higherRateCapacityAssets: availableCash,
         targetMarketCapacityAssets: remaining(
           selectedConfig.targetMarketExposureAssets,
           marketExposure

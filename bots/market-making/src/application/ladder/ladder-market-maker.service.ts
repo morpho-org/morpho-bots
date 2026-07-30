@@ -211,8 +211,8 @@ export class LadderMarketMakerService {
           verbose: parameters.verbose,
           onTransactionSubmitted: parameters.onTransactionSubmitted
         })
-        cycles += 1
         await parameters.onCycle?.(results)
+        cycles += 1
       } catch (error) {
         reason = 'cycle-error'
         cycleErrorName = operatorErrorName(error)

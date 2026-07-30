@@ -52,7 +52,7 @@ const quote = (groupMode: LadderQuoteSet['groupMode']): LadderQuoteSet => ({
 })
 
 describe('buildLadderTree', () => {
-  test('maps lower and higher shared-rung quotes to independent lend and borrow groups', () => {
+  test('maps lower sells and higher buys without crossing Midnight ticks', () => {
     const result = buildLadderTree({
       quote: quote('shared-rung'),
       market,
@@ -61,13 +61,16 @@ describe('buildLadderTree', () => {
       now
     })
 
-    expect(result.tree.offers.map(offer => offer.buy)).toEqual([true, true, false, false])
+    expect(result.tree.offers.map(offer => offer.buy)).toEqual([false, false, true, true])
     expect(result.tree.offers.map(offer => offer.maxAssets)).toEqual([10n, 20n, 30n, 40n])
-    expect(result.tree.offers.slice(2).every(offer => offer.reduceOnly)).toBe(true)
-    expect(result.tree.offers.slice(2).map(offer => offer.receiverIfMakerIsSeller)).toEqual([
+    expect(result.tree.offers.slice(0, 2).every(offer => offer.reduceOnly)).toBe(true)
+    expect(result.tree.offers.slice(0, 2).map(offer => offer.receiverIfMakerIsSeller)).toEqual([
       maker,
       maker
     ])
+    const buyTicks = result.bookOffers.filter(offer => offer.buy).map(offer => offer.tick)
+    const sellTicks = result.bookOffers.filter(offer => !offer.buy).map(offer => offer.tick)
+    expect(buyTicks.every(buyTick => sellTicks.every(sellTick => buyTick < sellTick))).toBe(true)
     expect(new Set(result.tree.offers.map(offer => offer.group)).size).toBe(4)
     expect(result.groups.map(group => group.rungIndexes)).toEqual([[0], [1], [0], [1]])
   })

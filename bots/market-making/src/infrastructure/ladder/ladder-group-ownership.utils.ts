@@ -26,7 +26,7 @@ export type OwnedLadderPublication = {
 
 type LadderOwnershipConfig = {
   maker: Address
-  marketIds: readonly Hex[]
+  strategyMarketIds: readonly Hex[]
 }
 
 type LadderOwnershipDependencies = {
@@ -157,7 +157,7 @@ const strategyId = (config: LadderOwnershipConfig) =>
       JSON.stringify({
         strategy: 'ladder',
         maker: config.maker,
-        marketIds: config.marketIds.map(canonicalId).toSorted()
+        marketIds: config.strategyMarketIds.map(canonicalId).toSorted()
       })
     )
   )
@@ -189,7 +189,7 @@ const serializePublication = (publication: OwnedLadderPublication): PersistedPub
 
 /**
  * Creates durable, strategy-scoped ownership for ladder publication groups.
- * @param config - Maker and configured market namespace.
+ * @param config - Maker and ladder-strategy market namespace.
  * @param dependencies - Optional isolated state directory for tests.
  * @returns Atomic publication reservation, confirmation, removal, and read operations.
  * @throws `LadderAdapterError` when persisted state is malformed, foreign, or insecure.

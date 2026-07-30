@@ -155,7 +155,7 @@ unchanged.
 `ladder` requires at least one `ladder` / `LADDER_MARKETS` entry. It runs readiness first, derives
 fresh wallet, allowance, credit, position, active-group, and strategy-wide exposure capacities, and
 then builds one deterministic quote set from the current Blue reference rate. Lower-rate rungs are
-lend-side buys; higher-rate rungs are reduce-only borrow-side sells. The complete mixed-side tree is
+reduce-only borrow-side sells; higher-rate rungs are lend-side buys. The complete mixed-side tree is
 Mempool-validated before and after signing and is submitted in one transaction. Replacement
 reserves the future group IDs durably, verifies the resulting whole maker book has positive spread,
 confirms cancellation receipts for old owned groups, and only then broadcasts the replacement.
@@ -402,8 +402,8 @@ center is recentered only when absolute effective-center movement is strictly gr
 Rung weight `k` is `10000 + k * sizeSkewBps`, and every weight must stay positive. Positive skew
 weights outer rungs more heavily; negative skew weights inner rungs more heavily. Each configured
 `lowerRateBudgetAssets` / `higherRateBudgetAssets` is first capped by its fresh side capacity. The
-target-market and strategy-total exposure capacities additionally cap only lower-rate lend buys;
-higher-rate reduce-only borrow sells are capped by accrued credit and do not consume new lend
+target-market and strategy-total exposure capacities additionally cap only higher-rate lend buys;
+lower-rate reduce-only borrow sells are capped by accrued credit and do not consume new lend
 exposure. A side below `minimumOfferAssets` emits no offer. Otherwise the allocator funds as many
 rungs as can each satisfy the floor, always selecting the closest-to-market rates first, reserves the
 floor for each, distributes remaining assets by weight, and assigns integer remainder to the

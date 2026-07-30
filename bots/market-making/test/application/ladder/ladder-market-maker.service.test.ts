@@ -136,6 +136,27 @@ describe('LadderMarketMakerService', () => {
     expect(subject.liveDesired.size).toBe(0)
   })
 
+  test('counts only cycles successfully delivered to the output callback', async () => {
+    const subject = harness()
+
+    const report = await subject.service.runContinuously({
+      signal: new AbortController().signal,
+      intervalMs: 1,
+      onCycle: () => {
+        throw new TypeError('private output failure')
+      }
+    })
+
+    expect(report).toEqual({
+      status: 'halted',
+      reason: 'cycle-error',
+      cycles: 0,
+      cleanup: { status: 'applied' },
+      cycleErrorName: 'TypeError'
+    })
+    expect(subject.cleanup).toHaveBeenCalledTimes(1)
+  })
+
   test('stops monitoring on a handled failed cycle and still cleans owned groups', async () => {
     const subject = harness()
     subject.failReconcile(marketId)

@@ -41,7 +41,7 @@ const sideOffers = (
   rungs: readonly LadderRung[],
   parameters: BuildLadderTreeParameters
 ) => {
-  const buy = side === 'lower'
+  const buy = side === 'higher'
   const common = {
     market: parameters.market.params,
     buy,
@@ -73,8 +73,9 @@ const sideOffers = (
  * @param parameters - Quote, fresh market, maker, ratifier, and block timestamp.
  * @returns Tree, protocol-group-to-rung mapping, and prospective book ticks.
  * @throws `LadderAdapterError` when the market has matured; SDK validation errors pass through.
- * @remarks Lower rates map to lend-side buys and higher rates map to reduce-only borrow-side sells.
- * `shared-rung` gives each rung an independent cap; `per-book` shares one cap across each side.
+ * @remarks Midnight prices are inverse to rates, so lower rates map to reduce-only sells and higher
+ * rates map to lend buys. This keeps every buy tick strictly below every sell tick. `shared-rung`
+ * gives each rung an independent cap; `per-book` shares one cap across each side.
  */
 export const buildLadderTree = (parameters: BuildLadderTreeParameters): PreparedLadderTree => {
   const lower = sideOffers('lower', parameters.quote.lower, parameters)

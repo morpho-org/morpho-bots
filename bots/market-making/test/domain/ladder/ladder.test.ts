@@ -72,7 +72,7 @@ describe('ladder domain', () => {
     expect(ladder.lower.reduce((sum, rung) => sum + rung.assets, 0n)).toBe(100n)
   })
 
-  test('applies fresh lend-exposure capacity only to the lower-rate buy side', () => {
+  test('applies fresh lend-exposure capacity only to the higher-rate buy side', () => {
     const ladder = generateLadder({
       config: config({
         lowerRateBudgetAssets: 100n,
@@ -88,8 +88,8 @@ describe('ladder domain', () => {
         maximumTotalCapacityAssets: 20n
       }
     })
-    expect(ladder.lower.reduce((sum, rung) => sum + rung.assets, 0n)).toBe(20n)
-    expect(ladder.higher.reduce((sum, rung) => sum + rung.assets, 0n)).toBe(100n)
+    expect(ladder.lower.reduce((sum, rung) => sum + rung.assets, 0n)).toBe(100n)
+    expect(ladder.higher.reduce((sum, rung) => sum + rung.assets, 0n)).toBe(20n)
   })
 
   test('omits a side whose fresh capacity is zero', () => {
@@ -148,15 +148,15 @@ describe('ladder domain', () => {
       }),
       referenceRateBps: 500n,
       capacities: {
-        lowerRateCapacityAssets: 100n,
-        higherRateCapacityAssets: 101n,
+        lowerRateCapacityAssets: 101n,
+        higherRateCapacityAssets: 100n,
         targetMarketCapacityAssets: 300n,
         maximumTotalCapacityAssets: 300n
       }
     })
 
-    expect(ladder.lower).toEqual([])
-    expect(ladder.higher).toEqual([{ index: 0, rateBps: 600n, assets: 101n }])
+    expect(ladder.lower).toEqual([{ index: 0, rateBps: 400n, assets: 101n }])
+    expect(ladder.higher).toEqual([])
   })
 
   test('does not apply rate bounds to an exhausted side that emits no rungs', () => {

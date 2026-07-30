@@ -76,7 +76,7 @@ const defaultState = (config: ConfigService) => {
   })
   const ladderOwnership = createLadderGroupOwnership({
     maker: config.setup.maker,
-    marketIds: config.setup.marketIds
+    strategyMarketIds: config.ladder.map(item => item.marketId)
   })
 
   return new ViemSetupStateService(
