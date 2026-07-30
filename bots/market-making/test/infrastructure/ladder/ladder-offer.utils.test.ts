@@ -64,6 +64,10 @@ describe('buildLadderTree', () => {
     expect(result.tree.offers.map(offer => offer.buy)).toEqual([true, true, false, false])
     expect(result.tree.offers.map(offer => offer.maxAssets)).toEqual([10n, 20n, 30n, 40n])
     expect(result.tree.offers.slice(2).every(offer => offer.reduceOnly)).toBe(true)
+    expect(result.tree.offers.slice(2).map(offer => offer.receiverIfMakerIsSeller)).toEqual([
+      maker,
+      maker
+    ])
     expect(new Set(result.tree.offers.map(offer => offer.group)).size).toBe(4)
     expect(result.groups.map(group => group.rungIndexes)).toEqual([[0], [1], [0], [1]])
   })

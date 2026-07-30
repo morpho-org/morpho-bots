@@ -220,10 +220,10 @@ export const strategyBootstrapGroups = (
 }
 
 /**
- * Totals the full reserve of every distinct explicitly owned group returned by the provider.
+ * Totals the unfilled cash reserve of every distinct explicitly owned buy group.
  * @param groups - Canonical maker groups, which may contain one projection per offer market.
  * @param ownedGroupIds - Durable explicit ownership candidates for this strategy.
- * @returns Aggregate maximum loan assets reserved by distinct owned groups.
+ * @returns Aggregate remaining loan assets reserved by distinct owned buy groups.
  */
 export const bootstrapReservedLoanAssets = (
   groups: readonly BootstrapRawGroup[],
@@ -232,10 +232,12 @@ export const bootstrapReservedLoanAssets = (
   const ownedGroups = new Set(ownedGroupIds)
   return [
     ...new Map(
-      groups.filter(group => ownedGroups.has(group.id)).map(group => [group.id, group])
+      groups
+        .filter(group => ownedGroups.has(group.id) && group.offers.some(offer => offer.buy))
+        .map(group => [group.id, group])
     ).values()
   ]
-    .map(group => group.maxAssets)
+    .map(group => group.maxAssets - group.consumed)
     .reduce((total, assets) => total + assets, 0n)
 }
 

@@ -292,6 +292,7 @@ const sourceFiles = [
   'application/monitor.utils.ts',
   'application/operator-error-name.utils.ts',
   'application/bootstrap/position-bootstrap-halted.error.ts',
+  'application/bootstrap/position-bootstrap-monitor-halted.error.ts',
   'application/bootstrap/position-bootstrap-monitor.utils.ts',
   'application/bootstrap/position-bootstrap.service.ts',
   'application/ladder/ladder-cycle-halted.error.ts',

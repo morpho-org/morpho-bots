@@ -3,6 +3,7 @@ import { describe, expect, mock, test } from 'bun:test'
 import type { LadderTransactionSubmittedEvent } from '../../../src/application/ladder/ladder-verbose'
 
 import { PositionBootstrapHaltedError } from '../../../src/application/bootstrap/position-bootstrap-halted.error'
+import { PositionBootstrapMonitorHaltedError } from '../../../src/application/bootstrap/position-bootstrap-monitor-halted.error'
 import { LadderCycleHaltedError } from '../../../src/application/ladder/ladder-cycle-halted.error'
 import { LadderMonitorHaltedError } from '../../../src/application/ladder/ladder-monitor-halted.error'
 import { SetupMonitorHaltedError } from '../../../src/application/setup/setup-monitor-halted.error'
@@ -422,6 +423,38 @@ describe('Cli', () => {
     })
   })
 
+  test('mm bootstrap --monitor preserves a halted terminal report object', async () => {
+    const report = {
+      status: 'halted' as const,
+      reason: 'cycle-failed' as const,
+      cycles: 1,
+      cleanup: { status: 'applied' as const },
+      lastCycle: [
+        {
+          marketId: `0x${'11'.repeat(32)}` as const,
+          status: 'failed' as const,
+          stage: 'make' as const,
+          invalidated: false,
+          errorName: 'ProviderWriteError'
+        }
+      ]
+    }
+    const application = new Cli(
+      new VersionService(),
+      () => ({ assertReady: async () => readyReport }),
+      () => ({
+        runOnce: async () => [],
+        runContinuously: async () => report
+      }),
+      () => ({ runOnce: async () => [] })
+    )
+
+    const error = await application.run(['bootstrap', '--monitor']).catch(value => value)
+
+    expect(error).toBeInstanceOf(PositionBootstrapMonitorHaltedError)
+    expect(error).toMatchObject({ report })
+  })
+
   test('mm ladder is exposed alongside setup-check and bootstrap', async () => {
     const assertReady = mock(async () => readyReport)
     const bootstrap = mock(async () => [])
@@ -668,6 +701,36 @@ describe('Cli', () => {
         typeof value === 'bigint' ? value.toString() : value
       )
     ])
+  })
+
+  test('entrypoint emits a halted bootstrap-monitor object and returns a non-zero exit code', async () => {
+    const report = {
+      status: 'halted' as const,
+      reason: 'cycle-failed' as const,
+      cycles: 1,
+      cleanup: { status: 'applied' as const },
+      lastCycle: [
+        {
+          marketId: `0x${'11'.repeat(32)}` as const,
+          status: 'failed' as const,
+          stage: 'make' as const,
+          invalidated: false,
+          errorName: 'ProviderWriteError'
+        }
+      ]
+    }
+    const stdout: string[] = []
+    const stderr: string[] = []
+
+    const exitCode = await runMarketMakingEntrypoint(
+      { run: async () => Promise.reject(new PositionBootstrapMonitorHaltedError(report)) },
+      ['bootstrap', '--monitor'],
+      { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) }
+    )
+
+    expect(exitCode).toBe(1)
+    expect(stdout).toEqual([])
+    expect(stderr).toEqual([JSON.stringify(report)])
   })
 
   test('entrypoint writes continuous events before the terminal monitor report', async () => {

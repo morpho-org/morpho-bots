@@ -4,6 +4,7 @@
     "src/application/monitor.utils.ts",
     "src/application/operator-error-name.utils.ts",
     "src/application/bootstrap/position-bootstrap-halted.error.ts",
+    "src/application/bootstrap/position-bootstrap-monitor-halted.error.ts",
     "src/application/bootstrap/position-bootstrap-monitor.utils.ts",
     "src/application/bootstrap/position-bootstrap.service.ts",
     "src/application/bootstrap/position-bootstrap-verbose.ts",

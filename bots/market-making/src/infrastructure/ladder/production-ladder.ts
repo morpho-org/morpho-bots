@@ -26,7 +26,11 @@ import type { HistoricalBlockReader } from '../reference/blue-reference-reader.u
 import type { OwnedLadderPublication } from './ladder-group-ownership.utils'
 
 import { createBootstrapGroupOwnership } from '../bootstrap/bootstrap-group-ownership.utils'
-import { bootstrapBookOffers, readBootstrapGroups } from '../bootstrap/bootstrap-groups.utils'
+import {
+  bootstrapBookOffers,
+  bootstrapReservedLoanAssets,
+  readBootstrapGroups
+} from '../bootstrap/bootstrap-groups.utils'
 import { BlueBootstrapReferenceRateService } from '../bootstrap/bootstrap-reference-rate.service'
 import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
 import { LadderAdapterError } from './ladder-adapter.error'
@@ -206,15 +210,19 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
           !replacedGroupIds.has(group.id) &&
           group.offers.some(offer => offer.buy)
       )
-      const reservedCash = otherBuyGroups.reduce((sum, group) => sum + group.maxAssets, 0n)
+      const otherBuyGroupIds = otherBuyGroups.map(group => group.id)
+      const reservedCash = bootstrapReservedLoanAssets(otherBuyGroups, otherBuyGroupIds)
       const availableCash = remaining(minimum(cashBalance, allowance), reservedCash)
-      const marketReserved = otherBuyGroups
-        .filter(group => group.offers.some(offer => offer.marketId === marketId))
-        .reduce((sum, group) => sum + group.maxAssets, 0n)
+      const marketBuyGroups = otherBuyGroups.filter(group =>
+        group.offers.some(offer => offer.marketId === marketId && offer.buy)
+      )
+      const marketReserved = bootstrapReservedLoanAssets(
+        marketBuyGroups,
+        marketBuyGroups.map(group => group.id)
+      )
       const marketExposure = selectedPosition.credit + marketReserved
       const totalCredit = positionSnapshots.reduce((sum, position) => sum + position.credit, 0n)
-      const totalExposure =
-        totalCredit + otherBuyGroups.reduce((sum, group) => sum + group.maxAssets, 0n)
+      const totalExposure = totalCredit + reservedCash
 
       return {
         lowerRateCapacityAssets: availableCash,

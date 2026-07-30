@@ -279,6 +279,20 @@ describe('LadderMarketMakerService', () => {
     expect(subject.reconciliations).toHaveLength(4)
   })
 
+  test('invalidates an active ladder when both sides fall below the offer floor', async () => {
+    const subject = harness()
+    await subject.service.runOnce()
+    subject.setCapacity(0n)
+
+    expect(await subject.service.runOnce()).toMatchObject([{ action: 'replace', reason: 'resize' }])
+    expect(subject.reconciliations.at(-1)).toMatchObject({
+      marketId,
+      desired: undefined,
+      reason: 'resize'
+    })
+    expect(subject.liveDesired.has(marketId)).toBe(false)
+  })
+
   test('reloads live roots so externally expired roots are republished', async () => {
     const subject = harness()
     await subject.service.runOnce()

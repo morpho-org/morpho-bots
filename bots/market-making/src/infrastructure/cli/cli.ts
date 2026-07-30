@@ -11,6 +11,7 @@ import type {
 import type { VersionService } from '../../application/version.service'
 
 import { PositionBootstrapHaltedError } from '../../application/bootstrap/position-bootstrap-halted.error'
+import { PositionBootstrapMonitorHaltedError } from '../../application/bootstrap/position-bootstrap-monitor-halted.error'
 import { bootstrapCycleHasFailure } from '../../application/bootstrap/position-bootstrap-monitor.utils'
 import { LadderCycleHaltedError } from '../../application/ladder/ladder-cycle-halted.error'
 import { LadderMonitorHaltedError } from '../../application/ladder/ladder-monitor-halted.error'
@@ -158,7 +159,7 @@ export class Cli {
               : undefined
         })
         if (result.status === 'halted') {
-          throw new PositionBootstrapHaltedError([result])
+          throw new PositionBootstrapMonitorHaltedError(result)
         }
         this.output = result
         this.hasOutput = true

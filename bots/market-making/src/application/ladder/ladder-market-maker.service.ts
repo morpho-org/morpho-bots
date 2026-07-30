@@ -409,6 +409,10 @@ export class LadderMarketMakerService {
         return results
       }
 
+      const desiredPublication =
+        desired.lower.length === 0 && desired.higher.length === 0 ? undefined : desired
+      if (!active && !desiredPublication) decision = 'rest'
+
       const verbosePlan: LadderVerbosePlan = {
         config,
         currentState,
@@ -422,7 +426,7 @@ export class LadderMarketMakerService {
       try {
         reconciliation = await this.make.reconcile({
           marketId: config.marketId,
-          desired,
+          desired: desiredPublication,
           reason: decision,
           onTransactionSubmitted: this.marketObserver(config.marketId, parameters)
         })

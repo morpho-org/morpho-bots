@@ -1,6 +1,7 @@
 import type { CliRuntimeOptions } from './cli'
 
 import { PositionBootstrapHaltedError } from '../../application/bootstrap/position-bootstrap-halted.error'
+import { PositionBootstrapMonitorHaltedError } from '../../application/bootstrap/position-bootstrap-monitor-halted.error'
 import { LadderCycleHaltedError } from '../../application/ladder/ladder-cycle-halted.error'
 import { LadderMonitorHaltedError } from '../../application/ladder/ladder-monitor-halted.error'
 import { SetupFailedError } from '../../application/setup/setup-failed.error'
@@ -46,17 +47,19 @@ export const runMarketMakingEntrypoint = async (
     const message =
       error instanceof SetupMonitorHaltedError
         ? serializeOutput(error.report)
-        : error instanceof LadderMonitorHaltedError
+        : error instanceof PositionBootstrapMonitorHaltedError
           ? serializeOutput(error.report)
-          : error instanceof LadderCycleHaltedError
+          : error instanceof LadderMonitorHaltedError
             ? serializeOutput(error.report)
-            : error instanceof PositionBootstrapHaltedError
+            : error instanceof LadderCycleHaltedError
               ? serializeOutput(error.report)
-              : error instanceof SetupFailedError
+              : error instanceof PositionBootstrapHaltedError
                 ? serializeOutput(error.report)
-                : error instanceof Error
-                  ? error.message
-                  : 'Unknown failure'
+                : error instanceof SetupFailedError
+                  ? serializeOutput(error.report)
+                  : error instanceof Error
+                    ? error.message
+                    : 'Unknown failure'
     output.writeError(message)
     return 1
   }

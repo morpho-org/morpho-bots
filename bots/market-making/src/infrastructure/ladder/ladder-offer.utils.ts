@@ -2,7 +2,6 @@ import type { IMarket, TreeInput } from '@morpho-org/midnight-sdk'
 import type { Address, Hex } from 'viem'
 
 import { Group, Offer, TickLib, Tree } from '@morpho-org/midnight-sdk'
-import { zeroAddress } from 'viem'
 
 import type { LadderQuoteSet, LadderRung } from '../../domain/ladder/ladder'
 import type { LadderGroupReference } from './ladder-group-ownership.utils'
@@ -55,7 +54,7 @@ const sideOffers = (
       ? {}
       : {
           reduceOnly: true,
-          receiverIfMakerIsSeller: zeroAddress
+          receiverIfMakerIsSeller: parameters.maker
         })
   }
   const cap = parameters.quote.groupMode === 'per-book' ? sideTotal(rungs) : undefined
