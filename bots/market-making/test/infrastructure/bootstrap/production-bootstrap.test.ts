@@ -650,6 +650,31 @@ describe('createBootstrapGroupOwnership', () => {
       await rm(directory, { recursive: true, force: true })
     }
   })
+
+  test('forgets canceled persisted groups while retaining configured ownership', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'market-making-forget-'))
+    const configuredGroupId: Hex = `0x${'34'.repeat(32)}`
+    const ownership = createBootstrapGroupOwnership(
+      { maker, marketIds: [marketId], configuredGroupIds: [configuredGroupId] },
+      { stateDirectory: directory }
+    )
+    try {
+      await ownership.reserve(groupId, {
+        marketId,
+        assets: 100n,
+        rateBps: 450n,
+        referenceObservationId: 'blocks:100-200'
+      })
+      await ownership.confirm(groupId)
+
+      await ownership.forget([groupId, configuredGroupId])
+
+      expect(await ownership.read()).toEqual([configuredGroupId])
+      expect(await ownership.readOffers()).toEqual([])
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('signBootstrapRequirements', () => {

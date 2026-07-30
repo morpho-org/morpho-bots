@@ -6,6 +6,7 @@ import type {
   BootstrapPositionService,
   BootstrapReferenceRateService
 } from './application/bootstrap/position-bootstrap.service'
+import type { OfferInvalidationPort } from './application/invalidation/offer-invalidation.service'
 import type {
   LadderMakeService,
   LadderPositionService,
@@ -17,6 +18,7 @@ import type { CliRuntimeOptions } from './infrastructure/cli/cli'
 import type { ChainReader } from './infrastructure/setup-state/viem-setup-state.service'
 
 import { PositionBootstrapService } from './application/bootstrap/position-bootstrap.service'
+import { OfferInvalidationService } from './application/invalidation/offer-invalidation.service'
 import { LadderMarketMakerService } from './application/ladder/ladder-market-maker.service'
 import { SetupCheckService } from './application/setup/setup-check.service'
 import { VersionService } from './application/version.service'
@@ -24,6 +26,7 @@ import { ConfigService as RuntimeConfigService } from './config/config.service'
 import { createBootstrapGroupOwnership } from './infrastructure/bootstrap/bootstrap-group-ownership.utils'
 import { createProductionBootstrapAdapters } from './infrastructure/bootstrap/production-bootstrap'
 import { Cli } from './infrastructure/cli/cli'
+import { createProductionOfferInvalidationPort } from './infrastructure/invalidation/production-offer-invalidation'
 import { createLadderGroupOwnership } from './infrastructure/ladder/ladder-group-ownership.utils'
 import { createProductionLadderAdapters } from './infrastructure/ladder/production-ladder'
 import { ReadOnlyBootstrapMakeService } from './infrastructure/make/read-only-bootstrap-make.service'
@@ -47,6 +50,8 @@ type Dependencies = {
     rates: LadderReferenceRateService
     make: LadderMakeService
   }
+  /** Replaces the provider, signer, and ownership port for explicit offer invalidation. */
+  createInvalidationPort?: (config: ConfigService) => OfferInvalidationPort
   /** Overrides the process working directory used for default configuration discovery. */
   cwd?: string
 }
@@ -102,12 +107,12 @@ const defaultState = (config: ConfigService) => {
 }
 
 /**
- * Composes the market-making CLI, setup-check, position-bootstrap, and ladder dependencies.
+ * Composes setup-check, position-bootstrap, ladder, and explicit invalidation dependencies.
  * @param environment - Environment map used for lazy validated configuration.
  * @param dependencies - Optional state and workflow-port factories used by isolated tests.
  * @returns An application exposing a single asynchronous CLI `run` boundary.
  * @remarks Composition is side-effect free. Configuration and provider construction occur lazily
- * for `setup-check`, `bootstrap`, or `ladder`. Setup is read-only and preserves
+ * for `setup-check`, `bootstrap`, `ladder`, or `invalidate`. Setup is read-only and preserves
  * concurrent independent reads through `Promise.all`. `--readonly` selects address-only identity
  * before any private-key validation and replaces every workflow mutation port with terminal output.
  * Writer commands assert readiness before constructing or running their application service; failed
@@ -115,7 +120,9 @@ const defaultState = (config: ConfigService) => {
  * at a one-minute cadence and halts nonzero on the first failed report. Bootstrap monitoring uses
  * the same cadence and invalidates strategy-owned groups after its shutdown signal. Ladder
  * monitoring uses the shortest configured ladder cadence and invalidates active owned ladder groups
- * after shutdown; one-shot writer cycles run only for their respective explicit commands.
+ * after shutdown. Explicit invalidation uses a narrower cancellation preflight so unknown maker
+ * groups can be removed without weakening normal readiness. One-shot writers run only for their
+ * respective explicit commands.
  */
 export const createApplication = (
   environment: Environment = Bun.env,
@@ -125,7 +132,7 @@ export const createApplication = (
    * Executes one CLI invocation.
    * @param argv - User arguments without runtime/executable prefixes.
    * @param runtime - Optional shutdown signal and continuous-cycle writer forwarded to the CLI.
-   * @returns Captured version text, setup-check JSON, or bootstrap/ladder cycle or monitor JSON.
+   * @returns Captured version, setup-check, writer cycle/monitor, or invalidation JSON.
    * @throws On invalid configuration or usage, provider or readiness failure, or a halted writer
    * cycle. Failed readiness prevents the selected writer's `runOnce()` side effect.
    */
@@ -167,6 +174,13 @@ export const createApplication = (
         dependencies.createLadderAdapters?.(config) ?? createProductionLadderAdapters(config)
       const make = config.readOnly ? new ReadOnlyLadderMakeService(adapters.make) : adapters.make
       return new LadderMarketMakerService(adapters.positions, adapters.rates, make, config.ladder)
+    },
+    async options => {
+      const config = await loadConfig(options)
+      const port =
+        dependencies.createInvalidationPort?.(config) ??
+        createProductionOfferInvalidationPort(config)
+      return new OfferInvalidationService(port)
     }
   )
 

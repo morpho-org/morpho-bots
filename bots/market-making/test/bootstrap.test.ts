@@ -98,6 +98,42 @@ describe('createApplication', () => {
     expect((output as { checks: unknown[] }).checks).toHaveLength(9)
   })
 
+  test('composes explicit invalidation without the offer-readiness gate', async () => {
+    const groupId: Hex = `0x${'12'.repeat(32)}`
+    const txHash: Hex = `0x${'ab'.repeat(32)}`
+    const events: string[] = []
+    const application = createApplication(environment, {
+      createState: () => {
+        throw new Error('setup state must not be constructed')
+      },
+      createInvalidationPort: config => ({
+        mode: () => (config.readOnly ? 'readonly' : 'write'),
+        preflight: async () => {
+          events.push('preflight')
+        },
+        listActiveGroupIds: async () => {
+          events.push('list')
+          return [groupId]
+        },
+        invalidate: async selectedGroupId => {
+          events.push(`invalidate:${selectedGroupId}`)
+          return txHash
+        },
+        forgetGroups: async groupIds => {
+          events.push(`forget:${groupIds.join(',')}`)
+        }
+      })
+    })
+
+    expect(await application.run(['invalidate'])).toEqual({
+      status: 'applied',
+      scope: 'all',
+      matchedGroups: 1,
+      invalidatedGroups: [{ groupId, txHash }]
+    })
+    expect(events).toEqual(['preflight', 'list', `invalidate:${groupId}`, `forget:${groupId}`])
+  })
+
   test('mm bootstrap passes readiness before composing one bootstrap cycle', async () => {
     const events: string[] = []
     const state = readyState()

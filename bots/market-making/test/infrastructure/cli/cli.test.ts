@@ -4,6 +4,7 @@ import type { LadderTransactionSubmittedEvent } from '../../../src/application/l
 
 import { PositionBootstrapHaltedError } from '../../../src/application/bootstrap/position-bootstrap-halted.error'
 import { PositionBootstrapMonitorHaltedError } from '../../../src/application/bootstrap/position-bootstrap-monitor-halted.error'
+import { OfferInvalidationFailedError } from '../../../src/application/invalidation/offer-invalidation-failed.error'
 import { LadderCycleHaltedError } from '../../../src/application/ladder/ladder-cycle-halted.error'
 import { LadderMonitorHaltedError } from '../../../src/application/ladder/ladder-monitor-halted.error'
 import { SetupMonitorHaltedError } from '../../../src/application/setup/setup-monitor-halted.error'
@@ -476,6 +477,96 @@ describe('Cli', () => {
     expect(bootstrap).not.toHaveBeenCalled()
   })
 
+  test('mm invalidate targets every active maker group and streams submitted hashes', async () => {
+    const groupId = `0x${'12'.repeat(32)}` as const
+    const txHash = `0x${'ab'.repeat(32)}` as const
+    const report = {
+      status: 'applied' as const,
+      scope: 'all' as const,
+      matchedGroups: 1,
+      invalidatedGroups: [{ groupId, txHash }]
+    }
+    const run = mock(
+      async (parameters?: {
+        groupId?: `0x${string}`
+        onTransactionSubmitted?: (event: {
+          event: 'offer-invalidation.transaction-submitted'
+          groupId: typeof groupId
+          txHash: typeof txHash
+        }) => void | Promise<void>
+      }) => {
+        await parameters?.onTransactionSubmitted?.({
+          event: 'offer-invalidation.transaction-submitted',
+          groupId,
+          txHash
+        })
+        return report
+      }
+    )
+    const streamed: unknown[] = []
+    const application = new Cli(
+      new VersionService(),
+      () => ({ assertReady: async () => readyReport }),
+      () => ({ runOnce: async () => [] }),
+      () => ({ runOnce: async () => [] }),
+      () => ({ run })
+    )
+
+    expect(
+      await application.run(['invalidate'], {
+        writeEvent: event => {
+          streamed.push(event)
+        }
+      })
+    ).toEqual(report)
+    expect(run.mock.calls[0]?.[0]?.groupId).toBeUndefined()
+    expect(streamed).toEqual([
+      { event: 'offer-invalidation.transaction-submitted', groupId, txHash }
+    ])
+  })
+
+  test('mm invalidate canonicalizes one explicit group and forwards read-only mode', async () => {
+    const groupId = `0x${'ab'.repeat(32)}` as const
+    let readOnly: boolean | undefined
+    const run = mock(async (_parameters?: { groupId?: `0x${string}` }) => ({
+      status: 'logged' as const,
+      scope: 'group' as const,
+      matchedGroups: 1,
+      invalidatedGroups: [{ groupId }]
+    }))
+    const application = new Cli(
+      new VersionService(),
+      () => ({ assertReady: async () => readyReport }),
+      () => ({ runOnce: async () => [] }),
+      () => ({ runOnce: async () => [] }),
+      options => {
+        readOnly = options.readOnly
+        return { run }
+      }
+    )
+
+    await application.run(['invalidate', groupId.toUpperCase().replace('0X', '0x'), '--readonly'])
+
+    expect(readOnly).toBe(true)
+    expect(run.mock.calls[0]?.[0]?.groupId).toBe(groupId)
+  })
+
+  test('mm invalidate rejects a malformed group before constructing the writer', async () => {
+    const invalidation = mock(() => ({ run: async () => undefined as never }))
+    const application = new Cli(
+      new VersionService(),
+      () => ({ assertReady: async () => readyReport }),
+      () => ({ runOnce: async () => [] }),
+      () => ({ runOnce: async () => [] }),
+      invalidation
+    )
+
+    const error = await application.run(['invalidate', '0x1234']).catch(value => value)
+
+    expect(error).toBeInstanceOf(CliUsageError)
+    expect(invalidation).not.toHaveBeenCalled()
+  })
+
   test('mm ladder --monitor --verbose --readonly streams cycles and cleanup evidence', async () => {
     const marketId = `0x${'11'.repeat(32)}` as const
     const txHash = `0x${'aa'.repeat(32)}` as const
@@ -670,6 +761,34 @@ describe('Cli', () => {
     const exitCode = await runMarketMakingEntrypoint(
       { run: async () => Promise.reject(new PositionBootstrapHaltedError(report)) },
       ['bootstrap'],
+      { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) }
+    )
+
+    expect(exitCode).toBe(1)
+    expect(stdout).toEqual([])
+    expect(stderr).toEqual([JSON.stringify(report)])
+  })
+
+  test('entrypoint emits an invalidation failure report and returns non-zero', async () => {
+    const report = {
+      status: 'failed' as const,
+      scope: 'group' as const,
+      matchedGroups: 1,
+      invalidatedGroups: [],
+      failures: [
+        {
+          stage: 'invalidation' as const,
+          groupId: `0x${'12'.repeat(32)}` as const,
+          errorName: 'OfferInvalidationAdapterError'
+        }
+      ]
+    }
+    const stdout: string[] = []
+    const stderr: string[] = []
+
+    const exitCode = await runMarketMakingEntrypoint(
+      { run: async () => Promise.reject(new OfferInvalidationFailedError(report)) },
+      ['invalidate'],
       { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) }
     )
 

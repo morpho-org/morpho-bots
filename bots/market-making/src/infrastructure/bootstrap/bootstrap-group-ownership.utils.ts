@@ -228,6 +228,16 @@ export const createBootstrapGroupOwnership = (
         reservedGroupIds: state.reservedGroupIds.filter(value => value !== id),
         offers: state.offers.filter(value => value.groupId !== id)
       })
+    },
+    /** Removes canceled groups from persisted ownership and offer intent. @param groupIds - Confirmed canceled group IDs. @returns Completion after atomic storage; configured IDs remain configuration-owned. */
+    forget: async (groupIds: readonly Hex[]) => {
+      const state = await readPersisted()
+      const removed = new Set(groupIds.map(canonicalId))
+      await writePersisted({
+        confirmedGroupIds: state.confirmedGroupIds.filter(value => !removed.has(value)),
+        reservedGroupIds: state.reservedGroupIds.filter(value => !removed.has(value)),
+        offers: state.offers.filter(value => !removed.has(value.groupId))
+      })
     }
   }
 }

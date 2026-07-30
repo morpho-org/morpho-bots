@@ -7,6 +7,8 @@ type OperatorErrorName =
   | 'LadderConfigurationError'
   | 'LadderAdapterError'
   | 'LadderHardHaltError'
+  | 'OfferInvalidationAdapterError'
+  | 'OfferInvalidationFailedError'
   | 'ReferenceAdapterError'
   | 'ConfigFileError'
   | 'ConfigValidationError'
@@ -30,6 +32,8 @@ const knownNames: Readonly<Record<string, OperatorErrorName>> = {
   LadderConfigurationError: 'LadderConfigurationError',
   LadderAdapterError: 'LadderAdapterError',
   LadderHardHaltError: 'LadderHardHaltError',
+  OfferInvalidationAdapterError: 'OfferInvalidationAdapterError',
+  OfferInvalidationFailedError: 'OfferInvalidationFailedError',
   ReferenceAdapterError: 'ReferenceAdapterError',
   ConfigFileError: 'ConfigFileError',
   ConfigValidationError: 'ConfigValidationError',

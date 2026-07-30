@@ -108,6 +108,15 @@ bun run --filter @morpho-org/market-making-bot start -- ladder
 
 # Continuously reconcile the live ladder and remove owned offers on SIGINT/SIGTERM.
 bun run --filter @morpho-org/market-making-bot start -- ladder --monitor --verbose
+
+# Cancel every active offer group for the configured maker.
+bun run --filter @morpho-org/market-making-bot start -- invalidate
+
+# Cancel one explicit offer group, even when it has not been indexed by the API.
+bun run --filter @morpho-org/market-making-bot start -- invalidate 0x<64-hex-characters>
+
+# Preview the active groups that maker-wide invalidation would cancel.
+bun run --filter @morpho-org/market-making-bot start -- invalidate --readonly
 ```
 
 Success exits zero and writes JSON Lines to standard output. Ordinary commands emit one report record;
@@ -172,6 +181,25 @@ exits with code `1`. Read-only monitoring emits the cleanup request without sign
 reference and premium-adjusted target rates, exact desired ladder, decision, confirmed transaction
 hashes, and a fresh state read after every check. Live transaction hashes are also emitted
 immediately as `ladder.transaction-submitted` records.
+
+`invalidate` is an explicit recovery command and does not run the normal offer-readiness gate. With
+no group argument it reads the complete active maker group set and invalidates every distinct group,
+including groups that are not owned by the bootstrap or ladder strategy. Because one Midnight group
+can cap several offers, one cancellation invalidates every offer in that group. With an optional
+0x-prefixed bytes32 argument, `invalidate <group-id>` directly invalidates only that group without
+depending on API indexing. Before a live cancellation it still verifies the connected Base chain,
+deployed configured Midnight contract, maker/private-key agreement, and configured native gas
+reserve. Every transaction is locally restricted to the exact Midnight `setConsumed` cancellation,
+broadcast from the maker, and receipt-confirmed before success is reported. Successfully canceled
+bot-owned groups are removed from durable ownership state; explicitly configured
+`V0_OFFER_GROUP_IDS` remain configuration-owned until the operator edits configuration.
+
+Maker-wide invalidation attempts every selected group before returning. Submitted hashes stream as
+`offer-invalidation.transaction-submitted` records and are retained in the terminal success or
+failure report. A partial failure exits with code `1` and includes completed groups plus sanitized
+per-group failure classifications. `invalidate --readonly` performs the cancellation preflight and,
+for maker-wide scope, lists the active groups, but never loads a private key, submits transactions,
+or edits ownership state.
 
 For a maker with at least 101 USDC of both available balance and accrued credit, this
 one-rung-per-side preset caps each side at 150 USDC. USDC uses six decimals, so `150000000` is 150
@@ -246,28 +274,31 @@ bun run --filter @morpho-org/market-making-bot start -- setup-check
 bun run --filter @morpho-org/market-making-bot start -- --readonly setup-check
 ```
 
-### Environment mapping
+### Environment variables
 
-| Environment variable           | YAML key                          | Required/default                                                 |
-| ------------------------------ | --------------------------------- | ---------------------------------------------------------------- |
-| `CHAIN_ID`                     | `chain.id`                        | Required; must be Base `8453`                                    |
-| `RPC_URL`                      | `chain.rpcUrl`                    | Required current-state Base RPC URL                              |
-| `REFERENCE_RPC_URL`            | `chain.archiveRpcUrl`             | Required archive-capable Base RPC URL                            |
-| `MAKER_ADDRESS`                | `identity.makerAddress`           | Required maker EVM address                                       |
-| `MAKER_PRIVATE_KEY`            | `identity.makerPrivateKey`        | Required write-mode key; omitted with `--readonly`               |
-| `MIDNIGHT_ADDRESS`             | `contracts.midnightAddress`       | Required Midnight singleton address                              |
-| `LOAN_ASSET_ADDRESS`           | `contracts.loanAssetAddress`      | Required loan-token address                                      |
-| `RATIFIER_ADDRESS`             | `contracts.ratifierAddress`       | Required Router-listed Ecrecover ratifier                        |
-| `MORPHO_API_BASE_URL`          | `apis.morphoBaseUrl`              | Required books and Mempool offer-group API origin                |
-| `ROUTER_API_BASE_URL`          | `apis.routerBaseUrl`              | Required Router contract-registry API origin                     |
-| `MARKET_IDS`                   | `markets.allowlist`               | Required; comma-separated bytes32 IDs / YAML list                |
-| `REFERENCE_MARKET_ID`          | `markets.referenceMarketId`       | Required Morpho Blue reference market ID                         |
-| `V0_OFFER_GROUP_IDS`           | `markets.v0OfferGroupIds`         | Optional; comma-separated bytes32 IDs / YAML list; defaults `[]` |
-| `NATIVE_RESERVE_WEI`           | `setup.nativeReserveWei`          | Required unsigned integer wei                                    |
-| `MAXIMUM_LEND_EXPOSURE_ASSETS` | `setup.maximumLendExposureAssets` | Required unsigned raw loan-asset units                           |
-| `REQUEST_TIMEOUT_MS`           | `setup.requestTimeoutMs`          | Optional; default `10000`, range `1..120000`                     |
-| `BOOTSTRAP_MARKETS`            | `bootstrap`                       | Optional JSON array; whole-list replacement; defaults `[]`       |
-| `LADDER_MARKETS`               | `ladder`                          | Optional JSON array; whole-list replacement; defaults `[]`       |
+Every supported environment variable is listed below. “Raw assets” means the loan token's smallest
+unit; for six-decimal USDC, `101000000` is 101 USDC. No value is inferred from another variable.
+
+| Environment variable           | YAML key                          | Requirement and behavior                                                                                                                                                     |
+| ------------------------------ | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CHAIN_ID`                     | `chain.id`                        | Required. Must be `8453`; all protocol, token, market, and transaction operations run on Base.                                                                               |
+| `RPC_URL`                      | `chain.rpcUrl`                    | Required. Current-state Base JSON-RPC endpoint used for blocks, balances, allowances, positions, contract reads, simulation, transaction submission, and receipts.           |
+| `REFERENCE_RPC_URL`            | `chain.archiveRpcUrl`             | Required. Archive-capable Base JSON-RPC endpoint used to read the reference Morpho Blue market at historical blocks.                                                         |
+| `MAKER_ADDRESS`                | `identity.makerAddress`           | Required. EVM address whose balance, allowance, credit, offers, and exposure the bot manages. In write mode it must be derived by `MAKER_PRIVATE_KEY`.                       |
+| `MAKER_PRIVATE_KEY`            | `identity.makerPrivateKey`        | Required in write mode; omitted and never loaded with `--readonly`. Must be a 0x-prefixed 32-byte secp256k1 key. Never include it in committed configuration or logs.        |
+| `MIDNIGHT_ADDRESS`             | `contracts.midnightAddress`       | Required. Expected deployed Midnight singleton. Setup verifies its bytecode before a writer starts.                                                                          |
+| `LOAN_ASSET_ADDRESS`           | `contracts.loanAssetAddress`      | Required. Loan token used by every configured Midnight market. Balances, allowances, budgets, offer sizes, and exposure values use this token's raw units.                   |
+| `RATIFIER_ADDRESS`             | `contracts.ratifierAddress`       | Required. Router-listed Ecrecover ratifier authorized by the maker; the bot signs offer trees for this ratifier and verifies its deployed Midnight binding.                  |
+| `MORPHO_API_BASE_URL`          | `apis.morphoBaseUrl`              | Required. Morpho API origin used for Midnight books, market metadata, prospective-offer validation, and cursor-paginated maker offer groups. No API-key header is supported. |
+| `ROUTER_API_BASE_URL`          | `apis.routerBaseUrl`              | Required. Router API origin used only to verify the configured ratifier against `/v0/config/contracts`. No API-key header is supported.                                      |
+| `MARKET_IDS`                   | `markets.allowlist`               | Required comma-separated list of unique 0x-prefixed bytes32 Midnight market IDs. Every bootstrap or ladder `marketId` must appear here.                                      |
+| `REFERENCE_MARKET_ID`          | `markets.referenceMarketId`       | Required 0x-prefixed bytes32 Morpho Blue market ID whose historical variable borrow rate supplies the reference rate for all configured strategies.                          |
+| `V0_OFFER_GROUP_IDS`           | `markets.v0OfferGroupIds`         | Optional comma-separated list of unique, explicitly strategy-owned bytes32 offer-group IDs; defaults to empty. Use it to adopt known pre-existing groups safely.             |
+| `NATIVE_RESERVE_WEI`           | `setup.nativeReserveWei`          | Required unsigned integer. Minimum maker native-token balance, in wei, required by readiness for transaction fees.                                                           |
+| `MAXIMUM_LEND_EXPOSURE_ASSETS` | `setup.maximumLendExposureAssets` | Required unsigned integer in raw loan-token units. Minimum maker allowance to Midnight required by readiness; it is not a strategy position cap.                             |
+| `REQUEST_TIMEOUT_MS`           | `setup.requestTimeoutMs`          | Optional provider-operation and aggregate pagination timeout in milliseconds. Defaults to `10000`; accepted range is `1` through `120000`.                                   |
+| `BOOTSTRAP_MARKETS`            | `bootstrap`                       | Optional exact JSON array of position-bootstrap entries documented below; defaults to `[]` and replaces the complete YAML `bootstrap` list when supplied.                    |
+| `LADDER_MARKETS`               | `ladder`                          | Optional exact JSON array of ladder entries documented below; defaults to `[]` and replaces the complete YAML `ladder` list when supplied.                                   |
 
 There is no separate Mempool endpoint or API-key field in the current clients. Books and cursor-paginated
 maker offer groups are read through `MORPHO_API_BASE_URL`; `ROUTER_API_BASE_URL` is used only for the
@@ -289,15 +320,16 @@ and `ladder`; unknown keys at any level are rejected. Every supported key appear
 - `bootstrap`: an ordered list of the exact per-market objects documented below.
 - `ladder`: an ordered list of the exact per-market objects documented below.
 
-Addresses and bytes32 IDs should be quoted YAML strings. Every integer field uses exact decimal-integer
-syntax: unsigned fields accept digits only, while `premiumBps` additionally accepts one leading minus.
-Exact raw-unit amounts may be quoted decimal strings or bare YAML decimal integers without precision
-loss. Floats, exponent notation, leading plus signs, surrounding whitespace inside quoted integers,
-negative unsigned amounts, wrong scalar/list/object types, duplicate keys or IDs, aliases, custom tags,
-prototype keys, unsupported keys, and malformed YAML are rejected. Rates and premiums are integer basis
-points (`100` = one percentage point); floats are never coerced. Each YAML `autoRefill` value must be
-the unquoted lowercase plain scalar `true` or `false`. Environment integer values follow the same
-decimal syntax after outer environment whitespace is trimmed.
+Addresses and bytes32 IDs should be quoted YAML strings. Every integer field uses exact
+decimal-integer syntax: unsigned fields accept digits only, while `premiumBps`, `quotePremiumBps`,
+and `sizeSkewBps` additionally accept one leading minus. Exact raw-unit amounts may be quoted decimal
+strings or bare YAML decimal integers without precision loss. Floats, exponent notation, leading
+plus signs, surrounding whitespace inside quoted integers, negative unsigned amounts, wrong
+scalar/list/object types, duplicate keys or IDs, aliases, custom tags, prototype keys, unsupported
+keys, and malformed YAML are rejected. Rates and premiums are integer basis points (`100` = one
+percentage point); floats are never coerced. Each YAML `autoRefill` value must be the unquoted
+lowercase plain scalar `true` or `false`. Environment integer values follow the same decimal syntax
+after outer environment whitespace is trimmed.
 
 ### Setup checks
 
@@ -330,6 +362,7 @@ reference hard-fails when its latest checkpoint is more than five minutes behind
 ### Position-bootstrap fields
 
 Each `bootstrap` entry must use a unique `marketId` present in `markets.allowlist`.
+There are no per-field defaults: every field in each entry is required.
 
 | Field                   | Unit / behavior                                                 | Validation                                                |
 | ----------------------- | --------------------------------------------------------------- | --------------------------------------------------------- |
@@ -380,12 +413,30 @@ requested make and graceful-cleanup operation instead.
 
 Each `ladder` entry has a unique allowlisted `marketId`. Rates are integer BPS and asset/exposure
 amounts are exact raw loan-asset units. `quotePremiumBps` and `sizeSkewBps` are signed; all other
-integer fields are nonnegative or positive as shown by the example. `spreadBps` is a positive even
-full spread, `stepBps` is positive, `rungCount` is a positive safe integer no greater than 512, and
-`minimumOfferAssets` and `loopIntervalSeconds` are positive. Both configured side budgets must be at
-least `minimumOfferAssets`. `movementToleranceBps` is nonnegative, and `groupMode` is `shared-rung`
-or `per-book`. The rung limit bounds local allocation to 1,024 offers for a two-sided ladder, a
-height-10 tree below the Midnight SDK's height-20 protocol limit.
+integer fields are nonnegative or positive as shown below. There are no per-field defaults: every
+field in each entry is required.
+
+| Field                        | Unit / behavior                                                                                                                                                      | Validation                                                                                       |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `marketId`                   | 0x-prefixed 32-byte Midnight market ID quoted by this entry.                                                                                                         | Required, unique across the array, and present in `MARKET_IDS`.                                  |
+| `quotePremiumBps`            | Signed BPS added to the fresh reference rate before the ladder spread is applied. Positive moves both sides higher; negative moves both lower.                       | Signed decimal integer; the resulting funded rungs must remain inside the configured rate range. |
+| `spreadBps`                  | Full distance in BPS between the nearest lower and higher rates. Each nearest rung is half this value from the center.                                               | Positive and even, so each half-spread is an exact integer BPS value.                            |
+| `stepBps`                    | Additional BPS between successive rungs on the same side, moving farther from the center.                                                                            | Positive.                                                                                        |
+| `rungCount`                  | Maximum number of rungs constructed on each side before capacity and minimum-size filtering.                                                                         | Positive safe integer no greater than `512`.                                                     |
+| `sizeSkewBps`                | Signed change to each successive rung's allocation weight from the base weight `10000`. Positive favors outer rungs; negative favors inner rungs.                    | Signed decimal integer; every configured rung weight must remain positive.                       |
+| `lowerRateBudgetAssets`      | Maximum raw assets allocated across lower-rate rungs. This side posts reduce-only borrow-side sells and is additionally capped by the maker's accrued market credit. | Positive and at least `minimumOfferAssets`.                                                      |
+| `higherRateBudgetAssets`     | Maximum raw assets allocated across higher-rate rungs. This side posts lend-side buys and is additionally capped by available balance, allowance, and exposure.      | Positive and at least `minimumOfferAssets`.                                                      |
+| `targetMarketExposureAssets` | Raw cap for credit plus reserved lend-buy liquidity in this market. It caps only the higher-rate, exposure-increasing side.                                          | Positive and no greater than `maximumTotalExposureAssets`.                                       |
+| `maximumTotalExposureAssets` | Raw cap for credit plus reserved lend-buy liquidity across all configured markets. It caps only the higher-rate, exposure-increasing side.                           | Positive.                                                                                        |
+| `minimumOfferAssets`         | Smallest raw size permitted for any emitted rung. Capacity funds the closest rungs first and omits a side or outer rungs that cannot each meet this floor.           | Positive and no greater than either configured side budget. Use at least `101000000` for USDC.   |
+| `groupMode`                  | Consumption-cap grouping: `shared-rung` creates one independent group per rung; `per-book` creates one shared group for all funded rungs on each side.               | Exactly `shared-rung` or `per-book`.                                                             |
+| `loopIntervalSeconds`        | Requested delay between completed monitor cycles for this market set; the monitor uses the shortest configured value.                                                | Positive safe integer.                                                                           |
+| `movementToleranceBps`       | Inclusive center-rate deadband. An existing center is retained until the effective center moves by strictly more than this value; capacity resizing still applies.   | Nonnegative.                                                                                     |
+| `minimumRateBps`             | Inclusive hard minimum for every funded final rung after premium, spread, and step offsets. Rates are rejected rather than clamped.                                  | Nonnegative and strictly less than `maximumRateBps`.                                             |
+| `maximumRateBps`             | Inclusive hard maximum for every funded final rung after premium, spread, and step offsets. Rates are rejected rather than clamped.                                  | Positive and strictly greater than `minimumRateBps`; the complete static ladder shape must fit.  |
+
+The rung limit bounds local allocation to 1,024 offers for a two-sided ladder, a height-10 tree
+below the Midnight SDK's height-20 protocol limit.
 
 For reference `R`, effective center `C = R + quotePremiumBps`. With zero-based rung `k`:
 
@@ -398,6 +449,12 @@ The complete static shape must fit between `minimumRateBps` and `maximumRateBps`
 must also remain inside that inclusive hard range; values are rejected, never clamped. A retained
 center is recentered only when absolute effective-center movement is strictly greater than
 `movementToleranceBps`; capacity changes still resize quotes inside that tolerance.
+
+“Lower” and “higher” describe rates, not protocol `buy`/`sell` flags. Because Midnight price is
+inverse to rate, lower-rate rungs are encoded as borrow-side `sell` offers and higher-rate rungs as
+lend-side `buy` offers. Every bot-created lower-rate offer has `reduceOnly: true`, so a fill may
+unwind the maker's existing credit but cannot increase maker debt. Explorers may still label that
+offer simply as “borrow”; use the tick-derived APR rather than the side label as the rate.
 
 Rung weight `k` is `10000 + k * sizeSkewBps`, and every weight must stay positive. Positive skew
 weights outer rungs more heavily; negative skew weights inner rungs more heavily. Each configured
@@ -440,6 +497,9 @@ bun run --filter @morpho-org/market-making-bot start -- ladder
 bun run --filter @morpho-org/market-making-bot start -- ladder --readonly
 bun run --filter @morpho-org/market-making-bot start -- ladder --monitor --verbose
 bun run --filter @morpho-org/market-making-bot start -- ladder --monitor --verbose --readonly
+bun run --filter @morpho-org/market-making-bot start -- invalidate
+bun run --filter @morpho-org/market-making-bot start -- invalidate 0x<64-hex-characters>
+bun run --filter @morpho-org/market-making-bot start -- invalidate --readonly
 bun run --filter @morpho-org/market-making-bot start -- --version
 ```
 
