@@ -15,11 +15,16 @@ import { LadderHardHaltError } from './ladder-hard-halt.error'
 import { assertLadderProspectiveSpread } from './ladder-spread.utils'
 
 type LadderBookOffer = { groupId?: Hex; marketId: Hex; buy: boolean; tick: bigint }
+type LadderOwnedGroup = { groupId: Hex; maxAssets: bigint }
 
 /** Blocking transport used by the serialized ladder make adapter. */
 export interface LadderOfferTransport {
   /** Reconstructs active quote semantics. @param marketId - Selected market. @returns Active quote set or no quote. */
   readActive(marketId: Hex): Promise<LadderQuoteSet | undefined>
+  /** Lists every durably owned group and its exact consumption cap. @returns Groups used for exhaustive cleanup. */
+  listOwnedGroups(): Promise<readonly LadderOwnedGroup[]>
+  /** Reads authoritative on-chain consumption. @param groupId - Strategy-owned group. @returns Current consumed assets. */
+  readGroupConsumed(groupId: Hex): Promise<bigint>
   /** Lists active owned group IDs, optionally for one market. @param marketId - Optional market filter. @returns Distinct group IDs. */
   listActiveGroupIds(marketId?: Hex): Promise<readonly Hex[]>
   /** Lists the maker's complete live offer book. @returns Every offer needed for spread safety. */
@@ -158,8 +163,17 @@ export class MidnightLadderMakeService implements LadderMakeService {
   ): Promise<LadderMakeResult> {
     const failures = []
     const submittedTransactions: LadderSubmittedTransaction[] = []
-    for (const groupId of new Set(await this.transport.listActiveGroupIds())) {
+    const ownedGroups = [
+      ...new Map(
+        (await this.transport.listOwnedGroups()).map(group => [group.groupId, group])
+      ).values()
+    ]
+    for (const { groupId, maxAssets } of ownedGroups) {
       try {
+        if ((await this.transport.readGroupConsumed(groupId)) >= maxAssets) {
+          await this.transport.forgetGroups([groupId])
+          continue
+        }
         const txHash = await this.transport.invalidate(
           groupId,
           this.safeObserver(onTransactionSubmitted)
@@ -167,6 +181,14 @@ export class MidnightLadderMakeService implements LadderMakeService {
         if (txHash) submittedTransactions.push({ operation: 'cancel', txHash })
         await this.transport.forgetGroups([groupId])
       } catch (error) {
+        try {
+          if ((await this.transport.readGroupConsumed(groupId)) >= maxAssets) {
+            await this.transport.forgetGroups([groupId])
+            continue
+          }
+        } catch {
+          // Preserve the original cancellation failure classification.
+        }
         failures.push({ groupId, errorName: operatorErrorName(error) })
       }
     }

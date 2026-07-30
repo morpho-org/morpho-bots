@@ -11,7 +11,6 @@ import {
   type Address,
   type Hex
 } from 'viem'
-import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
 
 import type { BootstrapTransactionSubmittedObserver } from '../../application/bootstrap/position-bootstrap-verbose'
@@ -25,6 +24,7 @@ import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
 import type { BootstrapActiveGroup, BootstrapInventoryReader } from './bootstrap-position.service'
 
 import { createLadderGroupOwnership } from '../ladder/ladder-group-ownership.utils'
+import { createManagedMakerAccount } from '../make/managed-maker-account.utils'
 import { ReadOnlyBootstrapMakeService } from '../make/read-only-bootstrap-make.service'
 import {
   createBlueReferenceReader,
@@ -255,7 +255,7 @@ export const createProductionBootstrapAdapters = (
     }
   }
 
-  const account = privateKeyToAccount(config.identity.privateKey)
+  const account = createManagedMakerAccount(config.identity.privateKey)
   if (!isAddressEqual(account.address, maker)) {
     throw new BootstrapAdapterError('maker-private-key-mismatch')
   }

@@ -27,6 +27,11 @@ const harness = () => {
   const events: string[] = []
   const transport: LadderOfferTransport = {
     readActive: async () => undefined,
+    listOwnedGroups: async () => [
+      { groupId: oldGroup, maxAssets: 10n },
+      { groupId: secondGroup, maxAssets: 10n }
+    ],
+    readGroupConsumed: async () => 0n,
     listActiveGroupIds: async selected => (selected ? [oldGroup] : [oldGroup, secondGroup]),
     listBookOffers: async () => [],
     preparePublication: async () => ({
@@ -141,6 +146,44 @@ describe('MidnightLadderMakeService', () => {
     })
     expect(subject.events).toContain(`forget:${oldGroup}`)
     expect(subject.events).toContain(`forget:${secondGroup}`)
+  })
+
+  test('cleanup forgets filled owned groups without submitting cancellation transactions', async () => {
+    const subject = harness()
+    subject.transport.readGroupConsumed = async groupId => (groupId === secondGroup ? 10n : 0n)
+    subject.transport.invalidate = async groupId => {
+      subject.events.push(`cancel:${groupId}`)
+      return cancellationHash
+    }
+
+    const result = await subject.service.cleanup()
+
+    expect(result).toEqual({
+      submittedTransactions: [{ operation: 'cancel', txHash: cancellationHash }]
+    })
+    expect(subject.events).toEqual([
+      `cancel:${oldGroup}`,
+      `forget:${oldGroup}`,
+      `forget:${secondGroup}`
+    ])
+  })
+
+  test('cleanup accepts a group that fills while its cancellation is attempted', async () => {
+    const subject = harness()
+    let consumedReadCount = 0
+    subject.transport.listOwnedGroups = async () => [{ groupId: oldGroup, maxAssets: 10n }]
+    subject.transport.readGroupConsumed = async () => {
+      consumedReadCount += 1
+      return consumedReadCount === 1 ? 0n : 10n
+    }
+    subject.transport.invalidate = async () => {
+      throw new TypeError('provider detail')
+    }
+
+    const result = await subject.service.cleanup()
+
+    expect(result).toEqual({ submittedTransactions: [] })
+    expect(subject.events).toEqual([`forget:${oldGroup}`])
   })
 
   test('attempts every active group before reporting aggregate hard-halt failure', async () => {

@@ -1,4 +1,4 @@
-import { EcrecoverRatifierUtils, Payload } from '@morpho-org/midnight-sdk'
+import { EcrecoverRatifierUtils, midnightAbi, Payload } from '@morpho-org/midnight-sdk'
 import { morphoViemExtension } from '@morpho-org/morpho-sdk'
 import { getChainAddress } from '@morpho-org/morpho-ts'
 import {
@@ -10,7 +10,6 @@ import {
   publicActions,
   type Hex
 } from 'viem'
-import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
 
 import type {
@@ -32,11 +31,13 @@ import {
   readBootstrapGroups
 } from '../bootstrap/bootstrap-groups.utils'
 import { BlueBootstrapReferenceRateService } from '../bootstrap/bootstrap-reference-rate.service'
+import { createManagedMakerAccount } from '../make/managed-maker-account.utils'
 import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
 import { LadderAdapterError } from './ladder-adapter.error'
 import { createLadderGroupOwnership } from './ladder-group-ownership.utils'
 import { MidnightLadderMakeService, type LadderOfferTransport } from './ladder-make.service'
 import { buildLadderTree } from './ladder-offer.utils'
+import { signLadderTree } from './ladder-signature.utils'
 import {
   assertLadderCancellationTransaction,
   assertLadderPublicationTransaction
@@ -116,6 +117,18 @@ const activeOwnedGroupIds = (
     )
   ]
 }
+
+const ownedGroups = (publications: readonly OwnedLadderPublication[]) =>
+  publications.flatMap(publication =>
+    publication.groups.map(group => {
+      const rungIndexes = new Set(group.rungIndexes)
+      const maxAssets = publication.quote[group.side]
+        .filter(rung => rungIndexes.has(rung.index))
+        .reduce((sum, rung) => sum + rung.assets, 0n)
+      if (maxAssets <= 0n) throw new LadderAdapterError('group-ownership-state')
+      return { groupId: group.groupId, maxAssets }
+    })
+  )
 
 /**
  * Composes live chain, archive reference, Mempool, signing, and ownership ladder adapters.
@@ -277,7 +290,7 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
   }
   if (config.identity.readOnly) return { positions, rates, make: readOnlyMake }
 
-  const account = privateKeyToAccount(config.identity.privateKey)
+  const account = createManagedMakerAccount(config.identity.privateKey)
   if (!isAddressEqual(account.address, maker)) {
     throw new LadderAdapterError('maker-private-key-mismatch')
   }
@@ -292,6 +305,14 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
 
   const transport: LadderOfferTransport = {
     readActive,
+    listOwnedGroups: async () => ownedGroups(await ladderOwnership.read()),
+    readGroupConsumed: groupId =>
+      client.readContract({
+        address: config.setup.midnight,
+        abi: midnightAbi,
+        functionName: 'consumed',
+        args: [maker, groupId]
+      }),
     listActiveGroupIds: async marketId => {
       const [publications, groups] = await Promise.all([ladderOwnership.read(), readGroups()])
       return activeOwnedGroupIds(publications, groups, marketId)
@@ -313,10 +334,10 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
         chainId: base.id,
         apiUrl: `${config.morphoApiBaseUrl}/v0/midnight`
       })
-      const signature = await EcrecoverRatifierUtils.sign({
+      const signature = await signLadderTree({
         tree: prepared.tree,
         client: wallet,
-        account: maker
+        account
       })
       await prepared.tree.mempoolValidate({
         chainId: base.id,

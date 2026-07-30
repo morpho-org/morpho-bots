@@ -71,8 +71,29 @@ describe('buildLadderTree', () => {
     const buyTicks = result.bookOffers.filter(offer => offer.buy).map(offer => offer.tick)
     const sellTicks = result.bookOffers.filter(offer => !offer.buy).map(offer => offer.tick)
     expect(buyTicks.every(buyTick => sellTicks.every(sellTick => buyTick < sellTick))).toBe(true)
+    expect(result.tree.offers.every(offer => offer.start === now)).toBe(true)
     expect(new Set(result.tree.offers.map(offer => offer.group)).size).toBe(4)
     expect(result.groups.map(group => group.rungIndexes)).toEqual([[0], [1], [0], [1]])
+  })
+
+  test('derives fresh group IDs for a later publication of the same quote', () => {
+    const first = buildLadderTree({
+      quote: quote('shared-rung'),
+      market,
+      maker,
+      ratifier,
+      now
+    })
+    const later = buildLadderTree({
+      quote: quote('shared-rung'),
+      market,
+      maker,
+      ratifier,
+      now: now + 1n
+    })
+
+    const firstGroups = new Set(first.groups.map(group => group.groupId))
+    expect(later.groups.every(group => !firstGroups.has(group.groupId))).toBe(true)
   })
 
   test('shares one exact cap across every rung in each per-book side', () => {

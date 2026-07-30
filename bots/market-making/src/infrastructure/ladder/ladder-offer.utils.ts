@@ -46,6 +46,7 @@ const sideOffers = (
     market: parameters.market.params,
     buy,
     maker: parameters.maker,
+    start: parameters.now,
     expiry: parameters.market.params.maturity,
     ratifier: parameters.ratifier,
     tickSpacing: parameters.market.tickSpacing,
@@ -74,8 +75,10 @@ const sideOffers = (
  * @returns Tree, protocol-group-to-rung mapping, and prospective book ticks.
  * @throws `LadderAdapterError` when the market has matured; SDK validation errors pass through.
  * @remarks Midnight prices are inverse to rates, so lower rates map to reduce-only sells and higher
- * rates map to lend buys. This keeps every buy tick strictly below every sell tick. `shared-rung`
- * gives each rung an independent cap; `per-book` shares one cap across each side.
+ * rates map to lend buys. This keeps every buy tick strictly below every sell tick. Each offer uses
+ * the fresh block timestamp as its start so a later publication cannot reuse a previously consumed
+ * content-addressed group. `shared-rung` gives each rung an independent cap; `per-book` shares one
+ * cap across each side.
  */
 export const buildLadderTree = (parameters: BuildLadderTreeParameters): PreparedLadderTree => {
   const lower = sideOffers('lower', parameters.quote.lower, parameters)
