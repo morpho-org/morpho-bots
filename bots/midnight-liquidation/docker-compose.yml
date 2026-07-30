@@ -17,6 +17,7 @@ services:
       ZEROX_API_KEY: ${ZEROX_API_KEY:-}
       ONEINCH_API_KEY: ${ONEINCH_API_KEY:-}
       ALLOW_BAD_DEBT_ONLY: ${ALLOW_BAD_DEBT_ONLY:-}
+      PRIORITY_FEE_GWEI: ${PRIORITY_FEE_GWEI:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       # Optional BetterStack log shipping (in-process loglayer transport). Empty = disabled; the bot
       # ships its structured logs only when BOTH are set (host also required), else behaves as before.
