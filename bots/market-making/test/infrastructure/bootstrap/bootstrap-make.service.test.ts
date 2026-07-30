@@ -150,6 +150,7 @@ describe('MidnightBootstrapMakeService', () => {
   })
 
   test('returns confirmed cancellation hashes from graceful cleanup', async () => {
+    const forgotten: Hex[] = []
     const service = new MidnightBootstrapMakeService({
       listActiveGroups: async () => [],
       listOwnedGroupIds: async () => [groupId],
@@ -159,12 +160,16 @@ describe('MidnightBootstrapMakeService', () => {
       reserveGroup: async () => {},
       confirmPublishedGroup: async () => {},
       releaseGroupReservation: async () => {},
+      forgetGroups: async (groupIds: readonly Hex[]) => {
+        forgotten.push(...groupIds)
+      },
       invalidate: async () => cancellationHash
     })
 
     expect(await service.cleanup()).toEqual({
       submittedTransactions: [{ operation: 'cancel', txHash: cancellationHash }]
     })
+    expect(forgotten).toEqual([groupId])
   })
 
   test('persists a published group for ownership after a process restart', async () => {
@@ -183,6 +188,9 @@ describe('MidnightBootstrapMakeService', () => {
         owned.add(id)
       },
       releaseGroupReservation: async () => {},
+      forgetGroups: async (groupIds: readonly Hex[]) => {
+        for (const id of groupIds) owned.delete(id)
+      },
       invalidate: async (id: Hex) => {
         invalidated.push(id)
       }
@@ -198,7 +206,7 @@ describe('MidnightBootstrapMakeService', () => {
       reason: 'target-reached'
     })
 
-    expect([...owned]).toEqual([publishedGroupId])
+    expect([...owned]).toEqual([])
     expect(invalidated).toEqual([publishedGroupId])
   })
 

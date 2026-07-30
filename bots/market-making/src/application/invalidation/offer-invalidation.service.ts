@@ -31,7 +31,7 @@ export type OfferInvalidationFailureReport = {
   matchedGroups: number
   invalidatedGroups: readonly InvalidatedOfferGroup[]
   failures: readonly {
-    stage: 'preflight' | 'selection' | 'invalidation'
+    stage: 'preflight' | 'selection' | 'invalidation' | 'ownership-cleanup'
     groupId?: Hex
     errorName: string
     txHash?: Hex
@@ -122,9 +122,10 @@ export class OfferInvalidationService {
 
     for (const groupId of selectedGroupIds) {
       let submittedTxHash: Hex | undefined
+      let txHash: Hex | void
 
       try {
-        const txHash = await this.port.invalidate(groupId, async hash => {
+        txHash = await this.port.invalidate(groupId, async hash => {
           submittedTxHash = hash
           try {
             await parameters.onTransactionSubmitted?.({
@@ -136,17 +137,28 @@ export class OfferInvalidationService {
             // Diagnostic output cannot interrupt receipt handling after submission.
           }
         })
-        await this.port.forgetGroups([groupId])
-        invalidatedGroups.push({
-          groupId,
-          ...(txHash ? { txHash } : {})
-        })
       } catch (error) {
         failures.push({
           stage: 'invalidation',
           groupId,
           errorName: operatorErrorName(error),
           ...(submittedTxHash ? { txHash: submittedTxHash } : {})
+        })
+        continue
+      }
+
+      invalidatedGroups.push({
+        groupId,
+        ...(txHash ? { txHash } : {})
+      })
+      try {
+        await this.port.forgetGroups([groupId])
+      } catch (error) {
+        failures.push({
+          stage: 'ownership-cleanup',
+          groupId,
+          errorName: operatorErrorName(error),
+          ...(txHash ? { txHash } : {})
         })
       }
     }

@@ -139,6 +139,34 @@ describe('OfferInvalidationService', () => {
     })
   })
 
+  test('retains a confirmed invalidation when ownership cleanup fails', async () => {
+    const { service } = subject({
+      listActiveGroupIds: async () => [groupA],
+      forgetGroups: async () => {
+        throw new OfferInvalidationAdapterError('ownership-cleanup')
+      }
+    })
+
+    const error = await service.run().catch(value => value)
+
+    expect(error).toBeInstanceOf(OfferInvalidationFailedError)
+    expect(error).toMatchObject({
+      report: {
+        status: 'failed',
+        matchedGroups: 1,
+        invalidatedGroups: [{ groupId: groupA, txHash: txA }],
+        failures: [
+          {
+            stage: 'ownership-cleanup',
+            groupId: groupA,
+            errorName: 'OfferInvalidationAdapterError',
+            txHash: txA
+          }
+        ]
+      }
+    })
+  })
+
   test('reports preflight failure without enumerating or invalidating groups', async () => {
     const listActiveGroupIds = mock(async () => [groupA])
     const invalidate = mock(async () => txA)

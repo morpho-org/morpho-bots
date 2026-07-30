@@ -356,6 +356,7 @@ const sourceFiles = [
   'infrastructure/ladder/ladder-hard-halt.error.ts',
   'infrastructure/ladder/ladder-make.service.ts',
   'infrastructure/ladder/ladder-offer.utils.ts',
+  'infrastructure/ladder/ladder-signature.utils.ts',
   'infrastructure/ladder/ladder-spread.utils.ts',
   'infrastructure/ladder/ladder-transaction.utils.ts',
   'infrastructure/ladder/production-ladder.ts',

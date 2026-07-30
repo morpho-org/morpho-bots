@@ -37,6 +37,8 @@ interface BootstrapOfferTransport {
   confirmPublishedGroup(group: Hex): Promise<void>
   /** Removes intent after publication fails. @param group - Unpublished group ID. @returns Completion after durable storage. */
   releaseGroupReservation(group: Hex): Promise<void>
+  /** Removes confirmed canceled groups from durable ownership. @param groups - Canceled group IDs. @returns Completion after durable storage; configured IDs remain configuration-owned. */
+  forgetGroups?(groups: readonly Hex[]): Promise<void>
   /** Invalidates one active group onchain. @param group - Active group ID. @returns Completion after receipt confirmation. */
   invalidate(
     group: Hex,
@@ -95,6 +97,7 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
             this.safeObserver(parameters.onTransactionSubmitted)
           )
           if (txHash) submittedTransactions.push({ operation: 'cancel', txHash })
+          await this.transport.forgetGroups?.([groupId])
         }
       } catch (error) {
         if (publication) {
@@ -185,6 +188,7 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
           this.safeObserver(onTransactionSubmitted)
         )
         if (txHash) submittedTransactions.push({ operation: 'cancel', txHash })
+        await this.transport.forgetGroups?.([groupId])
       } catch (error) {
         failures.push({ groupId, errorName: operatorErrorName(error) })
       }

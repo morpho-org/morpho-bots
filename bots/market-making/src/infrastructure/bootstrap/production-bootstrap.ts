@@ -358,6 +358,7 @@ export const createProductionBootstrapAdapters = (
     reserveGroup: ownership.reserve,
     confirmPublishedGroup: ownership.confirm,
     releaseGroupReservation: ownership.release,
+    forgetGroups: ownership.forget,
     preparePublication: async (offer: BootstrapOffer) => {
       const created = preparedOffers.get(offer.marketId)
       preparedOffers.delete(offer.marketId)

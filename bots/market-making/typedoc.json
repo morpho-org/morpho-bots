@@ -60,6 +60,7 @@
     "src/infrastructure/ladder/ladder-hard-halt.error.ts",
     "src/infrastructure/ladder/ladder-make.service.ts",
     "src/infrastructure/ladder/ladder-offer.utils.ts",
+    "src/infrastructure/ladder/ladder-signature.utils.ts",
     "src/infrastructure/ladder/ladder-spread.utils.ts",
     "src/infrastructure/ladder/ladder-transaction.utils.ts",
     "src/infrastructure/ladder/production-ladder.ts",
