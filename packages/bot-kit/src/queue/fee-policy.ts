@@ -45,9 +45,8 @@ export function bumpFees({
  * check, which latches a nonce hole and blocks every later send, so config should reject it up
  * front. Ignores the base-fee component, which is only known at send time. Pure.
  */
-export function hasBumpHeadroom(priorityFeeWei: bigint, maxFeeWei: bigint): boolean {
-  return bumped(priorityFeeWei) <= maxFeeWei
-}
+export const hasBumpHeadroom = (priorityFeeWei: bigint, maxFeeWei: bigint): boolean =>
+  bumped(priorityFeeWei) <= maxFeeWei
 
 /** First-send tip floor for callers that pass no explicit tip: 1 gwei priority. */
 const DEFAULT_PRIORITY_WEI = 10n ** 9n
