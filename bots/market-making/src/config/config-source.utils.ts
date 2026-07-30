@@ -68,7 +68,8 @@ const environmentKeys = [
   'MORPHO_API_BASE_URL',
   'ROUTER_API_BASE_URL',
   'V0_OFFER_GROUP_IDS',
-  'REQUEST_TIMEOUT_MS'
+  'REQUEST_TIMEOUT_MS',
+  'TRANSACTION_RECEIPT_TIMEOUT_MS'
 ] as const
 
 const yamlKeys = {
@@ -78,7 +79,12 @@ const yamlKeys = {
   contracts: ['midnightAddress', 'loanAssetAddress', 'ratifierAddress'],
   apis: ['morphoBaseUrl', 'routerBaseUrl'],
   markets: ['allowlist', 'referenceMarketId', 'v0OfferGroupIds'],
-  setup: ['nativeReserveWei', 'maximumLendExposureAssets', 'requestTimeoutMs'],
+  setup: [
+    'nativeReserveWei',
+    'maximumLendExposureAssets',
+    'requestTimeoutMs',
+    'transactionReceiptTimeoutMs'
+  ],
   bootstrap: [
     'marketId',
     'creditTarget',
@@ -145,7 +151,8 @@ const yamlIntegerEnvironmentKeys = new Set([
   'CHAIN_ID',
   'NATIVE_RESERVE_WEI',
   'MAXIMUM_LEND_EXPOSURE_ASSETS',
-  'REQUEST_TIMEOUT_MS'
+  'REQUEST_TIMEOUT_MS',
+  'TRANSACTION_RECEIPT_TIMEOUT_MS'
 ])
 
 const scalar = (value: unknown, field: string) => {
@@ -221,7 +228,8 @@ const yamlSource = (input: unknown, readOnly: boolean): ConfigurationSource => {
   mapGroup('setup', {
     nativeReserveWei: 'NATIVE_RESERVE_WEI',
     maximumLendExposureAssets: 'MAXIMUM_LEND_EXPOSURE_ASSETS',
-    requestTimeoutMs: 'REQUEST_TIMEOUT_MS'
+    requestTimeoutMs: 'REQUEST_TIMEOUT_MS',
+    transactionReceiptTimeoutMs: 'TRANSACTION_RECEIPT_TIMEOUT_MS'
   })
 
   if (root.markets !== undefined) {
@@ -330,7 +338,8 @@ const yamlEnvironmentPaths: Partial<
   MORPHO_API_BASE_URL: ['apis', 'morphoBaseUrl'],
   ROUTER_API_BASE_URL: ['apis', 'routerBaseUrl'],
   V0_OFFER_GROUP_IDS: ['markets', 'v0OfferGroupIds'],
-  REQUEST_TIMEOUT_MS: ['setup', 'requestTimeoutMs']
+  REQUEST_TIMEOUT_MS: ['setup', 'requestTimeoutMs'],
+  TRANSACTION_RECEIPT_TIMEOUT_MS: ['setup', 'transactionReceiptTimeoutMs']
 }
 
 const removeOverriddenYamlValues = (input: unknown, environment: Environment) => {

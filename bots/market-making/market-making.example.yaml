@@ -31,6 +31,7 @@ setup:
   nativeReserveWei: '10000000000000000'
   maximumLendExposureAssets: '10000000000'
   requestTimeoutMs: 10000
+  transactionReceiptTimeoutMs: 180000
 
 # Integer values use decimal notation only: no floats, exponents, plus signs, or internal whitespace.
 # Asset/credit/exposure amounts are exact raw loan-asset units. Rates are integer BPS.

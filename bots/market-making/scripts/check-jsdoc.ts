@@ -5,6 +5,7 @@ import { JSDocValidationError } from './js-doc-validation.error'
 
 type Rule = 'summary' | 'params' | 'returns' | 'throws' | 'concurrency' | 'deadline' | 'read-only'
 
+/** One safe, deterministic documentation-contract violation. */
 export type JSDocFailure = {
   file: string
   line: number
@@ -13,6 +14,7 @@ export type JSDocFailure = {
   message: string
 }
 
+/** Complete public-declaration inventory and validation result for one TypeScript source. */
 export type JSDocInspection = {
   declarations: string[]
   failures: JSDocFailure[]
@@ -219,6 +221,13 @@ const inspectCallable = (
   }
 }
 
+/**
+ * Inventories exported callables and validates their substantive JSDoc contract.
+ * @param file - Package-relative TypeScript filename used in safe diagnostics.
+ * @param source - Complete TypeScript source text to parse without executing it.
+ * @returns Every inspected declaration and every deterministic documentation-rule failure.
+ * @remarks The inspection is read-only: it parses in memory and performs no filesystem writes.
+ */
 export const inspectJSDocSource = (file: string, source: string): JSDocInspection => {
   const sourceFile = ts.createSourceFile(
     file,
@@ -364,6 +373,7 @@ const sourceFiles = [
   'infrastructure/setup-state/viem-setup-state.utils.ts'
 ].map(path => resolve(sourceRoot, path))
 sourceFiles.push(resolve(packageRoot, 'scripts/js-doc-validation.error.ts'))
+sourceFiles.push(resolve(packageRoot, 'scripts/check-jsdoc.ts'))
 
 const run = async () => {
   const failures: JSDocFailure[] = []

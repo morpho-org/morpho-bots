@@ -12,6 +12,7 @@ const WEIGHT_SCALE_BPS = 10_000n
  * comfortably below Midnight SDK 1.2.0's height-20 tree limit while bounding local allocation.
  */
 const MAX_LADDER_RUNG_COUNT = 512
+const MAX_MONITOR_INTERVAL_SECONDS = 2_147_483
 
 /** Static shape, inventory and offer floors, cadence, and hard rate range for one ladder market. */
 export type LadderConfig = {
@@ -184,6 +185,12 @@ export const validateLadderConfig = (config: LadderConfig): void => {
     throw new LadderConfigurationError('groupMode', 'must be shared-rung or per-book')
   }
   safePositive(config.loopIntervalSeconds, 'loopIntervalSeconds')
+  if (config.loopIntervalSeconds > MAX_MONITOR_INTERVAL_SECONDS) {
+    throw new LadderConfigurationError(
+      'loopIntervalSeconds',
+      `must not exceed ${MAX_MONITOR_INTERVAL_SECONDS}`
+    )
+  }
   nonnegative(config.movementToleranceBps, 'movementToleranceBps')
   nonnegative(config.minimumRateBps, 'minimumRateBps')
   positive(config.maximumRateBps, 'maximumRateBps')

@@ -126,7 +126,7 @@ export const createProductionOfferInvalidationPort = (
         }
         const receipt = await wallet.waitForTransactionReceipt({
           hash: txHash,
-          timeout: config.requestTimeoutMs
+          timeout: config.transactionReceiptTimeoutMs
         })
         if (receipt.status !== 'success') {
           throw new OfferInvalidationAdapterError('transaction-reverted')

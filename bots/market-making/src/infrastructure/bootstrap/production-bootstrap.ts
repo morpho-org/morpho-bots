@@ -148,6 +148,54 @@ export const createProductionBootstrapAdapters = (
       })
   }
 
+  const readGroupInventory = async () => {
+    const [block, groups, ownedIds, ownedOffers, ladderGroupIds] = await Promise.all([
+      client.getBlock({ blockTag: 'latest' }),
+      readGroups(),
+      ownership.read(),
+      ownership.readOffers(),
+      ladderOwnership.readGroupIds()
+    ])
+    const intended = new Map(
+      ownedOffers.map(offer => [`${offer.groupId}:${offer.marketId}`, offer] as const)
+    )
+    const project = (
+      selectedGroups: ReturnType<typeof strategyBootstrapGroups>,
+      includeIntent: boolean
+    ): BootstrapActiveGroup[] =>
+      selectedGroups
+        .filter(
+          group =>
+            group.marketId !== undefined &&
+            group.tick !== undefined &&
+            group.maturity !== undefined &&
+            group.maxAssets > group.consumed
+        )
+        .map(group => {
+          const persisted = includeIntent
+            ? intended.get(`${group.id}:${group.marketId as Hex}`)
+            : undefined
+          return {
+            id: group.id,
+            marketId: group.marketId as Hex,
+            assets: group.maxAssets - group.consumed,
+            rateBps:
+              persisted?.rateBps ??
+              TickLib.tickToApr(
+                group.tick as bigint,
+                (group.maturity as bigint) - block.timestamp
+              ) /
+                (WAD / 10_000n),
+            ...(persisted ? { referenceObservationId: persisted.referenceObservationId } : {})
+          }
+        })
+
+    return {
+      activeGroups: project(strategyBootstrapGroups(groups, ownedIds), true),
+      cashReservations: project(strategyBootstrapGroups(groups, ladderGroupIds), false)
+    }
+  }
+
   const ownedGroupIds = () => ownership.read()
 
   const inventory: BootstrapInventoryReader = {
@@ -173,7 +221,7 @@ export const createProductionBootstrapAdapters = (
         functionName: 'balanceOf',
         args: [maker]
       }),
-    readActiveGroups: activeGroups
+    readGroupInventory
   }
 
   const positions = new MidnightBootstrapPositionService(inventory, maker)
@@ -278,7 +326,7 @@ export const createProductionBootstrapAdapters = (
     await onTransactionSubmitted?.({ operation, txHash: hash })
     const receipt = await wallet.waitForTransactionReceipt({
       hash,
-      timeout: config.requestTimeoutMs
+      timeout: config.transactionReceiptTimeoutMs
     })
     if (receipt.status !== 'success') throw new BootstrapAdapterError('transaction-reverted')
     return hash

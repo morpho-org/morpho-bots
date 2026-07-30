@@ -17,14 +17,20 @@ export type BootstrapActiveGroup = {
   referenceObservationId?: string
 }
 
+/** Active bootstrap offers plus other owned buy groups that reserve the same loan-token inventory. */
+export type BootstrapGroupInventory = {
+  activeGroups: readonly BootstrapActiveGroup[]
+  cashReservations: readonly BootstrapActiveGroup[]
+}
+
 /** Read boundary used by the position adapter to combine chain and Mempool truth. */
 export interface BootstrapInventoryReader {
   /** Reads all configured accrued Midnight positions. @returns Current accrued position snapshots. */
   readPositions(): Promise<readonly MidnightPositionSnapshot[]>
   /** Reads the maker's current loan-token wallet balance. @returns Current raw token balance. */
   readCashBalance(): Promise<bigint>
-  /** Reads active strategy-owned bootstrap groups. @returns Current active group projections. */
-  readActiveGroups(): Promise<readonly BootstrapActiveGroup[]>
+  /** Reads bootstrap offers and independently owned buy-side reservations in one snapshot. @returns Current grouped inventory without treating reservations as replaceable bootstrap offers. */
+  readGroupInventory(): Promise<BootstrapGroupInventory>
 }
 
 /** Concrete position adapter deriving exposure from accrued credit and active lend reserves. */
@@ -45,13 +51,14 @@ export class MidnightBootstrapPositionService implements BootstrapPositionServic
    */
   async readPosition(marketId: Hex) {
     void this.maker
-    const [positions, cashBalance, groups] = await Promise.all([
+    const [positions, cashBalance, groupInventory] = await Promise.all([
       this.reader.readPositions(),
       this.reader.readCashBalance(),
-      this.reader.readActiveGroups()
+      this.reader.readGroupInventory()
     ])
     const position = positions.find(item => item.marketId === marketId)
     if (!position) throw new BootstrapAdapterError('position-unavailable')
+    const groups = groupInventory.activeGroups
     const uniqueGroups = [...new Map(groups.map(group => [group.id, group])).values()]
     const marketGroups = [
       ...new Map(
@@ -59,14 +66,30 @@ export class MidnightBootstrapPositionService implements BootstrapPositionServic
       ).values()
     ]
     const activeGroup = marketGroups[0]
-    const replacementGroups = activeGroup
+    const remainingBootstrapGroups = activeGroup
       ? uniqueGroups.filter(group => group.id !== activeGroup.id)
       : uniqueGroups
+    const bootstrapGroupIds = new Set(uniqueGroups.map(group => group.id))
+    const cashReservations = groupInventory.cashReservations.filter(
+      group => !bootstrapGroupIds.has(group.id)
+    )
+    const uniqueCashReservations = [
+      ...new Map(cashReservations.map(group => [group.id, group])).values()
+    ]
+    const replacementGroups = [...remainingBootstrapGroups, ...uniqueCashReservations]
+    const marketReplacementGroups = [
+      ...new Map(
+        [...remainingBootstrapGroups, ...cashReservations]
+          .filter(group => group.marketId === marketId)
+          .map(group => [group.id, group])
+      ).values()
+    ]
     const reservedCash = replacementGroups.reduce((total, group) => total + group.assets, 0n)
     const availableCash = cashBalance > reservedCash ? cashBalance - reservedCash : 0n
-    const reservedByMarket = replacementGroups
-      .filter(group => group.marketId === marketId)
-      .reduce((total, group) => total + group.assets, 0n)
+    const reservedByMarket = marketReplacementGroups.reduce(
+      (total, group) => total + group.assets,
+      0n
+    )
     const totalExposure =
       positions.reduce((total, item) => total + item.credit, 0n) +
       replacementGroups.reduce((total, group) => total + group.assets, 0n)

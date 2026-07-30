@@ -213,6 +213,12 @@ describe('ladder domain', () => {
     ).toThrow('rungCount must not exceed 512')
   })
 
+  test('rejects monitor intervals above the runtime timer limit', () => {
+    expect(() => validateLadderConfig(config({ loopIntervalSeconds: 2_147_484 }))).toThrow(
+      'loopIntervalSeconds must not exceed 2147483'
+    )
+  })
+
   test('recenters only when absolute movement is strictly greater than tolerance', () => {
     expect(shouldRecenter(500n, 510n, 10n)).toBe(false)
     expect(shouldRecenter(500n, 490n, 10n)).toBe(false)

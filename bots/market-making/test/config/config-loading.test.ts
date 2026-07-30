@@ -99,6 +99,7 @@ setup:
   nativeReserveWei: "10"
   maximumLendExposureAssets: "100"
   requestTimeoutMs: 10000
+  transactionReceiptTimeoutMs: 180000
 bootstrap:
   - marketId: "${marketId}"
     creditTarget: "10000000000000000001"
@@ -125,6 +126,7 @@ describe('ConfigService YAML and environment loading', () => {
     const config = await ConfigService.load({}, { configPath: path, cwd: directory })
 
     expect(config.rpcUrl).toBe('https://rpc.yaml.example')
+    expect(config.transactionReceiptTimeoutMs).toBe(180_000)
     expect(config.setup.marketIds).toEqual([marketId])
     expect(config.bootstrap).toEqual([
       {
@@ -208,7 +210,13 @@ describe('ConfigService YAML and environment loading', () => {
   test.each([
     ['CHAIN_ID', 'chain:\n  id: 8.453e3', 'chainId', 8453],
     ['NATIVE_RESERVE_WEI', 'setup:\n  nativeReserveWei: 1.5', 'nativeReserve', 42n],
-    ['REQUEST_TIMEOUT_MS', 'setup:\n  requestTimeoutMs: 1e4', 'requestTimeoutMs', 1234]
+    ['REQUEST_TIMEOUT_MS', 'setup:\n  requestTimeoutMs: 1e4', 'requestTimeoutMs', 1234],
+    [
+      'TRANSACTION_RECEIPT_TIMEOUT_MS',
+      'setup:\n  transactionReceiptTimeoutMs: 1e4',
+      'transactionReceiptTimeoutMs',
+      1234
+    ]
   ])(
     'valid %s overrides an invalid YAML scalar before semantic validation',
     async (key, contents, property, expected) => {
@@ -226,7 +234,9 @@ describe('ConfigService YAML and environment loading', () => {
           ? config.setup.chainId
           : property === 'nativeReserve'
             ? config.setup.nativeReserve
-            : config.requestTimeoutMs
+            : property === 'requestTimeoutMs'
+              ? config.requestTimeoutMs
+              : config.transactionReceiptTimeoutMs
       expect(actual).toBe(expected)
     }
   )
@@ -638,16 +648,22 @@ describe('ConfigService YAML and environment loading', () => {
     ['requestTimeoutMs', '1e4'],
     ['requestTimeoutMs', '1E+4'],
     ['requestTimeoutMs', '+10000'],
-    ['requestTimeoutMs', "' 10000 '"]
+    ['requestTimeoutMs', "' 10000 '"],
+    ['transactionReceiptTimeoutMs', '180000.0'],
+    ['transactionReceiptTimeoutMs', '1.8e5'],
+    ['transactionReceiptTimeoutMs', '+180000'],
+    ['transactionReceiptTimeoutMs', "' 180000 '"]
   ])('rejects non-decimal YAML integer syntax for %s: %s', async (field, spelling) => {
     const directory = await temporaryDirectory()
     const path = join(directory, 'operator.yaml')
     const original =
       field === 'requestTimeoutMs'
         ? '10000'
-        : field === 'premiumBps'
-          ? '-50'
-          : '"10000000000000000001"'
+        : field === 'transactionReceiptTimeoutMs'
+          ? '180000'
+          : field === 'premiumBps'
+            ? '-50'
+            : '"10000000000000000001"'
     await writeFile(path, yaml().replace(`${field}: ${original}`, `${field}: ${spelling}`))
 
     await expect(ConfigService.load({}, { configPath: path })).rejects.toThrow()

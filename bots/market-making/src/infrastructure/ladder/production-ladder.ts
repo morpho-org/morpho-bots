@@ -368,7 +368,7 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
           await notifySubmitted(onTransactionSubmitted, 'publish', hash)
           const receipt = await wallet.waitForTransactionReceipt({
             hash,
-            timeout: config.requestTimeoutMs
+            timeout: config.transactionReceiptTimeoutMs
           })
           if (receipt.status !== 'success') {
             throw new LadderAdapterError('transaction-reverted')
@@ -391,7 +391,7 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
       await notifySubmitted(onTransactionSubmitted, 'cancel', hash)
       const receipt = await wallet.waitForTransactionReceipt({
         hash,
-        timeout: config.requestTimeoutMs
+        timeout: config.transactionReceiptTimeoutMs
       })
       if (receipt.status !== 'success') throw new LadderAdapterError('transaction-reverted')
       return hash
