@@ -56,6 +56,7 @@ describe('fork: end-to-end liquidation against a real Base position', () => {
     midnight: Address
     executooorAddress: Address
     maxFeeWei: bigint
+    priorityFeeWei: bigint
   }
 
   beforeAll(async () => {
@@ -78,7 +79,8 @@ describe('fork: end-to-end liquidation against a real Base position', () => {
       privateKey: LIQUIDATOR_KEY,
       midnight: MIDNIGHT,
       executooorAddress: executooor,
-      maxFeeWei: parseGwei('300')
+      maxFeeWei: parseGwei('300'),
+      priorityFeeWei: parseGwei('0.1')
     }
     // The seed's archive reads through the fork RPC take ~120s end-to-end, so a 120s budget had
     // zero headroom — ordinary provider latency variance made this hook time out intermittently.
@@ -172,7 +174,7 @@ describe('fork: end-to-end liquidation against a real Base position', () => {
     })
 
     const signer = createSigner(cfg)
-    const fees = initialFees(await signer.getBaseFee(), cfg.maxFeeWei)
+    const fees = initialFees(await signer.getBaseFee(), cfg.maxFeeWei, cfg.priorityFeeWei)
     const { txHash } = await signer.send({
       to: executooor,
       data,

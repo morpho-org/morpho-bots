@@ -47,6 +47,7 @@ describe('loadConfig', () => {
     )
     expect(config.discovery.healthFactorLte).toBe(1.02)
     expect(config.maxFeeWei).toBe(parseGwei('300'))
+    expect(config.priorityFeeWei).toBe(parseGwei('0.1'))
     expect(config.logLevel).toBe('info')
 
     // Venue enablement is inferred from the present API key; global routing knobs take their defaults.
@@ -76,6 +77,7 @@ describe('loadConfig', () => {
       baseEnv({
         RPC_URL_FALLBACK: 'https://rpc.fallback',
         MAX_FEE_GWEI: '42',
+        PRIORITY_FEE_GWEI: '0.005',
         LOG_LEVEL: 'debug'
       }),
       deps
@@ -83,6 +85,7 @@ describe('loadConfig', () => {
 
     expect(config.rpcUrlFallback).toBe('https://rpc.fallback')
     expect(config.maxFeeWei).toBe(parseGwei('42'))
+    expect(config.priorityFeeWei).toBe(parseGwei('0.005'))
     expect(config.logLevel).toBe('debug')
   })
 
@@ -152,6 +155,32 @@ describe('loadConfig', () => {
   it('throws on a non-numeric MAX_FEE_GWEI', () => {
     expect(() => loadConfig(baseEnv({ MAX_FEE_GWEI: 'abc' }), deps)).toThrow(
       /MAX_FEE_GWEI must be a positive number/
+    )
+  })
+
+  it('throws on a non-numeric or zero PRIORITY_FEE_GWEI', () => {
+    expect(() => loadConfig(baseEnv({ PRIORITY_FEE_GWEI: 'abc' }), deps)).toThrow(
+      /PRIORITY_FEE_GWEI must be a positive number/
+    )
+    expect(() => loadConfig(baseEnv({ PRIORITY_FEE_GWEI: '0' }), deps)).toThrow(
+      /PRIORITY_FEE_GWEI must be a positive number/
+    )
+  })
+
+  // A valid decimal under 1 wei: parseGwei rounds it to 0, which would send an untipped tx.
+  it('throws on a PRIORITY_FEE_GWEI that rounds to zero wei', () => {
+    expect(() => loadConfig(baseEnv({ PRIORITY_FEE_GWEI: '0.0000000001' }), deps)).toThrow(
+      /PRIORITY_FEE_GWEI must be at least 1 wei/
+    )
+  })
+
+  // Within one bump of the ceiling, the first replacement exceeds it and drops, wedging the nonce.
+  it('throws when PRIORITY_FEE_GWEI leaves no bump headroom under MAX_FEE_GWEI', () => {
+    expect(() => loadConfig(baseEnv({ MAX_FEE_GWEI: '1', PRIORITY_FEE_GWEI: '2' }), deps)).toThrow(
+      /PRIORITY_FEE_GWEI \(2\) leaves no room to bump under MAX_FEE_GWEI \(1\)/
+    )
+    expect(() => loadConfig(baseEnv({ MAX_FEE_GWEI: '1', PRIORITY_FEE_GWEI: '1' }), deps)).toThrow(
+      /PRIORITY_FEE_GWEI \(1\) leaves no room to bump under MAX_FEE_GWEI \(1\)/
     )
   })
 

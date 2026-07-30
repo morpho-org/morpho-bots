@@ -317,7 +317,7 @@ async function main() {
           data: encodeExec(market, borrower, plan, swapPlan)
         }),
       submit: async ({ market, borrower, plan, swapPlan, blockNumber, label }) => {
-        const fees = initialFees(await signer.getBaseFee(), config.maxFeeWei)
+        const fees = initialFees(await signer.getBaseFee(), config.maxFeeWei, config.priorityFeeWei)
         await queue.submit({
           request: {
             to: config.executooorAddress,
