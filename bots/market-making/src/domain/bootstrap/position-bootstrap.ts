@@ -46,6 +46,7 @@ type PositionBootstrapParameters = {
   position: BootstrapPosition
   rate: BootstrapRate
   activeOffer?: BootstrapOffer
+  requiresReconciliation?: boolean
   initialTargetCompleted: boolean
 }
 
@@ -73,11 +74,8 @@ export type PositionBootstrapDecision =
 const minimum = (values: readonly bigint[]) =>
   values.reduce((smallest, value) => (value < smallest ? value : smallest))
 
-const sameOffer = (left: BootstrapOffer, right: BootstrapOffer, mode: BootstrapRate['mode']) =>
-  left.marketId === right.marketId &&
-  left.assets === right.assets &&
-  left.rateBps === right.rateBps &&
-  (mode === 'static' || left.referenceObservationId === right.referenceObservationId)
+const sameOffer = (left: BootstrapOffer, right: BootstrapOffer) =>
+  left.marketId === right.marketId && left.assets === right.assets && left.rateBps === right.rateBps
 
 /**
  * Validates the static bounds required by a market bootstrap strategy.
@@ -188,6 +186,7 @@ export const decidePositionBootstrap = ({
   position,
   rate,
   activeOffer,
+  requiresReconciliation = false,
   initialTargetCompleted
 }: PositionBootstrapParameters): PositionBootstrapDecision => {
   const transition = decidePositionBootstrapTransition({
@@ -232,7 +231,14 @@ export const decidePositionBootstrap = ({
     referenceObservationId: rate.observationId
   }
 
-  if (activeOffer && sameOffer(activeOffer, offer, rate.mode)) {
+  const observationMatches =
+    rate.mode === 'static' || activeOffer?.referenceObservationId === offer.referenceObservationId
+  if (
+    activeOffer &&
+    !requiresReconciliation &&
+    observationMatches &&
+    sameOffer(activeOffer, offer)
+  ) {
     return { kind: 'rest' as const, offer: activeOffer }
   }
   if (activeOffer) return { kind: 'replace' as const, activeOffer, offer }

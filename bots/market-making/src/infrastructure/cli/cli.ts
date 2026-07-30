@@ -3,11 +3,20 @@ import { Command, CommanderError } from 'commander'
 import type { SetupCheckReport } from '../../application/setup/setup-check.service'
 import type { VersionService } from '../../application/version.service'
 
+import { PositionBootstrapHaltedError } from '../../application/bootstrap/position-bootstrap-halted.error'
+import { LadderCycleHaltedError } from '../../application/ladder/ladder-cycle-halted.error'
 import { CliUsageError } from './cli-usage.error'
-import { formatSetupCheckReport } from './cli.utils'
 
 interface SetupReadinessService {
   assertReady(): Promise<SetupCheckReport>
+}
+
+interface PositionBootstrapService {
+  runOnce(): Promise<unknown>
+}
+
+interface LadderMarketMakerService {
+  runOnce(): Promise<unknown>
 }
 
 /** CLI-selected runtime and configuration-file options. */
@@ -16,12 +25,16 @@ type CliConfigurationOptions = { configPath?: string; readOnly: boolean }
 /** Infrastructure adapter: wires the `mm` CLI (commander) to application services. */
 export class Cli {
   private readonly program: Command
-  private output: string | undefined
+  private output: unknown
+  private hasOutput = false
 
   /**
-   * Configures the version, address-only mode, and setup-check command.
+   * Configures the version, address-only mode, setup-check, bootstrap, and ladder commands.
    * @param version - Application version provider.
    * @param setup - Lazy readiness-service factory, invoked only for `setup-check`.
+   * @param bootstrap - Lazy position-bootstrap factory, invoked only for `bootstrap`.
+   * @param ladder - Optional lazy ladder factory; omit it to keep `ladder` hidden until runtime
+   * adapters are composed.
    * @remarks Construction performs no provider calls and does not start writer workflows. The
    * `--readonly` option is a positive Boolean flag and defaults to write-enabled configuration.
    */
@@ -29,7 +42,13 @@ export class Cli {
     version: VersionService,
     setup: (
       options: CliConfigurationOptions
-    ) => SetupReadinessService | Promise<SetupReadinessService>
+    ) => SetupReadinessService | Promise<SetupReadinessService>,
+    bootstrap: (
+      options: CliConfigurationOptions
+    ) => PositionBootstrapService | Promise<PositionBootstrapService>,
+    ladder?: (
+      options: CliConfigurationOptions
+    ) => LadderMarketMakerService | Promise<LadderMarketMakerService>
   ) {
     this.program = new Command()
       .name('mm')
@@ -49,23 +68,76 @@ export class Cli {
           configPath: options.config,
           readOnly: options.readonly === true
         })
-        this.output = formatSetupCheckReport(await setupService.assertReady())
+        this.output = await setupService.assertReady()
+        this.hasOutput = true
       })
+
+    this.program
+      .command('bootstrap')
+      .description('run one explicit market-maker position-bootstrap cycle')
+      .action(async () => {
+        const options = this.program.opts<{ config?: string; readonly?: boolean }>()
+        const bootstrapService = await bootstrap({
+          configPath: options.config,
+          readOnly: options.readonly === true
+        })
+        const result = await bootstrapService.runOnce()
+        if (
+          Array.isArray(result) &&
+          result.some(item =>
+            typeof item === 'object' && item !== null && 'status' in item
+              ? item.status === 'halted' || item.status === 'failed'
+              : false
+          )
+        ) {
+          throw new PositionBootstrapHaltedError(result)
+        }
+        this.output = result
+        this.hasOutput = true
+      })
+
+    if (ladder) {
+      this.program
+        .command('ladder')
+        .description('run one explicit market-maker ladder cycle')
+        .action(async () => {
+          const options = this.program.opts<{ config?: string; readonly?: boolean }>()
+          const ladderService = await ladder({
+            configPath: options.config,
+            readOnly: options.readonly === true
+          })
+          const result = await ladderService.runOnce()
+          if (
+            Array.isArray(result) &&
+            result.some(item =>
+              typeof item === 'object' && item !== null && 'status' in item
+                ? item.status === 'halted' || item.status === 'failed'
+                : false
+            )
+          ) {
+            throw new LadderCycleHaltedError(result)
+          }
+          this.output = result
+          this.hasOutput = true
+        })
+    }
   }
 
   /**
    * Parses one CLI invocation and returns its captured output.
    * @param argv - User arguments without the executable/runtime prefix.
-   * @returns Version text or the serialized complete setup report.
+   * @returns Version text, the complete setup report, or a structured writer-cycle result.
    * @throws `CliUsageError` with a constant message and stable code on invalid usage; raw Commander
    * arguments, messages, option details, URLs, and causes are deliberately discarded. Provider and
    * readiness errors pass through.
-   * @remarks `setup-check` remains read-only; any remediation is descriptive and never executed.
-   * With `--readonly`, signer-only checks are skipped and configuration never loads a private key.
+   * @remarks `setup-check` remains read-only. Position bootstrap runs only for the explicit
+   * `bootstrap` command. Ladder reconciliation runs only for the explicit `ladder` command. With
+   * `--readonly`, configuration never loads a private key and make adapters suppress mutations.
    */
-  async run(argv: readonly string[]): Promise<string> {
+  async run(argv: readonly string[]): Promise<unknown> {
     if (argv.length === 0) throw new CliUsageError()
     this.output = undefined
+    this.hasOutput = false
     try {
       await this.program.parseAsync(argv, { from: 'user' })
     } catch (error) {
@@ -78,7 +150,7 @@ export class Cli {
       throw error
     }
 
-    if (this.output !== undefined) return this.output
+    if (this.hasOutput) return this.output
     throw new CliUsageError()
   }
 }

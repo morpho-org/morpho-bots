@@ -43,6 +43,7 @@ const createState = (
     marketIds?: readonly Hex[]
     v0OfferGroupIds?: readonly Hex[]
     readOnly?: boolean
+    persistedGroupIds?: readonly Hex[]
   } = {}
 ) => {
   const calls: string[] = []
@@ -159,6 +160,7 @@ const createState = (
       marketIds: overrides.marketIds ?? [marketId],
       referenceMarketId,
       v0OfferGroupIds: overrides.v0OfferGroupIds ?? [knownGroup],
+      readOwnedGroupIds: async () => overrides.persistedGroupIds ?? [],
       referenceLookbackBlocks: 1n,
       requestTimeoutMs: overrides.requestTimeoutMs,
       now: overrides.now
@@ -285,6 +287,7 @@ describe('ViemSetupStateService', () => {
         routerApiBaseUrl: 'https://router.example',
         marketIds: [marketId],
         v0OfferGroupIds: [knownGroup],
+        readOwnedGroupIds: async () => [],
         referenceMarketId,
         referenceLookbackBlocks: 1n
       })
@@ -602,19 +605,22 @@ describe('ViemSetupStateService', () => {
   test('reports fresh non-takeable active offers from every offer-group page', async () => {
     const firstOffer = { market_id: marketId, maker, buy: true, tick: 20 }
     const secondOffer = { market_id: marketId, maker, buy: false, tick: 10 }
-    const { state } = createState({
-      'cursor=next': {
-        cursor: null,
-        data: [{ id: unknownGroup, chain_id: 8453, offers: [secondOffer] }]
+    const { state } = createState(
+      {
+        'cursor=next': {
+          cursor: null,
+          data: [{ id: unknownGroup, chain_id: 8453, offers: [secondOffer] }]
+        },
+        '/v0/midnight/users/': {
+          cursor: 'next',
+          data: [{ id: knownGroup, chain_id: 8453, offers: [firstOffer] }]
+        }
       },
-      '/v0/midnight/users/': {
-        cursor: 'next',
-        data: [{ id: knownGroup, chain_id: 8453, offers: [firstOffer] }]
-      }
-    })
+      { persistedGroupIds: [unknownGroup] }
+    )
 
     expect(await state.inspectOffers(maker)).toEqual({
-      unknownNamespaces: [unknownGroup],
+      unknownNamespaces: [],
       unknownMarketIds: [],
       invertedMarketIds: [marketId]
     })
@@ -633,6 +639,37 @@ describe('ViemSetupStateService', () => {
     expect(calls.some(call => call.startsWith('https://router.example/v0/midnight/users/'))).toBe(
       false
     )
+  })
+
+  test('requires persisted ownership for a published same-market group across invocations', async () => {
+    const publishedGroup: Hex = `0x${'ef'.repeat(32)}`
+    const responses = {
+      '/v0/midnight/users/': {
+        cursor: null,
+        data: [
+          {
+            id: publishedGroup,
+            chain_id: 8453,
+            offers: [{ market_id: marketId, maker, buy: true, tick: 20 }]
+          }
+        ]
+      }
+    }
+    const { state: unknownState } = createState(responses)
+    const { state: restartedState } = createState(responses, {
+      persistedGroupIds: [publishedGroup]
+    })
+
+    expect(await unknownState.inspectOffers(maker)).toEqual({
+      unknownNamespaces: [publishedGroup],
+      unknownMarketIds: [],
+      invertedMarketIds: []
+    })
+    expect(await restartedState.inspectOffers(maker)).toEqual({
+      unknownNamespaces: [],
+      unknownMarketIds: [],
+      invertedMarketIds: []
+    })
   })
 
   test('fails readiness for a known group that remains active on a removed market', async () => {

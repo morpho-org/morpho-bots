@@ -1,6 +1,6 @@
 import type { Address, Hex } from 'viem'
 
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, mock, spyOn, test } from 'bun:test'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,6 +9,7 @@ import type { SetupStateService } from '../src/application/setup/setup-check.ser
 
 import { SetupFailedError } from '../src/application/setup/setup-failed.error'
 import { createApplication } from '../src/bootstrap'
+import { CliUsageError } from '../src/infrastructure/cli/cli-usage.error'
 
 const maker: Address = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
 const midnight: Address = '0x2222222222222222222222222222222222222222'
@@ -74,10 +75,94 @@ describe('createApplication', () => {
   test('wires configuration, setup service, and operator CLI through the composition root', async () => {
     const application = createApplication(environment, { createState: readyState })
 
-    const output = JSON.parse(await application.run(['setup-check']))
+    const output = await application.run(['setup-check'])
 
-    expect(output.ready).toBe(true)
-    expect(output.checks).toHaveLength(9)
+    expect(output).toMatchObject({ ready: true })
+    expect((output as { checks: unknown[] }).checks).toHaveLength(9)
+  })
+
+  test('mm bootstrap passes readiness before running one bootstrap cycle', async () => {
+    const events: string[] = []
+    const state = readyState()
+    state.getChainId = async () => {
+      events.push('readiness')
+      return 8453
+    }
+    const application = createApplication(environment, {
+      createState: () => state,
+      createBootstrap: () => ({
+        runOnce: async () => {
+          events.push('bootstrap')
+          return [{ marketId, status: 'observed', action: 'target-reached' }]
+        }
+      })
+    })
+
+    expect(await application.run(['bootstrap'])).toEqual([
+      { marketId, status: 'observed', action: 'target-reached' }
+    ])
+    expect(events).toEqual(['readiness', 'bootstrap'])
+  })
+
+  test('mm ladder passes readiness before running one ladder cycle', async () => {
+    const events: string[] = []
+    const state = readyState()
+    state.getChainId = async () => {
+      events.push('readiness')
+      return 8453
+    }
+    const application = createApplication(environment, {
+      createState: () => state,
+      createLadder: () => ({
+        runOnce: async () => {
+          events.push('ladder')
+          return [{ marketId, status: 'observed', action: 'rest' }]
+        }
+      })
+    })
+
+    expect(await application.run(['ladder'])).toEqual([
+      { marketId, status: 'observed', action: 'rest' }
+    ])
+    expect(events).toEqual(['readiness', 'ladder'])
+  })
+
+  test('keeps the ladder command hidden until runtime adapters are composed', async () => {
+    let readinessReads = 0
+    const state = readyState()
+    state.getChainId = async () => {
+      readinessReads += 1
+      return 8453
+    }
+    const application = createApplication(environment, { createState: () => state })
+
+    const error = await application.run(['ladder']).catch(value => value)
+
+    expect(error).toBeInstanceOf(CliUsageError)
+    expect(readinessReads).toBe(0)
+  })
+
+  test('default-composes PositionBootstrapService when only its production ports are replaced', async () => {
+    const application = createApplication(environment, {
+      createState: readyState,
+      createBootstrapAdapters: () => ({
+        positions: {
+          readPosition: async () => ({
+            credit: 1_000n,
+            debt: 0n,
+            cashBalance: 1_000n,
+            marketExposure: 0n,
+            totalExposure: 0n
+          })
+        },
+        rates: {
+          readRate: async () => ({ mode: 'static', rateBps: 500n, observationId: 'static:500' })
+        },
+        make: { reconcile: async () => {}, hardHalt: async () => {} }
+      })
+    })
+
+    expect(await application.run(['bootstrap'])).toEqual([])
   })
 
   test('wires --readonly without loading a maker private key', async () => {
@@ -92,16 +177,66 @@ describe('createApplication', () => {
       }
     )
 
-    const output = JSON.parse(await application.run(['--readonly', 'setup-check']))
+    const output = await application.run(['--readonly', 'setup-check'])
 
     expect(observedModes).toEqual([true])
-    expect(output.ready).toBe(true)
-    expect(output.checks.slice(1, 5).map((check: { status: string }) => check.status)).toEqual([
-      'not-required',
-      'passed',
-      'passed',
-      'passed'
-    ])
+    expect(output).toMatchObject({ ready: true })
+    expect(
+      (output as { checks: { status: string }[] }).checks.slice(1, 5).map(check => check.status)
+    ).toEqual(['not-required', 'passed', 'passed', 'passed'])
+  })
+
+  test('routes --readonly bootstrap make operations to terminal output', async () => {
+    const reconcile = mock(async () => {})
+    const hardHalt = mock(async () => {})
+    const terminal = spyOn(console, 'log').mockImplementation(() => {})
+    const bootstrapEnvironment = {
+      ...environment,
+      MAKER_PRIVATE_KEY: undefined,
+      BOOTSTRAP_MARKETS: JSON.stringify([
+        {
+          marketId,
+          creditTarget: '100',
+          acceptanceAssets: '0',
+          offerSize: '10',
+          premiumBps: '0',
+          maximumMarketExposure: '100',
+          maximumTotalExposure: '100',
+          minimumRateBps: '100',
+          maximumRateBps: '1000',
+          autoRefill: false
+        }
+      ])
+    }
+    const application = createApplication(bootstrapEnvironment, {
+      createState: readyState,
+      createBootstrapAdapters: () => ({
+        positions: {
+          readPosition: async () => ({
+            credit: 0n,
+            debt: 0n,
+            cashBalance: 100n,
+            marketExposure: 0n,
+            totalExposure: 0n
+          })
+        },
+        rates: {
+          readRate: async () => ({ mode: 'static', rateBps: 500n, observationId: 'static:500' })
+        },
+        make: { reconcile, hardHalt }
+      })
+    })
+
+    try {
+      expect(await application.run(['--readonly', 'bootstrap'])).toEqual([
+        { marketId, status: 'applied', action: 'publish' }
+      ])
+      expect(reconcile).not.toHaveBeenCalled()
+      expect(hardHalt).not.toHaveBeenCalled()
+      expect(terminal).toHaveBeenCalledWith(expect.stringContaining('"event":"readonly.make"'))
+    } finally {
+      terminal.mockRestore()
+    }
   })
 
   test('wires explicit --config and default working-directory discovery into startup', async () => {

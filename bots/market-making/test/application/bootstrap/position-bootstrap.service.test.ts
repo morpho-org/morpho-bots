@@ -176,6 +176,126 @@ describe('PositionBootstrapService', () => {
       }
     ])
   })
+  test('reserves planned exposure before deciding a later under-target market', async () => {
+    const capped = {
+      ...config(),
+      maximumMarketExposure: 600n,
+      maximumTotalExposure: 600n
+    }
+    const { service, reconcile } = setup({
+      configs: [capped, { ...capped, marketId: secondMarketId }]
+    })
+
+    expect(await service.runOnce()).toEqual([
+      { marketId, status: 'applied', action: 'publish' },
+      { marketId: secondMarketId, status: 'applied', action: 'publish' }
+    ])
+    expect(reconcile).toHaveBeenNthCalledWith(1, {
+      marketId,
+      desiredOffer: {
+        marketId,
+        assets: 500n,
+        rateBps: 450n,
+        referenceObservationId: 'static:500'
+      },
+      reason: 'publish'
+    })
+    expect(reconcile).toHaveBeenNthCalledWith(2, {
+      marketId: secondMarketId,
+      desiredOffer: {
+        marketId: secondMarketId,
+        assets: 100n,
+        rateBps: 450n,
+        referenceObservationId: 'static:500'
+      },
+      reason: 'publish'
+    })
+  })
+
+  test('reserves only the net replacement delta before deciding a later market', async () => {
+    const capped = {
+      ...config(),
+      maximumMarketExposure: 600n,
+      maximumTotalExposure: 600n
+    }
+    const { service, positions, reconcile } = setup({
+      configs: [capped, { ...capped, marketId: secondMarketId }]
+    })
+    positions.readPosition = mock(async id => ({
+      credit: 0n,
+      debt: 0n,
+      cashBalance: id === marketId ? 1_000n : 500n,
+      marketExposure: 0n,
+      totalExposure: id === marketId ? 0n : 500n,
+      activeOffer:
+        id === marketId
+          ? {
+              marketId,
+              assets: 500n,
+              rateBps: 400n,
+              referenceObservationId: 'static:old'
+            }
+          : undefined
+    }))
+
+    expect(await service.runOnce()).toEqual([
+      { marketId, status: 'applied', action: 'replace' },
+      { marketId: secondMarketId, status: 'applied', action: 'publish' }
+    ])
+    expect(reconcile).toHaveBeenNthCalledWith(2, {
+      marketId: secondMarketId,
+      desiredOffer: {
+        marketId: secondMarketId,
+        assets: 100n,
+        rateBps: 450n,
+        referenceObservationId: 'static:500'
+      },
+      reason: 'publish'
+    })
+  })
+
+  test('credits planned invalidation capacity before deciding a later market', async () => {
+    const capped = {
+      ...config(),
+      maximumMarketExposure: 600n,
+      maximumTotalExposure: 600n
+    }
+    const { service, positions, reconcile } = setup({
+      configs: [capped, { ...capped, marketId: secondMarketId }]
+    })
+    positions.readPosition = mock(async id => ({
+      credit: id === marketId ? 900n : 0n,
+      debt: 0n,
+      cashBalance: id === marketId ? 1_000n : 500n,
+      marketExposure: 0n,
+      totalExposure: id === marketId ? 0n : 500n,
+      activeOffer:
+        id === marketId
+          ? {
+              marketId,
+              assets: 500n,
+              rateBps: 450n,
+              referenceObservationId: 'static:500'
+            }
+          : undefined
+    }))
+
+    expect(await service.runOnce()).toEqual([
+      { marketId, status: 'applied', action: 'invalidate' },
+      { marketId: secondMarketId, status: 'applied', action: 'publish' }
+    ])
+    expect(reconcile).toHaveBeenNthCalledWith(2, {
+      marketId: secondMarketId,
+      desiredOffer: {
+        marketId: secondMarketId,
+        assets: 500n,
+        rateBps: 450n,
+        referenceObservationId: 'static:500'
+      },
+      reason: 'publish'
+    })
+  })
+
   test('invalidates at target and stays observational after completion when auto-refill is off', async () => {
     const { service, positions, reconcile } = setup()
     let cycle = 0
@@ -780,11 +900,12 @@ describe('PositionBootstrapService', () => {
     ])
   })
 
-  test('does not assume publication after a make failure and continues other markets', async () => {
+  test('stops dependent plans after a make failure', async () => {
     const { service, make } = setup({ configs: [config(), config(secondMarketId)] })
-    make.reconcile = mock(async request => {
+    const failedReconcile = mock(async request => {
       if (request.marketId === marketId) throw new RangeError('publish rejected')
     })
+    make.reconcile = failedReconcile
 
     const result = await service.runOnce()
 
@@ -795,9 +916,9 @@ describe('PositionBootstrapService', () => {
         stage: 'make',
         invalidated: false,
         errorName: 'RangeError'
-      },
-      { marketId: secondMarketId, status: 'applied', action: 'publish' }
+      }
     ])
+    expect(failedReconcile).toHaveBeenCalledTimes(1)
   })
 
   test('resumes after initial completion when auto-refill is enabled', async () => {

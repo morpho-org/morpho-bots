@@ -288,6 +288,25 @@ describe('decidePositionBootstrap', () => {
     ).toEqual({ kind: 'rest', offer })
   })
 
+  test('replaces duplicate active groups even when the representative terms match', () => {
+    const activeOffer = {
+      marketId,
+      assets: 500n,
+      rateBps: 450n,
+      referenceObservationId: 'group:first'
+    }
+    const offer = { ...activeOffer, referenceObservationId: 'static:500' }
+
+    expect(
+      decidePositionBootstrap({
+        ...parameters,
+        position: { ...parameters.position, credit: 0n },
+        activeOffer,
+        requiresReconciliation: true
+      })
+    ).toEqual({ kind: 'replace', activeOffer, offer })
+  })
+
   test('leaves a static offer resting when only observation metadata changes', () => {
     const activeOffer = {
       marketId,
@@ -306,23 +325,26 @@ describe('decidePositionBootstrap', () => {
     ).toEqual({ kind: 'rest', offer: activeOffer })
   })
 
-  test('replaces a variable bootstrap offer after a new reference observation', () => {
+  test('refreshes a rehydrated variable offer for a new observation', () => {
     const activeOffer = {
       marketId,
       assets: 500n,
       rateBps: 450n,
-      referenceObservationId: 'block:100'
+      referenceObservationId: 'group:rehydrated'
     }
-    const offer = { ...activeOffer, referenceObservationId: 'block:200' }
 
-    expect(
-      decidePositionBootstrap({
-        ...parameters,
-        position: { ...parameters.position, credit: 0n },
-        rate: { mode: 'variable', rateBps: 500n, observationId: 'block:200' },
-        activeOffer
-      })
-    ).toEqual({ kind: 'replace', activeOffer, offer })
+    const decision = decidePositionBootstrap({
+      ...parameters,
+      position: { ...parameters.position, credit: 0n },
+      rate: { mode: 'variable', rateBps: 500n, observationId: 'blocks:100-200' },
+      activeOffer
+    })
+
+    expect(decision).toMatchObject({
+      kind: 'replace',
+      activeOffer,
+      offer: { referenceObservationId: 'blocks:100-200' }
+    })
   })
 
   test('leaves a variable offer resting within the same reference observation', () => {

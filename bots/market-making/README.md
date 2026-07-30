@@ -29,10 +29,10 @@ other checks. Book reads also run concurrently; book validation waits only for t
 needs for maturity comparison.
 
 Concrete ladder tick conversion, lower/higher-to-buy/sell mapping, offer encoding, live publication,
-and runtime loop composition do not exist yet. Those protocol-specific concerns remain deferred
-infrastructure adapters. The current ladder implementation is deliberately limited to pure generation
-and application-port reconciliation; its read-only make adapter can render requested operations, but
-the current CLI does not yet run a quoting cycle.
+and runtime loop composition do not exist yet. Those ladder-specific concerns remain deferred
+infrastructure adapters. Position bootstrap has production read, reference-rate, publication, and
+invalidation adapters; its read-only make adapter renders the same requested operations without
+signing or submission.
 
 ## Setup-check configuration
 
@@ -66,9 +66,12 @@ All values are required except `V0_OFFER_GROUP_IDS`, `REQUEST_TIMEOUT_MS`, and
 - `ROUTER_API_BASE_URL`: official Router API origin used to verify the ratifier registry.
 - `REQUEST_TIMEOUT_MS`: optional bounded fetch/RPC timeout in milliseconds; defaults to `10000` and
   must be between `1` and `120000`.
-- `V0_OFFER_GROUP_IDS`: optional comma-separated strategy-owned group IDs. Any active maker group not
-  listed here, or any active offer on a market outside `MARKET_IDS` even when its group is known,
-  fails readiness. Group IDs are canonicalized by bytes.
+- `V0_OFFER_GROUP_IDS`: optional comma-separated strategy-owned group IDs. Confirmed groups published
+  by this bot are also recorded mode `0600` under
+  `$XDG_STATE_HOME/morpho-market-making` (or `~/.local/state/morpho-market-making`) using a maker-and-
+  market-bound namespace, so deployments must persist that directory across restarts. Any active
+  maker group absent from both explicit sources, or any active offer on a market outside `MARKET_IDS`
+  even when its group is known, fails readiness. Group IDs are canonicalized by bytes.
 
 ## Run
 
@@ -77,6 +80,12 @@ bun run --filter @morpho-org/market-making-bot start -- setup-check
 
 # Address-only setup inspection: MAKER_PRIVATE_KEY may be omitted.
 bun run --filter @morpho-org/market-making-bot start -- --readonly setup-check
+
+# One live position-bootstrap cycle.
+bun run --filter @morpho-org/market-making-bot start -- bootstrap
+
+# One address-only cycle that logs desired make operations without submitting them.
+bun run --filter @morpho-org/market-making-bot start -- --readonly bootstrap
 ```
 
 Success prints one JSON report and exits zero. Bigints are serialized as decimal strings. Any failed
@@ -86,8 +95,9 @@ only private-key/maker agreement is reported as `not-required`; balance, allowan
 market, reference, and active-offer observations still run against the configured maker address.
 
 Read-only make adapters serialize desired bootstrap and ladder reconcile/hard-halt requests as one
-JSON line with event name `readonly.make`. They never sign or submit an operation. The current CLI
-only exposes `setup-check`, so it prints the setup report but does not yet execute an offer cycle.
+JSON line with event name `readonly.make`. They never sign or submit an operation. The
+`--readonly bootstrap` command executes one complete observational decision cycle and routes every
+requested mutation through this terminal adapter.
 
 Version output remains available:
 
@@ -137,7 +147,7 @@ example filename.
 
 ```sh
 # Explicit file; relative paths resolve from the invocation working directory.
-bun run --filter @morpho-org/market-making-bot start -- --config ./operator.yml setup-check
+bun run --filter @morpho-org/market-making-bot start -- --config ./market-making.yml setup-check
 
 # Default discovery in the current working directory.
 bun run --filter @morpho-org/market-making-bot start -- setup-check
@@ -212,8 +222,19 @@ Setup verifies all of the following from the typed configuration:
 - The exact Blue reference market is readable from the archive provider.
 - Active offer groups belong to configured namespaces and markets and are not crossed/inverted.
 
-`V0_OFFER_GROUP_IDS` is optional, but any active maker group not listed there fails readiness. The
-request timeout is an aggregate fetch/RPC bound and does not reveal endpoint details in failures.
+`V0_OFFER_GROUP_IDS` is optional. Readiness and every writer use the same explicit ownership source:
+configured IDs plus bot-issued IDs from the maker-and-market-bound state file. Publication first durably
+reserves the SDK-derived group ID, broadcasts only after that write succeeds, and then promotes the
+reservation to confirmed ownership. A failed broadcast removes its reservation; if confirmation storage
+fails after a successful broadcast, the reservation remains sufficient to recognize the group from fresh
+provider data without claiming that an absent group is live. A same-market maker group absent from these
+sources remains unknown, fails readiness, and requires an operator decision; market membership alone never
+permits reconciliation or hard-halt cancellation. The request timeout is an aggregate fetch/RPC bound and
+does not reveal endpoint details in failures.
+
+Bootstrap offer-group reads request Base explicitly, ignore well-formed rows from other chains, and fail
+closed on malformed chain identity, asset strings, or empty/repeated pagination cursors. The variable Blue
+reference hard-fails when its latest checkpoint is more than five minutes behind wall-clock time.
 
 ### Position-bootstrap fields
 
@@ -233,9 +254,10 @@ Each `bootstrap` entry must use a unique `marketId` present in `markets.allowlis
 | `autoRefill`            | Resume after first observed completion if credit later falls    | Boolean; completion memory lasts for one service instance |
 
 For a market below its accepted target, desired assets are the minimum of `offerSize`, remaining
-credit target, cash balance, remaining per-market exposure, and remaining total exposure. Zero or
-negative capacity leaves no offer. The final requested rate is `reference rate + premiumBps`; an
-out-of-bounds result is rejected rather than clamped.
+credit target, cash balance, remaining per-market exposure, and remaining total exposure. Replacement
+capacity excludes that market's representative live group while retaining every other active group's
+exposure. Zero or negative capacity leaves no offer. The final requested rate is `reference rate +
+premiumBps`; an out-of-bounds result is rejected rather than clamped.
 
 `BOOTSTRAP_MARKETS` uses an exact JSON array with the same fields; YAML syntax, duplicate object keys,
 and prototype keys are rejected. Every integer-valued property—including asset amounts, exposure caps,
@@ -244,10 +266,16 @@ when integral; `marketId` remains a string and `autoRefill` remains a JSON boole
 every YAML bootstrap entry, which avoids ambiguous partial-array merge behavior. See
 [`.env.example`](./.env.example) for exact syntax.
 
+`mm bootstrap` is the only CLI path that invokes `runOnce()`. It first runs the same readiness gate as
+`setup-check`, then executes exactly one position-bootstrap cycle and prints its bigint-safe JSON result.
+Version output, `setup-check`, invalid usage, and application construction do not start bootstrap.
+
 `runOnce()` validates every market before any position/reference read or publication. Invalid
 configuration, reference failures, and decision failures invoke strategy-wide `hardHalt`; ordinary
 position-read failure requests market-local invalidation and permits other markets to continue.
-These are application-port guarantees until the deferred adapters and composition are implemented.
+The production adapters re-read owned Mempool groups, serialize invalidation and publication, and
+persist group ownership before broadcast. Read-only mode retains the same decisions but logs every
+requested make operation instead.
 
 ### Ladder fields and formulas
 
@@ -305,14 +333,17 @@ the supplied path. Runtime setup reports identify providers by stable IDs only.
 ```sh
 bun run --filter @morpho-org/market-making-bot start -- setup-check
 bun run --filter @morpho-org/market-making-bot start -- --readonly setup-check
+bun run --filter @morpho-org/market-making-bot start -- bootstrap
+bun run --filter @morpho-org/market-making-bot start -- --readonly bootstrap
 bun run --filter @morpho-org/market-making-bot start -- --version
 ```
 
 Success prints one JSON report and exits zero. Bigints are serialized as decimal strings. Any failed
-check throws `SetupFailedError`, prints the complete sanitized report, and exits non-zero. The check
-is read-only; remediation transaction descriptions are reported but never submitted. `--readonly`
-also removes the private-key requirement and marks only maker/private-key agreement as
-`not-required`.
+check throws `SetupFailedError`, prints the complete sanitized report, and exits non-zero. A bootstrap
+safety halt likewise prints its sanitized per-market cleanup report before exiting non-zero. The check is
+read-only; remediation transaction descriptions are reported but never submitted. `--readonly`
+also removes the private-key requirement, marks only maker/private-key agreement as `not-required`,
+and replaces bootstrap submission with `readonly.make` terminal output.
 
 ## Test
 
