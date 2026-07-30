@@ -2,7 +2,7 @@ import type { Hex } from 'viem'
 
 import { bytesToHex, getAddress, hexToBytes, isAddress, isHex, size } from 'viem'
 
-import { SafeProviderError } from '../../application/safe-provider.error'
+import { SafeProviderError } from '../../application/setup/safe-provider.error'
 import { ProviderResponseError } from './provider-response.error'
 
 export const BASE_CHAIN_ID = 8453

@@ -7,7 +7,7 @@ chain:
 
 identity:
   makerAddress: '0x1111111111111111111111111111111111111111'
-  # Placeholder only. Prefer MAKER_PRIVATE_KEY in the environment.
+  # Placeholder only. Prefer MAKER_PRIVATE_KEY in the environment, or omit in --readonly mode.
   makerPrivateKey: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 
 contracts:

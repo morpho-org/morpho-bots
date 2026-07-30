@@ -14,9 +14,9 @@ metadata:
 
 ## Overview
 
-Use the package-owned TypeScript AST inventory and TypeDoc configuration to keep the MKT-1459
-setup-check public surface documented. The build treats TypeDoc warnings as errors and writes ignored,
-browsable HTML; generated output is verification evidence, not a committed artifact.
+Use the package-owned TypeScript AST inventory and TypeDoc configuration to keep the market-making
+public surface documented. The build treats TypeDoc warnings as errors and writes ignored, browsable
+HTML; generated output is verification evidence, not a committed artifact.
 
 ## When to Use
 
@@ -67,21 +67,51 @@ Completion criterion: the AST inventory exits zero, TypeDoc emits zero warnings/
 
 ## Public-Surface Inventory
 
-The coverage script inventories these setup-check boundary and utility files:
+The coverage script inventories these market-making boundary and utility files:
 
-- `src/application/setup-check.service.ts`
-- `src/application/setup-check.utils.ts`
-- `src/application/safe-provider.error.ts`
-- `src/application/setup-failed.error.ts`
+- `src/application/operator-error-name.utils.ts`
+- `src/application/bootstrap/position-bootstrap-halted.error.ts`
+- `src/application/bootstrap/position-bootstrap.service.ts`
+- `src/application/ladder/ladder-cycle-halted.error.ts`
+- `src/application/ladder/ladder-market-maker.service.ts`
+- `src/application/ladder/ladder-market-maker.utils.ts`
+- `src/application/setup/setup-check.service.ts`
+- `src/application/setup/setup-check.utils.ts`
+- `src/application/setup/safe-provider.error.ts`
+- `src/application/setup/setup-failed.error.ts`
+- `src/application/version.service.ts`
 - `src/bootstrap.ts`
+- `src/config/config-file.error.ts`
+- `src/config/config-source.utils.ts`
 - `src/config/config-validation.error.ts`
 - `src/config/config.service.ts`
 - `src/config/config.utils.ts`
+- `src/domain/bootstrap/bootstrap-configuration.error.ts`
+- `src/domain/bootstrap/position-bootstrap.ts`
+- `src/domain/ladder/ladder-configuration.error.ts`
+- `src/domain/ladder/ladder.ts`
+- `src/infrastructure/bootstrap/bootstrap-hard-halt.error.ts`
+- `src/infrastructure/bootstrap/bootstrap-exposure.utils.ts`
+- `src/infrastructure/bootstrap/bootstrap-make.service.ts`
+- `src/infrastructure/bootstrap/bootstrap-offer.utils.ts`
+- `src/infrastructure/bootstrap/bootstrap-adapter.error.ts`
+- `src/infrastructure/bootstrap/bootstrap-group-ownership.utils.ts`
+- `src/infrastructure/bootstrap/bootstrap-groups.utils.ts`
+- `src/infrastructure/bootstrap/bootstrap-position.service.ts`
+- `src/infrastructure/bootstrap/bootstrap-reference-rate.service.ts`
+- `src/infrastructure/bootstrap/bootstrap-requirements.utils.ts`
+- `src/infrastructure/bootstrap/bootstrap-transaction.utils.ts`
+- `src/infrastructure/bootstrap/production-bootstrap.ts`
 - `src/infrastructure/cli/cli-usage.error.ts`
 - `src/infrastructure/cli/cli.ts`
-- `src/infrastructure/cli/cli.utils.ts`
+- `src/infrastructure/cli/market-making-entrypoint.ts`
+- `src/infrastructure/make/read-only-bootstrap-make.service.ts`
+- `src/infrastructure/make/read-only-ladder-make.service.ts`
+- `src/infrastructure/make/read-only-make.utils.ts`
 - `src/infrastructure/setup-state/http-json.utils.ts`
 - `src/infrastructure/setup-state/provider-pagination.error.ts`
+- `src/infrastructure/setup-state/provider-read.error.ts`
+- `src/infrastructure/setup-state/provider-read.utils.ts`
 - `src/infrastructure/setup-state/provider-response.error.ts`
 - `src/infrastructure/setup-state/viem-setup-state.service.ts`
 - `src/infrastructure/setup-state/viem-setup-state.utils.ts`
@@ -109,13 +139,13 @@ Completion criterion: no named utility function declaration remains in changed s
 shares a file with a class, and each protocol/viem reuse or local exception is evidenced in code or
 the change report.
 
-For the current setup-check implementation, preserve these verified package boundaries:
+For the current market-making implementation, preserve these verified package boundaries:
 
-- `@morpho-org/midnight-sdk@1.2.0/api` owns active-book URL construction and mapping through
+- `@morpho-org/midnight-sdk@1.3.0/api` owns active-book URL construction and mapping through
   `MidnightApi.fetchBooks`; inject the package's sanitized timeout-aware fetch adapter.
 - `@morpho-org/morpho-sdk@5.4.1/abis` owns Morpho Blue's `blueAbi`; do not recreate a local
   `idToMarketParams` / `market` ABI subset.
-- Midnight SDK 1.2.0 has no `/users/{maker}/offer-groups` client, entity, or mapper. Keep only the
+- Midnight SDK 1.3.0 has no `/users/{maker}/offer-groups` client, entity, or mapper. Keep only the
   local cursor/deadline/page/item guard and strict nested-offer projection until an equivalent SDK
   export exists; never substitute `fetchTakeableOffers`, because it omits fresh active offers whose
   takeable amount has not been measured.

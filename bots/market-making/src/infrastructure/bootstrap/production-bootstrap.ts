@@ -7,6 +7,7 @@ import {
   createWalletClient,
   erc20Abi,
   http,
+  isAddressEqual,
   publicActions,
   type Address,
   type Hex
@@ -18,12 +19,13 @@ import type {
   BootstrapMakeService,
   BootstrapPositionService,
   BootstrapReferenceRateService
-} from '../../application/position-bootstrap.service'
+} from '../../application/bootstrap/position-bootstrap.service'
 import type { ConfigService } from '../../config/config.service'
-import type { BootstrapOffer } from '../../domain/position-bootstrap'
+import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
 import type { BootstrapActiveGroup, BootstrapInventoryReader } from './bootstrap-position.service'
 import type { BlueReferenceReader, BlueSupplyCheckpoint } from './bootstrap-reference-rate.service'
 
+import { ReadOnlyBootstrapMakeService } from '../make/read-only-bootstrap-make.service'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 import { bootstrapExposureMarketIds } from './bootstrap-exposure.utils'
 import { createBootstrapGroupOwnership } from './bootstrap-group-ownership.utils'
@@ -118,41 +120,41 @@ type ProductionBootstrapAdapters = {
 /**
  * Composes concrete viem, Morpho SDK, Midnight SDK, and Mempool adapters.
  * @param config - Fully validated runtime configuration.
- * @returns Production bootstrap ports sharing one maker and mutation queue.
- * @throws Only during later provider reads, signing, publication, or invalidation; composition is lazy.
+ * @returns Production read ports and either a live mutation queue or terminal-only make adapter.
+ * @throws `BootstrapAdapterError` when write-mode signer identity differs from the configured maker;
+ * later provider reads, signing, publication, or invalidation may also fail.
  * @remarks No provider request or write occurs while this function constructs the adapters.
+ * Read-only configuration never derives an account or constructs a wallet client. Write mode checks
+ * the key-derived account before constructing any maker action, independently of the setup gate.
  */
 export const createProductionBootstrapAdapters = (
   config: ConfigService
 ): ProductionBootstrapAdapters => {
-  const account = privateKeyToAccount(config.privateKey)
-  const wallet = createWalletClient({
-    account,
+  const maker = config.identity.maker
+  const client = createPublicClient({
     chain: base,
     transport: http(config.rpcUrl, { timeout: config.requestTimeoutMs })
-  })
-    .extend(publicActions)
-    .extend(morphoViemExtension({ supportSignature: true, supportDeployless: true }))
+  }).extend(morphoViemExtension({ supportSignature: true, supportDeployless: true }))
   const referenceClient = createPublicClient({
     chain: base,
     transport: http(config.referenceRpcUrl, { timeout: config.requestTimeoutMs })
   })
-  const midnight = wallet.morpho.midnight(base.id)
+  const midnight = client.morpho.midnight(base.id)
   const ownership = createBootstrapGroupOwnership({
-    maker: account.address,
+    maker,
     marketIds: config.setup.marketIds,
     configuredGroupIds: config.v0OfferGroupIds
   })
   const readGroups = () =>
     readBootstrapGroups({
-      maker: account.address,
+      maker,
       morphoApiBaseUrl: config.morphoApiBaseUrl,
       requestTimeoutMs: config.requestTimeoutMs
     })
 
   const activeGroups = async (): Promise<BootstrapActiveGroup[]> => {
     const [block, groups, ownedIds, ownedOffers] = await Promise.all([
-      wallet.getBlock({ blockTag: 'latest' }),
+      client.getBlock({ blockTag: 'latest' }),
       readGroups(),
       ownership.read(),
       ownership.readOffers()
@@ -187,13 +189,13 @@ export const createProductionBootstrapAdapters = (
 
   const inventory: BootstrapInventoryReader = {
     readPositions: async () => {
-      const block = await wallet.getBlock({ blockTag: 'latest' })
+      const block = await client.getBlock({ blockTag: 'latest' })
       return Promise.all(
         bootstrapExposureMarketIds(config).map(async marketId => {
           const position = (
             await midnight.getPositionData({
               marketId,
-              accountAddress: account.address,
+              accountAddress: maker,
               parameters: { blockNumber: block.number }
             })
           ).accrueInterest(block.timestamp)
@@ -202,14 +204,34 @@ export const createProductionBootstrapAdapters = (
       )
     },
     readCashBalance: () =>
-      wallet.readContract({
+      client.readContract({
         address: config.setup.loanAsset,
         abi: erc20Abi,
         functionName: 'balanceOf',
-        args: [account.address]
+        args: [maker]
       }),
     readActiveGroups: activeGroups
   }
+
+  const positions = new MidnightBootstrapPositionService(inventory, maker)
+  const rates = new BlueBootstrapReferenceRateService(
+    createBlueReader(config, referenceClient as HistoricalBlockReader)
+  )
+  if (config.identity.readOnly) {
+    return { positions, rates, make: new ReadOnlyBootstrapMakeService() }
+  }
+
+  const account = privateKeyToAccount(config.identity.privateKey)
+  if (!isAddressEqual(account.address, maker)) {
+    throw new BootstrapAdapterError('maker-private-key-mismatch')
+  }
+  const wallet = createWalletClient({
+    account,
+    chain: base,
+    transport: http(config.rpcUrl, { timeout: config.requestTimeoutMs })
+  })
+    .extend(publicActions)
+    .extend(morphoViemExtension({ supportSignature: true, supportDeployless: true }))
 
   const execute = async (
     transaction: { to: `0x${string}`; data: Hex; value: bigint },
@@ -232,7 +254,7 @@ export const createProductionBootstrapAdapters = (
     return Offer.create({
       market: market.params,
       buy: true,
-      maker: account.address,
+      maker,
       tick: TickLib.priceToTick(TickLib.rateToPrice(periodRateWad), BigInt(market.tickSpacing)),
       expiry: market.params.maturity,
       ratifier: config.setup.ratifier,
@@ -251,11 +273,11 @@ export const createProductionBootstrapAdapters = (
       return { marketId: offer.marketId, buy: true, tick: created.tick }
     },
     invalidate: async group => {
-      await execute(midnight.cancelOffer({ group, accountAddress: account.address }).buildTx(), {
+      await execute(midnight.cancelOffer({ group, accountAddress: maker }).buildTx(), {
         kind: 'cancel',
         target: config.setup.midnight,
         groupId: group,
-        account: account.address
+        account: maker
       })
     },
     reserveGroup: ownership.reserve,
@@ -268,7 +290,7 @@ export const createProductionBootstrapAdapters = (
       const [groups, ownedIds] = await Promise.all([readGroups(), ownership.read()])
       const output = await midnight.makeLend(
         bootstrapMakeLendArguments({
-          accountAddress: account.address,
+          accountAddress: maker,
           offers: [created],
           validation: { apiUrl: `${config.morphoApiBaseUrl}/v0/midnight` },
           loanToken: config.setup.loanAsset,
@@ -279,7 +301,7 @@ export const createProductionBootstrapAdapters = (
       const signatures = await signBootstrapRequirements(
         await output.getRequirements(),
         requirement =>
-          requirement.sign(wallet, account.address) as Promise<
+          requirement.sign(wallet, maker) as Promise<
             import('@morpho-org/morpho-sdk').MidnightOfferRootSignature
           >
       )
@@ -298,10 +320,8 @@ export const createProductionBootstrapAdapters = (
   })
 
   return {
-    positions: new MidnightBootstrapPositionService(inventory, account.address),
-    rates: new BlueBootstrapReferenceRateService(
-      createBlueReader(config, referenceClient as HistoricalBlockReader)
-    ),
+    positions,
+    rates,
     make
   }
 }

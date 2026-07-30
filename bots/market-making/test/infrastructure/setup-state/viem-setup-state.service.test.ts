@@ -4,7 +4,7 @@ import { blueAbi } from '@morpho-org/morpho-sdk/abis'
 import { describe, expect, test } from 'bun:test'
 import { bytesToHex, hexToBytes, keccak256 } from 'viem'
 
-import { SafeProviderError } from '../../../src/application/safe-provider.error'
+import { SafeProviderError } from '../../../src/application/setup/safe-provider.error'
 import { requestJson } from '../../../src/infrastructure/setup-state/http-json.utils'
 import { ProviderPaginationError } from '../../../src/infrastructure/setup-state/provider-pagination.error'
 import { ProviderReadError } from '../../../src/infrastructure/setup-state/provider-read.error'
@@ -42,6 +42,7 @@ const createState = (
     onRequest?: (url: string, timeoutMs: number | undefined) => unknown
     marketIds?: readonly Hex[]
     v0OfferGroupIds?: readonly Hex[]
+    readOnly?: boolean
     persistedGroupIds?: readonly Hex[]
   } = {}
 ) => {
@@ -149,7 +150,9 @@ const createState = (
     requestBudgets,
     referenceAbis,
     state: new ViemSetupStateService(chain, reference, request, {
-      privateKey: `0x${'11'.repeat(32)}`,
+      ...(overrides.readOnly
+        ? { readOnly: true as const }
+        : { readOnly: false as const, privateKey: `0x${'11'.repeat(32)}` }),
       midnight,
       loanAsset,
       morphoApiBaseUrl: 'https://api.example',
@@ -166,6 +169,12 @@ const createState = (
 }
 
 describe('ViemSetupStateService', () => {
+  test('does not derive or retain a signer identity in read-only mode', async () => {
+    const { state } = createState({}, { readOnly: true })
+
+    expect(await state.getDerivedMaker()).toBeUndefined()
+  })
+
   test.each([
     [
       'getChainId',

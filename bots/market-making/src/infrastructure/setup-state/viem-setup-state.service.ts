@@ -8,7 +8,7 @@ import { getChainAddress } from '@morpho-org/morpho-ts'
 import { erc20Abi, isAddress, isAddressEqual, keccak256, zeroAddress, zeroHash } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
-import type { BookSetup, SetupStateService } from '../../application/setup-check.service'
+import type { BookSetup, SetupStateService } from '../../application/setup/setup-check.service'
 import type { JsonRequest } from './http-json.utils'
 
 import { booksJsonRequestFetch } from './http-json.utils'
@@ -77,7 +77,6 @@ export interface ChainReader {
 }
 
 type SetupStateOptions = {
-  privateKey: Hex
   midnight: Address
   loanAsset: Address
   morphoApiBaseUrl: string
@@ -89,19 +88,20 @@ type SetupStateOptions = {
   referenceLookbackBlocks?: bigint
   requestTimeoutMs?: number
   now?: () => number
-}
+} & ({ readOnly: true } | { readOnly?: false; privateKey: Hex })
 
 /** Read-only viem/API adapter that gathers setup facts and validates provider agreement. */
 export class ViemSetupStateService implements SetupStateService {
-  private readonly derivedMaker: Address
+  private readonly derivedMaker: Address | undefined
 
   /**
-   * Creates a state adapter and derives the maker address locally from the configured private key.
+   * Creates a state adapter and derives the maker only when write authority is configured.
    * @param chain - Current-state Base reader.
    * @param reference - Archive-capable Base reader.
    * @param request - JSON transport receiving only fixed provider IDs and explicit timeouts.
-   * @param options - Validated addresses, IDs, endpoints, deadline, and test clock.
+   * @param options - Validated identity mode, addresses, IDs, endpoints, deadline, and test clock.
    * @remarks Construction does not contact providers, sign data, log secrets, or execute writes.
+   * Read-only options carry no signer identity and never load a private key.
    */
   constructor(
     private readonly chain: ChainReader,
@@ -109,7 +109,9 @@ export class ViemSetupStateService implements SetupStateService {
     private readonly request: JsonRequest,
     private readonly options: SetupStateOptions
   ) {
-    this.derivedMaker = privateKeyToAccount(options.privateKey).address
+    this.derivedMaker = options.readOnly
+      ? undefined
+      : privateKeyToAccount(options.privateKey).address
   }
 
   /**
@@ -135,7 +137,7 @@ export class ViemSetupStateService implements SetupStateService {
     )
   }
 
-  /** Derives no new state and returns the cached local maker. @returns The locally derived maker; no signing or provider request occurs. */
+  /** Derives no new state and returns the cached signer identity. @returns The locally derived maker, or `undefined` when constructed read-only; no signing or provider request occurs. */
   async getDerivedMaker() {
     return this.derivedMaker
   }

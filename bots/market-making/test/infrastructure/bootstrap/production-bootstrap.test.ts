@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { encodeFunctionData } from 'viem'
 
+import { ConfigService } from '../../../src/config/config.service'
 import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/bootstrap-adapter.error'
 import { bootstrapExposureMarketIds } from '../../../src/infrastructure/bootstrap/bootstrap-exposure.utils'
 import { createBootstrapGroupOwnership } from '../../../src/infrastructure/bootstrap/bootstrap-group-ownership.utils'
@@ -19,7 +20,11 @@ import {
 import { bootstrapContinuousFeeCap } from '../../../src/infrastructure/bootstrap/bootstrap-offer.utils'
 import { signBootstrapRequirements } from '../../../src/infrastructure/bootstrap/bootstrap-requirements.utils'
 import { assertBootstrapTransaction } from '../../../src/infrastructure/bootstrap/bootstrap-transaction.utils'
-import { bootstrapMakeLendArguments } from '../../../src/infrastructure/bootstrap/production-bootstrap'
+import {
+  bootstrapMakeLendArguments,
+  createProductionBootstrapAdapters
+} from '../../../src/infrastructure/bootstrap/production-bootstrap'
+import { ReadOnlyBootstrapMakeService } from '../../../src/infrastructure/make/read-only-bootstrap-make.service'
 
 const maker: Address = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
 const marketId: Hex = `0x${'ab'.repeat(32)}`
@@ -72,6 +77,62 @@ const group = (overrides: Record<string, unknown> = {}) => ({
     }
   ],
   ...overrides
+})
+
+describe('createProductionBootstrapAdapters', () => {
+  test('constructs address-only readers and a terminal make adapter without a private key', () => {
+    const config = ConfigService.from(
+      {
+        CHAIN_ID: '8453',
+        RPC_URL: 'https://rpc.example',
+        REFERENCE_RPC_URL: 'https://archive.example',
+        MAKER_ADDRESS: maker,
+        MIDNIGHT_ADDRESS: maker,
+        LOAN_ASSET_ADDRESS: loanToken,
+        RATIFIER_ADDRESS: ratifier,
+        MARKET_IDS: marketId,
+        REFERENCE_MARKET_ID: secondMarketId,
+        NATIVE_RESERVE_WEI: '10',
+        MAXIMUM_LEND_EXPOSURE_ASSETS: '100',
+        MORPHO_API_BASE_URL: 'https://api.example',
+        ROUTER_API_BASE_URL: 'https://router.example'
+      },
+      { readOnly: true }
+    )
+
+    const adapters = createProductionBootstrapAdapters(config)
+
+    expect(adapters.make).toBeInstanceOf(ReadOnlyBootstrapMakeService)
+  })
+
+  test('rejects a write configuration whose private key does not match the maker', () => {
+    const config = ConfigService.from({
+      CHAIN_ID: '8453',
+      RPC_URL: 'https://rpc.example',
+      REFERENCE_RPC_URL: 'https://archive.example',
+      MAKER_PRIVATE_KEY: `0x${'11'.repeat(32)}`,
+      MAKER_ADDRESS: collateral,
+      MIDNIGHT_ADDRESS: maker,
+      LOAN_ASSET_ADDRESS: loanToken,
+      RATIFIER_ADDRESS: ratifier,
+      MARKET_IDS: marketId,
+      REFERENCE_MARKET_ID: secondMarketId,
+      NATIVE_RESERVE_WEI: '10',
+      MAXIMUM_LEND_EXPOSURE_ASSETS: '100',
+      MORPHO_API_BASE_URL: 'https://api.example',
+      ROUTER_API_BASE_URL: 'https://router.example'
+    })
+
+    let error: unknown
+    try {
+      createProductionBootstrapAdapters(config)
+    } catch (value) {
+      error = value
+    }
+
+    expect(error).toBeInstanceOf(BootstrapAdapterError)
+    expect(error).toMatchObject({ operation: 'maker-private-key-mismatch' })
+  })
 })
 
 describe('bootstrapExposureMarketIds', () => {

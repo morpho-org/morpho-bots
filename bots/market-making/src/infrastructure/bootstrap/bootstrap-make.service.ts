@@ -1,7 +1,7 @@
 import type { Hex } from 'viem'
 
-import type { BootstrapMakeService } from '../../application/position-bootstrap.service'
-import type { BootstrapOffer } from '../../domain/position-bootstrap'
+import type { BootstrapMakeService } from '../../application/bootstrap/position-bootstrap.service'
+import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
 import type { BootstrapActiveGroup } from './bootstrap-position.service'
 
 import { operatorErrorName } from '../../application/operator-error-name.utils'

@@ -5,7 +5,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { bytesToHex, hexToBytes, isHex, keccak256, size, stringToHex } from 'viem'
 
-import type { BootstrapOffer } from '../../domain/position-bootstrap'
+import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
 
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 

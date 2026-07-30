@@ -6,10 +6,10 @@ import {
   SetupCheckService,
   type SetupCheckConfig,
   type SetupStateService
-} from '../../src/application/setup-check.service'
-import { SetupFailedError } from '../../src/application/setup-failed.error'
-import { ProviderReadError } from '../../src/infrastructure/setup-state/provider-read.error'
-import { ProviderResponseError } from '../../src/infrastructure/setup-state/provider-response.error'
+} from '../../../src/application/setup/setup-check.service'
+import { SetupFailedError } from '../../../src/application/setup/setup-failed.error'
+import { ProviderReadError } from '../../../src/infrastructure/setup-state/provider-read.error'
+import { ProviderResponseError } from '../../../src/infrastructure/setup-state/provider-response.error'
 
 const maker = '0x1111111111111111111111111111111111111111'
 const midnight = '0x2222222222222222222222222222222222222222'
@@ -84,6 +84,60 @@ describe('SetupCheckService', () => {
       ['offers', 'passed'],
       ['position-health', 'not-required']
     ])
+  })
+
+  test('skips only private-key derivation and preserves maker observations in read-only mode', async () => {
+    const reads: string[] = []
+    const unavailable = async (): Promise<never> => {
+      reads.push('maker-derivation')
+      throw new Error('signer-only read must not run')
+    }
+    const state = readyState()
+    state.getDerivedMaker = unavailable
+    state.getNativeBalance = async () => {
+      reads.push('native-balance')
+      return 10n
+    }
+    state.getLoanAllowance = async () => {
+      reads.push('loan-allowance')
+      return { spender: midnight, amount: 100n }
+    }
+    state.getRatifier = async () => {
+      reads.push('ratifier')
+      return {
+        listed: true,
+        deployed: true,
+        midnightMatches: true,
+        ecrecoverSurface: true,
+        authorized: true
+      }
+    }
+
+    const report = await new SetupCheckService(state, config, true).check()
+
+    expect(reads).toEqual(['native-balance', 'loan-allowance', 'ratifier'])
+    expect(report.ready).toBe(true)
+    expect(report.checks.slice(1, 5).map(check => [check.name, check.status])).toEqual([
+      ['maker', 'not-required'],
+      ['native-balance', 'passed'],
+      ['loan-allowance', 'passed'],
+      ['ratifier', 'passed']
+    ])
+  })
+
+  test('fails maker readiness when write mode receives no derived signer identity', async () => {
+    const state = readyState()
+    state.getDerivedMaker = async () => undefined
+
+    const report = await new SetupCheckService(state, config).check()
+
+    expect(report.ready).toBe(false)
+    expect(report.checks.find(check => check.name === 'maker')).toEqual({
+      name: 'maker',
+      status: 'failed',
+      observed: undefined,
+      required: maker
+    })
   })
 
   test('reports compact deployment status instead of Midnight runtime bytecode', async () => {

@@ -1,6 +1,6 @@
 import type { ProviderId, ProviderOperation } from './provider-read.error'
 
-import { SafeProviderError } from '../../application/safe-provider.error'
+import { SafeProviderError } from '../../application/setup/safe-provider.error'
 import { ProviderReadError } from './provider-read.error'
 import { ProviderResponseError } from './provider-response.error'
 

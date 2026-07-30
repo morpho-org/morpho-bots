@@ -1,6 +1,6 @@
 import type { Hex } from 'viem'
 
-import type { BootstrapReferenceRateService } from '../../application/position-bootstrap.service'
+import type { BootstrapReferenceRateService } from '../../application/bootstrap/position-bootstrap.service'
 
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 

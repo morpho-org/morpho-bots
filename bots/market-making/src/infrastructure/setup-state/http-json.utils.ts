@@ -1,4 +1,4 @@
-import { SafeProviderError } from '../../application/safe-provider.error'
+import { SafeProviderError } from '../../application/setup/safe-provider.error'
 
 /** Stable HTTP provider identifiers safe to include in reports. */
 export type ProviderId = 'morpho-api' | 'router-api'

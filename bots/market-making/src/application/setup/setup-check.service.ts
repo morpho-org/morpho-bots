@@ -5,6 +5,7 @@ import {
   capture,
   chainCheck,
   providerFailure,
+  readOnlyMakerCheck,
   sameAddress,
   setupResult
 } from './setup-check.utils'
@@ -100,8 +101,8 @@ export interface SetupStateService {
   getChainId(): Promise<number>
   /** Reads deployed runtime bytecode. @param address - Contract address to inspect. @returns Runtime bytecode, if deployed. */
   getCode(address: Address): Promise<Hex | undefined>
-  /** Derives the configured maker locally. @returns The maker derived from the configured signing key without signing or broadcasting. */
-  getDerivedMaker(): Promise<Address>
+  /** Derives the configured maker locally. @returns The maker derived from the configured signing key, or `undefined` when no key was loaded. */
+  getDerivedMaker(): Promise<Address | undefined>
   /** Reads an account native-token balance. @param address - Account to inspect. @returns Its native-token balance. */
   getNativeBalance(address: Address): Promise<bigint>
   /**
@@ -158,10 +159,12 @@ export class SetupCheckService {
    * Creates the setup readiness gate.
    * @param state - Read-only provider port.
    * @param config - Validated setup requirements.
+   * @param readOnly - Whether signer-only readiness reads must be skipped.
    */
   constructor(
     private readonly state: SetupStateService,
-    private readonly config: SetupCheckConfig
+    private readonly config: SetupCheckConfig,
+    private readonly readOnly = false
   ) {}
 
   /**
@@ -187,10 +190,13 @@ export class SetupCheckService {
       requestedId,
       response: capture(() => this.state.getBook(requestedId))
     }))
+    const derivedMakerRead = this.readOnly
+      ? Promise.resolve(undefined)
+      : capture(() => this.state.getDerivedMaker())
     const reads = await Promise.all([
       capture(() => this.state.getChainId()),
       capture(() => this.state.getCode(this.config.midnight)),
-      capture(() => this.state.getDerivedMaker()),
+      derivedMakerRead,
       capture(() => this.state.getNativeBalance(this.config.maker)),
       capture(() => this.state.getLoanAllowance(this.config.maker, this.config.loanAsset)),
       capture(() => this.state.getRatifier(this.config.maker, this.config.ratifier)),
@@ -214,14 +220,18 @@ export class SetupCheckService {
       positionHealth
     ] = reads
 
-    const makerCheck = !derivedMaker.ok
-      ? providerFailure('maker', derivedMaker.error, this.config.maker)
-      : setupResult(
-          'maker',
-          sameAddress(derivedMaker.value, this.config.maker),
-          derivedMaker.value,
-          this.config.maker
-        )
+    const makerCheck =
+      derivedMaker === undefined
+        ? readOnlyMakerCheck(this.config.maker)
+        : !derivedMaker.ok
+          ? providerFailure('maker', derivedMaker.error, this.config.maker)
+          : setupResult(
+              'maker',
+              derivedMaker.value !== undefined &&
+                sameAddress(derivedMaker.value, this.config.maker),
+              derivedMaker.value,
+              this.config.maker
+            )
     const nativeCheck = !nativeBalance.ok
       ? providerFailure('native-balance', nativeBalance.error, this.config.nativeReserve)
       : setupResult(

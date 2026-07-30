@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 
-import type { SetupCheckReport } from '../../src/application/setup-check.service'
+import type { SetupCheckReport } from '../../src/application/setup/setup-check.service'
 import type { AnvilHandle } from './anvil'
 import type { SetupApiHandle } from './setup-api'
 

@@ -1,12 +1,10 @@
-import type { Hex } from 'viem'
+import type { Address, Hex } from 'viem'
 
-import { isHex, size } from 'viem'
-import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
 
-import type { SetupCheckConfig } from '../application/setup-check.service'
-import type { LadderConfig } from '../domain/ladder'
-import type { BootstrapConfig } from '../domain/position-bootstrap'
+import type { SetupCheckConfig } from '../application/setup/setup-check.service'
+import type { BootstrapConfig } from '../domain/bootstrap/position-bootstrap'
+import type { LadderConfig } from '../domain/ladder/ladder'
 import type { ConfigurationLoadOptions, ConfigurationSource } from './config-source.utils'
 import type { Environment } from './config.utils'
 
@@ -18,40 +16,57 @@ import {
   bytes32Value,
   hexListValue,
   ladderConfigsValue,
+  privateKeyValue,
   requestTimeoutValue,
   requiredValue,
   unsignedBigIntValue,
   urlValue
 } from './config.utils'
 
+/** Validated maker identity selected by the CLI runtime mode. */
+export type MakerIdentity =
+  | { readOnly: true; maker: Address }
+  | { readOnly: false; maker: Address; privateKey: Hex }
+
 /** Immutable, validated market-making runtime configuration loaded from YAML and environment values. */
 export class ConfigService {
   /**
    * Parses the existing environment-only representation through the shared validation path.
    * @param environment - Environment map; defaults to `Bun.env` at the runtime boundary.
+   * @param options - Runtime mode; read-only operation accepts only the configured maker address.
    * @returns An immutable configuration with checksummed addresses and narrowed IDs.
    * @throws `ConfigValidationError` on missing, malformed, duplicated, unsupported, or out-of-range
    * values; rejected values and secrets are not retained by the error.
    */
-  static from(environment: Environment = Bun.env) {
-    return ConfigService.fromSource(configurationFromEnvironment(environment))
+  static from(
+    environment: Environment = Bun.env,
+    options: Pick<ConfigurationLoadOptions, 'readOnly'> = {}
+  ) {
+    return ConfigService.fromSource(
+      configurationFromEnvironment(environment, options),
+      options.readOnly
+    )
   }
 
   /**
    * Loads an explicit or discovered YAML file, overlays environment values, and validates once.
    * @param environment - Environment values; supplied keys always override corresponding YAML.
-   * @param options - Optional explicit path and invocation working directory.
+   * @param options - Optional path, invocation directory, file reader, and identity-loading mode.
    * @returns A single immutable configuration shared by setup and bootstrap consumers.
    * @throws `ConfigFileError` or `ConfigValidationError` with no rejected values attached.
    * @remarks Without an explicit path, discovery securely opens `market-making.yaml` before
    * `market-making.yml` in `options.cwd` (or `process.cwd()`). Only an absent higher-precedence path
-   * permits fallback; unsafe entries fail closed. No file means env-only loading.
+   * permits fallback; unsafe entries fail closed. No file means env-only loading. Read-only mode
+   * omits YAML and environment private-key values before typed validation.
    */
   static async load(environment: Environment = Bun.env, options: ConfigurationLoadOptions = {}) {
-    return ConfigService.fromSource(await loadConfigurationSources(environment, options))
+    return ConfigService.fromSource(
+      await loadConfigurationSources(environment, options),
+      options.readOnly
+    )
   }
 
-  private static fromSource(source: ConfigurationSource) {
+  private static fromSource(source: ConfigurationSource, readOnly = false) {
     const environment = source.values as Environment
     const rawChainId = requiredValue(environment, 'CHAIN_ID')
     const chainId = /^\d+$/.test(rawChainId) ? Number(rawChainId) : Number.NaN
@@ -63,28 +78,16 @@ export class ConfigService {
       )
     }
 
-    const privateKey = requiredValue(environment, 'MAKER_PRIVATE_KEY')
-    if (!isHex(privateKey, { strict: true }) || size(privateKey) !== 32) {
-      throw new ConfigValidationError(
-        'MAKER_PRIVATE_KEY',
-        'invalid-bytes32',
-        'MAKER_PRIVATE_KEY must be a 0x-prefixed 32-byte hex string'
-      )
-    }
-    try {
-      privateKeyToAccount(privateKey)
-    } catch {
-      throw new ConfigValidationError(
-        'MAKER_PRIVATE_KEY',
-        'invalid-private-key',
-        'MAKER_PRIVATE_KEY must be a valid secp256k1 private key'
-      )
-    }
+    const maker = addressValue(environment, 'MAKER_ADDRESS')
+    const identity: MakerIdentity = readOnly
+      ? { readOnly: true, maker }
+      : { readOnly: false, maker, privateKey: privateKeyValue(environment) }
 
     return new ConfigService({
+      identity,
       setup: {
         chainId,
-        maker: addressValue(environment, 'MAKER_ADDRESS'),
+        maker,
         midnight: addressValue(environment, 'MIDNIGHT_ADDRESS'),
         nativeReserve: unsignedBigIntValue(environment, 'NATIVE_RESERVE_WEI'),
         loanAsset: addressValue(environment, 'LOAN_ASSET_ADDRESS'),
@@ -95,7 +98,6 @@ export class ConfigService {
       },
       rpcUrl: urlValue(environment, 'RPC_URL'),
       referenceRpcUrl: urlValue(environment, 'REFERENCE_RPC_URL'),
-      privateKey,
       morphoApiBaseUrl: urlValue(environment, 'MORPHO_API_BASE_URL'),
       routerApiBaseUrl: urlValue(environment, 'ROUTER_API_BASE_URL'),
       v0OfferGroupIds: hexListValue(environment, 'V0_OFFER_GROUP_IDS', false),
@@ -110,10 +112,10 @@ export class ConfigService {
 
   private constructor(
     readonly values: {
+      identity: MakerIdentity
       setup: SetupCheckConfig
       rpcUrl: string
       referenceRpcUrl: string
-      privateKey: Hex
       morphoApiBaseUrl: string
       routerApiBaseUrl: string
       v0OfferGroupIds: readonly Hex[]
@@ -122,6 +124,16 @@ export class ConfigService {
       ladder: readonly LadderConfig[]
     }
   ) {}
+
+  /** Exposes the selected validated maker identity. @returns Address-only identity in read-only mode, otherwise the signer identity. */
+  get identity() {
+    return this.values.identity
+  }
+
+  /** Reports whether mutation authority is disabled. @returns `true` when the CLI selected read-only mode. */
+  get readOnly() {
+    return this.values.identity.readOnly
+  }
 
   /** Exposes validated readiness requirements. @returns The complete validated requirements consumed by `SetupCheckService`. */
   get setup() {
@@ -138,9 +150,9 @@ export class ConfigService {
     return this.values.referenceRpcUrl
   }
 
-  /** Exposes the maker secret only to composition code. @returns Maker private key for local address derivation; callers must never log it. */
+  /** Exposes the maker secret only to write-enabled composition code. @returns Maker private key, or `undefined` in read-only mode; callers must never log it. */
   get privateKey() {
-    return this.values.privateKey
+    return this.values.identity.readOnly ? undefined : this.values.identity.privateKey
   }
 
   /** Exposes the validated Morpho API origin. @returns Validated Morpho API origin; reports identify it only as `morpho-api`. */

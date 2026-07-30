@@ -1,7 +1,7 @@
 import type { Address, Hex } from 'viem'
 
-import type { BootstrapPositionService } from '../../application/position-bootstrap.service'
-import type { BootstrapOffer } from '../../domain/position-bootstrap'
+import type { BootstrapPositionService } from '../../application/bootstrap/position-bootstrap.service'
+import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
 
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 

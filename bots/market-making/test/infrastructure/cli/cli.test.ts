@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from 'bun:test'
 
-import { LadderCycleHaltedError } from '../../../src/application/ladder-cycle-halted.error'
-import { PositionBootstrapHaltedError } from '../../../src/application/position-bootstrap-halted.error'
+import { PositionBootstrapHaltedError } from '../../../src/application/bootstrap/position-bootstrap-halted.error'
+import { LadderCycleHaltedError } from '../../../src/application/ladder/ladder-cycle-halted.error'
 import { VersionService } from '../../../src/application/version.service'
 import { Cli } from '../../../src/infrastructure/cli/cli'
 import { CliUsageError } from '../../../src/infrastructure/cli/cli-usage.error'
@@ -197,6 +197,23 @@ describe('Cli', () => {
     await application.run(['--config', 'operator.yml', 'setup-check'])
 
     expect(configPath).toBe('operator.yml')
+  })
+
+  test('passes --readonly as an explicit address-only runtime mode', async () => {
+    let readOnly: boolean | undefined
+    const application = new Cli(
+      new VersionService(),
+      options => {
+        readOnly = options.readOnly
+        return { assertReady: async () => readyReport }
+      },
+      () => ({ runOnce: async () => [] }),
+      () => ({ runOnce: async () => [] })
+    )
+
+    await application.run(['--readonly', 'setup-check'])
+
+    expect(readOnly).toBe(true)
   })
 
   test('runs setup-check and returns the complete structured report', async () => {

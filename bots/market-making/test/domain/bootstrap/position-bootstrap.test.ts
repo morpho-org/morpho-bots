@@ -2,11 +2,11 @@ import type { Hex } from 'viem'
 
 import { describe, expect, test } from 'bun:test'
 
-import { BootstrapConfigurationError } from '../../src/domain/bootstrap-configuration.error'
+import { BootstrapConfigurationError } from '../../../src/domain/bootstrap/bootstrap-configuration.error'
 import {
   decidePositionBootstrap,
   validateBootstrapConfig
-} from '../../src/domain/position-bootstrap'
+} from '../../../src/domain/bootstrap/position-bootstrap'
 
 const marketId: Hex = `0x${'11'.repeat(32)}`
 

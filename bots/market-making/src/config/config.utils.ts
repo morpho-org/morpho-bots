@@ -1,14 +1,15 @@
 import type { Address, Hex } from 'viem'
 
 import { bytesToHex, getAddress, hexToBytes, isAddress, isHex, size } from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
 
-import type { LadderConfig } from '../domain/ladder'
-import type { BootstrapConfig } from '../domain/position-bootstrap'
+import type { BootstrapConfig } from '../domain/bootstrap/position-bootstrap'
+import type { LadderConfig } from '../domain/ladder/ladder'
 
-import { BootstrapConfigurationError } from '../domain/bootstrap-configuration.error'
-import { validateLadderConfig } from '../domain/ladder'
-import { LadderConfigurationError } from '../domain/ladder-configuration.error'
-import { validateBootstrapConfig } from '../domain/position-bootstrap'
+import { BootstrapConfigurationError } from '../domain/bootstrap/bootstrap-configuration.error'
+import { validateBootstrapConfig } from '../domain/bootstrap/position-bootstrap'
+import { validateLadderConfig } from '../domain/ladder/ladder'
+import { LadderConfigurationError } from '../domain/ladder/ladder-configuration.error'
 import { ConfigValidationError } from './config-validation.error'
 
 /** String-valued runtime environment boundary accepted by configuration parsing. */
@@ -53,6 +54,34 @@ export const parseAddress = (value: string, name: string): Address => {
  */
 export const addressValue = (environment: Environment, name: string) =>
   parseAddress(requiredValue(environment, name), name)
+
+/**
+ * Reads and validates the maker signing key for write-enabled operation.
+ * @param environment - Environment map to inspect.
+ * @returns A usable secp256k1 private key narrowed to strict hex.
+ * @throws `ConfigValidationError` when the key is missing, not bytes32, or not a usable scalar.
+ * @remarks Read-only mode must not call this utility, so it never requests or retains a key.
+ */
+export const privateKeyValue = (environment: Environment): Hex => {
+  const privateKey = requiredValue(environment, 'MAKER_PRIVATE_KEY')
+  if (!isHex(privateKey, { strict: true }) || size(privateKey) !== 32) {
+    throw new ConfigValidationError(
+      'MAKER_PRIVATE_KEY',
+      'invalid-bytes32',
+      'MAKER_PRIVATE_KEY must be a 0x-prefixed 32-byte hex string'
+    )
+  }
+  try {
+    privateKeyToAccount(privateKey)
+  } catch {
+    throw new ConfigValidationError(
+      'MAKER_PRIVATE_KEY',
+      'invalid-private-key',
+      'MAKER_PRIVATE_KEY must be a valid secp256k1 private key'
+    )
+  }
+  return privateKey
+}
 
 /**
  * Reads an unsigned base-10 integer as bigint.
