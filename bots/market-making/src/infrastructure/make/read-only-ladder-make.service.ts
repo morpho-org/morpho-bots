@@ -30,22 +30,24 @@ export class ReadOnlyLadderMakeService implements LadderMakeService {
   /**
    * Logs the exact desired ladder reconciliation instead of submitting it.
    * @param parameters - Market, desired quote set or invalidation, and reconciliation reason.
-   * @returns Completion after the terminal writer accepts one JSON line.
+   * @returns `logged` after the terminal writer accepts one JSON line.
    * @throws When the injected terminal writer rejects the line.
    * @remarks No signing, publication, replacement, or invalidation occurs.
    */
   async reconcile(parameters: Parameters<LadderMakeService['reconcile']>[0]) {
     this.write(formatReadOnlyMakeEvent('ladder', 'reconcile', parameters))
+    return 'logged' as const
   }
 
   /**
    * Logs the requested ladder safety halt instead of invalidating strategy roots.
    * @param parameters - Stable strategy-wide safety reason.
-   * @returns Completion after the terminal writer accepts one JSON line.
+   * @returns `logged` after the terminal writer accepts one JSON line.
    * @throws When the injected terminal writer rejects the line.
    * @remarks No signing or strategy-root invalidation occurs.
    */
   async hardHalt(parameters: Parameters<LadderMakeService['hardHalt']>[0]) {
     this.write(formatReadOnlyMakeEvent('ladder', 'hard-halt', parameters))
+    return 'logged' as const
   }
 }

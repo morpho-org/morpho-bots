@@ -101,6 +101,7 @@ Read-only make adapters serialize desired bootstrap and ladder reconcile/hard-ha
 JSON line with event name `readonly.make`. They never sign or submit an operation. The
 `--readonly bootstrap` command executes one complete observational decision cycle and routes every
 requested mutation through this terminal adapter.
+The corresponding final cycle outcome uses `status: "logged"` rather than `"applied"`.
 
 Version output remains available:
 
@@ -349,7 +350,8 @@ sanitized report, and exits non-zero. A bootstrap safety halt likewise prints it
 cleanup report before exiting non-zero. The check is read-only; remediation transaction descriptions
 are reported but never submitted. `--readonly` also removes the private-key requirement, marks only
 maker/private-key agreement as `not-required`, and replaces bootstrap submission with
-`readonly.make` terminal output.
+`readonly.make` terminal output. Dry-run mutation outcomes use `status: "logged"` rather than
+`"applied"`.
 
 ## Test
 

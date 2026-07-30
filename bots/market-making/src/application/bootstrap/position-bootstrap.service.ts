@@ -60,9 +60,10 @@ export interface BootstrapMakeService {
   /**
    * Reconciles one market's desired bootstrap offer or invalidates that market group.
    * @param parameters - Canonical market, optional desired offer, and stable action reason.
-   * @returns Completion after the requested publication or invalidation is confirmed.
+   * @returns `logged` when a dry-run records the request; otherwise completion after confirmation.
    * @throws Error when simulation, publication, replacement, or invalidation fails.
-   * @remarks This mutating port may change only the requested strategy-owned market group.
+   * @remarks Live adapters may change only the requested strategy-owned market group. Dry-run
+   * adapters must return `logged` after recording the same request without mutation.
    */
   reconcile(parameters: {
     marketId: Hex
@@ -74,13 +75,14 @@ export interface BootstrapMakeService {
       | 'no-capacity'
       | 'auto-refill-disabled'
       | 'market-read-failed'
-  }): Promise<void>
+  }): Promise<void | 'logged'>
   /**
    * Invalidates all strategy-owned bootstrap groups after a cycle-level safety failure.
    * @param parameters - Fixed safety reason that triggered strategy-wide invalidation.
-   * @returns Completion after every strategy-owned group is invalidated.
+   * @returns `logged` when a dry-run records the halt; otherwise completion after invalidation.
    * @throws Error when one or more strategy-owned groups cannot be invalidated.
-   * @remarks This mutating port performs strategy-wide cleanup and must not publish offers.
+   * @remarks Live adapters perform strategy-wide cleanup and must not publish offers. Dry-run
+   * adapters return `logged` without claiming cleanup occurred.
    */
   hardHalt(parameters: {
     reason:
@@ -88,7 +90,7 @@ export interface BootstrapMakeService {
       | 'bootstrap-decision-failed'
       | 'bootstrap-configuration-failed'
       | 'market-invalidation-failed'
-  }): Promise<void>
+  }): Promise<void | 'logged'>
 }
 
 type BootstrapRunResult =
@@ -97,12 +99,17 @@ type BootstrapRunResult =
       status: 'observed'
       action: 'target-reached' | 'auto-refill-disabled' | 'no-capacity' | 'rest'
     }
-  | { marketId: Hex; status: 'applied'; action: 'invalidate' | 'publish' | 'replace' }
+  | {
+      marketId: Hex
+      status: 'applied' | 'logged'
+      action: 'invalidate' | 'publish' | 'replace'
+    }
   | {
       marketId: Hex
       status: 'failed'
       stage: 'position-read' | 'make'
       invalidated: boolean
+      invalidationLogged?: boolean
       errorName: string
       invalidationErrorName?: string
     }
@@ -111,6 +118,7 @@ type BootstrapRunResult =
       status: 'halted'
       stage: 'configuration' | 'reference-read' | 'decision'
       strategyInvalidated: boolean
+      strategyInvalidationLogged?: boolean
       errorName: string
       invalidationErrorName?: string
     }
@@ -119,6 +127,7 @@ type BootstrapRunResult =
       status: 'halted'
       stage: 'position-read'
       strategyInvalidated: boolean
+      strategyInvalidationLogged?: boolean
       errorName: string
       invalidationErrorName: string
       hardHaltErrorName?: string
@@ -130,6 +139,7 @@ type BootstrapRunResult =
       action: 'invalidate'
       reason: DecisionInvalidationReason
       strategyInvalidated: boolean
+      strategyInvalidationLogged?: boolean
       invalidationErrorName: string
       hardHaltErrorName?: string
     }
@@ -138,7 +148,7 @@ type BootstrapRunPlan =
   | { config: BootstrapConfig; decision: PositionBootstrapDecision }
   | { result: BootstrapRunResult }
 
-/** Applies position-bootstrap cycles. Its in-memory one-shot gate resets on service recreation. */
+/** Coordinates live or logged position-bootstrap cycles through explicit make-port outcomes. */
 export class PositionBootstrapService {
   private readonly completedMarkets = new Set<Hex>()
 
@@ -158,7 +168,7 @@ export class PositionBootstrapService {
 
   /**
    * Validates all configured markets, then applies one fresh bootstrap cycle per market.
-   * @returns Ordered market outcomes, stopping after any strategy-wide safety halt.
+   * @returns Ordered market outcomes; dry-run make requests are `logged`, never `applied`.
    * @throws Never for handled provider, configuration, or make failures; their classifications and
    *   cleanup evidence are returned in the structured result.
    * @remarks Invalid configuration hard-halts before any position/reference read or publication.
@@ -329,8 +339,9 @@ export class PositionBootstrapService {
         continue
       }
       if (decision.kind === 'invalidate') {
+        let reconciliation: void | 'logged'
         try {
-          await this.make.reconcile({
+          reconciliation = await this.make.reconcile({
             marketId: config.marketId,
             desiredOffer: undefined,
             reason: decision.reason
@@ -347,14 +358,15 @@ export class PositionBootstrapService {
         }
         results.push({
           marketId: config.marketId,
-          status: 'applied' as const,
+          status: reconciliation === 'logged' ? ('logged' as const) : ('applied' as const),
           action: 'invalidate' as const
         })
         continue
       }
 
+      let reconciliation: void | 'logged'
       try {
-        await this.make.reconcile({
+        reconciliation = await this.make.reconcile({
           marketId: config.marketId,
           desiredOffer: decision.offer,
           reason: decision.kind
@@ -369,7 +381,11 @@ export class PositionBootstrapService {
         })
         return results
       }
-      results.push({ marketId: config.marketId, status: 'applied' as const, action: decision.kind })
+      results.push({
+        marketId: config.marketId,
+        status: reconciliation === 'logged' ? ('logged' as const) : ('applied' as const),
+        action: decision.kind
+      })
     }
     return results
   }
@@ -381,12 +397,17 @@ export class PositionBootstrapService {
     reason: 'market-read-failed'
   ): Promise<BootstrapRunResult> {
     try {
-      await this.make.reconcile({ marketId, desiredOffer: undefined, reason })
+      const reconciliation = await this.make.reconcile({
+        marketId,
+        desiredOffer: undefined,
+        reason
+      })
       return {
         marketId,
         status: 'failed' as const,
         stage,
-        invalidated: true,
+        invalidated: reconciliation !== 'logged',
+        ...(reconciliation === 'logged' ? { invalidationLogged: true } : {}),
         errorName: operatorErrorName(readError)
       }
     } catch (invalidationError) {
@@ -404,15 +425,22 @@ export class PositionBootstrapService {
     invalidationError: unknown
   ): Promise<BootstrapRunResult> {
     let hardHaltError: unknown
+    let hardHaltResult: void | 'logged' = undefined
     try {
-      await this.make.hardHalt({ reason: 'market-invalidation-failed' })
+      hardHaltResult = await this.make.hardHalt({ reason: 'market-invalidation-failed' })
     } catch (error) {
       hardHaltError = error
     }
-    const strategyInvalidated = hardHaltError === undefined
-    const cleanupFailure = strategyInvalidated
-      ? {}
-      : { hardHaltErrorName: operatorErrorName(hardHaltError) }
+    const strategyInvalidated = hardHaltError === undefined && hardHaltResult !== 'logged'
+    let cleanupFailure: {
+      hardHaltErrorName?: string
+      strategyInvalidationLogged?: true
+    } = {}
+    if (hardHaltError !== undefined) {
+      cleanupFailure = { hardHaltErrorName: operatorErrorName(hardHaltError) }
+    } else if (hardHaltResult === 'logged') {
+      cleanupFailure = { strategyInvalidationLogged: true }
+    }
     if (context.stage === 'position-read') {
       return {
         marketId,
@@ -443,12 +471,13 @@ export class PositionBootstrapService {
     reason: 'reference-read-failed' | 'bootstrap-decision-failed' | 'bootstrap-configuration-failed'
   ) {
     try {
-      await this.make.hardHalt({ reason })
+      const invalidation = await this.make.hardHalt({ reason })
       return {
         marketId,
         status: 'halted' as const,
         stage,
-        strategyInvalidated: true,
+        strategyInvalidated: invalidation !== 'logged',
+        ...(invalidation === 'logged' ? { strategyInvalidationLogged: true } : {}),
         errorName: operatorErrorName(failure)
       }
     } catch (invalidationError) {

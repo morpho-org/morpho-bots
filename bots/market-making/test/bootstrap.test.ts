@@ -271,7 +271,7 @@ describe('createApplication', () => {
 
     try {
       expect(await application.run(['--readonly', 'bootstrap'])).toEqual([
-        { marketId, status: 'applied', action: 'publish' }
+        { marketId, status: 'logged', action: 'publish' }
       ])
       expect(reconcile).not.toHaveBeenCalled()
       expect(hardHalt).not.toHaveBeenCalled()
@@ -307,7 +307,7 @@ describe('createApplication', () => {
 
     try {
       expect(await application.run(['--readonly', 'ladder'])).toEqual([
-        { marketId, status: 'applied', action: 'publish', reason: 'publish' }
+        { marketId, status: 'logged', action: 'publish', reason: 'publish' }
       ])
       expect(reconcile).not.toHaveBeenCalled()
       expect(hardHalt).not.toHaveBeenCalled()

@@ -40,18 +40,18 @@ export interface LadderMakeService {
   /**
    * Reconciles one strategy-owned market quote set against fresh active roots.
    * @param parameters - Market, optional exact desired set, and stable reconciliation reason.
-   * @returns Completion only after blocking reconciliation settles.
+   * @returns `logged` when a dry-run records the request; otherwise completion after reconciliation.
    * @throws When publication, replacement, or invalidation does not settle successfully.
    */
   reconcile(parameters: {
     marketId: Hex
     desired?: LadderQuoteSet
     reason: 'publish' | 'recenter' | 'resize' | 'rest' | 'market-read-failed'
-  }): Promise<void>
+  }): Promise<void | 'logged'>
   /**
    * Invalidates all strategy-owned roots after an unsafe cycle-level failure.
    * @param parameters - Stable safety reason without provider-controlled text.
-   * @returns Completion after strategy invalidation settles.
+   * @returns `logged` when a dry-run records the halt; otherwise completion after invalidation.
    * @throws When complete strategy-root invalidation cannot be confirmed.
    */
   hardHalt(parameters: {
@@ -60,30 +60,38 @@ export interface LadderMakeService {
       | 'reference-read-failed'
       | 'ladder-decision-failed'
       | 'market-invalidation-failed'
-  }): Promise<void>
+  }): Promise<void | 'logged'>
 }
 
 type LadderRunResult =
   | { marketId: Hex; status: 'observed'; action: 'rest' }
   | {
       marketId: Hex
-      status: 'applied'
+      status: 'applied' | 'logged'
       action: 'publish' | 'replace'
       reason: 'publish' | 'recenter' | 'resize'
     }
-  | { marketId: Hex; status: 'failed'; stage: 'market-read'; invalidated: true; errorName: string }
+  | {
+      marketId: Hex
+      status: 'failed'
+      stage: 'market-read'
+      invalidated: boolean
+      invalidationLogged?: boolean
+      errorName: string
+    }
   | { marketId: Hex; status: 'failed'; stage: 'reconcile'; invalidated: false; errorName: string }
   | {
       marketId: Hex
       status: 'halted'
       stage: 'configuration' | 'reference-read' | 'decision' | 'market-invalidation'
       strategyInvalidated: boolean
+      strategyInvalidationLogged?: boolean
       errorName: string
       marketInvalidationErrorName?: string
       invalidationErrorName?: string
     }
 
-/** Coordinates deterministic ladder decisions through fresh read and blocking make ports. */
+/** Coordinates deterministic ladder decisions through fresh read and explicit make outcomes. */
 export class LadderMarketMakerService {
   /**
    * Creates one ladder application coordinator.
@@ -101,7 +109,7 @@ export class LadderMarketMakerService {
 
   /**
    * Preflights every config, then reconciles one fresh cycle for each configured market.
-   * @returns Ordered structured outcomes; market-read failures continue, safety halts stop the cycle.
+   * @returns Ordered outcomes; dry-run make requests are `logged`, never `applied`.
    * @throws Never for handled config, provider, decision, or invalidation failures.
    * @remarks Retains an active center inside the inclusive movement tolerance while still deriving
    * fresh sizes. All publication and invalidation side effects pass exclusively through `make`.
@@ -124,7 +132,7 @@ export class LadderMarketMakerService {
         market = await this.positions.readMarket(config.marketId)
       } catch (error) {
         try {
-          await this.make.reconcile({
+          const invalidation = await this.make.reconcile({
             marketId: config.marketId,
             desired: undefined,
             reason: 'market-read-failed'
@@ -134,7 +142,8 @@ export class LadderMarketMakerService {
             marketId: config.marketId,
             status: 'failed',
             stage: 'market-read',
-            invalidated: true,
+            invalidated: invalidation !== 'logged',
+            ...(invalidation === 'logged' ? { invalidationLogged: true } : {}),
             errorName: operatorErrorName(error)
           })
           continue
@@ -188,8 +197,9 @@ export class LadderMarketMakerService {
         return results
       }
 
+      let reconciliation: void | 'logged'
       try {
-        await this.make.reconcile({ marketId: config.marketId, desired, reason })
+        reconciliation = await this.make.reconcile({ marketId: config.marketId, desired, reason })
       } catch (error) {
         results.push({
           marketId: config.marketId,
@@ -206,7 +216,7 @@ export class LadderMarketMakerService {
       }
       results.push({
         marketId: config.marketId,
-        status: 'applied',
+        status: reconciliation === 'logged' ? 'logged' : 'applied',
         action: reason === 'publish' ? 'publish' : 'replace',
         reason
       })
@@ -226,12 +236,13 @@ export class LadderMarketMakerService {
         ? {}
         : { marketInvalidationErrorName: operatorErrorName(marketInvalidationError) }
     try {
-      await this.make.hardHalt({ reason })
+      const invalidation = await this.make.hardHalt({ reason })
       return {
         marketId,
         status: 'halted',
         stage,
-        strategyInvalidated: true,
+        strategyInvalidated: invalidation !== 'logged',
+        ...(invalidation === 'logged' ? { strategyInvalidationLogged: true } : {}),
         errorName: operatorErrorName(error),
         ...marketInvalidationFailure
       }

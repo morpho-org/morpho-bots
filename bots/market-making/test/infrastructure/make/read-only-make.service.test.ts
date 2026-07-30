@@ -14,17 +14,19 @@ describe('read-only make adapters', () => {
     const lines: string[] = []
     const service = new ReadOnlyBootstrapMakeService(line => lines.push(line))
 
-    await service.reconcile({
-      marketId,
-      desiredOffer: {
+    expect(
+      await service.reconcile({
         marketId,
-        assets: 50n,
-        rateBps: 450n,
-        referenceObservationId: 'block:100'
-      },
-      reason: 'publish'
-    })
-    await service.hardHalt({ reason: 'bootstrap-decision-failed' })
+        desiredOffer: {
+          marketId,
+          assets: 50n,
+          rateBps: 450n,
+          referenceObservationId: 'block:100'
+        },
+        reason: 'publish'
+      })
+    ).toBe('logged')
+    expect(await service.hardHalt({ reason: 'bootstrap-decision-failed' })).toBe('logged')
 
     expect(lines.map(line => JSON.parse(line))).toEqual([
       {
@@ -72,8 +74,10 @@ describe('read-only make adapters', () => {
     )
 
     expect(await service.readActive(marketId)).toBe(active)
-    await service.reconcile({ marketId, desired: active, reason: 'recenter' })
-    await service.hardHalt({ reason: 'ladder-decision-failed' })
+    expect(await service.reconcile({ marketId, desired: active, reason: 'recenter' })).toBe(
+      'logged'
+    )
+    expect(await service.hardHalt({ reason: 'ladder-decision-failed' })).toBe('logged')
 
     expect(reads).toEqual([marketId])
     expect(lines.map(line => JSON.parse(line))).toEqual([
