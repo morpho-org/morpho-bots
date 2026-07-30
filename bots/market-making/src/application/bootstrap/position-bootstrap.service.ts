@@ -7,6 +7,15 @@ import type {
   BootstrapRate,
   PositionBootstrapDecision
 } from '../../domain/bootstrap/position-bootstrap'
+import type {
+  BootstrapMakeResult,
+  BootstrapSubmittedTransaction,
+  BootstrapTransactionSubmittedEvent,
+  BootstrapTransactionSubmittedObserver,
+  BootstrapVerboseDetails,
+  BootstrapVerbosePosition,
+  BootstrapVerboseState
+} from './position-bootstrap-verbose'
 
 import { BootstrapConfigurationError } from '../../domain/bootstrap/bootstrap-configuration.error'
 import {
@@ -65,7 +74,7 @@ export interface BootstrapMakeService {
   /**
    * Reconciles one market's desired bootstrap offer or invalidates that market group.
    * @param parameters - Canonical market, optional desired offer, and stable action reason.
-   * @returns `logged` when a dry-run records the request; otherwise completion after confirmation.
+   * @returns `logged` for a dry-run, or confirmed transaction hashes for a live reconciliation.
    * @throws Error when simulation, publication, replacement, or invalidation fails.
    * @remarks Live adapters may change only the requested strategy-owned market group. Dry-run
    * adapters must return `logged` after recording the same request without mutation.
@@ -80,11 +89,12 @@ export interface BootstrapMakeService {
       | 'no-capacity'
       | 'auto-refill-disabled'
       | 'market-read-failed'
-  }): Promise<void | 'logged'>
+    onTransactionSubmitted?: BootstrapTransactionSubmittedObserver
+  }): Promise<BootstrapMakeResult>
   /**
    * Invalidates all strategy-owned bootstrap groups after a cycle-level safety failure.
    * @param parameters - Fixed safety reason that triggered strategy-wide invalidation.
-   * @returns `logged` when a dry-run records the halt; otherwise completion after invalidation.
+   * @returns `logged` for a dry-run, or confirmed cancellation hashes for a live hard halt.
    * @throws Error when one or more strategy-owned groups cannot be invalidated.
    * @remarks Live adapters perform strategy-wide cleanup and must not publish offers. Dry-run
    * adapters return `logged` without claiming cleanup occurred.
@@ -95,19 +105,22 @@ export interface BootstrapMakeService {
       | 'bootstrap-decision-failed'
       | 'bootstrap-configuration-failed'
       | 'market-invalidation-failed'
-  }): Promise<void | 'logged'>
+    onTransactionSubmitted?: BootstrapTransactionSubmittedObserver
+  }): Promise<BootstrapMakeResult>
   /**
    * Invalidates every strategy-owned bootstrap group during graceful monitoring shutdown.
-   * @returns `logged` when a dry-run records cleanup; otherwise completion after invalidation.
+   * @param parameters - Optional transaction-submission observer for verbose operator output.
+   * @returns `logged` for a dry-run, or confirmed cancellation hashes for live cleanup.
    * @throws Error when one or more strategy-owned groups cannot be invalidated.
    * @remarks Live adapters must serialize cleanup behind any in-flight mutation. Dry-run adapters
    * record the same request without signing or invalidating.
    */
-  cleanup(): Promise<void | 'logged'>
+  cleanup(parameters?: {
+    onTransactionSubmitted?: BootstrapTransactionSubmittedObserver
+  }): Promise<BootstrapMakeResult>
 }
 
-/** Sanitized outcome for one configured market in a bootstrap cycle. */
-export type BootstrapRunResult =
+type BootstrapRunOutcome =
   | {
       marketId: Hex
       status: 'observed'
@@ -159,9 +172,26 @@ export type BootstrapRunResult =
       hardHaltErrorName?: string
     }
 
+/** Sanitized outcome for one configured market in a bootstrap cycle. */
+export type BootstrapRunResult = BootstrapRunOutcome & {
+  /** Opt-in configuration, decision, transaction, and before/after position diagnostics. */
+  verbose?: BootstrapVerboseDetails
+}
+
+type BootstrapVerbosePlan = Omit<BootstrapVerboseDetails, 'stateAfterCheck'>
+
 type BootstrapRunPlan =
-  | { config: BootstrapConfig; decision: PositionBootstrapDecision }
+  | {
+      config: BootstrapConfig
+      decision: PositionBootstrapDecision
+      verbose?: BootstrapVerbosePlan
+    }
   | { result: BootstrapRunResult }
+
+type BootstrapMutationOutcome = {
+  result: BootstrapRunOutcome
+  makeResult?: BootstrapMakeResult
+}
 
 /** Final lifecycle report emitted after continuous bootstrap monitoring stops. */
 export type PositionBootstrapMonitorReport = {
@@ -175,6 +205,8 @@ export type PositionBootstrapMonitorReport = {
   cleanup: {
     status: 'applied' | 'logged' | 'failed'
     errorName?: string
+    /** Confirmed cleanup cancellations, included only for verbose monitoring. */
+    submittedTransactions?: readonly BootstrapSubmittedTransaction[]
   }
   /** Last handled failed cycle, retained only when it caused the halt. */
   lastCycle?: readonly BootstrapRunResult[]
@@ -202,16 +234,19 @@ export class PositionBootstrapService {
 
   /**
    * Repeats complete bootstrap observations until shutdown, then invalidates owned bootstrap groups.
-   * @param parameters - Shutdown signal, optional cycle writer, and testable positive interval.
+   * @param parameters - Shutdown signal, optional cycle writer, testable interval, and verbose flag.
    * @returns A terminal report after cleanup has been attempted.
    * @throws `BootstrapConfigurationError` before any cleanup when no bootstrap market is configured.
    * @remarks Each cycle finishes before shutdown cleanup begins. Cycles never overlap, every
-   * completed result is emitted once, and cleanup is serialized through the make port.
+   * completed result is emitted once, and cleanup is serialized through the make port. Verbose
+   * cycles perform a second read per market after each check and expose only safe operational data.
    */
   async runContinuously(parameters: {
     signal: AbortSignal
     onCycle?: (results: readonly Record<string, unknown>[]) => void | Promise<void>
     intervalMs?: number
+    verbose?: boolean
+    onTransactionSubmitted?: (event: BootstrapTransactionSubmittedEvent) => void | Promise<void>
   }): Promise<PositionBootstrapMonitorReport> {
     if (this.configs.length === 0) {
       throw new BootstrapConfigurationError(
@@ -236,7 +271,10 @@ export class PositionBootstrapService {
     while (!parameters.signal.aborted) {
       let results: readonly BootstrapRunResult[]
       try {
-        results = await this.runOnce()
+        results = await this.runOnce({
+          verbose: parameters.verbose,
+          onTransactionSubmitted: parameters.onTransactionSubmitted
+        })
         cycles += 1
         await parameters.onCycle?.(results)
       } catch (error) {
@@ -256,8 +294,20 @@ export class PositionBootstrapService {
 
     let cleanup: PositionBootstrapMonitorReport['cleanup']
     try {
-      const result = await this.cleanup()
-      cleanup = { status: result === 'logged' ? 'logged' : 'applied' }
+      const result = await this.cleanup({
+        onTransactionSubmitted:
+          parameters.verbose && parameters.onTransactionSubmitted
+            ? transaction =>
+                parameters.onTransactionSubmitted?.({
+                  event: 'bootstrap.transaction-submitted',
+                  ...transaction
+                })
+            : undefined
+      })
+      cleanup = {
+        status: result === 'logged' ? 'logged' : 'applied',
+        ...(parameters.verbose ? { submittedTransactions: this.submittedTransactions(result) } : {})
+      }
     } catch (error) {
       cleanup = { status: 'failed', errorName: operatorErrorName(error) }
       reason = 'cleanup-failed'
@@ -275,34 +325,66 @@ export class PositionBootstrapService {
 
   /**
    * Invalidates every strategy-owned bootstrap group after monitoring stops.
-   * @returns `logged` for read-only cleanup or completion after live invalidations confirm.
+   * @param parameters - Optional transaction-submission observer for verbose operator output.
+   * @returns `logged` for read-only cleanup or confirmed hashes after live invalidations.
    * @throws Error when the make adapter cannot complete exhaustive strategy cleanup.
    * @remarks Cleanup is serialized behind any in-flight publication, replacement, or invalidation.
    */
-  cleanup() {
-    return this.make.cleanup()
+  cleanup(
+    parameters: {
+      onTransactionSubmitted?: BootstrapTransactionSubmittedObserver
+    } = {}
+  ) {
+    return this.make.cleanup(parameters)
   }
 
   /**
    * Validates all configured markets, then applies one fresh bootstrap cycle per market.
+   * @param parameters - Optional verbose flag for safe before/after state and transaction details.
    * @returns Ordered market outcomes; dry-run make requests are `logged`, never `applied`.
    * @throws Never for handled provider, configuration, or make failures; their classifications and
    *   cleanup evidence are returned in the structured result.
    * @remarks Invalid configuration hard-halts before any position/reference read or publication.
+   * Verbose mode adds a fresh post-check read without exposing signer identity or provider details.
    */
-  async runOnce() {
+  async runOnce(
+    parameters: {
+      verbose?: boolean
+      onTransactionSubmitted?: (event: BootstrapTransactionSubmittedEvent) => void | Promise<void>
+    } = {}
+  ) {
+    const verbose = parameters.verbose === true
     const results: BootstrapRunResult[] = []
     for (const config of this.configs) {
       try {
         validateBootstrapConfig(config)
       } catch (error) {
+        const halt = await this.haltStrategy(
+          config.marketId,
+          'configuration',
+          error,
+          'bootstrap-configuration-failed',
+          this.transactionObserver(parameters, verbose)
+        )
+        const submittedTransactions = this.submittedTransactions(halt.makeResult)
         results.push(
-          await this.haltStrategy(
-            config.marketId,
-            'configuration',
-            error,
-            'bootstrap-configuration-failed'
-          )
+          verbose
+            ? {
+                ...halt.result,
+                verbose: {
+                  config,
+                  currentState: {
+                    status: 'not-read',
+                    reason: 'configuration-invalid'
+                  },
+                  ...(submittedTransactions.length > 0 ? { submittedTransactions } : {}),
+                  stateAfterCheck: {
+                    status: 'not-read',
+                    reason: 'configuration-invalid'
+                  }
+                }
+              }
+            : halt.result
         )
         return results
       }
@@ -314,42 +396,61 @@ export class PositionBootstrapService {
     const reservedAssetsDeltaByMarket = new Map<Hex, bigint>()
 
     for (const config of this.configs) {
-      let position: Awaited<ReturnType<BootstrapPositionService['readPosition']>>
+      let observedPosition: Awaited<ReturnType<BootstrapPositionService['readPosition']>>
       try {
-        position = await this.positions.readPosition(config.marketId)
+        observedPosition = await this.positions.readPosition(config.marketId)
       } catch (error) {
-        const result = await this.failedMarketRead(
+        const failure = await this.failedMarketRead(
           config.marketId,
           'position-read',
           error,
-          'market-read-failed'
+          'market-read-failed',
+          this.transactionObserver(parameters, verbose, config.marketId),
+          this.transactionObserver(parameters, verbose)
         )
-        if (result.status === 'halted') return [...preflightResults(), result]
-        plans.push({ result })
+        const completedResult = await this.withVerboseDetails(
+          failure.result,
+          verbose,
+          {
+            config,
+            currentState: {
+              status: 'failed',
+              errorName: operatorErrorName(error)
+            }
+          },
+          true,
+          failure.makeResult
+        )
+        if (failure.result.status === 'halted') {
+          return [...preflightResults(), completedResult]
+        }
+        plans.push({ result: completedResult })
         continue
       }
+      const currentState = this.verbosePosition(config.marketId, observedPosition)
       const marketReservationDelta = reservedAssetsDeltaByMarket.get(config.marketId) ?? 0n
-      position = {
-        ...position,
+      const position = {
+        ...observedPosition,
         cashBalance:
           reservedAssetsDelta >= 0n
-            ? position.cashBalance > reservedAssetsDelta
-              ? position.cashBalance - reservedAssetsDelta
+            ? observedPosition.cashBalance > reservedAssetsDelta
+              ? observedPosition.cashBalance - reservedAssetsDelta
               : 0n
-            : position.cashBalance - reservedAssetsDelta,
+            : observedPosition.cashBalance - reservedAssetsDelta,
         marketExposure:
           marketReservationDelta >= 0n
-            ? position.marketExposure + marketReservationDelta
-            : position.marketExposure > -marketReservationDelta
-              ? position.marketExposure + marketReservationDelta
+            ? observedPosition.marketExposure + marketReservationDelta
+            : observedPosition.marketExposure > -marketReservationDelta
+              ? observedPosition.marketExposure + marketReservationDelta
               : 0n,
         totalExposure:
           reservedAssetsDelta >= 0n
-            ? position.totalExposure + reservedAssetsDelta
-            : position.totalExposure > -reservedAssetsDelta
-              ? position.totalExposure + reservedAssetsDelta
+            ? observedPosition.totalExposure + reservedAssetsDelta
+            : observedPosition.totalExposure > -reservedAssetsDelta
+              ? observedPosition.totalExposure + reservedAssetsDelta
               : 0n
       }
+      const effectiveState = this.verbosePosition(config.marketId, position)
 
       let transition: ReturnType<typeof decidePositionBootstrapTransition>
       try {
@@ -360,30 +461,58 @@ export class PositionBootstrapService {
           initialTargetCompleted: this.completedMarkets.has(config.marketId)
         })
       } catch (error) {
-        const result = await this.haltStrategy(
+        const halt = await this.haltStrategy(
           config.marketId,
           'decision',
           error,
-          'bootstrap-decision-failed'
+          'bootstrap-decision-failed',
+          this.transactionObserver(parameters, verbose)
         )
-        return [...preflightResults(), result]
+        return [
+          ...preflightResults(),
+          await this.withVerboseDetails(
+            halt.result,
+            verbose,
+            {
+              config,
+              currentState: { status: 'observed', position: currentState },
+              effectiveState
+            },
+            true,
+            halt.makeResult
+          )
+        ]
       }
       let decision: PositionBootstrapDecision
+      let rate: BootstrapRate | undefined
 
       if (transition) {
         decision = transition
       } else {
-        let rate: BootstrapRate
         try {
           rate = await this.rates.readRate(config.marketId)
         } catch (error) {
-          const result = await this.haltStrategy(
+          const halt = await this.haltStrategy(
             config.marketId,
             'reference-read',
             error,
-            'reference-read-failed'
+            'reference-read-failed',
+            this.transactionObserver(parameters, verbose)
           )
-          return [...preflightResults(), result]
+          return [
+            ...preflightResults(),
+            await this.withVerboseDetails(
+              halt.result,
+              verbose,
+              {
+                config,
+                currentState: { status: 'observed', position: currentState },
+                effectiveState
+              },
+              true,
+              halt.makeResult
+            )
+          ]
         }
 
         try {
@@ -396,17 +525,53 @@ export class PositionBootstrapService {
             initialTargetCompleted: this.completedMarkets.has(config.marketId)
           })
         } catch (error) {
-          const result = await this.haltStrategy(
+          const halt = await this.haltStrategy(
             config.marketId,
             'decision',
             error,
-            'bootstrap-decision-failed'
+            'bootstrap-decision-failed',
+            this.transactionObserver(parameters, verbose)
           )
-          return [...preflightResults(), result]
+          return [
+            ...preflightResults(),
+            await this.withVerboseDetails(
+              halt.result,
+              verbose,
+              {
+                config,
+                currentState: { status: 'observed', position: currentState },
+                effectiveState,
+                referenceRate: rate,
+                targetRateBps: rate.rateBps + config.premiumBps
+              },
+              true,
+              halt.makeResult
+            )
+          ]
         }
       }
 
-      plans.push({ config, decision })
+      plans.push({
+        config,
+        decision,
+        ...(verbose
+          ? {
+              verbose: {
+                config,
+                currentState: { status: 'observed' as const, position: currentState },
+                effectiveState,
+                ...(rate
+                  ? {
+                      referenceRate: rate,
+                      targetRateBps: rate.rateBps + config.premiumBps
+                    }
+                  : {}),
+                decision,
+                ...('offer' in decision ? { bootstrapOffer: decision.offer } : {})
+              }
+            }
+          : {})
+      })
       if (decision.kind === 'publish' || decision.kind === 'replace') {
         const replacedAssets =
           decision.kind === 'replace' ? (position.activeOffer?.assets ?? 0n) : 0n
@@ -432,77 +597,122 @@ export class PositionBootstrapService {
       }
 
       if (decision.kind === 'target-reached') {
-        results.push({
-          marketId: config.marketId,
-          status: 'observed' as const,
-          action: 'target-reached' as const
-        })
+        results.push(
+          await this.withVerboseDetails(
+            {
+              marketId: config.marketId,
+              status: 'observed' as const,
+              action: 'target-reached' as const
+            },
+            verbose,
+            plan.verbose
+          )
+        )
         continue
       }
       if (decision.kind === 'observe') {
-        results.push({
-          marketId: config.marketId,
-          status: 'observed' as const,
-          action: decision.reason
-        })
+        results.push(
+          await this.withVerboseDetails(
+            {
+              marketId: config.marketId,
+              status: 'observed' as const,
+              action: decision.reason
+            },
+            verbose,
+            plan.verbose
+          )
+        )
         continue
       }
       if (decision.kind === 'rest') {
-        results.push({
-          marketId: config.marketId,
-          status: 'observed' as const,
-          action: 'rest' as const
-        })
+        results.push(
+          await this.withVerboseDetails(
+            {
+              marketId: config.marketId,
+              status: 'observed' as const,
+              action: 'rest' as const
+            },
+            verbose,
+            plan.verbose
+          )
+        )
         continue
       }
       if (decision.kind === 'invalidate') {
-        let reconciliation: void | 'logged'
+        let reconciliation: BootstrapMakeResult
         try {
           reconciliation = await this.make.reconcile({
             marketId: config.marketId,
             desiredOffer: undefined,
-            reason: decision.reason
+            reason: decision.reason,
+            onTransactionSubmitted: this.transactionObserver(parameters, verbose, config.marketId)
           })
         } catch (error) {
+          const halt = await this.haltAfterInvalidationFailure(
+            config.marketId,
+            { stage: 'make', reason: decision.reason },
+            error,
+            this.transactionObserver(parameters, verbose)
+          )
           results.push(
-            await this.haltAfterInvalidationFailure(
-              config.marketId,
-              { stage: 'make', reason: decision.reason },
-              error
-            )
+            await this.withVerboseDetails(halt.result, verbose, plan.verbose, true, halt.makeResult)
           )
           return results
         }
-        results.push({
-          marketId: config.marketId,
-          status: reconciliation === 'logged' ? ('logged' as const) : ('applied' as const),
-          action: 'invalidate' as const
-        })
+        results.push(
+          await this.withVerboseDetails(
+            {
+              marketId: config.marketId,
+              status: reconciliation === 'logged' ? ('logged' as const) : ('applied' as const),
+              action: 'invalidate' as const
+            },
+            verbose,
+            plan.verbose,
+            false,
+            reconciliation
+          )
+        )
         continue
       }
 
-      let reconciliation: void | 'logged'
+      let reconciliation: BootstrapMakeResult
       try {
         reconciliation = await this.make.reconcile({
           marketId: config.marketId,
           desiredOffer: decision.offer,
-          reason: decision.kind
+          reason: decision.kind,
+          onTransactionSubmitted: this.transactionObserver(parameters, verbose, config.marketId)
         })
       } catch (error) {
-        results.push({
-          marketId: config.marketId,
-          status: 'failed' as const,
-          stage: 'make' as const,
-          invalidated: false,
-          ...operatorErrorDetails(error)
-        })
+        results.push(
+          await this.withVerboseDetails(
+            {
+              marketId: config.marketId,
+              status: 'failed' as const,
+              stage: 'make' as const,
+              invalidated: false,
+              ...operatorErrorDetails(error)
+            },
+            verbose,
+            plan.verbose,
+            true
+          )
+        )
         return results
       }
-      results.push({
-        marketId: config.marketId,
-        status: reconciliation === 'logged' ? ('logged' as const) : ('applied' as const),
-        action: decision.kind
-      })
+      results.push(
+        await this.withVerboseDetails(
+          {
+            marketId: config.marketId,
+            status: reconciliation === 'logged' ? ('logged' as const) : ('applied' as const),
+            action: decision.kind
+          },
+          verbose,
+          plan.verbose,
+          false,
+          reconciliation
+        )
+      )
     }
     return results
   }
@@ -511,27 +721,34 @@ export class PositionBootstrapService {
     marketId: Hex,
     stage: 'position-read',
     readError: unknown,
-    reason: 'market-read-failed'
-  ): Promise<BootstrapRunResult> {
+    reason: 'market-read-failed',
+    onTransactionSubmitted?: BootstrapTransactionSubmittedObserver,
+    onHardHaltTransactionSubmitted?: BootstrapTransactionSubmittedObserver
+  ): Promise<BootstrapMutationOutcome> {
     try {
       const reconciliation = await this.make.reconcile({
         marketId,
         desiredOffer: undefined,
-        reason
+        reason,
+        onTransactionSubmitted
       })
       return {
-        marketId,
-        status: 'failed' as const,
-        stage,
-        invalidated: reconciliation !== 'logged',
-        ...(reconciliation === 'logged' ? { invalidationLogged: true } : {}),
-        errorName: operatorErrorName(readError)
+        result: {
+          marketId,
+          status: 'failed' as const,
+          stage,
+          invalidated: reconciliation !== 'logged',
+          ...(reconciliation === 'logged' ? { invalidationLogged: true } : {}),
+          errorName: operatorErrorName(readError)
+        },
+        makeResult: reconciliation
       }
     } catch (invalidationError) {
       return this.haltAfterInvalidationFailure(
         marketId,
         { stage, error: readError },
-        invalidationError
+        invalidationError,
+        onHardHaltTransactionSubmitted
       )
     }
   }
@@ -539,12 +756,16 @@ export class PositionBootstrapService {
   private async haltAfterInvalidationFailure(
     marketId: Hex,
     context: FailedInvalidationContext,
-    invalidationError: unknown
-  ): Promise<BootstrapRunResult> {
+    invalidationError: unknown,
+    onTransactionSubmitted?: BootstrapTransactionSubmittedObserver
+  ): Promise<BootstrapMutationOutcome> {
     let hardHaltError: unknown
-    let hardHaltResult: void | 'logged' = undefined
+    let hardHaltResult: BootstrapMakeResult = undefined
     try {
-      hardHaltResult = await this.make.hardHalt({ reason: 'market-invalidation-failed' })
+      hardHaltResult = await this.make.hardHalt({
+        reason: 'market-invalidation-failed',
+        onTransactionSubmitted
+      })
     } catch (error) {
       hardHaltError = error
     }
@@ -560,24 +781,30 @@ export class PositionBootstrapService {
     }
     if (context.stage === 'position-read') {
       return {
-        marketId,
-        status: 'halted' as const,
-        stage: context.stage,
-        strategyInvalidated,
-        errorName: operatorErrorName(context.error),
-        invalidationErrorName: operatorErrorName(invalidationError),
-        ...cleanupFailure
+        result: {
+          marketId,
+          status: 'halted' as const,
+          stage: context.stage,
+          strategyInvalidated,
+          errorName: operatorErrorName(context.error),
+          invalidationErrorName: operatorErrorName(invalidationError),
+          ...cleanupFailure
+        },
+        ...(hardHaltError === undefined ? { makeResult: hardHaltResult } : {})
       }
     }
     return {
-      marketId,
-      status: 'halted' as const,
-      stage: context.stage,
-      action: 'invalidate' as const,
-      reason: context.reason,
-      strategyInvalidated,
-      invalidationErrorName: operatorErrorName(invalidationError),
-      ...cleanupFailure
+      result: {
+        marketId,
+        status: 'halted' as const,
+        stage: context.stage,
+        action: 'invalidate' as const,
+        reason: context.reason,
+        strategyInvalidated,
+        invalidationErrorName: operatorErrorName(invalidationError),
+        ...cleanupFailure
+      },
+      ...(hardHaltError === undefined ? { makeResult: hardHaltResult } : {})
     }
   }
 
@@ -585,27 +812,107 @@ export class PositionBootstrapService {
     marketId: Hex,
     stage: 'configuration' | 'reference-read' | 'decision',
     failure: unknown,
-    reason: 'reference-read-failed' | 'bootstrap-decision-failed' | 'bootstrap-configuration-failed'
-  ) {
+    reason:
+      | 'reference-read-failed'
+      | 'bootstrap-decision-failed'
+      | 'bootstrap-configuration-failed',
+    onTransactionSubmitted?: BootstrapTransactionSubmittedObserver
+  ): Promise<BootstrapMutationOutcome> {
     try {
-      const invalidation = await this.make.hardHalt({ reason })
+      const invalidation = await this.make.hardHalt({ reason, onTransactionSubmitted })
       return {
-        marketId,
-        status: 'halted' as const,
-        stage,
-        strategyInvalidated: invalidation !== 'logged',
-        ...(invalidation === 'logged' ? { strategyInvalidationLogged: true } : {}),
-        errorName: operatorErrorName(failure)
+        result: {
+          marketId,
+          status: 'halted' as const,
+          stage,
+          strategyInvalidated: invalidation !== 'logged',
+          ...(invalidation === 'logged' ? { strategyInvalidationLogged: true } : {}),
+          errorName: operatorErrorName(failure)
+        },
+        makeResult: invalidation
       }
     } catch (invalidationError) {
       return {
-        marketId,
-        status: 'halted' as const,
-        stage,
-        strategyInvalidated: false,
-        errorName: operatorErrorName(failure),
-        invalidationErrorName: operatorErrorName(invalidationError)
+        result: {
+          marketId,
+          status: 'halted' as const,
+          stage,
+          strategyInvalidated: false,
+          errorName: operatorErrorName(failure),
+          invalidationErrorName: operatorErrorName(invalidationError)
+        }
       }
     }
+  }
+
+  private verbosePosition(
+    marketId: Hex,
+    position: Awaited<ReturnType<BootstrapPositionService['readPosition']>>
+  ): BootstrapVerbosePosition {
+    return {
+      credit: position.credit,
+      debt: position.debt,
+      cashBalance: position.cashBalance,
+      marketExposure: position.marketExposure,
+      totalExposure: position.totalExposure,
+      ...(position.activeOffer ? { activeOffer: position.activeOffer } : {}),
+      requiresReconciliation: position.requiresReconciliation === true,
+      initialTargetCompleted: this.completedMarkets.has(marketId)
+    }
+  }
+
+  private async readVerboseState(marketId: Hex): Promise<BootstrapVerboseState> {
+    try {
+      return {
+        status: 'observed',
+        position: this.verbosePosition(marketId, await this.positions.readPosition(marketId))
+      }
+    } catch (error) {
+      return { status: 'failed', errorName: operatorErrorName(error) }
+    }
+  }
+
+  private async withVerboseDetails(
+    result: BootstrapRunOutcome,
+    verbose: boolean,
+    details?: BootstrapVerbosePlan,
+    forceStateRead = false,
+    makeResult?: BootstrapMakeResult
+  ): Promise<BootstrapRunResult> {
+    if (!verbose || !details) return result
+    const submittedTransactions = this.submittedTransactions(makeResult)
+    return {
+      ...result,
+      verbose: {
+        ...details,
+        ...(submittedTransactions.length > 0 ? { submittedTransactions } : {}),
+        stateAfterCheck:
+          forceStateRead || details.currentState.status !== 'not-read'
+            ? await this.readVerboseState(result.marketId)
+            : details.currentState
+      }
+    }
+  }
+
+  private submittedTransactions(
+    result: BootstrapMakeResult
+  ): readonly BootstrapSubmittedTransaction[] {
+    return result && result !== 'logged' ? result.submittedTransactions : []
+  }
+
+  private transactionObserver(
+    parameters: {
+      onTransactionSubmitted?: (event: BootstrapTransactionSubmittedEvent) => void | Promise<void>
+    },
+    verbose: boolean,
+    marketId?: Hex
+  ): BootstrapTransactionSubmittedObserver | undefined {
+    if (!verbose || !parameters.onTransactionSubmitted) return undefined
+    return transaction =>
+      parameters.onTransactionSubmitted?.({
+        event: 'bootstrap.transaction-submitted',
+        ...(marketId ? { marketId } : {}),
+        ...transaction
+      })
   }
 }

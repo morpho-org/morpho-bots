@@ -15,6 +15,7 @@ import {
 import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
 
+import type { BootstrapTransactionSubmittedObserver } from '../../application/bootstrap/position-bootstrap-verbose'
 import type {
   BootstrapMakeService,
   BootstrapPositionService,
@@ -300,15 +301,19 @@ export const createProductionBootstrapAdapters = (
 
   const execute = async (
     transaction: { to: `0x${string}`; data: Hex; value: bigint },
-    policy: Parameters<typeof assertBootstrapTransaction>[1]
+    policy: Parameters<typeof assertBootstrapTransaction>[1],
+    operation: 'cancel' | 'publish',
+    onTransactionSubmitted?: BootstrapTransactionSubmittedObserver
   ) => {
     await assertBootstrapTransaction(transaction, policy)
     const hash = await wallet.sendTransaction(transaction)
+    await onTransactionSubmitted?.({ operation, txHash: hash })
     const receipt = await wallet.waitForTransactionReceipt({
       hash,
       timeout: config.requestTimeoutMs
     })
     if (receipt.status !== 'success') throw new BootstrapAdapterError('transaction-reverted')
+    return hash
   }
 
   const preparedOffers = new Map<Hex, Offer>()
@@ -321,13 +326,18 @@ export const createProductionBootstrapAdapters = (
       preparedOffers.set(offer.marketId, created)
       return { marketId: offer.marketId, buy: true, tick: created.tick }
     },
-    invalidate: async group => {
-      await execute(midnight.cancelOffer({ group, accountAddress: maker }).buildTx(), {
-        kind: 'cancel',
-        target: config.setup.midnight,
-        groupId: group,
-        account: maker
-      })
+    invalidate: async (group, onTransactionSubmitted) => {
+      return execute(
+        midnight.cancelOffer({ group, accountAddress: maker }).buildTx(),
+        {
+          kind: 'cancel',
+          target: config.setup.midnight,
+          groupId: group,
+          account: maker
+        },
+        'cancel',
+        onTransactionSubmitted
+      )
     },
     reserveGroup: ownership.reserve,
     confirmPublishedGroup: ownership.confirm,
@@ -354,7 +364,8 @@ export const createProductionBootstrapAdapters = (
       await assertBootstrapTransaction(transaction, publicationPolicy)
       return {
         groupId: output.groups[0] as Hex,
-        publish: () => execute(transaction, publicationPolicy)
+        publish: onTransactionSubmitted =>
+          execute(transaction, publicationPolicy, 'publish', onTransactionSubmitted)
       }
     }
   })

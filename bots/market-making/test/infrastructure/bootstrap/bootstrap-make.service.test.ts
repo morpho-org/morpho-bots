@@ -2,6 +2,8 @@ import type { Hex } from 'viem'
 
 import { describe, expect, test } from 'bun:test'
 
+import type { BootstrapSubmittedTransaction } from '../../../src/application/bootstrap/position-bootstrap-verbose'
+
 import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/bootstrap-adapter.error'
 import { BootstrapHardHaltError } from '../../../src/infrastructure/bootstrap/bootstrap-hard-halt.error'
 import { MidnightBootstrapMakeService } from '../../../src/infrastructure/bootstrap/bootstrap-make.service'
@@ -9,6 +11,8 @@ import { MidnightBootstrapMakeService } from '../../../src/infrastructure/bootst
 const marketId: Hex = `0x${'11'.repeat(32)}`
 const groupId: Hex = `0x${'22'.repeat(32)}`
 const publishedGroupId: Hex = `0x${'33'.repeat(32)}`
+const cancellationHash: Hex = `0x${'aa'.repeat(32)}`
+const publicationHash: Hex = `0x${'bb'.repeat(32)}`
 const desiredOffer = {
   marketId,
   assets: 100n,
@@ -68,6 +72,99 @@ describe('MidnightBootstrapMakeService', () => {
     await service.reconcile({ marketId, desiredOffer, reason: 'publish' })
 
     expect(events).toEqual(['book', 'publish'])
+  })
+
+  test('returns confirmed cancellation and publication hashes in submission order', async () => {
+    const submitted: BootstrapSubmittedTransaction[] = []
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [{ id: groupId, marketId, assets: 100n, rateBps: 400n }],
+      listBookOffers: async () => [],
+      toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
+      preparePublication: async () => ({
+        groupId: publishedGroupId,
+        publish: async observer => {
+          await observer?.({ operation: 'publish', txHash: publicationHash })
+          return publicationHash
+        }
+      }),
+      reserveGroup: async () => {},
+      confirmPublishedGroup: async () => {},
+      releaseGroupReservation: async () => {},
+      invalidate: async (_group, observer) => {
+        await observer?.({ operation: 'cancel', txHash: cancellationHash })
+        return cancellationHash
+      }
+    })
+
+    expect(
+      await service.reconcile({
+        marketId,
+        desiredOffer,
+        reason: 'replace',
+        onTransactionSubmitted: transaction => {
+          submitted.push(transaction)
+        }
+      })
+    ).toEqual({
+      submittedTransactions: [
+        { operation: 'cancel', txHash: cancellationHash },
+        { operation: 'publish', txHash: publicationHash }
+      ]
+    })
+    expect(submitted).toEqual([
+      { operation: 'cancel', txHash: cancellationHash },
+      { operation: 'publish', txHash: publicationHash }
+    ])
+  })
+
+  test('does not interrupt receipt handling when the submission observer fails', async () => {
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [],
+      listBookOffers: async () => [],
+      toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
+      preparePublication: async () => ({
+        groupId: publishedGroupId,
+        publish: async observer => {
+          await observer?.({ operation: 'publish', txHash: publicationHash })
+          return publicationHash
+        }
+      }),
+      reserveGroup: async () => {},
+      confirmPublishedGroup: async () => {},
+      releaseGroupReservation: async () => {},
+      invalidate: async () => cancellationHash
+    })
+
+    expect(
+      await service.reconcile({
+        marketId,
+        desiredOffer,
+        reason: 'publish',
+        onTransactionSubmitted: () => {
+          throw new Error('terminal unavailable')
+        }
+      })
+    ).toEqual({
+      submittedTransactions: [{ operation: 'publish', txHash: publicationHash }]
+    })
+  })
+
+  test('returns confirmed cancellation hashes from graceful cleanup', async () => {
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [],
+      listOwnedGroupIds: async () => [groupId],
+      listBookOffers: async () => [],
+      toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
+      preparePublication: async () => ({ groupId, publish: async () => publicationHash }),
+      reserveGroup: async () => {},
+      confirmPublishedGroup: async () => {},
+      releaseGroupReservation: async () => {},
+      invalidate: async () => cancellationHash
+    })
+
+    expect(await service.cleanup()).toEqual({
+      submittedTransactions: [{ operation: 'cancel', txHash: cancellationHash }]
+    })
   })
 
   test('persists a published group for ownership after a process restart', async () => {

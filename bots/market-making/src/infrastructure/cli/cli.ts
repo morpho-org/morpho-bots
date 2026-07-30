@@ -1,5 +1,6 @@
 import { Command, CommanderError } from 'commander'
 
+import type { BootstrapTransactionSubmittedEvent } from '../../application/bootstrap/position-bootstrap-verbose'
 import type { PositionBootstrapMonitorReport } from '../../application/bootstrap/position-bootstrap.service'
 import type {
   SetupCheckMonitorReport,
@@ -22,12 +23,17 @@ interface SetupReadinessService {
 }
 
 interface PositionBootstrapService {
-  runOnce(): Promise<readonly { status: string; [key: string]: unknown }[]>
+  runOnce(parameters?: {
+    verbose?: boolean
+    onTransactionSubmitted?: (event: BootstrapTransactionSubmittedEvent) => void | Promise<void>
+  }): Promise<readonly { status: string; [key: string]: unknown }[]>
   runContinuously?(parameters: {
     signal: AbortSignal
     onCycle?: (
       result: readonly { status: string; [key: string]: unknown }[]
     ) => void | Promise<void>
+    verbose?: boolean
+    onTransactionSubmitted?: (event: BootstrapTransactionSubmittedEvent) => void | Promise<void>
   }): Promise<PositionBootstrapMonitorReport>
 }
 
@@ -116,10 +122,14 @@ export class Cli {
       .command('bootstrap')
       .description('run one position-bootstrap cycle or monitor continuously')
       .option('--monitor', 'repeat every minute and clean up owned offers on shutdown')
+      .option(
+        '--verbose',
+        'show config, rates, offers, balances, exposures, and transaction hashes'
+      )
 
     bootstrapCommand.action(async () => {
       const options = this.program.opts<{ config?: string; readonly?: boolean }>()
-      const bootstrapOptions = bootstrapCommand.opts<{ monitor?: boolean }>()
+      const bootstrapOptions = bootstrapCommand.opts<{ monitor?: boolean; verbose?: boolean }>()
       const bootstrapService = await bootstrap({
         configPath: options.config,
         readOnly: options.readonly === true
@@ -128,7 +138,12 @@ export class Cli {
         if (!bootstrapService.runContinuously) throw new CliUsageError()
         const result = await bootstrapService.runContinuously({
           signal: this.runtime.signal ?? new AbortController().signal,
-          onCycle: cycle => this.runtime.writeEvent?.(cycle)
+          onCycle: cycle => this.runtime.writeEvent?.(cycle),
+          verbose: bootstrapOptions.verbose === true,
+          onTransactionSubmitted:
+            bootstrapOptions.verbose === true
+              ? event => this.runtime.writeEvent?.(event)
+              : undefined
         })
         if (result.status === 'halted') {
           throw new PositionBootstrapHaltedError([result])
@@ -138,7 +153,11 @@ export class Cli {
         return
       }
 
-      const result = await bootstrapService.runOnce()
+      const result = await bootstrapService.runOnce({
+        verbose: bootstrapOptions.verbose === true,
+        onTransactionSubmitted:
+          bootstrapOptions.verbose === true ? event => this.runtime.writeEvent?.(event) : undefined
+      })
       if (Array.isArray(result) && bootstrapCycleHasFailure(result)) {
         throw new PositionBootstrapHaltedError(result)
       }
@@ -186,8 +205,10 @@ export class Cli {
    * readiness without writes. A failed monitor report exits through `SetupMonitorHaltedError`.
    * Position bootstrap runs only for the explicit `bootstrap` command;
    * `bootstrap --monitor` repeats at the fixed bootstrap cadence and performs strategy cleanup
-   * after its signal. Ladder reconciliation runs only for the explicit `ladder` command. With
-   * `--readonly`, configuration never loads a private key and make adapters suppress mutations.
+   * after its signal. `bootstrap --verbose` adds safe configuration, rate, offer, position, and
+   * transaction-hash diagnostics. Ladder reconciliation runs only for the explicit `ladder`
+   * command. With `--readonly`, configuration never loads a private key and make adapters suppress
+   * mutations.
    */
   async run(argv: readonly string[], runtime: CliRuntimeOptions = {}): Promise<unknown> {
     if (argv.length === 0) throw new CliUsageError()

@@ -1,5 +1,10 @@
 import type { Hex } from 'viem'
 
+import type {
+  BootstrapMakeResult,
+  BootstrapSubmittedTransaction,
+  BootstrapTransactionSubmittedObserver
+} from '../../application/bootstrap/position-bootstrap-verbose'
 import type { BootstrapMakeService } from '../../application/bootstrap/position-bootstrap.service'
 import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
 import type { BootstrapActiveGroup } from './bootstrap-position.service'
@@ -22,7 +27,10 @@ interface BootstrapOfferTransport {
   /** Projects a domain offer into its exact protocol tick. @param offer - Desired offer. @returns Prospective book offer. */
   toProspectiveBookOffer(offer: BootstrapOffer): Promise<BootstrapBookOffer>
   /** Builds and signs one publication without broadcasting it. @param offer - Desired offer. @returns Reserved group ID and a one-shot confirmed publisher. */
-  preparePublication(offer: BootstrapOffer): Promise<{ groupId: Hex; publish(): Promise<void> }>
+  preparePublication(offer: BootstrapOffer): Promise<{
+    groupId: Hex
+    publish(onTransactionSubmitted?: BootstrapTransactionSubmittedObserver): Promise<Hex | void>
+  }>
   /** Durably records publication intent before broadcast. @param group - Future group ID. @returns Completion after durable storage. */
   reserveGroup(group: Hex, offer: BootstrapOffer): Promise<void>
   /** Finalizes a confirmed group while retaining ownership. @param group - Confirmed group ID. @returns Completion after durable storage. */
@@ -30,7 +38,10 @@ interface BootstrapOfferTransport {
   /** Removes intent after publication fails. @param group - Unpublished group ID. @returns Completion after durable storage. */
   releaseGroupReservation(group: Hex): Promise<void>
   /** Invalidates one active group onchain. @param group - Active group ID. @returns Completion after receipt confirmation. */
-  invalidate(group: Hex): Promise<void>
+  invalidate(
+    group: Hex,
+    onTransactionSubmitted?: BootstrapTransactionSubmittedObserver
+  ): Promise<Hex | void>
 }
 
 /** Serialized production adapter for one-cycle bootstrap publication and hard halts. */
@@ -43,7 +54,7 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
   /**
    * Reconciles one market after reloading Mempool truth inside the mutation queue.
    * @param parameters - Market, desired lend offer, and audited decision reason.
-   * @returns Completion after invalidations/publication have confirmed.
+   * @returns Confirmed cancellation and publication transaction hashes in submission order.
    * @throws When any protocol mutation or confirmation fails.
    * @remarks Mutations are serialized; publication never races invalidation.
    */
@@ -57,8 +68,10 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
       | 'no-capacity'
       | 'auto-refill-disabled'
       | 'market-read-failed'
+    onTransactionSubmitted?: BootstrapTransactionSubmittedObserver
   }) {
     return this.enqueue(async () => {
+      const submittedTransactions: BootstrapSubmittedTransaction[] = []
       const groups = await this.strategyGroups()
       const marketGroupIds = bootstrapMarketGroupIds(groups, parameters.marketId)
       let publication:
@@ -77,7 +90,11 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
       }
       try {
         for (const groupId of marketGroupIds) {
-          await this.transport.invalidate(groupId)
+          const txHash = await this.transport.invalidate(
+            groupId,
+            this.safeObserver(parameters.onTransactionSubmitted)
+          )
+          if (txHash) submittedTransactions.push({ operation: 'cancel', txHash })
         }
       } catch (error) {
         if (publication) {
@@ -91,7 +108,10 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
       }
       if (publication) {
         try {
-          await publication.publish()
+          const txHash = await publication.publish(
+            this.safeObserver(parameters.onTransactionSubmitted)
+          )
+          if (txHash) submittedTransactions.push({ operation: 'publish', txHash })
         } catch (error) {
           if (
             error instanceof BootstrapAdapterError &&
@@ -107,13 +127,14 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
         }
         await this.transport.confirmPublishedGroup(publication.groupId)
       }
+      return { submittedTransactions } satisfies BootstrapMakeResult
     })
   }
 
   /**
    * Invalidates every currently re-derived strategy bootstrap group serially.
    * @param parameters - Stable strategy-wide halt reason.
-   * @returns Completion after all active groups have confirmed invalidation.
+   * @returns Confirmed cancellation transaction hashes in submission order.
    * @throws When listing or invalidating any group fails.
    */
   hardHalt(parameters: {
@@ -122,27 +143,36 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
       | 'bootstrap-decision-failed'
       | 'bootstrap-configuration-failed'
       | 'market-invalidation-failed'
+    onTransactionSubmitted?: BootstrapTransactionSubmittedObserver
   }) {
     void parameters
-    return this.enqueue(() => this.invalidateOwnedGroups())
+    return this.enqueue(() => this.invalidateOwnedGroups(parameters.onTransactionSubmitted))
   }
 
   /**
    * Invalidates every explicitly owned bootstrap group during graceful shutdown.
-   * @returns Completion after every cancellation attempt and receipt confirmation.
+   * @param parameters - Optional observer notified as each cancellation receives its hash.
+   * @returns Confirmed cancellation transaction hashes in submission order.
    * @throws `BootstrapHardHaltError` after all groups are attempted when any cancellation fails.
    * @remarks Cleanup enters the same mutation queue as publication and normal reconciliation.
    */
-  cleanup() {
-    return this.enqueue(() => this.invalidateOwnedGroups())
+  cleanup(
+    parameters: {
+      onTransactionSubmitted?: BootstrapTransactionSubmittedObserver
+    } = {}
+  ) {
+    return this.enqueue(() => this.invalidateOwnedGroups(parameters.onTransactionSubmitted))
   }
 
   private strategyGroups = async () => {
     return this.transport.listActiveGroups()
   }
 
-  private async invalidateOwnedGroups() {
+  private async invalidateOwnedGroups(
+    onTransactionSubmitted?: BootstrapTransactionSubmittedObserver
+  ): Promise<BootstrapMakeResult> {
     const failures = []
+    const submittedTransactions: BootstrapSubmittedTransaction[] = []
     const groupIds = new Set(
       this.transport.listOwnedGroupIds
         ? await this.transport.listOwnedGroupIds()
@@ -150,12 +180,30 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
     )
     for (const groupId of groupIds) {
       try {
-        await this.transport.invalidate(groupId)
+        const txHash = await this.transport.invalidate(
+          groupId,
+          this.safeObserver(onTransactionSubmitted)
+        )
+        if (txHash) submittedTransactions.push({ operation: 'cancel', txHash })
       } catch (error) {
         failures.push({ groupId, errorName: operatorErrorName(error) })
       }
     }
     if (failures.length > 0) throw new BootstrapHardHaltError(failures)
+    return { submittedTransactions }
+  }
+
+  private safeObserver(
+    observer?: BootstrapTransactionSubmittedObserver
+  ): BootstrapTransactionSubmittedObserver | undefined {
+    if (!observer) return undefined
+    return async transaction => {
+      try {
+        await observer(transaction)
+      } catch {
+        // Diagnostic output must not interrupt receipt handling for an already-submitted transaction.
+      }
+    }
   }
 
   private enqueue<Result>(job: () => Promise<Result>): Promise<Result> {

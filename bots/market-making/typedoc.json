@@ -6,6 +6,7 @@
     "src/application/bootstrap/position-bootstrap-halted.error.ts",
     "src/application/bootstrap/position-bootstrap-monitor.utils.ts",
     "src/application/bootstrap/position-bootstrap.service.ts",
+    "src/application/bootstrap/position-bootstrap-verbose.ts",
     "src/application/ladder/ladder-cycle-halted.error.ts",
     "src/application/ladder/ladder-market-maker.service.ts",
     "src/application/ladder/ladder-market-maker.utils.ts",

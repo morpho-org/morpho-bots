@@ -94,6 +94,9 @@ bun run --filter @morpho-org/market-making-bot start -- --readonly bootstrap
 # Repeat bootstrap every minute; SIGINT/SIGTERM drains the current cycle and removes owned offers.
 bun run --filter @morpho-org/market-making-bot start -- bootstrap --monitor
 
+# Stream full safe diagnostics and emit publication/cancellation hashes as soon as submitted.
+bun run --filter @morpho-org/market-making-bot start -- bootstrap --monitor --verbose
+
 # Exercise the complete monitor and cleanup lifecycle without signing or submitting.
 bun run --filter @morpho-org/market-making-bot start -- --readonly bootstrap --monitor
 ```
@@ -128,6 +131,17 @@ cycle finish, then invalidates every explicitly owned bootstrap group through th
 queue and waits for bounded transaction receipts. The final record reports the number of cycles and
 whether cleanup was applied, logged, or failed. Read-only monitoring logs the cleanup request and
 never loads a private key.
+
+Add `--verbose` to either one-shot or monitored bootstrap mode to include the complete market
+configuration, fresh credit, debt, cash balance, per-market and total exposure, active offer,
+reference rate, premium-adjusted target rate, deterministic decision, desired bootstrap offer, and
+a fresh position read after every check. Live mode immediately emits a
+`bootstrap.transaction-submitted` record when the wallet returns each publication or cancellation
+hash. Completed results also list confirmed transaction hashes in submission order, and verbose
+monitor cleanup reports its confirmed cancellation hashes. These diagnostics deliberately omit the
+maker identity, private key, RPC/API URLs, signatures, raw transactions, provider payloads, and
+untrusted error text. Without `--verbose`, bootstrap output and provider-read volume remain
+unchanged.
 
 Version output remains available:
 
@@ -301,8 +315,10 @@ every YAML bootstrap entry, which avoids ambiguous partial-array merge behavior.
 until its shutdown signal or the first failed report. `mm bootstrap` first runs the same one-shot
 readiness gate as `setup-check`, then executes exactly one position-bootstrap cycle and prints its
 bigint-safe JSON result. `mm bootstrap --monitor` uses the same gate, repeats non-overlapping cycles
-every minute, and performs owned-group cleanup after its shutdown signal. Version output, setup
-monitoring, invalid usage, and application construction do not start bootstrap.
+every minute, and performs owned-group cleanup after its shutdown signal. `mm bootstrap --verbose`
+adds safe rate, offer, transaction-hash, configuration, and before/after position diagnostics to
+each result. Version output, setup monitoring, invalid usage, and application construction do not
+start bootstrap.
 
 `runOnce()` validates every market before any position/reference read or publication. Invalid
 configuration, reference failures, and decision failures invoke strategy-wide `hardHalt`; ordinary

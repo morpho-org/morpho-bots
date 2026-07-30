@@ -304,6 +304,51 @@ describe('Cli', () => {
       { marketId: `0x${'11'.repeat(32)}`, status: 'applied', action: 'publish', assets: 10n }
     ])
     expect(runOnce).toHaveBeenCalledTimes(1)
+    expect(runOnce).toHaveBeenCalledWith({ verbose: false })
+  })
+
+  test('mm bootstrap --verbose requests expanded bootstrap diagnostics', async () => {
+    const txHash = `0x${'aa'.repeat(32)}` as const
+    const runOnce = mock(
+      async (parameters?: {
+        verbose?: boolean
+        onTransactionSubmitted?: (event: {
+          event: 'bootstrap.transaction-submitted'
+          operation: 'publish'
+          txHash: typeof txHash
+        }) => void | Promise<void>
+      }) => {
+        await parameters?.onTransactionSubmitted?.({
+          event: 'bootstrap.transaction-submitted',
+          operation: 'publish',
+          txHash
+        })
+        return []
+      }
+    )
+    const events: unknown[] = []
+    const application = new Cli(
+      new VersionService(),
+      () => ({ assertReady: async () => readyReport }),
+      () => ({ runOnce }),
+      () => ({ runOnce: async () => [] })
+    )
+
+    expect(
+      await application.run(['bootstrap', '--verbose'], {
+        writeEvent: event => {
+          events.push(event)
+        }
+      })
+    ).toEqual([])
+    expect(runOnce.mock.calls[0]?.[0]).toMatchObject({ verbose: true })
+    expect(events).toEqual([
+      {
+        event: 'bootstrap.transaction-submitted',
+        operation: 'publish',
+        txHash
+      }
+    ])
   })
 
   test('mm bootstrap --monitor streams cycles and returns shutdown cleanup evidence', async () => {
@@ -343,7 +388,35 @@ describe('Cli', () => {
     ).toEqual(report)
     expect(streamed).toEqual([cycle])
     expect(runContinuously).toHaveBeenCalledTimes(1)
+    expect(runContinuously.mock.calls[0]?.[0]).toMatchObject({ verbose: false })
     expect(runOnce).not.toHaveBeenCalled()
+  })
+
+  test('mm bootstrap --monitor --verbose forwards verbose monitoring', async () => {
+    const controller = new AbortController()
+    const runContinuously = mock(
+      async (_parameters: { signal: AbortSignal; verbose?: boolean }) => ({
+        status: 'stopped' as const,
+        reason: 'signal' as const,
+        cycles: 0,
+        cleanup: { status: 'applied' as const }
+      })
+    )
+    const application = new Cli(
+      new VersionService(),
+      () => ({ assertReady: async () => readyReport }),
+      () => ({ runOnce: async () => [], runContinuously }),
+      () => ({ runOnce: async () => [] })
+    )
+
+    await application.run(['bootstrap', '--monitor', '--verbose'], {
+      signal: controller.signal
+    })
+
+    expect(runContinuously.mock.calls[0]?.[0]).toMatchObject({
+      signal: controller.signal,
+      verbose: true
+    })
   })
 
   test('mm ladder is exposed alongside setup-check and bootstrap', async () => {

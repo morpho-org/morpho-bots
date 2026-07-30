@@ -15,6 +15,8 @@ import { BootstrapMempoolValidationError } from '../../../src/infrastructure/boo
 
 const marketId: Hex = `0x${'11'.repeat(32)}`
 const secondMarketId: Hex = `0x${'22'.repeat(32)}`
+const publicationHash: Hex = `0x${'aa'.repeat(32)}`
+const cancellationHash: Hex = `0x${'bb'.repeat(32)}`
 
 const config = (id = marketId, autoRefill = false): BootstrapConfig => ({
   marketId: id,
@@ -279,6 +281,233 @@ describe('PositionBootstrapService', () => {
         marketId,
         status: 'applied',
         action: 'publish'
+      }
+    ])
+  })
+
+  test('reports config, target rate, offer, transaction hash, and fresh after-state when verbose', async () => {
+    const { service, positions, make } = setup()
+    const submittedEvents: unknown[] = []
+    const transactionOrder: string[] = []
+    let read = 0
+    const readPosition = mock(async () => {
+      read += 1
+      return {
+        credit: read === 1 ? 0n : 100n,
+        debt: 25n,
+        cashBalance: read === 1 ? 2_000n : 1_500n,
+        marketExposure: read === 1 ? 0n : 500n,
+        totalExposure: read === 1 ? 0n : 500n,
+        activeOffer:
+          read === 1
+            ? undefined
+            : {
+                marketId,
+                assets: 500n,
+                rateBps: 450n,
+                referenceObservationId: 'static:500'
+              },
+        requiresReconciliation: false
+      }
+    })
+    positions.readPosition = readPosition
+    make.reconcile = mock(async parameters => {
+      await parameters.onTransactionSubmitted?.({
+        operation: 'publish',
+        txHash: publicationHash
+      })
+      transactionOrder.push('confirmed')
+      return {
+        submittedTransactions: [{ operation: 'publish' as const, txHash: publicationHash }]
+      }
+    })
+
+    const result = await service.runOnce({
+      verbose: true,
+      onTransactionSubmitted: event => {
+        submittedEvents.push(event)
+        transactionOrder.push('submitted')
+      }
+    })
+
+    expect(result).toEqual([
+      {
+        marketId,
+        status: 'applied',
+        action: 'publish',
+        verbose: {
+          config: config(),
+          currentState: {
+            status: 'observed',
+            position: {
+              credit: 0n,
+              debt: 25n,
+              cashBalance: 2_000n,
+              marketExposure: 0n,
+              totalExposure: 0n,
+              requiresReconciliation: false,
+              initialTargetCompleted: false
+            }
+          },
+          effectiveState: {
+            credit: 0n,
+            debt: 25n,
+            cashBalance: 2_000n,
+            marketExposure: 0n,
+            totalExposure: 0n,
+            requiresReconciliation: false,
+            initialTargetCompleted: false
+          },
+          referenceRate: {
+            mode: 'static',
+            rateBps: 500n,
+            observationId: 'static:500'
+          },
+          targetRateBps: 450n,
+          decision: {
+            kind: 'publish',
+            offer: {
+              marketId,
+              assets: 500n,
+              rateBps: 450n,
+              referenceObservationId: 'static:500'
+            }
+          },
+          bootstrapOffer: {
+            marketId,
+            assets: 500n,
+            rateBps: 450n,
+            referenceObservationId: 'static:500'
+          },
+          submittedTransactions: [{ operation: 'publish', txHash: publicationHash }],
+          stateAfterCheck: {
+            status: 'observed',
+            position: {
+              credit: 100n,
+              debt: 25n,
+              cashBalance: 1_500n,
+              marketExposure: 500n,
+              totalExposure: 500n,
+              activeOffer: {
+                marketId,
+                assets: 500n,
+                rateBps: 450n,
+                referenceObservationId: 'static:500'
+              },
+              requiresReconciliation: false,
+              initialTargetCompleted: false
+            }
+          }
+        }
+      }
+    ])
+    expect(readPosition).toHaveBeenCalledTimes(2)
+    expect(submittedEvents).toEqual([
+      {
+        event: 'bootstrap.transaction-submitted',
+        marketId,
+        operation: 'publish',
+        txHash: publicationHash
+      }
+    ])
+    expect(transactionOrder).toEqual(['submitted', 'confirmed'])
+  })
+
+  test('keeps non-verbose cycles compact and avoids the diagnostic after-state read', async () => {
+    const { service, readPosition } = setup()
+
+    expect(await service.runOnce()).toEqual([{ marketId, status: 'applied', action: 'publish' }])
+    expect(readPosition).toHaveBeenCalledTimes(1)
+  })
+
+  test('keeps an applied result when only its verbose after-state read fails', async () => {
+    const { service, positions } = setup()
+    let read = 0
+    positions.readPosition = mock(async () => {
+      read += 1
+      if (read === 2) throw new TypeError('after-state provider unavailable')
+      return {
+        credit: 0n,
+        debt: 0n,
+        cashBalance: 2_000n,
+        marketExposure: 0n,
+        totalExposure: 0n,
+        activeOffer: undefined
+      }
+    })
+
+    const result = await service.runOnce({ verbose: true })
+
+    expect(result).toMatchObject([
+      {
+        status: 'applied',
+        action: 'publish',
+        verbose: {
+          stateAfterCheck: { status: 'failed', errorName: 'TypeError' }
+        }
+      }
+    ])
+  })
+
+  test('reports verbose monitor cycles and confirmed shutdown cancellation hashes', async () => {
+    const controller = new AbortController()
+    const { service, make } = setup({ credit: 900n })
+    make.cleanup = mock(async parameters => {
+      await parameters?.onTransactionSubmitted?.({
+        operation: 'cancel',
+        txHash: cancellationHash
+      })
+      return {
+        submittedTransactions: [{ operation: 'cancel' as const, txHash: cancellationHash }]
+      }
+    })
+    const cycles: unknown[] = []
+    const submittedEvents: unknown[] = []
+
+    const report = await service.runContinuously({
+      signal: controller.signal,
+      intervalMs: 1,
+      verbose: true,
+      onCycle: results => {
+        cycles.push(results)
+        controller.abort()
+      },
+      onTransactionSubmitted: event => {
+        submittedEvents.push(event)
+      }
+    })
+
+    expect(cycles).toHaveLength(1)
+    expect(cycles).toMatchObject([
+      [
+        {
+          action: 'target-reached',
+          verbose: {
+            config: { marketId },
+            currentState: { status: 'observed', position: { credit: 900n } },
+            decision: { kind: 'target-reached' },
+            stateAfterCheck: {
+              status: 'observed',
+              position: { credit: 900n, initialTargetCompleted: true }
+            }
+          }
+        }
+      ]
+    ])
+    expect(report).toEqual({
+      status: 'stopped',
+      reason: 'signal',
+      cycles: 1,
+      cleanup: {
+        status: 'applied',
+        submittedTransactions: [{ operation: 'cancel', txHash: cancellationHash }]
+      }
+    })
+    expect(submittedEvents).toEqual([
+      {
+        event: 'bootstrap.transaction-submitted',
+        operation: 'cancel',
+        txHash: cancellationHash
       }
     ])
   })
