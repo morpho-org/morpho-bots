@@ -33,7 +33,7 @@ const CHAIN_MAP: Record<number, ChainConfig> = {
 // ---------------------------------------------------------------------------
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
 const DEFAULT_MAX_FEE_GWEI = '300'
-// Clears the in-block p95 tip in ~91% of Base blocks; the bump path only adds 1.42x, so this is the bid.
+// Clears the in-block p95 tip in ~91% of Base blocks; escalation only adds 1.42x on top.
 const DEFAULT_PRIORITY_FEE_GWEI = '0.1'
 const PRIVATE_KEY_HEX_LENGTH = 66 // '0x' + 32 bytes
 
