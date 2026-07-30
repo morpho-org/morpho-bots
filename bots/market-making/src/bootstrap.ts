@@ -92,15 +92,17 @@ const defaultState = (config: ConfigService) => {
 }
 
 /**
- * Composes the market-making CLI, setup-check, and explicit position-bootstrap dependencies.
+ * Composes the market-making CLI, setup-check, position-bootstrap, and optional ladder dependencies.
  * @param environment - Environment map used for lazy validated configuration.
- * @param dependencies - Optional test adapters; production defaults to viem and HTTP readers.
+ * @param dependencies - Optional adapters; `createLadder` exposes the ladder application path.
  * @returns An application exposing a single asynchronous CLI `run` boundary.
  * @remarks Composition is side-effect free. Configuration and provider construction occur lazily
- * for `setup-check` or `bootstrap`; `--readonly` selects address-only identity before any
- * private-key validation and replaces the bootstrap mutation port with terminal output. The setup
- * implementation preserves concurrent independent reads through `Promise.all`. Bootstrap is never
- * started during composition or by another command.
+ * for `setup-check`, `bootstrap`, or an exposed `ladder` command. Setup is read-only and preserves
+ * concurrent independent reads through `Promise.all`. `--readonly` selects address-only identity
+ * before any private-key validation and replaces the bootstrap mutation port with terminal output.
+ * Writer commands assert readiness before constructing or running their application service; failed
+ * readiness rejects without starting the writer. Bootstrap and ladder cycles run only for their
+ * respective explicit commands.
  */
 export const createApplication = (
   environment: Environment = Bun.env,
@@ -109,8 +111,9 @@ export const createApplication = (
   /**
    * Executes one CLI invocation.
    * @param argv - User arguments without runtime/executable prefixes.
-   * @returns Captured version text, setup-check JSON, or position-bootstrap JSON.
-   * @throws On invalid configuration, unknown commands, provider failures, or failed readiness.
+   * @returns Captured version text, setup-check JSON, position-bootstrap JSON, or ladder-cycle JSON.
+   * @throws On invalid configuration or usage, provider or readiness failure, or a halted writer
+   * cycle. Failed readiness prevents the selected writer's `runOnce()` side effect.
    */
   run(argv: readonly string[]): Promise<unknown>
 } => {
