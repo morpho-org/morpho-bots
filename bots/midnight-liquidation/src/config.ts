@@ -2,6 +2,7 @@ import type { LogLevel } from '@repo/bot-kit'
 import type { Venue } from '@repo/swaps'
 import type { Address, Chain, Hex } from 'viem'
 
+import { hasBumpHeadroom } from '@repo/bot-kit'
 import { Executor } from '@repo/contracts'
 import { tryCatch } from '@repo/utils'
 import { getAddress, isAddress, isHex, parseGwei } from 'viem'
@@ -32,6 +33,8 @@ const CHAIN_MAP: Record<number, ChainConfig> = {
 // ---------------------------------------------------------------------------
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
 const DEFAULT_MAX_FEE_GWEI = '300'
+// Clears the in-block p95 tip in ~91% of Base blocks; the bump path only adds 1.42x, so this is the bid.
+const DEFAULT_PRIORITY_FEE_GWEI = '0.1'
 const PRIVATE_KEY_HEX_LENGTH = 66 // '0x' + 32 bytes
 
 // Borrower-candidate discovery defaults (the markets liquidation-candidates endpoint). The URL is a
@@ -167,6 +170,8 @@ export type Config = {
    */
   positionCooldownMs: number
   maxFeeWei: bigint
+  /** First-send `maxPriorityFeePerGas`. See `PRIORITY_FEE_GWEI`. */
+  priorityFeeWei: bigint
   logLevel: LogLevel
 }
 
@@ -329,6 +334,21 @@ export function loadConfig(
     throw new Error(`MAX_FEE_GWEI must be a positive number, got: ${env.MAX_FEE_GWEI}`)
   }
 
+  const priorityFeeGwei = env.PRIORITY_FEE_GWEI?.trim() || DEFAULT_PRIORITY_FEE_GWEI
+  if (!/^\d+(\.\d+)?$/.test(priorityFeeGwei)) {
+    throw new Error(`PRIORITY_FEE_GWEI must be a positive number, got: ${env.PRIORITY_FEE_GWEI}`)
+  }
+  const priorityFeeWei = parseGwei(priorityFeeGwei)
+  if (priorityFeeWei <= 0n) {
+    throw new Error(`PRIORITY_FEE_GWEI must be at least 1 wei, got: ${env.PRIORITY_FEE_GWEI}`)
+  }
+  const maxFeeWei = parseGwei(maxFeeGwei)
+  if (!hasBumpHeadroom(priorityFeeWei, maxFeeWei)) {
+    throw new Error(
+      `PRIORITY_FEE_GWEI (${priorityFeeGwei}) leaves no room to bump under MAX_FEE_GWEI (${maxFeeGwei})`
+    )
+  }
+
   // Enabled venues are inferred from which venue API keys are present — there is no per-collateral
   // routing file anymore. With no key present the bot can only discover positions and realize pure
   // bad debt (which needs no swap), never actually swap-liquidate — so that degraded posture must be
@@ -437,7 +457,8 @@ export function loadConfig(
       DEFAULT_POSITION_LIQUIDATION_COOLDOWN_MS,
       { min: 0 }
     ),
-    maxFeeWei: parseGwei(maxFeeGwei),
+    maxFeeWei,
+    priorityFeeWei,
     logLevel
   }
 }

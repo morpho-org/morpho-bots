@@ -56,7 +56,7 @@ describe('fork: pending-queue bump + replacement against a real node', () => {
     })
 
     // 1. Submit a trivial self-send through the real signer path; it sits unmined (automining off).
-    const fees = initialFees(await signer.getBaseFee(), MAX_FEE_WEI)
+    const fees = initialFees(await signer.getBaseFee(), MAX_FEE_WEI, parseGwei('0.1'))
     await queue.submit({
       request: { to: LIQUIDATOR, data: '0x' },
       label: 'queue-fork',

@@ -34,14 +34,38 @@ describe('bumpFees', () => {
 })
 
 describe('initialFees', () => {
-  it('uses a 1-gwei tip and 2×-base-fee headroom under a comfortable ceiling', () => {
-    expect(initialFees(10n ** 9n, 100n * 10n ** 9n)).toEqual({
-      maxPriorityFeePerGas: 10n ** 9n,
-      maxFeePerGas: 2n * 10n ** 9n + 10n ** 9n
+  it('uses the caller tip and 2×-base-fee headroom under a comfortable ceiling', () => {
+    expect(initialFees(10n ** 9n, 100n * 10n ** 9n, 100_000_000n)).toEqual({
+      maxPriorityFeePerGas: 100_000_000n,
+      maxFeePerGas: 2n * 10n ** 9n + 100_000_000n
     })
   })
 
+  // Callers that pass no tip (blue-liquidation, crossed-books) must keep the historical 1-gwei bid.
+  it('defaults to a 1-gwei tip when the caller passes none', () => {
+    expect(initialFees(10n ** 9n, 100n * 10n ** 9n)).toEqual({
+      maxPriorityFeePerGas: 10n ** 9n,
+      maxFeePerGas: 3n * 10n ** 9n
+    })
+  })
+
+  // Nodes reject a pair whose tip exceeds the max fee, and two independent clamps produce them.
+  it('never returns a tip above the max fee', () => {
+    const values = [0n, 1n, 5_000_000n, 100_000_000n, 10n ** 9n, 300n * 10n ** 9n]
+    for (const baseFee of values) {
+      for (const priorityFeeWei of values) {
+        for (const maxFeeWei of values) {
+          const fees = initialFees(baseFee, maxFeeWei, priorityFeeWei)
+          expect(fees.maxPriorityFeePerGas).toBeLessThanOrEqual(fees.maxFeePerGas)
+        }
+      }
+    }
+  })
+
   it('clamps both fees to the ceiling (an underpriced first send the bump path then recovers)', () => {
-    expect(initialFees(50n, 10n)).toEqual({ maxPriorityFeePerGas: 10n, maxFeePerGas: 10n })
+    expect(initialFees(50n, 10n, 1000n)).toEqual({
+      maxPriorityFeePerGas: 10n,
+      maxFeePerGas: 10n
+    })
   })
 })

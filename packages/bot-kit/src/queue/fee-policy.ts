@@ -39,16 +39,31 @@ export function bumpFees({
   return { kind: 'bump', fees: { maxFeePerGas: newMax, maxPriorityFeePerGas: newPriority } }
 }
 
-/** First-send tip floor: 1 gwei priority. */
+/**
+ * Whether a first send at `priorityFeeWei` leaves room for at least one replacement bump under
+ * `maxFeeWei`. A tip too close to the ceiling makes `bumpFees` return `drop` on the first stuck
+ * check, which latches a nonce hole and blocks every later send, so config should reject it up
+ * front. Ignores the base-fee component, which is only known at send time. Pure.
+ */
+export function hasBumpHeadroom(priorityFeeWei: bigint, maxFeeWei: bigint): boolean {
+  return bumped(priorityFeeWei) <= maxFeeWei
+}
+
+/** First-send tip floor for callers that pass no explicit tip: 1 gwei priority. */
 const DEFAULT_PRIORITY_WEI = 10n ** 9n
 
 /**
- * First-send fees from the current base fee: a 1-gwei priority tip and a 2×-base-fee headroom max,
- * both clamped to the operator's `maxFeeWei` ceiling. A ceiling below the headroom naturally
- * underprices the first send — exactly the case the bump/replace path is built to recover. Pure.
+ * First-send fees from the current base fee: `priorityFeeWei` (default 1 gwei) and a 2×-base-fee
+ * headroom max, both clamped to the operator's `maxFeeWei` ceiling. A ceiling below the headroom
+ * naturally underprices the first send, but the bump path tops out at 3 attempts of +12.5%, so
+ * `priorityFeeWei` is effectively the whole bid and must be set to win, not escalated into. Pure.
  */
-export function initialFees(baseFee: bigint, maxFeeWei: bigint): Fees {
-  const maxPriorityFeePerGas = DEFAULT_PRIORITY_WEI < maxFeeWei ? DEFAULT_PRIORITY_WEI : maxFeeWei
+export function initialFees(
+  baseFee: bigint,
+  maxFeeWei: bigint,
+  priorityFeeWei: bigint = DEFAULT_PRIORITY_WEI
+): Fees {
+  const maxPriorityFeePerGas = priorityFeeWei < maxFeeWei ? priorityFeeWei : maxFeeWei
   const target = baseFee * 2n + maxPriorityFeePerGas
   const maxFeePerGas = target < maxFeeWei ? target : maxFeeWei
   return { maxFeePerGas, maxPriorityFeePerGas }
