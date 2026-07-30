@@ -1,5 +1,7 @@
 import type { Address, Hex } from 'viem'
 
+import { waitForMonitorInterval } from '../monitor.utils'
+import { operatorErrorName } from '../operator-error-name.utils'
 import {
   booksCheck,
   capture,
@@ -10,7 +12,9 @@ import {
   setupResult
 } from './setup-check.utils'
 import { SetupFailedError } from './setup-failed.error'
+import { SetupMonitorConfigurationError } from './setup-monitor-configuration.error'
 
+const SETUP_CHECK_MONITOR_INTERVAL_MS = 60_000
 type SetupCheckStatus = 'passed' | 'failed' | 'not-required'
 
 /** Read-only operator instruction or exact transaction description; never executed by the checker. */
@@ -52,6 +56,37 @@ export type SetupCheckReport = {
   /** All V0 checks in stable operator-facing order. */
   checks: SetupCheck[]
 }
+
+/** Final lifecycle report emitted after continuous setup monitoring stops. */
+export type SetupCheckMonitorReport =
+  | {
+      /** Monitoring stopped normally after the runtime signal. */
+      status: 'stopped'
+      /** Stable signal-based terminal reason. */
+      reason: 'signal'
+      /** Number of complete readiness reports emitted to the monitoring writer. */
+      cycles: number
+    }
+  | {
+      /** Monitoring halted because a cycle could not produce or emit a report. */
+      status: 'halted'
+      /** Stable unexpected-cycle terminal reason. */
+      reason: 'cycle-error'
+      /** Number of complete readiness reports emitted before the failed cycle. */
+      cycles: number
+      /** Sanitized unexpected error classification. */
+      cycleErrorName: string
+    }
+  | {
+      /** Monitoring halted because the latest complete readiness report failed. */
+      status: 'halted'
+      /** Stable readiness-failure terminal reason. */
+      reason: 'setup-failed'
+      /** Number of complete readiness reports emitted through the failed cycle. */
+      cycles: number
+      /** Complete sanitized readiness evidence from the failed terminal cycle. */
+      lastReport: SetupCheckReport
+    }
 
 /** Validated configuration required to evaluate market-maker readiness on Base. */
 export type SetupCheckConfig = {
@@ -180,6 +215,48 @@ export class SetupCheckService {
   }
 
   /**
+   * Repeats complete read-only readiness observations until shutdown is requested.
+   * @param parameters - Shutdown signal, optional report writer, and testable positive interval.
+   * @returns A terminal report containing the number of emitted setup observations.
+   * @throws `SetupMonitorConfigurationError` when the requested interval is not a positive safe integer.
+   * @remarks Cycles never overlap. Failed readiness is emitted once and halts monitoring so the CLI
+   * exits nonzero; no remediation, signing, transaction submission, or cleanup write is performed.
+   */
+  async runContinuously(parameters: {
+    signal: AbortSignal
+    onCycle?: (report: SetupCheckReport) => void | Promise<void>
+    intervalMs?: number
+  }): Promise<SetupCheckMonitorReport> {
+    const intervalMs = parameters.intervalMs ?? SETUP_CHECK_MONITOR_INTERVAL_MS
+    if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) {
+      throw new SetupMonitorConfigurationError()
+    }
+
+    let cycles = 0
+    let cycleErrorName: string | undefined
+
+    while (!parameters.signal.aborted) {
+      try {
+        const report = await this.check()
+        await parameters.onCycle?.(report)
+        cycles += 1
+        if (!report.ready) {
+          return { status: 'halted', reason: 'setup-failed', cycles, lastReport: report }
+        }
+      } catch (error) {
+        cycleErrorName = operatorErrorName(error)
+        break
+      }
+
+      await waitForMonitorInterval(intervalMs, parameters.signal)
+    }
+
+    return cycleErrorName
+      ? { status: 'halted', reason: 'cycle-error', cycles, cycleErrorName }
+      : { status: 'stopped', reason: 'signal', cycles }
+  }
+
+  /**
    * Evaluates all setup surfaces while isolating provider failures into sanitized report entries.
    * @returns A complete report in stable check order; provider rejection does not short-circuit peers.
    * @remarks Read-only. All independent reads, including per-book reads, start before the outer
@@ -220,17 +297,22 @@ export class SetupCheckService {
       positionHealth
     ] = reads
 
+    const makerRequirement = 'private key derives configured maker'
+    const makerMatches =
+      derivedMaker !== undefined &&
+      derivedMaker.ok &&
+      derivedMaker.value !== undefined &&
+      sameAddress(derivedMaker.value, this.config.maker)
     const makerCheck =
       derivedMaker === undefined
-        ? readOnlyMakerCheck(this.config.maker)
+        ? readOnlyMakerCheck()
         : !derivedMaker.ok
-          ? providerFailure('maker', derivedMaker.error, this.config.maker)
+          ? providerFailure('maker', derivedMaker.error, makerRequirement)
           : setupResult(
               'maker',
-              derivedMaker.value !== undefined &&
-                sameAddress(derivedMaker.value, this.config.maker),
-              derivedMaker.value,
-              this.config.maker
+              makerMatches,
+              { derived: derivedMaker.value !== undefined, matches: makerMatches },
+              makerRequirement
             )
     const nativeCheck = !nativeBalance.ok
       ? providerFailure('native-balance', nativeBalance.error, this.config.nativeReserve)
@@ -239,7 +321,7 @@ export class SetupCheckService {
           nativeBalance.value >= this.config.nativeReserve,
           nativeBalance.value,
           this.config.nativeReserve,
-          `fund ${this.config.maker} with native token to at least ${this.config.nativeReserve}`
+          `fund the configured maker with native token to at least ${this.config.nativeReserve}`
         )
     const allowanceRequired = {
       spender: this.config.midnight,
@@ -282,11 +364,7 @@ export class SetupCheckService {
             ratifier.value.midnightMatches &&
             ratifier.value.ecrecoverSurface &&
             !ratifier.value.authorized
-            ? {
-                to: this.config.midnight,
-                functionName: 'setIsAuthorized',
-                args: [this.config.ratifier, true, this.config.maker]
-              }
+            ? 'authorize the configured maker with the selected ratifier'
             : 'select a Router-listed Ecrecover ratifier with the expected deployed surface'
         )
     const referenceRequired = {

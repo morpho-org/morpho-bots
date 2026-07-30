@@ -10,6 +10,8 @@ import type {
 import type { BootstrapConfig } from '../../../src/domain/bootstrap/position-bootstrap'
 
 import { PositionBootstrapService } from '../../../src/application/bootstrap/position-bootstrap.service'
+import { BootstrapConfigurationError } from '../../../src/domain/bootstrap/bootstrap-configuration.error'
+import { BootstrapMempoolValidationError } from '../../../src/infrastructure/bootstrap/bootstrap-mempool-validation.error'
 
 const marketId: Hex = `0x${'11'.repeat(32)}`
 const secondMarketId: Hex = `0x${'22'.repeat(32)}`
@@ -49,15 +51,119 @@ const setup = ({
   }))
   const reconcile = mock(async () => undefined)
   const hardHalt = mock(async () => undefined)
+  const cleanup = mock(async () => undefined)
   const positions: BootstrapPositionService = { readPosition }
   const rates: BootstrapReferenceRateService = { readRate }
-  const make: BootstrapMakeService = { reconcile, hardHalt }
+  const make: BootstrapMakeService = { reconcile, hardHalt, cleanup }
   const service = new PositionBootstrapService(positions, rates, make, configs)
 
-  return { service, positions, rates, make, readPosition, readRate, reconcile, hardHalt }
+  return {
+    service,
+    positions,
+    rates,
+    make,
+    readPosition,
+    readRate,
+    reconcile,
+    hardHalt,
+    cleanup
+  }
 }
 
 describe('PositionBootstrapService', () => {
+  test('monitors sequential cycles and cleans owned groups after shutdown', async () => {
+    const events: string[] = []
+    const controller = new AbortController()
+    const { service, make } = setup()
+    make.reconcile = mock(async () => {
+      events.push('reconcile')
+    })
+    const cleanup = mock(async () => {
+      events.push('cleanup')
+    })
+    make.cleanup = cleanup
+
+    const report = await service.runContinuously({
+      signal: controller.signal,
+      intervalMs: 1,
+      onCycle: results => {
+        events.push(`cycle:${results.length}`)
+        if (events.filter(event => event.startsWith('cycle:')).length === 2) {
+          controller.abort()
+        }
+      }
+    })
+
+    expect(report).toEqual({
+      status: 'stopped',
+      reason: 'signal',
+      cycles: 2,
+      cleanup: { status: 'applied' }
+    })
+    expect(events).toEqual(['reconcile', 'cycle:1', 'reconcile', 'cycle:1', 'cleanup'])
+    expect(cleanup).toHaveBeenCalledTimes(1)
+  })
+
+  test('stops monitoring on a handled failed cycle and still cleans owned groups', async () => {
+    const controller = new AbortController()
+    const { service, make } = setup()
+    make.reconcile = mock(async () => {
+      throw new Error('publication unavailable')
+    })
+    const cleanup = mock(async () => 'logged' as const)
+    make.cleanup = cleanup
+
+    const report = await service.runContinuously({
+      signal: controller.signal,
+      intervalMs: 1
+    })
+
+    expect(report).toMatchObject({
+      status: 'halted',
+      reason: 'cycle-failed',
+      cycles: 1,
+      cleanup: { status: 'logged' },
+      lastCycle: [{ status: 'failed', stage: 'make', errorName: 'UnknownError' }]
+    })
+    expect(cleanup).toHaveBeenCalledTimes(1)
+  })
+
+  test('reports a sanitized cleanup failure after a stop signal', async () => {
+    const controller = new AbortController()
+    const { service, make } = setup()
+    make.cleanup = mock(async () => {
+      const error = new Error('provider https://rpc.example/?key=secret')
+      error.name = 'https://rpc.example/?key=secret'
+      throw error
+    })
+    controller.abort()
+
+    const report = await service.runContinuously({
+      signal: controller.signal,
+      intervalMs: 1
+    })
+
+    expect(report).toEqual({
+      status: 'halted',
+      reason: 'cleanup-failed',
+      cycles: 0,
+      cleanup: { status: 'failed', errorName: 'UnknownError' }
+    })
+    expect(JSON.stringify(report)).not.toContain('secret')
+  })
+
+  test('rejects empty monitoring configuration before cleanup', async () => {
+    const controller = new AbortController()
+    const { service, cleanup } = setup({ configs: [] })
+
+    const error = await service
+      .runContinuously({ signal: controller.signal, intervalMs: 1 })
+      .catch(value => value)
+
+    expect(error).toBeInstanceOf(BootstrapConfigurationError)
+    expect(cleanup).not.toHaveBeenCalled()
+  })
+
   test('preflights a positive premium before a target-reached position or reference read', async () => {
     const { service, readPosition, readRate, reconcile, hardHalt } = setup({
       configs: [{ ...config(), premiumBps: 1n }],
@@ -919,6 +1025,26 @@ describe('PositionBootstrapService', () => {
       }
     ])
     expect(failedReconcile).toHaveBeenCalledTimes(1)
+  })
+
+  test('reports a sanitized Mempool asset floor after publication validation fails', async () => {
+    const { service, make } = setup()
+    make.reconcile = mock(async () => {
+      throw new BootstrapMempoolValidationError([
+        { rule: 'min_offer_assets_usd', minimumAssets: 100_000_000n }
+      ])
+    })
+
+    expect(await service.runOnce()).toEqual([
+      {
+        marketId,
+        status: 'failed',
+        stage: 'make',
+        invalidated: false,
+        errorName: 'BootstrapMempoolValidationError',
+        minimumAssets: '100000000'
+      }
+    ])
   })
 
   test('resumes after initial completion when auto-refill is enabled', async () => {

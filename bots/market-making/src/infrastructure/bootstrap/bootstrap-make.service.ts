@@ -7,6 +7,7 @@ import type { BootstrapActiveGroup } from './bootstrap-position.service'
 import { operatorErrorName } from '../../application/operator-error-name.utils'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 import { BootstrapHardHaltError } from './bootstrap-hard-halt.error'
+import { assertBootstrapProspectiveSpread, bootstrapMarketGroupIds } from './bootstrap-spread.utils'
 
 type BootstrapBookOffer = { groupId?: Hex; marketId: Hex; buy: boolean; tick: bigint }
 
@@ -59,37 +60,18 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
   }) {
     return this.enqueue(async () => {
       const groups = await this.strategyGroups()
-      const marketGroupIds = new Set(
-        groups.filter(item => item.marketId === parameters.marketId).map(group => group.id)
-      )
-      if (
-        groups.some(group => group.marketId !== parameters.marketId && marketGroupIds.has(group.id))
-      ) {
-        throw new BootstrapAdapterError('shared-group-reconciliation')
-      }
+      const marketGroupIds = bootstrapMarketGroupIds(groups, parameters.marketId)
       let publication:
         | Awaited<ReturnType<BootstrapOfferTransport['preparePublication']>>
         | undefined
       if (parameters.desiredOffer) {
         const prospective = await this.transport.toProspectiveBookOffer(parameters.desiredOffer)
-        const replacedGroupIds = new Set(
-          groups.filter(group => group.marketId === parameters.marketId).map(group => group.id)
-        )
-        const book = [...(await this.transport.listBookOffers()), prospective].filter(
-          offer =>
-            offer.marketId === parameters.marketId &&
-            (offer.groupId === undefined || !replacedGroupIds.has(offer.groupId))
-        )
-        const buys = book.filter(offer => offer.buy).map(offer => offer.tick)
-        const sells = book.filter(offer => !offer.buy).map(offer => offer.tick)
-        if (
-          buys.length > 0 &&
-          sells.length > 0 &&
-          buys.reduce((highest, tick) => (tick > highest ? tick : highest)) >=
-            sells.reduce((lowest, tick) => (tick < lowest ? tick : lowest))
-        ) {
-          throw new BootstrapAdapterError('negative-spread')
-        }
+        assertBootstrapProspectiveSpread({
+          marketId: parameters.marketId,
+          replacedGroupIds: marketGroupIds,
+          book: await this.transport.listBookOffers(),
+          prospective
+        })
         publication = await this.transport.preparePublication(parameters.desiredOffer)
         await this.transport.reserveGroup(publication.groupId, parameters.desiredOffer)
       }
@@ -142,26 +124,38 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
       | 'market-invalidation-failed'
   }) {
     void parameters
-    return this.enqueue(async () => {
-      const failures = []
-      const groupIds = new Set(
-        this.transport.listOwnedGroupIds
-          ? await this.transport.listOwnedGroupIds()
-          : (await this.strategyGroups()).map(group => group.id)
-      )
-      for (const groupId of groupIds) {
-        try {
-          await this.transport.invalidate(groupId)
-        } catch (error) {
-          failures.push({ groupId, errorName: operatorErrorName(error) })
-        }
-      }
-      if (failures.length > 0) throw new BootstrapHardHaltError(failures)
-    })
+    return this.enqueue(() => this.invalidateOwnedGroups())
+  }
+
+  /**
+   * Invalidates every explicitly owned bootstrap group during graceful shutdown.
+   * @returns Completion after every cancellation attempt and receipt confirmation.
+   * @throws `BootstrapHardHaltError` after all groups are attempted when any cancellation fails.
+   * @remarks Cleanup enters the same mutation queue as publication and normal reconciliation.
+   */
+  cleanup() {
+    return this.enqueue(() => this.invalidateOwnedGroups())
   }
 
   private strategyGroups = async () => {
     return this.transport.listActiveGroups()
+  }
+
+  private async invalidateOwnedGroups() {
+    const failures = []
+    const groupIds = new Set(
+      this.transport.listOwnedGroupIds
+        ? await this.transport.listOwnedGroupIds()
+        : (await this.strategyGroups()).map(group => group.id)
+    )
+    for (const groupId of groupIds) {
+      try {
+        await this.transport.invalidate(groupId)
+      } catch (error) {
+        failures.push({ groupId, errorName: operatorErrorName(error) })
+      }
+    }
+    if (failures.length > 0) throw new BootstrapHardHaltError(failures)
   }
 
   private enqueue<Result>(job: () => Promise<Result>): Promise<Result> {

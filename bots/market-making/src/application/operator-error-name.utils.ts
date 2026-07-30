@@ -1,6 +1,7 @@
 /** Stable operator-visible error classifications permitted at injected application boundaries. */
 type OperatorErrorName =
   | 'BootstrapAdapterError'
+  | 'BootstrapMempoolValidationError'
   | 'BootstrapHardHaltError'
   | 'BootstrapConfigurationError'
   | 'LadderConfigurationError'
@@ -11,6 +12,8 @@ type OperatorErrorName =
   | 'ProviderResponseError'
   | 'SafeProviderError'
   | 'SetupFailedError'
+  | 'SetupMonitorConfigurationError'
+  | 'SetupMonitorHaltedError'
   | 'TypeError'
   | 'RangeError'
   | 'URIError'
@@ -18,6 +21,7 @@ type OperatorErrorName =
 
 const knownNames: Readonly<Record<string, OperatorErrorName>> = {
   BootstrapAdapterError: 'BootstrapAdapterError',
+  BootstrapMempoolValidationError: 'BootstrapMempoolValidationError',
   BootstrapHardHaltError: 'BootstrapHardHaltError',
   BootstrapConfigurationError: 'BootstrapConfigurationError',
   LadderConfigurationError: 'LadderConfigurationError',
@@ -28,6 +32,8 @@ const knownNames: Readonly<Record<string, OperatorErrorName>> = {
   ProviderResponseError: 'ProviderResponseError',
   SafeProviderError: 'SafeProviderError',
   SetupFailedError: 'SetupFailedError',
+  SetupMonitorConfigurationError: 'SetupMonitorConfigurationError',
+  SetupMonitorHaltedError: 'SetupMonitorHaltedError',
   TypeError: 'TypeError',
   RangeError: 'RangeError',
   URIError: 'URIError'
@@ -41,3 +47,28 @@ const knownNames: Readonly<Record<string, OperatorErrorName>> = {
  */
 export const operatorErrorName = (error: unknown): OperatorErrorName =>
   error instanceof Error ? (knownNames[error.name] ?? 'UnknownError') : 'UnknownError'
+
+/**
+ * Projects a failure into fixed operator-safe fields and retains a sanitized Mempool asset floor.
+ * @param error - Unknown failure from an injected application or provider port.
+ * @returns An allowlisted error name and optional decimal minimum-assets value.
+ * @remarks Provider messages, response bodies, URLs, addresses, and credentials are never returned.
+ */
+export const operatorErrorDetails = (error: unknown) => {
+  const errorName = operatorErrorName(error)
+  if (
+    errorName !== 'BootstrapMempoolValidationError' ||
+    typeof error !== 'object' ||
+    error === null
+  ) {
+    return { errorName }
+  }
+
+  const minimumAssets = (error as Record<string, unknown>).minimumAssets
+  return {
+    errorName,
+    ...(typeof minimumAssets === 'bigint' && minimumAssets >= 0n
+      ? { minimumAssets: String(minimumAssets) }
+      : {})
+  }
+}

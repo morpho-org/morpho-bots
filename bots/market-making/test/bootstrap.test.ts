@@ -126,7 +126,11 @@ describe('createApplication', () => {
               observationId: 'static:500'
             })
           },
-          make: { reconcile: async () => {}, hardHalt: async () => {} }
+          make: {
+            reconcile: async () => {},
+            hardHalt: async () => {},
+            cleanup: async () => {}
+          }
         }
       }
     })
@@ -200,7 +204,11 @@ describe('createApplication', () => {
         rates: {
           readRate: async () => ({ mode: 'static', rateBps: 500n, observationId: 'static:500' })
         },
-        make: { reconcile: async () => {}, hardHalt: async () => {} }
+        make: {
+          reconcile: async () => {},
+          hardHalt: async () => {},
+          cleanup: async () => {}
+        }
       })
     })
 
@@ -265,7 +273,7 @@ describe('createApplication', () => {
         rates: {
           readRate: async () => ({ mode: 'static', rateBps: 500n, observationId: 'static:500' })
         },
-        make: { reconcile, hardHalt }
+        make: { reconcile, hardHalt, cleanup: async () => {} }
       })
     })
 

@@ -1,18 +1,34 @@
 import { Command, CommanderError } from 'commander'
 
-import type { SetupCheckReport } from '../../application/setup/setup-check.service'
+import type { PositionBootstrapMonitorReport } from '../../application/bootstrap/position-bootstrap.service'
+import type {
+  SetupCheckMonitorReport,
+  SetupCheckReport
+} from '../../application/setup/setup-check.service'
 import type { VersionService } from '../../application/version.service'
 
 import { PositionBootstrapHaltedError } from '../../application/bootstrap/position-bootstrap-halted.error'
+import { bootstrapCycleHasFailure } from '../../application/bootstrap/position-bootstrap-monitor.utils'
 import { LadderCycleHaltedError } from '../../application/ladder/ladder-cycle-halted.error'
+import { SetupMonitorHaltedError } from '../../application/setup/setup-monitor-halted.error'
 import { CliUsageError } from './cli-usage.error'
 
 interface SetupReadinessService {
   assertReady(): Promise<SetupCheckReport>
+  runContinuously?(parameters: {
+    signal: AbortSignal
+    onCycle?: (report: SetupCheckReport) => void | Promise<void>
+  }): Promise<SetupCheckMonitorReport>
 }
 
 interface PositionBootstrapService {
-  runOnce(): Promise<unknown>
+  runOnce(): Promise<readonly { status: string; [key: string]: unknown }[]>
+  runContinuously?(parameters: {
+    signal: AbortSignal
+    onCycle?: (
+      result: readonly { status: string; [key: string]: unknown }[]
+    ) => void | Promise<void>
+  }): Promise<PositionBootstrapMonitorReport>
 }
 
 interface LadderMarketMakerService {
@@ -22,11 +38,20 @@ interface LadderMarketMakerService {
 /** CLI-selected runtime and configuration-file options. */
 type CliConfigurationOptions = { configPath?: string; readOnly: boolean }
 
+/** Per-invocation process signal and JSON-compatible continuous-event writer. */
+export type CliRuntimeOptions = {
+  /** Requests graceful monitoring shutdown without interrupting an in-flight cycle. */
+  signal?: AbortSignal
+  /** Receives every completed monitoring cycle before the final lifecycle report. */
+  writeEvent?: (value: unknown) => void | Promise<void>
+}
+
 /** Infrastructure adapter: wires the `mm` CLI (commander) to application services. */
 export class Cli {
   private readonly program: Command
   private output: unknown
   private hasOutput = false
+  private runtime: CliRuntimeOptions = {}
 
   /**
    * Configures the version, address-only mode, setup-check, bootstrap, and ladder commands.
@@ -59,42 +84,67 @@ export class Cli {
       .exitOverride()
       .configureOutput({ writeOut: () => {}, writeErr: () => {} })
 
-    this.program
+    const setupCommand = this.program
       .command('setup-check')
-      .description('run the read-only market-maker readiness checks')
-      .action(async () => {
-        const options = this.program.opts<{ config?: string; readonly?: boolean }>()
-        const setupService = await setup({
-          configPath: options.config,
-          readOnly: options.readonly === true
-        })
-        this.output = await setupService.assertReady()
-        this.hasOutput = true
-      })
+      .description('run market-maker readiness checks once or monitor continuously')
+      .option('--monitor', 'repeat readiness checks every minute until shutdown')
 
-    this.program
-      .command('bootstrap')
-      .description('run one explicit market-maker position-bootstrap cycle')
-      .action(async () => {
-        const options = this.program.opts<{ config?: string; readonly?: boolean }>()
-        const bootstrapService = await bootstrap({
-          configPath: options.config,
-          readOnly: options.readonly === true
+    setupCommand.action(async () => {
+      const options = this.program.opts<{ config?: string; readonly?: boolean }>()
+      const setupOptions = setupCommand.opts<{ monitor?: boolean }>()
+      const setupService = await setup({
+        configPath: options.config,
+        readOnly: options.readonly === true
+      })
+      if (setupOptions.monitor === true) {
+        if (!setupService.runContinuously) throw new CliUsageError()
+        const result = await setupService.runContinuously({
+          signal: this.runtime.signal ?? new AbortController().signal,
+          onCycle: report => this.runtime.writeEvent?.(report)
         })
-        const result = await bootstrapService.runOnce()
-        if (
-          Array.isArray(result) &&
-          result.some(item =>
-            typeof item === 'object' && item !== null && 'status' in item
-              ? item.status === 'halted' || item.status === 'failed'
-              : false
-          )
-        ) {
-          throw new PositionBootstrapHaltedError(result)
+        if (result.status === 'halted') throw new SetupMonitorHaltedError(result)
+        this.output = result
+        this.hasOutput = true
+        return
+      }
+
+      this.output = await setupService.assertReady()
+      this.hasOutput = true
+    })
+
+    const bootstrapCommand = this.program
+      .command('bootstrap')
+      .description('run one position-bootstrap cycle or monitor continuously')
+      .option('--monitor', 'repeat every minute and clean up owned offers on shutdown')
+
+    bootstrapCommand.action(async () => {
+      const options = this.program.opts<{ config?: string; readonly?: boolean }>()
+      const bootstrapOptions = bootstrapCommand.opts<{ monitor?: boolean }>()
+      const bootstrapService = await bootstrap({
+        configPath: options.config,
+        readOnly: options.readonly === true
+      })
+      if (bootstrapOptions.monitor === true) {
+        if (!bootstrapService.runContinuously) throw new CliUsageError()
+        const result = await bootstrapService.runContinuously({
+          signal: this.runtime.signal ?? new AbortController().signal,
+          onCycle: cycle => this.runtime.writeEvent?.(cycle)
+        })
+        if (result.status === 'halted') {
+          throw new PositionBootstrapHaltedError([result])
         }
         this.output = result
         this.hasOutput = true
-      })
+        return
+      }
+
+      const result = await bootstrapService.runOnce()
+      if (Array.isArray(result) && bootstrapCycleHasFailure(result)) {
+        throw new PositionBootstrapHaltedError(result)
+      }
+      this.output = result
+      this.hasOutput = true
+    })
 
     if (ladder) {
       this.program
@@ -126,18 +176,24 @@ export class Cli {
   /**
    * Parses one CLI invocation and returns its captured output.
    * @param argv - User arguments without the executable/runtime prefix.
+   * @param runtime - Optional graceful-shutdown signal and continuous-cycle event writer.
    * @returns Version text, the complete setup report, or a structured writer-cycle result.
    * @throws `CliUsageError` with a constant message and stable code on invalid usage; raw Commander
    * arguments, messages, option details, URLs, and causes are deliberately discarded. Provider and
    * readiness errors pass through.
    * @remarks `setup-check` remains read-only. Position bootstrap runs only for the explicit
-   * `bootstrap` command. Ladder reconciliation runs only for the explicit `ladder` command. With
+   * `setup-check --monitor` streams non-overlapping readiness reports until shutdown or failed
+   * readiness without writes. A failed monitor report exits through `SetupMonitorHaltedError`.
+   * Position bootstrap runs only for the explicit `bootstrap` command;
+   * `bootstrap --monitor` repeats at the fixed bootstrap cadence and performs strategy cleanup
+   * after its signal. Ladder reconciliation runs only for the explicit `ladder` command. With
    * `--readonly`, configuration never loads a private key and make adapters suppress mutations.
    */
-  async run(argv: readonly string[]): Promise<unknown> {
+  async run(argv: readonly string[], runtime: CliRuntimeOptions = {}): Promise<unknown> {
     if (argv.length === 0) throw new CliUsageError()
     this.output = undefined
     this.hasOutput = false
+    this.runtime = runtime
     try {
       await this.program.parseAsync(argv, { from: 'user' })
     } catch (error) {

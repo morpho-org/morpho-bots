@@ -2,6 +2,7 @@ import { describe, expect, mock, test } from 'bun:test'
 
 import { PositionBootstrapHaltedError } from '../../../src/application/bootstrap/position-bootstrap-halted.error'
 import { LadderCycleHaltedError } from '../../../src/application/ladder/ladder-cycle-halted.error'
+import { SetupMonitorHaltedError } from '../../../src/application/setup/setup-monitor-halted.error'
 import { VersionService } from '../../../src/application/version.service'
 import { Cli } from '../../../src/infrastructure/cli/cli'
 import { CliUsageError } from '../../../src/infrastructure/cli/cli-usage.error'
@@ -11,6 +12,13 @@ const readyReport = {
   ready: true,
   checks: [
     { name: 'native-balance' as const, status: 'passed' as const, observed: 10n, required: 10n }
+  ]
+}
+
+const failedReport = {
+  ready: false,
+  checks: [
+    { name: 'native-balance' as const, status: 'failed' as const, observed: 9n, required: 10n }
   ]
 }
 
@@ -220,6 +228,67 @@ describe('Cli', () => {
     expect(await cli().run(['setup-check'])).toEqual(readyReport)
   })
 
+  test('mm setup-check --monitor streams readiness reports until shutdown', async () => {
+    const report = {
+      status: 'stopped' as const,
+      reason: 'signal' as const,
+      cycles: 1
+    }
+    const assertReady = mock(async () => readyReport)
+    const runContinuously = mock(
+      async (parameters: {
+        signal: AbortSignal
+        onCycle?: (result: typeof readyReport) => void | Promise<void>
+      }) => {
+        await parameters.onCycle?.(readyReport)
+        return report
+      }
+    )
+    const streamed: unknown[] = []
+    const controller = new AbortController()
+    const application = new Cli(
+      new VersionService(),
+      () => ({ assertReady, runContinuously }),
+      () => ({ runOnce: async () => [] }),
+      () => ({ runOnce: async () => [] })
+    )
+
+    expect(
+      await application.run(['setup-check', '--monitor'], {
+        signal: controller.signal,
+        writeEvent: value => {
+          streamed.push(value)
+        }
+      })
+    ).toEqual(report)
+    expect(streamed).toEqual([readyReport])
+    expect(runContinuously).toHaveBeenCalledTimes(1)
+    expect(assertReady).not.toHaveBeenCalled()
+  })
+
+  test('mm setup-check --monitor rejects a halted lifecycle report', async () => {
+    const report = {
+      status: 'halted' as const,
+      reason: 'setup-failed' as const,
+      cycles: 1,
+      lastReport: failedReport
+    }
+    const application = new Cli(
+      new VersionService(),
+      () => ({
+        assertReady: async () => readyReport,
+        runContinuously: async () => report
+      }),
+      () => ({ runOnce: async () => [] }),
+      () => ({ runOnce: async () => [] })
+    )
+
+    const error = await application.run(['setup-check', '--monitor']).catch(value => value)
+
+    expect(error).toBeInstanceOf(SetupMonitorHaltedError)
+    expect(error).toMatchObject({ report })
+  })
+
   test('mm bootstrap triggers one explicit position-bootstrap run', async () => {
     const runOnce = mock(async () => [
       { marketId: `0x${'11'.repeat(32)}`, status: 'applied', action: 'publish', assets: 10n }
@@ -235,6 +304,46 @@ describe('Cli', () => {
       { marketId: `0x${'11'.repeat(32)}`, status: 'applied', action: 'publish', assets: 10n }
     ])
     expect(runOnce).toHaveBeenCalledTimes(1)
+  })
+
+  test('mm bootstrap --monitor streams cycles and returns shutdown cleanup evidence', async () => {
+    const cycle = [{ marketId: `0x${'11'.repeat(32)}`, status: 'observed', action: 'rest' }]
+    const report = {
+      status: 'stopped' as const,
+      reason: 'signal' as const,
+      cycles: 1,
+      cleanup: { status: 'applied' as const }
+    }
+    const runOnce = mock(async () => [])
+    const runContinuously = mock(
+      async (parameters: {
+        signal: AbortSignal
+        onCycle?: (result: readonly { status: string; [key: string]: unknown }[]) => void
+      }) => {
+        await parameters.onCycle?.(cycle)
+        return report
+      }
+    )
+    const streamed: unknown[] = []
+    const controller = new AbortController()
+    const application = new Cli(
+      new VersionService(),
+      () => ({ assertReady: async () => readyReport }),
+      () => ({ runOnce, runContinuously }),
+      () => ({ runOnce: async () => [] })
+    )
+
+    expect(
+      await application.run(['bootstrap', '--monitor'], {
+        signal: controller.signal,
+        writeEvent: value => {
+          streamed.push(value)
+        }
+      })
+    ).toEqual(report)
+    expect(streamed).toEqual([cycle])
+    expect(runContinuously).toHaveBeenCalledTimes(1)
+    expect(runOnce).not.toHaveBeenCalled()
   })
 
   test('mm ladder is exposed alongside setup-check and bootstrap', async () => {
@@ -364,6 +473,58 @@ describe('Cli', () => {
     expect(exitCode).toBe(1)
     expect(stdout).toEqual([])
     expect(stderr).toEqual([JSON.stringify(report)])
+  })
+
+  test('entrypoint emits a halted setup-monitor report and returns a non-zero exit code', async () => {
+    const report = {
+      status: 'halted' as const,
+      reason: 'setup-failed' as const,
+      cycles: 1,
+      lastReport: failedReport
+    }
+    const stdout: string[] = []
+    const stderr: string[] = []
+
+    const exitCode = await runMarketMakingEntrypoint(
+      { run: async () => Promise.reject(new SetupMonitorHaltedError(report)) },
+      ['setup-check', '--monitor'],
+      { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) }
+    )
+
+    expect(exitCode).toBe(1)
+    expect(stdout).toEqual([])
+    expect(stderr).toEqual([
+      JSON.stringify(report, (_key, value) =>
+        typeof value === 'bigint' ? value.toString() : value
+      )
+    ])
+  })
+
+  test('entrypoint writes continuous events before the terminal monitor report', async () => {
+    const cycle = [{ status: 'observed', action: 'rest' }]
+    const report = {
+      status: 'stopped',
+      reason: 'signal',
+      cycles: 1,
+      cleanup: { status: 'logged' }
+    }
+    const stdout: string[] = []
+    const stderr: string[] = []
+
+    const exitCode = await runMarketMakingEntrypoint(
+      {
+        run: async (_argv, runtime) => {
+          await runtime?.writeEvent?.(cycle)
+          return report
+        }
+      },
+      ['bootstrap', '--monitor'],
+      { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) }
+    )
+
+    expect(exitCode).toBe(0)
+    expect(stdout).toEqual([JSON.stringify(cycle), JSON.stringify(report)])
+    expect(stderr).toEqual([])
   })
 
   test('entrypoint emits a failed ladder report and returns a non-zero exit code', async () => {

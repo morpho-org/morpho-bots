@@ -5,9 +5,11 @@ import { describe, expect, test } from 'bun:test'
 import {
   SetupCheckService,
   type SetupCheckConfig,
+  type SetupCheckReport,
   type SetupStateService
 } from '../../../src/application/setup/setup-check.service'
 import { SetupFailedError } from '../../../src/application/setup/setup-failed.error'
+import { SetupMonitorConfigurationError } from '../../../src/application/setup/setup-monitor-configuration.error'
 import { ProviderReadError } from '../../../src/infrastructure/setup-state/provider-read.error'
 import { ProviderResponseError } from '../../../src/infrastructure/setup-state/provider-response.error'
 
@@ -69,6 +71,72 @@ const readyState = (): SetupStateService => {
 }
 
 describe('SetupCheckService', () => {
+  test('halts monitoring after emitting the first failed readiness report', async () => {
+    const controller = new AbortController()
+    const reports: { ready: boolean; report: SetupCheckReport }[] = []
+    const state = readyState()
+    let nativeBalance = 10n
+    state.getNativeBalance = async () => nativeBalance
+    const service = new SetupCheckService(state, config)
+
+    const terminal = await service.runContinuously({
+      signal: controller.signal,
+      intervalMs: 1,
+      onCycle: report => {
+        reports.push({ ready: report.ready, report })
+        if (reports.length === 1) nativeBalance = 9n
+      }
+    })
+
+    expect(reports.map(report => report.ready)).toEqual([true, false])
+    expect(terminal).toMatchObject({ status: 'halted', reason: 'setup-failed', cycles: 2 })
+    const lastEmittedReport = reports.at(-1)
+    expect(lastEmittedReport).toBeDefined()
+    if (terminal.reason === 'setup-failed') {
+      expect(terminal.lastReport.ready).toBe(false)
+      if (lastEmittedReport) expect(terminal.lastReport).toBe(lastEmittedReport.report)
+    }
+  })
+
+  test('rejects an invalid setup-monitor interval before any readiness read', async () => {
+    const state = readyState()
+    let reads = 0
+    state.getChainId = async () => {
+      reads += 1
+      return 8453
+    }
+    const service = new SetupCheckService(state, config)
+
+    const error = await service
+      .runContinuously({ signal: new AbortController().signal, intervalMs: 0 })
+      .catch(value => value)
+
+    expect(error).toBeInstanceOf(SetupMonitorConfigurationError)
+    expect(reads).toBe(0)
+  })
+
+  test('sanitizes an unexpected monitor writer failure', async () => {
+    const service = new SetupCheckService(readyState(), config)
+
+    const terminal = await service.runContinuously({
+      signal: new AbortController().signal,
+      intervalMs: 1,
+      onCycle: () => {
+        const error = new Error('https://rpc.example/?key=secret')
+        error.name = 'https://rpc.example/?key=secret'
+        throw error
+      }
+    })
+
+    expect(terminal).toEqual({
+      status: 'halted',
+      reason: 'cycle-error',
+      cycles: 0,
+      cycleErrorName: 'UnknownError'
+    })
+    expect(JSON.stringify(terminal)).not.toContain('secret')
+  })
+
   test('reports every V0 setup check as passed when the maker is ready', async () => {
     const report = await new SetupCheckService(readyState(), config).check()
 
@@ -135,8 +203,8 @@ describe('SetupCheckService', () => {
     expect(report.checks.find(check => check.name === 'maker')).toEqual({
       name: 'maker',
       status: 'failed',
-      observed: undefined,
-      required: maker
+      observed: { derived: false, matches: false },
+      required: 'private key derives configured maker'
     })
   })
 
@@ -247,7 +315,7 @@ describe('SetupCheckService', () => {
             status: 'failed',
             observed: 9n,
             required: 10n,
-            remediation: `fund ${maker} with native token to at least 10`
+            remediation: 'fund the configured maker with native token to at least 10'
           })
         ])
       }
@@ -296,6 +364,7 @@ describe('SetupCheckService', () => {
       }
     })
     for (const marker of [
+      maker,
       'rpc-user',
       'rpc-pass',
       'rpc-secret',
@@ -521,7 +590,7 @@ describe('SetupCheckService', () => {
     })
   })
 
-  test('returns exact read-only remediation transactions for allowance and authorization failures', async () => {
+  test('returns allowance details and a maker-redacted authorization instruction', async () => {
     const state = readyState()
     state.getLoanAllowance = async () => ({ spender: midnight, amount: 99n })
     state.getRatifier = async () => ({
@@ -539,11 +608,9 @@ describe('SetupCheckService', () => {
       functionName: 'approve',
       args: [midnight, 100n]
     })
-    expect(report.checks.find(check => check.name === 'ratifier')?.remediation).toEqual({
-      to: midnight,
-      functionName: 'setIsAuthorized',
-      args: [ratifier, true, maker]
-    })
+    expect(report.checks.find(check => check.name === 'ratifier')?.remediation).toBe(
+      'authorize the configured maker with the selected ratifier'
+    )
   })
 
   test('fails closed for every unsafe V0 setup surface', async () => {

@@ -8,12 +8,17 @@ import type {
   PositionBootstrapDecision
 } from '../../domain/bootstrap/position-bootstrap'
 
+import { BootstrapConfigurationError } from '../../domain/bootstrap/bootstrap-configuration.error'
 import {
   decidePositionBootstrap,
   decidePositionBootstrapTransition,
   validateBootstrapConfig
 } from '../../domain/bootstrap/position-bootstrap'
-import { operatorErrorName } from '../operator-error-name.utils'
+import { waitForMonitorInterval } from '../monitor.utils'
+import { operatorErrorDetails, operatorErrorName } from '../operator-error-name.utils'
+import { bootstrapCycleHasFailure } from './position-bootstrap-monitor.utils'
+
+const BOOTSTRAP_MONITOR_INTERVAL_MS = 60_000
 
 type DecisionInvalidationReason = Extract<
   PositionBootstrapDecision,
@@ -91,9 +96,18 @@ export interface BootstrapMakeService {
       | 'bootstrap-configuration-failed'
       | 'market-invalidation-failed'
   }): Promise<void | 'logged'>
+  /**
+   * Invalidates every strategy-owned bootstrap group during graceful monitoring shutdown.
+   * @returns `logged` when a dry-run records cleanup; otherwise completion after invalidation.
+   * @throws Error when one or more strategy-owned groups cannot be invalidated.
+   * @remarks Live adapters must serialize cleanup behind any in-flight mutation. Dry-run adapters
+   * record the same request without signing or invalidating.
+   */
+  cleanup(): Promise<void | 'logged'>
 }
 
-type BootstrapRunResult =
+/** Sanitized outcome for one configured market in a bootstrap cycle. */
+export type BootstrapRunResult =
   | {
       marketId: Hex
       status: 'observed'
@@ -111,6 +125,7 @@ type BootstrapRunResult =
       invalidated: boolean
       invalidationLogged?: boolean
       errorName: string
+      minimumAssets?: string
       invalidationErrorName?: string
     }
   | {
@@ -148,6 +163,25 @@ type BootstrapRunPlan =
   | { config: BootstrapConfig; decision: PositionBootstrapDecision }
   | { result: BootstrapRunResult }
 
+/** Final lifecycle report emitted after continuous bootstrap monitoring stops. */
+export type PositionBootstrapMonitorReport = {
+  /** Whether shutdown completed normally or monitoring halted on a cycle/cleanup failure. */
+  status: 'stopped' | 'halted'
+  /** Stable reason for the terminal monitor state. */
+  reason: 'signal' | 'cycle-failed' | 'cycle-error' | 'cleanup-failed'
+  /** Number of complete cycles emitted to the monitoring writer. */
+  cycles: number
+  /** Strategy-owned cleanup outcome after the final in-flight cycle completed. */
+  cleanup: {
+    status: 'applied' | 'logged' | 'failed'
+    errorName?: string
+  }
+  /** Last handled failed cycle, retained only when it caused the halt. */
+  lastCycle?: readonly BootstrapRunResult[]
+  /** Sanitized unexpected cycle or output-writer error classification. */
+  cycleErrorName?: string
+}
+
 /** Coordinates live or logged position-bootstrap cycles through explicit make-port outcomes. */
 export class PositionBootstrapService {
   private readonly completedMarkets = new Set<Hex>()
@@ -165,6 +199,89 @@ export class PositionBootstrapService {
     private readonly make: BootstrapMakeService,
     private readonly configs: readonly BootstrapConfig[]
   ) {}
+
+  /**
+   * Repeats complete bootstrap observations until shutdown, then invalidates owned bootstrap groups.
+   * @param parameters - Shutdown signal, optional cycle writer, and testable positive interval.
+   * @returns A terminal report after cleanup has been attempted.
+   * @throws `BootstrapConfigurationError` before any cleanup when no bootstrap market is configured.
+   * @remarks Each cycle finishes before shutdown cleanup begins. Cycles never overlap, every
+   * completed result is emitted once, and cleanup is serialized through the make port.
+   */
+  async runContinuously(parameters: {
+    signal: AbortSignal
+    onCycle?: (results: readonly Record<string, unknown>[]) => void | Promise<void>
+    intervalMs?: number
+  }): Promise<PositionBootstrapMonitorReport> {
+    if (this.configs.length === 0) {
+      throw new BootstrapConfigurationError(
+        'bootstrap',
+        'requires at least one configured market for monitoring'
+      )
+    }
+
+    const intervalMs = parameters.intervalMs ?? BOOTSTRAP_MONITOR_INTERVAL_MS
+    if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) {
+      throw new BootstrapConfigurationError(
+        'bootstrap monitor interval',
+        'must be a positive safe integer'
+      )
+    }
+
+    let cycles = 0
+    let reason: PositionBootstrapMonitorReport['reason'] = 'signal'
+    let lastCycle: readonly BootstrapRunResult[] | undefined
+    let cycleErrorName: string | undefined
+
+    while (!parameters.signal.aborted) {
+      let results: readonly BootstrapRunResult[]
+      try {
+        results = await this.runOnce()
+        cycles += 1
+        await parameters.onCycle?.(results)
+      } catch (error) {
+        reason = 'cycle-error'
+        cycleErrorName = operatorErrorName(error)
+        break
+      }
+
+      if (bootstrapCycleHasFailure(results)) {
+        reason = 'cycle-failed'
+        lastCycle = results
+        break
+      }
+
+      await waitForMonitorInterval(intervalMs, parameters.signal)
+    }
+
+    let cleanup: PositionBootstrapMonitorReport['cleanup']
+    try {
+      const result = await this.cleanup()
+      cleanup = { status: result === 'logged' ? 'logged' : 'applied' }
+    } catch (error) {
+      cleanup = { status: 'failed', errorName: operatorErrorName(error) }
+      reason = 'cleanup-failed'
+    }
+
+    return {
+      status: reason === 'signal' ? 'stopped' : 'halted',
+      reason,
+      cycles,
+      cleanup,
+      ...(lastCycle ? { lastCycle } : {}),
+      ...(cycleErrorName ? { cycleErrorName } : {})
+    }
+  }
+
+  /**
+   * Invalidates every strategy-owned bootstrap group after monitoring stops.
+   * @returns `logged` for read-only cleanup or completion after live invalidations confirm.
+   * @throws Error when the make adapter cannot complete exhaustive strategy cleanup.
+   * @remarks Cleanup is serialized behind any in-flight publication, replacement, or invalidation.
+   */
+  cleanup() {
+    return this.make.cleanup()
+  }
 
   /**
    * Validates all configured markets, then applies one fresh bootstrap cycle per market.
@@ -377,7 +494,7 @@ export class PositionBootstrapService {
           status: 'failed' as const,
           stage: 'make' as const,
           invalidated: false,
-          errorName: operatorErrorName(error)
+          ...operatorErrorDetails(error)
         })
         return results
       }

@@ -410,6 +410,50 @@ describe('MidnightBootstrapMakeService', () => {
     expect(attempted).toEqual([groupId])
   })
 
+  test('serializes graceful cleanup behind an in-flight publication', async () => {
+    const events: string[] = []
+    let releasePublication!: () => void
+    let markPublicationStarted!: () => void
+    const publicationGate = new Promise<void>(resolve => {
+      releasePublication = resolve
+    })
+    const publicationStarted = new Promise<void>(resolve => {
+      markPublicationStarted = resolve
+    })
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [],
+      listOwnedGroupIds: async () => [groupId],
+      listBookOffers: async () => [],
+      toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
+      preparePublication: async () => ({
+        groupId: publishedGroupId,
+        publish: async () => {
+          events.push('publish:start')
+          markPublicationStarted()
+          await publicationGate
+          events.push('publish:end')
+        }
+      }),
+      reserveGroup: async () => {},
+      confirmPublishedGroup: async () => {},
+      releaseGroupReservation: async () => {},
+      invalidate: async id => {
+        events.push(`cleanup:${id}`)
+      }
+    })
+
+    const publication = service.reconcile({ marketId, desiredOffer, reason: 'publish' })
+    await publicationStarted
+    const cleanup = service.cleanup()
+    await Promise.resolve()
+
+    expect(events).toEqual(['publish:start'])
+    releasePublication()
+    await Promise.all([publication, cleanup])
+
+    expect(events).toEqual(['publish:start', 'publish:end', `cleanup:${groupId}`])
+  })
+
   test('attempts every hard-halt cancellation and reports failures deterministically', async () => {
     const lastGroupId: Hex = `0x${'44'.repeat(32)}`
     const attempted: Hex[] = []

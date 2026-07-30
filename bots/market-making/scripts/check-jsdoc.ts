@@ -40,6 +40,7 @@ const concurrencyDeclarations = new Set([
 const deadlineDeclarations = new Set(['ViemSetupStateService.inspectOffers'])
 const readOnlyDeclarations = new Set([
   'SetupCheckService.assertReady',
+  'SetupCheckService.runContinuously',
   'SetupCheckService.check',
   ...providerMethods,
   'ViemSetupStateService.checkPositionHealth'
@@ -288,8 +289,10 @@ export const inspectJSDocSource = (file: string, source: string): JSDocInspectio
 const packageRoot = resolve(import.meta.dir, '..')
 const sourceRoot = resolve(packageRoot, 'src')
 const sourceFiles = [
+  'application/monitor.utils.ts',
   'application/operator-error-name.utils.ts',
   'application/bootstrap/position-bootstrap-halted.error.ts',
+  'application/bootstrap/position-bootstrap-monitor.utils.ts',
   'application/bootstrap/position-bootstrap.service.ts',
   'application/ladder/ladder-cycle-halted.error.ts',
   'application/ladder/ladder-market-maker.service.ts',
@@ -298,6 +301,8 @@ const sourceFiles = [
   'application/setup/setup-check.utils.ts',
   'application/setup/safe-provider.error.ts',
   'application/setup/setup-failed.error.ts',
+  'application/setup/setup-monitor-configuration.error.ts',
+  'application/setup/setup-monitor-halted.error.ts',
   'application/version.service.ts',
   'bootstrap.ts',
   'config/config-file.error.ts',
@@ -312,6 +317,8 @@ const sourceFiles = [
   'infrastructure/bootstrap/bootstrap-hard-halt.error.ts',
   'infrastructure/bootstrap/bootstrap-exposure.utils.ts',
   'infrastructure/bootstrap/bootstrap-make.service.ts',
+  'infrastructure/bootstrap/bootstrap-mempool-validation.error.ts',
+  'infrastructure/bootstrap/bootstrap-mempool-validation.utils.ts',
   'infrastructure/bootstrap/bootstrap-offer.utils.ts',
   'infrastructure/bootstrap/bootstrap-adapter.error.ts',
   'infrastructure/bootstrap/bootstrap-group-ownership.utils.ts',
@@ -319,6 +326,7 @@ const sourceFiles = [
   'infrastructure/bootstrap/bootstrap-position.service.ts',
   'infrastructure/bootstrap/bootstrap-reference-rate.service.ts',
   'infrastructure/bootstrap/bootstrap-requirements.utils.ts',
+  'infrastructure/bootstrap/bootstrap-spread.utils.ts',
   'infrastructure/bootstrap/bootstrap-transaction.utils.ts',
   'infrastructure/bootstrap/production-bootstrap.ts',
   'infrastructure/cli/cli-usage.error.ts',

@@ -31,8 +31,9 @@ needs for maturity comparison.
 Concrete ladder tick conversion, lower/higher-to-buy/sell mapping, offer encoding, live publication,
 and runtime loop composition do not exist yet. Those ladder-specific concerns remain deferred
 infrastructure adapters. Position bootstrap has production read, reference-rate, publication, and
-invalidation adapters; its read-only make adapter renders the same requested operations without
-signing or submission.
+invalidation adapters plus a one-minute monitoring lifecycle. Its read-only make adapter performs
+the same fresh whole-book prospective-spread validation, then renders the requested operations
+without signing or submission.
 
 ## Setup-check configuration
 
@@ -81,11 +82,20 @@ bun run --filter @morpho-org/market-making-bot start -- setup-check
 # Address-only setup inspection: MAKER_PRIVATE_KEY may be omitted.
 bun run --filter @morpho-org/market-making-bot start -- --readonly setup-check
 
+# Repeat read-only readiness checks every minute until SIGINT/SIGTERM.
+bun run --filter @morpho-org/market-making-bot start -- setup-check --monitor
+
 # One live position-bootstrap cycle.
 bun run --filter @morpho-org/market-making-bot start -- bootstrap
 
 # One address-only cycle that logs desired make operations without submitting them.
 bun run --filter @morpho-org/market-making-bot start -- --readonly bootstrap
+
+# Repeat bootstrap every minute; SIGINT/SIGTERM drains the current cycle and removes owned offers.
+bun run --filter @morpho-org/market-making-bot start -- bootstrap --monitor
+
+# Exercise the complete monitor and cleanup lifecycle without signing or submitting.
+bun run --filter @morpho-org/market-making-bot start -- --readonly bootstrap --monitor
 ```
 
 Success exits zero and writes JSON Lines to standard output. Ordinary commands emit one report record;
@@ -97,11 +107,27 @@ reported but never submitted. With `--readonly`, only private-key/maker agreemen
 `not-required`; balance, allowance, ratifier, chain, market, reference, and active-offer observations
 still run against the configured maker address.
 
+`setup-check --monitor` runs the same complete read-only observation every minute and streams each
+report. The first report with `ready: false` halts monitoring, includes that report in the terminal
+`setup-failed` record, and exits with code `1`. `SIGINT` or `SIGTERM` after successful checks lets an
+in-flight check finish and emits a final `{"status":"stopped","reason":"signal","cycles":N}` record
+with exit code `0`. Monitoring never signs, submits remediation, or performs shutdown cleanup. Add
+the root `--readonly` flag when private-key/maker agreement should be omitted.
+
 Read-only make adapters serialize desired bootstrap and ladder reconcile/hard-halt requests as one
 JSON line with event name `readonly.make`. They never sign or submit an operation. The
 `--readonly bootstrap` command executes one complete observational decision cycle and routes every
-requested mutation through this terminal adapter.
+requested mutation through this terminal adapter after deriving its exact tick, comparing the
+prospective offer with the complete current maker book, and applying the SDK's live Mempool-policy
+validation without signing or broadcasting.
 The corresponding final cycle outcome uses `status: "logged"` rather than `"applied"`.
+
+`bootstrap --monitor` requires at least one explicit `bootstrap` / `BOOTSTRAP_MARKETS` entry. It
+serially runs a cycle every minute and streams each result. `SIGINT` or `SIGTERM` lets an in-flight
+cycle finish, then invalidates every explicitly owned bootstrap group through the same mutation
+queue and waits for bounded transaction receipts. The final record reports the number of cycles and
+whether cleanup was applied, logged, or failed. Read-only monitoring logs the cleanup request and
+never loads a private key.
 
 Version output remains available:
 
@@ -220,7 +246,8 @@ Setup verifies all of the following from the typed configuration:
 - Base chain identity and configured Midnight bytecode.
 - Native reserve, loan-token allowance, and ratifier readiness for the configured maker address.
 - Maker/private-key agreement in write mode; only this signer-identity check is `not-required` with
-  `--readonly`.
+  `--readonly`. Maker identity is reduced to configured/derived/matches status and the address is
+  never included in operator output.
 - Every allowlisted market is active, uses the configured loan asset, has valid tick spacing and
   maturity, and agrees between API and chain state.
 - The exact Blue reference market is readable from the archive provider.
@@ -270,16 +297,20 @@ when integral; `marketId` remains a string and `autoRefill` remains a JSON boole
 every YAML bootstrap entry, which avoids ambiguous partial-array merge behavior. See
 [`.env.example`](./.env.example) for exact syntax.
 
-`mm bootstrap` is the only CLI path that invokes `runOnce()`. It first runs the same readiness gate as
-`setup-check`, then executes exactly one position-bootstrap cycle and prints its bigint-safe JSON result.
-Version output, `setup-check`, invalid usage, and application construction do not start bootstrap.
+`mm setup-check --monitor` repeats non-overlapping read-only readiness observations every minute
+until its shutdown signal or the first failed report. `mm bootstrap` first runs the same one-shot
+readiness gate as `setup-check`, then executes exactly one position-bootstrap cycle and prints its
+bigint-safe JSON result. `mm bootstrap --monitor` uses the same gate, repeats non-overlapping cycles
+every minute, and performs owned-group cleanup after its shutdown signal. Version output, setup
+monitoring, invalid usage, and application construction do not start bootstrap.
 
 `runOnce()` validates every market before any position/reference read or publication. Invalid
 configuration, reference failures, and decision failures invoke strategy-wide `hardHalt`; ordinary
 position-read failure requests market-local invalidation and permits other markets to continue.
 The production adapters re-read owned Mempool groups, serialize invalidation and publication, and
-persist group ownership before broadcast. Read-only mode retains the same decisions but logs every
-requested make operation instead.
+persist group ownership before broadcast. Receipt polling is bounded by `REQUEST_TIMEOUT_MS`.
+Read-only mode retains the same decisions and fresh prospective whole-book comparison but logs every
+requested make and graceful-cleanup operation instead.
 
 ### Ladder fields and formulas
 
@@ -337,6 +368,7 @@ the supplied path. Runtime setup reports identify providers by stable IDs only.
 ```sh
 bun run --filter @morpho-org/market-making-bot start -- setup-check
 bun run --filter @morpho-org/market-making-bot start -- --readonly setup-check
+bun run --filter @morpho-org/market-making-bot start -- setup-check --monitor
 bun run --filter @morpho-org/market-making-bot start -- bootstrap
 bun run --filter @morpho-org/market-making-bot start -- --readonly bootstrap
 bun run --filter @morpho-org/market-making-bot start -- --version

@@ -13,6 +13,7 @@ import type {
 } from './application/ladder/ladder-market-maker.service'
 import type { SetupStateService } from './application/setup/setup-check.service'
 import type { ConfigService } from './config/config.service'
+import type { CliRuntimeOptions } from './infrastructure/cli/cli'
 import type { ChainReader } from './infrastructure/setup-state/viem-setup-state.service'
 
 import { PositionBootstrapService } from './application/bootstrap/position-bootstrap.service'
@@ -102,8 +103,10 @@ const defaultState = (config: ConfigService) => {
  * concurrent independent reads through `Promise.all`. `--readonly` selects address-only identity
  * before any private-key validation and replaces every workflow mutation port with terminal output.
  * Writer commands assert readiness before constructing or running their application service; failed
- * readiness rejects without starting the writer. Bootstrap and ladder cycles run only for their
- * respective explicit commands.
+ * readiness rejects without starting the writer. Setup monitoring emits read-only readiness reports
+ * at a one-minute cadence and halts nonzero on the first failed report. Bootstrap monitoring uses
+ * the same cadence and invalidates strategy-owned groups after its shutdown signal; one-shot
+ * bootstrap and ladder cycles run only for their respective explicit commands.
  */
 export const createApplication = (
   environment: Environment = Bun.env,
@@ -112,11 +115,12 @@ export const createApplication = (
   /**
    * Executes one CLI invocation.
    * @param argv - User arguments without runtime/executable prefixes.
+   * @param runtime - Optional shutdown signal and continuous-cycle writer forwarded to the CLI.
    * @returns Captured version text, setup-check JSON, position-bootstrap JSON, or ladder-cycle JSON.
    * @throws On invalid configuration or usage, provider or readiness failure, or a halted writer
    * cycle. Failed readiness prevents the selected writer's `runOnce()` side effect.
    */
-  run(argv: readonly string[]): Promise<unknown>
+  run(argv: readonly string[], runtime?: CliRuntimeOptions): Promise<unknown>
 } => {
   const loadConfig = (options: { configPath?: string; readOnly: boolean }) =>
     RuntimeConfigService.load(environment, {
@@ -167,6 +171,6 @@ export const createApplication = (
   )
 
   return {
-    run: (argv: readonly string[]) => cli.run(argv)
+    run: (argv: readonly string[], runtime?: CliRuntimeOptions) => cli.run(argv, runtime)
   }
 }

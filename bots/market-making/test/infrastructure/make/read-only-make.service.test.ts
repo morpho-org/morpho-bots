@@ -27,6 +27,7 @@ describe('read-only make adapters', () => {
       })
     ).toBe('logged')
     expect(await service.hardHalt({ reason: 'bootstrap-decision-failed' })).toBe('logged')
+    expect(await service.cleanup()).toBe('logged')
 
     expect(lines.map(line => JSON.parse(line))).toEqual([
       {
@@ -49,8 +50,29 @@ describe('read-only make adapters', () => {
         workflow: 'bootstrap',
         operation: 'hard-halt',
         request: { reason: 'bootstrap-decision-failed' }
+      },
+      {
+        event: 'readonly.make',
+        workflow: 'bootstrap',
+        operation: 'cleanup',
+        request: { reason: 'shutdown' }
       }
     ])
+  })
+
+  test('validates a read-only bootstrap reconcile before logging it', async () => {
+    const lines: string[] = []
+    const service = new ReadOnlyBootstrapMakeService(
+      line => lines.push(line),
+      async () => {
+        throw new Error('negative spread')
+      }
+    )
+
+    const error = await service.reconcile({ marketId, reason: 'publish' }).catch(value => value)
+
+    expect(error).toBeInstanceOf(Error)
+    expect(lines).toEqual([])
   })
 
   test('reads active ladder roots but logs every requested mutation', async () => {

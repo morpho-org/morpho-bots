@@ -36,10 +36,12 @@ import {
   strategyBootstrapGroups
 } from './bootstrap-groups.utils'
 import { MidnightBootstrapMakeService } from './bootstrap-make.service'
+import { validateBootstrapMempoolPublication } from './bootstrap-mempool-validation.utils'
 import { bootstrapContinuousFeeCap } from './bootstrap-offer.utils'
 import { MidnightBootstrapPositionService } from './bootstrap-position.service'
 import { BlueBootstrapReferenceRateService } from './bootstrap-reference-rate.service'
 import { signBootstrapRequirements } from './bootstrap-requirements.utils'
+import { assertBootstrapProspectiveSpread, bootstrapMarketGroupIds } from './bootstrap-spread.utils'
 import { assertBootstrapTransaction } from './bootstrap-transaction.utils'
 
 const WAD = 10n ** 18n
@@ -217,8 +219,71 @@ export const createProductionBootstrapAdapters = (
   const rates = new BlueBootstrapReferenceRateService(
     createBlueReader(config, referenceClient as HistoricalBlockReader)
   )
+  const prepareOffer = async (offer: BootstrapOffer) => {
+    const [market, block] = await Promise.all([
+      midnight.getMarketData(offer.marketId),
+      client.getBlock({ blockTag: 'latest' })
+    ])
+    const periodRateWad =
+      (offer.rateBps * (WAD / 10_000n) * (market.params.maturity - block.timestamp)) / YEAR_SECONDS
+    return Offer.create({
+      market: market.params,
+      buy: true,
+      maker,
+      tick: TickLib.priceToTick(TickLib.rateToPrice(periodRateWad), BigInt(market.tickSpacing)),
+      expiry: market.params.maturity,
+      ratifier: config.setup.ratifier,
+      maxAssets: offer.assets,
+      continuousFeeCap: bootstrapContinuousFeeCap(market)
+    })
+  }
+  const prepareMempoolPublication = (
+    offer: BootstrapOffer,
+    created: Offer,
+    groups: Awaited<ReturnType<typeof readGroups>>,
+    ownedIds: readonly Hex[]
+  ) =>
+    validateBootstrapMempoolPublication(() =>
+      midnight.makeLend(
+        bootstrapMakeLendArguments({
+          accountAddress: maker,
+          offers: [created],
+          validation: { apiUrl: `${config.morphoApiBaseUrl}/v0/midnight` },
+          loanToken: config.setup.loanAsset,
+          loanAssets: offer.assets,
+          reservedLoanAssets: bootstrapReservedLoanAssets(groups, ownedIds)
+        })
+      )
+    )
+
   if (config.identity.readOnly) {
-    return { positions, rates, make: new ReadOnlyBootstrapMakeService() }
+    const validate = async (parameters: Parameters<BootstrapMakeService['reconcile']>[0]) => {
+      if (!parameters.desiredOffer) return
+
+      const [groups, ownedIds, prospectiveOffer, activeStrategyGroups] = await Promise.all([
+        readGroups(),
+        ownership.read(),
+        prepareOffer(parameters.desiredOffer),
+        activeGroups()
+      ])
+      const marketGroupIds = bootstrapMarketGroupIds(activeStrategyGroups, parameters.marketId)
+      assertBootstrapProspectiveSpread({
+        marketId: parameters.marketId,
+        replacedGroupIds: marketGroupIds,
+        book: bootstrapBookOffers(groups),
+        prospective: {
+          marketId: parameters.marketId,
+          buy: true,
+          tick: prospectiveOffer.tick
+        }
+      })
+      await prepareMempoolPublication(parameters.desiredOffer, prospectiveOffer, groups, ownedIds)
+    }
+    return {
+      positions,
+      rates,
+      make: new ReadOnlyBootstrapMakeService(undefined, validate)
+    }
   }
 
   const account = privateKeyToAccount(config.identity.privateKey)
@@ -239,30 +304,14 @@ export const createProductionBootstrapAdapters = (
   ) => {
     await assertBootstrapTransaction(transaction, policy)
     const hash = await wallet.sendTransaction(transaction)
-    const receipt = await wallet.waitForTransactionReceipt({ hash })
+    const receipt = await wallet.waitForTransactionReceipt({
+      hash,
+      timeout: config.requestTimeoutMs
+    })
     if (receipt.status !== 'success') throw new BootstrapAdapterError('transaction-reverted')
   }
 
   const preparedOffers = new Map<Hex, Offer>()
-  const prepareOffer = async (offer: BootstrapOffer) => {
-    const [market, block] = await Promise.all([
-      midnight.getMarketData(offer.marketId),
-      wallet.getBlock({ blockTag: 'latest' })
-    ])
-    const periodRateWad =
-      (offer.rateBps * (WAD / 10_000n) * (market.params.maturity - block.timestamp)) / YEAR_SECONDS
-    return Offer.create({
-      market: market.params,
-      buy: true,
-      maker,
-      tick: TickLib.priceToTick(TickLib.rateToPrice(periodRateWad), BigInt(market.tickSpacing)),
-      expiry: market.params.maturity,
-      ratifier: config.setup.ratifier,
-      maxAssets: offer.assets,
-      continuousFeeCap: bootstrapContinuousFeeCap(market)
-    })
-  }
-
   const make = new MidnightBootstrapMakeService({
     listActiveGroups: activeGroups,
     listOwnedGroupIds: ownedGroupIds,
@@ -288,16 +337,7 @@ export const createProductionBootstrapAdapters = (
       preparedOffers.delete(offer.marketId)
       if (!created) throw new BootstrapAdapterError('prospective-offer-missing')
       const [groups, ownedIds] = await Promise.all([readGroups(), ownership.read()])
-      const output = await midnight.makeLend(
-        bootstrapMakeLendArguments({
-          accountAddress: maker,
-          offers: [created],
-          validation: { apiUrl: `${config.morphoApiBaseUrl}/v0/midnight` },
-          loanToken: config.setup.loanAsset,
-          loanAssets: offer.assets,
-          reservedLoanAssets: bootstrapReservedLoanAssets(groups, ownedIds)
-        })
-      )
+      const output = await prepareMempoolPublication(offer, created, groups, ownedIds)
       const signatures = await signBootstrapRequirements(
         await output.getRequirements(),
         requirement =>
