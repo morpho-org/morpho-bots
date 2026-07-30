@@ -11,14 +11,16 @@ const PAGE_SIZE = 100
 const MAX_OFFER_PAGES = 100
 const MAX_OFFER_ITEMS = 100_000
 
-type BootstrapBookOffer = {
+/** Canonical active maker-book offer projection used by spread guards. */
+export type BootstrapBookOffer = {
   marketId: Hex
   maker: Address
   buy: boolean
   tick: bigint
 }
 
-type BootstrapRawGroup = {
+/** Canonical maker group with shared consumption and nested book offers. */
+export type BootstrapRawGroup = {
   id: Hex
   consumed: bigint
   maxAssets: bigint

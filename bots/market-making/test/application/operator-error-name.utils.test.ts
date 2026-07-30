@@ -11,6 +11,9 @@ import { LadderConfigurationError } from '../../src/domain/ladder/ladder-configu
 import { BootstrapAdapterError } from '../../src/infrastructure/bootstrap/bootstrap-adapter.error'
 import { BootstrapHardHaltError } from '../../src/infrastructure/bootstrap/bootstrap-hard-halt.error'
 import { BootstrapMempoolValidationError } from '../../src/infrastructure/bootstrap/bootstrap-mempool-validation.error'
+import { LadderAdapterError } from '../../src/infrastructure/ladder/ladder-adapter.error'
+import { LadderHardHaltError } from '../../src/infrastructure/ladder/ladder-hard-halt.error'
+import { ReferenceAdapterError } from '../../src/infrastructure/reference/reference-adapter.error'
 
 describe('operatorErrorName', () => {
   test('keeps a fixed known domain classification', () => {
@@ -25,6 +28,13 @@ describe('operatorErrorName', () => {
   test('keeps the bootstrap adapter classification', () => {
     expect(operatorErrorName(new BootstrapAdapterError('position-unavailable'))).toBe(
       'BootstrapAdapterError'
+    )
+    expect(operatorErrorName(new LadderAdapterError('position-unavailable'))).toBe(
+      'LadderAdapterError'
+    )
+    expect(operatorErrorName(new LadderHardHaltError([]))).toBe('LadderHardHaltError')
+    expect(operatorErrorName(new ReferenceAdapterError('latest-block'))).toBe(
+      'ReferenceAdapterError'
     )
   })
 

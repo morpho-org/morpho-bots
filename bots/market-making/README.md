@@ -18,8 +18,8 @@ The package follows the repository's hexagonal architecture:
   IDs, bootstrap settings, and ladder settings.
 - `PositionBootstrapService` and `LadderMarketMakerService` define the current application/domain
   boundary through consumer-owned fresh-state, reference-rate, and blocking make ports.
-- `ReadOnlyBootstrapMakeService` and `ReadOnlyLadderMakeService` implement those make ports with
-  terminal JSON output and no signing or mutation.
+- `MidnightBootstrapMakeService` and `MidnightLadderMakeService` serialize owned-group
+  reconciliation, while their read-only decorators emit terminal JSON without signing or mutation.
 - `bootstrap.ts` is the manual composition root.
 - `Cli` is the operator adapter and `index.ts` is a thin entrypoint.
 
@@ -28,10 +28,10 @@ boundary, so a rejected provider call becomes the corresponding failed report it
 other checks. Book reads also run concurrently; book validation waits only for the latest timestamp it
 needs for maturity comparison.
 
-Concrete ladder tick conversion, lower/higher-to-buy/sell mapping, offer encoding, live publication,
-and runtime loop composition do not exist yet. Those ladder-specific concerns remain deferred
-infrastructure adapters. Position bootstrap has production read, reference-rate, publication, and
-invalidation adapters plus a one-minute monitoring lifecycle. Its read-only make adapter performs
+Ladder has production inventory, reference-rate, tick conversion, lower/higher-to-buy/sell mapping,
+offer-tree encoding, live publication, replacement, invalidation, and monitoring adapters. One
+`ladder` command runs one explicit cycle; `ladder --monitor` runs continuous non-overlapping checks.
+Position bootstrap additionally has a one-minute monitoring lifecycle. Its read-only make adapter performs
 the same fresh whole-book prospective-spread validation, then renders the requested operations
 without signing or submission.
 
@@ -99,6 +99,15 @@ bun run --filter @morpho-org/market-making-bot start -- bootstrap --monitor --ve
 
 # Exercise the complete monitor and cleanup lifecycle without signing or submitting.
 bun run --filter @morpho-org/market-making-bot start -- --readonly bootstrap --monitor
+
+# Validate and continuously render ladder decisions without loading a private key or submitting.
+bun run --filter @morpho-org/market-making-bot start -- ladder --monitor --verbose --readonly
+
+# Sign, broadcast, and confirm one ladder reconciliation cycle.
+bun run --filter @morpho-org/market-making-bot start -- ladder
+
+# Continuously reconcile the live ladder and remove owned offers on SIGINT/SIGTERM.
+bun run --filter @morpho-org/market-making-bot start -- ladder --monitor --verbose
 ```
 
 Success exits zero and writes JSON Lines to standard output. Ordinary commands emit one report record;
@@ -117,8 +126,8 @@ in-flight check finish and emits a final `{"status":"stopped","reason":"signal",
 with exit code `0`. Monitoring never signs, submits remediation, or performs shutdown cleanup. Add
 the root `--readonly` flag when private-key/maker agreement should be omitted.
 
-Read-only make adapters serialize desired bootstrap and ladder reconcile/hard-halt requests as one
-JSON line with event name `readonly.make`. They never sign or submit an operation. The
+Read-only make adapters serialize desired bootstrap and ladder reconcile/hard-halt/cleanup requests
+as one JSON line with event name `readonly.make`. They never sign or submit an operation. The
 `--readonly bootstrap` command executes one complete observational decision cycle and routes every
 requested mutation through this terminal adapter after deriving its exact tick, comparing the
 prospective offer with the complete current maker book, and applying the SDK's live Mempool-policy
@@ -142,6 +151,43 @@ monitor cleanup reports its confirmed cancellation hashes. These diagnostics del
 maker identity, private key, RPC/API URLs, signatures, raw transactions, provider payloads, and
 untrusted error text. Without `--verbose`, bootstrap output and provider-read volume remain
 unchanged.
+
+`ladder` requires at least one `ladder` / `LADDER_MARKETS` entry. It runs readiness first, derives
+fresh wallet, allowance, credit, position, active-group, and strategy-wide exposure capacities, and
+then builds one deterministic quote set from the current Blue reference rate. Lower-rate rungs are
+lend-side buys; higher-rate rungs are reduce-only borrow-side sells. The complete mixed-side tree is
+Mempool-validated before and after signing and is submitted in one transaction. Replacement
+reserves the future group IDs durably, verifies the resulting whole maker book has positive spread,
+confirms cancellation receipts for old owned groups, and only then broadcasts the replacement.
+`ladder --readonly` performs the same readiness, state, rate, and decision reads, reconstructs any
+active owned quote set, and emits the requested reconciliation without signing or writing.
+
+`ladder --monitor` repeats non-overlapping checks at the shortest `loopIntervalSeconds` configured
+across its markets. `SIGINT` or `SIGTERM` lets the current cycle and receipt handling finish, then
+invalidates every active owned ladder group through the same serialized mutation queue. Any failed
+or halted cycle stops monitoring, still attempts cleanup, prints the terminal halted report, and
+exits with code `1`. Read-only monitoring emits the cleanup request without signing or submitting.
+
+`ladder --verbose` includes the validated market config, current capacities and active quote,
+reference and premium-adjusted target rates, exact desired ladder, decision, confirmed transaction
+hashes, and a fresh state read after every check. Live transaction hashes are also emitted
+immediately as `ladder.transaction-submitted` records.
+
+For a maker with at least 101 USDC of both available balance and accrued credit, this
+one-rung-per-side preset caps each side at 150 USDC. USDC uses six decimals, so `150000000` is 150
+USDC and `101000000` is the Router-compatible 101 USDC offer floor. Duplicate the exact market ID
+already present in `MARKET_IDS`:
+
+```dotenv
+LADDER_MARKETS=[{"marketId":"0x05959752fdeff325962b9d263edb421efc6e2186a49360dba6c32e86ebf6c84c","quotePremiumBps":"0","spreadBps":"200","stepBps":"100","rungCount":"1","sizeSkewBps":"0","lowerRateBudgetAssets":"150000000","higherRateBudgetAssets":"150000000","targetMarketExposureAssets":"300000000","maximumTotalExposureAssets":"300000000","minimumOfferAssets":"101000000","groupMode":"shared-rung","loopIntervalSeconds":"60","movementToleranceBps":"10","minimumRateBps":"200","maximumRateBps":"800"}]
+```
+
+Run the exact read-only monitor command first to inspect whether current cash/credit capacity
+produces a lower side, a higher side, or both:
+
+```sh
+bun run --filter @morpho-org/market-making-bot start -- ladder --monitor --verbose --readonly
+```
 
 Version output remains available:
 
@@ -317,8 +363,10 @@ readiness gate as `setup-check`, then executes exactly one position-bootstrap cy
 bigint-safe JSON result. `mm bootstrap --monitor` uses the same gate, repeats non-overlapping cycles
 every minute, and performs owned-group cleanup after its shutdown signal. `mm bootstrap --verbose`
 adds safe rate, offer, transaction-hash, configuration, and before/after position diagnostics to
-each result. Version output, setup monitoring, invalid usage, and application construction do not
-start bootstrap.
+each result. `mm ladder --monitor` similarly repeats at the shortest configured ladder cadence,
+streams cycles, and cleans active owned ladder groups after shutdown; `--verbose` adds safe
+configuration, rate, quote, transaction-hash, and before/after capacity diagnostics. Version output,
+setup monitoring, invalid usage, and application construction do not start either writer.
 
 `runOnce()` validates every market before any position/reference read or publication. Invalid
 configuration, reference failures, and decision failures invoke strategy-wide `hardHalt`; ordinary
@@ -334,9 +382,10 @@ Each `ladder` entry has a unique allowlisted `marketId`. Rates are integer BPS a
 amounts are exact raw loan-asset units. `quotePremiumBps` and `sizeSkewBps` are signed; all other
 integer fields are nonnegative or positive as shown by the example. `spreadBps` is a positive even
 full spread, `stepBps` is positive, `rungCount` is a positive safe integer no greater than 512, and
-`loopIntervalSeconds` is a positive safe integer. `movementToleranceBps` is nonnegative, and
-`groupMode` is `shared-rung` or `per-book`. The rung limit bounds local allocation to 1,024 offers
-for a two-sided ladder, a height-10 tree below the Midnight SDK's height-20 protocol limit.
+`minimumOfferAssets` and `loopIntervalSeconds` are positive. Both configured side budgets must be at
+least `minimumOfferAssets`. `movementToleranceBps` is nonnegative, and `groupMode` is `shared-rung`
+or `per-book`. The rung limit bounds local allocation to 1,024 offers for a two-sided ladder, a
+height-10 tree below the Midnight SDK's height-20 protocol limit.
 
 For reference `R`, effective center `C = R + quotePremiumBps`. With zero-based rung `k`:
 
@@ -353,14 +402,14 @@ center is recentered only when absolute effective-center movement is strictly gr
 Rung weight `k` is `10000 + k * sizeSkewBps`, and every weight must stay positive. Positive skew
 weights outer rungs more heavily; negative skew weights inner rungs more heavily. Each configured
 `lowerRateBudgetAssets` / `higherRateBudgetAssets` is first capped by its fresh side capacity. The
-fresh target-market and strategy-total capacities then cap both sides in aggregate; when that cap
-binds, capacity is split proportionally between the requested side budgets with the bigint remainder
-assigned to the higher-rate side. Exact bigint proportional division allocates each nonzero side
-across its rungs, and the outermost rung receives the remainder so the side sums exactly to its capped
-budget. A side with zero fresh capacity produces no rungs, and any individual rung whose bigint
-allocation rounds to zero is omitted. Hard-rate bounds apply to every nonzero rung that can be
-published; an exhausted side cannot trigger a bound failure. `targetMarketExposureAssets` must not
-exceed `maximumTotalExposureAssets`.
+target-market and strategy-total exposure capacities additionally cap only lower-rate lend buys;
+higher-rate reduce-only borrow sells are capped by accrued credit and do not consume new lend
+exposure. A side below `minimumOfferAssets` emits no offer. Otherwise the allocator funds as many
+rungs as can each satisfy the floor, always selecting the closest-to-market rates first, reserves the
+floor for each, distributes remaining assets by weight, and assigns integer remainder to the
+outermost funded rung. Hard-rate bounds apply to every nonzero rung that can be published; an
+exhausted side cannot trigger a bound failure. `targetMarketExposureAssets` must not exceed
+`maximumTotalExposureAssets`.
 
 `LADDER_MARKETS` is exact JSON with the same fields. Every integer-valued property must be a quoted
 decimal string; JSON number tokens, floats, exponents, malformed values, unknown fields, duplicate
@@ -387,6 +436,10 @@ bun run --filter @morpho-org/market-making-bot start -- --readonly setup-check
 bun run --filter @morpho-org/market-making-bot start -- setup-check --monitor
 bun run --filter @morpho-org/market-making-bot start -- bootstrap
 bun run --filter @morpho-org/market-making-bot start -- --readonly bootstrap
+bun run --filter @morpho-org/market-making-bot start -- ladder
+bun run --filter @morpho-org/market-making-bot start -- ladder --readonly
+bun run --filter @morpho-org/market-making-bot start -- ladder --monitor --verbose
+bun run --filter @morpho-org/market-making-bot start -- ladder --monitor --verbose --readonly
 bun run --filter @morpho-org/market-making-bot start -- --version
 ```
 
@@ -399,7 +452,8 @@ cleanup report before exiting non-zero. The check is read-only; remediation tran
 are reported but never submitted. `--readonly` also removes the private-key requirement, marks only
 maker/private-key agreement as `not-required`, and replaces bootstrap submission with
 `readonly.make` terminal output. Dry-run mutation outcomes use `status: "logged"` rather than
-`"applied"`.
+`"applied"`. A ladder monitor failure prints its sanitized terminal cycle/cleanup report and exits
+non-zero.
 
 ## Test
 

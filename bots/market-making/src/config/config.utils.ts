@@ -356,6 +356,7 @@ const ladderFields = [
   'higherRateBudgetAssets',
   'targetMarketExposureAssets',
   'maximumTotalExposureAssets',
+  'minimumOfferAssets',
   'groupMode',
   'loopIntervalSeconds',
   'movementToleranceBps',
@@ -448,6 +449,11 @@ export const ladderConfigsValue = (
       maximumTotalExposureAssets: integerBigInt(
         required('maximumTotalExposureAssets'),
         `${prefix}.maximumTotalExposureAssets`,
+        false
+      ),
+      minimumOfferAssets: integerBigInt(
+        required('minimumOfferAssets'),
+        `${prefix}.minimumOfferAssets`,
         false
       ),
       groupMode: groupMode as LadderConfig['groupMode'],

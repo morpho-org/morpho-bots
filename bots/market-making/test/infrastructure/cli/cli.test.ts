@@ -1,7 +1,10 @@
 import { describe, expect, mock, test } from 'bun:test'
 
+import type { LadderTransactionSubmittedEvent } from '../../../src/application/ladder/ladder-verbose'
+
 import { PositionBootstrapHaltedError } from '../../../src/application/bootstrap/position-bootstrap-halted.error'
 import { LadderCycleHaltedError } from '../../../src/application/ladder/ladder-cycle-halted.error'
+import { LadderMonitorHaltedError } from '../../../src/application/ladder/ladder-monitor-halted.error'
 import { SetupMonitorHaltedError } from '../../../src/application/setup/setup-monitor-halted.error'
 import { VersionService } from '../../../src/application/version.service'
 import { Cli } from '../../../src/infrastructure/cli/cli'
@@ -440,6 +443,100 @@ describe('Cli', () => {
     expect(bootstrap).not.toHaveBeenCalled()
   })
 
+  test('mm ladder --monitor --verbose --readonly streams cycles and cleanup evidence', async () => {
+    const marketId = `0x${'11'.repeat(32)}` as const
+    const txHash = `0x${'aa'.repeat(32)}` as const
+    const cycle = [{ marketId, status: 'observed' as const, action: 'rest' as const }]
+    const report = {
+      status: 'stopped' as const,
+      reason: 'signal' as const,
+      cycles: 1,
+      cleanup: { status: 'logged' as const }
+    }
+    let readOnly: boolean | undefined
+    const runContinuously = mock(
+      async (parameters: {
+        signal: AbortSignal
+        verbose?: boolean
+        onCycle?: (results: typeof cycle) => void | Promise<void>
+        onTransactionSubmitted?: (event: LadderTransactionSubmittedEvent) => void | Promise<void>
+      }) => {
+        await parameters.onTransactionSubmitted?.({
+          event: 'ladder.transaction-submitted',
+          operation: 'publish',
+          txHash
+        })
+        await parameters.onCycle?.(cycle)
+        return report
+      }
+    )
+    const streamed: unknown[] = []
+    const controller = new AbortController()
+    const application = new Cli(
+      new VersionService(),
+      () => ({ assertReady: async () => readyReport }),
+      () => ({ runOnce: async () => [] }),
+      options => {
+        readOnly = options.readOnly
+        return { runOnce: async () => [], runContinuously }
+      }
+    )
+
+    expect(
+      await application.run(['ladder', '--monitor', '--verbose', '--readonly'], {
+        signal: controller.signal,
+        writeEvent: event => {
+          streamed.push(event)
+        }
+      })
+    ).toEqual(report)
+    expect(readOnly).toBe(true)
+    expect(runContinuously.mock.calls[0]?.[0]).toMatchObject({
+      signal: controller.signal,
+      verbose: true
+    })
+    expect(streamed).toEqual([
+      {
+        event: 'ladder.transaction-submitted',
+        operation: 'publish',
+        txHash
+      },
+      cycle
+    ])
+  })
+
+  test('mm ladder --monitor rejects a halted lifecycle report', async () => {
+    const report = {
+      status: 'halted' as const,
+      reason: 'cycle-failed' as const,
+      cycles: 1,
+      cleanup: { status: 'applied' as const },
+      lastCycle: [
+        {
+          marketId: `0x${'11'.repeat(32)}` as const,
+          status: 'failed' as const,
+          stage: 'reconcile' as const,
+          invalidated: false as const,
+          errorName: 'LadderAdapterError'
+        }
+      ]
+    }
+    const application = new Cli(
+      new VersionService(),
+      () => ({ assertReady: async () => readyReport }),
+      () => ({ runOnce: async () => [] }),
+      () => ({
+        runOnce: async () => [],
+        runContinuously: async () => report
+      })
+    )
+
+    const error = await application.run(['ladder', '--monitor']).catch(value => value)
+
+    expect(error).toBeInstanceOf(LadderMonitorHaltedError)
+    expect(error).toMatchObject({ report })
+  })
+
   test.each(['failed', 'halted'] as const)(
     'rejects a ladder cycle containing a %s market result',
     async status => {
@@ -616,6 +713,27 @@ describe('Cli', () => {
     const exitCode = await runMarketMakingEntrypoint(
       { run: async () => Promise.reject(new LadderCycleHaltedError(report)) },
       ['ladder'],
+      { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) }
+    )
+
+    expect(exitCode).toBe(1)
+    expect(stdout).toEqual([])
+    expect(stderr).toEqual([JSON.stringify(report)])
+  })
+
+  test('entrypoint emits a halted ladder monitor report and returns a non-zero exit code', async () => {
+    const report = {
+      status: 'halted' as const,
+      reason: 'cleanup-failed' as const,
+      cycles: 1,
+      cleanup: { status: 'failed' as const, errorName: 'LadderHardHaltError' }
+    }
+    const stdout: string[] = []
+    const stderr: string[] = []
+
+    const exitCode = await runMarketMakingEntrypoint(
+      { run: async () => Promise.reject(new LadderMonitorHaltedError(report)) },
+      ['ladder', '--monitor'],
       { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) }
     )
 

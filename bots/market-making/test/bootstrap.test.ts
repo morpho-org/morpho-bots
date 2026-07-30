@@ -9,7 +9,6 @@ import type { SetupStateService } from '../src/application/setup/setup-check.ser
 
 import { SetupFailedError } from '../src/application/setup/setup-failed.error'
 import { createApplication } from '../src/bootstrap'
-import { CliUsageError } from '../src/infrastructure/cli/cli-usage.error'
 
 const maker: Address = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
 const midnight: Address = '0x2222222222222222222222222222222222222222'
@@ -44,6 +43,7 @@ const ladderConfiguration = {
   higherRateBudgetAssets: '10',
   targetMarketExposureAssets: '20',
   maximumTotalExposureAssets: '20',
+  minimumOfferAssets: '1',
   groupMode: 'shared-rung',
   loopIntervalSeconds: '3600',
   movementToleranceBps: '10',
@@ -161,7 +161,8 @@ describe('createApplication', () => {
           make: {
             readActive: async () => undefined,
             reconcile: async () => {},
-            hardHalt: async () => {}
+            hardHalt: async () => {},
+            cleanup: async () => {}
           }
         })
       }
@@ -173,7 +174,7 @@ describe('createApplication', () => {
     expect(events).toEqual(['readiness', 'ladder'])
   })
 
-  test('keeps the ladder command hidden until runtime adapters are composed', async () => {
+  test('default-composes the ladder command and rejects an empty ladder config', async () => {
     let readinessReads = 0
     const state = readyState()
     state.getChainId = async () => {
@@ -184,8 +185,11 @@ describe('createApplication', () => {
 
     const error = await application.run(['ladder']).catch(value => value)
 
-    expect(error).toBeInstanceOf(CliUsageError)
-    expect(readinessReads).toBe(0)
+    expect(error).toMatchObject({
+      name: 'LadderConfigurationError',
+      field: 'ladder'
+    })
+    expect(readinessReads).toBe(1)
   })
 
   test('default-composes PositionBootstrapService when only its production ports are replaced', async () => {
@@ -307,7 +311,8 @@ describe('createApplication', () => {
           make: {
             readActive: async () => undefined,
             reconcile,
-            hardHalt
+            hardHalt,
+            cleanup: async () => {}
           }
         })
       }
@@ -321,6 +326,56 @@ describe('createApplication', () => {
       expect(hardHalt).not.toHaveBeenCalled()
       expect(terminal).toHaveBeenCalledWith(
         expect.stringContaining('"event":"readonly.make","workflow":"ladder"')
+      )
+    } finally {
+      terminal.mockRestore()
+    }
+  })
+
+  test('runs the exact read-only ladder monitor surface without loading or invoking a signer', async () => {
+    const reconcile = mock(async () => {})
+    const hardHalt = mock(async () => {})
+    const cleanup = mock(async () => {})
+    const terminal = spyOn(console, 'log').mockImplementation(() => {})
+    const controller = new AbortController()
+    controller.abort()
+    const application = createApplication(
+      {
+        ...environment,
+        MAKER_PRIVATE_KEY: undefined,
+        LADDER_MARKETS: JSON.stringify([ladderConfiguration])
+      },
+      {
+        createState: readyState,
+        createLadderAdapters: () => ({
+          positions: { readMarket: async () => ({}) },
+          rates: { readRate: async () => 500n },
+          make: {
+            readActive: async () => undefined,
+            reconcile,
+            hardHalt,
+            cleanup
+          }
+        })
+      }
+    )
+
+    try {
+      expect(
+        await application.run(['ladder', '--monitor', '--verbose', '--readonly'], {
+          signal: controller.signal
+        })
+      ).toEqual({
+        status: 'stopped',
+        reason: 'signal',
+        cycles: 0,
+        cleanup: { status: 'logged' }
+      })
+      expect(reconcile).not.toHaveBeenCalled()
+      expect(hardHalt).not.toHaveBeenCalled()
+      expect(cleanup).not.toHaveBeenCalled()
+      expect(terminal).toHaveBeenCalledWith(
+        expect.stringContaining('"event":"readonly.make","workflow":"ladder","operation":"cleanup"')
       )
     } finally {
       terminal.mockRestore()

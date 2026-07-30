@@ -1,6 +1,5 @@
 import { Offer, TickLib } from '@morpho-org/midnight-sdk'
 import { morphoViemExtension } from '@morpho-org/morpho-sdk'
-import { fetchMarket } from '@morpho-org/morpho-sdk/fetch'
 import { getChainAddress } from '@morpho-org/morpho-ts'
 import {
   createPublicClient,
@@ -24,9 +23,13 @@ import type {
 import type { ConfigService } from '../../config/config.service'
 import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
 import type { BootstrapActiveGroup, BootstrapInventoryReader } from './bootstrap-position.service'
-import type { BlueReferenceReader, BlueSupplyCheckpoint } from './bootstrap-reference-rate.service'
 
+import { createLadderGroupOwnership } from '../ladder/ladder-group-ownership.utils'
 import { ReadOnlyBootstrapMakeService } from '../make/read-only-bootstrap-make.service'
+import {
+  createBlueReferenceReader,
+  type HistoricalBlockReader
+} from '../reference/blue-reference-reader.utils'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 import { bootstrapExposureMarketIds } from './bootstrap-exposure.utils'
 import { createBootstrapGroupOwnership } from './bootstrap-group-ownership.utils'
@@ -66,53 +69,6 @@ export const bootstrapMakeLendArguments = (
   parameters: BootstrapMakeLendArguments
 ): BootstrapMakeLendArguments => parameters
 
-type HistoricalBlockReader = {
-  getBlock(parameters: { blockTag: 'latest' } | { blockNumber: bigint }): Promise<{
-    number: bigint | null
-    timestamp: bigint
-  }>
-}
-
-const createBlueReader = (
-  config: ConfigService,
-  client: HistoricalBlockReader
-): BlueReferenceReader => {
-  const checkpoint = async (blockNumber: bigint): Promise<BlueSupplyCheckpoint> => {
-    const block = await client.getBlock({ blockNumber })
-    const market = await fetchMarket(
-      config.setup.referenceMarketId as Parameters<typeof fetchMarket>[0],
-      client as never,
-      { blockNumber, deployless: false }
-    )
-    const accrued = market.accrueInterest(block.timestamp)
-    return {
-      blockNumber,
-      timestamp: block.timestamp,
-      supplyAssetsPerWadShares: accrued.toSupplyAssets(WAD)
-    }
-  }
-  return {
-    readLatest: async () => {
-      const block = await client.getBlock({ blockTag: 'latest' })
-      if (block.number === null) throw new BootstrapAdapterError('reference-latest-block')
-      return checkpoint(block.number)
-    },
-    readAtOrBefore: async target => {
-      const latest = await client.getBlock({ blockTag: 'latest' })
-      if (latest.number === null) throw new BootstrapAdapterError('reference-latest-block')
-      let low = 0n
-      let high = latest.number
-      while (low < high) {
-        const middle = (low + high + 1n) / 2n
-        const block = await client.getBlock({ blockNumber: middle })
-        if (block.timestamp <= target) low = middle
-        else high = middle - 1n
-      }
-      return checkpoint(low)
-    }
-  }
-}
-
 /** Production ports used by the default position-bootstrap application service. */
 type ProductionBootstrapAdapters = {
   positions: BootstrapPositionService
@@ -147,6 +103,10 @@ export const createProductionBootstrapAdapters = (
     maker,
     marketIds: config.setup.marketIds,
     configuredGroupIds: config.v0OfferGroupIds
+  })
+  const ladderOwnership = createLadderGroupOwnership({
+    maker,
+    marketIds: config.setup.marketIds
   })
   const readGroups = () =>
     readBootstrapGroups({
@@ -218,7 +178,10 @@ export const createProductionBootstrapAdapters = (
 
   const positions = new MidnightBootstrapPositionService(inventory, maker)
   const rates = new BlueBootstrapReferenceRateService(
-    createBlueReader(config, referenceClient as HistoricalBlockReader)
+    createBlueReferenceReader(
+      config.setup.referenceMarketId,
+      referenceClient as HistoricalBlockReader
+    )
   )
   const prepareOffer = async (offer: BootstrapOffer) => {
     const [market, block] = await Promise.all([
@@ -261,12 +224,14 @@ export const createProductionBootstrapAdapters = (
     const validate = async (parameters: Parameters<BootstrapMakeService['reconcile']>[0]) => {
       if (!parameters.desiredOffer) return
 
-      const [groups, ownedIds, prospectiveOffer, activeStrategyGroups] = await Promise.all([
-        readGroups(),
-        ownership.read(),
-        prepareOffer(parameters.desiredOffer),
-        activeGroups()
-      ])
+      const [groups, ownedIds, ladderOwnedIds, prospectiveOffer, activeStrategyGroups] =
+        await Promise.all([
+          readGroups(),
+          ownership.read(),
+          ladderOwnership.readGroupIds(),
+          prepareOffer(parameters.desiredOffer),
+          activeGroups()
+        ])
       const marketGroupIds = bootstrapMarketGroupIds(activeStrategyGroups, parameters.marketId)
       assertBootstrapProspectiveSpread({
         marketId: parameters.marketId,
@@ -278,7 +243,10 @@ export const createProductionBootstrapAdapters = (
           tick: prospectiveOffer.tick
         }
       })
-      await prepareMempoolPublication(parameters.desiredOffer, prospectiveOffer, groups, ownedIds)
+      await prepareMempoolPublication(parameters.desiredOffer, prospectiveOffer, groups, [
+        ...ownedIds,
+        ...ladderOwnedIds
+      ])
     }
     return {
       positions,
@@ -346,8 +314,15 @@ export const createProductionBootstrapAdapters = (
       const created = preparedOffers.get(offer.marketId)
       preparedOffers.delete(offer.marketId)
       if (!created) throw new BootstrapAdapterError('prospective-offer-missing')
-      const [groups, ownedIds] = await Promise.all([readGroups(), ownership.read()])
-      const output = await prepareMempoolPublication(offer, created, groups, ownedIds)
+      const [groups, ownedIds, ladderOwnedIds] = await Promise.all([
+        readGroups(),
+        ownership.read(),
+        ladderOwnership.readGroupIds()
+      ])
+      const output = await prepareMempoolPublication(offer, created, groups, [
+        ...ownedIds,
+        ...ladderOwnedIds
+      ])
       const signatures = await signBootstrapRequirements(
         await output.getRequirements(),
         requirement =>

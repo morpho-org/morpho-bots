@@ -2,6 +2,8 @@ import { Command, CommanderError } from 'commander'
 
 import type { BootstrapTransactionSubmittedEvent } from '../../application/bootstrap/position-bootstrap-verbose'
 import type { PositionBootstrapMonitorReport } from '../../application/bootstrap/position-bootstrap.service'
+import type { LadderMonitorReport } from '../../application/ladder/ladder-market-maker.service'
+import type { LadderTransactionSubmittedEvent } from '../../application/ladder/ladder-verbose'
 import type {
   SetupCheckMonitorReport,
   SetupCheckReport
@@ -11,6 +13,8 @@ import type { VersionService } from '../../application/version.service'
 import { PositionBootstrapHaltedError } from '../../application/bootstrap/position-bootstrap-halted.error'
 import { bootstrapCycleHasFailure } from '../../application/bootstrap/position-bootstrap-monitor.utils'
 import { LadderCycleHaltedError } from '../../application/ladder/ladder-cycle-halted.error'
+import { LadderMonitorHaltedError } from '../../application/ladder/ladder-monitor-halted.error'
+import { ladderCycleHasFailure } from '../../application/ladder/ladder-monitor.utils'
 import { SetupMonitorHaltedError } from '../../application/setup/setup-monitor-halted.error'
 import { CliUsageError } from './cli-usage.error'
 
@@ -38,7 +42,16 @@ interface PositionBootstrapService {
 }
 
 interface LadderMarketMakerService {
-  runOnce(): Promise<unknown>
+  runOnce(parameters?: {
+    verbose?: boolean
+    onTransactionSubmitted?: (event: LadderTransactionSubmittedEvent) => void | Promise<void>
+  }): Promise<readonly { status: string }[]>
+  runContinuously?(parameters: {
+    signal: AbortSignal
+    onCycle?: (result: readonly { status: string }[]) => void | Promise<void>
+    verbose?: boolean
+    onTransactionSubmitted?: (event: LadderTransactionSubmittedEvent) => void | Promise<void>
+  }): Promise<LadderMonitorReport>
 }
 
 /** CLI-selected runtime and configuration-file options. */
@@ -64,8 +77,7 @@ export class Cli {
    * @param version - Application version provider.
    * @param setup - Lazy readiness-service factory, invoked only for `setup-check`.
    * @param bootstrap - Lazy position-bootstrap factory, invoked only for `bootstrap`.
-   * @param ladder - Optional lazy ladder factory; omit it to keep `ladder` hidden until runtime
-   * adapters are composed.
+   * @param ladder - Lazy production or test ladder-service factory.
    * @remarks Construction performs no provider calls and does not start writer workflows. The
    * `--readonly` option is a positive Boolean flag and defaults to write-enabled configuration.
    */
@@ -77,7 +89,7 @@ export class Cli {
     bootstrap: (
       options: CliConfigurationOptions
     ) => PositionBootstrapService | Promise<PositionBootstrapService>,
-    ladder?: (
+    ladder: (
       options: CliConfigurationOptions
     ) => LadderMarketMakerService | Promise<LadderMarketMakerService>
   ) {
@@ -165,31 +177,50 @@ export class Cli {
       this.hasOutput = true
     })
 
-    if (ladder) {
-      this.program
-        .command('ladder')
-        .description('run one explicit market-maker ladder cycle')
-        .action(async () => {
-          const options = this.program.opts<{ config?: string; readonly?: boolean }>()
-          const ladderService = await ladder({
-            configPath: options.config,
-            readOnly: options.readonly === true
-          })
-          const result = await ladderService.runOnce()
-          if (
-            Array.isArray(result) &&
-            result.some(item =>
-              typeof item === 'object' && item !== null && 'status' in item
-                ? item.status === 'halted' || item.status === 'failed'
-                : false
-            )
-          ) {
-            throw new LadderCycleHaltedError(result)
-          }
-          this.output = result
-          this.hasOutput = true
+    const ladderCommand = this.program
+      .command('ladder')
+      .description('run one market-maker ladder cycle or monitor continuously')
+      .option('--monitor', 'repeat at the configured cadence and clean up owned offers on shutdown')
+      .option(
+        '--verbose',
+        'show config, rates, ladder offers, capacities, state, and transaction hashes'
+      )
+
+    ladderCommand.action(async () => {
+      const options = this.program.opts<{ config?: string; readonly?: boolean }>()
+      const ladderOptions = ladderCommand.opts<{ monitor?: boolean; verbose?: boolean }>()
+      const ladderService = await ladder({
+        configPath: options.config,
+        readOnly: options.readonly === true
+      })
+      if (ladderOptions.monitor === true) {
+        if (!ladderService.runContinuously) throw new CliUsageError()
+        const result = await ladderService.runContinuously({
+          signal: this.runtime.signal ?? new AbortController().signal,
+          onCycle: cycle => this.runtime.writeEvent?.(cycle),
+          verbose: ladderOptions.verbose === true,
+          onTransactionSubmitted:
+            ladderOptions.verbose === true ? event => this.runtime.writeEvent?.(event) : undefined
         })
-    }
+        if (result.status === 'halted') {
+          throw new LadderMonitorHaltedError(result)
+        }
+        this.output = result
+        this.hasOutput = true
+        return
+      }
+
+      const result = await ladderService.runOnce({
+        verbose: ladderOptions.verbose === true,
+        onTransactionSubmitted:
+          ladderOptions.verbose === true ? event => this.runtime.writeEvent?.(event) : undefined
+      })
+      if (ladderCycleHasFailure(result)) {
+        throw new LadderCycleHaltedError(result)
+      }
+      this.output = result
+      this.hasOutput = true
+    })
   }
 
   /**
@@ -200,15 +231,17 @@ export class Cli {
    * @throws `CliUsageError` with a constant message and stable code on invalid usage; raw Commander
    * arguments, messages, option details, URLs, and causes are deliberately discarded. Provider and
    * readiness errors pass through.
-   * @remarks `setup-check` remains read-only. Position bootstrap runs only for the explicit
-   * `setup-check --monitor` streams non-overlapping readiness reports until shutdown or failed
-   * readiness without writes. A failed monitor report exits through `SetupMonitorHaltedError`.
-   * Position bootstrap runs only for the explicit `bootstrap` command;
+   * @remarks `setup-check` remains read-only. `setup-check --monitor` streams non-overlapping
+   * readiness reports until shutdown or failed readiness without writes. A failed monitor report
+   * exits through `SetupMonitorHaltedError`. Position bootstrap runs only for the explicit
+   * `bootstrap` command;
    * `bootstrap --monitor` repeats at the fixed bootstrap cadence and performs strategy cleanup
    * after its signal. `bootstrap --verbose` adds safe configuration, rate, offer, position, and
    * transaction-hash diagnostics. Ladder reconciliation runs only for the explicit `ladder`
-   * command. With `--readonly`, configuration never loads a private key and make adapters suppress
-   * mutations.
+   * command; `ladder --monitor` repeats at the shortest configured cadence and cleans owned ladder
+   * groups after shutdown, while `ladder --verbose` adds safe configuration, rate, quote, state,
+   * and transaction diagnostics. With `--readonly`, including when placed after subcommand
+   * options, configuration never loads a private key and make adapters suppress mutations.
    */
   async run(argv: readonly string[], runtime: CliRuntimeOptions = {}): Promise<unknown> {
     if (argv.length === 0) throw new CliUsageError()

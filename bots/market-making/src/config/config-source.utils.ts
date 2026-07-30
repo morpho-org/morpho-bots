@@ -102,6 +102,7 @@ const yamlKeys = {
     'higherRateBudgetAssets',
     'targetMarketExposureAssets',
     'maximumTotalExposureAssets',
+    'minimumOfferAssets',
     'groupMode',
     'loopIntervalSeconds',
     'movementToleranceBps',

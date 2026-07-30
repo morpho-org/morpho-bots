@@ -5,6 +5,9 @@ type OperatorErrorName =
   | 'BootstrapHardHaltError'
   | 'BootstrapConfigurationError'
   | 'LadderConfigurationError'
+  | 'LadderAdapterError'
+  | 'LadderHardHaltError'
+  | 'ReferenceAdapterError'
   | 'ConfigFileError'
   | 'ConfigValidationError'
   | 'ProviderPaginationError'
@@ -25,6 +28,9 @@ const knownNames: Readonly<Record<string, OperatorErrorName>> = {
   BootstrapHardHaltError: 'BootstrapHardHaltError',
   BootstrapConfigurationError: 'BootstrapConfigurationError',
   LadderConfigurationError: 'LadderConfigurationError',
+  LadderAdapterError: 'LadderAdapterError',
+  LadderHardHaltError: 'LadderHardHaltError',
+  ReferenceAdapterError: 'ReferenceAdapterError',
   ConfigFileError: 'ConfigFileError',
   ConfigValidationError: 'ConfigValidationError',
   ProviderPaginationError: 'ProviderPaginationError',

@@ -50,4 +50,15 @@ export class ReadOnlyLadderMakeService implements LadderMakeService {
     this.write(formatReadOnlyMakeEvent('ladder', 'hard-halt', parameters))
     return 'logged' as const
   }
+
+  /**
+   * Logs graceful strategy cleanup instead of invalidating owned ladder groups.
+   * @returns `logged` after the terminal writer accepts one JSON line.
+   * @throws When the injected terminal writer rejects the line.
+   * @remarks No signing or strategy-root invalidation occurs.
+   */
+  async cleanup() {
+    this.write(formatReadOnlyMakeEvent('ladder', 'cleanup', { reason: 'shutdown' }))
+    return 'logged' as const
+  }
 }
