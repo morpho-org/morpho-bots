@@ -133,6 +133,17 @@ describe('createPendingQueue', () => {
     expect(sends).toHaveLength(1) // no replacement
   })
 
+  it('uses the latest queue-observed head when the caller block is stale', async () => {
+    const { queue, sends } = setup()
+    await queue.onBlock(10n)
+    await queue.onBlock(11n)
+    await queue.onBlock(12n)
+    await submitOne(queue, 0n)
+    await queue.onBlock(13n)
+    expect(sends).toHaveLength(1)
+    expect(queue.snapshot()[0]?.attempt).toBe(0)
+  })
+
   it('bumps and replaces a stuck tx at the same nonce', async () => {
     const { queue, sends } = setup({ baseFee: 100n })
     await submitOne(queue, 0n)
@@ -403,6 +414,34 @@ describe('drop', () => {
 })
 
 describe('nonce-consumed reconciliation', () => {
+  it('confirms from the original hash after a replacement and avoids nonce_consumed', async () => {
+    let originalMined = false
+    let consumedNonce = 7
+    const { logger, events } = captureLogger()
+    const { queue } = setup({
+      getReceipt: async txHash =>
+        txHash === hashOf(1) && originalMined ? { status: 'success', blockNumber: 6n } : null,
+      getConsumedNonce: async () => consumedNonce,
+      reconcileEveryBlocks: 1,
+      logger
+    })
+    await submitOne(queue, 0n)
+    await queue.onBlock(5n)
+    expect(queue.snapshot()[0]?.txHash).toBe(hashOf(2))
+    originalMined = true
+    consumedNonce = 8
+    await queue.onBlock(6n)
+    expect(queue.size).toBe(0)
+    expect(events.find(e => e.event === 'tx.confirmed')?.fields).toMatchObject({
+      nonce: 7,
+      txHash: hashOf(1),
+      blockNumber: 6n
+    })
+    expect(
+      events.some(e => e.event === 'tx.dropped' && e.fields?.reason === 'nonce_consumed')
+    ).toBe(false)
+  })
+
   it('drops a tracked tx whose nonce is consumed on-chain with no receipt for us', async () => {
     const { logger, events } = captureLogger()
     // getConsumedNonce reports 8 (> our nonce 7) while getReceipt never returns one: an external

@@ -43,8 +43,11 @@ export type GetConsumedNonce = () => Promise<number>
 type Pending = {
   nonce: number
   txHash: Hex
+  /** Every hash broadcast for this nonce, newest first, for receipt discovery after replacement. */
+  txHashes: Hex[]
   request: TxRequest
   label: string
+  /** Block head observed by the queue when the latest broadcast was submitted. */
   submittedAtBlock: bigint
   maxFeePerGas: bigint
   maxPriorityFeePerGas: bigint
@@ -57,6 +60,7 @@ export type PendingQueue = {
     label: string
     maxFeePerGas: bigint
     maxPriorityFeePerGas: bigint
+    /** Tick-start head fallback; the queue uses a newer head observed by `onBlock` when available. */
     blockNumber: bigint
   }): Promise<void>
   onBlock(blockNumber: bigint): Promise<void>
@@ -122,6 +126,9 @@ export function createPendingQueue({
   revertReason?: (error: unknown) => string
 }): PendingQueue {
   const pending = new Map<number, Pending>()
+  // Latest head observed by maintenance. A tick's caller-supplied head can be stale while slow
+  // discovery/quote work is in flight, so submissions use this value when it is newer.
+  let latestObservedBlock: bigint | null = null
   // label → block height at which its tx left `pending` (confirm/revert/drop). Keeps the label in the
   // backpressure set for `settledCooldownBlocks` so a just-acted position isn't re-submitted while
   // the read RPC still lags the confirmation. Pruned each `onBlock`. Unused when the cooldown is 0n.
@@ -246,9 +253,13 @@ export function createPendingQueue({
     pending.set(nonce, {
       nonce,
       txHash,
+      txHashes: [txHash],
       request: args.request,
       label: args.label,
-      submittedAtBlock: args.blockNumber,
+      submittedAtBlock:
+        latestObservedBlock === null || args.blockNumber > latestObservedBlock
+          ? args.blockNumber
+          : latestObservedBlock,
       maxFeePerGas: args.maxFeePerGas,
       maxPriorityFeePerGas: args.maxPriorityFeePerGas,
       attempt: 0
@@ -320,6 +331,7 @@ export function createPendingQueue({
     }
     const oldHash = entry.txHash
     entry.txHash = replaced.data.txHash
+    entry.txHashes.unshift(replaced.data.txHash)
     entry.maxFeePerGas = result.fees.maxFeePerGas
     entry.maxPriorityFeePerGas = result.fees.maxPriorityFeePerGas
     entry.submittedAtBlock = blockNumber
@@ -347,8 +359,20 @@ export function createPendingQueue({
     // Deleting the current key mid-iteration (via `drop`) is well-defined for a Map.
     for (const entry of pending.values()) {
       if (entry.nonce >= count.data) continue
-      const receipt = await tryCatch(getReceipt(entry.txHash))
-      if (!receipt.error && !receipt.data) drop(entry.nonce, 'nonce_consumed')
+      let foundReceipt = false
+      let receiptCheckFailed = false
+      for (const txHash of entry.txHashes) {
+        const receipt = await tryCatch(getReceipt(txHash))
+        if (receipt.error) {
+          receiptCheckFailed = true
+          break
+        }
+        if (receipt.data) {
+          foundReceipt = true
+          break
+        }
+      }
+      if (!foundReceipt && !receiptCheckFailed) drop(entry.nonce, 'nonce_consumed')
     }
   }
 
@@ -387,14 +411,26 @@ export function createPendingQueue({
   }
 
   async function onBlock(blockNumber: bigint): Promise<void> {
+    latestObservedBlock =
+      latestObservedBlock === null || blockNumber > latestObservedBlock
+        ? blockNumber
+        : latestObservedBlock
     let baseFee: bigint | null = null
     // Deleting the current key mid-iteration is well-defined for a Map; we never insert here.
     for (const entry of pending.values()) {
       // Per-entry isolation: one entry's transient read failure (getReceipt/getBaseFee) must not
       // abort the sweep for the rest of the queue. replaceStuck owns its own send-error handling.
       try {
-        const receipt = await getReceipt(entry.txHash)
-        if (receipt) {
+        let receipt: TxReceiptLite | null = null
+        let receiptHash: Hex | undefined
+        for (const txHash of entry.txHashes) {
+          receipt = await getReceipt(txHash)
+          if (receipt) {
+            receiptHash = txHash
+            break
+          }
+        }
+        if (receipt && receiptHash) {
           // One-block receipt finality: a receipt is treated as terminal (confirm or revert) the
           // moment it appears — accepted for the L2s these bots target (Base, Robinhood /
           // Arbitrum-Orbit), which do not reorg confirmed transactions in practice. If a receipt
@@ -406,14 +442,14 @@ export function createPendingQueue({
             logger.info('tx.confirmed', {
               label: entry.label,
               nonce: entry.nonce,
-              txHash: entry.txHash,
+              txHash: receiptHash,
               blockNumber: receipt.blockNumber
             })
           } else {
             logger.warn('tx.reverted', {
               label: entry.label,
               nonce: entry.nonce,
-              txHash: entry.txHash,
+              txHash: receiptHash,
               blockNumber: receipt.blockNumber
             })
           }
