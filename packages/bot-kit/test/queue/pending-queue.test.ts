@@ -139,7 +139,7 @@ describe('createPendingQueue', () => {
   it('uses the broadcast-time head when the caller block is stale', async () => {
     const { queue, sends } = setup({ getBlockNumber: async () => 12n })
     await submitOne(queue, 0n)
-    await queue.onBlock(1n)
+    await queue.onBlock(13n)
     expect(sends).toHaveLength(1)
     expect(queue.snapshot()[0]?.attempt).toBe(0)
   })
@@ -155,7 +155,7 @@ describe('createPendingQueue', () => {
     await submitOne(queue, 10n)
     await queue.onBlock(11n)
     expect(sends).toHaveLength(1)
-    expect(events.find(e => e.event === 'tx.block_number_failed')?.level).toBe('warn')
+    expect(events.find(e => e.event === 'head.read_failed')?.level).toBe('warn')
   })
 
   it('keeps the caller block when the fetched head is lower', async () => {

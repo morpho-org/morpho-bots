@@ -237,7 +237,7 @@ export function createPendingQueue({
     if (getBlockNumber) {
       const observed = await tryCatch(getBlockNumber())
       if (observed.error) {
-        logger.warn('tx.block_number_failed', {
+        logger.warn('head.read_failed', {
           label: args.label,
           reason: revertReason(observed.error)
         })
