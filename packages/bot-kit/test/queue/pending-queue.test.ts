@@ -85,7 +85,7 @@ function setup(
     send: opts.send ?? defaultSend,
     getReceipt: opts.getReceipt ?? (async () => null),
     getBaseFee,
-    ...(opts.getBlockNumber ? { getBlockNumber: opts.getBlockNumber } : {}),
+    getBlockNumber: opts.getBlockNumber ?? (async () => 0n),
     ...(opts.syncNonce === null ? {} : { syncNonce: opts.syncNonce ?? defaultSyncNonce }),
     ...(opts.withCooldown === false ? {} : { settledCooldownBlocks: SETTLED_COOLDOWN_BLOCKS }),
     ...(opts.getConsumedNonce ? { getConsumedNonce: opts.getConsumedNonce } : {}),
@@ -137,7 +137,12 @@ describe('createPendingQueue', () => {
   })
 
   it('uses the broadcast-time head when the caller block is stale', async () => {
-    const { queue, sends } = setup({ getBlockNumber: async () => 12n })
+    const { queue, sends } = setup({
+      getBlockNumber: async () => {
+        expect(sends).toHaveLength(1)
+        return 12n
+      }
+    })
     await submitOne(queue, 0n)
     await queue.onBlock(13n)
     expect(sends).toHaveLength(1)
@@ -175,6 +180,22 @@ describe('createPendingQueue', () => {
     expect(sends[1]?.maxPriorityFeePerGas).toBe(1125n) // +12.5%
     expect(sends[1]?.maxFeePerGas).toBe(1325n) // max(1125, 2*100 + 1125)
     expect(queue.snapshot()[0]).toEqual({ nonce: 7, txHash: hashOf(2), attempt: 1 })
+  })
+
+  it('uses a post-broadcast head for replacements', async () => {
+    let headReads = 0
+    const { queue, sends } = setup({
+      getBlockNumber: async () => {
+        headReads += 1
+        return headReads === 1 ? 0n : 12n
+      }
+    })
+    await submitOne(queue, 0n)
+    await queue.onBlock(5n)
+    expect(sends).toHaveLength(2)
+    await queue.onBlock(13n)
+    expect(sends).toHaveLength(2)
+    expect(queue.snapshot()[0]?.attempt).toBe(1)
   })
 
   it('drops a tx after maxBumpAttempts bumps', async () => {
@@ -572,6 +593,7 @@ describe('nonce-hole latch', () => {
       send,
       getReceipt: async () => null,
       getBaseFee: async () => 100n,
+      getBlockNumber: async () => 0n,
       syncNonce: async () => {
         syncNonceCalls += 1
       },

@@ -34,7 +34,7 @@ export type SendTx = (
 export type TxReceiptLite = { status: 'success' | 'reverted'; blockNumber: bigint }
 export type GetReceipt = (txHash: Hex) => Promise<TxReceiptLite | null>
 export type GetBaseFee = () => Promise<bigint>
-/** Reads the latest chain head for stamping a newly broadcast transaction. */
+/** Reads the latest chain head for stamping a broadcast transaction. */
 export type GetBlockNumber = () => Promise<bigint>
 /** Re-derives the signer's nonce cursor from chain truth; called when nothing is in flight. */
 export type SyncNonce = () => Promise<void>
@@ -62,7 +62,7 @@ export type PendingQueue = {
     label: string
     maxFeePerGas: bigint
     maxPriorityFeePerGas: bigint
-    /** Tick-start head fallback when the broadcast-time head read is unavailable. */
+    /** Caller-observed head fallback when the post-broadcast head read is unavailable. */
     blockNumber: bigint
   }): Promise<void>
   onBlock(blockNumber: bigint): Promise<void>
@@ -95,7 +95,8 @@ export type PendingQueue = {
  * tracked set is empty, the next first-send re-syncs the cursor so a dropped (never-mined) tx can't
  * strand the cursor above chain truth and turn every later send into an unminable future nonce.
  * Pending entries stamp `submittedAtBlock` with the broadcast-time chain head, because a slow tick can
- * make its caller-supplied head many blocks stale and trigger stuck-detection immediately.
+ * make its caller-supplied head many blocks stale and trigger stuck-detection immediately. Sampling
+ * after broadcast means a slightly late sample can only delay a legitimate bump by the send duration.
  */
 export function createPendingQueue({
   send,
@@ -116,11 +117,11 @@ export function createPendingQueue({
   getReceipt: GetReceipt
   getBaseFee: GetBaseFee
   /**
-   * Reads the chain head immediately before broadcast so `submittedAtBlock` reflects broadcast time.
+   * Reads the chain head after broadcast so `submittedAtBlock` reflects the broadcast-time head.
    * A slow tick can make its caller-supplied head many blocks stale and trigger stuck-detection
-   * immediately; read failures fall back to `submit.blockNumber` without preventing the send.
+   * immediately; read failures fall back to the caller's block without losing the sent entry.
    */
-  getBlockNumber?: GetBlockNumber
+  getBlockNumber: GetBlockNumber
   /** When set, re-derives the signer's nonce cursor before a first send on an empty queue. */
   syncNonce?: SyncNonce
   /** When set, every `reconcileEveryBlocks` blocks the queue drops tracked-but-consumed nonces. */
@@ -198,6 +199,18 @@ export function createPendingQueue({
     }
   }
 
+  const sampleSubmittedAtBlock = async (label: string, fallbackBlock: bigint): Promise<bigint> => {
+    const observed = await tryCatch(getBlockNumber())
+    if (observed.error) {
+      logger.warn('head.read_failed', {
+        label,
+        reason: revertReason(observed.error)
+      })
+      return fallbackBlock
+    }
+    return observed.data > fallbackBlock ? observed.data : fallbackBlock
+  }
+
   async function submit(args: {
     request: TxRequest
     label: string
@@ -233,18 +246,6 @@ export function createPendingQueue({
       logger.warn('queue.nonce_hole', { label: args.label, nonce: nonceHoleLow })
       return
     }
-    let submittedAtBlock = args.blockNumber
-    if (getBlockNumber) {
-      const observed = await tryCatch(getBlockNumber())
-      if (observed.error) {
-        logger.warn('head.read_failed', {
-          label: args.label,
-          reason: revertReason(observed.error)
-        })
-      } else if (observed.data > submittedAtBlock) {
-        submittedAtBlock = observed.data
-      }
-    }
     const sent = await tryCatch(
       send({
         ...args.request,
@@ -270,6 +271,7 @@ export function createPendingQueue({
       return
     }
     const { nonce, txHash } = sent.data
+    const submittedAtBlock = await sampleSubmittedAtBlock(args.label, args.blockNumber)
     pending.set(nonce, {
       nonce,
       txHash,
@@ -347,11 +349,12 @@ export function createPendingQueue({
       return
     }
     const oldHash = entry.txHash
+    const submittedAtBlock = await sampleSubmittedAtBlock(entry.label, blockNumber)
     entry.txHash = replaced.data.txHash
     entry.txHashes.unshift(replaced.data.txHash)
     entry.maxFeePerGas = result.fees.maxFeePerGas
     entry.maxPriorityFeePerGas = result.fees.maxPriorityFeePerGas
-    entry.submittedAtBlock = blockNumber
+    entry.submittedAtBlock = submittedAtBlock
     entry.attempt += 1
     logger.info('tx.bumped', {
       label: entry.label,

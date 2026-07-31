@@ -71,6 +71,7 @@ export async function createApplication(environment: Record<string, string | und
     send: signer.send,
     getReceipt: signer.getReceipt,
     getBaseFee: signer.getBaseFee,
+    getBlockNumber: () => getBlockNumber(chainClient),
     syncNonce: signer.syncNonce,
     getConsumedNonce: signer.consumedNonce,
     maxFeeWei: config.maxFeeWei,
