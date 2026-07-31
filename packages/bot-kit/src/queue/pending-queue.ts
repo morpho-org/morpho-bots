@@ -34,6 +34,8 @@ export type SendTx = (
 export type TxReceiptLite = { status: 'success' | 'reverted'; blockNumber: bigint }
 export type GetReceipt = (txHash: Hex) => Promise<TxReceiptLite | null>
 export type GetBaseFee = () => Promise<bigint>
+/** Reads the latest chain head for stamping a newly broadcast transaction. */
+export type GetBlockNumber = () => Promise<bigint>
 /** Re-derives the signer's nonce cursor from chain truth; called when nothing is in flight. */
 export type SyncNonce = () => Promise<void>
 /** Reads the EOA's latest (mined) transaction count — the nonce-consumed reconciler's chain truth. */
@@ -47,7 +49,7 @@ type Pending = {
   txHashes: Hex[]
   request: TxRequest
   label: string
-  /** Block head observed by the queue when the latest broadcast was submitted. */
+  /** Chain head at broadcast time, used to prevent slow ticks from triggering instant bumps. */
   submittedAtBlock: bigint
   maxFeePerGas: bigint
   maxPriorityFeePerGas: bigint
@@ -60,7 +62,7 @@ export type PendingQueue = {
     label: string
     maxFeePerGas: bigint
     maxPriorityFeePerGas: bigint
-    /** Tick-start head fallback; the queue uses a newer head observed by `onBlock` when available. */
+    /** Tick-start head fallback when the broadcast-time head read is unavailable. */
     blockNumber: bigint
   }): Promise<void>
   onBlock(blockNumber: bigint): Promise<void>
@@ -92,11 +94,14 @@ export type PendingQueue = {
  * (empty) tracked set against receipts and the consumed nonce. When `syncNonce` is provided and the
  * tracked set is empty, the next first-send re-syncs the cursor so a dropped (never-mined) tx can't
  * strand the cursor above chain truth and turn every later send into an unminable future nonce.
+ * Pending entries stamp `submittedAtBlock` with the broadcast-time chain head, because a slow tick can
+ * make its caller-supplied head many blocks stale and trigger stuck-detection immediately.
  */
 export function createPendingQueue({
   send,
   getReceipt,
   getBaseFee,
+  getBlockNumber,
   syncNonce,
   getConsumedNonce,
   maxFeeWei,
@@ -110,6 +115,12 @@ export function createPendingQueue({
   send: SendTx
   getReceipt: GetReceipt
   getBaseFee: GetBaseFee
+  /**
+   * Reads the chain head immediately before broadcast so `submittedAtBlock` reflects broadcast time.
+   * A slow tick can make its caller-supplied head many blocks stale and trigger stuck-detection
+   * immediately; read failures fall back to `submit.blockNumber` without preventing the send.
+   */
+  getBlockNumber?: GetBlockNumber
   /** When set, re-derives the signer's nonce cursor before a first send on an empty queue. */
   syncNonce?: SyncNonce
   /** When set, every `reconcileEveryBlocks` blocks the queue drops tracked-but-consumed nonces. */
@@ -126,9 +137,6 @@ export function createPendingQueue({
   revertReason?: (error: unknown) => string
 }): PendingQueue {
   const pending = new Map<number, Pending>()
-  // Latest head observed by maintenance. A tick's caller-supplied head can be stale while slow
-  // discovery/quote work is in flight, so submissions use this value when it is newer.
-  let latestObservedBlock: bigint | null = null
   // label → block height at which its tx left `pending` (confirm/revert/drop). Keeps the label in the
   // backpressure set for `settledCooldownBlocks` so a just-acted position isn't re-submitted while
   // the read RPC still lags the confirmation. Pruned each `onBlock`. Unused when the cooldown is 0n.
@@ -225,6 +233,18 @@ export function createPendingQueue({
       logger.warn('queue.nonce_hole', { label: args.label, nonce: nonceHoleLow })
       return
     }
+    let submittedAtBlock = args.blockNumber
+    if (getBlockNumber) {
+      const observed = await tryCatch(getBlockNumber())
+      if (observed.error) {
+        logger.warn('tx.block_number_failed', {
+          label: args.label,
+          reason: revertReason(observed.error)
+        })
+      } else if (observed.data > submittedAtBlock) {
+        submittedAtBlock = observed.data
+      }
+    }
     const sent = await tryCatch(
       send({
         ...args.request,
@@ -256,10 +276,7 @@ export function createPendingQueue({
       txHashes: [txHash],
       request: args.request,
       label: args.label,
-      submittedAtBlock:
-        latestObservedBlock === null || args.blockNumber > latestObservedBlock
-          ? args.blockNumber
-          : latestObservedBlock,
+      submittedAtBlock,
       maxFeePerGas: args.maxFeePerGas,
       maxPriorityFeePerGas: args.maxPriorityFeePerGas,
       attempt: 0
@@ -411,10 +428,6 @@ export function createPendingQueue({
   }
 
   async function onBlock(blockNumber: bigint): Promise<void> {
-    latestObservedBlock =
-      latestObservedBlock === null || blockNumber > latestObservedBlock
-        ? blockNumber
-        : latestObservedBlock
     let baseFee: bigint | null = null
     // Deleting the current key mid-iteration is well-defined for a Map; we never insert here.
     for (const entry of pending.values()) {

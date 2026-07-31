@@ -6,6 +6,7 @@ import { ExecutionRevertedError } from 'viem'
 import type { Logger, LogLevel } from '../../src/logger'
 import type {
   GetBaseFee,
+  GetBlockNumber,
   GetConsumedNonce,
   GetReceipt,
   PendingQueue,
@@ -55,6 +56,7 @@ function captureLogger() {
 function setup(
   opts: {
     getReceipt?: GetReceipt
+    getBlockNumber?: GetBlockNumber
     baseFee?: bigint
     maxFeeWei?: bigint
     send?: SendTx
@@ -83,6 +85,7 @@ function setup(
     send: opts.send ?? defaultSend,
     getReceipt: opts.getReceipt ?? (async () => null),
     getBaseFee,
+    ...(opts.getBlockNumber ? { getBlockNumber: opts.getBlockNumber } : {}),
     ...(opts.syncNonce === null ? {} : { syncNonce: opts.syncNonce ?? defaultSyncNonce }),
     ...(opts.withCooldown === false ? {} : { settledCooldownBlocks: SETTLED_COOLDOWN_BLOCKS }),
     ...(opts.getConsumedNonce ? { getConsumedNonce: opts.getConsumedNonce } : {}),
@@ -133,13 +136,32 @@ describe('createPendingQueue', () => {
     expect(sends).toHaveLength(1) // no replacement
   })
 
-  it('uses the latest queue-observed head when the caller block is stale', async () => {
-    const { queue, sends } = setup()
-    await queue.onBlock(10n)
-    await queue.onBlock(11n)
-    await queue.onBlock(12n)
+  it('uses the broadcast-time head when the caller block is stale', async () => {
+    const { queue, sends } = setup({ getBlockNumber: async () => 12n })
     await submitOne(queue, 0n)
-    await queue.onBlock(13n)
+    await queue.onBlock(1n)
+    expect(sends).toHaveLength(1)
+    expect(queue.snapshot()[0]?.attempt).toBe(0)
+  })
+
+  it('falls back to the caller block when the broadcast-time head read fails', async () => {
+    const { logger, events } = captureLogger()
+    const { queue, sends } = setup({
+      getBlockNumber: async () => {
+        throw new Error('rpc down')
+      },
+      logger
+    })
+    await submitOne(queue, 10n)
+    await queue.onBlock(11n)
+    expect(sends).toHaveLength(1)
+    expect(events.find(e => e.event === 'tx.block_number_failed')?.level).toBe('warn')
+  })
+
+  it('keeps the caller block when the fetched head is lower', async () => {
+    const { queue, sends } = setup({ getBlockNumber: async () => 5n })
+    await submitOne(queue, 10n)
+    await queue.onBlock(11n)
     expect(sends).toHaveLength(1)
     expect(queue.snapshot()[0]?.attempt).toBe(0)
   })
