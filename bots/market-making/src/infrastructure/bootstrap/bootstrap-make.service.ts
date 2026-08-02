@@ -77,8 +77,10 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
     return this.enqueue(async () => {
       const submittedTransactions: BootstrapSubmittedTransaction[] = []
       const groups = await this.strategyGroups()
-      const marketGroupIds = bootstrapMarketGroupIds(groups, parameters.marketId).filter(
-        groupId => !this.confirmedCanceledGroups.has(groupId)
+      const marketGroupIds = new Set(
+        [...bootstrapMarketGroupIds(groups, parameters.marketId)].filter(
+          groupId => !this.confirmedCanceledGroups.has(groupId)
+        )
       )
       let publication:
         | Awaited<ReturnType<BootstrapOfferTransport['preparePublication']>>

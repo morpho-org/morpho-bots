@@ -25,8 +25,8 @@ import {
 } from '../../domain/bootstrap/position-bootstrap'
 import { waitForMonitorInterval } from '../monitor.utils'
 import { operatorErrorDetails, operatorErrorName } from '../operator-error-name.utils'
-import { bootstrapCycleHasFailure } from './position-bootstrap-monitor.utils'
 import { BootstrapOwnershipCleanupError } from './bootstrap-ownership-cleanup.error'
+import { bootstrapCycleHasFailure } from './position-bootstrap-monitor.utils'
 
 const BOOTSTRAP_MONITOR_INTERVAL_MS = 60_000
 
@@ -705,8 +705,7 @@ export class PositionBootstrapService {
           onTransactionSubmitted: this.transactionObserver(parameters, verbose, config.marketId)
         })
       } catch (error) {
-        const ownershipCleanup =
-          error instanceof BootstrapOwnershipCleanupError ? error : undefined
+        const ownershipCleanup = error instanceof BootstrapOwnershipCleanupError ? error : undefined
         results.push(
           await this.withVerboseDetails(
             {

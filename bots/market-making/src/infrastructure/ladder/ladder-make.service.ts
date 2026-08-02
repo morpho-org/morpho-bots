@@ -9,8 +9,8 @@ import type {
 import type { LadderQuoteSet } from '../../domain/ladder/ladder'
 import type { LadderGroupReference } from './ladder-group-ownership.utils'
 
-import { operatorErrorName } from '../../application/operator-error-name.utils'
 import { LadderOwnershipCleanupError } from '../../application/ladder/ladder-ownership-cleanup.error'
+import { operatorErrorName } from '../../application/operator-error-name.utils'
 import { LadderAdapterError } from './ladder-adapter.error'
 import { LadderHardHaltError } from './ladder-hard-halt.error'
 import { assertLadderProspectiveSpread } from './ladder-spread.utils'
