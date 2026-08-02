@@ -42,6 +42,7 @@ import {
 import { MidnightBootstrapMakeService } from './bootstrap-make.service'
 import { validateBootstrapMempoolPublication } from './bootstrap-mempool-validation.utils'
 import { bootstrapContinuousFeeCap } from './bootstrap-offer.utils'
+import { pendingBootstrapGroups } from './bootstrap-pending-offer.utils'
 import { MidnightBootstrapPositionService } from './bootstrap-position.service'
 import { BlueBootstrapReferenceRateService } from './bootstrap-reference-rate.service'
 import { signBootstrapRequirements } from './bootstrap-requirements.utils'
@@ -125,27 +126,33 @@ export const createProductionBootstrapAdapters = (
     const intended = new Map(
       ownedOffers.map(offer => [`${offer.groupId}:${offer.marketId}`, offer] as const)
     )
-    return strategyBootstrapGroups(groups, ownedIds)
-      .filter(
-        group =>
-          group.marketId !== undefined &&
-          group.tick !== undefined &&
-          group.maturity !== undefined &&
-          group.maxAssets > group.consumed
-      )
-      .map(group => {
-        const persisted = intended.get(`${group.id}:${group.marketId as Hex}`)
-        return {
-          id: group.id,
-          marketId: group.marketId as Hex,
-          assets: group.maxAssets - group.consumed,
-          rateBps:
-            persisted?.rateBps ??
-            TickLib.tickToApr(group.tick as bigint, (group.maturity as bigint) - block.timestamp) /
-              (WAD / 10_000n),
-          ...(persisted ? { referenceObservationId: persisted.referenceObservationId } : {})
-        }
-      })
+    return [
+      ...strategyBootstrapGroups(groups, ownedIds)
+        .filter(
+          group =>
+            group.marketId !== undefined &&
+            group.tick !== undefined &&
+            group.maturity !== undefined &&
+            group.maxAssets > group.consumed
+        )
+        .map(group => {
+          const persisted = intended.get(`${group.id}:${group.marketId as Hex}`)
+          return {
+            id: group.id,
+            marketId: group.marketId as Hex,
+            assets: group.maxAssets - group.consumed,
+            rateBps:
+              persisted?.rateBps ??
+              TickLib.tickToApr(
+                group.tick as bigint,
+                (group.maturity as bigint) - block.timestamp
+              ) /
+                (WAD / 10_000n),
+            ...(persisted ? { referenceObservationId: persisted.referenceObservationId } : {})
+          }
+        }),
+      ...pendingBootstrapGroups(groups, ownedOffers)
+    ]
   }
 
   const readGroupInventory = async () => {
@@ -191,7 +198,10 @@ export const createProductionBootstrapAdapters = (
         })
 
     return {
-      activeGroups: project(strategyBootstrapGroups(groups, ownedIds), true),
+      activeGroups: [
+        ...project(strategyBootstrapGroups(groups, ownedIds), true),
+        ...pendingBootstrapGroups(groups, ownedOffers)
+      ],
       cashReservations: project(strategyBootstrapGroups(groups, ladderGroupIds), false)
     }
   }

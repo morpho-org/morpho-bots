@@ -19,7 +19,7 @@ import type {
 } from '../../application/ladder/ladder-market-maker.service'
 import type { LadderTransactionSubmittedObserver } from '../../application/ladder/ladder-verbose'
 import type { ConfigService } from '../../config/config.service'
-import type { LadderQuoteSet, LadderRung } from '../../domain/ladder/ladder'
+import type { LadderQuoteSet } from '../../domain/ladder/ladder'
 import type { BootstrapRawGroup } from '../bootstrap/bootstrap-groups.utils'
 import type { HistoricalBlockReader } from '../reference/blue-reference-reader.utils'
 import type { OwnedLadderPublication } from './ladder-group-ownership.utils'
@@ -33,6 +33,10 @@ import {
 import { BlueBootstrapReferenceRateService } from '../bootstrap/bootstrap-reference-rate.service'
 import { createManagedMakerAccount } from '../make/managed-maker-account.utils'
 import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
+import {
+  activeOwnedLadderGroupIds,
+  reconstructOwnedLadderPublication
+} from './ladder-active-publication.utils'
 import { LadderAdapterError } from './ladder-adapter.error'
 import { createLadderGroupOwnership } from './ladder-group-ownership.utils'
 import { MidnightLadderMakeService, type LadderOfferTransport } from './ladder-make.service'
@@ -66,59 +70,6 @@ const notifySubmitted = async (
 const distinctGroups = (groups: readonly BootstrapRawGroup[]) => [
   ...new Map(groups.map(group => [group.id, group])).values()
 ]
-
-const scaleRungs = (rungs: readonly LadderRung[], assets: bigint): LadderRung[] => {
-  const total = rungs.reduce((sum, rung) => sum + rung.assets, 0n)
-  if (total === 0n || assets === 0n) return []
-  const scaled = rungs.map(rung => ({ ...rung, assets: (assets * rung.assets) / total }))
-  const allocated = scaled.reduce((sum, rung) => sum + rung.assets, 0n)
-  const last = scaled.at(-1)
-  if (last) last.assets += assets - allocated
-  return scaled.filter(rung => rung.assets > 0n)
-}
-
-const reconstructPublication = (
-  publication: OwnedLadderPublication,
-  liveGroups: ReadonlyMap<Hex, BootstrapRawGroup>
-): LadderQuoteSet | undefined => {
-  const side = (name: 'lower' | 'higher') => {
-    const original = publication.quote[name]
-    const byIndex = new Map(original.map(rung => [rung.index, rung]))
-    const reconstructed: LadderRung[] = []
-    for (const reference of publication.groups.filter(group => group.side === name)) {
-      const group = liveGroups.get(reference.groupId)
-      if (!group || group.maxAssets <= group.consumed) continue
-      const rungs = reference.rungIndexes.flatMap(index => {
-        const rung = byIndex.get(index)
-        return rung ? [rung] : []
-      })
-      reconstructed.push(...scaleRungs(rungs, group.maxAssets - group.consumed))
-    }
-    return reconstructed.toSorted((left, right) => left.index - right.index)
-  }
-  const lower = side('lower')
-  const higher = side('higher')
-  if (lower.length === 0 && higher.length === 0) return undefined
-  return { ...publication.quote, lower, higher }
-}
-
-const activeOwnedGroupIds = (
-  publications: readonly OwnedLadderPublication[],
-  groups: readonly BootstrapRawGroup[],
-  marketId?: Hex
-) => {
-  const live = new Set(
-    groups.filter(group => group.maxAssets > group.consumed).map(group => group.id)
-  )
-  return [
-    ...new Set(
-      publications
-        .filter(publication => marketId === undefined || publication.marketId === marketId)
-        .flatMap(publication => publication.groups.map(group => group.groupId))
-        .filter(groupId => live.has(groupId))
-    )
-  ]
-}
 
 const ownedGroups = (publications: readonly OwnedLadderPublication[]) =>
   publications.flatMap(publication =>
@@ -266,16 +217,11 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
 
   const readActive = async (marketId: Hex) => {
     const [groups, publications] = await Promise.all([readGroups(), ladderOwnership.read()])
-    const liveGroups = new Map(
-      distinctGroups(groups)
-        .filter(group => group.maxAssets > group.consumed)
-        .map(group => [group.id, group])
-    )
-    const publication = publications
+    return publications
       .filter(item => item.marketId === marketId)
       .toReversed()
-      .find(item => item.groups.some(group => liveGroups.has(group.groupId)))
-    return publication ? reconstructPublication(publication, liveGroups) : undefined
+      .map(publication => reconstructOwnedLadderPublication(publication, groups))
+      .find(quote => quote !== undefined)
   }
 
   const prepareUnsignedPublication = async (quote: LadderQuoteSet) => {
@@ -303,7 +249,9 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
     const [groups, publications] = await Promise.all([readGroups(), ladderOwnership.read()])
     assertLadderProspectiveSpread({
       marketId: parameters.marketId,
-      replacedGroupIds: new Set(activeOwnedGroupIds(publications, groups, parameters.marketId)),
+      replacedGroupIds: new Set(
+        activeOwnedLadderGroupIds(publications, groups, parameters.marketId)
+      ),
       book: bootstrapBookOffers(groups),
       prospective: prepared.bookOffers
     })
@@ -350,7 +298,7 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
       }),
     listActiveGroupIds: async marketId => {
       const [publications, groups] = await Promise.all([ladderOwnership.read(), readGroups()])
-      return activeOwnedGroupIds(publications, groups, marketId)
+      return activeOwnedLadderGroupIds(publications, groups, marketId)
     },
     listBookOffers: async () => bootstrapBookOffers(await readGroups()),
     preparePublication: async quote => {
