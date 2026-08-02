@@ -16,6 +16,7 @@ import { waitForMonitorInterval } from '../monitor.utils'
 import { operatorErrorName } from '../operator-error-name.utils'
 import { sameLadderQuoteSet } from './ladder-market-maker.utils'
 import { ladderCycleHasFailure } from './ladder-monitor.utils'
+import { LadderOwnershipCleanupError } from './ladder-ownership-cleanup.error'
 
 /** Consumer-owned port for fresh position and capacity inputs for one ladder market. */
 export interface LadderPositionService {
@@ -102,7 +103,14 @@ type LadderRunOutcome =
       invalidationLogged?: boolean
       errorName: string
     }
-  | { marketId: Hex; status: 'failed'; stage: 'reconcile'; invalidated: false; errorName: string }
+  | {
+      marketId: Hex
+      status: 'failed'
+      stage: 'reconcile'
+      invalidated: boolean
+      errorName: string
+      ownershipCleanupErrorName?: string
+    }
   | {
       marketId: Hex
       status: 'halted'
@@ -431,6 +439,7 @@ export class LadderMarketMakerService {
           onTransactionSubmitted: this.marketObserver(config.marketId, parameters)
         })
       } catch (error) {
+        const ownershipCleanup = error instanceof LadderOwnershipCleanupError ? error : undefined
         results.push(
           await this.completeResult(
             config,
@@ -438,11 +447,19 @@ export class LadderMarketMakerService {
               marketId: config.marketId,
               status: 'failed',
               stage: 'reconcile',
-              invalidated: false,
-              errorName: operatorErrorName(error)
+              invalidated: ownershipCleanup !== undefined,
+              errorName: operatorErrorName(error),
+              ...(ownershipCleanup
+                ? { ownershipCleanupErrorName: ownershipCleanup.cleanupErrorName }
+                : {})
             },
             parameters,
-            verbosePlan
+            {
+              ...verbosePlan,
+              ...(ownershipCleanup
+                ? { submittedTransactions: ownershipCleanup.submittedTransactions }
+                : {})
+            }
           )
         )
         continue

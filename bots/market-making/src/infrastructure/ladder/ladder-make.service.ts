@@ -10,6 +10,7 @@ import type { LadderQuoteSet } from '../../domain/ladder/ladder'
 import type { LadderGroupReference } from './ladder-group-ownership.utils'
 
 import { operatorErrorName } from '../../application/operator-error-name.utils'
+import { LadderOwnershipCleanupError } from '../../application/ladder/ladder-ownership-cleanup.error'
 import { LadderAdapterError } from './ladder-adapter.error'
 import { LadderHardHaltError } from './ladder-hard-halt.error'
 import { assertLadderProspectiveSpread } from './ladder-spread.utils'
@@ -63,6 +64,7 @@ export interface LadderOfferTransport {
 /** Serialized live adapter for ladder publication, replacement, and safety cleanup. */
 export class MidnightLadderMakeService implements LadderMakeService {
   private queue = Promise.resolve()
+  private readonly confirmedCanceledGroups = new Set<Hex>()
 
   /** Creates one mutation queue. @param transport - Protocol, book, and ownership transport. */
   constructor(private readonly transport: LadderOfferTransport) {}
@@ -84,7 +86,11 @@ export class MidnightLadderMakeService implements LadderMakeService {
     return this.enqueue(async () => {
       const submittedTransactions: LadderSubmittedTransaction[] = []
       if (parameters.reason === 'rest') return { submittedTransactions }
-      const replacedGroupIds = new Set(await this.transport.listActiveGroupIds(parameters.marketId))
+      const replacedGroupIds = new Set(
+        (await this.transport.listActiveGroupIds(parameters.marketId)).filter(
+          groupId => !this.confirmedCanceledGroups.has(groupId)
+        )
+      )
       const publication = parameters.desired
         ? await this.transport.preparePublication(parameters.desired)
         : undefined
@@ -108,8 +114,18 @@ export class MidnightLadderMakeService implements LadderMakeService {
             groupId,
             this.safeObserver(parameters.onTransactionSubmitted)
           )
-          if (txHash) submittedTransactions.push({ operation: 'cancel', txHash })
-          await this.transport.forgetGroups([groupId])
+          const cancellation = txHash ? ({ operation: 'cancel', txHash } as const) : undefined
+          if (cancellation) submittedTransactions.push(cancellation)
+          this.confirmedCanceledGroups.add(groupId)
+          try {
+            await this.transport.forgetGroups([groupId])
+          } catch (error) {
+            throw new LadderOwnershipCleanupError(
+              groupId,
+              [...submittedTransactions],
+              operatorErrorName(error)
+            )
+          }
         }
       } catch (error) {
         if (publication) await this.transport.releasePublication(publication.groupIds)
@@ -169,6 +185,7 @@ export class MidnightLadderMakeService implements LadderMakeService {
       ).values()
     ]
     for (const { groupId, maxAssets } of ownedGroups) {
+      if (this.confirmedCanceledGroups.has(groupId)) continue
       try {
         if ((await this.transport.readGroupConsumed(groupId)) >= maxAssets) {
           await this.transport.forgetGroups([groupId])
@@ -179,6 +196,7 @@ export class MidnightLadderMakeService implements LadderMakeService {
           this.safeObserver(onTransactionSubmitted)
         )
         if (txHash) submittedTransactions.push({ operation: 'cancel', txHash })
+        this.confirmedCanceledGroups.add(groupId)
         await this.transport.forgetGroups([groupId])
       } catch (error) {
         try {

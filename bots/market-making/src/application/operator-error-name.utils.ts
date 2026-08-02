@@ -3,10 +3,12 @@ type OperatorErrorName =
   | 'BootstrapAdapterError'
   | 'BootstrapMempoolValidationError'
   | 'BootstrapHardHaltError'
+  | 'BootstrapOwnershipCleanupError'
   | 'BootstrapConfigurationError'
   | 'LadderConfigurationError'
   | 'LadderAdapterError'
   | 'LadderHardHaltError'
+  | 'LadderOwnershipCleanupError'
   | 'OfferInvalidationAdapterError'
   | 'OfferInvalidationFailedError'
   | 'ReferenceAdapterError'
@@ -28,10 +30,12 @@ const knownNames: Readonly<Record<string, OperatorErrorName>> = {
   BootstrapAdapterError: 'BootstrapAdapterError',
   BootstrapMempoolValidationError: 'BootstrapMempoolValidationError',
   BootstrapHardHaltError: 'BootstrapHardHaltError',
+  BootstrapOwnershipCleanupError: 'BootstrapOwnershipCleanupError',
   BootstrapConfigurationError: 'BootstrapConfigurationError',
   LadderConfigurationError: 'LadderConfigurationError',
   LadderAdapterError: 'LadderAdapterError',
   LadderHardHaltError: 'LadderHardHaltError',
+  LadderOwnershipCleanupError: 'LadderOwnershipCleanupError',
   OfferInvalidationAdapterError: 'OfferInvalidationAdapterError',
   OfferInvalidationFailedError: 'OfferInvalidationFailedError',
   ReferenceAdapterError: 'ReferenceAdapterError',

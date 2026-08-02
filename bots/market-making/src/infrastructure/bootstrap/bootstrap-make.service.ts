@@ -9,6 +9,7 @@ import type { BootstrapMakeService } from '../../application/bootstrap/position-
 import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
 import type { BootstrapActiveGroup } from './bootstrap-position.service'
 
+import { BootstrapOwnershipCleanupError } from '../../application/bootstrap/bootstrap-ownership-cleanup.error'
 import { operatorErrorName } from '../../application/operator-error-name.utils'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 import { BootstrapHardHaltError } from './bootstrap-hard-halt.error'
@@ -49,6 +50,7 @@ interface BootstrapOfferTransport {
 /** Serialized production adapter for one-cycle bootstrap publication and hard halts. */
 export class MidnightBootstrapMakeService implements BootstrapMakeService {
   private queue = Promise.resolve()
+  private readonly confirmedCanceledGroups = new Set<Hex>()
 
   /** Creates a singleton mutation queue. @param transport - Midnight SDK transport. */
   constructor(private readonly transport: BootstrapOfferTransport) {}
@@ -75,7 +77,9 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
     return this.enqueue(async () => {
       const submittedTransactions: BootstrapSubmittedTransaction[] = []
       const groups = await this.strategyGroups()
-      const marketGroupIds = bootstrapMarketGroupIds(groups, parameters.marketId)
+      const marketGroupIds = bootstrapMarketGroupIds(groups, parameters.marketId).filter(
+        groupId => !this.confirmedCanceledGroups.has(groupId)
+      )
       let publication:
         | Awaited<ReturnType<BootstrapOfferTransport['preparePublication']>>
         | undefined
@@ -96,8 +100,18 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
             groupId,
             this.safeObserver(parameters.onTransactionSubmitted)
           )
-          if (txHash) submittedTransactions.push({ operation: 'cancel', txHash })
-          await this.transport.forgetGroups?.([groupId])
+          const cancellation = txHash ? ({ operation: 'cancel', txHash } as const) : undefined
+          if (cancellation) submittedTransactions.push(cancellation)
+          this.confirmedCanceledGroups.add(groupId)
+          try {
+            await this.transport.forgetGroups?.([groupId])
+          } catch (error) {
+            throw new BootstrapOwnershipCleanupError(
+              groupId,
+              [...submittedTransactions],
+              operatorErrorName(error)
+            )
+          }
         }
       } catch (error) {
         if (publication) {
@@ -182,12 +196,14 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
         : (await this.strategyGroups()).map(group => group.id)
     )
     for (const groupId of groupIds) {
+      if (this.confirmedCanceledGroups.has(groupId)) continue
       try {
         const txHash = await this.transport.invalidate(
           groupId,
           this.safeObserver(onTransactionSubmitted)
         )
         if (txHash) submittedTransactions.push({ operation: 'cancel', txHash })
+        this.confirmedCanceledGroups.add(groupId)
         await this.transport.forgetGroups?.([groupId])
       } catch (error) {
         failures.push({ groupId, errorName: operatorErrorName(error) })

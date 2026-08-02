@@ -4,6 +4,7 @@ import { describe, expect, test } from 'bun:test'
 
 import type { BootstrapSubmittedTransaction } from '../../../src/application/bootstrap/position-bootstrap-verbose'
 
+import { BootstrapOwnershipCleanupError } from '../../../src/application/bootstrap/bootstrap-ownership-cleanup.error'
 import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/bootstrap-adapter.error'
 import { BootstrapHardHaltError } from '../../../src/infrastructure/bootstrap/bootstrap-hard-halt.error'
 import { MidnightBootstrapMakeService } from '../../../src/infrastructure/bootstrap/bootstrap-make.service'
@@ -115,6 +116,42 @@ describe('MidnightBootstrapMakeService', () => {
       { operation: 'cancel', txHash: cancellationHash },
       { operation: 'publish', txHash: publicationHash }
     ])
+  })
+
+  test('retains a confirmed cancel when bootstrap ownership cleanup fails', async () => {
+    let invalidations = 0
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [{ id: groupId, marketId, assets: 100n, rateBps: 400n }],
+      listOwnedGroupIds: async () => [groupId],
+      listBookOffers: async () => [],
+      toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
+      preparePublication: async () => ({ groupId: publishedGroupId, publish: async () => {} }),
+      reserveGroup: async () => {},
+      confirmPublishedGroup: async () => {},
+      releaseGroupReservation: async () => {},
+      invalidate: async () => {
+        invalidations += 1
+        return cancellationHash
+      },
+      forgetGroups: async () => {
+        throw new BootstrapAdapterError('group-ownership-state')
+      }
+    })
+
+    const error = await service
+      .reconcile({ marketId, reason: 'target-reached' })
+      .catch(value => value)
+
+    expect(error).toBeInstanceOf(BootstrapOwnershipCleanupError)
+    expect(error).toMatchObject({
+      groupId,
+      cleanupErrorName: 'BootstrapAdapterError',
+      submittedTransactions: [{ operation: 'cancel', txHash: cancellationHash }]
+    })
+    expect(await service.hardHalt({ reason: 'market-invalidation-failed' })).toEqual({
+      submittedTransactions: []
+    })
+    expect(invalidations).toBe(1)
   })
 
   test('does not interrupt receipt handling when the submission observer fails', async () => {

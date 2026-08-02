@@ -5,6 +5,7 @@ import { describe, expect, mock, test } from 'bun:test'
 import type { LadderQuoteSet } from '../../../src/domain/ladder/ladder'
 import type { LadderOfferTransport } from '../../../src/infrastructure/ladder/ladder-make.service'
 
+import { LadderOwnershipCleanupError } from '../../../src/application/ladder/ladder-ownership-cleanup.error'
 import { LadderHardHaltError } from '../../../src/infrastructure/ladder/ladder-hard-halt.error'
 import { MidnightLadderMakeService } from '../../../src/infrastructure/ladder/ladder-make.service'
 
@@ -125,6 +126,34 @@ describe('MidnightLadderMakeService', () => {
       { operation: 'cancel', txHash: cancellationHash },
       { operation: 'publish', txHash: publicationHash }
     ])
+  })
+
+  test('retains a confirmed cancel when ladder ownership cleanup fails', async () => {
+    const subject = harness()
+    let invalidations = 0
+    subject.transport.listOwnedGroups = async () => [{ groupId: oldGroup, maxAssets: 10n }]
+    subject.transport.listActiveGroupIds = async () => [oldGroup]
+    subject.transport.invalidate = async () => {
+      invalidations += 1
+      return cancellationHash
+    }
+    subject.transport.forgetGroups = async () => {
+      throw new TypeError('state unavailable')
+    }
+
+    const error = await subject.service
+      .reconcile({ marketId, desired: quote, reason: 'recenter' })
+      .catch(value => value)
+
+    expect(error).toBeInstanceOf(LadderOwnershipCleanupError)
+    expect(error).toMatchObject({
+      groupId: oldGroup,
+      cleanupErrorName: 'TypeError',
+      submittedTransactions: [{ operation: 'cancel', txHash: cancellationHash }]
+    })
+    expect(subject.events).toContain('release')
+    expect(await subject.service.cleanup()).toEqual({ submittedTransactions: [] })
+    expect(invalidations).toBe(1)
   })
 
   test('cleanup attempts every active group and returns confirmed cancellation hashes', async () => {

@@ -26,6 +26,7 @@ import {
 import { waitForMonitorInterval } from '../monitor.utils'
 import { operatorErrorDetails, operatorErrorName } from '../operator-error-name.utils'
 import { bootstrapCycleHasFailure } from './position-bootstrap-monitor.utils'
+import { BootstrapOwnershipCleanupError } from './bootstrap-ownership-cleanup.error'
 
 const BOOTSTRAP_MONITOR_INTERVAL_MS = 60_000
 
@@ -140,6 +141,7 @@ type BootstrapRunOutcome =
       errorName: string
       minimumAssets?: string
       invalidationErrorName?: string
+      ownershipCleanupErrorName?: string
     }
   | {
       marketId: Hex
@@ -648,6 +650,25 @@ export class PositionBootstrapService {
             onTransactionSubmitted: this.transactionObserver(parameters, verbose, config.marketId)
           })
         } catch (error) {
+          if (error instanceof BootstrapOwnershipCleanupError) {
+            results.push(
+              await this.withVerboseDetails(
+                {
+                  marketId: config.marketId,
+                  status: 'failed' as const,
+                  stage: 'make' as const,
+                  invalidated: true,
+                  errorName: operatorErrorName(error),
+                  ownershipCleanupErrorName: error.cleanupErrorName
+                },
+                verbose,
+                plan.verbose,
+                true,
+                { submittedTransactions: error.submittedTransactions }
+              )
+            )
+            return results
+          }
           const halt = await this.haltAfterInvalidationFailure(
             config.marketId,
             { stage: 'make', reason: decision.reason },
@@ -684,18 +705,26 @@ export class PositionBootstrapService {
           onTransactionSubmitted: this.transactionObserver(parameters, verbose, config.marketId)
         })
       } catch (error) {
+        const ownershipCleanup =
+          error instanceof BootstrapOwnershipCleanupError ? error : undefined
         results.push(
           await this.withVerboseDetails(
             {
               marketId: config.marketId,
               status: 'failed' as const,
               stage: 'make' as const,
-              invalidated: false,
-              ...operatorErrorDetails(error)
+              invalidated: ownershipCleanup !== undefined,
+              ...operatorErrorDetails(error),
+              ...(ownershipCleanup
+                ? { ownershipCleanupErrorName: ownershipCleanup.cleanupErrorName }
+                : {})
             },
             verbose,
             plan.verbose,
-            true
+            true,
+            ownershipCleanup
+              ? { submittedTransactions: ownershipCleanup.submittedTransactions }
+              : undefined
           )
         )
         return results
