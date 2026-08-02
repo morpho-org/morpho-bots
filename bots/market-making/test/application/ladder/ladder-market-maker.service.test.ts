@@ -376,6 +376,38 @@ describe('LadderMarketMakerService', () => {
     })
   })
 
+  test('retains failed-market cancellation hashes in verbose output', async () => {
+    const cancellationHash: Hex = `0x${'cc'.repeat(32)}`
+    const service = new LadderMarketMakerService(
+      {
+        async readMarket() {
+          throw new TypeError('private provider detail')
+        }
+      },
+      { readRate: async () => 500n },
+      {
+        readActive: async () => undefined,
+        reconcile: async () => ({
+          submittedTransactions: [{ operation: 'cancel', txHash: cancellationHash }]
+        }),
+        hardHalt: async () => ({ submittedTransactions: [] }),
+        cleanup: async () => ({ submittedTransactions: [] })
+      },
+      [config()]
+    )
+
+    expect(await service.runOnce({ verbose: true })).toMatchObject([
+      {
+        status: 'failed',
+        stage: 'market-read',
+        invalidated: true,
+        verbose: {
+          submittedTransactions: [{ operation: 'cancel', txHash: cancellationHash }]
+        }
+      }
+    ])
+  })
+
   test('preserves the market read and local invalidation failures before hard halt', async () => {
     const subject = harness()
     subject.failMarket(marketId)

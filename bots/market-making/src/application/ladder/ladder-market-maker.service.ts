@@ -324,11 +324,16 @@ export class LadderMarketMakerService {
       try {
         market = await this.positions.readMarket(config.marketId)
       } catch (error) {
-        const result = await this.failedMarketRead(config, error, parameters)
+        const { result, invalidation } = await this.failedMarketRead(config, error, parameters)
+        const submittedTransactions =
+          invalidation === undefined || invalidation === 'logged'
+            ? undefined
+            : invalidation.submittedTransactions
         results.push(
           await this.completeResult(config, result, parameters, {
             config,
-            currentState: { status: 'failed', errorName: operatorErrorName(error) }
+            currentState: { status: 'failed', errorName: operatorErrorName(error) },
+            ...(submittedTransactions ? { submittedTransactions } : {})
           })
         )
         if (result.status === 'halted') return results
@@ -505,7 +510,7 @@ export class LadderMarketMakerService {
     config: LadderConfig,
     error: unknown,
     parameters: LadderRunParameters
-  ): Promise<LadderRunOutcome> {
+  ): Promise<{ result: LadderRunOutcome; invalidation?: LadderMakeResult }> {
     try {
       const invalidation = await this.make.reconcile({
         marketId: config.marketId,
@@ -515,22 +520,27 @@ export class LadderMarketMakerService {
       })
 
       return {
-        marketId: config.marketId,
-        status: 'failed',
-        stage: 'market-read',
-        invalidated: invalidation !== 'logged',
-        ...(invalidation === 'logged' ? { invalidationLogged: true } : {}),
-        errorName: operatorErrorName(error)
+        result: {
+          marketId: config.marketId,
+          status: 'failed',
+          stage: 'market-read',
+          invalidated: invalidation !== 'logged',
+          ...(invalidation === 'logged' ? { invalidationLogged: true } : {}),
+          errorName: operatorErrorName(error)
+        },
+        invalidation
       }
     } catch (invalidationError) {
-      return this.halt(
-        config.marketId,
-        'market-invalidation',
-        error,
-        'market-invalidation-failed',
-        parameters,
-        invalidationError
-      )
+      return {
+        result: await this.halt(
+          config.marketId,
+          'market-invalidation',
+          error,
+          'market-invalidation-failed',
+          parameters,
+          invalidationError
+        )
+      }
     }
   }
 
