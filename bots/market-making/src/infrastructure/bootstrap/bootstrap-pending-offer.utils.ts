@@ -4,8 +4,7 @@ import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
 import type { BootstrapRawGroup } from './bootstrap-groups.utils'
 import type { BootstrapActiveGroup } from './bootstrap-position.service'
 
-/** Persisted bootstrap publication intent paired with its deterministic group identifier. */
-export type OwnedBootstrapOffer = BootstrapOffer & { groupId: Hex }
+type OwnedBootstrapOffer = BootstrapOffer & { groupId: Hex }
 
 /**
  * Projects persisted bootstrap publications that have not appeared in the Morpho API yet.
