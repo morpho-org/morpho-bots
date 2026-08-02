@@ -20,16 +20,11 @@ import type {
 import type { LadderTransactionSubmittedObserver } from '../../application/ladder/ladder-verbose'
 import type { ConfigService } from '../../config/config.service'
 import type { LadderQuoteSet } from '../../domain/ladder/ladder'
-import type { BootstrapRawGroup } from '../bootstrap/bootstrap-groups.utils'
 import type { HistoricalBlockReader } from '../reference/blue-reference-reader.utils'
 import type { OwnedLadderPublication } from './ladder-group-ownership.utils'
 
 import { createBootstrapGroupOwnership } from '../bootstrap/bootstrap-group-ownership.utils'
-import {
-  bootstrapBookOffers,
-  bootstrapReservedLoanAssets,
-  readBootstrapGroups
-} from '../bootstrap/bootstrap-groups.utils'
+import { bootstrapBookOffers, readBootstrapGroups } from '../bootstrap/bootstrap-groups.utils'
 import { BlueBootstrapReferenceRateService } from '../bootstrap/bootstrap-reference-rate.service'
 import { createManagedMakerAccount } from '../make/managed-maker-account.utils'
 import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
@@ -38,6 +33,7 @@ import {
   reconstructOwnedLadderPublication
 } from './ladder-active-publication.utils'
 import { LadderAdapterError } from './ladder-adapter.error'
+import { ladderCashReservations } from './ladder-cash-reservation.utils'
 import { createLadderGroupOwnership } from './ladder-group-ownership.utils'
 import { MidnightLadderMakeService, type LadderOfferTransport } from './ladder-make.service'
 import { buildLadderTree } from './ladder-offer.utils'
@@ -66,10 +62,6 @@ const notifySubmitted = async (
 ) => {
   await observer?.({ operation, txHash })
 }
-
-const distinctGroups = (groups: readonly BootstrapRawGroup[]) => [
-  ...new Map(groups.map(group => [group.id, group])).values()
-]
 
 const ownedGroups = (publications: readonly OwnedLadderPublication[]) =>
   publications.flatMap(publication =>
@@ -125,67 +117,67 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
       const selectedConfig = configByMarket.get(marketId)
       if (!selectedConfig) throw new LadderAdapterError('market-configuration-missing')
       const block = await client.getBlock({ blockTag: 'latest' })
-      const [groups, publications, bootstrapGroupIds, cashBalance, allowance, positionSnapshots] =
-        await Promise.all([
-          readGroups(),
-          ladderOwnership.read(),
-          bootstrapOwnership.read(),
-          client.readContract({
-            address: config.setup.loanAsset,
-            abi: erc20Abi,
-            functionName: 'balanceOf',
-            args: [maker]
-          }),
-          client.readContract({
-            address: config.setup.loanAsset,
-            abi: erc20Abi,
-            functionName: 'allowance',
-            args: [maker, config.setup.midnight]
-          }),
-          Promise.all(
-            config.setup.marketIds.map(async configuredMarketId => {
-              const position = (
-                await midnight.getPositionData({
-                  marketId: configuredMarketId,
-                  accountAddress: maker,
-                  parameters: { blockNumber: block.number }
-                })
-              ).accrueInterest(block.timestamp)
-              return {
+      const [
+        groups,
+        publications,
+        bootstrapGroupIds,
+        bootstrapOffers,
+        cashBalance,
+        allowance,
+        positionSnapshots
+      ] = await Promise.all([
+        readGroups(),
+        ladderOwnership.read(),
+        bootstrapOwnership.read(),
+        bootstrapOwnership.readOffers(),
+        client.readContract({
+          address: config.setup.loanAsset,
+          abi: erc20Abi,
+          functionName: 'balanceOf',
+          args: [maker]
+        }),
+        client.readContract({
+          address: config.setup.loanAsset,
+          abi: erc20Abi,
+          functionName: 'allowance',
+          args: [maker, config.setup.midnight]
+        }),
+        Promise.all(
+          config.setup.marketIds.map(async configuredMarketId => {
+            const position = (
+              await midnight.getPositionData({
                 marketId: configuredMarketId,
-                credit: position.credit
-              }
-            })
-          )
-        ])
+                accountAddress: maker,
+                parameters: { blockNumber: block.number }
+              })
+            ).accrueInterest(block.timestamp)
+            return {
+              marketId: configuredMarketId,
+              credit: position.credit
+            }
+          })
+        )
+      ])
       const selectedPosition = positionSnapshots.find(item => item.marketId === marketId)
       if (!selectedPosition) throw new LadderAdapterError('position-unavailable')
 
-      const ladderGroupIds = new Set(
-        publications.flatMap(publication => publication.groups.map(group => group.groupId))
-      )
-      const ownedGroupIds = new Set([...bootstrapGroupIds, ...ladderGroupIds])
       const replacedGroupIds = new Set(
         publications
           .filter(publication => publication.marketId === marketId)
           .flatMap(publication => publication.groups.map(group => group.groupId))
       )
-      const otherBuyGroups = distinctGroups(groups).filter(
-        group =>
-          ownedGroupIds.has(group.id) &&
-          !replacedGroupIds.has(group.id) &&
-          group.offers.some(offer => offer.buy)
-      )
-      const otherBuyGroupIds = otherBuyGroups.map(group => group.id)
-      const reservedCash = bootstrapReservedLoanAssets(otherBuyGroups, otherBuyGroupIds)
+      const reservations = ladderCashReservations({
+        groups,
+        publications,
+        bootstrapGroupIds,
+        bootstrapOffers,
+        replacedGroupIds
+      })
+      const reservedCash = reservations.reduce((sum, reservation) => sum + reservation.assets, 0n)
       const availableCash = remaining(minimum(cashBalance, allowance), reservedCash)
-      const marketBuyGroups = otherBuyGroups.filter(group =>
-        group.offers.some(offer => offer.marketId === marketId && offer.buy)
-      )
-      const marketReserved = bootstrapReservedLoanAssets(
-        marketBuyGroups,
-        marketBuyGroups.map(group => group.id)
-      )
+      const marketReserved = reservations
+        .filter(reservation => reservation.marketIds.includes(marketId))
+        .reduce((sum, reservation) => sum + reservation.assets, 0n)
       const marketExposure = selectedPosition.credit + marketReserved
       const totalCredit = positionSnapshots.reduce((sum, position) => sum + position.credit, 0n)
       const totalExposure = totalCredit + reservedCash

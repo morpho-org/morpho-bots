@@ -10,6 +10,7 @@ import { readBootstrapGroups } from '../bootstrap/bootstrap-groups.utils'
 import { createLadderGroupOwnership } from '../ladder/ladder-group-ownership.utils'
 import { createManagedMakerAccount } from '../make/managed-maker-account.utils'
 import { OfferInvalidationAdapterError } from './offer-invalidation-adapter.error'
+import { offerInvalidationGroupIds } from './offer-invalidation-group.utils'
 import { assertOfferInvalidationTransaction } from './offer-invalidation-transaction.utils'
 
 const providerOperation = async <Result>(
@@ -73,14 +74,16 @@ export const createProductionOfferInvalidationPort = (
 
   const listActiveGroupIds = () =>
     providerOperation('offer-groups-read', async () => {
-      const groups = await readBootstrapGroups({
-        maker,
-        morphoApiBaseUrl: config.morphoApiBaseUrl,
-        requestTimeoutMs: config.requestTimeoutMs
-      })
-      return [
-        ...new Set(groups.filter(group => group.maxAssets > group.consumed).map(group => group.id))
-      ]
+      const [groups, bootstrapGroupIds, ladderGroupIds] = await Promise.all([
+        readBootstrapGroups({
+          maker,
+          morphoApiBaseUrl: config.morphoApiBaseUrl,
+          requestTimeoutMs: config.requestTimeoutMs
+        }),
+        bootstrapOwnership.read(),
+        ladderOwnership.readGroupIds()
+      ])
+      return offerInvalidationGroupIds(groups, bootstrapGroupIds, ladderGroupIds)
     })
 
   if (config.identity.readOnly) {

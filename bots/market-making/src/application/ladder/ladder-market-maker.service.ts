@@ -382,7 +382,6 @@ export class LadderMarketMakerService {
       let decision: 'publish' | 'recenter' | 'resize' | 'rest'
       try {
         const targetRateBps = referenceRateBps + config.quotePremiumBps
-        const freshDesired = generateLadder({ config, referenceRateBps, capacities: market })
         const recenter = active
           ? shouldRecenter(active.centerRateBps, targetRateBps, config.movementToleranceBps)
           : true
@@ -394,7 +393,7 @@ export class LadderMarketMakerService {
                 capacities: market,
                 retainedCenterRateBps: active.centerRateBps
               })
-            : freshDesired
+            : generateLadder({ config, referenceRateBps, capacities: market })
         if (!active) decision = 'publish'
         else if (sameLadderQuoteSet(active, desired)) decision = 'rest'
         else decision = recenter ? 'recenter' : 'resize'

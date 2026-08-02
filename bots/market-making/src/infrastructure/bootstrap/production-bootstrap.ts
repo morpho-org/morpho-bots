@@ -23,6 +23,7 @@ import type { ConfigService } from '../../config/config.service'
 import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
 import type { BootstrapActiveGroup, BootstrapInventoryReader } from './bootstrap-position.service'
 
+import { pendingLadderBuyReservations } from '../ladder/ladder-cash-reservation.utils'
 import { createLadderGroupOwnership } from '../ladder/ladder-group-ownership.utils'
 import { createManagedMakerAccount } from '../make/managed-maker-account.utils'
 import { ReadOnlyBootstrapMakeService } from '../make/read-only-bootstrap-make.service'
@@ -156,12 +157,12 @@ export const createProductionBootstrapAdapters = (
   }
 
   const readGroupInventory = async () => {
-    const [block, groups, ownedIds, ownedOffers, ladderGroupIds] = await Promise.all([
+    const [block, groups, ownedIds, ownedOffers, ladderPublications] = await Promise.all([
       client.getBlock({ blockTag: 'latest' }),
       readGroups(),
       ownership.read(),
       ownership.readOffers(),
-      ladderOwnership.readGroupIds()
+      ladderOwnership.read()
     ])
     const intended = new Map(
       ownedOffers.map(offer => [`${offer.groupId}:${offer.marketId}`, offer] as const)
@@ -202,7 +203,25 @@ export const createProductionBootstrapAdapters = (
         ...project(strategyBootstrapGroups(groups, ownedIds), true),
         ...pendingBootstrapGroups(groups, ownedOffers)
       ],
-      cashReservations: project(strategyBootstrapGroups(groups, ladderGroupIds), false)
+      cashReservations: [
+        ...project(
+          strategyBootstrapGroups(
+            groups,
+            ladderPublications.flatMap(publication =>
+              publication.groups.map(group => group.groupId)
+            )
+          ),
+          false
+        ),
+        ...pendingLadderBuyReservations(groups, ladderPublications).flatMap(reservation =>
+          reservation.marketIds.map(marketId => ({
+            id: reservation.id,
+            marketId,
+            assets: reservation.assets,
+            rateBps: 0n
+          }))
+        )
+      ]
     }
   }
 

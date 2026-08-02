@@ -345,7 +345,7 @@ describe('LadderMarketMakerService', () => {
     expect(subject.halts).toEqual([])
   })
 
-  test('hard-halts when a fresh effective center is unsafe inside a wide tolerance', async () => {
+  test('retains a safe active center before generating an out-of-bounds fresh center', async () => {
     const subject = harness([
       {
         ...config(),
@@ -357,10 +357,8 @@ describe('LadderMarketMakerService', () => {
     await subject.service.runOnce()
     subject.setRate(900n)
 
-    expect(await subject.service.runOnce()).toMatchObject([
-      { status: 'halted', stage: 'decision', strategyInvalidated: true }
-    ])
-    expect(subject.halts).toEqual(['ladder-decision-failed'])
+    expect(await subject.service.runOnce()).toMatchObject([{ action: 'rest' }])
+    expect(subject.halts).toEqual([])
   })
 
   test('invalidates one failed market read and continues other markets', async () => {
