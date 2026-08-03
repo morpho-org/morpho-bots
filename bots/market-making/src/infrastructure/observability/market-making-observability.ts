@@ -2,6 +2,8 @@ import type { Logger } from '@repo/bot-kit'
 
 import { createHeartbeatMonitor, createLogger, railwayContext } from '@repo/bot-kit'
 
+import { operatorErrorName } from '../../application/operator-error-name.utils'
+
 const BASE_CHAIN_ID = 8453
 
 type Environment = Record<string, string | undefined>
@@ -11,17 +13,27 @@ type UnexpectedOrigin = 'entrypoint' | 'uncaughtException' | 'unhandledRejection
 const hasShippingConfig = (env: Environment) =>
   Boolean(env.BETTERSTACK_SOURCE_TOKEN?.trim() && env.BETTERSTACK_INGESTING_HOST?.trim())
 
+const marketMakingCommand = (argv: readonly string[]) => {
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index]
+    if (argument === '--config' || argument === '-c') {
+      index += 1
+      continue
+    }
+    if (argument?.startsWith('--config=') || argument?.startsWith('-')) continue
+    return argument
+  }
+  return undefined
+}
+
 /** Enables the existing safe verbose event stream only when BetterStack shipping is fully configured. */
 export const enhanceMarketMakingArgv = (
   argv: readonly string[],
   env: Environment = process.env
 ): readonly string[] => {
   if (!hasShippingConfig(env) || argv.includes('--verbose')) return [...argv]
-  if (
-    !argv.some(
-      argument => argument === 'start' || argument === 'bootstrap' || argument === 'ladder'
-    )
-  ) {
+  const command = marketMakingCommand(argv)
+  if (command !== 'start' && command !== 'bootstrap' && command !== 'ladder') {
     return [...argv]
   }
   return [...argv, '--verbose']
@@ -38,11 +50,6 @@ const hasFailure = (value: unknown, seen = new WeakSet<object>(), depth = 0): bo
     if (hasFailure(nested, seen, depth + 1)) return true
   }
   return false
-}
-
-const safeErrorName = (error: unknown) => {
-  if (!(error instanceof Error)) return 'UnknownError'
-  return /^[A-Za-z][A-Za-z0-9_$]{0,79}$/.test(error.name) ? error.name : 'UnknownError'
 }
 
 /** Mirrors the CLI's already-sanitized records into bot-kit observability without consuming output. */
@@ -93,7 +100,7 @@ export const createMarketMakingObservability = (
       if (shippingEnabled) logger.info('bot.started')
       void heartbeat
         .start()
-        .catch(error => logger.warn('heartbeat.failed', { errorName: safeErrorName(error) }))
+        .catch(error => logger.warn('heartbeat.failed', { errorName: operatorErrorName(error) }))
     },
     stop(reason: string) {
       heartbeat.stop()
@@ -105,7 +112,7 @@ export const createMarketMakingObservability = (
     },
     unexpected(error: unknown, origin: UnexpectedOrigin) {
       if (shippingEnabled) {
-        logger.error('bot.unexpected-error', { origin, errorName: safeErrorName(error) })
+        logger.error('bot.unexpected-error', { origin, errorName: operatorErrorName(error) })
       }
     }
   }

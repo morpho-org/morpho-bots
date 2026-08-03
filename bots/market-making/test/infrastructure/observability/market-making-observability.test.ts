@@ -38,6 +38,19 @@ describe('enhanceMarketMakingArgv', () => {
     expect(enhanceMarketMakingArgv(['start', '--verbose'], full)).toEqual(['start', '--verbose'])
   })
 
+  test('recognizes the command without mistaking a config path for one', () => {
+    expect(enhanceMarketMakingArgv(['--config', 'start', 'setup-check'], full)).toEqual([
+      '--config',
+      'start',
+      'setup-check'
+    ])
+    expect(enhanceMarketMakingArgv(['--config=market-making.yaml', 'ladder'], full)).toEqual([
+      '--config=market-making.yaml',
+      'ladder',
+      '--verbose'
+    ])
+  })
+
   test.each([
     ['unset', {}],
     ['token only', { BETTERSTACK_SOURCE_TOKEN: 'source-token' }],
@@ -87,27 +100,50 @@ describe('market-making observability', () => {
     expect(cycle.event).toBe('market-making.cycle')
   })
 
-  test('ships each array action as a searchable top-level record', () => {
+  test('ships recenter, resize, publish, rest, bootstrap, and invalidation actions as records', () => {
     const { logger, records } = captureLogger()
     const observability = createMarketMakingObservability({ logger })
 
     observability.record([
-      { marketId: 'market-a', action: 'resize', status: 'published' },
-      { marketId: 'market-b', action: 'rest', status: 'resting' }
+      { marketId: 'market-a', action: 'recenter', status: 'published' },
+      { marketId: 'market-b', action: 'resize', status: 'published' },
+      { marketId: 'market-c', action: 'publish', status: 'published' },
+      { marketId: 'market-d', action: 'rest', status: 'resting' },
+      { marketId: 'market-e', action: 'bootstrap', status: 'applied' },
+      { marketId: 'market-f', action: 'invalidation', status: 'confirmed' }
     ])
 
-    expect(records).toEqual([
-      {
-        level: 'info',
-        event: 'bot.action',
-        fields: { marketId: 'market-a', action: 'resize', status: 'published' }
-      },
-      {
-        level: 'info',
-        event: 'bot.action',
-        fields: { marketId: 'market-b', action: 'rest', status: 'resting' }
-      }
+    expect(records.map(record => record.fields.action)).toEqual([
+      'recenter',
+      'resize',
+      'publish',
+      'rest',
+      'bootstrap',
+      'invalidation'
     ])
+    expect(records.every(record => record.level === 'info' && record.event === 'bot.action')).toBe(
+      true
+    )
+  })
+
+  test('records a fresh lifecycle start after a clean stop so process restarts remain queryable', async () => {
+    const { logger, records } = captureLogger()
+    const heartbeat = { start: mock(async () => undefined), stop: mock(() => undefined) }
+    const observability = createMarketMakingObservability({ logger, heartbeat })
+
+    await observability.start()
+    observability.stop('restart')
+    await observability.start()
+    observability.stop('completed')
+
+    expect(records.map(record => record.event)).toEqual([
+      'bot.started',
+      'bot.stopped',
+      'bot.started',
+      'bot.stopped'
+    ])
+    expect(heartbeat.start).toHaveBeenCalledTimes(2)
+    expect(heartbeat.stop).toHaveBeenCalledTimes(2)
   })
 
   test('elevates nested failed, halted, and errorName outcomes to error level', () => {
@@ -139,7 +175,7 @@ describe('market-making observability', () => {
       {
         level: 'error',
         event: 'bot.unexpected-error',
-        fields: { origin: 'unhandledRejection', errorName: 'ProviderTimeoutError' }
+        fields: { origin: 'unhandledRejection', errorName: 'UnknownError' }
       },
       {
         level: 'error',

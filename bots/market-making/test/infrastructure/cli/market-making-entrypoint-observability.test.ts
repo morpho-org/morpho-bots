@@ -49,7 +49,7 @@ describe('runMarketMakingEntrypoint observability', () => {
 
     expect(exitCode).toBe(1)
     expect(stdout).toEqual([])
-    expect(stderr).toEqual(['ProviderFailureError'])
+    expect(stderr).toEqual(['UnknownError'])
     expect(unexpected).toHaveBeenCalledWith(error, 'entrypoint')
     expect(stderr.join('')).not.toContain('raw provider')
     expect(stderr.join('')).not.toContain('credential')

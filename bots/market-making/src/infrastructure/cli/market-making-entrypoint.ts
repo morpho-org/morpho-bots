@@ -6,6 +6,7 @@ import { OfferInvalidationFailedError } from '../../application/invalidation/off
 import { LadderCycleHaltedError } from '../../application/ladder/ladder-cycle-halted.error'
 import { LadderMonitorHaltedError } from '../../application/ladder/ladder-monitor-halted.error'
 import { MarketMakingMonitorHaltedError } from '../../application/market-making/market-making-monitor-halted.error'
+import { operatorErrorName } from '../../application/operator-error-name.utils'
 import { SetupFailedError } from '../../application/setup/setup-failed.error'
 import { SetupMonitorHaltedError } from '../../application/setup/setup-monitor-halted.error'
 import { CliUsageError } from './cli-usage.error'
@@ -36,8 +37,7 @@ const failureOutput = (error: unknown) => {
   if (error instanceof PositionBootstrapHaltedError) return serializeOutput(error.report)
   if (error instanceof SetupFailedError) return serializeOutput(error.report)
   if (error instanceof CliUsageError) return error.message
-  if (error instanceof Error && /^[A-Za-z][A-Za-z0-9_$]{0,79}$/.test(error.name)) return error.name
-  return 'UnknownError'
+  return operatorErrorName(error)
 }
 
 const failureReport = (error: unknown) => {
@@ -62,6 +62,7 @@ const failureReport = (error: unknown) => {
  * @param argv - User arguments without runtime/executable prefixes.
  * @param output - Standard output and error writers.
  * @param runtime - Optional graceful-shutdown signal for continuous commands.
+ * @param observability - Optional mirror for sanitized records and unexpected error classifications.
  * @returns Zero on success and one after a sanitized failure has been emitted.
  * @remarks Each output value is one JSON Lines record. Continuous readiness, bootstrap, ladder,
  * combined-monitor, or invalidation transaction records precede the terminal result; read-only
