@@ -115,10 +115,17 @@ describe('LadderMarketMakerService', () => {
     const subject = harness([{ ...config(), loopIntervalSeconds: 1 }])
     const controller = new AbortController()
     const cycles: unknown[] = []
+    const operations: string[] = []
 
     const report = await subject.service.runContinuously({
       signal: controller.signal,
       intervalMs: 1,
+      runOperation: async operation => {
+        operations.push('start')
+        const result = await operation()
+        operations.push('end')
+        return result
+      },
       onCycle: results => {
         cycles.push(results)
         if (cycles.length === 2) controller.abort()
@@ -132,6 +139,7 @@ describe('LadderMarketMakerService', () => {
       cleanup: { status: 'applied' }
     })
     expect(cycles).toHaveLength(2)
+    expect(operations).toEqual(['start', 'end', 'start', 'end', 'start', 'end'])
     expect(subject.cleanup).toHaveBeenCalledTimes(1)
     expect(subject.liveDesired.size).toBe(0)
   })

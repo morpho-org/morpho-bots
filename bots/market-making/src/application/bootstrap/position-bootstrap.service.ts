@@ -7,6 +7,7 @@ import type {
   BootstrapRate,
   PositionBootstrapDecision
 } from '../../domain/bootstrap/position-bootstrap'
+import type { MonitorOperationQueue } from '../monitor.utils'
 import type {
   BootstrapMakeResult,
   BootstrapSubmittedTransaction,
@@ -247,6 +248,7 @@ export class PositionBootstrapService {
   async runContinuously(parameters: {
     signal: AbortSignal
     onCycle?: (results: readonly Record<string, unknown>[]) => void | Promise<void>
+    runOperation?: MonitorOperationQueue
     intervalMs?: number
     verbose?: boolean
     onTransactionSubmitted?: (event: BootstrapTransactionSubmittedEvent) => void | Promise<void>
@@ -272,23 +274,30 @@ export class PositionBootstrapService {
     let cycleErrorName: string | undefined
 
     while (!parameters.signal.aborted) {
-      let results: readonly BootstrapRunResult[]
       try {
-        results = await this.runOnce({
-          verbose: parameters.verbose,
-          onTransactionSubmitted: parameters.onTransactionSubmitted
-        })
-        await parameters.onCycle?.(results)
+        const runCycle = async () => {
+          if (parameters.signal.aborted) return undefined
+          const results = await this.runOnce({
+            verbose: parameters.verbose,
+            onTransactionSubmitted: parameters.onTransactionSubmitted
+          })
+          await parameters.onCycle?.(results)
+          return results
+        }
+        const results = parameters.runOperation
+          ? await parameters.runOperation(runCycle)
+          : await runCycle()
+        if (results === undefined) break
         cycles += 1
+
+        if (bootstrapCycleHasFailure(results)) {
+          reason = 'cycle-failed'
+          lastCycle = results
+          break
+        }
       } catch (error) {
         reason = 'cycle-error'
         cycleErrorName = operatorErrorName(error)
-        break
-      }
-
-      if (bootstrapCycleHasFailure(results)) {
-        reason = 'cycle-failed'
-        lastCycle = results
         break
       }
 
@@ -297,16 +306,20 @@ export class PositionBootstrapService {
 
     let cleanup: PositionBootstrapMonitorReport['cleanup']
     try {
-      const result = await this.cleanup({
-        onTransactionSubmitted:
-          parameters.verbose && parameters.onTransactionSubmitted
-            ? transaction =>
-                parameters.onTransactionSubmitted?.({
-                  event: 'bootstrap.transaction-submitted',
-                  ...transaction
-                })
-            : undefined
-      })
+      const runCleanup = () =>
+        this.cleanup({
+          onTransactionSubmitted:
+            parameters.verbose && parameters.onTransactionSubmitted
+              ? transaction =>
+                  parameters.onTransactionSubmitted?.({
+                    event: 'bootstrap.transaction-submitted',
+                    ...transaction
+                  })
+              : undefined
+        })
+      const result = parameters.runOperation
+        ? await parameters.runOperation(runCleanup)
+        : await runCleanup()
       cleanup = {
         status: result === 'logged' ? 'logged' : 'applied',
         ...(parameters.verbose ? { submittedTransactions: this.submittedTransactions(result) } : {})

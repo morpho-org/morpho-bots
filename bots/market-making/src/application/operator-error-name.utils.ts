@@ -21,6 +21,7 @@ type OperatorErrorName =
   | 'SetupFailedError'
   | 'SetupMonitorConfigurationError'
   | 'SetupMonitorHaltedError'
+  | 'MarketMakingMonitorHaltedError'
   | 'TypeError'
   | 'RangeError'
   | 'URIError'
@@ -48,6 +49,7 @@ const knownNames: Readonly<Record<string, OperatorErrorName>> = {
   SetupFailedError: 'SetupFailedError',
   SetupMonitorConfigurationError: 'SetupMonitorConfigurationError',
   SetupMonitorHaltedError: 'SetupMonitorHaltedError',
+  MarketMakingMonitorHaltedError: 'MarketMakingMonitorHaltedError',
   TypeError: 'TypeError',
   RangeError: 'RangeError',
   URIError: 'URIError'

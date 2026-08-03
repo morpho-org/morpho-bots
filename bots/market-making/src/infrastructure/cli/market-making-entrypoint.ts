@@ -5,6 +5,7 @@ import { PositionBootstrapMonitorHaltedError } from '../../application/bootstrap
 import { OfferInvalidationFailedError } from '../../application/invalidation/offer-invalidation-failed.error'
 import { LadderCycleHaltedError } from '../../application/ladder/ladder-cycle-halted.error'
 import { LadderMonitorHaltedError } from '../../application/ladder/ladder-monitor-halted.error'
+import { MarketMakingMonitorHaltedError } from '../../application/market-making/market-making-monitor-halted.error'
 import { SetupFailedError } from '../../application/setup/setup-failed.error'
 import { SetupMonitorHaltedError } from '../../application/setup/setup-monitor-halted.error'
 import { createMarketMakingLogger } from './market-making-logger'
@@ -15,6 +16,7 @@ type MarketMakingApplication = {
 type EntrypointOutput = { writeOut(value: string): void; writeError(value: string): void }
 
 const failureDetails = (error: unknown): unknown => {
+  if (error instanceof MarketMakingMonitorHaltedError) return error.report
   if (error instanceof SetupMonitorHaltedError) return error.report
   if (error instanceof OfferInvalidationFailedError) return error.report
   if (error instanceof PositionBootstrapMonitorHaltedError) return error.report
@@ -36,9 +38,10 @@ const failureMessage = (error: unknown) =>
  * @param runtime - Optional graceful-shutdown signal for continuous commands.
  * @returns Zero on success and one after a sanitized failure has been emitted.
  * @remarks Output is human-readable unless `--json` selects one JSON Lines record per value.
- * Continuous readiness, bootstrap, ladder, or invalidation transaction records precede the terminal
- * result; read-only make records may also precede workflow results. Failure reports exclude causes,
- * provider payloads, and credentials and always include an explicit error message.
+ * Continuous readiness, bootstrap, ladder, combined-monitor, or invalidation transaction records
+ * precede the terminal result; read-only make records may also precede workflow results. Failure
+ * reports exclude causes, provider payloads, and credentials and always include an explicit error
+ * message.
  */
 export const runMarketMakingEntrypoint = async (
   application: MarketMakingApplication,

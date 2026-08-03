@@ -88,6 +88,12 @@ describe('PositionBootstrapService', () => {
     const report = await service.runContinuously({
       signal: controller.signal,
       intervalMs: 1,
+      runOperation: async operation => {
+        events.push('operation:start')
+        const result = await operation()
+        events.push('operation:end')
+        return result
+      },
       onCycle: results => {
         events.push(`cycle:${results.length}`)
         if (events.filter(event => event.startsWith('cycle:')).length === 2) {
@@ -102,7 +108,19 @@ describe('PositionBootstrapService', () => {
       cycles: 2,
       cleanup: { status: 'applied' }
     })
-    expect(events).toEqual(['reconcile', 'cycle:1', 'reconcile', 'cycle:1', 'cleanup'])
+    expect(events).toEqual([
+      'operation:start',
+      'reconcile',
+      'cycle:1',
+      'operation:end',
+      'operation:start',
+      'reconcile',
+      'cycle:1',
+      'operation:end',
+      'operation:start',
+      'cleanup',
+      'operation:end'
+    ])
     expect(cleanup).toHaveBeenCalledTimes(1)
   })
 

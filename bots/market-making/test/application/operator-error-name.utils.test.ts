@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 
+import { MarketMakingMonitorHaltedError } from '../../src/application/market-making/market-making-monitor-halted.error'
 import {
   operatorErrorDetails,
   operatorErrorName
@@ -80,6 +81,20 @@ describe('operatorErrorName', () => {
         })
       )
     ).toBe('SetupMonitorHaltedError')
+  })
+
+  test('keeps the combined market-making monitor classification', () => {
+    const error = new MarketMakingMonitorHaltedError({
+      status: 'halted',
+      reason: 'workflow-error',
+      workflows: {
+        setupCheck: { status: 'rejected', errorName: 'TypeError' },
+        bootstrap: { status: 'rejected', errorName: 'TypeError' },
+        ladder: { status: 'rejected', errorName: 'TypeError' }
+      }
+    })
+
+    expect(operatorErrorName(error)).toBe('MarketMakingMonitorHaltedError')
   })
 
   test('maps hostile arbitrary names to one generic classification', () => {

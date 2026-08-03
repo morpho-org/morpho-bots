@@ -1,3 +1,6 @@
+/** Serial execution boundary for one complete monitor operation. */
+export type MonitorOperationQueue = <Result>(operation: () => Promise<Result>) => Promise<Result>
+
 /**
  * Waits between continuous workflow observations and resolves early on shutdown.
  * @param intervalMs - Positive monitoring interval in milliseconds.
