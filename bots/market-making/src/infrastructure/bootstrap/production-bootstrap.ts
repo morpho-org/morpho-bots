@@ -92,7 +92,7 @@ type ProductionBootstrapAdapters = {
  */
 export const createProductionBootstrapAdapters = (
   config: ConfigService,
-  writeReadOnlyEvent?: (line: string) => void
+  writeReadOnlyEvent?: (line: string) => void | Promise<void>
 ): ProductionBootstrapAdapters => {
   const maker = config.identity.maker
   const client = createPublicClient({

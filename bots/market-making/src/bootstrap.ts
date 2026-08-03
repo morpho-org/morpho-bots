@@ -158,9 +158,7 @@ export const createApplication = (
       await new SetupCheckService(state, config.setup, config.readOnly).assertReady()
       const injectedAdapters = dependencies.createBootstrapAdapters?.(config)
       const writeReadOnlyEvent = options.writeEvent
-        ? (line: string) => {
-            void options.writeEvent?.(JSON.parse(line))
-          }
+        ? (line: string) => options.writeEvent?.(JSON.parse(line))
         : undefined
       const adapters =
         injectedAdapters ?? createProductionBootstrapAdapters(config, writeReadOnlyEvent)
@@ -182,9 +180,7 @@ export const createApplication = (
       const adapters =
         dependencies.createLadderAdapters?.(config) ?? createProductionLadderAdapters(config)
       const writeReadOnlyEvent = options.writeEvent
-        ? (line: string) => {
-            void options.writeEvent?.(JSON.parse(line))
-          }
+        ? (line: string) => options.writeEvent?.(JSON.parse(line))
         : undefined
       const make = config.readOnly
         ? new ReadOnlyLadderMakeService(
