@@ -279,7 +279,8 @@ export class Cli {
       const startOptions = startCommand.opts<{ verbose?: boolean }>()
       const service = await marketMaking({
         configPath: options.config,
-        readOnly: options.readonly === true
+        readOnly: options.readonly === true,
+        writeEvent: this.runtime.writeEvent
       })
       const result = await service.runContinuously({
         signal: this.runtime.signal ?? new AbortController().signal,

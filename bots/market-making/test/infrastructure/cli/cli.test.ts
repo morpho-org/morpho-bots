@@ -729,6 +729,7 @@ describe('Cli', () => {
       }
     }
     let readOnly: boolean | undefined
+    let factoryWriteEvent: ((value: unknown) => void | Promise<void>) | undefined
     const runContinuously = mock(
       async (parameters: {
         signal: AbortSignal
@@ -749,19 +750,23 @@ describe('Cli', () => {
       undefined,
       options => {
         readOnly = options.readOnly
+        factoryWriteEvent = options.writeEvent
         return { runContinuously }
       }
     )
 
+    const writeEvent = (value: unknown) => {
+      streamed.push(value)
+    }
+
     expect(
       await application.run(['--readonly', 'start', '--verbose'], {
         signal: controller.signal,
-        writeEvent: value => {
-          streamed.push(value)
-        }
+        writeEvent
       })
     ).toEqual(report)
     expect(readOnly).toBe(true)
+    expect(factoryWriteEvent).toBe(writeEvent)
     expect(runContinuously.mock.calls[0]?.[0]).toMatchObject({
       signal: controller.signal,
       verbose: true
@@ -957,7 +962,7 @@ describe('Cli', () => {
 
     expect(exitCode).toBe(1)
     expect(stdout).toEqual([])
-    expect(stderr).toEqual(['Error: Bot cycle failed'])
+    expect(stderr).toEqual(['Error: UnknownError'])
   })
 
   test('entrypoint emits one structured JSON error record with --json', async () => {
@@ -974,7 +979,7 @@ describe('Cli', () => {
     expect(JSON.parse(stderr[0] ?? '')).toEqual({
       level: 'error',
       event: 'market-making.error',
-      message: 'Bot cycle failed'
+      message: 'UnknownError'
     })
     expect(stderr[0]).not.toContain('\n')
   })

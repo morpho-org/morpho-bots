@@ -40,6 +40,9 @@ import { ViemSetupStateService } from './infrastructure/setup-state/viem-setup-s
 
 type Environment = Record<string, string | undefined>
 
+const readOnlyWriter = (writeEvent?: CliRuntimeOptions['writeEvent']) =>
+  writeEvent === undefined ? console.log : (line: string) => writeEvent(JSON.parse(line))
+
 type Dependencies = {
   createState?: (config: ConfigService) => SetupStateService
   /** Replaces provider ports while retaining default application-service composition. */
@@ -225,10 +228,11 @@ export const createApplication = (
 
       const injectedBootstrapAdapters = dependencies.createBootstrapAdapters?.(config)
       const bootstrapAdapters =
-        injectedBootstrapAdapters ?? createProductionBootstrapAdapters(config)
+        injectedBootstrapAdapters ??
+        createProductionBootstrapAdapters(config, readOnlyWriter(options.writeEvent))
       const bootstrapMake =
         config.readOnly && injectedBootstrapAdapters
-          ? new ReadOnlyBootstrapMakeService()
+          ? new ReadOnlyBootstrapMakeService(readOnlyWriter(options.writeEvent))
           : bootstrapAdapters.make
 
       const ladderAdapters =
@@ -236,7 +240,7 @@ export const createApplication = (
       const ladderMake = config.readOnly
         ? new ReadOnlyLadderMakeService(
             ladderAdapters.make,
-            console.log,
+            readOnlyWriter(options.writeEvent),
             ladderAdapters.validateReconcile
           )
         : ladderAdapters.make

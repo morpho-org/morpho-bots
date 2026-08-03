@@ -59,6 +59,7 @@
     "src/infrastructure/cli/cli.ts",
     "src/infrastructure/cli/market-making-entrypoint.ts",
     "src/infrastructure/cli/offer-invalidation-group.utils.ts",
+    "src/infrastructure/observability/market-making-observability.ts",
     "src/infrastructure/invalidation/offer-invalidation-adapter.error.ts",
     "src/infrastructure/invalidation/offer-invalidation-group.utils.ts",
     "src/infrastructure/invalidation/offer-invalidation-transaction.utils.ts",

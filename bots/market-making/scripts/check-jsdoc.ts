@@ -356,6 +356,7 @@ const sourceFiles = [
   'infrastructure/cli/cli.ts',
   'infrastructure/cli/market-making-entrypoint.ts',
   'infrastructure/cli/offer-invalidation-group.utils.ts',
+  'infrastructure/observability/market-making-observability.ts',
   'infrastructure/invalidation/offer-invalidation-adapter.error.ts',
   'infrastructure/invalidation/offer-invalidation-group.utils.ts',
   'infrastructure/invalidation/offer-invalidation-transaction.utils.ts',

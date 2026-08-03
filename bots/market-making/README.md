@@ -331,11 +331,44 @@ unit; for six-decimal USDC, `101000000` is 101 USDC. No value is inferred from a
 | `TRANSACTION_RECEIPT_TIMEOUT_MS` | `setup.transactionReceiptTimeoutMs` | Optional timeout for confirming an already-submitted transaction, in milliseconds. Defaults to `180000`; accepted range is `1` through `900000`.                             |
 | `BOOTSTRAP_MARKETS`              | `bootstrap`                         | Optional exact JSON array of position-bootstrap entries documented below; defaults to `[]` and replaces the complete YAML `bootstrap` list when supplied.                    |
 | `LADDER_MARKETS`                 | `ladder`                            | Optional exact JSON array of ladder entries documented below; defaults to `[]` and replaces the complete YAML `ladder` list when supplied.                                   |
+| `BETTERSTACK_SOURCE_TOKEN`       | —                                   | Optional Better Stack source token. Must be set together with `BETTERSTACK_INGESTING_HOST`; partial configuration emits `logship.misconfigured` and ships nothing.           |
+| `BETTERSTACK_INGESTING_HOST`     | —                                   | Optional Better Stack ingest host, with or without an `https://` prefix. Must be set together with `BETTERSTACK_SOURCE_TOKEN`.                                               |
+| `BETTERSTACK_HEARTBEAT_URL`      | —                                   | Optional HTTP(S) heartbeat URL pinged at startup and once per minute. Invalid URLs and ping failures are reported safely and never interrupt market making.                  |
 
 There is no separate Mempool endpoint or API-key field in the current clients. Books and cursor-paginated
 maker offer groups are read through `MORPHO_API_BASE_URL`; `ROUTER_API_BASE_URL` is used only for the
 `/v0/config/contracts` ratifier registry. The existing clients do not accept configured API-key
 headers. No unused credential setting is exposed.
+
+### Better Stack observability
+
+Set both `BETTERSTACK_SOURCE_TOKEN` and `BETTERSTACK_INGESTING_HOST` to mirror every sanitized CLI
+event and result to Better Stack. Shipping is best-effort and never replaces or suppresses the
+existing stdout/stderr JSON Lines contract. With full shipping configuration, `start`, `bootstrap`,
+and `ladder` automatically enable the existing safe `--verbose` event stream (without adding a
+duplicate flag), so active positions, bootstrap offers, ladder quotes/offers, decisions, and
+submitted/confirmed transactions are available to the log source. Unset shipping variables are
+inert; partial configuration fails loud locally and does not enable verbose diagnostics.
+
+Every record carries `bot: "market-making"`, `chainId: 8453`, and available Railway deployment
+context. Existing event names remain the top-level `event`, and the sanitized report fields remain
+searchable structured fields. Nested `status: "failed"`, `status: "halted"`, and `errorName` values
+are emitted at error level. Unexpected failures include only a sanitized `errorName`; private keys,
+RPC/API credentials, signed or raw transaction payloads, provider payloads, and untrusted raw error
+messages are never added to observability records.
+
+Useful Better Stack source queries/filters include:
+
+- lifecycle and restarts: `bot:market-making AND event:(bot.started OR bot.stopped)`;
+- actions and monitor cycles: `bot:market-making AND event:*` plus `workflow`, `action`, or `status`;
+- active state: filter/search `activePosition`, `activeOffers`, `offers`, `quotes`, or the verbose
+  bootstrap/ladder event names;
+- failures: `bot:market-making AND level:error`, optionally grouped by `event` and `errorName`.
+
+`BETTERSTACK_HEARTBEAT_URL` is independent and optional. It starts with the process, stops during
+normal teardown, and cannot interrupt strategy execution. Create the log source, heartbeat, saved
+queries, and any dashboard/alerting in Better Stack externally; this repository does not provision
+or claim a deployed dashboard URL.
 
 ### YAML schema
 
