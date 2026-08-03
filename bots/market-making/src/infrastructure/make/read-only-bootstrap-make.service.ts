@@ -12,7 +12,7 @@ export class ReadOnlyBootstrapMakeService implements BootstrapMakeService {
    * request is validated and emitted as one independently parseable JSON record.
    */
   constructor(
-    private readonly write: (line: string) => void = console.log,
+    private readonly write: (line: string) => void | Promise<void> = console.log,
     private readonly validate: (
       parameters: Parameters<BootstrapMakeService['reconcile']>[0]
     ) => Promise<void> = async () => {}
@@ -29,7 +29,7 @@ export class ReadOnlyBootstrapMakeService implements BootstrapMakeService {
    */
   async reconcile(parameters: Parameters<BootstrapMakeService['reconcile']>[0]) {
     await this.validate(parameters)
-    this.write(formatReadOnlyMakeEvent('bootstrap', 'reconcile', parameters))
+    await this.write(formatReadOnlyMakeEvent('bootstrap', 'reconcile', parameters))
     return 'logged' as const
   }
 
@@ -41,7 +41,7 @@ export class ReadOnlyBootstrapMakeService implements BootstrapMakeService {
    * @remarks No signing or strategy-root invalidation occurs.
    */
   async hardHalt(parameters: Parameters<BootstrapMakeService['hardHalt']>[0]) {
-    this.write(formatReadOnlyMakeEvent('bootstrap', 'hard-halt', parameters))
+    await this.write(formatReadOnlyMakeEvent('bootstrap', 'hard-halt', parameters))
     return 'logged' as const
   }
 
@@ -52,7 +52,7 @@ export class ReadOnlyBootstrapMakeService implements BootstrapMakeService {
    * @remarks No signing or strategy-root invalidation occurs.
    */
   async cleanup() {
-    this.write(formatReadOnlyMakeEvent('bootstrap', 'cleanup', { reason: 'shutdown' }))
+    await this.write(formatReadOnlyMakeEvent('bootstrap', 'cleanup', { reason: 'shutdown' }))
     return 'logged' as const
   }
 }

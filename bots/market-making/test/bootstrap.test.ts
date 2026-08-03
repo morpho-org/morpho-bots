@@ -291,7 +291,7 @@ describe('createApplication', () => {
   test('routes --readonly bootstrap make operations to terminal output', async () => {
     const reconcile = mock(async () => {})
     const hardHalt = mock(async () => {})
-    const terminal = spyOn(console, 'log').mockImplementation(() => {})
+    const events: unknown[] = []
     const bootstrapEnvironment = {
       ...environment,
       MAKER_PRIVATE_KEY: undefined,
@@ -329,23 +329,87 @@ describe('createApplication', () => {
       })
     })
 
-    try {
-      expect(await application.run(['--readonly', 'bootstrap'])).toEqual([
-        { marketId, status: 'logged', action: 'publish' }
-      ])
-      expect(reconcile).not.toHaveBeenCalled()
-      expect(hardHalt).not.toHaveBeenCalled()
-      expect(terminal).toHaveBeenCalledWith(expect.stringContaining('"event":"readonly.make"'))
-    } finally {
-      terminal.mockRestore()
-    }
+    expect(
+      await application.run(['--readonly', 'bootstrap'], {
+        writeEvent: event => {
+          events.push(event)
+        }
+      })
+    ).toEqual([{ marketId, status: 'logged', action: 'publish' }])
+    expect(reconcile).not.toHaveBeenCalled()
+    expect(hardHalt).not.toHaveBeenCalled()
+    expect(events).toEqual([
+      expect.objectContaining({ event: 'readonly.make', workflow: 'bootstrap' })
+    ])
+  })
+
+  test('waits for async read-only bootstrap event writes before completing the command', async () => {
+    const writeStarted = Promise.withResolvers<void>()
+    const releaseWrite = Promise.withResolvers<void>()
+    const application = createApplication(
+      {
+        ...environment,
+        MAKER_PRIVATE_KEY: undefined,
+        BOOTSTRAP_MARKETS: JSON.stringify([
+          {
+            marketId,
+            creditTarget: '100',
+            acceptanceAssets: '0',
+            offerSize: '10',
+            premiumBps: '0',
+            maximumMarketExposure: '100',
+            maximumTotalExposure: '100',
+            minimumRateBps: '100',
+            maximumRateBps: '1000',
+            autoRefill: false
+          }
+        ])
+      },
+      {
+        createState: readyState,
+        createBootstrapAdapters: () => ({
+          positions: {
+            readPosition: async () => ({
+              credit: 0n,
+              debt: 0n,
+              cashBalance: 100n,
+              marketExposure: 0n,
+              totalExposure: 0n
+            })
+          },
+          rates: {
+            readRate: async () => ({
+              mode: 'static',
+              rateBps: 500n,
+              observationId: 'static:500'
+            })
+          },
+          make: { reconcile: async () => {}, hardHalt: async () => {}, cleanup: async () => {} }
+        })
+      }
+    )
+    const run = application.run(['--readonly', 'bootstrap'], {
+      writeEvent: async () => {
+        writeStarted.resolve()
+        await releaseWrite.promise
+      }
+    })
+    await writeStarted.promise
+    const state = await Promise.race([
+      run.then(() => 'completed' as const),
+      Bun.sleep(20).then(() => 'pending' as const)
+    ])
+    releaseWrite.resolve()
+
+    expect(state).toBe('pending')
+    expect(await run).toEqual([{ marketId, status: 'logged', action: 'publish' }])
   })
 
   test('routes --readonly ladder make operations to terminal output', async () => {
     const reconcile = mock(async () => {})
     const hardHalt = mock(async () => {})
     const validateReconcile = mock(async () => {})
-    const terminal = spyOn(console, 'log').mockImplementation(() => {})
+    const events: unknown[] = []
     const application = createApplication(
       {
         ...environment,
@@ -368,21 +432,56 @@ describe('createApplication', () => {
       }
     )
 
-    try {
-      expect(await application.run(['--readonly', 'ladder'])).toEqual([
-        { marketId, status: 'logged', action: 'publish', reason: 'publish' }
-      ])
-      expect(reconcile).not.toHaveBeenCalled()
-      expect(hardHalt).not.toHaveBeenCalled()
-      expect(validateReconcile).toHaveBeenCalledWith(
-        expect.objectContaining({ marketId, reason: 'publish' })
-      )
-      expect(terminal).toHaveBeenCalledWith(
-        expect.stringContaining('"event":"readonly.make","workflow":"ladder"')
-      )
-    } finally {
-      terminal.mockRestore()
-    }
+    expect(
+      await application.run(['--readonly', 'ladder'], {
+        writeEvent: event => {
+          events.push(event)
+        }
+      })
+    ).toEqual([{ marketId, status: 'logged', action: 'publish', reason: 'publish' }])
+    expect(reconcile).not.toHaveBeenCalled()
+    expect(hardHalt).not.toHaveBeenCalled()
+    expect(validateReconcile).toHaveBeenCalledWith(
+      expect.objectContaining({ marketId, reason: 'publish' })
+    )
+    expect(events).toEqual([
+      expect.objectContaining({ event: 'readonly.make', workflow: 'ladder' })
+    ])
+  })
+
+  test('rejects the read-only ladder command when an async event write rejects', async () => {
+    const writeError = new Error('event sink unavailable')
+    const application = createApplication(
+      {
+        ...environment,
+        MAKER_PRIVATE_KEY: undefined,
+        LADDER_MARKETS: JSON.stringify([ladderConfiguration])
+      },
+      {
+        createState: readyState,
+        createLadderAdapters: () => ({
+          positions: { readMarket: async () => ({}) },
+          rates: { readRate: async () => 500n },
+          make: {
+            readActive: async () => undefined,
+            reconcile: async () => {},
+            hardHalt: async () => {},
+            cleanup: async () => {}
+          }
+        })
+      }
+    )
+
+    expect(
+      application.run(['--readonly', 'ladder'], {
+        writeEvent: async () => {
+          throw writeError
+        }
+      })
+    ).rejects.toMatchObject({
+      name: 'LadderCycleHaltedError',
+      code: 'LADDER_CYCLE_HALTED'
+    })
   })
 
   test('runs the exact read-only ladder monitor surface without loading or invoking a signer', async () => {

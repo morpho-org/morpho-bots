@@ -14,7 +14,7 @@ export class ReadOnlyLadderMakeService implements LadderMakeService {
    */
   constructor(
     private readonly activeQuotes: Pick<LadderMakeService, 'readActive'>,
-    private readonly write: (line: string) => void = console.log,
+    private readonly write: (line: string) => void | Promise<void> = console.log,
     private readonly validate: (
       parameters: Parameters<LadderMakeService['reconcile']>[0]
     ) => Promise<void> = async () => {}
@@ -42,7 +42,7 @@ export class ReadOnlyLadderMakeService implements LadderMakeService {
    */
   async reconcile(parameters: Parameters<LadderMakeService['reconcile']>[0]) {
     await this.validate(parameters)
-    this.write(formatReadOnlyMakeEvent('ladder', 'reconcile', parameters))
+    await this.write(formatReadOnlyMakeEvent('ladder', 'reconcile', parameters))
     return 'logged' as const
   }
 
@@ -54,7 +54,7 @@ export class ReadOnlyLadderMakeService implements LadderMakeService {
    * @remarks No signing or strategy-root invalidation occurs.
    */
   async hardHalt(parameters: Parameters<LadderMakeService['hardHalt']>[0]) {
-    this.write(formatReadOnlyMakeEvent('ladder', 'hard-halt', parameters))
+    await this.write(formatReadOnlyMakeEvent('ladder', 'hard-halt', parameters))
     return 'logged' as const
   }
 
@@ -65,7 +65,7 @@ export class ReadOnlyLadderMakeService implements LadderMakeService {
    * @remarks No signing or strategy-root invalidation occurs.
    */
   async cleanup() {
-    this.write(formatReadOnlyMakeEvent('ladder', 'cleanup', { reason: 'shutdown' }))
+    await this.write(formatReadOnlyMakeEvent('ladder', 'cleanup', { reason: 'shutdown' }))
     return 'logged' as const
   }
 }

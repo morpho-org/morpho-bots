@@ -13,7 +13,9 @@ const marketId: Hex = `0x${'55'.repeat(32)}`
 describe('read-only make adapters', () => {
   test('logs bootstrap offers and safety invalidations without a submission dependency', async () => {
     const lines: string[] = []
-    const service = new ReadOnlyBootstrapMakeService(line => lines.push(line))
+    const service = new ReadOnlyBootstrapMakeService(line => {
+      lines.push(line)
+    })
 
     expect(
       await service.reconcile({
@@ -61,10 +63,22 @@ describe('read-only make adapters', () => {
     ])
   })
 
+  test('propagates rejected async writers from bootstrap halt and cleanup operations', async () => {
+    const writeError = new Error('event sink unavailable')
+    const service = new ReadOnlyBootstrapMakeService(async () => {
+      throw writeError
+    })
+
+    expect(service.hardHalt({ reason: 'bootstrap-decision-failed' })).rejects.toBe(writeError)
+    expect(service.cleanup()).rejects.toBe(writeError)
+  })
+
   test('validates a read-only bootstrap reconcile before logging it', async () => {
     const lines: string[] = []
     const service = new ReadOnlyBootstrapMakeService(
-      line => lines.push(line),
+      line => {
+        lines.push(line)
+      },
       async () => {
         throw new Error('negative spread')
       }
@@ -93,7 +107,9 @@ describe('read-only make adapters', () => {
           return active
         }
       },
-      line => lines.push(line)
+      line => {
+        lines.push(line)
+      }
     )
 
     expect(await service.readActive(marketId)).toBe(active)
@@ -129,11 +145,26 @@ describe('read-only make adapters', () => {
     ])
   })
 
+  test('propagates rejected async writers from ladder halt and cleanup operations', async () => {
+    const writeError = new Error('event sink unavailable')
+    const service = new ReadOnlyLadderMakeService(
+      { readActive: async () => undefined },
+      async () => {
+        throw writeError
+      }
+    )
+
+    expect(service.hardHalt({ reason: 'ladder-decision-failed' })).rejects.toBe(writeError)
+    expect(service.cleanup()).rejects.toBe(writeError)
+  })
+
   test('validates a read-only ladder reconcile before logging it', async () => {
     const lines: string[] = []
     const service = new ReadOnlyLadderMakeService(
       { readActive: async () => undefined },
-      line => lines.push(line),
+      line => {
+        lines.push(line)
+      },
       async () => {
         throw new LadderAdapterError('negative-spread')
       }
