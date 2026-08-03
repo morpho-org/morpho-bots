@@ -7,6 +7,7 @@ import { PositionBootstrapMonitorHaltedError } from '../../../src/application/bo
 import { OfferInvalidationFailedError } from '../../../src/application/invalidation/offer-invalidation-failed.error'
 import { LadderCycleHaltedError } from '../../../src/application/ladder/ladder-cycle-halted.error'
 import { LadderMonitorHaltedError } from '../../../src/application/ladder/ladder-monitor-halted.error'
+import { MarketMakingMonitorHaltedError } from '../../../src/application/market-making/market-making-monitor-halted.error'
 import { SetupMonitorHaltedError } from '../../../src/application/setup/setup-monitor-halted.error'
 import { VersionService } from '../../../src/application/version.service'
 import { Cli } from '../../../src/infrastructure/cli/cli'
@@ -661,6 +662,122 @@ describe('Cli', () => {
     expect(error).toMatchObject({ report })
   })
 
+  test('mm start forwards the shared signal, verbose mode, read-only mode, and events', async () => {
+    const event = {
+      event: 'market-making.cycle' as const,
+      workflow: 'setup-check' as const,
+      report: readyReport
+    }
+    const report = {
+      status: 'stopped' as const,
+      reason: 'signal' as const,
+      workflows: {
+        setupCheck: {
+          status: 'fulfilled' as const,
+          report: { status: 'stopped' as const, reason: 'signal' as const, cycles: 1 }
+        },
+        bootstrap: {
+          status: 'fulfilled' as const,
+          report: {
+            status: 'stopped' as const,
+            reason: 'signal' as const,
+            cycles: 1,
+            cleanup: { status: 'logged' as const }
+          }
+        },
+        ladder: {
+          status: 'fulfilled' as const,
+          report: {
+            status: 'stopped' as const,
+            reason: 'signal' as const,
+            cycles: 1,
+            cleanup: { status: 'logged' as const }
+          }
+        }
+      }
+    }
+    let readOnly: boolean | undefined
+    const runContinuously = mock(
+      async (parameters: {
+        signal: AbortSignal
+        verbose?: boolean
+        onEvent?: (value: typeof event) => void | Promise<void>
+      }) => {
+        await parameters.onEvent?.(event)
+        return report
+      }
+    )
+    const streamed: unknown[] = []
+    const controller = new AbortController()
+    const application = new Cli(
+      new VersionService(),
+      () => ({ assertReady: async () => readyReport }),
+      () => ({ runOnce: async () => [] }),
+      () => ({ runOnce: async () => [] }),
+      undefined,
+      options => {
+        readOnly = options.readOnly
+        return { runContinuously }
+      }
+    )
+
+    expect(
+      await application.run(['--readonly', 'start', '--verbose'], {
+        signal: controller.signal,
+        writeEvent: value => {
+          streamed.push(value)
+        }
+      })
+    ).toEqual(report)
+    expect(readOnly).toBe(true)
+    expect(runContinuously.mock.calls[0]?.[0]).toMatchObject({
+      signal: controller.signal,
+      verbose: true
+    })
+    expect(streamed).toEqual([event])
+  })
+
+  test('mm start rejects a halted combined lifecycle report', async () => {
+    const report = {
+      status: 'halted' as const,
+      reason: 'workflow-error' as const,
+      workflows: {
+        setupCheck: { status: 'rejected' as const, errorName: 'TypeError' },
+        bootstrap: {
+          status: 'fulfilled' as const,
+          report: {
+            status: 'stopped' as const,
+            reason: 'signal' as const,
+            cycles: 0,
+            cleanup: { status: 'applied' as const }
+          }
+        },
+        ladder: {
+          status: 'fulfilled' as const,
+          report: {
+            status: 'stopped' as const,
+            reason: 'signal' as const,
+            cycles: 0,
+            cleanup: { status: 'applied' as const }
+          }
+        }
+      }
+    }
+    const application = new Cli(
+      new VersionService(),
+      () => ({ assertReady: async () => readyReport }),
+      () => ({ runOnce: async () => [] }),
+      () => ({ runOnce: async () => [] }),
+      undefined,
+      () => ({ runContinuously: async () => report })
+    )
+
+    const error = await application.run(['start']).catch(value => value)
+
+    expect(error).toBeInstanceOf(MarketMakingMonitorHaltedError)
+    expect(error).toMatchObject({ report })
+  })
+
   test.each(['failed', 'halted'] as const)(
     'rejects a ladder cycle containing a %s market result',
     async status => {
@@ -916,6 +1033,46 @@ describe('Cli', () => {
     const exitCode = await runMarketMakingEntrypoint(
       { run: async () => Promise.reject(new LadderMonitorHaltedError(report)) },
       ['ladder', '--monitor'],
+      { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) }
+    )
+
+    expect(exitCode).toBe(1)
+    expect(stdout).toEqual([])
+    expect(stderr).toEqual([JSON.stringify(report)])
+  })
+
+  test('entrypoint emits a halted combined-monitor report and returns a non-zero exit code', async () => {
+    const report = {
+      status: 'halted' as const,
+      reason: 'workflow-error' as const,
+      workflows: {
+        setupCheck: { status: 'rejected' as const, errorName: 'TypeError' },
+        bootstrap: {
+          status: 'fulfilled' as const,
+          report: {
+            status: 'stopped' as const,
+            reason: 'signal' as const,
+            cycles: 0,
+            cleanup: { status: 'applied' as const }
+          }
+        },
+        ladder: {
+          status: 'fulfilled' as const,
+          report: {
+            status: 'stopped' as const,
+            reason: 'signal' as const,
+            cycles: 0,
+            cleanup: { status: 'applied' as const }
+          }
+        }
+      }
+    }
+    const stdout: string[] = []
+    const stderr: string[] = []
+
+    const exitCode = await runMarketMakingEntrypoint(
+      { run: async () => Promise.reject(new MarketMakingMonitorHaltedError(report)) },
+      ['start'],
       { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) }
     )
 

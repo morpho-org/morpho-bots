@@ -50,6 +50,18 @@ const ladderConfiguration = {
   minimumRateBps: '100',
   maximumRateBps: '1000'
 }
+const bootstrapConfiguration = {
+  marketId,
+  creditTarget: '100',
+  acceptanceAssets: '0',
+  offerSize: '10',
+  premiumBps: '0',
+  maximumMarketExposure: '100',
+  maximumTotalExposure: '100',
+  minimumRateBps: '100',
+  maximumRateBps: '1000',
+  autoRefill: false
+}
 
 const readyState = (): SetupStateService => {
   return {
@@ -421,6 +433,87 @@ describe('createApplication', () => {
     } finally {
       terminal.mockRestore()
     }
+  })
+
+  test('composes the combined start lifecycle and drains both writer cleanups', async () => {
+    const bootstrapCleanup = mock(async () => {})
+    const ladderCleanup = mock(async () => {})
+    const controller = new AbortController()
+    controller.abort()
+    const application = createApplication(
+      {
+        ...environment,
+        BOOTSTRAP_MARKETS: JSON.stringify([bootstrapConfiguration]),
+        LADDER_MARKETS: JSON.stringify([ladderConfiguration])
+      },
+      {
+        createState: readyState,
+        createBootstrapAdapters: () => ({
+          positions: {
+            readPosition: async () => ({
+              credit: 0n,
+              debt: 0n,
+              cashBalance: 100n,
+              marketExposure: 0n,
+              totalExposure: 0n
+            })
+          },
+          rates: {
+            readRate: async () => ({
+              mode: 'static',
+              rateBps: 500n,
+              observationId: 'static:500'
+            })
+          },
+          make: {
+            reconcile: async () => {},
+            hardHalt: async () => {},
+            cleanup: bootstrapCleanup
+          }
+        }),
+        createLadderAdapters: () => ({
+          positions: { readMarket: async () => ({}) },
+          rates: { readRate: async () => 500n },
+          make: {
+            readActive: async () => undefined,
+            reconcile: async () => {},
+            hardHalt: async () => {},
+            cleanup: ladderCleanup
+          }
+        })
+      }
+    )
+
+    expect(await application.run(['start'], { signal: controller.signal })).toEqual({
+      status: 'stopped',
+      reason: 'signal',
+      workflows: {
+        setupCheck: {
+          status: 'fulfilled',
+          report: { status: 'stopped', reason: 'signal', cycles: 0 }
+        },
+        bootstrap: {
+          status: 'fulfilled',
+          report: {
+            status: 'stopped',
+            reason: 'signal',
+            cycles: 0,
+            cleanup: { status: 'applied' }
+          }
+        },
+        ladder: {
+          status: 'fulfilled',
+          report: {
+            status: 'stopped',
+            reason: 'signal',
+            cycles: 0,
+            cleanup: { status: 'applied' }
+          }
+        }
+      }
+    })
+    expect(bootstrapCleanup).toHaveBeenCalledTimes(1)
+    expect(ladderCleanup).toHaveBeenCalledTimes(1)
   })
 
   test('wires explicit --config and default working-directory discovery into startup', async () => {

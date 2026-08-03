@@ -11,6 +11,10 @@ import type {
 import type { LadderMonitorReport } from '../../application/ladder/ladder-market-maker.service'
 import type { LadderTransactionSubmittedEvent } from '../../application/ladder/ladder-verbose'
 import type {
+  MarketMakingEvent,
+  MarketMakingMonitorReport
+} from '../../application/market-making/market-making.service'
+import type {
   SetupCheckMonitorReport,
   SetupCheckReport
 } from '../../application/setup/setup-check.service'
@@ -22,6 +26,7 @@ import { bootstrapCycleHasFailure } from '../../application/bootstrap/position-b
 import { LadderCycleHaltedError } from '../../application/ladder/ladder-cycle-halted.error'
 import { LadderMonitorHaltedError } from '../../application/ladder/ladder-monitor-halted.error'
 import { ladderCycleHasFailure } from '../../application/ladder/ladder-monitor.utils'
+import { MarketMakingMonitorHaltedError } from '../../application/market-making/market-making-monitor-halted.error'
 import { SetupMonitorHaltedError } from '../../application/setup/setup-monitor-halted.error'
 import { CliUsageError } from './cli-usage.error'
 import { offerInvalidationGroup } from './offer-invalidation-group.utils'
@@ -71,6 +76,14 @@ interface OfferInvalidationService {
   }): Promise<OfferInvalidationSuccessReport>
 }
 
+interface MarketMakingMonitorService {
+  runContinuously(parameters: {
+    signal: AbortSignal
+    onEvent?: (event: MarketMakingEvent) => void | Promise<void>
+    verbose?: boolean
+  }): Promise<MarketMakingMonitorReport>
+}
+
 /** CLI-selected runtime and configuration-file options. */
 type CliConfigurationOptions = { configPath?: string; readOnly: boolean }
 
@@ -90,12 +103,13 @@ export class Cli {
   private runtime: CliRuntimeOptions = {}
 
   /**
-   * Configures the version, address-only mode, setup-check, bootstrap, ladder, and invalidation commands.
+   * Configures version, address-only mode, individual workflows, combined monitoring, and invalidation.
    * @param version - Application version provider.
    * @param setup - Lazy readiness-service factory, invoked only for `setup-check`.
    * @param bootstrap - Lazy position-bootstrap factory, invoked only for `bootstrap`.
    * @param ladder - Lazy production or test ladder-service factory.
    * @param invalidation - Optional lazy all-groups or one-group invalidation factory.
+   * @param marketMaking - Optional lazy combined setup, bootstrap, and ladder monitor factory.
    * @remarks Construction performs no provider calls and does not start writer workflows. The
    * `--readonly` option is a positive Boolean flag and defaults to write-enabled configuration.
    */
@@ -112,7 +126,10 @@ export class Cli {
     ) => LadderMarketMakerService | Promise<LadderMarketMakerService>,
     invalidation?: (
       options: CliConfigurationOptions
-    ) => OfferInvalidationService | Promise<OfferInvalidationService>
+    ) => OfferInvalidationService | Promise<OfferInvalidationService>,
+    marketMaking?: (
+      options: CliConfigurationOptions
+    ) => MarketMakingMonitorService | Promise<MarketMakingMonitorService>
   ) {
     this.program = new Command()
       .name('mm')
@@ -243,6 +260,29 @@ export class Cli {
       this.hasOutput = true
     })
 
+    const startCommand = this.program
+      .command('start')
+      .description('monitor setup, bootstrap, and ladder together until shutdown')
+      .option('--verbose', 'show bootstrap and ladder diagnostics and submitted transaction hashes')
+
+    startCommand.action(async () => {
+      if (!marketMaking) throw new CliUsageError()
+      const options = this.program.opts<{ config?: string; readonly?: boolean }>()
+      const startOptions = startCommand.opts<{ verbose?: boolean }>()
+      const service = await marketMaking({
+        configPath: options.config,
+        readOnly: options.readonly === true
+      })
+      const result = await service.runContinuously({
+        signal: this.runtime.signal ?? new AbortController().signal,
+        onEvent: event => this.runtime.writeEvent?.(event),
+        verbose: startOptions.verbose === true
+      })
+      if (result.status === 'halted') throw new MarketMakingMonitorHaltedError(result)
+      this.output = result
+      this.hasOutput = true
+    })
+
     const invalidateCommand = this.program
       .command('invalidate')
       .description('invalidate all active maker offer groups or one explicit group')
@@ -284,7 +324,9 @@ export class Cli {
    * and transaction diagnostics. `invalidate` cancels all active maker groups, while
    * `invalidate <group-id>` directly targets one group and streams each submitted hash. With
    * `--readonly`, including when placed after subcommand options, configuration never loads a
-   * private key and mutation adapters emit observational results.
+   * private key and mutation adapters emit observational results. `start` performs one readiness
+   * gate, then runs setup, bootstrap, and ladder monitoring concurrently as a fail-together group;
+   * it waits for both writer cleanups before returning or throwing `MarketMakingMonitorHaltedError`.
    */
   async run(argv: readonly string[], runtime: CliRuntimeOptions = {}): Promise<unknown> {
     if (argv.length === 0) throw new CliUsageError()

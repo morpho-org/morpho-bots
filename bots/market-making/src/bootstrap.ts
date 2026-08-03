@@ -20,9 +20,13 @@ import type { ChainReader } from './infrastructure/setup-state/viem-setup-state.
 import { PositionBootstrapService } from './application/bootstrap/position-bootstrap.service'
 import { OfferInvalidationService } from './application/invalidation/offer-invalidation.service'
 import { LadderMarketMakerService } from './application/ladder/ladder-market-maker.service'
+import { serializeMarketMakingWrites } from './application/market-making/market-making-mutation.utils'
+import { MarketMakingService } from './application/market-making/market-making.service'
 import { SetupCheckService } from './application/setup/setup-check.service'
 import { VersionService } from './application/version.service'
 import { ConfigService as RuntimeConfigService } from './config/config.service'
+import { BootstrapConfigurationError } from './domain/bootstrap/bootstrap-configuration.error'
+import { LadderConfigurationError } from './domain/ladder/ladder-configuration.error'
 import { createBootstrapGroupOwnership } from './infrastructure/bootstrap/bootstrap-group-ownership.utils'
 import { createProductionBootstrapAdapters } from './infrastructure/bootstrap/production-bootstrap'
 import { Cli } from './infrastructure/cli/cli'
@@ -108,12 +112,12 @@ const defaultState = (config: ConfigService) => {
 }
 
 /**
- * Composes setup-check, position-bootstrap, ladder, and explicit invalidation dependencies.
+ * Composes setup-check, position-bootstrap, ladder, combined monitoring, and invalidation dependencies.
  * @param environment - Environment map used for lazy validated configuration.
  * @param dependencies - Optional state and workflow-port factories used by isolated tests.
  * @returns An application exposing a single asynchronous CLI `run` boundary.
  * @remarks Composition is side-effect free. Configuration and provider construction occur lazily
- * for `setup-check`, `bootstrap`, `ladder`, or `invalidate`. Setup is read-only and preserves
+ * for `setup-check`, `bootstrap`, `ladder`, `start`, or `invalidate`. Setup is read-only and preserves
  * concurrent independent reads through `Promise.all`. `--readonly` selects address-only identity
  * before any private-key validation and replaces every workflow mutation port with terminal output.
  * Writer commands assert readiness before constructing or running their application service; failed
@@ -121,7 +125,9 @@ const defaultState = (config: ConfigService) => {
  * at a one-minute cadence and halts nonzero on the first failed report. Bootstrap monitoring uses
  * the same cadence and invalidates strategy-owned groups after its shutdown signal. Ladder
  * monitoring uses the shortest configured ladder cadence and invalidates active owned ladder groups
- * after shutdown. Explicit invalidation uses a narrower cancellation preflight so unknown maker
+ * after shutdown. `start` gates readiness once, launches all three monitors concurrently, and uses
+ * one cross-strategy mutation queue so separate writer adapters cannot race signer nonces. Explicit
+ * invalidation uses a narrower cancellation preflight so unknown maker
  * groups can be removed without weakening normal readiness. One-shot writers run only for their
  * respective explicit commands.
  */
@@ -133,7 +139,7 @@ export const createApplication = (
    * Executes one CLI invocation.
    * @param argv - User arguments without runtime/executable prefixes.
    * @param runtime - Optional shutdown signal and continuous-cycle writer forwarded to the CLI.
-   * @returns Captured version, setup-check, writer cycle/monitor, or invalidation JSON.
+   * @returns Captured version, setup-check, writer cycle/monitor, combined monitor, or invalidation JSON.
    * @throws On invalid configuration or usage, provider or readiness failure, or a halted writer
    * cycle. Failed readiness prevents the selected writer's `runOnce()` side effect.
    */
@@ -184,6 +190,60 @@ export const createApplication = (
         dependencies.createInvalidationPort?.(config) ??
         createProductionOfferInvalidationPort(config)
       return new OfferInvalidationService(port)
+    },
+    async options => {
+      const config = await loadConfig(options)
+      if (config.bootstrap.length === 0) {
+        throw new BootstrapConfigurationError(
+          'bootstrap',
+          'requires at least one configured market for monitoring'
+        )
+      }
+      if (config.ladder.length === 0) {
+        throw new LadderConfigurationError(
+          'ladder',
+          'requires at least one configured market for monitoring'
+        )
+      }
+
+      const state = dependencies.createState?.(config) ?? defaultState(config)
+      const setup = new SetupCheckService(state, config.setup, config.readOnly)
+      await setup.assertReady()
+
+      const injectedBootstrapAdapters = dependencies.createBootstrapAdapters?.(config)
+      const bootstrapAdapters =
+        injectedBootstrapAdapters ?? createProductionBootstrapAdapters(config)
+      const bootstrapMake =
+        config.readOnly && injectedBootstrapAdapters
+          ? new ReadOnlyBootstrapMakeService()
+          : bootstrapAdapters.make
+
+      const ladderAdapters =
+        dependencies.createLadderAdapters?.(config) ?? createProductionLadderAdapters(config)
+      const ladderMake = config.readOnly
+        ? new ReadOnlyLadderMakeService(
+            ladderAdapters.make,
+            console.log,
+            ladderAdapters.validateReconcile
+          )
+        : ladderAdapters.make
+      const make = serializeMarketMakingWrites({ bootstrap: bootstrapMake, ladder: ladderMake })
+
+      return new MarketMakingService(
+        setup,
+        new PositionBootstrapService(
+          bootstrapAdapters.positions,
+          bootstrapAdapters.rates,
+          make.bootstrap,
+          config.bootstrap
+        ),
+        new LadderMarketMakerService(
+          ladderAdapters.positions,
+          ladderAdapters.rates,
+          make.ladder,
+          config.ladder
+        )
+      )
     }
   )
 

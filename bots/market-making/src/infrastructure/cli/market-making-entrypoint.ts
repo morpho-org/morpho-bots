@@ -5,6 +5,7 @@ import { PositionBootstrapMonitorHaltedError } from '../../application/bootstrap
 import { OfferInvalidationFailedError } from '../../application/invalidation/offer-invalidation-failed.error'
 import { LadderCycleHaltedError } from '../../application/ladder/ladder-cycle-halted.error'
 import { LadderMonitorHaltedError } from '../../application/ladder/ladder-monitor-halted.error'
+import { MarketMakingMonitorHaltedError } from '../../application/market-making/market-making-monitor-halted.error'
 import { SetupFailedError } from '../../application/setup/setup-failed.error'
 import { SetupMonitorHaltedError } from '../../application/setup/setup-monitor-halted.error'
 
@@ -21,6 +22,7 @@ const serializeOutput = (value: unknown) =>
       )
 
 const failureOutput = (error: unknown) => {
+  if (error instanceof MarketMakingMonitorHaltedError) return serializeOutput(error.report)
   if (error instanceof SetupMonitorHaltedError) return serializeOutput(error.report)
   if (error instanceof OfferInvalidationFailedError) return serializeOutput(error.report)
   if (error instanceof PositionBootstrapMonitorHaltedError) return serializeOutput(error.report)
@@ -38,9 +40,10 @@ const failureOutput = (error: unknown) => {
  * @param output - Standard output and error writers.
  * @param runtime - Optional graceful-shutdown signal for continuous commands.
  * @returns Zero on success and one after a sanitized failure has been emitted.
- * @remarks Each output value is one JSON Lines record. Continuous readiness, bootstrap, ladder, or
- * invalidation transaction records precede the terminal result; read-only make records may also
- * precede workflow results. Failure reports exclude causes, provider payloads, and credentials.
+ * @remarks Each output value is one JSON Lines record. Continuous readiness, bootstrap, ladder,
+ * combined-monitor, or invalidation transaction records precede the terminal result; read-only
+ * make records may also precede workflow results. Failure reports exclude causes, provider
+ * payloads, and credentials.
  */
 export const runMarketMakingEntrypoint = async (
   application: MarketMakingApplication,

@@ -18,6 +18,8 @@ The package follows the repository's hexagonal architecture:
   IDs, bootstrap settings, and ladder settings.
 - `PositionBootstrapService` and `LadderMarketMakerService` define the current application/domain
   boundary through consumer-owned fresh-state, reference-rate, and blocking make ports.
+- `MarketMakingService` supervises setup, bootstrap, and ladder monitoring as one fail-together
+  lifecycle while a shared make-port queue serializes cross-strategy writes.
 - `MidnightBootstrapMakeService` and `MidnightLadderMakeService` serialize owned-group
   reconciliation, while their read-only decorators emit terminal JSON without signing or mutation.
 - `bootstrap.ts` is the manual composition root.
@@ -113,6 +115,12 @@ bun run --filter @morpho-org/market-making-bot start -- ladder
 # Continuously reconcile the live ladder and remove owned offers on SIGINT/SIGTERM.
 bun run --filter @morpho-org/market-making-bot start -- ladder --monitor --verbose
 
+# Run setup checks, bootstrap, and ladder monitoring together until SIGINT/SIGTERM.
+bun run --filter @morpho-org/market-making-bot start -- start --verbose
+
+# Exercise the same combined lifecycle without signing or submitting transactions.
+bun run --filter @morpho-org/market-making-bot start -- --readonly start --verbose
+
 # Cancel every active offer group for the configured maker.
 bun run --filter @morpho-org/market-making-bot start -- invalidate
 
@@ -187,6 +195,17 @@ exits with code `1`. Read-only monitoring emits the cleanup request without sign
 reference and premium-adjusted target rates, exact desired ladder, decision, confirmed transaction
 hashes, and a fresh state read after every check. Live transaction hashes are also emitted
 immediately as `ladder.transaction-submitted` records.
+
+`start` requires at least one configured bootstrap market and one configured ladder market. It runs
+the readiness gate before constructing either writer, then launches setup monitoring, position
+bootstrap monitoring, and ladder monitoring concurrently. Cycle records are tagged with
+`event: "market-making.cycle"` and their `workflow`; verbose transaction records retain the existing
+bootstrap and ladder event names. The first halted, rejected, or unexpectedly stopped workflow
+aborts its peers, waits for both writer monitors to drain their in-flight cycles and cleanup owned
+offers, and emits one combined terminal report. Bootstrap and ladder reads remain concurrent, while
+their reconcile, hard-halt, and cleanup operations share one queue to prevent signer-nonce and book
+mutation races. A normal SIGINT or SIGTERM returns `status: "stopped"`; any workflow failure returns
+`status: "halted"` and exits with code `1`.
 
 `invalidate` is an explicit recovery command and does not run the normal offer-readiness gate. With
 no group argument it reads the complete active maker group set and invalidates every distinct group,
