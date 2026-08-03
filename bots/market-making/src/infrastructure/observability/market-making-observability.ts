@@ -111,7 +111,7 @@ export const createMarketMakingObservability = (
   }
 }
 
-export type MarketMakingObservability = ReturnType<typeof createMarketMakingObservability>
+type MarketMakingObservability = ReturnType<typeof createMarketMakingObservability>
 
 type ProcessObserverTarget = {
   on(event: 'uncaughtExceptionMonitor', listener: (error: Error, origin: string) => void): unknown
