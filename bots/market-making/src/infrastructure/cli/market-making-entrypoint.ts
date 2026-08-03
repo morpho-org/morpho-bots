@@ -46,7 +46,10 @@ export const runMarketMakingEntrypoint = async (
   output: EntrypointOutput,
   runtime: Pick<CliRuntimeOptions, 'signal'> = {}
 ) => {
-  const json = argv.includes('--json')
+  const optionDelimiter = argv.indexOf('--')
+  const json = argv
+    .slice(0, optionDelimiter === -1 ? undefined : optionDelimiter)
+    .includes('--json')
   const logger = createMarketMakingLogger(output, json)
   try {
     const result = await application.run(argv, {

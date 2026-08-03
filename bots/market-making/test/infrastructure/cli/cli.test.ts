@@ -862,6 +862,13 @@ describe('Cli', () => {
     expect(stderr[0]).not.toContain('\n')
   })
 
+  test('entrypoint does not enable JSON output after the option delimiter', async () => {
+    const { exitCode, output } = await runEntrypoint(['invalidate', '--', '--json'])
+
+    expect(exitCode).toBe(1)
+    expect(output.trim()).toBe('Error: Invalid command-line usage')
+  })
+
   test('entrypoint emits a halted report and returns a non-zero exit code', async () => {
     const report = [
       {
