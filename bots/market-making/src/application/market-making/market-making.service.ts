@@ -6,10 +6,8 @@ import type { MonitorOperationQueue } from '../monitor.utils'
 import type { SetupCheckMonitorReport, SetupCheckReport } from '../setup/setup-check.service'
 
 import { operatorErrorName } from '../operator-error-name.utils'
+import { marketMakingCycleHasFailure } from './market-making-cycle.utils'
 import { createMarketMakingOperationQueue } from './market-making-mutation.utils'
-
-const marketMakingCycleHasFailure = (results: readonly { status: string }[]) =>
-  results.some(result => result.status === 'failed' || result.status === 'halted')
 
 /** Readiness monitor required by the combined market-making lifecycle. */
 export interface MarketMakingSetupMonitor {
