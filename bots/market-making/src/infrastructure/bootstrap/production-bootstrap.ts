@@ -82,6 +82,7 @@ type ProductionBootstrapAdapters = {
 /**
  * Composes concrete viem, Morpho SDK, Midnight SDK, and Mempool adapters.
  * @param config - Fully validated runtime configuration.
+ * @param writeReadOnlyEvent - Optional terminal writer for read-only make records.
  * @returns Production read ports and either a live mutation queue or terminal-only make adapter.
  * @throws `BootstrapAdapterError` when write-mode signer identity differs from the configured maker;
  * later provider reads, signing, publication, or invalidation may also fail.
@@ -90,7 +91,8 @@ type ProductionBootstrapAdapters = {
  * the key-derived account before constructing any maker action, independently of the setup gate.
  */
 export const createProductionBootstrapAdapters = (
-  config: ConfigService
+  config: ConfigService,
+  writeReadOnlyEvent?: (line: string) => void | Promise<void>
 ): ProductionBootstrapAdapters => {
   const maker = config.identity.maker
   const client = createPublicClient({
@@ -356,7 +358,7 @@ export const createProductionBootstrapAdapters = (
     return {
       positions,
       rates,
-      make: new ReadOnlyBootstrapMakeService(undefined, validate)
+      make: new ReadOnlyBootstrapMakeService(writeReadOnlyEvent, validate)
     }
   }
 

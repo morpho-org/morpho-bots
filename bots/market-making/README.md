@@ -19,7 +19,7 @@ The package follows the repository's hexagonal architecture:
 - `PositionBootstrapService` and `LadderMarketMakerService` define the current application/domain
   boundary through consumer-owned fresh-state, reference-rate, and blocking make ports.
 - `MidnightBootstrapMakeService` and `MidnightLadderMakeService` serialize owned-group
-  reconciliation, while their read-only decorators emit terminal JSON without signing or mutation.
+  reconciliation, while their read-only decorators emit terminal records without signing or mutation.
 - `bootstrap.ts` is the manual composition root.
 - `Cli` is the operator adapter and `index.ts` is a thin entrypoint.
 
@@ -89,6 +89,9 @@ bun run --filter @morpho-org/market-making-bot start -- --readonly setup-check
 # Repeat read-only readiness checks every minute until SIGINT/SIGTERM.
 bun run --filter @morpho-org/market-making-bot start -- setup-check --monitor
 
+# Emit compact JSON Lines for automation instead of the default human-readable output.
+bun run --filter @morpho-org/market-making-bot start -- --json setup-check
+
 # One live position-bootstrap cycle.
 bun run --filter @morpho-org/market-making-bot start -- bootstrap
 
@@ -123,14 +126,17 @@ bun run --filter @morpho-org/market-making-bot start -- invalidate 0x<64-hex-cha
 bun run --filter @morpho-org/market-making-bot start -- invalidate --readonly
 ```
 
-Success exits zero and writes JSON Lines to standard output. Ordinary commands emit one report record;
+Success exits zero and writes human-readable output to standard output. Add the root `--json` flag for
+compact JSON Lines suitable for automation. In JSON mode, ordinary commands emit one report record;
 a read-only writer command emits zero or more `readonly.make` records followed by its final cycle
 report. Consumers must parse stdout one line at a time rather than as one JSON document. Bigints are
-serialized as decimal strings. Any failed check throws `SetupFailedError`, prints the failed check
-names, and exits non-zero. The check is strictly read-only; remediation transaction descriptions are
-reported but never submitted. With `--readonly`, only private-key/maker agreement is reported as
-`not-required`; balance, allowance, ratifier, chain, market, reference, and active-offer observations
-still run against the configured maker address.
+serialized as decimal strings. Failures always produce an explicit error on standard error and exit
+non-zero; with `--json`, that error is one `market-making.error` JSON record with optional structured
+details. Any failed check throws `SetupFailedError` and identifies the failed check names. The check is
+strictly read-only; remediation transaction descriptions are reported but never submitted. With
+`--readonly`, only private-key/maker agreement is reported as `not-required`; balance, allowance,
+ratifier, chain, market, reference, and active-offer observations still run against the configured
+maker address.
 
 `setup-check --monitor` runs the same complete read-only observation every minute and streams each
 report. The first report with `ready: false` halts monitoring, includes that report in the terminal

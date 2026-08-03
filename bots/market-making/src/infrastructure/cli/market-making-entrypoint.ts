@@ -7,29 +7,26 @@ import { LadderCycleHaltedError } from '../../application/ladder/ladder-cycle-ha
 import { LadderMonitorHaltedError } from '../../application/ladder/ladder-monitor-halted.error'
 import { SetupFailedError } from '../../application/setup/setup-failed.error'
 import { SetupMonitorHaltedError } from '../../application/setup/setup-monitor-halted.error'
+import { createMarketMakingLogger } from './market-making-logger'
 
 type MarketMakingApplication = {
   run(argv: readonly string[], runtime?: CliRuntimeOptions): Promise<unknown>
 }
 type EntrypointOutput = { writeOut(value: string): void; writeError(value: string): void }
 
-const serializeOutput = (value: unknown) =>
-  typeof value === 'string'
-    ? value
-    : JSON.stringify(value, (_key, nested) =>
-        typeof nested === 'bigint' ? nested.toString() : nested
-      )
-
-const failureOutput = (error: unknown) => {
-  if (error instanceof SetupMonitorHaltedError) return serializeOutput(error.report)
-  if (error instanceof OfferInvalidationFailedError) return serializeOutput(error.report)
-  if (error instanceof PositionBootstrapMonitorHaltedError) return serializeOutput(error.report)
-  if (error instanceof LadderMonitorHaltedError) return serializeOutput(error.report)
-  if (error instanceof LadderCycleHaltedError) return serializeOutput(error.report)
-  if (error instanceof PositionBootstrapHaltedError) return serializeOutput(error.report)
-  if (error instanceof SetupFailedError) return serializeOutput(error.report)
-  return error instanceof Error ? error.message : 'Unknown failure'
+const failureDetails = (error: unknown): unknown => {
+  if (error instanceof SetupMonitorHaltedError) return error.report
+  if (error instanceof OfferInvalidationFailedError) return error.report
+  if (error instanceof PositionBootstrapMonitorHaltedError) return error.report
+  if (error instanceof LadderMonitorHaltedError) return error.report
+  if (error instanceof LadderCycleHaltedError) return error.report
+  if (error instanceof PositionBootstrapHaltedError) return error.report
+  if (error instanceof SetupFailedError) return error.report
+  return undefined
 }
+
+const failureMessage = (error: unknown) =>
+  error instanceof Error ? error.message : 'Unknown failure'
 
 /**
  * Runs one market-making CLI invocation and maps sanitized output to a process exit contract.
@@ -38,9 +35,10 @@ const failureOutput = (error: unknown) => {
  * @param output - Standard output and error writers.
  * @param runtime - Optional graceful-shutdown signal for continuous commands.
  * @returns Zero on success and one after a sanitized failure has been emitted.
- * @remarks Each output value is one JSON Lines record. Continuous readiness, bootstrap, ladder, or
- * invalidation transaction records precede the terminal result; read-only make records may also
- * precede workflow results. Failure reports exclude causes, provider payloads, and credentials.
+ * @remarks Output is human-readable unless `--json` selects one JSON Lines record per value.
+ * Continuous readiness, bootstrap, ladder, or invalidation transaction records precede the terminal
+ * result; read-only make records may also precede workflow results. Failure reports exclude causes,
+ * provider payloads, and credentials and always include an explicit error message.
  */
 export const runMarketMakingEntrypoint = async (
   application: MarketMakingApplication,
@@ -48,15 +46,20 @@ export const runMarketMakingEntrypoint = async (
   output: EntrypointOutput,
   runtime: Pick<CliRuntimeOptions, 'signal'> = {}
 ) => {
+  const optionDelimiter = argv.indexOf('--')
+  const json = argv
+    .slice(0, optionDelimiter === -1 ? undefined : optionDelimiter)
+    .includes('--json')
+  const logger = createMarketMakingLogger(output, json)
   try {
     const result = await application.run(argv, {
       ...runtime,
-      writeEvent: value => output.writeOut(serializeOutput(value))
+      writeEvent: value => logger.result(value)
     })
-    output.writeOut(serializeOutput(result))
+    logger.result(result)
     return 0
   } catch (error) {
-    output.writeError(failureOutput(error))
+    logger.error(failureMessage(error), failureDetails(error))
     return 1
   }
 }

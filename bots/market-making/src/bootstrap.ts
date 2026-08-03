@@ -157,9 +157,15 @@ export const createApplication = (
       const state = dependencies.createState?.(config) ?? defaultState(config)
       await new SetupCheckService(state, config.setup, config.readOnly).assertReady()
       const injectedAdapters = dependencies.createBootstrapAdapters?.(config)
-      const adapters = injectedAdapters ?? createProductionBootstrapAdapters(config)
+      const writeReadOnlyEvent = options.writeEvent
+        ? (line: string) => options.writeEvent?.(JSON.parse(line))
+        : undefined
+      const adapters =
+        injectedAdapters ?? createProductionBootstrapAdapters(config, writeReadOnlyEvent)
       const make =
-        config.readOnly && injectedAdapters ? new ReadOnlyBootstrapMakeService() : adapters.make
+        config.readOnly && injectedAdapters
+          ? new ReadOnlyBootstrapMakeService(writeReadOnlyEvent)
+          : adapters.make
       return new PositionBootstrapService(
         adapters.positions,
         adapters.rates,
@@ -173,8 +179,15 @@ export const createApplication = (
       await new SetupCheckService(state, config.setup, config.readOnly).assertReady()
       const adapters =
         dependencies.createLadderAdapters?.(config) ?? createProductionLadderAdapters(config)
+      const writeReadOnlyEvent = options.writeEvent
+        ? (line: string) => options.writeEvent?.(JSON.parse(line))
+        : undefined
       const make = config.readOnly
-        ? new ReadOnlyLadderMakeService(adapters.make, console.log, adapters.validateReconcile)
+        ? new ReadOnlyLadderMakeService(
+            adapters.make,
+            writeReadOnlyEvent,
+            adapters.validateReconcile
+          )
         : adapters.make
       return new LadderMarketMakerService(adapters.positions, adapters.rates, make, config.ladder)
     },
