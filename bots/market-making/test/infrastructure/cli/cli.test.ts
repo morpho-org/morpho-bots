@@ -729,6 +729,7 @@ describe('Cli', () => {
       }
     }
     let readOnly: boolean | undefined
+    let factoryWriteEvent: ((value: unknown) => void | Promise<void>) | undefined
     const runContinuously = mock(
       async (parameters: {
         signal: AbortSignal
@@ -749,19 +750,23 @@ describe('Cli', () => {
       undefined,
       options => {
         readOnly = options.readOnly
+        factoryWriteEvent = options.writeEvent
         return { runContinuously }
       }
     )
 
+    const writeEvent = (value: unknown) => {
+      streamed.push(value)
+    }
+
     expect(
       await application.run(['--readonly', 'start', '--verbose'], {
         signal: controller.signal,
-        writeEvent: value => {
-          streamed.push(value)
-        }
+        writeEvent
       })
     ).toEqual(report)
     expect(readOnly).toBe(true)
+    expect(factoryWriteEvent).toBe(writeEvent)
     expect(runContinuously.mock.calls[0]?.[0]).toMatchObject({
       signal: controller.signal,
       verbose: true

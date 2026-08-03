@@ -228,7 +228,8 @@ export const createApplication = (
 
       const injectedBootstrapAdapters = dependencies.createBootstrapAdapters?.(config)
       const bootstrapAdapters =
-        injectedBootstrapAdapters ?? createProductionBootstrapAdapters(config)
+        injectedBootstrapAdapters ??
+        createProductionBootstrapAdapters(config, readOnlyWriter(options.writeEvent))
       const bootstrapMake =
         config.readOnly && injectedBootstrapAdapters
           ? new ReadOnlyBootstrapMakeService(readOnlyWriter(options.writeEvent))
