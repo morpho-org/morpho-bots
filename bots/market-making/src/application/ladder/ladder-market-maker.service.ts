@@ -9,6 +9,7 @@ import type {
   LadderVerboseDetails,
   LadderVerboseState
 } from './ladder-verbose'
+import type { MonitorOperationQueue } from '../monitor.utils'
 
 import { generateLadder, shouldRecenter, validateLadderConfig } from '../../domain/ladder/ladder'
 import { LadderConfigurationError } from '../../domain/ladder/ladder-configuration.error'
@@ -188,6 +189,7 @@ export class LadderMarketMakerService {
   async runContinuously(parameters: {
     signal: AbortSignal
     onCycle?: (results: readonly LadderRunResult[]) => void | Promise<void>
+    runOperation?: MonitorOperationQueue
     intervalMs?: number
     verbose?: boolean
     onTransactionSubmitted?: (event: LadderTransactionSubmittedEvent) => void | Promise<void>
@@ -213,23 +215,30 @@ export class LadderMarketMakerService {
     let cycleErrorName: string | undefined
 
     while (!parameters.signal.aborted) {
-      let results: readonly LadderRunResult[]
       try {
-        results = await this.runOnce({
-          verbose: parameters.verbose,
-          onTransactionSubmitted: parameters.onTransactionSubmitted
-        })
-        await parameters.onCycle?.(results)
+        const runCycle = async () => {
+          if (parameters.signal.aborted) return undefined
+          const results = await this.runOnce({
+            verbose: parameters.verbose,
+            onTransactionSubmitted: parameters.onTransactionSubmitted
+          })
+          await parameters.onCycle?.(results)
+          return results
+        }
+        const results = parameters.runOperation
+          ? await parameters.runOperation(runCycle)
+          : await runCycle()
+        if (results === undefined) break
         cycles += 1
+
+        if (ladderCycleHasFailure(results)) {
+          reason = 'cycle-failed'
+          lastCycle = results
+          break
+        }
       } catch (error) {
         reason = 'cycle-error'
         cycleErrorName = operatorErrorName(error)
-        break
-      }
-
-      if (ladderCycleHasFailure(results)) {
-        reason = 'cycle-failed'
-        lastCycle = results
         break
       }
 
@@ -238,16 +247,20 @@ export class LadderMarketMakerService {
 
     let cleanup: LadderMonitorReport['cleanup']
     try {
-      const result = await this.cleanup({
-        onTransactionSubmitted:
-          parameters.verbose && parameters.onTransactionSubmitted
-            ? transaction =>
-                parameters.onTransactionSubmitted?.({
-                  event: 'ladder.transaction-submitted',
-                  ...transaction
-                })
-            : undefined
-      })
+      const runCleanup = () =>
+        this.cleanup({
+          onTransactionSubmitted:
+            parameters.verbose && parameters.onTransactionSubmitted
+              ? transaction =>
+                  parameters.onTransactionSubmitted?.({
+                    event: 'ladder.transaction-submitted',
+                    ...transaction
+                  })
+              : undefined
+        })
+      const result = parameters.runOperation
+        ? await parameters.runOperation(runCleanup)
+        : await runCleanup()
       cleanup = {
         status: result === 'logged' ? 'logged' : 'applied',
         ...(parameters.verbose && result !== undefined && result !== 'logged'

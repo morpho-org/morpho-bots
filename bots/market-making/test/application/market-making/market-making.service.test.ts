@@ -110,6 +110,67 @@ describe('MarketMakingService', () => {
     ])
   })
 
+  test('serializes writer cycles and aborts peers before cleanup begins', async () => {
+    const events: string[] = []
+    const failedResults = [{ status: 'failed', stage: 'make' }]
+    const setup: MarketMakingSetupMonitor = {
+      runContinuously: async ({ signal }) => {
+        await waitForAbort(signal)
+        return stoppedSetupReport
+      }
+    }
+    const bootstrap: MarketMakingBootstrapMonitor = {
+      runContinuously: async ({ signal, onCycle, runOperation }) => {
+        if (!runOperation) throw new Error('missing operation queue')
+        await runOperation(async () => {
+          events.push('bootstrap:cycle')
+          await onCycle?.(failedResults)
+        })
+        events.push(`bootstrap:cleanup-aborted:${signal.aborted}`)
+        await runOperation(async () => {
+          events.push('bootstrap:cleanup-write')
+        })
+        return {
+          status: 'halted',
+          reason: 'cycle-failed',
+          cycles: 1,
+          cleanup: { status: 'applied' }
+        }
+      }
+    }
+    const ladder: MarketMakingLadderMonitor = {
+      runContinuously: async ({ signal, runOperation }) => {
+        if (!runOperation) throw new Error('missing operation queue')
+        await runOperation(async () => {
+          if (signal.aborted) {
+            events.push('ladder:cycle-skipped')
+            return
+          }
+          events.push('ladder:cycle')
+        })
+        events.push(`ladder:cleanup-aborted:${signal.aborted}`)
+        await runOperation(async () => {
+          events.push('ladder:cleanup-write')
+        })
+        return stoppedLadderReport
+      }
+    }
+
+    const report = await new MarketMakingService(setup, bootstrap, ladder).runContinuously({
+      signal: new AbortController().signal
+    })
+
+    expect(report).toMatchObject({ status: 'halted', reason: 'workflow-halted' })
+    expect(events).toContain('bootstrap:cycle')
+    expect(events).toContain('ladder:cycle-skipped')
+    expect(events).not.toContain('ladder:cycle')
+    expect(events).toContain('bootstrap:cleanup-aborted:true')
+    expect(events).toContain('ladder:cleanup-aborted:true')
+    expect(events.indexOf('bootstrap:cycle')).toBeLessThan(
+      events.indexOf('bootstrap:cleanup-write')
+    )
+  })
+
   test('returns a clean stop only after an operator signal drains every workflow', async () => {
     const started: string[] = []
     const setup: MarketMakingSetupMonitor = {

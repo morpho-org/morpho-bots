@@ -2,9 +2,14 @@ import type { BootstrapTransactionSubmittedEvent } from '../bootstrap/position-b
 import type { PositionBootstrapMonitorReport } from '../bootstrap/position-bootstrap.service'
 import type { LadderMonitorReport } from '../ladder/ladder-market-maker.service'
 import type { LadderTransactionSubmittedEvent } from '../ladder/ladder-verbose'
+import type { MonitorOperationQueue } from '../monitor.utils'
 import type { SetupCheckMonitorReport, SetupCheckReport } from '../setup/setup-check.service'
 
 import { operatorErrorName } from '../operator-error-name.utils'
+import { createMarketMakingOperationQueue } from './market-making-mutation.utils'
+
+const marketMakingCycleHasFailure = (results: readonly { status: string }[]) =>
+  results.some(result => result.status === 'failed' || result.status === 'halted')
 
 /** Readiness monitor required by the combined market-making lifecycle. */
 export interface MarketMakingSetupMonitor {
@@ -33,6 +38,7 @@ export interface MarketMakingBootstrapMonitor {
     onCycle?: (
       results: readonly { status: string; [key: string]: unknown }[]
     ) => void | Promise<void>
+    runOperation?: MonitorOperationQueue
     verbose?: boolean
     onTransactionSubmitted?: (event: BootstrapTransactionSubmittedEvent) => void | Promise<void>
   }): Promise<PositionBootstrapMonitorReport>
@@ -49,6 +55,7 @@ export interface MarketMakingLadderMonitor {
   runContinuously(parameters: {
     signal: AbortSignal
     onCycle?: (results: readonly { status: string }[]) => void | Promise<void>
+    runOperation?: MonitorOperationQueue
     verbose?: boolean
     onTransactionSubmitted?: (event: LadderTransactionSubmittedEvent) => void | Promise<void>
   }): Promise<LadderMonitorReport>
@@ -107,9 +114,9 @@ export class MarketMakingService {
    * Runs all three monitors concurrently and stops the peers after any terminal outcome.
    * @param parameters - Operator signal, tagged event observer, and verbose writer diagnostics.
    * @returns A combined report only after bootstrap and ladder shutdown cleanup have settled.
-   * @remarks The three monitor promises start before `Promise.allSettled` is awaited. A workflow
-   * rejection is reduced to an allowlisted name, and the shared abort signal drains both writer
-   * monitors instead of abandoning their in-flight cycle or cleanup.
+   * @remarks Writer workflows share one queue around each full read-decision-write cycle and
+   * cleanup. A handled cycle failure aborts peers before releasing that queue, while a rejection is
+   * reduced to an allowlisted name and cleanup still drains before the combined report resolves.
    */
   async runContinuously(parameters: {
     signal: AbortSignal
@@ -127,6 +134,16 @@ export class MarketMakingService {
       if (!stopRequested) workflowSettledBeforeOperator = true
       controller.abort()
     }
+    const operationQueue = createMarketMakingOperationQueue()
+    const runOperation: MonitorOperationQueue = operation =>
+      operationQueue(async () => {
+        try {
+          return await operation()
+        } catch (error) {
+          stopFromWorkflow()
+          throw error
+        }
+      })
 
     if (stopRequested) controller.abort()
     parameters.signal.addEventListener('abort', stopFromOperator, { once: true })
@@ -144,8 +161,15 @@ export class MarketMakingService {
       .then(() =>
         this.bootstrap.runContinuously({
           signal: controller.signal,
-          onCycle: results =>
-            parameters.onEvent?.({ event: 'market-making.cycle', workflow: 'bootstrap', results }),
+          onCycle: async results => {
+            await parameters.onEvent?.({
+              event: 'market-making.cycle',
+              workflow: 'bootstrap',
+              results
+            })
+            if (marketMakingCycleHasFailure(results)) stopFromWorkflow()
+          },
+          runOperation,
           verbose: parameters.verbose,
           onTransactionSubmitted:
             parameters.verbose === true ? event => parameters.onEvent?.(event) : undefined
@@ -156,8 +180,11 @@ export class MarketMakingService {
       .then(() =>
         this.ladder.runContinuously({
           signal: controller.signal,
-          onCycle: results =>
-            parameters.onEvent?.({ event: 'market-making.cycle', workflow: 'ladder', results }),
+          onCycle: async results => {
+            await parameters.onEvent?.({ event: 'market-making.cycle', workflow: 'ladder', results })
+            if (marketMakingCycleHasFailure(results)) stopFromWorkflow()
+          },
+          runOperation,
           verbose: parameters.verbose,
           onTransactionSubmitted:
             parameters.verbose === true ? event => parameters.onEvent?.(event) : undefined
