@@ -8,11 +8,16 @@ import { LadderMonitorHaltedError } from '../../application/ladder/ladder-monito
 import { MarketMakingMonitorHaltedError } from '../../application/market-making/market-making-monitor-halted.error'
 import { SetupFailedError } from '../../application/setup/setup-failed.error'
 import { SetupMonitorHaltedError } from '../../application/setup/setup-monitor-halted.error'
+import { CliUsageError } from './cli-usage.error'
 
 type MarketMakingApplication = {
   run(argv: readonly string[], runtime?: CliRuntimeOptions): Promise<unknown>
 }
 type EntrypointOutput = { writeOut(value: string): void; writeError(value: string): void }
+type EntrypointObservability = {
+  record(value: unknown): void
+  unexpected(error: unknown, origin: 'entrypoint'): void
+}
 
 const serializeOutput = (value: unknown) =>
   typeof value === 'string'
@@ -30,7 +35,25 @@ const failureOutput = (error: unknown) => {
   if (error instanceof LadderCycleHaltedError) return serializeOutput(error.report)
   if (error instanceof PositionBootstrapHaltedError) return serializeOutput(error.report)
   if (error instanceof SetupFailedError) return serializeOutput(error.report)
-  return error instanceof Error ? error.message : 'Unknown failure'
+  if (error instanceof CliUsageError) return error.message
+  if (error instanceof Error && /^[A-Za-z][A-Za-z0-9_$]{0,79}$/.test(error.name)) return error.name
+  return 'UnknownError'
+}
+
+const failureReport = (error: unknown) => {
+  if (
+    error instanceof MarketMakingMonitorHaltedError ||
+    error instanceof SetupMonitorHaltedError ||
+    error instanceof OfferInvalidationFailedError ||
+    error instanceof PositionBootstrapMonitorHaltedError ||
+    error instanceof LadderMonitorHaltedError ||
+    error instanceof LadderCycleHaltedError ||
+    error instanceof PositionBootstrapHaltedError ||
+    error instanceof SetupFailedError
+  ) {
+    return error.report
+  }
+  return undefined
 }
 
 /**
@@ -49,16 +72,24 @@ export const runMarketMakingEntrypoint = async (
   application: MarketMakingApplication,
   argv: readonly string[],
   output: EntrypointOutput,
-  runtime: Pick<CliRuntimeOptions, 'signal'> = {}
+  runtime: Pick<CliRuntimeOptions, 'signal'> = {},
+  observability?: EntrypointObservability
 ) => {
   try {
     const result = await application.run(argv, {
       ...runtime,
-      writeEvent: value => output.writeOut(serializeOutput(value))
+      writeEvent: value => {
+        observability?.record(value)
+        output.writeOut(serializeOutput(value))
+      }
     })
+    observability?.record(result)
     output.writeOut(serializeOutput(result))
     return 0
   } catch (error) {
+    const report = failureReport(error)
+    if (report === undefined) observability?.unexpected(error, 'entrypoint')
+    else observability?.record(report)
     output.writeError(failureOutput(error))
     return 1
   }
