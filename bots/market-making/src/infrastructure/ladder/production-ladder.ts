@@ -26,7 +26,6 @@ import type { OwnedLadderPublication } from './ladder-group-ownership.utils'
 import { createBootstrapGroupOwnership } from '../bootstrap/bootstrap-group-ownership.utils'
 import { bootstrapBookOffers, readBootstrapGroups } from '../bootstrap/bootstrap-groups.utils'
 import { createBootstrapOffer } from '../bootstrap/bootstrap-offer.utils'
-import { pendingBootstrapOffers } from '../bootstrap/bootstrap-pending-offer.utils'
 import { BlueBootstrapReferenceRateService } from '../bootstrap/bootstrap-reference-rate.service'
 import { createManagedMakerAccount } from '../make/managed-maker-account.utils'
 import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
@@ -35,6 +34,7 @@ import {
   reconstructOwnedLadderPublication
 } from './ladder-active-publication.utils'
 import { LadderAdapterError } from './ladder-adapter.error'
+import { readLivePendingBootstrapOffers } from './ladder-bootstrap-offer.utils'
 import { ladderCashReservations } from './ladder-cash-reservation.utils'
 import { createLadderGroupOwnership } from './ladder-group-ownership.utils'
 import { MidnightLadderMakeService, type LadderOfferTransport } from './ladder-make.service'
@@ -113,6 +113,14 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
       morphoApiBaseUrl: config.morphoApiBaseUrl,
       requestTimeoutMs: config.requestTimeoutMs
     })
+  const readGroupConsumed = (groupId: Hex, blockNumber?: bigint) =>
+    client.readContract({
+      address: config.setup.midnight,
+      abi: midnightAbi,
+      functionName: 'consumed',
+      args: [maker, groupId],
+      ...(blockNumber === undefined ? {} : { blockNumber })
+    })
 
   const positions: LadderPositionService = {
     readMarket: async marketId => {
@@ -123,7 +131,7 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
         groups,
         publications,
         bootstrapGroupIds,
-        bootstrapOffers,
+        persistedBootstrapOffers,
         cashBalance,
         allowance,
         positionSnapshots
@@ -162,6 +170,11 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
       ])
       const selectedPosition = positionSnapshots.find(item => item.marketId === marketId)
       if (!selectedPosition) throw new LadderAdapterError('position-unavailable')
+      const pendingBootstrapOffers = await readLivePendingBootstrapOffers({
+        groups,
+        offers: persistedBootstrapOffers,
+        readGroupConsumed: groupId => readGroupConsumed(groupId, block.number)
+      })
 
       const replacedGroupIds = new Set(
         publications
@@ -172,7 +185,7 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
         groups,
         publications,
         bootstrapGroupIds,
-        bootstrapOffers,
+        bootstrapOffers: pendingBootstrapOffers,
         replacedGroupIds
       })
       const reservedCash = reservations.reduce((sum, reservation) => sum + reservation.assets, 0n)
@@ -210,7 +223,7 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
   }
 
   const prepareBootstrapBookOffer = async (
-    offer: ReturnType<typeof pendingBootstrapOffers>[number]
+    offer: Awaited<ReturnType<typeof readLivePendingBootstrapOffers>>[number]
   ) => {
     const [market, block] = await Promise.all([
       midnight.getMarketData(offer.marketId),
@@ -227,13 +240,16 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
   }
 
   const completeBookOffers = async () => {
-    const [groups, bootstrapOffers] = await Promise.all([
+    const [groups, persistedBootstrapOffers] = await Promise.all([
       readGroups(),
       bootstrapOwnership.readOffers()
     ])
-    const pendingOffers = await Promise.all(
-      pendingBootstrapOffers(groups, bootstrapOffers).map(prepareBootstrapBookOffer)
-    )
+    const pendingBootstrapOffers = await readLivePendingBootstrapOffers({
+      groups,
+      offers: persistedBootstrapOffers,
+      readGroupConsumed
+    })
+    const pendingOffers = await Promise.all(pendingBootstrapOffers.map(prepareBootstrapBookOffer))
     return { groups, book: [...bootstrapBookOffers(groups), ...pendingOffers] }
   }
 
@@ -314,13 +330,7 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
   const transport: LadderOfferTransport = {
     readActive,
     listOwnedGroups: async () => ownedGroups(await ladderOwnership.read()),
-    readGroupConsumed: groupId =>
-      client.readContract({
-        address: config.setup.midnight,
-        abi: midnightAbi,
-        functionName: 'consumed',
-        args: [maker, groupId]
-      }),
+    readGroupConsumed,
     listActiveGroupIds: async marketId => {
       const [publications, groups] = await Promise.all([ladderOwnership.read(), readGroups()])
       return activeOwnedLadderGroupIds(publications, groups, marketId)

@@ -358,6 +358,7 @@ const sourceFiles = [
   'infrastructure/invalidation/production-offer-invalidation.ts',
   'infrastructure/ladder/ladder-adapter.error.ts',
   'infrastructure/ladder/ladder-active-publication.utils.ts',
+  'infrastructure/ladder/ladder-bootstrap-offer.utils.ts',
   'infrastructure/ladder/ladder-cash-reservation.utils.ts',
   'infrastructure/ladder/ladder-group-ownership.utils.ts',
   'infrastructure/ladder/ladder-hard-halt.error.ts',

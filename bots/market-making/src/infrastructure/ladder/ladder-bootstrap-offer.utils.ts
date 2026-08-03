@@ -1,0 +1,34 @@
+import type { Hex } from 'viem'
+
+import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
+import type { BootstrapRawGroup } from '../bootstrap/bootstrap-groups.utils'
+
+import { pendingBootstrapOffers } from '../bootstrap/bootstrap-pending-offer.utils'
+
+type OwnedBootstrapOffer = BootstrapOffer & { groupId: Hex }
+
+/**
+ * Resolves API-missing bootstrap offer intents against authoritative on-chain consumption.
+ * @param parameters - Indexed groups, persisted intents, and the Midnight consumption reader.
+ * @returns Still-live pending intents sized to their remaining group capacity.
+ * @throws When on-chain consumption cannot be read for an API-missing persisted group.
+ * @remarks Reads only API-missing groups. Fully consumed groups are omitted; partially consumed
+ * groups retain their original rate and ownership identity with only their remaining assets.
+ */
+export const readLivePendingBootstrapOffers = async (parameters: {
+  groups: readonly BootstrapRawGroup[]
+  offers: readonly OwnedBootstrapOffer[]
+  readGroupConsumed: (groupId: Hex) => Promise<bigint>
+}) => {
+  const pendingOffers = pendingBootstrapOffers(parameters.groups, parameters.offers)
+  const resolvedOffers = await Promise.all(
+    pendingOffers.map(async offer => {
+      const consumed = await parameters.readGroupConsumed(offer.groupId)
+      if (consumed >= offer.assets) return undefined
+
+      return { ...offer, assets: offer.assets - consumed }
+    })
+  )
+
+  return resolvedOffers.flatMap(offer => (offer ? [offer] : []))
+}
