@@ -49,6 +49,19 @@ describe('operatorErrorName', () => {
     })
   })
 
+  test('retains only allowlisted reservation cleanup diagnostics', () => {
+    const error = new BootstrapAdapterError('transaction-reverted')
+    error.recordReservationCleanupFailure('BootstrapAdapterError')
+
+    expect(operatorErrorDetails(error)).toEqual({
+      errorName: 'BootstrapAdapterError',
+      reservationCleanupErrorName: 'BootstrapAdapterError'
+    })
+
+    error.recordReservationCleanupFailure('https://provider.example/?token=secret-token')
+    expect(operatorErrorDetails(error)).toEqual({ errorName: 'BootstrapAdapterError' })
+  })
+
   test('keeps the aggregate hard-halt classification', () => {
     expect(operatorErrorName(new BootstrapHardHaltError([]))).toBe('BootstrapHardHaltError')
   })

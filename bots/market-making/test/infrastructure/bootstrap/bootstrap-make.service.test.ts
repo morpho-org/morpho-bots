@@ -503,7 +503,10 @@ describe('MidnightBootstrapMakeService', () => {
       .catch(value => value)
 
     expect(error).toBeInstanceOf(BootstrapAdapterError)
-    expect(error).toMatchObject({ operation: 'transaction-reverted' })
+    expect(error).toMatchObject({
+      operation: 'transaction-reverted',
+      reservationCleanupErrorName: 'BootstrapAdapterError'
+    })
   })
 
   test('validates a replacement spread before invalidating its live group', async () => {

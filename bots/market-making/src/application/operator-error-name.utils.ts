@@ -70,19 +70,20 @@ export const operatorErrorName = (error: unknown): OperatorErrorName =>
  */
 export const operatorErrorDetails = (error: unknown) => {
   const errorName = operatorErrorName(error)
-  if (
-    errorName !== 'BootstrapMempoolValidationError' ||
-    typeof error !== 'object' ||
-    error === null
-  ) {
-    return { errorName }
-  }
+  if (typeof error !== 'object' || error === null) return { errorName }
 
-  const minimumAssets = (error as Record<string, unknown>).minimumAssets
+  const details = error as Record<string, unknown>
+  const minimumAssets = details.minimumAssets
+  const cleanupName = details.reservationCleanupErrorName
+  const reservationCleanupErrorName =
+    typeof cleanupName === 'string' ? knownNames[cleanupName] : undefined
   return {
     errorName,
-    ...(typeof minimumAssets === 'bigint' && minimumAssets >= 0n
+    ...(errorName === 'BootstrapMempoolValidationError' &&
+    typeof minimumAssets === 'bigint' &&
+    minimumAssets >= 0n
       ? { minimumAssets: String(minimumAssets) }
-      : {})
+      : {}),
+    ...(reservationCleanupErrorName ? { reservationCleanupErrorName } : {})
   }
 }

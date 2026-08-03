@@ -192,9 +192,16 @@ export const createBootstrapGroupOwnership = (
     return [...new Set([...configured, ...state.confirmedGroupIds, ...state.reservedGroupIds])]
   }
 
+  const readPersistedGroupIds = async () => {
+    const state = await readPersisted()
+    return [...new Set([...state.confirmedGroupIds, ...state.reservedGroupIds])]
+  }
+
   return {
     /** Reads configured, confirmed, and reserved group IDs as ownership candidates. @returns Canonical explicit ownership IDs. */
     read,
+    /** Reads only confirmed and reserved bot-issued group IDs. @returns Persisted IDs that may still be active before API indexing. */
+    readPersistedGroupIds,
     /** Reads persisted offer intent for safe live-offer comparison. @returns Confirmed or reserved offers with their group IDs. */
     readOffers: async () => (await readPersisted()).offers,
     /** Durably reserves a group ID and offer intent before publication. @param groupId - Prepared group ID. @param offer - Intended offer semantics. @returns Completion after atomic storage. */

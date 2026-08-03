@@ -668,9 +668,13 @@ describe('createBootstrapGroupOwnership', () => {
       })
       await ownership.confirm(groupId)
 
+      expect(await ownership.read()).toEqual([configuredGroupId, groupId])
+      expect(await ownership.readPersistedGroupIds()).toEqual([groupId])
+
       await ownership.forget([groupId, configuredGroupId])
 
       expect(await ownership.read()).toEqual([configuredGroupId])
+      expect(await ownership.readPersistedGroupIds()).toEqual([])
       expect(await ownership.readOffers()).toEqual([])
     } finally {
       await rm(directory, { recursive: true, force: true })

@@ -80,7 +80,7 @@ export const createProductionOfferInvalidationPort = (
           morphoApiBaseUrl: config.morphoApiBaseUrl,
           requestTimeoutMs: config.requestTimeoutMs
         }),
-        bootstrapOwnership.read(),
+        bootstrapOwnership.readPersistedGroupIds(),
         ladderOwnership.readGroupIds()
       ])
       return offerInvalidationGroupIds(groups, bootstrapGroupIds, ladderGroupIds)

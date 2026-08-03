@@ -142,6 +142,7 @@ type BootstrapRunOutcome =
       minimumAssets?: string
       invalidationErrorName?: string
       ownershipCleanupErrorName?: string
+      reservationCleanupErrorName?: string
     }
   | {
       marketId: Hex
