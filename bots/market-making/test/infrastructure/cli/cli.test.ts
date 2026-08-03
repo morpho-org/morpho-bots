@@ -54,6 +54,13 @@ const runEntrypoint = async (argv: readonly string[]) => {
   return { exitCode, output: stdout + stderr }
 }
 
+const expectHumanFailure = (stderr: string[], message: string, details: unknown) => {
+  expect(stderr).toHaveLength(1)
+  const [header, ...serializedDetails] = (stderr[0] ?? '').split('\n')
+  expect(header).toBe(`Error: ${message}`)
+  expect(JSON.parse(serializedDetails.join('\n'))).toEqual(details)
+}
+
 describe('Cli', () => {
   test('mm --version returns 0.0.0', async () => {
     expect(await cli().run(['--version'])).toBe('0.0.0')
@@ -77,6 +84,27 @@ describe('Cli', () => {
 
     expect(exitCode).toBe(0)
     expect(stdout.trim()).toBe('0.0.0')
+    expect(stderr).toBe('')
+  })
+
+  test('entrypoint --json --version emits a valid JSON string', async () => {
+    const process = Bun.spawn(
+      [Bun.which('bun') ?? 'bun', 'bots/market-making/src/index.ts', '--json', '--version'],
+      {
+        cwd: `${import.meta.dir}/../../../../..`,
+        env: { PATH: Bun.env.PATH },
+        stdout: 'pipe',
+        stderr: 'pipe'
+      }
+    )
+    const [exitCode, stdout, stderr] = await Promise.all([
+      process.exited,
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text()
+    ])
+
+    expect(exitCode).toBe(0)
+    expect(JSON.parse(stdout)).toBe('0.0.0')
     expect(stderr).toBe('')
   })
 
@@ -132,7 +160,7 @@ describe('Cli', () => {
     const output = stdout + stderr
 
     expect(exitCode).toBe(1)
-    expect(output).toContain('"name":"chain"')
+    expect(output).toContain('"name": "chain"')
     for (const marker of markers) expect(output).not.toContain(marker)
   })
 
@@ -191,7 +219,7 @@ describe('Cli', () => {
     const { exitCode, output } = await runEntrypoint(argv)
 
     expect(exitCode).toBe(1)
-    expect(output.trim()).toBe('Invalid command-line usage')
+    expect(output.trim()).toBe('Error: Invalid command-line usage')
     for (const marker of markers) expect(output).not.toContain(marker)
   })
 
@@ -227,6 +255,10 @@ describe('Cli', () => {
     await application.run(['--readonly', 'setup-check'])
 
     expect(readOnly).toBe(true)
+  })
+
+  test('accepts --json as a root output option', async () => {
+    expect(await cli().run(['--json', 'setup-check'])).toEqual(readyReport)
   })
 
   test('runs setup-check and returns the complete structured report', async () => {
@@ -745,6 +777,91 @@ describe('Cli', () => {
     expect((error as Error).message).toBe('Position bootstrap halted for safety')
   })
 
+  test('entrypoint renders structured output for humans by default', async () => {
+    const stdout: string[] = []
+    const stderr: string[] = []
+
+    const exitCode = await runMarketMakingEntrypoint(
+      { run: async () => ({ ready: true, checks: [{ name: 'chain', status: 'passed' }] }) },
+      ['setup-check'],
+      { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) }
+    )
+
+    expect(exitCode).toBe(0)
+    expect(stdout).toEqual([
+      [
+        '{',
+        '  "ready": true,',
+        '  "checks": [',
+        '    {',
+        '      "name": "chain",',
+        '      "status": "passed"',
+        '    }',
+        '  ]',
+        '}'
+      ].join('\n')
+    ])
+    expect(stderr).toEqual([])
+  })
+
+  test('entrypoint emits machine-parseable JSON lines with --json', async () => {
+    const stdout: string[] = []
+    const stderr: string[] = []
+
+    const exitCode = await runMarketMakingEntrypoint(
+      {
+        run: async (_argv, runtime) => {
+          await runtime?.writeEvent?.({ event: 'cycle.completed', assets: 7n })
+          return { status: 'stopped', cycles: 1 }
+        }
+      },
+      ['--json', 'setup-check'],
+      { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) }
+    )
+
+    expect(exitCode).toBe(0)
+    expect(stdout.map(line => JSON.parse(line))).toEqual([
+      { event: 'cycle.completed', assets: '7' },
+      { status: 'stopped', cycles: 1 }
+    ])
+    expect(stdout.every(line => !line.includes('\n'))).toBe(true)
+    expect(stderr).toEqual([])
+  })
+
+  test('entrypoint emits an explicit human-readable error when the bot fails', async () => {
+    const stdout: string[] = []
+    const stderr: string[] = []
+
+    const exitCode = await runMarketMakingEntrypoint(
+      { run: async () => Promise.reject(new Error('Bot cycle failed')) },
+      ['ladder'],
+      { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) }
+    )
+
+    expect(exitCode).toBe(1)
+    expect(stdout).toEqual([])
+    expect(stderr).toEqual(['Error: Bot cycle failed'])
+  })
+
+  test('entrypoint emits one structured JSON error record with --json', async () => {
+    const stderr: string[] = []
+
+    const exitCode = await runMarketMakingEntrypoint(
+      { run: async () => Promise.reject(new Error('Bot cycle failed')) },
+      ['--json', 'ladder'],
+      { writeOut: () => {}, writeError: value => stderr.push(value) }
+    )
+
+    expect(exitCode).toBe(1)
+    expect(stderr).toHaveLength(1)
+    expect(JSON.parse(stderr[0] ?? '')).toEqual({
+      level: 'error',
+      event: 'market-making.error',
+      message: 'Bot cycle failed'
+    })
+    expect(stderr[0]).not.toContain('\n')
+  })
+
   test('entrypoint emits a halted report and returns a non-zero exit code', async () => {
     const report = [
       {
@@ -766,7 +883,7 @@ describe('Cli', () => {
 
     expect(exitCode).toBe(1)
     expect(stdout).toEqual([])
-    expect(stderr).toEqual([JSON.stringify(report)])
+    expectHumanFailure(stderr, 'Position bootstrap halted for safety', report)
   })
 
   test('entrypoint emits an invalidation failure report and returns non-zero', async () => {
@@ -794,7 +911,7 @@ describe('Cli', () => {
 
     expect(exitCode).toBe(1)
     expect(stdout).toEqual([])
-    expect(stderr).toEqual([JSON.stringify(report)])
+    expectHumanFailure(stderr, 'Offer invalidation failed', report)
   })
 
   test('entrypoint emits a halted setup-monitor report and returns a non-zero exit code', async () => {
@@ -815,11 +932,17 @@ describe('Cli', () => {
 
     expect(exitCode).toBe(1)
     expect(stdout).toEqual([])
-    expect(stderr).toEqual([
-      JSON.stringify(report, (_key, value) =>
-        typeof value === 'bigint' ? value.toString() : value
-      )
-    ])
+    expectHumanFailure(stderr, 'Setup monitor halted', {
+      ...report,
+      lastReport: {
+        ...report.lastReport,
+        checks: report.lastReport.checks.map(check => ({
+          ...check,
+          observed: check.observed.toString(),
+          required: check.required.toString()
+        }))
+      }
+    })
   })
 
   test('entrypoint emits a halted bootstrap-monitor object and returns a non-zero exit code', async () => {
@@ -849,7 +972,7 @@ describe('Cli', () => {
 
     expect(exitCode).toBe(1)
     expect(stdout).toEqual([])
-    expect(stderr).toEqual([JSON.stringify(report)])
+    expectHumanFailure(stderr, 'Position bootstrap monitor halted for safety', report)
   })
 
   test('entrypoint writes continuous events before the terminal monitor report', async () => {
@@ -875,7 +998,7 @@ describe('Cli', () => {
     )
 
     expect(exitCode).toBe(0)
-    expect(stdout).toEqual([JSON.stringify(cycle), JSON.stringify(report)])
+    expect(stdout.map(value => JSON.parse(value))).toEqual([cycle, report])
     expect(stderr).toEqual([])
   })
 
@@ -900,7 +1023,7 @@ describe('Cli', () => {
 
     expect(exitCode).toBe(1)
     expect(stdout).toEqual([])
-    expect(stderr).toEqual([JSON.stringify(report)])
+    expectHumanFailure(stderr, 'Ladder cycle halted for safety', report)
   })
 
   test('entrypoint emits a halted ladder monitor report and returns a non-zero exit code', async () => {
@@ -921,7 +1044,7 @@ describe('Cli', () => {
 
     expect(exitCode).toBe(1)
     expect(stdout).toEqual([])
-    expect(stderr).toEqual([JSON.stringify(report)])
+    expectHumanFailure(stderr, 'Ladder monitor halted for safety', report)
   })
 
   test('propagates a readiness failure for a deterministic non-zero entrypoint exit', async () => {

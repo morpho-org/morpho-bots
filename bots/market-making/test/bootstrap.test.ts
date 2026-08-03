@@ -279,7 +279,7 @@ describe('createApplication', () => {
   test('routes --readonly bootstrap make operations to terminal output', async () => {
     const reconcile = mock(async () => {})
     const hardHalt = mock(async () => {})
-    const terminal = spyOn(console, 'log').mockImplementation(() => {})
+    const events: unknown[] = []
     const bootstrapEnvironment = {
       ...environment,
       MAKER_PRIVATE_KEY: undefined,
@@ -317,23 +317,25 @@ describe('createApplication', () => {
       })
     })
 
-    try {
-      expect(await application.run(['--readonly', 'bootstrap'])).toEqual([
-        { marketId, status: 'logged', action: 'publish' }
-      ])
-      expect(reconcile).not.toHaveBeenCalled()
-      expect(hardHalt).not.toHaveBeenCalled()
-      expect(terminal).toHaveBeenCalledWith(expect.stringContaining('"event":"readonly.make"'))
-    } finally {
-      terminal.mockRestore()
-    }
+    expect(
+      await application.run(['--readonly', 'bootstrap'], {
+        writeEvent: event => {
+          events.push(event)
+        }
+      })
+    ).toEqual([{ marketId, status: 'logged', action: 'publish' }])
+    expect(reconcile).not.toHaveBeenCalled()
+    expect(hardHalt).not.toHaveBeenCalled()
+    expect(events).toEqual([
+      expect.objectContaining({ event: 'readonly.make', workflow: 'bootstrap' })
+    ])
   })
 
   test('routes --readonly ladder make operations to terminal output', async () => {
     const reconcile = mock(async () => {})
     const hardHalt = mock(async () => {})
     const validateReconcile = mock(async () => {})
-    const terminal = spyOn(console, 'log').mockImplementation(() => {})
+    const events: unknown[] = []
     const application = createApplication(
       {
         ...environment,
@@ -356,21 +358,21 @@ describe('createApplication', () => {
       }
     )
 
-    try {
-      expect(await application.run(['--readonly', 'ladder'])).toEqual([
-        { marketId, status: 'logged', action: 'publish', reason: 'publish' }
-      ])
-      expect(reconcile).not.toHaveBeenCalled()
-      expect(hardHalt).not.toHaveBeenCalled()
-      expect(validateReconcile).toHaveBeenCalledWith(
-        expect.objectContaining({ marketId, reason: 'publish' })
-      )
-      expect(terminal).toHaveBeenCalledWith(
-        expect.stringContaining('"event":"readonly.make","workflow":"ladder"')
-      )
-    } finally {
-      terminal.mockRestore()
-    }
+    expect(
+      await application.run(['--readonly', 'ladder'], {
+        writeEvent: event => {
+          events.push(event)
+        }
+      })
+    ).toEqual([{ marketId, status: 'logged', action: 'publish', reason: 'publish' }])
+    expect(reconcile).not.toHaveBeenCalled()
+    expect(hardHalt).not.toHaveBeenCalled()
+    expect(validateReconcile).toHaveBeenCalledWith(
+      expect.objectContaining({ marketId, reason: 'publish' })
+    )
+    expect(events).toEqual([
+      expect.objectContaining({ event: 'readonly.make', workflow: 'ladder' })
+    ])
   })
 
   test('runs the exact read-only ladder monitor surface without loading or invoking a signer', async () => {

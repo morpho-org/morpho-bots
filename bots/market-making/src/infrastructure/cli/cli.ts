@@ -72,7 +72,11 @@ interface OfferInvalidationService {
 }
 
 /** CLI-selected runtime and configuration-file options. */
-type CliConfigurationOptions = { configPath?: string; readOnly: boolean }
+type CliConfigurationOptions = {
+  configPath?: string
+  readOnly: boolean
+  writeEvent?: (value: unknown) => void | Promise<void>
+}
 
 /** Per-invocation process signal and JSON-compatible continuous-event writer. */
 export type CliRuntimeOptions = {
@@ -119,6 +123,7 @@ export class Cli {
       .description('Morpho market making bot CLI')
       .version(version.getVersion(), '-v, --version', 'output the current version')
       .option('-c, --config <path>', 'load configuration from an explicit .yaml or .yml file')
+      .option('--json', 'emit machine-parseable JSON Lines instead of human-readable output')
       .option('--readonly', 'use a maker address without signing or submitting transactions')
       .exitOverride()
       .configureOutput({ writeOut: () => {}, writeErr: () => {} })
@@ -133,7 +138,8 @@ export class Cli {
       const setupOptions = setupCommand.opts<{ monitor?: boolean }>()
       const setupService = await setup({
         configPath: options.config,
-        readOnly: options.readonly === true
+        readOnly: options.readonly === true,
+        writeEvent: this.runtime.writeEvent
       })
       if (setupOptions.monitor === true) {
         if (!setupService.runContinuously) throw new CliUsageError()
@@ -165,7 +171,8 @@ export class Cli {
       const bootstrapOptions = bootstrapCommand.opts<{ monitor?: boolean; verbose?: boolean }>()
       const bootstrapService = await bootstrap({
         configPath: options.config,
-        readOnly: options.readonly === true
+        readOnly: options.readonly === true,
+        writeEvent: this.runtime.writeEvent
       })
       if (bootstrapOptions.monitor === true) {
         if (!bootstrapService.runContinuously) throw new CliUsageError()
@@ -212,7 +219,8 @@ export class Cli {
       const ladderOptions = ladderCommand.opts<{ monitor?: boolean; verbose?: boolean }>()
       const ladderService = await ladder({
         configPath: options.config,
-        readOnly: options.readonly === true
+        readOnly: options.readonly === true,
+        writeEvent: this.runtime.writeEvent
       })
       if (ladderOptions.monitor === true) {
         if (!ladderService.runContinuously) throw new CliUsageError()
@@ -254,7 +262,8 @@ export class Cli {
       const options = this.program.opts<{ config?: string; readonly?: boolean }>()
       const invalidationService = await invalidation({
         configPath: options.config,
-        readOnly: options.readonly === true
+        readOnly: options.readonly === true,
+        writeEvent: this.runtime.writeEvent
       })
       this.output = await invalidationService.run({
         groupId,
