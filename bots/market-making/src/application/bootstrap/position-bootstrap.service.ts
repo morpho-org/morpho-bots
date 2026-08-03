@@ -7,6 +7,7 @@ import type {
   BootstrapRate,
   PositionBootstrapDecision
 } from '../../domain/bootstrap/position-bootstrap'
+import type { MonitorOperationQueue } from '../monitor.utils'
 import type {
   BootstrapMakeResult,
   BootstrapSubmittedTransaction,
@@ -16,7 +17,6 @@ import type {
   BootstrapVerbosePosition,
   BootstrapVerboseState
 } from './position-bootstrap-verbose'
-import type { MonitorOperationQueue } from '../monitor.utils'
 
 import { BootstrapConfigurationError } from '../../domain/bootstrap/bootstrap-configuration.error'
 import {

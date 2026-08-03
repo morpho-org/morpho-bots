@@ -1,6 +1,7 @@
 import type { Hex } from 'viem'
 
 import type { LadderConfig, LadderMarketState, LadderQuoteSet } from '../../domain/ladder/ladder'
+import type { MonitorOperationQueue } from '../monitor.utils'
 import type {
   LadderMakeResult,
   LadderSubmittedTransaction,
@@ -9,7 +10,6 @@ import type {
   LadderVerboseDetails,
   LadderVerboseState
 } from './ladder-verbose'
-import type { MonitorOperationQueue } from '../monitor.utils'
 
 import { generateLadder, shouldRecenter, validateLadderConfig } from '../../domain/ladder/ladder'
 import { LadderConfigurationError } from '../../domain/ladder/ladder-configuration.error'

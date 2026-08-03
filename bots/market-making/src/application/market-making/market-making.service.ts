@@ -181,7 +181,11 @@ export class MarketMakingService {
         this.ladder.runContinuously({
           signal: controller.signal,
           onCycle: async results => {
-            await parameters.onEvent?.({ event: 'market-making.cycle', workflow: 'ladder', results })
+            await parameters.onEvent?.({
+              event: 'market-making.cycle',
+              workflow: 'ladder',
+              results
+            })
             if (marketMakingCycleHasFailure(results)) stopFromWorkflow()
           },
           runOperation,
