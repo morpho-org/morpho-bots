@@ -315,6 +315,7 @@ const sourceFiles = [
   'application/ladder/ladder-monitor.utils.ts',
   'application/ladder/ladder-ownership-cleanup.error.ts',
   'application/ladder/ladder-verbose.ts',
+  'application/market-making/market-making-cycle.utils.ts',
   'application/market-making/market-making-monitor-halted.error.ts',
   'application/market-making/market-making-mutation.utils.ts',
   'application/market-making/market-making.service.ts',

@@ -110,6 +110,65 @@ describe('MarketMakingService', () => {
     ])
   })
 
+  test('aborts writers before awaiting failed setup event delivery', async () => {
+    const failedReport = { ready: false, checks: [] }
+    let releaseEventDelivery: (() => void) | undefined
+    let markEventStarted: (() => void) | undefined
+    let markWriterChecked: (() => void) | undefined
+    const eventDelivery = new Promise<void>(resolve => {
+      releaseEventDelivery = resolve
+    })
+    const eventStarted = new Promise<void>(resolve => {
+      markEventStarted = resolve
+    })
+    const writerChecked = new Promise<void>(resolve => {
+      markWriterChecked = resolve
+    })
+    let writerObservedAbort = false
+    const setup: MarketMakingSetupMonitor = {
+      runContinuously: async ({ onCycle }) => {
+        await onCycle?.(failedReport)
+        return {
+          status: 'halted',
+          reason: 'setup-failed',
+          cycles: 1,
+          lastReport: failedReport
+        }
+      }
+    }
+    const bootstrap: MarketMakingBootstrapMonitor = {
+      runContinuously: async ({ signal, runOperation }) => {
+        if (!runOperation) throw new Error('missing operation queue')
+        await runOperation(async () => {
+          writerObservedAbort = signal.aborted
+          markWriterChecked?.()
+        })
+        return stoppedBootstrapReport
+      }
+    }
+    const ladder: MarketMakingLadderMonitor = {
+      runContinuously: async ({ signal }) => {
+        await waitForAbort(signal)
+        return stoppedLadderReport
+      }
+    }
+    const running = new MarketMakingService(setup, bootstrap, ladder).runContinuously({
+      signal: new AbortController().signal,
+      onEvent: async event => {
+        if (event.event !== 'market-making.cycle' || event.workflow !== 'setup-check') return
+        markEventStarted?.()
+        await eventDelivery
+      }
+    })
+
+    await eventStarted
+    await writerChecked
+    expect(writerObservedAbort).toBe(true)
+    releaseEventDelivery?.()
+
+    expect(await running).toMatchObject({ status: 'halted', reason: 'workflow-halted' })
+  })
+
   test('serializes writer cycles and aborts peers before cleanup begins', async () => {
     const events: string[] = []
     const failedResults = [{ status: 'failed', stage: 'make' }]
