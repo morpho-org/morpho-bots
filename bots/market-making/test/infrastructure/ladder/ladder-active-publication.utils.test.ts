@@ -7,6 +7,7 @@ import type { OwnedLadderPublication } from '../../../src/infrastructure/ladder/
 
 import {
   activeOwnedLadderGroupIds,
+  pendingLadderQuoteSets,
   reconstructOwnedLadderPublication
 } from '../../../src/infrastructure/ladder/ladder-active-publication.utils'
 
@@ -56,5 +57,18 @@ describe('ladder active publication indexing', () => {
       higher: []
     })
     expect(activeOwnedLadderGroupIds([publication], groups, marketId)).toEqual([lowerGroupId])
+    expect(pendingLadderQuoteSets([publication], groups)).toEqual([])
+  })
+
+  test('projects only API-missing ladder groups into pending spread offers', () => {
+    const groups = [indexedGroup(higherGroupId, 0n, 80n)]
+
+    expect(pendingLadderQuoteSets([publication], groups)).toEqual([
+      {
+        ...publication.quote,
+        lower: [...publication.quote.lower],
+        higher: []
+      }
+    ])
   })
 })

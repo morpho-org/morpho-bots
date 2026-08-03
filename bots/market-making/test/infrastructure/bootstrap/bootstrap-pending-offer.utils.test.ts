@@ -4,7 +4,10 @@ import { describe, expect, test } from 'bun:test'
 
 import type { BootstrapRawGroup } from '../../../src/infrastructure/bootstrap/bootstrap-groups.utils'
 
-import { pendingBootstrapGroups } from '../../../src/infrastructure/bootstrap/bootstrap-pending-offer.utils'
+import {
+  pendingBootstrapGroups,
+  pendingBootstrapOffers
+} from '../../../src/infrastructure/bootstrap/bootstrap-pending-offer.utils'
 
 const marketId: Hex = `0x${'11'.repeat(32)}`
 const groupId: Hex = `0x${'22'.repeat(32)}`
@@ -29,6 +32,7 @@ const indexedGroup = (consumed: bigint): BootstrapRawGroup => ({
 
 describe('pendingBootstrapGroups', () => {
   test('projects persisted publication intent while API indexing is pending', () => {
+    expect(pendingBootstrapOffers([], [offer])).toEqual([offer])
     expect(pendingBootstrapGroups([], [offer])).toEqual([
       {
         id: groupId,
@@ -43,7 +47,9 @@ describe('pendingBootstrapGroups', () => {
   test.each([0n, 100n])(
     'does not project an offer after its group is indexed (%p consumed)',
     consumed => {
-      expect(pendingBootstrapGroups([indexedGroup(consumed)], [offer])).toEqual([])
+      const groups = [indexedGroup(consumed)]
+      expect(pendingBootstrapOffers(groups, [offer])).toEqual([])
+      expect(pendingBootstrapGroups(groups, [offer])).toEqual([])
     }
   )
 })

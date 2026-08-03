@@ -23,8 +23,10 @@ import type { ConfigService } from '../../config/config.service'
 import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
 import type { BootstrapActiveGroup, BootstrapInventoryReader } from './bootstrap-position.service'
 
+import { pendingLadderQuoteSets } from '../ladder/ladder-active-publication.utils'
 import { pendingLadderBuyReservations } from '../ladder/ladder-cash-reservation.utils'
 import { createLadderGroupOwnership } from '../ladder/ladder-group-ownership.utils'
+import { buildLadderTree } from '../ladder/ladder-offer.utils'
 import { createManagedMakerAccount } from '../make/managed-maker-account.utils'
 import { ReadOnlyBootstrapMakeService } from '../make/read-only-bootstrap-make.service'
 import {
@@ -42,7 +44,7 @@ import {
 } from './bootstrap-groups.utils'
 import { MidnightBootstrapMakeService } from './bootstrap-make.service'
 import { validateBootstrapMempoolPublication } from './bootstrap-mempool-validation.utils'
-import { bootstrapContinuousFeeCap } from './bootstrap-offer.utils'
+import { createBootstrapOffer } from './bootstrap-offer.utils'
 import { pendingBootstrapGroups } from './bootstrap-pending-offer.utils'
 import { MidnightBootstrapPositionService } from './bootstrap-position.service'
 import { BlueBootstrapReferenceRateService } from './bootstrap-reference-rate.service'
@@ -51,7 +53,6 @@ import { assertBootstrapProspectiveSpread, bootstrapMarketGroupIds } from './boo
 import { assertBootstrapTransaction } from './bootstrap-transaction.utils'
 
 const WAD = 10n ** 18n
-const YEAR_SECONDS = 31_536_000n
 
 type BootstrapMakeLendArguments = {
   accountAddress: Address
@@ -265,24 +266,45 @@ export const createProductionBootstrapAdapters = (
       midnight.getMarketData(offer.marketId),
       client.getBlock({ blockTag: 'latest' })
     ])
-    const periodRateWad =
-      (offer.rateBps * (WAD / 10_000n) * (market.params.maturity - block.timestamp)) / YEAR_SECONDS
-    return Offer.create({
-      market: market.params,
-      buy: true,
+    return createBootstrapOffer({
+      offer,
+      market,
       maker,
-      tick: TickLib.priceToTick(TickLib.rateToPrice(periodRateWad), BigInt(market.tickSpacing)),
-      expiry: market.params.maturity,
       ratifier: config.setup.ratifier,
-      maxAssets: offer.assets,
-      continuousFeeCap: bootstrapContinuousFeeCap(market)
+      now: block.timestamp
     })
+  }
+  const completeBookOffers = async () => {
+    const [groups, ladderPublications] = await Promise.all([readGroups(), ladderOwnership.read()])
+    const pendingLadderOffers = (
+      await Promise.all(
+        pendingLadderQuoteSets(ladderPublications, groups).map(async quote => {
+          const [market, block] = await Promise.all([
+            midnight.getMarketData(quote.marketId),
+            client.getBlock({ blockTag: 'latest' })
+          ])
+          return buildLadderTree({
+            quote,
+            market,
+            maker,
+            ratifier: config.setup.ratifier,
+            now: block.timestamp
+          }).bookOffers
+        })
+      )
+    ).flat()
+    return {
+      groups,
+      ladderPublications,
+      book: [...bootstrapBookOffers(groups), ...pendingLadderOffers]
+    }
   }
   const prepareMempoolPublication = (
     offer: BootstrapOffer,
     created: Offer,
     groups: Awaited<ReturnType<typeof readGroups>>,
-    ownedIds: readonly Hex[]
+    ownedIds: readonly Hex[],
+    replacedGroupIds: ReadonlySet<Hex>
   ) =>
     validateBootstrapMempoolPublication(() =>
       midnight.makeLend(
@@ -292,7 +314,7 @@ export const createProductionBootstrapAdapters = (
           validation: { apiUrl: `${config.morphoApiBaseUrl}/v0/midnight` },
           loanToken: config.setup.loanAsset,
           loanAssets: offer.assets,
-          reservedLoanAssets: bootstrapReservedLoanAssets(groups, ownedIds)
+          reservedLoanAssets: bootstrapReservedLoanAssets(groups, ownedIds, replacedGroupIds)
         })
       )
     )
@@ -301,29 +323,35 @@ export const createProductionBootstrapAdapters = (
     const validate = async (parameters: Parameters<BootstrapMakeService['reconcile']>[0]) => {
       if (!parameters.desiredOffer) return
 
-      const [groups, ownedIds, ladderOwnedIds, prospectiveOffer, activeStrategyGroups] =
-        await Promise.all([
-          readGroups(),
-          ownership.read(),
-          ladderOwnership.readGroupIds(),
-          prepareOffer(parameters.desiredOffer),
-          activeGroups()
-        ])
+      const [bookState, ownedIds, prospectiveOffer, activeStrategyGroups] = await Promise.all([
+        completeBookOffers(),
+        ownership.read(),
+        prepareOffer(parameters.desiredOffer),
+        activeGroups()
+      ])
       const marketGroupIds = bootstrapMarketGroupIds(activeStrategyGroups, parameters.marketId)
       assertBootstrapProspectiveSpread({
         marketId: parameters.marketId,
         replacedGroupIds: marketGroupIds,
-        book: bootstrapBookOffers(groups),
+        book: bookState.book,
         prospective: {
           marketId: parameters.marketId,
           buy: true,
           tick: prospectiveOffer.tick
         }
       })
-      await prepareMempoolPublication(parameters.desiredOffer, prospectiveOffer, groups, [
-        ...ownedIds,
-        ...ladderOwnedIds
-      ])
+      await prepareMempoolPublication(
+        parameters.desiredOffer,
+        prospectiveOffer,
+        bookState.groups,
+        [
+          ...ownedIds,
+          ...bookState.ladderPublications.flatMap(publication =>
+            publication.groups.map(group => group.groupId)
+          )
+        ],
+        marketGroupIds
+      )
     }
     return {
       positions,
@@ -365,7 +393,7 @@ export const createProductionBootstrapAdapters = (
   const make = new MidnightBootstrapMakeService({
     listActiveGroups: activeGroups,
     listOwnedGroupIds: ownedGroupIds,
-    listBookOffers: async () => bootstrapBookOffers(await readGroups()),
+    listBookOffers: async () => (await completeBookOffers()).book,
     toProspectiveBookOffer: async offer => {
       const created = await prepareOffer(offer)
       preparedOffers.set(offer.marketId, created)
@@ -392,15 +420,20 @@ export const createProductionBootstrapAdapters = (
       const created = preparedOffers.get(offer.marketId)
       preparedOffers.delete(offer.marketId)
       if (!created) throw new BootstrapAdapterError('prospective-offer-missing')
-      const [groups, ownedIds, ladderOwnedIds] = await Promise.all([
+      const [groups, ownedIds, ladderOwnedIds, activeStrategyGroups] = await Promise.all([
         readGroups(),
         ownership.read(),
-        ladderOwnership.readGroupIds()
+        ladderOwnership.readGroupIds(),
+        activeGroups()
       ])
-      const output = await prepareMempoolPublication(offer, created, groups, [
-        ...ownedIds,
-        ...ladderOwnedIds
-      ])
+      const replacedGroupIds = bootstrapMarketGroupIds(activeStrategyGroups, offer.marketId)
+      const output = await prepareMempoolPublication(
+        offer,
+        created,
+        groups,
+        [...ownedIds, ...ladderOwnedIds],
+        replacedGroupIds
+      )
       const signatures = await signBootstrapRequirements(
         await output.getRequirements(),
         requirement =>

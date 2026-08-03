@@ -79,3 +79,31 @@ export const activeOwnedLadderGroupIds = (
     )
   ]
 }
+
+/**
+ * Projects only ladder rungs whose persisted groups are still absent from the provider book.
+ * @param publications - Durable reserved and confirmed ladder publication intents.
+ * @param groups - Current maker groups returned by the eventually consistent API.
+ * @returns Quote fragments that can be rebuilt into pending book offers for spread validation.
+ */
+export const pendingLadderQuoteSets = (
+  publications: readonly OwnedLadderPublication[],
+  groups: readonly BootstrapRawGroup[]
+) => {
+  const indexedGroupIds = new Set(groups.map(group => group.id))
+  return publications.flatMap(publication => {
+    const pendingIndexes = (side: 'lower' | 'higher') =>
+      new Set(
+        publication.groups
+          .filter(group => group.side === side && !indexedGroupIds.has(group.groupId))
+          .flatMap(group => group.rungIndexes)
+      )
+    const lowerIndexes = pendingIndexes('lower')
+    const higherIndexes = pendingIndexes('higher')
+    const lower = publication.quote.lower.filter(rung => lowerIndexes.has(rung.index))
+    const higher = publication.quote.higher.filter(rung => higherIndexes.has(rung.index))
+    return lower.length === 0 && higher.length === 0
+      ? []
+      : [{ ...publication.quote, lower, higher }]
+  })
+}

@@ -122,7 +122,7 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
           try {
             await this.transport.releaseGroupReservation(publication.groupId)
           } catch {
-            throw new BootstrapAdapterError('publication-reservation-cleanup')
+            // Rollback storage failure must not mask the original cancellation failure.
           }
         }
         throw error

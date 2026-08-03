@@ -7,6 +7,20 @@ import type { BootstrapActiveGroup } from './bootstrap-position.service'
 type OwnedBootstrapOffer = BootstrapOffer & { groupId: Hex }
 
 /**
+ * Selects persisted bootstrap intents whose groups are still absent from the provider book.
+ * @param groups - Current maker groups returned by the eventually consistent API.
+ * @param ownedOffers - Reserved or confirmed offer intents persisted before publication.
+ * @returns Original pending intents for exact protocol-offer reconstruction.
+ */
+export const pendingBootstrapOffers = (
+  groups: readonly BootstrapRawGroup[],
+  ownedOffers: readonly OwnedBootstrapOffer[]
+) => {
+  const indexedGroupIds = new Set(groups.map(group => group.id))
+  return ownedOffers.filter(offer => !indexedGroupIds.has(offer.groupId))
+}
+
+/**
  * Projects persisted bootstrap publications that have not appeared in the Morpho API yet.
  * @param groups - Current maker groups returned by the eventually consistent API.
  * @param ownedOffers - Reserved or confirmed offer intents persisted before publication.
@@ -17,14 +31,11 @@ export const pendingBootstrapGroups = (
   groups: readonly BootstrapRawGroup[],
   ownedOffers: readonly OwnedBootstrapOffer[]
 ): BootstrapActiveGroup[] => {
-  const indexedGroupIds = new Set(groups.map(group => group.id))
-  return ownedOffers
-    .filter(offer => !indexedGroupIds.has(offer.groupId))
-    .map(offer => ({
-      id: offer.groupId,
-      marketId: offer.marketId,
-      assets: offer.assets,
-      rateBps: offer.rateBps,
-      referenceObservationId: offer.referenceObservationId
-    }))
+  return pendingBootstrapOffers(groups, ownedOffers).map(offer => ({
+    id: offer.groupId,
+    marketId: offer.marketId,
+    assets: offer.assets,
+    rateBps: offer.rateBps,
+    referenceObservationId: offer.referenceObservationId
+  }))
 }

@@ -25,6 +25,8 @@ import type { OwnedLadderPublication } from './ladder-group-ownership.utils'
 
 import { createBootstrapGroupOwnership } from '../bootstrap/bootstrap-group-ownership.utils'
 import { bootstrapBookOffers, readBootstrapGroups } from '../bootstrap/bootstrap-groups.utils'
+import { createBootstrapOffer } from '../bootstrap/bootstrap-offer.utils'
+import { pendingBootstrapOffers } from '../bootstrap/bootstrap-pending-offer.utils'
 import { BlueBootstrapReferenceRateService } from '../bootstrap/bootstrap-reference-rate.service'
 import { createManagedMakerAccount } from '../make/managed-maker-account.utils'
 import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
@@ -207,6 +209,34 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
     readRate: async marketId => (await blueRates.readRate(marketId)).rateBps
   }
 
+  const prepareBootstrapBookOffer = async (
+    offer: ReturnType<typeof pendingBootstrapOffers>[number]
+  ) => {
+    const [market, block] = await Promise.all([
+      midnight.getMarketData(offer.marketId),
+      client.getBlock({ blockTag: 'latest' })
+    ])
+    const created = createBootstrapOffer({
+      offer,
+      market,
+      maker,
+      ratifier: config.setup.ratifier,
+      now: block.timestamp
+    })
+    return { marketId: offer.marketId, buy: true, tick: created.tick }
+  }
+
+  const completeBookOffers = async () => {
+    const [groups, bootstrapOffers] = await Promise.all([
+      readGroups(),
+      bootstrapOwnership.readOffers()
+    ])
+    const pendingOffers = await Promise.all(
+      pendingBootstrapOffers(groups, bootstrapOffers).map(prepareBootstrapBookOffer)
+    )
+    return { groups, book: [...bootstrapBookOffers(groups), ...pendingOffers] }
+  }
+
   const readActive = async (marketId: Hex) => {
     const [groups, publications] = await Promise.all([readGroups(), ladderOwnership.read()])
     return publications
@@ -238,13 +268,16 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
   const validateReconcile: ProductionLadderAdapters['validateReconcile'] = async parameters => {
     if (parameters.reason === 'rest' || !parameters.desired) return
     const prepared = await prepareUnsignedPublication(parameters.desired)
-    const [groups, publications] = await Promise.all([readGroups(), ladderOwnership.read()])
+    const [bookState, publications] = await Promise.all([
+      completeBookOffers(),
+      ladderOwnership.read()
+    ])
     assertLadderProspectiveSpread({
       marketId: parameters.marketId,
       replacedGroupIds: new Set(
-        activeOwnedLadderGroupIds(publications, groups, parameters.marketId)
+        activeOwnedLadderGroupIds(publications, bookState.groups, parameters.marketId)
       ),
-      book: bootstrapBookOffers(groups),
+      book: bookState.book,
       prospective: prepared.bookOffers
     })
   }
@@ -292,7 +325,7 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
       const [publications, groups] = await Promise.all([ladderOwnership.read(), readGroups()])
       return activeOwnedLadderGroupIds(publications, groups, marketId)
     },
-    listBookOffers: async () => bootstrapBookOffers(await readGroups()),
+    listBookOffers: async () => (await completeBookOffers()).book,
     preparePublication: async quote => {
       const prepared = await prepareUnsignedPublication(quote)
       const signature = await signLadderTree({

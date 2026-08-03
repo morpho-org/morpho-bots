@@ -292,6 +292,7 @@ describe('readBootstrapGroups', () => {
     )
 
     expect(bootstrapReservedLoanAssets(groups, [groupId])).toBe(100n)
+    expect(bootstrapReservedLoanAssets(groups, [groupId], new Set([groupId]))).toBe(0n)
   })
 
   test('excludes durably owned sell-only groups from the loan-token cash reserve', async () => {
