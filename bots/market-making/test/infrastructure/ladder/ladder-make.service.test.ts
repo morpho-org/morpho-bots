@@ -6,6 +6,7 @@ import type { LadderQuoteSet } from '../../../src/domain/ladder/ladder'
 import type { LadderOfferTransport } from '../../../src/infrastructure/ladder/ladder-make.service'
 
 import { LadderOwnershipCleanupError } from '../../../src/application/ladder/ladder-ownership-cleanup.error'
+import { LadderAdapterError } from '../../../src/infrastructure/ladder/ladder-adapter.error'
 import { LadderHardHaltError } from '../../../src/infrastructure/ladder/ladder-hard-halt.error'
 import { MidnightLadderMakeService } from '../../../src/infrastructure/ladder/ladder-make.service'
 
@@ -154,6 +155,82 @@ describe('MidnightLadderMakeService', () => {
     expect(subject.events).toContain('release')
     expect(await subject.service.cleanup()).toEqual({ submittedTransactions: [] })
     expect(invalidations).toBe(1)
+  })
+
+  test('preserves ownership cleanup failure when publication rollback storage also fails', async () => {
+    const subject = harness()
+    subject.transport.invalidate = async () => cancellationHash
+    subject.transport.forgetGroups = async () => {
+      throw new TypeError('ownership unavailable')
+    }
+    subject.transport.releasePublication = async () => {
+      throw new TypeError('reservation unavailable')
+    }
+
+    const error = await subject.service
+      .reconcile({ marketId, desired: quote, reason: 'recenter' })
+      .catch(value => value)
+
+    expect(error).toBeInstanceOf(LadderOwnershipCleanupError)
+    expect(error).toMatchObject({
+      groupId: oldGroup,
+      cleanupErrorName: 'TypeError',
+      submittedTransactions: [{ operation: 'cancel', txHash: cancellationHash }]
+    })
+  })
+
+  test('preserves publication revert when reservation rollback storage also fails', async () => {
+    const subject = harness()
+    subject.transport.listActiveGroupIds = async () => []
+    subject.transport.preparePublication = async () => ({
+      groupIds: [newGroup],
+      groups: [{ groupId: newGroup, side: 'lower', rungIndexes: [0] }],
+      prospective: [],
+      publish: async () => {
+        throw new LadderAdapterError('transaction-reverted')
+      }
+    })
+    subject.transport.releasePublication = async () => {
+      throw new TypeError('reservation unavailable')
+    }
+
+    const error = await subject.service
+      .reconcile({ marketId, desired: quote, reason: 'recenter' })
+      .catch(value => value)
+
+    expect(error).toBeInstanceOf(LadderAdapterError)
+    expect(error).toMatchObject({ operation: 'transaction-reverted' })
+  })
+
+  test('excludes a previously canceled group while the book still reports its offers', async () => {
+    const subject = harness()
+    let activeReadCount = 0
+    subject.transport.listActiveGroupIds = async () => {
+      activeReadCount += 1
+      return activeReadCount === 1 ? [oldGroup] : []
+    }
+    subject.transport.listBookOffers = async () => [
+      { groupId: oldGroup, marketId, buy: false, tick: 10n }
+    ]
+    subject.transport.preparePublication = async () => ({
+      groupIds: [newGroup],
+      groups: [{ groupId: newGroup, side: 'lower', rungIndexes: [0] }],
+      prospective: [{ marketId, buy: true, tick: 10n }],
+      publish: async () => {
+        subject.events.push('publish')
+      }
+    })
+
+    await subject.service.reconcile({ marketId, reason: 'market-read-failed' })
+    await subject.service.reconcile({ marketId, desired: quote, reason: 'recenter' })
+
+    expect(subject.events).toEqual([
+      `cancel:${oldGroup}`,
+      `forget:${oldGroup}`,
+      'reserve',
+      'publish',
+      'confirm'
+    ])
   })
 
   test('cleanup attempts every active group and returns confirmed cancellation hashes', async () => {

@@ -86,10 +86,12 @@ export class MidnightLadderMakeService implements LadderMakeService {
     return this.enqueue(async () => {
       const submittedTransactions: LadderSubmittedTransaction[] = []
       if (parameters.reason === 'rest') return { submittedTransactions }
-      const replacedGroupIds = new Set(
-        (await this.transport.listActiveGroupIds(parameters.marketId)).filter(
-          groupId => !this.confirmedCanceledGroups.has(groupId)
-        )
+      const spreadReplacedGroupIds = new Set([
+        ...(await this.transport.listActiveGroupIds(parameters.marketId)),
+        ...this.confirmedCanceledGroups
+      ])
+      const invalidatedGroupIds = new Set(
+        [...spreadReplacedGroupIds].filter(groupId => !this.confirmedCanceledGroups.has(groupId))
       )
       const publication = parameters.desired
         ? await this.transport.preparePublication(parameters.desired)
@@ -97,7 +99,7 @@ export class MidnightLadderMakeService implements LadderMakeService {
       if (publication) {
         assertLadderProspectiveSpread({
           marketId: parameters.marketId,
-          replacedGroupIds,
+          replacedGroupIds: spreadReplacedGroupIds,
           book: await this.transport.listBookOffers(),
           prospective: publication.prospective
         })
@@ -109,7 +111,7 @@ export class MidnightLadderMakeService implements LadderMakeService {
       }
 
       try {
-        for (const groupId of replacedGroupIds) {
+        for (const groupId of invalidatedGroupIds) {
           const txHash = await this.transport.invalidate(
             groupId,
             this.safeObserver(parameters.onTransactionSubmitted)
@@ -128,7 +130,13 @@ export class MidnightLadderMakeService implements LadderMakeService {
           }
         }
       } catch (error) {
-        if (publication) await this.transport.releasePublication(publication.groupIds)
+        if (publication) {
+          try {
+            await this.transport.releasePublication(publication.groupIds)
+          } catch {
+            // Rollback storage failure must not mask the original cancellation failure.
+          }
+        }
         throw error
       }
 
@@ -140,7 +148,11 @@ export class MidnightLadderMakeService implements LadderMakeService {
         if (txHash) submittedTransactions.push({ operation: 'publish', txHash })
       } catch (error) {
         if (error instanceof LadderAdapterError && error.operation === 'transaction-reverted') {
-          await this.transport.releasePublication(publication.groupIds)
+          try {
+            await this.transport.releasePublication(publication.groupIds)
+          } catch {
+            // Rollback storage failure must not mask the original publication failure.
+          }
         }
         throw error
       }

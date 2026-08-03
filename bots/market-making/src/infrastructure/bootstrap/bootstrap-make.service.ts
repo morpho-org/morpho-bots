@@ -77,10 +77,12 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
     return this.enqueue(async () => {
       const submittedTransactions: BootstrapSubmittedTransaction[] = []
       const groups = await this.strategyGroups()
-      const marketGroupIds = new Set(
-        [...bootstrapMarketGroupIds(groups, parameters.marketId)].filter(
-          groupId => !this.confirmedCanceledGroups.has(groupId)
-        )
+      const spreadReplacedGroupIds = new Set([
+        ...bootstrapMarketGroupIds(groups, parameters.marketId),
+        ...this.confirmedCanceledGroups
+      ])
+      const invalidatedGroupIds = new Set(
+        [...spreadReplacedGroupIds].filter(groupId => !this.confirmedCanceledGroups.has(groupId))
       )
       let publication:
         | Awaited<ReturnType<BootstrapOfferTransport['preparePublication']>>
@@ -89,7 +91,7 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
         const prospective = await this.transport.toProspectiveBookOffer(parameters.desiredOffer)
         assertBootstrapProspectiveSpread({
           marketId: parameters.marketId,
-          replacedGroupIds: marketGroupIds,
+          replacedGroupIds: spreadReplacedGroupIds,
           book: await this.transport.listBookOffers(),
           prospective
         })
@@ -97,7 +99,7 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
         await this.transport.reserveGroup(publication.groupId, parameters.desiredOffer)
       }
       try {
-        for (const groupId of marketGroupIds) {
+        for (const groupId of invalidatedGroupIds) {
           const txHash = await this.transport.invalidate(
             groupId,
             this.safeObserver(parameters.onTransactionSubmitted)

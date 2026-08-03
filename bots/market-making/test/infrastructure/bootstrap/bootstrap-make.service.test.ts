@@ -415,6 +415,37 @@ describe('MidnightBootstrapMakeService', () => {
     expect(events).toEqual(['invalidate', 'publish'])
   })
 
+  test('excludes a previously canceled group while the book still reports its offers', async () => {
+    let activeReadCount = 0
+    const events: string[] = []
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => {
+        activeReadCount += 1
+        return activeReadCount === 1 ? [{ id: groupId, marketId, assets: 100n, rateBps: 500n }] : []
+      },
+      listBookOffers: async () => [{ groupId, marketId, buy: false, tick: 100n }],
+      toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
+      preparePublication: async () => ({
+        groupId: publishedGroupId,
+        publish: async () => {
+          events.push('publish')
+        }
+      }),
+      reserveGroup: async () => {},
+      confirmPublishedGroup: async () => {},
+      releaseGroupReservation: async () => {},
+      forgetGroups: async () => {},
+      invalidate: async () => {
+        events.push('invalidate')
+      }
+    })
+
+    await service.reconcile({ marketId, reason: 'target-reached' })
+    await service.reconcile({ marketId, desiredOffer, reason: 'publish' })
+
+    expect(events).toEqual(['invalidate', 'publish'])
+  })
+
   test('prepares and reserves a replacement before invalidation and releases it if invalidation fails', async () => {
     const events: string[] = []
     const service = new MidnightBootstrapMakeService({
