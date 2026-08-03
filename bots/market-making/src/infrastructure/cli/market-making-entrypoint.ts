@@ -7,9 +7,15 @@ import { LadderCycleHaltedError } from '../../application/ladder/ladder-cycle-ha
 import { LadderMonitorHaltedError } from '../../application/ladder/ladder-monitor-halted.error'
 import { MarketMakingMonitorHaltedError } from '../../application/market-making/market-making-monitor-halted.error'
 import { operatorErrorName } from '../../application/operator-error-name.utils'
+import { SafeProviderError } from '../../application/setup/safe-provider.error'
 import { SetupFailedError } from '../../application/setup/setup-failed.error'
 import { SetupMonitorHaltedError } from '../../application/setup/setup-monitor-halted.error'
+import { ConfigFileError } from '../../config/config-file.error'
+import { ConfigValidationError } from '../../config/config-validation.error'
+import { BootstrapConfigurationError } from '../../domain/bootstrap/bootstrap-configuration.error'
+import { LadderConfigurationError } from '../../domain/ladder/ladder-configuration.error'
 import { CliUsageError } from './cli-usage.error'
+import { createMarketMakingLogger } from './market-making-logger'
 
 type MarketMakingApplication = {
   run(argv: readonly string[], runtime?: CliRuntimeOptions): Promise<unknown>
@@ -20,40 +26,31 @@ type EntrypointObservability = {
   unexpected(error: unknown, origin: 'entrypoint'): void
 }
 
-const serializeOutput = (value: unknown) =>
-  typeof value === 'string'
-    ? value
-    : JSON.stringify(value, (_key, nested) =>
-        typeof nested === 'bigint' ? nested.toString() : nested
-      )
-
-const failureOutput = (error: unknown) => {
-  if (error instanceof MarketMakingMonitorHaltedError) return serializeOutput(error.report)
-  if (error instanceof SetupMonitorHaltedError) return serializeOutput(error.report)
-  if (error instanceof OfferInvalidationFailedError) return serializeOutput(error.report)
-  if (error instanceof PositionBootstrapMonitorHaltedError) return serializeOutput(error.report)
-  if (error instanceof LadderMonitorHaltedError) return serializeOutput(error.report)
-  if (error instanceof LadderCycleHaltedError) return serializeOutput(error.report)
-  if (error instanceof PositionBootstrapHaltedError) return serializeOutput(error.report)
-  if (error instanceof SetupFailedError) return serializeOutput(error.report)
-  if (error instanceof CliUsageError) return error.message
-  return operatorErrorName(error)
+const failureDetails = (error: unknown): unknown => {
+  if (error instanceof MarketMakingMonitorHaltedError) return error.report
+  if (error instanceof SetupMonitorHaltedError) return error.report
+  if (error instanceof OfferInvalidationFailedError) return error.report
+  if (error instanceof PositionBootstrapMonitorHaltedError) return error.report
+  if (error instanceof LadderMonitorHaltedError) return error.report
+  if (error instanceof LadderCycleHaltedError) return error.report
+  if (error instanceof PositionBootstrapHaltedError) return error.report
+  if (error instanceof SetupFailedError) return error.report
+  return undefined
 }
 
-const failureReport = (error: unknown) => {
+const failureMessage = (error: unknown) => {
   if (
-    error instanceof MarketMakingMonitorHaltedError ||
-    error instanceof SetupMonitorHaltedError ||
-    error instanceof OfferInvalidationFailedError ||
-    error instanceof PositionBootstrapMonitorHaltedError ||
-    error instanceof LadderMonitorHaltedError ||
-    error instanceof LadderCycleHaltedError ||
-    error instanceof PositionBootstrapHaltedError ||
-    error instanceof SetupFailedError
+    error instanceof CliUsageError ||
+    error instanceof ConfigFileError ||
+    error instanceof ConfigValidationError ||
+    error instanceof SafeProviderError ||
+    error instanceof BootstrapConfigurationError ||
+    error instanceof LadderConfigurationError
   ) {
-    return error.report
+    return error.message
   }
-  return undefined
+  if (error instanceof Error && failureDetails(error) !== undefined) return error.message
+  return operatorErrorName(error)
 }
 
 /**
@@ -64,10 +61,11 @@ const failureReport = (error: unknown) => {
  * @param runtime - Optional graceful-shutdown signal for continuous commands.
  * @param observability - Optional mirror for sanitized records and unexpected error classifications.
  * @returns Zero on success and one after a sanitized failure has been emitted.
- * @remarks Each output value is one JSON Lines record. Continuous readiness, bootstrap, ladder,
- * combined-monitor, or invalidation transaction records precede the terminal result; read-only
- * make records may also precede workflow results. Failure reports exclude causes, provider
- * payloads, and credentials.
+ * @remarks Output is human-readable unless `--json` selects one JSON Lines record per value.
+ * Continuous readiness, bootstrap, ladder, combined-monitor, or invalidation transaction records
+ * precede the terminal result; read-only make records may also precede workflow results. Failure
+ * reports exclude causes, provider payloads, and credentials and always include an explicit error
+ * message.
  */
 export const runMarketMakingEntrypoint = async (
   application: MarketMakingApplication,
@@ -76,22 +74,27 @@ export const runMarketMakingEntrypoint = async (
   runtime: Pick<CliRuntimeOptions, 'signal'> = {},
   observability?: EntrypointObservability
 ) => {
+  const optionDelimiter = argv.indexOf('--')
+  const json = argv
+    .slice(0, optionDelimiter === -1 ? undefined : optionDelimiter)
+    .includes('--json')
+  const logger = createMarketMakingLogger(output, json)
   try {
     const result = await application.run(argv, {
       ...runtime,
       writeEvent: value => {
         observability?.record(value)
-        output.writeOut(serializeOutput(value))
+        logger.result(value)
       }
     })
     observability?.record(result)
-    output.writeOut(serializeOutput(result))
+    logger.result(result)
     return 0
   } catch (error) {
-    const report = failureReport(error)
-    if (report === undefined) observability?.unexpected(error, 'entrypoint')
-    else observability?.record(report)
-    output.writeError(failureOutput(error))
+    const details = failureDetails(error)
+    if (details === undefined) observability?.unexpected(error, 'entrypoint')
+    else observability?.record(details)
+    logger.error(failureMessage(error), details)
     return 1
   }
 }

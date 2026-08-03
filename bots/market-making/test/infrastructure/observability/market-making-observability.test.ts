@@ -214,29 +214,34 @@ describe('market-making observability', () => {
     }
   })
 
-  test('observes fatal exceptions through the monitor hook without installing a swallowing handler', () => {
+  test('observes fatal exceptions and rethrows unhandled rejections after recording', () => {
     const unexpected = mock(
       (_error: unknown, _origin: 'uncaughtException' | 'unhandledRejection') => undefined
     )
-    let listener: ((error: Error, origin: string) => void) | undefined
+    let exceptionListener: ((error: Error, origin: string) => void) | undefined
+    let rejectionListener: ((reason: unknown) => void) | undefined
     const target = {
-      on: mock((event: string, value: typeof listener) => {
-        expect(event).toBe('uncaughtExceptionMonitor')
-        listener = value
+      on: mock((event: string, value: (...args: never[]) => void) => {
+        if (event === 'uncaughtExceptionMonitor') {
+          exceptionListener = value as typeof exceptionListener
+        } else {
+          rejectionListener = value as typeof rejectionListener
+        }
       }),
-      removeListener: mock((event: string, value: typeof listener) => {
-        expect(event).toBe('uncaughtExceptionMonitor')
-        expect(value).toBe(listener)
-      })
+      removeListener: mock((_event: string, _value: (...args: never[]) => void) => undefined)
     }
 
     const cleanup = installMarketMakingProcessObservers({ unexpected }, target)
     const error = new Error('must not be logged')
-    listener?.(error, 'unhandledRejection')
+    exceptionListener?.(error, 'uncaughtException')
+    expect(() => rejectionListener?.(error)).toThrow(error)
     cleanup()
 
-    expect(unexpected).toHaveBeenCalledWith(error, 'unhandledRejection')
-    expect(target.on).toHaveBeenCalledTimes(1)
-    expect(target.removeListener).toHaveBeenCalledTimes(1)
+    expect(unexpected.mock.calls).toEqual([
+      [error, 'uncaughtException'],
+      [error, 'unhandledRejection']
+    ])
+    expect(target.on).toHaveBeenCalledTimes(2)
+    expect(target.removeListener).toHaveBeenCalledTimes(2)
   })
 })

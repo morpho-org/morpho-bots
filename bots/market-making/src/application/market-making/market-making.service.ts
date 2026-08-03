@@ -150,8 +150,14 @@ export class MarketMakingService {
       .then(() =>
         this.setup.runContinuously({
           signal: controller.signal,
-          onCycle: report =>
-            parameters.onEvent?.({ event: 'market-making.cycle', workflow: 'setup-check', report })
+          onCycle: async report => {
+            if (!report.ready) stopFromWorkflow()
+            await parameters.onEvent?.({
+              event: 'market-making.cycle',
+              workflow: 'setup-check',
+              report
+            })
+          }
         })
       )
       .finally(stopFromWorkflow)

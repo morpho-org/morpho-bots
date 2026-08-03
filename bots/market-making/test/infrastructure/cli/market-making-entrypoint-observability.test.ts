@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from 'bun:test'
 
+import { ConfigFileError } from '../../../src/config/config-file.error'
 import { runMarketMakingEntrypoint } from '../../../src/infrastructure/cli/market-making-entrypoint'
 
 describe('runMarketMakingEntrypoint observability', () => {
@@ -24,9 +25,9 @@ describe('runMarketMakingEntrypoint observability', () => {
     )
 
     expect(exitCode).toBe(0)
-    expect(stdout).toEqual([
-      '{"event":"ladder.cycle","status":"resting","activeOffers":[{"assets":"9"}]}',
-      '{"status":"stopped","cycles":1}'
+    expect(stdout.map(value => JSON.parse(value))).toEqual([
+      { event: 'ladder.cycle', status: 'resting', activeOffers: [{ assets: '9' }] },
+      result
     ])
     expect(stderr).toEqual([])
     expect(record.mock.calls.map(call => call[0])).toEqual([cycle, result])
@@ -49,9 +50,26 @@ describe('runMarketMakingEntrypoint observability', () => {
 
     expect(exitCode).toBe(1)
     expect(stdout).toEqual([])
-    expect(stderr).toEqual(['UnknownError'])
+    expect(stderr).toEqual(['Error: UnknownError'])
     expect(unexpected).toHaveBeenCalledWith(error, 'entrypoint')
     expect(stderr.join('')).not.toContain('raw provider')
     expect(stderr.join('')).not.toContain('credential')
+  })
+
+  test('preserves audited configuration diagnostics while still classifying the failure', async () => {
+    const stderr: string[] = []
+    const unexpected = mock((_error: unknown, _origin: 'entrypoint') => undefined)
+
+    const exitCode = await runMarketMakingEntrypoint(
+      { run: async () => Promise.reject(new ConfigFileError('malformed')) },
+      ['start'],
+      { writeOut: () => undefined, writeError: value => stderr.push(value) },
+      {},
+      { record: mock(() => undefined), unexpected }
+    )
+
+    expect(exitCode).toBe(1)
+    expect(stderr).toEqual(['Error: Configuration file contains malformed YAML'])
+    expect(unexpected).toHaveBeenCalledTimes(1)
   })
 })

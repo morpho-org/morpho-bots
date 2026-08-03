@@ -26,7 +26,13 @@ const marketMakingCommand = (argv: readonly string[]) => {
   return undefined
 }
 
-/** Enables the existing safe verbose event stream only when BetterStack shipping is fully configured. */
+/**
+ * Enables the existing safe verbose event stream only when BetterStack shipping is fully configured.
+ * @param argv - CLI arguments without runtime or executable prefixes.
+ * @param env - Environment used only to detect complete BetterStack shipping configuration.
+ * @returns A copied argument list, with `--verbose` added for supported writer commands when needed.
+ * @remarks Pure argument transformation; it performs no logging, shipping, or process mutation.
+ */
 export const enhanceMarketMakingArgv = (
   argv: readonly string[],
   env: Environment = process.env
@@ -52,7 +58,13 @@ const hasFailure = (value: unknown, seen = new WeakSet<object>(), depth = 0): bo
   return false
 }
 
-/** Mirrors the CLI's already-sanitized records into bot-kit observability without consuming output. */
+/**
+ * Mirrors the CLI's already-sanitized records into bot-kit observability without consuming output.
+ * @param options - Optional environment and testable logger or heartbeat overrides.
+ * @returns Lifecycle, record, and unexpected-error observers for the process composition root.
+ * @remarks Starting begins best-effort heartbeat delivery; stopping ends it. Record shipping is
+ * best-effort and never consumes or changes the CLI stdout/stderr stream.
+ */
 export const createMarketMakingObservability = (
   options: {
     env?: Environment
@@ -96,20 +108,24 @@ export const createMarketMakingObservability = (
   }
 
   return {
+    /** Starts lifecycle logging and best-effort heartbeat delivery. */
     async start() {
       if (shippingEnabled) logger.info('bot.started')
       void heartbeat
         .start()
         .catch(error => logger.warn('heartbeat.failed', { errorName: operatorErrorName(error) }))
     },
+    /** Stops heartbeat delivery and records the sanitized lifecycle reason. */
     stop(reason: string) {
       heartbeat.stop()
       if (shippingEnabled) logger.info('bot.stopped', { reason })
     },
+    /** Ships one already-sanitized CLI record without changing terminal output. */
     record(value: unknown) {
       if (!shippingEnabled) return
       emitRecord(value)
     },
+    /** Classifies an unexpected failure without shipping its message or cause. */
     unexpected(error: unknown, origin: UnexpectedOrigin) {
       if (shippingEnabled) {
         logger.error('bot.unexpected-error', { origin, errorName: operatorErrorName(error) })
@@ -122,22 +138,37 @@ type MarketMakingObservability = ReturnType<typeof createMarketMakingObservabili
 
 type ProcessObserverTarget = {
   on(event: 'uncaughtExceptionMonitor', listener: (error: Error, origin: string) => void): unknown
+  on(event: 'unhandledRejection', listener: (reason: unknown) => void): unknown
   removeListener(
     event: 'uncaughtExceptionMonitor',
     listener: (error: Error, origin: string) => void
   ): unknown
+  removeListener(event: 'unhandledRejection', listener: (reason: unknown) => void): unknown
 }
 
-/** Uses Node's monitor-only fatal hook, which observes both exceptions and escalated rejections. */
+/**
+ * Installs fatal exception and Bun unhandled-rejection observers.
+ * @param observability - Sanitized unexpected-error sink.
+ * @param target - Process-like event target; injectable for isolated verification.
+ * @returns A cleanup callback that removes every installed listener.
+ * @remarks The rejection listener rethrows after recording so the runtime retains its fatal exit
+ * behavior; the monitor listener observes uncaught exceptions without swallowing them.
+ */
 export const installMarketMakingProcessObservers = (
   observability: Pick<MarketMakingObservability, 'unexpected'>,
   target: ProcessObserverTarget = process
 ) => {
-  const listener = (error: Error, origin: string) =>
-    observability.unexpected(
-      error,
-      origin === 'unhandledRejection' ? 'unhandledRejection' : 'uncaughtException'
-    )
-  target.on('uncaughtExceptionMonitor', listener)
-  return () => target.removeListener('uncaughtExceptionMonitor', listener)
+  const exceptionListener = (error: Error, origin: string) => {
+    if (origin !== 'unhandledRejection') observability.unexpected(error, 'uncaughtException')
+  }
+  const rejectionListener = (reason: unknown) => {
+    observability.unexpected(reason, 'unhandledRejection')
+    throw reason
+  }
+  target.on('uncaughtExceptionMonitor', exceptionListener)
+  target.on('unhandledRejection', rejectionListener)
+  return () => {
+    target.removeListener('uncaughtExceptionMonitor', exceptionListener)
+    target.removeListener('unhandledRejection', rejectionListener)
+  }
 }
