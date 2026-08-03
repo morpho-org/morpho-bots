@@ -36,6 +36,7 @@ const item = (overrides: Record<string, unknown> = {}) => ({
   higherRateBudgetAssets: '10',
   targetMarketExposureAssets: '20',
   maximumTotalExposureAssets: '20',
+  minimumOfferAssets: '1',
   groupMode: 'shared-rung',
   loopIntervalSeconds: '3600',
   movementToleranceBps: '10',
@@ -61,7 +62,13 @@ describe('ladder configuration loading', () => {
     await writeFile(path, `ladder:\n  -\n${yamlItem}\n`)
     const config = await ConfigService.load(baseEnvironment, { configPath: path })
     expect(config.ladder).toEqual([
-      expect.objectContaining({ marketId, rungCount: 3, spreadBps: 200n, groupMode: 'shared-rung' })
+      expect.objectContaining({
+        marketId,
+        rungCount: 3,
+        spreadBps: 200n,
+        minimumOfferAssets: 1n,
+        groupMode: 'shared-rung'
+      })
     ])
   })
 
@@ -100,5 +107,13 @@ describe('ladder configuration loading', () => {
         LADDER_MARKETS: JSON.stringify([item({ spreadBps: '201' })])
       })
     ).toThrow('must be even')
+    expect(() =>
+      ConfigService.from({
+        ...baseEnvironment,
+        LADDER_MARKETS: JSON.stringify([
+          item({ lowerRateBudgetAssets: '100', minimumOfferAssets: '101' })
+        ])
+      })
+    ).toThrow('must be at least minimumOfferAssets')
   })
 })

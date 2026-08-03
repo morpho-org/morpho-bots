@@ -9,7 +9,22 @@ Object.defineProperty(BigInt.prototype, 'toJSON', {
   }
 })
 
-process.exitCode = await runMarketMakingEntrypoint(createApplication(), Bun.argv.slice(2), {
-  writeOut: value => console.log(value),
-  writeError: value => console.error(value)
-})
+const shutdown = new AbortController()
+const requestShutdown = () => shutdown.abort()
+process.once('SIGINT', requestShutdown)
+process.once('SIGTERM', requestShutdown)
+
+try {
+  process.exitCode = await runMarketMakingEntrypoint(
+    createApplication(),
+    Bun.argv.slice(2),
+    {
+      writeOut: value => console.log(value),
+      writeError: value => console.error(value)
+    },
+    { signal: shutdown.signal }
+  )
+} finally {
+  process.removeListener('SIGINT', requestShutdown)
+  process.removeListener('SIGTERM', requestShutdown)
+}

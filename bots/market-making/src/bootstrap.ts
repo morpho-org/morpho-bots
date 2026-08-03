@@ -6,6 +6,7 @@ import type {
   BootstrapPositionService,
   BootstrapReferenceRateService
 } from './application/bootstrap/position-bootstrap.service'
+import type { OfferInvalidationPort } from './application/invalidation/offer-invalidation.service'
 import type {
   LadderMakeService,
   LadderPositionService,
@@ -13,9 +14,11 @@ import type {
 } from './application/ladder/ladder-market-maker.service'
 import type { SetupStateService } from './application/setup/setup-check.service'
 import type { ConfigService } from './config/config.service'
+import type { CliRuntimeOptions } from './infrastructure/cli/cli'
 import type { ChainReader } from './infrastructure/setup-state/viem-setup-state.service'
 
 import { PositionBootstrapService } from './application/bootstrap/position-bootstrap.service'
+import { OfferInvalidationService } from './application/invalidation/offer-invalidation.service'
 import { LadderMarketMakerService } from './application/ladder/ladder-market-maker.service'
 import { SetupCheckService } from './application/setup/setup-check.service'
 import { VersionService } from './application/version.service'
@@ -23,6 +26,9 @@ import { ConfigService as RuntimeConfigService } from './config/config.service'
 import { createBootstrapGroupOwnership } from './infrastructure/bootstrap/bootstrap-group-ownership.utils'
 import { createProductionBootstrapAdapters } from './infrastructure/bootstrap/production-bootstrap'
 import { Cli } from './infrastructure/cli/cli'
+import { createProductionOfferInvalidationPort } from './infrastructure/invalidation/production-offer-invalidation'
+import { createLadderGroupOwnership } from './infrastructure/ladder/ladder-group-ownership.utils'
+import { createProductionLadderAdapters } from './infrastructure/ladder/production-ladder'
 import { ReadOnlyBootstrapMakeService } from './infrastructure/make/read-only-bootstrap-make.service'
 import { ReadOnlyLadderMakeService } from './infrastructure/make/read-only-ladder-make.service'
 import { requestJson } from './infrastructure/setup-state/http-json.utils'
@@ -38,12 +44,15 @@ type Dependencies = {
     rates: BootstrapReferenceRateService
     make: BootstrapMakeService
   }
-  /** Exposes the ladder command through ports retained under read-only make composition. */
+  /** Replaces production ladder ports while retaining default application-service composition. */
   createLadderAdapters?: (config: ConfigService) => {
     positions: LadderPositionService
     rates: LadderReferenceRateService
     make: LadderMakeService
+    validateReconcile?: (parameters: Parameters<LadderMakeService['reconcile']>[0]) => Promise<void>
   }
+  /** Replaces the provider, signer, and ownership port for explicit offer invalidation. */
+  createInvalidationPort?: (config: ConfigService) => OfferInvalidationPort
   /** Overrides the process working directory used for default configuration discovery. */
   cwd?: string
 }
@@ -71,6 +80,10 @@ const defaultState = (config: ConfigService) => {
     marketIds: config.setup.marketIds,
     configuredGroupIds: config.v0OfferGroupIds
   })
+  const ladderOwnership = createLadderGroupOwnership({
+    maker: config.setup.maker,
+    strategyMarketIds: config.ladder.map(item => item.marketId)
+  })
 
   return new ViemSetupStateService(
     chainReader(config.rpcUrl, config.requestTimeoutMs),
@@ -86,23 +99,30 @@ const defaultState = (config: ConfigService) => {
       marketIds: config.setup.marketIds,
       referenceMarketId: config.setup.referenceMarketId,
       v0OfferGroupIds: config.v0OfferGroupIds,
-      readOwnedGroupIds: ownership.read,
+      readOwnedGroupIds: async () => [
+        ...new Set([...(await ownership.read()), ...(await ladderOwnership.readGroupIds())])
+      ],
       requestTimeoutMs: config.requestTimeoutMs
     }
   )
 }
 
 /**
- * Composes the market-making CLI, setup-check, position-bootstrap, and optional ladder dependencies.
+ * Composes setup-check, position-bootstrap, ladder, and explicit invalidation dependencies.
  * @param environment - Environment map used for lazy validated configuration.
- * @param dependencies - Optional state and workflow-port factories; ladder ports expose its command.
+ * @param dependencies - Optional state and workflow-port factories used by isolated tests.
  * @returns An application exposing a single asynchronous CLI `run` boundary.
  * @remarks Composition is side-effect free. Configuration and provider construction occur lazily
- * for `setup-check`, `bootstrap`, or an exposed `ladder` command. Setup is read-only and preserves
+ * for `setup-check`, `bootstrap`, `ladder`, or `invalidate`. Setup is read-only and preserves
  * concurrent independent reads through `Promise.all`. `--readonly` selects address-only identity
  * before any private-key validation and replaces every workflow mutation port with terminal output.
  * Writer commands assert readiness before constructing or running their application service; failed
- * readiness rejects without starting the writer. Bootstrap and ladder cycles run only for their
+ * readiness rejects without starting the writer. Setup monitoring emits read-only readiness reports
+ * at a one-minute cadence and halts nonzero on the first failed report. Bootstrap monitoring uses
+ * the same cadence and invalidates strategy-owned groups after its shutdown signal. Ladder
+ * monitoring uses the shortest configured ladder cadence and invalidates active owned ladder groups
+ * after shutdown. Explicit invalidation uses a narrower cancellation preflight so unknown maker
+ * groups can be removed without weakening normal readiness. One-shot writers run only for their
  * respective explicit commands.
  */
 export const createApplication = (
@@ -112,11 +132,12 @@ export const createApplication = (
   /**
    * Executes one CLI invocation.
    * @param argv - User arguments without runtime/executable prefixes.
-   * @returns Captured version text, setup-check JSON, position-bootstrap JSON, or ladder-cycle JSON.
+   * @param runtime - Optional shutdown signal and continuous-cycle writer forwarded to the CLI.
+   * @returns Captured version, setup-check, writer cycle/monitor, or invalidation JSON.
    * @throws On invalid configuration or usage, provider or readiness failure, or a halted writer
    * cycle. Failed readiness prevents the selected writer's `runOnce()` side effect.
    */
-  run(argv: readonly string[]): Promise<unknown>
+  run(argv: readonly string[], runtime?: CliRuntimeOptions): Promise<unknown>
 } => {
   const loadConfig = (options: { configPath?: string; readOnly: boolean }) =>
     RuntimeConfigService.load(environment, {
@@ -124,7 +145,6 @@ export const createApplication = (
       cwd: dependencies.cwd,
       readOnly: options.readOnly
     })
-  const createLadderAdapters = dependencies.createLadderAdapters
   const cli = new Cli(
     new VersionService(),
     async options => {
@@ -147,26 +167,27 @@ export const createApplication = (
         config.bootstrap
       )
     },
-    createLadderAdapters
-      ? async options => {
-          const config = await loadConfig(options)
-          const state = dependencies.createState?.(config) ?? defaultState(config)
-          await new SetupCheckService(state, config.setup, config.readOnly).assertReady()
-          const adapters = createLadderAdapters(config)
-          const make = config.readOnly
-            ? new ReadOnlyLadderMakeService(adapters.make)
-            : adapters.make
-          return new LadderMarketMakerService(
-            adapters.positions,
-            adapters.rates,
-            make,
-            config.ladder
-          )
-        }
-      : undefined
+    async options => {
+      const config = await loadConfig(options)
+      const state = dependencies.createState?.(config) ?? defaultState(config)
+      await new SetupCheckService(state, config.setup, config.readOnly).assertReady()
+      const adapters =
+        dependencies.createLadderAdapters?.(config) ?? createProductionLadderAdapters(config)
+      const make = config.readOnly
+        ? new ReadOnlyLadderMakeService(adapters.make, console.log, adapters.validateReconcile)
+        : adapters.make
+      return new LadderMarketMakerService(adapters.positions, adapters.rates, make, config.ladder)
+    },
+    async options => {
+      const config = await loadConfig(options)
+      const port =
+        dependencies.createInvalidationPort?.(config) ??
+        createProductionOfferInvalidationPort(config)
+      return new OfferInvalidationService(port)
+    }
   )
 
   return {
-    run: (argv: readonly string[]) => cli.run(argv)
+    run: (argv: readonly string[], runtime?: CliRuntimeOptions) => cli.run(argv, runtime)
   }
 }

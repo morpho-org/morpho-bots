@@ -10,9 +10,13 @@ import type {
 import type { BootstrapConfig } from '../../../src/domain/bootstrap/position-bootstrap'
 
 import { PositionBootstrapService } from '../../../src/application/bootstrap/position-bootstrap.service'
+import { BootstrapConfigurationError } from '../../../src/domain/bootstrap/bootstrap-configuration.error'
+import { BootstrapMempoolValidationError } from '../../../src/infrastructure/bootstrap/bootstrap-mempool-validation.error'
 
 const marketId: Hex = `0x${'11'.repeat(32)}`
 const secondMarketId: Hex = `0x${'22'.repeat(32)}`
+const publicationHash: Hex = `0x${'aa'.repeat(32)}`
+const cancellationHash: Hex = `0x${'bb'.repeat(32)}`
 
 const config = (id = marketId, autoRefill = false): BootstrapConfig => ({
   marketId: id,
@@ -49,15 +53,140 @@ const setup = ({
   }))
   const reconcile = mock(async () => undefined)
   const hardHalt = mock(async () => undefined)
+  const cleanup = mock(async () => undefined)
   const positions: BootstrapPositionService = { readPosition }
   const rates: BootstrapReferenceRateService = { readRate }
-  const make: BootstrapMakeService = { reconcile, hardHalt }
+  const make: BootstrapMakeService = { reconcile, hardHalt, cleanup }
   const service = new PositionBootstrapService(positions, rates, make, configs)
 
-  return { service, positions, rates, make, readPosition, readRate, reconcile, hardHalt }
+  return {
+    service,
+    positions,
+    rates,
+    make,
+    readPosition,
+    readRate,
+    reconcile,
+    hardHalt,
+    cleanup
+  }
 }
 
 describe('PositionBootstrapService', () => {
+  test('monitors sequential cycles and cleans owned groups after shutdown', async () => {
+    const events: string[] = []
+    const controller = new AbortController()
+    const { service, make } = setup()
+    make.reconcile = mock(async () => {
+      events.push('reconcile')
+    })
+    const cleanup = mock(async () => {
+      events.push('cleanup')
+    })
+    make.cleanup = cleanup
+
+    const report = await service.runContinuously({
+      signal: controller.signal,
+      intervalMs: 1,
+      onCycle: results => {
+        events.push(`cycle:${results.length}`)
+        if (events.filter(event => event.startsWith('cycle:')).length === 2) {
+          controller.abort()
+        }
+      }
+    })
+
+    expect(report).toEqual({
+      status: 'stopped',
+      reason: 'signal',
+      cycles: 2,
+      cleanup: { status: 'applied' }
+    })
+    expect(events).toEqual(['reconcile', 'cycle:1', 'reconcile', 'cycle:1', 'cleanup'])
+    expect(cleanup).toHaveBeenCalledTimes(1)
+  })
+
+  test('counts only cycles successfully delivered to the output callback', async () => {
+    const { service, cleanup } = setup()
+
+    const report = await service.runContinuously({
+      signal: new AbortController().signal,
+      intervalMs: 1,
+      onCycle: () => {
+        throw new TypeError('private output failure')
+      }
+    })
+
+    expect(report).toEqual({
+      status: 'halted',
+      reason: 'cycle-error',
+      cycles: 0,
+      cleanup: { status: 'applied' },
+      cycleErrorName: 'TypeError'
+    })
+    expect(cleanup).toHaveBeenCalledTimes(1)
+  })
+
+  test('stops monitoring on a handled failed cycle and still cleans owned groups', async () => {
+    const controller = new AbortController()
+    const { service, make } = setup()
+    make.reconcile = mock(async () => {
+      throw new Error('publication unavailable')
+    })
+    const cleanup = mock(async () => 'logged' as const)
+    make.cleanup = cleanup
+
+    const report = await service.runContinuously({
+      signal: controller.signal,
+      intervalMs: 1
+    })
+
+    expect(report).toMatchObject({
+      status: 'halted',
+      reason: 'cycle-failed',
+      cycles: 1,
+      cleanup: { status: 'logged' },
+      lastCycle: [{ status: 'failed', stage: 'make', errorName: 'UnknownError' }]
+    })
+    expect(cleanup).toHaveBeenCalledTimes(1)
+  })
+
+  test('reports a sanitized cleanup failure after a stop signal', async () => {
+    const controller = new AbortController()
+    const { service, make } = setup()
+    make.cleanup = mock(async () => {
+      const error = new Error('provider https://rpc.example/?key=secret')
+      error.name = 'https://rpc.example/?key=secret'
+      throw error
+    })
+    controller.abort()
+
+    const report = await service.runContinuously({
+      signal: controller.signal,
+      intervalMs: 1
+    })
+
+    expect(report).toEqual({
+      status: 'halted',
+      reason: 'cleanup-failed',
+      cycles: 0,
+      cleanup: { status: 'failed', errorName: 'UnknownError' }
+    })
+    expect(JSON.stringify(report)).not.toContain('secret')
+  })
+
+  test('rejects empty monitoring configuration before cleanup', async () => {
+    const controller = new AbortController()
+    const { service, cleanup } = setup({ configs: [] })
+
+    const error = await service
+      .runContinuously({ signal: controller.signal, intervalMs: 1 })
+      .catch(value => value)
+
+    expect(error).toBeInstanceOf(BootstrapConfigurationError)
+    expect(cleanup).not.toHaveBeenCalled()
+  })
+
   test('preflights a positive premium before a target-reached position or reference read', async () => {
     const { service, readPosition, readRate, reconcile, hardHalt } = setup({
       configs: [{ ...config(), premiumBps: 1n }],
@@ -173,6 +302,233 @@ describe('PositionBootstrapService', () => {
         marketId,
         status: 'applied',
         action: 'publish'
+      }
+    ])
+  })
+
+  test('reports config, target rate, offer, transaction hash, and fresh after-state when verbose', async () => {
+    const { service, positions, make } = setup()
+    const submittedEvents: unknown[] = []
+    const transactionOrder: string[] = []
+    let read = 0
+    const readPosition = mock(async () => {
+      read += 1
+      return {
+        credit: read === 1 ? 0n : 100n,
+        debt: 25n,
+        cashBalance: read === 1 ? 2_000n : 1_500n,
+        marketExposure: read === 1 ? 0n : 500n,
+        totalExposure: read === 1 ? 0n : 500n,
+        activeOffer:
+          read === 1
+            ? undefined
+            : {
+                marketId,
+                assets: 500n,
+                rateBps: 450n,
+                referenceObservationId: 'static:500'
+              },
+        requiresReconciliation: false
+      }
+    })
+    positions.readPosition = readPosition
+    make.reconcile = mock(async parameters => {
+      await parameters.onTransactionSubmitted?.({
+        operation: 'publish',
+        txHash: publicationHash
+      })
+      transactionOrder.push('confirmed')
+      return {
+        submittedTransactions: [{ operation: 'publish' as const, txHash: publicationHash }]
+      }
+    })
+
+    const result = await service.runOnce({
+      verbose: true,
+      onTransactionSubmitted: event => {
+        submittedEvents.push(event)
+        transactionOrder.push('submitted')
+      }
+    })
+
+    expect(result).toEqual([
+      {
+        marketId,
+        status: 'applied',
+        action: 'publish',
+        verbose: {
+          config: config(),
+          currentState: {
+            status: 'observed',
+            position: {
+              credit: 0n,
+              debt: 25n,
+              cashBalance: 2_000n,
+              marketExposure: 0n,
+              totalExposure: 0n,
+              requiresReconciliation: false,
+              initialTargetCompleted: false
+            }
+          },
+          effectiveState: {
+            credit: 0n,
+            debt: 25n,
+            cashBalance: 2_000n,
+            marketExposure: 0n,
+            totalExposure: 0n,
+            requiresReconciliation: false,
+            initialTargetCompleted: false
+          },
+          referenceRate: {
+            mode: 'static',
+            rateBps: 500n,
+            observationId: 'static:500'
+          },
+          targetRateBps: 450n,
+          decision: {
+            kind: 'publish',
+            offer: {
+              marketId,
+              assets: 500n,
+              rateBps: 450n,
+              referenceObservationId: 'static:500'
+            }
+          },
+          bootstrapOffer: {
+            marketId,
+            assets: 500n,
+            rateBps: 450n,
+            referenceObservationId: 'static:500'
+          },
+          submittedTransactions: [{ operation: 'publish', txHash: publicationHash }],
+          stateAfterCheck: {
+            status: 'observed',
+            position: {
+              credit: 100n,
+              debt: 25n,
+              cashBalance: 1_500n,
+              marketExposure: 500n,
+              totalExposure: 500n,
+              activeOffer: {
+                marketId,
+                assets: 500n,
+                rateBps: 450n,
+                referenceObservationId: 'static:500'
+              },
+              requiresReconciliation: false,
+              initialTargetCompleted: false
+            }
+          }
+        }
+      }
+    ])
+    expect(readPosition).toHaveBeenCalledTimes(2)
+    expect(submittedEvents).toEqual([
+      {
+        event: 'bootstrap.transaction-submitted',
+        marketId,
+        operation: 'publish',
+        txHash: publicationHash
+      }
+    ])
+    expect(transactionOrder).toEqual(['submitted', 'confirmed'])
+  })
+
+  test('keeps non-verbose cycles compact and avoids the diagnostic after-state read', async () => {
+    const { service, readPosition } = setup()
+
+    expect(await service.runOnce()).toEqual([{ marketId, status: 'applied', action: 'publish' }])
+    expect(readPosition).toHaveBeenCalledTimes(1)
+  })
+
+  test('keeps an applied result when only its verbose after-state read fails', async () => {
+    const { service, positions } = setup()
+    let read = 0
+    positions.readPosition = mock(async () => {
+      read += 1
+      if (read === 2) throw new TypeError('after-state provider unavailable')
+      return {
+        credit: 0n,
+        debt: 0n,
+        cashBalance: 2_000n,
+        marketExposure: 0n,
+        totalExposure: 0n,
+        activeOffer: undefined
+      }
+    })
+
+    const result = await service.runOnce({ verbose: true })
+
+    expect(result).toMatchObject([
+      {
+        status: 'applied',
+        action: 'publish',
+        verbose: {
+          stateAfterCheck: { status: 'failed', errorName: 'TypeError' }
+        }
+      }
+    ])
+  })
+
+  test('reports verbose monitor cycles and confirmed shutdown cancellation hashes', async () => {
+    const controller = new AbortController()
+    const { service, make } = setup({ credit: 900n })
+    make.cleanup = mock(async parameters => {
+      await parameters?.onTransactionSubmitted?.({
+        operation: 'cancel',
+        txHash: cancellationHash
+      })
+      return {
+        submittedTransactions: [{ operation: 'cancel' as const, txHash: cancellationHash }]
+      }
+    })
+    const cycles: unknown[] = []
+    const submittedEvents: unknown[] = []
+
+    const report = await service.runContinuously({
+      signal: controller.signal,
+      intervalMs: 1,
+      verbose: true,
+      onCycle: results => {
+        cycles.push(results)
+        controller.abort()
+      },
+      onTransactionSubmitted: event => {
+        submittedEvents.push(event)
+      }
+    })
+
+    expect(cycles).toHaveLength(1)
+    expect(cycles).toMatchObject([
+      [
+        {
+          action: 'target-reached',
+          verbose: {
+            config: { marketId },
+            currentState: { status: 'observed', position: { credit: 900n } },
+            decision: { kind: 'target-reached' },
+            stateAfterCheck: {
+              status: 'observed',
+              position: { credit: 900n, initialTargetCompleted: true }
+            }
+          }
+        }
+      ]
+    ])
+    expect(report).toEqual({
+      status: 'stopped',
+      reason: 'signal',
+      cycles: 1,
+      cleanup: {
+        status: 'applied',
+        submittedTransactions: [{ operation: 'cancel', txHash: cancellationHash }]
+      }
+    })
+    expect(submittedEvents).toEqual([
+      {
+        event: 'bootstrap.transaction-submitted',
+        operation: 'cancel',
+        txHash: cancellationHash
       }
     ])
   })
@@ -919,6 +1275,26 @@ describe('PositionBootstrapService', () => {
       }
     ])
     expect(failedReconcile).toHaveBeenCalledTimes(1)
+  })
+
+  test('reports a sanitized Mempool asset floor after publication validation fails', async () => {
+    const { service, make } = setup()
+    make.reconcile = mock(async () => {
+      throw new BootstrapMempoolValidationError([
+        { rule: 'min_offer_assets_usd', minimumAssets: 100_000_000n }
+      ])
+    })
+
+    expect(await service.runOnce()).toEqual([
+      {
+        marketId,
+        status: 'failed',
+        stage: 'make',
+        invalidated: false,
+        errorName: 'BootstrapMempoolValidationError',
+        minimumAssets: '100000000'
+      }
+    ])
   })
 
   test('resumes after initial completion when auto-refill is enabled', async () => {

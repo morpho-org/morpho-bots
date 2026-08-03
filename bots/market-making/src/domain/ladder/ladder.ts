@@ -12,8 +12,9 @@ const WEIGHT_SCALE_BPS = 10_000n
  * comfortably below Midnight SDK 1.2.0's height-20 tree limit while bounding local allocation.
  */
 const MAX_LADDER_RUNG_COUNT = 512
+const MAX_MONITOR_INTERVAL_SECONDS = 2_147_483
 
-/** Static shape, inventory limits, cadence, and hard rate range for one ladder market. */
+/** Static shape, inventory and offer floors, cadence, and hard rate range for one ladder market. */
 export type LadderConfig = {
   marketId: Hex
   quotePremiumBps: bigint
@@ -25,6 +26,7 @@ export type LadderConfig = {
   higherRateBudgetAssets: bigint
   targetMarketExposureAssets: bigint
   maximumTotalExposureAssets: bigint
+  minimumOfferAssets: bigint
   groupMode: 'shared-rung' | 'per-book'
   loopIntervalSeconds: number
   movementToleranceBps: bigint
@@ -32,7 +34,12 @@ export type LadderConfig = {
   maximumRateBps: bigint
 }
 
-/** Fresh capacities that independently cap each configured side budget. */
+/**
+ * Fresh inventory by rate side plus exposure-increasing lend capacity for one ladder market.
+ * @remarks Lower-rate capacity is accrued credit for reduce-only sells. Higher-rate capacity is
+ * available loan-token balance and allowance for lend buys; target and total capacities cap only
+ * that higher-rate exposure-increasing side.
+ */
 export type LadderMarketState = {
   lowerRateCapacityAssets?: bigint
   higherRateCapacityAssets?: bigint
@@ -86,9 +93,17 @@ const rungWeights = (config: LadderConfig) =>
     (_, index) => WEIGHT_SCALE_BPS + BigInt(index) * config.sizeSkewBps
   )
 
-const allocateBudget = (budget: bigint, weights: readonly bigint[]) => {
-  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0n)
-  const allocations = weights.map(weight => (budget * weight) / totalWeight)
+const allocateBudget = (budget: bigint, weights: readonly bigint[], minimumOfferAssets: bigint) => {
+  const fundedRungCount = Number(minimum([BigInt(weights.length), budget / minimumOfferAssets]))
+  const fundedWeights = weights.slice(0, fundedRungCount)
+  if (fundedWeights.length === 0) return []
+
+  const reservedAssets = minimumOfferAssets * BigInt(fundedWeights.length)
+  const weightedAssets = budget - reservedAssets
+  const totalWeight = fundedWeights.reduce((sum, weight) => sum + weight, 0n)
+  const allocations = fundedWeights.map(
+    weight => minimumOfferAssets + (weightedAssets * weight) / totalWeight
+  )
   const allocated = allocations.reduce((sum, allocation) => sum + allocation, 0n)
   allocations[allocations.length - 1] = (allocations.at(-1) ?? 0n) + budget - allocated
   return allocations
@@ -112,13 +127,6 @@ const aggregateBudget = (config: LadderConfig, capacities: LadderMarketState) =>
     }
   }
   return minimum(values)
-}
-
-const splitBudget = (lower: bigint, higher: bigint, aggregate: bigint) => {
-  const requested = lower + higher
-  if (requested <= aggregate) return { lower, higher }
-  const lowerShare = (aggregate * lower) / requested
-  return { lower: lowerShare, higher: aggregate - lowerShare }
 }
 
 const assertRungBounds = (rate: bigint, side: 'lower' | 'higher', config: LadderConfig) => {
@@ -154,6 +162,19 @@ export const validateLadderConfig = (config: LadderConfig): void => {
   positive(config.higherRateBudgetAssets, 'higherRateBudgetAssets')
   positive(config.targetMarketExposureAssets, 'targetMarketExposureAssets')
   positive(config.maximumTotalExposureAssets, 'maximumTotalExposureAssets')
+  positive(config.minimumOfferAssets, 'minimumOfferAssets')
+  if (config.lowerRateBudgetAssets < config.minimumOfferAssets) {
+    throw new LadderConfigurationError(
+      'lowerRateBudgetAssets',
+      'must be at least minimumOfferAssets'
+    )
+  }
+  if (config.higherRateBudgetAssets < config.minimumOfferAssets) {
+    throw new LadderConfigurationError(
+      'higherRateBudgetAssets',
+      'must be at least minimumOfferAssets'
+    )
+  }
   if (config.targetMarketExposureAssets > config.maximumTotalExposureAssets) {
     throw new LadderConfigurationError(
       'targetMarketExposureAssets',
@@ -164,6 +185,12 @@ export const validateLadderConfig = (config: LadderConfig): void => {
     throw new LadderConfigurationError('groupMode', 'must be shared-rung or per-book')
   }
   safePositive(config.loopIntervalSeconds, 'loopIntervalSeconds')
+  if (config.loopIntervalSeconds > MAX_MONITOR_INTERVAL_SECONDS) {
+    throw new LadderConfigurationError(
+      'loopIntervalSeconds',
+      `must not exceed ${MAX_MONITOR_INTERVAL_SECONDS}`
+    )
+  }
   nonnegative(config.movementToleranceBps, 'movementToleranceBps')
   nonnegative(config.minimumRateBps, 'minimumRateBps')
   positive(config.maximumRateBps, 'maximumRateBps')
@@ -187,10 +214,11 @@ export const validateLadderConfig = (config: LadderConfig): void => {
  * Generates exact lower/higher rates and deterministic bigint allocations for one market snapshot.
  * @param parameters - Input object: `config` defines the static shape, budgets, cadence, and hard
  * rate range; `referenceRateBps` is the fresh reference in integer basis points; `capacities`
- * optionally supplies fresh side, market, and total budget caps; and `retainedCenterRateBps`
- * optionally keeps a previously active center inside movement tolerance while still requiring every
- * resulting rung to satisfy the configured hard range.
- * @returns Exact desired quote set; outer rungs receive integer-division remainders.
+ * optionally supplies fresh balance, credit, and exposure-increasing lend caps; and
+ * `retainedCenterRateBps` optionally keeps a previously active center inside movement tolerance
+ * while still requiring every resulting rung to satisfy the configured hard range.
+ * @returns Exact desired quote set; only the nearest rates are funded when the side cannot support
+ * every rung at `minimumOfferAssets`, and the outermost funded rung receives division remainders.
  * @throws LadderConfigurationError for invalid config, capacities, or any out-of-bounds runtime rung.
  * @remarks This domain operation never clamps rates and performs no protocol direction/tick mapping.
  */
@@ -199,13 +227,13 @@ export const generateLadder = (parameters: GenerateLadderParameters): LadderQuot
   validateLadderConfig(config)
   const centerRateBps = retainedCenterRateBps ?? referenceRateBps + config.quotePremiumBps
   const weights = rungWeights(config)
-  const budgets = splitBudget(
-    sideBudget(config.lowerRateBudgetAssets, capacities.lowerRateCapacityAssets),
+  const lowerBudget = sideBudget(config.lowerRateBudgetAssets, capacities.lowerRateCapacityAssets)
+  const higherBudget = minimum([
     sideBudget(config.higherRateBudgetAssets, capacities.higherRateCapacityAssets),
     aggregateBudget(config, capacities)
-  )
-  const lowerAllocations = allocateBudget(budgets.lower, weights)
-  const higherAllocations = allocateBudget(budgets.higher, weights)
+  ])
+  const lowerAllocations = allocateBudget(lowerBudget, weights, config.minimumOfferAssets)
+  const higherAllocations = allocateBudget(higherBudget, weights, config.minimumOfferAssets)
   const halfSpread = config.spreadBps / 2n
   const buildRungs = (side: 'lower' | 'higher', allocations: readonly bigint[]) =>
     weights.flatMap((_weight, index) => {

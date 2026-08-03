@@ -5,6 +5,7 @@ import { JSDocValidationError } from './js-doc-validation.error'
 
 type Rule = 'summary' | 'params' | 'returns' | 'throws' | 'concurrency' | 'deadline' | 'read-only'
 
+/** One safe, deterministic documentation-contract violation. */
 export type JSDocFailure = {
   file: string
   line: number
@@ -13,6 +14,7 @@ export type JSDocFailure = {
   message: string
 }
 
+/** Complete public-declaration inventory and validation result for one TypeScript source. */
 export type JSDocInspection = {
   declarations: string[]
   failures: JSDocFailure[]
@@ -40,6 +42,7 @@ const concurrencyDeclarations = new Set([
 const deadlineDeclarations = new Set(['ViemSetupStateService.inspectOffers'])
 const readOnlyDeclarations = new Set([
   'SetupCheckService.assertReady',
+  'SetupCheckService.runContinuously',
   'SetupCheckService.check',
   ...providerMethods,
   'ViemSetupStateService.checkPositionHealth'
@@ -218,6 +221,13 @@ const inspectCallable = (
   }
 }
 
+/**
+ * Inventories exported callables and validates their substantive JSDoc contract.
+ * @param file - Package-relative TypeScript filename used in safe diagnostics.
+ * @param source - Complete TypeScript source text to parse without executing it.
+ * @returns Every inspected declaration and every deterministic documentation-rule failure.
+ * @remarks The inspection is read-only: it parses in memory and performs no filesystem writes.
+ */
 export const inspectJSDocSource = (file: string, source: string): JSDocInspection => {
   const sourceFile = ts.createSourceFile(
     file,
@@ -288,16 +298,29 @@ export const inspectJSDocSource = (file: string, source: string): JSDocInspectio
 const packageRoot = resolve(import.meta.dir, '..')
 const sourceRoot = resolve(packageRoot, 'src')
 const sourceFiles = [
+  'application/monitor.utils.ts',
   'application/operator-error-name.utils.ts',
+  'application/bootstrap/bootstrap-ownership-cleanup.error.ts',
   'application/bootstrap/position-bootstrap-halted.error.ts',
+  'application/bootstrap/position-bootstrap-monitor-halted.error.ts',
+  'application/bootstrap/position-bootstrap-monitor.utils.ts',
+  'application/bootstrap/position-bootstrap-verbose.ts',
   'application/bootstrap/position-bootstrap.service.ts',
+  'application/invalidation/offer-invalidation-failed.error.ts',
+  'application/invalidation/offer-invalidation.service.ts',
   'application/ladder/ladder-cycle-halted.error.ts',
   'application/ladder/ladder-market-maker.service.ts',
   'application/ladder/ladder-market-maker.utils.ts',
+  'application/ladder/ladder-monitor-halted.error.ts',
+  'application/ladder/ladder-monitor.utils.ts',
+  'application/ladder/ladder-ownership-cleanup.error.ts',
+  'application/ladder/ladder-verbose.ts',
   'application/setup/setup-check.service.ts',
   'application/setup/setup-check.utils.ts',
   'application/setup/safe-provider.error.ts',
   'application/setup/setup-failed.error.ts',
+  'application/setup/setup-monitor-configuration.error.ts',
+  'application/setup/setup-monitor-halted.error.ts',
   'application/version.service.ts',
   'bootstrap.ts',
   'config/config-file.error.ts',
@@ -312,21 +335,45 @@ const sourceFiles = [
   'infrastructure/bootstrap/bootstrap-hard-halt.error.ts',
   'infrastructure/bootstrap/bootstrap-exposure.utils.ts',
   'infrastructure/bootstrap/bootstrap-make.service.ts',
+  'infrastructure/bootstrap/bootstrap-mempool-validation.error.ts',
+  'infrastructure/bootstrap/bootstrap-mempool-validation.utils.ts',
   'infrastructure/bootstrap/bootstrap-offer.utils.ts',
+  'infrastructure/bootstrap/bootstrap-pending-offer.utils.ts',
   'infrastructure/bootstrap/bootstrap-adapter.error.ts',
   'infrastructure/bootstrap/bootstrap-group-ownership.utils.ts',
   'infrastructure/bootstrap/bootstrap-groups.utils.ts',
   'infrastructure/bootstrap/bootstrap-position.service.ts',
   'infrastructure/bootstrap/bootstrap-reference-rate.service.ts',
   'infrastructure/bootstrap/bootstrap-requirements.utils.ts',
+  'infrastructure/bootstrap/bootstrap-spread.utils.ts',
   'infrastructure/bootstrap/bootstrap-transaction.utils.ts',
   'infrastructure/bootstrap/production-bootstrap.ts',
   'infrastructure/cli/cli-usage.error.ts',
   'infrastructure/cli/cli.ts',
   'infrastructure/cli/market-making-entrypoint.ts',
+  'infrastructure/cli/offer-invalidation-group.utils.ts',
+  'infrastructure/invalidation/offer-invalidation-adapter.error.ts',
+  'infrastructure/invalidation/offer-invalidation-group.utils.ts',
+  'infrastructure/invalidation/offer-invalidation-transaction.utils.ts',
+  'infrastructure/invalidation/production-offer-invalidation.ts',
+  'infrastructure/ladder/ladder-adapter.error.ts',
+  'infrastructure/ladder/ladder-active-publication.utils.ts',
+  'infrastructure/ladder/ladder-bootstrap-offer.utils.ts',
+  'infrastructure/ladder/ladder-cash-reservation.utils.ts',
+  'infrastructure/ladder/ladder-group-ownership.utils.ts',
+  'infrastructure/ladder/ladder-hard-halt.error.ts',
+  'infrastructure/ladder/ladder-make.service.ts',
+  'infrastructure/ladder/ladder-offer.utils.ts',
+  'infrastructure/ladder/ladder-signature.utils.ts',
+  'infrastructure/ladder/ladder-spread.utils.ts',
+  'infrastructure/ladder/ladder-transaction.utils.ts',
+  'infrastructure/ladder/production-ladder.ts',
+  'infrastructure/make/managed-maker-account.utils.ts',
   'infrastructure/make/read-only-bootstrap-make.service.ts',
   'infrastructure/make/read-only-ladder-make.service.ts',
   'infrastructure/make/read-only-make.utils.ts',
+  'infrastructure/reference/blue-reference-reader.utils.ts',
+  'infrastructure/reference/reference-adapter.error.ts',
   'infrastructure/setup-state/http-json.utils.ts',
   'infrastructure/setup-state/provider-pagination.error.ts',
   'infrastructure/setup-state/provider-read.error.ts',
@@ -336,6 +383,7 @@ const sourceFiles = [
   'infrastructure/setup-state/viem-setup-state.utils.ts'
 ].map(path => resolve(sourceRoot, path))
 sourceFiles.push(resolve(packageRoot, 'scripts/js-doc-validation.error.ts'))
+sourceFiles.push(resolve(packageRoot, 'scripts/check-jsdoc.ts'))
 
 const run = async () => {
   const failures: JSDocFailure[] = []

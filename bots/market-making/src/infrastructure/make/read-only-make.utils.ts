@@ -9,7 +9,7 @@
  */
 export const formatReadOnlyMakeEvent = (
   workflow: 'bootstrap' | 'ladder',
-  operation: 'reconcile' | 'hard-halt',
+  operation: 'reconcile' | 'hard-halt' | 'cleanup',
   request: unknown
 ) =>
   JSON.stringify({ event: 'readonly.make', workflow, operation, request }, (_, value) =>

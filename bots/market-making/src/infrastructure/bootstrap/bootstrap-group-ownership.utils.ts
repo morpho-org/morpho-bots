@@ -192,9 +192,16 @@ export const createBootstrapGroupOwnership = (
     return [...new Set([...configured, ...state.confirmedGroupIds, ...state.reservedGroupIds])]
   }
 
+  const readPersistedGroupIds = async () => {
+    const state = await readPersisted()
+    return [...new Set([...state.confirmedGroupIds, ...state.reservedGroupIds])]
+  }
+
   return {
     /** Reads configured, confirmed, and reserved group IDs as ownership candidates. @returns Canonical explicit ownership IDs. */
     read,
+    /** Reads only confirmed and reserved bot-issued group IDs. @returns Persisted IDs that may still be active before API indexing. */
+    readPersistedGroupIds,
     /** Reads persisted offer intent for safe live-offer comparison. @returns Confirmed or reserved offers with their group IDs. */
     readOffers: async () => (await readPersisted()).offers,
     /** Durably reserves a group ID and offer intent before publication. @param groupId - Prepared group ID. @param offer - Intended offer semantics. @returns Completion after atomic storage. */
@@ -227,6 +234,16 @@ export const createBootstrapGroupOwnership = (
         ...state,
         reservedGroupIds: state.reservedGroupIds.filter(value => value !== id),
         offers: state.offers.filter(value => value.groupId !== id)
+      })
+    },
+    /** Removes canceled groups from persisted ownership and offer intent. @param groupIds - Confirmed canceled group IDs. @returns Completion after atomic storage; configured IDs remain configuration-owned. */
+    forget: async (groupIds: readonly Hex[]) => {
+      const state = await readPersisted()
+      const removed = new Set(groupIds.map(canonicalId))
+      await writePersisted({
+        confirmedGroupIds: state.confirmedGroupIds.filter(value => !removed.has(value)),
+        reservedGroupIds: state.reservedGroupIds.filter(value => !removed.has(value)),
+        offers: state.offers.filter(value => !removed.has(value.groupId))
       })
     }
   }

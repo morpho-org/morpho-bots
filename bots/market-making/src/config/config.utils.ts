@@ -17,6 +17,8 @@ export type Environment = Record<string, string | undefined>
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000
 const MAXIMUM_REQUEST_TIMEOUT_MS = 120_000
+const DEFAULT_TRANSACTION_RECEIPT_TIMEOUT_MS = 180_000
+const MAXIMUM_TRANSACTION_RECEIPT_TIMEOUT_MS = 900_000
 
 /**
  * Reads one required trimmed environment value.
@@ -124,6 +126,37 @@ export const requestTimeoutValue = (environment: Environment) => {
       'REQUEST_TIMEOUT_MS',
       'out-of-range',
       `REQUEST_TIMEOUT_MS must be between 1 and ${MAXIMUM_REQUEST_TIMEOUT_MS}`
+    )
+  }
+  return value
+}
+
+/**
+ * Reads the transaction-confirmation timeout independently from provider request deadlines.
+ * @param environment - Environment map to inspect.
+ * @returns A receipt timeout from 1 through 900,000 milliseconds, defaulting to 180,000.
+ * @throws `ConfigValidationError` when the value is not decimal digits or is outside the supported
+ * range.
+ * @remarks This longer deadline starts only after a transaction hash has been returned; it does not
+ * change JSON-RPC request, fetch, or aggregate pagination deadlines.
+ */
+export const transactionReceiptTimeoutValue = (environment: Environment) => {
+  const raw =
+    environment.TRANSACTION_RECEIPT_TIMEOUT_MS?.trim() ??
+    String(DEFAULT_TRANSACTION_RECEIPT_TIMEOUT_MS)
+  if (!/^\d+$/.test(raw)) {
+    throw new ConfigValidationError(
+      'TRANSACTION_RECEIPT_TIMEOUT_MS',
+      'invalid-integer',
+      'TRANSACTION_RECEIPT_TIMEOUT_MS must be a decimal integer'
+    )
+  }
+  const value = Number(raw)
+  if (!Number.isSafeInteger(value) || value < 1 || value > MAXIMUM_TRANSACTION_RECEIPT_TIMEOUT_MS) {
+    throw new ConfigValidationError(
+      'TRANSACTION_RECEIPT_TIMEOUT_MS',
+      'out-of-range',
+      `TRANSACTION_RECEIPT_TIMEOUT_MS must be between 1 and ${MAXIMUM_TRANSACTION_RECEIPT_TIMEOUT_MS}`
     )
   }
   return value
@@ -356,6 +389,7 @@ const ladderFields = [
   'higherRateBudgetAssets',
   'targetMarketExposureAssets',
   'maximumTotalExposureAssets',
+  'minimumOfferAssets',
   'groupMode',
   'loopIntervalSeconds',
   'movementToleranceBps',
@@ -448,6 +482,11 @@ export const ladderConfigsValue = (
       maximumTotalExposureAssets: integerBigInt(
         required('maximumTotalExposureAssets'),
         `${prefix}.maximumTotalExposureAssets`,
+        false
+      ),
+      minimumOfferAssets: integerBigInt(
+        required('minimumOfferAssets'),
+        `${prefix}.minimumOfferAssets`,
         false
       ),
       groupMode: groupMode as LadderConfig['groupMode'],

@@ -1,9 +1,17 @@
 /** Stable operator-visible error classifications permitted at injected application boundaries. */
 type OperatorErrorName =
   | 'BootstrapAdapterError'
+  | 'BootstrapMempoolValidationError'
   | 'BootstrapHardHaltError'
+  | 'BootstrapOwnershipCleanupError'
   | 'BootstrapConfigurationError'
   | 'LadderConfigurationError'
+  | 'LadderAdapterError'
+  | 'LadderHardHaltError'
+  | 'LadderOwnershipCleanupError'
+  | 'OfferInvalidationAdapterError'
+  | 'OfferInvalidationFailedError'
+  | 'ReferenceAdapterError'
   | 'ConfigFileError'
   | 'ConfigValidationError'
   | 'ProviderPaginationError'
@@ -11,6 +19,8 @@ type OperatorErrorName =
   | 'ProviderResponseError'
   | 'SafeProviderError'
   | 'SetupFailedError'
+  | 'SetupMonitorConfigurationError'
+  | 'SetupMonitorHaltedError'
   | 'TypeError'
   | 'RangeError'
   | 'URIError'
@@ -18,9 +28,17 @@ type OperatorErrorName =
 
 const knownNames: Readonly<Record<string, OperatorErrorName>> = {
   BootstrapAdapterError: 'BootstrapAdapterError',
+  BootstrapMempoolValidationError: 'BootstrapMempoolValidationError',
   BootstrapHardHaltError: 'BootstrapHardHaltError',
+  BootstrapOwnershipCleanupError: 'BootstrapOwnershipCleanupError',
   BootstrapConfigurationError: 'BootstrapConfigurationError',
   LadderConfigurationError: 'LadderConfigurationError',
+  LadderAdapterError: 'LadderAdapterError',
+  LadderHardHaltError: 'LadderHardHaltError',
+  LadderOwnershipCleanupError: 'LadderOwnershipCleanupError',
+  OfferInvalidationAdapterError: 'OfferInvalidationAdapterError',
+  OfferInvalidationFailedError: 'OfferInvalidationFailedError',
+  ReferenceAdapterError: 'ReferenceAdapterError',
   ConfigFileError: 'ConfigFileError',
   ConfigValidationError: 'ConfigValidationError',
   ProviderPaginationError: 'ProviderPaginationError',
@@ -28,6 +46,8 @@ const knownNames: Readonly<Record<string, OperatorErrorName>> = {
   ProviderResponseError: 'ProviderResponseError',
   SafeProviderError: 'SafeProviderError',
   SetupFailedError: 'SetupFailedError',
+  SetupMonitorConfigurationError: 'SetupMonitorConfigurationError',
+  SetupMonitorHaltedError: 'SetupMonitorHaltedError',
   TypeError: 'TypeError',
   RangeError: 'RangeError',
   URIError: 'URIError'
@@ -41,3 +61,29 @@ const knownNames: Readonly<Record<string, OperatorErrorName>> = {
  */
 export const operatorErrorName = (error: unknown): OperatorErrorName =>
   error instanceof Error ? (knownNames[error.name] ?? 'UnknownError') : 'UnknownError'
+
+/**
+ * Projects a failure into fixed operator-safe fields and retains a sanitized Mempool asset floor.
+ * @param error - Unknown failure from an injected application or provider port.
+ * @returns An allowlisted error name and optional decimal minimum-assets value.
+ * @remarks Provider messages, response bodies, URLs, addresses, and credentials are never returned.
+ */
+export const operatorErrorDetails = (error: unknown) => {
+  const errorName = operatorErrorName(error)
+  if (typeof error !== 'object' || error === null) return { errorName }
+
+  const details = error as Record<string, unknown>
+  const minimumAssets = details.minimumAssets
+  const cleanupName = details.reservationCleanupErrorName
+  const reservationCleanupErrorName =
+    typeof cleanupName === 'string' ? knownNames[cleanupName] : undefined
+  return {
+    errorName,
+    ...(errorName === 'BootstrapMempoolValidationError' &&
+    typeof minimumAssets === 'bigint' &&
+    minimumAssets >= 0n
+      ? { minimumAssets: String(minimumAssets) }
+      : {}),
+    ...(reservationCleanupErrorName ? { reservationCleanupErrorName } : {})
+  }
+}

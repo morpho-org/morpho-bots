@@ -22,6 +22,7 @@ const config = (overrides: Partial<LadderConfig> = {}): LadderConfig => ({
   higherRateBudgetAssets: 10n,
   targetMarketExposureAssets: 20n,
   maximumTotalExposureAssets: 20n,
+  minimumOfferAssets: 1n,
   groupMode: 'shared-rung',
   loopIntervalSeconds: 3600,
   movementToleranceBps: 10n,
@@ -53,7 +54,7 @@ describe('ladder domain', () => {
 
   test.each([
     [1_000n, [30n, 33n, 37n]],
-    [-1_000n, [37n, 33n, 30n]]
+    [-1_000n, [36n, 33n, 31n]]
   ])('allocates skew %p with exact outer-rung remainder', (sizeSkewBps, expected) => {
     const ladder = generateLadder({
       config: config({
@@ -71,7 +72,7 @@ describe('ladder domain', () => {
     expect(ladder.lower.reduce((sum, rung) => sum + rung.assets, 0n)).toBe(100n)
   })
 
-  test('shares fresh aggregate exposure capacity across both ladder sides', () => {
+  test('applies fresh lend-exposure capacity only to the higher-rate buy side', () => {
     const ladder = generateLadder({
       config: config({
         lowerRateBudgetAssets: 100n,
@@ -87,8 +88,8 @@ describe('ladder domain', () => {
         maximumTotalCapacityAssets: 20n
       }
     })
-    expect(ladder.lower.reduce((sum, rung) => sum + rung.assets, 0n)).toBe(10n)
-    expect(ladder.higher.reduce((sum, rung) => sum + rung.assets, 0n)).toBe(10n)
+    expect(ladder.lower.reduce((sum, rung) => sum + rung.assets, 0n)).toBe(100n)
+    expect(ladder.higher.reduce((sum, rung) => sum + rung.assets, 0n)).toBe(20n)
   })
 
   test('omits a side whose fresh capacity is zero', () => {
@@ -102,14 +103,59 @@ describe('ladder domain', () => {
     expect(ladder.higher.reduce((sum, rung) => sum + rung.assets, 0n)).toBe(10n)
   })
 
-  test('omits individual rungs whose proportional allocation rounds to zero', () => {
+  test('funds the closest rung first when capacity supports only one minimum offer', () => {
     const ladder = generateLadder({
       config: config(),
       referenceRateBps: 500n,
       capacities: { lowerRateCapacityAssets: 1n, higherRateCapacityAssets: 0n }
     })
 
-    expect(ladder.lower).toEqual([{ index: 2, rateBps: 200n, assets: 1n }])
+    expect(ladder.lower).toEqual([{ index: 0, rateBps: 400n, assets: 1n }])
+    expect(ladder.higher).toEqual([])
+  })
+
+  test('funds only the closest rungs that can each satisfy the offer floor', () => {
+    const ladder = generateLadder({
+      config: config({
+        lowerRateBudgetAssets: 250n,
+        higherRateBudgetAssets: 250n,
+        targetMarketExposureAssets: 250n,
+        maximumTotalExposureAssets: 250n,
+        minimumOfferAssets: 101n
+      }),
+      referenceRateBps: 500n
+    })
+
+    expect(ladder.lower).toEqual([
+      { index: 0, rateBps: 400n, assets: 125n },
+      { index: 1, rateBps: 300n, assets: 125n }
+    ])
+    expect(ladder.higher).toEqual([
+      { index: 0, rateBps: 600n, assets: 125n },
+      { index: 1, rateBps: 700n, assets: 125n }
+    ])
+  })
+
+  test('requires the full offer floor independently from balance and credit', () => {
+    const ladder = generateLadder({
+      config: config({
+        rungCount: 1,
+        lowerRateBudgetAssets: 150n,
+        higherRateBudgetAssets: 150n,
+        targetMarketExposureAssets: 300n,
+        maximumTotalExposureAssets: 300n,
+        minimumOfferAssets: 101n
+      }),
+      referenceRateBps: 500n,
+      capacities: {
+        lowerRateCapacityAssets: 101n,
+        higherRateCapacityAssets: 100n,
+        targetMarketCapacityAssets: 300n,
+        maximumTotalCapacityAssets: 300n
+      }
+    })
+
+    expect(ladder.lower).toEqual([{ index: 0, rateBps: 400n, assets: 101n }])
     expect(ladder.higher).toEqual([])
   })
 
@@ -128,6 +174,18 @@ describe('ladder domain', () => {
     expect(() => validateLadderConfig(config({ maximumRateBps: 700n }))).toThrow(
       LadderConfigurationError
     )
+  })
+
+  test('rejects configured side budgets below the offer floor', () => {
+    expect(() =>
+      validateLadderConfig(
+        config({
+          lowerRateBudgetAssets: 100n,
+          higherRateBudgetAssets: 101n,
+          minimumOfferAssets: 101n
+        })
+      )
+    ).toThrow('lowerRateBudgetAssets must be at least minimumOfferAssets')
   })
 
   test('rejects a runtime rung outside the hard range instead of clamping', () => {
@@ -153,6 +211,12 @@ describe('ladder domain', () => {
         })
       )
     ).toThrow('rungCount must not exceed 512')
+  })
+
+  test('rejects monitor intervals above the runtime timer limit', () => {
+    expect(() => validateLadderConfig(config({ loopIntervalSeconds: 2_147_484 }))).toThrow(
+      'loopIntervalSeconds must not exceed 2147483'
+    )
   })
 
   test('recenters only when absolute movement is strictly greater than tolerance', () => {

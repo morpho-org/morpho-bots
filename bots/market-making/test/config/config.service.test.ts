@@ -48,6 +48,7 @@ describe('ConfigService', () => {
     })
     expect(config.v0OfferGroupIds).toEqual([groupId])
     expect(config.requestTimeoutMs).toBe(10_000)
+    expect(config.transactionReceiptTimeoutMs).toBe(180_000)
   })
 
   test('canonicalizes equivalent mixed-case market, group, and reference IDs', () => {
@@ -100,6 +101,19 @@ describe('ConfigService', () => {
     expect(() => ConfigService.from({ ...environment, REQUEST_TIMEOUT_MS: '0' })).toThrow(
       'REQUEST_TIMEOUT_MS must be between 1 and 120000'
     )
+  })
+
+  test('loads a separate bounded transaction receipt timeout', () => {
+    expect(
+      ConfigService.from({
+        ...environment,
+        REQUEST_TIMEOUT_MS: '2500',
+        TRANSACTION_RECEIPT_TIMEOUT_MS: '300000'
+      }).transactionReceiptTimeoutMs
+    ).toBe(300_000)
+    expect(() =>
+      ConfigService.from({ ...environment, TRANSACTION_RECEIPT_TIMEOUT_MS: '900001' })
+    ).toThrow('TRANSACTION_RECEIPT_TIMEOUT_MS must be between 1 and 900000')
   })
 
   test('rejects malformed private keys and unsigned integer settings', () => {

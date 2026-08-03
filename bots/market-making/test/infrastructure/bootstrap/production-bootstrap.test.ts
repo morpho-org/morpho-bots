@@ -268,7 +268,7 @@ describe('bootstrapContinuousFeeCap', () => {
 })
 
 describe('readBootstrapGroups', () => {
-  test('counts each owned group full reserve once across multi-market projections', async () => {
+  test('counts each owned group unfilled reserve once across multi-market projections', async () => {
     const secondOffer = {
       ...group().offers[0],
       market_id: secondMarketId,
@@ -291,10 +291,11 @@ describe('readBootstrapGroups', () => {
       }
     )
 
-    expect(bootstrapReservedLoanAssets(groups, [groupId])).toBe(125n)
+    expect(bootstrapReservedLoanAssets(groups, [groupId])).toBe(100n)
+    expect(bootstrapReservedLoanAssets(groups, [groupId], new Set([groupId]))).toBe(0n)
   })
 
-  test('reserves every distinct durably owned API group even without a buy projection', async () => {
+  test('excludes durably owned sell-only groups from the loan-token cash reserve', async () => {
     const secondGroupId: Hex = `0x${'ef'.repeat(32)}`
     const sellOnly = { ...group().offers[0], buy: false }
     const groups = await readBootstrapGroups(
@@ -311,7 +312,7 @@ describe('readBootstrapGroups', () => {
     )
 
     expect(strategyBootstrapGroups(groups, [groupId, secondGroupId])).toEqual([])
-    expect(bootstrapReservedLoanAssets(groups, [groupId, secondGroupId])).toBe(200n)
+    expect(bootstrapReservedLoanAssets(groups, [groupId, secondGroupId])).toBe(0n)
   })
 
   test('passes the full distinct owned reserve in the actual makeLend argument shape', async () => {
@@ -646,6 +647,35 @@ describe('createBootstrapGroupOwnership', () => {
 
       expect(await restarted.read()).toEqual([groupId])
       expect(await otherStrategy.read()).toEqual([])
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  test('forgets canceled persisted groups while retaining configured ownership', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'market-making-forget-'))
+    const configuredGroupId: Hex = `0x${'34'.repeat(32)}`
+    const ownership = createBootstrapGroupOwnership(
+      { maker, marketIds: [marketId], configuredGroupIds: [configuredGroupId] },
+      { stateDirectory: directory }
+    )
+    try {
+      await ownership.reserve(groupId, {
+        marketId,
+        assets: 100n,
+        rateBps: 450n,
+        referenceObservationId: 'blocks:100-200'
+      })
+      await ownership.confirm(groupId)
+
+      expect(await ownership.read()).toEqual([configuredGroupId, groupId])
+      expect(await ownership.readPersistedGroupIds()).toEqual([groupId])
+
+      await ownership.forget([groupId, configuredGroupId])
+
+      expect(await ownership.read()).toEqual([configuredGroupId])
+      expect(await ownership.readPersistedGroupIds()).toEqual([])
+      expect(await ownership.readOffers()).toEqual([])
     } finally {
       await rm(directory, { recursive: true, force: true })
     }

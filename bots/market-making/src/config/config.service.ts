@@ -19,6 +19,7 @@ import {
   privateKeyValue,
   requestTimeoutValue,
   requiredValue,
+  transactionReceiptTimeoutValue,
   unsignedBigIntValue,
   urlValue
 } from './config.utils'
@@ -102,6 +103,7 @@ export class ConfigService {
       routerApiBaseUrl: urlValue(environment, 'ROUTER_API_BASE_URL'),
       v0OfferGroupIds: hexListValue(environment, 'V0_OFFER_GROUP_IDS', false),
       requestTimeoutMs: requestTimeoutValue(environment),
+      transactionReceiptTimeoutMs: transactionReceiptTimeoutValue(environment),
       bootstrap: bootstrapConfigsValue(
         source.bootstrap,
         hexListValue(environment, 'MARKET_IDS', true)
@@ -120,6 +122,7 @@ export class ConfigService {
       routerApiBaseUrl: string
       v0OfferGroupIds: readonly Hex[]
       requestTimeoutMs: number
+      transactionReceiptTimeoutMs: number
       bootstrap: readonly BootstrapConfig[]
       ladder: readonly LadderConfig[]
     }
@@ -173,6 +176,11 @@ export class ConfigService {
   /** Exposes the aggregate provider timeout. @returns Bounded provider timeout in milliseconds, between 1 and 120,000 inclusive. */
   get requestTimeoutMs() {
     return this.values.requestTimeoutMs
+  }
+
+  /** Exposes the post-submission confirmation deadline. @returns Bounded receipt timeout in milliseconds, between 1 and 900,000 inclusive. */
+  get transactionReceiptTimeoutMs() {
+    return this.values.transactionReceiptTimeoutMs
   }
 
   /** Exposes position-bootstrap settings. @returns The validated ordered market list; `BOOTSTRAP_MARKETS` replaces YAML `bootstrap` as a whole. */

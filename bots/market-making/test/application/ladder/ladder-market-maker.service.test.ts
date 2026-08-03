@@ -1,6 +1,6 @@
 import type { Hex } from 'viem'
 
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, mock, test } from 'bun:test'
 
 import type {
   LadderMakeService,
@@ -28,6 +28,7 @@ const config = (id = marketId): LadderConfig => ({
   higherRateBudgetAssets: 10n,
   targetMarketExposureAssets: 20n,
   maximumTotalExposureAssets: 20n,
+  minimumOfferAssets: 1n,
   groupMode: 'shared-rung',
   loopIntervalSeconds: 3600,
   movementToleranceBps: 10n,
@@ -68,6 +69,9 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
       return rate
     }
   }
+  const cleanup = mock(async () => {
+    liveDesired.clear()
+  })
   const make: LadderMakeService = {
     async readActive(id) {
       return liveDesired.get(id)
@@ -81,7 +85,8 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
     },
     async hardHalt(parameters) {
       halts.push(parameters.reason)
-    }
+    },
+    cleanup
   }
   let service = new LadderMarketMakerService(positions, rates, make, configs)
   return {
@@ -95,6 +100,7 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
     reconciliations,
     liveDesired,
     halts,
+    cleanup,
     setRate: (value: bigint) => (rate = value),
     setCapacity: (value: bigint) => (marketState = state(value)),
     failMarket: (id: Hex) => (readFailure = id),
@@ -105,6 +111,170 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
 }
 
 describe('LadderMarketMakerService', () => {
+  test('monitors sequential cycles and cleans owned groups after shutdown', async () => {
+    const subject = harness([{ ...config(), loopIntervalSeconds: 1 }])
+    const controller = new AbortController()
+    const cycles: unknown[] = []
+
+    const report = await subject.service.runContinuously({
+      signal: controller.signal,
+      intervalMs: 1,
+      onCycle: results => {
+        cycles.push(results)
+        if (cycles.length === 2) controller.abort()
+      }
+    })
+
+    expect(report).toEqual({
+      status: 'stopped',
+      reason: 'signal',
+      cycles: 2,
+      cleanup: { status: 'applied' }
+    })
+    expect(cycles).toHaveLength(2)
+    expect(subject.cleanup).toHaveBeenCalledTimes(1)
+    expect(subject.liveDesired.size).toBe(0)
+  })
+
+  test('counts only cycles successfully delivered to the output callback', async () => {
+    const subject = harness()
+
+    const report = await subject.service.runContinuously({
+      signal: new AbortController().signal,
+      intervalMs: 1,
+      onCycle: () => {
+        throw new TypeError('private output failure')
+      }
+    })
+
+    expect(report).toEqual({
+      status: 'halted',
+      reason: 'cycle-error',
+      cycles: 0,
+      cleanup: { status: 'applied' },
+      cycleErrorName: 'TypeError'
+    })
+    expect(subject.cleanup).toHaveBeenCalledTimes(1)
+  })
+
+  test('stops monitoring on a handled failed cycle and still cleans owned groups', async () => {
+    const subject = harness()
+    subject.failReconcile(marketId)
+
+    const report = await subject.service.runContinuously({
+      signal: new AbortController().signal,
+      intervalMs: 1
+    })
+
+    expect(report).toMatchObject({
+      status: 'halted',
+      reason: 'cycle-failed',
+      cycles: 1,
+      cleanup: { status: 'applied' },
+      lastCycle: [{ status: 'failed', stage: 'reconcile' }]
+    })
+    expect(subject.cleanup).toHaveBeenCalledTimes(1)
+  })
+
+  test('verbose monitoring emits transaction hashes and fresh state before cleanup', async () => {
+    const publicationHash: Hex = `0x${'aa'.repeat(32)}`
+    const cancellationHash: Hex = `0x${'bb'.repeat(32)}`
+    const desired = new Map<Hex, LadderQuoteSet>()
+    const controller = new AbortController()
+    const readMarket = mock(async () => state())
+    const make: LadderMakeService = {
+      readActive: async id => desired.get(id),
+      reconcile: async parameters => {
+        if (parameters.desired) desired.set(parameters.marketId, parameters.desired)
+        await parameters.onTransactionSubmitted?.({
+          operation: 'publish',
+          txHash: publicationHash
+        })
+        return {
+          submittedTransactions: [{ operation: 'publish', txHash: publicationHash }]
+        }
+      },
+      hardHalt: async () => ({ submittedTransactions: [] }),
+      cleanup: async parameters => {
+        desired.clear()
+        await parameters?.onTransactionSubmitted?.({
+          operation: 'cancel',
+          txHash: cancellationHash
+        })
+        return {
+          submittedTransactions: [{ operation: 'cancel', txHash: cancellationHash }]
+        }
+      }
+    }
+    const service = new LadderMarketMakerService(
+      { readMarket },
+      { readRate: async () => 500n },
+      make,
+      [config()]
+    )
+    const cycles: unknown[] = []
+    const submittedEvents: unknown[] = []
+
+    const report = await service.runContinuously({
+      signal: controller.signal,
+      intervalMs: 1,
+      verbose: true,
+      onCycle: results => {
+        cycles.push(results)
+        controller.abort()
+      },
+      onTransactionSubmitted: event => {
+        submittedEvents.push(event)
+      }
+    })
+
+    expect(cycles).toMatchObject([
+      [
+        {
+          status: 'applied',
+          action: 'publish',
+          verbose: {
+            config: { marketId },
+            currentState: { status: 'observed', market: state() },
+            referenceRateBps: 500n,
+            targetRateBps: 500n,
+            ladderOffer: { centerRateBps: 500n },
+            decision: 'publish',
+            submittedTransactions: [{ operation: 'publish', txHash: publicationHash }],
+            stateAfterCheck: {
+              status: 'observed',
+              market: state(),
+              activeQuote: { centerRateBps: 500n }
+            }
+          }
+        }
+      ]
+    ])
+    expect(readMarket).toHaveBeenCalledTimes(2)
+    expect(report).toEqual({
+      status: 'stopped',
+      reason: 'signal',
+      cycles: 1,
+      cleanup: {
+        status: 'applied',
+        submittedTransactions: [{ operation: 'cancel', txHash: cancellationHash }]
+      }
+    })
+    expect(submittedEvents).toEqual([
+      {
+        event: 'ladder.transaction-submitted',
+        marketId,
+        operation: 'publish',
+        txHash: publicationHash
+      },
+      {
+        event: 'ladder.transaction-submitted',
+        operation: 'cancel',
+        txHash: cancellationHash
+      }
+    ])
+  })
+
   test('preflights every config before reading and hard-halts invalid configuration', async () => {
     const invalid = { ...config(secondMarketId), spreadBps: 201n }
     const subject = harness([config(), invalid])
@@ -128,6 +298,20 @@ describe('LadderMarketMakerService', () => {
     subject.setCapacity(5n)
     expect(await subject.service.runOnce()).toMatchObject([{ action: 'replace', reason: 'resize' }])
     expect(subject.reconciliations).toHaveLength(4)
+  })
+
+  test('invalidates an active ladder when both sides fall below the offer floor', async () => {
+    const subject = harness()
+    await subject.service.runOnce()
+    subject.setCapacity(0n)
+
+    expect(await subject.service.runOnce()).toMatchObject([{ action: 'replace', reason: 'resize' }])
+    expect(subject.reconciliations.at(-1)).toMatchObject({
+      marketId,
+      desired: undefined,
+      reason: 'resize'
+    })
+    expect(subject.liveDesired.has(marketId)).toBe(false)
   })
 
   test('reloads live roots so externally expired roots are republished', async () => {
@@ -161,7 +345,7 @@ describe('LadderMarketMakerService', () => {
     expect(subject.halts).toEqual([])
   })
 
-  test('hard-halts when a fresh effective center is unsafe inside a wide tolerance', async () => {
+  test('retains a safe active center before generating an out-of-bounds fresh center', async () => {
     const subject = harness([
       {
         ...config(),
@@ -173,10 +357,8 @@ describe('LadderMarketMakerService', () => {
     await subject.service.runOnce()
     subject.setRate(900n)
 
-    expect(await subject.service.runOnce()).toMatchObject([
-      { status: 'halted', stage: 'decision', strategyInvalidated: true }
-    ])
-    expect(subject.halts).toEqual(['ladder-decision-failed'])
+    expect(await subject.service.runOnce()).toMatchObject([{ action: 'rest' }])
+    expect(subject.halts).toEqual([])
   })
 
   test('invalidates one failed market read and continues other markets', async () => {
@@ -192,6 +374,38 @@ describe('LadderMarketMakerService', () => {
       desired: undefined,
       reason: 'market-read-failed'
     })
+  })
+
+  test('retains failed-market cancellation hashes in verbose output', async () => {
+    const cancellationHash: Hex = `0x${'cc'.repeat(32)}`
+    const service = new LadderMarketMakerService(
+      {
+        async readMarket() {
+          throw new TypeError('private provider detail')
+        }
+      },
+      { readRate: async () => 500n },
+      {
+        readActive: async () => undefined,
+        reconcile: async () => ({
+          submittedTransactions: [{ operation: 'cancel', txHash: cancellationHash }]
+        }),
+        hardHalt: async () => ({ submittedTransactions: [] }),
+        cleanup: async () => ({ submittedTransactions: [] })
+      },
+      [config()]
+    )
+
+    expect(await service.runOnce({ verbose: true })).toMatchObject([
+      {
+        status: 'failed',
+        stage: 'market-read',
+        invalidated: true,
+        verbose: {
+          submittedTransactions: [{ operation: 'cancel', txHash: cancellationHash }]
+        }
+      }
+    ])
   })
 
   test('preserves the market read and local invalidation failures before hard halt', async () => {
@@ -234,6 +448,9 @@ describe('LadderMarketMakerService', () => {
           async reconcile() {},
           async hardHalt(parameters) {
             subject.halts.push(parameters.reason)
+          },
+          async cleanup() {
+            subject.liveDesired.clear()
           }
         },
         [config()]

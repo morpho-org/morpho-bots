@@ -1,0 +1,412 @@
+import { EcrecoverRatifierUtils, midnightAbi, Payload } from '@morpho-org/midnight-sdk'
+import { morphoViemExtension } from '@morpho-org/morpho-sdk'
+import { getChainAddress } from '@morpho-org/morpho-ts'
+import {
+  createPublicClient,
+  createWalletClient,
+  erc20Abi,
+  http,
+  isAddressEqual,
+  publicActions,
+  type Hex
+} from 'viem'
+import { base } from 'viem/chains'
+
+import type {
+  LadderMakeService,
+  LadderPositionService,
+  LadderReferenceRateService
+} from '../../application/ladder/ladder-market-maker.service'
+import type { LadderTransactionSubmittedObserver } from '../../application/ladder/ladder-verbose'
+import type { ConfigService } from '../../config/config.service'
+import type { LadderQuoteSet } from '../../domain/ladder/ladder'
+import type { HistoricalBlockReader } from '../reference/blue-reference-reader.utils'
+import type { OwnedLadderPublication } from './ladder-group-ownership.utils'
+
+import { createBootstrapGroupOwnership } from '../bootstrap/bootstrap-group-ownership.utils'
+import { bootstrapBookOffers, readBootstrapGroups } from '../bootstrap/bootstrap-groups.utils'
+import { createBootstrapOffer } from '../bootstrap/bootstrap-offer.utils'
+import { BlueBootstrapReferenceRateService } from '../bootstrap/bootstrap-reference-rate.service'
+import { createManagedMakerAccount } from '../make/managed-maker-account.utils'
+import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
+import {
+  activeOwnedLadderGroupIds,
+  reconstructOwnedLadderPublication
+} from './ladder-active-publication.utils'
+import { LadderAdapterError } from './ladder-adapter.error'
+import { readLivePendingBootstrapOffers } from './ladder-bootstrap-offer.utils'
+import { ladderCashReservations } from './ladder-cash-reservation.utils'
+import { createLadderGroupOwnership } from './ladder-group-ownership.utils'
+import { MidnightLadderMakeService, type LadderOfferTransport } from './ladder-make.service'
+import { buildLadderTree } from './ladder-offer.utils'
+import { signLadderTree } from './ladder-signature.utils'
+import { assertLadderProspectiveSpread } from './ladder-spread.utils'
+import {
+  assertLadderCancellationTransaction,
+  assertLadderPublicationTransaction
+} from './ladder-transaction.utils'
+
+/** Concrete ports used by the default ladder application service. */
+type ProductionLadderAdapters = {
+  positions: LadderPositionService
+  rates: LadderReferenceRateService
+  make: LadderMakeService
+  validateReconcile: (parameters: Parameters<LadderMakeService['reconcile']>[0]) => Promise<void>
+}
+
+const minimum = (left: bigint, right: bigint) => (left < right ? left : right)
+const remaining = (limit: bigint, used: bigint) => (limit > used ? limit - used : 0n)
+
+const notifySubmitted = async (
+  observer: LadderTransactionSubmittedObserver | undefined,
+  operation: 'cancel' | 'publish',
+  txHash: Hex
+) => {
+  await observer?.({ operation, txHash })
+}
+
+const ownedGroups = (publications: readonly OwnedLadderPublication[]) =>
+  publications.flatMap(publication =>
+    publication.groups.map(group => {
+      const rungIndexes = new Set(group.rungIndexes)
+      const maxAssets = publication.quote[group.side]
+        .filter(rung => rungIndexes.has(rung.index))
+        .reduce((sum, rung) => sum + rung.assets, 0n)
+      if (maxAssets <= 0n) throw new LadderAdapterError('group-ownership-state')
+      return { groupId: group.groupId, maxAssets }
+    })
+  )
+
+/**
+ * Composes live chain, archive reference, Mempool, signing, and ownership ladder adapters.
+ * @param config - Fully validated runtime configuration.
+ * @returns Production position, reference-rate, and make ports.
+ * @throws `LadderAdapterError` when write-mode signer identity differs from the maker; later reads,
+ * validation, signing, publication, storage, or receipt confirmation may also fail.
+ * @remarks Read-only construction never derives an account or creates a wallet. Every published
+ * tree is API-validated before and after signing, locally policy-checked, and submitted atomically.
+ */
+export const createProductionLadderAdapters = (config: ConfigService): ProductionLadderAdapters => {
+  const maker = config.identity.maker
+  const client = createPublicClient({
+    chain: base,
+    transport: http(config.rpcUrl, { timeout: config.requestTimeoutMs })
+  }).extend(morphoViemExtension({ supportSignature: true, supportDeployless: true }))
+  const referenceClient = createPublicClient({
+    chain: base,
+    transport: http(config.referenceRpcUrl, { timeout: config.requestTimeoutMs })
+  })
+  const midnight = client.morpho.midnight(base.id)
+  const bootstrapOwnership = createBootstrapGroupOwnership({
+    maker,
+    marketIds: config.setup.marketIds,
+    configuredGroupIds: config.v0OfferGroupIds
+  })
+  const ladderOwnership = createLadderGroupOwnership({
+    maker,
+    strategyMarketIds: config.ladder.map(item => item.marketId)
+  })
+  const configByMarket = new Map(config.ladder.map(item => [item.marketId, item]))
+  const readGroups = () =>
+    readBootstrapGroups({
+      maker,
+      morphoApiBaseUrl: config.morphoApiBaseUrl,
+      requestTimeoutMs: config.requestTimeoutMs
+    })
+  const readGroupConsumed = (groupId: Hex, blockNumber?: bigint) =>
+    client.readContract({
+      address: config.setup.midnight,
+      abi: midnightAbi,
+      functionName: 'consumed',
+      args: [maker, groupId],
+      ...(blockNumber === undefined ? {} : { blockNumber })
+    })
+
+  const positions: LadderPositionService = {
+    readMarket: async marketId => {
+      const selectedConfig = configByMarket.get(marketId)
+      if (!selectedConfig) throw new LadderAdapterError('market-configuration-missing')
+      const block = await client.getBlock({ blockTag: 'latest' })
+      const [
+        groups,
+        publications,
+        bootstrapGroupIds,
+        persistedBootstrapOffers,
+        cashBalance,
+        allowance,
+        positionSnapshots
+      ] = await Promise.all([
+        readGroups(),
+        ladderOwnership.read(),
+        bootstrapOwnership.read(),
+        bootstrapOwnership.readOffers(),
+        client.readContract({
+          address: config.setup.loanAsset,
+          abi: erc20Abi,
+          functionName: 'balanceOf',
+          args: [maker]
+        }),
+        client.readContract({
+          address: config.setup.loanAsset,
+          abi: erc20Abi,
+          functionName: 'allowance',
+          args: [maker, config.setup.midnight]
+        }),
+        Promise.all(
+          config.setup.marketIds.map(async configuredMarketId => {
+            const position = (
+              await midnight.getPositionData({
+                marketId: configuredMarketId,
+                accountAddress: maker,
+                parameters: { blockNumber: block.number }
+              })
+            ).accrueInterest(block.timestamp)
+            return {
+              marketId: configuredMarketId,
+              credit: position.credit
+            }
+          })
+        )
+      ])
+      const selectedPosition = positionSnapshots.find(item => item.marketId === marketId)
+      if (!selectedPosition) throw new LadderAdapterError('position-unavailable')
+      const pendingBootstrapOffers = await readLivePendingBootstrapOffers({
+        groups,
+        offers: persistedBootstrapOffers,
+        readGroupConsumed: groupId => readGroupConsumed(groupId, block.number)
+      })
+
+      const replacedGroupIds = new Set(
+        publications
+          .filter(publication => publication.marketId === marketId)
+          .flatMap(publication => publication.groups.map(group => group.groupId))
+      )
+      const reservations = ladderCashReservations({
+        groups,
+        publications,
+        bootstrapGroupIds,
+        bootstrapOffers: pendingBootstrapOffers,
+        replacedGroupIds
+      })
+      const reservedCash = reservations.reduce((sum, reservation) => sum + reservation.assets, 0n)
+      const availableCash = remaining(minimum(cashBalance, allowance), reservedCash)
+      const marketReserved = reservations
+        .filter(reservation => reservation.marketIds.includes(marketId))
+        .reduce((sum, reservation) => sum + reservation.assets, 0n)
+      const marketExposure = selectedPosition.credit + marketReserved
+      const totalCredit = positionSnapshots.reduce((sum, position) => sum + position.credit, 0n)
+      const totalExposure = totalCredit + reservedCash
+
+      return {
+        lowerRateCapacityAssets: selectedPosition.credit,
+        higherRateCapacityAssets: availableCash,
+        targetMarketCapacityAssets: remaining(
+          selectedConfig.targetMarketExposureAssets,
+          marketExposure
+        ),
+        maximumTotalCapacityAssets: remaining(
+          selectedConfig.maximumTotalExposureAssets,
+          totalExposure
+        )
+      }
+    }
+  }
+
+  const blueRates = new BlueBootstrapReferenceRateService(
+    createBlueReferenceReader(
+      config.setup.referenceMarketId,
+      referenceClient as HistoricalBlockReader
+    )
+  )
+  const rates: LadderReferenceRateService = {
+    readRate: async marketId => (await blueRates.readRate(marketId)).rateBps
+  }
+
+  const prepareBootstrapBookOffer = async (
+    offer: Awaited<ReturnType<typeof readLivePendingBootstrapOffers>>[number]
+  ) => {
+    const [market, block] = await Promise.all([
+      midnight.getMarketData(offer.marketId),
+      client.getBlock({ blockTag: 'latest' })
+    ])
+    const created = createBootstrapOffer({
+      offer,
+      market,
+      maker,
+      ratifier: config.setup.ratifier,
+      now: block.timestamp
+    })
+    return { marketId: offer.marketId, buy: true, tick: created.tick }
+  }
+
+  const completeBookOffers = async () => {
+    const [groups, persistedBootstrapOffers] = await Promise.all([
+      readGroups(),
+      bootstrapOwnership.readOffers()
+    ])
+    const pendingBootstrapOffers = await readLivePendingBootstrapOffers({
+      groups,
+      offers: persistedBootstrapOffers,
+      readGroupConsumed
+    })
+    const pendingOffers = await Promise.all(pendingBootstrapOffers.map(prepareBootstrapBookOffer))
+    return { groups, book: [...bootstrapBookOffers(groups), ...pendingOffers] }
+  }
+
+  const readActive = async (marketId: Hex) => {
+    const [groups, publications] = await Promise.all([readGroups(), ladderOwnership.read()])
+    return publications
+      .filter(item => item.marketId === marketId)
+      .toReversed()
+      .map(publication => reconstructOwnedLadderPublication(publication, groups))
+      .find(quote => quote !== undefined)
+  }
+
+  const prepareUnsignedPublication = async (quote: LadderQuoteSet) => {
+    const [market, block] = await Promise.all([
+      midnight.getMarketData(quote.marketId),
+      client.getBlock({ blockTag: 'latest' })
+    ])
+    const prepared = buildLadderTree({
+      quote,
+      market,
+      maker,
+      ratifier: config.setup.ratifier,
+      now: block.timestamp
+    })
+    await prepared.tree.mempoolValidate({
+      chainId: base.id,
+      apiUrl: `${config.morphoApiBaseUrl}/v0/midnight`
+    })
+    return prepared
+  }
+
+  const validateReconcile: ProductionLadderAdapters['validateReconcile'] = async parameters => {
+    if (parameters.reason === 'rest' || !parameters.desired) return
+    const prepared = await prepareUnsignedPublication(parameters.desired)
+    const [bookState, publications] = await Promise.all([
+      completeBookOffers(),
+      ladderOwnership.read()
+    ])
+    assertLadderProspectiveSpread({
+      marketId: parameters.marketId,
+      replacedGroupIds: new Set(
+        activeOwnedLadderGroupIds(publications, bookState.groups, parameters.marketId)
+      ),
+      book: bookState.book,
+      prospective: prepared.bookOffers
+    })
+  }
+
+  const readOnlyMake: LadderMakeService = {
+    readActive,
+    reconcile: async () => {
+      throw new LadderAdapterError('readonly-mutation')
+    },
+    hardHalt: async () => {
+      throw new LadderAdapterError('readonly-mutation')
+    },
+    cleanup: async () => {
+      throw new LadderAdapterError('readonly-mutation')
+    }
+  }
+  if (config.identity.readOnly) {
+    return { positions, rates, make: readOnlyMake, validateReconcile }
+  }
+
+  const account = createManagedMakerAccount(config.identity.privateKey)
+  if (!isAddressEqual(account.address, maker)) {
+    throw new LadderAdapterError('maker-private-key-mismatch')
+  }
+  const wallet = createWalletClient({
+    account,
+    chain: base,
+    transport: http(config.rpcUrl, { timeout: config.requestTimeoutMs })
+  })
+    .extend(publicActions)
+    .extend(morphoViemExtension({ supportSignature: true, supportDeployless: true }))
+  const mempool = getChainAddress(base.id, 'midnightMempool')
+
+  const transport: LadderOfferTransport = {
+    readActive,
+    listOwnedGroups: async () => ownedGroups(await ladderOwnership.read()),
+    readGroupConsumed,
+    listActiveGroupIds: async marketId => {
+      const [publications, groups] = await Promise.all([ladderOwnership.read(), readGroups()])
+      return activeOwnedLadderGroupIds(publications, groups, marketId)
+    },
+    listBookOffers: async () => (await completeBookOffers()).book,
+    preparePublication: async quote => {
+      const prepared = await prepareUnsignedPublication(quote)
+      const signature = await signLadderTree({
+        tree: prepared.tree,
+        client: wallet,
+        account
+      })
+      await prepared.tree.mempoolValidate({
+        chainId: base.id,
+        apiUrl: `${config.morphoApiBaseUrl}/v0/midnight`,
+        ratification: { type: 'ecrecover', account: maker, signature }
+      })
+      const items = await EcrecoverRatifierUtils.ratify({
+        tree: prepared.tree,
+        account: maker,
+        signature
+      })
+      const transaction = {
+        to: mempool,
+        data: await Payload.encode(items),
+        value: 0n
+      }
+      await assertLadderPublicationTransaction(transaction, {
+        target: mempool,
+        offers: prepared.tree.offers
+      })
+      const groupIds = [...new Set(prepared.groups.map(group => group.groupId))]
+      return {
+        groupIds,
+        groups: prepared.groups,
+        prospective: prepared.bookOffers,
+        publish: async onTransactionSubmitted => {
+          const hash = await wallet.sendTransaction(transaction)
+          await notifySubmitted(onTransactionSubmitted, 'publish', hash)
+          const receipt = await wallet.waitForTransactionReceipt({
+            hash,
+            timeout: config.transactionReceiptTimeoutMs
+          })
+          if (receipt.status !== 'success') {
+            throw new LadderAdapterError('transaction-reverted')
+          }
+          return hash
+        }
+      }
+    },
+    reservePublication: publication => ladderOwnership.reserve(publication),
+    confirmPublication: ladderOwnership.confirm,
+    releasePublication: ladderOwnership.release,
+    invalidate: async (groupId, onTransactionSubmitted) => {
+      const transaction = midnight.cancelOffer({ group: groupId, accountAddress: maker }).buildTx()
+      assertLadderCancellationTransaction(transaction, {
+        target: config.setup.midnight,
+        groupId,
+        account: maker
+      })
+      const hash = await wallet.sendTransaction(transaction)
+      await notifySubmitted(onTransactionSubmitted, 'cancel', hash)
+      const receipt = await wallet.waitForTransactionReceipt({
+        hash,
+        timeout: config.transactionReceiptTimeoutMs
+      })
+      if (receipt.status !== 'success') throw new LadderAdapterError('transaction-reverted')
+      return hash
+    },
+    forgetGroups: ladderOwnership.forget
+  }
+
+  return {
+    positions,
+    rates,
+    make: new MidnightLadderMakeService(transport),
+    validateReconcile
+  }
+}
