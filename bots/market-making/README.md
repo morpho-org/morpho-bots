@@ -598,7 +598,9 @@ The e2e suite starts its own Anvil fork of Base at a pinned historical block. It
 
 The stateless local playground exposes the complete current YAML/environment configuration surface,
 including bootstrap, ladder, and environment-only Better Stack settings. It renders a synthetic
-offer ladder immediately as inputs change and exports matching YAML, dotenv, and JSON. It does not
+offer ladder immediately as inputs change and exports matching YAML, clearly labeled POSIX-shell-safe ENV,
+and JSON formats. Use only the shell-safe output with `source`. Invalid configurations remain visible with
+accessible errors and cannot be copied as valid exports. It does not
 read current offers or a live market book, persist edits, or connect to a backend. Live offers and
 order-book simulation are future scope only.
 

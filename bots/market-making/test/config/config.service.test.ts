@@ -79,10 +79,8 @@ describe('ConfigService', () => {
     expect(() => ConfigService.from({ ...environment, [name]: value })).toThrow(message)
   })
 
-  test('rejects an empty market allowlist', () => {
-    expect(() => ConfigService.from({ ...environment, MARKET_IDS: ' , ' })).toThrow(
-      'MARKET_IDS must contain at least one market id'
-    )
+  test('accepts an empty market allowlist', () => {
+    expect(ConfigService.from({ ...environment, MARKET_IDS: ' , ' }).setup.marketIds).toEqual([])
   })
 
   test('requires one exact Blue reference market id', () => {

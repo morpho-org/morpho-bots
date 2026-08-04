@@ -94,7 +94,7 @@ export class ConfigService {
         loanAsset: addressValue(environment, 'LOAN_ASSET_ADDRESS'),
         maximumLendExposure: unsignedBigIntValue(environment, 'MAXIMUM_LEND_EXPOSURE_ASSETS'),
         ratifier: addressValue(environment, 'RATIFIER_ADDRESS'),
-        marketIds: hexListValue(environment, 'MARKET_IDS', true),
+        marketIds: hexListValue(environment, 'MARKET_IDS', false),
         referenceMarketId: bytes32Value(environment, 'REFERENCE_MARKET_ID')
       },
       rpcUrl: urlValue(environment, 'RPC_URL'),
@@ -106,9 +106,9 @@ export class ConfigService {
       transactionReceiptTimeoutMs: transactionReceiptTimeoutValue(environment),
       bootstrap: bootstrapConfigsValue(
         source.bootstrap,
-        hexListValue(environment, 'MARKET_IDS', true)
+        hexListValue(environment, 'MARKET_IDS', false)
       ),
-      ladder: ladderConfigsValue(source.ladder, hexListValue(environment, 'MARKET_IDS', true))
+      ladder: ladderConfigsValue(source.ladder, hexListValue(environment, 'MARKET_IDS', false))
     })
   }
 
