@@ -8,6 +8,7 @@
   },
   "type": "module",
   "scripts": {
+    "deploy:docker-hub": "bun run scripts/deploy-docker-hub.ts",
     "start": "bun src/index.ts",
     "test:e2e": "bun test test/e2e",
     "typecheck": "tsc --noEmit",

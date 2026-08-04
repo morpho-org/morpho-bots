@@ -8,3 +8,7 @@
 **/*.log
 **/.env
 **/.env.*
+# Local market-making configuration may hold a private key; it must never bake into an image.
+# The committed *.example.yaml templates are copied normally.
+**/market-making.yaml
+**/market-making.yml

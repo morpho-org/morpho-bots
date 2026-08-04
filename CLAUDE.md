@@ -154,8 +154,9 @@ This is a **bun workspaces monorepo** housing off-chain Morpho curator bots:
   liquidators build viem clients and drive a block-watcher + per-tick runner loop that discovers
   positions, reads fresh on-chain state, sizes/simulates a liquidation, and broadcasts only
   simulation-ok transactions through an in-process pending-tx queue. No bot imports another bot.
-  Each bot owns its own operator surface — `README.md`, `Dockerfile`, `docker-compose.yml`, and
-  `scripts/deploy-railway.ts` — so it ships as its own image and
+  Each bot owns its own operator surface — `README.md`, `Dockerfile`, `docker-compose.yml`, and a
+  deploy script (`scripts/deploy-railway.ts` for the liquidators and crossed-books,
+  `scripts/deploy-docker-hub.ts` for market-making) — so it ships as its own image and
   deploys independently. `bots/blue-liquidation` and `bots/midnight-liquidation` are the live
   liquidators; `bots/market-making` is the Midnight maker bot (setup checks, position bootstrap,
   ladder quoting, combined monitoring); `bots/midnight-crossed-books` resolves crossed Midnight

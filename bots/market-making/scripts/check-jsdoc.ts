@@ -385,6 +385,8 @@ const sourceFiles = [
 ].map(path => resolve(sourceRoot, path))
 sourceFiles.push(resolve(packageRoot, 'scripts/js-doc-validation.error.ts'))
 sourceFiles.push(resolve(packageRoot, 'scripts/check-jsdoc.ts'))
+sourceFiles.push(resolve(packageRoot, 'scripts/deploy-docker-hub.utils.ts'))
+sourceFiles.push(resolve(packageRoot, 'scripts/docker-publish.error.ts'))
 
 const run = async () => {
   const failures: JSDocFailure[] = []

@@ -85,7 +85,9 @@
     "src/infrastructure/setup-state/viem-setup-state.utils.ts",
     "src/infrastructure/reference/blue-reference-reader.utils.ts",
     "src/infrastructure/reference/reference-adapter.error.ts",
-    "scripts/js-doc-validation.error.ts"
+    "scripts/js-doc-validation.error.ts",
+    "scripts/deploy-docker-hub.utils.ts",
+    "scripts/docker-publish.error.ts"
   ],
   "tsconfig": "tsconfig.json",
   "out": "build/jsdoc",

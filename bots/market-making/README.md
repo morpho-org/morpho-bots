@@ -183,6 +183,116 @@ Version output remains available:
 bun run --filter @morpho-org/market-making-bot start -- --version
 ```
 
+## Docker
+
+The bot ships as a standalone Docker image whose entrypoint is the `mm` CLI itself, so every command
+and flag documented above is available as the container command; the default command is `start`.
+Configuration follows the exact precedence documented under [Configuration](#configuration):
+environment variables passed to the container override values from a mounted YAML file, and either
+source alone is sufficient. The build context must be the repo root so the bun workspace
+(`packages/*`) resolves. The repo-root `.dockerignore` excludes every `market-making.yaml`/`.yml`
+and `.env` file, so a local configuration holding a private key is never baked into an image.
+
+### Build
+
+```sh
+# From the repo root.
+docker build -f bots/market-making/Dockerfile -t market-making-bot .
+```
+
+On Apple Silicon add `--platform linux/amd64` when the image is destined for x86 servers, or keep
+the host platform for purely local runs.
+
+### Run with environment variables
+
+Pass any subset of the variables documented under
+[Environment variables](#environment-variables):
+
+```sh
+docker run --rm \
+  -e CHAIN_ID=8453 \
+  -e RPC_URL=https://base-rpc.example \
+  -e REFERENCE_RPC_URL=https://base-archive-rpc.example \
+  -e MAKER_ADDRESS=0x1111111111111111111111111111111111111111 \
+  -e MIDNIGHT_ADDRESS=0x2222222222222222222222222222222222222222 \
+  -e LOAN_ASSET_ADDRESS=0x3333333333333333333333333333333333333333 \
+  -e RATIFIER_ADDRESS=0x4444444444444444444444444444444444444444 \
+  -e MARKET_IDS=0x5555555555555555555555555555555555555555555555555555555555555555 \
+  -e REFERENCE_MARKET_ID=0x7777777777777777777777777777777777777777777777777777777777777777 \
+  -e NATIVE_RESERVE_WEI=10000000000000000 \
+  -e MAXIMUM_LEND_EXPOSURE_ASSETS=10000000000 \
+  -e MORPHO_API_BASE_URL=https://api.example \
+  -e ROUTER_API_BASE_URL=https://router.example \
+  market-making-bot --readonly setup-check
+```
+
+`docker run --env-file <file>` works with a file in [`.env.example`](./.env.example) syntax. Every
+line present in the file counts as a set variable — a `NAME=` line with an empty value overrides
+the YAML counterpart with emptiness and fails validation — so list only the variables to supply.
+
+### Run with a YAML file
+
+Mount the configuration read-only and select it explicitly:
+
+```sh
+docker run --rm \
+  -v "$PWD/bots/market-making/market-making.yaml:/config/market-making.yaml:ro" \
+  market-making-bot --config /config/market-making.yaml --readonly setup-check
+```
+
+Both sources combine freely — for example, keep `identity.makerPrivateKey` out of the file and add
+`-e MAKER_PRIVATE_KEY=0x…` only for write-mode commands. The container works from
+`/repo/bots/market-making`, so a file mounted at `/repo/bots/market-making/market-making.yaml` is
+also picked up by default discovery without `--config`.
+
+### docker compose
+
+[`docker-compose.yml`](./docker-compose.yml) runs the combined `start` monitor from a YAML file
+next to it plus optional environment overrides:
+
+```sh
+cd bots/market-making
+cp market-making.example.yaml market-making.yaml   # then edit values; chmod 600
+docker compose up --build --detach
+docker compose logs --follow
+```
+
+- The compose file bind-mounts `./market-making.yaml` read-only and fails loud when it is missing.
+- Every supported environment variable is declared as a null passthrough entry: it reaches the
+  container only when the invoking shell sets it, so unset variables never mask YAML values. Export
+  overrides before starting, e.g. `export MAKER_PRIVATE_KEY=0x…`.
+- `stop_grace_period: 5m` leaves shutdown cleanup (drain the in-flight cycle, cancel owned offers,
+  wait for receipts) time to finish; `docker compose stop` delivers the same graceful SIGTERM the
+  CLI handles everywhere else.
+
+### Publish to Docker Hub
+
+`deploy:docker-hub` builds the image from the repo root and pushes it to Docker Hub from the CLI:
+
+```sh
+DOCKERHUB_REPOSITORY=<namespace>/<name> \
+  bun run --filter @morpho-org/market-making-bot deploy:docker-hub
+```
+
+| Environment variable                     | Requirement and behavior                                                                                                                                                    |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DOCKERHUB_REPOSITORY`                   | Required lowercase `<namespace>/<name>` Docker Hub repository, e.g. `morphoorg/market-making-bot`. Registry hosts and tags are rejected here.                               |
+| `DOCKER_IMAGE_TAG`                       | Optional movable primary tag; defaults to `latest`.                                                                                                                         |
+| `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` | Optional pair for non-interactive `docker login`; the token is piped via stdin and never appears in argv or logs. Set both, or neither to reuse an existing `docker login`. |
+| `DOCKER_BUILD_PLATFORM`                  | Optional single `<os>/<arch>[/<variant>]` image platform; defaults to `linux/amd64` so Apple Silicon hosts cross-build instead of publishing arm64-only images.             |
+
+Every publish additionally pushes an immutable `git-<shortsha>` traceability tag, suffixed `-dirty`
+when the working tree holds uncommitted changes, so a running container is attributable to its
+commit. Expected failures exit `1` with a sanitized `DockerPublishError` message after docker's own
+streamed output. A deployed host then runs the published image with the exact same parametrization
+as above:
+
+```sh
+docker run --pull always --detach --restart unless-stopped \
+  --env-file /etc/market-making.env \
+  <namespace>/<name>:latest start
+```
+
 ## Configuration
 
 ### Configuration sources and precedence
