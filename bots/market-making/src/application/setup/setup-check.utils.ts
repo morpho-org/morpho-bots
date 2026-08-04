@@ -8,9 +8,9 @@ import type {
   SetupRemediation
 } from './setup-check.service'
 
+import { BASE_CHAIN_ID } from '../../config/config.utils'
 import { SafeProviderError } from './safe-provider.error'
 
-const BASE_CHAIN_ID = 8453
 const SAFE_ERROR_NAMES = new Set([
   'Error',
   'TypeError',
@@ -107,17 +107,14 @@ const safeProviderFailure = (
  * @returns A promise that always fulfills with the captured result.
  * @throws Never; synchronous throws and promise rejections are converted to failure values.
  */
-export const capture = <T>(
+export const capture = async <T>(
   read: () => Promise<T>,
   provider: SafeProviderFailure['provider'] = 'rpc'
 ): Promise<Captured<T>> => {
   try {
-    return read().then(
-      value => ({ ok: true, value }),
-      error => ({ ok: false, error: safeProviderFailure(error, provider) })
-    )
+    return { ok: true, value: await read() }
   } catch (error) {
-    return Promise.resolve({ ok: false, error: safeProviderFailure(error, provider) })
+    return { ok: false, error: safeProviderFailure(error, provider) }
   }
 }
 

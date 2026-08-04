@@ -1,5 +1,6 @@
 import type { Hex } from 'viem'
 
+import { bigintMin } from '@repo/utils'
 import { isHex, size } from 'viem'
 
 import { BootstrapConfigurationError } from './bootstrap-configuration.error'
@@ -71,9 +72,6 @@ export type PositionBootstrapDecision =
   | { kind: 'replace'; activeOffer: BootstrapOffer; offer: BootstrapOffer }
   | { kind: 'publish'; offer: BootstrapOffer }
 
-const minimum = (values: readonly bigint[]) =>
-  values.reduce((smallest, value) => (value < smallest ? value : smallest))
-
 const sameOffer = (left: BootstrapOffer, right: BootstrapOffer) =>
   left.marketId === right.marketId && left.assets === right.assets && left.rateBps === right.rateBps
 
@@ -143,14 +141,14 @@ export const decidePositionBootstrapTransition = ({
   if (position.credit >= acceptedCredit) {
     if (activeOffer) {
       return {
-        kind: 'invalidate' as const,
-        reason: 'target-reached' as const,
+        kind: 'invalidate',
+        reason: 'target-reached',
         completesInitialTarget: true
       }
     }
 
     return {
-      kind: 'target-reached' as const,
+      kind: 'target-reached',
       completesInitialTarget: true,
       credit: position.credit,
       acceptedCredit
@@ -160,14 +158,14 @@ export const decidePositionBootstrapTransition = ({
   if (initialTargetCompleted && !config.autoRefill) {
     if (activeOffer) {
       return {
-        kind: 'invalidate' as const,
-        reason: 'auto-refill-disabled' as const,
+        kind: 'invalidate',
+        reason: 'auto-refill-disabled',
         completesInitialTarget: false
       }
     }
     return {
-      kind: 'observe' as const,
-      reason: 'auto-refill-disabled' as const,
+      kind: 'observe',
+      reason: 'auto-refill-disabled',
       credit: position.credit,
       acceptedCredit
     }
@@ -205,23 +203,23 @@ export const decidePositionBootstrap = ({
     throw new BootstrapConfigurationError('requestedRateBps', 'must be at most maximumRateBps')
   }
 
-  const assets = minimum([
+  const assets = [
     config.offerSize,
     config.creditTarget - position.credit,
     position.cashBalance,
     config.maximumMarketExposure - position.marketExposure,
     config.maximumTotalExposure - position.totalExposure
-  ])
+  ].reduce(bigintMin)
 
   if (assets <= 0n) {
     if (activeOffer) {
       return {
-        kind: 'invalidate' as const,
-        reason: 'no-capacity' as const,
+        kind: 'invalidate',
+        reason: 'no-capacity',
         completesInitialTarget: false
       }
     }
-    return { kind: 'observe' as const, reason: 'no-capacity' as const, assets: 0n }
+    return { kind: 'observe', reason: 'no-capacity', assets: 0n }
   }
 
   const offer: BootstrapOffer = {
@@ -239,9 +237,9 @@ export const decidePositionBootstrap = ({
     observationMatches &&
     sameOffer(activeOffer, offer)
   ) {
-    return { kind: 'rest' as const, offer: activeOffer }
+    return { kind: 'rest', offer: activeOffer }
   }
-  if (activeOffer) return { kind: 'replace' as const, activeOffer, offer }
+  if (activeOffer) return { kind: 'replace', activeOffer, offer }
 
-  return { kind: 'publish' as const, offer }
+  return { kind: 'publish', offer }
 }

@@ -23,3 +23,27 @@ export const waitForMonitorInterval = (intervalMs: number, signal: AbortSignal) 
     const timer = setTimeout(complete, intervalMs)
     signal.addEventListener('abort', complete, { once: true })
   })
+
+/**
+ * Creates one failure-tolerant serial queue for complete monitor operations.
+ * @returns A boundary that runs each submitted operation after every preceding operation settles.
+ */
+export const createOperationQueue = (): MonitorOperationQueue => {
+  let queue = Promise.resolve()
+  return <Result>(operation: () => Promise<Result>) => {
+    const result = queue.then(operation, operation)
+    queue = result.then(
+      () => undefined,
+      () => undefined
+    )
+    return result
+  }
+}
+
+/**
+ * Detects whether a completed monitor cycle entered a handled failure or safety halt.
+ * @param results - Ordered sanitized outcomes from one complete cycle.
+ * @returns Whether monitoring must stop before another cycle begins.
+ */
+export const cycleHasFailure = (results: readonly { status: string }[]) =>
+  results.some(result => result.status === 'failed' || result.status === 'halted')

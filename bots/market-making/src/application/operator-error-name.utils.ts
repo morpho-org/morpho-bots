@@ -1,59 +1,37 @@
-/** Stable operator-visible error classifications permitted at injected application boundaries. */
-type OperatorErrorName =
-  | 'BootstrapAdapterError'
-  | 'BootstrapMempoolValidationError'
-  | 'BootstrapHardHaltError'
-  | 'BootstrapOwnershipCleanupError'
-  | 'BootstrapConfigurationError'
-  | 'LadderConfigurationError'
-  | 'LadderAdapterError'
-  | 'LadderHardHaltError'
-  | 'LadderOwnershipCleanupError'
-  | 'OfferInvalidationAdapterError'
-  | 'OfferInvalidationFailedError'
-  | 'ReferenceAdapterError'
-  | 'ConfigFileError'
-  | 'ConfigValidationError'
-  | 'ProviderPaginationError'
-  | 'ProviderReadError'
-  | 'ProviderResponseError'
-  | 'SafeProviderError'
-  | 'SetupFailedError'
-  | 'SetupMonitorConfigurationError'
-  | 'SetupMonitorHaltedError'
-  | 'MarketMakingMonitorHaltedError'
-  | 'TypeError'
-  | 'RangeError'
-  | 'URIError'
-  | 'UnknownError'
+const KNOWN_NAMES = [
+  'BootstrapAdapterError',
+  'BootstrapMempoolValidationError',
+  'BootstrapHardHaltError',
+  'BootstrapOwnershipCleanupError',
+  'BootstrapConfigurationError',
+  'LadderConfigurationError',
+  'LadderAdapterError',
+  'LadderHardHaltError',
+  'LadderOwnershipCleanupError',
+  'OfferInvalidationAdapterError',
+  'OfferInvalidationFailedError',
+  'ReferenceAdapterError',
+  'ConfigFileError',
+  'ConfigValidationError',
+  'ProviderPaginationError',
+  'ProviderReadError',
+  'ProviderResponseError',
+  'SafeProviderError',
+  'SetupFailedError',
+  'SetupMonitorConfigurationError',
+  'SetupMonitorHaltedError',
+  'MarketMakingMonitorHaltedError',
+  'TypeError',
+  'RangeError',
+  'URIError'
+] as const
 
-const knownNames: Readonly<Record<string, OperatorErrorName>> = {
-  BootstrapAdapterError: 'BootstrapAdapterError',
-  BootstrapMempoolValidationError: 'BootstrapMempoolValidationError',
-  BootstrapHardHaltError: 'BootstrapHardHaltError',
-  BootstrapOwnershipCleanupError: 'BootstrapOwnershipCleanupError',
-  BootstrapConfigurationError: 'BootstrapConfigurationError',
-  LadderConfigurationError: 'LadderConfigurationError',
-  LadderAdapterError: 'LadderAdapterError',
-  LadderHardHaltError: 'LadderHardHaltError',
-  LadderOwnershipCleanupError: 'LadderOwnershipCleanupError',
-  OfferInvalidationAdapterError: 'OfferInvalidationAdapterError',
-  OfferInvalidationFailedError: 'OfferInvalidationFailedError',
-  ReferenceAdapterError: 'ReferenceAdapterError',
-  ConfigFileError: 'ConfigFileError',
-  ConfigValidationError: 'ConfigValidationError',
-  ProviderPaginationError: 'ProviderPaginationError',
-  ProviderReadError: 'ProviderReadError',
-  ProviderResponseError: 'ProviderResponseError',
-  SafeProviderError: 'SafeProviderError',
-  SetupFailedError: 'SetupFailedError',
-  SetupMonitorConfigurationError: 'SetupMonitorConfigurationError',
-  SetupMonitorHaltedError: 'SetupMonitorHaltedError',
-  MarketMakingMonitorHaltedError: 'MarketMakingMonitorHaltedError',
-  TypeError: 'TypeError',
-  RangeError: 'RangeError',
-  URIError: 'URIError'
-}
+/** Stable operator-visible error classifications permitted at injected application boundaries. */
+type OperatorErrorName = (typeof KNOWN_NAMES)[number] | 'UnknownError'
+
+const knownNames: ReadonlyMap<string, OperatorErrorName> = new Map(
+  KNOWN_NAMES.map(name => [name, name])
+)
 
 /**
  * Maps an untrusted thrown value to a fixed operator-visible classification.
@@ -62,7 +40,7 @@ const knownNames: Readonly<Record<string, OperatorErrorName>> = {
  * @remarks This pure projection never returns messages, URLs, credentials, or raw custom names.
  */
 export const operatorErrorName = (error: unknown): OperatorErrorName =>
-  error instanceof Error ? (knownNames[error.name] ?? 'UnknownError') : 'UnknownError'
+  error instanceof Error ? (knownNames.get(error.name) ?? 'UnknownError') : 'UnknownError'
 
 /**
  * Projects a failure into fixed operator-safe fields and retains a sanitized Mempool asset floor.
@@ -78,7 +56,7 @@ export const operatorErrorDetails = (error: unknown) => {
   const minimumAssets = details.minimumAssets
   const cleanupName = details.reservationCleanupErrorName
   const reservationCleanupErrorName =
-    typeof cleanupName === 'string' ? knownNames[cleanupName] : undefined
+    typeof cleanupName === 'string' ? knownNames.get(cleanupName) : undefined
   return {
     errorName,
     ...(errorName === 'BootstrapMempoolValidationError' &&

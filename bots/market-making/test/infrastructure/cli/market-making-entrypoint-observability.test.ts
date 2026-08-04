@@ -1,7 +1,11 @@
+import { enhanceVerboseArgv } from '@repo/observability'
 import { describe, expect, mock, test } from 'bun:test'
 
 import { ConfigFileError } from '../../../src/config/config-file.error'
-import { runMarketMakingEntrypoint } from '../../../src/infrastructure/cli/market-making-entrypoint'
+import {
+  MARKET_MAKING_VERBOSE_COMMANDS,
+  runMarketMakingEntrypoint
+} from '../../../src/infrastructure/cli/market-making-entrypoint'
 
 describe('runMarketMakingEntrypoint observability', () => {
   test('mirrors streamed actions and terminal results while preserving stdout', async () => {
@@ -54,6 +58,47 @@ describe('runMarketMakingEntrypoint observability', () => {
     expect(unexpected).toHaveBeenCalledWith(error, 'entrypoint')
     expect(stderr.join('')).not.toContain('raw provider')
     expect(stderr.join('')).not.toContain('credential')
+  })
+
+  test('suppresses report payloads from errors outside the audited allowlist', async () => {
+    const stdout: string[] = []
+    const stderr: string[] = []
+    const unexpected = mock((_error: unknown, _origin: 'entrypoint') => undefined)
+    const error = Object.assign(new Error('raw provider payload'), {
+      report: { secret: 'hostile provider response body' }
+    })
+    error.name = 'ProviderFailureError'
+
+    const exitCode = await runMarketMakingEntrypoint(
+      { run: async () => Promise.reject(error) },
+      ['start'],
+      { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) },
+      {},
+      { record: mock(() => undefined), unexpected }
+    )
+
+    expect(exitCode).toBe(1)
+    expect(stdout).toEqual([])
+    expect(stderr).toEqual(['Error: UnknownError'])
+    expect(unexpected).toHaveBeenCalledWith(error, 'entrypoint')
+    expect(stderr.join('')).not.toContain('hostile provider')
+  })
+
+  test('enables verbose diagnostics for exactly the writer commands', () => {
+    const env = {
+      BETTERSTACK_SOURCE_TOKEN: 'source-token',
+      BETTERSTACK_INGESTING_HOST: 's1.betterstackdata.com'
+    }
+
+    expect(MARKET_MAKING_VERBOSE_COMMANDS).toEqual(['start', 'bootstrap', 'ladder'])
+    for (const command of MARKET_MAKING_VERBOSE_COMMANDS) {
+      expect(
+        enhanceVerboseArgv([command], { commands: MARKET_MAKING_VERBOSE_COMMANDS, env })
+      ).toEqual([command, '--verbose'])
+    }
+    expect(
+      enhanceVerboseArgv(['setup-check'], { commands: MARKET_MAKING_VERBOSE_COMMANDS, env })
+    ).toEqual(['setup-check'])
   })
 
   test('preserves audited configuration diagnostics while still classifying the failure', async () => {
