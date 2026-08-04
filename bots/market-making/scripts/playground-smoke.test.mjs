@@ -284,11 +284,25 @@ child.on('close', () => process.exit(0))
 
 for (const signal of ['SIGTERM', 'SIGINT']) {
   const testName = `${signal} after Chromium readiness closes the browser gracefully and reaps its tree`
-  t(n(testName), { timeout: 180_000 }, async () => {
+  t(n(testName), { timeout: 60_000 }, async () => {
     const isolatedTmp = await temporaryDirectory(`playground-browser-${signal.toLowerCase()}-`)
+    const bin = join(isolatedTmp, 'bin')
+    const fakeBun = join(bin, 'bun')
     const wrapper = join(isolatedTmp, 'chromium-wrapper')
     const wrapperPidFile = join(isolatedTmp, 'chromium-wrapper-pid')
     const chromium = await discoverChromium()
+    await mkdir(bin)
+    await writeFile(
+      fakeBun,
+      `#!/usr/bin/env node
+const { mkdirSync, writeFileSync } = require('node:fs')
+const outdir = process.argv[process.argv.indexOf('--outdir') + 1]
+if (!outdir) throw new Error('missing --outdir')
+mkdirSync(outdir, { recursive: true })
+writeFileSync(outdir + '/index.html', '<!doctype html><title>signal test</title>')
+`
+    )
+    await chmod(fakeBun, 0o755)
     await writeFile(
       wrapper,
       `#!/usr/bin/env python3
@@ -308,6 +322,7 @@ os.execv(chromium, [chromium, *sys.argv[1:]])
         ...process.env,
         CHROMIUM_PATH: wrapper,
         SMOKE_CHROMIUM_WRAPPER_PID_FILE: wrapperPidFile,
+        PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
         TMPDIR: isolatedTmp
       },
       stdio: ['ignore', 'pipe', 'pipe']
@@ -325,7 +340,7 @@ os.execv(chromium, [chromium, *sys.argv[1:]])
     try {
       await waitFor(async () => {
         assert.match(output, /smoke environment:/)
-      }, 12_000)
+      }, 3000)
       const wrapperPid = Number(await readFile(wrapperPidFile, 'utf8'))
       const processGroup = await processGroupOf(wrapperPid)
       recordedPids = (await inspectProcessGroup(processGroup)).map(({ pid }) => pid)
