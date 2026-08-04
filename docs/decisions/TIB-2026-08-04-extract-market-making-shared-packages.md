@@ -104,9 +104,12 @@ mind as a plausible second consumer.
   throws its own named error class, so operator-facing failure modes are unchanged.
 - **`BASE_CHAIN_ID` deduped** to a single export in
   `bots/market-making/src/config/config.utils.ts`.
-- **Structural error type guard**: the entrypoint's 8-branch `instanceof` ladder is replaced by a
-  structural `'report' in error` guard. A shared base class was ruled out because the
-  error-convention test requires exactly one `extends Error` clause per `*.error.ts` file.
+- **Audited report allowlist**: the entrypoint's 8-branch `instanceof` ladder is replaced by a
+  single `REPORTED_ERRORS` constructor table iterated by `failureDetails`. A structural
+  `'report' in error` guard was rejected because it would emit report payloads from unaudited
+  errors (a leak-prevention regression, now pinned by a suppression test), and a shared base
+  class was ruled out because the error-convention test requires exactly one `extends Error`
+  clause per `*.error.ts` file.
 
 ## Considered Alternatives
 
