@@ -191,7 +191,7 @@ const list = (value: string) =>
     .split(',')
     .map(item => item.trim())
     .filter(Boolean)
-const yamlQuote = (value: string) => `'${value.replaceAll("'", "''")}'`
+const yamlQuote = (value: string) => JSON.stringify(value)
 
 const environmentRecord = (state: PlaygroundState): Record<string, string> => ({
   ...state.scalar,

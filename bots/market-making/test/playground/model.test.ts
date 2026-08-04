@@ -404,6 +404,39 @@ describe('market-maker parameter playground', () => {
     expect(loaded.v0OfferGroupIds).toEqual([])
   })
 
+  test('YAML export round-trips hostile scalar content through the production loader without adding keys', async () => {
+    const state = createDefaultPlaygroundState()
+    const hostile = `https://example.test/  leading '"\\\t\r\nnewKey: injected # : $HOME $() \`backticks\`; trailing  /end`
+    state.scalar.RPC_URL = hostile
+
+    const yaml = exportYaml(state)
+    const document = parseDocument(yaml, { schema: 'failsafe', uniqueKeys: true })
+    expect(document.errors).toEqual([])
+    expect(document.warnings).toEqual([])
+    const parsed = document.toJS() as Record<string, unknown> & {
+      chain: { rpcUrl: string }
+    }
+    expect(parsed.chain.rpcUrl).toBe(hostile)
+    expect(parsed.newKey).toBeUndefined()
+    expect(Object.keys(parsed)).toEqual([
+      'chain',
+      'identity',
+      'contracts',
+      'apis',
+      'markets',
+      'setup',
+      'bootstrap',
+      'ladder'
+    ])
+
+    const cwd = '/tmp/morpho-playground-hostile-yaml-roundtrip'
+    await rm(cwd, { recursive: true, force: true })
+    await mkdir(cwd, { recursive: true })
+    await writeFile(`${cwd}/market-making.yaml`, yaml)
+    const loaded = await ConfigService.load({}, { cwd, readOnly: true })
+    expect(loaded.rpcUrl).toBe(hostile)
+  })
+
   test('valid exports round-trip through real environment and YAML config loaders', async () => {
     const state = createDefaultPlaygroundState()
     const env = await loadShellEnvironment(exportShell(state, { includeSensitiveValues: true }))
