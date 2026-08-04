@@ -17,7 +17,7 @@ import { LadderAdapterError } from './ladder-adapter.error'
  * @param transaction - Locally built Setter approval transaction.
  * @param policy - Configured ratifier, maker, and canonical tree root.
  * @returns Completion only for `setIsRootRatified(maker, root, true)` with zero value.
- * @throws `LadderAdapterError` when target, value, selector, or arguments differ.
+ * @throws `LadderAdapterError` when target, value, width, selector, or arguments differ.
  */
 export const assertLadderRatificationTransaction = (
   transaction: { to: Address; data: Hex; value: bigint },
@@ -27,7 +27,8 @@ export const assertLadderRatificationTransaction = (
     if (
       !isAddressEqual(transaction.to, policy.target) ||
       transaction.value !== 0n ||
-      !isHex(transaction.data, { strict: true })
+      !isHex(transaction.data, { strict: true }) ||
+      size(transaction.data) !== 100
     ) {
       throw new LadderAdapterError('transaction-policy')
     }

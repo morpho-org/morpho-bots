@@ -205,16 +205,58 @@ describe('assertBootstrapTransaction', () => {
         account: maker
       })
     ).resolves.toBeUndefined()
+    for (const rejected of [
+      { ...transaction, to: maker },
+      { ...transaction, value: 1n },
+      { ...transaction, data: '0xdeadbeef' as Hex },
+      { ...transaction, data: transaction.data.slice(0, -2) as Hex },
+      { ...transaction, data: `0xdeadbeef${transaction.data.slice(10)}` as Hex },
+      {
+        ...transaction,
+        data: encodeFunctionData({
+          abi: setterRatifierAbi,
+          functionName: 'setIsRootRatified',
+          args: [collateral, groupId, true]
+        })
+      },
+      {
+        ...transaction,
+        data: encodeFunctionData({
+          abi: setterRatifierAbi,
+          functionName: 'setIsRootRatified',
+          args: [maker, secondMarketId, true]
+        })
+      },
+      {
+        ...transaction,
+        data: encodeFunctionData({
+          abi: setterRatifierAbi,
+          functionName: 'setIsRootRatified',
+          args: [maker, groupId, false]
+        })
+      }
+    ]) {
+      await expect(
+        assertBootstrapTransaction(rejected, {
+          kind: 'ratification',
+          target: ratifier,
+          root: groupId,
+          account: maker
+        })
+      ).rejects.toMatchObject({ operation: 'transaction-policy' })
+    }
+  })
+
+  test('rejects canonical Setter root approval calldata with trailing bytes', async () => {
+    const data = encodeFunctionData({
+      abi: setterRatifierAbi,
+      functionName: 'setIsRootRatified',
+      args: [maker, groupId, true]
+    })
+
     await expect(
       assertBootstrapTransaction(
-        {
-          ...transaction,
-          data: encodeFunctionData({
-            abi: setterRatifierAbi,
-            functionName: 'setIsRootRatified',
-            args: [maker, groupId, false]
-          })
-        },
+        { to: ratifier, value: 0n, data: `${data}deadbeef` },
         { kind: 'ratification', target: ratifier, root: groupId, account: maker }
       )
     ).rejects.toMatchObject({ operation: 'transaction-policy' })

@@ -33,15 +33,29 @@ const approval = (ratified = true, account: Address = maker, selectedRoot: Hex =
 })
 
 describe('assertLadderRatificationTransaction', () => {
+  test('rejects canonical Setter root approval calldata with trailing bytes', () => {
+    const transaction = approval()
+
+    expect(() =>
+      assertLadderRatificationTransaction(
+        { ...transaction, data: `${transaction.data}deadbeef` },
+        { target: ratifier, account: maker, root }
+      )
+    ).toThrow()
+  })
+
   test('accepts only the configured Setter root approval', () => {
     expect(() =>
       assertLadderRatificationTransaction(approval(), { target: ratifier, account: maker, root })
     ).not.toThrow()
 
+    const canonical = approval()
     for (const transaction of [
-      { ...approval(), to: maker },
-      { ...approval(), value: 1n },
-      { ...approval(), data: '0xdeadbeef' as Hex },
+      { ...canonical, to: maker },
+      { ...canonical, value: 1n },
+      { ...canonical, data: '0xdeadbeef' as Hex },
+      { ...canonical, data: canonical.data.slice(0, -2) as Hex },
+      { ...canonical, data: `0xdeadbeef${canonical.data.slice(10)}` as Hex },
       approval(true, foreignMaker),
       approval(true, maker, foreignRoot),
       approval(false)

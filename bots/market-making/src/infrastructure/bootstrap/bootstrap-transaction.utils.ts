@@ -34,9 +34,9 @@ type BootstrapTransactionPolicy =
  * @param policy - Exact allowed target and cancellation or mempool payload shape.
  * @returns Completion only after target, value, and calldata satisfy the local policy.
  * @throws `BootstrapAdapterError` when any transaction field falls outside the allowlist.
- * @remarks Cancellation calldata must be the exact fixed-width `setConsumed` call; publication
- *   calldata must decode as a bounded canonical Midnight payload whose ratifier data proves the
- *   expected root and, for Ecrecover, recovers the configured maker.
+ * @remarks Cancellation and Setter ratification calldata must be exact fixed-width calls;
+ *   publication calldata must decode as a bounded canonical Midnight payload whose ratifier data
+ *   proves the expected root and, for Ecrecover, recovers the configured maker.
  */
 export const assertBootstrapTransaction = async (
   transaction: BootstrapTransaction,
@@ -54,6 +54,9 @@ export const assertBootstrapTransaction = async (
     throw new BootstrapAdapterError('transaction-policy')
   }
   if (policy.kind === 'ratification') {
+    if (size(transaction.data) !== 100) {
+      throw new BootstrapAdapterError('transaction-policy')
+    }
     try {
       const decoded = decodeFunctionData({ abi: setterRatifierAbi, data: transaction.data })
       if (decoded.functionName !== 'setIsRootRatified') {
