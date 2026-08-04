@@ -2,7 +2,10 @@ import { describe, expect, test } from 'bun:test'
 
 import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/bootstrap-adapter.error'
 import { BootstrapMempoolValidationError } from '../../../src/infrastructure/bootstrap/bootstrap-mempool-validation.error'
-import { validateBootstrapMempoolPublication } from '../../../src/infrastructure/bootstrap/bootstrap-mempool-validation.utils'
+import {
+  validateBootstrapMempoolPayload,
+  validateBootstrapMempoolPublication
+} from '../../../src/infrastructure/bootstrap/bootstrap-mempool-validation.utils'
 
 describe('validateBootstrapMempoolPublication', () => {
   test('returns the unchanged prepared output after validation succeeds', async () => {
@@ -45,5 +48,39 @@ describe('validateBootstrapMempoolPublication', () => {
     expect(error).toBeInstanceOf(BootstrapAdapterError)
     expect(error).toMatchObject({ operation: 'mempool-validation' })
     expect(error.message).not.toContain('secret-token')
+  })
+})
+
+describe('validateBootstrapMempoolPayload', () => {
+  test('rejects API issues for the exact final encoded payload', async () => {
+    const payload = '0x1234'
+    const requests: unknown[] = []
+    const error = await validateBootstrapMempoolPayload(
+      { chainId: 8453, baseUrl: 'https://api.example/v0/midnight', payload },
+      async (parameters: unknown) => {
+        requests.push(parameters)
+        return {
+          valid: false,
+          issues: [
+            {
+              rule: 'min_offer_assets_usd',
+              details: {
+                type: 'minOfferAssetsUsd',
+                loanToken: '0x2222222222222222222222222222222222222222',
+                minAssets: 42n
+              }
+            }
+          ]
+        }
+      }
+    ).catch((value: unknown) => value)
+
+    expect(requests).toEqual([
+      { chainId: 8453, baseUrl: 'https://api.example/v0/midnight', payload }
+    ])
+    expect(error).toBeInstanceOf(BootstrapMempoolValidationError)
+    expect(error).toMatchObject({
+      issues: [{ rule: 'min_offer_assets_usd', minimumAssets: 42n }]
+    })
   })
 })

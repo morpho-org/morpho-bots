@@ -25,12 +25,14 @@ import {
   readBootstrapGroups,
   strategyBootstrapGroups
 } from '../../../src/infrastructure/bootstrap/bootstrap-groups.utils'
+import { MidnightBootstrapMakeService } from '../../../src/infrastructure/bootstrap/bootstrap-make.service'
 import { bootstrapContinuousFeeCap } from '../../../src/infrastructure/bootstrap/bootstrap-offer.utils'
 import { prepareBootstrapRequirements } from '../../../src/infrastructure/bootstrap/bootstrap-requirements.utils'
 import { assertBootstrapTransaction } from '../../../src/infrastructure/bootstrap/bootstrap-transaction.utils'
 import {
   bootstrapMakeLendArguments,
-  createProductionBootstrapAdapters
+  createProductionBootstrapAdapters,
+  publishBootstrapPublication
 } from '../../../src/infrastructure/bootstrap/production-bootstrap'
 import { ReadOnlyBootstrapMakeService } from '../../../src/infrastructure/make/read-only-bootstrap-make.service'
 
@@ -150,6 +152,160 @@ describe('createProductionBootstrapAdapters', () => {
 
     expect(error).toBeInstanceOf(BootstrapAdapterError)
     expect(error).toMatchObject({ operation: 'maker-private-key-mismatch' })
+  })
+})
+
+describe('Setter bootstrap publication sequencing', () => {
+  test('orders reserve, cancel, approval confirmation, exact payload validation, publication, and ownership confirmation', async () => {
+    const events: string[] = []
+    const payload: Hex = '0x1234'
+    const tracked = new Set<Hex>()
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [{ id: groupId, marketId, assets: 100n, rateBps: 400n }],
+      listBookOffers: async () => [],
+      toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
+      preparePublication: async () => ({
+        groupId: secondMarketId,
+        publish: async () =>
+          publishBootstrapPublication({
+            ratifierType: 'setter',
+            payload,
+            ratify: async () => {
+              events.push('approve-submit', 'approve-confirmed')
+              return [{ operation: 'ratify', txHash: groupId }]
+            },
+            validate: async (validatedPayload: Hex) => {
+              events.push('validate')
+              expect(validatedPayload).toBe(payload)
+            },
+            publish: async () => {
+              events.push('publish-submit', 'publish-confirmed')
+              return { operation: 'publish', txHash: secondMarketId }
+            }
+          })
+      }),
+      reserveGroup: async id => {
+        tracked.add(id)
+        events.push('reserve')
+      },
+      confirmPublishedGroup: async () => {
+        events.push('ownership-confirm')
+      },
+      releaseGroupReservation: async id => {
+        tracked.delete(id)
+        events.push('release')
+      },
+      invalidate: async () => {
+        events.push('cancel-submit', 'cancel-confirmed')
+        return groupId
+      }
+    })
+
+    await service.reconcile({
+      marketId,
+      desiredOffer: { marketId, assets: 100n, rateBps: 500n, referenceObservationId: 'test' },
+      reason: 'replace'
+    })
+
+    expect(events).toEqual([
+      'reserve',
+      'cancel-submit',
+      'cancel-confirmed',
+      'approve-submit',
+      'approve-confirmed',
+      'validate',
+      'publish-submit',
+      'publish-confirmed',
+      'ownership-confirm'
+    ])
+  })
+
+  test('does not publish or release the approved reservation when final payload validation fails', async () => {
+    const events: string[] = []
+    const tracked = new Set<Hex>()
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [],
+      listOwnedGroupIds: async () => [...tracked],
+      listBookOffers: async () => [],
+      toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
+      preparePublication: async () => ({
+        groupId,
+        publish: async () =>
+          publishBootstrapPublication({
+            ratifierType: 'setter',
+            payload: '0x1234',
+            ratify: async () => {
+              events.push('approve-submit', 'approve-confirmed')
+              return [{ operation: 'ratify', txHash: groupId }]
+            },
+            validate: async () => {
+              events.push('validate')
+              throw new Error('rejected')
+            },
+            publish: async () => {
+              events.push('publish')
+              return { operation: 'publish', txHash: secondMarketId }
+            }
+          })
+      }),
+      reserveGroup: async id => {
+        tracked.add(id)
+        events.push('reserve')
+      },
+      confirmPublishedGroup: async () => {
+        events.push('ownership-confirm')
+      },
+      releaseGroupReservation: async id => {
+        tracked.delete(id)
+        events.push('release')
+      },
+      invalidate: async id => {
+        tracked.delete(id)
+        events.push('cleanup-cancel')
+      },
+      forgetGroups: async ids => {
+        for (const id of ids) tracked.delete(id)
+      }
+    })
+
+    await expect(
+      service.reconcile({
+        marketId,
+        desiredOffer: { marketId, assets: 100n, rateBps: 500n, referenceObservationId: 'test' },
+        reason: 'publish'
+      })
+    ).rejects.toMatchObject({
+      operation: 'mempool-validation-after-ratification',
+      confirmedTransactions: [{ operation: 'ratify', txHash: groupId }]
+    })
+    expect(events).toEqual(['reserve', 'approve-submit', 'approve-confirmed', 'validate'])
+    expect([...tracked]).toEqual([groupId])
+
+    await service.cleanup()
+    expect(events).toEqual([
+      'reserve',
+      'approve-submit',
+      'approve-confirmed',
+      'validate',
+      'cleanup-cancel'
+    ])
+    expect([...tracked]).toEqual([])
+  })
+
+  test('does not repeat final Mempool validation for Ecrecover publication', async () => {
+    let validations = 0
+    expect(
+      await publishBootstrapPublication({
+        ratifierType: 'ecrecover',
+        payload: '0x1234',
+        ratify: async () => [],
+        validate: async () => {
+          validations += 1
+        },
+        publish: async () => ({ operation: 'publish', txHash: groupId })
+      })
+    ).toEqual([{ operation: 'publish', txHash: groupId }])
+    expect(validations).toBe(0)
   })
 })
 
@@ -814,6 +970,43 @@ describe('prepareBootstrapRequirements', () => {
     await expect(
       prepareBootstrapRequirements(
         [requirement],
+        async () => {
+          signed = true
+          return {} as never
+        },
+        { kind: 'ecrecover', target: ratifier, root: groupId, account: maker, offers: 1 }
+      )
+    ).rejects.toMatchObject({ operation: 'unexpected-requirement' })
+    expect(signed).toBe(false)
+  })
+
+  test.each([
+    ['missing', []],
+    [
+      'duplicate',
+      [
+        {
+          action: {
+            type: 'midnightOfferRootSignature',
+            args: { root: groupId, ratifier, offers: 1 }
+          },
+          sign: async () => ({})
+        },
+        {
+          action: {
+            type: 'midnightOfferRootSignature',
+            args: { root: groupId, ratifier, offers: 1 }
+          },
+          sign: async () => ({})
+        }
+      ]
+    ]
+  ])('rejects %s Ecrecover signature requirements before signing', async (_label, requirements) => {
+    let signed = false
+
+    await expect(
+      prepareBootstrapRequirements(
+        requirements,
         async () => {
           signed = true
           return {} as never

@@ -13,7 +13,10 @@ import {
 } from 'viem'
 import { base } from 'viem/chains'
 
-import type { BootstrapTransactionSubmittedObserver } from '../../application/bootstrap/position-bootstrap-verbose'
+import type {
+  BootstrapSubmittedTransaction,
+  BootstrapTransactionSubmittedObserver
+} from '../../application/bootstrap/position-bootstrap-verbose'
 import type {
   BootstrapMakeService,
   BootstrapPositionService,
@@ -43,7 +46,10 @@ import {
   strategyBootstrapGroups
 } from './bootstrap-groups.utils'
 import { MidnightBootstrapMakeService } from './bootstrap-make.service'
-import { validateBootstrapMempoolPublication } from './bootstrap-mempool-validation.utils'
+import {
+  validateBootstrapMempoolPayload,
+  validateBootstrapMempoolPublication
+} from './bootstrap-mempool-validation.utils'
 import { createBootstrapOffer } from './bootstrap-offer.utils'
 import { pendingBootstrapGroups } from './bootstrap-pending-offer.utils'
 import { MidnightBootstrapPositionService } from './bootstrap-position.service'
@@ -72,6 +78,52 @@ type BootstrapMakeLendArguments = {
 export const bootstrapMakeLendArguments = (
   parameters: BootstrapMakeLendArguments
 ): BootstrapMakeLendArguments => parameters
+
+type PublishBootstrapPublicationParameters = {
+  ratifierType: 'ecrecover' | 'setter'
+  payload: Hex
+  ratify: () => Promise<readonly BootstrapSubmittedTransaction[]>
+  validate: (payload: Hex) => Promise<void>
+  publish: () => Promise<BootstrapSubmittedTransaction>
+}
+
+/**
+ * Executes a prepared bootstrap publication with Setter's final payload validation barrier.
+ * @param parameters - Exact payload plus confirmed ratification, validation, and publication steps.
+ * @returns Confirmed ratification and publication transactions in submission order.
+ * @throws `BootstrapAdapterError` after a confirmed approval when final validation or publication
+ * fails; failures before approval confirmation pass through unchanged.
+ * @remarks Ecrecover payloads were already validated after signing by the SDK preparation path and
+ * therefore skip this Setter-only second validation. A confirmed Setter approval is retained in the
+ * thrown error so the caller preserves its durable reservation for safe cleanup.
+ */
+export const publishBootstrapPublication = async (
+  parameters: PublishBootstrapPublicationParameters
+): Promise<readonly BootstrapSubmittedTransaction[]> => {
+  const submittedTransactions: BootstrapSubmittedTransaction[] = []
+  try {
+    submittedTransactions.push(...(await parameters.ratify()))
+    if (parameters.ratifierType === 'setter') {
+      try {
+        await parameters.validate(parameters.payload)
+      } catch (error) {
+        if (submittedTransactions.length > 0) {
+          throw new BootstrapAdapterError('mempool-validation-after-ratification')
+        }
+        throw error
+      }
+    }
+    submittedTransactions.push(await parameters.publish())
+    return submittedTransactions
+  } catch (error) {
+    if (submittedTransactions.length === 0) throw error
+    const failure =
+      error instanceof BootstrapAdapterError
+        ? error
+        : new BootstrapAdapterError('publication-after-ratification')
+    throw failure.recordConfirmedTransactions(submittedTransactions)
+  }
+}
 
 /** Production ports used by the default position-bootstrap application service. */
 type ProductionBootstrapAdapters = {
@@ -480,44 +532,48 @@ export const createProductionBootstrapAdapters = (
       await assertBootstrapTransaction(transaction, publicationPolicy)
       return {
         groupId: output.groups[0] as Hex,
-        publish: async onTransactionSubmitted => {
-          const submittedTransactions = []
-          try {
-            for (const ratification of ratificationTransactions) {
+        publish: onTransactionSubmitted =>
+          publishBootstrapPublication({
+            ratifierType: output.ratifierType,
+            payload: transaction.data,
+            ratify: async () => {
+              const submittedTransactions: BootstrapSubmittedTransaction[] = []
+              for (const ratification of ratificationTransactions) {
+                const txHash = await execute(
+                  ratification,
+                  {
+                    kind: 'ratification',
+                    target: config.setup.ratifier,
+                    root: output.root,
+                    account: maker
+                  },
+                  'ratify',
+                  onTransactionSubmitted,
+                  'ratifier-transaction-reverted'
+                )
+                submittedTransactions.push({ operation: 'ratify' as const, txHash })
+              }
+              return submittedTransactions
+            },
+            validate: payload =>
+              validateBootstrapMempoolPayload({
+                chainId: base.id,
+                baseUrl: `${config.morphoApiBaseUrl}/v0/midnight`,
+                payload
+              }),
+            publish: async () => {
               const txHash = await execute(
-                ratification,
-                {
-                  kind: 'ratification',
-                  target: config.setup.ratifier,
-                  root: output.root,
-                  account: maker
-                },
-                'ratify',
+                transaction,
+                publicationPolicy,
+                'publish',
                 onTransactionSubmitted,
-                'ratifier-transaction-reverted'
+                output.ratifierType === 'setter'
+                  ? 'publication-transaction-reverted-after-ratification'
+                  : 'transaction-reverted'
               )
-              submittedTransactions.push({ operation: 'ratify' as const, txHash })
+              return { operation: 'publish' as const, txHash }
             }
-            const txHash = await execute(
-              transaction,
-              publicationPolicy,
-              'publish',
-              onTransactionSubmitted,
-              output.ratifierType === 'setter'
-                ? 'publication-transaction-reverted-after-ratification'
-                : 'transaction-reverted'
-            )
-            submittedTransactions.push({ operation: 'publish' as const, txHash })
-            return submittedTransactions
-          } catch (error) {
-            if (submittedTransactions.length === 0) throw error
-            const failure =
-              error instanceof BootstrapAdapterError
-                ? error
-                : new BootstrapAdapterError('publication-after-ratification')
-            throw failure.recordConfirmedTransactions(submittedTransactions)
-          }
-        }
+          })
       }
     }
   })

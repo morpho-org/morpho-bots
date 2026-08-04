@@ -95,7 +95,11 @@ serially runs a cycle every minute and streams each result. `SIGINT` or `SIGTERM
 cycle finish, then invalidates every explicitly owned bootstrap group through the same mutation
 queue and waits for bounded transaction receipts. The final record reports the number of cycles and
 whether cleanup was applied, logged, or failed. Read-only monitoring logs the cleanup request and
-never loads a private key.
+never loads a private key. In live mode, Ecrecover bootstrap signs and publishes the validated payload
+in one transaction. Setter bootstrap durably reserves the future group, confirms any replacement
+cancellations, submits and confirms `setIsRootRatified`, revalidates the exact final proof payload with
+the Mempool API, then publishes it in a second transaction and confirms ownership. A post-approval
+validation failure does not publish and retains the reservation for safe cleanup.
 
 Add `--verbose` to either one-shot or monitored bootstrap mode to include the complete market
 configuration, fresh credit, debt, cash balance, per-market and total exposure, active offer,
