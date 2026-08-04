@@ -74,24 +74,41 @@ export const createBotObservability = (options: {
   }
 
   return {
-    /** Starts lifecycle logging and best-effort heartbeat delivery. */
+    /**
+     * Starts the lifecycle: logs `bot.started` when shipping is enabled and begins best-effort
+     * heartbeat delivery.
+     * @returns Completion once the start has been recorded; heartbeat delivery continues in the
+     * background and its failures are reduced to a sanitized `heartbeat.failed` warning.
+     */
     async start() {
       if (shippingEnabled) logger.info('bot.started')
       void heartbeat
         .start()
         .catch(error => logger.warn('heartbeat.failed', { errorName: options.errorName(error) }))
     },
-    /** Stops heartbeat delivery and records the sanitized lifecycle reason. */
+    /**
+     * Stops heartbeat delivery and logs `bot.stopped` when shipping is enabled.
+     * @param reason - Sanitized operator-facing lifecycle reason; it is logged verbatim.
+     */
     stop(reason: string) {
       heartbeat.stop()
       if (shippingEnabled) logger.info('bot.stopped', { reason })
     },
-    /** Ships one already-sanitized record without changing terminal output. */
+    /**
+     * Ships one already-sanitized record without consuming or changing terminal output.
+     * @param value - Sanitized record; arrays ship one record per item, records with nested
+     * `failed`/`halted` statuses or `errorName` fields ship at error level, and everything else
+     * ships at info level. Silently ignored while shipping is disabled. Never throws.
+     */
     record(value: unknown) {
       if (!shippingEnabled) return
       emitRecord(value)
     },
-    /** Classifies an unexpected failure without shipping its message or cause. */
+    /**
+     * Logs one `bot.unexpected-error` classification without shipping the message or cause.
+     * @param error - Untrusted failure; only the injected sanitized name projection is logged.
+     * @param origin - Stable failure origin recorded alongside the classification.
+     */
     unexpected(error: unknown, origin: UnexpectedOrigin) {
       if (shippingEnabled) {
         logger.error('bot.unexpected-error', { origin, errorName: options.errorName(error) })
