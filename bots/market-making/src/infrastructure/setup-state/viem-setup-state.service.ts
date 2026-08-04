@@ -11,13 +11,13 @@ import { privateKeyToAccount } from 'viem/accounts'
 import type { BookSetup, SetupStateService } from '../../application/setup/setup-check.service'
 import type { JsonRequest } from './http-json.utils'
 
+import { BASE_CHAIN_ID } from '../../config/config.utils'
 import { booksJsonRequestFetch } from './http-json.utils'
 import { ProviderPaginationError } from './provider-pagination.error'
 import { executeProviderRead } from './provider-read.utils'
 import { ProviderResponseError } from './provider-response.error'
 import {
   addressValue,
-  BASE_CHAIN_ID,
   BASE_ECRECOVER_RATIFIER_RUNTIME_HASH,
   DEFAULT_REQUEST_TIMEOUT_MS,
   invertedMarketIds,
@@ -26,11 +26,11 @@ import {
   marketFromContract,
   MAX_OFFER_ITEMS,
   MAX_OFFER_PAGES,
-  objectRecord,
+  objectValue,
   offerFromApi,
   offersFromGroups,
   PAGE_SIZE,
-  providerBigInt,
+  bigintValue,
   routerEcrecoverRatifiers,
   morphoApiTimeout
 } from './viem-setup-state.utils'
@@ -223,8 +223,7 @@ export class ViemSetupStateService implements SetupStateService {
       isAddressEqual(ratifier, listedRatifier)
     )
     const deployed = code !== undefined && code !== '0x'
-    const ecrecoverSurface =
-      deployed && code !== undefined && keccak256(code) === BASE_ECRECOVER_RATIFIER_RUNTIME_HASH
+    const ecrecoverSurface = deployed && keccak256(code) === BASE_ECRECOVER_RATIFIER_RUNTIME_HASH
     if (!ecrecoverSurface) {
       return {
         listed,
@@ -461,7 +460,7 @@ export class ViemSetupStateService implements SetupStateService {
     ])
     // Morpho's ABI exposes named tuple outputs, which viem decodes as arrays. Reuse the SDK's
     // canonical tuple mapper instead of maintaining positional field mapping locally.
-    const params = objectRecord(
+    const params = objectValue(
       Array.isArray(paramsResponse)
         ? restructure(paramsResponse, {
             abi: blueAbi,
@@ -471,7 +470,7 @@ export class ViemSetupStateService implements SetupStateService {
         : paramsResponse,
       'Morpho Blue reference market params'
     )
-    const market = objectRecord(
+    const market = objectValue(
       Array.isArray(marketResponse)
         ? restructure(marketResponse, {
             abi: blueAbi,
@@ -496,14 +495,14 @@ export class ViemSetupStateService implements SetupStateService {
         'configured reference market uses an unexpected loan asset'
       )
     }
-    if (providerBigInt(market.totalSupplyShares, 'reference market totalSupplyShares') === 0n) {
+    if (bigintValue(market.totalSupplyShares, 'reference market totalSupplyShares') === 0n) {
       throw new ProviderResponseError(
         'archive-rpc',
         'reference-market',
         'configured reference market has zero supply shares'
       )
     }
-    if (providerBigInt(market.lastUpdate, 'reference market lastUpdate') === 0n) {
+    if (bigintValue(market.lastUpdate, 'reference market lastUpdate') === 0n) {
       throw new ProviderResponseError(
         'archive-rpc',
         'reference-market',
@@ -556,7 +555,7 @@ export class ViemSetupStateService implements SetupStateService {
         limit: String(PAGE_SIZE)
       })
       if (cursor !== null) query.set('cursor', cursor)
-      const response = objectRecord(
+      const response = objectValue(
         await executeProviderRead('morpho-api', 'offer-groups', () =>
           this.request(
             `${this.options.morphoApiBaseUrl}/v0/midnight/users/${encodeURIComponent(maker)}/offer-groups?${query.toString()}`,
@@ -566,9 +565,8 @@ export class ViemSetupStateService implements SetupStateService {
         ),
         'Morpho API response'
       )
-      const groupData = response.data
-      const groups = Array.isArray(groupData) ? groupData : []
-      if (!Array.isArray(groupData)) {
+      const groups = response.data
+      if (!Array.isArray(groups)) {
         throw new ProviderResponseError(
           'morpho-api',
           'offer-groups',

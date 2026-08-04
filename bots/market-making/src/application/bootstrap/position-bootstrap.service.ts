@@ -1,4 +1,8 @@
+import type { MonitorOperationQueue } from '@repo/monitoring'
 import type { Hex } from 'viem'
+
+import { cycleHasFailure, waitForMonitorInterval } from '@repo/monitoring'
+import { zeroFloorSub } from '@repo/utils'
 
 import type {
   BootstrapConfig,
@@ -7,7 +11,6 @@ import type {
   BootstrapRate,
   PositionBootstrapDecision
 } from '../../domain/bootstrap/position-bootstrap'
-import type { MonitorOperationQueue } from '../monitor.utils'
 import type {
   BootstrapMakeResult,
   BootstrapSubmittedTransaction,
@@ -24,10 +27,8 @@ import {
   decidePositionBootstrapTransition,
   validateBootstrapConfig
 } from '../../domain/bootstrap/position-bootstrap'
-import { waitForMonitorInterval } from '../monitor.utils'
 import { operatorErrorDetails, operatorErrorName } from '../operator-error-name.utils'
 import { BootstrapOwnershipCleanupError } from './bootstrap-ownership-cleanup.error'
-import { bootstrapCycleHasFailure } from './position-bootstrap-monitor.utils'
 
 const BOOTSTRAP_MONITOR_INTERVAL_MS = 60_000
 
@@ -290,7 +291,7 @@ export class PositionBootstrapService {
         if (results === undefined) break
         cycles += 1
 
-        if (bootstrapCycleHasFailure(results)) {
+        if (cycleHasFailure(results)) {
           reason = 'cycle-failed'
           lastCycle = results
           break
@@ -449,22 +450,16 @@ export class PositionBootstrapService {
         ...observedPosition,
         cashBalance:
           reservedAssetsDelta >= 0n
-            ? observedPosition.cashBalance > reservedAssetsDelta
-              ? observedPosition.cashBalance - reservedAssetsDelta
-              : 0n
+            ? zeroFloorSub(observedPosition.cashBalance, reservedAssetsDelta)
             : observedPosition.cashBalance - reservedAssetsDelta,
         marketExposure:
           marketReservationDelta >= 0n
             ? observedPosition.marketExposure + marketReservationDelta
-            : observedPosition.marketExposure > -marketReservationDelta
-              ? observedPosition.marketExposure + marketReservationDelta
-              : 0n,
+            : zeroFloorSub(observedPosition.marketExposure, -marketReservationDelta),
         totalExposure:
           reservedAssetsDelta >= 0n
             ? observedPosition.totalExposure + reservedAssetsDelta
-            : observedPosition.totalExposure > -reservedAssetsDelta
-              ? observedPosition.totalExposure + reservedAssetsDelta
-              : 0n
+            : zeroFloorSub(observedPosition.totalExposure, -reservedAssetsDelta)
       }
       const effectiveState = this.verbosePosition(config.marketId, position)
 

@@ -9,6 +9,10 @@
     "packages/utils": {},
     "packages/contracts": {},
     "packages/bot-kit": {},
+    "packages/logging": {},
+    "packages/monitoring": {},
+    "packages/observability": {},
+    "packages/offers": {},
     "packages/swaps": {},
     "bots/midnight-liquidation": {
       "ignore": ["src/generated/**"]

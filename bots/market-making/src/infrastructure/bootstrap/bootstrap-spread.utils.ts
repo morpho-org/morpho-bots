@@ -1,10 +1,11 @@
+import type { BookOffer } from '@repo/offers'
 import type { Hex } from 'viem'
+
+import { batchProspectiveBook, hasNegativeSpread } from '@repo/offers'
 
 import type { BootstrapActiveGroup } from './bootstrap-position.service'
 
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
-
-type BootstrapBookOffer = { groupId?: Hex; marketId: Hex; buy: boolean; tick: bigint }
 
 /**
  * Resolves the strategy group IDs that may be reconciled for one market.
@@ -25,28 +26,16 @@ export const bootstrapMarketGroupIds = (groups: readonly BootstrapActiveGroup[],
 
 /**
  * Rejects a prospective buy when it crosses any still-live sell in the complete maker book.
- * @param parameters - Market, replaced group IDs, current book, and exact prospective protocol tick.
+ * @param parameters - Market, replaced group IDs, current book, and exact prospective offer.
  * @returns Nothing after the resulting selected-market book is proven non-crossing.
  * @throws `BootstrapAdapterError` when the prospective book has a negative or zero spread.
  */
 export const assertBootstrapProspectiveSpread = (parameters: {
   marketId: Hex
   replacedGroupIds: ReadonlySet<Hex>
-  book: readonly BootstrapBookOffer[]
-  prospective: BootstrapBookOffer
+  book: readonly BookOffer[]
+  prospective: BookOffer
 }) => {
-  const resultingBook = [...parameters.book, parameters.prospective].filter(
-    offer =>
-      offer.marketId === parameters.marketId &&
-      (offer.groupId === undefined || !parameters.replacedGroupIds.has(offer.groupId))
-  )
-  const buys = resultingBook.filter(offer => offer.buy).map(offer => offer.tick)
-  const sells = resultingBook.filter(offer => !offer.buy).map(offer => offer.tick)
-  if (buys.length === 0 || sells.length === 0) return
-
-  const highestBuy = buys.reduce((highest, tick) => (tick > highest ? tick : highest))
-  const lowestSell = sells.reduce((lowest, tick) => (tick < lowest ? tick : lowest))
-  if (highestBuy >= lowestSell) {
-    throw new BootstrapAdapterError('negative-spread')
-  }
+  const book = batchProspectiveBook({ ...parameters, prospective: [parameters.prospective] })
+  if (hasNegativeSpread(book)) throw new BootstrapAdapterError('negative-spread')
 }

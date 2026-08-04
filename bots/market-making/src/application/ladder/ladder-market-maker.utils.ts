@@ -10,6 +10,8 @@ export const sameLadderQuoteSet = (left: LadderQuoteSet, right: LadderQuoteSet) 
   left.marketId === right.marketId &&
   left.centerRateBps === right.centerRateBps &&
   left.groupMode === right.groupMode &&
+  left.lower.length === right.lower.length &&
+  left.higher.length === right.higher.length &&
   left.lower.every(
     (rung, index) =>
       rung.index === right.lower[index]?.index &&
@@ -21,6 +23,4 @@ export const sameLadderQuoteSet = (left: LadderQuoteSet, right: LadderQuoteSet) 
       rung.index === right.higher[index]?.index &&
       rung.rateBps === right.higher[index]?.rateBps &&
       rung.assets === right.higher[index]?.assets
-  ) &&
-  left.lower.length === right.lower.length &&
-  left.higher.length === right.higher.length
+  )

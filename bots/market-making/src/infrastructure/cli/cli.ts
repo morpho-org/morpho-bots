@@ -1,5 +1,6 @@
 import type { Hex } from 'viem'
 
+import { cycleHasFailure } from '@repo/monitoring'
 import { Command, CommanderError } from 'commander'
 
 import type { BootstrapTransactionSubmittedEvent } from '../../application/bootstrap/position-bootstrap-verbose'
@@ -22,14 +23,12 @@ import type { VersionService } from '../../application/version.service'
 
 import { PositionBootstrapHaltedError } from '../../application/bootstrap/position-bootstrap-halted.error'
 import { PositionBootstrapMonitorHaltedError } from '../../application/bootstrap/position-bootstrap-monitor-halted.error'
-import { bootstrapCycleHasFailure } from '../../application/bootstrap/position-bootstrap-monitor.utils'
 import { LadderCycleHaltedError } from '../../application/ladder/ladder-cycle-halted.error'
 import { LadderMonitorHaltedError } from '../../application/ladder/ladder-monitor-halted.error'
-import { ladderCycleHasFailure } from '../../application/ladder/ladder-monitor.utils'
 import { MarketMakingMonitorHaltedError } from '../../application/market-making/market-making-monitor-halted.error'
 import { SetupMonitorHaltedError } from '../../application/setup/setup-monitor-halted.error'
 import { CliUsageError } from './cli-usage.error'
-import { offerInvalidationGroup } from './offer-invalidation-group.utils'
+import { offerInvalidationGroup } from './offer-invalidation-argument.utils'
 
 interface SetupReadinessService {
   assertReady(): Promise<SetupCheckReport>
@@ -106,6 +105,19 @@ export class Cli {
   private hasOutput = false
   private runtime: CliRuntimeOptions = {}
 
+  private get signal() {
+    return this.runtime.signal ?? new AbortController().signal
+  }
+
+  private eventObserver<Event>(enabled: boolean) {
+    return enabled ? (event: Event) => this.runtime.writeEvent?.(event) : undefined
+  }
+
+  private capture(output: unknown) {
+    this.output = output
+    this.hasOutput = true
+  }
+
   /**
    * Configures version, address-only mode, individual workflows, combined monitoring, and invalidation.
    * @param version - Application version provider.
@@ -161,17 +173,15 @@ export class Cli {
       if (setupOptions.monitor === true) {
         if (!setupService.runContinuously) throw new CliUsageError()
         const result = await setupService.runContinuously({
-          signal: this.runtime.signal ?? new AbortController().signal,
+          signal: this.signal,
           onCycle: report => this.runtime.writeEvent?.(report)
         })
         if (result.status === 'halted') throw new SetupMonitorHaltedError(result)
-        this.output = result
-        this.hasOutput = true
+        this.capture(result)
         return
       }
 
-      this.output = await setupService.assertReady()
-      this.hasOutput = true
+      this.capture(await setupService.assertReady())
     })
 
     const bootstrapCommand = this.program
@@ -191,35 +201,28 @@ export class Cli {
         readOnly: options.readonly === true,
         writeEvent: this.runtime.writeEvent
       })
+      const verbose = bootstrapOptions.verbose === true
+      const onTransactionSubmitted = this.eventObserver<BootstrapTransactionSubmittedEvent>(verbose)
       if (bootstrapOptions.monitor === true) {
         if (!bootstrapService.runContinuously) throw new CliUsageError()
         const result = await bootstrapService.runContinuously({
-          signal: this.runtime.signal ?? new AbortController().signal,
+          signal: this.signal,
           onCycle: cycle => this.runtime.writeEvent?.(cycle),
-          verbose: bootstrapOptions.verbose === true,
-          onTransactionSubmitted:
-            bootstrapOptions.verbose === true
-              ? event => this.runtime.writeEvent?.(event)
-              : undefined
+          verbose,
+          onTransactionSubmitted
         })
         if (result.status === 'halted') {
           throw new PositionBootstrapMonitorHaltedError(result)
         }
-        this.output = result
-        this.hasOutput = true
+        this.capture(result)
         return
       }
 
-      const result = await bootstrapService.runOnce({
-        verbose: bootstrapOptions.verbose === true,
-        onTransactionSubmitted:
-          bootstrapOptions.verbose === true ? event => this.runtime.writeEvent?.(event) : undefined
-      })
-      if (Array.isArray(result) && bootstrapCycleHasFailure(result)) {
+      const result = await bootstrapService.runOnce({ verbose, onTransactionSubmitted })
+      if (Array.isArray(result) && cycleHasFailure(result)) {
         throw new PositionBootstrapHaltedError(result)
       }
-      this.output = result
-      this.hasOutput = true
+      this.capture(result)
     })
 
     const ladderCommand = this.program
@@ -239,33 +242,28 @@ export class Cli {
         readOnly: options.readonly === true,
         writeEvent: this.runtime.writeEvent
       })
+      const verbose = ladderOptions.verbose === true
+      const onTransactionSubmitted = this.eventObserver<LadderTransactionSubmittedEvent>(verbose)
       if (ladderOptions.monitor === true) {
         if (!ladderService.runContinuously) throw new CliUsageError()
         const result = await ladderService.runContinuously({
-          signal: this.runtime.signal ?? new AbortController().signal,
+          signal: this.signal,
           onCycle: cycle => this.runtime.writeEvent?.(cycle),
-          verbose: ladderOptions.verbose === true,
-          onTransactionSubmitted:
-            ladderOptions.verbose === true ? event => this.runtime.writeEvent?.(event) : undefined
+          verbose,
+          onTransactionSubmitted
         })
         if (result.status === 'halted') {
           throw new LadderMonitorHaltedError(result)
         }
-        this.output = result
-        this.hasOutput = true
+        this.capture(result)
         return
       }
 
-      const result = await ladderService.runOnce({
-        verbose: ladderOptions.verbose === true,
-        onTransactionSubmitted:
-          ladderOptions.verbose === true ? event => this.runtime.writeEvent?.(event) : undefined
-      })
-      if (ladderCycleHasFailure(result)) {
+      const result = await ladderService.runOnce({ verbose, onTransactionSubmitted })
+      if (cycleHasFailure(result)) {
         throw new LadderCycleHaltedError(result)
       }
-      this.output = result
-      this.hasOutput = true
+      this.capture(result)
     })
 
     const startCommand = this.program
@@ -283,13 +281,12 @@ export class Cli {
         writeEvent: this.runtime.writeEvent
       })
       const result = await service.runContinuously({
-        signal: this.runtime.signal ?? new AbortController().signal,
+        signal: this.signal,
         onEvent: event => this.runtime.writeEvent?.(event),
         verbose: startOptions.verbose === true
       })
       if (result.status === 'halted') throw new MarketMakingMonitorHaltedError(result)
-      this.output = result
-      this.hasOutput = true
+      this.capture(result)
     })
 
     const invalidateCommand = this.program
@@ -306,11 +303,12 @@ export class Cli {
         readOnly: options.readonly === true,
         writeEvent: this.runtime.writeEvent
       })
-      this.output = await invalidationService.run({
-        groupId,
-        onTransactionSubmitted: event => this.runtime.writeEvent?.(event)
-      })
-      this.hasOutput = true
+      this.capture(
+        await invalidationService.run({
+          groupId,
+          onTransactionSubmitted: event => this.runtime.writeEvent?.(event)
+        })
+      )
     })
   }
 
@@ -322,21 +320,11 @@ export class Cli {
    * @throws `CliUsageError` with a constant message and stable code on invalid usage; raw Commander
    * arguments, messages, option details, URLs, and causes are deliberately discarded. Provider and
    * readiness errors pass through.
-   * @remarks `setup-check` remains read-only. `setup-check --monitor` streams non-overlapping
-   * readiness reports until shutdown or failed readiness without writes. A failed monitor report
-   * exits through `SetupMonitorHaltedError`. Position bootstrap runs only for the explicit
-   * `bootstrap` command;
-   * `bootstrap --monitor` repeats at the fixed bootstrap cadence and performs strategy cleanup
-   * after its signal. `bootstrap --verbose` adds safe configuration, rate, offer, position, and
-   * transaction-hash diagnostics. Ladder reconciliation runs only for the explicit `ladder`
-   * command; `ladder --monitor` repeats at the shortest configured cadence and cleans owned ladder
-   * groups after shutdown, while `ladder --verbose` adds safe configuration, rate, quote, state,
-   * and transaction diagnostics. `invalidate` cancels all active maker groups, while
-   * `invalidate <group-id>` directly targets one group and streams each submitted hash. With
-   * `--readonly`, including when placed after subcommand options, configuration never loads a
-   * private key and mutation adapters emit observational results. `start` performs one readiness
-   * gate, then runs setup, bootstrap, and ladder monitoring concurrently as a fail-together group;
-   * it waits for both writer cleanups before returning or throwing `MarketMakingMonitorHaltedError`.
+   * @remarks `setup-check` is read-only, writers run only for their explicit commands, and
+   * `--monitor` variants repeat at their configured cadence with owned-offer cleanup on shutdown.
+   * `--verbose` adds safe diagnostics, `--readonly` never loads a private key, and `start` runs
+   * setup, bootstrap, and ladder monitoring as one fail-together group that drains writer cleanup
+   * before settling.
    */
   async run(argv: readonly string[], runtime: CliRuntimeOptions = {}): Promise<unknown> {
     if (argv.length === 0) throw new CliUsageError()

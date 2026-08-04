@@ -2,11 +2,7 @@ import type { Logger, LogLevel } from '@repo/bot-kit'
 
 import { describe, expect, mock, spyOn, test } from 'bun:test'
 
-import {
-  createMarketMakingObservability,
-  enhanceMarketMakingArgv,
-  installMarketMakingProcessObservers
-} from '../../../src/infrastructure/observability/market-making-observability'
+import { createBotObservability, installProcessObservers } from '../src/bot-observability.utils'
 
 const captureLogger = () => {
   const records: { level: LogLevel; event: string; fields: Record<string, unknown> }[] = []
@@ -21,50 +17,15 @@ const captureLogger = () => {
   return { logger, records }
 }
 
-describe('enhanceMarketMakingArgv', () => {
-  const full = {
-    BETTERSTACK_SOURCE_TOKEN: 'source-token',
-    BETTERSTACK_INGESTING_HOST: 's1.betterstackdata.com'
-  }
+const errorName = (error: unknown) => (error instanceof RangeError ? 'RangeError' : 'UnknownError')
 
-  test.each(['start', 'bootstrap', 'ladder'])(
-    'enables safe diagnostics for %s with full shipping config',
-    command => {
-      expect(enhanceMarketMakingArgv([command], full)).toEqual([command, '--verbose'])
-    }
-  )
+const identity = { bot: 'test-bot', chainId: 8453, errorName }
 
-  test('does not duplicate an explicit verbose flag', () => {
-    expect(enhanceMarketMakingArgv(['start', '--verbose'], full)).toEqual(['start', '--verbose'])
-  })
-
-  test('recognizes the command without mistaking a config path for one', () => {
-    expect(enhanceMarketMakingArgv(['--config', 'start', 'setup-check'], full)).toEqual([
-      '--config',
-      'start',
-      'setup-check'
-    ])
-    expect(enhanceMarketMakingArgv(['--config=market-making.yaml', 'ladder'], full)).toEqual([
-      '--config=market-making.yaml',
-      'ladder',
-      '--verbose'
-    ])
-  })
-
-  test.each([
-    ['unset', {}],
-    ['token only', { BETTERSTACK_SOURCE_TOKEN: 'source-token' }],
-    ['host only', { BETTERSTACK_INGESTING_HOST: 's1.betterstackdata.com' }]
-  ])('is inert when shipping config is %s', (_name, env) => {
-    expect(enhanceMarketMakingArgv(['start'], env)).toEqual(['start'])
-  })
-})
-
-describe('market-making observability', () => {
-  test('ships lifecycle, heartbeat, actions, positions, and offers without consuming CLI output', async () => {
+describe('createBotObservability', () => {
+  test('ships lifecycle, heartbeat, and record events without consuming CLI output', async () => {
     const { logger, records } = captureLogger()
     const heartbeat = { start: mock(async () => undefined), stop: mock(() => undefined) }
-    const observability = createMarketMakingObservability({ logger, heartbeat })
+    const observability = createBotObservability({ ...identity, logger, heartbeat })
     const cycle = {
       event: 'market-making.cycle',
       workflow: 'ladder',
@@ -100,9 +61,9 @@ describe('market-making observability', () => {
     expect(cycle.event).toBe('market-making.cycle')
   })
 
-  test('ships recenter, resize, publish, rest, bootstrap, and invalidation actions as records', () => {
+  test('ships each array item as its own info-level record for every success status', () => {
     const { logger, records } = captureLogger()
-    const observability = createMarketMakingObservability({ logger })
+    const observability = createBotObservability({ ...identity, logger })
 
     observability.record([
       { marketId: 'market-a', action: 'recenter', status: 'published' },
@@ -129,7 +90,7 @@ describe('market-making observability', () => {
   test('records a fresh lifecycle start after a clean stop so process restarts remain queryable', async () => {
     const { logger, records } = captureLogger()
     const heartbeat = { start: mock(async () => undefined), stop: mock(() => undefined) }
-    const observability = createMarketMakingObservability({ logger, heartbeat })
+    const observability = createBotObservability({ ...identity, logger, heartbeat })
 
     await observability.start()
     observability.stop('restart')
@@ -148,7 +109,7 @@ describe('market-making observability', () => {
 
   test('elevates nested failed, halted, and errorName outcomes to error level', () => {
     const { logger, records } = captureLogger()
-    const observability = createMarketMakingObservability({ logger })
+    const observability = createBotObservability({ ...identity, logger })
 
     observability.record({
       event: 'bootstrap.cycle',
@@ -162,14 +123,14 @@ describe('market-making observability', () => {
     ])
   })
 
-  test('logs unexpected failures by allowlisted error name only', () => {
+  test('logs unexpected failures through the injected sanitized projection only', () => {
     const { logger, records } = captureLogger()
-    const observability = createMarketMakingObservability({ logger })
+    const observability = createBotObservability({ ...identity, logger })
     const error = new Error('provider secret raw response')
     error.name = 'ProviderTimeoutError'
 
     observability.unexpected(error, 'unhandledRejection')
-    observability.unexpected({ message: 'hostile raw text' }, 'uncaughtException')
+    observability.unexpected(new RangeError('hostile raw text'), 'uncaughtException')
 
     expect(records).toEqual([
       {
@@ -180,7 +141,7 @@ describe('market-making observability', () => {
       {
         level: 'error',
         event: 'bot.unexpected-error',
-        fields: { origin: 'uncaughtException', errorName: 'UnknownError' }
+        fields: { origin: 'uncaughtException', errorName: 'RangeError' }
       }
     ])
     expect(JSON.stringify(records)).not.toContain('provider secret')
@@ -193,7 +154,8 @@ describe('market-making observability', () => {
       new Error('heartbeat secret URL and raw network response')
     )
     try {
-      const observability = createMarketMakingObservability({
+      const observability = createBotObservability({
+        ...identity,
         logger,
         env: { BETTERSTACK_HEARTBEAT_URL: 'https://uptime.example/secret' }
       })
@@ -213,7 +175,9 @@ describe('market-making observability', () => {
       fetchSpy.mockRestore()
     }
   })
+})
 
+describe('installProcessObservers', () => {
   test('observes fatal exceptions and rethrows unhandled rejections after recording', () => {
     const unexpected = mock(
       (_error: unknown, _origin: 'uncaughtException' | 'unhandledRejection') => undefined
@@ -231,7 +195,7 @@ describe('market-making observability', () => {
       removeListener: mock((_event: string, _value: (...args: never[]) => void) => undefined)
     }
 
-    const cleanup = installMarketMakingProcessObservers({ unexpected }, target)
+    const cleanup = installProcessObservers({ unexpected }, target)
     const error = new Error('must not be logged')
     exceptionListener?.(error, 'uncaughtException')
     expect(() => rejectionListener?.(error)).toThrow(error)

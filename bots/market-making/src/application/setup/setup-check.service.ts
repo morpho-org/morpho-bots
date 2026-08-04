@@ -1,6 +1,7 @@
 import type { Address, Hex } from 'viem'
 
-import { waitForMonitorInterval } from '../monitor.utils'
+import { waitForMonitorInterval } from '@repo/monitoring'
+
 import { operatorErrorName } from '../operator-error-name.utils'
 import {
   booksCheck,

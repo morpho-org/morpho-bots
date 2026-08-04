@@ -2,48 +2,12 @@ import type { Logger } from '@repo/bot-kit'
 
 import { createHeartbeatMonitor, createLogger, railwayContext } from '@repo/bot-kit'
 
-import { operatorErrorName } from '../../application/operator-error-name.utils'
+import type { Environment } from './shipping-config.utils'
 
-const BASE_CHAIN_ID = 8453
+import { hasShippingConfig } from './shipping-config.utils'
 
-type Environment = Record<string, string | undefined>
 type HeartbeatMonitor = { start: () => Promise<void>; stop: () => void }
 type UnexpectedOrigin = 'entrypoint' | 'uncaughtException' | 'unhandledRejection'
-
-const hasShippingConfig = (env: Environment) =>
-  Boolean(env.BETTERSTACK_SOURCE_TOKEN?.trim() && env.BETTERSTACK_INGESTING_HOST?.trim())
-
-const marketMakingCommand = (argv: readonly string[]) => {
-  for (let index = 0; index < argv.length; index += 1) {
-    const argument = argv[index]
-    if (argument === '--config' || argument === '-c') {
-      index += 1
-      continue
-    }
-    if (argument?.startsWith('--config=') || argument?.startsWith('-')) continue
-    return argument
-  }
-  return undefined
-}
-
-/**
- * Enables the existing safe verbose event stream only when BetterStack shipping is fully configured.
- * @param argv - CLI arguments without runtime or executable prefixes.
- * @param env - Environment used only to detect complete BetterStack shipping configuration.
- * @returns A copied argument list, with `--verbose` added for supported writer commands when needed.
- * @remarks Pure argument transformation; it performs no logging, shipping, or process mutation.
- */
-export const enhanceMarketMakingArgv = (
-  argv: readonly string[],
-  env: Environment = process.env
-): readonly string[] => {
-  if (!hasShippingConfig(env) || argv.includes('--verbose')) return [...argv]
-  const command = marketMakingCommand(argv)
-  if (command !== 'start' && command !== 'bootstrap' && command !== 'ladder') {
-    return [...argv]
-  }
-  return [...argv, '--verbose']
-}
 
 const hasFailure = (value: unknown, seen = new WeakSet<object>(), depth = 0): boolean => {
   if (depth > 12 || value === null || typeof value !== 'object') return false
@@ -59,26 +23,28 @@ const hasFailure = (value: unknown, seen = new WeakSet<object>(), depth = 0): bo
 }
 
 /**
- * Mirrors the CLI's already-sanitized records into bot-kit observability without consuming output.
- * @param options - Optional environment and testable logger or heartbeat overrides.
+ * Mirrors a bot's already-sanitized records into bot-kit observability without consuming output.
+ * @param options - Bot identity, sanitized error-name projection, and testable overrides.
  * @returns Lifecycle, record, and unexpected-error observers for the process composition root.
  * @remarks Starting begins best-effort heartbeat delivery; stopping ends it. Record shipping is
- * best-effort and never consumes or changes the CLI stdout/stderr stream.
+ * best-effort and never consumes or changes the bot's stdout/stderr stream. The error-name
+ * projection must already be sanitized: it is logged verbatim.
  */
-export const createMarketMakingObservability = (
-  options: {
-    env?: Environment
-    logger?: Logger
-    heartbeat?: HeartbeatMonitor
-  } = {}
-) => {
+export const createBotObservability = (options: {
+  bot: string
+  chainId: number
+  errorName: (error: unknown) => string
+  env?: Environment
+  logger?: Logger
+  heartbeat?: HeartbeatMonitor
+}) => {
   const env = options.env ?? process.env
   const shippingEnabled = options.logger !== undefined || hasShippingConfig(env)
   const logger =
     options.logger ??
     createLogger('info', {
       env,
-      context: { bot: 'market-making', chainId: BASE_CHAIN_ID, ...railwayContext(env) }
+      context: { bot: options.bot, chainId: options.chainId, ...railwayContext(env) }
     })
   const heartbeatLogger: Logger = {
     ...logger,
@@ -113,14 +79,14 @@ export const createMarketMakingObservability = (
       if (shippingEnabled) logger.info('bot.started')
       void heartbeat
         .start()
-        .catch(error => logger.warn('heartbeat.failed', { errorName: operatorErrorName(error) }))
+        .catch(error => logger.warn('heartbeat.failed', { errorName: options.errorName(error) }))
     },
     /** Stops heartbeat delivery and records the sanitized lifecycle reason. */
     stop(reason: string) {
       heartbeat.stop()
       if (shippingEnabled) logger.info('bot.stopped', { reason })
     },
-    /** Ships one already-sanitized CLI record without changing terminal output. */
+    /** Ships one already-sanitized record without changing terminal output. */
     record(value: unknown) {
       if (!shippingEnabled) return
       emitRecord(value)
@@ -128,13 +94,14 @@ export const createMarketMakingObservability = (
     /** Classifies an unexpected failure without shipping its message or cause. */
     unexpected(error: unknown, origin: UnexpectedOrigin) {
       if (shippingEnabled) {
-        logger.error('bot.unexpected-error', { origin, errorName: operatorErrorName(error) })
+        logger.error('bot.unexpected-error', { origin, errorName: options.errorName(error) })
       }
     }
   }
 }
 
-type MarketMakingObservability = ReturnType<typeof createMarketMakingObservability>
+/** Lifecycle, record, and unexpected-error observers created for one bot process. */
+export type BotObservability = ReturnType<typeof createBotObservability>
 
 type ProcessObserverTarget = {
   on(event: 'uncaughtExceptionMonitor', listener: (error: Error, origin: string) => void): unknown
@@ -154,8 +121,8 @@ type ProcessObserverTarget = {
  * @remarks The rejection listener rethrows after recording so the runtime retains its fatal exit
  * behavior; the monitor listener observes uncaught exceptions without swallowing them.
  */
-export const installMarketMakingProcessObservers = (
-  observability: Pick<MarketMakingObservability, 'unexpected'>,
+export const installProcessObservers = (
+  observability: Pick<BotObservability, 'unexpected'>,
   target: ProcessObserverTarget = process
 ) => {
   const exceptionListener = (error: Error, origin: string) => {

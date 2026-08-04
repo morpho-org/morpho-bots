@@ -358,13 +358,9 @@ const removeOverriddenYamlValues = (input: unknown, environment: Environment) =>
   if (environment.LADDER_MARKETS !== undefined) delete root.ladder
 }
 
-const parseBootstrapMarkets = (text: string) => {
+const parseMarketsValue = (name: 'BOOTSTRAP_MARKETS' | 'LADDER_MARKETS', text: string) => {
   if (Buffer.byteLength(text, 'utf8') > MAX_CONFIGURATION_SOURCE_BYTES) {
-    throw new ConfigValidationError(
-      'BOOTSTRAP_MARKETS',
-      'too-large',
-      'BOOTSTRAP_MARKETS exceeds the maximum supported size'
-    )
+    throw new ConfigValidationError(name, 'too-large', `${name} exceeds the maximum supported size`)
   }
   try {
     JSON.parse(text)
@@ -374,32 +370,9 @@ const parseBootstrapMarkets = (text: string) => {
     return document.toJS({ maxAliasCount: 0 }) as unknown
   } catch {
     throw new ConfigValidationError(
-      'BOOTSTRAP_MARKETS',
+      name,
       'malformed-json',
-      'BOOTSTRAP_MARKETS must be a JSON array with unique object keys'
-    )
-  }
-}
-
-const parseLadderMarkets = (text: string) => {
-  if (Buffer.byteLength(text, 'utf8') > MAX_CONFIGURATION_SOURCE_BYTES) {
-    throw new ConfigValidationError(
-      'LADDER_MARKETS',
-      'too-large',
-      'LADDER_MARKETS exceeds the maximum supported size'
-    )
-  }
-  try {
-    JSON.parse(text)
-    const document = parseDocument(text, { intAsBigInt: true, uniqueKeys: true })
-    if (document.errors.length > 0) throw document.errors
-    rejectUnsafeYamlNodes(document)
-    return document.toJS({ maxAliasCount: 0 }) as unknown
-  } catch {
-    throw new ConfigValidationError(
-      'LADDER_MARKETS',
-      'malformed-json',
-      'LADDER_MARKETS must be a JSON array with unique object keys'
+      `${name} must be a JSON array with unique object keys`
     )
   }
 }
@@ -516,10 +489,10 @@ export const loadConfigurationSources = async (
     if (environment[key] !== undefined) source.values[key] = environment[key]
   }
   if (environment.BOOTSTRAP_MARKETS !== undefined) {
-    source.bootstrap = parseBootstrapMarkets(environment.BOOTSTRAP_MARKETS)
+    source.bootstrap = parseMarketsValue('BOOTSTRAP_MARKETS', environment.BOOTSTRAP_MARKETS)
   }
   if (environment.LADDER_MARKETS !== undefined) {
-    source.ladder = parseLadderMarkets(environment.LADDER_MARKETS)
+    source.ladder = parseMarketsValue('LADDER_MARKETS', environment.LADDER_MARKETS)
   }
   return { ...source, path }
 }
@@ -544,9 +517,11 @@ export const configurationFromEnvironment = (
   }
   let bootstrap: unknown = []
   if (environment.BOOTSTRAP_MARKETS !== undefined) {
-    bootstrap = parseBootstrapMarkets(environment.BOOTSTRAP_MARKETS)
+    bootstrap = parseMarketsValue('BOOTSTRAP_MARKETS', environment.BOOTSTRAP_MARKETS)
   }
   const ladder =
-    environment.LADDER_MARKETS === undefined ? [] : parseLadderMarkets(environment.LADDER_MARKETS)
+    environment.LADDER_MARKETS === undefined
+      ? []
+      : parseMarketsValue('LADDER_MARKETS', environment.LADDER_MARKETS)
   return { values, bootstrap, ladder }
 }

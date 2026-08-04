@@ -15,6 +15,9 @@ import { ConfigValidationError } from './config-validation.error'
 /** String-valued runtime environment boundary accepted by configuration parsing. */
 export type Environment = Record<string, string | undefined>
 
+/** Base mainnet chain ID — the only chain the market-making bot supports. */
+export const BASE_CHAIN_ID = 8453
+
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000
 const MAXIMUM_REQUEST_TIMEOUT_MS = 120_000
 const DEFAULT_TRANSACTION_RECEIPT_TIMEOUT_MS = 180_000
@@ -105,31 +108,41 @@ export const unsignedBigIntValue = (environment: Environment, name: string) => {
   return BigInt(value)
 }
 
+const boundedTimeoutValue = (
+  environment: Environment,
+  options: { name: string; defaultMs: number; maximumMs: number }
+) => {
+  const raw = environment[options.name]?.trim() ?? String(options.defaultMs)
+  if (!/^\d+$/.test(raw)) {
+    throw new ConfigValidationError(
+      options.name,
+      'invalid-integer',
+      `${options.name} must be a decimal integer`
+    )
+  }
+  const value = Number(raw)
+  if (!Number.isSafeInteger(value) || value < 1 || value > options.maximumMs) {
+    throw new ConfigValidationError(
+      options.name,
+      'out-of-range',
+      `${options.name} must be between 1 and ${options.maximumMs}`
+    )
+  }
+  return value
+}
+
 /**
  * Reads the bounded aggregate provider timeout.
  * @param environment - Environment map to inspect.
  * @returns A timeout from 1 through 120,000 milliseconds.
  * @throws When the trimmed value is not decimal digits or is outside the supported safe-integer range.
  */
-export const requestTimeoutValue = (environment: Environment) => {
-  const raw = environment.REQUEST_TIMEOUT_MS?.trim() ?? String(DEFAULT_REQUEST_TIMEOUT_MS)
-  if (!/^\d+$/.test(raw)) {
-    throw new ConfigValidationError(
-      'REQUEST_TIMEOUT_MS',
-      'invalid-integer',
-      'REQUEST_TIMEOUT_MS must be a decimal integer'
-    )
-  }
-  const value = Number(raw)
-  if (!Number.isSafeInteger(value) || value < 1 || value > MAXIMUM_REQUEST_TIMEOUT_MS) {
-    throw new ConfigValidationError(
-      'REQUEST_TIMEOUT_MS',
-      'out-of-range',
-      `REQUEST_TIMEOUT_MS must be between 1 and ${MAXIMUM_REQUEST_TIMEOUT_MS}`
-    )
-  }
-  return value
-}
+export const requestTimeoutValue = (environment: Environment) =>
+  boundedTimeoutValue(environment, {
+    name: 'REQUEST_TIMEOUT_MS',
+    defaultMs: DEFAULT_REQUEST_TIMEOUT_MS,
+    maximumMs: MAXIMUM_REQUEST_TIMEOUT_MS
+  })
 
 /**
  * Reads the transaction-confirmation timeout independently from provider request deadlines.
@@ -140,27 +153,12 @@ export const requestTimeoutValue = (environment: Environment) => {
  * @remarks This longer deadline starts only after a transaction hash has been returned; it does not
  * change JSON-RPC request, fetch, or aggregate pagination deadlines.
  */
-export const transactionReceiptTimeoutValue = (environment: Environment) => {
-  const raw =
-    environment.TRANSACTION_RECEIPT_TIMEOUT_MS?.trim() ??
-    String(DEFAULT_TRANSACTION_RECEIPT_TIMEOUT_MS)
-  if (!/^\d+$/.test(raw)) {
-    throw new ConfigValidationError(
-      'TRANSACTION_RECEIPT_TIMEOUT_MS',
-      'invalid-integer',
-      'TRANSACTION_RECEIPT_TIMEOUT_MS must be a decimal integer'
-    )
-  }
-  const value = Number(raw)
-  if (!Number.isSafeInteger(value) || value < 1 || value > MAXIMUM_TRANSACTION_RECEIPT_TIMEOUT_MS) {
-    throw new ConfigValidationError(
-      'TRANSACTION_RECEIPT_TIMEOUT_MS',
-      'out-of-range',
-      `TRANSACTION_RECEIPT_TIMEOUT_MS must be between 1 and ${MAXIMUM_TRANSACTION_RECEIPT_TIMEOUT_MS}`
-    )
-  }
-  return value
-}
+export const transactionReceiptTimeoutValue = (environment: Environment) =>
+  boundedTimeoutValue(environment, {
+    name: 'TRANSACTION_RECEIPT_TIMEOUT_MS',
+    defaultMs: DEFAULT_TRANSACTION_RECEIPT_TIMEOUT_MS,
+    maximumMs: MAXIMUM_TRANSACTION_RECEIPT_TIMEOUT_MS
+  })
 
 /**
  * Validates an exact bytes32 value with viem strict hex and byte-size utilities.
