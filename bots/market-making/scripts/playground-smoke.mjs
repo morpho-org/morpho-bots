@@ -1,29 +1,113 @@
-import { spawn } from 'node:child_process'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtempSync } from 'node:fs'
+import { readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const root = new URL('..', import.meta.url).pathname
-const dist = join(root, 'playground/dist')
-const port = 4173
-const debuggingPort = 9333
-const userDataDir = await mkdtemp(join(tmpdir(), 'market-making-playground-'))
-const server = spawn('python3', ['-m', 'http.server', String(port), '--bind', '127.0.0.1'], {
-  cwd: dist,
-  stdio: 'ignore'
-})
-const browser = spawn(
-  '/usr/bin/chromium',
-  [
-    '--headless=new',
-    '--no-sandbox',
-    '--disable-gpu',
-    `--remote-debugging-port=${debuggingPort}`,
-    `--user-data-dir=${userDataDir}`,
-    'about:blank'
-  ],
-  { stdio: 'ignore' }
-)
+import {
+  closeOwnedProcessTreeGracefully,
+  discoverChromium,
+  prepareFreshDist,
+  spawnOwnedProcess,
+  startStaticServer,
+  terminateOwnedProcessTree
+} from './playground-smoke-support.mjs'
+
+const root = fileURLToPath(new URL('..', import.meta.url))
+const shutdown = new AbortController()
+const ownedDirectories = new Set([join(root, 'playground/dist')])
+const children = new Set()
+let server
+let cleanupPromise
+let terminatingSignal
+let browser
+let browserSocket
+let browserReady = false
+
+const stopChild = child => terminateOwnedProcessTree(child)
+const trackChild = child => {
+  children.add(child)
+  const release = () => children.delete(child)
+  child.once('close', release)
+  return release
+}
+const stopOwnedChild = async child => {
+  if (child === browser && browserReady && browserSocket?.readyState === WebSocket.OPEN) {
+    try {
+      await closeOwnedProcessTreeGracefully(child, () => {
+        browserSocket.send(JSON.stringify({ id: 0, method: 'Browser.close' }))
+      })
+      return
+    } catch (error) {
+      console.error(`Graceful Chromium shutdown failed; escalating: ${error.message}`)
+      // Fall through to bounded direct-parent/deepest-first termination.
+    }
+  }
+  await stopChild(child)
+}
+const cleanup = () =>
+  (cleanupPromise ??= (async () => {
+    const childResults = await Promise.allSettled([...children].map(stopOwnedChild))
+    const resourceResults = await Promise.allSettled([
+      ...(server ? [server.close()] : []),
+      ...[...ownedDirectories].map(directory =>
+        rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
+      )
+    ])
+    const failure = [...childResults, ...resourceResults].find(
+      ({ status }) => status === 'rejected'
+    )
+    if (failure) throw failure.reason
+  })())
+const onSignal = signal => {
+  if (terminatingSignal) return
+  terminatingSignal = signal
+  shutdown.abort(new Error(`Smoke test interrupted by ${signal}`))
+  void cleanup().then(
+    () => {
+      process.off('SIGINT', onSignal)
+      process.off('SIGTERM', onSignal)
+      try {
+        process.kill(process.pid, signal)
+      } catch {
+        process.exit(signal === 'SIGINT' ? 130 : 143)
+      }
+    },
+    error => {
+      process.off('SIGINT', onSignal)
+      process.off('SIGTERM', onSignal)
+      console.error(`Smoke cleanup failed before ${signal} could be re-signalled: ${error.message}`)
+      process.exitCode = 1
+    }
+  )
+}
+process.once('SIGINT', onSignal)
+process.once('SIGTERM', onSignal)
+
+const waitAtTempCreationBoundary = async directory => {
+  const readyFile = process.env.PLAYGROUND_SMOKE_TEMP_BOUNDARY_READY_FILE
+  if (!readyFile) return
+  const releaseFile = process.env.PLAYGROUND_SMOKE_TEMP_BOUNDARY_RELEASE_FILE
+  if (!releaseFile) throw new Error('Temp creation boundary hook requires a release file')
+  await writeFile(readyFile, directory)
+  while (true) {
+    try {
+      await readFile(releaseFile)
+      return
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+  }
+}
+
+const createOwnedTempDirectory = async prefix => {
+  const directory = mkdtempSync(join(tmpdir(), prefix))
+  ownedDirectories.add(directory)
+  if (!shutdown.signal.aborted) return directory
+  await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
+  throw shutdown.signal.reason
+}
 
 const waitFor = async operation => {
   let lastError
@@ -31,6 +115,7 @@ const waitFor = async operation => {
     try {
       return await operation()
     } catch (error) {
+      if (error.fatal) throw error
       lastError = error
       await new Promise(resolve => setTimeout(resolve, 50))
     }
@@ -43,9 +128,67 @@ const assert = (condition, message) => {
 }
 
 try {
+  const chromiumPath = await discoverChromium()
+  const preparedDist = await prepareFreshDist({
+    root,
+    onDistCreated: directory => ownedDirectories.add(directory),
+    onBuildProcess: trackChild,
+    onTempCreated: waitAtTempCreationBoundary,
+    signal: shutdown.signal
+  })
+  const dist = preparedDist.dist
+  const userDataDir = await createOwnedTempDirectory('market-making-playground-')
+  const startedServer = await startStaticServer(dist)
+  if (shutdown.signal.aborted) {
+    await startedServer.close()
+    throw shutdown.signal.reason
+  }
+  server = startedServer
+  const port = server.port
+  let browserStderr = ''
+  let browserSpawnError
+  browser = spawnOwnedProcess(
+    chromiumPath,
+    [
+      '--headless=new',
+      '--no-sandbox',
+      '--disable-gpu',
+      '--remote-debugging-port=0',
+      `--user-data-dir=${userDataDir}`,
+      'about:blank'
+    ],
+    { stdio: ['ignore', 'ignore', 'pipe'] }
+  )
+  trackChild(browser)
+  browser.once('error', error => {
+    browserSpawnError = error
+  })
+  browser.stderr.setEncoding('utf8')
+  browser.stderr.on('data', chunk => {
+    browserStderr = `${browserStderr}${chunk}`.slice(-4000)
+  })
+
   await waitFor(async () => {
     const response = await fetch(`http://127.0.0.1:${port}`)
     if (!response.ok) throw new Error('server not ready')
+  })
+  const debuggingPort = await waitFor(async () => {
+    if (browserSpawnError || browser.exitCode !== null) {
+      const detail = browserSpawnError?.message ?? `exit code ${browser.exitCode}`
+      const error = new Error(
+        `Chromium failed before exposing its debugging port (${detail}). ${browserStderr.trim()}`
+      )
+      error.fatal = true
+      throw error
+    }
+    const [portText] = (await readFile(join(userDataDir, 'DevToolsActivePort'), 'utf8')).split(
+      /\r?\n/
+    )
+    const discoveredPort = Number(portText)
+    if (!Number.isInteger(discoveredPort) || discoveredPort <= 0) {
+      throw new Error(`invalid Chromium debugging port: ${portText}`)
+    }
+    return discoveredPort
   })
   const target = await waitFor(async () => {
     const response = await fetch(
@@ -58,10 +201,15 @@ try {
     return response.json()
   })
   const socket = new WebSocket(target.webSocketDebuggerUrl)
+  browserSocket = socket
   await new Promise((resolve, reject) => {
     socket.addEventListener('open', resolve, { once: true })
     socket.addEventListener('error', reject, { once: true })
   })
+  browserReady = true
+  console.log(
+    `smoke environment: appPort=${port} chromiumDebugPort=${debuggingPort} chromium=${chromiumPath}`
+  )
   let id = 0
   const pending = new Map()
   const requests = []
@@ -115,6 +263,12 @@ try {
     }
   })
 
+  assert(
+    await evaluate(
+      `document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content.includes("connect-src 'none'") === true`
+    ),
+    "playground CSP does not block network connections with connect-src 'none'"
+  )
   assert(
     await evaluate("document.querySelectorAll('.ladder-market').length === 1"),
     'initial ladder was not rendered immediately'
@@ -562,15 +716,9 @@ try {
   )
   assert(unexpected.length === 0, `unexpected network requests: ${unexpected.join(', ')}`)
   assert(consoleErrors.length === 0, `browser console errors: ${consoleErrors.join('; ')}`)
-  socket.close()
   console.log(`browser smoke: PASS (${requests.length} local requests, 0 unexpected requests)`)
 } finally {
-  server.kill('SIGTERM')
-  browser.kill('SIGTERM')
-  const exited = process =>
-    process.exitCode === null
-      ? new Promise(resolve => process.once('exit', resolve))
-      : Promise.resolve()
-  await Promise.all([exited(server), exited(browser)])
-  await rm(userDataDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
+  process.off('SIGINT', onSignal)
+  process.off('SIGTERM', onSignal)
+  await cleanup()
 }
