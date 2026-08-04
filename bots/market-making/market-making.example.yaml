@@ -12,6 +12,8 @@ identity:
 
 contracts:
   midnightAddress: '0x2222222222222222222222222222222222222222'
+  # Optional. Midnight must authorize this helper for identity.makerAddress before batching is used.
+  revokeOffersAddress: '0x5555555555555555555555555555555555555555'
   loanAssetAddress: '0x3333333333333333333333333333333333333333'
   ratifierAddress: '0x4444444444444444444444444444444444444444'
 

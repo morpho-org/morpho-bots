@@ -59,6 +59,7 @@ const environmentKeys = [
   'MAKER_PRIVATE_KEY',
   'MAKER_ADDRESS',
   'MIDNIGHT_ADDRESS',
+  'REVOKE_OFFERS_ADDRESS',
   'LOAN_ASSET_ADDRESS',
   'RATIFIER_ADDRESS',
   'MARKET_IDS',
@@ -76,7 +77,7 @@ const yamlKeys = {
   root: ['chain', 'identity', 'contracts', 'apis', 'markets', 'setup', 'bootstrap', 'ladder'],
   chain: ['id', 'rpcUrl', 'archiveRpcUrl'],
   identity: ['makerAddress', 'makerPrivateKey'],
-  contracts: ['midnightAddress', 'loanAssetAddress', 'ratifierAddress'],
+  contracts: ['midnightAddress', 'revokeOffersAddress', 'loanAssetAddress', 'ratifierAddress'],
   apis: ['morphoBaseUrl', 'routerBaseUrl'],
   markets: ['allowlist', 'referenceMarketId', 'v0OfferGroupIds'],
   setup: [
@@ -218,6 +219,7 @@ const yamlSource = (input: unknown, readOnly: boolean): ConfigurationSource => {
   )
   mapGroup('contracts', {
     midnightAddress: 'MIDNIGHT_ADDRESS',
+    revokeOffersAddress: 'REVOKE_OFFERS_ADDRESS',
     loanAssetAddress: 'LOAN_ASSET_ADDRESS',
     ratifierAddress: 'RATIFIER_ADDRESS'
   })
@@ -329,6 +331,7 @@ const yamlEnvironmentPaths: Partial<
   MAKER_PRIVATE_KEY: ['identity', 'makerPrivateKey'],
   MAKER_ADDRESS: ['identity', 'makerAddress'],
   MIDNIGHT_ADDRESS: ['contracts', 'midnightAddress'],
+  REVOKE_OFFERS_ADDRESS: ['contracts', 'revokeOffersAddress'],
   LOAN_ASSET_ADDRESS: ['contracts', 'loanAssetAddress'],
   RATIFIER_ADDRESS: ['contracts', 'ratifierAddress'],
   MARKET_IDS: ['markets', 'allowlist'],

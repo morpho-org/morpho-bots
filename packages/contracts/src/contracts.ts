@@ -11,3 +11,7 @@ export const CrossedBooksResolver = sol('CrossedBooksResolver')`
 export const Executor = sol('Executor')`
   ${solFile('../solidity/Executor.sol', { raw: true })}
 `
+
+export const RevokeOffers = sol('RevokeOffers')`
+  ${solFile('../solidity/RevokeOffers.sol', { raw: true })}
+`

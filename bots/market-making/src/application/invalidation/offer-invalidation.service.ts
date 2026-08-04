@@ -56,6 +56,17 @@ export interface OfferInvalidationPort {
     groupId: Hex,
     onTransactionSubmitted?: (txHash: Hex) => void | Promise<void>
   ): Promise<Hex | void>
+  /**
+   * Attempts one transaction for all selected groups when a safe helper is available.
+   * @param groupIds - Distinct offer-group identifiers selected by the application.
+   * @param onTransactionSubmitted - Optional observer called once after wallet submission.
+   * @returns The confirmed shared hash, or `undefined` when capability preflight requires fallback.
+   * @throws An adapter error after submission or when capability preflight cannot be completed.
+   */
+  invalidateBatch?(
+    groupIds: readonly Hex[],
+    onTransactionSubmitted?: (txHash: Hex) => void | Promise<void>
+  ): Promise<Hex | undefined>
   /** Removes canceled bot-owned groups from durable ownership. @param groupIds - Confirmed canceled groups. @returns Completion after ownership cleanup. */
   forgetGroups(groupIds: readonly Hex[]): Promise<void>
 }
@@ -72,8 +83,9 @@ export class OfferInvalidationService {
    * @throws `OfferInvalidationFailedError` after all selected groups are attempted when preflight,
    * cancellation, receipt confirmation, or ownership cleanup fails.
    * @remarks Omitting `groupId` enumerates the maker's complete active group set. Supplying it
-   * directly targets that group even when the API has not indexed it. Observer failures never
-   * interrupt receipt handling for an already-submitted transaction.
+   * directly targets that group even when the API has not indexed it. A supported batch transaction
+   * reports its shared hash against every group and is never retried serially after submission.
+   * Observer failures never interrupt receipt handling for an already-submitted transaction.
    */
   async run(
     parameters: {
@@ -119,6 +131,76 @@ export class OfferInvalidationService {
     }
     const invalidatedGroups: InvalidatedOfferGroup[] = []
     const failures: OfferInvalidationFailureReport['failures'][number][] = []
+
+    if (selectedGroupIds.length > 0 && this.port.mode() === 'write' && this.port.invalidateBatch) {
+      let submittedTxHash: Hex | undefined
+      let batchTxHash: Hex | undefined
+      try {
+        batchTxHash = await this.port.invalidateBatch(selectedGroupIds, async hash => {
+          submittedTxHash = hash
+          await Promise.all(
+            selectedGroupIds.map(async groupId => {
+              try {
+                await parameters.onTransactionSubmitted?.({
+                  event: 'offer-invalidation.transaction-submitted',
+                  groupId,
+                  txHash: hash
+                })
+              } catch {
+                // Diagnostic output cannot interrupt receipt handling after submission.
+              }
+            })
+          )
+        })
+      } catch (error) {
+        throw new OfferInvalidationFailedError({
+          status: 'failed',
+          scope,
+          matchedGroups: selectedGroupIds.length,
+          invalidatedGroups,
+          failures: selectedGroupIds.map(groupId => ({
+            stage: 'invalidation',
+            groupId,
+            errorName: operatorErrorName(error),
+            ...(submittedTxHash ? { txHash: submittedTxHash } : {})
+          }))
+        })
+      }
+
+      if (batchTxHash) {
+        invalidatedGroups.push(
+          ...selectedGroupIds.map(groupId => ({ groupId, txHash: batchTxHash }))
+        )
+        try {
+          await this.port.forgetGroups(selectedGroupIds)
+        } catch (error) {
+          failures.push(
+            ...selectedGroupIds.map(groupId => ({
+              stage: 'ownership-cleanup' as const,
+              groupId,
+              errorName: operatorErrorName(error),
+              txHash: batchTxHash
+            }))
+          )
+        }
+
+        if (failures.length > 0) {
+          throw new OfferInvalidationFailedError({
+            status: 'failed',
+            scope,
+            matchedGroups: selectedGroupIds.length,
+            invalidatedGroups,
+            failures
+          })
+        }
+        return {
+          status: 'applied',
+          scope,
+          matchedGroups: selectedGroupIds.length,
+          invalidatedGroups
+        }
+      }
+    }
 
     for (const groupId of selectedGroupIds) {
       let submittedTxHash: Hex | undefined

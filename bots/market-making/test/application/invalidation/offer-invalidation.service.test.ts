@@ -76,6 +76,72 @@ describe('OfferInvalidationService', () => {
     ])
   })
 
+  test('reports one confirmed batch hash for every selected group and forgets them together', async () => {
+    const invalidateBatch = mock(
+      async (groupIds: readonly Hex[], observer?: (hash: Hex) => unknown) => {
+        expect(groupIds).toEqual([groupA, groupB])
+        await observer?.(txA)
+        return txA
+      }
+    )
+    const invalidate = mock(async () => txB)
+    const forgetGroups = mock(async () => undefined)
+    const { service } = subject({ invalidateBatch, invalidate, forgetGroups })
+    const submitted: unknown[] = []
+
+    const report = await service.run({
+      onTransactionSubmitted: event => {
+        submitted.push(event)
+      }
+    })
+
+    expect(report.invalidatedGroups).toEqual([
+      { groupId: groupA, txHash: txA },
+      { groupId: groupB, txHash: txA }
+    ])
+    expect(submitted).toEqual([
+      { event: 'offer-invalidation.transaction-submitted', groupId: groupA, txHash: txA },
+      { event: 'offer-invalidation.transaction-submitted', groupId: groupB, txHash: txA }
+    ])
+    expect(invalidate).not.toHaveBeenCalled()
+    expect(forgetGroups).toHaveBeenCalledWith([groupA, groupB])
+  })
+
+  test('falls back to serial invalidation only when batch capability is unavailable', async () => {
+    const invalidateBatch = mock(async () => undefined)
+    const { service, events } = subject({ invalidateBatch })
+
+    await service.run()
+
+    expect(invalidateBatch).toHaveBeenCalledTimes(1)
+    expect(events).toContain(`invalidate:${groupA}`)
+    expect(events).toContain(`invalidate:${groupB}`)
+  })
+
+  test('does not fall back after a submitted batch transaction fails', async () => {
+    const invalidate = mock(async () => txB)
+    const { service } = subject({
+      invalidateBatch: async (_groupIds, observer) => {
+        await observer?.(txA)
+        throw new OfferInvalidationAdapterError('transaction-reverted')
+      },
+      invalidate
+    })
+
+    const error = await service.run().catch(value => value)
+
+    expect(invalidate).not.toHaveBeenCalled()
+    expect(error).toMatchObject({
+      report: {
+        invalidatedGroups: [],
+        failures: [
+          { stage: 'invalidation', groupId: groupA, txHash: txA },
+          { stage: 'invalidation', groupId: groupB, txHash: txA }
+        ]
+      }
+    })
+  })
+
   test('directly invalidates an explicit group without consulting the active-group API', async () => {
     const listActiveGroupIds = mock(async () => [groupB])
     const { service } = subject({ listActiveGroupIds })
