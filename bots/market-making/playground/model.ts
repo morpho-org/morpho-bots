@@ -121,7 +121,7 @@ type BootstrapKey = (typeof BOOTSTRAP_FIELDS)[number][0]
 type LadderKey = (typeof LADDER_FIELDS)[number][0]
 type ObservabilityKey = (typeof OBSERVABILITY_FIELDS)[number][0]
 
-export type PlaygroundState = {
+type PlaygroundState = {
   scalar: Record<ScalarKey, string>
   bootstrap: Record<Exclude<BootstrapKey, 'autoRefill'>, string> & { autoRefill: boolean }
   ladder: Record<LadderKey, string>
@@ -210,7 +210,7 @@ const allocate = (budget: bigint, count: number, skew: bigint, floor: bigint) =>
   return amounts
 }
 
-export type PreviewRung = { index: number; rateBps: string; assets: string }
+type PreviewRung = { index: number; rateBps: string; assets: string }
 
 export const generatePreviewLadder = (state: PlaygroundState) => {
   const ladder = state.ladder
