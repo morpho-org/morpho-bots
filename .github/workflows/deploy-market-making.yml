@@ -1,20 +1,31 @@
 name: Deploy market-making
 
-# Publishes the market-making bot image to Docker Hub. Unlike the Railway bots (deploy-bot.yml),
-# "deploy" here means publish only: operators pull and run the image themselves (see
-# bots/market-making/README.md), so there is no service to restart. Runs for a PR merged to main
-# carrying the `release-market-making` label (same convention as deploy-production.yml — on other
-# pushes the publish job is simply skipped) or on manual dispatch, e.g.
+# Publishes the market-making bot image to Docker Hub when a `market-making-*` GitHub release is
+# published (repo CalVer convention: `market-making-YYYY.MM.DD-N`), or on manual dispatch. Unlike
+# the Railway bots (deploy-bot.yml), "deploy" here means publish only: operators pull and run the
+# image themselves (see bots/market-making/README.md), so there is no service to restart. The same
+# release publish also fires release-slack-notify.yml, so one `gh release create` announces and
+# ships in one step.
+#
+# The release MUST be created by a user (`gh release create` or the releases UI): GitHub does not
+# run workflows for events raised with the repository GITHUB_TOKEN, so a release cut by another
+# workflow with that token would never publish an image. workflow_dispatch stays as the escape
+# hatch for exactly that case and for re-publishing, e.g.
 # `gh workflow run deploy-market-making.yml -f tag=latest`.
+#
+# A release publish builds the tagged commit and pushes `<release tag>` plus `git-<shortsha>`, and
+# moves `latest` unless the release is marked a prerelease. A dispatch builds the dispatched ref
+# and pushes the `tag` input (default `latest`) plus `git-<shortsha>`.
 #
 # Credentials live in the `market-making-production` GitHub Environment: secrets DOCKERHUB_USERNAME
 # and DOCKERHUB_TOKEN (a Docker Hub access token, write scope) plus variable DOCKERHUB_REPOSITORY
-# (`<namespace>/<name>`, e.g. `morphoorg/market-making-bot`). Scope the environment's deployment
-# branches to `main` so the token is unreachable from arbitrary PR branches.
+# (`<namespace>/<name>`, e.g. `morphoorg/market-making-bot`). In the environment's deployment
+# branches/tags policy allow branch `main` AND tags matching `market-making-*` — release runs
+# execute on the tag ref, so a branch-only policy rejects them.
 
 on:
-  push:
-    branches: [main]
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
@@ -32,40 +43,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  Select:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      market_making: ${{ steps.pick.outputs.market_making }}
-    steps:
-      - id: pick
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          SHA: ${{ github.sha }}
-          EVENT: ${{ github.event_name }}
-        run: |
-          set -euo pipefail
-          if [ "$EVENT" = "workflow_dispatch" ]; then
-            echo "market_making=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          # Labels of the PR whose merge produced this commit.
-          labels="$(gh api "repos/$REPO/commits/$SHA/pulls" --jq '.[].labels[].name' 2>/dev/null || true)"
-          if echo "$labels" | grep -qx 'release-market-making'; then
-            echo "market_making=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "market_making=false" >> "$GITHUB_OUTPUT"
-          fi
-
   Publish:
-    needs: Select
-    if: ${{ needs.Select.outputs.market_making == 'true' }}
+    # Releases are repo-wide (the Railway bots cut `blue-liq-*` etc.); only market-making tags
+    # concern this image. Other releases simply skip this job.
+    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'market-making-') }}
     runs-on: ubuntu-latest
     environment: market-making-production
     steps:
+      # On a release event this checks out the tagged commit (github.sha is the tag's commit), so
+      # the image is built from exactly the released tree, not main HEAD.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       # The token reaches docker via stdin only — never argv, never a workflow-file literal.
@@ -80,12 +66,15 @@ jobs:
           printf '%s' "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
 
       # The build context is the repo root so the bun workspace (packages/*) resolves — see
-      # bots/market-making/Dockerfile. Every publish pushes the movable primary tag plus an
-      # immutable git-<shortsha> tag so a running container is attributable to its commit.
+      # bots/market-making/Dockerfile. The docker release tag is the git tag verbatim, so the
+      # image, git tag, and GitHub release cross-reference with zero transformation.
       - name: Build and push
         env:
           REPOSITORY: ${{ vars.DOCKERHUB_REPOSITORY }}
-          PRIMARY_TAG: ${{ inputs.tag || 'latest' }}
+          EVENT: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+          DISPATCH_TAG: ${{ inputs.tag || 'latest' }}
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
@@ -94,12 +83,23 @@ jobs:
           # read by docker as a registry host and silently push somewhere other than Docker Hub.
           echo "$REPOSITORY" | grep -Eq '^[a-z0-9]+((_|__|-+)[a-z0-9]+)*/[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*$' \
             || { echo "DOCKERHUB_REPOSITORY must be a lowercase Docker Hub <namespace>/<name> repository" >&2; exit 1; }
-          echo "$PRIMARY_TAG" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$' \
-            || { echo "tag must be a valid Docker tag of at most 128 characters" >&2; exit 1; }
-          git_tag="git-${SHA:0:7}"
-          echo "Building $REPOSITORY:$PRIMARY_TAG and $REPOSITORY:$git_tag…"
-          docker build --file bots/market-making/Dockerfile \
-            --tag "$REPOSITORY:$PRIMARY_TAG" --tag "$REPOSITORY:$git_tag" .
-          docker push "$REPOSITORY:$PRIMARY_TAG"
-          docker push "$REPOSITORY:$git_tag"
-          echo "Published docker.io/$REPOSITORY:$PRIMARY_TAG and docker.io/$REPOSITORY:$git_tag"
+          if [ "$EVENT" = "release" ]; then
+            tags=("$RELEASE_TAG")
+            # A prerelease publishes its own tag only; `latest` keeps tracking full releases.
+            [ "$PRERELEASE" = "true" ] || tags+=("latest")
+          else
+            tags=("$DISPATCH_TAG")
+          fi
+          tags+=("git-${SHA:0:7}")
+          build_args=()
+          for tag in "${tags[@]}"; do
+            echo "$tag" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$' \
+              || { echo "invalid docker tag: $tag" >&2; exit 1; }
+            build_args+=(--tag "$REPOSITORY:$tag")
+          done
+          echo "Building ${tags[*]} from $SHA…"
+          docker build --file bots/market-making/Dockerfile "${build_args[@]}" .
+          for tag in "${tags[@]}"; do
+            docker push "$REPOSITORY:$tag"
+            echo "Published docker.io/$REPOSITORY:$tag"
+          done

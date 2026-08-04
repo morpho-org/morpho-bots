@@ -267,23 +267,35 @@ docker compose logs --follow
 
 ### Publish to Docker Hub
 
-The `Deploy market-making` GitHub Actions workflow
-([`.github/workflows/deploy-market-making.yml`](../../.github/workflows/deploy-market-making.yml))
-builds the image from the repo root on an `ubuntu-latest` (`linux/amd64`) runner and pushes it to
-Docker Hub. It runs for a PR merged to `main` carrying the `release-market-making` label — the same
-convention `deploy-production.yml` uses for the Railway bots — or on manual dispatch from the CLI:
+Publishing is release-driven. Creating a GitHub release whose tag starts with `market-making-`
+(repo CalVer convention: `market-making-YYYY.MM.DD-N`) triggers the `Deploy market-making` workflow
+([`.github/workflows/deploy-market-making.yml`](../../.github/workflows/deploy-market-making.yml)),
+which builds the **tagged commit** from the repo root on an `ubuntu-latest` (`linux/amd64`) runner
+and pushes three tags to Docker Hub: the release tag verbatim (immutable), `latest` (moved unless
+the release is marked a prerelease), and `git-<shortsha>` for the built commit. The same release
+also fires the repo's Slack notification, so one release announces and ships in one step:
+
+```sh
+gh release create "market-making-$(date -u +%Y.%m.%d)-1" --generate-notes
+```
+
+Increment the trailing `-N` for further same-day releases. Creating the release from the GitHub
+releases UI is equivalent. The release must be created by a user: GitHub never runs workflows for
+events raised with the repository `GITHUB_TOKEN`, so a release cut by another workflow with that
+token would not publish an image.
+
+Manual dispatch remains available as the escape hatch and for re-publishing; it builds the
+dispatched ref (defaults to `main` HEAD) and pushes the `tag` input (default `latest`) plus
+`git-<shortsha>`:
 
 ```sh
 gh workflow run deploy-market-making.yml -f tag=latest
 ```
 
-The optional `tag` input selects the movable primary tag (default `latest`). Every publish
-additionally pushes an immutable `git-<shortsha>` tag for the built commit, so a running container
-is attributable to its source.
-
 One-time repository setup: create the `market-making-production` GitHub Environment holding the
-publish configuration, and scope its deployment branches to `main` so the token is unreachable from
-arbitrary PR branches.
+publish configuration. In its deployment branches/tags policy allow branch `main` **and** tags
+matching `market-making-*` — release runs execute on the tag ref, so a branch-only policy rejects
+them, while the tag pattern keeps the token unreachable from arbitrary PR branches.
 
 | Environment entry      | Kind     | Requirement and behavior                                                                                                                          |
 | ---------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -291,7 +303,8 @@ arbitrary PR branches.
 | `DOCKERHUB_USERNAME`   | Secret   | Required Docker Hub account with write access to the repository.                                                                                  |
 | `DOCKERHUB_TOKEN`      | Secret   | Required Docker Hub access token (write scope); it reaches `docker login` via stdin and never appears in argv or workflow logs.                   |
 
-A deployed host then runs the published image with the exact parametrization documented above:
+A deployed host then runs the published image with the exact parametrization documented above —
+substitute a `market-making-YYYY.MM.DD-N` release tag for `latest` to pin an immutable version:
 
 ```sh
 docker run --pull always --detach --restart unless-stopped \
