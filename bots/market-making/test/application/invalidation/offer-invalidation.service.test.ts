@@ -131,6 +131,49 @@ describe('OfferInvalidationService', () => {
     })
   })
 
+  test('retains the shared batch hash for every group when ownership cleanup fails', async () => {
+    const forgetGroups = mock(async () => {
+      throw new OfferInvalidationAdapterError('ownership-cleanup')
+    })
+    const { service } = subject({
+      invalidateBatch: async (_groupIds, observer) => {
+        await observer?.(txA)
+        return txA
+      },
+      forgetGroups
+    })
+
+    const error = await service.run().catch(value => value)
+
+    expect(error).toBeInstanceOf(OfferInvalidationFailedError)
+    expect(error).toMatchObject({
+      report: {
+        status: 'failed',
+        matchedGroups: 2,
+        invalidatedGroups: [
+          { groupId: groupA, txHash: txA },
+          { groupId: groupB, txHash: txA }
+        ],
+        failures: [
+          {
+            stage: 'ownership-cleanup',
+            groupId: groupA,
+            errorName: 'OfferInvalidationAdapterError',
+            txHash: txA
+          },
+          {
+            stage: 'ownership-cleanup',
+            groupId: groupB,
+            errorName: 'OfferInvalidationAdapterError',
+            txHash: txA
+          }
+        ]
+      }
+    })
+    expect(forgetGroups).toHaveBeenCalledTimes(1)
+    expect(forgetGroups).toHaveBeenCalledWith([groupA, groupB])
+  })
+
   test('directly invalidates an explicit group without consulting the active-group API', async () => {
     const listActiveGroupIds = mock(async () => [groupB])
     const invalidateBatch = mock(async () => txB)
