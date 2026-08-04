@@ -68,6 +68,12 @@
               aria-live="assertive"
               hidden
             ></div>
+            <div
+              id="observability-status"
+              class="observability-status"
+              role="status"
+              aria-live="polite"
+            ></div>
             <label class="sensitive-export-control" for="include-sensitive-values">
               <input
                 id="include-sensitive-values"
@@ -163,7 +169,9 @@
             <p id="copy-status" class="status" role="status" aria-live="polite"></p>
             <p class="secret-note">
               Sensitive values are redacted by default. Deliberate opt-in affects displayed exports
-              and clipboard output only; this playground never stores or sends them.
+              and clipboard output only; this playground never stores or sends them. A nonfatal
+              observability warning means the runtime will disable that integration, not that its
+              observability settings are valid.
             </p>
           </section>
         </div>

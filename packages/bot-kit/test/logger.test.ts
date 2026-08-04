@@ -157,6 +157,24 @@ describe('createLogger BetterStack opt-in contract', () => {
     const line = JSON.parse(String(err.mock.calls[0]?.[0])) as Record<string, unknown>
     expect(line.detail).toContain('BETTERSTACK_SOURCE_TOKEN')
   })
+
+  it('accepts a nonblank malformed paired host without synchronous validation', () => {
+    const err = spyOn(console, 'error').mockImplementation(() => undefined)
+
+    expect(() =>
+      createLogger('info', {
+        env: {
+          BETTERSTACK_SOURCE_TOKEN: 'tok',
+          BETTERSTACK_INGESTING_HOST: 'not a valid host'
+        }
+      })
+    ).not.toThrow()
+    expect(
+      err.mock.calls
+        .map(call => JSON.parse(String(call[0])) as Record<string, unknown>)
+        .some(line => line.event === 'logship.misconfigured')
+    ).toBe(false)
+  })
 })
 
 describe('createLogger BetterStack path', () => {

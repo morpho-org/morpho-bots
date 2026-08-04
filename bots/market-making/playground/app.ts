@@ -12,6 +12,7 @@ import {
   exportShell,
   exportYaml,
   generateLadderGraphicModels,
+  getObservabilityStatuses,
   validatePreviewState,
   validateProductionState
 } from './model'
@@ -27,6 +28,7 @@ const controls = required<HTMLDivElement>('#controls')
 const ladderContainer = required<HTMLDivElement>('#ladders')
 const ladderStatus = required<HTMLParagraphElement>('#ladder-status')
 const validationErrors = required<HTMLDivElement>('#validation-errors')
+const observabilityStatus = required<HTMLDivElement>('#observability-status')
 const copyStatus = required<HTMLParagraphElement>('#copy-status')
 const exportTabs = [...document.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
 const exportPanels = [...document.querySelectorAll<HTMLElement>('[role="tabpanel"]')]
@@ -524,8 +526,26 @@ const renderLadders = () => {
 }
 
 const exporters = { yaml: exportYaml, shell: exportShell, json: exportJson }
+const renderObservabilityStatus = () => {
+  const statuses = getObservabilityStatuses(state)
+  const warnings = statuses.some(status => status.level === 'warning')
+  const title = document.createElement('strong')
+  title.textContent = warnings
+    ? 'Core configuration remains exportable; observability has nonfatal warnings:'
+    : 'Best-effort observability status:'
+  const list = document.createElement('ul')
+  for (const status of statuses) {
+    const item = document.createElement('li')
+    item.dataset.level = status.level
+    item.textContent = status.message
+    list.append(item)
+  }
+  observabilityStatus.dataset.status = warnings ? 'warning' : 'status'
+  observabilityStatus.replaceChildren(title, list)
+}
 const renderExports = () => {
   const validation = validateProductionState(state)
+  renderObservabilityStatus()
   validationErrors.replaceChildren()
   validationErrors.hidden = validation.valid
   if (!validation.valid) {

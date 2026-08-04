@@ -144,6 +144,25 @@ main {
   margin-bottom: 0;
   padding-left: 1.2rem;
 }
+.observability-status {
+  margin-bottom: 0.8rem;
+  border: 1px solid #59626a;
+  border-radius: 4px;
+  padding: 0.7rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.observability-status[data-status='warning'] {
+  border-color: #9b762d;
+  color: #ffd37a;
+}
+.observability-status ul {
+  margin-bottom: 0;
+  padding-left: 1.2rem;
+}
+.observability-status li[data-level='warning'] {
+  color: #ffd37a;
+}
 .section-heading {
   display: flex;
   align-items: baseline;

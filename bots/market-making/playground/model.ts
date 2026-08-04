@@ -1,4 +1,5 @@
 import { parseHttpHeartbeatUrl } from '@repo/bot-kit/heartbeat-url'
+import { classifyShippingConfig } from '@repo/bot-kit/shipping-config'
 import { base } from 'viem/chains'
 
 import {
@@ -250,16 +251,49 @@ export const validateProductionState = (state: PlaygroundState) => {
     bootstrapConfigsValue(structuredBootstrap(state), markets)
     ladderConfigsValue(structuredLadder(state), markets)
   })
-  capture(() => {
-    const token = state.observability.BETTERSTACK_SOURCE_TOKEN.trim()
-    const host = state.observability.BETTERSTACK_INGESTING_HOST.trim()
-    if (Boolean(token) !== Boolean(host))
-      throw new Error('Better Stack token and ingest host must be set together')
-    const heartbeat = state.observability.BETTERSTACK_HEARTBEAT_URL.trim()
-    if (heartbeat && !parseHttpHeartbeatUrl(heartbeat))
-      throw new Error('BETTERSTACK_HEARTBEAT_URL must be an HTTP(S) URL')
-  })
   return { valid: errors.length === 0, errors }
+}
+
+export type ObservabilityStatus = {
+  integration: 'shipping' | 'heartbeat'
+  state: 'disabled' | 'misconfigured' | 'enabled'
+  level: 'status' | 'warning'
+  message: string
+}
+
+/** Reports best-effort runtime observability state without treating it as core config validity. */
+export const getObservabilityStatuses = (state: PlaygroundState): ObservabilityStatus[] => {
+  const shipping = classifyShippingConfig(state.observability)
+  const heartbeatValue = state.observability.BETTERSTACK_HEARTBEAT_URL.trim()
+  const heartbeatState = !heartbeatValue
+    ? 'disabled'
+    : parseHttpHeartbeatUrl(heartbeatValue)
+      ? 'enabled'
+      : 'misconfigured'
+  return [
+    {
+      integration: 'shipping',
+      state: shipping.state,
+      level: shipping.state === 'misconfigured' ? 'warning' : 'status',
+      message:
+        shipping.state === 'enabled'
+          ? 'Log shipping transport configured at runtime because both Better Stack variables are set; delivery remains best-effort.'
+          : shipping.state === 'disabled'
+            ? 'Log shipping disabled. No Better Stack shipping variables are set.'
+            : 'Log shipping is misconfigured and disabled at runtime. Set both Better Stack shipping variables; runtime emits logship.misconfigured.'
+    },
+    {
+      integration: 'heartbeat',
+      state: heartbeatState,
+      level: heartbeatState === 'misconfigured' ? 'warning' : 'status',
+      message:
+        heartbeatState === 'enabled'
+          ? 'Heartbeat enabled at runtime with an HTTP(S) URL.'
+          : heartbeatState === 'disabled'
+            ? 'Heartbeat disabled. No heartbeat URL is set.'
+            : 'Heartbeat is misconfigured and disabled at runtime. Use an HTTP(S) URL; runtime emits heartbeat.misconfigured.'
+    }
+  ]
 }
 
 /** Backward-compatible production/export validation boundary. */

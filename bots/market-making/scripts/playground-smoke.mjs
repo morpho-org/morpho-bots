@@ -697,16 +697,31 @@ try {
   )
 
   await evaluate(
-    "(() => { const heartbeat=document.querySelector('[data-field=BETTERSTACK_HEARTBEAT_URL]'); heartbeat.value='ftp://example.test/heartbeat'; heartbeat.dispatchEvent(new Event('input',{bubbles:true})); })()"
+    "(() => { const token=document.querySelector('[data-field=BETTERSTACK_SOURCE_TOKEN]'); token.value='browser-warning-secret-token'; token.dispatchEvent(new Event('input',{bubbles:true})); const heartbeat=document.querySelector('[data-field=BETTERSTACK_HEARTBEAT_URL]'); heartbeat.value='javascript:https://secret.example/heartbeat-token'; heartbeat.dispatchEvent(new Event('input',{bubbles:true})); })()"
   )
+  const observabilityWarningProof = await evaluate(`(async () => {
+    const warning = document.querySelector('#observability-status')
+    const yaml = document.querySelector('#export-yaml').value
+    const shell = document.querySelector('#export-shell').value
+    const json = document.querySelector('#export-json').value
+    const exportsAvailable = [...document.querySelectorAll('#export-yaml,#export-shell,#export-json')].every(output => output.dataset.invalid === 'false')
+    const warningAccessible = warning?.getAttribute('role') === 'status' && warning.textContent.includes('disabled at runtime') && warning.textContent.includes('Log shipping') && warning.textContent.includes('Heartbeat')
+    const warningSafe = !warning.textContent.includes('browser-warning-secret-token') && !warning.textContent.includes('secret.example') && !warning.textContent.includes('heartbeat-token')
+    const valuesCorrect = !yaml.includes('BETTERSTACK_') && !yaml.includes('browser-warning-secret-token') && shell.includes("export BETTERSTACK_SOURCE_TOKEN='<redacted>'") && shell.includes("export BETTERSTACK_HEARTBEAT_URL='javascript:https://secret.example/heartbeat-token'") && !json.includes('browser-warning-secret-token') && JSON.parse(json).observability.BETTERSTACK_SOURCE_TOKEN === '<redacted>'
+    let copied = ''
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: async value => { copied = value } }, configurable: true })
+    document.querySelector('#tab-json').click()
+    document.querySelector('#copy-export').click()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const copyAvailableAndRedacted = copied.includes('<redacted>') && !copied.includes('browser-warning-secret-token')
+    return { exportsAvailable, warningAccessible, warningSafe, valuesCorrect, copyAvailableAndRedacted, previewAvailable: document.querySelector('#ladder-status').dataset.status === 'ok' && document.querySelectorAll('.ladder-rung').length > 0, validationNonblocking: document.querySelector('#validation-errors').hidden && !document.querySelector('#copy-export').disabled }
+  })()`)
   assert(
-    await evaluate(
-      "!document.querySelector('#validation-errors').hidden && document.querySelector('#validation-errors').textContent.includes('HTTP(S)') && document.querySelector('#copy-export').disabled && document.querySelector('#ladder-status').dataset.status === 'error' && document.querySelectorAll('.ladder-rung').length === 0 && [...document.querySelectorAll('#export-yaml,#export-shell,#export-json')].every(output => output.dataset.invalid === 'true')"
-    ),
-    'non-HTTP(S) heartbeat did not block every export/copy and preview'
+    Object.values(observabilityWarningProof).every(Boolean),
+    `observability warnings did not remain accessible and nonblocking: ${JSON.stringify(observabilityWarningProof)}`
   )
   await evaluate(
-    "(() => { const heartbeat=document.querySelector('[data-field=BETTERSTACK_HEARTBEAT_URL]'); heartbeat.value=''; heartbeat.dispatchEvent(new Event('input',{bubbles:true})); })()"
+    "(() => { const token=document.querySelector('[data-field=BETTERSTACK_SOURCE_TOKEN]'); token.value=''; token.dispatchEvent(new Event('input',{bubbles:true})); const heartbeat=document.querySelector('[data-field=BETTERSTACK_HEARTBEAT_URL]'); heartbeat.value=''; heartbeat.dispatchEvent(new Event('input',{bubbles:true})); })()"
   )
 
   await evaluate(

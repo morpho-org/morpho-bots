@@ -1,4 +1,5 @@
 import { parseHttpHeartbeatUrl } from '@repo/bot-kit/heartbeat-url'
+import { classifyShippingConfig } from '@repo/bot-kit/shipping-config'
 import { describe, expect, test } from 'bun:test'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { parseDocument } from 'yaml'
@@ -17,6 +18,7 @@ import {
   exportYaml,
   generateLadderGraphicModels,
   generatePreviewLadders,
+  getObservabilityStatuses,
   validatePreviewState,
   validateProductionState,
   validatePlaygroundState
@@ -355,30 +357,107 @@ describe('market-maker parameter playground', () => {
     }
   })
 
-  test('matches runtime heartbeat HTTP(S) protocol acceptance and blocks every export otherwise', () => {
+  test('matches runtime heartbeat classification without blocking core validation or exports', () => {
     const cases = [
-      ['https://example.test/heartbeat', true],
-      ['http://user:pass@example.test:8080/heartbeat?maker=1#ok', true],
-      ['  HTTPS://example.test/heartbeat  ', true],
-      ['ftp://example.test/heartbeat', false],
-      ['file:///tmp/heartbeat', false],
-      ['ws://example.test/heartbeat', false],
-      ['javascript:alert(1)', false],
-      ['not a URL', false],
-      ['https://example.test:bad-port/heartbeat', false]
+      ['', 'disabled'],
+      ['   ', 'disabled'],
+      ['https://example.test/heartbeat', 'enabled'],
+      ['http://user:pass@example.test:8080/heartbeat?maker=1#ok', 'enabled'],
+      ['  HTTPS://example.test/heartbeat  ', 'enabled'],
+      ['ftp://example.test/heartbeat', 'misconfigured'],
+      ['file:///tmp/heartbeat', 'misconfigured'],
+      ['ws://example.test/heartbeat', 'misconfigured'],
+      ['javascript:alert(1)', 'misconfigured'],
+      ['not a URL', 'misconfigured'],
+      ['https://example.test:bad-port/heartbeat', 'misconfigured']
     ] as const
 
-    for (const [heartbeat, accepted] of cases) {
+    for (const [heartbeat, expected] of cases) {
       const state = createDefaultPlaygroundState()
       state.observability.BETTERSTACK_HEARTBEAT_URL = heartbeat
       const production = validateProductionState(state)
-      expect(production.valid).toBe(accepted)
-      expect(production.valid).toBe(Boolean(parseHttpHeartbeatUrl(heartbeat)))
+      const heartbeatStatus = getObservabilityStatuses(state).find(
+        status => status.integration === 'heartbeat'
+      )
+      expect(production.valid).toBe(true)
+      const runtimeState = heartbeat.trim()
+        ? parseHttpHeartbeatUrl(heartbeat)
+          ? 'enabled'
+          : 'misconfigured'
+        : 'disabled'
+      expect(heartbeatStatus?.state).toBe(runtimeState)
+      expect(heartbeatStatus?.state).toBe(expected)
       for (const exporter of [exportYaml, exportShell, exportJson]) {
-        if (accepted) expect(() => exporter(state)).not.toThrow()
-        else expect(() => exporter(state)).toThrow('Configuration is invalid')
+        expect(() => exporter(state)).not.toThrow()
       }
     }
+  })
+
+  test('matches shared runtime shipping classification for empty, partial, blank, and malformed pairs', () => {
+    const cases = [
+      ['', '', 'disabled'],
+      ['   ', '   ', 'disabled'],
+      ['token-secret', '', 'misconfigured'],
+      ['', 'logs.example.test', 'misconfigured'],
+      ['   ', 'logs.example.test', 'misconfigured'],
+      ['token-secret', 'not a valid host', 'enabled']
+    ] as const
+
+    for (const [token, host, expected] of cases) {
+      const state = createDefaultPlaygroundState()
+      state.observability.BETTERSTACK_SOURCE_TOKEN = token
+      state.observability.BETTERSTACK_INGESTING_HOST = host
+      const runtime = classifyShippingConfig(productionEnvironment(state))
+      const playground = getObservabilityStatuses(state).find(
+        status => status.integration === 'shipping'
+      )
+
+      expect(runtime.state).toBe(expected)
+      expect(playground?.state).toBe(runtime.state)
+      expect(validateProductionState(state)).toEqual({ valid: true, errors: [] })
+      expect(validatePreviewState(state)).toEqual({ valid: true, errors: [] })
+      for (const exporter of [exportYaml, exportShell, exportJson]) {
+        expect(() => exporter(state)).not.toThrow()
+      }
+      if (token.trim()) expect(JSON.stringify(playground)).not.toContain(token.trim())
+      if (host) expect(JSON.stringify(playground)).not.toContain(host)
+    }
+  })
+
+  test('keeps warning exports available, preserves env-only values, and redacts tokens by default', async () => {
+    const state = createDefaultPlaygroundState()
+    const token = 'warning-secret-token'
+    const heartbeat = 'javascript:https://secret.example/heartbeat-token'
+    state.observability.BETTERSTACK_SOURCE_TOKEN = token
+    state.observability.BETTERSTACK_HEARTBEAT_URL = heartbeat
+
+    expect(
+      getObservabilityStatuses(state).filter(status => status.level === 'warning')
+    ).toHaveLength(2)
+    expect(validateProductionState(state)).toEqual({ valid: true, errors: [] })
+    expect(validatePreviewState(state)).toEqual({ valid: true, errors: [] })
+
+    const yaml = exportYaml(state)
+    expect(yaml).not.toContain('BETTERSTACK_')
+    expect(yaml).not.toContain(token)
+    expect(yaml).not.toContain(heartbeat)
+
+    const shell = exportShell(state)
+    const shellEnvironment = await loadShellEnvironment(shell)
+    expect(shellEnvironment.BETTERSTACK_SOURCE_TOKEN).toBe('<redacted>')
+    expect(shellEnvironment.BETTERSTACK_INGESTING_HOST).toBe('')
+    expect(shellEnvironment.BETTERSTACK_HEARTBEAT_URL).toBe(heartbeat)
+
+    const json = JSON.parse(exportJson(state)) as {
+      observability: Record<string, string>
+    }
+    expect(json.observability).toEqual({
+      BETTERSTACK_SOURCE_TOKEN: '<redacted>',
+      BETTERSTACK_INGESTING_HOST: '',
+      BETTERSTACK_HEARTBEAT_URL: heartbeat
+    })
+    expect(exportShell(state, { includeSensitiveValues: true })).toContain(token)
+    expect(exportJson(state, { includeSensitiveValues: true })).toContain(token)
   })
 
   test('matches ConfigService across accepted and rejected boundaries for all 17 scalar fields', () => {
@@ -512,13 +591,9 @@ describe('market-maker parameter playground', () => {
     }
   )
 
-  test.each([
-    ['MAKER_PRIVATE_KEY', 'invalid'],
-    ['BETTERSTACK_HEARTBEAT_URL', 'ftp://example.test/heartbeat']
-  ] as const)('production-invalid %s blocks exports and preview', (field, value) => {
+  test('genuine core errors still block exports and preview', () => {
     const state = createDefaultPlaygroundState()
-    if (field === 'MAKER_PRIVATE_KEY') state.scalar.MAKER_PRIVATE_KEY = value
-    else state.observability.BETTERSTACK_HEARTBEAT_URL = value
+    state.scalar.MAKER_PRIVATE_KEY = 'invalid'
 
     expect(validateProductionState(state).valid).toBe(false)
     expect(validatePreviewState(state).valid).toBe(false)

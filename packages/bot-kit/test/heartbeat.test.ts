@@ -89,6 +89,37 @@ describe('createHeartbeatMonitor', () => {
     ])
     monitor.stop()
   })
+
+  it.each([
+    'ftp://example.test/heartbeat',
+    'file:///tmp/heartbeat',
+    'ws://example.test/heartbeat',
+    'javascript:alert(1)',
+    'not a URL'
+  ])('warns once and disables pings for invalid URL %s', async url => {
+    const { logger, events } = captureLogger()
+    let pings = 0
+    const monitor = createHeartbeatMonitor({
+      url,
+      logger,
+      ping: async () => {
+        pings += 1
+        return { ok: true, status: 200 }
+      }
+    })
+
+    await monitor.start()
+    expect(pings).toBe(0)
+    expect(events).toEqual([
+      {
+        level: 'warn',
+        event: 'heartbeat.misconfigured',
+        fields: {
+          detail: 'BETTERSTACK_HEARTBEAT_URL must be an HTTP(S) URL — heartbeat disabled'
+        }
+      }
+    ])
+  })
 })
 
 describe('parseHttpHeartbeatUrl', () => {
