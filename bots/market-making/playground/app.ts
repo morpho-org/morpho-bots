@@ -9,11 +9,13 @@ import {
   createDefaultBootstrap,
   createDefaultLadder,
   createDefaultPlaygroundState,
+  exportLadderMarketsEnvValue,
   exportJson,
   exportShell,
   exportYaml,
   generateLadderGraphicModels,
   getObservabilityStatuses,
+  parseLadderMarketsImport,
   validatePreviewState,
   validateProductionState
 } from './model'
@@ -25,7 +27,7 @@ const required = <ElementType extends Element>(selector: string) => {
   return element
 }
 
-const controls = required<HTMLDivElement>('#controls')
+const controls = required<HTMLDivElement>('#generated-controls')
 const ladderContainer = required<HTMLDivElement>('#ladders')
 const ladderStatus = required<HTMLParagraphElement>('#ladder-status')
 const validationErrors = required<HTMLDivElement>('#validation-errors')
@@ -35,7 +37,11 @@ const exportTabs = [...document.querySelectorAll<HTMLButtonElement>('[role="tab"
 const exportPanels = [...document.querySelectorAll<HTMLElement>('[role="tabpanel"]')]
 const previewReference = required<HTMLInputElement>('#preview-reference')
 const includeSensitiveValues = required<HTMLInputElement>('#include-sensitive-values')
-let activeExport: 'yaml' | 'shell' | 'json' = 'yaml'
+const ladderImportDrop = required<HTMLDivElement>('#ladder-import-drop')
+const ladderImportFile = required<HTMLInputElement>('#ladder-import-file')
+const ladderImportText = required<HTMLTextAreaElement>('#ladder-import-text')
+const ladderImportStatus = required<HTMLParagraphElement>('#ladder-import-status')
+let activeExport: 'yaml' | 'shell' | 'json' | 'ladder-env' = 'yaml'
 let fieldIndex = 0
 
 type Field = readonly [string, string, string, string]
@@ -239,6 +245,88 @@ const renderControls = () => {
   )
   renderSensitiveVisibility()
 }
+
+const MAXIMUM_LADDER_IMPORT_BYTES = 128 * 1024
+const textByteLength = (value: string) => new TextEncoder().encode(value).byteLength
+const setLadderImportStatus = (message: string, status: 'ok' | 'error') => {
+  ladderImportStatus.textContent = message
+  ladderImportStatus.dataset.status = status
+}
+const applyLadderImport = (text: string) => {
+  if (textByteLength(text) > MAXIMUM_LADDER_IMPORT_BYTES) {
+    setLadderImportStatus('Import exceeds the 128 KiB size limit.', 'error')
+    return false
+  }
+  try {
+    const imported = parseLadderMarketsImport(text, state.scalar.MARKET_IDS)
+    state.ladder.splice(0, state.ladder.length, ...imported)
+    renderControls()
+    renderDynamic()
+    setLadderImportStatus(
+      `Applied ${imported.length} ladder market${imported.length === 1 ? '' : 's'}.`,
+      'ok'
+    )
+    return true
+  } catch (error) {
+    setLadderImportStatus(error instanceof Error ? error.message : 'Invalid ladder JSON.', 'error')
+    return false
+  }
+}
+const applyLadderFile = async (files: FileList | readonly File[]) => {
+  if (files.length !== 1) {
+    setLadderImportStatus('Choose or drop exactly one JSON file.', 'error')
+    return
+  }
+  const file = files[0]
+  if (!file) return
+  const supportedMime =
+    file.type === '' || file.type === 'application/json' || file.type === 'text/json'
+  if (!file.name.toLowerCase().endsWith('.json') || !supportedMime) {
+    setLadderImportStatus('Choose a .json JSON file with a supported JSON MIME type.', 'error')
+    return
+  }
+  if (file.size > MAXIMUM_LADDER_IMPORT_BYTES) {
+    setLadderImportStatus('Import exceeds the 128 KiB size limit.', 'error')
+    return
+  }
+  try {
+    const text = await file.text()
+    if (applyLadderImport(text)) ladderImportText.value = text
+  } catch {
+    setLadderImportStatus('The JSON file could not be read.', 'error')
+  }
+}
+required<HTMLButtonElement>('#apply-ladder-import').addEventListener('click', () => {
+  applyLadderImport(ladderImportText.value)
+})
+ladderImportFile.addEventListener('change', () => {
+  if (ladderImportFile.files) void applyLadderFile(ladderImportFile.files)
+  ladderImportFile.value = ''
+})
+ladderImportDrop.addEventListener('keydown', event => {
+  if (event.key !== 'Enter' && event.key !== ' ') return
+  event.preventDefault()
+  ladderImportFile.click()
+})
+ladderImportDrop.addEventListener('click', event => {
+  if (event.target !== ladderImportFile) ladderImportFile.click()
+})
+for (const eventName of ['dragenter', 'dragover']) {
+  ladderImportDrop.addEventListener(eventName, event => {
+    event.preventDefault()
+    ladderImportDrop.classList.add('is-dragging')
+  })
+}
+for (const eventName of ['dragleave', 'dragend']) {
+  ladderImportDrop.addEventListener(eventName, () =>
+    ladderImportDrop.classList.remove('is-dragging')
+  )
+}
+ladderImportDrop.addEventListener('drop', event => {
+  event.preventDefault()
+  ladderImportDrop.classList.remove('is-dragging')
+  void applyLadderFile(event.dataTransfer?.files ?? [])
+})
 
 previewReference.value = state.referenceRateBps
 previewReference.addEventListener('input', () => {
@@ -559,7 +647,12 @@ const renderLadders = () => {
   }
 }
 
-const exporters = { yaml: exportYaml, shell: exportShell, json: exportJson }
+const exporters = {
+  yaml: exportYaml,
+  shell: exportShell,
+  json: exportJson,
+  'ladder-env': (currentState: typeof state) => exportLadderMarketsEnvValue(currentState)
+}
 const renderObservabilityStatus = () => {
   const statuses = getObservabilityStatuses(state)
   const warnings = statuses.some(status => status.level === 'warning')

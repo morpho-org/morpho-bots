@@ -15,11 +15,13 @@ import {
   createDefaultLadder,
   createDefaultPlaygroundState,
   exportJson,
+  exportLadderMarketsEnvValue,
   exportShell,
   exportYaml,
   generateLadderGraphicModels,
   generatePreviewLadders,
   getObservabilityStatuses,
+  parseLadderMarketsImport,
   validatePreviewState,
   validateProductionState,
   validatePlaygroundState
@@ -874,6 +876,211 @@ describe('market-maker parameter playground', () => {
       secondMarket,
       originalMarket
     ])
+  })
+
+  test('LADDER_MARKETS env export is the exact compact production value and round-trips canonically', () => {
+    const state = createDefaultPlaygroundState()
+    const secondMarket = `0x${'6'.repeat(64)}`
+    state.scalar.MARKET_IDS = `${state.scalar.MARKET_IDS},${secondMarket}`
+    state.ladder.push(createDefaultLadder(secondMarket))
+
+    const output = exportLadderMarketsEnvValue(state)
+    expect(output).toBe(JSON.stringify(state.ladder))
+    expect(output).not.toContain('\n')
+    expect(parseLadderMarketsImport(output, state.scalar.MARKET_IDS)).toEqual(state.ladder)
+  })
+
+  test.each([
+    [
+      'LADDER_MARKETS array',
+      (state: ReturnType<typeof createDefaultPlaygroundState>) => JSON.stringify(state.ladder)
+    ],
+    [
+      'single ladder object',
+      (state: ReturnType<typeof createDefaultPlaygroundState>) => JSON.stringify(state.ladder[0])
+    ],
+    [
+      'JSON string literal containing a LADDER_MARKETS array',
+      (state: ReturnType<typeof createDefaultPlaygroundState>) =>
+        JSON.stringify(JSON.stringify(state.ladder))
+    ],
+    [
+      'JSON string literal containing one ladder object',
+      (state: ReturnType<typeof createDefaultPlaygroundState>) =>
+        JSON.stringify(JSON.stringify(state.ladder[0]))
+    ]
+  ])('ladder import accepts exactly %s', (_name, input) => {
+    const state = createDefaultPlaygroundState()
+    const parsed = parseLadderMarketsImport(input(state), state.scalar.MARKET_IDS)
+    expect(parsed).toEqual(state.ladder)
+    expect(Object.keys(parsed[0]!)).toEqual(LADDER_FIELDS.map(([key]) => key))
+    expect(Object.values(parsed[0]!).every(value => typeof value === 'string')).toBe(true)
+  })
+
+  test('ladder import accepts the production-empty LADDER_MARKETS array', () => {
+    const state = createDefaultPlaygroundState()
+    expect(parseLadderMarketsImport('[]', state.scalar.MARKET_IDS)).toEqual([])
+  })
+
+  test('ladder import rejects duplicate JSON members at every permitted parse layer and object depth', () => {
+    const state = createDefaultPlaygroundState()
+    const ladder = JSON.stringify(state.ladder[0])
+    const duplicateLadder = `${ladder.slice(0, -1)},"marketId":"${state.ladder[0]!.marketId}"}`
+    const duplicateUnicodeLadder = `${ladder.slice(0, -1)},"market\\u0049d":"${state.ladder[0]!.marketId}"}`
+    const cases = [
+      duplicateLadder,
+      duplicateUnicodeLadder,
+      `[${duplicateLadder}]`,
+      `[{"wrapper":{"value":1,"value":2}}]`,
+      `{"configuration":{"LADDER_MARKETS":[],"LADDER\\u005fMARKETS":[]}}`,
+      JSON.stringify(duplicateLadder),
+      JSON.stringify(`[${duplicateUnicodeLadder}]`)
+    ]
+
+    for (const input of cases) {
+      expect(() => parseLadderMarketsImport(input, state.scalar.MARKET_IDS)).toThrow(
+        'Import contains duplicate JSON member names'
+      )
+      try {
+        parseLadderMarketsImport(input, state.scalar.MARKET_IDS)
+      } catch (error) {
+        expect(String(error)).not.toContain('marketId')
+        expect(String(error)).not.toContain('configuration')
+        expect(String(error)).not.toContain('ladder[')
+      }
+    }
+  })
+
+  test('ladder import duplicate detection handles escaped values and a deterministic JSON corpus', () => {
+    const state = createDefaultPlaygroundState()
+    const escapedKeyOnly = JSON.stringify(state.ladder[0]).replace('"marketId"', '"market\\u0049d"')
+    const escapedValues = escapedKeyOnly
+      .replace('"groupMode":"shared-rung"', '"groupMode":"shared\\u002drung"')
+      .replace('"quotePremiumBps":"0"', '"quotePremiumBps":"\\u0030"')
+    expect(parseLadderMarketsImport(escapedValues, state.scalar.MARKET_IDS)).toEqual([
+      state.ladder[0]!
+    ])
+
+    const whitespace = [' ', '\n', '\t', '\r\n']
+    const scalarValues = [
+      'null',
+      'true',
+      'false',
+      '-12.5e+2',
+      '"escaped\\\\value"',
+      '"\\uD834\\uDD1E"'
+    ]
+    for (let index = 0; index < 48; index++) {
+      const gap = whitespace[index % whitespace.length]!
+      const value = scalarValues[index % scalarValues.length]!
+      const key = index % 2 === 0 ? 'member' : 'm\\u0065mber'
+      const nested = `${'['.repeat(index % 7)}{"${key}":${value},${gap}"member":${value}}${']'.repeat(index % 7)}`
+      expect(() => parseLadderMarketsImport(nested, state.scalar.MARKET_IDS)).toThrow(
+        'Import contains duplicate JSON member names'
+      )
+    }
+  })
+
+  test('ladder import bounds JSON nesting and input size with generic accessible errors', () => {
+    const state = createDefaultPlaygroundState()
+    const deeplyNested = `${'['.repeat(129)}null${']'.repeat(129)}`
+    expect(() => parseLadderMarketsImport(deeplyNested, state.scalar.MARKET_IDS)).toThrow(
+      'Import JSON exceeds the nesting limit'
+    )
+    expect(() =>
+      parseLadderMarketsImport(' '.repeat(128 * 1024 + 1), state.scalar.MARKET_IDS)
+    ).toThrow('Import exceeds the 128 KiB size limit')
+  })
+
+  test.each([
+    [
+      'direct LADDER_MARKETS wrapper',
+      (state: ReturnType<typeof createDefaultPlaygroundState>) =>
+        JSON.stringify({ LADDER_MARKETS: state.ladder }),
+      /unsupported key/
+    ],
+    [
+      'configuration wrapper',
+      (state: ReturnType<typeof createDefaultPlaygroundState>) =>
+        JSON.stringify({ configuration: { LADDER_MARKETS: state.ladder } }),
+      /unsupported key/
+    ],
+    [
+      'full playground export',
+      (state: ReturnType<typeof createDefaultPlaygroundState>) =>
+        exportJson(state, { includeSensitiveValues: true }),
+      /unsupported key/
+    ],
+    [
+      'arbitrary top-level addition',
+      (state: ReturnType<typeof createDefaultPlaygroundState>) =>
+        `${JSON.stringify(state.ladder[0]).slice(0, -1)},"extra":true}`,
+      /unsupported key/
+    ],
+    [
+      'double encoding beyond one JSON string-literal layer',
+      (state: ReturnType<typeof createDefaultPlaygroundState>) =>
+        JSON.stringify(JSON.stringify(JSON.stringify(state.ladder))),
+      /one JSON string literal layer/
+    ],
+    [
+      'array where a ladder object is expected',
+      (state: ReturnType<typeof createDefaultPlaygroundState>) =>
+        JSON.stringify([state.ladder[0], []]),
+      /ladder\[1\].*own enumerable plain object/
+    ],
+    [
+      'partial ladder object',
+      (state: ReturnType<typeof createDefaultPlaygroundState>) =>
+        JSON.stringify({ marketId: state.ladder[0]!.marketId }),
+      /required/
+    ],
+    [
+      'unknown ladder key',
+      (state: ReturnType<typeof createDefaultPlaygroundState>) =>
+        `${JSON.stringify(state.ladder[0]).slice(0, -1)},"unsupported":true}`,
+      /unsupported key/
+    ],
+    [
+      '__proto__ ladder key',
+      (state: ReturnType<typeof createDefaultPlaygroundState>) =>
+        `${JSON.stringify(state.ladder[0]).slice(0, -1)},"__proto__":{}}`,
+      /unsafe key/
+    ],
+    [
+      'constructor ladder key',
+      (state: ReturnType<typeof createDefaultPlaygroundState>) =>
+        `${JSON.stringify(state.ladder[0]).slice(0, -1)},"constructor":{}}`,
+      /unsafe key/
+    ],
+    [
+      'prototype ladder key',
+      (state: ReturnType<typeof createDefaultPlaygroundState>) =>
+        `${JSON.stringify(state.ladder[0]).slice(0, -1)},"prototype":{}}`,
+      /unsafe key/
+    ],
+    [
+      'invalid second ladder entry',
+      (state: ReturnType<typeof createDefaultPlaygroundState>) =>
+        JSON.stringify([
+          state.ladder[0],
+          { ...state.ladder[0], marketId: `0x${'6'.repeat(64)}`, rungCount: '0' }
+        ]),
+      /ladder\[1\].rungCount/
+    ],
+    [
+      'duplicate ladder entries',
+      (state: ReturnType<typeof createDefaultPlaygroundState>) =>
+        JSON.stringify([state.ladder[0], state.ladder[0]]),
+      /unique/
+    ],
+    ['malformed JSON', () => '[{"marketId":', /valid JSON/],
+    ['null', () => 'null', /array or one exact ladder object/],
+    ['primitive', () => '42', /array or one exact ladder object/]
+  ])('ladder import rejects %s', (_name, input, error) => {
+    const state = createDefaultPlaygroundState()
+    state.scalar.MARKET_IDS = `${state.scalar.MARKET_IDS},0x${'6'.repeat(64)}`
+    expect(() => parseLadderMarketsImport(input(state), state.scalar.MARKET_IDS)).toThrow(error)
   })
 
   test('blank market lists export as empty arrays and round-trip through every real loader', async () => {

@@ -306,6 +306,238 @@ export const getObservabilityStatuses = (state: PlaygroundState): ObservabilityS
 /** Backward-compatible production/export validation boundary. */
 export const validatePlaygroundState = validateProductionState
 
+const LADDER_IMPORT_FIELDS = [
+  'marketId',
+  'quotePremiumBps',
+  'spreadBps',
+  'stepBps',
+  'rungCount',
+  'sizeSkewBps',
+  'lowerRateBudgetAssets',
+  'higherRateBudgetAssets',
+  'targetMarketExposureAssets',
+  'maximumTotalExposureAssets',
+  'minimumOfferAssets',
+  'groupMode',
+  'loopIntervalSeconds',
+  'movementToleranceBps',
+  'minimumRateBps',
+  'maximumRateBps'
+] as const
+const LADDER_IMPORT_FIELD_SET = new Set<string>(LADDER_IMPORT_FIELDS)
+const UNSAFE_IMPORT_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
+const isOwnEnumerablePlainObject = (value: unknown): value is Record<string, unknown> => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  if (Object.getPrototypeOf(value) !== Object.prototype) return false
+  return Reflect.ownKeys(value).every(key => {
+    if (typeof key !== 'string') return false
+    return Object.getOwnPropertyDescriptor(value, key)?.enumerable === true
+  })
+}
+
+const assertExactLadderObject = (value: unknown, prefix: string) => {
+  if (!isOwnEnumerablePlainObject(value)) {
+    throw new Error(`${prefix} must be an own enumerable plain object`)
+  }
+  const keys = Object.keys(value)
+  if (keys.some(key => UNSAFE_IMPORT_KEYS.has(key))) {
+    throw new Error(`${prefix} contains an unsafe key`)
+  }
+  if (keys.some(key => !LADDER_IMPORT_FIELD_SET.has(key))) {
+    throw new Error(`${prefix} contains an unsupported key`)
+  }
+}
+
+const importedLadderValue = (value: unknown): unknown[] => {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertExactLadderObject(item, `ladder[${index}]`))
+    return value
+  }
+  if (!isOwnEnumerablePlainObject(value)) {
+    throw new Error('Import must be a LADDER_MARKETS array or one exact ladder object')
+  }
+  assertExactLadderObject(value, 'ladder[0]')
+  return [value]
+}
+
+const ladderInputFromConfig = (
+  config: ReturnType<typeof ladderConfigsValue>[number]
+): LadderInput => ({
+  marketId: config.marketId,
+  quotePremiumBps: String(config.quotePremiumBps),
+  spreadBps: String(config.spreadBps),
+  stepBps: String(config.stepBps),
+  rungCount: String(config.rungCount),
+  sizeSkewBps: String(config.sizeSkewBps),
+  lowerRateBudgetAssets: String(config.lowerRateBudgetAssets),
+  higherRateBudgetAssets: String(config.higherRateBudgetAssets),
+  targetMarketExposureAssets: String(config.targetMarketExposureAssets),
+  maximumTotalExposureAssets: String(config.maximumTotalExposureAssets),
+  minimumOfferAssets: String(config.minimumOfferAssets),
+  groupMode: config.groupMode,
+  loopIntervalSeconds: String(config.loopIntervalSeconds),
+  movementToleranceBps: String(config.movementToleranceBps),
+  minimumRateBps: String(config.minimumRateBps),
+  maximumRateBps: String(config.maximumRateBps)
+})
+
+const MAXIMUM_LADDER_IMPORT_BYTES = 128 * 1024
+const MAXIMUM_JSON_NESTING = 128
+const DUPLICATE_JSON_MEMBER_ERROR = 'Import contains duplicate JSON member names'
+
+class LadderImportJsonError extends Error {}
+class JsonScannerSyntaxError extends Error {}
+
+/**
+ * Scans JSON object names before JSON.parse can overwrite duplicate members.
+ * String names are decoded independently so escaped-equivalent names compare equal.
+ */
+const assertNoDuplicateJsonMembers = (text: string) => {
+  let position = 0
+  const syntaxError = (): never => {
+    throw new JsonScannerSyntaxError()
+  }
+  const skipWhitespace = () => {
+    while (
+      text[position] === ' ' ||
+      text[position] === '\t' ||
+      text[position] === '\n' ||
+      text[position] === '\r'
+    ) {
+      position++
+    }
+  }
+  const scanString = (): string => {
+    const start = position
+    if (text[position++] !== '"') syntaxError()
+    while (position < text.length) {
+      const character = text[position++]!
+      if (character === '"') return text.slice(start, position)
+      if (character.charCodeAt(0) <= 0x1f) syntaxError()
+      if (character !== '\\') continue
+      const escape = text[position++]
+      if (escape === 'u') {
+        const hexadecimal = text.slice(position, position + 4)
+        if (!/^[0-9a-fA-F]{4}$/.test(hexadecimal)) syntaxError()
+        position += 4
+      } else if (escape === undefined || !'"\\/bfnrt'.includes(escape)) {
+        syntaxError()
+      }
+    }
+    return syntaxError()
+  }
+  const scanValue = (depth: number): void => {
+    skipWhitespace()
+    const character = text[position]
+    if (character === '"') {
+      scanString()
+      return
+    }
+    if (character === '{') {
+      if (depth >= MAXIMUM_JSON_NESTING) {
+        throw new LadderImportJsonError('Import JSON exceeds the nesting limit')
+      }
+      position++
+      skipWhitespace()
+      const members = new Set<string>()
+      if (text[position] === '}') {
+        position++
+        return
+      }
+      while (position < text.length) {
+        skipWhitespace()
+        const encodedName = scanString()
+        const name = (() => {
+          try {
+            return JSON.parse(encodedName) as string
+          } catch {
+            return syntaxError()
+          }
+        })()
+        if (members.has(name)) throw new LadderImportJsonError(DUPLICATE_JSON_MEMBER_ERROR)
+        members.add(name)
+        skipWhitespace()
+        if (text[position++] !== ':') syntaxError()
+        scanValue(depth + 1)
+        skipWhitespace()
+        const separator = text[position++]
+        if (separator === '}') return
+        if (separator !== ',') syntaxError()
+      }
+      syntaxError()
+    }
+    if (character === '[') {
+      if (depth >= MAXIMUM_JSON_NESTING) {
+        throw new LadderImportJsonError('Import JSON exceeds the nesting limit')
+      }
+      position++
+      skipWhitespace()
+      if (text[position] === ']') {
+        position++
+        return
+      }
+      while (position < text.length) {
+        scanValue(depth + 1)
+        skipWhitespace()
+        const separator = text[position++]
+        if (separator === ']') return
+        if (separator !== ',') syntaxError()
+      }
+      syntaxError()
+    }
+    const remainder = text.slice(position)
+    const token = remainder.match(
+      /^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/
+    )?.[0]
+    if (token === undefined) return syntaxError()
+    position += token.length
+  }
+
+  try {
+    scanValue(0)
+    skipWhitespace()
+    if (position !== text.length) syntaxError()
+  } catch (error) {
+    // Malformed JSON is intentionally left to the native parser and its normal error path.
+    if (!(error instanceof JsonScannerSyntaxError)) throw error
+  }
+}
+
+const parseStrictImportJson = (text: string): unknown => {
+  if (new TextEncoder().encode(text).byteLength > MAXIMUM_LADDER_IMPORT_BYTES) {
+    throw new LadderImportJsonError('Import exceeds the 128 KiB size limit')
+  }
+  assertNoDuplicateJsonMembers(text)
+  return JSON.parse(text)
+}
+
+const parseImportJsonLayer = (text: string): unknown => {
+  let failure: unknown
+  try {
+    return parseStrictImportJson(text)
+  } catch (error) {
+    failure = error
+  }
+  if (failure instanceof LadderImportJsonError) throw failure
+  throw new Error('Import must be valid JSON or a JSON string literal containing valid JSON')
+}
+
+/** Parses supported JSON ladder shapes through the production parser and returns canonical UI inputs. */
+export const parseLadderMarketsImport = (
+  text: string,
+  allowlistedMarketIds: string
+): LadderInput[] => {
+  let parsed = parseImportJsonLayer(text)
+  if (typeof parsed === 'string') parsed = parseImportJsonLayer(parsed)
+  if (typeof parsed === 'string') {
+    throw new Error('Import accepts at most one JSON string literal layer')
+  }
+  const markets = hexListValue({ MARKET_IDS: allowlistedMarketIds }, 'MARKET_IDS', false)
+  const imported = importedLadderValue(parsed)
+  return ladderConfigsValue(imported, markets).map(ladderInputFromConfig)
+}
+
 export const validatePreviewState = (state: PlaygroundState) => {
   const production = validateProductionState(state)
   if (!production.valid) return production
@@ -323,6 +555,12 @@ export const validatePreviewState = (state: PlaygroundState) => {
 const assertExportable = (state: PlaygroundState) => {
   const result = validateProductionState(state)
   if (!result.valid) throw new Error(`Configuration is invalid: ${result.errors.join('; ')}`)
+}
+
+/** Exact compact JSON value expected in the LADDER_MARKETS environment variable. */
+export const exportLadderMarketsEnvValue = (state: PlaygroundState) => {
+  assertExportable(state)
+  return JSON.stringify(structuredLadder(state))
 }
 
 type ExportOptions = { includeSensitiveValues?: boolean }

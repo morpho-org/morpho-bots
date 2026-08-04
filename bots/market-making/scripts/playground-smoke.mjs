@@ -390,6 +390,173 @@ try {
     'graphic callouts or stateless legend are missing'
   )
 
+  const ladderJsonIo = await evaluate(`(async () => {
+    const area = document.querySelector('#ladder-import')
+    const drop = document.querySelector('#ladder-import-drop')
+    const file = document.querySelector('#ladder-import-file')
+    const text = document.querySelector('#ladder-import-text')
+    const apply = document.querySelector('#apply-ladder-import')
+    const status = document.querySelector('#ladder-import-status')
+    const envTab = document.querySelector('#tab-ladder-env')
+    const envOutput = document.querySelector('#export-ladder-env')
+    const initial = envOutput?.value
+    const accessible = Boolean(
+      area && drop && file && text && apply && status && envTab && envOutput &&
+      file.accept.includes('.json') && text.getAttribute('aria-describedby')?.includes('ladder-import-help') &&
+      status.getAttribute('role') === 'status' && drop.tabIndex === 0
+    )
+    const documentedCopy = area.textContent
+    const documentedShapes = documentedCopy.includes('LADDER_MARKETS array') &&
+      documentedCopy.includes('one exact ladder object') &&
+      documentedCopy.includes('JSON string literal') &&
+      documentedCopy.includes('either') &&
+      !documentedCopy.includes('full playground JSON export')
+    text.value = initial
+    apply.click()
+    await new Promise(resolve => requestAnimationFrame(resolve))
+    const pasteApplied = status.dataset.status === 'ok' && status.textContent.includes('1 ladder') &&
+      document.querySelectorAll('#controls .market-card:has([data-field=quotePremiumBps])').length === 1 &&
+      document.querySelectorAll('.ladder-market').length === 1
+    text.value = JSON.stringify(initial)
+    apply.click()
+    const stringLiteralApplied = status.dataset.status === 'ok' && envOutput.value === initial
+    const beforeShapeFailure = envOutput.value
+    text.value = JSON.stringify({ LADDER_MARKETS: JSON.parse(initial) })
+    apply.click()
+    const wrapperRejected = status.dataset.status === 'error' && envOutput.value === beforeShapeFailure
+    const originalGraphic = document.querySelector('.ladder-graphic svg')?.outerHTML
+    const modified = JSON.parse(initial)
+    modified[0].quotePremiumBps = '25'
+    text.value = JSON.stringify(modified)
+    apply.click()
+    const previewUpdated = envOutput.value === JSON.stringify(modified) &&
+      document.querySelector('.ladder-graphic svg')?.outerHTML !== originalGraphic &&
+      getComputedStyle(document.querySelector('.monitor-surface')).position === 'sticky'
+    text.value = initial
+    apply.click()
+    const roundTripRestored = envOutput.value === initial &&
+      document.querySelector('.ladder-graphic svg')?.outerHTML === originalGraphic
+    const beforeFailure = envOutput.value
+    const beforeGraphic = document.querySelector('.ladder-graphic svg')?.outerHTML
+    const duplicate = initial.replace('{', '{"marketId":"0x' + '5'.repeat(64) + '",')
+    text.value = duplicate
+    apply.click()
+    const duplicatePasteRejected = status.dataset.status === 'error' &&
+      status.textContent === 'Import contains duplicate JSON member names' &&
+      envOutput.value === beforeFailure && document.querySelector('.ladder-graphic svg')?.outerHTML === beforeGraphic
+    text.value = JSON.stringify([{ marketId: '0x' + '5'.repeat(64), rungCount: '0' }])
+    apply.click()
+    const atomicFailure = status.dataset.status === 'error' && status.textContent.includes('ladder[0]') &&
+      envOutput.value === beforeFailure && document.querySelector('.ladder-graphic svg')?.outerHTML === beforeGraphic
+    text.value = 'x'.repeat(131073)
+    apply.click()
+    const oversizedRejected = status.dataset.status === 'error' && status.textContent.includes('128 KiB') &&
+      envOutput.value === beforeFailure
+    const dropFiles = files => {
+      const transfer = new DataTransfer()
+      for (const candidate of files) transfer.items.add(candidate)
+      drop.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }))
+    }
+    drop.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: new DataTransfer() }))
+    const dragStateVisible = drop.classList.contains('is-dragging')
+    drop.dispatchEvent(new DragEvent('dragleave', { bubbles: true, cancelable: true }))
+    const dragStateCleared = !drop.classList.contains('is-dragging')
+    const waitForImportStatus = async predicate => {
+      for (let attempt = 0; attempt < 100; attempt++) {
+        if (predicate()) return true
+        await new Promise(resolve => setTimeout(resolve, 20))
+      }
+      return false
+    }
+    dropFiles([new File([initial], 'ladder.json', { type: 'application/json' })])
+    const validDropSettled = await waitForImportStatus(() => status.dataset.status === 'ok')
+    const dropApplied = validDropSettled && envOutput.value === initial
+    dropFiles([new File([duplicate], 'duplicate.json', { type: 'application/json' })])
+    const duplicateDropSettled = await waitForImportStatus(
+      () => status.dataset.status === 'error' && status.textContent === 'Import contains duplicate JSON member names'
+    )
+    const duplicateDropRejected = duplicateDropSettled && envOutput.value === initial &&
+      document.querySelector('.ladder-graphic svg')?.outerHTML === beforeGraphic
+    dropFiles([new File([initial], 'ladder.txt', { type: 'text/plain' })])
+    const invalidDropSettled = await waitForImportStatus(
+      () => status.dataset.status === 'error' && status.textContent.includes('JSON file')
+    )
+    const mimeRejected = invalidDropSettled && envOutput.value === initial
+    dropFiles([
+      new File([initial], 'one.json', { type: 'application/json' }),
+      new File([initial], 'two.json', { type: 'application/json' })
+    ])
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const multipleRejected = status.dataset.status === 'error' && status.textContent.includes('one JSON file') && envOutput.value === initial
+    text.value = initial
+    apply.click()
+    envTab.click()
+    let copied = ''
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: async value => { copied = value } }, configurable: true })
+    document.querySelector('#copy-export').click()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const exactCopy = copied === initial && !copied.includes('\\n') && !copied.startsWith('LADDER_MARKETS=')
+    document.querySelector('#tab-yaml').click()
+    return {
+      accessible,
+      documentedShapes,
+      pasteApplied,
+      stringLiteralApplied,
+      wrapperRejected,
+      previewUpdated,
+      roundTripRestored,
+      duplicatePasteRejected,
+      atomicFailure,
+      oversizedRejected,
+      dragStateVisible,
+      dragStateCleared,
+      dropApplied,
+      duplicateDropRejected,
+      mimeRejected,
+      multipleRejected,
+      exactCopy
+    }
+  })()`)
+  assert(
+    Object.values(ladderJsonIo).every(Boolean),
+    `ladder JSON import/export failed: ${JSON.stringify(ladderJsonIo)}`
+  )
+  const captureImportViewport = async (path, selector = '#ladder-import', block = 'start') => {
+    await evaluate(
+      `document.querySelector(${JSON.stringify(selector)}).scrollIntoView({ block: ${JSON.stringify(block)} })`
+    )
+    await new Promise(resolve => setTimeout(resolve, 50))
+    const shot = await command('Page.captureScreenshot', {
+      format: 'png',
+      captureBeyondViewport: false
+    })
+    await writeFile(path, Buffer.from(shot.data, 'base64'))
+  }
+  await captureImportViewport('/tmp/morpho-bots-pr122-ladder-jsonio-desktop.png')
+  await command('Emulation.setDeviceMetricsOverride', {
+    width: 390,
+    height: 844,
+    deviceScaleFactor: 1,
+    mobile: true
+  })
+  await captureImportViewport(
+    '/tmp/morpho-bots-pr122-ladder-jsonio-mobile-drop.png',
+    '#ladder-import-drop',
+    'center'
+  )
+  await captureImportViewport(
+    '/tmp/morpho-bots-pr122-ladder-jsonio-mobile.png',
+    '#apply-ladder-import',
+    'end'
+  )
+  await command('Emulation.setDeviceMetricsOverride', {
+    width: 1440,
+    height: 1000,
+    deviceScaleFactor: 1,
+    mobile: false
+  })
+  await evaluate('scrollTo(0, 0)')
+
   const stickyGeometryAt = async ({ width, height, mobile }) => {
     await command('Emulation.setDeviceMetricsOverride', {
       width,
@@ -874,12 +1041,12 @@ try {
   )
   assert(
     await evaluate(
-      "document.activeElement.id === 'tab-json' && document.querySelector('#tab-json').getAttribute('aria-selected') === 'true' && !document.querySelector('#panel-json').hidden && document.querySelector('#panel-yaml').hidden"
+      "document.activeElement.id === 'tab-ladder-env' && document.querySelector('#tab-ladder-env').getAttribute('aria-selected') === 'true' && !document.querySelector('#panel-ladder-env').hidden && document.querySelector('#panel-yaml').hidden"
     ),
     'End key did not activate the final tab and hide inactive panels'
   )
   await evaluate(
-    "document.querySelector('#tab-json').dispatchEvent(new KeyboardEvent('keydown', {key:'Home', bubbles:true}))"
+    "document.querySelector('#tab-ladder-env').dispatchEvent(new KeyboardEvent('keydown', {key:'Home', bubbles:true}))"
   )
   assert(
     await evaluate("document.activeElement.id === 'tab-yaml'"),

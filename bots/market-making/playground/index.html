@@ -55,7 +55,52 @@
               </p>
             </div>
           </section>
-          <div id="controls" class="controls"></div>
+          <div id="controls" class="controls">
+            <section
+              id="ladder-import"
+              class="control-section ladder-import"
+              aria-labelledby="ladder-import-heading"
+            >
+              <div class="section-heading">
+                <span>LADDER_MARKETS · local only</span>
+                <h2 id="ladder-import-heading">Import ladder JSON</h2>
+              </div>
+              <p id="ladder-import-help" class="format-note">
+                Drop or choose one .json file, or paste JSON below. Accepts only the exact
+                LADDER_MARKETS array, one exact ladder object, or a JSON string literal containing
+                either. The production parser rejects unknown keys; applying replaces every ladder
+                only after the complete input validates. Maximum 128 KiB.
+              </p>
+              <div
+                id="ladder-import-drop"
+                class="ladder-import__drop"
+                role="button"
+                tabindex="0"
+                aria-describedby="ladder-import-help"
+              >
+                <strong>Drop one ladder .json file here</strong>
+                <span>or activate to choose a file</span>
+                <input id="ladder-import-file" type="file" accept=".json,application/json" />
+              </div>
+              <label class="field" for="ladder-import-text">
+                <span class="field__heading">Paste ladder JSON</span>
+                <span class="field__hint"
+                  >Exact JSON only; no shell assignment or persistence.</span
+                >
+                <textarea
+                  id="ladder-import-text"
+                  rows="6"
+                  spellcheck="false"
+                  aria-describedby="ladder-import-help"
+                ></textarea>
+              </label>
+              <button id="apply-ladder-import" type="button" class="button">
+                Apply ladder JSON
+              </button>
+              <p id="ladder-import-status" class="status" role="status" aria-live="polite"></p>
+            </section>
+            <div id="generated-controls" class="controls"></div>
+          </div>
         </div>
 
         <section class="export-card">
@@ -125,6 +170,17 @@
             >
               JSON
             </button>
+            <button
+              id="tab-ladder-env"
+              type="button"
+              role="tab"
+              aria-controls="panel-ladder-env"
+              aria-selected="false"
+              tabindex="-1"
+              data-export="ladder-env"
+            >
+              LADDER_MARKETS env value
+            </button>
           </div>
           <section id="panel-yaml" role="tabpanel" aria-labelledby="tab-yaml" data-panel="yaml">
             <textarea
@@ -161,6 +217,24 @@
               readonly
               spellcheck="false"
               aria-label="JSON configuration export"
+            ></textarea>
+          </section>
+          <section
+            id="panel-ladder-env"
+            role="tabpanel"
+            aria-labelledby="tab-ladder-env"
+            data-panel="ladder-env"
+            hidden
+          >
+            <p class="format-note">
+              Compact single-line JSON value for LADDER_MARKETS. This is the environment value only,
+              without a shell assignment or extra JSON string-literal encoding.
+            </p>
+            <textarea
+              id="export-ladder-env"
+              readonly
+              spellcheck="false"
+              aria-label="LADDER_MARKETS env value"
             ></textarea>
           </section>
           <div class="copy-actions">
