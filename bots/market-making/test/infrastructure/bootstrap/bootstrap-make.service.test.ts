@@ -320,10 +320,13 @@ describe('MidnightBootstrapMakeService', () => {
     expect(events).toEqual(['reserve', 'publish', 'release'])
   })
 
-  test('retains the approved Setter reservation when publication reverts', async () => {
+  test('retains and cancels an approved Setter reservation after restart when publication reverts', async () => {
     const events: string[] = []
-    const service = new MidnightBootstrapMakeService({
+    const tracked = new Set<Hex>()
+    const invalidated: Hex[] = []
+    const transport = {
       listActiveGroups: async () => [],
+      listOwnedGroupIds: async () => [...tracked],
       listBookOffers: async () => [],
       toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
       preparePublication: async () => ({
@@ -333,24 +336,42 @@ describe('MidnightBootstrapMakeService', () => {
           throw new BootstrapAdapterError('publication-transaction-reverted-after-ratification')
         }
       }),
-      reserveGroup: async () => {
+      reserveGroup: async (group: Hex) => {
+        tracked.add(group)
         events.push('reserve')
       },
       confirmPublishedGroup: async () => {
         events.push('confirm')
       },
-      releaseGroupReservation: async () => {
+      releaseGroupReservation: async (group: Hex) => {
+        tracked.delete(group)
         events.push('release')
       },
-      invalidate: async () => {}
-    })
+      forgetGroups: async (groups: readonly Hex[]) => {
+        for (const group of groups) tracked.delete(group)
+      },
+      invalidate: async (group: Hex) => {
+        invalidated.push(group)
+      }
+    }
 
     await expect(
-      service.reconcile({ marketId, desiredOffer, reason: 'publish' })
+      new MidnightBootstrapMakeService(transport).reconcile({
+        marketId,
+        desiredOffer,
+        reason: 'publish'
+      })
     ).rejects.toMatchObject({
       operation: 'publication-transaction-reverted-after-ratification'
     })
     expect(events).toEqual(['reserve', 'publish'])
+    expect([...tracked]).toEqual([publishedGroupId])
+
+    expect(await new MidnightBootstrapMakeService(transport).cleanup()).toEqual({
+      submittedTransactions: []
+    })
+    expect(invalidated).toEqual([publishedGroupId])
+    expect([...tracked]).toEqual([])
   })
 
   test('retains the durable reservation when publication outcome is ambiguous', async () => {

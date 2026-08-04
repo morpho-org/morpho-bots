@@ -27,6 +27,7 @@ import {
   decidePositionBootstrapTransition,
   validateBootstrapConfig
 } from '../../domain/bootstrap/position-bootstrap'
+import { BootstrapAdapterError } from '../../infrastructure/bootstrap/bootstrap-adapter.error'
 import { operatorErrorDetails, operatorErrorName } from '../operator-error-name.utils'
 import { BootstrapOwnershipCleanupError } from './bootstrap-ownership-cleanup.error'
 
@@ -715,6 +716,9 @@ export class PositionBootstrapService {
         })
       } catch (error) {
         const ownershipCleanup = error instanceof BootstrapOwnershipCleanupError ? error : undefined
+        const confirmedTransactions =
+          ownershipCleanup?.submittedTransactions ??
+          (error instanceof BootstrapAdapterError ? error.confirmedTransactions : [])
         results.push(
           await this.withVerboseDetails(
             {
@@ -730,8 +734,8 @@ export class PositionBootstrapService {
             verbose,
             plan.verbose,
             true,
-            ownershipCleanup
-              ? { submittedTransactions: ownershipCleanup.submittedTransactions }
+            confirmedTransactions.length > 0
+              ? { submittedTransactions: confirmedTransactions }
               : undefined
           )
         )

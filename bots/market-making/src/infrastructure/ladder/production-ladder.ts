@@ -369,47 +369,56 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
         prospective: prepared.bookOffers,
         publish: async onTransactionSubmitted => {
           const submittedTransactions = []
-          if (ratification.approval !== undefined) {
-            assertLadderRatificationTransaction(ratification.approval, {
-              target: config.setup.ratifier,
-              account: maker,
-              root: prepared.tree.root
-            })
-            const approvalHash = await wallet.sendTransaction(ratification.approval)
-            await notifySubmitted(onTransactionSubmitted, 'ratify', approvalHash)
-            const approvalReceipt = await wallet.waitForTransactionReceipt({
-              hash: approvalHash,
+          try {
+            if (ratification.approval !== undefined) {
+              assertLadderRatificationTransaction(ratification.approval, {
+                target: config.setup.ratifier,
+                account: maker,
+                root: prepared.tree.root
+              })
+              const approvalHash = await wallet.sendTransaction(ratification.approval)
+              await notifySubmitted(onTransactionSubmitted, 'ratify', approvalHash)
+              const approvalReceipt = await wallet.waitForTransactionReceipt({
+                hash: approvalHash,
+                timeout: config.transactionReceiptTimeoutMs
+              })
+              if (approvalReceipt.status !== 'success') {
+                throw new LadderAdapterError('ratifier-transaction-reverted')
+              }
+              submittedTransactions.push({ operation: 'ratify' as const, txHash: approvalHash })
+              try {
+                await prepared.tree.mempoolValidate({
+                  chainId: base.id,
+                  apiUrl: `${config.morphoApiBaseUrl}/v0/midnight`,
+                  ratification: ratification.validation
+                })
+              } catch {
+                throw new LadderAdapterError('mempool-validation-after-ratification')
+              }
+            }
+            const hash = await wallet.sendTransaction(transaction)
+            await notifySubmitted(onTransactionSubmitted, 'publish', hash)
+            const receipt = await wallet.waitForTransactionReceipt({
+              hash,
               timeout: config.transactionReceiptTimeoutMs
             })
-            if (approvalReceipt.status !== 'success') {
-              throw new LadderAdapterError('ratifier-transaction-reverted')
+            if (receipt.status !== 'success') {
+              throw new LadderAdapterError(
+                ratification.approval === undefined
+                  ? 'transaction-reverted'
+                  : 'publication-transaction-reverted-after-ratification'
+              )
             }
-            submittedTransactions.push({ operation: 'ratify' as const, txHash: approvalHash })
-            try {
-              await prepared.tree.mempoolValidate({
-                chainId: base.id,
-                apiUrl: `${config.morphoApiBaseUrl}/v0/midnight`,
-                ratification: ratification.validation
-              })
-            } catch {
-              throw new LadderAdapterError('mempool-validation-after-ratification')
-            }
+            submittedTransactions.push({ operation: 'publish' as const, txHash: hash })
+            return submittedTransactions
+          } catch (error) {
+            if (submittedTransactions.length === 0) throw error
+            const failure =
+              error instanceof LadderAdapterError
+                ? error
+                : new LadderAdapterError('publication-after-ratification')
+            throw failure.recordConfirmedTransactions(submittedTransactions)
           }
-          const hash = await wallet.sendTransaction(transaction)
-          await notifySubmitted(onTransactionSubmitted, 'publish', hash)
-          const receipt = await wallet.waitForTransactionReceipt({
-            hash,
-            timeout: config.transactionReceiptTimeoutMs
-          })
-          if (receipt.status !== 'success') {
-            throw new LadderAdapterError(
-              ratification.approval === undefined
-                ? 'transaction-reverted'
-                : 'publication-transaction-reverted-after-ratification'
-            )
-          }
-          submittedTransactions.push({ operation: 'publish' as const, txHash: hash })
-          return submittedTransactions
         }
       }
     },

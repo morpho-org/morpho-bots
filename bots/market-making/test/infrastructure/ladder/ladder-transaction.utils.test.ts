@@ -16,17 +16,19 @@ import {
 } from '../../../src/infrastructure/ladder/ladder-transaction.utils'
 
 const maker: Address = '0x1111111111111111111111111111111111111111'
+const foreignMaker: Address = '0x2222222222222222222222222222222222222222'
 const ratifier: Address = '0x800B5F12A61B8198a5a6EfD794Cac6699B294d63'
 const root: Hex = `0x${'22'.repeat(32)}`
+const foreignRoot: Hex = `0x${'44'.repeat(32)}`
 const mempool: Address = '0x3333333333333333333333333333333333333333'
 
-const approval = (ratified = true) => ({
+const approval = (ratified = true, account: Address = maker, selectedRoot: Hex = root) => ({
   to: ratifier,
   value: 0n,
   data: encodeFunctionData({
     abi: setterRatifierAbi,
     functionName: 'setIsRootRatified',
-    args: [maker, root, ratified]
+    args: [account, selectedRoot, ratified]
   })
 })
 
@@ -39,6 +41,9 @@ describe('assertLadderRatificationTransaction', () => {
     for (const transaction of [
       { ...approval(), to: maker },
       { ...approval(), value: 1n },
+      { ...approval(), data: '0xdeadbeef' as Hex },
+      approval(true, foreignMaker),
+      approval(true, maker, foreignRoot),
       approval(false)
     ]) {
       expect(() =>

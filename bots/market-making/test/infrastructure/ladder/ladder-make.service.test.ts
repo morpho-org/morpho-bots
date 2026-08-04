@@ -209,9 +209,27 @@ describe('MidnightLadderMakeService', () => {
     expect(error).toMatchObject({ operation: 'transaction-reverted' })
   })
 
-  test('retains an approved Setter reservation when final validation fails', async () => {
+  test('retains and cancels an approved Setter reservation after restart when publication fails', async () => {
     const subject = harness()
+    const tracked = new Set<Hex>()
+    const invalidated: Hex[] = []
     subject.transport.listActiveGroupIds = async () => []
+    subject.transport.listOwnedGroups = async () =>
+      [...tracked].map(groupId => ({ groupId, maxAssets: 10n }))
+    subject.transport.reservePublication = async publication => {
+      for (const group of publication.groups) tracked.add(group.groupId)
+      subject.events.push('reserve')
+    }
+    subject.transport.releasePublication = async groupIds => {
+      for (const groupId of groupIds) tracked.delete(groupId)
+      subject.events.push('release')
+    }
+    subject.transport.forgetGroups = async groupIds => {
+      for (const groupId of groupIds) tracked.delete(groupId)
+    }
+    subject.transport.invalidate = async groupId => {
+      invalidated.push(groupId)
+    }
     subject.transport.preparePublication = async () => ({
       groupIds: [newGroup],
       groups: [{ groupId: newGroup, side: 'lower', rungIndexes: [0] }],
@@ -225,6 +243,13 @@ describe('MidnightLadderMakeService', () => {
       subject.service.reconcile({ marketId, desired: quote, reason: 'recenter' })
     ).rejects.toMatchObject({ operation: 'mempool-validation-after-ratification' })
     expect(subject.events).toEqual(['reserve'])
+    expect([...tracked]).toEqual([newGroup])
+
+    expect(await new MidnightLadderMakeService(subject.transport).cleanup()).toEqual({
+      submittedTransactions: []
+    })
+    expect(invalidated).toEqual([newGroup])
+    expect([...tracked]).toEqual([])
   })
 
   test('excludes a previously canceled group while the book still reports its offers', async () => {

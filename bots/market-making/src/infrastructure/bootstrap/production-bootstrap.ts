@@ -482,32 +482,41 @@ export const createProductionBootstrapAdapters = (
         groupId: output.groups[0] as Hex,
         publish: async onTransactionSubmitted => {
           const submittedTransactions = []
-          for (const ratification of ratificationTransactions) {
+          try {
+            for (const ratification of ratificationTransactions) {
+              const txHash = await execute(
+                ratification,
+                {
+                  kind: 'ratification',
+                  target: config.setup.ratifier,
+                  root: output.root,
+                  account: maker
+                },
+                'ratify',
+                onTransactionSubmitted,
+                'ratifier-transaction-reverted'
+              )
+              submittedTransactions.push({ operation: 'ratify' as const, txHash })
+            }
             const txHash = await execute(
-              ratification,
-              {
-                kind: 'ratification',
-                target: config.setup.ratifier,
-                root: output.root,
-                account: maker
-              },
-              'ratify',
+              transaction,
+              publicationPolicy,
+              'publish',
               onTransactionSubmitted,
-              'ratifier-transaction-reverted'
+              output.ratifierType === 'setter'
+                ? 'publication-transaction-reverted-after-ratification'
+                : 'transaction-reverted'
             )
-            submittedTransactions.push({ operation: 'ratify' as const, txHash })
+            submittedTransactions.push({ operation: 'publish' as const, txHash })
+            return submittedTransactions
+          } catch (error) {
+            if (submittedTransactions.length === 0) throw error
+            const failure =
+              error instanceof BootstrapAdapterError
+                ? error
+                : new BootstrapAdapterError('publication-after-ratification')
+            throw failure.recordConfirmedTransactions(submittedTransactions)
           }
-          const txHash = await execute(
-            transaction,
-            publicationPolicy,
-            'publish',
-            onTransactionSubmitted,
-            output.ratifierType === 'setter'
-              ? 'publication-transaction-reverted-after-ratification'
-              : 'transaction-reverted'
-          )
-          submittedTransactions.push({ operation: 'publish' as const, txHash })
-          return submittedTransactions
         }
       }
     }
