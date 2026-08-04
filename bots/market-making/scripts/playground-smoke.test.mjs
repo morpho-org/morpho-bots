@@ -288,23 +288,17 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
     const isolatedTmp = await temporaryDirectory(`playground-browser-${signal.toLowerCase()}-`)
     const wrapper = join(isolatedTmp, 'chromium-wrapper')
     const wrapperPidFile = join(isolatedTmp, 'chromium-wrapper-pid')
-    const directSignalFile = join(isolatedTmp, 'chromium-wrapper-direct-signal')
     const chromium = await discoverChromium()
     await writeFile(
       wrapper,
-      `#!/usr/bin/env node
-const { spawn } = require('node:child_process')
-const { writeFileSync } = require('node:fs')
-const browser = spawn(${JSON.stringify(chromium)}, process.argv.slice(2), { stdio: 'inherit' })
-writeFileSync(process.env.SMOKE_CHROMIUM_WRAPPER_PID_FILE, String(process.pid))
-process.on('SIGTERM', () => {
-  writeFileSync(process.env.SMOKE_CHROMIUM_DIRECT_SIGNAL_FILE, 'direct signal received')
-  browser.kill('SIGTERM')
-})
-browser.on('close', (code, signal) => {
-  if (signal) process.kill(process.pid, signal)
-  else process.exit(code ?? 0)
-})
+      `#!/usr/bin/env python3
+import os
+import sys
+
+with open(os.environ['SMOKE_CHROMIUM_WRAPPER_PID_FILE'], 'w') as pid_file:
+    pid_file.write(str(os.getpid()))
+chromium = ${JSON.stringify(chromium)}
+os.execv(chromium, [chromium, *sys.argv[1:]])
 `
     )
     await chmod(wrapper, 0o755)
@@ -314,7 +308,6 @@ browser.on('close', (code, signal) => {
         ...process.env,
         CHROMIUM_PATH: wrapper,
         SMOKE_CHROMIUM_WRAPPER_PID_FILE: wrapperPidFile,
-        SMOKE_CHROMIUM_DIRECT_SIGNAL_FILE: directSignalFile,
         TMPDIR: isolatedTmp
       },
       stdio: ['ignore', 'pipe', 'pipe']
@@ -346,17 +339,7 @@ browser.on('close', (code, signal) => {
 
       assert.deepEqual(result, { code: null, signal })
       await waitForProcessesGone(recordedPids)
-      assert.equal(
-        await readFile(directSignalFile).then(
-          () => true,
-          error => {
-            if (error.code === 'ENOENT') return false
-            throw error
-          }
-        ),
-        false,
-        output
-      )
+      assert.doesNotMatch(output, /Graceful Chromium shutdown failed/)
       assert.deepEqual(
         (await readdir(isolatedTmp)).filter(
           name =>
