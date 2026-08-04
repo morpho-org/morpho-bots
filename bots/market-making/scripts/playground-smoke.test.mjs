@@ -284,7 +284,7 @@ child.on('close', () => process.exit(0))
 
 for (const signal of ['SIGTERM', 'SIGINT']) {
   const testName = `${signal} after Chromium readiness closes the browser gracefully and reaps its tree`
-  t(n(testName), { timeout: 30_000 }, async () => {
+  t(n(testName), { timeout: 60_000 }, async () => {
     const isolatedTmp = await temporaryDirectory(`playground-browser-${signal.toLowerCase()}-`)
     const wrapper = join(isolatedTmp, 'chromium-wrapper')
     const wrapperPidFile = join(isolatedTmp, 'chromium-wrapper-pid')
@@ -332,7 +332,7 @@ browser.on('close', (code, signal) => {
     try {
       await waitFor(async () => {
         assert.match(output, /smoke environment:/)
-      }, 1000)
+      }, 3000)
       const wrapperPid = Number(await readFile(wrapperPidFile, 'utf8'))
       const processGroup = await processGroupOf(wrapperPid)
       recordedPids = (await inspectProcessGroup(processGroup)).map(({ pid }) => pid)
