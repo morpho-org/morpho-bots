@@ -153,6 +153,7 @@ try {
       '--headless=new',
       '--no-sandbox',
       '--disable-gpu',
+      '--disable-dev-shm-usage',
       '--remote-debugging-port=0',
       `--user-data-dir=${userDataDir}`,
       'about:blank'
@@ -213,11 +214,23 @@ try {
   let id = 0
   const pending = new Map()
   const requests = []
+  const networkRequestEvents = []
+  const networkFailures = []
+  const responseUrls = []
   const consoleErrors = []
   const consoleMessages = []
   socket.addEventListener('message', event => {
     const message = JSON.parse(String(event.data))
-    if (message.method === 'Network.requestWillBeSent') requests.push(message.params.request.url)
+    if (message.method === 'Network.requestWillBeSent') {
+      requests.push(message.params.request.url)
+      networkRequestEvents.push({
+        requestId: message.params.requestId,
+        url: message.params.request.url
+      })
+    }
+    if (message.method === 'Network.loadingFailed') networkFailures.push(message.params)
+    if (message.method === 'Network.responseReceived')
+      responseUrls.push(message.params.response.url)
     if (message.method === 'Runtime.exceptionThrown')
       consoleErrors.push(message.params.exceptionDetails.text)
     if (message.method === 'Runtime.consoleAPICalled')
@@ -343,6 +356,83 @@ try {
     ),
     "playground CSP does not block network connections with connect-src 'none'"
   )
+  assert(
+    consoleErrors.length === 0,
+    `browser errors before CSP probes: ${consoleErrors.join('; ')}`
+  )
+  const cspRequestOffset = networkRequestEvents.length
+  const cspProof = await evaluate(`(async () => {
+    const violations = []
+    const errors = []
+    const rejections = []
+    const recordViolation = event => violations.push({
+      blockedURI: event.blockedURI,
+      effectiveDirective: event.effectiveDirective
+    })
+    document.addEventListener('securitypolicyviolation', recordViolation)
+    try {
+      await fetch('https://csp-probe.invalid/forbidden-fetch')
+    } catch (error) {
+      rejections.push({ source: 'fetch', name: error.name })
+    }
+    await new Promise(resolve => {
+      try {
+        const socket = new WebSocket('wss://csp-probe.invalid/forbidden-websocket')
+        socket.addEventListener('error', () => {
+          errors.push('websocket')
+          resolve()
+        }, { once: true })
+      } catch (error) {
+        rejections.push({ source: 'websocket', name: error.name })
+        resolve()
+      }
+    })
+    await new Promise(resolve => {
+      const script = document.createElement('script')
+      script.src = 'https://csp-probe.invalid/forbidden-script.js'
+      script.addEventListener('error', () => {
+        errors.push('script')
+        resolve()
+      }, { once: true })
+      document.head.append(script)
+    })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    document.removeEventListener('securitypolicyviolation', recordViolation)
+    return { violations, errors, rejections }
+  })()`)
+  const cspDirectives = cspProof.violations.map(({ effectiveDirective }) => effectiveDirective)
+  assert(
+    cspDirectives.filter(directive => directive === 'connect-src').length >= 2 &&
+      cspDirectives.some(
+        directive => directive === 'script-src-elem' || directive === 'script-src'
+      ) &&
+      cspProof.errors.includes('websocket') &&
+      cspProof.errors.includes('script') &&
+      cspProof.rejections.some(({ source }) => source === 'fetch'),
+    `deliberate CSP enforcement proof failed: ${JSON.stringify(cspProof)}`
+  )
+  const cspExternalRequests = networkRequestEvents
+    .slice(cspRequestOffset)
+    .filter(
+      ({ url }) =>
+        url.startsWith('https://csp-probe.invalid/') || url.startsWith('wss://csp-probe.invalid/')
+    )
+  const cspBlockedRequestIds = new Set(
+    networkFailures
+      .filter(({ blockedReason }) => blockedReason === 'csp')
+      .map(({ requestId }) => requestId)
+  )
+  const cspExternalResponses = responseUrls.filter(
+    url =>
+      url.startsWith('https://csp-probe.invalid/') || url.startsWith('wss://csp-probe.invalid/')
+  )
+  assert(
+    cspExternalRequests.every(({ requestId }) => cspBlockedRequestIds.has(requestId)) &&
+      cspExternalResponses.length === 0,
+    `CSP probes escaped before network: ${JSON.stringify({ cspExternalRequests, cspExternalResponses })}`
+  )
+  console.log(`browser CSP: PASS (${cspProof.violations.length} violations, 0 external responses)`)
+  consoleErrors.length = 0
   assert(
     await evaluate("document.querySelectorAll('.ladder-market').length === 1"),
     'initial ladder was not rendered immediately'
@@ -1109,6 +1199,8 @@ try {
     Object.defineProperty(navigator, 'clipboard', { value: { writeText: async value => { copied.push(value) } }, configurable: true })
     const reference = document.querySelector('#preview-reference')
     const exportBaseline = [...document.querySelectorAll('#export-yaml,#export-shell,#export-json')].map(output => output.value)
+    const baselineRedacted = exportBaseline.every(payload => payload.includes('<redacted>')) &&
+      exportBaseline.every(payload => !payload.includes('browser-secret-source-token') && !payload.includes('rpc-password') && !payload.includes('archive-password'))
     const prove = async value => {
       reference.value = value
       reference.dispatchEvent(new Event('input', { bubbles: true }))
@@ -1123,7 +1215,24 @@ try {
         document.querySelector('#copy-export').click()
         await new Promise(resolve => setTimeout(resolve, 0))
       }
-      return { validExports, previewInvalid, positiveError, exportUiValid, copiedAll: copied.splice(0).length === 3 }
+      const copiedPayloads = copied.splice(0)
+      const clipboardExact = JSON.stringify(copiedPayloads) === JSON.stringify(exportBaseline)
+      const clipboardIsolated = copiedPayloads.every(
+        payload =>
+          !payload.includes('preview-reference') &&
+          !payload.includes('PREVIEW_REFERENCE') &&
+          !payload.includes('browser-secret-source-token') &&
+          !payload.includes('rpc-password') &&
+          !payload.includes('archive-password')
+      )
+      return {
+        validExports,
+        previewInvalid,
+        positiveError,
+        exportUiValid,
+        clipboardExact,
+        clipboardIsolated
+      }
     }
     const nonNumeric = await prove('not-a-number')
     const zero = await prove('0')
@@ -1131,10 +1240,13 @@ try {
     const hardRange = await prove('1000000000000000000000000000000000000')
     reference.value = '500'
     reference.dispatchEvent(new Event('input', { bubbles: true }))
-    return { nonNumeric, zero, negative, hardRange }
+    return { baselineRedacted, nonNumeric, zero, negative, hardRange }
   })()`)
   assert(
-    Object.values(previewIsolationProof).every(result => Object.values(result).every(Boolean)),
+    previewIsolationProof.baselineRedacted &&
+      Object.entries(previewIsolationProof)
+        .filter(([key]) => key !== 'baselineRedacted')
+        .every(([, result]) => Object.values(result).every(Boolean)),
     `preview/export isolation proof failed: ${JSON.stringify(previewIsolationProof)}`
   )
 
@@ -1184,6 +1296,17 @@ try {
       "(() => { const monitor=document.querySelector('.monitor-surface'); const style=getComputedStyle(monitor); return document.querySelectorAll('.ladder-market').length === 2 && Math.abs(monitor.getBoundingClientRect().top - parseFloat(style.top)) <= 2 && monitor.getBoundingClientRect().bottom <= innerHeight })()"
     ),
     'multiple ladder previews were not rendered inside the pinned monitor'
+  )
+  assert(
+    await evaluate(
+      `(() => {
+        const markets = [...document.querySelectorAll('.ladder-market')]
+        return markets.map(market => market.querySelector('.ladder-heading h3')?.id).join('|') === 'ladder-heading-0|ladder-heading-1' &&
+          markets.map(market => market.querySelector('.ladder-heading code')?.textContent).join('|') === 'MARKET ID · ${secondMarket}|MARKET ID · 0x${'5'.repeat(64)}' &&
+          markets.every((market, index) => market.querySelector('.ladder-graphic')?.getAttribute('aria-labelledby') === \`ladder-heading-\${index}\`)
+      })()`
+    ),
+    'rendered ladder heading IDs did not exactly follow reordered DOM market order'
   )
   assert(
     await evaluate(
@@ -1309,9 +1432,10 @@ try {
     `playground accessed persistence APIs: ${JSON.stringify(persistenceAccesses)}`
   )
 
-  const unexpected = requests.filter(
-    url => !url.startsWith(`http://127.0.0.1:${port}/`) && !url.startsWith('data:')
-  )
+  const unexpected = networkRequestEvents
+    .filter(({ requestId }) => !cspBlockedRequestIds.has(requestId))
+    .map(({ url }) => url)
+    .filter(url => !url.startsWith(`http://127.0.0.1:${port}/`) && !url.startsWith('data:'))
   const securityTranscript = [...requests, ...consoleMessages].join('\n')
   for (const marker of [
     'rpc-password',
