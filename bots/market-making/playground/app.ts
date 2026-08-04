@@ -12,7 +12,8 @@ import {
   exportShell,
   exportYaml,
   generateLadderGraphicModels,
-  validatePlaygroundState
+  validatePreviewState,
+  validateProductionState
 } from './model'
 
 const state = createDefaultPlaygroundState()
@@ -497,7 +498,7 @@ const invalidGraphic = (errors: readonly string[]) => {
 }
 
 const renderLadders = () => {
-  const validation = validatePlaygroundState(state)
+  const validation = validatePreviewState(state)
   if (!validation.valid) {
     ladderContainer.replaceChildren(invalidGraphic(validation.errors))
     ladderStatus.textContent = 'Preview unavailable while configuration is invalid.'
@@ -524,7 +525,7 @@ const renderLadders = () => {
 
 const exporters = { yaml: exportYaml, shell: exportShell, json: exportJson }
 const renderExports = () => {
-  const validation = validatePlaygroundState(state)
+  const validation = validateProductionState(state)
   validationErrors.replaceChildren()
   validationErrors.hidden = validation.valid
   if (!validation.valid) {

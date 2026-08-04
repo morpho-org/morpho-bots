@@ -1,3 +1,4 @@
+import { parseHttpHeartbeatUrl } from '@repo/bot-kit/heartbeat-url'
 import { describe, expect, test } from 'bun:test'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { parseDocument } from 'yaml'
@@ -16,6 +17,8 @@ import {
   exportYaml,
   generateLadderGraphicModels,
   generatePreviewLadders,
+  validatePreviewState,
+  validateProductionState,
   validatePlaygroundState
 } from '../../playground/model'
 import { ConfigService } from '../../src/config/config.service'
@@ -331,6 +334,68 @@ describe('market-maker parameter playground', () => {
     const result = validatePlaygroundState(state)
     expect(result.valid).toBe(false)
     expect(result.errors.join(' ')).toContain('stepBps')
+    for (const exporter of [exportYaml, exportShell, exportJson]) {
+      expect(() => exporter(state)).toThrow('Configuration is invalid')
+    }
+  })
+
+  test('matches runtime heartbeat HTTP(S) protocol acceptance and blocks every export otherwise', () => {
+    const cases = [
+      ['https://example.test/heartbeat', true],
+      ['http://user:pass@example.test:8080/heartbeat?maker=1#ok', true],
+      ['  HTTPS://example.test/heartbeat  ', true],
+      ['ftp://example.test/heartbeat', false],
+      ['file:///tmp/heartbeat', false],
+      ['ws://example.test/heartbeat', false],
+      ['javascript:alert(1)', false],
+      ['not a URL', false],
+      ['https://example.test:bad-port/heartbeat', false]
+    ] as const
+
+    for (const [heartbeat, accepted] of cases) {
+      const state = createDefaultPlaygroundState()
+      state.observability.BETTERSTACK_HEARTBEAT_URL = heartbeat
+      const production = validateProductionState(state)
+      expect(production.valid).toBe(accepted)
+      expect(production.valid).toBe(Boolean(parseHttpHeartbeatUrl(heartbeat)))
+      for (const exporter of [exportYaml, exportShell, exportJson]) {
+        if (accepted) expect(() => exporter(state)).not.toThrow()
+        else expect(() => exporter(state)).toThrow('Configuration is invalid')
+      }
+    }
+  })
+
+  test.each(['not-a-number', '1000000000000000000000000000000000000'])(
+    'keeps all production exports valid when preview reference rate %s is invalid',
+    async referenceRateBps => {
+      const state = createDefaultPlaygroundState()
+      state.referenceRateBps = referenceRateBps
+
+      expect(validateProductionState(state)).toEqual({ valid: true, errors: [] })
+      const preview = validatePreviewState(state)
+      expect(preview.valid).toBe(false)
+      expect(preview.errors.length).toBeGreaterThan(0)
+
+      const yaml = exportYaml(state, { includeSensitiveValues: true })
+      const shell = exportShell(state, { includeSensitiveValues: true })
+      const json = exportJson(state, { includeSensitiveValues: true })
+      expect(yaml).not.toContain(referenceRateBps)
+      expect(shell).not.toContain(referenceRateBps)
+      expect(json).not.toContain(referenceRateBps)
+      expect(validateWithProductionLoader(await loadShellEnvironment(shell)).ladder).toHaveLength(1)
+    }
+  )
+
+  test.each([
+    ['MAKER_PRIVATE_KEY', 'invalid'],
+    ['BETTERSTACK_HEARTBEAT_URL', 'ftp://example.test/heartbeat']
+  ] as const)('production-invalid %s blocks exports and preview', (field, value) => {
+    const state = createDefaultPlaygroundState()
+    if (field === 'MAKER_PRIVATE_KEY') state.scalar.MAKER_PRIVATE_KEY = value
+    else state.observability.BETTERSTACK_HEARTBEAT_URL = value
+
+    expect(validateProductionState(state).valid).toBe(false)
+    expect(validatePreviewState(state).valid).toBe(false)
     for (const exporter of [exportYaml, exportShell, exportJson]) {
       expect(() => exporter(state)).toThrow('Configuration is invalid')
     }

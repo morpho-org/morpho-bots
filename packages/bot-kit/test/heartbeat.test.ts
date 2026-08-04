@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test'
 import type { Logger, LogLevel } from '../src/logger'
 
 import { createHeartbeatMonitor } from '../src/heartbeat'
+import { parseHttpHeartbeatUrl } from '../src/heartbeat-url'
 
 function captureLogger() {
   const events: { level: LogLevel; event: string; fields?: Record<string, unknown> }[] = []
@@ -87,5 +88,24 @@ describe('createHeartbeatMonitor', () => {
       }
     ])
     monitor.stop()
+  })
+})
+
+describe('parseHttpHeartbeatUrl', () => {
+  const cases = [
+    ['https://uptime.betterstack.com/api/v1/heartbeat/secret', true],
+    ['http://example.test/heartbeat?source=maker#status', true],
+    ['  HTTPS://user:pass@example.test:8443/heartbeat  ', true],
+    ['ftp://example.test/heartbeat', false],
+    ['file:///tmp/heartbeat', false],
+    ['ws://example.test/heartbeat', false],
+    ['javascript:alert(1)', false],
+    ['not a URL', false],
+    ['https://example.test:bad-port/heartbeat', false],
+    ['', false]
+  ] as const
+
+  it.each(cases)('classifies %s as HTTP(S)=%s', (value, accepted) => {
+    expect(Boolean(parseHttpHeartbeatUrl(value))).toBe(accepted)
   })
 })

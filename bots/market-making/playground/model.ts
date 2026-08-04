@@ -1,3 +1,4 @@
+import { parseHttpHeartbeatUrl } from '@repo/bot-kit/heartbeat-url'
 import { base } from 'viem/chains'
 
 import {
@@ -200,7 +201,7 @@ const environmentRecord = (state: PlaygroundState): Record<string, string> => ({
   ...state.observability
 })
 
-export const validatePlaygroundState = (state: PlaygroundState) => {
+export const validateProductionState = (state: PlaygroundState) => {
   const errors: string[] = []
   const capture = (operation: () => unknown) => {
     try {
@@ -236,28 +237,40 @@ export const validatePlaygroundState = (state: PlaygroundState) => {
     }
     requestTimeoutValue(environment)
     transactionReceiptTimeoutValue(environment)
-    const bootstrap = bootstrapConfigsValue(structuredBootstrap(state), markets)
-    const ladders = ladderConfigsValue(structuredLadder(state), markets)
-    for (const config of ladders)
-      generateLadder({ config, referenceRateBps: BigInt(state.referenceRateBps) })
-    return bootstrap
+    bootstrapConfigsValue(structuredBootstrap(state), markets)
+    ladderConfigsValue(structuredLadder(state), markets)
   })
   capture(() => {
     const token = state.observability.BETTERSTACK_SOURCE_TOKEN.trim()
     const host = state.observability.BETTERSTACK_INGESTING_HOST.trim()
     if (Boolean(token) !== Boolean(host))
       throw new Error('Better Stack token and ingest host must be set together')
-    if (
-      state.observability.BETTERSTACK_HEARTBEAT_URL.trim() &&
-      !URL.canParse(state.observability.BETTERSTACK_HEARTBEAT_URL)
-    )
-      throw new Error('BETTERSTACK_HEARTBEAT_URL must be a valid URL')
+    const heartbeat = state.observability.BETTERSTACK_HEARTBEAT_URL.trim()
+    if (heartbeat && !parseHttpHeartbeatUrl(heartbeat))
+      throw new Error('BETTERSTACK_HEARTBEAT_URL must be an HTTP(S) URL')
   })
   return { valid: errors.length === 0, errors }
 }
 
+/** Backward-compatible production/export validation boundary. */
+export const validatePlaygroundState = validateProductionState
+
+export const validatePreviewState = (state: PlaygroundState) => {
+  const production = validateProductionState(state)
+  if (!production.valid) return production
+  try {
+    generatePreviewLadders(state)
+    return { valid: true, errors: [] }
+  } catch (error) {
+    return {
+      valid: false,
+      errors: [error instanceof Error ? error.message : 'Invalid preview configuration']
+    }
+  }
+}
+
 const assertExportable = (state: PlaygroundState) => {
-  const result = validatePlaygroundState(state)
+  const result = validateProductionState(state)
   if (!result.valid) throw new Error(`Configuration is invalid: ${result.errors.join('; ')}`)
 }
 

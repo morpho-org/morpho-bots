@@ -456,6 +456,36 @@ try {
     `sensitive export proof failed: ${JSON.stringify(secretProof)}`
   )
 
+  const previewIsolationProof = await evaluate(`(async () => {
+    const copied = []
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: async value => { copied.push(value) } }, configurable: true })
+    const reference = document.querySelector('#preview-reference')
+    const prove = async value => {
+      reference.value = value
+      reference.dispatchEvent(new Event('input', { bubbles: true }))
+      await new Promise(resolve => setTimeout(resolve, 0))
+      const outputs = [...document.querySelectorAll('#export-yaml,#export-shell,#export-json')]
+      const validExports = outputs.every(output => output.dataset.invalid === 'false' && !output.value.includes(value))
+      const previewInvalid = document.querySelector('#ladder-status').dataset.status === 'error' && document.querySelector('.ladder-invalid[role=img]')?.getAttribute('aria-label')?.includes('Invalid ladder graphic') && document.querySelectorAll('.ladder-rung').length === 0
+      const exportUiValid = document.querySelector('#validation-errors').hidden && !document.querySelector('#copy-export').disabled
+      for (const id of ['tab-yaml', 'tab-shell', 'tab-json']) {
+        document.querySelector('#' + id).click()
+        document.querySelector('#copy-export').click()
+        await new Promise(resolve => setTimeout(resolve, 0))
+      }
+      return { validExports, previewInvalid, exportUiValid, copiedAll: copied.splice(0).length === 3 }
+    }
+    const nonNumeric = await prove('not-a-number')
+    const hardRange = await prove('1000000000000000000000000000000000000')
+    reference.value = '500'
+    reference.dispatchEvent(new Event('input', { bubbles: true }))
+    return { nonNumeric, hardRange }
+  })()`)
+  assert(
+    Object.values(previewIsolationProof).every(result => Object.values(result).every(Boolean)),
+    `preview/export isolation proof failed: ${JSON.stringify(previewIsolationProof)}`
+  )
+
   const secondMarket = `0x${'6'.repeat(64)}`
   await evaluate(
     `(() => { const input=document.querySelector('[data-field=MARKET_IDS]'); if (!input.value.includes('${secondMarket}')) input.value += ',${secondMarket}'; input.dispatchEvent(new Event('input',{bubbles:true})); [...document.querySelectorAll('button')].find(button=>button.textContent==='Add ladder market').click(); const markets=[...document.querySelectorAll('.market-card [data-field=marketId]')]; const input2=markets.at(-1); input2.value='${secondMarket}'; input2.dispatchEvent(new Event('input',{bubbles:true})); const cards=[...document.querySelectorAll('.market-card')]; [...cards.at(-1).querySelectorAll('button')].find(button=>button.textContent==='Move up').click(); })()`
@@ -482,6 +512,19 @@ try {
   )
   await evaluate(
     `(() => { const key=document.querySelector('[data-field=MAKER_PRIVATE_KEY]'); key.value='0x${'a'.repeat(64)}'; key.dispatchEvent(new Event('input',{bubbles:true})); })()`
+  )
+
+  await evaluate(
+    "(() => { const heartbeat=document.querySelector('[data-field=BETTERSTACK_HEARTBEAT_URL]'); heartbeat.value='ftp://example.test/heartbeat'; heartbeat.dispatchEvent(new Event('input',{bubbles:true})); })()"
+  )
+  assert(
+    await evaluate(
+      "!document.querySelector('#validation-errors').hidden && document.querySelector('#validation-errors').textContent.includes('HTTP(S)') && document.querySelector('#copy-export').disabled && document.querySelector('#ladder-status').dataset.status === 'error' && document.querySelectorAll('.ladder-rung').length === 0 && [...document.querySelectorAll('#export-yaml,#export-shell,#export-json')].every(output => output.dataset.invalid === 'true')"
+    ),
+    'non-HTTP(S) heartbeat did not block every export/copy and preview'
+  )
+  await evaluate(
+    "(() => { const heartbeat=document.querySelector('[data-field=BETTERSTACK_HEARTBEAT_URL]'); heartbeat.value=''; heartbeat.dispatchEvent(new Event('input',{bubbles:true})); })()"
   )
 
   await evaluate(
