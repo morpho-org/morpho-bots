@@ -173,6 +173,56 @@ describe('market-maker parameter playground', () => {
     expect(preview?.lower.reduce((sum, rung) => sum + BigInt(rung.assets), 0n)).toBe(1000n)
   })
 
+  test('models allocation and actual offer maxAssets distinctly in both group modes', () => {
+    const state = createDefaultPlaygroundState()
+    const input = state.ladder[0]!
+
+    input.groupMode = 'shared-rung'
+    const [shared] = generateLadderGraphicModels(state)
+    input.groupMode = 'per-book'
+    const [perBook] = generateLadderGraphicModels(state)
+
+    expect(shared?.rungs.map(rung => rung.allocationAssets)).toEqual([
+      '3333333334',
+      '3333333333',
+      '3333333333',
+      '3333333333',
+      '3333333333',
+      '3333333334'
+    ])
+    expect(shared?.rungs.map(rung => rung.offerMaxAssets)).toEqual(
+      shared?.rungs.map(rung => rung.allocationAssets)
+    )
+    expect(perBook?.rungs.map(rung => rung.allocationAssets)).toEqual(
+      shared?.rungs.map(rung => rung.allocationAssets)
+    )
+    expect(perBook?.rungs.map(rung => rung.offerMaxAssets)).toEqual([
+      '10000000000',
+      '10000000000',
+      '10000000000',
+      '10000000000',
+      '10000000000',
+      '10000000000'
+    ])
+    expect(perBook?.rungs.map(rung => rung.allocationBarRatio)).toEqual(
+      shared?.rungs.map(rung => rung.allocationBarRatio)
+    )
+    expect(perBook?.rungs.map(rung => rung.offerMaxBarRatio)).not.toEqual(
+      shared?.rungs.map(rung => rung.offerMaxBarRatio)
+    )
+    expect(perBook?.callouts.find(callout => callout.label === 'Grouping')?.value).toBe(
+      'per-book · side-wide shared cap · Reduce-only 10,000,000,000 · Lend 10,000,000,000 offer maxAssets'
+    )
+  })
+
+  test('uses explicit allocation and offer maxAssets language in graphic rendering', async () => {
+    const application = await Bun.file(new URL('../../playground/app.ts', import.meta.url)).text()
+    expect(application).toContain('allocation')
+    expect(application).toContain('offer maxAssets')
+    expect(application.toLowerCase()).not.toContain('offer-size')
+    expect(application.toLowerCase()).not.toContain('relative offer size')
+  })
+
   test('proves every ladder field and reference rate through specific rendered model output', () => {
     const state = createDefaultPlaygroundState()
     const input = state.ladder[0]!
@@ -216,20 +266,27 @@ describe('market-maker parameter playground', () => {
       '205',
       '95'
     ])
-    expect(graphic?.rungs.filter(rung => rung.side === 'higher').map(rung => rung.assets)).toEqual([
-      '199',
-      '182',
-      '167',
-      '152'
+    expect(
+      graphic?.rungs.filter(rung => rung.side === 'higher').map(rung => rung.allocationAssets)
+    ).toEqual(['199', '182', '167', '152'])
+    expect(
+      graphic?.rungs.filter(rung => rung.side === 'lower').map(rung => rung.allocationAssets)
+    ).toEqual(['261', '287', '313', '339'])
+    expect(graphic?.rungs.map(rung => rung.offerMaxAssets)).toEqual([
+      '700',
+      '700',
+      '700',
+      '700',
+      '1200',
+      '1200',
+      '1200',
+      '1200'
     ])
-    expect(graphic?.rungs.filter(rung => rung.side === 'lower').map(rung => rung.assets)).toEqual([
-      '261',
-      '287',
-      '313',
-      '339'
+    expect(graphic?.rungs.map(rung => rung.allocationBarRatio)).toEqual([
+      0.1658, 0.1516, 0.1391, 0.1266, 0.2175, 0.2391, 0.2608, 0.2825
     ])
-    expect(graphic?.rungs.map(rung => rung.barRatio)).toEqual([
-      0.587, 0.5368, 0.4926, 0.4483, 0.7699, 0.8466, 0.9233, 1
+    expect(graphic?.rungs.map(rung => rung.offerMaxBarRatio)).toEqual([
+      0.5833, 0.5833, 0.5833, 0.5833, 1, 1, 1, 1
     ])
     expect(graphic?.callouts.map(callout => callout.value)).toEqual([
       '510 + 25 = 535 BPS',
@@ -237,7 +294,7 @@ describe('market-maker parameter playground', () => {
       '4/side · 1000 BPS skew · 1 floor',
       '1200 reduce-only · 900 lend',
       '700 target · 800 total',
-      'per-book',
+      'per-book · side-wide shared cap · Reduce-only 1,200 · Lend 700 offer maxAssets',
       '30s loop · 20 BPS deadband',
       '0–2000 BPS'
     ])
@@ -319,8 +376,12 @@ describe('market-maker parameter playground', () => {
     expect(
       graphic?.rungs.every((rung, index, rows) => index === 0 || rung.y > rows[index - 1]!.y)
     ).toBe(true)
-    expect(graphic?.rungs[0]!.barRatio).toBeGreaterThan(graphic?.rungs[2]!.barRatio ?? 1)
-    expect(graphic?.rungs[3]!.barRatio).toBeLessThan(graphic?.rungs[5]!.barRatio ?? 0)
+    expect(graphic?.rungs[0]!.allocationBarRatio).toBeGreaterThan(
+      graphic?.rungs[2]!.allocationBarRatio ?? 1
+    )
+    expect(graphic?.rungs[3]!.allocationBarRatio).toBeLessThan(
+      graphic?.rungs[5]!.allocationBarRatio ?? 0
+    )
     expect(graphic?.gapBps).toBe('200')
   })
 

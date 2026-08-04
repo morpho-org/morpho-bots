@@ -6,6 +6,7 @@ import { Group, Offer, TickLib, Tree } from '@morpho-org/midnight-sdk'
 import type { LadderQuoteSet, LadderRung } from '../../domain/ladder/ladder'
 import type { LadderGroupReference } from './ladder-group-ownership.utils'
 
+import { offerMaxAssetsByRung } from '../../domain/ladder/ladder'
 import { LadderAdapterError } from './ladder-adapter.error'
 
 const WAD = 10n ** 18n
@@ -26,9 +27,6 @@ type PreparedLadderTree = {
   bookOffers: readonly { marketId: Hex; buy: boolean; tick: bigint }[]
 }
 
-const sideTotal = (rungs: readonly LadderRung[]) =>
-  rungs.reduce((total, rung) => total + rung.assets, 0n)
-
 const rateToTick = (rateBps: bigint, market: IMarket, now: bigint) => {
   const timeToMaturity = BigInt(market.params.maturity) - now
   if (timeToMaturity <= 0n) throw new LadderAdapterError('market-matured')
@@ -39,6 +37,7 @@ const rateToTick = (rateBps: bigint, market: IMarket, now: bigint) => {
 const sideOffers = (
   side: 'lower' | 'higher',
   rungs: readonly LadderRung[],
+  maxAssetsByRung: readonly bigint[],
   parameters: BuildLadderTreeParameters
 ) => {
   const buy = side === 'higher'
@@ -58,13 +57,12 @@ const sideOffers = (
           receiverIfMakerIsSeller: parameters.maker
         })
   }
-  const cap = parameters.quote.groupMode === 'per-book' ? sideTotal(rungs) : undefined
-  return rungs.map(rung => ({
+  return rungs.map((rung, index) => ({
     rung,
     offer: Offer.create({
       ...common,
       tick: rateToTick(rung.rateBps, parameters.market, parameters.now),
-      maxAssets: cap ?? rung.assets
+      maxAssets: maxAssetsByRung[index]!
     })
   }))
 }
@@ -81,8 +79,9 @@ const sideOffers = (
  * cap across each side.
  */
 export const buildLadderTree = (parameters: BuildLadderTreeParameters): PreparedLadderTree => {
-  const lower = sideOffers('lower', parameters.quote.lower, parameters)
-  const higher = sideOffers('higher', parameters.quote.higher, parameters)
+  const caps = offerMaxAssetsByRung(parameters.quote)
+  const lower = sideOffers('lower', parameters.quote.lower, caps.lower, parameters)
+  const higher = sideOffers('higher', parameters.quote.higher, caps.higher, parameters)
   const tagged = [
     ...lower.map(item => ({ ...item, side: 'lower' as const })),
     ...higher.map(item => ({ ...item, side: 'higher' as const }))

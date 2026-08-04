@@ -351,6 +351,7 @@ button:focus-visible {
   stroke-width: 1;
 }
 .ladder-rung,
+.allocation-bar,
 .rung-marker,
 .rung-rate,
 .rung-details {
@@ -371,11 +372,22 @@ button:focus-visible {
     transform: translateX(0);
   }
 }
-.ladder-rung--higher,
+.offer-cap-bar {
+  fill: transparent;
+  stroke-width: 2;
+  stroke-dasharray: 5 3;
+}
+.offer-cap-bar--higher {
+  stroke: var(--blue);
+}
+.offer-cap-bar--lower {
+  stroke: var(--orange);
+}
+.allocation-bar--higher,
 .rung-marker--higher {
   fill: var(--blue);
 }
-.ladder-rung--lower {
+.allocation-bar--lower {
   fill: var(--orange);
 }
 .rung-marker--lower {
@@ -441,10 +453,16 @@ button:focus-visible {
   border: 2px solid var(--orange);
   border-radius: 50%;
 }
-.legend-marker--bar {
+.legend-marker--offer-cap {
+  width: 24px;
+  height: 10px;
+  border: 2px dashed var(--text);
+  border-radius: 2px;
+}
+.legend-marker--allocation {
   width: 24px;
   height: 5px;
-  border-radius: 2px;
+  border-radius: 1px;
   background: var(--text);
 }
 .ladder-callouts {
@@ -713,6 +731,7 @@ main {
   overflow: hidden !important;
   clip: rect(0 0 0 0) !important;
   clip-path: inset(50%) !important;
+  contain: strict !important;
   white-space: nowrap !important;
 }
 .rung-table {

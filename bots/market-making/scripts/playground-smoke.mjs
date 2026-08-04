@@ -287,21 +287,21 @@ try {
   )
   assert(
     await evaluate(
-      "document.querySelector('.ladder-scroll') && document.querySelector('.rung-table:not([hidden])') && getComputedStyle(document.querySelector('.rung-table')).display !== 'none' && document.querySelectorAll('.rung-table tbody tr').length === 6"
+      "document.querySelector('.ladder-scroll') && document.querySelector('.rung-table:not([hidden])') && getComputedStyle(document.querySelector('.rung-table')).display !== 'none' && document.querySelectorAll('.rung-table tbody tr').length === 6 && [...document.querySelectorAll('.rung-table thead th')].map(cell => cell.textContent).join('|') === 'Side|Rate (BPS)|Allocation (assets)|Offer maxAssets (assets)'"
     ),
-    'exact semantic rung enumeration is unavailable to assistive technology'
+    'exact allocation and offer maxAssets enumeration is unavailable to assistive technology'
   )
   assert(
     await evaluate(
-      "document.querySelector('.ladder-graphic svg[role=img] title')?.textContent.includes('Ladder market 1') && document.querySelector('.ladder-graphic svg desc')?.textContent.includes('higher-rate lend')"
+      "document.querySelector('.ladder-graphic svg[role=img] title')?.textContent.includes('allocation, and offer maxAssets') && document.querySelector('.ladder-graphic svg desc')?.textContent.includes('outlined offer maxAssets bar') && document.querySelector('.ladder-graphic svg desc')?.textContent.includes('nested allocation fill')"
     ),
     'ladder SVG is missing an accessible title or description'
   )
   assert(
     await evaluate(
-      "document.querySelectorAll('.ladder-rung').length === 6 && [...document.querySelectorAll('.ladder-rung')].every(rung => rung.dataset.rateBps && rung.dataset.assets && rung.dataset.side && Number.isFinite(Number(rung.getAttribute('y'))))"
+      "document.querySelectorAll('.offer-cap-bar').length === 6 && document.querySelectorAll('.allocation-bar').length === 6 && [...document.querySelectorAll('.offer-cap-bar')].every(rung => rung.dataset.rateBps && rung.dataset.allocationAssets && rung.dataset.offerMaxAssets && rung.dataset.side && Number.isFinite(Number(rung.getAttribute('y'))))"
     ),
-    'ladder did not expose exact rung values and SVG geometry'
+    'ladder did not expose exact allocation, offer maxAssets, and SVG geometry'
   )
   assert(
     await evaluate(
@@ -311,7 +311,7 @@ try {
   )
   assert(
     await evaluate(
-      "document.querySelectorAll('.ladder-callout').length === 8 && document.querySelector('.ladder-legend').textContent.includes('not live offers')"
+      "document.querySelectorAll('.ladder-callout').length === 8 && document.querySelector('.ladder-legend').textContent.includes('Outlined bar = offer maxAssets') && document.querySelector('.ladder-legend').textContent.includes('Nested fill = allocation') && document.querySelector('.ladder-legend').textContent.includes('live capacities and current offers remain excluded')"
     ),
     'graphic callouts or stateless legend are missing'
   )
@@ -364,25 +364,27 @@ try {
     set('sizeSkewBps', '1000')
     result.sizeSkewBps = [...document.querySelectorAll('.ladder-rung')].map(rung => rung.getAttribute('width')).join('|') !== equalWidths
     set('sizeSkewBps', '0')
-    const lowerAssets = document.querySelector('.ladder-rung[data-side=lower]')?.dataset.assets
+    const lowerAssets = document.querySelector('.ladder-rung[data-side=lower]')?.dataset.allocationAssets
     set('lowerRateBudgetAssets', '9000000000')
-    result.lowerRateBudgetAssets = document.querySelector('.ladder-rung[data-side=lower]')?.dataset.assets !== lowerAssets
+    result.lowerRateBudgetAssets = document.querySelector('.ladder-rung[data-side=lower]')?.dataset.allocationAssets !== lowerAssets
     set('lowerRateBudgetAssets', '10000000000')
-    const higherAssets = document.querySelector('.ladder-rung[data-side=higher]')?.dataset.assets
+    const higherAssets = document.querySelector('.ladder-rung[data-side=higher]')?.dataset.allocationAssets
     set('higherRateBudgetAssets', '9000000000')
-    result.higherRateBudgetAssets = document.querySelector('.ladder-rung[data-side=higher]')?.dataset.assets !== higherAssets
+    result.higherRateBudgetAssets = document.querySelector('.ladder-rung[data-side=higher]')?.dataset.allocationAssets !== higherAssets
     set('higherRateBudgetAssets', '10000000000')
     set('targetMarketExposureAssets', '9000000000')
-    result.targetMarketExposureAssets = document.querySelector('.ladder-rung[data-side=higher]')?.dataset.assets !== higherAssets
+    result.targetMarketExposureAssets = document.querySelector('.ladder-rung[data-side=higher]')?.dataset.allocationAssets !== higherAssets
     set('targetMarketExposureAssets', '20000000000')
     set('maximumTotalExposureAssets', '9000000000')
-    result.maximumTotalExposureAssets = document.querySelector('.ladder-rung[data-side=lower]')?.dataset.assets !== lowerAssets
+    result.maximumTotalExposureAssets = document.querySelector('.ladder-rung[data-side=lower]')?.dataset.allocationAssets !== lowerAssets
     set('maximumTotalExposureAssets', '30000000000')
     set('minimumOfferAssets', '4000000000')
     result.minimumOfferAssets = document.querySelectorAll('.ladder-rung').length < 6
     set('minimumOfferAssets', '101000000')
+    const sharedCapWidths = [...document.querySelectorAll('.offer-cap-bar')].map(rung => rung.getAttribute('width')).join('|')
     set('groupMode', 'per-book')
-    result.groupMode = callout('groupMode') === 'per-book'
+    const perBookCaps = [...document.querySelectorAll('.offer-cap-bar')]
+    result.groupMode = callout('groupMode').includes('side-wide shared cap') && callout('groupMode').includes('Reduce-only 10,000,000,000') && callout('groupMode').includes('Lend 10,000,000,000') && perBookCaps.map(rung => rung.getAttribute('width')).join('|') !== sharedCapWidths && perBookCaps.every(rung => rung.dataset.offerMaxAssets === '10000000000') && perBookCaps.map(rung => rung.dataset.allocationAssets).join('|') === '3333333334|3333333333|3333333333|3333333333|3333333333|3333333334' && [...document.querySelectorAll('.rung-table tbody tr')].every(row => row.cells[2]?.textContent && row.cells[3]?.textContent === '10000000000')
     set('groupMode', 'shared-rung')
     set('loopIntervalSeconds', '30')
     result.loopIntervalSeconds = callout('loopIntervalSeconds').includes('30s loop')
@@ -415,6 +417,14 @@ try {
     Object.keys(parameterProof).length === 17,
     'parameter proof did not cover all 16 ladder fields plus reference rate'
   )
+  await evaluate(`(() => {
+    const input = field => document.querySelector(\`.market-card:has([data-field=quotePremiumBps]) [data-field=\${field}]\`)
+    const set = (field, value) => { const element=input(field); element.value=String(value); element.dispatchEvent(new Event('input',{bubbles:true})) }
+    set('minimumRateBps', '200')
+    set('maximumRateBps', '800')
+    set('groupMode', 'per-book')
+  })()`)
+  await capture('/tmp/morpho-bots-pr122-perbook-default-desktop.png')
 
   const configureDensity = async rungCount =>
     evaluate(`(() => {
@@ -470,11 +480,18 @@ try {
     mobile: true
   })
   const density32Mobile = await densityMetrics()
+  const mobileLayout = await evaluate(`(() => ({
+    documentWidth: document.documentElement.scrollWidth,
+    scrollWidth: document.querySelector('.ladder-scroll').clientWidth,
+    overflow: [...document.querySelectorAll('body *')].filter(element => {
+      if (element.closest('.ladder-scroll')) return false
+      const rect = element.getBoundingClientRect()
+      return rect.right > 390.5 || rect.left < -0.5
+    }).slice(0, 20).map(element => ({ tag: element.tagName, className: String(element.className), position: getComputedStyle(element).position, left: element.getBoundingClientRect().left, right: element.getBoundingClientRect().right, width: element.getBoundingClientRect().width, scrollWidth: element.scrollWidth, clientWidth: element.clientWidth }))
+  }))()`)
   assert(
-    await evaluate(
-      "document.documentElement.scrollWidth <= 390 && document.querySelector('.ladder-scroll').clientWidth <= 358"
-    ),
-    'mobile layout overflows its viewport'
+    mobileLayout.documentWidth <= 390 && mobileLayout.scrollWidth <= 358,
+    `mobile layout overflows its viewport: ${JSON.stringify(mobileLayout)}`
   )
   assert(
     density32Mobile.minGap >= 28 &&
@@ -529,6 +546,7 @@ try {
     const reference=document.querySelector('#preview-reference');reference.value='500';reference.dispatchEvent(new Event('input',{bubbles:true}))
   })()`)
   await capture('/tmp/morpho-bots-pr122-ladder-default-mobile.png')
+  await capture('/tmp/morpho-bots-pr122-perbook-default-mobile.png')
   await command('Emulation.clearDeviceMetricsOverride')
   console.log(
     `density 32 desktop/mobile: ${JSON.stringify({ desktop: density32Desktop, mobile: density32Mobile })}`

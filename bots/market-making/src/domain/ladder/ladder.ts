@@ -64,6 +64,25 @@ export type LadderQuoteSet = {
   higher: readonly LadderRung[]
 }
 
+type LadderOfferCapInput = Pick<LadderQuoteSet, 'groupMode' | 'lower' | 'higher'>
+
+/**
+ * Resolves the protocol `maxAssets` written onto every ladder offer.
+ * @param quote - Group mode and per-rung allocations for both rate sides.
+ * @returns One cap per rung, preserving side and rung order.
+ * @remarks Pure and browser-safe. In `shared-rung`, an offer cap equals that rung's allocation. In
+ * `per-book`, every offer on a side carries the side-wide allocation sum because consumption is
+ * shared by the side's protocol group.
+ */
+export const offerMaxAssetsByRung = (quote: LadderOfferCapInput) => {
+  const resolveSide = (rungs: readonly LadderRung[]) => {
+    if (quote.groupMode === 'shared-rung') return rungs.map(rung => rung.assets)
+    const sideTotal = rungs.reduce((total, rung) => total + rung.assets, 0n)
+    return rungs.map(() => sideTotal)
+  }
+  return { lower: resolveSide(quote.lower), higher: resolveSide(quote.higher) }
+}
+
 type GenerateLadderParameters = {
   config: LadderConfig
   referenceRateBps: bigint

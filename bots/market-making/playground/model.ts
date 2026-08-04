@@ -15,7 +15,7 @@ import {
   unsignedBigIntValue,
   urlValue
 } from '../src/config/config.utils'
-import { generateLadder } from '../src/domain/ladder/ladder'
+import { generateLadder, offerMaxAssetsByRung } from '../src/domain/ladder/ladder'
 
 export const BOT_ENVIRONMENT_KEYS = [
   'CHAIN_ID',
@@ -392,7 +392,7 @@ export const exportJson = (state: PlaygroundState, options: ExportOptions = {}) 
   return `${JSON.stringify({ configuration: { ...scalar, MAKER_PRIVATE_KEY: exportSensitiveValue(scalar.MAKER_PRIVATE_KEY, options), MARKET_IDS: list(scalar.MARKET_IDS), V0_OFFER_GROUP_IDS: list(scalar.V0_OFFER_GROUP_IDS), BOOTSTRAP_MARKETS: structuredBootstrap(state), LADDER_MARKETS: structuredLadder(state) }, observability: { ...state.observability, BETTERSTACK_SOURCE_TOKEN: exportSensitiveValue(state.observability.BETTERSTACK_SOURCE_TOKEN, options) } }, null, 2)}\n`
 }
 
-type PreviewRung = { index: number; rateBps: string; assets: string }
+type PreviewRung = { index: number; rateBps: string; assets: string; offerMaxAssets: string }
 type PreviewLadder = {
   marketId: string
   centerRateBps: string
@@ -400,11 +400,16 @@ type PreviewLadder = {
   higher: PreviewRung[]
 }
 
-export type LadderGraphicRung = PreviewRung & {
+export type LadderGraphicRung = {
+  index: number
+  rateBps: string
+  allocationAssets: string
+  offerMaxAssets: string
   side: 'higher' | 'lower'
   sideLabel: 'Lend' | 'Reduce-only'
   y: number
-  barRatio: number
+  allocationBarRatio: number
+  offerMaxBarRatio: number
 }
 
 export type LadderGraphicModel = {
@@ -427,22 +432,30 @@ export const generatePreviewLadders = (state: PlaygroundState): PreviewLadder[] 
   const configs = ladderConfigsValue(structuredLadder(state), markets)
   return configs.map(config => {
     const generated = generateLadder({ config, referenceRateBps: BigInt(state.referenceRateBps) })
-    const mapRungs = (rungs: typeof generated.lower) =>
-      rungs.map(rung => ({
+    const maxAssets = offerMaxAssetsByRung(generated)
+    const mapRungs = (rungs: typeof generated.lower, caps: readonly bigint[]) =>
+      rungs.map((rung, index) => ({
         index: rung.index,
         rateBps: String(rung.rateBps),
-        assets: String(rung.assets)
+        assets: String(rung.assets),
+        offerMaxAssets: String(caps[index]!)
       }))
     return {
       marketId: generated.marketId,
       centerRateBps: String(generated.centerRateBps),
-      lower: mapRungs(generated.lower),
-      higher: mapRungs(generated.higher)
+      lower: mapRungs(generated.lower, maxAssets.lower),
+      higher: mapRungs(generated.higher, maxAssets.higher)
     }
   })
 }
 
-const graphicCallouts = (values: Record<string, string>, centerRateBps: string) => [
+const graphicAssets = (value: bigint) => Intl.NumberFormat('en-US').format(value)
+
+const graphicCallouts = (
+  values: Record<string, string>,
+  centerRateBps: string,
+  sideTotals: { lower: bigint; higher: bigint }
+) => [
   {
     label: 'Center',
     value: `${values.referenceRateBps} + ${values.quotePremiumBps} = ${centerRateBps} BPS`,
@@ -470,7 +483,10 @@ const graphicCallouts = (values: Record<string, string>, centerRateBps: string) 
   },
   {
     label: 'Grouping',
-    value: values.groupMode!,
+    value:
+      values.groupMode === 'per-book'
+        ? `per-book · side-wide shared cap · Reduce-only ${graphicAssets(sideTotals.lower)} · Lend ${graphicAssets(sideTotals.higher)} offer maxAssets`
+        : 'shared-rung · each offer maxAssets equals its rung allocation',
     parameters: ['groupMode']
   },
   {
@@ -499,18 +515,28 @@ export const generateLadderGraphicModels = (state: PlaygroundState): LadderGraph
     const range = maximum - minimum
     const rows = [
       ...preview.higher.toReversed().map(rung => ({
-        ...rung,
+        index: rung.index,
+        rateBps: rung.rateBps,
+        allocationAssets: rung.assets,
+        offerMaxAssets: rung.offerMaxAssets,
         side: 'higher' as const,
         sideLabel: 'Lend' as const
       })),
       ...preview.lower.map(rung => ({
-        ...rung,
+        index: rung.index,
+        rateBps: rung.rateBps,
+        allocationAssets: rung.assets,
+        offerMaxAssets: rung.offerMaxAssets,
         side: 'lower' as const,
         sideLabel: 'Reduce-only' as const
       }))
     ]
-    const largestAssets = rows.reduce(
-      (largest, rung) => (BigInt(rung.assets) > largest ? BigInt(rung.assets) : largest),
+    const sideTotals = {
+      lower: preview.lower.reduce((total, rung) => total + BigInt(rung.assets), 0n),
+      higher: preview.higher.reduce((total, rung) => total + BigInt(rung.assets), 0n)
+    }
+    const scaleAssets = [sideTotals.lower, sideTotals.higher].reduce(
+      (largest, total) => (total > largest ? total : largest),
       1n
     )
     const importantRates = [preview.centerRateBps, ...rows.map(rung => rung.rateBps)]
@@ -530,7 +556,8 @@ export const generateLadderGraphicModels = (state: PlaygroundState): LadderGraph
     const rungs = rows.map(rung => ({
       ...rung,
       y: rateToY(rung.rateBps),
-      barRatio: Number((BigInt(rung.assets) * 10_000n) / largestAssets) / 10_000
+      allocationBarRatio: Number((BigInt(rung.allocationAssets) * 10_000n) / scaleAssets) / 10_000,
+      offerMaxBarRatio: Number((BigInt(rung.offerMaxAssets) * 10_000n) / scaleAssets) / 10_000
     }))
     return {
       marketId: preview.marketId,
@@ -544,7 +571,7 @@ export const generateLadderGraphicModels = (state: PlaygroundState): LadderGraph
       plotHeight,
       rateToY,
       rungs,
-      callouts: graphicCallouts(parameterValues, preview.centerRateBps)
+      callouts: graphicCallouts(parameterValues, preview.centerRateBps, sideTotals)
     }
   })
 }

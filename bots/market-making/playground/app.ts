@@ -280,9 +280,9 @@ const renderGraphic = (
     preserveAspectRatio: 'xMidYMid meet'
   })
   const svgTitle = svgElement('title', { id: `ladder-title-${previewIndex}` })
-  svgTitle.textContent = `Ladder market ${previewIndex + 1} rate and offer-size graphic`
+  svgTitle.textContent = `Ladder market ${previewIndex + 1} rate, allocation, and offer maxAssets graphic`
   const description = svgElement('desc', { id: `ladder-description-${previewIndex}` })
-  description.textContent = `Vertical rate axis from ${graphic.axis.minimumRateBps} to ${graphic.axis.maximumRateBps} BPS. Reference ${graphic.axis.referenceRateBps} BPS, quote center ${graphic.axis.centerRateBps} BPS, higher-rate lend rungs and lower-rate reduce-only rungs. An associated semantic table enumerates every exact rate, size, and side.`
+  description.textContent = `Vertical rate axis from ${graphic.axis.minimumRateBps} to ${graphic.axis.maximumRateBps} BPS. Reference ${graphic.axis.referenceRateBps} BPS, quote center ${graphic.axis.centerRateBps} BPS, higher-rate lend rungs and lower-rate reduce-only rungs. Every rung has an outlined offer maxAssets bar and a nested allocation fill. An associated semantic table enumerates every exact rate, allocation, offer maxAssets, and side.`
   svg.append(svgTitle, description)
 
   const axisX = 180
@@ -381,20 +381,35 @@ const renderGraphic = (
       y2: rung.y,
       class: 'rung-guide'
     })
-    const barWidth = Math.max(28, Math.round(470 * rung.barRatio))
-    const bar = svgElement('rect', {
+    const offerCapWidth = Math.max(28, Math.round(470 * rung.offerMaxBarRatio))
+    const allocationWidth = Math.max(12, Math.round(470 * rung.allocationBarRatio))
+    const offerCap = svgElement('rect', {
       x: 206,
       y: rung.y - 10,
-      width: barWidth,
+      width: offerCapWidth,
       height: 20,
       rx: 3,
-      class: `ladder-rung ladder-rung--${rung.side}`
+      class: `ladder-rung offer-cap-bar offer-cap-bar--${rung.side}`
     })
-    bar.dataset.rateBps = rung.rateBps
-    bar.dataset.assets = rung.assets
-    bar.dataset.side = rung.side
-    bar.dataset.parameter =
+    offerCap.dataset.rateBps = rung.rateBps
+    offerCap.dataset.allocationAssets = rung.allocationAssets
+    offerCap.dataset.offerMaxAssets = rung.offerMaxAssets
+    offerCap.dataset.side = rung.side
+    offerCap.dataset.parameter =
       'sizeSkewBps lowerRateBudgetAssets higherRateBudgetAssets targetMarketExposureAssets maximumTotalExposureAssets minimumOfferAssets'
+    const allocation = svgElement('rect', {
+      x: 206,
+      y: rung.y - 4,
+      width: allocationWidth,
+      height: 8,
+      rx: 2,
+      class: `allocation-bar allocation-bar--${rung.side}`
+    })
+    allocation.dataset.allocationAssets = rung.allocationAssets
+    allocation.dataset.offerMaxAssets = rung.offerMaxAssets
+    allocation.dataset.side = rung.side
+    const tooltip = svgElement('title')
+    tooltip.textContent = `${rung.sideLabel}; ${rung.rateBps} BPS; allocation ${formatAssets(rung.allocationAssets)} assets; offer maxAssets ${formatAssets(rung.offerMaxAssets)} assets`
     const rate = svgElement('text', { x: 216, y: rung.y + 4, class: 'rung-rate' })
     rate.textContent = `${rung.rateBps} BPS`
     const details = svgElement('text', {
@@ -403,8 +418,8 @@ const renderGraphic = (
       class: 'rung-details',
       'text-anchor': 'end'
     })
-    details.textContent = `${rung.sideLabel.toUpperCase()} · ${formatAssets(rung.assets)} assets`
-    group.append(baseline, bar, marker, rate, details)
+    details.textContent = `${rung.sideLabel.toUpperCase()} · allocation ${formatAssets(rung.allocationAssets)} · offer maxAssets ${formatAssets(rung.offerMaxAssets)}`
+    group.append(tooltip, baseline, offerCap, allocation, marker, rate, details)
     svg.append(group)
   }
   const scrollHint = document.createElement('p')
@@ -418,13 +433,20 @@ const renderGraphic = (
   scroll.append(svg)
   figure.append(scrollHint, scroll)
 
+  const semanticTable = document.createElement('div')
+  semanticTable.className = 'visually-hidden'
   const table = document.createElement('table')
-  table.className = 'rung-table visually-hidden'
+  table.className = 'rung-table'
   const caption = document.createElement('caption')
   caption.textContent = `Exact ladder rungs for market ${previewIndex + 1}`
   const tableHead = document.createElement('thead')
   const headingRowElement = document.createElement('tr')
-  for (const headingText of ['Side', 'Rate (BPS)', 'Size (assets)']) {
+  for (const headingText of [
+    'Side',
+    'Rate (BPS)',
+    'Allocation (assets)',
+    'Offer maxAssets (assets)'
+  ]) {
     const cell = document.createElement('th')
     cell.scope = 'col'
     cell.textContent = headingText
@@ -439,20 +461,24 @@ const renderGraphic = (
     side.textContent = rung.sideLabel
     const rate = document.createElement('td')
     rate.textContent = rung.rateBps
-    const assets = document.createElement('td')
-    assets.textContent = rung.assets
-    row.append(side, rate, assets)
+    const allocation = document.createElement('td')
+    allocation.textContent = rung.allocationAssets
+    const offerMaxAssets = document.createElement('td')
+    offerMaxAssets.textContent = rung.offerMaxAssets
+    row.append(side, rate, allocation, offerMaxAssets)
     tableBody.append(row)
   }
   table.append(caption, tableHead, tableBody)
-  figure.append(table)
+  semanticTable.append(table)
+  figure.append(semanticTable)
 
   const legend = document.createElement('div')
   legend.className = 'ladder-legend'
   const legendItems: readonly (readonly [string, string])[] = [
     ['triangle', 'Higher rate · LEND'],
     ['circle', 'Lower rate · REDUCE-ONLY'],
-    ['bar', 'Bar length = relative offer size']
+    ['offer-cap', 'Outlined bar = offer maxAssets'],
+    ['allocation', 'Nested fill = allocation']
   ]
   for (const [kind, label] of legendItems) {
     const item = document.createElement('span')
@@ -462,7 +488,8 @@ const renderGraphic = (
     legend.append(item)
   }
   const stateless = document.createElement('strong')
-  stateless.textContent = 'Configured synthetic output · not live offers'
+  stateless.textContent =
+    'Stateless configured output · live capacities and current offers remain excluded'
   legend.append(stateless)
   figure.append(legend)
 
