@@ -50,8 +50,11 @@ services:
       BETTERSTACK_INGESTING_HOST:
       BETTERSTACK_HEARTBEAT_URL:
     # SIGTERM triggers graceful shutdown: the monitors drain the in-flight cycle, then cancel owned
-    # offers on-chain and wait for receipts. Leave ample room before compose escalates to SIGKILL.
-    stop_grace_period: 5m
+    # offers on-chain serially and wait for each receipt, bounded per transaction by
+    # TRANSACTION_RECEIPT_TIMEOUT_MS (default 3m, max 15m). Compose escalates to SIGKILL when the
+    # grace period lapses, cutting cleanup off — raise STOP_GRACE_PERIOD beyond the default when
+    # configuring long receipt timeouts or many owned groups.
+    stop_grace_period: ${STOP_GRACE_PERIOD:-15m}
     restart: unless-stopped
 
 volumes:

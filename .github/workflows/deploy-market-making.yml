@@ -3,8 +3,10 @@ name: Deploy market-making
 # Publishes the market-making bot image to Docker Hub when a `market-making-*` GitHub release is
 # published (repo CalVer convention: `market-making-YYYY.MM.DD-N`), or on manual dispatch. Unlike
 # the Railway bots (deploy-bot.yml), "deploy" here means publish only: operators pull and run the
-# image themselves (see bots/market-making/README.md), so there is no service to restart. The same
-# release publish also fires release-slack-notify.yml, so one release announces and ships together.
+# image themselves (see bots/market-making/README.md), so there is no service to restart. The Slack
+# announcement comes AFTER a successful publish: release-slack-notify.yml skips market-making
+# release events and the final step here re-enters it through its manual `tag` input once every
+# image tag is pushed — so an announced release always has its image.
 #
 # Releases normally come from tag-releases.yml (a merged PR bumping the bot's package.json version
 # to a new CalVer value), which creates them with a GitHub App installation token precisely so this
@@ -49,6 +51,10 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'market-making-') }}
     runs-on: ubuntu-latest
     environment: market-making-production
+    permissions:
+      contents: read
+      # `gh workflow run` for the post-publish Slack announcement.
+      actions: write
     steps:
       # On a release event this checks out the tagged commit (github.sha is the tag's commit), so
       # the image is built from exactly the released tree, not main HEAD.
@@ -103,3 +109,13 @@ jobs:
             docker push "$REPOSITORY:$tag"
             echo "Published docker.io/$REPOSITORY:$tag"
           done
+
+      # Announce only now that every image tag exists. release-slack-notify.yml deliberately skips
+      # market-making release events; its manual `tag` input re-enters it here. workflow_dispatch
+      # fired with the default GITHUB_TOKEN does start workflows (unlike tag/release events).
+      - name: Announce release on Slack
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: gh workflow run release-slack-notify.yml -f tag="$RELEASE_TAG"

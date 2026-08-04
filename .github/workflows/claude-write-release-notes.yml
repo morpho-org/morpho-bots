@@ -55,7 +55,10 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          show_full_output: true
+          # show_full_output stays off (unlike the morpho-apps original): the action's own docs
+          # reserve it for debugging in non-sensitive environments, and this job holds an API key
+          # and a write token while allowing Bash — a full transcript could retain
+          # credential-bearing tool output in the Actions logs.
           prompt: /ci-write-release-notes
           allowed_bots: 'github-actions'
           claude_args: |

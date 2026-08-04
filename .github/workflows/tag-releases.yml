@@ -67,8 +67,11 @@ jobs:
           PREV_COMMIT=$(git rev-parse HEAD~1)
 
           invalid_versions=""
-          created_tags=""
+          pending_releases=""
 
+          # Phase 1: collect and validate every bumped version. No release is created until the
+          # whole push validates — releases fire downstream image/Slack workflows, so one bad bump
+          # must not leave partial release side effects behind a run that fails loud.
           for bot_dir in bots/*/; do
             if [ -f "${bot_dir}package.json" ]; then
               bot_name=$(basename "$bot_dir")
@@ -77,29 +80,8 @@ jobs:
               prev_version=$(git show "${PREV_COMMIT}:${bot_dir}package.json" 2>/dev/null | jq -r .version || echo "")
 
               if [ "$current_version" != "$prev_version" ] && [ -n "$current_version" ] && [ "$current_version" != "null" ]; then
-                tag_name="${bot_name}-${current_version}"
-
                 if [[ $current_version =~ $CALVER_PATTERN ]]; then
-                  echo "Processing release: $tag_name"
-
-                  if gh release view "$tag_name" &>/dev/null; then
-                    echo "Release already exists: $tag_name (skipping)"
-                  else
-                    # `|| true` guards against SIGPIPE aborting the job under `set -o pipefail`
-                    # (git is killed when head closes the pipe early once there are many tags).
-                    prev_tag="$(git tag -l "${bot_name}-*" --sort=-version:refname | head -n 1 || true)"
-                    # Target the exact triggering commit, not `main`: the branch pointer is
-                    # resolved server-side at API-call time, so a commit landing between the push
-                    # and this call would silently ship code the release never reviewed.
-                    gh release create "$tag_name" \
-                      --title "${bot_name} v${current_version}" \
-                      --target "$GITHUB_SHA" \
-                      --generate-notes \
-                      ${prev_tag:+--notes-start-tag "$prev_tag"}
-
-                    echo "Created release: $tag_name"
-                    created_tags="${created_tags}${created_tags:+ }${tag_name}"
-                  fi
+                  pending_releases="${pending_releases}${pending_releases:+ }${bot_name}:${current_version}"
                 else
                   echo "Invalid CalVer format for $bot_name: $current_version (expected YYYY.MM.DD-N)"
                   invalid_versions="${invalid_versions}${bot_name}: ${current_version}\n"
@@ -109,11 +91,41 @@ jobs:
           done
 
           if [ -n "$invalid_versions" ]; then
-            echo -e "\nERROR: invalid CalVer format in the following version bumps:"
+            echo -e "\nERROR: invalid CalVer format in the following version bumps (no releases created):"
             echo -e "$invalid_versions"
             echo -e "\nExpected format: YYYY.MM.DD-N (e.g., 2026.08.04-1)"
             exit 1
           fi
+
+          created_tags=""
+
+          # Phase 2: create the fully validated releases. Bot directory names never contain `:`,
+          # so `bot:version` entries split unambiguously.
+          for entry in $pending_releases; do
+            bot_name="${entry%%:*}"
+            current_version="${entry#*:}"
+            tag_name="${bot_name}-${current_version}"
+            echo "Processing release: $tag_name"
+
+            if gh release view "$tag_name" &>/dev/null; then
+              echo "Release already exists: $tag_name (skipping)"
+            else
+              # `|| true` guards against SIGPIPE aborting the job under `set -o pipefail`
+              # (git is killed when head closes the pipe early once there are many tags).
+              prev_tag="$(git tag -l "${bot_name}-*" --sort=-version:refname | head -n 1 || true)"
+              # Target the exact triggering commit, not `main`: the branch pointer is resolved
+              # server-side at API-call time, so a commit landing between the push and this call
+              # would silently ship code the release never reviewed.
+              gh release create "$tag_name" \
+                --title "${bot_name} v${current_version}" \
+                --target "$GITHUB_SHA" \
+                --generate-notes \
+                ${prev_tag:+--notes-start-tag "$prev_tag"}
+
+              echo "Created release: $tag_name"
+              created_tags="${created_tags}${created_tags:+ }${tag_name}"
+            fi
+          done
 
           if [ -n "$created_tags" ]; then
             echo -e "\nSuccessfully created releases: ${created_tags}"

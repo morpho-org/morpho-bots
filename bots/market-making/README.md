@@ -190,8 +190,9 @@ and flag documented above is available as the container command; the default com
 Configuration follows the exact precedence documented under [Configuration](#configuration):
 environment variables passed to the container override values from a mounted YAML file, and either
 source alone is sufficient. The build context must be the repo root so the bun workspace
-(`packages/*`) resolves. The repo-root `.dockerignore` excludes every `market-making.yaml`/`.yml`
-and `.env` file, so a local configuration holding a private key is never baked into an image.
+(`packages/*`) resolves. The repo-root `.dockerignore` keeps every non-example YAML and `.env`
+file out of the build context — whatever filename `--config` points at — so a local configuration
+holding a private key is never baked into an image.
 
 The image pins `XDG_STATE_HOME=/state`, where the bot persists its durable offer-group ownership
 records. Writer deployments (`start`, `bootstrap`, `ladder`) must mount a volume at `/state` so
@@ -267,9 +268,11 @@ docker compose logs --follow
 - Every supported environment variable is declared as a null passthrough entry: it reaches the
   container only when the invoking shell sets it, so unset variables never mask YAML values. Export
   overrides before starting, e.g. `export MAKER_PRIVATE_KEY=0x…`.
-- `stop_grace_period: 5m` leaves shutdown cleanup (drain the in-flight cycle, cancel owned offers,
-  wait for receipts) time to finish; `docker compose stop` delivers the same graceful SIGTERM the
-  CLI handles everywhere else.
+- `stop_grace_period` defaults to `15m` so shutdown cleanup — drain the in-flight cycle, then
+  cancel owned offers serially with each receipt bounded by `TRANSACTION_RECEIPT_TIMEOUT_MS`
+  (default 3 minutes, max 15) — can finish before compose escalates to SIGKILL. Export
+  `STOP_GRACE_PERIOD` to raise it for long receipt timeouts or many owned groups; `docker compose
+stop` delivers the same graceful SIGTERM the CLI handles everywhere else.
 
 ### Publish to Docker Hub
 
@@ -278,8 +281,10 @@ convention: `market-making-YYYY.MM.DD-N`) triggers the `Deploy market-making` wo
 ([`.github/workflows/deploy-market-making.yml`](../../.github/workflows/deploy-market-making.yml)),
 which builds the **tagged commit** from the repo root on an `ubuntu-latest` (`linux/amd64`) runner
 and pushes three tags to Docker Hub: the release tag verbatim (immutable), `latest` (moved unless
-the release is marked a prerelease), and `git-<shortsha>` for the built commit. The same release
-also fires the repo's Slack notification, so one release announces and ships in one step.
+the release is marked a prerelease), and `git-<shortsha>` for the built commit. The Slack
+announcement is sent by the publish workflow only after every image tag is pushed — the repo-wide
+release notifier deliberately skips market-making release events — so an announced release always
+has its image.
 
 To release, bump `version` in [`package.json`](./package.json) to the new CalVer value inside the
 PR (for example `2026.08.04-1`; increment the trailing `-N` for further same-day releases). On
