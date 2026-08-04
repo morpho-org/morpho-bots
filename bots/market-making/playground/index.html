@@ -12,47 +12,51 @@
       content="A stateless playground for every market-making bot configuration parameter."
     />
     <title>Market maker parameter playground</title>
+    <link rel="icon" href="data:," />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <header class="hero">
+    <header class="topbar">
       <div>
-        <p class="eyebrow">Morpho · Midnight</p>
-        <h1>Market maker<br />parameter playground</h1>
+        <p class="eyebrow">Morpho · Midnight · Monitor / Configure</p>
+        <h1>Market maker parameter playground</h1>
       </div>
-      <div class="scope-note">
-        <span>Stateless preview</span>
-        <p>
-          Tune the complete current config surface. No current offers, live market book,
-          persistence, backend integration, or runtime network requests.
-        </p>
-      </div>
+      <p class="scope-note">
+        <span>Stateless preview</span> · Complete current config surface; no live offers, market
+        book, persistence, backend, or runtime network requests.
+      </p>
     </header>
 
     <main>
-      <div class="workspace">
-        <div id="controls" class="controls"></div>
+      <section class="monitor-surface" aria-labelledby="monitor-heading">
+        <div class="monitor-header">
+          <div class="section-heading">
+            <span>Monitor · instant simulation</span>
+            <h2 id="monitor-heading">Offer ladder monitor</h2>
+          </div>
+          <label class="field preview-reference">
+            <span class="field__heading">Reference rate (BPS)</span>
+            <span class="field__hint">Preview-only market input · not exported</span>
+            <input id="preview-reference" type="text" inputmode="numeric" pattern="-?[0-9]*" />
+          </label>
+        </div>
+        <p id="ladder-status" class="status" role="status" aria-live="polite"></p>
+        <div id="ladders" class="ladders" aria-live="polite"></div>
+        <p class="future-scope">
+          Production generator and validators are reused locally. Dynamic balances, credit, and live
+          order books remain outside this stateless preview.
+        </p>
+      </section>
 
-        <aside class="preview-column" aria-label="Ladder preview and configuration exports">
-          <section class="preview-card sticky-card">
-            <div class="section-heading">
-              <span>Instant simulation</span>
-              <h2>Offer ladders</h2>
-            </div>
-            <label class="field preview-reference">
-              <span class="field__heading">Reference rate (BPS)</span>
-              <span class="field__hint">Preview-only market input · not exported</span>
-              <input id="preview-reference" type="text" inputmode="numeric" pattern="-?[0-9]*" />
-            </label>
-            <p id="ladder-status" class="status" role="status" aria-live="polite"></p>
-            <div id="ladders" class="ladders" aria-live="polite"></div>
-            <p class="future-scope">
-              Production generator and validators are reused locally. Dynamic balances, credit, and
-              live order books remain outside this stateless preview.
-            </p>
-          </section>
+      <section class="configure-surface" aria-labelledby="configure-heading">
+        <div class="configure-heading">
+          <p class="eyebrow">Configure · validated handoff</p>
+          <h2 id="configure-heading">Runtime parameters and export</h2>
+        </div>
+        <div class="configure-grid">
+          <div id="controls" class="controls"></div>
 
-          <section class="preview-card export-card">
+          <section class="export-card">
             <div class="section-heading">
               <span>Validated handoff</span>
               <h2>Configuration export</h2>
@@ -64,6 +68,19 @@
               aria-live="assertive"
               hidden
             ></div>
+            <label class="sensitive-export-control" for="include-sensitive-values">
+              <input
+                id="include-sensitive-values"
+                type="checkbox"
+                aria-describedby="include-sensitive-warning"
+              />
+              <span>
+                <strong>Include sensitive values in exports</strong>
+                <small id="include-sensitive-warning"
+                  >Warning: reveals private credentials in export text and clipboard output.</small
+                >
+              </span>
+            </label>
             <div class="tabs" role="tablist" aria-label="Export format">
               <button
                 id="tab-yaml"
@@ -145,12 +162,12 @@
             </div>
             <p id="copy-status" class="status" role="status" aria-live="polite"></p>
             <p class="secret-note">
-              Exports include entered secrets. Keep real private keys and Better Stack tokens in
-              your deployment secret store; never commit them.
+              Sensitive values are redacted by default. Deliberate opt-in affects displayed exports
+              and clipboard output only; this playground never stores or sends them.
             </p>
           </section>
-        </aside>
-      </div>
+        </div>
+      </section>
     </main>
 
     <script type="module" src="./app.ts"></script>

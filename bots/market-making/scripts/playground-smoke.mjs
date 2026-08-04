@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -65,9 +65,14 @@ try {
   let id = 0
   const pending = new Map()
   const requests = []
+  const consoleErrors = []
   socket.addEventListener('message', event => {
     const message = JSON.parse(String(event.data))
     if (message.method === 'Network.requestWillBeSent') requests.push(message.params.request.url)
+    if (message.method === 'Runtime.exceptionThrown')
+      consoleErrors.push(message.params.exceptionDetails.text)
+    if (message.method === 'Log.entryAdded' && message.params.entry.level === 'error')
+      consoleErrors.push(message.params.entry.text)
     if (message.id && pending.has(message.id)) {
       const { resolve, reject } = pending.get(message.id)
       pending.delete(message.id)
@@ -95,7 +100,14 @@ try {
   }
   await command('Page.enable')
   await command('Runtime.enable')
+  await command('Log.enable')
   await command('Network.enable')
+  await command('Emulation.setDeviceMetricsOverride', {
+    width: 1440,
+    height: 1000,
+    deviceScaleFactor: 1,
+    mobile: false
+  })
   await command('Page.navigate', { url: `http://127.0.0.1:${port}` })
   await waitFor(async () => {
     if (!(await evaluate("document.documentElement.dataset.playgroundReady === 'true'"))) {
@@ -107,6 +119,281 @@ try {
     await evaluate("document.querySelectorAll('.ladder-market').length === 1"),
     'initial ladder was not rendered immediately'
   )
+  assert(
+    await evaluate(
+      "document.querySelector('main > .monitor-surface #ladders') && document.querySelector('main > .configure-surface #controls') && document.querySelector('.monitor-surface').getBoundingClientRect().width >= 1300"
+    ),
+    'monitor/configure hierarchy is missing or ladder monitor is not full-width'
+  )
+  assert(
+    await evaluate(
+      "document.querySelector('#include-sensitive-values')?.checked === false && document.querySelector('#include-sensitive-warning')?.textContent.includes('private credentials')"
+    ),
+    'sensitive export opt-in is not explicit, unchecked, and warned'
+  )
+  assert(
+    await evaluate(
+      "document.querySelector('.ladder-scroll') && document.querySelector('.rung-table:not([hidden])') && getComputedStyle(document.querySelector('.rung-table')).display !== 'none' && document.querySelectorAll('.rung-table tbody tr').length === 6"
+    ),
+    'exact semantic rung enumeration is unavailable to assistive technology'
+  )
+  assert(
+    await evaluate(
+      "document.querySelector('.ladder-graphic svg[role=img] title')?.textContent.includes('Ladder market 1') && document.querySelector('.ladder-graphic svg desc')?.textContent.includes('higher-rate lend')"
+    ),
+    'ladder SVG is missing an accessible title or description'
+  )
+  assert(
+    await evaluate(
+      "document.querySelectorAll('.ladder-rung').length === 6 && [...document.querySelectorAll('.ladder-rung')].every(rung => rung.dataset.rateBps && rung.dataset.assets && rung.dataset.side && Number.isFinite(Number(rung.getAttribute('y'))))"
+    ),
+    'ladder did not expose exact rung values and SVG geometry'
+  )
+  assert(
+    await evaluate(
+      "['marketId','quotePremiumBps','spreadBps','stepBps','rungCount','sizeSkewBps','lowerRateBudgetAssets','higherRateBudgetAssets','targetMarketExposureAssets','maximumTotalExposureAssets','minimumOfferAssets','groupMode','loopIntervalSeconds','movementToleranceBps','minimumRateBps','maximumRateBps','referenceRateBps'].every(key => document.querySelector(`[data-parameter~=${key}]`))"
+    ),
+    'not every ladder parameter is visibly mapped into the graphic'
+  )
+  assert(
+    await evaluate(
+      "document.querySelectorAll('.ladder-callout').length === 8 && document.querySelector('.ladder-legend').textContent.includes('not live offers')"
+    ),
+    'graphic callouts or stateless legend are missing'
+  )
+  const screenshotClip = async () =>
+    evaluate(
+      "(() => { const r=document.querySelector('.monitor-surface').getBoundingClientRect(); return {x:r.left+scrollX,y:r.top+scrollY,width:r.width,height:r.height,scale:1} })()"
+    )
+  const capture = async path => {
+    const shot = await command('Page.captureScreenshot', {
+      format: 'png',
+      captureBeyondViewport: true,
+      clip: await screenshotClip()
+    })
+    await writeFile(path, Buffer.from(shot.data, 'base64'))
+  }
+  await capture('/tmp/morpho-bots-pr122-ladder-default-desktop.png')
+
+  const parameterProof = await evaluate(`(() => {
+    const result = {}
+    const input = field => document.querySelector(\`.market-card:has([data-field=quotePremiumBps]) [data-field=\${field}]\`)
+    const set = (field, value) => {
+      const element = input(field)
+      element.value = value
+      element.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    const callout = field => document.querySelector(\`[data-parameter~=\${field}].ladder-callout dd\`)?.textContent ?? ''
+    set('minimumRateBps', '0')
+    set('maximumRateBps', '2000')
+    const allowlist = document.querySelector('[data-field=MARKET_IDS]')
+    const secondMarket = '0x' + '6'.repeat(64)
+    allowlist.value += ',' + secondMarket
+    allowlist.dispatchEvent(new Event('input', { bubbles: true }))
+    set('marketId', secondMarket)
+    result.marketId = document.querySelector('.ladder-heading code')?.textContent.includes(secondMarket)
+    set('marketId', '0x' + '5'.repeat(64))
+
+    set('quotePremiumBps', '25')
+    result.quotePremiumBps = document.querySelector('.center-label')?.textContent === 'CENTER 525'
+    set('quotePremiumBps', '0')
+    set('spreadBps', '220')
+    result.spreadBps = document.querySelector('.spread-gap-label')?.textContent === 'SPREAD GAP · 220 BPS'
+    set('spreadBps', '200')
+    set('stepBps', '110')
+    result.stepBps = [...document.querySelectorAll('.ladder-rung[data-side=higher]')].some(rung => rung.dataset.rateBps === '710')
+    set('stepBps', '100')
+    set('rungCount', '4')
+    result.rungCount = document.querySelectorAll('.ladder-rung').length === 8
+    set('rungCount', '3')
+    const equalWidths = [...document.querySelectorAll('.ladder-rung')].map(rung => rung.getAttribute('width')).join('|')
+    set('sizeSkewBps', '1000')
+    result.sizeSkewBps = [...document.querySelectorAll('.ladder-rung')].map(rung => rung.getAttribute('width')).join('|') !== equalWidths
+    set('sizeSkewBps', '0')
+    const lowerAssets = document.querySelector('.ladder-rung[data-side=lower]')?.dataset.assets
+    set('lowerRateBudgetAssets', '9000000000')
+    result.lowerRateBudgetAssets = document.querySelector('.ladder-rung[data-side=lower]')?.dataset.assets !== lowerAssets
+    set('lowerRateBudgetAssets', '10000000000')
+    const higherAssets = document.querySelector('.ladder-rung[data-side=higher]')?.dataset.assets
+    set('higherRateBudgetAssets', '9000000000')
+    result.higherRateBudgetAssets = document.querySelector('.ladder-rung[data-side=higher]')?.dataset.assets !== higherAssets
+    set('higherRateBudgetAssets', '10000000000')
+    set('targetMarketExposureAssets', '9000000000')
+    result.targetMarketExposureAssets = document.querySelector('.ladder-rung[data-side=higher]')?.dataset.assets !== higherAssets
+    set('targetMarketExposureAssets', '20000000000')
+    set('maximumTotalExposureAssets', '9000000000')
+    result.maximumTotalExposureAssets = document.querySelector('.ladder-rung[data-side=lower]')?.dataset.assets !== lowerAssets
+    set('maximumTotalExposureAssets', '30000000000')
+    set('minimumOfferAssets', '4000000000')
+    result.minimumOfferAssets = document.querySelectorAll('.ladder-rung').length < 6
+    set('minimumOfferAssets', '101000000')
+    set('groupMode', 'per-book')
+    result.groupMode = callout('groupMode') === 'per-book'
+    set('groupMode', 'shared-rung')
+    set('loopIntervalSeconds', '30')
+    result.loopIntervalSeconds = callout('loopIntervalSeconds').includes('30s loop')
+    set('loopIntervalSeconds', '60')
+    set('movementToleranceBps', '20')
+    result.movementToleranceBps = callout('movementToleranceBps').includes('20 BPS deadband')
+    set('movementToleranceBps', '10')
+    set('minimumRateBps', '50')
+    result.minimumRateBps = [...document.querySelectorAll('.axis-label')].some(label => label.textContent === 'MIN 50 BPS')
+    set('minimumRateBps', '0')
+    set('maximumRateBps', '1950')
+    result.maximumRateBps = [...document.querySelectorAll('.axis-label')].some(label => label.textContent === 'MAX 1950 BPS')
+    set('maximumRateBps', '2000')
+    const reference = document.querySelector('#preview-reference')
+    reference.value = '510'
+    reference.dispatchEvent(new Event('input', { bubbles: true }))
+    result.referenceRateBps = document.querySelector('.reference-label')?.textContent === 'REFERENCE 510'
+    reference.value = '500'
+    reference.dispatchEvent(new Event('input', { bubbles: true }))
+    return result
+  })()`)
+  const failedParameters = Object.entries(parameterProof)
+    .filter(([, passed]) => !passed)
+    .map(([field]) => field)
+  assert(
+    failedParameters.length === 0,
+    `parameter render proof failed: ${failedParameters.join(', ')}`
+  )
+  assert(
+    Object.keys(parameterProof).length === 17,
+    'parameter proof did not cover all 16 ladder fields plus reference rate'
+  )
+
+  const configureDensity = async rungCount =>
+    evaluate(`(() => {
+      const input = field => document.querySelector(\`.market-card:has([data-field=quotePremiumBps]) [data-field=\${field}]\`)
+      const set = (field, value) => { const element=input(field); element.value=String(value); element.dispatchEvent(new Event('input',{bubbles:true})) }
+      set('rungCount', '${rungCount}')
+      set('minimumOfferAssets', '1')
+      set('minimumRateBps', '0')
+      set('maximumRateBps', '${rungCount * 200 + 400}')
+      const reference=document.querySelector('#preview-reference'); reference.value='${rungCount * 100 + 200}'; reference.dispatchEvent(new Event('input',{bubbles:true}))
+    })()`)
+  const densityMetrics = () =>
+    evaluate(`(() => {
+      const rungs=[...document.querySelectorAll('.ladder-rung')]
+      const boxes=rungs.map(rung=>{const rect=rung.getBoundingClientRect();return {side:rung.dataset.side, top:rect.top+rect.height/2}}).sort((a,b)=>a.top-b.top)
+      const gaps=boxes.slice(1).map((box,index)=>box.top-boxes[index].top)
+      const center=document.querySelector('.center-line').getBoundingClientRect().top
+      const higher=boxes.filter(box=>box.side==='higher').at(-1).top
+      const lower=boxes.find(box=>box.side==='lower').top
+      const scroll=document.querySelector('.ladder-scroll')
+      return {
+        rungs:rungs.length,
+        tableRows:document.querySelectorAll('.rung-table tbody tr').length,
+        minGap:Math.min(...gaps),
+        higherCenterGap:center-higher,
+        lowerCenterGap:lower-center,
+        minimumLabelPx:Math.min(...['.rung-rate','.rung-details','.axis-label','.spread-gap-label'].map(selector=>parseFloat(getComputedStyle(document.querySelector(selector)).fontSize))),
+        viewportHeight:scroll.clientHeight,
+        contentHeight:scroll.scrollHeight,
+        svgWidth:document.querySelector('.ladder-scroll svg').getBoundingClientRect().width
+      }
+    })()`)
+
+  await configureDensity(32)
+  const density32Desktop = await densityMetrics()
+  assert(
+    density32Desktop.rungs === 64 && density32Desktop.tableRows === 64,
+    '32-rung configuration did not render/enumerate all 64 rungs'
+  )
+  assert(
+    density32Desktop.minGap >= 28 &&
+      density32Desktop.higherCenterGap >= 28 &&
+      density32Desktop.lowerCenterGap >= 28,
+    `32-rung desktop spacing is unreadable: ${JSON.stringify(density32Desktop)}`
+  )
+  assert(density32Desktop.minimumLabelPx >= 11, '32-rung labels are smaller than 11px')
+  await capture('/tmp/morpho-bots-pr122-ladder-32-desktop.png')
+
+  await command('Emulation.setDeviceMetricsOverride', {
+    width: 390,
+    height: 844,
+    deviceScaleFactor: 1,
+    mobile: true
+  })
+  const density32Mobile = await densityMetrics()
+  assert(
+    await evaluate(
+      "document.documentElement.scrollWidth <= 390 && document.querySelector('.ladder-scroll').clientWidth <= 358"
+    ),
+    'mobile layout overflows its viewport'
+  )
+  assert(
+    density32Mobile.minGap >= 28 &&
+      density32Mobile.minimumLabelPx >= 11 &&
+      density32Mobile.svgWidth >= 1120,
+    `32-rung mobile density is unreadable: ${JSON.stringify(density32Mobile)}`
+  )
+
+  await configureDensity(512)
+  const density512Mobile = await densityMetrics()
+  assert(
+    density512Mobile.rungs === 1024 && density512Mobile.tableRows === 1024,
+    '512-rung configuration did not render/enumerate all 1024 rungs'
+  )
+  assert(
+    density512Mobile.minGap >= 28 &&
+      density512Mobile.higherCenterGap >= 28 &&
+      density512Mobile.lowerCenterGap >= 28,
+    `512-rung spacing is unreadable: ${JSON.stringify(density512Mobile)}`
+  )
+  assert(
+    density512Mobile.minimumLabelPx >= 11 &&
+      density512Mobile.viewportHeight <= 900 &&
+      density512Mobile.contentHeight > density512Mobile.viewportHeight,
+    '512-rung chart is not a bounded readable scroll viewport'
+  )
+  await command('Emulation.setDeviceMetricsOverride', {
+    width: 1440,
+    height: 1000,
+    deviceScaleFactor: 1,
+    mobile: false
+  })
+  const density512Desktop = await densityMetrics()
+  assert(
+    density512Desktop.rungs === 1024 &&
+      density512Desktop.minGap >= 28 &&
+      density512Desktop.minimumLabelPx >= 11,
+    `512-rung desktop density is unreadable: ${JSON.stringify(density512Desktop)}`
+  )
+
+  await command('Emulation.setDeviceMetricsOverride', {
+    width: 390,
+    height: 844,
+    deviceScaleFactor: 1,
+    mobile: true
+  })
+  await configureDensity(3)
+  await evaluate(`(() => {
+    const input = field => document.querySelector(\`.market-card:has([data-field=quotePremiumBps]) [data-field=\${field}]\`)
+    const set=(field,value)=>{const element=input(field);element.value=value;element.dispatchEvent(new Event('input',{bubbles:true}))}
+    set('minimumOfferAssets','101000000'); set('minimumRateBps','200'); set('maximumRateBps','800')
+    const reference=document.querySelector('#preview-reference');reference.value='500';reference.dispatchEvent(new Event('input',{bubbles:true}))
+  })()`)
+  await capture('/tmp/morpho-bots-pr122-ladder-default-mobile.png')
+  await command('Emulation.clearDeviceMetricsOverride')
+  console.log(
+    `density 32 desktop/mobile: ${JSON.stringify({ desktop: density32Desktop, mobile: density32Mobile })}`
+  )
+  console.log(
+    `density 512 desktop/mobile: ${JSON.stringify({ desktop: density512Desktop, mobile: density512Mobile })}`
+  )
+  await command('Emulation.setEmulatedMedia', {
+    features: [{ name: 'prefers-reduced-motion', value: 'reduce' }]
+  })
+  assert(
+    await evaluate(
+      "getComputedStyle(document.querySelector('.rung-group')).animationName === 'none' && getComputedStyle(document.querySelector('.ladder-rung')).transitionDuration === '0s'"
+    ),
+    'reduced-motion preference did not disable ladder animation and transitions'
+  )
+  await command('Emulation.setEmulatedMedia', {
+    features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }]
+  })
   assert(
     await evaluate(
       "[...document.querySelectorAll('[role=tab]')].every((tab, index) => Boolean(tab.getAttribute('aria-controls')) && tab.tabIndex === (index === 0 ? 0 : -1))"
@@ -130,9 +417,48 @@ try {
     'Home key did not activate the first tab'
   )
 
+  const secretProof = await evaluate(`(async () => {
+    const privateKey = '0x' + '9'.repeat(64)
+    const sourceToken = 'browser-secret-source-token'
+    const set = (field, value) => {
+      const input = document.querySelector(\`[data-field=\${field}]\`)
+      input.value = value
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    set('MAKER_PRIVATE_KEY', privateKey)
+    set('BETTERSTACK_SOURCE_TOKEN', sourceToken)
+    set('BETTERSTACK_INGESTING_HOST', 'logs.example.test')
+    const outputs = () => [...document.querySelectorAll('[role=tabpanel] textarea')].map(output => output.value).join('\\n')
+    const defaultRedacted = !outputs().includes(privateKey) && !outputs().includes(sourceToken) && outputs().includes('<redacted>')
+    const noDomLeak = !document.body.textContent.includes(privateKey) && !document.body.textContent.includes(sourceToken) && ![...document.querySelectorAll('.ladder-market *')].some(element => [...element.attributes].some(attribute => attribute.value.includes(privateKey) || attribute.value.includes(sourceToken)))
+    const passwordInputs = [...document.querySelectorAll('[data-field=MAKER_PRIVATE_KEY],[data-field=BETTERSTACK_SOURCE_TOKEN]')].every(input => input.type === 'password')
+    const toggle = document.querySelector('#include-sensitive-values')
+    toggle.checked = true
+    toggle.dispatchEvent(new Event('change', { bubbles: true }))
+    const included = [...document.querySelectorAll('#export-yaml,#export-shell,#export-json')].every((output, index) => index === 0 ? output.value.includes(privateKey) : output.value.includes(privateKey) && output.value.includes(sourceToken))
+    let copied = ''
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: async value => { copied = value } }, configurable: true })
+    document.querySelector('#copy-export').click()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const clipboardIncluded = copied.includes(privateKey)
+    toggle.checked = false
+    toggle.dispatchEvent(new Event('change', { bubbles: true }))
+    document.querySelector('#copy-export').click()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const rerRedacted = !outputs().includes(privateKey) && !outputs().includes(sourceToken) && !copied.includes(privateKey) && copied.includes('<redacted>')
+    set('MAKER_PRIVATE_KEY', '0x' + 'a'.repeat(64))
+    set('BETTERSTACK_SOURCE_TOKEN', '')
+    set('BETTERSTACK_INGESTING_HOST', '')
+    return { defaultRedacted, noDomLeak, passwordInputs, included, clipboardIncluded, rerRedacted }
+  })()`)
+  assert(
+    Object.values(secretProof).every(Boolean),
+    `sensitive export proof failed: ${JSON.stringify(secretProof)}`
+  )
+
   const secondMarket = `0x${'6'.repeat(64)}`
   await evaluate(
-    `(() => { const input=document.querySelector('[data-field=MARKET_IDS]'); input.value += ',${secondMarket}'; input.dispatchEvent(new Event('input',{bubbles:true})); [...document.querySelectorAll('button')].find(button=>button.textContent==='Add ladder market').click(); const markets=[...document.querySelectorAll('.market-card [data-field=marketId]')]; const input2=markets.at(-1); input2.value='${secondMarket}'; input2.dispatchEvent(new Event('input',{bubbles:true})); const cards=[...document.querySelectorAll('.market-card')]; [...cards.at(-1).querySelectorAll('button')].find(button=>button.textContent==='Move up').click(); })()`
+    `(() => { const input=document.querySelector('[data-field=MARKET_IDS]'); if (!input.value.includes('${secondMarket}')) input.value += ',${secondMarket}'; input.dispatchEvent(new Event('input',{bubbles:true})); [...document.querySelectorAll('button')].find(button=>button.textContent==='Add ladder market').click(); const markets=[...document.querySelectorAll('.market-card [data-field=marketId]')]; const input2=markets.at(-1); input2.value='${secondMarket}'; input2.dispatchEvent(new Event('input',{bubbles:true})); const cards=[...document.querySelectorAll('.market-card')]; [...cards.at(-1).querySelectorAll('button')].find(button=>button.textContent==='Move up').click(); })()`
   )
   assert(
     await evaluate("document.querySelectorAll('.ladder-market').length === 2"),
@@ -150,7 +476,7 @@ try {
   )
   assert(
     await evaluate(
-      "!document.querySelector('#validation-errors').hidden && document.querySelector('#validation-errors').textContent.includes('MAKER_PRIVATE_KEY') && document.querySelector('#copy-export').disabled && document.querySelector('#ladder-status').dataset.status !== 'ok' && document.querySelectorAll('.ladder-market').length === 0"
+      "!document.querySelector('#validation-errors').hidden && document.querySelector('#validation-errors').textContent.includes('MAKER_PRIVATE_KEY') && document.querySelector('#copy-export').disabled && document.querySelector('#ladder-status').dataset.status !== 'ok' && document.querySelectorAll('.ladder-rung').length === 0 && document.querySelector('.ladder-invalid[role=img]')?.textContent.includes('Invalid ladder graphic')"
     ),
     'invalid production configuration did not invalidate every synthetic ladder preview'
   )
@@ -192,6 +518,7 @@ try {
     url => !url.startsWith(`http://127.0.0.1:${port}/`) && !url.startsWith('data:')
   )
   assert(unexpected.length === 0, `unexpected network requests: ${unexpected.join(', ')}`)
+  assert(consoleErrors.length === 0, `browser console errors: ${consoleErrors.join('; ')}`)
   socket.close()
   console.log(`browser smoke: PASS (${requests.length} local requests, 0 unexpected requests)`)
 } finally {

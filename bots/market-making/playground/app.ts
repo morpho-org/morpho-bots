@@ -11,7 +11,7 @@ import {
   exportJson,
   exportShell,
   exportYaml,
-  generatePreviewLadders,
+  generateLadderGraphicModels,
   validatePlaygroundState
 } from './model'
 
@@ -30,6 +30,7 @@ const copyStatus = required<HTMLParagraphElement>('#copy-status')
 const exportTabs = [...document.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
 const exportPanels = [...document.querySelectorAll<HTMLElement>('[role="tabpanel"]')]
 const previewReference = required<HTMLInputElement>('#preview-reference')
+const includeSensitiveValues = required<HTMLInputElement>('#include-sensitive-values')
 let activeExport: 'yaml' | 'shell' | 'json' = 'yaml'
 let fieldIndex = 0
 
@@ -236,55 +237,285 @@ previewReference.addEventListener('input', () => {
 })
 
 const formatAssets = (value: string) => Intl.NumberFormat('en-US').format(BigInt(value))
+const SVG_NAMESPACE = 'http://www.w3.org/2000/svg'
+const svgElement = <Name extends keyof SVGElementTagNameMap>(
+  name: Name,
+  attributes: Record<string, string | number> = {}
+) => {
+  const element = document.createElementNS(SVG_NAMESPACE, name)
+  for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, String(value))
+  return element
+}
+
+const renderGraphic = (
+  graphic: ReturnType<typeof generateLadderGraphicModels>[number],
+  previewIndex: number
+) => {
+  const section = document.createElement('section')
+  section.className = 'ladder-market'
+  const headingRow = document.createElement('div')
+  headingRow.className = 'ladder-heading'
+  const title = document.createElement('h3')
+  title.id = `ladder-heading-${previewIndex}`
+  title.textContent = `Ladder market ${previewIndex + 1}`
+  const market = document.createElement('code')
+  market.dataset.parameter = 'marketId'
+  market.textContent = `MARKET ID · ${graphic.marketId}`
+  headingRow.append(title, market)
+
+  const figure = document.createElement('figure')
+  figure.className = 'ladder-graphic'
+  figure.setAttribute('aria-labelledby', title.id)
+  const chartWidth = 1120
+  const chartHeight = graphic.plotHeight + 64
+  const svg = svgElement('svg', {
+    viewBox: `0 0 ${chartWidth} ${chartHeight}`,
+    width: chartWidth,
+    height: chartHeight,
+    role: 'img',
+    'aria-labelledby': `ladder-title-${previewIndex} ladder-description-${previewIndex}`,
+    preserveAspectRatio: 'xMidYMid meet'
+  })
+  const svgTitle = svgElement('title', { id: `ladder-title-${previewIndex}` })
+  svgTitle.textContent = `Ladder market ${previewIndex + 1} rate and offer-size graphic`
+  const description = svgElement('desc', { id: `ladder-description-${previewIndex}` })
+  description.textContent = `Vertical rate axis from ${graphic.axis.minimumRateBps} to ${graphic.axis.maximumRateBps} BPS. Reference ${graphic.axis.referenceRateBps} BPS, quote center ${graphic.axis.centerRateBps} BPS, higher-rate lend rungs and lower-rate reduce-only rungs. An associated semantic table enumerates every exact rate, size, and side.`
+  svg.append(svgTitle, description)
+
+  const axisX = 180
+  const rightX = 1096
+  const axis = svgElement('line', {
+    x1: axisX,
+    y1: 24,
+    x2: axisX,
+    y2: graphic.plotHeight + 40,
+    class: 'ladder-axis'
+  })
+  axis.dataset.parameter = 'minimumRateBps maximumRateBps'
+  svg.append(axis)
+  for (const [label, y] of [
+    [`MAX ${graphic.axis.maximumRateBps}`, 24],
+    [`MIN ${graphic.axis.minimumRateBps}`, graphic.plotHeight + 40]
+  ] as const) {
+    const tick = svgElement('line', { x1: 172, y1: y, x2: 188, y2: y, class: 'axis-tick' })
+    const text = svgElement('text', { x: 164, y: y + 4, class: 'axis-label', 'text-anchor': 'end' })
+    text.textContent = `${label} BPS`
+    svg.append(tick, text)
+  }
+  const referenceY = graphic.rateToY(graphic.axis.referenceRateBps)
+  const centerY = graphic.rateToY(graphic.axis.centerRateBps)
+  const nearestHigher = graphic.rungs.findLast(rung => rung.side === 'higher')
+  const nearestLower = graphic.rungs.find(rung => rung.side === 'lower')
+  if (nearestHigher && nearestLower) {
+    const top = nearestHigher.y + 11
+    const bottom = nearestLower.y - 11
+    const gapBand = svgElement('rect', {
+      x: axisX,
+      y: top,
+      width: rightX - axisX,
+      height: Math.max(0, bottom - top),
+      class: 'spread-gap'
+    })
+    gapBand.dataset.parameter = 'spreadBps'
+    const gapLabel = svgElement('text', {
+      x: axisX + 16,
+      y: (top + bottom) / 2 + 4,
+      class: 'spread-gap-label'
+    })
+    gapLabel.textContent = `SPREAD GAP · ${graphic.gapBps} BPS`
+    svg.append(gapBand, gapLabel)
+  }
+  const referenceLine = svgElement('line', {
+    x1: axisX,
+    y1: referenceY,
+    x2: rightX,
+    y2: referenceY,
+    class: 'reference-line'
+  })
+  referenceLine.dataset.parameter = 'referenceRateBps'
+  const referenceLabel = svgElement('text', {
+    x: rightX - 8,
+    y: referenceY - 7,
+    class: 'reference-label',
+    'text-anchor': 'end'
+  })
+  referenceLabel.textContent = `REFERENCE ${graphic.axis.referenceRateBps}`
+  const centerLine = svgElement('line', {
+    x1: axisX,
+    y1: centerY,
+    x2: rightX,
+    y2: centerY,
+    class: 'center-line'
+  })
+  centerLine.dataset.parameter = 'quotePremiumBps'
+  const centerLabel = svgElement('text', {
+    x: rightX - 8,
+    y: centerY + 15,
+    class: 'center-label',
+    'text-anchor': 'end'
+  })
+  centerLabel.textContent = `CENTER ${graphic.axis.centerRateBps}`
+  svg.append(referenceLine, referenceLabel, centerLine, centerLabel)
+
+  for (const rung of graphic.rungs) {
+    const group = svgElement('g', { class: `rung-group rung-group--${rung.side}` })
+    const marker =
+      rung.side === 'higher'
+        ? svgElement('path', {
+            d: `M 172 ${rung.y} l -8 -6 v 12 z`,
+            class: 'rung-marker rung-marker--higher'
+          })
+        : svgElement('circle', {
+            cx: 166,
+            cy: rung.y,
+            r: 6,
+            class: 'rung-marker rung-marker--lower'
+          })
+    const baseline = svgElement('line', {
+      x1: 190,
+      y1: rung.y,
+      x2: rightX - 12,
+      y2: rung.y,
+      class: 'rung-guide'
+    })
+    const barWidth = Math.max(28, Math.round(470 * rung.barRatio))
+    const bar = svgElement('rect', {
+      x: 206,
+      y: rung.y - 10,
+      width: barWidth,
+      height: 20,
+      rx: 3,
+      class: `ladder-rung ladder-rung--${rung.side}`
+    })
+    bar.dataset.rateBps = rung.rateBps
+    bar.dataset.assets = rung.assets
+    bar.dataset.side = rung.side
+    bar.dataset.parameter =
+      'sizeSkewBps lowerRateBudgetAssets higherRateBudgetAssets targetMarketExposureAssets maximumTotalExposureAssets minimumOfferAssets'
+    const rate = svgElement('text', { x: 216, y: rung.y + 4, class: 'rung-rate' })
+    rate.textContent = `${rung.rateBps} BPS`
+    const details = svgElement('text', {
+      x: rightX - 8,
+      y: rung.y + 4,
+      class: 'rung-details',
+      'text-anchor': 'end'
+    })
+    details.textContent = `${rung.sideLabel.toUpperCase()} · ${formatAssets(rung.assets)} assets`
+    group.append(baseline, bar, marker, rate, details)
+    svg.append(group)
+  }
+  const scrollHint = document.createElement('p')
+  scrollHint.className = 'ladder-scroll-hint'
+  scrollHint.textContent = 'Scroll the plot horizontally or vertically to reach every exact rung.'
+  const scroll = document.createElement('div')
+  scroll.className = 'ladder-scroll'
+  scroll.tabIndex = 0
+  scroll.setAttribute('role', 'region')
+  scroll.setAttribute('aria-label', `Scrollable ladder plot for market ${previewIndex + 1}`)
+  scroll.append(svg)
+  figure.append(scrollHint, scroll)
+
+  const table = document.createElement('table')
+  table.className = 'rung-table visually-hidden'
+  const caption = document.createElement('caption')
+  caption.textContent = `Exact ladder rungs for market ${previewIndex + 1}`
+  const tableHead = document.createElement('thead')
+  const headingRowElement = document.createElement('tr')
+  for (const headingText of ['Side', 'Rate (BPS)', 'Size (assets)']) {
+    const cell = document.createElement('th')
+    cell.scope = 'col'
+    cell.textContent = headingText
+    headingRowElement.append(cell)
+  }
+  tableHead.append(headingRowElement)
+  const tableBody = document.createElement('tbody')
+  for (const rung of graphic.rungs) {
+    const row = document.createElement('tr')
+    const side = document.createElement('th')
+    side.scope = 'row'
+    side.textContent = rung.sideLabel
+    const rate = document.createElement('td')
+    rate.textContent = rung.rateBps
+    const assets = document.createElement('td')
+    assets.textContent = rung.assets
+    row.append(side, rate, assets)
+    tableBody.append(row)
+  }
+  table.append(caption, tableHead, tableBody)
+  figure.append(table)
+
+  const legend = document.createElement('div')
+  legend.className = 'ladder-legend'
+  const legendItems: readonly (readonly [string, string])[] = [
+    ['triangle', 'Higher rate · LEND'],
+    ['circle', 'Lower rate · REDUCE-ONLY'],
+    ['bar', 'Bar length = relative offer size']
+  ]
+  for (const [kind, label] of legendItems) {
+    const item = document.createElement('span')
+    const marker = document.createElement('i')
+    marker.className = `legend-marker legend-marker--${kind}`
+    item.append(marker, label)
+    legend.append(item)
+  }
+  const stateless = document.createElement('strong')
+  stateless.textContent = 'Configured synthetic output · not live offers'
+  legend.append(stateless)
+  figure.append(legend)
+
+  const callouts = document.createElement('dl')
+  callouts.className = 'ladder-callouts'
+  for (const callout of graphic.callouts) {
+    const item = document.createElement('div')
+    item.className = 'ladder-callout'
+    item.dataset.parameter = callout.parameters.join(' ')
+    const term = document.createElement('dt')
+    term.textContent = callout.label
+    const detail = document.createElement('dd')
+    detail.textContent = callout.value
+    item.append(term, detail)
+    callouts.append(item)
+  }
+  section.append(headingRow, figure, callouts)
+  return section
+}
+
+const invalidGraphic = (errors: readonly string[]) => {
+  const element = document.createElement('div')
+  element.className = 'ladder-invalid'
+  element.setAttribute('role', 'img')
+  element.setAttribute(
+    'aria-label',
+    `Invalid ladder graphic. No offers shown. ${errors.join('. ')}`
+  )
+  const title = document.createElement('strong')
+  title.textContent = 'Invalid ladder graphic'
+  const detail = document.createElement('span')
+  detail.textContent = 'No synthetic offers are shown until the configuration is valid.'
+  element.append(title, detail)
+  return element
+}
+
 const renderLadders = () => {
   const validation = validatePlaygroundState(state)
   if (!validation.valid) {
-    ladderContainer.replaceChildren()
+    ladderContainer.replaceChildren(invalidGraphic(validation.errors))
     ladderStatus.textContent = 'Preview unavailable while configuration is invalid.'
     ladderStatus.dataset.status = 'error'
     return
   }
   try {
-    const previews = generatePreviewLadders(state)
+    const graphics = generateLadderGraphicModels(state)
     ladderStatus.textContent =
-      previews.length === 0
+      graphics.length === 0
         ? 'No ladder markets configured.'
-        : `${previews.length} production-equivalent synthetic ladder preview${previews.length === 1 ? '' : 's'}.`
+        : `${graphics.length} production-equivalent synthetic ladder graphic${graphics.length === 1 ? '' : 's'}.`
     ladderStatus.dataset.status = 'ok'
-    ladderContainer.replaceChildren(
-      ...previews.map((preview, previewIndex) => {
-        const section = document.createElement('section')
-        section.className = 'ladder-market'
-        const title = document.createElement('h3')
-        title.textContent = `Ladder market ${previewIndex + 1}`
-        const market = document.createElement('code')
-        market.textContent = preview.marketId
-        const center = document.createElement('p')
-        center.textContent = `Effective center ${preview.centerRateBps} BPS`
-        const rows = [
-          ...preview.higher.toReversed().map(rung => ({ ...rung, side: 'higher' as const })),
-          ...preview.lower.map(rung => ({ ...rung, side: 'lower' as const }))
-        ]
-        const rungs = rows.map(row => {
-          const item = document.createElement('div')
-          item.className = `rung rung--${row.side}`
-          const side = document.createElement('span')
-          side.className = 'rung__side'
-          side.textContent = row.side === 'higher' ? 'Lend buy' : 'Reduce-only sell'
-          const rate = document.createElement('strong')
-          rate.textContent = `${row.rateBps} BPS`
-          const assets = document.createElement('span')
-          assets.className = 'rung__assets'
-          assets.textContent = `${formatAssets(row.assets)} assets`
-          item.append(side, rate, assets)
-          return item
-        })
-        section.append(title, market, center, ...rungs)
-        return section
-      })
-    )
+    ladderContainer.replaceChildren(...graphics.map(renderGraphic))
   } catch (error) {
-    ladderContainer.replaceChildren()
+    ladderContainer.replaceChildren(
+      invalidGraphic([error instanceof Error ? error.message : 'Invalid preview configuration'])
+    )
     ladderStatus.textContent =
       error instanceof Error ? error.message : 'Invalid preview configuration'
     ladderStatus.dataset.status = 'error'
@@ -312,7 +543,9 @@ const renderExports = () => {
     const output = panel.querySelector<HTMLTextAreaElement>('textarea')
     if (!output) continue
     try {
-      output.value = exporters[format](state)
+      output.value = exporters[format](state, {
+        includeSensitiveValues: includeSensitiveValues.checked
+      })
       output.dataset.invalid = 'false'
     } catch (error) {
       output.value = error instanceof Error ? error.message : 'Configuration is invalid'
@@ -374,6 +607,13 @@ const copyExport = async () => {
 }
 
 required<HTMLButtonElement>('#copy-export').addEventListener('click', () => void copyExport())
+includeSensitiveValues.addEventListener('change', () => {
+  renderExports()
+  copyStatus.textContent = includeSensitiveValues.checked
+    ? 'Sensitive values are visible and will be copied.'
+    : 'Sensitive values are redacted.'
+  copyStatus.dataset.status = includeSensitiveValues.checked ? 'error' : 'ok'
+})
 required<HTMLButtonElement>('#select-export').addEventListener('click', () => {
   activeOutput().focus()
   activeOutput().select()

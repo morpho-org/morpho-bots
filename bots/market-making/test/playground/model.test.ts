@@ -14,6 +14,7 @@ import {
   exportJson,
   exportShell,
   exportYaml,
+  generateLadderGraphicModels,
   generatePreviewLadders,
   validatePlaygroundState
 } from '../../playground/model'
@@ -121,7 +122,7 @@ describe('market-maker parameter playground', () => {
     const hostile = ' leading # value \\ $HOME $(touch /tmp/playground-pwned) `id` ;&|<>\nnext=\'" '
     state.observability.BETTERSTACK_SOURCE_TOKEN = hostile
     state.observability.BETTERSTACK_INGESTING_HOST = 'logs.example.test'
-    const output = exportShell(state)
+    const output = exportShell(state, { includeSensitiveValues: true })
     const roundTripPath = '/tmp/playground-roundtrip'
     await rm(roundTripPath, { force: true })
     await writeFile(roundTripPath, `${output}\nprintf '%s' "$BETTERSTACK_SOURCE_TOKEN"`)
@@ -149,6 +150,172 @@ describe('market-maker parameter playground', () => {
     const [preview] = generatePreviewLadders(state)
     expect(preview?.higher.reduce((sum, rung) => sum + BigInt(rung.assets), 0n)).toBe(100n)
     expect(preview?.lower.reduce((sum, rung) => sum + BigInt(rung.assets), 0n)).toBe(1000n)
+  })
+
+  test('proves every ladder field and reference rate through specific rendered model output', () => {
+    const state = createDefaultPlaygroundState()
+    const input = state.ladder[0]!
+    input.minimumRateBps = '0'
+    input.maximumRateBps = '2000'
+    input.minimumOfferAssets = '1'
+    input.lowerRateBudgetAssets = '1200'
+    input.higherRateBudgetAssets = '900'
+    input.targetMarketExposureAssets = '700'
+    input.maximumTotalExposureAssets = '800'
+    input.quotePremiumBps = '25'
+    input.spreadBps = '220'
+    input.stepBps = '110'
+    input.rungCount = '4'
+    input.sizeSkewBps = '1000'
+    input.groupMode = 'per-book'
+    input.loopIntervalSeconds = '30'
+    input.movementToleranceBps = '20'
+    state.referenceRateBps = '510'
+    const marketId = `0x${'6'.repeat(64)}`
+    state.scalar.MARKET_IDS = `${state.scalar.MARKET_IDS},${marketId}`
+    input.marketId = marketId
+
+    const [graphic] = generateLadderGraphicModels(state)
+    expect(graphic?.marketId).toBe(marketId)
+    expect(graphic?.axis).toMatchObject({
+      minimumRateBps: '0',
+      maximumRateBps: '2000',
+      referenceRateBps: '510',
+      centerRateBps: '535'
+    })
+    expect(graphic?.gapBps).toBe('220')
+    expect(graphic?.rungs).toHaveLength(8)
+    expect(graphic?.rungs.map(rung => rung.rateBps)).toEqual([
+      '975',
+      '865',
+      '755',
+      '645',
+      '425',
+      '315',
+      '205',
+      '95'
+    ])
+    expect(graphic?.rungs.filter(rung => rung.side === 'higher').map(rung => rung.assets)).toEqual([
+      '199',
+      '182',
+      '167',
+      '152'
+    ])
+    expect(graphic?.rungs.filter(rung => rung.side === 'lower').map(rung => rung.assets)).toEqual([
+      '261',
+      '287',
+      '313',
+      '339'
+    ])
+    expect(graphic?.rungs.map(rung => rung.barRatio)).toEqual([
+      0.587, 0.5368, 0.4926, 0.4483, 0.7699, 0.8466, 0.9233, 1
+    ])
+    expect(graphic?.callouts.map(callout => callout.value)).toEqual([
+      '510 + 25 = 535 BPS',
+      '110 BPS steps · 220 BPS full gap',
+      '4/side · 1000 BPS skew · 1 floor',
+      '1200 reduce-only · 900 lend',
+      '700 target · 800 total',
+      'per-book',
+      '30s loop · 20 BPS deadband',
+      '0–2000 BPS'
+    ])
+  })
+
+  test('allocates adaptive rate geometry with readable spacing at 32 and 512 rungs per side', () => {
+    for (const rungCount of [32, 512]) {
+      const state = createDefaultPlaygroundState()
+      const input = state.ladder[0]!
+      input.rungCount = String(rungCount)
+      input.minimumOfferAssets = '1'
+      input.minimumRateBps = '0'
+      input.maximumRateBps = String(rungCount * 200 + 400)
+      state.referenceRateBps = String(rungCount * 100 + 200)
+      const [graphic] = generateLadderGraphicModels(state)
+      const gaps = graphic!.rungs.slice(1).map((rung, index) => rung.y - graphic!.rungs[index]!.y)
+      const nearestHigher = graphic!.rungs.findLast(rung => rung.side === 'higher')!
+      const nearestLower = graphic!.rungs.find(rung => rung.side === 'lower')!
+
+      expect(graphic?.rungs).toHaveLength(rungCount * 2)
+      expect(Math.min(...gaps)).toBeGreaterThanOrEqual(28)
+      expect(
+        graphic!.rateToY(graphic!.axis.centerRateBps) - nearestHigher.y
+      ).toBeGreaterThanOrEqual(28)
+      expect(nearestLower.y - graphic!.rateToY(graphic!.axis.centerRateBps)).toBeGreaterThanOrEqual(
+        28
+      )
+      expect(graphic!.plotHeight).toBeGreaterThanOrEqual(rungCount * 2 * 28)
+    }
+  })
+
+  test('redacts sensitive values by default and includes them only with explicit opt-in', async () => {
+    const state = createDefaultPlaygroundState()
+    const privateKey = `0x${'9'.repeat(64)}`
+    const sourceToken = 'super-private-source-token'
+    state.scalar.MAKER_PRIVATE_KEY = privateKey
+    state.observability.BETTERSTACK_SOURCE_TOKEN = sourceToken
+    state.observability.BETTERSTACK_INGESTING_HOST = 'logs.example.test'
+
+    const yamlRedacted = exportYaml(state)
+    expect(yamlRedacted).not.toContain(privateKey)
+    expect(yamlRedacted).not.toContain(sourceToken)
+    expect(yamlRedacted).toContain('<redacted>')
+    const yamlIncluded = exportYaml(state, { includeSensitiveValues: true })
+    expect(yamlIncluded).toContain(privateKey)
+    expect(yamlIncluded).not.toContain(sourceToken)
+
+    for (const exporter of [exportShell, exportJson]) {
+      const redacted = exporter(state)
+      expect(redacted).not.toContain(privateKey)
+      expect(redacted).not.toContain(sourceToken)
+      expect(redacted).toContain('<redacted>')
+      const included = exporter(state, { includeSensitiveValues: true })
+      expect(included).toContain(privateKey)
+      expect(included).toContain(sourceToken)
+      expect(exporter(state)).not.toContain(privateKey)
+    }
+    const redactedEnvironment = await loadShellEnvironment(exportShell(state))
+    expect(redactedEnvironment.MAKER_PRIVATE_KEY).toBe('<redacted>')
+    expect(redactedEnvironment.BETTERSTACK_SOURCE_TOKEN).toBe('<redacted>')
+  })
+
+  test('builds ordered vertical geometry around center, gap, bounds, and relative rung sizes', () => {
+    const state = createDefaultPlaygroundState()
+    state.ladder[0]!.sizeSkewBps = '1000'
+    const [graphic] = generateLadderGraphicModels(state)
+    expect(graphic?.axis.minimumRateBps).toBe('200')
+    expect(graphic?.axis.maximumRateBps).toBe('800')
+    expect(graphic?.axis.referenceRateBps).toBe('500')
+    expect(graphic?.axis.centerRateBps).toBe('500')
+    expect(graphic?.rungs.map(rung => [rung.side, rung.rateBps])).toEqual([
+      ['higher', '800'],
+      ['higher', '700'],
+      ['higher', '600'],
+      ['lower', '400'],
+      ['lower', '300'],
+      ['lower', '200']
+    ])
+    expect(
+      graphic?.rungs.every((rung, index, rows) => index === 0 || rung.y > rows[index - 1]!.y)
+    ).toBe(true)
+    expect(graphic?.rungs[0]!.barRatio).toBeGreaterThan(graphic?.rungs[2]!.barRatio ?? 1)
+    expect(graphic?.rungs[3]!.barRatio).toBeLessThan(graphic?.rungs[5]!.barRatio ?? 0)
+    expect(graphic?.gapBps).toBe('200')
+  })
+
+  test('returns empty graphics for no markets and ordered models for multiple markets', () => {
+    const state = createDefaultPlaygroundState()
+    state.ladder = []
+    expect(generateLadderGraphicModels(state)).toEqual([])
+
+    const first = createDefaultLadder(`0x${'6'.repeat(64)}`)
+    const second = createDefaultLadder(`0x${'5'.repeat(64)}`)
+    state.scalar.MARKET_IDS = `${first.marketId},${second.marketId}`
+    state.ladder = [first, second]
+    expect(generateLadderGraphicModels(state).map(model => model.marketId)).toEqual([
+      first.marketId,
+      second.marketId
+    ])
   })
 
   test('rejects production-invalid ladder shape and blocks every export', () => {
@@ -207,14 +374,16 @@ describe('market-maker parameter playground', () => {
 
     expect(validatePlaygroundState(state)).toEqual({ valid: true, errors: [] })
 
-    const yaml = exportYaml(state)
+    const yaml = exportYaml(state, { includeSensitiveValues: true })
     const parsedYaml = parseDocument(yaml, { schema: 'failsafe' }).toJS() as {
       markets: { allowlist: unknown; v0OfferGroupIds: unknown }
     }
     expect(parsedYaml.markets.allowlist).toEqual([])
     expect(parsedYaml.markets.v0OfferGroupIds).toEqual([])
 
-    const environment = await loadShellEnvironment(exportShell(state))
+    const environment = await loadShellEnvironment(
+      exportShell(state, { includeSensitiveValues: true })
+    )
     expect(environment.MARKET_IDS).toBe('')
     expect(environment.V0_OFFER_GROUP_IDS).toBe('')
     expect(validateWithProductionLoader(environment).setup.marketIds).toEqual([])
@@ -237,13 +406,16 @@ describe('market-maker parameter playground', () => {
 
   test('valid exports round-trip through real environment and YAML config loaders', async () => {
     const state = createDefaultPlaygroundState()
-    const env = await loadShellEnvironment(exportShell(state))
+    const env = await loadShellEnvironment(exportShell(state, { includeSensitiveValues: true }))
     expect(validateWithProductionLoader(env).ladder).toHaveLength(1)
 
     const cwd = '/tmp/morpho-playground-roundtrip'
     await rm(cwd, { recursive: true, force: true })
     await mkdir(cwd, { recursive: true })
-    await writeFile(`${cwd}/market-making.yaml`, exportYaml(state))
+    await writeFile(
+      `${cwd}/market-making.yaml`,
+      exportYaml(state, { includeSensitiveValues: true })
+    )
     const loaded = await ConfigService.load({}, { cwd })
     expect(loaded.bootstrap).toHaveLength(1)
     expect(loaded.ladder).toHaveLength(1)

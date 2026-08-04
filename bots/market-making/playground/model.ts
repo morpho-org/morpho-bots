@@ -261,7 +261,12 @@ const assertExportable = (state: PlaygroundState) => {
   if (!result.valid) throw new Error(`Configuration is invalid: ${result.errors.join('; ')}`)
 }
 
-export const exportYaml = (state: PlaygroundState) => {
+type ExportOptions = { includeSensitiveValues?: boolean }
+const REDACTED_VALUE = '<redacted>'
+const exportSensitiveValue = (value: string, options: ExportOptions) =>
+  options.includeSensitiveValues || value === '' ? value : REDACTED_VALUE
+
+export const exportYaml = (state: PlaygroundState, options: ExportOptions = {}) => {
   assertExportable(state)
   const scalar = state.scalar
   const yamlList = (name: string, values: string[]) =>
@@ -275,7 +280,7 @@ export const exportYaml = (state: PlaygroundState) => {
     `  archiveRpcUrl: ${yamlQuote(scalar.REFERENCE_RPC_URL)}`,
     'identity:',
     `  makerAddress: ${yamlQuote(scalar.MAKER_ADDRESS)}`,
-    `  makerPrivateKey: ${yamlQuote(scalar.MAKER_PRIVATE_KEY)}`,
+    `  makerPrivateKey: ${yamlQuote(exportSensitiveValue(scalar.MAKER_PRIVATE_KEY, options))}`,
     'contracts:',
     `  midnightAddress: ${yamlQuote(scalar.MIDNIGHT_ADDRESS)}`,
     `  loanAssetAddress: ${yamlQuote(scalar.LOAN_ASSET_ADDRESS)}`,
@@ -311,16 +316,22 @@ export const exportYaml = (state: PlaygroundState) => {
 const shellQuote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`
 
 /** POSIX-shell-safe export. Values are single-quoted so expansion and command substitution stay inert. */
-export const exportShell = (state: PlaygroundState) => {
+export const exportShell = (state: PlaygroundState, options: ExportOptions = {}) => {
   assertExportable(state)
-  return `${Object.entries(environmentRecord(state))
+  const environment = environmentRecord(state)
+  environment.MAKER_PRIVATE_KEY = exportSensitiveValue(environment.MAKER_PRIVATE_KEY!, options)
+  environment.BETTERSTACK_SOURCE_TOKEN = exportSensitiveValue(
+    environment.BETTERSTACK_SOURCE_TOKEN!,
+    options
+  )
+  return `${Object.entries(environment)
     .map(([key, value]) => `export ${key}=${shellQuote(value)}`)
     .join('\n')}\n`
 }
 
-export const exportJson = (state: PlaygroundState) => {
+export const exportJson = (state: PlaygroundState, options: ExportOptions = {}) => {
   assertExportable(state)
-  return `${JSON.stringify({ configuration: { ...state.scalar, MARKET_IDS: list(state.scalar.MARKET_IDS), V0_OFFER_GROUP_IDS: list(state.scalar.V0_OFFER_GROUP_IDS), BOOTSTRAP_MARKETS: structuredBootstrap(state), LADDER_MARKETS: structuredLadder(state) }, observability: state.observability }, null, 2)}\n`
+  return `${JSON.stringify({ configuration: { ...state.scalar, MAKER_PRIVATE_KEY: exportSensitiveValue(state.scalar.MAKER_PRIVATE_KEY, options), MARKET_IDS: list(state.scalar.MARKET_IDS), V0_OFFER_GROUP_IDS: list(state.scalar.V0_OFFER_GROUP_IDS), BOOTSTRAP_MARKETS: structuredBootstrap(state), LADDER_MARKETS: structuredLadder(state) }, observability: { ...state.observability, BETTERSTACK_SOURCE_TOKEN: exportSensitiveValue(state.observability.BETTERSTACK_SOURCE_TOKEN, options) } }, null, 2)}\n`
 }
 
 type PreviewRung = { index: number; rateBps: string; assets: string }
@@ -329,6 +340,28 @@ type PreviewLadder = {
   centerRateBps: string
   lower: PreviewRung[]
   higher: PreviewRung[]
+}
+
+export type LadderGraphicRung = PreviewRung & {
+  side: 'higher' | 'lower'
+  sideLabel: 'Lend' | 'Reduce-only'
+  y: number
+  barRatio: number
+}
+
+export type LadderGraphicModel = {
+  marketId: string
+  axis: {
+    minimumRateBps: string
+    maximumRateBps: string
+    referenceRateBps: string
+    centerRateBps: string
+  }
+  gapBps: string
+  plotHeight: number
+  rateToY: (rateBps: string) => number
+  rungs: LadderGraphicRung[]
+  callouts: { label: string; value: string; parameters: string[] }[]
 }
 
 export const generatePreviewLadders = (state: PlaygroundState): PreviewLadder[] => {
@@ -347,6 +380,113 @@ export const generatePreviewLadders = (state: PlaygroundState): PreviewLadder[] 
       centerRateBps: String(generated.centerRateBps),
       lower: mapRungs(generated.lower),
       higher: mapRungs(generated.higher)
+    }
+  })
+}
+
+const graphicCallouts = (values: Record<string, string>, centerRateBps: string) => [
+  {
+    label: 'Center',
+    value: `${values.referenceRateBps} + ${values.quotePremiumBps} = ${centerRateBps} BPS`,
+    parameters: ['referenceRateBps', 'quotePremiumBps']
+  },
+  {
+    label: 'Spacing & gap',
+    value: `${values.stepBps} BPS steps · ${values.spreadBps} BPS full gap`,
+    parameters: ['stepBps', 'spreadBps']
+  },
+  {
+    label: 'Rungs & sizing',
+    value: `${values.rungCount}/side · ${values.sizeSkewBps} BPS skew · ${values.minimumOfferAssets} floor`,
+    parameters: ['rungCount', 'sizeSkewBps', 'minimumOfferAssets']
+  },
+  {
+    label: 'Budgets',
+    value: `${values.lowerRateBudgetAssets} reduce-only · ${values.higherRateBudgetAssets} lend`,
+    parameters: ['lowerRateBudgetAssets', 'higherRateBudgetAssets']
+  },
+  {
+    label: 'Exposure caps',
+    value: `${values.targetMarketExposureAssets} target · ${values.maximumTotalExposureAssets} total`,
+    parameters: ['targetMarketExposureAssets', 'maximumTotalExposureAssets']
+  },
+  {
+    label: 'Grouping',
+    value: values.groupMode!,
+    parameters: ['groupMode']
+  },
+  {
+    label: 'Cadence & tolerance',
+    value: `${values.loopIntervalSeconds}s loop · ${values.movementToleranceBps} BPS deadband`,
+    parameters: ['loopIntervalSeconds', 'movementToleranceBps']
+  },
+  {
+    label: 'Hard bounds',
+    value: `${values.minimumRateBps}–${values.maximumRateBps} BPS`,
+    parameters: ['minimumRateBps', 'maximumRateBps']
+  }
+]
+
+/** Builds presentation-only SVG geometry from the production-equivalent generated ladders. */
+export const generateLadderGraphicModels = (state: PlaygroundState): LadderGraphicModel[] => {
+  const previews = generatePreviewLadders(state)
+  return previews.map((preview, index) => {
+    const input = state.ladder[index]!
+    const parameterValues: Record<string, string> = {
+      ...input,
+      referenceRateBps: state.referenceRateBps
+    }
+    const minimum = BigInt(input.minimumRateBps)
+    const maximum = BigInt(input.maximumRateBps)
+    const range = maximum - minimum
+    const rows = [
+      ...preview.higher.toReversed().map(rung => ({
+        ...rung,
+        side: 'higher' as const,
+        sideLabel: 'Lend' as const
+      })),
+      ...preview.lower.map(rung => ({
+        ...rung,
+        side: 'lower' as const,
+        sideLabel: 'Reduce-only' as const
+      }))
+    ]
+    const largestAssets = rows.reduce(
+      (largest, rung) => (BigInt(rung.assets) > largest ? BigInt(rung.assets) : largest),
+      1n
+    )
+    const importantRates = [preview.centerRateBps, ...rows.map(rung => rung.rateBps)]
+      .map(BigInt)
+      .toSorted((left, right) => (left < right ? -1 : left > right ? 1 : 0))
+    const minimumRateDelta = importantRates.slice(1).reduce((minimumDelta, rate, index) => {
+      const delta = rate - importantRates[index]!
+      return delta > 0n && delta < minimumDelta ? delta : minimumDelta
+    }, range)
+    const minimumRowSpacing = 28
+    const plotHeight = Math.max(
+      336,
+      Math.ceil((Number(range) / Number(minimumRateDelta)) * minimumRowSpacing) + 1
+    )
+    const rateToY = (rateBps: string) =>
+      32 + (Number(maximum - BigInt(rateBps)) / Number(range)) * plotHeight
+    const rungs = rows.map(rung => ({
+      ...rung,
+      y: rateToY(rung.rateBps),
+      barRatio: Number((BigInt(rung.assets) * 10_000n) / largestAssets) / 10_000
+    }))
+    return {
+      marketId: preview.marketId,
+      axis: {
+        minimumRateBps: input.minimumRateBps,
+        maximumRateBps: input.maximumRateBps,
+        referenceRateBps: state.referenceRateBps,
+        centerRateBps: preview.centerRateBps
+      },
+      gapBps: input.spreadBps,
+      plotHeight,
+      rateToY,
+      rungs,
+      callouts: graphicCallouts(parameterValues, preview.centerRateBps)
     }
   })
 }
