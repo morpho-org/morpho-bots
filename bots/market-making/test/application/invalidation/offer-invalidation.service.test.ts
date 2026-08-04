@@ -107,17 +107,6 @@ describe('OfferInvalidationService', () => {
     expect(forgetGroups).toHaveBeenCalledWith([groupA, groupB])
   })
 
-  test('falls back to serial invalidation only when batch capability is unavailable', async () => {
-    const invalidateBatch = mock(async () => undefined)
-    const { service, events } = subject({ invalidateBatch })
-
-    await service.run()
-
-    expect(invalidateBatch).toHaveBeenCalledTimes(1)
-    expect(events).toContain(`invalidate:${groupA}`)
-    expect(events).toContain(`invalidate:${groupB}`)
-  })
-
   test('does not fall back after a submitted batch transaction fails', async () => {
     const invalidate = mock(async () => txB)
     const { service } = subject({
@@ -144,7 +133,8 @@ describe('OfferInvalidationService', () => {
 
   test('directly invalidates an explicit group without consulting the active-group API', async () => {
     const listActiveGroupIds = mock(async () => [groupB])
-    const { service } = subject({ listActiveGroupIds })
+    const invalidateBatch = mock(async () => txB)
+    const { service } = subject({ listActiveGroupIds, invalidateBatch })
 
     const report = await service.run({ groupId: groupA })
 
@@ -155,6 +145,7 @@ describe('OfferInvalidationService', () => {
       invalidatedGroups: [{ groupId: groupA, txHash: txA }]
     })
     expect(listActiveGroupIds).not.toHaveBeenCalled()
+    expect(invalidateBatch).not.toHaveBeenCalled()
   })
 
   test('renders selected groups without hashes in read-only mode', async () => {

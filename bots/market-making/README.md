@@ -149,22 +149,24 @@ can cap several offers, one cancellation invalidates every offer in that group. 
 0x-prefixed bytes32 argument, `invalidate <group-id>` directly invalidates only that group without
 depending on API indexing. Before a live cancellation it still verifies the connected Base chain,
 deployed configured Midnight contract, maker/private-key agreement, and configured native gas
-reserve. When `REVOKE_OFFERS_ADDRESS` is configured, has bytecode, reports the configured Midnight
-from `MIDNIGHT()`, and is authorized by Midnight for the maker, all selected groups use one exact
-zero-value `revokeOffers(bytes32[])` call. The helper always uses `msg.sender` as the on-behalf
-identity. If capability preflight is unavailable, unauthorized, or mismatched, invalidation falls
-back to exact serial Midnight `setConsumed` calls. A submitted helper transaction is never retried
-serially after failure. Every transaction is locally policy-checked and receipt-confirmed before
-success is reported. Successfully canceled
+reserve. Maker-wide invalidation submits one zero-value native Midnight `multicall(bytes[])`; each
+ordered inner call is exactly `setConsumed(groupId, MAX_OFFER_CAP, MAKER_ADDRESS)`. Midnight executes
+the inner calls with `delegatecall`, so the maker account that submits the outer transaction remains
+`msg.sender` throughout. The local transaction policy rejects any wrong target, selector, call count,
+order, group, amount, on-behalf account, or extra calldata. A reverted or failed multicall is reported
+without serial retry. Explicit single-group invalidation keeps the simpler direct Midnight
+`setConsumed` transaction. Successfully canceled
 bot-owned groups are removed from durable ownership state; explicitly configured
 `V0_OFFER_GROUP_IDS` remain configuration-owned until the operator edits configuration.
 
-Maker-wide invalidation attempts every selected group before returning. Submitted hashes stream as
+Maker-wide invalidation waits for the single multicall receipt, reports its hash against every group,
+then forgets all confirmed bot-owned groups together. Submitted hashes stream as
 `offer-invalidation.transaction-submitted` records and are retained in the terminal success or
-failure report. A partial failure exits with code `1` and includes completed groups plus sanitized
-per-group failure classifications. `invalidate --readonly` performs the cancellation preflight and,
-for maker-wide scope, lists the active groups, but never loads a private key, submits transactions,
-or edits ownership state.
+failure report. A failed atomic multicall exits with code `1` and reports the same submitted hash for
+every selected group. `invalidate --readonly` performs the cancellation preflight and, for maker-wide
+scope, lists the active groups, but never loads a private key, submits transactions, or edits
+ownership state. Normal bootstrap and ladder invalidation loops remain serial; native multicall is
+limited to the explicit maker-wide recovery command.
 
 For a maker with at least 101 USDC of both available balance and accrued credit, this
 one-rung-per-side preset caps each side at 150 USDC. USDC uses six decimals, so `150000000` is 150
@@ -231,31 +233,30 @@ bun run --filter @morpho-org/market-making-bot start -- --readonly setup-check
 Every supported environment variable is listed below. “Raw assets” means the loan token's smallest
 unit; for six-decimal USDC, `101000000` is 101 USDC. No value is inferred from another variable.
 
-| Environment variable             | YAML key                            | Requirement and behavior                                                                                                                                                                                                |
-| -------------------------------- | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CHAIN_ID`                       | `chain.id`                          | Required. Must be `8453`; all protocol, token, market, and transaction operations run on Base.                                                                                                                          |
-| `RPC_URL`                        | `chain.rpcUrl`                      | Required. Current-state Base JSON-RPC endpoint used for blocks, balances, allowances, positions, contract reads, simulation, transaction submission, and receipts.                                                      |
-| `REFERENCE_RPC_URL`              | `chain.archiveRpcUrl`               | Required. Archive-capable Base JSON-RPC endpoint used to read the reference Morpho Blue market at historical blocks.                                                                                                    |
-| `MAKER_ADDRESS`                  | `identity.makerAddress`             | Required. EVM address whose balance, allowance, credit, offers, and exposure the bot manages. In write mode it must be derived by `MAKER_PRIVATE_KEY`.                                                                  |
-| `MAKER_PRIVATE_KEY`              | `identity.makerPrivateKey`          | Required in write mode; omitted and never loaded with `--readonly`. Must be a 0x-prefixed 32-byte secp256k1 key. Never include it in committed configuration or logs.                                                   |
-| `MIDNIGHT_ADDRESS`               | `contracts.midnightAddress`         | Required. Expected deployed Midnight singleton. Setup verifies its bytecode before a writer starts.                                                                                                                     |
-| `REVOKE_OFFERS_ADDRESS`          | `contracts.revokeOffersAddress`     | Optional checksummed batch helper. Used only when it has bytecode, `MIDNIGHT()` matches `MIDNIGHT_ADDRESS`, and Midnight `isAuthorized(MAKER_ADDRESS, helper)` is true; otherwise explicit invalidation remains serial. |
-| `LOAN_ASSET_ADDRESS`             | `contracts.loanAssetAddress`        | Required. Loan token used by every configured Midnight market. Balances, allowances, budgets, offer sizes, and exposure values use this token's raw units.                                                              |
-| `RATIFIER_ADDRESS`               | `contracts.ratifierAddress`         | Required. Router-listed Ecrecover ratifier authorized by the maker; the bot signs offer trees for this ratifier and verifies its deployed Midnight binding.                                                             |
-| `MORPHO_API_BASE_URL`            | `apis.morphoBaseUrl`                | Required. Morpho API origin used for Midnight books, market metadata, prospective-offer validation, and cursor-paginated maker offer groups. No API-key header is supported.                                            |
-| `ROUTER_API_BASE_URL`            | `apis.routerBaseUrl`                | Required. Router API origin used only to verify the configured ratifier against `/v0/config/contracts`. No API-key header is supported.                                                                                 |
-| `MARKET_IDS`                     | `markets.allowlist`                 | Required comma-separated list of unique 0x-prefixed bytes32 Midnight market IDs. Every bootstrap or ladder `marketId` must appear here.                                                                                 |
-| `REFERENCE_MARKET_ID`            | `markets.referenceMarketId`         | Required 0x-prefixed bytes32 Morpho Blue market ID whose historical variable borrow rate supplies the reference rate for all configured strategies.                                                                     |
-| `V0_OFFER_GROUP_IDS`             | `markets.v0OfferGroupIds`           | Optional comma-separated list of unique, explicitly strategy-owned bytes32 offer-group IDs; defaults to empty. Use it to adopt known pre-existing groups safely.                                                        |
-| `NATIVE_RESERVE_WEI`             | `setup.nativeReserveWei`            | Required unsigned integer. Minimum maker native-token balance, in wei, required by readiness for transaction fees.                                                                                                      |
-| `MAXIMUM_LEND_EXPOSURE_ASSETS`   | `setup.maximumLendExposureAssets`   | Required unsigned integer in raw loan-token units. Minimum maker allowance to Midnight required by readiness; it is not a strategy position cap.                                                                        |
-| `REQUEST_TIMEOUT_MS`             | `setup.requestTimeoutMs`            | Optional provider-operation and aggregate pagination timeout in milliseconds. Defaults to `10000`; accepted range is `1` through `120000`.                                                                              |
-| `TRANSACTION_RECEIPT_TIMEOUT_MS` | `setup.transactionReceiptTimeoutMs` | Optional timeout for confirming an already-submitted transaction, in milliseconds. Defaults to `180000`; accepted range is `1` through `900000`.                                                                        |
-| `BOOTSTRAP_MARKETS`              | `bootstrap`                         | Optional exact JSON array of position-bootstrap entries documented below; defaults to `[]` and replaces the complete YAML `bootstrap` list when supplied.                                                               |
-| `LADDER_MARKETS`                 | `ladder`                            | Optional exact JSON array of ladder entries documented below; defaults to `[]` and replaces the complete YAML `ladder` list when supplied.                                                                              |
-| `BETTERSTACK_SOURCE_TOKEN`       | —                                   | Optional Better Stack source token. Must be set together with `BETTERSTACK_INGESTING_HOST`; partial configuration emits `logship.misconfigured` and ships nothing.                                                      |
-| `BETTERSTACK_INGESTING_HOST`     | —                                   | Optional Better Stack ingest host, with or without an `https://` prefix. Must be set together with `BETTERSTACK_SOURCE_TOKEN`.                                                                                          |
-| `BETTERSTACK_HEARTBEAT_URL`      | —                                   | Optional HTTP(S) heartbeat URL pinged at startup and once per minute. Invalid URLs and ping failures are reported safely and never interrupt market making.                                                             |
+| Environment variable             | YAML key                            | Requirement and behavior                                                                                                                                                     |
+| -------------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CHAIN_ID`                       | `chain.id`                          | Required. Must be `8453`; all protocol, token, market, and transaction operations run on Base.                                                                               |
+| `RPC_URL`                        | `chain.rpcUrl`                      | Required. Current-state Base JSON-RPC endpoint used for blocks, balances, allowances, positions, contract reads, simulation, transaction submission, and receipts.           |
+| `REFERENCE_RPC_URL`              | `chain.archiveRpcUrl`               | Required. Archive-capable Base JSON-RPC endpoint used to read the reference Morpho Blue market at historical blocks.                                                         |
+| `MAKER_ADDRESS`                  | `identity.makerAddress`             | Required. EVM address whose balance, allowance, credit, offers, and exposure the bot manages. In write mode it must be derived by `MAKER_PRIVATE_KEY`.                       |
+| `MAKER_PRIVATE_KEY`              | `identity.makerPrivateKey`          | Required in write mode; omitted and never loaded with `--readonly`. Must be a 0x-prefixed 32-byte secp256k1 key. Never include it in committed configuration or logs.        |
+| `MIDNIGHT_ADDRESS`               | `contracts.midnightAddress`         | Required. Expected deployed Midnight singleton. Setup verifies its bytecode before a writer starts.                                                                          |
+| `LOAN_ASSET_ADDRESS`             | `contracts.loanAssetAddress`        | Required. Loan token used by every configured Midnight market. Balances, allowances, budgets, offer sizes, and exposure values use this token's raw units.                   |
+| `RATIFIER_ADDRESS`               | `contracts.ratifierAddress`         | Required. Router-listed Ecrecover ratifier authorized by the maker; the bot signs offer trees for this ratifier and verifies its deployed Midnight binding.                  |
+| `MORPHO_API_BASE_URL`            | `apis.morphoBaseUrl`                | Required. Morpho API origin used for Midnight books, market metadata, prospective-offer validation, and cursor-paginated maker offer groups. No API-key header is supported. |
+| `ROUTER_API_BASE_URL`            | `apis.routerBaseUrl`                | Required. Router API origin used only to verify the configured ratifier against `/v0/config/contracts`. No API-key header is supported.                                      |
+| `MARKET_IDS`                     | `markets.allowlist`                 | Required comma-separated list of unique 0x-prefixed bytes32 Midnight market IDs. Every bootstrap or ladder `marketId` must appear here.                                      |
+| `REFERENCE_MARKET_ID`            | `markets.referenceMarketId`         | Required 0x-prefixed bytes32 Morpho Blue market ID whose historical variable borrow rate supplies the reference rate for all configured strategies.                          |
+| `V0_OFFER_GROUP_IDS`             | `markets.v0OfferGroupIds`           | Optional comma-separated list of unique, explicitly strategy-owned bytes32 offer-group IDs; defaults to empty. Use it to adopt known pre-existing groups safely.             |
+| `NATIVE_RESERVE_WEI`             | `setup.nativeReserveWei`            | Required unsigned integer. Minimum maker native-token balance, in wei, required by readiness for transaction fees.                                                           |
+| `MAXIMUM_LEND_EXPOSURE_ASSETS`   | `setup.maximumLendExposureAssets`   | Required unsigned integer in raw loan-token units. Minimum maker allowance to Midnight required by readiness; it is not a strategy position cap.                             |
+| `REQUEST_TIMEOUT_MS`             | `setup.requestTimeoutMs`            | Optional provider-operation and aggregate pagination timeout in milliseconds. Defaults to `10000`; accepted range is `1` through `120000`.                                   |
+| `TRANSACTION_RECEIPT_TIMEOUT_MS` | `setup.transactionReceiptTimeoutMs` | Optional timeout for confirming an already-submitted transaction, in milliseconds. Defaults to `180000`; accepted range is `1` through `900000`.                             |
+| `BOOTSTRAP_MARKETS`              | `bootstrap`                         | Optional exact JSON array of position-bootstrap entries documented below; defaults to `[]` and replaces the complete YAML `bootstrap` list when supplied.                    |
+| `LADDER_MARKETS`                 | `ladder`                            | Optional exact JSON array of ladder entries documented below; defaults to `[]` and replaces the complete YAML `ladder` list when supplied.                                   |
+| `BETTERSTACK_SOURCE_TOKEN`       | —                                   | Optional Better Stack source token. Must be set together with `BETTERSTACK_INGESTING_HOST`; partial configuration emits `logship.misconfigured` and ships nothing.           |
+| `BETTERSTACK_INGESTING_HOST`     | —                                   | Optional Better Stack ingest host, with or without an `https://` prefix. Must be set together with `BETTERSTACK_SOURCE_TOKEN`.                                               |
+| `BETTERSTACK_HEARTBEAT_URL`      | —                                   | Optional HTTP(S) heartbeat URL pinged at startup and once per minute. Invalid URLs and ping failures are reported safely and never interrupt market making.                  |
 
 There is no separate Mempool endpoint or API-key field. Books and cursor-paginated maker offer groups
 are read through `MORPHO_API_BASE_URL`; `ROUTER_API_BASE_URL` is used only for the

@@ -111,22 +111,17 @@ export const createProductionOfferInvalidationPort = (
     mode: () => 'write',
     preflight,
     listActiveGroupIds,
-    invalidateBatch: (groupIds, onTransactionSubmitted) => {
-      const helper = config.revokeOffersAddress
-      if (!helper) return Promise.resolve(undefined)
-      return providerOperation('batch-transaction', () =>
+    invalidateBatch: (groupIds, onTransactionSubmitted) =>
+      providerOperation('batch-transaction', () =>
         invalidateOffersBatch({
-          client,
           wallet,
-          helper,
           midnight: config.setup.midnight,
           maker,
           groupIds,
           receiptTimeoutMs: config.transactionReceiptTimeoutMs,
           onTransactionSubmitted
         })
-      )
-    },
+      ),
     invalidate: (groupId, onTransactionSubmitted) =>
       providerOperation('transaction', async () => {
         const transaction = midnight

@@ -1,15 +1,7 @@
 import type { Address, Hex } from 'viem'
 
 import { MAX_OFFER_CAP, midnightAbi } from '@morpho-org/midnight-sdk'
-import { RevokeOffers } from '@repo/contracts'
-import {
-  decodeFunctionData,
-  encodeFunctionData,
-  isAddressEqual,
-  isHex,
-  keccak256,
-  size
-} from 'viem'
+import { decodeFunctionData, encodeFunctionData, isAddressEqual, isHex, keccak256 } from 'viem'
 
 import { OfferInvalidationAdapterError } from './offer-invalidation-adapter.error'
 
@@ -28,8 +20,7 @@ export const assertOfferInvalidationTransaction = (
     if (
       !isAddressEqual(transaction.to, policy.target) ||
       transaction.value !== 0n ||
-      !isHex(transaction.data, { strict: true }) ||
-      size(transaction.data) !== 100
+      !isHex(transaction.data, { strict: true })
     ) {
       throw new OfferInvalidationAdapterError('transaction-policy')
     }
@@ -47,6 +38,15 @@ export const assertOfferInvalidationTransaction = (
     ) {
       throw new OfferInvalidationAdapterError('transaction-policy')
     }
+
+    const expected = encodeFunctionData({
+      abi: midnightAbi,
+      functionName: 'setConsumed',
+      args: [policy.groupId, MAX_OFFER_CAP, policy.account]
+    })
+    if (keccak256(transaction.data) !== keccak256(expected)) {
+      throw new OfferInvalidationAdapterError('transaction-policy')
+    }
   } catch (error) {
     if (error instanceof OfferInvalidationAdapterError) throw error
     throw new OfferInvalidationAdapterError('transaction-policy')
@@ -54,17 +54,16 @@ export const assertOfferInvalidationTransaction = (
 }
 
 /**
- * Enforces the exact hot-key policy for one helper-backed batch cancellation.
- * @param transaction - Helper call awaiting submission.
- * @param policy - Expected helper target and ordered bytes32 group array.
- * @returns Completion only for zero-value `revokeOffers` calldata matching the exact selection.
- * @throws `OfferInvalidationAdapterError` when any transaction field is outside the allowlist.
- * @remarks The helper ABI has no on-behalf argument; its Solidity implementation always uses
- * `msg.sender`, and exact re-encoding rejects appended calldata.
+ * Enforces the exact hot-key policy for an ordered Midnight multicall cancellation.
+ * @param transaction - Native Midnight multicall awaiting submission.
+ * @param policy - Expected Midnight target, ordered group identifiers, and configured maker.
+ * @returns Completion only for a zero-value multicall containing the exact `setConsumed` calls.
+ * @throws `OfferInvalidationAdapterError` for a wrong target, selector, count, order, group, amount,
+ * on-behalf account, malformed payload, or additional calldata.
  */
 export const assertBatchOfferInvalidationTransaction = (
   transaction: { to: Address; data: Hex; value: bigint },
-  policy: { target: Address; groupIds: readonly Hex[] }
+  policy: { target: Address; groupIds: readonly Hex[]; maker: Address }
 ) => {
   try {
     if (
@@ -75,15 +74,41 @@ export const assertBatchOfferInvalidationTransaction = (
       throw new OfferInvalidationAdapterError('transaction-policy')
     }
 
-    const decoded = decodeFunctionData({ abi: RevokeOffers.abi, data: transaction.data })
-    if (decoded.functionName !== 'revokeOffers') {
+    const outer = decodeFunctionData({ abi: midnightAbi, data: transaction.data })
+    if (outer.functionName !== 'multicall') {
+      throw new OfferInvalidationAdapterError('transaction-policy')
+    }
+    const [calls] = outer.args
+    if (calls.length !== policy.groupIds.length) {
       throw new OfferInvalidationAdapterError('transaction-policy')
     }
 
+    for (const [index, data] of calls.entries()) {
+      const inner = decodeFunctionData({ abi: midnightAbi, data })
+      if (inner.functionName !== 'setConsumed') {
+        throw new OfferInvalidationAdapterError('transaction-policy')
+      }
+      const [groupId, amount, onBehalf] = inner.args
+      if (
+        groupId !== policy.groupIds[index] ||
+        amount !== MAX_OFFER_CAP ||
+        !isAddressEqual(onBehalf, policy.maker)
+      ) {
+        throw new OfferInvalidationAdapterError('transaction-policy')
+      }
+    }
+
+    const expectedCalls = policy.groupIds.map(groupId =>
+      encodeFunctionData({
+        abi: midnightAbi,
+        functionName: 'setConsumed',
+        args: [groupId, MAX_OFFER_CAP, policy.maker]
+      })
+    )
     const expected = encodeFunctionData({
-      abi: RevokeOffers.abi,
-      functionName: 'revokeOffers',
-      args: [policy.groupIds]
+      abi: midnightAbi,
+      functionName: 'multicall',
+      args: [expectedCalls]
     })
     if (keccak256(transaction.data) !== keccak256(expected)) {
       throw new OfferInvalidationAdapterError('transaction-policy')

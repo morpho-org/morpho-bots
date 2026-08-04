@@ -49,16 +49,6 @@ describe('ConfigService', () => {
     expect(config.v0OfferGroupIds).toEqual([groupId])
     expect(config.requestTimeoutMs).toBe(10_000)
     expect(config.transactionReceiptTimeoutMs).toBe(180_000)
-    expect(config.revokeOffersAddress).toBeUndefined()
-  })
-
-  test('loads and checksum-normalizes the optional batch revocation helper', () => {
-    const config = ConfigService.from({
-      ...environment,
-      REVOKE_OFFERS_ADDRESS: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd'
-    })
-
-    expect(config.revokeOffersAddress).toBe('0xABcdEFABcdEFabcdEfAbCdefabcdeFABcDEFabCD')
   })
 
   test('canonicalizes equivalent mixed-case market, group, and reference IDs', () => {
@@ -79,7 +69,6 @@ describe('ConfigService', () => {
   test.each([
     ['MAKER_ADDRESS', 'not-an-address', 'MAKER_ADDRESS must be an EVM address'],
     ['MIDNIGHT_ADDRESS', '0x12', 'MIDNIGHT_ADDRESS must be an EVM address'],
-    ['REVOKE_OFFERS_ADDRESS', '0x12', 'REVOKE_OFFERS_ADDRESS must be an EVM address'],
     ['MARKET_IDS', '0x1234', 'MARKET_IDS must contain 0x-prefixed 32-byte hex values'],
     [
       'V0_OFFER_GROUP_IDS',

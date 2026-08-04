@@ -16,7 +16,6 @@ import {
   bytes32Value,
   hexListValue,
   ladderConfigsValue,
-  parseAddress,
   privateKeyValue,
   requestTimeoutValue,
   requiredValue,
@@ -102,9 +101,6 @@ export class ConfigService {
       referenceRpcUrl: urlValue(environment, 'REFERENCE_RPC_URL'),
       morphoApiBaseUrl: urlValue(environment, 'MORPHO_API_BASE_URL'),
       routerApiBaseUrl: urlValue(environment, 'ROUTER_API_BASE_URL'),
-      revokeOffersAddress: environment.REVOKE_OFFERS_ADDRESS?.trim()
-        ? parseAddress(environment.REVOKE_OFFERS_ADDRESS.trim(), 'REVOKE_OFFERS_ADDRESS')
-        : undefined,
       v0OfferGroupIds: hexListValue(environment, 'V0_OFFER_GROUP_IDS', false),
       requestTimeoutMs: requestTimeoutValue(environment),
       transactionReceiptTimeoutMs: transactionReceiptTimeoutValue(environment),
@@ -124,7 +120,6 @@ export class ConfigService {
       referenceRpcUrl: string
       morphoApiBaseUrl: string
       routerApiBaseUrl: string
-      revokeOffersAddress?: Address
       v0OfferGroupIds: readonly Hex[]
       requestTimeoutMs: number
       transactionReceiptTimeoutMs: number
@@ -171,11 +166,6 @@ export class ConfigService {
   /** Exposes the validated Router API origin. @returns Validated Router API origin; reports identify it only as `router-api`. */
   get routerApiBaseUrl() {
     return this.values.routerApiBaseUrl
-  }
-
-  /** Exposes the optional validated batch revocation helper. @returns Its checksummed address, or `undefined` to retain serial cancellation. */
-  get revokeOffersAddress() {
-    return this.values.revokeOffersAddress
   }
 
   /** Exposes strategy-owned offer groups. @returns Strategy-owned V0 offer-group IDs used to reject unknown namespaces. */

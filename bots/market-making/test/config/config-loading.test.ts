@@ -85,7 +85,6 @@ identity:
   makerPrivateKey: "0x${'11'.repeat(32)}"
 contracts:
   midnightAddress: "0x2222222222222222222222222222222222222222"
-  revokeOffersAddress: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"
   loanAssetAddress: "0x3333333333333333333333333333333333333333"
   ratifierAddress: "0x4444444444444444444444444444444444444444"
 apis:
@@ -129,7 +128,6 @@ describe('ConfigService YAML and environment loading', () => {
     expect(config.rpcUrl).toBe('https://rpc.yaml.example')
     expect(config.transactionReceiptTimeoutMs).toBe(180_000)
     expect(config.setup.marketIds).toEqual([marketId])
-    expect(config.revokeOffersAddress).toBe('0xABcdEFABcdEFabcdEfAbCdefabcdeFABcDEFabCD')
     expect(config.bootstrap).toEqual([
       {
         marketId,
