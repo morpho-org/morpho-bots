@@ -15,6 +15,7 @@ const oldGroup: Hex = `0x${'22'.repeat(32)}`
 const newGroup: Hex = `0x${'33'.repeat(32)}`
 const secondGroup: Hex = `0x${'44'.repeat(32)}`
 const publicationHash: Hex = `0x${'aa'.repeat(32)}`
+const ratificationHash: Hex = `0x${'dd'.repeat(32)}`
 const cancellationHash: Hex = `0x${'bb'.repeat(32)}`
 const secondCancellationHash: Hex = `0x${'cc'.repeat(32)}`
 const quote: LadderQuoteSet = {
@@ -102,9 +103,13 @@ describe('MidnightLadderMakeService', () => {
       groups: [{ groupId: newGroup, side: 'lower', rungIndexes: [0] }],
       prospective: [{ marketId, buy: true, tick: 10n }],
       publish: async observer => {
+        await observer?.({ operation: 'ratify', txHash: ratificationHash })
         await observer?.({ operation: 'publish', txHash: publicationHash })
         subject.events.push('publish')
-        return publicationHash
+        return [
+          { operation: 'ratify', txHash: ratificationHash },
+          { operation: 'publish', txHash: publicationHash }
+        ] as const
       }
     })
 
@@ -120,11 +125,13 @@ describe('MidnightLadderMakeService', () => {
     expect(result).toEqual({
       submittedTransactions: [
         { operation: 'cancel', txHash: cancellationHash },
+        { operation: 'ratify', txHash: ratificationHash },
         { operation: 'publish', txHash: publicationHash }
       ]
     })
     expect(submitted).toEqual([
       { operation: 'cancel', txHash: cancellationHash },
+      { operation: 'ratify', txHash: ratificationHash },
       { operation: 'publish', txHash: publicationHash }
     ])
   })
@@ -200,6 +207,24 @@ describe('MidnightLadderMakeService', () => {
 
     expect(error).toBeInstanceOf(LadderAdapterError)
     expect(error).toMatchObject({ operation: 'transaction-reverted' })
+  })
+
+  test('retains an approved Setter reservation when final validation fails', async () => {
+    const subject = harness()
+    subject.transport.listActiveGroupIds = async () => []
+    subject.transport.preparePublication = async () => ({
+      groupIds: [newGroup],
+      groups: [{ groupId: newGroup, side: 'lower', rungIndexes: [0] }],
+      prospective: [],
+      publish: async () => {
+        throw new LadderAdapterError('mempool-validation-after-ratification')
+      }
+    })
+
+    await expect(
+      subject.service.reconcile({ marketId, desired: quote, reason: 'recenter' })
+    ).rejects.toMatchObject({ operation: 'mempool-validation-after-ratification' })
+    expect(subject.events).toEqual(['reserve'])
   })
 
   test('excludes a previously canceled group while the book still reports its offers', async () => {

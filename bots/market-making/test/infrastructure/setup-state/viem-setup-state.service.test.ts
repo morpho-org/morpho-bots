@@ -15,6 +15,7 @@ const maker: Address = '0x1111111111111111111111111111111111111111'
 const midnight: Address = '0x2222222222222222222222222222222222222222'
 const loanAsset: Address = '0x3333333333333333333333333333333333333333'
 const ratifier: Address = '0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E'
+const setterRatifier: Address = '0x800B5F12A61B8198a5a6EfD794Cac6699B294d63'
 const marketId: Hex = `0x${'55'.repeat(32)}`
 const referenceMarketId: Hex = `0x${'88'.repeat(32)}`
 const knownGroup: Hex = `0x${'66'.repeat(32)}`
@@ -25,6 +26,9 @@ const authoritativeRatifierRuntime = (
 ).trim() as Hex
 const authoritativeRatifierRuntimeHash =
   '0xcce1e0dd38ae831e81a9270627af2c24c208409ec03d5654a28a33ead53b1ac1'
+const authoritativeSetterRatifierRuntime = (
+  await Bun.file(new URL('../../fixtures/setter-ratifier-base.hex', import.meta.url)).text()
+).trim() as Hex
 
 const createState = (
   responses: Record<string, unknown>,
@@ -32,10 +36,12 @@ const createState = (
     code?: Hex
     ratifierMidnight?: Address
     rootCanceled?: unknown
+    rootRatified?: unknown
     rejectRatifierReads?: boolean
     missingReferenceMarket?: boolean
     referenceLoanAsset?: Address
     routerRatifier?: Address
+    routerRatifierName?: 'ecrecoverRatifier' | 'setterRatifier'
     requestLimit?: number
     requestTimeoutMs?: number
     now?: () => number
@@ -64,6 +70,10 @@ const createState = (
       if (functionName === 'isRootCanceled') {
         if (overrides.rejectRatifierReads) throw new Error('undeployed ratifier')
         return overrides.rootCanceled ?? false
+      }
+      if (functionName === 'isRootRatified') {
+        if (overrides.rejectRatifierReads) throw new Error('undeployed ratifier')
+        return overrides.rootRatified ?? false
       }
       if (functionName === 'toMarket') {
         return {
@@ -128,7 +138,7 @@ const createState = (
         data: [
           {
             chain_id: 8453,
-            name: 'ecrecoverRatifier',
+            name: overrides.routerRatifierName ?? 'ecrecoverRatifier',
             address: overrides.routerRatifier ?? ratifier
           }
         ],
@@ -519,10 +529,11 @@ describe('ViemSetupStateService', () => {
     const { state } = createState({})
 
     expect(await state.getRatifier(maker, ratifier)).toEqual({
+      type: 'ecrecover',
       listed: true,
       deployed: true,
       midnightMatches: true,
-      ecrecoverSurface: true,
+      surfaceMatches: true,
       authorized: true
     })
 
@@ -541,13 +552,58 @@ describe('ViemSetupStateService', () => {
     ).toBe(false)
   })
 
+  test('accepts the Router-listed Setter ratifier with its exact deployed interface', async () => {
+    const { state } = createState(
+      {},
+      {
+        code: authoritativeSetterRatifierRuntime,
+        routerRatifier: setterRatifier,
+        routerRatifierName: 'setterRatifier'
+      }
+    )
+
+    expect(await state.getRatifier(maker, setterRatifier)).toEqual({
+      type: 'setter',
+      listed: true,
+      deployed: true,
+      midnightMatches: true,
+      surfaceMatches: true,
+      authorized: true
+    })
+    expect(
+      (
+        await createState(
+          {},
+          {
+            code: authoritativeSetterRatifierRuntime,
+            routerRatifier: setterRatifier,
+            routerRatifierName: 'setterRatifier',
+            rootRatified: true
+          }
+        ).state.getRatifier(maker, setterRatifier)
+      ).surfaceMatches
+    ).toBe(false)
+  })
+
+  test('rejects a non-canonical ratifier even when Router labels compatible runtime bytecode', async () => {
+    const unknownRatifier: Address = '0x1111111111111111111111111111111111111111'
+    const { state } = createState(
+      {},
+      { code: authoritativeRatifierRuntime, routerRatifier: unknownRatifier }
+    )
+
+    expect(await state.getRatifier(maker, unknownRatifier)).toMatchObject({
+      listed: false,
+      surfaceMatches: false
+    })
+  })
+
   test('rejects arbitrary getter-compatible bytecode and accepts the authoritative Base runtime', async () => {
     expect(keccak256(authoritativeRatifierRuntime)).toBe(authoritativeRatifierRuntimeHash)
     expect(
-      (await createState({}, { code: '0x1234' }).state.getRatifier(maker, ratifier))
-        .ecrecoverSurface
+      (await createState({}, { code: '0x1234' }).state.getRatifier(maker, ratifier)).surfaceMatches
     ).toBe(false)
-    expect((await createState({}).state.getRatifier(maker, ratifier)).ecrecoverSurface).toBe(true)
+    expect((await createState({}).state.getRatifier(maker, ratifier)).surfaceMatches).toBe(true)
   })
 
   test('reports an undeployed ratifier without calling its ABI surface', async () => {
@@ -559,7 +615,7 @@ describe('ViemSetupStateService', () => {
     expect(result).toMatchObject({
       deployed: false,
       midnightMatches: false,
-      ecrecoverSurface: false
+      surfaceMatches: false
     })
   })
 

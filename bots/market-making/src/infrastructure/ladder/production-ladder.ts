@@ -1,4 +1,4 @@
-import { EcrecoverRatifierUtils, midnightAbi, Payload } from '@morpho-org/midnight-sdk'
+import { midnightAbi, Payload } from '@morpho-org/midnight-sdk'
 import { morphoViemExtension } from '@morpho-org/morpho-sdk'
 import { getChainAddress } from '@morpho-org/morpho-ts'
 import {
@@ -39,11 +39,12 @@ import { ladderCashReservations } from './ladder-cash-reservation.utils'
 import { createLadderGroupOwnership } from './ladder-group-ownership.utils'
 import { MidnightLadderMakeService, type LadderOfferTransport } from './ladder-make.service'
 import { buildLadderTree } from './ladder-offer.utils'
-import { signLadderTree } from './ladder-signature.utils'
+import { configuredRatifierType, prepareLadderRatification } from './ladder-ratification.utils'
 import { assertLadderProspectiveSpread } from './ladder-spread.utils'
 import {
   assertLadderCancellationTransaction,
-  assertLadderPublicationTransaction
+  assertLadderPublicationTransaction,
+  assertLadderRatificationTransaction
 } from './ladder-transaction.utils'
 
 /** Concrete ports used by the default ladder application service. */
@@ -59,7 +60,7 @@ const remaining = (limit: bigint, used: bigint) => (limit > used ? limit - used 
 
 const notifySubmitted = async (
   observer: LadderTransactionSubmittedObserver | undefined,
-  operation: 'cancel' | 'publish',
+  operation: 'cancel' | 'ratify' | 'publish',
   txHash: Hex
 ) => {
   await observer?.({ operation, txHash })
@@ -338,29 +339,28 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
     listBookOffers: async () => (await completeBookOffers()).book,
     preparePublication: async quote => {
       const prepared = await prepareUnsignedPublication(quote)
-      const signature = await signLadderTree({
+      const ratifierType = configuredRatifierType(config.setup.ratifier)
+      const ratification = await prepareLadderRatification({
+        type: ratifierType,
         tree: prepared.tree,
         client: wallet,
         account
       })
-      await prepared.tree.mempoolValidate({
-        chainId: base.id,
-        apiUrl: `${config.morphoApiBaseUrl}/v0/midnight`,
-        ratification: { type: 'ecrecover', account: maker, signature }
-      })
-      const items = await EcrecoverRatifierUtils.ratify({
-        tree: prepared.tree,
-        account: maker,
-        signature
-      })
+      if (ratification.approval === undefined) {
+        await prepared.tree.mempoolValidate({
+          chainId: base.id,
+          apiUrl: `${config.morphoApiBaseUrl}/v0/midnight`,
+          ratification: ratification.validation
+        })
+      }
       const transaction = {
         to: mempool,
-        data: await Payload.encode(items),
+        data: await Payload.encode(ratification.items),
         value: 0n
       }
       await assertLadderPublicationTransaction(transaction, {
         target: mempool,
-        offers: prepared.tree.offers
+        items: ratification.items
       })
       const groupIds = [...new Set(prepared.groups.map(group => group.groupId))]
       return {
@@ -368,6 +368,33 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
         groups: prepared.groups,
         prospective: prepared.bookOffers,
         publish: async onTransactionSubmitted => {
+          const submittedTransactions = []
+          if (ratification.approval !== undefined) {
+            assertLadderRatificationTransaction(ratification.approval, {
+              target: config.setup.ratifier,
+              account: maker,
+              root: prepared.tree.root
+            })
+            const approvalHash = await wallet.sendTransaction(ratification.approval)
+            await notifySubmitted(onTransactionSubmitted, 'ratify', approvalHash)
+            const approvalReceipt = await wallet.waitForTransactionReceipt({
+              hash: approvalHash,
+              timeout: config.transactionReceiptTimeoutMs
+            })
+            if (approvalReceipt.status !== 'success') {
+              throw new LadderAdapterError('ratifier-transaction-reverted')
+            }
+            submittedTransactions.push({ operation: 'ratify' as const, txHash: approvalHash })
+            try {
+              await prepared.tree.mempoolValidate({
+                chainId: base.id,
+                apiUrl: `${config.morphoApiBaseUrl}/v0/midnight`,
+                ratification: ratification.validation
+              })
+            } catch {
+              throw new LadderAdapterError('mempool-validation-after-ratification')
+            }
+          }
           const hash = await wallet.sendTransaction(transaction)
           await notifySubmitted(onTransactionSubmitted, 'publish', hash)
           const receipt = await wallet.waitForTransactionReceipt({
@@ -375,9 +402,14 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
             timeout: config.transactionReceiptTimeoutMs
           })
           if (receipt.status !== 'success') {
-            throw new LadderAdapterError('transaction-reverted')
+            throw new LadderAdapterError(
+              ratification.approval === undefined
+                ? 'transaction-reverted'
+                : 'publication-transaction-reverted-after-ratification'
+            )
           }
-          return hash
+          submittedTransactions.push({ operation: 'publish' as const, txHash: hash })
+          return submittedTransactions
         }
       }
     },

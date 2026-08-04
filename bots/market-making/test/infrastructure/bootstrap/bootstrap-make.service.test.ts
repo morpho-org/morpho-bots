@@ -14,6 +14,7 @@ const groupId: Hex = `0x${'22'.repeat(32)}`
 const publishedGroupId: Hex = `0x${'33'.repeat(32)}`
 const cancellationHash: Hex = `0x${'aa'.repeat(32)}`
 const publicationHash: Hex = `0x${'bb'.repeat(32)}`
+const ratificationHash: Hex = `0x${'cc'.repeat(32)}`
 const desiredOffer = {
   marketId,
   assets: 100n,
@@ -84,8 +85,12 @@ describe('MidnightBootstrapMakeService', () => {
       preparePublication: async () => ({
         groupId: publishedGroupId,
         publish: async observer => {
+          await observer?.({ operation: 'ratify', txHash: ratificationHash })
           await observer?.({ operation: 'publish', txHash: publicationHash })
-          return publicationHash
+          return [
+            { operation: 'ratify', txHash: ratificationHash },
+            { operation: 'publish', txHash: publicationHash }
+          ] as const
         }
       }),
       reserveGroup: async () => {},
@@ -109,11 +114,13 @@ describe('MidnightBootstrapMakeService', () => {
     ).toEqual({
       submittedTransactions: [
         { operation: 'cancel', txHash: cancellationHash },
+        { operation: 'ratify', txHash: ratificationHash },
         { operation: 'publish', txHash: publicationHash }
       ]
     })
     expect(submitted).toEqual([
       { operation: 'cancel', txHash: cancellationHash },
+      { operation: 'ratify', txHash: ratificationHash },
       { operation: 'publish', txHash: publicationHash }
     ])
   })
@@ -311,6 +318,39 @@ describe('MidnightBootstrapMakeService', () => {
 
     expect(error).toMatchObject({ operation: 'transaction-reverted' })
     expect(events).toEqual(['reserve', 'publish', 'release'])
+  })
+
+  test('retains the approved Setter reservation when publication reverts', async () => {
+    const events: string[] = []
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [],
+      listBookOffers: async () => [],
+      toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
+      preparePublication: async () => ({
+        groupId: publishedGroupId,
+        publish: async () => {
+          events.push('publish')
+          throw new BootstrapAdapterError('publication-transaction-reverted-after-ratification')
+        }
+      }),
+      reserveGroup: async () => {
+        events.push('reserve')
+      },
+      confirmPublishedGroup: async () => {
+        events.push('confirm')
+      },
+      releaseGroupReservation: async () => {
+        events.push('release')
+      },
+      invalidate: async () => {}
+    })
+
+    await expect(
+      service.reconcile({ marketId, desiredOffer, reason: 'publish' })
+    ).rejects.toMatchObject({
+      operation: 'publication-transaction-reverted-after-ratification'
+    })
+    expect(events).toEqual(['reserve', 'publish'])
   })
 
   test('retains the durable reservation when publication outcome is ambiguous', async () => {

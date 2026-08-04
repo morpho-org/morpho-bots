@@ -1,6 +1,6 @@
 import type { Address, Hex } from 'viem'
 
-import { ecrecoverRatifierAbi, midnightAbi } from '@morpho-org/midnight-sdk'
+import { ecrecoverRatifierAbi, midnightAbi, setterRatifierAbi } from '@morpho-org/midnight-sdk'
 import { MidnightApi } from '@morpho-org/midnight-sdk/api'
 import { blueAbi } from '@morpho-org/morpho-sdk/abis'
 import { restructure } from '@morpho-org/morpho-sdk/utils'
@@ -19,6 +19,7 @@ import { ProviderResponseError } from './provider-response.error'
 import {
   addressValue,
   BASE_ECRECOVER_RATIFIER_RUNTIME_HASH,
+  BASE_SETTER_RATIFIER_RUNTIME_HASH,
   DEFAULT_REQUEST_TIMEOUT_MS,
   invertedMarketIds,
   listedBaseMarketIds,
@@ -31,7 +32,7 @@ import {
   offersFromGroups,
   PAGE_SIZE,
   bigintValue,
-  routerEcrecoverRatifiers,
+  routerRatifiers,
   morphoApiTimeout
 } from './viem-setup-state.utils'
 
@@ -185,14 +186,14 @@ export class ViemSetupStateService implements SetupStateService {
 
   /**
    * Cross-checks a ratifier against Router registry, exact runtime hash, immutable target, callable
-   * Ecrecover surface, and Midnight authorization.
+   * Ecrecover or Setter surface, and Midnight authorization.
    * @param maker - Maker whose authorization/root surface is read.
    * @param ratifier - Candidate ratifier address.
-   * @returns Five readiness facts without exposing provider URLs or bytecode.
+   * @returns Sanitized ratifier type and five readiness facts without exposing provider URLs or bytecode.
    * @throws `ProviderReadError` on a sanitized Router/RPC rejection, or `ProviderResponseError` for
    * malformed provider or contract responses.
    * @remarks Registry, bytecode, and authorization reads start concurrently. Ratifier ABI reads then
-   * run concurrently only after the exact Ecrecover runtime is proven; this is read-only.
+   * run concurrently only after the exact selected runtime is proven; this is read-only.
    */
   async getRatifier(maker: Address, ratifier: Address) {
     const [routerContracts, code, authorized] = await Promise.all([
@@ -219,33 +220,48 @@ export class ViemSetupStateService implements SetupStateService {
         'Midnight isAuthorized response must be boolean'
       )
     }
-    const listed = routerEcrecoverRatifiers(routerContracts).some(listedRatifier =>
-      isAddressEqual(ratifier, listedRatifier)
+    const type = isAddressEqual(ratifier, getChainAddress(BASE_CHAIN_ID, 'setterRatifier'))
+      ? ('setter' as const)
+      : isAddressEqual(ratifier, getChainAddress(BASE_CHAIN_ID, 'ecrecoverRatifier'))
+        ? ('ecrecover' as const)
+        : undefined
+    const registered = routerRatifiers(routerContracts).find(
+      item => item.type === type && isAddressEqual(ratifier, item.address)
     )
     const deployed = code !== undefined && code !== '0x'
-    const ecrecoverSurface = deployed && keccak256(code) === BASE_ECRECOVER_RATIFIER_RUNTIME_HASH
-    if (!ecrecoverSurface) {
+    const expectedRuntimeHash =
+      type === 'setter'
+        ? BASE_SETTER_RATIFIER_RUNTIME_HASH
+        : type === 'ecrecover'
+          ? BASE_ECRECOVER_RATIFIER_RUNTIME_HASH
+          : undefined
+    const surfaceMatches =
+      deployed && expectedRuntimeHash !== undefined && keccak256(code) === expectedRuntimeHash
+    if (!surfaceMatches || type === undefined) {
       return {
-        listed,
+        type,
+        listed: registered !== undefined,
         deployed,
         midnightMatches: false,
-        ecrecoverSurface: false,
+        surfaceMatches: false,
         authorized
       }
     }
-    const [ratifierMidnight, rootCanceled] = await Promise.all([
+    const abi = type === 'setter' ? setterRatifierAbi : ecrecoverRatifierAbi
+    const rootFunction = type === 'setter' ? 'isRootRatified' : 'isRootCanceled'
+    const [ratifierMidnight, rootState] = await Promise.all([
       executeProviderRead('rpc', 'ratifier-midnight', () =>
         this.chain.readContract({
           address: ratifier,
-          abi: ecrecoverRatifierAbi,
+          abi,
           functionName: 'MIDNIGHT'
         })
       ),
       executeProviderRead('rpc', 'ratifier-root', () =>
         this.chain.readContract({
           address: ratifier,
-          abi: ecrecoverRatifierAbi,
-          functionName: 'isRootCanceled',
+          abi,
+          functionName: rootFunction,
           args: [maker, zeroHash]
         })
       )
@@ -254,21 +270,22 @@ export class ViemSetupStateService implements SetupStateService {
       throw new ProviderResponseError(
         'rpc',
         'ratifier-midnight',
-        'EcrecoverRatifier MIDNIGHT response must be an address'
+        `${type === 'setter' ? 'SetterRatifier' : 'EcrecoverRatifier'} MIDNIGHT response must be an address`
       )
     }
-    if (typeof rootCanceled !== 'boolean') {
+    if (typeof rootState !== 'boolean') {
       throw new ProviderResponseError(
         'rpc',
         'ratifier-root',
-        'EcrecoverRatifier isRootCanceled response must be boolean'
+        `${type === 'setter' ? 'SetterRatifier isRootRatified' : 'EcrecoverRatifier isRootCanceled'} response must be boolean`
       )
     }
     return {
-      listed,
+      type,
+      listed: registered !== undefined,
       deployed,
       midnightMatches: isAddressEqual(ratifierMidnight, this.options.midnight),
-      ecrecoverSurface,
+      surfaceMatches: surfaceMatches && (type !== 'setter' || !rootState),
       authorized
     }
   }

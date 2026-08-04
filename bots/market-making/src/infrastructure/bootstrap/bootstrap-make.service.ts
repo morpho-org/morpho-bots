@@ -27,10 +27,12 @@ interface BootstrapOfferTransport {
   listBookOffers(): Promise<readonly BootstrapBookOffer[]>
   /** Projects a domain offer into its exact protocol tick. @param offer - Desired offer. @returns Prospective book offer. */
   toProspectiveBookOffer(offer: BootstrapOffer): Promise<BootstrapBookOffer>
-  /** Builds and signs one publication without broadcasting it. @param offer - Desired offer. @returns Reserved group ID and a one-shot confirmed publisher. */
+  /** Prepares one policy-checked publication without broadcasting it. @param offer - Desired offer. @returns Reserved group ID and a one-shot confirmed ratifier/publisher. */
   preparePublication(offer: BootstrapOffer): Promise<{
     groupId: Hex
-    publish(onTransactionSubmitted?: BootstrapTransactionSubmittedObserver): Promise<Hex | void>
+    publish(
+      onTransactionSubmitted?: BootstrapTransactionSubmittedObserver
+    ): Promise<Hex | void | readonly BootstrapSubmittedTransaction[]>
   }>
   /** Durably records publication intent before broadcast. @param group - Future group ID. @returns Completion after durable storage. */
   reserveGroup(group: Hex, offer: BootstrapOffer): Promise<void>
@@ -131,14 +133,18 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
       }
       if (publication) {
         try {
-          const txHash = await publication.publish(
+          const publicationResult = await publication.publish(
             this.safeObserver(parameters.onTransactionSubmitted)
           )
-          if (txHash) submittedTransactions.push({ operation: 'publish', txHash })
+          if (publicationResult && typeof publicationResult !== 'string') {
+            submittedTransactions.push(...publicationResult)
+          } else if (publicationResult) {
+            submittedTransactions.push({ operation: 'publish', txHash: publicationResult })
+          }
         } catch (error) {
           if (
             error instanceof BootstrapAdapterError &&
-            error.operation === 'transaction-reverted'
+            ['transaction-reverted', 'ratifier-transaction-reverted'].includes(error.operation)
           ) {
             try {
               await this.transport.releaseGroupReservation(publication.groupId)

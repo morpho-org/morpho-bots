@@ -48,7 +48,7 @@ import { createBootstrapOffer } from './bootstrap-offer.utils'
 import { pendingBootstrapGroups } from './bootstrap-pending-offer.utils'
 import { MidnightBootstrapPositionService } from './bootstrap-position.service'
 import { BlueBootstrapReferenceRateService } from './bootstrap-reference-rate.service'
-import { signBootstrapRequirements } from './bootstrap-requirements.utils'
+import { prepareBootstrapRequirements } from './bootstrap-requirements.utils'
 import { assertBootstrapProspectiveSpread, bootstrapMarketGroupIds } from './bootstrap-spread.utils'
 import { assertBootstrapTransaction } from './bootstrap-transaction.utils'
 
@@ -377,8 +377,9 @@ export const createProductionBootstrapAdapters = (
   const execute = async (
     transaction: { to: `0x${string}`; data: Hex; value: bigint },
     policy: Parameters<typeof assertBootstrapTransaction>[1],
-    operation: 'cancel' | 'publish',
-    onTransactionSubmitted?: BootstrapTransactionSubmittedObserver
+    operation: 'cancel' | 'ratify' | 'publish',
+    onTransactionSubmitted?: BootstrapTransactionSubmittedObserver,
+    revertOperation = 'transaction-reverted'
   ) => {
     await assertBootstrapTransaction(transaction, policy)
     const hash = await wallet.sendTransaction(transaction)
@@ -387,7 +388,7 @@ export const createProductionBootstrapAdapters = (
       hash,
       timeout: config.transactionReceiptTimeoutMs
     })
-    if (receipt.status !== 'success') throw new BootstrapAdapterError('transaction-reverted')
+    if (receipt.status !== 'success') throw new BootstrapAdapterError(revertOperation)
     return hash
   }
 
@@ -436,24 +437,67 @@ export const createProductionBootstrapAdapters = (
         [...ownedIds, ...ladderOwnedIds],
         replacedGroupIds
       )
-      const signatures = await signBootstrapRequirements(
-        await output.getRequirements(),
-        requirement =>
-          requirement.sign(wallet, maker) as Promise<
-            import('@morpho-org/morpho-sdk').MidnightOfferRootSignature
-          >
-      )
+      const { signatures, transactions: ratificationTransactions } =
+        await prepareBootstrapRequirements(
+          await output.getRequirements(),
+          requirement =>
+            requirement.sign(wallet, maker) as Promise<
+              import('@morpho-org/morpho-sdk').MidnightOfferRootSignature
+            >,
+          output.ratifierType,
+          output.ratifierType === 'setter'
+            ? { target: config.setup.ratifier, root: output.root, account: maker }
+            : undefined
+        )
+      if (
+        (output.ratifierType === 'setter' && signatures.length > 0) ||
+        (output.ratifierType === 'ecrecover' &&
+          (signatures.length !== 1 || ratificationTransactions.length > 0))
+      ) {
+        throw new BootstrapAdapterError('unexpected-requirement')
+      }
       const transaction = output.buildTx(signatures)
       const publicationPolicy = {
         kind: 'publication' as const,
         target: getChainAddress(base.id, 'midnightMempool'),
-        offer: created
+        offer: created,
+        ratifierType: output.ratifierType,
+        chainId: base.id,
+        root: output.root,
+        maker
       }
       await assertBootstrapTransaction(transaction, publicationPolicy)
       return {
         groupId: output.groups[0] as Hex,
-        publish: onTransactionSubmitted =>
-          execute(transaction, publicationPolicy, 'publish', onTransactionSubmitted)
+        publish: async onTransactionSubmitted => {
+          const submittedTransactions = []
+          for (const ratification of ratificationTransactions) {
+            const txHash = await execute(
+              ratification,
+              {
+                kind: 'ratification',
+                target: config.setup.ratifier,
+                root: output.root,
+                account: maker
+              },
+              'ratify',
+              onTransactionSubmitted,
+              'ratifier-transaction-reverted'
+            )
+            submittedTransactions.push({ operation: 'ratify' as const, txHash })
+          }
+          const txHash = await execute(
+            transaction,
+            publicationPolicy,
+            'publish',
+            onTransactionSubmitted,
+            output.ratifierType === 'setter'
+              ? 'publication-transaction-reverted-after-ratification'
+              : 'transaction-reverted'
+          )
+          submittedTransactions.push({ operation: 'publish' as const, txHash })
+          return submittedTransactions
+        }
       }
     }
   })

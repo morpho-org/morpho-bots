@@ -103,7 +103,7 @@ export type SetupCheckConfig = {
   loanAsset: Address
   /** Minimum allowance granted to Midnight. */
   maximumLendExposure: bigint
-  /** Router-listed Ecrecover ratifier expected to authorize the maker. */
+  /** Router-listed Ecrecover or Setter ratifier expected to authorize the maker. */
   ratifier: Address
   /** Non-empty set of Midnight market identifiers to validate concurrently. */
   marketIds: readonly Hex[]
@@ -155,17 +155,18 @@ export interface SetupStateService {
    * Reads Router registry, runtime-code, immutable-target, callable-surface, and authorization facts.
    * Independent provider and contract reads should run concurrently with `Promise.all`.
    * @param maker - Maker whose authorization is checked.
-   * @param ratifier - Candidate Ecrecover ratifier.
+   * @param ratifier - Candidate Ecrecover or Setter ratifier.
    * @returns Sanitized ratifier readiness facts.
    */
   getRatifier(
     maker: Address,
     ratifier: Address
   ): Promise<{
+    type?: 'ecrecover' | 'setter'
     listed: boolean
     deployed: boolean
     midnightMatches: boolean
-    ecrecoverSurface: boolean
+    surfaceMatches: boolean
     authorized: boolean
   }>
   /** Cross-checks one Midnight market. @param id - Midnight market identifier. @returns Cross-checked API and on-chain market facts. */
@@ -346,7 +347,7 @@ export class SetupCheckService {
       listed: true,
       deployed: true,
       midnightMatches: true,
-      ecrecoverSurface: true,
+      surfaceMatches: true,
       authorized: true
     }
     const ratifierCheck = !ratifier.ok
@@ -356,17 +357,17 @@ export class SetupCheckService {
           ratifier.value.listed &&
             ratifier.value.deployed &&
             ratifier.value.midnightMatches &&
-            ratifier.value.ecrecoverSurface &&
+            ratifier.value.surfaceMatches &&
             ratifier.value.authorized,
           ratifier.value,
           ratifierRequired,
           ratifier.value.listed &&
             ratifier.value.deployed &&
             ratifier.value.midnightMatches &&
-            ratifier.value.ecrecoverSurface &&
+            ratifier.value.surfaceMatches &&
             !ratifier.value.authorized
             ? 'authorize the configured maker with the selected ratifier'
-            : 'select a Router-listed Ecrecover ratifier with the expected deployed surface'
+            : 'select a Router-listed ratifier with the expected deployed surface'
         )
     const referenceRequired = {
       marketId: this.config.referenceMarketId,

@@ -1,6 +1,14 @@
 import type { Address, Hex } from 'viem'
 
-import { MAX_OFFER_CAP, midnightAbi, Offer, Payload } from '@morpho-org/midnight-sdk'
+import {
+  MAX_OFFER_CAP,
+  midnightAbi,
+  Offer,
+  Payload,
+  SetterRatifierUtils,
+  Tree,
+  setterRatifierAbi
+} from '@morpho-org/midnight-sdk'
 import { describe, expect, test } from 'bun:test'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -18,7 +26,7 @@ import {
   strategyBootstrapGroups
 } from '../../../src/infrastructure/bootstrap/bootstrap-groups.utils'
 import { bootstrapContinuousFeeCap } from '../../../src/infrastructure/bootstrap/bootstrap-offer.utils'
-import { signBootstrapRequirements } from '../../../src/infrastructure/bootstrap/bootstrap-requirements.utils'
+import { prepareBootstrapRequirements } from '../../../src/infrastructure/bootstrap/bootstrap-requirements.utils'
 import { assertBootstrapTransaction } from '../../../src/infrastructure/bootstrap/bootstrap-transaction.utils'
 import {
   bootstrapMakeLendArguments,
@@ -33,7 +41,7 @@ const groupId: Hex = `0x${'cd'.repeat(32)}`
 const collateral: Address = '0x1111111111111111111111111111111111111111'
 const loanToken: Address = '0x2222222222222222222222222222222222222222'
 const oracle: Address = '0x3333333333333333333333333333333333333333'
-const ratifier: Address = '0x4444444444444444444444444444444444444444'
+const ratifier: Address = '0x800B5F12A61B8198a5a6EfD794Cac6699B294d63'
 
 const publicationOffer = (tick = 100n) =>
   Offer.create({
@@ -61,6 +69,16 @@ const publicationOffer = (tick = 100n) =>
     ratifier,
     maxAssets: 100n
   })
+
+const publicationPolicy = (offer: ReturnType<typeof publicationOffer>) => ({
+  kind: 'publication' as const,
+  target: maker,
+  offer,
+  ratifierType: 'setter' as const,
+  chainId: 8453,
+  root: Tree.create([offer]).root,
+  maker
+})
 
 const group = (overrides: Record<string, unknown> = {}) => ({
   id: groupId,
@@ -168,6 +186,40 @@ describe('assertBootstrapTransaction', () => {
     ).resolves.toBeUndefined()
   })
 
+  test('accepts only the exact Setter root approval', async () => {
+    const transaction = {
+      to: ratifier,
+      value: 0n,
+      data: encodeFunctionData({
+        abi: setterRatifierAbi,
+        functionName: 'setIsRootRatified',
+        args: [maker, groupId, true]
+      })
+    }
+
+    await expect(
+      assertBootstrapTransaction(transaction, {
+        kind: 'ratification',
+        target: ratifier,
+        root: groupId,
+        account: maker
+      })
+    ).resolves.toBeUndefined()
+    await expect(
+      assertBootstrapTransaction(
+        {
+          ...transaction,
+          data: encodeFunctionData({
+            abi: setterRatifierAbi,
+            functionName: 'setIsRootRatified',
+            args: [maker, groupId, false]
+          })
+        },
+        { kind: 'ratification', target: ratifier, root: groupId, account: maker }
+      )
+    ).rejects.toMatchObject({ operation: 'transaction-policy' })
+  })
+
   test.each([
     [{ ...cancellation, to: '0x1111111111111111111111111111111111111111' as Address }],
     [{ ...cancellation, value: 1n }],
@@ -207,21 +259,24 @@ describe('assertBootstrapTransaction', () => {
     await expect(
       assertBootstrapTransaction(
         { to: maker, value: 0n, data: '0xdeadbeef' },
-        { kind: 'publication', target: maker, offer: publicationOffer() }
+        publicationPolicy(publicationOffer())
       )
     ).rejects.toMatchObject({ operation: 'transaction-policy' })
   })
 
   test('accepts exactly one intended Midnight offer in a publication payload', async () => {
     const offer = publicationOffer()
-    const data = await Payload.encode([{ offer, ratifierData: '0x' }])
+    const tree = Tree.create([offer])
+    const data = await Payload.encode(SetterRatifierUtils.ratify({ tree }))
 
     await expect(
-      assertBootstrapTransaction(
-        { to: maker, value: 0n, data },
-        { kind: 'publication', target: maker, offer }
-      )
+      assertBootstrapTransaction({ to: maker, value: 0n, data }, publicationPolicy(offer))
     ).resolves.toBeUndefined()
+
+    const altered = await Payload.encode([{ offer, ratifierData: '0x1234' }])
+    await expect(
+      assertBootstrapTransaction({ to: maker, value: 0n, data: altered }, publicationPolicy(offer))
+    ).rejects.toMatchObject({ operation: 'transaction-policy' })
   })
 
   test('rejects a publication payload containing two offers', async () => {
@@ -232,10 +287,7 @@ describe('assertBootstrapTransaction', () => {
     ])
 
     await expect(
-      assertBootstrapTransaction(
-        { to: maker, value: 0n, data },
-        { kind: 'publication', target: maker, offer }
-      )
+      assertBootstrapTransaction({ to: maker, value: 0n, data }, publicationPolicy(offer))
     ).rejects.toMatchObject({ operation: 'transaction-policy' })
   })
 
@@ -244,10 +296,7 @@ describe('assertBootstrapTransaction', () => {
     const data = await Payload.encode([{ offer: publicationOffer(104n), ratifierData: '0x' }])
 
     await expect(
-      assertBootstrapTransaction(
-        { to: maker, value: 0n, data },
-        { kind: 'publication', target: maker, offer }
-      )
+      assertBootstrapTransaction({ to: maker, value: 0n, data }, publicationPolicy(offer))
     ).rejects.toMatchObject({ operation: 'transaction-policy' })
   })
 })
@@ -682,7 +731,129 @@ describe('createBootstrapGroupOwnership', () => {
   })
 })
 
-describe('signBootstrapRequirements', () => {
+describe('prepareBootstrapRequirements', () => {
+  test('preserves Ecrecover root-signature requirements', async () => {
+    const signature = {
+      kind: 'signed'
+    } as unknown as import('@morpho-org/morpho-sdk').MidnightOfferRootSignature
+    const requirement = {
+      action: { type: 'midnightOfferRootSignature' },
+      sign: async () => signature
+    }
+
+    expect(
+      await prepareBootstrapRequirements([requirement], async () => signature, 'ecrecover')
+    ).toEqual({
+      signatures: [signature],
+      transactions: []
+    })
+  })
+
+  test('returns one validated Setter root-ratification requirement without trying to sign it', async () => {
+    const requirement = {
+      to: ratifier,
+      data: encodeFunctionData({
+        abi: setterRatifierAbi,
+        functionName: 'setIsRootRatified',
+        args: [maker, groupId, true]
+      }),
+      value: 0n,
+      action: {
+        type: 'setterRatifierRatifyRoot',
+        args: { maker, root: groupId, isRootRatified: true }
+      }
+    } as const
+
+    expect(
+      await prepareBootstrapRequirements(
+        [requirement],
+        async () => {
+          throw new Error('Setter requirement must not be signed')
+        },
+        'setter',
+        { target: ratifier, root: groupId, account: maker }
+      )
+    ).toEqual({ signatures: [], transactions: [requirement] })
+
+    await expect(
+      prepareBootstrapRequirements(
+        [{ ...requirement, data: '0x12345678' }],
+        async () => {
+          throw new Error('Setter requirement must not be signed')
+        },
+        'setter',
+        { target: ratifier, root: groupId, account: maker }
+      )
+    ).rejects.toMatchObject({ operation: 'unexpected-requirement' })
+  })
+
+  test('rejects mixed ratifiers before signing', async () => {
+    let signed = false
+    const signatureRequirement = {
+      action: { type: 'midnightOfferRootSignature' },
+      sign: async () => ({})
+    }
+    const setterRequirement = {
+      to: '0x800B5F12A61B8198a5a6EfD794Cac6699B294d63',
+      data: '0x12345678',
+      value: 0n,
+      action: {
+        type: 'setterRatifierRatifyRoot',
+        args: { maker, root: groupId, isRootRatified: true }
+      }
+    } as const
+
+    await expect(
+      prepareBootstrapRequirements(
+        [signatureRequirement, setterRequirement],
+        async () => {
+          signed = true
+          return {} as never
+        },
+        'ecrecover'
+      )
+    ).rejects.toMatchObject({ operation: 'unexpected-requirement' })
+    expect(signed).toBe(false)
+  })
+
+  test('rejects multiple Setter approval requirements before executing either one', async () => {
+    const requirement = {
+      to: '0x800B5F12A61B8198a5a6EfD794Cac6699B294d63',
+      data: '0x12345678',
+      value: 0n,
+      action: {
+        type: 'setterRatifierRatifyRoot',
+        args: { maker, root: groupId, isRootRatified: true }
+      }
+    } as const
+
+    await expect(
+      prepareBootstrapRequirements(
+        [requirement, requirement],
+        async () => {
+          throw new Error('Setter requirement must not be signed')
+        },
+        'setter'
+      )
+    ).rejects.toMatchObject({ operation: 'unexpected-requirement' })
+  })
+
+  test('requires exactly one Setter approval requirement before signing', async () => {
+    let signed = false
+
+    await expect(
+      prepareBootstrapRequirements(
+        [],
+        async () => {
+          signed = true
+          return {} as never
+        },
+        'setter'
+      )
+    ).rejects.toMatchObject({ operation: 'unexpected-requirement' })
+    expect(signed).toBe(false)
+  })
+
   test.each([
     [
       'unknown target',
@@ -695,10 +866,14 @@ describe('signBootstrapRequirements', () => {
   ])('rejects %s requirements without executing them', async (_label, requirement) => {
     let signed = false
 
-    const error = await signBootstrapRequirements([requirement], async () => {
-      signed = true
-      return {} as never
-    }).catch(value => value)
+    const error = await prepareBootstrapRequirements(
+      [requirement],
+      async () => {
+        signed = true
+        return {} as never
+      },
+      'ecrecover'
+    ).catch(value => value)
 
     expect(error).toBeInstanceOf(BootstrapAdapterError)
     expect(signed).toBe(false)

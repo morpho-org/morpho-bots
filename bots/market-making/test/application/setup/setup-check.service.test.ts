@@ -44,7 +44,7 @@ const readyState = (): SetupStateService => {
       listed: true,
       deployed: true,
       midnightMatches: true,
-      ecrecoverSurface: true,
+      surfaceMatches: true,
       authorized: true
     }),
     getBook: async id => ({
@@ -176,7 +176,7 @@ describe('SetupCheckService', () => {
         listed: true,
         deployed: true,
         midnightMatches: true,
-        ecrecoverSurface: true,
+        surfaceMatches: true,
         authorized: true
       }
     }
@@ -399,7 +399,7 @@ describe('SetupCheckService', () => {
         listed: true,
         deployed: true,
         midnightMatches: true,
-        ecrecoverSurface: true,
+        surfaceMatches: true,
         authorized: true
       })
     state.getLatestTimestamp = () => wait('timestamp', 1_000n)
@@ -597,7 +597,7 @@ describe('SetupCheckService', () => {
       listed: true,
       deployed: true,
       midnightMatches: true,
-      ecrecoverSurface: true,
+      surfaceMatches: true,
       authorized: false
     })
 
@@ -624,7 +624,7 @@ describe('SetupCheckService', () => {
       listed: false,
       deployed: false,
       midnightMatches: false,
-      ecrecoverSurface: false,
+      surfaceMatches: false,
       authorized: false
     })
     state.getBook = async id => ({
