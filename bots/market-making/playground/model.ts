@@ -8,6 +8,7 @@ import {
   hexListValue,
   ladderConfigsValue,
   privateKeyValue,
+  requiredValue,
   requestTimeoutValue,
   transactionReceiptTimeoutValue,
   unsignedBigIntValue,
@@ -51,8 +52,13 @@ export const SCALAR_FIELDS = [
   ['RATIFIER_ADDRESS', 'Ratifier address', 'Router-listed Ecrecover ratifier', 'text'],
   ['MARKET_IDS', 'Market IDs', 'Comma-separated bytes32 allowlist', 'text'],
   ['REFERENCE_MARKET_ID', 'Reference market ID', 'Morpho Blue variable-rate market', 'text'],
-  ['NATIVE_RESERVE_WEI', 'Native reserve (wei)', 'Required positive gas reserve', 'number'],
-  ['MAXIMUM_LEND_EXPOSURE_ASSETS', 'Maximum lend exposure', 'Positive allowance floor', 'number'],
+  ['NATIVE_RESERVE_WEI', 'Native reserve (wei)', 'Non-negative gas reserve', 'number'],
+  [
+    'MAXIMUM_LEND_EXPOSURE_ASSETS',
+    'Maximum lend exposure',
+    'Non-negative allowance floor',
+    'number'
+  ],
   ['MORPHO_API_BASE_URL', 'Morpho API base URL', 'Books and maker offer groups', 'url'],
   ['ROUTER_API_BASE_URL', 'Router API base URL', 'Ratifier registry', 'url'],
   ['V0_OFFER_GROUP_IDS', 'V0 offer group IDs', 'Optional comma-separated IDs', 'text'],
@@ -194,8 +200,13 @@ const list = (value: string) =>
     .filter(Boolean)
 const yamlQuote = (value: string) => JSON.stringify(value)
 
-const environmentRecord = (state: PlaygroundState): Record<string, string> => ({
+const canonicalScalar = (state: PlaygroundState): PlaygroundState['scalar'] => ({
   ...state.scalar,
+  CHAIN_ID: state.scalar.CHAIN_ID.trim()
+})
+
+const environmentRecord = (state: PlaygroundState): Record<string, string> => ({
+  ...canonicalScalar(state),
   BOOTSTRAP_MARKETS: JSON.stringify(structuredBootstrap(state)),
   LADDER_MARKETS: JSON.stringify(structuredLadder(state)),
   ...state.observability
@@ -212,7 +223,8 @@ export const validateProductionState = (state: PlaygroundState) => {
   }
   const environment = environmentRecord(state)
   capture(() => {
-    if (environment.CHAIN_ID !== String(base.id)) throw new Error(`CHAIN_ID must be ${base.id}`)
+    if (requiredValue(environment, 'CHAIN_ID') !== String(base.id))
+      throw new Error(`CHAIN_ID must be ${base.id}`)
     privateKeyValue(environment)
     for (const field of [
       'MAKER_ADDRESS',
@@ -231,10 +243,8 @@ export const validateProductionState = (state: PlaygroundState) => {
     bytes32Value(environment, 'REFERENCE_MARKET_ID')
     const markets = hexListValue(environment, 'MARKET_IDS', false)
     hexListValue(environment, 'V0_OFFER_GROUP_IDS', false)
-    for (const field of ['NATIVE_RESERVE_WEI', 'MAXIMUM_LEND_EXPOSURE_ASSETS']) {
-      if (unsignedBigIntValue(environment, field) <= 0n)
-        throw new Error(`${field} must be positive`)
-    }
+    for (const field of ['NATIVE_RESERVE_WEI', 'MAXIMUM_LEND_EXPOSURE_ASSETS'])
+      unsignedBigIntValue(environment, field)
     requestTimeoutValue(environment)
     transactionReceiptTimeoutValue(environment)
     bootstrapConfigsValue(structuredBootstrap(state), markets)
@@ -281,7 +291,7 @@ const exportSensitiveValue = (value: string, options: ExportOptions) =>
 
 export const exportYaml = (state: PlaygroundState, options: ExportOptions = {}) => {
   assertExportable(state)
-  const scalar = state.scalar
+  const scalar = canonicalScalar(state)
   const yamlList = (name: string, values: string[]) =>
     values.length === 0
       ? [`  ${name}: []`]
@@ -344,7 +354,8 @@ export const exportShell = (state: PlaygroundState, options: ExportOptions = {})
 
 export const exportJson = (state: PlaygroundState, options: ExportOptions = {}) => {
   assertExportable(state)
-  return `${JSON.stringify({ configuration: { ...state.scalar, MAKER_PRIVATE_KEY: exportSensitiveValue(state.scalar.MAKER_PRIVATE_KEY, options), MARKET_IDS: list(state.scalar.MARKET_IDS), V0_OFFER_GROUP_IDS: list(state.scalar.V0_OFFER_GROUP_IDS), BOOTSTRAP_MARKETS: structuredBootstrap(state), LADDER_MARKETS: structuredLadder(state) }, observability: { ...state.observability, BETTERSTACK_SOURCE_TOKEN: exportSensitiveValue(state.observability.BETTERSTACK_SOURCE_TOKEN, options) } }, null, 2)}\n`
+  const scalar = canonicalScalar(state)
+  return `${JSON.stringify({ configuration: { ...scalar, MAKER_PRIVATE_KEY: exportSensitiveValue(scalar.MAKER_PRIVATE_KEY, options), MARKET_IDS: list(scalar.MARKET_IDS), V0_OFFER_GROUP_IDS: list(scalar.V0_OFFER_GROUP_IDS), BOOTSTRAP_MARKETS: structuredBootstrap(state), LADDER_MARKETS: structuredLadder(state) }, observability: { ...state.observability, BETTERSTACK_SOURCE_TOKEN: exportSensitiveValue(state.observability.BETTERSTACK_SOURCE_TOKEN, options) } }, null, 2)}\n`
 }
 
 type PreviewRung = { index: number; rateBps: string; assets: string }

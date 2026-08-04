@@ -49,6 +49,22 @@ const loadShellEnvironment = async (text: string) => {
 const validateWithProductionLoader = (environment: Record<string, string>) =>
   ConfigService.from(environment)
 
+const productionEnvironment = (state: ReturnType<typeof createDefaultPlaygroundState>) => ({
+  ...state.scalar,
+  BOOTSTRAP_MARKETS: JSON.stringify(state.bootstrap),
+  LADDER_MARKETS: JSON.stringify(state.ladder),
+  ...state.observability
+})
+
+const productionAccepts = (state: ReturnType<typeof createDefaultPlaygroundState>) => {
+  try {
+    validateWithProductionLoader(productionEnvironment(state))
+    return true
+  } catch {
+    return false
+  }
+}
+
 describe('market-maker parameter playground', () => {
   test('inventory independently parses runtime source, env example, and YAML example', async () => {
     const [source, environmentExample, yamlExampleText] = await Promise.all([
@@ -364,6 +380,116 @@ describe('market-maker parameter playground', () => {
       }
     }
   })
+
+  test('matches ConfigService across accepted and rejected boundaries for all 17 scalar fields', () => {
+    const validKey = `0x${'11'.repeat(32)}`
+    const matrix = [
+      ['CHAIN_ID', ' 8453 ', '8454'],
+      ['RPC_URL', ' https://rpc.example/path/ ', 'not a url'],
+      ['REFERENCE_RPC_URL', 'http://localhost:8545', '://missing-scheme'],
+      ['MAKER_PRIVATE_KEY', ` ${validKey} `, `0x${'00'.repeat(32)}`],
+      ['MAKER_ADDRESS', ` 0x${'1'.repeat(40)} `, '0x12'],
+      ['MIDNIGHT_ADDRESS', `0x${'0'.repeat(40)}`, 'midnight'],
+      ['LOAN_ASSET_ADDRESS', `0x${'3'.repeat(40)}`, '0x1234'],
+      ['RATIFIER_ADDRESS', ` 0x${'4'.repeat(40)} `, 'ratifier'],
+      ['MARKET_IDS', ` 0x${'5'.repeat(64)} `, '0x1234'],
+      ['REFERENCE_MARKET_ID', ` 0x${'7'.repeat(64)} `, '0x1234'],
+      ['NATIVE_RESERVE_WEI', '0', '-1'],
+      ['MAXIMUM_LEND_EXPOSURE_ASSETS', '0', '1.5'],
+      ['MORPHO_API_BASE_URL', 'http://localhost', 'not a url'],
+      ['ROUTER_API_BASE_URL', 'https://router.example/', 'router host'],
+      ['V0_OFFER_GROUP_IDS', ' , ', '0x1234'],
+      ['REQUEST_TIMEOUT_MS', '120000', '120001'],
+      ['TRANSACTION_RECEIPT_TIMEOUT_MS', '900000', '900001']
+    ] as const
+
+    expect(matrix.map(([field]) => field)).toEqual(SCALAR_FIELDS.map(([field]) => field))
+    for (const [field, acceptedValue, rejectedValue] of matrix) {
+      for (const [value, expected] of [
+        [acceptedValue, true],
+        [rejectedValue, false]
+      ] as const) {
+        const state = createDefaultPlaygroundState()
+        state.scalar[field] = value
+        expect({
+          field,
+          value,
+          playground: validateProductionState(state).valid,
+          production: productionAccepts(state)
+        }).toEqual({ field, value, playground: expected, production: expected })
+      }
+    }
+  })
+
+  test('matches ConfigService acceptance of zero bigint setup boundaries', () => {
+    for (const field of ['NATIVE_RESERVE_WEI', 'MAXIMUM_LEND_EXPOSURE_ASSETS'] as const) {
+      const state = createDefaultPlaygroundState()
+      state.scalar[field] = '0'
+      expect(productionAccepts(state)).toBe(true)
+      expect(validateProductionState(state).valid).toBe(true)
+    }
+  })
+
+  test('accepts trimmed Base chain and zero bigint setup fields with canonical exports', async () => {
+    const state = createDefaultPlaygroundState()
+    state.scalar.CHAIN_ID = '  8453  '
+    state.scalar.NATIVE_RESERVE_WEI = '0'
+    state.scalar.MAXIMUM_LEND_EXPOSURE_ASSETS = '0'
+
+    const production = validateWithProductionLoader(productionEnvironment(state))
+    expect(production.setup).toMatchObject({
+      chainId: 8453,
+      nativeReserve: 0n,
+      maximumLendExposure: 0n
+    })
+    expect(validateProductionState(state)).toEqual({ valid: true, errors: [] })
+    expect(validatePreviewState(state)).toEqual({ valid: true, errors: [] })
+
+    const yaml = exportYaml(state, { includeSensitiveValues: true })
+    expect(yaml).toContain('  id: 8453\n')
+    expect(yaml).toContain('  nativeReserveWei: "0"\n')
+    expect(yaml).toContain('  maximumLendExposureAssets: "0"\n')
+    const shellEnvironment = await loadShellEnvironment(
+      exportShell(state, { includeSensitiveValues: true })
+    )
+    expect(shellEnvironment).toMatchObject({
+      CHAIN_ID: '8453',
+      NATIVE_RESERVE_WEI: '0',
+      MAXIMUM_LEND_EXPOSURE_ASSETS: '0'
+    })
+    expect(validateWithProductionLoader(shellEnvironment).setup.chainId).toBe(8453)
+    expect(
+      JSON.parse(exportJson(state, { includeSensitiveValues: true })).configuration
+    ).toMatchObject({
+      CHAIN_ID: '8453',
+      NATIVE_RESERVE_WEI: '0',
+      MAXIMUM_LEND_EXPOSURE_ASSETS: '0'
+    })
+  })
+
+  test.each([
+    ['CHAIN_ID', '8454'],
+    ['CHAIN_ID', '-1'],
+    ['CHAIN_ID', '1.5'],
+    ['CHAIN_ID', '9007199254740992'],
+    ['NATIVE_RESERVE_WEI', '-1'],
+    ['NATIVE_RESERVE_WEI', '1.5'],
+    ['MAXIMUM_LEND_EXPOSURE_ASSETS', '-1'],
+    ['MAXIMUM_LEND_EXPOSURE_ASSETS', '1.5']
+  ] as const)(
+    'matches production rejection and blocks preview/exports for %s=%s',
+    (field, value) => {
+      const state = createDefaultPlaygroundState()
+      state.scalar[field] = value
+
+      expect(productionAccepts(state)).toBe(false)
+      expect(validateProductionState(state).valid).toBe(false)
+      expect(validatePreviewState(state).valid).toBe(false)
+      for (const exporter of [exportYaml, exportShell, exportJson]) {
+        expect(() => exporter(state)).toThrow('Configuration is invalid')
+      }
+    }
+  )
 
   test.each(['not-a-number', '1000000000000000000000000000000000000'])(
     'keeps all production exports valid when preview reference rate %s is invalid',
