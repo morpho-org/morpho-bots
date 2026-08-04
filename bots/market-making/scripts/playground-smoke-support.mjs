@@ -358,7 +358,7 @@ const contentTypes = new Map([
   ['.svg', 'image/svg+xml; charset=utf-8']
 ])
 
-export const startStaticServer = async root => {
+export const startStaticServer = async (root, { host = '127.0.0.1', port = 0 } = {}) => {
   const servedRoot = await realpath(root)
   const server = createServer(async (request, response) => {
     try {
@@ -391,20 +391,34 @@ export const startStaticServer = async root => {
     }
   })
   server.on('clientError', (_error, socket) => socket.end('HTTP/1.1 400 Bad Request\r\n\r\n'))
-  await new Promise((resolveListen, reject) => {
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => {
-      server.off('error', reject)
+  await new Promise((resolveListen, rejectListen) => {
+    const onError = error => {
+      if (error.code === 'EADDRINUSE') {
+        rejectListen(
+          new Error(
+            `Cannot serve playground on ${host}:${port}: port is already in use. Choose another with --port or PORT.`
+          )
+        )
+        return
+      }
+      rejectListen(new Error(`Cannot serve playground on ${host}:${port}: ${error.message}`))
+    }
+    server.once('error', onError)
+    server.listen(port, host, () => {
+      server.off('error', onError)
       resolveListen()
     })
   })
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('Static server has no TCP address')
+  const urlHost = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
   return {
+    host,
     port: address.port,
+    url: `http://${urlHost}:${address.port}`,
     close: () =>
-      new Promise((resolveClose, reject) =>
-        server.close(error => (error ? reject(error) : resolveClose()))
+      new Promise((resolveClose, rejectClose) =>
+        server.close(error => (error ? rejectClose(error) : resolveClose()))
       )
   }
 }

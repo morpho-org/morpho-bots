@@ -10,6 +10,8 @@
   "scripts": {
     "start": "bun src/index.ts",
     "playground:build": "rm -rf playground/dist && bun build playground/index.html --outdir playground/dist --target browser",
+    "playground:serve": "node scripts/playground-serve.mjs",
+    "playground:serve:test": "node --test scripts/playground-serve.test.mjs",
     "playground:smoke": "node scripts/playground-smoke.mjs",
     "playground:smoke:test": "node --test scripts/playground-smoke.test.mjs",
     "test:e2e": "bun test test/e2e",

@@ -40,6 +40,7 @@
     "knip": "knip",
     "lint": "oxlint --no-error-on-unmatched-pattern",
     "lint:fix": "oxlint --fix --no-error-on-unmatched-pattern",
+    "market-making:playground": "node bots/market-making/scripts/playground-serve.mjs",
     "prepare": "husky",
     "test": "bun test"
   },
