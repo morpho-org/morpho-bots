@@ -88,9 +88,12 @@ jobs:
                     # `|| true` guards against SIGPIPE aborting the job under `set -o pipefail`
                     # (git is killed when head closes the pipe early once there are many tags).
                     prev_tag="$(git tag -l "${bot_name}-*" --sort=-version:refname | head -n 1 || true)"
+                    # Target the exact triggering commit, not `main`: the branch pointer is
+                    # resolved server-side at API-call time, so a commit landing between the push
+                    # and this call would silently ship code the release never reviewed.
                     gh release create "$tag_name" \
                       --title "${bot_name} v${current_version}" \
-                      --target main \
+                      --target "$GITHUB_SHA" \
                       --generate-notes \
                       ${prev_tag:+--notes-start-tag "$prev_tag"}
 

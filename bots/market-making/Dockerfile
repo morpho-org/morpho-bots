@@ -17,6 +17,11 @@ RUN bun install --frozen-lockfile
 # (e.g. `--readonly setup-check`, `--config /config/market-making.yaml start`). Configuration comes
 # from environment variables and/or a mounted YAML file; a set variable overrides its YAML value.
 # The workdir is the package dir, so default discovery also finds a market-making.yaml mounted there.
+#
+# Durable offer-group ownership state lives under XDG_STATE_HOME (see the *-group-ownership utils).
+# Pin it to a stable mountable path: writer deployments MUST mount a volume at /state, or a
+# recreated container forgets which live on-chain offer groups the bot owns.
+ENV XDG_STATE_HOME=/state
 WORKDIR /repo/bots/market-making
 ENTRYPOINT ["bun", "src/index.ts"]
 CMD ["start"]

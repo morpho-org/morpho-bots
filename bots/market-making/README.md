@@ -193,6 +193,12 @@ source alone is sufficient. The build context must be the repo root so the bun w
 (`packages/*`) resolves. The repo-root `.dockerignore` excludes every `market-making.yaml`/`.yml`
 and `.env` file, so a local configuration holding a private key is never baked into an image.
 
+The image pins `XDG_STATE_HOME=/state`, where the bot persists its durable offer-group ownership
+records. Writer deployments (`start`, `bootstrap`, `ladder`) must mount a volume at `/state` so
+that state outlives the container — the compose file below does this automatically. A recreated
+container without it forgets which live on-chain offer groups the bot owns, treats its own offers
+as foreign, and cannot clean them up. Read-only commands need no state volume.
+
 ### Build
 
 ```sh
@@ -314,11 +320,13 @@ GitHub-generated notes remain.
 | `DOCKERHUB_TOKEN`      | Secret   | Required Docker Hub access token (write scope); it reaches `docker login` via stdin and never appears in argv or workflow logs.                   |
 
 A deployed host then runs the published image with the exact parametrization documented above —
-substitute a `market-making-YYYY.MM.DD-N` release tag for `latest` to pin an immutable version:
+substitute a `market-making-YYYY.MM.DD-N` release tag for `latest` to pin an immutable version. The
+named volume keeps offer-group ownership across re-pulls and recreations:
 
 ```sh
 docker run --pull always --detach --restart unless-stopped \
   --env-file /etc/market-making.env \
+  -v market-making-state:/state \
   <namespace>/<name>:latest start
 ```
 

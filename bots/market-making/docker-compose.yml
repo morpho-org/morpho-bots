@@ -16,6 +16,12 @@ services:
         bind:
           # Fail loud when market-making.yaml is missing instead of mounting an empty directory.
           create_host_path: false
+      # Durable offer-group ownership state (XDG_STATE_HOME=/state, set by the Dockerfile). It must
+      # outlive the container: recreating without it makes the bot forget which live on-chain offer
+      # groups it owns, so it treats its own offers as foreign and cannot clean them up.
+      - type: volume
+        source: state
+        target: /state
     # Null-valued entries pass a variable through ONLY when the invoking shell sets it. Never use
     # `${VAR:-}` defaults here: they set empty strings, and any SET variable — even empty — replaces
     # the YAML value and fails validation with "Missing required env var".
@@ -47,3 +53,6 @@ services:
     # offers on-chain and wait for receipts. Leave ample room before compose escalates to SIGKILL.
     stop_grace_period: 5m
     restart: unless-stopped
+
+volumes:
+  state:
