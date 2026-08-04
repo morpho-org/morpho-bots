@@ -1,0 +1,105 @@
+name: Deploy market-making
+
+# Publishes the market-making bot image to Docker Hub. Unlike the Railway bots (deploy-bot.yml),
+# "deploy" here means publish only: operators pull and run the image themselves (see
+# bots/market-making/README.md), so there is no service to restart. Runs for a PR merged to main
+# carrying the `release-market-making` label (same convention as deploy-production.yml — on other
+# pushes the publish job is simply skipped) or on manual dispatch, e.g.
+# `gh workflow run deploy-market-making.yml -f tag=latest`.
+#
+# Credentials live in the `market-making-production` GitHub Environment: secrets DOCKERHUB_USERNAME
+# and DOCKERHUB_TOKEN (a Docker Hub access token, write scope) plus variable DOCKERHUB_REPOSITORY
+# (`<namespace>/<name>`, e.g. `morphoorg/market-making-bot`). Scope the environment's deployment
+# branches to `main` so the token is unreachable from arbitrary PR branches.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Movable primary tag to publish alongside the immutable git-<sha> tag
+        required: false
+        type: string
+        default: latest
+
+permissions:
+  contents: read
+
+concurrency:
+  # Serialize publishes so two runs can't interleave their pushes of the movable tag.
+  group: deploy-market-making
+  cancel-in-progress: false
+
+jobs:
+  Select:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      market_making: ${{ steps.pick.outputs.market_making }}
+    steps:
+      - id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            echo "market_making=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Labels of the PR whose merge produced this commit.
+          labels="$(gh api "repos/$REPO/commits/$SHA/pulls" --jq '.[].labels[].name' 2>/dev/null || true)"
+          if echo "$labels" | grep -qx 'release-market-making'; then
+            echo "market_making=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "market_making=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  Publish:
+    needs: Select
+    if: ${{ needs.Select.outputs.market_making == 'true' }}
+    runs-on: ubuntu-latest
+    environment: market-making-production
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # The token reaches docker via stdin only — never argv, never a workflow-file literal.
+      - name: Login to Docker Hub
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${DOCKERHUB_USERNAME:?set secret DOCKERHUB_USERNAME on the market-making-production environment}"
+          : "${DOCKERHUB_TOKEN:?set secret DOCKERHUB_TOKEN on the market-making-production environment}"
+          printf '%s' "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
+
+      # The build context is the repo root so the bun workspace (packages/*) resolves — see
+      # bots/market-making/Dockerfile. Every publish pushes the movable primary tag plus an
+      # immutable git-<shortsha> tag so a running container is attributable to its commit.
+      - name: Build and push
+        env:
+          REPOSITORY: ${{ vars.DOCKERHUB_REPOSITORY }}
+          PRIMARY_TAG: ${{ inputs.tag || 'latest' }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          : "${REPOSITORY:?set variable DOCKERHUB_REPOSITORY on the market-making-production environment}"
+          # Docker Hub `<namespace>/<name>` only. A dotted (or `localhost`) first component would be
+          # read by docker as a registry host and silently push somewhere other than Docker Hub.
+          echo "$REPOSITORY" | grep -Eq '^[a-z0-9]+((_|__|-+)[a-z0-9]+)*/[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*$' \
+            || { echo "DOCKERHUB_REPOSITORY must be a lowercase Docker Hub <namespace>/<name> repository" >&2; exit 1; }
+          echo "$PRIMARY_TAG" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$' \
+            || { echo "tag must be a valid Docker tag of at most 128 characters" >&2; exit 1; }
+          git_tag="git-${SHA:0:7}"
+          echo "Building $REPOSITORY:$PRIMARY_TAG and $REPOSITORY:$git_tag…"
+          docker build --file bots/market-making/Dockerfile \
+            --tag "$REPOSITORY:$PRIMARY_TAG" --tag "$REPOSITORY:$git_tag" .
+          docker push "$REPOSITORY:$PRIMARY_TAG"
+          docker push "$REPOSITORY:$git_tag"
+          echo "Published docker.io/$REPOSITORY:$PRIMARY_TAG and docker.io/$REPOSITORY:$git_tag"

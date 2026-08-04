@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 # Bun-workspace image for the market-making bot. The build context MUST be the repo root so the
-# workspace packages (packages/*) resolve — docker-compose.yml sets `context: ../..` and
-# scripts/deploy-docker-hub.ts builds from the repo root. State is on-chain plus the Morpho/Router
-# APIs, so there is no indexer/database sidecar to build.
+# workspace packages (packages/*) resolve — docker-compose.yml sets `context: ../..` and the
+# deploy-market-making GitHub Actions workflow builds from the repo root. State is on-chain plus
+# the Morpho/Router APIs, so there is no indexer/database sidecar to build.
 FROM oven/bun:1.3.12-slim
 WORKDIR /repo
 

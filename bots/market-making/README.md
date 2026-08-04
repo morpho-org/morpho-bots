@@ -267,25 +267,31 @@ docker compose logs --follow
 
 ### Publish to Docker Hub
 
-`deploy:docker-hub` builds the image from the repo root and pushes it to Docker Hub from the CLI:
+The `Deploy market-making` GitHub Actions workflow
+([`.github/workflows/deploy-market-making.yml`](../../.github/workflows/deploy-market-making.yml))
+builds the image from the repo root on an `ubuntu-latest` (`linux/amd64`) runner and pushes it to
+Docker Hub. It runs for a PR merged to `main` carrying the `release-market-making` label — the same
+convention `deploy-production.yml` uses for the Railway bots — or on manual dispatch from the CLI:
 
 ```sh
-DOCKERHUB_REPOSITORY=<namespace>/<name> \
-  bun run --filter @morpho-org/market-making-bot deploy:docker-hub
+gh workflow run deploy-market-making.yml -f tag=latest
 ```
 
-| Environment variable                     | Requirement and behavior                                                                                                                                                    |
-| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DOCKERHUB_REPOSITORY`                   | Required lowercase `<namespace>/<name>` Docker Hub repository, e.g. `morphoorg/market-making-bot`. Registry hosts and tags are rejected here.                               |
-| `DOCKER_IMAGE_TAG`                       | Optional movable primary tag; defaults to `latest`.                                                                                                                         |
-| `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` | Optional pair for non-interactive `docker login`; the token is piped via stdin and never appears in argv or logs. Set both, or neither to reuse an existing `docker login`. |
-| `DOCKER_BUILD_PLATFORM`                  | Optional single `<os>/<arch>[/<variant>]` image platform; defaults to `linux/amd64` so Apple Silicon hosts cross-build instead of publishing arm64-only images.             |
+The optional `tag` input selects the movable primary tag (default `latest`). Every publish
+additionally pushes an immutable `git-<shortsha>` tag for the built commit, so a running container
+is attributable to its source.
 
-Every publish additionally pushes an immutable `git-<shortsha>` traceability tag, suffixed `-dirty`
-when the working tree holds uncommitted changes, so a running container is attributable to its
-commit. Expected failures exit `1` with a sanitized `DockerPublishError` message after docker's own
-streamed output. A deployed host then runs the published image with the exact same parametrization
-as above:
+One-time repository setup: create the `market-making-production` GitHub Environment holding the
+publish configuration, and scope its deployment branches to `main` so the token is unreachable from
+arbitrary PR branches.
+
+| Environment entry      | Kind     | Requirement and behavior                                                                                                                          |
+| ---------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DOCKERHUB_REPOSITORY` | Variable | Required lowercase `<namespace>/<name>` Docker Hub repository, e.g. `morphoorg/market-making-bot`. Registry hosts and embedded tags are rejected. |
+| `DOCKERHUB_USERNAME`   | Secret   | Required Docker Hub account with write access to the repository.                                                                                  |
+| `DOCKERHUB_TOKEN`      | Secret   | Required Docker Hub access token (write scope); it reaches `docker login` via stdin and never appears in argv or workflow logs.                   |
+
+A deployed host then runs the published image with the exact parametrization documented above:
 
 ```sh
 docker run --pull always --detach --restart unless-stopped \
