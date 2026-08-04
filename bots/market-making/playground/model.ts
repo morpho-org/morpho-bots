@@ -42,10 +42,17 @@ export const BOT_ENVIRONMENT_KEYS = [
   'LADDER_MARKETS'
 ] as const
 
+export const SENSITIVE_UI_KEYS = [
+  'MAKER_PRIVATE_KEY',
+  'BETTERSTACK_SOURCE_TOKEN',
+  'RPC_URL',
+  'REFERENCE_RPC_URL'
+] as const
+
 export const SCALAR_FIELDS = [
   ['CHAIN_ID', 'Chain ID', 'Base only (8453)', 'number'],
-  ['RPC_URL', 'Current-state RPC URL', 'Base JSON-RPC endpoint', 'url'],
-  ['REFERENCE_RPC_URL', 'Archive RPC URL', 'Historical reference reads', 'url'],
+  ['RPC_URL', 'Current-state RPC URL', 'Base JSON-RPC endpoint', 'password'],
+  ['REFERENCE_RPC_URL', 'Archive RPC URL', 'Historical reference reads', 'password'],
   ['MAKER_PRIVATE_KEY', 'Maker private key', 'Prefer environment secrets', 'password'],
   ['MAKER_ADDRESS', 'Maker address', 'Balance, allowance, offers, and exposure owner', 'text'],
   ['MIDNIGHT_ADDRESS', 'Midnight address', 'Expected singleton contract', 'text'],
@@ -322,10 +329,18 @@ type ExportOptions = { includeSensitiveValues?: boolean }
 const REDACTED_VALUE = '<redacted>'
 const exportSensitiveValue = (value: string, options: ExportOptions) =>
   options.includeSensitiveValues || value === '' ? value : REDACTED_VALUE
+const exportScalar = (state: PlaygroundState, options: ExportOptions) => {
+  const scalar = canonicalScalar(state)
+  for (const key of SENSITIVE_UI_KEYS) {
+    if (key === 'BETTERSTACK_SOURCE_TOKEN') continue
+    scalar[key] = exportSensitiveValue(scalar[key], options)
+  }
+  return scalar
+}
 
 export const exportYaml = (state: PlaygroundState, options: ExportOptions = {}) => {
   assertExportable(state)
-  const scalar = canonicalScalar(state)
+  const scalar = exportScalar(state, options)
   const yamlList = (name: string, values: string[]) =>
     values.length === 0
       ? [`  ${name}: []`]
@@ -337,7 +352,7 @@ export const exportYaml = (state: PlaygroundState, options: ExportOptions = {}) 
     `  archiveRpcUrl: ${yamlQuote(scalar.REFERENCE_RPC_URL)}`,
     'identity:',
     `  makerAddress: ${yamlQuote(scalar.MAKER_ADDRESS)}`,
-    `  makerPrivateKey: ${yamlQuote(exportSensitiveValue(scalar.MAKER_PRIVATE_KEY, options))}`,
+    `  makerPrivateKey: ${yamlQuote(scalar.MAKER_PRIVATE_KEY)}`,
     'contracts:',
     `  midnightAddress: ${yamlQuote(scalar.MIDNIGHT_ADDRESS)}`,
     `  loanAssetAddress: ${yamlQuote(scalar.LOAN_ASSET_ADDRESS)}`,
@@ -376,11 +391,9 @@ const shellQuote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`
 export const exportShell = (state: PlaygroundState, options: ExportOptions = {}) => {
   assertExportable(state)
   const environment = environmentRecord(state)
-  environment.MAKER_PRIVATE_KEY = exportSensitiveValue(environment.MAKER_PRIVATE_KEY!, options)
-  environment.BETTERSTACK_SOURCE_TOKEN = exportSensitiveValue(
-    environment.BETTERSTACK_SOURCE_TOKEN!,
-    options
-  )
+  for (const key of SENSITIVE_UI_KEYS) {
+    environment[key] = exportSensitiveValue(environment[key] ?? '', options)
+  }
   return `${Object.entries(environment)
     .map(([key, value]) => `export ${key}=${shellQuote(value)}`)
     .join('\n')}\n`
@@ -388,8 +401,20 @@ export const exportShell = (state: PlaygroundState, options: ExportOptions = {})
 
 export const exportJson = (state: PlaygroundState, options: ExportOptions = {}) => {
   assertExportable(state)
-  const scalar = canonicalScalar(state)
-  return `${JSON.stringify({ configuration: { ...scalar, MAKER_PRIVATE_KEY: exportSensitiveValue(scalar.MAKER_PRIVATE_KEY, options), MARKET_IDS: list(scalar.MARKET_IDS), V0_OFFER_GROUP_IDS: list(scalar.V0_OFFER_GROUP_IDS), BOOTSTRAP_MARKETS: structuredBootstrap(state), LADDER_MARKETS: structuredLadder(state) }, observability: { ...state.observability, BETTERSTACK_SOURCE_TOKEN: exportSensitiveValue(state.observability.BETTERSTACK_SOURCE_TOKEN, options) } }, null, 2)}\n`
+  const scalar = exportScalar(state, options)
+  const configuration = {
+    ...scalar,
+    MARKET_IDS: list(scalar.MARKET_IDS),
+    V0_OFFER_GROUP_IDS: list(scalar.V0_OFFER_GROUP_IDS),
+    BOOTSTRAP_MARKETS: structuredBootstrap(state),
+    LADDER_MARKETS: structuredLadder(state)
+  }
+  const observability = { ...state.observability }
+  observability.BETTERSTACK_SOURCE_TOKEN = exportSensitiveValue(
+    observability.BETTERSTACK_SOURCE_TOKEN,
+    options
+  )
+  return `${JSON.stringify({ configuration, observability }, null, 2)}\n`
 }
 
 type PreviewRung = { index: number; rateBps: string; assets: string; offerMaxAssets: string }
@@ -428,10 +453,12 @@ export type LadderGraphicModel = {
 }
 
 export const generatePreviewLadders = (state: PlaygroundState): PreviewLadder[] => {
+  const referenceRateBps = BigInt(state.referenceRateBps)
+  if (referenceRateBps <= 0n) throw new Error('referenceRateBps must be positive')
   const markets = hexListValue(environmentRecord(state), 'MARKET_IDS', false)
   const configs = ladderConfigsValue(structuredLadder(state), markets)
   return configs.map(config => {
-    const generated = generateLadder({ config, referenceRateBps: BigInt(state.referenceRateBps) })
+    const generated = generateLadder({ config, referenceRateBps })
     const maxAssets = offerMaxAssetsByRung(generated)
     const mapRungs = (rungs: typeof generated.lower, caps: readonly bigint[]) =>
       rungs.map((rung, index) => ({
@@ -449,12 +476,37 @@ export const generatePreviewLadders = (state: PlaygroundState): PreviewLadder[] 
   })
 }
 
+const GRAPHIC_RATIO_SCALE = 1_000_000_000_000n
+const ASSET_RATIO_SCALE = 10_000n
+const MINIMUM_GRAPHIC_HEIGHT = 336
+const MAXIMUM_GRAPHIC_HEIGHT = 32_768
+const MINIMUM_ROW_SPACING = 28
+
+const boundedRatio = (numerator: bigint, denominator: bigint, scale = GRAPHIC_RATIO_SCALE) => {
+  if (denominator <= 0n) throw new Error('Graphic ratio denominator must be positive')
+  const bounded = numerator < 0n ? 0n : numerator > denominator ? denominator : numerator
+  return Number((bounded * scale) / denominator) / Number(scale)
+}
+
+const boundedPlotHeight = (range: bigint, minimumRateDelta: bigint) => {
+  if (range <= 0n || minimumRateDelta <= 0n) throw new Error('Graphic rate range must be positive')
+  const required =
+    (range * BigInt(MINIMUM_ROW_SPACING) + minimumRateDelta - 1n) / minimumRateDelta + 2n
+  if (required > BigInt(MAXIMUM_GRAPHIC_HEIGHT)) {
+    throw new Error(
+      `Preview geometry exceeds the ${MAXIMUM_GRAPHIC_HEIGHT}px practical plot-height limit`
+    )
+  }
+  return Math.max(MINIMUM_GRAPHIC_HEIGHT, Number(required))
+}
+
 const graphicAssets = (value: bigint) => Intl.NumberFormat('en-US').format(value)
 
 const graphicCallouts = (
   values: Record<string, string>,
   centerRateBps: string,
-  sideTotals: { lower: bigint; higher: bigint }
+  sideTotals: { lower: bigint; higher: bigint },
+  effectiveRuntimeCycleSeconds: string
 ) => [
   {
     label: 'Center',
@@ -478,7 +530,7 @@ const graphicCallouts = (
   },
   {
     label: 'Exposure caps',
-    value: `${values.targetMarketExposureAssets} target · ${values.maximumTotalExposureAssets} total`,
+    value: `${values.targetMarketExposureAssets} target (static binding cap) · ${values.maximumTotalExposureAssets} configured total ceiling; current aggregate exposure and live capacity excluded`,
     parameters: ['targetMarketExposureAssets', 'maximumTotalExposureAssets']
   },
   {
@@ -491,7 +543,7 @@ const graphicCallouts = (
   },
   {
     label: 'Cadence & tolerance',
-    value: `${values.loopIntervalSeconds}s loop · ${values.movementToleranceBps} BPS deadband`,
+    value: `${values.loopIntervalSeconds}s configured interval · ${effectiveRuntimeCycleSeconds}s effective runtime cycle (minimum across configured markets) · ${values.movementToleranceBps} BPS informational deadband against retained active center; fresh stateless center unchanged`,
     parameters: ['loopIntervalSeconds', 'movementToleranceBps']
   },
   {
@@ -504,6 +556,11 @@ const graphicCallouts = (
 /** Builds presentation-only SVG geometry from the production-equivalent generated ladders. */
 export const generateLadderGraphicModels = (state: PlaygroundState): LadderGraphicModel[] => {
   const previews = generatePreviewLadders(state)
+  const effectiveRuntimeCycleSeconds = state.ladder.reduce(
+    (minimum, input) =>
+      BigInt(input.loopIntervalSeconds) < minimum ? BigInt(input.loopIntervalSeconds) : minimum,
+    BigInt(state.ladder[0]?.loopIntervalSeconds ?? '1')
+  )
   return previews.map((preview, index) => {
     const input = state.ladder[index]!
     const parameterValues: Record<string, string> = {
@@ -546,18 +603,18 @@ export const generateLadderGraphicModels = (state: PlaygroundState): LadderGraph
       const delta = rate - importantRates[index]!
       return delta > 0n && delta < minimumDelta ? delta : minimumDelta
     }, range)
-    const minimumRowSpacing = 28
-    const plotHeight = Math.max(
-      336,
-      Math.ceil((Number(range) / Number(minimumRateDelta)) * minimumRowSpacing) + 1
-    )
+    const plotHeight = boundedPlotHeight(range, minimumRateDelta)
     const rateToY = (rateBps: string) =>
-      32 + (Number(maximum - BigInt(rateBps)) / Number(range)) * plotHeight
+      32 + boundedRatio(maximum - BigInt(rateBps), range) * plotHeight
     const rungs = rows.map(rung => ({
       ...rung,
       y: rateToY(rung.rateBps),
-      allocationBarRatio: Number((BigInt(rung.allocationAssets) * 10_000n) / scaleAssets) / 10_000,
-      offerMaxBarRatio: Number((BigInt(rung.offerMaxAssets) * 10_000n) / scaleAssets) / 10_000
+      allocationBarRatio: boundedRatio(
+        BigInt(rung.allocationAssets),
+        scaleAssets,
+        ASSET_RATIO_SCALE
+      ),
+      offerMaxBarRatio: boundedRatio(BigInt(rung.offerMaxAssets), scaleAssets, ASSET_RATIO_SCALE)
     }))
     return {
       marketId: preview.marketId,
@@ -571,7 +628,12 @@ export const generateLadderGraphicModels = (state: PlaygroundState): LadderGraph
       plotHeight,
       rateToY,
       rungs,
-      callouts: graphicCallouts(parameterValues, preview.centerRateBps, sideTotals)
+      callouts: graphicCallouts(
+        parameterValues,
+        preview.centerRateBps,
+        sideTotals,
+        String(effectiveRuntimeCycleSeconds)
+      )
     }
   })
 }

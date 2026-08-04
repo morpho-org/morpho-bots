@@ -5,6 +5,7 @@ import {
   LADDER_FIELDS,
   OBSERVABILITY_FIELDS,
   SCALAR_FIELDS,
+  SENSITIVE_UI_KEYS,
   createDefaultBootstrap,
   createDefaultLadder,
   createDefaultPlaygroundState,
@@ -38,6 +39,7 @@ let activeExport: 'yaml' | 'shell' | 'json' = 'yaml'
 let fieldIndex = 0
 
 type Field = readonly [string, string, string, string]
+const sensitiveUiKeys = new Set<string>(SENSITIVE_UI_KEYS)
 
 const inputFor = (
   field: Field,
@@ -72,7 +74,11 @@ const inputFor = (
       input.inputMode = 'numeric'
       input.pattern = '-?[0-9]*'
     }
-    if (type === 'password') input.autocomplete = 'off'
+    if (sensitiveUiKeys.has(key)) {
+      input.type = 'password'
+      input.autocomplete = 'off'
+      input.dataset.sensitive = 'true'
+    }
   }
   input.id = `field-${key}-${fieldIndex++}`
   input.dataset.field = key
@@ -231,6 +237,7 @@ const renderControls = () => {
       }
     )
   )
+  renderSensitiveVisibility()
 }
 
 previewReference.value = state.referenceRateBps
@@ -655,7 +662,13 @@ const copyExport = async () => {
 }
 
 required<HTMLButtonElement>('#copy-export').addEventListener('click', () => void copyExport())
+const renderSensitiveVisibility = () => {
+  for (const input of document.querySelectorAll<HTMLInputElement>('input[data-sensitive="true"]')) {
+    input.type = includeSensitiveValues.checked ? 'text' : 'password'
+  }
+}
 includeSensitiveValues.addEventListener('change', () => {
+  renderSensitiveVisibility()
   renderExports()
   copyStatus.textContent = includeSensitiveValues.checked
     ? 'Sensitive values are visible and will be copied.'

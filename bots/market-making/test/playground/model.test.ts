@@ -10,6 +10,7 @@ import {
   LADDER_FIELDS,
   OBSERVABILITY_FIELDS,
   SCALAR_FIELDS,
+  SENSITIVE_UI_KEYS,
   createDefaultBootstrap,
   createDefaultLadder,
   createDefaultPlaygroundState,
@@ -158,7 +159,7 @@ describe('market-maker parameter playground', () => {
     expect(await Bun.file('/tmp/playground-pwned').exists()).toBe(false)
   })
 
-  test('uses production ladder allocation and applies target and total exposure caps', () => {
+  test('treats target as the static binding cap while total exposure is annotation-only without live state', () => {
     const state = createDefaultPlaygroundState()
     const config = state.ladder[0]!
     config.rungCount = '3'
@@ -168,9 +169,30 @@ describe('market-maker parameter playground', () => {
     config.targetMarketExposureAssets = '100'
     config.maximumTotalExposureAssets = '1000'
 
-    const [preview] = generatePreviewLadders(state)
-    expect(preview?.higher.reduce((sum, rung) => sum + BigInt(rung.assets), 0n)).toBe(100n)
-    expect(preview?.lower.reduce((sum, rung) => sum + BigInt(rung.assets), 0n)).toBe(1000n)
+    const [baseline] = generateLadderGraphicModels(state)
+    config.maximumTotalExposureAssets = '500'
+    const [differentValidTotal] = generateLadderGraphicModels(state)
+    expect(differentValidTotal?.rungs.map(rung => rung.allocationAssets)).toEqual(
+      baseline?.rungs.map(rung => rung.allocationAssets)
+    )
+
+    config.targetMarketExposureAssets = '80'
+    const [differentTarget] = generateLadderGraphicModels(state)
+    expect(
+      differentTarget?.rungs
+        .filter(rung => rung.side === 'higher')
+        .reduce((sum, rung) => sum + BigInt(rung.allocationAssets), 0n)
+    ).toBe(80n)
+    expect(
+      differentTarget?.rungs
+        .filter(rung => rung.side === 'lower')
+        .reduce((sum, rung) => sum + BigInt(rung.allocationAssets), 0n)
+    ).toBe(1000n)
+    expect(
+      differentTarget?.callouts.find(callout => callout.label === 'Exposure caps')?.value
+    ).toBe(
+      '80 target (static binding cap) · 500 configured total ceiling; current aggregate exposure and live capacity excluded'
+    )
   })
 
   test('models allocation and actual offer maxAssets distinctly in both group modes', () => {
@@ -293,9 +315,9 @@ describe('market-maker parameter playground', () => {
       '110 BPS steps · 220 BPS full gap',
       '4/side · 1000 BPS skew · 1 floor',
       '1200 reduce-only · 900 lend',
-      '700 target · 800 total',
+      '700 target (static binding cap) · 800 configured total ceiling; current aggregate exposure and live capacity excluded',
       'per-book · side-wide shared cap · Reduce-only 1,200 · Lend 700 offer maxAssets',
-      '30s loop · 20 BPS deadband',
+      '30s configured interval · 30s effective runtime cycle (minimum across configured markets) · 20 BPS informational deadband against retained active center; fresh stateless center unchanged',
       '0–2000 BPS'
     ])
   })
@@ -324,6 +346,121 @@ describe('market-maker parameter playground', () => {
       )
       expect(graphic!.plotHeight).toBeGreaterThanOrEqual(rungCount * 2 * 28)
     }
+  })
+
+  test('keeps huge bigint geometry finite and bounded without Number(bigint) conversion', () => {
+    const powers = [100, 308, 400]
+    for (const power of powers) {
+      const state = createDefaultPlaygroundState()
+      const input = state.ladder[0]!
+      const unit = 10n ** BigInt(power)
+      input.minimumRateBps = '0'
+      input.maximumRateBps = String(unit * 8n)
+      input.spreadBps = String(unit * 2n)
+      input.stepBps = String(unit)
+      state.referenceRateBps = String(unit * 4n)
+
+      const [graphic] = generateLadderGraphicModels(state)
+      expect(graphic).toBeDefined()
+      expect(graphic!.plotHeight).toBeGreaterThanOrEqual(336)
+      expect(graphic!.plotHeight).toBeLessThanOrEqual(32_768)
+      expect(
+        [
+          graphic!.rateToY(graphic!.axis.minimumRateBps),
+          graphic!.rateToY(graphic!.axis.maximumRateBps),
+          ...graphic!.rungs.flatMap(rung => [
+            rung.y,
+            rung.allocationBarRatio,
+            rung.offerMaxBarRatio
+          ])
+        ].every(Number.isFinite)
+      ).toBe(true)
+      expect(JSON.stringify(graphic!.rungs)).not.toMatch(/NaN|Infinity/)
+    }
+  })
+
+  test('deterministic huge-rate fuzz never returns non-finite or impractical geometry', () => {
+    let seed = 0x122n
+    for (let sample = 0; sample < 64; sample++) {
+      seed = (seed * 1_103_515_245n + 12_345n) % 2_147_483_648n
+      const power = 100 + Number(seed % 301n)
+      const unit = 10n ** BigInt(power)
+      const state = createDefaultPlaygroundState()
+      const input = state.ladder[0]!
+      input.minimumRateBps = '0'
+      input.maximumRateBps = String(unit * 8n)
+      input.spreadBps = String(unit * 2n)
+      input.stepBps = String(unit)
+      state.referenceRateBps = String(unit * 4n)
+
+      const [graphic] = generateLadderGraphicModels(state)
+      expect(graphic!.plotHeight).toBeLessThanOrEqual(32_768)
+      expect(
+        graphic!.rungs.every(rung =>
+          [rung.y, rung.allocationBarRatio, rung.offerMaxBarRatio].every(Number.isFinite)
+        )
+      ).toBe(true)
+    }
+  })
+
+  test('keeps exports valid when practical plot dimensions require preview-only invalid state', () => {
+    const state = createDefaultPlaygroundState()
+    const input = state.ladder[0]!
+    input.minimumRateBps = '0'
+    input.maximumRateBps = `1${'0'.repeat(400)}`
+    input.spreadBps = '2'
+    input.stepBps = '1'
+    state.referenceRateBps = '4'
+
+    expect(validateProductionState(state)).toEqual({ valid: true, errors: [] })
+    expect(() => generateLadderGraphicModels(state)).toThrow(
+      'Preview geometry exceeds the 32768px practical plot-height limit'
+    )
+    for (const exporter of [exportYaml, exportShell, exportJson]) {
+      expect(() => exporter(state)).not.toThrow()
+      expect(exporter(state)).not.toMatch(/NaN|Infinity/)
+    }
+  })
+
+  test('centrally inventories all UI credentials and redacts complete RPC URLs by default', async () => {
+    expect([...SENSITIVE_UI_KEYS]).toEqual([
+      'MAKER_PRIVATE_KEY',
+      'BETTERSTACK_SOURCE_TOKEN',
+      'RPC_URL',
+      'REFERENCE_RPC_URL'
+    ])
+    const sensitiveFieldTypes = new Map(
+      [...SCALAR_FIELDS, ...OBSERVABILITY_FIELDS].map(([key, , , type]) => [key, type])
+    )
+    for (const key of SENSITIVE_UI_KEYS) expect(sensitiveFieldTypes.get(key)).toBe('password')
+
+    const state = createDefaultPlaygroundState()
+    const values = {
+      MAKER_PRIVATE_KEY: `0x${'9'.repeat(64)}`,
+      BETTERSTACK_SOURCE_TOKEN: 'super-private-source-token',
+      RPC_URL: 'https://rpc-user:rpc-password@rpc.example.test/path?api_key=query-secret#fragment',
+      REFERENCE_RPC_URL:
+        'https://archive-user:archive-password@archive.example.test/path?token=archive-secret'
+    }
+    state.scalar.MAKER_PRIVATE_KEY = values.MAKER_PRIVATE_KEY
+    state.scalar.RPC_URL = values.RPC_URL
+    state.scalar.REFERENCE_RPC_URL = values.REFERENCE_RPC_URL
+    state.observability.BETTERSTACK_SOURCE_TOKEN = values.BETTERSTACK_SOURCE_TOKEN
+    state.observability.BETTERSTACK_INGESTING_HOST = 'logs.example.test'
+
+    for (const exporter of [exportYaml, exportShell, exportJson]) {
+      const redacted = exporter(state)
+      for (const value of Object.values(values)) expect(redacted).not.toContain(value)
+      expect(redacted).not.toContain('rpc.example.test')
+      expect(redacted).not.toContain('archive.example.test')
+      const included = exporter(state, { includeSensitiveValues: true })
+      for (const [key, value] of Object.entries(values)) {
+        if (exporter === exportYaml && key === 'BETTERSTACK_SOURCE_TOKEN') continue
+        expect(included).toContain(value)
+      }
+    }
+    const redactedEnvironment = await loadShellEnvironment(exportShell(state))
+    for (const key of SENSITIVE_UI_KEYS) expect(redactedEnvironment[key]).toBe('<redacted>')
   })
 
   test('redacts sensitive values by default and includes them only with explicit opt-in', async () => {
@@ -383,6 +520,25 @@ describe('market-maker parameter playground', () => {
       graphic?.rungs[5]!.allocationBarRatio ?? 0
     )
     expect(graphic?.gapBps).toBe('200')
+  })
+
+  test('annotates per-market interval, minimum effective cycle, and retained-center tolerance semantics', () => {
+    const state = createDefaultPlaygroundState()
+    const second = createDefaultLadder(`0x${'6'.repeat(64)}`)
+    state.scalar.MARKET_IDS = `${state.scalar.MARKET_IDS},${second.marketId}`
+    state.ladder[0]!.loopIntervalSeconds = '60'
+    state.ladder[0]!.movementToleranceBps = '10'
+    second.loopIntervalSeconds = '30'
+    second.movementToleranceBps = '20'
+    state.ladder.push(second)
+
+    const cadence = generateLadderGraphicModels(state).map(
+      model => model.callouts.find(callout => callout.label === 'Cadence & tolerance')?.value
+    )
+    expect(cadence).toEqual([
+      '60s configured interval · 30s effective runtime cycle (minimum across configured markets) · 10 BPS informational deadband against retained active center; fresh stateless center unchanged',
+      '30s configured interval · 30s effective runtime cycle (minimum across configured markets) · 20 BPS informational deadband against retained active center; fresh stateless center unchanged'
+    ])
   })
 
   test('returns empty graphics for no markets and ordered models for multiple markets', () => {
@@ -631,6 +787,34 @@ describe('market-maker parameter playground', () => {
     }
   )
 
+  test.each(['0', '-1'])(
+    'treats non-positive preview reference rate %s as preview-only invalid like production adapter',
+    async referenceRateBps => {
+      const state = createDefaultPlaygroundState()
+      const baselineExports = [
+        exportYaml(state, { includeSensitiveValues: true }),
+        exportShell(state, { includeSensitiveValues: true }),
+        exportJson(state, { includeSensitiveValues: true })
+      ]
+      state.referenceRateBps = referenceRateBps
+
+      expect(validateProductionState(state)).toEqual({ valid: true, errors: [] })
+      expect(validatePreviewState(state)).toEqual({
+        valid: false,
+        errors: ['referenceRateBps must be positive']
+      })
+      const exports = [
+        exportYaml(state, { includeSensitiveValues: true }),
+        exportShell(state, { includeSensitiveValues: true }),
+        exportJson(state, { includeSensitiveValues: true })
+      ]
+      expect(exports).toEqual(baselineExports)
+      expect(
+        validateWithProductionLoader(await loadShellEnvironment(exports[1]!)).ladder
+      ).toHaveLength(1)
+    }
+  )
+
   test.each(['not-a-number', '1000000000000000000000000000000000000'])(
     'keeps all production exports valid when preview reference rate %s is invalid',
     async referenceRateBps => {
@@ -736,7 +920,7 @@ describe('market-maker parameter playground', () => {
     const hostile = `https://example.test/  leading '"\\\t\r\nnewKey: injected # : $HOME $() \`backticks\`; trailing  /end`
     state.scalar.RPC_URL = hostile
 
-    const yaml = exportYaml(state)
+    const yaml = exportYaml(state, { includeSensitiveValues: true })
     const document = parseDocument(yaml, { schema: 'failsafe', uniqueKeys: true })
     expect(document.errors).toEqual([])
     expect(document.warnings).toEqual([])

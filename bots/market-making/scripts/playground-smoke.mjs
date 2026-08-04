@@ -214,13 +214,20 @@ try {
   const pending = new Map()
   const requests = []
   const consoleErrors = []
+  const consoleMessages = []
   socket.addEventListener('message', event => {
     const message = JSON.parse(String(event.data))
     if (message.method === 'Network.requestWillBeSent') requests.push(message.params.request.url)
     if (message.method === 'Runtime.exceptionThrown')
       consoleErrors.push(message.params.exceptionDetails.text)
-    if (message.method === 'Log.entryAdded' && message.params.entry.level === 'error')
-      consoleErrors.push(message.params.entry.text)
+    if (message.method === 'Runtime.consoleAPICalled')
+      consoleMessages.push(
+        message.params.args.map(argument => argument.value ?? argument.description ?? '').join(' ')
+      )
+    if (message.method === 'Log.entryAdded') {
+      consoleMessages.push(message.params.entry.text)
+      if (message.params.entry.level === 'error') consoleErrors.push(message.params.entry.text)
+    }
     if (message.id && pending.has(message.id)) {
       const { resolve, reject } = pending.get(message.id)
       pending.delete(message.id)
@@ -256,6 +263,73 @@ try {
     deviceScaleFactor: 1,
     mobile: false
   })
+  await command('Page.addScriptToEvaluateOnNewDocument', {
+    source: `(() => {
+      const accesses = []
+      const instrumented = []
+      Object.defineProperty(globalThis, '__persistenceAccesses', {
+        value: accesses,
+        configurable: false,
+        enumerable: false,
+        writable: false
+      })
+      Object.defineProperty(globalThis, '__persistenceInstrumentation', {
+        value: instrumented,
+        configurable: false,
+        enumerable: false,
+        writable: false
+      })
+      const record = name => accesses.push(name)
+      const wrapMethod = (prototype, key, label) => {
+        const descriptor = prototype && Object.getOwnPropertyDescriptor(prototype, key)
+        if (!descriptor || typeof descriptor.value !== 'function') return
+        instrumented.push(label)
+        Object.defineProperty(prototype, key, {
+          ...descriptor,
+          value: function (...args) {
+            record(label)
+            return Reflect.apply(descriptor.value, this, args)
+          }
+        })
+      }
+      const wrapAccessor = (prototype, key, label) => {
+        const descriptor = prototype && Object.getOwnPropertyDescriptor(prototype, key)
+        if (!descriptor || (!descriptor.get && !descriptor.set)) return
+        instrumented.push(label)
+        Object.defineProperty(prototype, key, {
+          ...descriptor,
+          get: descriptor.get && function () {
+            record(label + '.get')
+            return Reflect.apply(descriptor.get, this, [])
+          },
+          set: descriptor.set && function (value) {
+            record(label + '.set')
+            return Reflect.apply(descriptor.set, this, [value])
+          }
+        })
+      }
+      for (const key of ['getItem', 'setItem', 'removeItem', 'clear', 'key']) {
+        wrapMethod(globalThis.Storage?.prototype, key, 'Storage.' + key)
+      }
+      wrapAccessor(globalThis.Storage?.prototype, 'length', 'Storage.length')
+      wrapAccessor(globalThis, 'localStorage', 'Window.localStorage')
+      wrapAccessor(globalThis, 'sessionStorage', 'Window.sessionStorage')
+      wrapAccessor(globalThis, 'indexedDB', 'Window.indexedDB')
+      for (const key of ['open', 'deleteDatabase', 'databases', 'cmp']) {
+        wrapMethod(globalThis.IDBFactory?.prototype, key, 'IDBFactory.' + key)
+      }
+      wrapAccessor(globalThis, 'caches', 'Window.caches')
+      for (const key of ['open', 'match', 'has', 'delete', 'keys']) {
+        wrapMethod(globalThis.CacheStorage?.prototype, key, 'CacheStorage.' + key)
+      }
+      wrapAccessor(globalThis.Navigator?.prototype, 'serviceWorker', 'Navigator.serviceWorker')
+      for (const key of ['register', 'getRegistration', 'getRegistrations']) {
+        wrapMethod(globalThis.ServiceWorkerContainer?.prototype, key, 'ServiceWorkerContainer.' + key)
+      }
+      wrapAccessor(globalThis.ServiceWorkerContainer?.prototype, 'ready', 'ServiceWorkerContainer.ready')
+      wrapAccessor(globalThis.Document?.prototype, 'cookie', 'Document.cookie')
+    })()`
+  })
   await command('Page.navigate', { url: `http://127.0.0.1:${port}` })
   await waitFor(async () => {
     if (!(await evaluate("document.documentElement.dataset.playgroundReady === 'true'"))) {
@@ -281,7 +355,7 @@ try {
   )
   assert(
     await evaluate(
-      "document.querySelector('#include-sensitive-values')?.checked === false && document.querySelector('#include-sensitive-warning')?.textContent.includes('private credentials')"
+      "document.querySelector('#include-sensitive-values')?.checked === false && document.querySelector('#include-sensitive-warning')?.textContent.includes('complete RPC URLs')"
     ),
     'sensitive export opt-in is not explicit, unchecked, and warned'
   )
@@ -375,8 +449,9 @@ try {
     set('targetMarketExposureAssets', '9000000000')
     result.targetMarketExposureAssets = document.querySelector('.ladder-rung[data-side=higher]')?.dataset.allocationAssets !== higherAssets
     set('targetMarketExposureAssets', '20000000000')
-    set('maximumTotalExposureAssets', '9000000000')
-    result.maximumTotalExposureAssets = document.querySelector('.ladder-rung[data-side=lower]')?.dataset.allocationAssets !== lowerAssets
+    const beforeMaximumTotalExposureAssets = [...document.querySelectorAll('.ladder-rung')].map(rung => rung.dataset.allocationAssets).join('|')
+    set('maximumTotalExposureAssets', '25000000000')
+    result.maximumTotalExposureAssets = [...document.querySelectorAll('.ladder-rung')].map(rung => rung.dataset.allocationAssets).join('|') === beforeMaximumTotalExposureAssets && callout('maximumTotalExposureAssets') === '20000000000 target (static binding cap) · 25000000000 configured total ceiling; current aggregate exposure and live capacity excluded'
     set('maximumTotalExposureAssets', '30000000000')
     set('minimumOfferAssets', '4000000000')
     result.minimumOfferAssets = document.querySelectorAll('.ladder-rung').length < 6
@@ -387,10 +462,10 @@ try {
     result.groupMode = callout('groupMode').includes('side-wide shared cap') && callout('groupMode').includes('Reduce-only 10,000,000,000') && callout('groupMode').includes('Lend 10,000,000,000') && perBookCaps.map(rung => rung.getAttribute('width')).join('|') !== sharedCapWidths && perBookCaps.every(rung => rung.dataset.offerMaxAssets === '10000000000') && perBookCaps.map(rung => rung.dataset.allocationAssets).join('|') === '3333333334|3333333333|3333333333|3333333333|3333333333|3333333334' && [...document.querySelectorAll('.rung-table tbody tr')].every(row => row.cells[2]?.textContent && row.cells[3]?.textContent === '10000000000')
     set('groupMode', 'shared-rung')
     set('loopIntervalSeconds', '30')
-    result.loopIntervalSeconds = callout('loopIntervalSeconds').includes('30s loop')
+    result.loopIntervalSeconds = callout('loopIntervalSeconds').includes('30s configured interval') && callout('loopIntervalSeconds').includes('30s effective runtime cycle')
     set('loopIntervalSeconds', '60')
     set('movementToleranceBps', '20')
-    result.movementToleranceBps = callout('movementToleranceBps').includes('20 BPS deadband')
+    result.movementToleranceBps = callout('movementToleranceBps').includes('20 BPS informational deadband against retained active center') && callout('movementToleranceBps').includes('fresh stateless center unchanged')
     set('movementToleranceBps', '10')
     set('minimumRateBps', '50')
     result.minimumRateBps = [...document.querySelectorAll('.axis-label')].some(label => label.textContent === 'MIN 50 BPS')
@@ -416,6 +491,42 @@ try {
   assert(
     Object.keys(parameterProof).length === 17,
     'parameter proof did not cover all 16 ladder fields plus reference rate'
+  )
+
+  const hugeGeometryProof = await evaluate(`(() => {
+    const input = field => document.querySelector(\`.market-card:has([data-field=quotePremiumBps]) [data-field=\${field}]\`)
+    const set = (field, value) => { const element=input(field); element.value=String(value); element.dispatchEvent(new Event('input',{bubbles:true})) }
+    const results = []
+    for (const power of [100, 308, 400]) {
+      const unit = BigInt('1' + '0'.repeat(power))
+      set('minimumRateBps', '0')
+      set('maximumRateBps', String(unit * 8n))
+      set('spreadBps', String(unit * 2n))
+      set('stepBps', String(unit))
+      const reference=document.querySelector('#preview-reference'); reference.value=String(unit * 4n); reference.dispatchEvent(new Event('input',{bubbles:true}))
+      const svg=document.querySelector('.ladder-scroll svg')
+      const numericAttributes=[...document.querySelectorAll('.ladder-market [x],[y],[width],[height],[cx],[cy],[r]')].flatMap(element => ['x','y','width','height','cx','cy','r'].flatMap(name => element.hasAttribute(name) ? [Number(element.getAttribute(name))] : []))
+      results.push({
+        power,
+        valid:document.querySelector('#ladder-status').dataset.status==='ok',
+        bounded:Number(svg?.getAttribute('height')) <= 32832 && document.querySelector('.ladder-scroll').clientHeight <= 900,
+        finite:numericAttributes.every(Number.isFinite),
+        noInvalidTokens:!document.querySelector('.ladder-market').innerHTML.match(/NaN|Infinity/)
+      })
+    }
+    set('maximumRateBps', '1' + '0'.repeat(400)); set('spreadBps', '2'); set('stepBps', '1')
+    const practicalReference=document.querySelector('#preview-reference'); practicalReference.value='4'; practicalReference.dispatchEvent(new Event('input',{bubbles:true}))
+    const practicalInvalid = document.querySelector('.ladder-invalid[role=img]')?.getAttribute('aria-label')?.includes('32768px practical plot-height limit') && document.querySelector('#ladder-status').dataset.status==='error' && document.querySelector('#validation-errors').hidden && !document.querySelector('#copy-export').disabled && [...document.querySelectorAll('#export-yaml,#export-shell,#export-json')].every(output => output.dataset.invalid==='false' && !output.value.match(/NaN|Infinity/))
+    set('spreadBps', '200'); set('stepBps', '100'); set('minimumRateBps', '200'); set('maximumRateBps', '800')
+    const reference=document.querySelector('#preview-reference'); reference.value='500'; reference.dispatchEvent(new Event('input',{bubbles:true}))
+    return { results, practicalInvalid }
+  })()`)
+  assert(
+    hugeGeometryProof.practicalInvalid &&
+      hugeGeometryProof.results.every(
+        result => result.valid && result.bounded && result.finite && result.noInvalidTokens
+      ),
+    `huge bigint browser geometry failed: ${JSON.stringify(hugeGeometryProof)}`
   )
   await evaluate(`(() => {
     const input = field => document.querySelector(\`.market-card:has([data-field=quotePremiumBps]) [data-field=\${field}]\`)
@@ -451,7 +562,11 @@ try {
         minGap:Math.min(...gaps),
         higherCenterGap:center-higher,
         lowerCenterGap:lower-center,
-        minimumLabelPx:Math.min(...['.rung-rate','.rung-details','.axis-label','.spread-gap-label'].map(selector=>parseFloat(getComputedStyle(document.querySelector(selector)).fontSize))),
+        minimumLabelPx:Math.min(...[...document.querySelectorAll('.ladder-market *')].filter(element => {
+          const style=getComputedStyle(element)
+          if (style.display==='none' || style.visibility==='hidden') return false
+          return [...element.childNodes].some(node => node.nodeType===Node.TEXT_NODE && node.textContent.trim())
+        }).map(element=>parseFloat(getComputedStyle(element).fontSize))),
         viewportHeight:scroll.clientHeight,
         contentHeight:scroll.scrollHeight,
         svgWidth:document.querySelector('.ladder-scroll svg').getBoundingClientRect().width
@@ -542,10 +657,25 @@ try {
   await evaluate(`(() => {
     const input = field => document.querySelector(\`.market-card:has([data-field=quotePremiumBps]) [data-field=\${field}]\`)
     const set=(field,value)=>{const element=input(field);element.value=value;element.dispatchEvent(new Event('input',{bubbles:true}))}
-    set('minimumOfferAssets','101000000'); set('minimumRateBps','200'); set('maximumRateBps','800')
+    set('minimumOfferAssets','101000000'); set('minimumRateBps','200'); set('maximumRateBps','800'); set('groupMode','shared-rung')
     const reference=document.querySelector('#preview-reference');reference.value='500';reference.dispatchEvent(new Event('input',{bubbles:true}))
   })()`)
+  assert(
+    await evaluate(
+      "[...document.querySelectorAll('.offer-cap-bar')].every(rung => rung.dataset.offerMaxAssets === rung.dataset.allocationAssets)"
+    ),
+    'shared-rung mobile screenshot state does not preserve per-rung maxAssets semantics'
+  )
   await capture('/tmp/morpho-bots-pr122-ladder-default-mobile.png')
+  await evaluate(
+    `(() => { const input=document.querySelector('.market-card:has([data-field=quotePremiumBps]) [data-field=groupMode]'); input.value='per-book'; input.dispatchEvent(new Event('input',{bubbles:true})) })()`
+  )
+  assert(
+    await evaluate(
+      "[...document.querySelectorAll('.offer-cap-bar')].every(rung => rung.dataset.offerMaxAssets === '10000000000')"
+    ),
+    'per-book mobile screenshot state does not preserve side-wide maxAssets semantics'
+  )
   await capture('/tmp/morpho-bots-pr122-perbook-default-mobile.png')
   await command('Emulation.clearDeviceMetricsOverride')
   console.log(
@@ -590,38 +720,50 @@ try {
   )
 
   const secretProof = await evaluate(`(async () => {
-    const privateKey = '0x' + '9'.repeat(64)
-    const sourceToken = 'browser-secret-source-token'
+    const values = {
+      MAKER_PRIVATE_KEY: '0x' + '9'.repeat(64),
+      BETTERSTACK_SOURCE_TOKEN: 'browser-secret-source-token',
+      RPC_URL: 'https://rpc-user:rpc-password@rpc.example.test/path?api_key=query-secret#fragment',
+      REFERENCE_RPC_URL: 'https://archive-user:archive-password@archive.example.test/path?token=archive-secret'
+    }
     const set = (field, value) => {
       const input = document.querySelector(\`[data-field=\${field}]\`)
       input.value = value
       input.dispatchEvent(new Event('input', { bubbles: true }))
     }
-    set('MAKER_PRIVATE_KEY', privateKey)
-    set('BETTERSTACK_SOURCE_TOKEN', sourceToken)
+    for (const [field, value] of Object.entries(values)) set(field, value)
     set('BETTERSTACK_INGESTING_HOST', 'logs.example.test')
     const outputs = () => [...document.querySelectorAll('[role=tabpanel] textarea')].map(output => output.value).join('\\n')
-    const defaultRedacted = !outputs().includes(privateKey) && !outputs().includes(sourceToken) && outputs().includes('<redacted>')
-    const noDomLeak = !document.body.textContent.includes(privateKey) && !document.body.textContent.includes(sourceToken) && ![...document.querySelectorAll('.ladder-market *')].some(element => [...element.attributes].some(attribute => attribute.value.includes(privateKey) || attribute.value.includes(sourceToken)))
-    const passwordInputs = [...document.querySelectorAll('[data-field=MAKER_PRIVATE_KEY],[data-field=BETTERSTACK_SOURCE_TOKEN]')].every(input => input.type === 'password')
+    const credentials = Object.values(values)
+    const defaultRedacted = credentials.every(value => !outputs().includes(value)) && outputs().includes('<redacted>')
+    const noGraphicOrWarningLeak = ![...document.querySelectorAll('.ladder-market *,#observability-status *,#ladder-status')].some(element => element.textContent && credentials.some(value => element.textContent.includes(value)) || [...element.attributes].some(attribute => credentials.some(value => attribute.value.includes(value))))
+    const passwordInputs = Object.keys(values).every(field => document.querySelector(\`[data-field=\${field}]\`)?.type === 'password')
     const toggle = document.querySelector('#include-sensitive-values')
     toggle.checked = true
     toggle.dispatchEvent(new Event('change', { bubbles: true }))
-    const included = [...document.querySelectorAll('#export-yaml,#export-shell,#export-json')].every((output, index) => index === 0 ? output.value.includes(privateKey) : output.value.includes(privateKey) && output.value.includes(sourceToken))
+    const deliberatelyRevealed = Object.keys(values).every(field => document.querySelector(\`[data-field=\${field}]\`)?.type === 'text' && document.querySelector(\`[data-field=\${field}]\`)?.value === values[field])
+    const yaml = document.querySelector('#export-yaml').value
+    const shell = document.querySelector('#export-shell').value
+    const json = document.querySelector('#export-json').value
+    const included = [values.MAKER_PRIVATE_KEY, values.RPC_URL, values.REFERENCE_RPC_URL].every(value => yaml.includes(value)) && credentials.every(value => shell.includes(value) && json.includes(value))
     let copied = ''
     Object.defineProperty(navigator, 'clipboard', { value: { writeText: async value => { copied = value } }, configurable: true })
+    document.querySelector('#tab-json').click()
     document.querySelector('#copy-export').click()
     await new Promise(resolve => setTimeout(resolve, 0))
-    const clipboardIncluded = copied.includes(privateKey)
+    const clipboardIncluded = credentials.every(value => copied.includes(value))
     toggle.checked = false
     toggle.dispatchEvent(new Event('change', { bubbles: true }))
     document.querySelector('#copy-export').click()
     await new Promise(resolve => setTimeout(resolve, 0))
-    const rerRedacted = !outputs().includes(privateKey) && !outputs().includes(sourceToken) && !copied.includes(privateKey) && copied.includes('<redacted>')
+    const reRedacted = credentials.every(value => !outputs().includes(value) && !copied.includes(value)) && copied.includes('<redacted>')
+    const hiddenAgain = Object.keys(values).every(field => document.querySelector(\`[data-field=\${field}]\`)?.type === 'password' && document.querySelector(\`[data-field=\${field}]\`)?.value === values[field])
     set('MAKER_PRIVATE_KEY', '0x' + 'a'.repeat(64))
     set('BETTERSTACK_SOURCE_TOKEN', '')
     set('BETTERSTACK_INGESTING_HOST', '')
-    return { defaultRedacted, noDomLeak, passwordInputs, included, clipboardIncluded, rerRedacted }
+    set('RPC_URL', 'https://base-rpc.example')
+    set('REFERENCE_RPC_URL', 'https://base-archive-rpc.example')
+    return { defaultRedacted, noGraphicOrWarningLeak, passwordInputs, deliberatelyRevealed, included, clipboardIncluded, reRedacted, hiddenAgain }
   })()`)
   assert(
     Object.values(secretProof).every(Boolean),
@@ -632,26 +774,30 @@ try {
     const copied = []
     Object.defineProperty(navigator, 'clipboard', { value: { writeText: async value => { copied.push(value) } }, configurable: true })
     const reference = document.querySelector('#preview-reference')
+    const exportBaseline = [...document.querySelectorAll('#export-yaml,#export-shell,#export-json')].map(output => output.value)
     const prove = async value => {
       reference.value = value
       reference.dispatchEvent(new Event('input', { bubbles: true }))
       await new Promise(resolve => setTimeout(resolve, 0))
       const outputs = [...document.querySelectorAll('#export-yaml,#export-shell,#export-json')]
-      const validExports = outputs.every(output => output.dataset.invalid === 'false' && !output.value.includes(value))
+      const validExports = outputs.every((output, index) => output.dataset.invalid === 'false' && output.value === exportBaseline[index])
       const previewInvalid = document.querySelector('#ladder-status').dataset.status === 'error' && document.querySelector('.ladder-invalid[role=img]')?.getAttribute('aria-label')?.includes('Invalid ladder graphic') && document.querySelectorAll('.ladder-rung').length === 0
+      const positiveError = value !== '0' && value !== '-1' || document.querySelector('.ladder-invalid[role=img]')?.getAttribute('aria-label')?.includes('referenceRateBps must be positive')
       const exportUiValid = document.querySelector('#validation-errors').hidden && !document.querySelector('#copy-export').disabled
       for (const id of ['tab-yaml', 'tab-shell', 'tab-json']) {
         document.querySelector('#' + id).click()
         document.querySelector('#copy-export').click()
         await new Promise(resolve => setTimeout(resolve, 0))
       }
-      return { validExports, previewInvalid, exportUiValid, copiedAll: copied.splice(0).length === 3 }
+      return { validExports, previewInvalid, positiveError, exportUiValid, copiedAll: copied.splice(0).length === 3 }
     }
     const nonNumeric = await prove('not-a-number')
+    const zero = await prove('0')
+    const negative = await prove('-1')
     const hardRange = await prove('1000000000000000000000000000000000000')
     reference.value = '500'
     reference.dispatchEvent(new Event('input', { bubbles: true }))
-    return { nonNumeric, hardRange }
+    return { nonNumeric, zero, negative, hardRange }
   })()`)
   assert(
     Object.values(previewIsolationProof).every(result => Object.values(result).every(Boolean)),
@@ -688,7 +834,7 @@ try {
 
   const secondMarket = `0x${'6'.repeat(64)}`
   await evaluate(
-    `(() => { const input=document.querySelector('[data-field=MARKET_IDS]'); if (!input.value.includes('${secondMarket}')) input.value += ',${secondMarket}'; input.dispatchEvent(new Event('input',{bubbles:true})); [...document.querySelectorAll('button')].find(button=>button.textContent==='Add ladder market').click(); const markets=[...document.querySelectorAll('.market-card [data-field=marketId]')]; const input2=markets.at(-1); input2.value='${secondMarket}'; input2.dispatchEvent(new Event('input',{bubbles:true})); const cards=[...document.querySelectorAll('.market-card')]; [...cards.at(-1).querySelectorAll('button')].find(button=>button.textContent==='Move up').click(); })()`
+    `(() => { const input=document.querySelector('[data-field=MARKET_IDS]'); if (!input.value.includes('${secondMarket}')) input.value += ',${secondMarket}'; input.dispatchEvent(new Event('input',{bubbles:true})); const firstLadder=document.querySelector('.market-card:has([data-field=quotePremiumBps]) [data-field=loopIntervalSeconds]'); firstLadder.value='60'; firstLadder.dispatchEvent(new Event('input',{bubbles:true})); [...document.querySelectorAll('button')].find(button=>button.textContent==='Add ladder market').click(); const ladderCards=[...document.querySelectorAll('.market-card:has([data-field=quotePremiumBps])')]; const added=ladderCards.at(-1); const input2=added.querySelector('[data-field=marketId]'); input2.value='${secondMarket}'; input2.dispatchEvent(new Event('input',{bubbles:true})); const interval2=added.querySelector('[data-field=loopIntervalSeconds]'); interval2.value='30'; interval2.dispatchEvent(new Event('input',{bubbles:true})); [...added.querySelectorAll('button')].find(button=>button.textContent==='Move up').click(); })()`
   )
   assert(
     await evaluate("document.querySelectorAll('.ladder-market').length === 2"),
@@ -699,6 +845,12 @@ try {
       `JSON.parse(document.querySelector('#export-json').value).configuration.LADDER_MARKETS[0].marketId === '${secondMarket}'`
     ),
     'ladder export did not preserve reordered market order'
+  )
+  assert(
+    await evaluate(
+      `(() => { const values=[...document.querySelectorAll('.ladder-market [data-parameter~="loopIntervalSeconds"].ladder-callout dd')].map(node=>node.textContent); return values.length===2 && values[0].startsWith('30s configured interval · 30s effective runtime cycle') && values[1].startsWith('60s configured interval · 30s effective runtime cycle') && values.every(value=>value.includes('minimum across configured markets') && value.includes('fresh stateless center unchanged')) })()`
+    ),
+    'multi-market configured intervals or minimum effective runtime cycle annotation is incorrect'
   )
 
   await evaluate(
@@ -767,14 +919,62 @@ try {
     await evaluate("document.querySelector('#copy-status').getAttribute('aria-live') === 'polite'"),
     'clipboard fallback is not announced in a live region'
   )
+  const persistenceInstrumentation = await evaluate('globalThis.__persistenceInstrumentation')
+  const expectedPersistenceInstrumentation = [
+    'Storage.getItem',
+    'Storage.setItem',
+    'Storage.removeItem',
+    'Storage.clear',
+    'Storage.key',
+    'Storage.length',
+    'Window.localStorage',
+    'Window.sessionStorage',
+    'Window.indexedDB',
+    'IDBFactory.open',
+    'IDBFactory.deleteDatabase',
+    'IDBFactory.databases',
+    'IDBFactory.cmp',
+    'Window.caches',
+    'CacheStorage.open',
+    'CacheStorage.match',
+    'CacheStorage.has',
+    'CacheStorage.delete',
+    'CacheStorage.keys',
+    'Navigator.serviceWorker',
+    'ServiceWorkerContainer.register',
+    'ServiceWorkerContainer.getRegistration',
+    'ServiceWorkerContainer.getRegistrations',
+    'ServiceWorkerContainer.ready',
+    'Document.cookie'
+  ]
   assert(
-    await evaluate('localStorage.length === 0 && sessionStorage.length === 0'),
-    'playground persisted data'
+    JSON.stringify(persistenceInstrumentation) ===
+      JSON.stringify(expectedPersistenceInstrumentation),
+    `persistence instrumentation coverage mismatch: ${JSON.stringify(persistenceInstrumentation)}`
+  )
+  const persistenceAccesses = await evaluate('globalThis.__persistenceAccesses')
+  assert(
+    Array.isArray(persistenceAccesses) && persistenceAccesses.length === 0,
+    `playground accessed persistence APIs: ${JSON.stringify(persistenceAccesses)}`
   )
 
   const unexpected = requests.filter(
     url => !url.startsWith(`http://127.0.0.1:${port}/`) && !url.startsWith('data:')
   )
+  const securityTranscript = [...requests, ...consoleMessages].join('\n')
+  for (const marker of [
+    'rpc-password',
+    'query-secret',
+    'archive-password',
+    'archive-secret',
+    'browser-secret-source-token',
+    `0x${'9'.repeat(64)}`
+  ]) {
+    assert(
+      !securityTranscript.includes(marker),
+      `credential leaked to browser request/log output: ${marker}`
+    )
+  }
   assert(unexpected.length === 0, `unexpected network requests: ${unexpected.join(', ')}`)
   assert(consoleErrors.length === 0, `browser console errors: ${consoleErrors.join('; ')}`)
   console.log(`browser smoke: PASS (${requests.length} local requests, 0 unexpected requests)`)

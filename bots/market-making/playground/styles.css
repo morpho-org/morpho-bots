@@ -285,7 +285,7 @@ button:focus-visible {
 }
 .ladder-heading code {
   color: var(--muted);
-  font-size: 0.62rem;
+  font-size: 11px;
   overflow-wrap: anywhere;
 }
 .ladder-graphic {
@@ -416,7 +416,7 @@ button:focus-visible {
   border-top: 1px solid var(--line);
   color: var(--muted);
   font:
-    0.62rem/1.35 ui-monospace,
+    11px/1.35 ui-monospace,
     SFMono-Regular,
     Menlo,
     monospace;
@@ -481,7 +481,7 @@ button:focus-visible {
   margin-bottom: 0.25rem;
   color: var(--muted);
   font:
-    0.58rem/1.2 ui-monospace,
+    11px/1.2 ui-monospace,
     SFMono-Regular,
     Menlo,
     monospace;
@@ -492,7 +492,7 @@ button:focus-visible {
   margin: 0;
   color: var(--text);
   font:
-    0.65rem/1.4 ui-monospace,
+    11px/1.4 ui-monospace,
     SFMono-Regular,
     Menlo,
     monospace;
@@ -743,7 +743,7 @@ main {
   padding: 0.45rem 0.7rem;
   color: var(--muted);
   font:
-    0.68rem/1.35 ui-monospace,
+    11px/1.35 ui-monospace,
     SFMono-Regular,
     Menlo,
     monospace;
