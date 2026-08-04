@@ -349,9 +349,9 @@ try {
   )
   assert(
     await evaluate(
-      "document.querySelector('main > .monitor-surface #ladders') && document.querySelector('main > .configure-surface #controls') && document.querySelector('.monitor-surface').getBoundingClientRect().width >= 1300"
+      "document.querySelector('main > .configure-surface > .workbench > .monitor-surface #ladders') && document.querySelector('main > .configure-surface > .workbench > #controls') && document.querySelector('.monitor-surface').getBoundingClientRect().width >= document.querySelector('#controls').getBoundingClientRect().width"
     ),
-    'monitor/configure hierarchy is missing or ladder monitor is not full-width'
+    'monitor/configure workbench hierarchy is missing or preview is not dominant'
   )
   assert(
     await evaluate(
@@ -389,6 +389,173 @@ try {
     ),
     'graphic callouts or stateless legend are missing'
   )
+
+  const stickyGeometryAt = async ({ width, height, mobile }) => {
+    await command('Emulation.setDeviceMetricsOverride', {
+      width,
+      height,
+      deviceScaleFactor: 1,
+      mobile
+    })
+    return evaluate(`(async () => {
+      const monitor = document.querySelector('.monitor-surface')
+      const representativeControls = selector => {
+        const controls = [...document.querySelectorAll(selector)]
+        return [controls[0], controls[Math.floor(controls.length / 2)], controls.at(-1)]
+      }
+      const targets = [
+        ...representativeControls(
+          '#controls .market-card:has([data-field=autoRefill]) input, #controls .market-card:has([data-field=autoRefill]) select'
+        ),
+        ...representativeControls(
+          '#controls .market-card:has([data-field=quotePremiumBps]) input, #controls .market-card:has([data-field=quotePremiumBps]) select'
+        )
+      ]
+      const measurements = []
+      const css = getComputedStyle(monitor)
+      const stickyTop = Number.parseFloat(css.top)
+      const ancestors = []
+      for (let ancestor = monitor.parentElement; ancestor; ancestor = ancestor.parentElement) {
+        const style = getComputedStyle(ancestor)
+        ancestors.push({ tag: ancestor.tagName, className: ancestor.className, overflow: style.overflow, overflowY: style.overflowY })
+      }
+      for (const [index, target] of targets.entries()) {
+        target.focus({ preventScroll: true })
+        target.scrollIntoView({ block: ${mobile ? "'center'" : "'nearest'"} })
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+        const before = monitor.getBoundingClientRect()
+        const focusedBefore = target.getBoundingClientRect()
+        const scrollBefore = scrollY
+        const spread = document.querySelector('.market-card:has([data-field=quotePremiumBps]) [data-field=spreadBps]')
+        const oldLabel = document.querySelector('.spread-gap-label')?.textContent
+        const oldValue = spread.value
+        spread.value = oldValue === '180' ? '200' : '180'
+        spread.dispatchEvent(new Event('input', { bubbles: true }))
+        await new Promise(resolve => requestAnimationFrame(resolve))
+        const after = monitor.getBoundingClientRect()
+        const focusedAfter = target.getBoundingClientRect()
+        measurements.push({
+          index,
+          top: after.top,
+          bottom: after.bottom,
+          height: after.height,
+          stickyTop,
+          pageScroll: scrollY,
+          pageJump: scrollY - scrollBefore,
+          focusedVisible: focusedAfter.top >= Math.max(0, ${mobile} ? after.bottom : 0) - 1 && focusedAfter.bottom <= innerHeight + 1,
+          focusRetained: document.activeElement === target,
+          monitorStable: Math.abs(after.top - before.top) <= 2,
+          graphicChanged: document.querySelector('.spread-gap-label')?.textContent !== oldLabel,
+          horizontalOverflow: document.documentElement.scrollWidth - innerWidth,
+          focusedBefore: { top: focusedBefore.top, bottom: focusedBefore.bottom },
+          focusedAfter: { top: focusedAfter.top, bottom: focusedAfter.bottom }
+        })
+      }
+      const ladderScroll = document.querySelector('.ladder-scroll')
+      const exportButton = document.querySelector('#copy-export')
+      exportButton.scrollIntoView({ block: 'center' })
+      await new Promise(resolve => requestAnimationFrame(resolve))
+      const exportRect = exportButton.getBoundingClientRect()
+      return {
+        width: ${width},
+        height: ${height},
+        mobile: ${mobile},
+        cssPosition: css.position,
+        cssMaxHeight: css.maxHeight,
+        monitorParent: monitor.parentElement?.className,
+        domOrderLogical: Boolean(monitor.compareDocumentPosition(document.querySelector('#controls')) & Node.DOCUMENT_POSITION_FOLLOWING),
+        ancestors,
+        measurements,
+        ladderIndependent: Boolean(ladderScroll) && ['auto', 'scroll'].includes(getComputedStyle(ladderScroll).overflowY),
+        exportAccessible: exportRect.top >= 0 && exportRect.bottom <= innerHeight && document.elementFromPoint(exportRect.left + 4, exportRect.top + 4)?.closest('#copy-export') === exportButton,
+        documentWidth: document.documentElement.scrollWidth
+      }
+    })()`)
+  }
+  const stickyMatrix = []
+  for (const viewport of [
+    { width: 1440, height: 900, mobile: false },
+    { width: 1024, height: 768, mobile: false },
+    { width: 390, height: 844, mobile: true }
+  ])
+    stickyMatrix.push(await stickyGeometryAt(viewport))
+  assert(
+    stickyMatrix.every(
+      result =>
+        result.cssPosition === 'sticky' &&
+        result.monitorParent.includes('workbench') &&
+        result.domOrderLogical &&
+        result.ladderIndependent &&
+        result.documentWidth <= result.width &&
+        result.ancestors.every(
+          ancestor => !['auto', 'scroll', 'hidden', 'clip'].includes(ancestor.overflowY)
+        ) &&
+        result.measurements.every(
+          measurement =>
+            measurement.pageScroll > 0 &&
+            Math.abs(measurement.top - measurement.stickyTop) <= 2 &&
+            measurement.bottom <= result.height + 1 &&
+            measurement.height < result.height &&
+            Math.abs(measurement.pageJump) <= 2 &&
+            measurement.focusedVisible &&
+            measurement.focusRetained &&
+            measurement.monitorStable &&
+            measurement.graphicChanged &&
+            measurement.horizontalOverflow <= 0
+        ) &&
+        result.exportAccessible
+    ),
+    `sticky workbench geometry failed: ${JSON.stringify(stickyMatrix)}`
+  )
+  console.log(`sticky geometry: ${JSON.stringify(stickyMatrix)}`)
+
+  const captureViewport = async ({ width, height, mobile, path }) => {
+    await command('Emulation.setDeviceMetricsOverride', {
+      width,
+      height,
+      deviceScaleFactor: 1,
+      mobile
+    })
+    await evaluate(
+      "document.querySelector('.market-card:has([data-field=quotePremiumBps]) [data-field=sizeSkewBps]').scrollIntoView({block:'center'})"
+    )
+    await new Promise(resolve => setTimeout(resolve, 50))
+    const shot = await command('Page.captureScreenshot', {
+      format: 'png',
+      captureBeyondViewport: false,
+      fromSurface: true
+    })
+    await writeFile(path, Buffer.from(shot.data, 'base64'))
+  }
+  for (const viewport of [
+    {
+      width: 1440,
+      height: 900,
+      mobile: false,
+      path: '/tmp/morpho-bots-pr122-sticky-1440x900.png'
+    },
+    {
+      width: 1024,
+      height: 768,
+      mobile: false,
+      path: '/tmp/morpho-bots-pr122-sticky-1024x768.png'
+    },
+    {
+      width: 390,
+      height: 844,
+      mobile: true,
+      path: '/tmp/morpho-bots-pr122-sticky-390x844.png'
+    }
+  ])
+    await captureViewport(viewport)
+
+  await command('Emulation.setDeviceMetricsOverride', {
+    width: 1440,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false
+  })
+  await evaluate('scrollTo(0, 0)')
   const screenshotClip = async () =>
     evaluate(
       "(() => { const r=document.querySelector('.monitor-surface').getBoundingClientRect(); return {x:r.left+scrollX,y:r.top+scrollY,width:r.width,height:r.height,scale:1} })()"
@@ -833,12 +1000,23 @@ try {
   )
 
   const secondMarket = `0x${'6'.repeat(64)}`
+  await command('Emulation.setDeviceMetricsOverride', {
+    width: 1024,
+    height: 768,
+    deviceScaleFactor: 1,
+    mobile: false
+  })
+  await evaluate(
+    "document.querySelector('.market-card:has([data-field=quotePremiumBps]) [data-field=loopIntervalSeconds]').scrollIntoView({block:'center'})"
+  )
   await evaluate(
     `(() => { const input=document.querySelector('[data-field=MARKET_IDS]'); if (!input.value.includes('${secondMarket}')) input.value += ',${secondMarket}'; input.dispatchEvent(new Event('input',{bubbles:true})); const firstLadder=document.querySelector('.market-card:has([data-field=quotePremiumBps]) [data-field=loopIntervalSeconds]'); firstLadder.value='60'; firstLadder.dispatchEvent(new Event('input',{bubbles:true})); [...document.querySelectorAll('button')].find(button=>button.textContent==='Add ladder market').click(); const ladderCards=[...document.querySelectorAll('.market-card:has([data-field=quotePremiumBps])')]; const added=ladderCards.at(-1); const input2=added.querySelector('[data-field=marketId]'); input2.value='${secondMarket}'; input2.dispatchEvent(new Event('input',{bubbles:true})); const interval2=added.querySelector('[data-field=loopIntervalSeconds]'); interval2.value='30'; interval2.dispatchEvent(new Event('input',{bubbles:true})); [...added.querySelectorAll('button')].find(button=>button.textContent==='Move up').click(); })()`
   )
   assert(
-    await evaluate("document.querySelectorAll('.ladder-market').length === 2"),
-    'multiple ladder previews were not rendered'
+    await evaluate(
+      "(() => { const monitor=document.querySelector('.monitor-surface'); const style=getComputedStyle(monitor); return document.querySelectorAll('.ladder-market').length === 2 && Math.abs(monitor.getBoundingClientRect().top - parseFloat(style.top)) <= 2 && monitor.getBoundingClientRect().bottom <= innerHeight })()"
+    ),
+    'multiple ladder previews were not rendered inside the pinned monitor'
   )
   assert(
     await evaluate(
@@ -858,12 +1036,18 @@ try {
   )
   assert(
     await evaluate(
-      "!document.querySelector('#validation-errors').hidden && document.querySelector('#validation-errors').textContent.includes('MAKER_PRIVATE_KEY') && document.querySelector('#copy-export').disabled && document.querySelector('#ladder-status').dataset.status !== 'ok' && document.querySelectorAll('.ladder-rung').length === 0 && document.querySelector('.ladder-invalid[role=img]')?.textContent.includes('Invalid ladder graphic')"
+      "(() => { const monitor=document.querySelector('.monitor-surface'); const style=getComputedStyle(monitor); return !document.querySelector('#validation-errors').hidden && document.querySelector('#validation-errors').textContent.includes('MAKER_PRIVATE_KEY') && document.querySelector('#copy-export').disabled && document.querySelector('#ladder-status').dataset.status !== 'ok' && document.querySelectorAll('.ladder-rung').length === 0 && document.querySelector('.ladder-invalid[role=img]')?.textContent.includes('Invalid ladder graphic') && Math.abs(monitor.getBoundingClientRect().top - parseFloat(style.top)) <= 2 && monitor.getBoundingClientRect().bottom <= innerHeight })()"
     ),
-    'invalid production configuration did not invalidate every synthetic ladder preview'
+    'invalid production configuration did not remain usable in the pinned monitor'
   )
   await evaluate(
     `(() => { const key=document.querySelector('[data-field=MAKER_PRIVATE_KEY]'); key.value='0x${'a'.repeat(64)}'; key.dispatchEvent(new Event('input',{bubbles:true})); })()`
+  )
+  assert(
+    await evaluate(
+      "document.querySelector('#ladder-status').dataset.status === 'ok' && document.querySelectorAll('.ladder-market').length === 2 && Math.abs(document.querySelector('.monitor-surface').getBoundingClientRect().top - parseFloat(getComputedStyle(document.querySelector('.monitor-surface')).top)) <= 2"
+    ),
+    'valid recovery did not restore both previews while the monitor stayed pinned'
   )
 
   await evaluate(

@@ -528,6 +528,7 @@ button:focus-visible {
 
 .tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.4rem;
   margin-bottom: 0.7rem;
 }
@@ -646,23 +647,56 @@ textarea {
   }
 }
 
-/* Monitor-first composition: the ladder owns the full canvas; configuration is subordinate. */
+/* Configure workbench: the live monitor shares the full controls parent so sticky lasts end-to-end. */
 main {
+  display: block;
+}
+.configure-surface {
+  min-width: 0;
+}
+.configure-heading {
+  margin-bottom: 1.25rem;
+}
+.configure-heading h2,
+.configure-heading p {
+  margin-top: 0;
+}
+.workbench {
   display: grid;
-  gap: 2rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.25rem;
+  align-items: start;
+}
+.controls,
+.control-section,
+.market-card,
+.export-card {
+  min-width: 0;
+}
+.market-card {
+  min-inline-size: 0;
 }
 .monitor-surface {
+  position: sticky;
+  top: 1rem;
+  z-index: 2;
+  display: flex;
   min-width: 0;
+  height: calc(100vh - 2rem);
+  max-height: calc(100vh - 2rem);
+  flex-direction: column;
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 1.5rem;
+  padding: 1.25rem;
   background: var(--panel);
 }
 .monitor-header {
   display: flex;
+  flex: 0 0 auto;
   align-items: start;
   justify-content: space-between;
-  gap: 2rem;
+  gap: 1.25rem;
 }
 .monitor-header .section-heading {
   align-items: flex-start;
@@ -673,26 +707,27 @@ main {
   text-align: left;
 }
 .monitor-header .preview-reference {
-  width: min(22rem, 100%);
+  width: min(18rem, 46%);
+  margin-bottom: 0;
 }
-.configure-surface {
-  border-top: 1px solid var(--line);
-  padding-top: 1.5rem;
+.monitor-body {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-color: var(--acid) #0f1113;
 }
-.configure-heading {
-  margin-bottom: 1.25rem;
-}
-.configure-heading h2,
-.configure-heading p {
+.monitor-body > .status {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   margin-top: 0;
-}
-.configure-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.6fr) minmax(360px, 0.8fr);
-  gap: 1.25rem;
-  align-items: start;
+  padding-block: 0.65rem;
+  background: var(--panel);
 }
 .export-card {
+  margin-top: 1.25rem;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 1.5rem;
@@ -702,7 +737,7 @@ main {
   overflow: visible;
 }
 .ladder-scroll {
-  max-height: min(72vh, 900px);
+  max-height: min(58vh, 720px);
   overflow: auto;
   overscroll-behavior: contain;
   scrollbar-color: var(--acid) #0f1113;
@@ -785,19 +820,59 @@ main {
   color: #d6ad77;
   line-height: 1.4;
 }
-@media (max-width: 1100px) {
-  .configure-grid {
+@media (max-width: 760px) {
+  main {
+    padding-top: 1rem;
+  }
+  .workbench {
     grid-template-columns: 1fr;
   }
-}
-@media (max-width: 620px) {
-  .monitor-surface,
-  .export-card {
-    padding: 1rem;
+  .monitor-surface {
+    top: 0;
+    z-index: 4;
+    height: min(42dvh, 22rem);
+    max-height: calc(100dvh - 1rem);
+    padding: 0.75rem;
+    border-color: #42484f;
+    border-radius: 0 0 8px 8px;
+    box-shadow: 0 10px 24px #000a;
   }
   .monitor-header {
-    flex-direction: column;
-    gap: 1rem;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(8rem, 42%);
+    gap: 0.75rem;
+    align-items: end;
+  }
+  .monitor-header h2 {
+    font-size: 1rem;
+  }
+  .monitor-header .section-heading > span,
+  .monitor-header .preview-reference .field__hint {
+    display: none;
+  }
+  .monitor-header .preview-reference {
+    width: auto;
+  }
+  .monitor-header input {
+    min-height: 2.25rem;
+  }
+  .monitor-body > .status {
+    padding-block: 0.4rem;
+  }
+  .monitor-body .future-scope,
+  .monitor-body .ladder-callouts {
+    display: none;
+  }
+  .ladder-scroll {
+    max-height: max(10rem, calc(min(42dvh, 22rem) - 8rem));
+  }
+  #controls input,
+  #controls select,
+  #controls button {
+    scroll-margin-top: min(44dvh, 23rem);
+  }
+  .export-card {
+    padding: 1rem;
   }
 }
 
