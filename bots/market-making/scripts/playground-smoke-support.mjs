@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { constants, createReadStream, mkdtempSync } from 'node:fs'
-import { access, lstat, readFile, readdir, realpath, rm } from 'node:fs/promises'
+import { access, lstat, readFile, readdir, realpath, rm, stat } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { delimiter, extname, isAbsolute, join, relative, resolve } from 'node:path'
@@ -185,12 +185,13 @@ export const terminateOwnedProcessTree = async child => {
 
 const executableFile = async path => {
   try {
-    const metadata = await lstat(path)
-    if (!metadata.isFile()) return false
-    await access(path, constants.X_OK)
-    return true
+    const canonicalPath = await realpath(path)
+    const metadata = await stat(canonicalPath)
+    if (!metadata.isFile()) return undefined
+    await access(canonicalPath, constants.X_OK)
+    return canonicalPath
   } catch {
-    return false
+    return undefined
   }
 }
 
@@ -202,10 +203,11 @@ export const discoverChromium = async ({
     if (!isAbsolute(override)) {
       throw new Error(`CHROMIUM_PATH must be an absolute executable path; received: ${override}`)
     }
-    if (!(await executableFile(override))) {
+    const executable = await executableFile(override)
+    if (!executable) {
       throw new Error(`CHROMIUM_PATH is not an executable file: ${override}`)
     }
-    return override
+    return executable
   }
 
   const candidates = [
@@ -216,7 +218,8 @@ export const discoverChromium = async ({
     ...commonChromiumPaths
   ]
   for (const candidate of candidates) {
-    if (await executableFile(candidate)) return candidate
+    const executable = await executableFile(candidate)
+    if (executable) return executable
   }
   throw new Error(
     `Chromium was not found. Install one of ${chromiumNames.join(', ')} on PATH, or set CHROMIUM_PATH to its absolute executable path.`

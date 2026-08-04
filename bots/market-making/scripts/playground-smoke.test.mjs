@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { chmod, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import test from 'node:test'
@@ -495,16 +495,17 @@ t(n(concurrentSmokeTest), async () => {
     const child = spawn(process.execPath, [smokeScript], { stdio: ['ignore', 'pipe', 'pipe'] })
     child.stdout.setEncoding('utf8')
     child.stderr.setEncoding('utf8')
-    let output = ''
+    let stdout = ''
+    let stderr = ''
     child.stdout.on('data', chunk => {
-      output += chunk
+      stdout += chunk
     })
     child.stderr.on('data', chunk => {
-      output += chunk
+      stderr += chunk
     })
     return new Promise((resolve, reject) => {
       child.once('error', reject)
-      child.once('close', (code, signal) => resolve({ code, signal, output }))
+      child.once('close', (code, signal) => resolve({ code, signal, stdout, stderr }))
     })
   })
 
@@ -513,12 +514,18 @@ t(n(concurrentSmokeTest), async () => {
     assert.deepEqual(
       { code: result.code, signal: result.signal },
       { code: 0, signal: null },
-      result.output
+      `stdout (tail):\n${result.stdout.slice(-4000)}\nstderr (tail):\n${result.stderr.slice(-4000)}`
     )
-    assert.match(result.output, /browser smoke: PASS/)
+    assert.equal(result.stdout.match(/browser CSP: PASS/g)?.length, 1)
+    assert.equal(result.stdout.match(/browser smoke: PASS/g)?.length, 1)
   }
-  const ports = results.map(({ output }) => Number(output.match(/appPort=(\d+)/)?.[1]))
+  const ports = results.map(({ stdout }) => Number(stdout.match(/appPort=(\d+)/)?.[1]))
   assert.equal(new Set(ports).size, 2)
+
+  const evidence = results[0].stdout
+    .split(/\r?\n/)
+    .filter(line => line.startsWith('browser CSP: PASS') || line.startsWith('browser smoke: PASS'))
+  process.stdout.write(`${evidence.join('\n')}\n`)
 })
 
 test('invalid CHROMIUM_PATH fails clearly', async () => {
@@ -553,14 +560,47 @@ test('Chromium availability returns the discovered executable without invoking a
   })
 })
 
-test('normal Chromium discovery searches PATH without a shell', async () => {
-  const bin = await temporaryDirectory('chromium-discovery-test-')
-  const chromium = join(bin, 'chromium')
-  await writeFile(chromium, '#!/bin/sh\nexit 0\n')
-  await chmod(chromium, 0o755)
+test('Chromium discovery follows an executable PATH symlink and returns its canonical target', async () => {
+  const root = await temporaryDirectory('chromium-symlink-discovery-test-')
+  const realBin = join(root, 'real-bin')
+  const pathBin = join(root, 'path-bin')
+  await Promise.all([mkdir(realBin), mkdir(pathBin)])
+  const executable = join(realBin, 'chromium-real')
+  const linkedChromium = join(pathBin, 'chromium')
+  await writeFile(executable, '#!/bin/sh\nexit 0\n')
+  await chmod(executable, 0o755)
+  await symlink(executable, linkedChromium)
 
-  assert.equal(
-    await discoverChromium({ override: '', path: `${bin}${delimiter}/unused` }),
-    chromium
+  assert.equal(await discoverChromium({ override: '', path: pathBin }), executable)
+  assert.equal(await discoverChromium({ override: linkedChromium, path: '' }), executable)
+
+  const nonExecutable = join(realBin, 'chromium-non-executable')
+  await writeFile(nonExecutable, '#!/bin/sh\nexit 0\n')
+  await assert.rejects(
+    discoverChromium({ override: nonExecutable, path: '' }),
+    /CHROMIUM_PATH.*not an executable file/
   )
+
+  const brokenLink = join(pathBin, 'broken-chromium')
+  await symlink(join(realBin, 'missing-chromium'), brokenLink)
+  await assert.rejects(
+    discoverChromium({ override: brokenLink, path: '' }),
+    /CHROMIUM_PATH.*not an executable file/
+  )
+
+  const firstLoop = join(pathBin, 'chromium-loop-a')
+  const secondLoop = join(pathBin, 'chromium-loop-b')
+  await symlink(secondLoop, firstLoop)
+  await symlink(firstLoop, secondLoop)
+  await assert.rejects(
+    discoverChromium({ override: firstLoop, path: '' }),
+    /CHROMIUM_PATH.*not an executable file/
+  )
+
+  const injectionMarker = join(root, 'shell-injection-marker')
+  await assert.rejects(
+    discoverChromium({ override: `./chromium; touch ${injectionMarker}`, path: '' }),
+    /CHROMIUM_PATH must be an absolute executable path/
+  )
+  await assert.rejects(readFile(injectionMarker), { code: 'ENOENT' })
 })
