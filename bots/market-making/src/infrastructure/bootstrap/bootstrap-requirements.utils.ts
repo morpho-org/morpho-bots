@@ -7,7 +7,10 @@ import { BootstrapAdapterError } from './bootstrap-adapter.error'
 import { assertBootstrapTransaction } from './bootstrap-transaction.utils'
 
 type RootSignatureRequirement = {
-  action: { type: 'midnightOfferRootSignature' }
+  action: {
+    type: 'midnightOfferRootSignature'
+    args: { root: Hex; ratifier: Address; offers: number }
+  }
   sign: (...parameters: unknown[]) => unknown
 }
 
@@ -21,22 +24,27 @@ type SetterRootRequirement = {
   }
 }
 
+type BootstrapRequirementPolicy =
+  | { kind: 'ecrecover'; target: Address; root: Hex; account: Address; offers: number }
+  | { kind: 'setter'; target: Address; root: Hex; account: Address }
+
 /**
  * Collects only supported Midnight offer-root signature and Setter approval requirements.
  * @param requirements - Untrusted runtime requirements returned by the SDK flow.
- * @param sign - Bound signer for one validated Ecrecover offer-root requirement.
- * @param ratifierType - Runtime-selected ratifier kind whose exact requirement set is required.
- * @param setterPolicy - Exact configured Setter target, maker, and output root when Setter is selected.
+ * @param sign - Bound signer for one validated Ecrecover offer-root requirement and maker.
+ * @param policy - Exact ratifier kind, target, maker, output root, and Ecrecover offer count.
  * @returns Signed Ecrecover roots and validated-shape Setter transactions for policy checking.
  * @throws `BootstrapAdapterError` for every unknown, malformed, mixed, repeated, or missing requirement set.
- * @remarks The complete set is validated before `sign` is called, so rejected sets have no signing
- * or transaction side effects.
+ * @remarks The complete set and exact action metadata are validated before `sign` is called, so
+ * rejected sets have no signing or transaction side effects.
  */
 export const prepareBootstrapRequirements = async (
   requirements: readonly unknown[],
-  sign: (requirement: RootSignatureRequirement) => Promise<MidnightOfferRootSignature>,
-  ratifierType: 'ecrecover' | 'setter',
-  setterPolicy?: { target: Address; root: Hex; account: Address }
+  sign: (
+    requirement: RootSignatureRequirement,
+    account: Address
+  ) => Promise<MidnightOfferRootSignature>,
+  policy: BootstrapRequirementPolicy
 ) => {
   const signatureRequirements: RootSignatureRequirement[] = []
   const transactions: SetterRootRequirement[] = []
@@ -71,32 +79,50 @@ export const prepareBootstrapRequirements = async (
     transactions.push(candidate as unknown as SetterRootRequirement)
   }
   const invalidCardinality =
-    ratifierType === 'setter'
+    policy.kind === 'setter'
       ? transactions.length !== 1 || signatureRequirements.length > 0
       : signatureRequirements.length !== 1 || transactions.length > 0
   if (invalidCardinality) {
     throw new BootstrapAdapterError('unexpected-requirement')
   }
-  if (ratifierType === 'setter') {
+  if (policy.kind === 'setter') {
     const transaction = transactions[0]!
     const args = transaction.action.args
     try {
       if (
-        setterPolicy === undefined ||
-        !isAddressEqual(args.maker, setterPolicy.account) ||
-        args.root !== setterPolicy.root ||
+        !isAddressEqual(args.maker, policy.account) ||
+        args.root !== policy.root ||
         !args.isRootRatified
       ) {
         throw new BootstrapAdapterError('unexpected-requirement')
       }
       await assertBootstrapTransaction(transaction, {
         kind: 'ratification',
-        ...setterPolicy
+        target: policy.target,
+        root: policy.root,
+        account: policy.account
       })
     } catch {
       throw new BootstrapAdapterError('unexpected-requirement')
     }
+    return { signatures: [], transactions }
   }
-  const signatures = await Promise.all(signatureRequirements.map(sign))
-  return { signatures, transactions }
+  const requirement = signatureRequirements[0]!
+  const args = requirement.action.args
+  try {
+    if (
+      typeof args !== 'object' ||
+      args === null ||
+      args.root !== policy.root ||
+      typeof args.ratifier !== 'string' ||
+      !isAddressEqual(args.ratifier, policy.target) ||
+      args.offers !== policy.offers
+    ) {
+      throw new BootstrapAdapterError('unexpected-requirement')
+    }
+  } catch {
+    throw new BootstrapAdapterError('unexpected-requirement')
+  }
+  const signature = await sign(requirement, policy.account)
+  return { signatures: [signature], transactions: [] }
 }

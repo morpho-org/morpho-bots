@@ -47,6 +47,7 @@
     "src/infrastructure/bootstrap/bootstrap-groups.utils.ts",
     "src/infrastructure/bootstrap/bootstrap-position.service.ts",
     "src/infrastructure/bootstrap/bootstrap-reference-rate.service.ts",
+    "src/infrastructure/bootstrap/bootstrap-requirement-client.utils.ts",
     "src/infrastructure/bootstrap/bootstrap-requirements.utils.ts",
     "src/infrastructure/bootstrap/bootstrap-spread.utils.ts",
     "src/infrastructure/bootstrap/bootstrap-transaction.utils.ts",

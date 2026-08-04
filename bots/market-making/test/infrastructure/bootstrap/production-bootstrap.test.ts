@@ -737,16 +737,49 @@ describe('prepareBootstrapRequirements', () => {
       kind: 'signed'
     } as unknown as import('@morpho-org/morpho-sdk').MidnightOfferRootSignature
     const requirement = {
-      action: { type: 'midnightOfferRootSignature' },
+      action: {
+        type: 'midnightOfferRootSignature',
+        args: { root: groupId, ratifier, offers: 1 }
+      },
       sign: async () => signature
     }
 
     expect(
-      await prepareBootstrapRequirements([requirement], async () => signature, 'ecrecover')
+      await prepareBootstrapRequirements(
+        [requirement],
+        async (_requirement, account) => {
+          expect(account).toBe(maker)
+          return signature
+        },
+        { kind: 'ecrecover', target: ratifier, root: groupId, account: maker, offers: 1 }
+      )
     ).toEqual({
       signatures: [signature],
       transactions: []
     })
+  })
+
+  test('rejects altered Ecrecover semantics before signing', async () => {
+    let signed = false
+    const requirement = {
+      action: {
+        type: 'midnightOfferRootSignature',
+        args: { root: secondMarketId, ratifier, offers: 1 }
+      },
+      sign: async () => ({})
+    }
+
+    await expect(
+      prepareBootstrapRequirements(
+        [requirement],
+        async () => {
+          signed = true
+          return {} as never
+        },
+        { kind: 'ecrecover', target: ratifier, root: groupId, account: maker, offers: 1 }
+      )
+    ).rejects.toMatchObject({ operation: 'unexpected-requirement' })
+    expect(signed).toBe(false)
   })
 
   test('returns one validated Setter root-ratification requirement without trying to sign it', async () => {
@@ -770,8 +803,7 @@ describe('prepareBootstrapRequirements', () => {
         async () => {
           throw new Error('Setter requirement must not be signed')
         },
-        'setter',
-        { target: ratifier, root: groupId, account: maker }
+        { kind: 'setter', target: ratifier, root: groupId, account: maker }
       )
     ).toEqual({ signatures: [], transactions: [requirement] })
 
@@ -781,8 +813,7 @@ describe('prepareBootstrapRequirements', () => {
         async () => {
           throw new Error('Setter requirement must not be signed')
         },
-        'setter',
-        { target: ratifier, root: groupId, account: maker }
+        { kind: 'setter', target: ratifier, root: groupId, account: maker }
       )
     ).rejects.toMatchObject({ operation: 'unexpected-requirement' })
   })
@@ -810,7 +841,7 @@ describe('prepareBootstrapRequirements', () => {
           signed = true
           return {} as never
         },
-        'ecrecover'
+        { kind: 'ecrecover', target: ratifier, root: groupId, account: maker, offers: 1 }
       )
     ).rejects.toMatchObject({ operation: 'unexpected-requirement' })
     expect(signed).toBe(false)
@@ -833,7 +864,7 @@ describe('prepareBootstrapRequirements', () => {
         async () => {
           throw new Error('Setter requirement must not be signed')
         },
-        'setter'
+        { kind: 'setter', target: ratifier, root: groupId, account: maker }
       )
     ).rejects.toMatchObject({ operation: 'unexpected-requirement' })
   })
@@ -848,7 +879,7 @@ describe('prepareBootstrapRequirements', () => {
           signed = true
           return {} as never
         },
-        'setter'
+        { kind: 'setter', target: ratifier, root: groupId, account: maker }
       )
     ).rejects.toMatchObject({ operation: 'unexpected-requirement' })
     expect(signed).toBe(false)
@@ -872,7 +903,7 @@ describe('prepareBootstrapRequirements', () => {
         signed = true
         return {} as never
       },
-      'ecrecover'
+      { kind: 'ecrecover', target: ratifier, root: groupId, account: maker, offers: 1 }
     ).catch(value => value)
 
     expect(error).toBeInstanceOf(BootstrapAdapterError)

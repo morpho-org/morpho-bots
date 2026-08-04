@@ -344,6 +344,7 @@ const sourceFiles = [
   'infrastructure/bootstrap/bootstrap-groups.utils.ts',
   'infrastructure/bootstrap/bootstrap-position.service.ts',
   'infrastructure/bootstrap/bootstrap-reference-rate.service.ts',
+  'infrastructure/bootstrap/bootstrap-requirement-client.utils.ts',
   'infrastructure/bootstrap/bootstrap-requirements.utils.ts',
   'infrastructure/bootstrap/bootstrap-spread.utils.ts',
   'infrastructure/bootstrap/bootstrap-transaction.utils.ts',

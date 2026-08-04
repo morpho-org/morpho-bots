@@ -1,4 +1,4 @@
-import { Offer, TickLib } from '@morpho-org/midnight-sdk'
+import { Offer, TickLib, Tree } from '@morpho-org/midnight-sdk'
 import { morphoViemExtension } from '@morpho-org/morpho-sdk'
 import { getChainAddress } from '@morpho-org/morpho-ts'
 import {
@@ -48,6 +48,7 @@ import { createBootstrapOffer } from './bootstrap-offer.utils'
 import { pendingBootstrapGroups } from './bootstrap-pending-offer.utils'
 import { MidnightBootstrapPositionService } from './bootstrap-position.service'
 import { BlueBootstrapReferenceRateService } from './bootstrap-reference-rate.service'
+import { createBootstrapRequirementClient } from './bootstrap-requirement-client.utils'
 import { prepareBootstrapRequirements } from './bootstrap-requirements.utils'
 import { assertBootstrapProspectiveSpread, bootstrapMarketGroupIds } from './bootstrap-spread.utils'
 import { assertBootstrapTransaction } from './bootstrap-transaction.utils'
@@ -437,17 +438,27 @@ export const createProductionBootstrapAdapters = (
         [...ownedIds, ...ladderOwnedIds],
         replacedGroupIds
       )
+      const tree = Tree.create([created])
+      if (tree.root !== output.root) {
+        throw new BootstrapAdapterError('unexpected-requirement')
+      }
+      const requirementClient = createBootstrapRequirementClient({ account, chain: base, tree })
       const { signatures, transactions: ratificationTransactions } =
         await prepareBootstrapRequirements(
           await output.getRequirements(),
-          requirement =>
-            requirement.sign(wallet, maker) as Promise<
+          (requirement, requirementAccount) =>
+            requirement.sign(requirementClient, requirementAccount) as Promise<
               import('@morpho-org/morpho-sdk').MidnightOfferRootSignature
             >,
-          output.ratifierType,
-          output.ratifierType === 'setter'
-            ? { target: config.setup.ratifier, root: output.root, account: maker }
-            : undefined
+          output.ratifierType === 'ecrecover'
+            ? {
+                kind: 'ecrecover',
+                target: config.setup.ratifier,
+                root: output.root,
+                account: maker,
+                offers: tree.offers.length
+              }
+            : { kind: 'setter', target: config.setup.ratifier, root: output.root, account: maker }
         )
       if (
         (output.ratifierType === 'setter' && signatures.length > 0) ||
