@@ -4,13 +4,13 @@ name: Deploy market-making
 # published (repo CalVer convention: `market-making-YYYY.MM.DD-N`), or on manual dispatch. Unlike
 # the Railway bots (deploy-bot.yml), "deploy" here means publish only: operators pull and run the
 # image themselves (see bots/market-making/README.md), so there is no service to restart. The same
-# release publish also fires release-slack-notify.yml, so one `gh release create` announces and
-# ships in one step.
+# release publish also fires release-slack-notify.yml, so one release announces and ships together.
 #
-# The release MUST be created by a user (`gh release create` or the releases UI): GitHub does not
-# run workflows for events raised with the repository GITHUB_TOKEN, so a release cut by another
-# workflow with that token would never publish an image. workflow_dispatch stays as the escape
-# hatch for exactly that case and for re-publishing, e.g.
+# Releases normally come from tag-releases.yml (a merged PR bumping the bot's package.json version
+# to a new CalVer value), which creates them with a GitHub App installation token precisely so this
+# workflow fires — GitHub never runs workflows for events raised with the default GITHUB_TOKEN. A
+# user-created release (`gh release create` or the releases UI) triggers identically.
+# workflow_dispatch stays as the escape hatch for re-publishing, e.g.
 # `gh workflow run deploy-market-making.yml -f tag=latest`.
 #
 # A release publish builds the tagged commit and pushes `<release tag>` plus `git-<shortsha>`, and

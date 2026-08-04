@@ -1,0 +1,65 @@
+name: Claude write release notes
+
+# Ported from morpho-apps: rewrites the GitHub-generated notes of freshly created bot releases with
+# a Claude-authored summary, following the repo command .claude/commands/ci-write-release-notes.md.
+# Triggered by the repository_dispatch that tag-releases.yml sends after creating releases. Manual
+# re-run for a tag:
+#   gh api repos/morpho-org/morpho-bots/dispatches --method POST \
+#     --field event_type=write-release-notes \
+#     --field 'client_payload[release_tags]=market-making-2026.08.04-1'
+#
+# The Claude step is skipped — not failed — while ANTHROPIC_API_KEY is not configured, so releasing
+# keeps working before that secret exists; the GitHub-generated notes simply remain. Slack:
+# release-slack-notify.yml already announced the release at publish time; to re-announce the
+# rewritten notes, run that workflow manually with its `tag` input. (morpho-apps instead posts to
+# per-app Slack channels from this workflow; this repo's single release channel makes that
+# redundant.)
+
+on:
+  repository_dispatch:
+    types: [write-release-notes]
+
+jobs:
+  write-release-notes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Fetch all tags
+        run: git fetch --tags --prune --force
+
+      # The secrets context is unavailable in job/step `if` expressions, so presence is probed in a
+      # step and exported as an output.
+      - name: Check Claude credentials
+        id: credentials
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "ANTHROPIC_API_KEY is not configured; keeping the GitHub-generated release notes."
+          fi
+
+      - name: Write with Claude
+        if: steps.credentials.outputs.available == 'true'
+        uses: anthropics/claude-code-action@657fb7c9c986158a19624b357bcbc8c6deb83598 # v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          show_full_output: true
+          prompt: /ci-write-release-notes
+          allowed_bots: 'github-actions'
+          claude_args: |
+            --allowedTools Bash,Read,Glob,Grep
+        env:
+          # description: "Space-separated list of release tags to update"
+          RELEASE_TAGS: ${{ github.event.client_payload.release_tags }}

@@ -267,22 +267,28 @@ docker compose logs --follow
 
 ### Publish to Docker Hub
 
-Publishing is release-driven. Creating a GitHub release whose tag starts with `market-making-`
-(repo CalVer convention: `market-making-YYYY.MM.DD-N`) triggers the `Deploy market-making` workflow
+Publishing is release-driven. A GitHub release whose tag starts with `market-making-` (repo CalVer
+convention: `market-making-YYYY.MM.DD-N`) triggers the `Deploy market-making` workflow
 ([`.github/workflows/deploy-market-making.yml`](../../.github/workflows/deploy-market-making.yml)),
 which builds the **tagged commit** from the repo root on an `ubuntu-latest` (`linux/amd64`) runner
 and pushes three tags to Docker Hub: the release tag verbatim (immutable), `latest` (moved unless
 the release is marked a prerelease), and `git-<shortsha>` for the built commit. The same release
-also fires the repo's Slack notification, so one release announces and ships in one step:
+also fires the repo's Slack notification, so one release announces and ships in one step.
+
+To release, bump `version` in [`package.json`](./package.json) to the new CalVer value inside the
+PR (for example `2026.08.04-1`; increment the trailing `-N` for further same-day releases). On
+merge to `main`, [`tag-releases.yml`](../../.github/workflows/tag-releases.yml) — ported from
+morpho-apps — creates the `market-making-<version>` GitHub release with generated notes, using a
+GitHub App token precisely so the release event fires the publish workflow (GitHub never runs
+workflows for events raised with the default `GITHUB_TOKEN`), then dispatches
+[`claude-write-release-notes.yml`](../../.github/workflows/claude-write-release-notes.yml) to
+rewrite the notes into a reviewed summary. A non-CalVer version bump fails the run loud.
+
+Creating the release directly also works and publishes identically:
 
 ```sh
 gh release create "market-making-$(date -u +%Y.%m.%d)-1" --generate-notes
 ```
-
-Increment the trailing `-N` for further same-day releases. Creating the release from the GitHub
-releases UI is equivalent. The release must be created by a user: GitHub never runs workflows for
-events raised with the repository `GITHUB_TOKEN`, so a release cut by another workflow with that
-token would not publish an image.
 
 Manual dispatch remains available as the escape hatch and for re-publishing; it builds the
 dispatched ref (defaults to `main` HEAD) and pushes the `tag` input (default `latest`) plus
@@ -295,7 +301,11 @@ gh workflow run deploy-market-making.yml -f tag=latest
 One-time repository setup: create the `market-making-production` GitHub Environment holding the
 publish configuration. In its deployment branches/tags policy allow branch `main` **and** tags
 matching `market-making-*` — release runs execute on the tag ref, so a branch-only policy rejects
-them, while the tag pattern keeps the token unreachable from arbitrary PR branches.
+them, while the tag pattern keeps the token unreachable from arbitrary PR branches. The release
+automation additionally needs the org GitHub App credentials `GIT_BOT_CLIENT_ID` /
+`GIT_BOT_PRIVATE_KEY` (the same pair morpho-apps uses) available to this repository, and
+optionally `ANTHROPIC_API_KEY` — without it the notes-rewrite step skips cleanly and the
+GitHub-generated notes remain.
 
 | Environment entry      | Kind     | Requirement and behavior                                                                                                                          |
 | ---------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |

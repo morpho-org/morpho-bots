@@ -1,0 +1,141 @@
+name: Tag releases
+
+# Ported from morpho-apps' tag-releases.yml: merging a PR to main that bumps a bot's package.json
+# `version` to a new CalVer value (YYYY.MM.DD-N) creates that bot's GitHub release
+# `<bot>-<version>`. The release is created with a GitHub App installation token so it FIRES
+# downstream `release` workflows — deploy-market-making.yml publishes the image and
+# release-slack-notify.yml announces it; tag/release events created with the default GITHUB_TOKEN
+# are intentionally blocked by GitHub from triggering further workflows.
+#
+# Adaptations from the morpho-apps original: apps/* → bots/*, depot runners → ubuntu-latest, no
+# static-version skip list (every bot releases via CalVer bumps), and initial notes are
+# GitHub-generated from the bot's previous tag instead of a placeholder — this repo's Slack post
+# fires at publish time, so it must carry real content; the dispatched Claude workflow then
+# rewrites the notes in place (morpho-apps posts to Slack only after that rewrite).
+#
+# A version bump that is not CalVer fails the run loud, so drive-by semver bumps cannot slip
+# through unreleased. Requires org App credentials GIT_BOT_CLIENT_ID / GIT_BOT_PRIVATE_KEY (the
+# same pair morpho-apps uses).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'bots/*/package.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  create-releases:
+    runs-on: ubuntu-latest
+    outputs:
+      release_tags: ${{ steps.create.outputs.tags }}
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Fetch all tags
+        run: git fetch --tags --prune --force
+
+      # Mint a GitHub App installation token so the release/tag events fire downstream workflows
+      # (image publish, Slack notify). See the header for why the default GITHUB_TOKEN cannot.
+      - name: Mint app installation token
+        id: app-token
+        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2.1.4
+        with:
+          app-id: ${{ secrets.GIT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.GIT_BOT_PRIVATE_KEY }}
+
+      - name: Check and create releases
+        id: create
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+
+          # CalVer pattern: YYYY.MM.DD-N (N must be >= 1)
+          CALVER_PATTERN="^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[1-9][0-9]*$"
+
+          # The previous commit (before merge) — versions are compared against it.
+          PREV_COMMIT=$(git rev-parse HEAD~1)
+
+          invalid_versions=""
+          created_tags=""
+
+          for bot_dir in bots/*/; do
+            if [ -f "${bot_dir}package.json" ]; then
+              bot_name=$(basename "$bot_dir")
+
+              current_version=$(jq -r .version "${bot_dir}package.json")
+              prev_version=$(git show "${PREV_COMMIT}:${bot_dir}package.json" 2>/dev/null | jq -r .version || echo "")
+
+              if [ "$current_version" != "$prev_version" ] && [ -n "$current_version" ] && [ "$current_version" != "null" ]; then
+                tag_name="${bot_name}-${current_version}"
+
+                if [[ $current_version =~ $CALVER_PATTERN ]]; then
+                  echo "Processing release: $tag_name"
+
+                  if gh release view "$tag_name" &>/dev/null; then
+                    echo "Release already exists: $tag_name (skipping)"
+                  else
+                    # `|| true` guards against SIGPIPE aborting the job under `set -o pipefail`
+                    # (git is killed when head closes the pipe early once there are many tags).
+                    prev_tag="$(git tag -l "${bot_name}-*" --sort=-version:refname | head -n 1 || true)"
+                    gh release create "$tag_name" \
+                      --title "${bot_name} v${current_version}" \
+                      --target main \
+                      --generate-notes \
+                      ${prev_tag:+--notes-start-tag "$prev_tag"}
+
+                    echo "Created release: $tag_name"
+                    created_tags="${created_tags}${created_tags:+ }${tag_name}"
+                  fi
+                else
+                  echo "Invalid CalVer format for $bot_name: $current_version (expected YYYY.MM.DD-N)"
+                  invalid_versions="${invalid_versions}${bot_name}: ${current_version}\n"
+                fi
+              fi
+            fi
+          done
+
+          if [ -n "$invalid_versions" ]; then
+            echo -e "\nERROR: invalid CalVer format in the following version bumps:"
+            echo -e "$invalid_versions"
+            echo -e "\nExpected format: YYYY.MM.DD-N (e.g., 2026.08.04-1)"
+            exit 1
+          fi
+
+          if [ -n "$created_tags" ]; then
+            echo -e "\nSuccessfully created releases: ${created_tags}"
+            echo "tags=${created_tags}" >> "$GITHUB_OUTPUT"
+          else
+            echo -e "\nNo new releases created (all versions unchanged or already released)"
+            echo "tags=" >> "$GITHUB_OUTPUT"
+          fi
+
+  # repository_dispatch events fired with the default GITHUB_TOKEN DO trigger workflows (unlike
+  # tag/release events), so no App token is needed here.
+  dispatch-write-release-notes:
+    needs: create-releases
+    if: needs.create-releases.outputs.release_tags != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Dispatch write-release-notes event
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAGS: ${{ needs.create-releases.outputs.release_tags }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${{ github.repository }}/dispatches" \
+            --method POST \
+            --field event_type='write-release-notes' \
+            --field "client_payload[release_tags]=$TAGS"
