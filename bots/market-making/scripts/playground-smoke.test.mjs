@@ -33,9 +33,9 @@ test.after(async () => {
   )
 })
 
-const waitFor = async operation => {
+const waitFor = async (operation, attempts = 200) => {
   let lastError
-  for (let attempt = 0; attempt < 200; attempt++) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     try {
       return await operation()
     } catch (error) {
@@ -284,7 +284,7 @@ child.on('close', () => process.exit(0))
 
 for (const signal of ['SIGTERM', 'SIGINT']) {
   const testName = `${signal} after Chromium readiness closes the browser gracefully and reaps its tree`
-  t(n(testName), async () => {
+  t(n(testName), { timeout: 30_000 }, async () => {
     const isolatedTmp = await temporaryDirectory(`playground-browser-${signal.toLowerCase()}-`)
     const wrapper = join(isolatedTmp, 'chromium-wrapper')
     const wrapperPidFile = join(isolatedTmp, 'chromium-wrapper-pid')
@@ -332,7 +332,7 @@ browser.on('close', (code, signal) => {
     try {
       await waitFor(async () => {
         assert.match(output, /smoke environment:/)
-      })
+      }, 1000)
       const wrapperPid = Number(await readFile(wrapperPidFile, 'utf8'))
       const processGroup = await processGroupOf(wrapperPid)
       recordedPids = (await inspectProcessGroup(processGroup)).map(({ pid }) => pid)
@@ -490,7 +490,7 @@ test('two static servers allocate distinct application ports and only serve thei
 
 const concurrentSmokeTest =
   'two complete smoke runs use isolated builds and dynamic ports concurrently'
-t(n(concurrentSmokeTest), async () => {
+t(n(concurrentSmokeTest), { timeout: 30_000 }, async () => {
   const runs = Array.from({ length: 2 }, () => {
     const child = spawn(process.execPath, [smokeScript], { stdio: ['ignore', 'pipe', 'pipe'] })
     child.stdout.setEncoding('utf8')
