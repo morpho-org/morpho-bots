@@ -17,7 +17,10 @@ import type {
   LadderPositionService,
   LadderReferenceRateService
 } from '../../application/ladder/ladder-market-maker.service'
-import type { LadderTransactionSubmittedObserver } from '../../application/ladder/ladder-verbose'
+import type {
+  LadderSubmittedTransaction,
+  LadderTransactionSubmittedObserver
+} from '../../application/ladder/ladder-verbose'
 import type { ConfigService } from '../../config/config.service'
 import type { LadderQuoteSet } from '../../domain/ladder/ladder'
 import type { HistoricalBlockReader } from '../reference/blue-reference-reader.utils'
@@ -66,6 +69,43 @@ const notifySubmitted = async (
   await observer?.({ operation, txHash })
 }
 
+type PublishLadderPublicationParameters = {
+  approve: () => Promise<LadderSubmittedTransaction | undefined>
+  validate: () => Promise<void>
+  sendPublication: () => Promise<LadderSubmittedTransaction>
+  confirmPublication: (transaction: LadderSubmittedTransaction) => Promise<void>
+}
+
+/**
+ * Executes the ordered ratification and publication stages for one prepared ladder tree.
+ * @param parameters - Confirmed approval, validation, publication submission, and receipt stages.
+ * @returns Confirmed ratification and publication transactions in submission order.
+ * @throws `LadderAdapterError` with confirmed approval evidence when publication confirmation fails.
+ * @remarks A confirmed Setter approval remains recorded when the later publication is not confirmed,
+ * allowing the application service to retain its durable reservation for safe cleanup.
+ */
+export const publishLadderPublication = async (
+  parameters: PublishLadderPublicationParameters
+): Promise<readonly LadderSubmittedTransaction[]> => {
+  const submittedTransactions: LadderSubmittedTransaction[] = []
+  try {
+    const approval = await parameters.approve()
+    if (approval) submittedTransactions.push(approval)
+    await parameters.validate()
+    const publication = await parameters.sendPublication()
+    await parameters.confirmPublication(publication)
+    submittedTransactions.push(publication)
+    return submittedTransactions
+  } catch (error) {
+    if (submittedTransactions.length === 0) throw error
+    const failure =
+      error instanceof LadderAdapterError
+        ? error
+        : new LadderAdapterError('publication-after-ratification')
+    throw failure.recordConfirmedTransactions(submittedTransactions)
+  }
+}
+
 const ownedGroups = (publications: readonly OwnedLadderPublication[]) =>
   publications.flatMap(publication =>
     publication.groups.map(group => {
@@ -85,7 +125,10 @@ const ownedGroups = (publications: readonly OwnedLadderPublication[]) =>
  * @throws `LadderAdapterError` when write-mode signer identity differs from the maker; later reads,
  * validation, signing, publication, storage, or receipt confirmation may also fail.
  * @remarks Read-only construction never derives an account or creates a wallet. Every published
- * tree is API-validated before and after signing, locally policy-checked, and submitted atomically.
+ * tree is API-validated before and after signing and locally policy-checked. Ecrecover publication
+ * uses one transaction. Setter publication uses an ordered approval transaction followed by the
+ * publication transaction; its durable reservation remains owned after approval if publication is
+ * not confirmed.
  */
 export const createProductionLadderAdapters = (config: ConfigService): ProductionLadderAdapters => {
   const maker = config.identity.maker
@@ -367,25 +410,28 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
         groupIds,
         groups: prepared.groups,
         prospective: prepared.bookOffers,
-        publish: async onTransactionSubmitted => {
-          const submittedTransactions = []
-          try {
-            if (ratification.approval !== undefined) {
+        publish: onTransactionSubmitted =>
+          publishLadderPublication({
+            approve: async () => {
+              if (ratification.approval === undefined) return undefined
               assertLadderRatificationTransaction(ratification.approval, {
                 target: config.setup.ratifier,
                 account: maker,
                 root: prepared.tree.root
               })
-              const approvalHash = await wallet.sendTransaction(ratification.approval)
-              await notifySubmitted(onTransactionSubmitted, 'ratify', approvalHash)
-              const approvalReceipt = await wallet.waitForTransactionReceipt({
-                hash: approvalHash,
+              const txHash = await wallet.sendTransaction(ratification.approval)
+              await notifySubmitted(onTransactionSubmitted, 'ratify', txHash)
+              const receipt = await wallet.waitForTransactionReceipt({
+                hash: txHash,
                 timeout: config.transactionReceiptTimeoutMs
               })
-              if (approvalReceipt.status !== 'success') {
+              if (receipt.status !== 'success') {
                 throw new LadderAdapterError('ratifier-transaction-reverted')
               }
-              submittedTransactions.push({ operation: 'ratify' as const, txHash: approvalHash })
+              return { operation: 'ratify', txHash }
+            },
+            validate: async () => {
+              if (ratification.approval === undefined) return
               try {
                 await prepared.tree.mempoolValidate({
                   chainId: base.id,
@@ -395,31 +441,26 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
               } catch {
                 throw new LadderAdapterError('mempool-validation-after-ratification')
               }
+            },
+            sendPublication: async () => {
+              const txHash = await wallet.sendTransaction(transaction)
+              await notifySubmitted(onTransactionSubmitted, 'publish', txHash)
+              return { operation: 'publish', txHash }
+            },
+            confirmPublication: async publication => {
+              const receipt = await wallet.waitForTransactionReceipt({
+                hash: publication.txHash,
+                timeout: config.transactionReceiptTimeoutMs
+              })
+              if (receipt.status !== 'success') {
+                throw new LadderAdapterError(
+                  ratification.approval === undefined
+                    ? 'transaction-reverted'
+                    : 'publication-transaction-reverted-after-ratification'
+                )
+              }
             }
-            const hash = await wallet.sendTransaction(transaction)
-            await notifySubmitted(onTransactionSubmitted, 'publish', hash)
-            const receipt = await wallet.waitForTransactionReceipt({
-              hash,
-              timeout: config.transactionReceiptTimeoutMs
-            })
-            if (receipt.status !== 'success') {
-              throw new LadderAdapterError(
-                ratification.approval === undefined
-                  ? 'transaction-reverted'
-                  : 'publication-transaction-reverted-after-ratification'
-              )
-            }
-            submittedTransactions.push({ operation: 'publish' as const, txHash: hash })
-            return submittedTransactions
-          } catch (error) {
-            if (submittedTransactions.length === 0) throw error
-            const failure =
-              error instanceof LadderAdapterError
-                ? error
-                : new LadderAdapterError('publication-after-ratification')
-            throw failure.recordConfirmedTransactions(submittedTransactions)
-          }
-        }
+          })
       }
     },
     reservePublication: publication => ladderOwnership.reserve(publication),
