@@ -7,6 +7,7 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import {
+  chromiumAvailability,
   discoverChromium,
   inspectProcessGroup,
   prepareFreshDist,
@@ -17,6 +18,9 @@ import {
 
 const temporaryDirectories = []
 const smokeScript = fileURLToPath(new URL('./playground-smoke.mjs', import.meta.url))
+const chromium = await chromiumAvailability()
+const t = chromium.path ? test : test.skip
+const n = name => (chromium.path ? name : `${name} — ${chromium.reason}`)
 const temporaryDirectory = async prefix => {
   const directory = await mkdtemp(join(tmpdir(), prefix))
   temporaryDirectories.push(directory)
@@ -279,7 +283,8 @@ child.on('close', () => process.exit(0))
 }
 
 for (const signal of ['SIGTERM', 'SIGINT']) {
-  test(`${signal} after Chromium readiness closes the browser gracefully and reaps its tree`, async () => {
+  const testName = `${signal} after Chromium readiness closes the browser gracefully and reaps its tree`
+  t(n(testName), async () => {
     const isolatedTmp = await temporaryDirectory(`playground-browser-${signal.toLowerCase()}-`)
     const wrapper = join(isolatedTmp, 'chromium-wrapper')
     const wrapperPidFile = join(isolatedTmp, 'chromium-wrapper-pid')
@@ -483,7 +488,9 @@ test('two static servers allocate distinct application ports and only serve thei
   }
 })
 
-test('two complete smoke runs use isolated builds and dynamic ports concurrently', async () => {
+const concurrentSmokeTest =
+  'two complete smoke runs use isolated builds and dynamic ports concurrently'
+t(n(concurrentSmokeTest), async () => {
   const runs = Array.from({ length: 2 }, () => {
     const child = spawn(process.execPath, [smokeScript], { stdio: ['ignore', 'pipe', 'pipe'] })
     child.stdout.setEncoding('utf8')
@@ -521,11 +528,39 @@ test('invalid CHROMIUM_PATH fails clearly', async () => {
   )
 })
 
+test('Chromium availability reports a clear skip reason when no executable is discoverable', async () => {
+  const availability = await chromiumAvailability({
+    override: '/definitely/missing/chromium',
+    path: ''
+  })
+
+  assert.deepEqual(availability, {
+    path: undefined,
+    reason:
+      'Chromium-dependent test skipped: CHROMIUM_PATH is not an executable file: /definitely/missing/chromium'
+  })
+})
+
+test('Chromium availability returns the discovered executable without invoking a shell', async () => {
+  const bin = await temporaryDirectory('chromium-availability-test-')
+  const chromium = join(bin, 'chromium')
+  await writeFile(chromium, '#!/bin/sh\nexit 0\n')
+  await chmod(chromium, 0o755)
+
+  assert.deepEqual(await chromiumAvailability({ override: '', path: bin }), {
+    path: chromium,
+    reason: undefined
+  })
+})
+
 test('normal Chromium discovery searches PATH without a shell', async () => {
   const bin = await temporaryDirectory('chromium-discovery-test-')
   const chromium = join(bin, 'chromium')
   await writeFile(chromium, '#!/bin/sh\nexit 0\n')
   await chmod(chromium, 0o755)
 
-  assert.equal(await discoverChromium({ path: `${bin}${delimiter}/unused` }), chromium)
+  assert.equal(
+    await discoverChromium({ override: '', path: `${bin}${delimiter}/unused` }),
+    chromium
+  )
 })

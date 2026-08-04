@@ -223,6 +223,14 @@ export const discoverChromium = async ({
   )
 }
 
+export const chromiumAvailability = async options => {
+  try {
+    return { path: await discoverChromium(options), reason: undefined }
+  } catch (error) {
+    return { path: undefined, reason: `Chromium-dependent test skipped: ${error.message}` }
+  }
+}
+
 const linuxSubreaper = String.raw`
 import ctypes
 import os
