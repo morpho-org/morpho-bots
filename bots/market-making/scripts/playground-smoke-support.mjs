@@ -113,13 +113,13 @@ const terminateDescendantsDeepestFirst = async ({ processGroup, rootPid, tracked
     for (const leaf of leaves) signalPid(leaf.pid, 'SIGTERM')
     let remaining = await waitForIdentitiesGone(
       new Map(leaves.map(processInfo => [identity(processInfo), processInfo])),
-      500
+      2000
     )
     if (remaining.length) {
       for (const leaf of remaining) signalPid(leaf.pid, 'SIGKILL')
       remaining = await waitForIdentitiesGone(
         new Map(remaining.map(processInfo => [identity(processInfo), processInfo])),
-        500
+        2000
       )
     }
     if (remaining.length) {

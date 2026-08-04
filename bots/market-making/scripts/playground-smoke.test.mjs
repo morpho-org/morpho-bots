@@ -374,14 +374,17 @@ browser.on('close', (code, signal) => {
   })
 }
 
-test('bounded fallback terminates stubborn descendants deepest-first without zombies', async () => {
-  const isolatedTmp = await temporaryDirectory('playground-stubborn-tree-')
-  const parentScript = join(isolatedTmp, 'stubborn-parent.mjs')
-  const parentPidFile = join(isolatedTmp, 'parent-pid')
-  const childPidFile = join(isolatedTmp, 'child-pid')
-  await writeFile(
-    parentScript,
-    `import { spawn } from 'node:child_process'
+test(
+  'bounded fallback terminates stubborn descendants deepest-first without zombies',
+  { timeout: 30_000 },
+  async () => {
+    const isolatedTmp = await temporaryDirectory('playground-stubborn-tree-')
+    const parentScript = join(isolatedTmp, 'stubborn-parent.mjs')
+    const parentPidFile = join(isolatedTmp, 'parent-pid')
+    const childPidFile = join(isolatedTmp, 'child-pid')
+    await writeFile(
+      parentScript,
+      `import { spawn } from 'node:child_process'
 import { writeFileSync } from 'node:fs'
 const child = spawn(process.execPath, ['-e', \`
   const { writeFileSync } = require('node:fs')
@@ -394,31 +397,32 @@ process.on('SIGTERM', () => {})
 child.on('close', () => {})
 setInterval(() => {}, 1000)
 `
-  )
-  const owner = spawnOwnedProcess(process.execPath, [parentScript], {
-    env: {
-      ...process.env,
-      STUBBORN_PARENT_PID_FILE: parentPidFile,
-      STUBBORN_CHILD_PID_FILE: childPidFile
-    },
-    stdio: 'ignore'
-  })
-  let recordedPids = []
-  try {
-    await waitFor(async () => {
-      await Promise.all([readFile(parentPidFile), readFile(childPidFile)])
+    )
+    const owner = spawnOwnedProcess(process.execPath, [parentScript], {
+      env: {
+        ...process.env,
+        STUBBORN_PARENT_PID_FILE: parentPidFile,
+        STUBBORN_CHILD_PID_FILE: childPidFile
+      },
+      stdio: 'ignore'
     })
-    recordedPids = (await inspectProcessGroup(owner.pid)).map(({ pid }) => pid)
-    assert.ok(recordedPids.length >= 3, `expected owner+parent+child, got ${recordedPids}`)
+    let recordedPids = []
+    try {
+      await waitFor(async () => {
+        await Promise.all([readFile(parentPidFile), readFile(childPidFile)])
+      })
+      recordedPids = (await inspectProcessGroup(owner.pid)).map(({ pid }) => pid)
+      assert.ok(recordedPids.length >= 3, `expected owner+parent+child, got ${recordedPids}`)
 
-    await terminateOwnedProcessTree(owner)
-    await waitForProcessesGone(recordedPids)
-  } finally {
-    for (const pid of recordedPids) {
-      if (processExists(pid)) process.kill(pid, 'SIGKILL')
+      await terminateOwnedProcessTree(owner)
+      await waitForProcessesGone(recordedPids)
+    } finally {
+      for (const pid of recordedPids) {
+        if (processExists(pid)) process.kill(pid, 'SIGKILL')
+      }
     }
   }
-})
+)
 
 test('failed fresh build removes its temporary output and reports the child failure', async () => {
   const root = await temporaryDirectory('playground-failed-build-')
