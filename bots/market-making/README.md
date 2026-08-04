@@ -593,3 +593,19 @@ bun run --filter @morpho-org/market-making-bot jsdoc:build
 
 The e2e suite starts its own Anvil fork of Base at a pinned historical block. It requires the
 `anvil` binary on `PATH` and an archive-capable `RPC_URL_8453`.
+
+## Parameter playground
+
+The stateless local playground exposes the complete current YAML/environment configuration surface,
+including bootstrap, ladder, and environment-only Better Stack settings. It renders a synthetic
+offer ladder immediately as inputs change and exports matching YAML, dotenv, and JSON. It does not
+read current offers or a live market book, persist edits, or connect to a backend. Live offers and
+order-book simulation are future scope only.
+
+```sh
+bun run --filter @morpho-org/market-making-bot playground:build
+cd bots/market-making/playground/dist && python3 -m http.server 4173
+```
+
+Open `http://localhost:4173`. Exported secrets are shown verbatim, so use placeholders in the
+playground and keep real values in the deployment secret store.
