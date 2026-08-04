@@ -1,7 +1,9 @@
+import type { MonitorOperationQueue } from '@repo/monitoring'
 import type { Hex } from 'viem'
 
+import { cycleHasFailure, waitForMonitorInterval } from '@repo/monitoring'
+
 import type { LadderConfig, LadderMarketState, LadderQuoteSet } from '../../domain/ladder/ladder'
-import type { MonitorOperationQueue } from '../monitor.utils'
 import type {
   LadderMakeResult,
   LadderSubmittedTransaction,
@@ -13,10 +15,8 @@ import type {
 
 import { generateLadder, shouldRecenter, validateLadderConfig } from '../../domain/ladder/ladder'
 import { LadderConfigurationError } from '../../domain/ladder/ladder-configuration.error'
-import { waitForMonitorInterval } from '../monitor.utils'
 import { operatorErrorName } from '../operator-error-name.utils'
 import { sameLadderQuoteSet } from './ladder-market-maker.utils'
-import { ladderCycleHasFailure } from './ladder-monitor.utils'
 import { LadderOwnershipCleanupError } from './ladder-ownership-cleanup.error'
 
 /** Consumer-owned port for fresh position and capacity inputs for one ladder market. */
@@ -231,7 +231,7 @@ export class LadderMarketMakerService {
         if (results === undefined) break
         cycles += 1
 
-        if (ladderCycleHasFailure(results)) {
+        if (cycleHasFailure(results)) {
           reason = 'cycle-failed'
           lastCycle = results
           break

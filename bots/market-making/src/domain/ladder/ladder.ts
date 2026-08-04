@@ -1,5 +1,6 @@
 import type { Hex } from 'viem'
 
+import { bigintAbs, bigintMin } from '@repo/utils'
 import { isHex, size } from 'viem'
 
 import { LadderConfigurationError } from './ladder-configuration.error'
@@ -70,8 +71,7 @@ type GenerateLadderParameters = {
   retainedCenterRateBps?: bigint
 }
 
-const minimum = (values: readonly bigint[]) =>
-  values.reduce((smallest, value) => (value < smallest ? value : smallest))
+const minimum = (values: readonly bigint[]) => values.reduce(bigintMin)
 
 const positive = (value: bigint, field: string) => {
   if (value <= 0n) throw new LadderConfigurationError(field, 'must be positive')
@@ -236,8 +236,7 @@ export const generateLadder = (parameters: GenerateLadderParameters): LadderQuot
   const higherAllocations = allocateBudget(higherBudget, weights, config.minimumOfferAssets)
   const halfSpread = config.spreadBps / 2n
   const buildRungs = (side: 'lower' | 'higher', allocations: readonly bigint[]) =>
-    weights.flatMap((_weight, index) => {
-      const assets = allocations[index] ?? 0n
+    allocations.flatMap((assets, index) => {
       if (assets === 0n) return []
       const offset = halfSpread + BigInt(index) * config.stepBps
       const rateBps = side === 'lower' ? centerRateBps - offset : centerRateBps + offset
@@ -263,6 +262,5 @@ export const shouldRecenter = (
   toleranceBps: bigint
 ) => {
   nonnegative(toleranceBps, 'movementToleranceBps')
-  const movement = activeCenterRateBps - effectiveCenterRateBps
-  return (movement < 0n ? -movement : movement) > toleranceBps
+  return bigintAbs(activeCenterRateBps - effectiveCenterRateBps) > toleranceBps
 }

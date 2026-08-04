@@ -1,3 +1,5 @@
+import { createCliLogger } from '@repo/logging'
+
 import type { CliRuntimeOptions } from './cli'
 
 import { PositionBootstrapHaltedError } from '../../application/bootstrap/position-bootstrap-halted.error'
@@ -15,7 +17,6 @@ import { ConfigValidationError } from '../../config/config-validation.error'
 import { BootstrapConfigurationError } from '../../domain/bootstrap/bootstrap-configuration.error'
 import { LadderConfigurationError } from '../../domain/ladder/ladder-configuration.error'
 import { CliUsageError } from './cli-usage.error'
-import { createMarketMakingLogger } from './market-making-logger'
 
 type MarketMakingApplication = {
   run(argv: readonly string[], runtime?: CliRuntimeOptions): Promise<unknown>
@@ -26,15 +27,24 @@ type EntrypointObservability = {
   unexpected(error: unknown, origin: 'entrypoint'): void
 }
 
-const failureDetails = (error: unknown): unknown => {
-  if (error instanceof MarketMakingMonitorHaltedError) return error.report
-  if (error instanceof SetupMonitorHaltedError) return error.report
-  if (error instanceof OfferInvalidationFailedError) return error.report
-  if (error instanceof PositionBootstrapMonitorHaltedError) return error.report
-  if (error instanceof LadderMonitorHaltedError) return error.report
-  if (error instanceof LadderCycleHaltedError) return error.report
-  if (error instanceof PositionBootstrapHaltedError) return error.report
-  if (error instanceof SetupFailedError) return error.report
+/** CLI commands whose safe verbose event stream may be auto-enabled by observability shipping. */
+export const MARKET_MAKING_VERBOSE_COMMANDS = ['start', 'bootstrap', 'ladder'] as const
+
+const REPORTED_ERRORS = [
+  MarketMakingMonitorHaltedError,
+  SetupMonitorHaltedError,
+  OfferInvalidationFailedError,
+  PositionBootstrapMonitorHaltedError,
+  LadderMonitorHaltedError,
+  LadderCycleHaltedError,
+  PositionBootstrapHaltedError,
+  SetupFailedError
+] as const
+
+const failureDetails = (error: unknown) => {
+  for (const reported of REPORTED_ERRORS) {
+    if (error instanceof reported) return error.report
+  }
   return undefined
 }
 
@@ -62,10 +72,8 @@ const failureMessage = (error: unknown) => {
  * @param observability - Optional mirror for sanitized records and unexpected error classifications.
  * @returns Zero on success and one after a sanitized failure has been emitted.
  * @remarks Output is human-readable unless `--json` selects one JSON Lines record per value.
- * Continuous readiness, bootstrap, ladder, combined-monitor, or invalidation transaction records
- * precede the terminal result; read-only make records may also precede workflow results. Failure
- * reports exclude causes, provider payloads, and credentials and always include an explicit error
- * message.
+ * Failure reports exclude causes, provider payloads, and credentials and always include an
+ * explicit error message.
  */
 export const runMarketMakingEntrypoint = async (
   application: MarketMakingApplication,
@@ -78,7 +86,7 @@ export const runMarketMakingEntrypoint = async (
   const json = argv
     .slice(0, optionDelimiter === -1 ? undefined : optionDelimiter)
     .includes('--json')
-  const logger = createMarketMakingLogger(output, json)
+  const logger = createCliLogger(output, { json, errorEvent: 'market-making.error' })
   try {
     const result = await application.run(argv, {
       ...runtime,

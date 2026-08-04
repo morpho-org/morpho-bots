@@ -1,6 +1,3 @@
-import { createPublicClient, http } from 'viem'
-import { base } from 'viem/chains'
-
 import type {
   BootstrapMakeService,
   BootstrapPositionService,
@@ -15,7 +12,6 @@ import type {
 import type { SetupStateService } from './application/setup/setup-check.service'
 import type { ConfigService } from './config/config.service'
 import type { CliRuntimeOptions } from './infrastructure/cli/cli'
-import type { ChainReader } from './infrastructure/setup-state/viem-setup-state.service'
 
 import { PositionBootstrapService } from './application/bootstrap/position-bootstrap.service'
 import { OfferInvalidationService } from './application/invalidation/offer-invalidation.service'
@@ -35,6 +31,7 @@ import { createLadderGroupOwnership } from './infrastructure/ladder/ladder-group
 import { createProductionLadderAdapters } from './infrastructure/ladder/production-ladder'
 import { ReadOnlyBootstrapMakeService } from './infrastructure/make/read-only-bootstrap-make.service'
 import { ReadOnlyLadderMakeService } from './infrastructure/make/read-only-ladder-make.service'
+import { createChainReader } from './infrastructure/setup-state/chain-reader.utils'
 import { requestJson } from './infrastructure/setup-state/http-json.utils'
 import { ViemSetupStateService } from './infrastructure/setup-state/viem-setup-state.service'
 
@@ -42,6 +39,9 @@ type Environment = Record<string, string | undefined>
 
 const readOnlyWriter = (writeEvent?: CliRuntimeOptions['writeEvent']) =>
   writeEvent === undefined ? console.log : (line: string) => writeEvent(JSON.parse(line))
+
+const parseEventWriter = (writeEvent?: CliRuntimeOptions['writeEvent']) =>
+  writeEvent === undefined ? undefined : (line: string) => writeEvent(JSON.parse(line))
 
 type Dependencies = {
   createState?: (config: ConfigService) => SetupStateService
@@ -64,20 +64,6 @@ type Dependencies = {
   cwd?: string
 }
 
-const chainReader = (rpcUrl: string, timeout: number): ChainReader => {
-  const client = createPublicClient({ chain: base, transport: http(rpcUrl, { timeout }) })
-  return {
-    getChainId: () => client.getChainId(),
-    getCode: parameters => client.getCode(parameters),
-    getBalance: parameters => client.getBalance(parameters),
-    getBlock: parameters =>
-      parameters.blockNumber === undefined
-        ? client.getBlock({ blockTag: 'latest' })
-        : client.getBlock({ blockNumber: parameters.blockNumber }),
-    readContract: parameters => client.readContract(parameters as never)
-  }
-}
-
 const defaultState = (config: ConfigService) => {
   const identityOptions = config.identity.readOnly
     ? { readOnly: true as const }
@@ -93,8 +79,8 @@ const defaultState = (config: ConfigService) => {
   })
 
   return new ViemSetupStateService(
-    chainReader(config.rpcUrl, config.requestTimeoutMs),
-    chainReader(config.referenceRpcUrl, config.requestTimeoutMs),
+    createChainReader(config.rpcUrl, config.requestTimeoutMs),
+    createChainReader(config.referenceRpcUrl, config.requestTimeoutMs),
     (url, provider, timeoutMs) =>
       requestJson(url, provider, Math.min(config.requestTimeoutMs, timeoutMs ?? Infinity)),
     {
@@ -119,20 +105,10 @@ const defaultState = (config: ConfigService) => {
  * @param environment - Environment map used for lazy validated configuration.
  * @param dependencies - Optional state and workflow-port factories used by isolated tests.
  * @returns An application exposing a single asynchronous CLI `run` boundary.
- * @remarks Composition is side-effect free. Configuration and provider construction occur lazily
- * for `setup-check`, `bootstrap`, `ladder`, `start`, or `invalidate`. Setup is read-only and preserves
- * concurrent independent reads through `Promise.all`. `--readonly` selects address-only identity
- * before any private-key validation and replaces every workflow mutation port with terminal output.
- * Writer commands assert readiness before constructing or running their application service; failed
- * readiness rejects without starting the writer. Setup monitoring emits read-only readiness reports
- * at a one-minute cadence and halts nonzero on the first failed report. Bootstrap monitoring uses
- * the same cadence and invalidates strategy-owned groups after its shutdown signal. Ladder
- * monitoring uses the shortest configured ladder cadence and invalidates active owned ladder groups
- * after shutdown. `start` gates readiness once, launches all three monitors concurrently, and uses
- * one cross-strategy mutation queue so separate writer adapters cannot race signer nonces. Explicit
- * invalidation uses a narrower cancellation preflight so unknown maker
- * groups can be removed without weakening normal readiness. One-shot writers run only for their
- * respective explicit commands.
+ * @remarks Composition is side-effect free: configuration and providers are built lazily per
+ * command, writer commands gate on readiness first, and `--readonly` swaps every mutation port for
+ * terminal output. `start` shares one cross-strategy mutation queue so separate writer adapters
+ * cannot race signer nonces.
  */
 export const createApplication = (
   environment: Environment = Bun.env,
@@ -143,8 +119,7 @@ export const createApplication = (
    * @param argv - User arguments without runtime/executable prefixes.
    * @param runtime - Optional shutdown signal and continuous-cycle writer forwarded to the CLI.
    * @returns Captured version, setup-check, writer cycle/monitor, combined monitor, or invalidation JSON.
-   * @throws On invalid configuration or usage, provider or readiness failure, or a halted writer
-   * cycle. Failed readiness prevents the selected writer's `runOnce()` side effect.
+   * @throws On invalid configuration or usage, provider or readiness failure, or a halted cycle.
    */
   run(argv: readonly string[], runtime?: CliRuntimeOptions): Promise<unknown>
 } => {
@@ -166,9 +141,7 @@ export const createApplication = (
       const state = dependencies.createState?.(config) ?? defaultState(config)
       await new SetupCheckService(state, config.setup, config.readOnly).assertReady()
       const injectedAdapters = dependencies.createBootstrapAdapters?.(config)
-      const writeReadOnlyEvent = options.writeEvent
-        ? (line: string) => options.writeEvent?.(JSON.parse(line))
-        : undefined
+      const writeReadOnlyEvent = parseEventWriter(options.writeEvent)
       const adapters =
         injectedAdapters ?? createProductionBootstrapAdapters(config, writeReadOnlyEvent)
       const make =
@@ -188,9 +161,7 @@ export const createApplication = (
       await new SetupCheckService(state, config.setup, config.readOnly).assertReady()
       const adapters =
         dependencies.createLadderAdapters?.(config) ?? createProductionLadderAdapters(config)
-      const writeReadOnlyEvent = options.writeEvent
-        ? (line: string) => options.writeEvent?.(JSON.parse(line))
-        : undefined
+      const writeReadOnlyEvent = parseEventWriter(options.writeEvent)
       const make = config.readOnly
         ? new ReadOnlyLadderMakeService(
             adapters.make,

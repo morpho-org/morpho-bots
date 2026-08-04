@@ -3,82 +3,12 @@
 > [!WARNING]
 > The market-making bot is a work in progress, must not be used yet, and is expected to be ready for use around August 12, 2026.
 
-Implements the market-maker setup readiness gate from
-[TIB-2026-07-27](../../docs/decisions/TIB-2026-07-27-midnight-market-making-bot.md) for
-[MKT-1459](https://linear.app/morpho-labs/issue/MKT-1459).
+The bot validates its Base and Midnight setup, bootstraps target lending positions, maintains
+two-sided rate ladders, and provides explicit recovery commands. Start with read-only mode to inspect
+every intended action before enabling signing.
 
-## Architecture
-
-The package follows the repository's hexagonal architecture:
-
-- `SetupCheckService` owns the read-only readiness workflow and its consumer-owned `SetupStateService`
-  port.
-- `ViemSetupStateService` is the concrete RPC/Morpho API/Router API adapter.
-- `ConfigService` validates YAML plus environment configuration once and narrows addresses, bytes32
-  IDs, bootstrap settings, and ladder settings.
-- `PositionBootstrapService` and `LadderMarketMakerService` define the current application/domain
-  boundary through consumer-owned fresh-state, reference-rate, and blocking make ports.
-- `MarketMakingService` supervises setup, bootstrap, and ladder monitoring as one fail-together
-  lifecycle while a shared make-port queue serializes cross-strategy writes.
-- `MidnightBootstrapMakeService` and `MidnightLadderMakeService` serialize owned-group
-  reconciliation, while their read-only decorators emit terminal records without signing or mutation.
-- `bootstrap.ts` is the manual composition root.
-- `Cli` is the operator adapter and `index.ts` is a thin entrypoint.
-
-The setup service launches independent provider reads with `Promise.all`. Each read has its own error
-boundary, so a rejected provider call becomes the corresponding failed report item and does not stop
-other checks. Book reads also run concurrently; book validation waits only for the latest timestamp it
-needs for maturity comparison.
-
-Ladder has production inventory, reference-rate, tick conversion, lower/higher-to-buy/sell mapping,
-offer-tree encoding, live publication, replacement, invalidation, and monitoring adapters. One
-`ladder` command runs one explicit cycle; `ladder --monitor` runs continuous non-overlapping checks.
-Position bootstrap additionally has a one-minute monitoring lifecycle. Its read-only make adapter performs
-the same fresh whole-book prospective-spread validation, then renders the requested operations
-without signing or submission.
-
-## Setup-check configuration
-
-All values are required except `V0_OFFER_GROUP_IDS`, `REQUEST_TIMEOUT_MS`,
-`TRANSACTION_RECEIPT_TIMEOUT_MS`, and `MAKER_PRIVATE_KEY` when `--readonly` is set:
-
-- `CHAIN_ID`: must be `8453` (Base).
-- `RPC_URL`: Base RPC used for current chain state.
-- `REFERENCE_RPC_URL`: archive-capable Base RPC. Setup verifies a latest block and reads the exact
-  configured Blue reference market at a historical block approximately 10,800 blocks earlier.
-- `REFERENCE_MARKET_ID`: 32-byte Morpho Blue market ID used by the variable-rate strategy. Setup
-  fails closed when its immutable parameters or historical market state are missing or unreadable.
-- `MAKER_PRIVATE_KEY`: 0x-prefixed 32-byte private key; never logged. It is not loaded, validated, or
-  required in `--readonly` mode.
-- `MAKER_ADDRESS`: configured maker address. Write mode verifies that the private key derives it;
-  read-only mode uses the address directly.
-- `MIDNIGHT_ADDRESS`: expected Midnight singleton.
-- `LOAN_ASSET_ADDRESS`: expected market loan asset.
-- `RATIFIER_ADDRESS`: selected Base Ecrecover ratifier. V0 requires the address in the official
-  Router `/v0/config/contracts` registry, verifies deployed code and the `MIDNIGHT` /
-  `isRootCanceled` Ecrecover surface, checks that its immutable Midnight target matches, and verifies
-  `Midnight.isAuthorized(maker, ratifier)`.
-- `MARKET_IDS`: comma-separated allowlisted 32-byte market IDs; at least one is required. IDs are
-  canonicalized by bytes, so equivalent mixed-case hex values compare identically.
-- `NATIVE_RESERVE_WEI`: minimum native balance in wei.
-- `MAXIMUM_LEND_EXPOSURE_ASSETS`: minimum loan-token allowance in raw assets.
-- `MORPHO_API_BASE_URL`: Morpho API origin used by `MidnightApi.fetchBooks` to verify active books
-  and to traverse the maker's complete `/v0/midnight/users/{maker}/offer-groups` source. The latter
-  includes fresh active offers before a takeable amount is measured; repeated cursors, oversized
-  pages, excessive items, and aggregate deadline expiry fail closed.
-- `ROUTER_API_BASE_URL`: official Router API origin used to verify the ratifier registry.
-- `REQUEST_TIMEOUT_MS`: optional bounded fetch/RPC timeout in milliseconds; defaults to `10000` and
-  must be between `1` and `120000`.
-- `TRANSACTION_RECEIPT_TIMEOUT_MS`: optional post-submission confirmation timeout in milliseconds;
-  defaults to `180000` and must be between `1` and `900000`. It is independent from provider
-  request deadlines so a slow confirmation does not turn an already-broadcast transaction into a
-  premature strategy retry.
-- `V0_OFFER_GROUP_IDS`: optional comma-separated strategy-owned group IDs. Confirmed groups published
-  by this bot are also recorded mode `0600` under
-  `$XDG_STATE_HOME/morpho-market-making` (or `~/.local/state/morpho-market-making`) using a maker-and-
-  market-bound namespace, so deployments must persist that directory across restarts. Any active
-  maker group absent from both explicit sources, or any active offer on a market outside `MARKET_IDS`
-  even when its group is known, fails readiness. Group IDs are canonicalized by bytes.
+See [Architecture](./docs/architecture.md) for the contributor-facing package design and code
+structure.
 
 ## Run
 
@@ -153,12 +83,11 @@ in-flight check finish and emits a final `{"status":"stopped","reason":"signal",
 with exit code `0`. Monitoring never signs, submits remediation, or performs shutdown cleanup. Add
 the root `--readonly` flag when private-key/maker agreement should be omitted.
 
-Read-only make adapters serialize desired bootstrap and ladder reconcile/hard-halt/cleanup requests
-as one JSON line with event name `readonly.make`. They never sign or submit an operation. The
-`--readonly bootstrap` command executes one complete observational decision cycle and routes every
-requested mutation through this terminal adapter after deriving its exact tick, comparing the
-prospective offer with the complete current maker book, and applying the SDK's live Mempool-policy
-validation without signing or broadcasting.
+Read-only writer commands serialize desired bootstrap and ladder reconcile, hard-halt, and cleanup
+requests as one JSON line with event name `readonly.make`. They never sign or submit an operation.
+The `--readonly bootstrap` command executes one complete observational decision cycle after deriving
+its exact tick, comparing the prospective offer with the complete current maker book, and applying
+the SDK's live Mempool-policy validation without signing or broadcasting.
 The corresponding final cycle outcome uses `status: "logged"` rather than `"applied"`.
 
 `bootstrap --monitor` requires at least one explicit `bootstrap` / `BOOTSTRAP_MARKETS` entry. It
@@ -209,9 +138,9 @@ bootstrap monitoring, and ladder monitoring concurrently. Cycle records are tagg
 bootstrap and ladder event names. The first halted, rejected, or unexpectedly stopped workflow
 aborts its peers, waits for both writer monitors to drain their in-flight cycles and cleanup owned
 offers, and emits one combined terminal report. Bootstrap and ladder reads remain concurrent, while
-their reconcile, hard-halt, and cleanup operations share one queue to prevent signer-nonce and book
-mutation races. A normal SIGINT or SIGTERM returns `status: "stopped"`; any workflow failure returns
-`status: "halted"` and exits with code `1`.
+their reconcile, hard-halt, and cleanup operations are serialized to prevent signer-nonce and book
+mutation races. A normal SIGINT or SIGTERM returns `status: "stopped"`; any workflow failure
+returns `status: "halted"` and exits with code `1`.
 
 `invalidate` is an explicit recovery command and does not run the normal offer-readiness gate. With
 no group argument it reads the complete active maker group set and invalidates every distinct group,
@@ -254,22 +183,9 @@ Version output remains available:
 bun run --filter @morpho-org/market-making-bot start -- --version
 ```
 
-## Test
+## Configuration
 
-```sh
-bun test bots/market-making/test
-bun run --filter @morpho-org/market-making-bot test:e2e
-bun run --filter @morpho-org/market-making-bot typecheck
-```
-
-The e2e suite starts its own Anvil fork of Base at a pinned historical block. It requires the
-`anvil` binary on `PATH` and an archive-capable `RPC_URL_8453`.
-
-## YAML and position-bootstrap configuration
-
-The following configuration contract extends the environment-only setup gate above.
-
-## Configuration sources and precedence
+### Configuration sources and precedence
 
 Configuration can come from environment variables, a YAML file, or both. YAML files and the
 `BOOTSTRAP_MARKETS` and `LADDER_MARKETS` values are each limited to 1 MiB before parsing.
@@ -335,10 +251,9 @@ unit; for six-decimal USDC, `101000000` is 101 USDC. No value is inferred from a
 | `BETTERSTACK_INGESTING_HOST`     | —                                   | Optional Better Stack ingest host, with or without an `https://` prefix. Must be set together with `BETTERSTACK_SOURCE_TOKEN`.                                               |
 | `BETTERSTACK_HEARTBEAT_URL`      | —                                   | Optional HTTP(S) heartbeat URL pinged at startup and once per minute. Invalid URLs and ping failures are reported safely and never interrupt market making.                  |
 
-There is no separate Mempool endpoint or API-key field in the current clients. Books and cursor-paginated
-maker offer groups are read through `MORPHO_API_BASE_URL`; `ROUTER_API_BASE_URL` is used only for the
-`/v0/config/contracts` ratifier registry. The existing clients do not accept configured API-key
-headers. No unused credential setting is exposed.
+There is no separate Mempool endpoint or API-key field. Books and cursor-paginated maker offer groups
+are read through `MORPHO_API_BASE_URL`; `ROUTER_API_BASE_URL` is used only for the
+`/v0/config/contracts` ratifier registry. The bot does not accept configured API-key headers.
 
 ### Better Stack observability
 
@@ -465,16 +380,14 @@ adds safe rate, offer, transaction-hash, configuration, and before/after positio
 each result. `mm ladder --monitor` similarly repeats at the shortest configured ladder cadence,
 streams cycles, and cleans active owned ladder groups after shutdown; `--verbose` adds safe
 configuration, rate, quote, transaction-hash, and before/after capacity diagnostics. Version output,
-setup monitoring, invalid usage, and application construction do not start either writer.
+setup monitoring, and invalid usage never start either writer.
 
-`runOnce()` validates every market before any position/reference read or publication. Invalid
-configuration, reference failures, and decision failures invoke strategy-wide `hardHalt`; ordinary
-position-read failure requests market-local invalidation and permits other markets to continue.
-The production adapters re-read owned Mempool groups, serialize invalidation and publication, and
-persist group ownership before broadcast. Receipt polling is bounded independently by
-`TRANSACTION_RECEIPT_TIMEOUT_MS`.
-Read-only mode retains the same decisions and fresh prospective whole-book comparison but logs every
-requested make and graceful-cleanup operation instead.
+Before a bootstrap cycle reads positions or publishes, it validates every configured market.
+Invalid configuration, reference failures, and decision failures trigger a strategy-wide hard halt;
+an ordinary position-read failure requests market-local invalidation and permits other markets to
+continue. Receipt polling is bounded independently by `TRANSACTION_RECEIPT_TIMEOUT_MS`. Read-only
+mode retains the same decisions and fresh prospective whole-book comparison but logs every requested
+mutation and graceful-cleanup operation instead.
 
 ### Ladder fields and formulas
 
@@ -535,6 +448,123 @@ outermost funded rung. Hard-rate bounds apply to every nonzero rung that can be 
 exhausted side cannot trigger a bound failure. `targetMarketExposureAssets` must not exceed
 `maximumTotalExposureAssets`.
 
+The ladder is state reconciliation, not a collection of independently refilled orders. Every
+one-shot `ladder` invocation and every non-overlapping `ladder --monitor` cycle:
+
+1. Reads fresh market credit, wallet balance, allowance, market and strategy exposure, active owned
+   groups, group consumption, and the Blue reference rate.
+2. Reconstructs the remaining active quote. A partially consumed group contributes only its
+   remaining assets, and a fully consumed indexed group contributes no rung. A persisted group that
+   has not appeared in the eventually consistent API remains pending-active so the bot cannot
+   publish an unsafe duplicate while indexing catches up.
+3. Generates a complete desired quote from the current capacities and configuration. If the center
+   remains inside `movementToleranceBps`, the active center is retained while sizes are still
+   recalculated from fresh inventory.
+4. Compares the complete active and desired quotes, then selects one decision:
+
+| Decision   | Condition                                                                                                                                      | Mutation                                                                                                         |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `publish`  | No active ladder remains and at least one side can fund an offer.                                                                              | Publishes one fresh complete tree. The cycle reports `action: "publish", reason: "publish"`.                     |
+| `rest`     | Active and desired quotes are exactly equal, or neither an active nor a fundable desired quote exists.                                         | Submits no transaction.                                                                                          |
+| `resize`   | An active ladder exists, its center remains inside tolerance, but fresh sizes, funded rung count, side availability, or grouping have changed. | Replaces the complete market ladder and reports `action: "replace", reason: "resize"`.                           |
+| `recenter` | The absolute movement from the active center to `reference + quotePremiumBps` is strictly greater than `movementToleranceBps`.                 | Recalculates rates and sizes, replaces the complete ladder, and reports `action: "replace", reason: "recenter"`. |
+
+`movementToleranceBps` controls only rate movement. It never suppresses a capacity-driven `resize`.
+For example, a retained center can stay at 4.22% while a fill changes five higher-side rungs from
+200 USDC each to 160 USDC each.
+
+A replacement is market-wide rather than rung-local. The bot prepares and validates the future tree,
+durably reserves its group IDs, confirms cancellation of every remaining active group for the
+market, publishes the complete replacement tree, waits for its receipt, and confirms its durable
+ownership. Every publication uses the fresh block timestamp, producing new content-addressed group
+IDs instead of reusing consumed IDs. This means an unchanged rung also receives a new group ID when
+another rung causes a resize or recenter.
+
+Monitoring is interval-based rather than fill-event-driven. With `loopIntervalSeconds: "60"`, a
+consumption is normally reconciled by the next cycle after the current cycle and interval finish;
+provider reads and receipt confirmation add to that wall-clock time. A direct one-shot `ladder`
+command performs the same reconciliation once.
+
+#### Shared-rung consumption and inventory movement
+
+`shared-rung` creates an independent consumption cap and group ID for every funded rung. A fill
+reduces only that group's remaining amount on-chain, but the next cycle recalculates the complete
+ladder. Partial consumption normally triggers `resize` too: if one 200 USDC rung has 150 USDC left
+while fresh side capacity calls for five 190 USDC rungs, the active and desired quotes differ.
+
+Consider 2,000 USDC split initially into 1,000 USDC of market credit and 1,000 USDC of wallet cash,
+with five equal rungs per side and these inventory-responsive limits:
+
+```json
+{
+  "lowerRateBudgetAssets": "2000000000",
+  "higherRateBudgetAssets": "2000000000",
+  "targetMarketExposureAssets": "2000000000",
+  "maximumTotalExposureAssets": "2000000000"
+}
+```
+
+The initial quote can allocate 200 USDC to each of five lower and five higher rungs. If a 200 USDC
+higher-rate lend offer is consumed, approximately 200 USDC moves from wallet cash into market
+credit. The next desired quote becomes:
+
+```text
+before fill: lower 1,000 = 5 × 200; higher 1,000 = 5 × 200
+after fill:  lower 1,200 = 5 × 240; higher   800 = 5 × 160
+decision:    replace / resize
+```
+
+If both configured side budgets were instead 1,000 USDC, the lower side would remain capped at
+1,000 USDC despite the increased credit, while the higher side would shrink to 800 USDC:
+
+```text
+after fill: lower 1,000 = 5 × 200; higher 800 = 5 × 160
+```
+
+A lower-side reduce-only fill moves inventory in the opposite direction: market credit falls and
+wallet cash rises, so the lower side can shrink while the higher side grows, subject to its budget,
+allowance, target-market exposure, and total-exposure caps.
+
+`rungCount` is a maximum, not a guaranteed count. With five configured rungs, zero skew, and a 101
+USDC minimum, decreasing capacity produces approximately:
+
+| Fresh side capacity | Funded rungs | Equal allocation                            |
+| ------------------- | ------------ | ------------------------------------------- |
+| 1,000 USDC          | 5            | 200 USDC each                               |
+| 800 USDC            | 5            | 160 USDC each                               |
+| 500 USDC            | 4            | 125 USDC each                               |
+| 400 USDC            | 3            | About 133 USDC each, plus integer remainder |
+| 100 USDC            | 0            | Side omitted because it is below the floor  |
+
+The closest-to-market rungs are funded first when capacity cannot support the full count.
+
+#### Per-book consumption
+
+`per-book` creates one shared consumption group for every funded lower-side offer and a separate
+shared group for every funded higher-side offer. It never creates one group spanning both sides.
+All offers on one side can consume the same side-total cap, so a fill at any one rate reduces the
+capacity available through every rate in that group.
+
+For three higher-side rates sharing 300 USDC:
+
+```text
+4.47% ─┐
+4.57%  ├─ higher group H: 300 USDC total
+4.67% ─┘
+```
+
+If 120 USDC executes at 4.47%, only 180 USDC remains collectively across all three offers. Because
+otherwise identical rational takers prefer the best rate and that offer can consume the complete
+shared cap, the worse same-side rates generally have no execution incentive. `per-book` is therefore
+a set of alternative prices under one side limit, not strict price-level depth. Use `shared-rung`
+when each rate must reserve a distinct amount and execution should move through successive levels.
+
+Safety failures are separate from the four normal decisions. Configuration, reference, or decision
+failure requests a strategy-wide hard halt; a market-state read failure requests market-local
+invalidation. A failed or halted monitored cycle stops the loop and still attempts exhaustive owned
+group cleanup. `SIGINT` and `SIGTERM` let the in-flight cycle finish and then cancel every remaining
+active owned ladder group before the monitor reports `status: "stopped"`.
+
 `LADDER_MARKETS` is exact JSON with the same fields. Every integer-valued property must be a quoted
 decimal string; JSON number tokens, floats, exponents, malformed values, unknown fields, duplicate
 markets, and markets outside `MARKET_IDS` are rejected. The variable replaces the YAML list before
@@ -551,48 +581,6 @@ example `chmod 600 market-making.yaml`).
 Configuration errors contain stable field/reason metadata but never rejected values, URLs, private
 keys, parser snippets, or nested third-party errors. Explicit file failures are loud but do not echo
 the supplied path. Runtime setup reports identify providers by stable IDs only.
-
-## Run
-
-```sh
-bun run --filter @morpho-org/market-making-bot start -- setup-check
-bun run --filter @morpho-org/market-making-bot start -- --readonly setup-check
-bun run --filter @morpho-org/market-making-bot start -- setup-check --monitor
-bun run --filter @morpho-org/market-making-bot start -- bootstrap
-bun run --filter @morpho-org/market-making-bot start -- --readonly bootstrap
-bun run --filter @morpho-org/market-making-bot start -- ladder
-bun run --filter @morpho-org/market-making-bot start -- ladder --readonly
-bun run --filter @morpho-org/market-making-bot start -- ladder --monitor --verbose
-bun run --filter @morpho-org/market-making-bot start -- ladder --monitor --verbose --readonly
-bun run --filter @morpho-org/market-making-bot start -- invalidate
-bun run --filter @morpho-org/market-making-bot start -- invalidate 0x<64-hex-characters>
-bun run --filter @morpho-org/market-making-bot start -- invalidate --readonly
-bun run --filter @morpho-org/market-making-bot start -- --version
-```
-
-Success exits zero and writes JSON Lines to standard output. Ordinary commands emit one report record;
-a read-only writer command emits zero or more `readonly.make` records followed by its final cycle
-report. Consumers must parse stdout one line at a time rather than as one JSON document. Bigints are
-serialized as decimal strings. Any failed check throws `SetupFailedError`, prints the complete
-sanitized report, and exits non-zero. A bootstrap safety halt likewise prints its sanitized per-market
-cleanup report before exiting non-zero. The check is read-only; remediation transaction descriptions
-are reported but never submitted. `--readonly` also removes the private-key requirement, marks only
-maker/private-key agreement as `not-required`, and replaces bootstrap submission with
-`readonly.make` terminal output. Dry-run mutation outcomes use `status: "logged"` rather than
-`"applied"`. A ladder monitor failure prints its sanitized terminal cycle/cleanup report and exits
-non-zero.
-
-## Test
-
-```sh
-bun test bots/market-making/test
-bun run --filter @morpho-org/market-making-bot test:e2e
-bun run --filter @morpho-org/market-making-bot typecheck
-bun run --filter @morpho-org/market-making-bot jsdoc:build
-```
-
-The e2e suite starts its own Anvil fork of Base at a pinned historical block. It requires the
-`anvil` binary on `PATH` and an archive-capable `RPC_URL_8453`.
 
 ## Parameter playground
 

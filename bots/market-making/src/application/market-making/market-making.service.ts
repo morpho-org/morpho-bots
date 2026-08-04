@@ -1,13 +1,14 @@
+import type { MonitorOperationQueue } from '@repo/monitoring'
+
+import { createOperationQueue, cycleHasFailure } from '@repo/monitoring'
+
 import type { BootstrapTransactionSubmittedEvent } from '../bootstrap/position-bootstrap-verbose'
 import type { PositionBootstrapMonitorReport } from '../bootstrap/position-bootstrap.service'
 import type { LadderMonitorReport } from '../ladder/ladder-market-maker.service'
 import type { LadderTransactionSubmittedEvent } from '../ladder/ladder-verbose'
-import type { MonitorOperationQueue } from '../monitor.utils'
 import type { SetupCheckMonitorReport, SetupCheckReport } from '../setup/setup-check.service'
 
 import { operatorErrorName } from '../operator-error-name.utils'
-import { marketMakingCycleHasFailure } from './market-making-cycle.utils'
-import { createMarketMakingOperationQueue } from './market-making-mutation.utils'
 
 /** Readiness monitor required by the combined market-making lifecycle. */
 export interface MarketMakingSetupMonitor {
@@ -132,7 +133,7 @@ export class MarketMakingService {
       if (!stopRequested) workflowSettledBeforeOperator = true
       controller.abort()
     }
-    const operationQueue = createMarketMakingOperationQueue()
+    const operationQueue = createOperationQueue()
     const runOperation: MonitorOperationQueue = operation =>
       operationQueue(async () => {
         try {
@@ -171,7 +172,7 @@ export class MarketMakingService {
               workflow: 'bootstrap',
               results
             })
-            if (marketMakingCycleHasFailure(results)) stopFromWorkflow()
+            if (cycleHasFailure(results)) stopFromWorkflow()
           },
           runOperation,
           verbose: parameters.verbose,
@@ -190,7 +191,7 @@ export class MarketMakingService {
               workflow: 'ladder',
               results
             })
-            if (marketMakingCycleHasFailure(results)) stopFromWorkflow()
+            if (cycleHasFailure(results)) stopFromWorkflow()
           },
           runOperation,
           verbose: parameters.verbose,
@@ -207,23 +208,17 @@ export class MarketMakingService {
     ])
     parameters.signal.removeEventListener('abort', stopFromOperator)
 
-    const setupOutcome: MarketMakingWorkflowOutcome<SetupCheckMonitorReport> =
-      setupSettlement.status === 'fulfilled'
-        ? { status: 'fulfilled', report: setupSettlement.value }
-        : { status: 'rejected', errorName: operatorErrorName(setupSettlement.reason) }
-    const bootstrapOutcome: MarketMakingWorkflowOutcome<PositionBootstrapMonitorReport> =
-      bootstrapSettlement.status === 'fulfilled'
-        ? { status: 'fulfilled', report: bootstrapSettlement.value }
-        : { status: 'rejected', errorName: operatorErrorName(bootstrapSettlement.reason) }
-    const ladderOutcome: MarketMakingWorkflowOutcome<LadderMonitorReport> =
-      ladderSettlement.status === 'fulfilled'
-        ? { status: 'fulfilled', report: ladderSettlement.value }
-        : { status: 'rejected', errorName: operatorErrorName(ladderSettlement.reason) }
+    const toOutcome = <Report>(
+      settlement: PromiseSettledResult<Report>
+    ): MarketMakingWorkflowOutcome<Report> =>
+      settlement.status === 'fulfilled'
+        ? { status: 'fulfilled', report: settlement.value }
+        : { status: 'rejected', errorName: operatorErrorName(settlement.reason) }
 
     const workflows = {
-      setupCheck: setupOutcome,
-      bootstrap: bootstrapOutcome,
-      ladder: ladderOutcome
+      setupCheck: toOutcome(setupSettlement),
+      bootstrap: toOutcome(bootstrapSettlement),
+      ladder: toOutcome(ladderSettlement)
     }
     const outcomes = Object.values(workflows)
     const workflowRejected = outcomes.some(outcome => outcome.status === 'rejected')

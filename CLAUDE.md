@@ -157,14 +157,20 @@ This is a **bun workspaces monorepo** housing off-chain Morpho curator bots:
   Each bot owns its own operator surface — `README.md`, `Dockerfile`, `docker-compose.yml`, and
   `scripts/deploy-railway.ts` — so it ships as its own image and
   deploys independently. `bots/blue-liquidation` and `bots/midnight-liquidation` are the live
-  liquidators; `bots/kill-switch` is a proposal bot (docs only).
+  liquidators; `bots/market-making` is the Midnight maker bot (setup checks, position bootstrap,
+  ladder quoting, combined monitoring); `bots/midnight-crossed-books` resolves crossed Midnight
+  books; `bots/kill-switch` is a proposal bot (docs only).
 - `/packages/` — shared libraries: `@repo/bot-kit` (the shared bot runtime — viem
   clients/transport, loglayer-backed JSON-lines logger (opt-in in-process BetterStack shipping),
   block watcher + runner loop, pending-tx queue with fee
   policy / per-position backoff / cooldown, signing policy guard,
   simulation, revert decoding, balance metric), `@repo/swaps` (multi-venue DEX quoting, routing,
   unwrap seam, venue selection, and the shared Executor call builders), `@repo/contracts` (contract
-  ABIs + Executor sources),
+  ABIs + Executor sources), `@repo/observability` (bot lifecycle/record shipping over the bot-kit
+  logger + heartbeat, process observers, shipping-gated verbose argv), `@repo/monitoring` (monitor
+  interval waits, serial operation queue, cycle-failure predicate), `@repo/logging` (stdout/stderr
+  CLI presenter with bigint-safe JSON Lines), `@repo/offers` (maker offer-book model: prospective
+  batch projection and negative-spread/crossed-book checks),
   `@repo/utils`, and `@repo/typescript-config`. A bot assembles its behavior from `@repo/bot-kit`
   and `@repo/swaps` rather than forking a monolith.
 
@@ -219,20 +225,26 @@ All commit messages, PR titles, and Linear ticket titles use the same format:
 
 **Scopes — Packages:**
 
-| Package                 | Scope       |
-| ----------------------- | ----------- |
-| @repo/bot-kit           | `bot-kit`   |
-| @repo/contracts         | `contracts` |
-| @repo/swaps             | `swaps`     |
-| @repo/typescript-config | `ts-config` |
-| @repo/utils             | `utils`     |
+| Package                 | Scope           |
+| ----------------------- | --------------- |
+| @repo/bot-kit           | `bot-kit`       |
+| @repo/contracts         | `contracts`     |
+| @repo/logging           | `logging`       |
+| @repo/monitoring        | `monitoring`    |
+| @repo/observability     | `observability` |
+| @repo/offers            | `offers`        |
+| @repo/swaps             | `swaps`         |
+| @repo/typescript-config | `ts-config`     |
+| @repo/utils             | `utils`         |
 
 **Scopes — Bots:**
 
-| Bot                  | Scope                  |
-| -------------------- | ---------------------- |
-| blue-liquidation     | `blue-liquidation`     |
-| midnight-liquidation | `midnight-liquidation` |
+| Bot                    | Scope                    |
+| ---------------------- | ------------------------ |
+| blue-liquidation       | `blue-liquidation`       |
+| market-making          | `market-making`          |
+| midnight-crossed-books | `midnight-crossed-books` |
+| midnight-liquidation   | `midnight-liquidation`   |
 
 **Scopes — Cross-cutting:**
 

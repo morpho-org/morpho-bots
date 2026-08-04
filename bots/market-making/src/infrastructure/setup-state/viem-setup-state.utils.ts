@@ -1,11 +1,12 @@
 import type { Hex } from 'viem'
 
+import { crossedMarketIds } from '@repo/offers'
 import { bytesToHex, getAddress, hexToBytes, isAddress, isHex, size } from 'viem'
 
 import { SafeProviderError } from '../../application/setup/safe-provider.error'
+import { BASE_CHAIN_ID } from '../../config/config.utils'
 import { ProviderResponseError } from './provider-response.error'
 
-export const BASE_CHAIN_ID = 8453
 export const PAGE_SIZE = 100
 export const MAX_OFFER_PAGES = 100
 export const MAX_OFFER_ITEMS = 100_000
@@ -16,7 +17,14 @@ export const BASE_ECRECOVER_RATIFIER_RUNTIME_HASH =
   '0xcce1e0dd38ae831e81a9270627af2c24c208409ec03d5654a28a33ead53b1ac1'
 const invalidProviderValue = (message: string) =>
   new ProviderResponseError('provider', 'decode', message)
-const objectValue = (value: unknown, label: string): Record<string, unknown> => {
+/**
+ * Validates an unknown provider response as a record.
+ * @param value - Provider value to validate.
+ * @param label - Safe field label for errors.
+ * @returns The narrowed object record.
+ * @throws When the provider value is null, an array, or not an object.
+ */
+export const objectValue = (value: unknown, label: string): Record<string, unknown> => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw invalidProviderValue(`${label} must be an object`)
   }
@@ -70,7 +78,14 @@ const integerValue = (value: unknown, label: string) => {
   return value
 }
 
-const bigintValue = (value: unknown, label: string) => {
+/**
+ * Validates an unknown provider response as bigint.
+ * @param value - Provider value to validate.
+ * @param label - Safe field label for errors.
+ * @returns The narrowed bigint.
+ * @throws When the provider value is not bigint.
+ */
+export const bigintValue = (value: unknown, label: string) => {
   if (typeof value !== 'bigint') throw invalidProviderValue(`${label} must be a bigint`)
   return value
 }
@@ -192,12 +207,9 @@ export const routerEcrecoverRatifiers = (value: unknown) => {
  * @returns Canonical IDs having a highest buy tick at or above the lowest sell tick.
  */
 export const invertedMarketIds = (offers: readonly ReturnType<typeof offerFromApi>[]) =>
-  [...new Set(offers.map(offer => offer.marketId))].filter(marketId => {
-    const marketOffers = offers.filter(offer => offer.marketId === marketId)
-    const buys = marketOffers.filter(offer => offer.buy).map(offer => offer.tick)
-    const sells = marketOffers.filter(offer => !offer.buy).map(offer => offer.tick)
-    return buys.length > 0 && sells.length > 0 && Math.max(...buys) >= Math.min(...sells)
-  })
+  crossedMarketIds(
+    offers.map(offer => ({ marketId: offer.marketId, buy: offer.buy, tick: BigInt(offer.tick) }))
+  )
 
 /**
  * Creates a sanitized aggregate Morpho API deadline failure.
@@ -211,21 +223,3 @@ export const morphoApiTimeout = () =>
     code: 'REQUEST_TIMEOUT',
     context: 'request'
   })
-
-/**
- * Validates an unknown provider response as a record.
- * @param value - Provider value to validate.
- * @param label - Safe field label for errors.
- * @returns The narrowed object record.
- * @throws When the provider value is null, an array, or not an object.
- */
-export const objectRecord = (value: unknown, label: string) => objectValue(value, label)
-
-/**
- * Validates an unknown provider response as bigint.
- * @param value - Provider value to validate.
- * @param label - Safe field label for errors.
- * @returns The narrowed bigint.
- * @throws When the provider value is not bigint.
- */
-export const providerBigInt = (value: unknown, label: string) => bigintValue(value, label)

@@ -103,4 +103,17 @@ describe('operatorErrorName', () => {
 
     expect(operatorErrorName(hostile)).toBe('UnknownError')
   })
+
+  test('maps thrown non-Error values to one generic classification', () => {
+    expect(operatorErrorName({ message: 'hostile raw text' })).toBe('UnknownError')
+    expect(operatorErrorName('hostile raw string')).toBe('UnknownError')
+    expect(operatorErrorName(null)).toBe('UnknownError')
+  })
+
+  test('never resolves inherited object-prototype keys as classifications', () => {
+    const hostile = new Error('failed')
+    hostile.name = 'toString'
+
+    expect(operatorErrorName(hostile)).toBe('UnknownError')
+  })
 })
