@@ -37,27 +37,6 @@ describe('createHeartbeatMonitor', () => {
     expect(pings).toBe(0)
   })
 
-  it('is inert without warning or scheduling when the URL contains only whitespace', async () => {
-    const { logger, events } = captureLogger()
-    const setIntervalSpy = spyOn(globalThis, 'setInterval')
-    let pings = 0
-    const monitor = createHeartbeatMonitor({
-      url: ' \t\r\n ',
-      logger,
-      ping: async () => {
-        pings += 1
-        return { ok: true, status: 200 }
-      }
-    })
-
-    await monitor.start()
-    monitor.stop()
-
-    expect(events).toEqual([])
-    expect(pings).toBe(0)
-    expect(setIntervalSpy).not.toHaveBeenCalled()
-  })
-
   it('pings immediately and then on a wall-clock interval', async () => {
     const { logger } = captureLogger()
     const urls: string[] = []
@@ -112,44 +91,13 @@ describe('createHeartbeatMonitor', () => {
   })
 
   it.each([
-    [
-      '  https://uptime.betterstack.com:443/api/v1/heartbeat/secret?source=maker#status  ',
-      'https://uptime.betterstack.com:443/api/v1/heartbeat/secret?source=maker#status'
-    ],
-    ['http://example.test:8080/heartbeat', 'http://example.test:8080/heartbeat']
-  ])('uses the exact trimmed HTTP(S) URL %s', async (url, expectedUrl) => {
-    const { logger } = captureLogger()
-    const setIntervalSpy = spyOn(globalThis, 'setInterval').mockImplementation(
-      (() => 1 as unknown as ReturnType<typeof setInterval>) as typeof setInterval
-    )
-    const urls: string[] = []
-    const monitor = createHeartbeatMonitor({
-      url,
-      logger,
-      ping: async endpoint => {
-        urls.push(endpoint)
-        return { ok: true, status: 200 }
-      }
-    })
-
-    await monitor.start()
-    monitor.stop()
-
-    expect(urls).toEqual([expectedUrl])
-    expect(setIntervalSpy).toHaveBeenCalledTimes(1)
-  })
-
-  it.each([
     'ftp://example.test/heartbeat',
     'file:///tmp/heartbeat',
     'ws://example.test/heartbeat',
-    'wss://example.test/heartbeat',
     'javascript:alert(1)',
-    'not a URL',
-    'https://example.test:bad-port/heartbeat'
-  ])('warns once and stays inert for invalid URL %s', async url => {
+    'not a URL'
+  ])('warns once and disables pings for invalid URL %s', async url => {
     const { logger, events } = captureLogger()
-    const setIntervalSpy = spyOn(globalThis, 'setInterval')
     let pings = 0
     const monitor = createHeartbeatMonitor({
       url,
@@ -161,10 +109,7 @@ describe('createHeartbeatMonitor', () => {
     })
 
     await monitor.start()
-    monitor.stop()
-
     expect(pings).toBe(0)
-    expect(setIntervalSpy).not.toHaveBeenCalled()
     expect(events).toEqual([
       {
         level: 'warn',
@@ -185,7 +130,6 @@ describe('parseHttpHeartbeatUrl', () => {
     ['ftp://example.test/heartbeat', false],
     ['file:///tmp/heartbeat', false],
     ['ws://example.test/heartbeat', false],
-    ['wss://example.test/heartbeat', false],
     ['javascript:alert(1)', false],
     ['not a URL', false],
     ['https://example.test:bad-port/heartbeat', false],

@@ -38,7 +38,7 @@ export function createHeartbeatMonitor(deps: {
   let timer: ReturnType<typeof setInterval> | null = null
 
   const pingHeartbeat = async () => {
-    const response = await tryCatch(ping(url))
+    const response = await tryCatch(ping(parsed.toString()))
     if (response.error) {
       deps.logger.warn('heartbeat.failed', { detail: ensureError(response.error).message })
     } else if (!response.data.ok) {
