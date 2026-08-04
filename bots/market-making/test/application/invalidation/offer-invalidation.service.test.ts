@@ -33,6 +33,11 @@ const subject = (
       await observer?.(txHash)
       return txHash
     },
+    invalidateBatch: async (groupIds, observer) => {
+      events.push(`invalidateBatch:${groupIds.join(',')}`)
+      await observer?.(txA)
+      return txA
+    },
     forgetGroups: async ([groupId]) => {
       events.push(`forget:${groupId}`)
     },
@@ -43,37 +48,22 @@ const subject = (
 }
 
 describe('OfferInvalidationService', () => {
-  test('invalidates every distinct active maker group and streams submitted hashes', async () => {
-    const { service, events } = subject()
-    const submitted: unknown[] = []
+  test('uses the mandatory batch capability once for maker-wide read-only rendering', async () => {
+    const invalidateBatch = mock(async () => undefined)
+    const invalidate = mock(async () => txB)
+    const { service } = subject({ invalidateBatch, invalidate }, 'readonly')
 
-    const report = await service.run({
-      onTransactionSubmitted: event => {
-        submitted.push(event)
-      }
-    })
+    const report = await service.run()
 
     expect(report).toEqual({
-      status: 'applied',
+      status: 'logged',
       scope: 'all',
       matchedGroups: 2,
-      invalidatedGroups: [
-        { groupId: groupA, txHash: txA },
-        { groupId: groupB, txHash: txB }
-      ]
+      invalidatedGroups: [{ groupId: groupA }, { groupId: groupB }]
     })
-    expect(events).toEqual([
-      'preflight',
-      'list',
-      `invalidate:${groupA}`,
-      `forget:${groupA}`,
-      `invalidate:${groupB}`,
-      `forget:${groupB}`
-    ])
-    expect(submitted).toEqual([
-      { event: 'offer-invalidation.transaction-submitted', groupId: groupA, txHash: txA },
-      { event: 'offer-invalidation.transaction-submitted', groupId: groupB, txHash: txB }
-    ])
+    expect(invalidateBatch).toHaveBeenCalledTimes(1)
+    expect(invalidateBatch).toHaveBeenCalledWith([groupA, groupB], expect.any(Function))
+    expect(invalidate).not.toHaveBeenCalled()
   })
 
   test('reports one confirmed batch hash for every selected group and forgets them together', async () => {
@@ -195,6 +185,7 @@ describe('OfferInvalidationService', () => {
     const { service } = subject(
       {
         listActiveGroupIds: async () => [groupA],
+        invalidateBatch: async () => undefined,
         invalidate: async () => undefined
       },
       'readonly'
@@ -208,25 +199,22 @@ describe('OfferInvalidationService', () => {
     })
   })
 
-  test('attempts every group and preserves a submitted hash in the aggregate failure', async () => {
+  test('preserves a submitted hash when explicit group invalidation fails', async () => {
     const { service, port } = subject()
-    port.invalidate = async (groupId, observer) => {
-      if (groupId === groupA) {
-        await observer?.(txA)
-        throw new OfferInvalidationAdapterError('receipt')
-      }
-      return txB
+    port.invalidate = async (_groupId, observer) => {
+      await observer?.(txA)
+      throw new OfferInvalidationAdapterError('receipt')
     }
 
-    const error = await service.run().catch(value => value)
+    const error = await service.run({ groupId: groupA }).catch(value => value)
 
     expect(error).toBeInstanceOf(OfferInvalidationFailedError)
     expect(error).toMatchObject({
       report: {
         status: 'failed',
-        scope: 'all',
-        matchedGroups: 2,
-        invalidatedGroups: [{ groupId: groupB, txHash: txB }],
+        scope: 'group',
+        matchedGroups: 1,
+        invalidatedGroups: [],
         failures: [
           {
             stage: 'invalidation',
@@ -247,7 +235,7 @@ describe('OfferInvalidationService', () => {
       }
     })
 
-    const error = await service.run().catch(value => value)
+    const error = await service.run({ groupId: groupA }).catch(value => value)
 
     expect(error).toBeInstanceOf(OfferInvalidationFailedError)
     expect(error).toMatchObject({

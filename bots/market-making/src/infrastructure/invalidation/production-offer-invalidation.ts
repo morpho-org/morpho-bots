@@ -92,6 +92,7 @@ export const createProductionOfferInvalidationPort = (
       mode: () => 'readonly',
       preflight,
       listActiveGroupIds,
+      invalidateBatch: async () => undefined,
       invalidate: async () => undefined,
       forgetGroups: async () => undefined
     }

@@ -60,13 +60,13 @@ export interface OfferInvalidationPort {
    * Invalidates all selected groups in one native Midnight multicall.
    * @param groupIds - Distinct offer-group identifiers selected by the application.
    * @param onTransactionSubmitted - Optional observer called once after wallet submission.
-   * @returns The confirmed shared transaction hash.
+   * @returns The confirmed shared transaction hash, or no hash in read-only mode.
    * @throws An adapter error when submission or receipt confirmation fails.
    */
-  invalidateBatch?(
+  invalidateBatch(
     groupIds: readonly Hex[],
     onTransactionSubmitted?: (txHash: Hex) => void | Promise<void>
-  ): Promise<Hex>
+  ): Promise<Hex | void>
   /** Removes canceled bot-owned groups from durable ownership. @param groupIds - Confirmed canceled groups. @returns Completion after ownership cleanup. */
   forgetGroups(groupIds: readonly Hex[]): Promise<void>
 }
@@ -133,14 +133,9 @@ export class OfferInvalidationService {
     const invalidatedGroups: InvalidatedOfferGroup[] = []
     const failures: OfferInvalidationFailureReport['failures'][number][] = []
 
-    if (
-      scope === 'all' &&
-      selectedGroupIds.length > 0 &&
-      this.port.mode() === 'write' &&
-      this.port.invalidateBatch
-    ) {
+    if (scope === 'all' && selectedGroupIds.length > 0) {
       let submittedTxHash: Hex | undefined
-      let batchTxHash: Hex
+      let batchTxHash: Hex | void
       try {
         batchTxHash = await this.port.invalidateBatch(selectedGroupIds, async hash => {
           submittedTxHash = hash
@@ -173,7 +168,12 @@ export class OfferInvalidationService {
         })
       }
 
-      invalidatedGroups.push(...selectedGroupIds.map(groupId => ({ groupId, txHash: batchTxHash })))
+      invalidatedGroups.push(
+        ...selectedGroupIds.map(groupId => ({
+          groupId,
+          ...(batchTxHash ? { txHash: batchTxHash } : {})
+        }))
+      )
       try {
         await this.port.forgetGroups(selectedGroupIds)
       } catch (error) {
@@ -182,7 +182,7 @@ export class OfferInvalidationService {
             stage: 'ownership-cleanup' as const,
             groupId,
             errorName: operatorErrorName(error),
-            txHash: batchTxHash
+            ...(batchTxHash ? { txHash: batchTxHash } : {})
           }))
         )
       }
@@ -197,7 +197,7 @@ export class OfferInvalidationService {
         })
       }
       return {
-        status: 'applied',
+        status: this.port.mode() === 'write' ? 'applied' : 'logged',
         scope,
         matchedGroups: selectedGroupIds.length,
         invalidatedGroups
