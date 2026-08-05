@@ -966,7 +966,29 @@ main {
   color: #d6ad77;
   line-height: 1.4;
 }
-@media (max-width: 760px) {
+@media (min-width: 901px) and (max-width: 1100px) {
+  .field-grid {
+    grid-template-columns: 1fr;
+  }
+  .controls .section-heading {
+    align-items: flex-start;
+    flex-direction: column-reverse;
+  }
+  .controls .section-heading > span {
+    text-align: left;
+  }
+}
+@media (min-width: 901px) and (max-width: 960px) {
+  .quick-grid {
+    grid-template-columns: 1fr;
+  }
+}
+@media (min-width: 621px) and (max-width: 900px) {
+  .field-grid {
+    grid-template-columns: repeat(2, minmax(220px, 1fr));
+  }
+}
+@media (max-width: 900px) {
   main {
     padding-top: 1rem;
   }
@@ -976,12 +998,43 @@ main {
   .monitor-surface {
     top: 0;
     z-index: 4;
-    height: min(42dvh, 22rem);
-    max-height: calc(100dvh - 1rem);
+    height: min(45dvh, 27.5rem);
+    max-height: min(45dvh, 27.5rem);
     padding: 0.75rem;
     border-color: #42484f;
     border-radius: 0 0 8px 8px;
     box-shadow: 0 10px 24px #000a;
+  }
+  .monitor-header h2 {
+    font-size: 1rem;
+  }
+  .monitor-header .section-heading > span {
+    display: none;
+  }
+  .monitor-body > .status {
+    padding-block: 0.4rem;
+  }
+  .ladder-scroll {
+    max-height: max(8rem, calc(min(45dvh, 27.5rem) - 7rem));
+  }
+  #controls input,
+  #controls select,
+  #controls button,
+  .export-card button {
+    scroll-margin-top: min(47dvh, 29rem);
+  }
+  .item-actions button,
+  .section-heading > button,
+  .button,
+  .tabs button,
+  .copy-actions button {
+    min-height: 44px;
+  }
+}
+@media (max-width: 760px) {
+  .monitor-surface {
+    height: min(42dvh, 22rem);
+    max-height: min(42dvh, 22rem);
   }
   .monitor-header {
     display: block;
@@ -1021,7 +1074,8 @@ main {
   }
   #controls input,
   #controls select,
-  #controls button {
+  #controls button,
+  .export-card button {
     scroll-margin-top: min(44dvh, 23rem);
   }
   .export-card {

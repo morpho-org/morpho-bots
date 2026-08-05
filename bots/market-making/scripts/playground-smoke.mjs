@@ -173,6 +173,9 @@ try {
     await cp(dist, mountedDist, { recursive: true })
   }
   const userDataDir = await createOwnedTempDirectory('market-making-playground-')
+  const screenshotDirectory = await createOwnedTempDirectory(
+    'market-making-playground-screenshots-'
+  )
   const startupDeadline = performance.now() + startupTimeout
   const startedServer = await runBounded(() => startStaticServer(servedRoot), {
     description: 'static server startup',
@@ -1004,7 +1007,7 @@ try {
     })
     await writeFile(path, Buffer.from(shot.data, 'base64'))
   }
-  await captureImportViewport('/tmp/morpho-bots-pr122-ladder-jsonio-desktop.png')
+  await captureImportViewport(join(screenshotDirectory, 'ladder-jsonio-desktop.png'))
   await command('Emulation.setDeviceMetricsOverride', {
     width: 390,
     height: 844,
@@ -1012,12 +1015,12 @@ try {
     mobile: true
   })
   await captureImportViewport(
-    '/tmp/morpho-bots-pr122-ladder-jsonio-mobile-drop.png',
+    join(screenshotDirectory, 'ladder-jsonio-mobile-drop.png'),
     '#ladder-import-drop',
     'center'
   )
   await captureImportViewport(
-    '/tmp/morpho-bots-pr122-ladder-jsonio-mobile.png',
+    join(screenshotDirectory, 'ladder-jsonio-mobile.png'),
     '#apply-ladder-import',
     'end'
   )
@@ -1029,7 +1032,7 @@ try {
   })
   await evaluate('scrollTo(0, 0)')
 
-  const stickyGeometryAt = async ({ width, height, mobile }) => {
+  const stickyGeometryAt = async ({ width, height, mobile, expectedColumns }) => {
     await command('Emulation.setDeviceMetricsOverride', {
       width,
       height,
@@ -1037,10 +1040,18 @@ try {
       mobile
     })
     return evaluate(`(async () => {
+      scrollTo(0, 0)
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
       const monitor = document.querySelector('.monitor-surface')
+      const controls = document.querySelector('#controls')
+      const workbench = document.querySelector('.workbench')
+      const monitorCss = getComputedStyle(monitor)
+      const monitorAtStart = monitor.getBoundingClientRect()
+      const controlsAtStart = controls.getBoundingClientRect()
+      const stacked = controlsAtStart.top >= monitorAtStart.bottom - 1
       const representativeControls = selector => {
-        const controls = [...document.querySelectorAll(selector)]
-        return [controls[0], controls[Math.floor(controls.length / 2)], controls.at(-1)]
+        const matches = [...document.querySelectorAll(selector)]
+        return [matches[0], matches[Math.floor(matches.length / 2)], matches.at(-1)].filter(Boolean)
       }
       const targets = [
         ...representativeControls(
@@ -1051,8 +1062,7 @@ try {
         )
       ]
       const measurements = []
-      const css = getComputedStyle(monitor)
-      const stickyTop = Number.parseFloat(css.top)
+      const stickyTop = Number.parseFloat(monitorCss.top)
       const ancestors = []
       for (let ancestor = monitor.parentElement; ancestor; ancestor = ancestor.parentElement) {
         const style = getComputedStyle(ancestor)
@@ -1060,17 +1070,15 @@ try {
       }
       for (const [index, target] of targets.entries()) {
         target.focus({ preventScroll: true })
-        target.scrollIntoView({ block: ${mobile ? "'center'" : "'nearest'"} })
+        target.scrollIntoView({ block: 'center' })
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
         const before = monitor.getBoundingClientRect()
-        const focusedBefore = target.getBoundingClientRect()
         const scrollBefore = scrollY
         const spread = document.querySelector('.market-card:has([data-field=quotePremiumBps]) [data-field=spreadBps]')
         const oldLabel = document.querySelector('.spread-gap-label')?.textContent
-        const oldValue = spread.value
-        spread.value = oldValue === '180' ? '200' : '180'
+        spread.value = spread.value === '180' ? '200' : '180'
         spread.dispatchEvent(new Event('input', { bubbles: true }))
-        await new Promise(resolve => requestAnimationFrame(resolve))
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
         const after = monitor.getBoundingClientRect()
         const focusedAfter = target.getBoundingClientRect()
         measurements.push({
@@ -1081,16 +1089,36 @@ try {
           stickyTop,
           pageScroll: scrollY,
           pageJump: scrollY - scrollBefore,
-          focusedVisible: focusedAfter.top >= Math.max(0, ${mobile} ? after.bottom : 0) - 1 && focusedAfter.bottom <= innerHeight + 1,
+          focusedVisible:
+            focusedAfter.top >= Math.max(0, stacked ? after.bottom : 0) - 1 &&
+            focusedAfter.bottom <= innerHeight + 1,
           focusRetained: document.activeElement === target,
           monitorStable: Math.abs(after.top - before.top) <= 2,
           graphicChanged: document.querySelector('.spread-gap-label')?.textContent !== oldLabel,
-          horizontalOverflow: document.documentElement.scrollWidth - innerWidth,
-          focusedBefore: { top: focusedBefore.top, bottom: focusedBefore.bottom },
-          focusedAfter: { top: focusedAfter.top, bottom: focusedAfter.bottom }
+          horizontalOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth
         })
       }
       const ladderScroll = document.querySelector('.ladder-scroll')
+      const fieldWidths = [...document.querySelectorAll('#controls .field-grid > .field')]
+        .filter(element => element.getClientRects().length)
+        .map(element => element.getBoundingClientRect().width)
+      const quickWidths = [...document.querySelectorAll('#quick-edit .quick-field')]
+        .filter(element => element.getClientRects().length)
+        .map(element => element.getBoundingClientRect().width)
+      const tabletActions = [...document.querySelectorAll(
+        '#controls .item-actions button, #controls .section-heading > button, #apply-ladder-import, .export-card button'
+      )].filter(element => element.getClientRects().length)
+      const actionMetrics = tabletActions.map(element => {
+        const rect = element.getBoundingClientRect()
+        const owner = element.closest('.control-section, .market-card, .export-card')?.getBoundingClientRect()
+        return {
+          label: element.textContent.trim(),
+          height: rect.height,
+          width: rect.width,
+          ownerWidth: owner?.width,
+          fits: !owner || (rect.left >= owner.left - 1 && rect.right <= owner.right + 1)
+        }
+      })
       const exportButton = document.querySelector('#copy-export')
       exportButton.scrollIntoView({ block: 'center' })
       await new Promise(resolve => requestAnimationFrame(resolve))
@@ -1098,41 +1126,63 @@ try {
       return {
         width: ${width},
         height: ${height},
-        mobile: ${mobile},
-        cssPosition: css.position,
-        cssMaxHeight: css.maxHeight,
+        expectedColumns: ${expectedColumns},
+        stacked,
+        cssPosition: monitorCss.position,
+        cssMaxHeight: monitorCss.maxHeight,
+        monitorHeight: monitor.getBoundingClientRect().height,
         monitorParent: monitor.parentElement?.className,
-        domOrderLogical: Boolean(monitor.compareDocumentPosition(document.querySelector('#controls')) & Node.DOCUMENT_POSITION_FOLLOWING),
+        domOrderLogical: Boolean(monitor.compareDocumentPosition(controls) & Node.DOCUMENT_POSITION_FOLLOWING),
         ancestors,
         measurements,
         ladderIndependent: Boolean(ladderScroll) && ['auto', 'scroll'].includes(getComputedStyle(ladderScroll).overflowY),
+        monitorBodyIndependent: ['auto', 'scroll'].includes(getComputedStyle(document.querySelector('.monitor-body')).overflowY),
         exportAccessible: exportRect.top >= 0 && exportRect.bottom <= innerHeight && document.elementFromPoint(exportRect.left + 4, exportRect.top + 4)?.closest('#copy-export') === exportButton,
-        documentWidth: document.documentElement.scrollWidth
+        documentOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        minimumFieldWidth: Math.min(...fieldWidths),
+        minimumQuickWidth: Math.min(...quickWidths),
+        minimumActionHeight: Math.min(...actionMetrics.map(metric => metric.height)),
+        failingActions: actionMetrics.filter(metric => !metric.fits),
+        actionsFit: actionMetrics.every(metric => metric.fits),
+        workbenchColumns: getComputedStyle(workbench).gridTemplateColumns
       }
     })()`)
   }
   const stickyMatrix = []
   for (const viewport of [
-    { width: 1440, height: 900, mobile: false },
-    { width: 1024, height: 768, mobile: false },
-    { width: 390, height: 844, mobile: true }
+    { width: 760, height: 500, mobile: false, expectedColumns: 1 },
+    { width: 768, height: 500, mobile: false, expectedColumns: 1 },
+    { width: 820, height: 500, mobile: false, expectedColumns: 1 },
+    { width: 900, height: 500, mobile: false, expectedColumns: 1 },
+    { width: 901, height: 600, mobile: false, expectedColumns: 2 },
+    { width: 1024, height: 640, mobile: false, expectedColumns: 2 },
+    { width: 1440, height: 900, mobile: false, expectedColumns: 2 },
+    { width: 390, height: 844, mobile: true, expectedColumns: 1 }
   ])
     stickyMatrix.push(await stickyGeometryAt(viewport))
   assert(
     stickyMatrix.every(
       result =>
         result.cssPosition === 'sticky' &&
+        result.stacked === (result.expectedColumns === 1) &&
         result.monitorParent.includes('workbench') &&
         result.domOrderLogical &&
         result.ladderIndependent &&
-        result.documentWidth <= result.width &&
+        result.monitorBodyIndependent &&
+        result.documentOverflow === 0 &&
+        result.minimumFieldWidth >= 220 &&
+        result.minimumQuickWidth >= (result.width <= 900 ? 200 : 160) &&
+        (result.width > 900 || result.minimumActionHeight >= 44) &&
+        result.actionsFit &&
+        (result.width > 900 || result.monitorHeight <= Math.min(result.height * 0.5, 440) + 1) &&
         result.ancestors.every(
           ancestor => !['auto', 'scroll', 'hidden', 'clip'].includes(ancestor.overflowY)
         ) &&
         result.measurements.every(
           measurement =>
             measurement.pageScroll > 0 &&
-            Math.abs(measurement.top - measurement.stickyTop) <= 2 &&
+            (Math.abs(measurement.top - measurement.stickyTop) <= 2 ||
+              (measurement.top < measurement.stickyTop && measurement.bottom <= result.height)) &&
             measurement.bottom <= result.height + 1 &&
             measurement.height < result.height &&
             Math.abs(measurement.pageJump) <= 2 &&
@@ -1140,13 +1190,30 @@ try {
             measurement.focusRetained &&
             measurement.monitorStable &&
             measurement.graphicChanged &&
-            measurement.horizontalOverflow <= 0
+            measurement.horizontalOverflow === 0
         ) &&
         result.exportAccessible
     ),
-    `sticky workbench geometry failed: ${JSON.stringify(stickyMatrix)}`
+    `sticky tablet boundary geometry failed: ${JSON.stringify(stickyMatrix)}`
   )
-  console.log(`sticky geometry: ${JSON.stringify(stickyMatrix)}`)
+  console.log(
+    `tablet layout matrix: ${JSON.stringify(
+      stickyMatrix.map(result => ({
+        viewport: `${result.width}x${result.height}`,
+        columns: result.stacked ? 1 : 2,
+        overflow: result.documentOverflow,
+        monitorHeight: result.monitorHeight,
+        minimumFieldWidth: result.minimumFieldWidth,
+        minimumQuickWidth: result.minimumQuickWidth,
+        minimumActionHeight: result.minimumActionHeight,
+        focusRetained: result.measurements.every(measurement => measurement.focusRetained),
+        maximumPageJump: Math.max(
+          ...result.measurements.map(measurement => Math.abs(measurement.pageJump))
+        ),
+        graphicChanged: result.measurements.every(measurement => measurement.graphicChanged)
+      }))
+    )}`
+  )
 
   const captureViewport = async ({ width, height, mobile, path }) => {
     await command('Emulation.setDeviceMetricsOverride', {
@@ -1168,22 +1235,34 @@ try {
   }
   for (const viewport of [
     {
+      width: 768,
+      height: 500,
+      mobile: false,
+      path: join(screenshotDirectory, 'sticky-768x500.png')
+    },
+    {
+      width: 900,
+      height: 500,
+      mobile: false,
+      path: join(screenshotDirectory, 'sticky-900x500.png')
+    },
+    {
       width: 1440,
       height: 900,
       mobile: false,
-      path: '/tmp/morpho-bots-pr122-sticky-1440x900.png'
+      path: join(screenshotDirectory, 'sticky-1440x900.png')
     },
     {
       width: 1024,
       height: 768,
       mobile: false,
-      path: '/tmp/morpho-bots-pr122-sticky-1024x768.png'
+      path: join(screenshotDirectory, 'sticky-1024x768.png')
     },
     {
       width: 390,
       height: 844,
       mobile: true,
-      path: '/tmp/morpho-bots-pr122-sticky-390x844.png'
+      path: join(screenshotDirectory, 'sticky-390x844.png')
     }
   ])
     await captureViewport(viewport)
@@ -1195,7 +1274,7 @@ try {
     mobile: false
   })
   await captureImportViewport(
-    '/tmp/morpho-bots-pr122-quick-edit-desktop.png',
+    join(screenshotDirectory, 'quick-edit-desktop.png'),
     '#quick-edit',
     'center'
   )
@@ -1206,7 +1285,7 @@ try {
     mobile: true
   })
   await captureImportViewport(
-    '/tmp/morpho-bots-pr122-quick-edit-mobile.png',
+    join(screenshotDirectory, 'quick-edit-mobile.png'),
     '#quick-edit',
     'center'
   )
@@ -1229,7 +1308,7 @@ try {
     })
     await writeFile(path, Buffer.from(shot.data, 'base64'))
   }
-  await capture('/tmp/morpho-bots-pr122-ladder-default-desktop.png')
+  await capture(join(screenshotDirectory, 'ladder-default-desktop.png'))
 
   const parameterProof = await evaluate(`(() => {
     const result = {}
@@ -1509,7 +1588,7 @@ try {
     set('maximumRateBps', '800')
     set('groupMode', 'per-book')
   })()`)
-  await capture('/tmp/morpho-bots-pr122-perbook-default-desktop.png')
+  await capture(join(screenshotDirectory, 'perbook-default-desktop.png'))
 
   const configureDensity = async rungCount =>
     evaluate(`(() => {
@@ -1568,7 +1647,7 @@ try {
     `32-rung desktop spacing is unreadable: ${JSON.stringify(density32Desktop)}`
   )
   assert(density32Desktop.minimumLabelPx >= 11, '32-rung labels are smaller than 11px')
-  await capture('/tmp/morpho-bots-pr122-ladder-32-desktop.png')
+  await capture(join(screenshotDirectory, 'ladder-32-desktop.png'))
 
   await command('Emulation.setDeviceMetricsOverride', {
     width: 390,
@@ -1694,7 +1773,7 @@ try {
     ),
     'shared-rung mobile screenshot state does not preserve per-rung maxAssets semantics'
   )
-  await capture('/tmp/morpho-bots-pr122-ladder-default-mobile.png')
+  await capture(join(screenshotDirectory, 'ladder-default-mobile.png'))
   await evaluate(
     `(() => { const input=document.querySelector('.market-card:has([data-field=quotePremiumBps]) [data-field=groupMode]'); input.value='per-book'; input.dispatchEvent(new Event('input',{bubbles:true})) })()`
   )
@@ -1704,7 +1783,7 @@ try {
     ),
     'per-book mobile screenshot state does not preserve side-wide maxAssets semantics'
   )
-  await capture('/tmp/morpho-bots-pr122-perbook-default-mobile.png')
+  await capture(join(screenshotDirectory, 'perbook-default-mobile.png'))
   await command('Emulation.clearDeviceMetricsOverride')
   console.log(
     `density 32 desktop/mobile: ${JSON.stringify({ desktop: density32Desktop, mobile: density32Mobile })}`
@@ -1872,7 +1951,7 @@ try {
       Object.values(proof).every(Boolean),
       `credential ${label} DOM/clipboard proof failed: ${JSON.stringify(proof)}`
     )
-    const path = `/tmp/morpho-bots-pr122-credentials-${label}.png`
+    const path = join(screenshotDirectory, `credentials-${label}.png`)
     let previous
     for (let attempt = 0; attempt < 5; attempt++) {
       await evaluate(
