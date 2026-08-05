@@ -40,15 +40,15 @@
                 <span>Monitor · instant simulation</span>
                 <h2 id="monitor-heading">Offer ladder monitor</h2>
               </div>
-              <label class="field preview-reference">
-                <span class="field__heading">Reference rate (BPS)</span>
-                <span class="field__hint">Preview-only market input · not exported</span>
-                <input id="preview-reference" type="text" inputmode="numeric" pattern="-?[0-9]*" />
-              </label>
             </div>
             <div class="monitor-body">
               <p id="ladder-status" class="status" role="status" aria-live="polite"></p>
               <div id="ladders" class="ladders" aria-live="polite"></div>
+              <section
+                id="quick-edit"
+                class="quick-edit"
+                aria-labelledby="quick-edit-heading"
+              ></section>
               <p class="future-scope">
                 Production generator and validators are reused locally. Dynamic balances, credit,
                 and live order books remain outside this stateless preview.

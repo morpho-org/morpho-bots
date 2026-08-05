@@ -29,13 +29,13 @@ const required = <ElementType extends Element>(selector: string) => {
 
 const controls = required<HTMLDivElement>('#generated-controls')
 const ladderContainer = required<HTMLDivElement>('#ladders')
+const quickEdit = required<HTMLElement>('#quick-edit')
 const ladderStatus = required<HTMLParagraphElement>('#ladder-status')
 const validationErrors = required<HTMLDivElement>('#validation-errors')
 const observabilityStatus = required<HTMLDivElement>('#observability-status')
 const copyStatus = required<HTMLParagraphElement>('#copy-status')
 const exportTabs = [...document.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
 const exportPanels = [...document.querySelectorAll<HTMLElement>('[role="tabpanel"]')]
-const previewReference = required<HTMLInputElement>('#preview-reference')
 const includeSensitiveValues = required<HTMLInputElement>('#include-sensitive-values')
 const ladderImportDrop = required<HTMLDivElement>('#ladder-import-drop')
 const ladderImportFile = required<HTMLInputElement>('#ladder-import-file')
@@ -43,6 +43,7 @@ const ladderImportText = required<HTMLTextAreaElement>('#ladder-import-text')
 const ladderImportStatus = required<HTMLParagraphElement>('#ladder-import-status')
 let activeExport: 'yaml' | 'shell' | 'json' | 'ladder-env' = 'yaml'
 let fieldIndex = 0
+let selectedLadder: LadderInput | undefined = state.ladder[0]
 
 type Field = readonly [string, string, string, string]
 const sensitiveUiKeys = new Set<string>(SENSITIVE_UI_KEYS)
@@ -143,8 +144,13 @@ const itemControls = (kind: 'bootstrap' | 'ladder', index: number, count: number
     action('Move up', () => moveItem(items, index, index - 1), index === 0),
     action('Move down', () => moveItem(items, index, index + 1), index === count - 1),
     action(`Remove ${kind}`, () => {
+      const removed = items[index]
       items.splice(index, 1)
+      if (kind === 'ladder' && removed === selectedLadder) {
+        selectedLadder = state.ladder[Math.min(index, state.ladder.length - 1)]
+      }
       renderControls()
+      renderQuickEditor()
       renderDynamic()
     })
   )
@@ -156,6 +162,7 @@ const moveItem = <Item>(items: Item[], from: number, to: number) => {
   const [item] = items.splice(from, 1)
   if (item !== undefined) items.splice(to, 0, item)
   renderControls()
+  if (items === state.ladder) renderQuickEditor()
   renderDynamic()
 }
 
@@ -177,8 +184,11 @@ const collectionSection = <Item extends BootstrapInput | LadderInput>(
   add.className = 'button'
   add.textContent = `Add ${kind} market`
   add.addEventListener('click', () => {
-    items.push(create())
+    const item = create()
+    items.push(item)
+    if (kind === 'ladder') selectedLadder = item as LadderInput
     renderControls()
+    if (kind === 'ladder') renderQuickEditor()
     renderDynamic()
   })
   top.append(add)
@@ -260,7 +270,9 @@ const applyLadderImport = (text: string) => {
   try {
     const imported = parseLadderMarketsImport(text, state.scalar.MARKET_IDS)
     state.ladder.splice(0, state.ladder.length, ...imported)
+    selectedLadder = state.ladder[0]
     renderControls()
+    renderQuickEditor()
     renderDynamic()
     setLadderImportStatus(
       `Applied ${imported.length} ladder market${imported.length === 1 ? '' : 's'}.`,
@@ -328,11 +340,188 @@ ladderImportDrop.addEventListener('drop', event => {
   void applyLadderFile(event.dataTransfer?.files ?? [])
 })
 
-previewReference.value = state.referenceRateBps
-previewReference.addEventListener('input', () => {
-  state.referenceRateBps = previewReference.value
-  renderDynamic()
-})
+const quickGroups = [
+  ['Market', ['marketId']],
+  ['Center', ['referenceRateBps', 'quotePremiumBps']],
+  ['Spacing & Gap', ['spreadBps', 'stepBps', 'rungCount']],
+  ['Sizing & Skew', ['sizeSkewBps', 'minimumOfferAssets']],
+  [
+    'Budgets & Exposure',
+    [
+      'lowerRateBudgetAssets',
+      'higherRateBudgetAssets',
+      'targetMarketExposureAssets',
+      'maximumTotalExposureAssets'
+    ]
+  ],
+  [
+    'Runtime & Bounds',
+    ['groupMode', 'loopIntervalSeconds', 'movementToleranceBps', 'minimumRateBps', 'maximumRateBps']
+  ]
+] as const
+
+type QuickFieldKey = keyof LadderInput | 'referenceRateBps'
+const ladderFieldsByKey = new Map<string, Field>(LADDER_FIELDS.map(field => [field[0], field]))
+const quickFieldDefinition = (key: QuickFieldKey): Field =>
+  key === 'referenceRateBps'
+    ? [
+        'referenceRateBps',
+        'Reference rate (BPS)',
+        'Preview-only market input · not exported',
+        'number'
+      ]
+    : (ladderFieldsByKey.get(key) as Field)
+
+const selectedLadderIndex = () => (selectedLadder ? state.ladder.indexOf(selectedLadder) : -1)
+const originalLadderInput = (index: number, key: keyof LadderInput) =>
+  document
+    .querySelectorAll<HTMLElement>('.market-card:has([data-field=quotePremiumBps])')
+    .item(index)
+    ?.querySelector<HTMLInputElement | HTMLSelectElement>(`[data-field="${key}"]`)
+
+const quickInputFor = (key: QuickFieldKey) => {
+  const [, labelText, help, type] = quickFieldDefinition(key)
+  const wrapper = document.createElement('label')
+  wrapper.className = 'quick-field'
+  const label = document.createElement('span')
+  label.className = 'quick-field__label'
+  label.textContent = labelText
+  const hint = document.createElement('span')
+  hint.className = 'quick-field__hint'
+  hint.id = `quick-hint-${key}`
+  hint.textContent = `${key} · ${help}`
+  const error = document.createElement('span')
+  error.className = 'quick-field__error'
+  error.id = `quick-error-${key}`
+  error.setAttribute('role', 'status')
+  let input: HTMLInputElement | HTMLSelectElement
+  if (type === 'select') {
+    input = document.createElement('select')
+    for (const optionValue of ['shared-rung', 'per-book']) {
+      const option = document.createElement('option')
+      option.value = optionValue
+      option.textContent = optionValue
+      input.append(option)
+    }
+  } else {
+    input = document.createElement('input')
+    input.type = 'text'
+    if (type === 'number') {
+      input.inputMode = 'numeric'
+      input.pattern = '-?[0-9]*'
+    }
+  }
+  input.id = key === 'referenceRateBps' ? 'preview-reference' : `quick-${key}`
+  input.dataset.quickField = key
+  input.setAttribute('aria-describedby', `${hint.id} ${error.id}`)
+  input.addEventListener('input', () => {
+    if (key === 'referenceRateBps') state.referenceRateBps = input.value
+    else if (selectedLadder) {
+      selectedLadder[key] = input.value
+      const original = originalLadderInput(selectedLadderIndex(), key)
+      if (original && original.value !== input.value) original.value = input.value
+    }
+    renderDynamic()
+  })
+  wrapper.htmlFor = input.id
+  wrapper.append(label, hint, input, error)
+  return wrapper
+}
+
+const renderQuickEditor = () => {
+  const titleRow = document.createElement('div')
+  titleRow.className = 'quick-edit__header'
+  const title = document.createElement('h3')
+  title.id = 'quick-edit-heading'
+  title.textContent = 'Quick edit'
+  const fullEditor = document.createElement('a')
+  fullEditor.href = '#generated-controls'
+  fullEditor.textContent = 'Open full configuration'
+  titleRow.append(title, fullEditor)
+
+  if (!selectedLadder || selectedLadderIndex() < 0) selectedLadder = state.ladder[0]
+  if (!selectedLadder) {
+    const empty = document.createElement('p')
+    empty.className = 'empty-state'
+    empty.textContent = 'Add a ladder market in the full configuration to enable quick edit.'
+    quickEdit.replaceChildren(titleRow, empty)
+    return
+  }
+
+  const marketLabel = document.createElement('label')
+  marketLabel.className = 'quick-market-switcher'
+  const marketLabelText = document.createElement('span')
+  marketLabelText.textContent = 'Selected ladder market'
+  const marketSelect = document.createElement('select')
+  marketSelect.id = 'quick-market-select'
+  marketSelect.setAttribute('aria-label', 'Selected ladder market')
+  state.ladder.forEach((ladder, index) => {
+    const option = document.createElement('option')
+    option.value = String(index)
+    option.textContent = `Market ${index + 1} · ${ladder.marketId.slice(0, 10)}…`
+    option.selected = ladder === selectedLadder
+    marketSelect.append(option)
+  })
+  marketSelect.addEventListener('change', () => {
+    selectedLadder = state.ladder[Number(marketSelect.value)]
+    renderQuickEditor()
+    renderDynamic()
+  })
+  marketLabel.append(marketLabelText, marketSelect)
+
+  const groups = quickGroups.map(([groupName, keys], groupIndex) => {
+    const details = document.createElement('details')
+    details.className = 'quick-group'
+    details.open = groupIndex < 2
+    const summary = document.createElement('summary')
+    summary.textContent = groupName
+    const fieldset = document.createElement('fieldset')
+    const legend = document.createElement('legend')
+    legend.textContent = groupName
+    const grid = document.createElement('div')
+    grid.className = 'quick-grid'
+    for (const key of keys) grid.append(quickInputFor(key))
+    fieldset.append(legend, grid)
+    details.append(summary, fieldset)
+    return details
+  })
+  quickEdit.replaceChildren(titleRow, marketLabel, ...groups)
+  syncQuickEditor()
+}
+
+const syncQuickEditor = () => {
+  const index = selectedLadderIndex()
+  if (!selectedLadder || index < 0) return
+  const validationErrors = [
+    ...validateProductionState(state).errors,
+    ...validatePreviewState(state).errors
+  ]
+  const prefix = `ladder[${index}]`
+  for (const input of quickEdit.querySelectorAll<HTMLInputElement | HTMLSelectElement>(
+    '[data-quick-field]'
+  )) {
+    const key = input.dataset.quickField as QuickFieldKey
+    const value = key === 'referenceRateBps' ? state.referenceRateBps : selectedLadder[key]
+    if (input.value !== value) input.value = value
+    const errors = validationErrors.filter(
+      message =>
+        message.includes(key) &&
+        (key === 'referenceRateBps' || !message.includes('ladder[') || message.includes(prefix))
+    )
+    const error = quickEdit.querySelector<HTMLElement>(`#quick-error-${key}`)
+    if (error) error.textContent = errors[0] ?? ''
+    input.setAttribute('aria-invalid', String(errors.length > 0))
+  }
+  const marketSelect = quickEdit.querySelector<HTMLSelectElement>('#quick-market-select')
+  if (marketSelect) {
+    marketSelect.value = String(index)
+    state.ladder.forEach((ladder, marketIndex) => {
+      const option = marketSelect.options.item(marketIndex)
+      if (option)
+        option.textContent = `Market ${marketIndex + 1} · ${ladder.marketId.slice(0, 10)}…`
+    })
+  }
+}
 
 const formatAssets = (value: string) => Intl.NumberFormat('en-US').format(BigInt(value))
 const SVG_NAMESPACE = 'http://www.w3.org/2000/svg'
@@ -631,10 +820,11 @@ const renderLadders = () => {
   }
   try {
     const graphics = generateLadderGraphicModels(state)
+    const selectedIndex = selectedLadderIndex()
     ladderStatus.textContent =
       graphics.length === 0
         ? 'No ladder markets configured.'
-        : `${graphics.length} production-equivalent synthetic ladder graphic${graphics.length === 1 ? '' : 's'}.`
+        : `${graphics.length} production-equivalent synthetic ladder graphic${graphics.length === 1 ? '' : 's'} · quick editing market ${selectedIndex + 1}.`
     ladderStatus.dataset.status = 'ok'
     ladderContainer.replaceChildren(...graphics.map(renderGraphic))
   } catch (error) {
@@ -777,10 +967,12 @@ required<HTMLButtonElement>('#select-export').addEventListener('click', () => {
 const renderDynamic = () => {
   renderLadders()
   renderExports()
+  syncQuickEditor()
   copyStatus.textContent = ''
 }
 
 renderControls()
+renderQuickEditor()
 activateTab(0)
 renderDynamic()
 

@@ -388,6 +388,22 @@ test(
 )
 
 test(
+  'complete Chromium smoke remains deployable below the /morpho-bots/ Pages subpath',
+  { timeout: browserTestTimeout },
+  async () => {
+    const run = spawnSmoke({
+      env: {
+        ...process.env,
+        PLAYGROUND_SMOKE_BASE_PATH: '/morpho-bots/'
+      }
+    })
+    const result = await runSmokesConcurrently([run])
+    assert.match(result[0].stdout, /browser CSP: PASS/)
+    assert.match(result[0].stdout, /browser smoke: PASS/)
+  }
+)
+
+test(
   'two complete smoke runs use isolated builds and dynamic ports concurrently',
   { timeout: browserTestTimeout },
   async () => {

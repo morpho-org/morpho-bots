@@ -518,6 +518,55 @@ try {
     'graphic callouts or stateless legend are missing'
   )
 
+  const quickEditStructure = await evaluate(`(() => {
+    const quick = document.querySelector('#quick-edit')
+    const fieldsets = [...(quick?.querySelectorAll('fieldset') ?? [])]
+    const fields = [...(quick?.querySelectorAll('[data-quick-field]') ?? [])]
+    return {
+      directlyBelowGraphic: quick?.previousElementSibling?.id === 'ladders',
+      progressive: fieldsets.every(fieldset => fieldset.closest('details')),
+      groups: fieldsets.map(fieldset => fieldset.querySelector('legend')?.textContent),
+      fields: fields.map(field => field.dataset.quickField),
+      labeled: fields.every(field => field.labels?.length && field.getAttribute('aria-describedby')),
+      fullEditorLink: quick?.querySelector('a[href="#generated-controls"]')?.textContent.includes('full configuration')
+    }
+  })()`)
+  assert(
+    quickEditStructure.directlyBelowGraphic &&
+      quickEditStructure.progressive &&
+      [
+        'Market',
+        'Center',
+        'Spacing & Gap',
+        'Sizing & Skew',
+        'Budgets & Exposure',
+        'Runtime & Bounds'
+      ].every(group => quickEditStructure.groups.includes(group)) &&
+      [
+        'referenceRateBps',
+        'marketId',
+        'quotePremiumBps',
+        'spreadBps',
+        'stepBps',
+        'rungCount',
+        'sizeSkewBps',
+        'minimumOfferAssets',
+        'lowerRateBudgetAssets',
+        'higherRateBudgetAssets',
+        'targetMarketExposureAssets',
+        'maximumTotalExposureAssets',
+        'groupMode',
+        'loopIntervalSeconds',
+        'movementToleranceBps',
+        'minimumRateBps',
+        'maximumRateBps'
+      ].every(field => quickEditStructure.fields.includes(field)) &&
+      quickEditStructure.fields.length === 17 &&
+      quickEditStructure.labeled &&
+      quickEditStructure.fullEditorLink,
+    `quick edit structure is incomplete: ${JSON.stringify(quickEditStructure)}`
+  )
+
   const ladderJsonIo = await evaluate(`(async () => {
     const area = document.querySelector('#ladder-import')
     const drop = document.querySelector('#ladder-import-drop')
@@ -544,7 +593,9 @@ try {
     await new Promise(resolve => requestAnimationFrame(resolve))
     const pasteApplied = status.dataset.status === 'ok' && status.textContent.includes('1 ladder') &&
       document.querySelectorAll('#controls .market-card:has([data-field=quotePremiumBps])').length === 1 &&
-      document.querySelectorAll('.ladder-market').length === 1
+      document.querySelectorAll('.ladder-market').length === 1 &&
+      document.querySelector('#quick-market-select').options.length === 1 &&
+      document.querySelector('[data-quick-field=marketId]').value === JSON.parse(initial)[0].marketId
     text.value = JSON.stringify(initial)
     apply.click()
     const stringLiteralApplied = status.dataset.status === 'ok' && envOutput.value === initial
@@ -559,6 +610,7 @@ try {
     apply.click()
     const previewUpdated = envOutput.value === JSON.stringify(modified) &&
       document.querySelector('.ladder-graphic svg')?.outerHTML !== originalGraphic &&
+      document.querySelector('[data-quick-field=quotePremiumBps]').value === '25' &&
       getComputedStyle(document.querySelector('.monitor-surface')).position === 'sticky'
     text.value = initial
     apply.click()
@@ -850,6 +902,28 @@ try {
     deviceScaleFactor: 1,
     mobile: false
   })
+  await captureImportViewport(
+    '/tmp/morpho-bots-pr122-quick-edit-desktop.png',
+    '#quick-edit',
+    'center'
+  )
+  await command('Emulation.setDeviceMetricsOverride', {
+    width: 390,
+    height: 844,
+    deviceScaleFactor: 1,
+    mobile: true
+  })
+  await captureImportViewport(
+    '/tmp/morpho-bots-pr122-quick-edit-mobile.png',
+    '#quick-edit',
+    'center'
+  )
+  await command('Emulation.setDeviceMetricsOverride', {
+    width: 1440,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false
+  })
   await evaluate('scrollTo(0, 0)')
   const screenshotClip = async () =>
     evaluate(
@@ -955,6 +1029,152 @@ try {
     'parameter proof did not cover all 16 ladder fields plus reference rate'
   )
 
+  const quickEditSyncProof = await evaluate(`(() => {
+    const values = {
+      marketId: '0x' + '6'.repeat(64),
+      quotePremiumBps: '15',
+      spreadBps: '220',
+      stepBps: '110',
+      rungCount: '4',
+      sizeSkewBps: '100',
+      minimumOfferAssets: '100000000',
+      lowerRateBudgetAssets: '9000000000',
+      higherRateBudgetAssets: '8000000000',
+      targetMarketExposureAssets: '15000000000',
+      maximumTotalExposureAssets: '25000000000',
+      groupMode: 'per-book',
+      loopIntervalSeconds: '45',
+      movementToleranceBps: '12',
+      minimumRateBps: '0',
+      maximumRateBps: '1200'
+    }
+    const cards = () => [...document.querySelectorAll('.market-card:has([data-field=quotePremiumBps])')]
+    const full = key => cards()[0].querySelector('[data-field=' + key + ']')
+    const quick = key => document.querySelector('[data-quick-field=' + key + ']')
+    const set = (element, value) => {
+      element.value = value
+      element.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    const quickToFull = {}
+    for (const [key, value] of Object.entries(values)) {
+      set(quick(key), value)
+      quickToFull[key] = full(key).value === value
+    }
+    set(quick('referenceRateBps'), '510')
+    quickToFull.referenceRateBps = document.querySelector('.reference-label')?.textContent === 'REFERENCE 510'
+    quickToFull.marketSwitcherIdentity = document
+      .querySelector('#quick-market-select')
+      .selectedOptions[0].textContent.includes('0x66666666')
+    const quickExport = [
+      document.querySelector('#export-yaml').value,
+      document.querySelector('#export-shell').value,
+      document.querySelector('#export-json').value,
+      document.querySelector('#export-ladder-env').value
+    ]
+    const ladderExport = JSON.parse(quickExport[3])[0]
+    const exportEquality = Object.entries(values).every(([key, value]) => ladderExport[key] === value) &&
+      JSON.parse(quickExport[2]).configuration.LADDER_MARKETS[0].quotePremiumBps === '15' &&
+      quickExport.slice(0, 3).every(payload => payload.includes('15'))
+
+    const reverseValues = { ...values, quotePremiumBps: '16', spreadBps: '240', stepBps: '120' }
+    const fullToQuick = {}
+    for (const [key, value] of Object.entries(reverseValues)) {
+      set(full(key), value)
+      fullToQuick[key] = quick(key).value === value
+    }
+    set(quick('quotePremiumBps'), '17')
+    const viaQuick = [...document.querySelectorAll('#export-yaml,#export-shell,#export-json,#export-ladder-env')].map(output => output.value)
+    set(full('quotePremiumBps'), '16')
+    set(full('quotePremiumBps'), '17')
+    const viaFull = [...document.querySelectorAll('#export-yaml,#export-shell,#export-json,#export-ladder-env')].map(output => output.value)
+    return {
+      quickToFull,
+      fullToQuick,
+      exportEquality,
+      exactSameStateExports: JSON.stringify(viaQuick) === JSON.stringify(viaFull),
+      graphicAndCallouts: document.querySelector('.center-label')?.textContent === 'CENTER 527' &&
+        document.querySelector('.spread-gap-label')?.textContent === 'SPREAD GAP · 240 BPS' &&
+        document.querySelectorAll('.ladder-rung').length === 8 &&
+        document.querySelector('[data-parameter~=groupMode].ladder-callout dd')?.textContent.includes('per-book')
+    }
+  })()`)
+  assert(
+    Object.values(quickEditSyncProof.quickToFull).every(Boolean) &&
+      Object.values(quickEditSyncProof.fullToQuick).every(Boolean) &&
+      quickEditSyncProof.exportEquality &&
+      quickEditSyncProof.exactSameStateExports &&
+      quickEditSyncProof.graphicAndCallouts,
+    `quick/full two-way synchronization failed: ${JSON.stringify(quickEditSyncProof)}`
+  )
+
+  const quickFocusProof = await evaluate(`(() => {
+    const input = document.querySelector('[data-quick-field=spreadBps]')
+    input.closest('details').open = true
+    input.scrollIntoView({ block: 'center' })
+    input.focus({ preventScroll: true })
+    const sameNode = input
+    const pageBefore = scrollY
+    input.value = ''
+    input.setSelectionRange(0, 0)
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    const invalid = document.activeElement === sameNode &&
+      input.getAttribute('aria-invalid') === 'true' &&
+      document.querySelector('#quick-error-spreadBps').textContent.length > 0 &&
+      document.querySelector('.ladder-invalid[role=img]') &&
+      !document.querySelector('#validation-errors').hidden
+    const carets = []
+    for (const character of '240') {
+      input.setRangeText(character, input.selectionStart, input.selectionEnd, 'end')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      carets.push({
+        focused: document.activeElement === sameNode,
+        caret: input.selectionStart,
+        value: input.value,
+        sameNode: document.querySelector('[data-quick-field=spreadBps]') === sameNode
+      })
+    }
+    return {
+      invalid: Boolean(invalid),
+      recovered: input.getAttribute('aria-invalid') === 'false' &&
+        document.querySelector('#validation-errors').hidden &&
+        document.querySelector('#ladder-status').dataset.status === 'ok',
+      carets,
+      noPageJump: Math.abs(scrollY - pageBefore) <= 2
+    }
+  })()`)
+  assert(
+    quickFocusProof.invalid &&
+      quickFocusProof.recovered &&
+      quickFocusProof.noPageJump &&
+      quickFocusProof.carets.every(
+        (entry, index) =>
+          entry.focused &&
+          entry.sameNode &&
+          entry.caret === index + 1 &&
+          entry.value === '240'.slice(0, index + 1)
+      ),
+    `quick edit focus/caret or invalid recovery failed: ${JSON.stringify(quickFocusProof)}`
+  )
+  await evaluate(`(() => {
+    const values = {
+      marketId: '0x' + '5'.repeat(64), quotePremiumBps: '0', spreadBps: '200', stepBps: '100',
+      rungCount: '3', sizeSkewBps: '0', lowerRateBudgetAssets: '10000000000',
+      higherRateBudgetAssets: '10000000000', targetMarketExposureAssets: '20000000000',
+      maximumTotalExposureAssets: '30000000000', minimumOfferAssets: '101000000',
+      groupMode: 'shared-rung', loopIntervalSeconds: '60', movementToleranceBps: '10',
+      minimumRateBps: '200', maximumRateBps: '800'
+    }
+    const card = document.querySelector('.market-card:has([data-field=quotePremiumBps])')
+    for (const [key, value] of Object.entries(values)) {
+      const input = card.querySelector('[data-field=' + key + ']')
+      input.value = value
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    const reference = document.querySelector('#preview-reference')
+    reference.value = '500'
+    reference.dispatchEvent(new Event('input', { bubbles: true }))
+  })()`)
+
   const hugeGeometryProof = await evaluate(`(() => {
     const input = field => document.querySelector(\`.market-card:has([data-field=quotePremiumBps]) [data-field=\${field}]\`)
     const set = (field, value) => { const element=input(field); element.value=String(value); element.dispatchEvent(new Event('input',{bubbles:true})) }
@@ -1057,18 +1277,36 @@ try {
     mobile: true
   })
   const density32Mobile = await densityMetrics()
-  const mobileLayout = await evaluate(`(() => ({
-    documentWidth: document.documentElement.scrollWidth,
-    scrollWidth: document.querySelector('.ladder-scroll').clientWidth,
-    overflow: [...document.querySelectorAll('body *')].filter(element => {
-      if (element.closest('.ladder-scroll')) return false
-      const rect = element.getBoundingClientRect()
-      return rect.right > 390.5 || rect.left < -0.5
-    }).slice(0, 20).map(element => ({ tag: element.tagName, className: String(element.className), position: getComputedStyle(element).position, left: element.getBoundingClientRect().left, right: element.getBoundingClientRect().right, width: element.getBoundingClientRect().width, scrollWidth: element.scrollWidth, clientWidth: element.clientWidth }))
-  }))()`)
+  const mobileLayout = await evaluate(`(() => {
+    document.querySelectorAll('.quick-group').forEach(group => { group.open = true })
+    const quickControls = [...document.querySelectorAll('#quick-edit input,#quick-edit select,#quick-edit summary')]
+    const monitor = document.querySelector('.monitor-surface')
+    const monitorBody = document.querySelector('.monitor-body')
+    return {
+      documentWidth: document.documentElement.scrollWidth,
+      scrollWidth: document.querySelector('.ladder-scroll').clientWidth,
+      quickTouchMinimum: Math.min(...quickControls.map(control => control.getBoundingClientRect().height)),
+      quickWithinViewport: [...document.querySelectorAll('#quick-edit *')].every(element => {
+        const rect = element.getBoundingClientRect()
+        return rect.width === 0 || (rect.left >= -0.5 && rect.right <= 390.5)
+      }),
+      monitorBounded: monitor.getBoundingClientRect().height <= innerHeight &&
+        ['auto', 'scroll'].includes(getComputedStyle(monitorBody).overflowY) &&
+        monitorBody.scrollHeight > monitorBody.clientHeight,
+      overflow: [...document.querySelectorAll('body *')].filter(element => {
+        if (element.closest('.ladder-scroll')) return false
+        const rect = element.getBoundingClientRect()
+        return rect.right > 390.5 || rect.left < -0.5
+      }).slice(0, 20).map(element => ({ tag: element.tagName, className: String(element.className), position: getComputedStyle(element).position, left: element.getBoundingClientRect().left, right: element.getBoundingClientRect().right, width: element.getBoundingClientRect().width, scrollWidth: element.scrollWidth, clientWidth: element.clientWidth }))
+    }
+  })()`)
   assert(
-    mobileLayout.documentWidth <= 390 && mobileLayout.scrollWidth <= 358,
-    `mobile layout overflows its viewport: ${JSON.stringify(mobileLayout)}`
+    mobileLayout.documentWidth <= 390 &&
+      mobileLayout.scrollWidth <= 358 &&
+      mobileLayout.quickTouchMinimum >= 44 &&
+      mobileLayout.quickWithinViewport &&
+      mobileLayout.monitorBounded,
+    `mobile layout overflows its viewport or quick controls are unusable: ${JSON.stringify(mobileLayout)}`
   )
   assert(
     density32Mobile.minGap >= 28 &&
@@ -1352,6 +1590,31 @@ try {
     ),
     'ladder export did not preserve reordered market order'
   )
+  const quickMarketProof = await evaluate(`(() => {
+    const select = document.querySelector('#quick-market-select')
+    const firstIdentity = document.querySelector('[data-quick-field=marketId]').value === '${secondMarket}' &&
+      document.querySelector('[data-quick-field=loopIntervalSeconds]').value === '30'
+    const orderedOptions = [...select.options].map(option => option.textContent).join('|')
+    select.value = '1'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    const switched = document.querySelector('#quick-market-select').value === '1' &&
+      document.querySelector('[data-quick-field=marketId]').value === '0x${'5'.repeat(64)}' &&
+      document.querySelector('[data-quick-field=loopIntervalSeconds]').value === '60'
+    const currentSelect = document.querySelector('#quick-market-select')
+    currentSelect.value = '0'
+    currentSelect.dispatchEvent(new Event('change', { bubbles: true }))
+    return {
+      firstIdentity,
+      orderedOptions: orderedOptions.includes('Market 1 · ${secondMarket.slice(0, 10)}') &&
+        orderedOptions.includes('Market 2 · 0x${'5'.repeat(8)}'),
+      switched,
+      restored: document.querySelector('[data-quick-field=marketId]').value === '${secondMarket}'
+    }
+  })()`)
+  assert(
+    Object.values(quickMarketProof).every(Boolean),
+    `quick market selection/reorder identity failed: ${JSON.stringify(quickMarketProof)}`
+  )
   assert(
     await evaluate(
       `(() => { const values=[...document.querySelectorAll('.ladder-market [data-parameter~="loopIntervalSeconds"].ladder-callout dd')].map(node=>node.textContent); return values.length===2 && values[0].startsWith('30s configured interval · 30s effective runtime cycle') && values[1].startsWith('60s configured interval · 30s effective runtime cycle') && values.every(value=>value.includes('minimum across configured markets') && value.includes('fresh stateless center unchanged')) })()`
@@ -1430,6 +1693,27 @@ try {
   assert(
     await evaluate("document.querySelector('#copy-status').getAttribute('aria-live') === 'polite'"),
     'clipboard fallback is not announced in a live region'
+  )
+
+  const quickDeleteProof = await evaluate(`(() => {
+    const firstCard = document.querySelector('.market-card:has([data-field=quotePremiumBps])')
+    const step = firstCard.querySelector('[data-field=stepBps]')
+    step.value = '100'
+    step.dispatchEvent(new Event('input', { bubbles: true }))
+    const remove = [...firstCard.querySelectorAll('button')].find(button => button.textContent === 'Remove ladder')
+    remove.click()
+    return {
+      oneMarket: document.querySelectorAll('.market-card:has([data-field=quotePremiumBps])').length === 1 &&
+        document.querySelectorAll('.ladder-market').length === 1,
+      selectedFallback: document.querySelector('#quick-market-select').options.length === 1 &&
+        document.querySelector('#quick-market-select').value === '0' &&
+        document.querySelector('[data-quick-field=marketId]').value === '0x${'5'.repeat(64)}',
+      exportUpdated: JSON.parse(document.querySelector('#export-ladder-env').value).length === 1
+    }
+  })()`)
+  assert(
+    Object.values(quickDeleteProof).every(Boolean),
+    `quick market delete fallback failed: ${JSON.stringify(quickDeleteProof)}`
   )
   const persistenceInstrumentation = await evaluate('globalThis.__persistenceInstrumentation')
   const expectedPersistenceInstrumentation = [
