@@ -28,7 +28,6 @@ import type { OwnedLadderPublication } from './ladder-group-ownership.utils'
 
 import { createBootstrapGroupOwnership } from '../bootstrap/bootstrap-group-ownership.utils'
 import { bootstrapBookOffers, readBootstrapGroups } from '../bootstrap/bootstrap-groups.utils'
-import { createBootstrapOffer } from '../bootstrap/bootstrap-offer.utils'
 import { readLivePendingBootstrapOffers } from '../bootstrap/bootstrap-pending-offer.utils'
 import { BlueBootstrapReferenceRateService } from '../bootstrap/bootstrap-reference-rate.service'
 import { createManagedMakerAccount } from '../make/managed-maker-account.utils'
@@ -266,23 +265,6 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
     readRate: async marketId => (await blueRates.readRate(marketId)).rateBps
   }
 
-  const prepareBootstrapBookOffer = async (
-    offer: Awaited<ReturnType<typeof readLivePendingBootstrapOffers>>[number]
-  ) => {
-    const [market, block] = await Promise.all([
-      midnight.getMarketData(offer.marketId),
-      client.getBlock({ blockTag: 'latest' })
-    ])
-    const created = createBootstrapOffer({
-      offer,
-      market,
-      maker,
-      ratifier: config.setup.ratifier,
-      now: block.timestamp
-    })
-    return { marketId: offer.marketId, buy: true, tick: created.tick }
-  }
-
   const completeBookOffers = async () => {
     const [groups, persistedBootstrapOffers] = await Promise.all([
       readGroups(),
@@ -293,7 +275,12 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
       offers: persistedBootstrapOffers,
       readGroupConsumed
     })
-    const pendingOffers = await Promise.all(pendingBootstrapOffers.map(prepareBootstrapBookOffer))
+    const pendingOffers = pendingBootstrapOffers.map(offer => {
+      if (offer.tick === undefined) {
+        throw new LadderAdapterError('bootstrap-offer-tick-unavailable')
+      }
+      return { marketId: offer.marketId, buy: true, tick: offer.tick }
+    })
     return { groups, book: [...bootstrapBookOffers(groups), ...pendingOffers] }
   }
 

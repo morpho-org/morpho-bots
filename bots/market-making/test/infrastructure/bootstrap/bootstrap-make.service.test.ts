@@ -85,13 +85,21 @@ describe('MidnightBootstrapMakeService', () => {
     const invalidate = mock(async () => cancellationHash)
     const service = new MidnightBootstrapMakeService({
       listActiveGroups: async () => [
-        { id: groupId, marketId, assets: 100n, rateBps: 499n, tick: 100n }
+        {
+          id: groupId,
+          marketId,
+          assets: 100n,
+          maximumAssets: 140n,
+          rateBps: 499n,
+          tick: 100n,
+          offerCount: 1
+        }
       ],
       listBookOffers: async () => [],
       toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
       preparePublication,
       reserveGroup: async (id, offer) => {
-        metadataUpdates.push(`reserve:${id}:${offer.rateBps}`)
+        metadataUpdates.push(`reserve:${id}:${offer.assets}:${offer.rateBps}:${offer.tick}`)
       },
       confirmPublishedGroup: async id => {
         metadataUpdates.push(`confirm:${id}`)
@@ -105,7 +113,52 @@ describe('MidnightBootstrapMakeService', () => {
     expect(result).toBe('unchanged')
     expect(preparePublication).not.toHaveBeenCalled()
     expect(invalidate).not.toHaveBeenCalled()
-    expect(metadataUpdates).toEqual([`reserve:${groupId}:500`, `confirm:${groupId}`])
+    expect(metadataUpdates).toEqual([`reserve:${groupId}:140:500:100`, `confirm:${groupId}`])
+  })
+
+  test('replaces a matching projection when its group contains multiple offers', async () => {
+    const events: string[] = []
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [
+        {
+          id: groupId,
+          marketId,
+          assets: 100n,
+          maximumAssets: 100n,
+          rateBps: 500n,
+          tick: 100n,
+          offerCount: 2
+        }
+      ],
+      listBookOffers: async () => [],
+      toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
+      preparePublication: async () => ({
+        groupId: publishedGroupId,
+        tick: 100n,
+        publish: async () => {
+          events.push('publish')
+        }
+      }),
+      reserveGroup: async id => {
+        events.push(`reserve:${id}`)
+      },
+      confirmPublishedGroup: async id => {
+        events.push(`confirm:${id}`)
+      },
+      releaseGroupReservation: async () => {},
+      invalidate: async id => {
+        events.push(`invalidate:${id}`)
+      }
+    })
+
+    await service.reconcile({ marketId, desiredOffer, reason: 'replace' })
+
+    expect(events).toEqual([
+      `reserve:${publishedGroupId}`,
+      `invalidate:${groupId}`,
+      'publish',
+      `confirm:${publishedGroupId}`
+    ])
   })
 
   test('returns confirmed cancellation and publication hashes in submission order', async () => {

@@ -16,6 +16,10 @@ export type BootstrapActiveGroup = {
   rateBps: bigint
   /** Exact protocol tick when this projection represents a bootstrap offer. */
   tick?: bigint
+  /** Original protocol group cap before cumulative consumption. */
+  maximumAssets?: bigint
+  /** Total number of offers sharing the protocol group. */
+  offerCount?: number
   referenceObservationId?: string
 }
 

@@ -204,13 +204,7 @@ export const createProductionBootstrapAdapters = (
       readGroupConsumed: groupId => readGroupConsumed(groupId, blockNumber)
     })
 
-    return Promise.all(
-      liveOffers.map(async ({ groupId, ...offer }) => ({
-        id: groupId,
-        ...offer,
-        tick: (await prepareOffer(offer)).tick
-      }))
-    )
+    return liveOffers.map(({ groupId, ...offer }) => ({ id: groupId, ...offer, offerCount: 1 }))
   }
 
   const activeGroups = async (): Promise<BootstrapActiveGroup[]> => {
@@ -241,6 +235,8 @@ export const createProductionBootstrapAdapters = (
             marketId: group.marketId as Hex,
             assets: group.maxAssets - group.consumed,
             tick: group.tick as bigint,
+            maximumAssets: group.maxAssets,
+            offerCount: group.offers.length,
             rateBps:
               persisted?.rateBps ??
               TickLib.tickToApr(
@@ -288,6 +284,8 @@ export const createProductionBootstrapAdapters = (
             marketId: group.marketId as Hex,
             assets: group.maxAssets - group.consumed,
             tick: group.tick as bigint,
+            maximumAssets: group.maxAssets,
+            offerCount: group.offers.length,
             rateBps:
               persisted?.rateBps ??
               TickLib.tickToApr(
@@ -561,6 +559,7 @@ export const createProductionBootstrapAdapters = (
       await assertBootstrapTransaction(transaction, publicationPolicy)
       return {
         groupId: output.groups[0] as Hex,
+        tick: created.tick,
         publish: onTransactionSubmitted =>
           publishBootstrapPublication({
             ratifierType: output.ratifierType,

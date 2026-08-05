@@ -17,7 +17,8 @@ const offer = {
   marketId,
   assets: 100n,
   rateBps: 450n,
-  referenceObservationId: 'blocks:100-200'
+  referenceObservationId: 'blocks:100-200',
+  tick: 123n
 }
 
 const indexedGroup = (consumed: bigint): BootstrapRawGroup => ({
@@ -67,7 +68,7 @@ describe('readLivePendingBootstrapOffers', () => {
       readGroupConsumed
     })
 
-    expect(result).toEqual([{ ...offer, assets: 60n }])
+    expect(result).toEqual([{ ...offer, maximumAssets: 100n, assets: 60n }])
     expect(readGroupConsumed).toHaveBeenCalledWith(groupId)
   })
 

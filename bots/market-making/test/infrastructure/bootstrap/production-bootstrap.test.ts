@@ -886,7 +886,8 @@ describe('createBootstrapGroupOwnership', () => {
       marketId,
       assets: 100n,
       rateBps: 450n,
-      referenceObservationId: 'blocks:100-200'
+      referenceObservationId: 'blocks:100-200',
+      tick: -123n
     }
     try {
       await ownership.reserve(groupId, offer)

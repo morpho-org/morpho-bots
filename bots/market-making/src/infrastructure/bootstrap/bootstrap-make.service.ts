@@ -30,12 +30,13 @@ interface BootstrapOfferTransport {
   /** Prepares one policy-checked publication without broadcasting it. @param offer - Desired offer. @returns Reserved group ID and a one-shot confirmed ratifier/publisher. */
   preparePublication(offer: BootstrapOffer): Promise<{
     groupId: Hex
+    tick?: bigint
     publish(
       onTransactionSubmitted?: BootstrapTransactionSubmittedObserver
     ): Promise<Hex | void | readonly BootstrapSubmittedTransaction[]>
   }>
   /** Durably records publication intent before broadcast. @param group - Future group ID. @returns Completion after durable storage. */
-  reserveGroup(group: Hex, offer: BootstrapOffer): Promise<void>
+  reserveGroup(group: Hex, offer: BootstrapOffer & { tick?: bigint }): Promise<void>
   /** Finalizes a confirmed group while retaining ownership. @param group - Confirmed group ID. @returns Completion after durable storage. */
   confirmPublishedGroup(group: Hex): Promise<void>
   /** Removes intent after publication fails. @param group - Unpublished group ID. @returns Completion after durable storage. */
@@ -88,7 +89,7 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
       let publication:
         | Awaited<ReturnType<BootstrapOfferTransport['preparePublication']>>
         | undefined
-      let retainedGroupId: Hex | undefined
+      let retainedGroup: BootstrapActiveGroup | undefined
       if (parameters.desiredOffer) {
         const prospective = await this.transport.toProspectiveBookOffer(parameters.desiredOffer)
         assertBootstrapProspectiveSpread({
@@ -97,21 +98,25 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
           book: await this.transport.listBookOffers(),
           prospective
         })
-        retainedGroupId = groups.find(
+        retainedGroup = groups.find(
           group =>
             group.marketId === parameters.marketId &&
             group.assets === parameters.desiredOffer?.assets &&
             group.tick === prospective.tick &&
+            group.offerCount === 1 &&
             !this.confirmedCanceledGroups.has(group.id)
-        )?.id
-        if (!retainedGroupId) {
+        )
+        if (!retainedGroup) {
           publication = await this.transport.preparePublication(parameters.desiredOffer)
-          await this.transport.reserveGroup(publication.groupId, parameters.desiredOffer)
+          await this.transport.reserveGroup(publication.groupId, {
+            ...parameters.desiredOffer,
+            ...(publication.tick === undefined ? {} : { tick: publication.tick })
+          })
         }
       }
       const invalidatedGroupIds = new Set(
         [...activeMarketGroupIds].filter(
-          groupId => groupId !== retainedGroupId && !this.confirmedCanceledGroups.has(groupId)
+          groupId => groupId !== retainedGroup?.id && !this.confirmedCanceledGroups.has(groupId)
         )
       )
       try {
@@ -145,9 +150,13 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
         }
         throw error
       }
-      if (retainedGroupId && parameters.desiredOffer) {
-        await this.transport.reserveGroup(retainedGroupId, parameters.desiredOffer)
-        await this.transport.confirmPublishedGroup(retainedGroupId)
+      if (retainedGroup && parameters.desiredOffer) {
+        await this.transport.reserveGroup(retainedGroup.id, {
+          ...parameters.desiredOffer,
+          assets: retainedGroup.maximumAssets ?? retainedGroup.assets,
+          ...(retainedGroup.tick === undefined ? {} : { tick: retainedGroup.tick })
+        })
+        await this.transport.confirmPublishedGroup(retainedGroup.id)
 
         return submittedTransactions.length === 0
           ? ('unchanged' as const)
