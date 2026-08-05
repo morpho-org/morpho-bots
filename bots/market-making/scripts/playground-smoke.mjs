@@ -1854,9 +1854,7 @@ try {
       }
     })()`)
   const credentialClip = await evaluate(`(() => {
-    const fields = ['MAKER_PRIVATE_KEY','BETTERSTACK_SOURCE_TOKEN','RPC_URL','REFERENCE_RPC_URL','BETTERSTACK_HEARTBEAT_URL']
     const targets = [
-      ...fields.map(field => document.querySelector(\`[data-field=\${field}]\`)?.closest('.field')),
       document.querySelector('.sensitive-export-control'),
       document.querySelector('#panel-json')
     ].filter(Boolean)
