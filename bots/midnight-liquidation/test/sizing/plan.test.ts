@@ -292,6 +292,23 @@ describe('planWithReason', () => {
     })
   })
 
+  it('caps a post-maturity seize at the post-writeoff debt, not the gross debt', () => {
+    // `badDebt` is written off before the repay, so the cap is `debt - badDebt`. Sizing against the
+    // gross debt would over-repay and revert on-chain (Panic 0x11). Asserted by equivalence rather
+    // than a literal, so the test does not re-derive the sizing arithmetic it is checking.
+    const post = {
+      blockTimestamp: 3000n,
+      maturity: 2000n,
+      healthy: true,
+      bestCollateralAmt: 1000n * WAD
+    }
+    const withWriteoff = plan(baseInput({ ...post, debt: 1000n * WAD, badDebt: 400n * WAD }))
+    const equivalent = plan(baseInput({ ...post, debt: 600n * WAD, badDebt: 0n }))
+    const grossDebt = plan(baseInput({ ...post, debt: 1000n * WAD, badDebt: 0n }))
+    expect(withWriteoff).toEqual(equivalent)
+    expect(withWriteoff).not.toEqual(grossDebt)
+  })
+
   it('reports nothing_to_seize for an empty best slot, omitting the cap stage', () => {
     const outcome = planWithReason(baseInput({ bestCollateralAmt: 0n }))
     expect(outcome).toEqual({

@@ -40,9 +40,8 @@ const SENT: SubmitOutcome = { kind: 'sent', nonce: 7, txHash: TX_HASH }
 type TickCounters = Awaited<ReturnType<typeof runTick>>
 
 /**
- * Every counter identity the tick promises for a completed tick. Asserted for EVERY case built by
- * `runWith`, so a stage added without a counter breaks the sums instead of silently dropping a
- * position — the exact class of bug these counters exist to catch.
+ * Asserted for EVERY case built by `runWith`, so a stage added without a counter breaks a sum rather
+ * than silently dropping a position — the exact class of bug these counters exist to catch.
  */
 function expectCountersConsistent(c: TickCounters) {
   expect(c.pairs).toBeGreaterThanOrEqual(c.liquidatable)
@@ -354,9 +353,8 @@ describe('runTick', () => {
   })
 
   describe('unplannable positions (plan.skipped)', () => {
-    // Post-maturity dust: 1 wei of debt against a high-priced slot. The cap binds, but the largest
-    // seize whose derived repaid fits in 1 wei rounds to 0 collateral — the production signature that
-    // left 12 liquidatable positions silently unplanned.
+    // Post-maturity dust: 1 wei of debt against a high-priced slot, so the largest in-cap seize
+    // rounds to 0 collateral. This is the production signature that went unexplained for 5 days.
     const DUST = () =>
       lensOut({
         healthy: true,
@@ -407,8 +405,8 @@ describe('runTick', () => {
     })
 
     it('distinguishes the margin eating the cap from the division flooring', async () => {
-      // Same 1-wei cap, but a 30bps margin floors capEff to 0. Same reason, different numbers — this
-      // is what proves the field set discriminates the sub-causes.
+      // Same 1-wei cap, but a 30bps margin floors capEff to 0: same reason, different numbers. Shows
+      // the field set discriminates the sub-causes.
       const { events } = await runWith({ out: DUST(), seizeCapMarginBps: 30 })
       expect(events.find(e => e.event === 'plan.skipped')?.fields).toMatchObject({
         reason: 'seize_rounds_to_zero',
@@ -420,8 +418,7 @@ describe('runTick', () => {
 
     it('warns on a non-positive cap and refuses the negative-seize plan', async () => {
       // debt - maxDebt (100) < badDebt (500) < debt (1000) makes the RCF numerator negative, so the
-      // cap and the derived seize both go negative. Pre-fix this returned a plan with a NEGATIVE
-      // seizedAssets that slipped past an `=== 0n` guard.
+      // cap and the seize both go negative. Pre-fix this returned a NEGATIVE-seize plan.
       // rcfThreshold 0 so the slot is NOT rcf-exempt and the negative RCF cap actually binds.
       const { counters, events, submitCalls } = await runWith({
         out: lensOut({
@@ -484,8 +481,6 @@ describe('runTick', () => {
     })
 
     it('counts notSent and ACCUMULATES the backoff when the send failed for this position', async () => {
-      // The bug-3 regression: pre-fix `backoff.clear` ran unconditionally after submit, so a
-      // send-failing position was re-quoted + re-simulated + re-sent every block forever.
       const cooldown = createCooldownStore({ cooldownMs: 60_000 })
       const { counters, backoff } = await runWith({
         cooldown,
@@ -497,10 +492,9 @@ describe('runTick', () => {
     })
 
     it('lets the backoff delay GROW across repeated send failures', async () => {
-      // The precise mechanism of bug 3: `clear` deletes the attempt count, so clearing on a
-      // non-broadcast resets the delay to `baseBlocks` forever and the exponential never accrues.
-      // Seeded at block 1 (attempts=1) and failing again at 100 must reach attempts=2 → a 4-block
-      // wait (until 104), not the 2-block wait a reset would give.
+      // `clear` deletes the attempt count, so clearing on a non-broadcast pins the delay at
+      // `baseBlocks` forever. Seeded at block 1 (attempts=1) then failing at 100 must reach
+      // attempts=2 → a 4-block wait (until 104), not the 2-block wait a reset would give.
       const { backoff } = await runWith({
         seedBackoffAt: 1n,
         submitOutcome: { kind: 'failed', reason: 'submit_failed' }
@@ -512,8 +506,8 @@ describe('runTick', () => {
     it.each(['send_aborted', 'nonce_hole', 'nonce_sync_failed'] as const)(
       'counts notSent but does NOT back off a queue-wide refusal (%s)',
       async reason => {
-        // These refuse EVERY send this tick, so attributing them to whichever position was in hand
-        // would suppress innocent positions after the latch itself has cleared.
+        // These refuse EVERY send this tick, so attributing one to the position in hand would
+        // suppress positions that did nothing wrong.
         const cooldown = createCooldownStore({ cooldownMs: 60_000 })
         const { counters, backoff } = await runWith({
           cooldown,
@@ -536,8 +530,8 @@ describe('runTick', () => {
     })
 
     it('still emits tick.end with complete:false when a submit aborts the tick', async () => {
-      // A hashless send after the nonce was claimed throws by design. Pre-fix the throw escaped
-      // before `tick.end`, so the whole tick's counters vanished.
+      // A hashless send after the nonce was claimed throws by design; pre-fix the throw escaped
+      // before `tick.end`, so the tick's counters vanished.
       const { events } = await runExpectingThrow({ submitThrows: new Error('rpc timeout') })
       const end = events.find(e => e.event === 'tick.end')
       expect(end?.fields).toMatchObject({

@@ -52,25 +52,22 @@ type Pending = {
 }
 
 /**
- * What one {@link PendingQueue.submit} call did. `sent` carries the nonce + hash of a real broadcast;
- * `failed` means NO transaction left this process. Callers must treat only `sent` as a submission —
- * it is the sole outcome that may clear a per-position backoff.
+ * What one {@link PendingQueue.submit} call did. Only `sent` is a submission — the sole outcome that
+ * may clear a per-position backoff. `failed` means no transaction left this process, and its `reason`
+ * pairs with the warn line the queue already logged:
  *
- * Each `reason` names the exit the queue took, and pairs with the warn line it already logged:
+ * | `reason`            | logged event        | scope                |
+ * | ------------------- | ------------------- | -------------------- |
+ * | `submit_failed`     | `tx.submit_failed`  | THIS position's send |
+ * | `send_aborted`      | `tx.send_aborted`   | queue-wide refusal   |
+ * | `nonce_sync_failed` | `nonce.sync_failed` | queue-wide refusal   |
+ * | `nonce_hole`        | `queue.nonce_hole`  | queue-wide refusal   |
  *
- * | `reason`            | logged event        | scope                                        |
- * | ------------------- | ------------------- | -------------------------------------------- |
- * | `send_aborted`      | `tx.send_aborted`   | queue-wide latch (clears next `onBlock`)      |
- * | `nonce_sync_failed` | `nonce.sync_failed` | queue-wide (cursor unusable this tick)        |
- * | `nonce_hole`        | `queue.nonce_hole`  | queue-wide latch (clears when chain consumes) |
- * | `submit_failed`     | `tx.submit_failed`  | THIS position's send failed                   |
+ * Scope matters: a queue-wide reason refuses EVERY send this tick, so a caller must not back off the
+ * position it happened to be holding. Only `submit_failed` is that position's own failure.
  *
- * The scope column is load-bearing: the three queue-wide reasons refuse *every* send this tick, so a
- * caller must not attribute them to the position it happened to be holding. Only `submit_failed` is
- * per-position and therefore the only reason that should back a position off.
- *
- * A first send that fails hashless AFTER claiming a nonce is NOT a `failed` outcome — it throws
- * `TxSendError` so the caller aborts the tick rather than racing the signer's cursor rollback.
+ * A hashless send that already claimed a nonce is not a `failed` outcome — it throws `TxSendError` so
+ * the caller aborts the tick instead of racing the signer's cursor rollback.
  */
 export type SubmitOutcome =
   | { kind: 'sent'; nonce: number; txHash: Hex }

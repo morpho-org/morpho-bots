@@ -53,15 +53,13 @@ type PlanOptions = {
 }
 
 /**
- * Why {@link planWithReason} produced no plan. Reasons discriminate SEVERITY (and hence log level);
- * the numbers on {@link SizingTrace} discriminate cause. That is why there is no `margin_ate_cap` or
- * `price_too_high` — those are one continuous arithmetic that `cap` vs `capEff` vs `seizedAssets`
- * pin exactly.
+ * Why {@link planWithReason} produced no plan. Reasons discriminate SEVERITY (hence log level); the
+ * numbers on {@link SizingTrace} discriminate cause — so there is no `margin_ate_cap` reason, because
+ * `cap` vs `capEff` vs `seizedAssets` already pin that.
  *
- * `no_debt`, `locked` and `healthy_pre_maturity` are UNREACHABLE from the tick: `isLiquidatable`
- * tests the same lens fields `planWithReason` re-tests, and `!postMaturityMode && healthy` is the
- * exact negation of its third clause. A caller that observes one has diverged from the sizing
- * module, which is a correctness bug — hence they are logged at `warn`, as a live assertion.
+ * The first three are UNREACHABLE from the tick: `isLiquidatable` tests the same lens fields, and
+ * `!postMaturityMode && healthy` is the exact negation of its third clause. Observing one means the
+ * eligibility gate and this module have diverged, so callers log them at `warn`.
  */
 export type PlanSkipReason =
   | 'no_debt'
@@ -75,10 +73,9 @@ export type PlanSkipReason =
   | 'seize_rounds_to_zero'
 
 /**
- * Every value on the causal chain from a lens reading to a refused seize, so an operator can replay
- * the decision from one log line instead of re-deriving it. `maxRepaid`/`rcfExempt`/`rcfDisabled`
- * apply to normal mode only and are `undefined` post-maturity — the logger drops `undefined`, so a
- * post-maturity line self-describes its mode.
+ * The derived values between a lens reading and a refused seize, so an operator can replay the
+ * decision from one log line. The normal-mode-only fields are `undefined` post-maturity, and the
+ * logger drops `undefined`, so a line self-describes its mode.
  */
 type SizingTrace = {
   postMaturityMode: boolean
@@ -93,7 +90,7 @@ type SizingTrace = {
   capEff?: bigint
   maxRepaid?: bigint
   rcfExempt?: boolean
-  /** `true` when `lltv >= WAD` waives the RCF cap entirely (so `maxRepaid` is omitted, not huge). */
+  /** `lltv >= WAD` waives the RCF cap, so `maxRepaid` is omitted rather than logged as maxUint256. */
   rcfDisabled?: boolean
 }
 
@@ -146,16 +143,14 @@ const capBoundOutcome = ({
   const capEff = mulDivDown(cap, BPS - BigInt(marginBps), BPS)
   const seizedAssets = maxSeizeForCap(capEff, input.bestCollateralPrice, base.lif)
   const trace: SizingTrace = { ...base, cap, capEff, seizedAssets }
-  // Discriminate on the RAW cap, not `capEff`: a legitimate 1-wei cap with any margin > 0 floors to
-  // capEff 0, which is ordinary dust, not an impossible state. A non-positive RAW cap means the RCF
-  // numerator went negative (`debt - maxDebt < badDebt < debt`), which breaks the module's invariant
-  // AND would otherwise produce a NEGATIVE seize that slips past an `=== 0n` guard and reverts
-  // opaquely when abi-encoded as uint256.
+  // Guard the RAW cap, not `capEff`: a legitimate 1-wei cap with any margin floors capEff to 0, which
+  // is ordinary dust. A non-positive RAW cap means the RCF numerator went negative
+  // (`debt - maxDebt < badDebt < debt`), which also yields a NEGATIVE seize that would slip past an
+  // `=== 0n` check and revert opaquely once abi-encoded as uint256.
   if (cap <= 0n) return { kind: 'skip', reason: 'cap_not_positive', trace }
-  // Rounds to nothing. Never emit a `(0, 0)` plan, which `isBadDebtRealization` would misclassify as
-  // a bad-debt write-off against a solvent position. `<= 0n` rather than `=== 0n` is defense in
-  // depth: a positive cap can only floor to a non-negative seize, so the negative case is already
-  // caught by the guard above — this simply cannot be the branch that lets one through.
+  // Rounds to nothing. Never emit a `(0, 0)` plan, which `isBadDebtRealization` would misread as a
+  // write-off against a solvent position. (`<= 0n` is belt-and-braces: a positive cap cannot floor to
+  // a negative seize, so the guard above already covers that.)
   if (seizedAssets <= 0n) return { kind: 'skip', reason: 'seize_rounds_to_zero', trace }
   return {
     kind: 'plan',
@@ -178,51 +173,46 @@ const seizeWholeSlot = (input: PlanInput, postMaturityMode: boolean): PlanOutcom
   }
 })
 
+/** Everything both mode branches need, derived once in {@link planWithReason}. */
+type ModeStage = {
+  input: PlanInput
+  marginBps: number
+  lif: bigint
+  /** `debt - badDebt`: the post-writeoff debt every cap is taken against. */
+  effectiveDebt: bigint
+  /** Implied repaid units if the whole best slot were seized. */
+  wholeSlotRepaid: bigint
+}
+
 /**
- * Post-maturity mode: the RCF cap does not apply, but the contract still subtracts `repaidUnits`
- * from the (post-writeoff) debt with no clamp, so over-repaying reverts (Panic 0x11 underflow).
- * Seizing the whole slot is correct only while its implied repaid units fit within the debt — the
- * underwater case. When the slot is worth more than the debt (the common case: a solvent borrower
- * who simply missed maturity), seize the largest amount whose contract-derived repaid stays within
- * that debt. `badDebt` is written off before the repay, so the cap is `debt - badDebt`.
+ * Post-maturity mode: the RCF cap does not apply, but the contract still subtracts `repaidUnits` from
+ * the post-writeoff debt with no clamp, so over-repaying reverts (Panic 0x11 underflow). Seizing the
+ * whole slot is therefore correct only while its implied repaid fits within that debt — the underwater
+ * case. Otherwise (a solvent borrower who simply missed maturity) fall back to the cap.
  */
 const postMaturityOutcome = ({
   input,
+  marginBps,
   lif,
-  marginBps
-}: {
-  input: PlanInput
-  lif: bigint
-  marginBps: number
-}): PlanOutcome => {
-  const effectiveDebt = input.debt - input.badDebt
-  const base: TraceBase = { postMaturityMode: true, lif, effectiveDebt }
-  const wholeSlotRepaid = impliedRepaidUnits(
-    input.bestCollateralAmt,
-    input.bestCollateralPrice,
-    lif
-  )
+  effectiveDebt,
+  wholeSlotRepaid
+}: ModeStage): PlanOutcome => {
   if (wholeSlotRepaid <= effectiveDebt) return seizeWholeSlot(input, true)
+  const base: TraceBase = { postMaturityMode: true, lif, effectiveDebt }
   return capBoundOutcome({ input, cap: effectiveDebt, marginBps, base })
 }
 
 /**
- * Normal mode: like post-maturity, the contract subtracts `repaidUnits` from the post-writeoff debt
- * with no clamp, so an implied repay above it reverts (Panic 0x11). The repay is bounded by the RCF
- * cap (waived when the slot is rcf-exempt) AND never exceeds that debt. Seize the whole slot only
- * when its implied repaid units fit within the bound; otherwise seize the largest amount whose
- * contract-derived repaid stays within that bound.
+ * Normal mode: same no-clamp subtraction as post-maturity, but the repay is additionally bounded by
+ * the RCF cap (waived when the slot is rcf-exempt), never exceeding the post-writeoff debt.
  */
 const normalModeOutcome = ({
   input,
+  marginBps,
   lif,
-  marginBps
-}: {
-  input: PlanInput
-  lif: bigint
-  marginBps: number
-}): PlanOutcome => {
-  const effectiveDebt = input.debt - input.badDebt
+  effectiveDebt,
+  wholeSlotRepaid
+}: ModeStage): PlanOutcome => {
   const maxRepaid = maxRepaidPreMaturity({
     debt: input.debt,
     badDebt: input.badDebt,
@@ -237,21 +227,15 @@ const normalModeOutcome = ({
     maxRepaid,
     rcfThreshold: input.rcfThreshold
   })
-  // `lltv >= WAD` waives the cap and returns maxUint256; report that as a flag rather than logging a
-  // 78-digit number that reads like a real bound.
-  const rcfDisabled = input.bestCollateralLltv >= WAD
   const base: TraceBase = {
     postMaturityMode: false,
     lif,
     effectiveDebt,
     rcfExempt: exempt,
-    ...(rcfDisabled ? { rcfDisabled } : { maxRepaid })
+    // `lltv >= WAD` waives the cap and returns maxUint256; flag that instead of logging a 78-digit
+    // number that reads like a real bound.
+    ...(input.bestCollateralLltv >= WAD ? { rcfDisabled: true } : { maxRepaid })
   }
-  const wholeSlotRepaid = impliedRepaidUnits(
-    input.bestCollateralAmt,
-    input.bestCollateralPrice,
-    lif
-  )
   const repayCap = exempt ? effectiveDebt : min(maxRepaid, effectiveDebt)
   if (wholeSlotRepaid <= repayCap) return seizeWholeSlot(input, false)
   return capBoundOutcome({ input, cap: repayCap, marginBps, base })
@@ -308,6 +292,7 @@ export const planWithReason = (input: PlanInput, options: PlanOptions = {}): Pla
     maxLif: input.bestCollateralMaxLif,
     postMaturityMode
   })
+  const effectiveDebt = input.debt - input.badDebt
 
   // An empty best slot would make `wholeSlotRepaid` 0, pass every cap comparison, and return a
   // `(0, 0)` whole-slot plan that `isBadDebtRealization` reads as a write-off against a position we
@@ -316,15 +301,18 @@ export const planWithReason = (input: PlanInput, options: PlanOptions = {}): Pla
     return {
       kind: 'skip',
       reason: 'nothing_to_seize',
-      // No cap stage ran — the slot is empty, so `cap`/`capEff` are deliberately absent rather than
-      // fabricated (the logger drops `undefined`, so the line self-describes).
-      trace: { postMaturityMode, lif, effectiveDebt: input.debt - input.badDebt, seizedAssets: 0n }
+      // No cap stage ran, so `cap`/`capEff` are absent rather than fabricated.
+      trace: { postMaturityMode, lif, effectiveDebt, seizedAssets: 0n }
     }
   }
 
-  return postMaturityMode
-    ? postMaturityOutcome({ input, lif, marginBps })
-    : normalModeOutcome({ input, lif, marginBps })
+  const wholeSlotRepaid = impliedRepaidUnits(
+    input.bestCollateralAmt,
+    input.bestCollateralPrice,
+    lif
+  )
+  const stage: ModeStage = { input, marginBps, lif, effectiveDebt, wholeSlotRepaid }
+  return postMaturityMode ? postMaturityOutcome(stage) : normalModeOutcome(stage)
 }
 
 /**
