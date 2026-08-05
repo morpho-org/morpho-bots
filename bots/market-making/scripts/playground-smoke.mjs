@@ -959,6 +959,24 @@ try {
     )
     const duplicateDropRejected = duplicateDropSettled && envOutput.value === initial &&
       document.querySelector('.ladder-graphic svg')?.outerHTML === beforeGraphic
+    const controlValues = selector => [...document.querySelectorAll(selector)].map(input => input.value)
+    const semanticBefore = {
+      env: envOutput.value,
+      controls: controlValues('#controls [data-field]'),
+      quick: controlValues('#quick-edit [data-quick-field]'),
+      graphic: document.querySelector('.ladder-graphic svg')?.outerHTML,
+      text: text.value
+    }
+    const syntacticallyValidSemanticFailure = JSON.stringify([{ marketId: '0x' + '5'.repeat(64), rungCount: '0' }])
+    dropFiles([new File([syntacticallyValidSemanticFailure], 'semantic-invalid.json', { type: 'application/json' })])
+    const semanticInvalidSettled = await waitForImportStatus(
+      () => status.dataset.status === 'error' && status.textContent.includes('ladder[0]')
+    )
+    const semanticInvalidDropAtomic = semanticInvalidSettled &&
+      envOutput.value === semanticBefore.env && text.value === semanticBefore.text &&
+      JSON.stringify(controlValues('#controls [data-field]')) === JSON.stringify(semanticBefore.controls) &&
+      JSON.stringify(controlValues('#quick-edit [data-quick-field]')) === JSON.stringify(semanticBefore.quick) &&
+      document.querySelector('.ladder-graphic svg')?.outerHTML === semanticBefore.graphic
     dropFiles([new File([initial], 'ladder.txt', { type: 'text/plain' })])
     const invalidDropSettled = await waitForImportStatus(
       () => status.dataset.status === 'error' && status.textContent.includes('JSON file')
@@ -1092,6 +1110,7 @@ try {
       dragStateCleared,
       dropApplied,
       duplicateDropRejected,
+      semanticInvalidDropAtomic,
       mimeRejected,
       multipleRejected,
       slowOldFastNew,

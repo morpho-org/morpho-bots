@@ -395,6 +395,7 @@ const DUPLICATE_JSON_MEMBER_ERROR = 'Import contains duplicate JSON member names
 
 class LadderImportJsonError extends Error {}
 class JsonScannerSyntaxError extends Error {}
+class MalformedJsonUnicodeError extends Error {}
 
 /**
  * Scans JSON object names before JSON.parse can overwrite duplicate members.
@@ -420,7 +421,29 @@ const assertNoDuplicateJsonMembers = (text: string) => {
     if (text[position++] !== '"') syntaxError()
     while (position < text.length) {
       const character = text[position++]!
-      if (character === '"') return text.slice(start, position)
+      if (character === '"') {
+        const encoded = text.slice(start, position)
+        const decoded = (() => {
+          try {
+            return JSON.parse(encoded) as string
+          } catch {
+            return syntaxError()
+          }
+        })()
+        for (let index = 0; index < decoded.length; index++) {
+          const codeUnit = decoded.charCodeAt(index)
+          if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+            const lowSurrogate = decoded.charCodeAt(index + 1)
+            if (!(lowSurrogate >= 0xdc00 && lowSurrogate <= 0xdfff)) {
+              throw new MalformedJsonUnicodeError()
+            }
+            index++
+          } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+            throw new MalformedJsonUnicodeError()
+          }
+        }
+        return encoded
+      }
       if (character.charCodeAt(0) <= 0x1f) syntaxError()
       if (character !== '\\') continue
       const escape = text[position++]
@@ -457,7 +480,7 @@ const assertNoDuplicateJsonMembers = (text: string) => {
         const encodedName = scanString()
         const name = (() => {
           try {
-            return JSON.parse(encodedName) as string
+            return (JSON.parse(encodedName) as string).normalize('NFC')
           } catch {
             return syntaxError()
           }

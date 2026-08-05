@@ -948,7 +948,7 @@ describe('market-maker parameter playground', () => {
 
     expect(validateProductionState(state).valid).toBe(false)
     expect(validatePreviewState(state).valid).toBe(false)
-    for (const exporter of [exportYaml, exportShell, exportJson]) {
+    for (const exporter of [exportYaml, exportShell, exportJson, exportLadderMarketsEnvValue]) {
       expect(() => exporter(state)).toThrow('Configuration is invalid')
     }
   })
@@ -1055,6 +1055,25 @@ describe('market-maker parameter playground', () => {
     }
   })
 
+  test('ladder import compares every decoded object member name in Unicode NFC', () => {
+    const state = createDefaultPlaygroundState()
+    const nfc = 'é'
+    const decomposed = 'e\u0301'
+    const duplicateObjects = [
+      `{"${nfc}":1,"${decomposed}":2}`,
+      `{"outer":{"${nfc}":1,"e\\u0301":2}}`,
+      `[{"${nfc}":1,"e\\u0301":2}]`,
+      `{"outer":[{"inner":{"${nfc}":1,"e\\u0301":2}}]}`
+    ]
+    const cases = [...duplicateObjects, ...duplicateObjects.map(value => JSON.stringify(value))]
+
+    for (const input of cases) {
+      expect(() => parseLadderMarketsImport(input, state.scalar.MARKET_IDS)).toThrow(
+        'Import contains duplicate JSON member names'
+      )
+    }
+  })
+
   test('ladder import duplicate detection handles escaped values and a deterministic JSON corpus', () => {
     const state = createDefaultPlaygroundState()
     const escapedKeyOnly = JSON.stringify(state.ladder[0]).replace('"marketId"', '"market\\u0049d"')
@@ -1085,16 +1104,114 @@ describe('market-maker parameter playground', () => {
     }
   })
 
-  test('ladder import bounds JSON nesting and input size with generic accessible errors', () => {
+  test('ladder import enforces exact 127/128/129 nesting boundaries at both parse layers', () => {
     const state = createDefaultPlaygroundState()
-    const deeplyNested = `${'['.repeat(129)}null${']'.repeat(129)}`
-    expect(() => parseLadderMarketsImport(deeplyNested, state.scalar.MARKET_IDS)).toThrow(
-      'Import JSON exceeds the nesting limit'
-    )
-    expect(() =>
-      parseLadderMarketsImport(' '.repeat(128 * 1024 + 1), state.scalar.MARKET_IDS)
-    ).toThrow('Import exceeds the 128 KiB size limit')
+    for (const depth of [127, 128, 129]) {
+      const nested = `${'['.repeat(depth)}null${']'.repeat(depth)}`
+      const expected =
+        depth === 129 ? 'Import JSON exceeds the nesting limit' : 'own enumerable plain object'
+      expect(() => parseLadderMarketsImport(nested, state.scalar.MARKET_IDS)).toThrow(expected)
+      expect(() =>
+        parseLadderMarketsImport(JSON.stringify(nested), state.scalar.MARKET_IDS)
+      ).toThrow(expected)
+    }
   })
+
+  test('ladder import enforces exact 128 KiB UTF-8 boundaries at both reachable layers', () => {
+    const state = createDefaultPlaygroundState()
+    const limit = 128 * 1024
+    const errorText = (input: string) => {
+      try {
+        parseLadderMarketsImport(input, state.scalar.MARKET_IDS)
+        return ''
+      } catch (error) {
+        return String(error)
+      }
+    }
+    const exactAscii = `${' '.repeat(limit - 2)}[]`
+    expect(new TextEncoder().encode(exactAscii)).toHaveLength(limit)
+    expect(parseLadderMarketsImport(exactAscii, state.scalar.MARKET_IDS)).toEqual([])
+    expect(errorText(` ${exactAscii}`)).toContain('Import exceeds the 128 KiB size limit')
+
+    const utf8BelowBoundary = `"${'a'.repeat(limit - 5)}é"`
+    const utf8AtBoundary = `"${'a'.repeat(limit - 4)}é"`
+    const utf8OverBoundary = `"${'a'.repeat(limit - 3)}é"`
+    expect(new TextEncoder().encode(utf8BelowBoundary)).toHaveLength(limit - 1)
+    expect(new TextEncoder().encode(utf8AtBoundary)).toHaveLength(limit)
+    expect(new TextEncoder().encode(utf8OverBoundary)).toHaveLength(limit + 1)
+    expect(errorText(utf8BelowBoundary)).not.toContain('128 KiB')
+    expect(errorText(utf8AtBoundary)).not.toContain('128 KiB')
+    expect(errorText(utf8OverBoundary)).toContain('Import exceeds the 128 KiB size limit')
+
+    // A decoded layer is necessarily smaller than its JSON string-literal wrapper. This reaches
+    // its exact maximum possible size while the outer layer itself is exactly at the cap.
+    const decodedAtReachableBoundary = `"${'a'.repeat(limit - 8)}é"`
+    const outer = JSON.stringify(decodedAtReachableBoundary)
+    expect(new TextEncoder().encode(decodedAtReachableBoundary)).toHaveLength(limit - 4)
+    expect(new TextEncoder().encode(outer)).toHaveLength(limit)
+    expect(errorText(outer)).not.toContain('128 KiB')
+  })
+
+  test.each([
+    ['trailing object comma', '{"value":1,}'],
+    ['trailing array comma', '[null,]'],
+    ['bad escape', '"\\x"'],
+    ['truncated unicode escape', '"\\u123"'],
+    ['unpaired high surrogate', '{"wrapper":"\\uD800"}'],
+    ['unpaired low surrogate', '{"wrapper":"\\uDC00"}'],
+    ['raw control', '"line\nfeed"'],
+    ['leading-zero number', '01'],
+    ['incomplete exponent', '1e+'],
+    ['decoded inner number', JSON.stringify('{"value":01}')],
+    ['decoded inner JSON', JSON.stringify('[{"value":1,}]')]
+  ])('ladder import rejects malformed %s with a generic JSON error', (_name, input) => {
+    const state = createDefaultPlaygroundState()
+    expect(() => parseLadderMarketsImport(input, state.scalar.MARKET_IDS)).toThrow(
+      'Import must be valid JSON or a JSON string literal containing valid JSON'
+    )
+  })
+
+  test('ladder import scanner has no false positives for punctuation, Unicode, or escape text in values', () => {
+    const state = createDefaultPlaygroundState()
+    const values = [
+      '{}[],"quoted"',
+      'line separator \u2028 paragraph separator \u2029',
+      String.raw`literal escape text: \\u0061 \\n \\t \\\\`,
+      'combining value only: é/e\u0301',
+      'commas,,, colons::: braces{{{ arrays[[['
+    ]
+    for (const value of values) {
+      const input = JSON.stringify({ wrapper: { value, other: `${value}!` } })
+      for (const layer of [input, JSON.stringify(input)]) {
+        try {
+          parseLadderMarketsImport(layer, state.scalar.MARKET_IDS)
+        } catch (error) {
+          expect(String(error)).not.toContain('duplicate JSON member names')
+        }
+      }
+    }
+  })
+
+  test.each(['__proto__', 'constructor', 'prototype'])(
+    'ladder import rejects escaped %s keys in nested layers without disclosing their names',
+    unsafeKey => {
+      const state = createDefaultPlaygroundState()
+      const encodedKey = unsafeKey
+        .split('')
+        .map(character => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`)
+        .join('')
+      const ladder = JSON.stringify(state.ladder[0]).slice(0, -1)
+      const direct = `[${ladder},"${encodedKey}":{}}]`
+      for (const input of [direct, JSON.stringify(direct)]) {
+        expect(() => parseLadderMarketsImport(input, state.scalar.MARKET_IDS)).toThrow('unsafe key')
+        try {
+          parseLadderMarketsImport(input, state.scalar.MARKET_IDS)
+        } catch (error) {
+          expect(String(error)).not.toContain(unsafeKey)
+        }
+      }
+    }
+  )
 
   test.each([
     [
