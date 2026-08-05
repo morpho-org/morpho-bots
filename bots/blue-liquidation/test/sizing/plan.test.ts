@@ -12,7 +12,7 @@ import {
   wMulDown,
   mulDivUp
 } from '../../src/sizing/math'
-import { plan } from '../../src/sizing/plan'
+import { plan, planWithReason } from '../../src/sizing/plan'
 
 const LLTV = 86n * 10n ** 16n // 0.86e18
 
@@ -139,5 +139,61 @@ describe('plan — repaidShares ≤ borrowShares (no on-chain underflow)', () =>
             }
     // Guard against a vacuous sweep (every combo skipped would pass trivially).
     expect(checked).toBeGreaterThan(100)
+  })
+})
+
+describe('planWithReason', () => {
+  it.each([
+    ['no_debt', { hasDebt: false }],
+    ['healthy', { healthy: true }],
+    ['no_collateral', { collateral: 0n }],
+    ['zero_price', { collateralPrice: 0n }]
+  ] as const)('reports %s without a trace (decided before any arithmetic)', (reason, overrides) => {
+    expect(planWithReason(baseInput(overrides))).toEqual({ kind: 'skip', reason })
+  })
+
+  it('reports seize_rounds_to_zero with the full sizing trace', () => {
+    // Dust debt against a 1e6x-priced slot: the full-debt seize floors to zero collateral.
+    const outcome = planWithReason(
+      baseInput({ borrowShares: 1n, collateralPrice: ORACLE_PRICE_SCALE * 10n ** 6n })
+    )
+    expect(outcome).toEqual({
+      kind: 'skip',
+      reason: 'seize_rounds_to_zero',
+      trace: {
+        lif: lifFromLltv(LLTV),
+        repaidAssetsFull: 0n,
+        seizeForFullDebt: 0n,
+        seizedAssets: 0n
+      }
+    })
+  })
+
+  it('returns a plan whose seize matches the documented rule', () => {
+    const input = baseInput()
+    const outcome = planWithReason(input)
+    expect(outcome.kind).toBe('plan')
+    expect(outcome).toMatchObject({ plan: { seizedAssets: plan(input)?.seizedAssets } })
+  })
+
+  describe('plan() facade', () => {
+    // Pins the facade to the implementation so a later edit to planWithReason cannot silently change
+    // plan()'s contract (which the whole suite above still asserts through plan()).
+    const cases: PlanInput[] = [
+      baseInput(),
+      baseInput({ hasDebt: false }),
+      baseInput({ healthy: true }),
+      baseInput({ collateral: 0n }),
+      baseInput({ collateralPrice: 0n }),
+      baseInput({ borrowShares: 1n, collateralPrice: ORACLE_PRICE_SCALE * 10n ** 6n })
+    ]
+
+    it.each(cases.map((input, i) => [i, input] as const))(
+      'case %i returns the outcome plan, or null for a skip',
+      (_i, input) => {
+        const outcome = planWithReason(input)
+        expect(plan(input)).toEqual(outcome.kind === 'plan' ? outcome.plan : null)
+      }
+    )
   })
 })

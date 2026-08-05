@@ -112,10 +112,12 @@ function submitOne(queue: PendingQueue, blockNumber = 0n) {
 describe('createPendingQueue', () => {
   it('records a submitted tx with the signer-assigned nonce', async () => {
     const { queue, sends } = setup()
-    await submitOne(queue)
+    const outcome = await submitOne(queue)
     expect(queue.size).toBe(1)
     expect(sends[0]?.nonce).toBeUndefined() // first send leaves nonce assignment to the signer
     expect(queue.snapshot()[0]).toEqual({ nonce: 7, txHash: hashOf(1), attempt: 0 })
+    // The caller's broadcast signal — only this outcome may clear a per-position backoff.
+    expect(outcome).toEqual({ kind: 'sent', nonce: 7, txHash: hashOf(1) })
   })
 
   it('removes a tx once its receipt confirms', async () => {
@@ -168,9 +170,11 @@ describe('createPendingQueue', () => {
       throw new Error('rpc down')
     }
     const { queue } = setup({ send, logger })
-    await submitOne(queue) // must not throw
+    const outcome = await submitOne(queue) // must not throw
     expect(queue.size).toBe(0)
     expect(events.find(e => e.event === 'tx.submit_failed')?.level).toBe('warn')
+    // Per-position: this is the one reason a caller may attribute to the position it was holding.
+    expect(outcome).toEqual({ kind: 'failed', reason: 'submit_failed' })
   })
 
   it('rethrows a first-send failure after a nonce was claimed but no hash was returned', async () => {
@@ -179,6 +183,8 @@ describe('createPendingQueue', () => {
       throw new TxSendError(new Error('rpc timeout after broadcast'), 7)
     }
     const { queue } = setup({ send, logger })
+    // Still a THROW, deliberately not a `failed` outcome: the caller must abort the tick rather than
+    // race the signer's cursor rollback.
     await expect(submitOne(queue)).rejects.toThrow(/rpc timeout after broadcast/)
     expect(queue.size).toBe(0)
     expect(events.find(e => e.event === 'tx.submit_failed')?.fields?.nonce).toBe(7)
@@ -301,8 +307,9 @@ describe('createPendingQueue', () => {
       },
       logger
     })
-    await submitOne(ctx.queue) // must not throw
+    const outcome = await submitOne(ctx.queue) // must not throw
     expect(ctx.queue.size).toBe(0) // nothing broadcast on a stale cursor
+    expect(outcome).toEqual({ kind: 'failed', reason: 'nonce_sync_failed' })
     expect(ctx.sends).toHaveLength(0)
     expect(events.find(e => e.event === 'nonce.sync_failed')?.level).toBe('warn')
   })
@@ -485,8 +492,10 @@ describe('send-aborted latch', () => {
     }
     const { queue } = setup({ send, logger })
     await expect(submitOne(queue, 0n)).rejects.toThrow()
-    await submitOne(queue, 0n) // latched → skipped
+    const outcome = await submitOne(queue, 0n) // latched → skipped
     expect(events.find(e => e.event === 'tx.send_aborted')?.level).toBe('warn')
+    // Queue-WIDE: refuses every send this tick, so a caller must not back the position off for it.
+    expect(outcome).toEqual({ kind: 'failed', reason: 'send_aborted' })
   })
 })
 
@@ -554,8 +563,9 @@ describe('nonce-hole latch', () => {
     const sendsAfterDrop = ctx.sends.length
     // A NEW first-send is refused while the hole is latched (nonce 8 still pending → queue not empty,
     // so the empty-queue sync can't clear it).
-    await ctx.submit('c', 6n)
+    const refused = await ctx.submit('c', 6n)
     expect(ctx.sends.length).toBe(sendsAfterDrop) // no new broadcast
+    expect(refused).toEqual({ kind: 'failed', reason: 'nonce_hole' })
     expect(ctx.queue.size).toBe(1)
     expect(ctx.events.some(e => e.event === 'queue.nonce_hole' && e.fields?.label === 'c')).toBe(
       true

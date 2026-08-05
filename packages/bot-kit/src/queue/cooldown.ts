@@ -1,7 +1,8 @@
 /**
  * Opt-in per-position liquidation cooldown, keyed by the `${id}:${borrower}` label. A COMPLEMENTARY
  * rate-limit defense to {@link Backoff}, not a replacement: after a liquidation attempt fails to
- * produce a submittable transaction (no swap route, quote failure, or sim revert), the caller
+ * produce a broadcast transaction (no swap route, quote failure, sim revert, or a per-position send
+ * failure), the caller
  * {@link CooldownStore.mark}s the position and {@link CooldownStore.shouldSkip} suppresses re-quoting
  * the rate-limited venue APIs for a fixed `cooldownMs` window. Unlike {@link Backoff}'s block-based
  * exponential growth, this is a flat wall-clock window and is DISABLED by default — an operator opts
@@ -21,7 +22,7 @@
 export type CooldownStore = {
   /** True if `label` was marked within the cooldown window and should be skipped this tick. */
   shouldSkip: (label: string) => boolean
-  /** Record that `label` just failed to produce a submittable tx (starts/refreshes its cooldown). */
+  /** Record that `label` just failed to produce a broadcast tx (starts/refreshes its cooldown). */
   mark: (label: string) => void
 }
 

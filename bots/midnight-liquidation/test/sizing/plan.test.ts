@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { LiquidationPlan, PlanInput } from '../../src/sizing/plan'
 
 import { ORACLE_PRICE_SCALE, WAD } from '../../src/constants'
-import { maxSeizeForCap, plan } from '../../src/sizing/plan'
+import { maxSeizeForCap, plan, planWithReason } from '../../src/sizing/plan'
 
 const MAX_LIF = 1036269430051813471n
 const LLTV = 860000000000000000n
@@ -232,5 +232,133 @@ describe('maxSeizeForCap', () => {
         }
       }
     }
+  })
+})
+
+describe('planWithReason', () => {
+  // The reachable-from-the-tick skips. `no_debt`/`locked`/`healthy_pre_maturity` are excluded by
+  // `isLiquidatable` upstream, so they are asserted only for their reason, not their trace.
+  it.each([
+    ['no_debt', { hasDebt: false }],
+    ['locked', { locked: true }],
+    ['healthy_pre_maturity', { healthy: true }]
+  ] as const)('reports %s without a trace (decided before any arithmetic)', (reason, overrides) => {
+    const outcome = planWithReason(baseInput(overrides))
+    expect(outcome).toEqual({ kind: 'skip', reason })
+  })
+
+  it('reports seize_rounds_to_zero with the full cap-stage trace', () => {
+    // Post-maturity dust: a 1-wei cap against a 10x-priced slot floors the seize to zero.
+    const outcome = planWithReason(
+      baseInput({
+        blockTimestamp: 3000n,
+        healthy: true,
+        debt: 1n,
+        badDebt: 0n,
+        bestCollateralAmt: 1n * WAD,
+        bestCollateralPrice: ORACLE_PRICE_SCALE * 10n
+      })
+    )
+    expect(outcome).toEqual({
+      kind: 'skip',
+      reason: 'seize_rounds_to_zero',
+      trace: {
+        postMaturityMode: true,
+        lif: 1010074841681059297n,
+        effectiveDebt: 1n,
+        cap: 1n,
+        capEff: 1n,
+        seizedAssets: 0n
+      }
+    })
+  })
+
+  it('reports capEff 0 when the margin alone eats a 1-wei cap', () => {
+    const outcome = planWithReason(
+      baseInput({
+        blockTimestamp: 3000n,
+        healthy: true,
+        debt: 1n,
+        badDebt: 0n,
+        bestCollateralAmt: 1n * WAD,
+        bestCollateralPrice: ORACLE_PRICE_SCALE * 10n
+      }),
+      { seizeCapMarginBps: 30 }
+    )
+    expect(outcome.kind).toBe('skip')
+    expect(outcome).toMatchObject({
+      reason: 'seize_rounds_to_zero',
+      trace: { cap: 1n, capEff: 0n, seizedAssets: 0n }
+    })
+  })
+
+  it('reports nothing_to_seize for an empty best slot, omitting the cap stage', () => {
+    const outcome = planWithReason(baseInput({ bestCollateralAmt: 0n }))
+    expect(outcome).toEqual({
+      kind: 'skip',
+      reason: 'nothing_to_seize',
+      trace: {
+        postMaturityMode: false,
+        lif: MAX_LIF,
+        effectiveDebt: 1000n * WAD,
+        seizedAssets: 0n
+      }
+    })
+  })
+
+  it('reports cap_not_positive — and no longer returns a NEGATIVE-seize plan', () => {
+    // `debt - maxDebt < badDebt < debt` makes the RCF numerator negative, so maxRepaid, the cap and
+    // the derived seize all go negative. Before the `<= 0n` guard this returned a plan whose
+    // `seizedAssets` was negative, which reverts opaquely once abi-encoded as uint256.
+    const input = baseInput({
+      debt: 1000n,
+      badDebt: 500n,
+      maxDebt: 900n,
+      rcfThreshold: 0n, // not rcf-exempt, so the negative cap actually binds
+      bestCollateralAmt: 5000n,
+      bestCollateralPrice: ORACLE_PRICE_SCALE,
+      bestCollateralMaxLif: 1100000000000000000n
+    })
+    const outcome = planWithReason(input)
+    expect(outcome).toMatchObject({ kind: 'skip', reason: 'cap_not_positive' })
+    expect(outcome.kind === 'skip' && outcome.trace?.cap).toBe(-7406n)
+    expect(outcome.kind === 'skip' && outcome.trace?.seizedAssets).toBe(-8146n)
+    expect(plan(input)).toBeNull()
+  })
+
+  it('omits maxRepaid and flags rcfDisabled when lltv waives the cap', () => {
+    const outcome = planWithReason(
+      baseInput({ bestCollateralLltv: WAD, bestCollateralAmt: 0n, bestCollateralMaxLif: WAD })
+    )
+    // Reached via nothing_to_seize, so only the mode fields are present — the point is that a
+    // maxUint256 maxRepaid is never logged as if it were a real bound.
+    expect(outcome.kind === 'skip' && outcome.trace).not.toHaveProperty('maxRepaid')
+  })
+
+  describe('plan() facade', () => {
+    // Pins the facade to the implementation so a later edit to planWithReason cannot silently change
+    // plan()'s contract (which the whole suite above still asserts through plan()).
+    const cases: PlanInput[] = [
+      baseInput(), // plans
+      baseInput({ hasDebt: false }),
+      baseInput({ locked: true }),
+      baseInput({ healthy: true }),
+      baseInput({ bestCollateralAmt: 0n }),
+      baseInput({
+        blockTimestamp: 3000n,
+        healthy: true,
+        debt: 1n,
+        bestCollateralAmt: 1n * WAD,
+        bestCollateralPrice: ORACLE_PRICE_SCALE * 10n
+      })
+    ]
+
+    it.each(cases.map((input, i) => [i, input] as const))(
+      'case %i returns the outcome plan, or null for a skip',
+      (_i, input) => {
+        const outcome = planWithReason(input)
+        expect(plan(input)).toEqual(outcome.kind === 'plan' ? outcome.plan : null)
+      }
+    )
   })
 })
