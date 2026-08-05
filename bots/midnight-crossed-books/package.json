@@ -8,6 +8,7 @@
     "build": "pnpm run generate:api && tsx scripts/build.ts",
     "deploy:railway": "tsx scripts/deploy-railway.ts",
     "generate:api": "openapi-typescript morpho-api.json -o src/infrastructure/morpho-api/generated/morpho-api.types.ts && openapi-typescript router-api.json -o src/infrastructure/router-api/generated/router-api.types.ts",
+    "prestart": "pnpm --filter \"{.}...\" --if-present run build",
     "start": "node --env-file-if-exists=.env dist/src/index.js",
     "typecheck": "pnpm run generate:api && tsc --noEmit"
   },

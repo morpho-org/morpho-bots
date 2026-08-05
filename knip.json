@@ -4,7 +4,9 @@
   "ignore": [".claude/**"],
   "ignoreBinaries": ["forge", "mkfifo", "railway"],
   "workspaces": {
-    ".": {},
+    ".": {
+      "ignoreDependencies": ["tsx"]
+    },
     "packages/typescript-config": {},
     "packages/utils": {},
     "packages/contracts": {},

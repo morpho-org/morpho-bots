@@ -388,6 +388,7 @@ const sourceFiles = [
   'infrastructure/setup-state/viem-setup-state.utils.ts'
 ].map(path => resolve(sourceRoot, path))
 sourceFiles.push(resolve(packageRoot, 'scripts/js-doc-validation.error.ts'))
+sourceFiles.push(resolve(packageRoot, 'scripts/bundle-failed.error.ts'))
 sourceFiles.push(resolve(packageRoot, 'scripts/check-jsdoc.ts'))
 
 const run = async () => {

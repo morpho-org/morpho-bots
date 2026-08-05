@@ -31,10 +31,8 @@
     "src/config/config-validation.error.ts",
     "src/config/config.service.ts",
     "src/config/config.utils.ts",
-    "src/config/market-collections.ts",
     "src/domain/bootstrap/bootstrap-configuration.error.ts",
     "src/domain/bootstrap/position-bootstrap.ts",
-    "src/domain/bytes32.ts",
     "src/domain/ladder/ladder-configuration.error.ts",
     "src/domain/ladder/ladder.ts",
     "src/infrastructure/bootstrap/bootstrap-hard-halt.error.ts",
@@ -64,6 +62,7 @@
     "src/infrastructure/invalidation/production-offer-invalidation.ts",
     "src/infrastructure/ladder/ladder-adapter.error.ts",
     "src/infrastructure/ladder/ladder-active-publication.utils.ts",
+    "src/infrastructure/ladder/ladder-bootstrap-offer.utils.ts",
     "src/infrastructure/ladder/ladder-cash-reservation.utils.ts",
     "src/infrastructure/ladder/ladder-group-ownership.utils.ts",
     "src/infrastructure/ladder/ladder-hard-halt.error.ts",
@@ -89,8 +88,7 @@
     "src/infrastructure/reference/blue-reference-reader.utils.ts",
     "src/infrastructure/reference/reference-adapter.error.ts",
     "scripts/js-doc-validation.error.ts",
-    "scripts/railway-deployment.error.ts",
-    "scripts/railway.utils.ts"
+    "scripts/bundle-failed.error.ts"
   ],
   "tsconfig": "tsconfig.json",
   "out": "build/jsdoc",

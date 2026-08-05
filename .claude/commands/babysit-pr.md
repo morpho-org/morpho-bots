@@ -440,7 +440,7 @@ After all comments are addressed, run validation on affected packages:
 ```bash
 pnpm --filter <affected-package> run typecheck
 pnpm lint
-bun test
+pnpm test
 pnpm format
 ```
 

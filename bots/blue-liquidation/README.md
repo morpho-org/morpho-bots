@@ -89,8 +89,9 @@ export ZEROX_API_KEY=…            # or ENABLE_LIFI=true, or ALLOW_DETECTION_ON
 pnpm --filter @morpho-org/blue-liquidation run start
 ```
 
-`prestart` builds the workspace packages (soltag-compiles `@repo/contracts` and materializes the ABI).
-Discovery hits the public Morpho GraphQL API — no indexer or database to run.
+`prestart` builds this bot and its workspace dependencies (soltag-compiles `@repo/contracts` and
+materializes the ABI, then esbuild-bundles `dist/`), so `start` runs a plain `node` against a
+freshly built bundle. Discovery hits the public Morpho GraphQL API — no indexer or database to run.
 
 ## Running With Docker Compose
 

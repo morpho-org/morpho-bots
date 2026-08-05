@@ -11,6 +11,7 @@
     "build": "tsx scripts/build.ts",
     "jsdoc:build": "pnpm run jsdoc:check && typedoc --options typedoc.json",
     "jsdoc:check": "tsx scripts/check-jsdoc.ts",
+    "prestart": "pnpm --filter \"{.}...\" --if-present run build",
     "start": "node --env-file-if-exists=.env dist/src/index.js",
     "test:e2e": "vitest run test/e2e",
     "typecheck": "tsc --noEmit"
@@ -36,6 +37,7 @@
     "tsx": "catalog:",
     "typedoc": "0.28.20",
     "typescript": "catalog:",
+    "vite": "catalog:",
     "vitest": "catalog:"
   }
 }

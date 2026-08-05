@@ -156,9 +156,7 @@ async function setVar(service: string, kv: string): Promise<void> {
 // Secret variable: value piped via stdin (never argv), `--json` omitted (it echoes raw values).
 async function setSecret(service: string, key: string, value: string): Promise<void> {
   const { error } = await tryCatch(
-    Promise.resolve(
-      $({ input: value })`railway variable set ${key} --stdin -s ${service} --skip-deploys`
-    )
+    $({ input: value })`railway variable set ${key} --stdin -s ${service} --skip-deploys`
   )
   if (error) throw new Error(`Failed to set ${key} on ${service}`)
   console.log(`Set ${key} on ${service} (secret).`)
@@ -172,9 +170,7 @@ async function deployService(service: string): Promise<void> {
   // sibling bot's project after its last deploy, which fails with "No environment specified" or, worse,
   // targets the wrong project. Scope the deploy explicitly so it never depends on ambient link state.
   const { error } = await tryCatch(
-    Promise.resolve(
-      $({ cwd: REPO_ROOT })`railway up -s ${service} -p ${PROJECT_ID} -e ${ENVIRONMENT} -d`
-    )
+    $({ cwd: REPO_ROOT })`railway up -s ${service} -p ${PROJECT_ID} -e ${ENVIRONMENT} -d`
   )
   if (error) throw new Error(`Failed to start deploy for ${service}: ${stderrOf(error)}`)
 }
