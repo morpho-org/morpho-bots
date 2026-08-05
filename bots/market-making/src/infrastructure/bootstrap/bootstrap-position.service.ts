@@ -117,7 +117,9 @@ export class MidnightBootstrapPositionService implements BootstrapPositionServic
       marketExposure: position.credit + reservedByMarket,
       totalExposure,
       ...(activeOffer ? { activeOffer } : {}),
-      requiresReconciliation: marketGroups.length > 1
+      requiresReconciliation:
+        marketGroups.length > 1 ||
+        marketGroups.some(group => group.offerCount !== undefined && group.offerCount !== 1)
     }
   }
 }

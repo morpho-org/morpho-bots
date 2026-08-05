@@ -1,4 +1,4 @@
-import { midnightAbi, Payload } from '@morpho-org/midnight-sdk'
+import { MAX_TICK, midnightAbi, Payload } from '@morpho-org/midnight-sdk'
 import { morphoViemExtension } from '@morpho-org/morpho-sdk'
 import { getChainAddress } from '@morpho-org/morpho-ts'
 import {
@@ -28,7 +28,10 @@ import type { OwnedLadderPublication } from './ladder-group-ownership.utils'
 
 import { createBootstrapGroupOwnership } from '../bootstrap/bootstrap-group-ownership.utils'
 import { bootstrapBookOffers, readBootstrapGroups } from '../bootstrap/bootstrap-groups.utils'
-import { recoverLegacyBootstrapOfferTick } from '../bootstrap/bootstrap-offer.utils'
+import {
+  legacyBootstrapOfferTickUpperBound,
+  recoverLegacyBootstrapOfferTick
+} from '../bootstrap/bootstrap-offer.utils'
 import { readLivePendingBootstrapOffers } from '../bootstrap/bootstrap-pending-offer.utils'
 import { BlueBootstrapReferenceRateService } from '../bootstrap/bootstrap-reference-rate.service'
 import { createManagedMakerAccount } from '../make/managed-maker-account.utils'
@@ -278,19 +281,25 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
     })
     const pendingOffers = await Promise.all(
       pendingBootstrapOffers.map(async offer => {
-        const tick =
-          offer.tick ??
-          recoverLegacyBootstrapOfferTick({
-            groupId: offer.groupId,
-            maximumAssets: offer.maximumAssets,
-            market: await midnight.getMarketData(offer.marketId),
-            maker,
-            ratifier: config.setup.ratifier
-          })
-        if (tick === undefined) {
-          throw new LadderAdapterError('bootstrap-offer-tick-unavailable')
+        if (offer.tick !== undefined) {
+          return { marketId: offer.marketId, buy: true, tick: offer.tick }
         }
-        return { marketId: offer.marketId, buy: true, tick }
+        const market = await midnight.getMarketData(offer.marketId)
+        const recoveredTick = recoverLegacyBootstrapOfferTick({
+          groupId: offer.groupId,
+          maximumAssets: offer.maximumAssets,
+          market,
+          maker,
+          ratifier: config.setup.ratifier,
+          continuousFeeCap: offer.continuousFeeCap
+        })
+        const conservativeTick =
+          recoveredTick ?? legacyBootstrapOfferTickUpperBound({ offer, market }) ?? MAX_TICK
+        return {
+          marketId: offer.marketId,
+          buy: true,
+          tick: conservativeTick
+        }
       })
     )
     return { groups, book: [...bootstrapBookOffers(groups), ...pendingOffers] }

@@ -166,15 +166,23 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
         throw error
       }
       if (retainedGroup && parameters.desiredOffer) {
-        await this.transport.reserveGroup(retainedGroup.id, {
-          ...parameters.desiredOffer,
-          assets: retainedGroup.maximumAssets ?? retainedGroup.assets,
-          ...(retainedGroup.tick === undefined ? {} : { tick: retainedGroup.tick }),
-          ...(retainedGroup.continuousFeeCap === undefined
-            ? {}
-            : { continuousFeeCap: retainedGroup.continuousFeeCap })
-        })
-        await this.transport.confirmPublishedGroup(retainedGroup.id)
+        try {
+          await this.transport.reserveGroup(retainedGroup.id, {
+            ...parameters.desiredOffer,
+            assets: retainedGroup.maximumAssets ?? retainedGroup.assets,
+            ...(retainedGroup.tick === undefined ? {} : { tick: retainedGroup.tick }),
+            ...(retainedGroup.continuousFeeCap === undefined
+              ? {}
+              : { continuousFeeCap: retainedGroup.continuousFeeCap })
+          })
+          await this.transport.confirmPublishedGroup(retainedGroup.id)
+        } catch (error) {
+          const failure =
+            error instanceof BootstrapAdapterError
+              ? error
+              : new BootstrapAdapterError('retained-group-metadata-refresh')
+          throw failure.recordConfirmedTransactions(submittedTransactions)
+        }
 
         return submittedTransactions.length === 0
           ? ('unchanged' as const)

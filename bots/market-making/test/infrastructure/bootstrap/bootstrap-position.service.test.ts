@@ -169,6 +169,22 @@ describe('MidnightBootstrapPositionService', () => {
     expect(position.marketExposure).toBe(30n)
   })
 
+  test('forces reconciliation when one group contains multiple offers', async () => {
+    const service = new MidnightBootstrapPositionService(
+      {
+        readPositions: async () => [{ marketId, credit: 10n, debt: 0n }],
+        readCashBalance: async () => 100n,
+        readGroupInventory: async () => ({
+          activeGroups: [{ id: firstGroup, marketId, assets: 20n, rateBps: 500n, offerCount: 2 }],
+          cashReservations: []
+        })
+      },
+      maker
+    )
+
+    expect((await service.readPosition(marketId)).requiresReconciliation).toBe(true)
+  })
+
   test('reserves ladder buys without treating them as replaceable bootstrap offers', async () => {
     const otherMarketId: Hex = `0x${'44'.repeat(32)}`
     const service = new MidnightBootstrapPositionService(

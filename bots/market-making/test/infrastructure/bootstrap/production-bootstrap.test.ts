@@ -30,6 +30,7 @@ import { MidnightBootstrapMakeService } from '../../../src/infrastructure/bootst
 import {
   bootstrapContinuousFeeCap,
   createBootstrapOffer,
+  legacyBootstrapOfferTickUpperBound,
   recoverLegacyBootstrapOfferTick
 } from '../../../src/infrastructure/bootstrap/bootstrap-offer.utils'
 import { prepareBootstrapRequirements } from '../../../src/infrastructure/bootstrap/bootstrap-requirements.utils'
@@ -573,6 +574,47 @@ describe('recoverLegacyBootstrapOfferTick', () => {
         ratifier
       })
     ).toBe(410n)
+  })
+
+  test('uses a persisted fee cap when the live market fee changed after publication', () => {
+    const legacyOffer = Offer.create({
+      market: publicationMarket,
+      buy: true,
+      maker,
+      tick: 410n,
+      tickSpacing: 2n,
+      expiry: publicationMarket.maturity,
+      ratifier,
+      maxAssets: 1_000n,
+      continuousFeeCap: 16n
+    })
+
+    expect(
+      recoverLegacyBootstrapOfferTick({
+        groupId: legacyOffer.group,
+        maximumAssets: legacyOffer.maxAssets,
+        market: { params: publicationMarket, tickSpacing: 2, continuousFee: 17 },
+        maker,
+        ratifier,
+        continuousFeeCap: legacyOffer.continuousFeeCap
+      })
+    ).toBe(410n)
+  })
+
+  test('bounds a pre-v5 tick from its original observation when the fee cap is unavailable', () => {
+    const market = { params: publicationMarket, tickSpacing: 2, continuousFee: 17 }
+    const offer = {
+      marketId,
+      assets: 1_000n,
+      rateBps: 500n,
+      referenceObservationId: 'hour:1'
+    }
+    const firstPossible = createBootstrapOffer({ offer, market, maker, ratifier, now: 3_600n })
+    const lastPossible = createBootstrapOffer({ offer, market, maker, ratifier, now: 7_500n })
+
+    expect(legacyBootstrapOfferTickUpperBound({ offer, market })).toBe(
+      firstPossible.tick > lastPossible.tick ? firstPossible.tick : lastPossible.tick
+    )
   })
 
   test('rejects a reconstruction that does not match the persisted group identity', () => {

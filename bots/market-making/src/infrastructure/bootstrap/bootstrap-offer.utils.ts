@@ -8,11 +8,23 @@ import { BootstrapAdapterError } from './bootstrap-adapter.error'
 
 const WAD = 10n ** 18n
 const YEAR_SECONDS = 31_536_000n
+const REFERENCE_OBSERVATION_SECONDS = 3_600n
+const REFERENCE_STALENESS_SECONDS = 300n
 
 type BootstrapOfferMarket = {
   params: IMarketParams
   tickSpacing: number
   continuousFee: unknown
+}
+
+const bootstrapOfferTick = (
+  rateBps: bigint,
+  market: Pick<BootstrapOfferMarket, 'params' | 'tickSpacing'>,
+  now: bigint
+) => {
+  const periodRateWad =
+    (rateBps * (WAD / 10_000n) * (BigInt(market.params.maturity) - now)) / YEAR_SECONDS
+  return TickLib.priceToTick(TickLib.rateToPrice(periodRateWad), BigInt(market.tickSpacing))
 }
 
 /**
@@ -38,7 +50,7 @@ export const bootstrapContinuousFeeCap = (market: { continuousFee: unknown }) =>
  * Recreates the exact protocol offer for a persisted or prospective bootstrap intent.
  * @param parameters - Offer intent, fresh market state, maker policy, and current block time.
  * @returns A Midnight buy offer with the live maturity-adjusted tick and fee cap.
- * @throws `BootstrapAdapterError` when the live market fee is malformed; SDK validation failures propagate.
+ * @throws `BootstrapAdapterError` when a required live market fee is malformed; SDK validation failures propagate.
  * @remarks The fresh block timestamp prevents a later publication from reusing a consumed
  * content-addressed group while preserving the market maturity as the offer expiry.
  */
@@ -49,20 +61,12 @@ export const createBootstrapOffer = (parameters: {
   ratifier: Address
   now: bigint
 }) => {
-  const periodRateWad =
-    (parameters.offer.rateBps *
-      (WAD / 10_000n) *
-      (BigInt(parameters.market.params.maturity) - parameters.now)) /
-    YEAR_SECONDS
   return Offer.create({
     market: parameters.market.params,
     buy: true,
     maker: parameters.maker,
     start: parameters.now,
-    tick: TickLib.priceToTick(
-      TickLib.rateToPrice(periodRateWad),
-      BigInt(parameters.market.tickSpacing)
-    ),
+    tick: bootstrapOfferTick(parameters.offer.rateBps, parameters.market, parameters.now),
     expiry: parameters.market.params.maturity,
     ratifier: parameters.ratifier,
     maxAssets: parameters.offer.assets,
@@ -72,11 +76,11 @@ export const createBootstrapOffer = (parameters: {
 
 /**
  * Recovers the exact protocol tick of a pre-v4 persisted bootstrap offer.
- * @param parameters - Legacy group identity, original offer cap, current immutable market data,
- * maker, and ratifier used by the original publication.
+ * @param parameters - Legacy group identity, original asset and optional fee caps, current market
+ * data, maker, and ratifier used by the original publication.
  * @returns The aligned tick whose singleton content-addressed group matches, or `undefined` when
  * the legacy offer cannot be reconstructed exactly.
- * @throws `BootstrapAdapterError` when the live market fee is malformed; SDK validation failures propagate.
+ * @throws `BootstrapAdapterError` when a required live market fee is malformed; SDK validation failures propagate.
  * @remarks Bootstrap ownership v3 did not persist ticks. Those offers used the SDK's historical
  * default `start` of zero, so scanning the bounded protocol tick domain at the market's live spacing
  * and accepting only an exact group hash match recovers their price without deriving it from a later
@@ -88,8 +92,10 @@ export const recoverLegacyBootstrapOfferTick = (parameters: {
   market: BootstrapOfferMarket
   maker: Address
   ratifier: Address
+  continuousFeeCap?: bigint
 }) => {
-  const continuousFeeCap = bootstrapContinuousFeeCap(parameters.market)
+  const continuousFeeCap =
+    parameters.continuousFeeCap ?? bootstrapContinuousFeeCap(parameters.market)
   const tickSpacing = BigInt(parameters.market.tickSpacing)
   for (let tick = 0n; tick <= MAX_TICK; tick += tickSpacing) {
     const candidate = Offer.create({
@@ -106,4 +112,33 @@ export const recoverLegacyBootstrapOfferTick = (parameters: {
     if (candidate.group === parameters.groupId) return tick
   }
   return undefined
+}
+
+/**
+ * Bounds the tick of a legacy variable-rate offer when its original fee cap is unavailable.
+ * @param parameters - Persisted offer semantics and current immutable market parameters.
+ * @returns The highest tick reachable during the offer's original hourly observation window plus
+ * the reference freshness allowance, or `undefined` for non-hourly or post-maturity observations.
+ * @remarks This migration-only fallback never uses a later current block. A buy at the highest
+ * possible tick is conservative for crossed-book validation because it cannot hide an unsafe sell.
+ */
+export const legacyBootstrapOfferTickUpperBound = (parameters: {
+  offer: BootstrapOffer
+  market: Pick<BootstrapOfferMarket, 'params' | 'tickSpacing'>
+}) => {
+  const observation = /^hour:(0|[1-9]\d*)$/.exec(parameters.offer.referenceObservationId)
+  if (!observation?.[1]) return undefined
+
+  const windowStart = BigInt(observation[1]) * REFERENCE_OBSERVATION_SECONDS
+  const maturity = BigInt(parameters.market.params.maturity)
+  if (windowStart > maturity) return undefined
+
+  const windowEnd = windowStart + REFERENCE_OBSERVATION_SECONDS + REFERENCE_STALENESS_SECONDS
+  const lastPossibleStart = windowEnd < maturity ? windowEnd : maturity
+  let highestTick = bootstrapOfferTick(parameters.offer.rateBps, parameters.market, windowStart)
+  for (let now = windowStart + 1n; now <= lastPossibleStart; now += 1n) {
+    const tick = bootstrapOfferTick(parameters.offer.rateBps, parameters.market, now)
+    if (tick > highestTick) highestTick = tick
+  }
+  return highestTick
 }

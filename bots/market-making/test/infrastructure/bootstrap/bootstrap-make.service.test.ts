@@ -220,6 +220,60 @@ describe('MidnightBootstrapMakeService', () => {
     ])
   })
 
+  test('preserves duplicate cancellation evidence when retained metadata refresh fails', async () => {
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [
+        {
+          id: groupId,
+          marketId,
+          assets: 100n,
+          maximumAssets: 100n,
+          rateBps: 500n,
+          tick: 100n,
+          offerCount: 1,
+          continuousFeeCap: 17n
+        },
+        {
+          id: publishedGroupId,
+          marketId,
+          assets: 100n,
+          rateBps: 500n,
+          tick: 100n,
+          offerCount: 1,
+          continuousFeeCap: 17n
+        }
+      ],
+      listBookOffers: async () => [],
+      toProspectiveBookOffer: async () => ({
+        marketId,
+        buy: true,
+        tick: 100n,
+        continuousFeeCap: 17n
+      }),
+      preparePublication: async () => ({
+        groupId: publishedGroupId,
+        publish: async () => publicationHash
+      }),
+      reserveGroup: async () => {
+        throw new BootstrapAdapterError('group-ownership-state')
+      },
+      confirmPublishedGroup: async () => {},
+      releaseGroupReservation: async () => {},
+      forgetGroups: async () => {},
+      invalidate: async () => cancellationHash
+    })
+
+    const error = await service
+      .reconcile({ marketId, desiredOffer, reason: 'replace' })
+      .catch(value => value)
+
+    expect(error).toBeInstanceOf(BootstrapAdapterError)
+    expect(error).toMatchObject({
+      operation: 'group-ownership-state',
+      confirmedTransactions: [{ operation: 'cancel', txHash: cancellationHash }]
+    })
+  })
+
   test('returns confirmed cancellation and publication hashes in submission order', async () => {
     const submitted: BootstrapSubmittedTransaction[] = []
     const service = new MidnightBootstrapMakeService({
