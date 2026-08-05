@@ -651,3 +651,62 @@ TIB conventions:
   how the TIB is applied without changing the decision itself.
 - TIB identifiers use CalVer (YYYY-MM-DD) based on the date the TIB was first drafted.
 -->
+
+## Addenda
+
+### 2026-08-05 — `tick.end` counters reconciled; `submitted` now means broadcast
+
+Three production defects, found by a BetterStack review of `bot.liquidation.midnight` (source 2607569) and present verbatim in this bot too, changed the observability contract this TIB documents. This addendum records the
+new shape; the body above is left as written.
+
+**The defects.** (1) Two `continue`s — a position already in flight, and a position sizing refused —
+incremented no counter and logged nothing, so from 2026-07-31 15:37 the bot reported
+`liquidatable: 12, planned: 0` for ~215,000 consecutive ticks with every skip counter at zero and no
+way to learn why. (2) `submitted` counted `submit` _calls_, not broadcasts: on 2026-07-30 it summed
+2,425 while `tx.sent` was 0 and `tx.submit_failed` was 2,666. (3) `backoff.clear` ran unconditionally
+after `submit`, wiping the accumulated attempt count, so a position that simulated ok and then failed
+to send was re-quoted, re-simulated and re-sent every block indefinitely.
+
+**The counter set** (identical in both liquidators, ordered as the pipeline runs):
+
+```text
+tick.end { pairs, liquidatable, inflightSkipped, planSkipped, planned,
+           cooledDown, backoffSkipped, noSwapPath, quoteFailed,
+           ok, reverted, submitted, notSent, complete }
+```
+
+This reconciles drift in both directions: `backoffSkipped`/`cooledDown` shipped without ever being
+documented, and `badRoute` was documented here but never implemented (route-quality rejection surfaces
+as the `quote.route_quality_failed` event, not a counter).
+
+For a tick with `complete: true` the set is exhaustive by construction, and the identities are
+asserted in every tick test — so a stage added without a counter breaks a sum instead of silently
+dropping a position:
+
+```text
+pairs        >= liquidatable
+liquidatable === inflightSkipped + planSkipped + planned
+planned      === cooledDown + backoffSkipped + noSwapPath + quoteFailed + ok + reverted
+ok           === submitted + notSent
+```
+
+`complete: false` marks a tick aborted part-way (a hashless send after a nonce was claimed still
+throws by design); its counters are partial and the last identity is short by one. Previously such a
+tick emitted no `tick.end` at all.
+
+**Semantics that changed.** `submitted` counts only real broadcasts. `notSent` counts a `submit` that
+returned without sending, and the queue now reports which of its four non-sending exits it took
+(`tx.submit_failed`, `tx.send_aborted`, `nonce.sync_failed`, `queue.nonce_hole`). Only the
+per-position one (`tx.submit_failed`) backs the position off; the other three are queue-wide refusals
+that reject every send that tick, so attributing them to one position would suppress healthy ones.
+Only a broadcast clears a backoff.
+
+**New event.** `plan.skipped` explains a liquidatable-but-unsizable position, carrying the sizing
+inputs and the derived numbers (`lif`, `repaidAssetsFull`, `seizeForFullDebt`, `seizedAssets`) so the
+decision replays from one line. `info` for the ordinary dust reasons; `warn` for reasons that should
+be unreachable, which makes it a live assertion that the eligibility gate and the sizing module have
+not diverged. It is sampled at most once per `PLAN_SKIP_SAMPLE_EVERY_BLOCKS` (the counter stays exact
+every tick), because one line per position per block would have been ~21k lines/hour/bot.
+
+**Any BetterStack chart or alert built on `submitted` changes meaning** and needs review; the new
+fields also need the dashboard metrics-collection step before they are queryable.

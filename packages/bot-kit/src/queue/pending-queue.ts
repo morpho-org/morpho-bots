@@ -51,6 +51,34 @@ type Pending = {
   attempt: number
 }
 
+/**
+ * What one {@link PendingQueue.submit} call did. `sent` carries the nonce + hash of a real broadcast;
+ * `failed` means NO transaction left this process. Callers must treat only `sent` as a submission —
+ * it is the sole outcome that may clear a per-position backoff.
+ *
+ * Each `reason` names the exit the queue took, and pairs with the warn line it already logged:
+ *
+ * | `reason`            | logged event        | scope                                        |
+ * | ------------------- | ------------------- | -------------------------------------------- |
+ * | `send_aborted`      | `tx.send_aborted`   | queue-wide latch (clears next `onBlock`)      |
+ * | `nonce_sync_failed` | `nonce.sync_failed` | queue-wide (cursor unusable this tick)        |
+ * | `nonce_hole`        | `queue.nonce_hole`  | queue-wide latch (clears when chain consumes) |
+ * | `submit_failed`     | `tx.submit_failed`  | THIS position's send failed                   |
+ *
+ * The scope column is load-bearing: the three queue-wide reasons refuse *every* send this tick, so a
+ * caller must not attribute them to the position it happened to be holding. Only `submit_failed` is
+ * per-position and therefore the only reason that should back a position off.
+ *
+ * A first send that fails hashless AFTER claiming a nonce is NOT a `failed` outcome — it throws
+ * `TxSendError` so the caller aborts the tick rather than racing the signer's cursor rollback.
+ */
+export type SubmitOutcome =
+  | { kind: 'sent'; nonce: number; txHash: Hex }
+  | {
+      kind: 'failed'
+      reason: 'send_aborted' | 'nonce_sync_failed' | 'nonce_hole' | 'submit_failed'
+    }
+
 export type PendingQueue = {
   submit(args: {
     request: TxRequest
@@ -58,7 +86,7 @@ export type PendingQueue = {
     maxFeePerGas: bigint
     maxPriorityFeePerGas: bigint
     blockNumber: bigint
-  }): Promise<void>
+  }): Promise<SubmitOutcome>
   onBlock(blockNumber: bigint): Promise<void>
   readonly size: number
   snapshot(): { nonce: number; txHash: Hex; attempt: number }[]
@@ -189,12 +217,12 @@ export function createPendingQueue({
     maxFeePerGas: bigint
     maxPriorityFeePerGas: bigint
     blockNumber: bigint
-  }): Promise<void> {
+  }): Promise<SubmitOutcome> {
     // Latched by a prior hashless send: skip until the next `onBlock` clears it. The signer has
     // rolled its cursor back, so broadcasting again now would race that rollback.
     if (sendAborted) {
       logger.warn('tx.send_aborted', { label: args.label })
-      return
+      return { kind: 'failed', reason: 'send_aborted' }
     }
     // Nothing in flight → reconcile the cursor with chain before claiming a nonce. A failed sync
     // would leave a stale (possibly runaway) cursor, so skip the send this tick rather than risk a
@@ -206,7 +234,7 @@ export function createPendingQueue({
       const synced = await tryCatch(syncNonce())
       if (synced.error) {
         logger.warn('nonce.sync_failed', { label: args.label, reason: revertReason(synced.error) })
-        return
+        return { kind: 'failed', reason: 'nonce_sync_failed' }
       }
       if (nonceHoleLow !== null) clearNonceHole('sync')
     }
@@ -216,7 +244,7 @@ export function createPendingQueue({
     // sweep clears it once the chain consumes past the hole.
     if (nonceHoleLow !== null) {
       logger.warn('queue.nonce_hole', { label: args.label, nonce: nonceHoleLow })
-      return
+      return { kind: 'failed', reason: 'nonce_hole' }
     }
     const sent = await tryCatch(
       send({
@@ -240,7 +268,7 @@ export function createPendingQueue({
         sendAborted = true
         throw sent.error
       }
-      return
+      return { kind: 'failed', reason: 'submit_failed' }
     }
     const { nonce, txHash } = sent.data
     pending.set(nonce, {
@@ -260,6 +288,7 @@ export function createPendingQueue({
       maxFee: args.maxFeePerGas,
       priority: args.maxPriorityFeePerGas
     })
+    return { kind: 'sent', nonce, txHash }
   }
 
   async function replaceStuck(entry: Pending, blockNumber: bigint, baseFee: bigint): Promise<void> {

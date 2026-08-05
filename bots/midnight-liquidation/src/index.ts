@@ -5,6 +5,7 @@ import {
   assertContractDeployed,
   createBalanceMonitor,
   createBackoff,
+  createBlockSampler,
   createCooldownStore,
   createDeploylessClient,
   createHeartbeatMonitor,
@@ -34,7 +35,11 @@ import type { Market } from './execution/encode-call'
 import type { LiquidationPlan } from './sizing/plan'
 
 import { loadConfig } from './config'
-import { LISTED_MARKETS_MAX_AGE_MS, SETTLED_COOLDOWN_BLOCKS } from './constants'
+import {
+  LISTED_MARKETS_MAX_AGE_MS,
+  PLAN_SKIP_SAMPLE_EVERY_BLOCKS,
+  SETTLED_COOLDOWN_BLOCKS
+} from './constants'
 import {
   createApiCandidateSource,
   discoverBorrowers,
@@ -194,6 +199,9 @@ async function main() {
   // Opt-in per-position cooldown (default disabled): one in-memory store for the process lifetime,
   // complementary to `backoff` (see POSITION_LIQUIDATION_COOLDOWN_MS).
   const cooldown = createCooldownStore({ cooldownMs: config.positionCooldownMs })
+  // Bounds the `plan.skipped` diagnostic to one burst per cadence; process-lifetime state, like the
+  // two stores above.
+  const planSkipSampler = createBlockSampler(PLAN_SKIP_SAMPLE_EVERY_BLOCKS)
 
   // The exec calldata for one liquidation — the same bytes the simulate gate checks and the queue
   // broadcasts, so a sim-ok plan and its broadcast can't drift.
@@ -318,7 +326,9 @@ async function main() {
         }),
       submit: async ({ market, borrower, plan, swapPlan, blockNumber, label }) => {
         const fees = initialFees(await signer.getBaseFee(), config.maxFeeWei, config.priorityFeeWei)
-        await queue.submit({
+        // Returned, not awaited-and-discarded: the tick needs to know whether a tx actually went out
+        // before it clears this position's backoff.
+        return queue.submit({
           request: {
             to: config.executooorAddress,
             data: encodeExec(market, borrower, plan, swapPlan)
@@ -331,6 +341,7 @@ async function main() {
       },
       backoff,
       cooldown,
+      planSkipSampler,
       inflightLabels: () => queue.inflightLabels(),
       logger
     })
