@@ -1799,6 +1799,19 @@ try {
         const input = document.querySelector(\`[data-field=\${field}]\`)
         return input?.type === expectedType && input.value === values[field]
       })
+      for (const field of fields) {
+        const input = document.querySelector(\`[data-field=\${field}]\`)
+        input.scrollLeft = 0
+        input.setSelectionRange(0, 0)
+      }
+      for (const output of document.querySelectorAll('#export-yaml,#export-shell,#export-json')) {
+        output.scrollTop = 0
+        output.scrollLeft = 0
+        output.setSelectionRange(0, 0)
+      }
+      const focusAnchor = document.querySelector('h1')
+      focusAnchor.tabIndex = -1
+      focusAnchor.focus({ preventScroll: true })
       const yamlSensitive = [values.MAKER_PRIVATE_KEY, values.RPC_URL, values.REFERENCE_RPC_URL]
       const yamlCorrect = ${includeSensitive}
         ? yamlSensitive.every(value => yaml.includes(value)) &&
@@ -1883,6 +1896,11 @@ try {
     }
     throw new Error(`credential ${label} screenshot did not reach a stable pixel hash`)
   }
+  const credentialWarmup = await proveCredentialState(true)
+  assert(
+    Object.values(credentialWarmup).every(Boolean),
+    `credential screenshot state warmup failed: ${JSON.stringify(credentialWarmup)}`
+  )
   const credentialScreenshots = {
     default: await captureCredentialState('default-redacted', false),
     optIn: await captureCredentialState('opt-in-revealed', true),
