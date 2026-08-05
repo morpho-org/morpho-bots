@@ -371,7 +371,7 @@ describe('LadderMarketMakerService', () => {
 
   test('retains a confirmed ratification hash when publication later fails', async () => {
     const subject = harness()
-    subject.make.reconcile = mock(async () => {
+    subject.make.reconcile = vi.fn(async () => {
       throw new LadderAdapterError(
         'publication-transaction-reverted-after-ratification'
       ).recordConfirmedTransactions([{ operation: 'ratify', txHash: ratificationHash }])

@@ -1,8 +1,8 @@
 import type { Address, Hex } from 'viem'
 
 import { MAX_OFFER_CAP, midnightAbi } from '@morpho-org/midnight-sdk'
-import { describe, expect, test } from 'bun:test'
 import { encodeFunctionData } from 'viem'
+import { describe, expect, test } from 'vitest'
 
 import { OfferInvalidationAdapterError } from '../../../src/infrastructure/invalidation/offer-invalidation-adapter.error'
 import { assertBatchOfferInvalidationTransaction } from '../../../src/infrastructure/invalidation/offer-invalidation-transaction.utils'

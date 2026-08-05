@@ -456,7 +456,7 @@ describe('PositionBootstrapService', () => {
 
   test('retains a confirmed ratification hash when publication later fails', async () => {
     const { service, make } = setup()
-    make.reconcile = mock(async () => {
+    make.reconcile = vi.fn(async () => {
       throw new BootstrapAdapterError(
         'publication-transaction-reverted-after-ratification'
       ).recordConfirmedTransactions([{ operation: 'ratify', txHash: ratificationHash }])

@@ -1,10 +1,10 @@
 import type { Address } from 'viem'
 
 import { EcrecoverRatifierUtils, Offer, Tree } from '@morpho-org/midnight-sdk'
-import { describe, expect, test } from 'bun:test'
 import { isHex, zeroAddress } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
+import { describe, expect, test } from 'vitest'
 
 import { createBootstrapRequirementClient } from '../../../src/infrastructure/bootstrap/bootstrap-requirement-client.utils'
 

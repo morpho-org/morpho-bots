@@ -1,8 +1,8 @@
 import type { Address, Hex } from 'viem'
 
 import { MAX_OFFER_CAP, midnightAbi } from '@morpho-org/midnight-sdk'
-import { describe, expect, mock, test } from 'bun:test'
 import { decodeFunctionData } from 'viem'
+import { describe, expect, test, vi } from 'vitest'
 
 import { invalidateOffersBatch } from '../../../src/infrastructure/invalidation/batch-offer-invalidation.utils'
 import { OfferInvalidationAdapterError } from '../../../src/infrastructure/invalidation/offer-invalidation-adapter.error'
@@ -14,10 +14,10 @@ const groupIds = [`0x${'44'.repeat(32)}`, `0x${'55'.repeat(32)}`] as const
 const txHash: Hex = `0x${'aa'.repeat(32)}`
 
 const subject = (status = 'success', account = maker) => {
-  const sendTransaction = mock(
+  const sendTransaction = vi.fn(
     async (_transaction: { to: Address; data: Hex; value: bigint }) => txHash
   )
-  const waitForTransactionReceipt = mock(async () => ({ status }))
+  const waitForTransactionReceipt = vi.fn(async () => ({ status }))
   return {
     wallet: { account: { address: account }, sendTransaction, waitForTransactionReceipt },
     sendTransaction,
