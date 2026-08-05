@@ -32,6 +32,23 @@ const environment = {
 }
 
 describe('ConfigService', () => {
+  test.each([
+    ['8453', true],
+    ['0008453', true],
+    ['  0008453\t', true],
+    ['+8453', false],
+    ['8453.0', false],
+    ['8.453e3', false],
+    ['-8453', false],
+    ['0', false],
+    ['8454', false],
+    ['9007199254740992', false]
+  ] as const)('parses CHAIN_ID=%j with exact Base decimal semantics', (value, accepted) => {
+    const load = () => ConfigService.from({ ...environment, CHAIN_ID: value })
+    if (accepted) expect(load().setup.chainId).toBe(8453)
+    else expect(load).toThrow('Unsupported CHAIN_ID; supported: 8453')
+  })
+
   test('loads and normalizes setup-check configuration', () => {
     const config = ConfigService.from(environment)
 

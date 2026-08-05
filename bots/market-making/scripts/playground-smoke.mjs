@@ -1547,22 +1547,48 @@ try {
       input.value = value
       input.dispatchEvent(new Event('input', { bubbles: true }))
     }
-    set('CHAIN_ID', '  8453  ')
     set('NATIVE_RESERVE_WEI', '0')
     set('MAXIMUM_LEND_EXPOSURE_ASSETS', '0')
-    await new Promise(resolve => setTimeout(resolve, 0))
-    const yaml = document.querySelector('#export-yaml').value
-    const shell = document.querySelector('#export-shell').value
-    const json = JSON.parse(document.querySelector('#export-json').value)
-    const exportState = [...document.querySelectorAll('#export-yaml,#export-shell,#export-json')].every(output => output.dataset.invalid === 'false') && yaml.includes('  id: 8453\\n') && yaml.includes('  nativeReserveWei: "0"\\n') && yaml.includes('  maximumLendExposureAssets: "0"\\n') && shell.includes("export CHAIN_ID='8453'") && json.configuration.CHAIN_ID === '8453' && json.configuration.NATIVE_RESERVE_WEI === '0' && json.configuration.MAXIMUM_LEND_EXPOSURE_ASSETS === '0'
-    const uiState = document.querySelector('[data-field=CHAIN_ID]').value === '  8453  ' && document.querySelector('[data-field=NATIVE_RESERVE_WEI]').value === '0' && document.querySelector('[data-field=MAXIMUM_LEND_EXPOSURE_ASSETS]').value === '0' && document.querySelector('#validation-errors').hidden && !document.querySelector('#copy-export').disabled && document.querySelector('#ladder-status').dataset.status === 'ok' && document.querySelectorAll('.ladder-rung').length > 0
     let copied = ''
     Object.defineProperty(navigator, 'clipboard', { value: { writeText: async value => { copied = value } }, configurable: true })
-    document.querySelector('#tab-json').click()
-    document.querySelector('#copy-export').click()
-    await new Promise(resolve => setTimeout(resolve, 0))
-    const copyState = JSON.parse(copied).configuration.CHAIN_ID === '8453'
-    return { exportState, uiState, copyState }
+    const accepted = []
+    for (const value of ['8453', '0008453', '  0008453  ']) {
+      set('CHAIN_ID', value)
+      await new Promise(resolve => setTimeout(resolve, 0))
+      const yaml = document.querySelector('#export-yaml').value
+      const shell = document.querySelector('#export-shell').value
+      const json = JSON.parse(document.querySelector('#export-json').value)
+      const copies = []
+      for (const tab of ['yaml', 'shell', 'json']) {
+        document.querySelector('#tab-' + tab).click()
+        document.querySelector('#copy-export').click()
+        await new Promise(resolve => setTimeout(resolve, 0))
+        copies.push(copied)
+      }
+      accepted.push(
+        [...document.querySelectorAll('#export-yaml,#export-shell,#export-json')].every(output => output.dataset.invalid === 'false') &&
+        yaml.includes('  id: 8453\\n') && !yaml.includes('0008453') &&
+        shell.includes("export CHAIN_ID='8453'") && !shell.includes('0008453') &&
+        json.configuration.CHAIN_ID === '8453' &&
+        copies[0] === yaml && copies[1] === shell && copies[2] === JSON.stringify(json, null, 2) + '\\n' &&
+        copies.every(copy => !copy.includes('0008453')) &&
+        document.querySelector('[data-field=CHAIN_ID]').value === value &&
+        document.querySelector('#validation-errors').hidden && !document.querySelector('#copy-export').disabled &&
+        document.querySelector('#ladder-status').dataset.status === 'ok' && document.querySelectorAll('.ladder-rung').length > 0
+      )
+    }
+    const rejected = []
+    for (const value of ['+8453', '8453.0', '8.453e3', '-8453', '0', '8454', '9007199254740992']) {
+      set('CHAIN_ID', value)
+      await new Promise(resolve => setTimeout(resolve, 0))
+      rejected.push(
+        !document.querySelector('#validation-errors').hidden && document.querySelector('#copy-export').disabled &&
+        document.querySelector('#ladder-status').dataset.status === 'error' &&
+        [...document.querySelectorAll('#export-yaml,#export-shell,#export-json')].every(output => output.dataset.invalid === 'true')
+      )
+    }
+    set('CHAIN_ID', '8453')
+    return { accepted: accepted.every(Boolean), rejected: rejected.every(Boolean) }
   })()`)
   assert(
     Object.values(scalarParityProof).every(Boolean),

@@ -6,10 +6,10 @@ import {
   addressValue,
   bootstrapConfigsValue,
   bytes32Value,
+  chainIdValue,
   hexListValue,
   ladderConfigsValue,
   privateKeyValue,
-  requiredValue,
   requestTimeoutValue,
   transactionReceiptTimeoutValue,
   unsignedBigIntValue,
@@ -210,7 +210,14 @@ const yamlQuote = (value: string) => JSON.stringify(value)
 
 const canonicalScalar = (state: PlaygroundState): PlaygroundState['scalar'] => ({
   ...state.scalar,
-  CHAIN_ID: state.scalar.CHAIN_ID.trim()
+  CHAIN_ID: String(chainIdValue(state.scalar))
+})
+
+const rawEnvironmentRecord = (state: PlaygroundState): Record<string, string> => ({
+  ...state.scalar,
+  BOOTSTRAP_MARKETS: JSON.stringify(structuredBootstrap(state)),
+  LADDER_MARKETS: JSON.stringify(structuredLadder(state)),
+  ...state.observability
 })
 
 const environmentRecord = (state: PlaygroundState): Record<string, string> => ({
@@ -229,10 +236,9 @@ export const validateProductionState = (state: PlaygroundState) => {
       errors.push(error instanceof Error ? error.message : 'Invalid configuration')
     }
   }
-  const environment = environmentRecord(state)
+  const environment = rawEnvironmentRecord(state)
   capture(() => {
-    if (requiredValue(environment, 'CHAIN_ID') !== String(base.id))
-      throw new Error(`CHAIN_ID must be ${base.id}`)
+    chainIdValue(environment)
     privateKeyValue(environment)
     for (const field of [
       'MAKER_ADDRESS',

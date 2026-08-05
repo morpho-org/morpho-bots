@@ -728,47 +728,53 @@ describe('market-maker parameter playground', () => {
     }
   })
 
-  test('accepts trimmed Base chain and zero bigint setup fields with canonical exports', async () => {
-    const state = createDefaultPlaygroundState()
-    state.scalar.CHAIN_ID = '  8453  '
-    state.scalar.NATIVE_RESERVE_WEI = '0'
-    state.scalar.MAXIMUM_LEND_EXPOSURE_ASSETS = '0'
+  test.each(['8453', '0008453', '  0008453\t'])(
+    'matches production acceptance and canonical exports for CHAIN_ID=%j',
+    async chainId => {
+      const state = createDefaultPlaygroundState()
+      state.scalar.CHAIN_ID = chainId
+      state.scalar.NATIVE_RESERVE_WEI = '0'
+      state.scalar.MAXIMUM_LEND_EXPOSURE_ASSETS = '0'
 
-    const production = validateWithProductionLoader(productionEnvironment(state))
-    expect(production.setup).toMatchObject({
-      chainId: 8453,
-      nativeReserve: 0n,
-      maximumLendExposure: 0n
-    })
-    expect(validateProductionState(state)).toEqual({ valid: true, errors: [] })
-    expect(validatePreviewState(state)).toEqual({ valid: true, errors: [] })
+      const production = validateWithProductionLoader(productionEnvironment(state))
+      expect(production.setup).toMatchObject({
+        chainId: 8453,
+        nativeReserve: 0n,
+        maximumLendExposure: 0n
+      })
+      expect(validateProductionState(state)).toEqual({ valid: true, errors: [] })
+      expect(validatePreviewState(state)).toEqual({ valid: true, errors: [] })
 
-    const yaml = exportYaml(state, { includeSensitiveValues: true })
-    expect(yaml).toContain('  id: 8453\n')
-    expect(yaml).toContain('  nativeReserveWei: "0"\n')
-    expect(yaml).toContain('  maximumLendExposureAssets: "0"\n')
-    const shellEnvironment = await loadShellEnvironment(
-      exportShell(state, { includeSensitiveValues: true })
-    )
-    expect(shellEnvironment).toMatchObject({
-      CHAIN_ID: '8453',
-      NATIVE_RESERVE_WEI: '0',
-      MAXIMUM_LEND_EXPOSURE_ASSETS: '0'
-    })
-    expect(validateWithProductionLoader(shellEnvironment).setup.chainId).toBe(8453)
-    expect(
-      JSON.parse(exportJson(state, { includeSensitiveValues: true })).configuration
-    ).toMatchObject({
-      CHAIN_ID: '8453',
-      NATIVE_RESERVE_WEI: '0',
-      MAXIMUM_LEND_EXPOSURE_ASSETS: '0'
-    })
-  })
+      const yaml = exportYaml(state, { includeSensitiveValues: true })
+      expect(yaml).toContain('  id: 8453\n')
+      expect(yaml).toContain('  nativeReserveWei: "0"\n')
+      expect(yaml).toContain('  maximumLendExposureAssets: "0"\n')
+      const shellEnvironment = await loadShellEnvironment(
+        exportShell(state, { includeSensitiveValues: true })
+      )
+      expect(shellEnvironment).toMatchObject({
+        CHAIN_ID: '8453',
+        NATIVE_RESERVE_WEI: '0',
+        MAXIMUM_LEND_EXPOSURE_ASSETS: '0'
+      })
+      expect(validateWithProductionLoader(shellEnvironment).setup.chainId).toBe(8453)
+      expect(
+        JSON.parse(exportJson(state, { includeSensitiveValues: true })).configuration
+      ).toMatchObject({
+        CHAIN_ID: '8453',
+        NATIVE_RESERVE_WEI: '0',
+        MAXIMUM_LEND_EXPOSURE_ASSETS: '0'
+      })
+    }
+  )
 
   test.each([
     ['CHAIN_ID', '8454'],
-    ['CHAIN_ID', '-1'],
-    ['CHAIN_ID', '1.5'],
+    ['CHAIN_ID', '+8453'],
+    ['CHAIN_ID', '-8453'],
+    ['CHAIN_ID', '8453.0'],
+    ['CHAIN_ID', '8.453e3'],
+    ['CHAIN_ID', '0'],
     ['CHAIN_ID', '9007199254740992'],
     ['NATIVE_RESERVE_WEI', '-1'],
     ['NATIVE_RESERVE_WEI', '1.5'],
