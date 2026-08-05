@@ -438,10 +438,10 @@ For **CI failures**:
 After all comments are addressed, run validation on affected packages:
 
 ```bash
-bun run --filter <affected-package> typecheck
-bun lint
+pnpm --filter <affected-package> run typecheck
+pnpm lint
 bun test
-bun format
+pnpm format
 ```
 
 Fix any issues found.

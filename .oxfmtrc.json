@@ -18,7 +18,7 @@
     ]
   },
   "ignorePatterns": [
-    "bun.lock",
+    "pnpm-lock.yaml",
     "**/dist/**",
     "**/build/**",
     "**/coverage/**",

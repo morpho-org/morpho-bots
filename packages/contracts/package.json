@@ -13,11 +13,11 @@
   "scripts": {
     "generate": "bun run scripts/codegen.ts && oxfmt src/abis.ts src/contracts.ts",
     "build": "soltag && bun run scripts/build.ts && tsc -p tsconfig.build.json --emitDeclarationOnly",
-    "deploy:executor": "bun run build && bun run scripts/deploy-executor.ts",
+    "deploy:executor": "pnpm run build && bun run scripts/deploy-executor.ts",
     "typecheck": "soltag && tsc --noEmit",
     "format:sol": "forge fmt",
     "format:sol:check": "forge fmt --check",
-    "deploy:crossed-books-resolver": "bun run build && bun run scripts/deploy-crossed-books-resolver.ts"
+    "deploy:crossed-books-resolver": "pnpm run build && bun run scripts/deploy-crossed-books-resolver.ts"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",

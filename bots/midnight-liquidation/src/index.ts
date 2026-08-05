@@ -90,7 +90,7 @@ async function main() {
     client,
     config.executooorAddress,
     'EXECUTOOOR_ADDRESS',
-    'deploy it with `bun run --filter @repo/contracts deploy:executor`'
+    'deploy it with `pnpm --filter @repo/contracts run deploy:executor`'
   )
   await assertContractDeployed(client, config.midnight, 'Midnight singleton')
 
