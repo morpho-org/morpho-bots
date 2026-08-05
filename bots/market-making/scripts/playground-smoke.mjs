@@ -872,11 +872,18 @@ try {
     const envTab = document.querySelector('#tab-ladder-env')
     const envOutput = document.querySelector('#export-ladder-env')
     const initial = envOutput?.value
+    const fileLabel = document.querySelector('label[for="ladder-import-file"]')
     const accessible = Boolean(
-      area && drop && file && text && apply && status && envTab && envOutput &&
+      area && drop && file && fileLabel && text && apply && status && envTab && envOutput &&
       file.accept.includes('.json') && text.getAttribute('aria-describedby')?.includes('ladder-import-help') &&
-      status.getAttribute('role') === 'status' && drop.tabIndex === 0
+      status.getAttribute('role') === 'status' && drop.getAttribute('role') === 'group' &&
+      drop.getAttribute('aria-describedby')?.includes('ladder-import-help') &&
+      !drop.hasAttribute('tabindex') && !drop.contains(file) &&
+      file.labels?.length === 1 && file.labels[0] === fileLabel &&
+      fileLabel.textContent.trim().length > 0 && file.tabIndex === 0
     )
+    file.focus()
+    const nativeFileFocus = document.activeElement === file
     const documentedCopy = area.textContent
     const documentedShapes = documentedCopy.includes('LADDER_MARKETS array') &&
       documentedCopy.includes('one exact ladder object') &&
@@ -963,6 +970,103 @@ try {
     ])
     await new Promise(resolve => setTimeout(resolve, 0))
     const multipleRejected = status.dataset.status === 'error' && status.textContent.includes('one JSON file') && envOutput.value === initial
+
+    const nextFrame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    const variant = premium => {
+      const value = JSON.parse(initial)
+      value[0].quotePremiumBps = String(premium)
+      return JSON.stringify(value)
+    }
+    const deferredFile = name => {
+      let resolve
+      let reject
+      const file = new File(['{}'], name, { type: 'application/json' })
+      Object.defineProperty(file, 'text', {
+        value: () => new Promise((onResolve, onReject) => {
+          resolve = onResolve
+          reject = onReject
+        })
+      })
+      return { file, resolve: value => resolve(value), reject: error => reject(error) }
+    }
+    const dispatchFiles = files => {
+      const event = new Event('drop', { bubbles: true, cancelable: true })
+      Object.defineProperty(event, 'dataTransfer', { value: { files } })
+      drop.dispatchEvent(event)
+    }
+
+    const slowOld = deferredFile('slow-old.json')
+    const fastNew = variant(41)
+    dispatchFiles([slowOld.file])
+    dispatchFiles([new File([fastNew], 'fast-new.json', { type: 'application/json' })])
+    await waitForImportStatus(() => envOutput.value === fastNew)
+    const latestGraphic = document.querySelector('.ladder-graphic svg')?.outerHTML
+    slowOld.resolve(variant(31))
+    await nextFrame()
+    const slowOldFastNew = envOutput.value === fastNew && text.value === fastNew &&
+      status.dataset.status === 'ok' && status.textContent.includes('Applied') &&
+      document.querySelector('.ladder-graphic svg')?.outerHTML === latestGraphic
+
+    const fileBeforePaste = deferredFile('file-before-paste.json')
+    dispatchFiles([fileBeforePaste.file])
+    text.value = initial
+    apply.click()
+    fileBeforePaste.resolve(variant(51))
+    await nextFrame()
+    const fileThenPaste = envOutput.value === initial && text.value === initial && status.dataset.status === 'ok'
+
+    const oldBeforeInvalid = deferredFile('old-before-invalid.json')
+    dispatchFiles([oldBeforeInvalid.file])
+    dispatchFiles([new File([variant(61)], 'invalid.txt', { type: 'text/plain' })])
+    const invalidStatus = status.textContent
+    oldBeforeInvalid.resolve(variant(62))
+    await nextFrame()
+    const invalidBeatsOldSuccess = envOutput.value === initial && status.dataset.status === 'error' &&
+      status.textContent === invalidStatus && status.textContent.includes('JSON file')
+
+    const staleUnreadable = deferredFile('stale-unreadable.json')
+    dispatchFiles([staleUnreadable.file])
+    const afterStaleError = variant(71)
+    text.value = afterStaleError
+    apply.click()
+    const successStatus = status.textContent
+    staleUnreadable.reject(new Error('secret stale read detail'))
+    await nextFrame()
+    const staleErrorDiscarded = envOutput.value === afterStaleError && status.dataset.status === 'ok' &&
+      status.textContent === successStatus && !status.textContent.includes('secret')
+
+    const beforeUnreadable = envOutput.value
+    const unreadableLatest = deferredFile('unreadable-latest.json')
+    dispatchFiles([unreadableLatest.file])
+    unreadableLatest.reject(new Error('filesystem secret'))
+    await nextFrame()
+    const unreadableLatestSafe = envOutput.value === beforeUnreadable && status.dataset.status === 'error' &&
+      status.textContent === 'The JSON file could not be read.' && !status.textContent.includes('filesystem')
+
+    let oversizedTextCalls = 0
+    const oversizedFile = new File(['x'.repeat(131073)], 'oversized.json', { type: 'application/json' })
+    Object.defineProperty(oversizedFile, 'text', { value: async () => { oversizedTextCalls++; return initial } })
+    dispatchFiles([oversizedFile])
+    await nextFrame()
+    const oversizedFileSkippedRead = oversizedTextCalls === 0 && status.dataset.status === 'error' &&
+      status.textContent.includes('128 KiB') && envOutput.value === beforeUnreadable
+
+    text.value = '"' + 'é'.repeat(65535) + '"'
+    apply.click()
+    const utf8AtBoundary = status.dataset.status === 'error' && !status.textContent.includes('128 KiB')
+    text.value = '"' + 'é'.repeat(65536) + '"'
+    apply.click()
+    const utf8OverBoundary = status.dataset.status === 'error' && status.textContent.includes('128 KiB')
+
+    const inputChangeValue = variant(81)
+    const inputTransfer = new DataTransfer()
+    inputTransfer.items.add(new File([inputChangeValue], 'input-change.json', { type: 'application/json' }))
+    Object.defineProperty(file, 'files', { value: inputTransfer.files, configurable: true })
+    file.dispatchEvent(new Event('change', { bubbles: true }))
+    await waitForImportStatus(() => envOutput.value === inputChangeValue)
+    const fileInputChange = envOutput.value === inputChangeValue && text.value === inputChangeValue &&
+      status.dataset.status === 'ok'
+
     text.value = initial
     apply.click()
     envTab.click()
@@ -974,6 +1078,7 @@ try {
     document.querySelector('#tab-yaml').click()
     return {
       accessible,
+      nativeFileFocus,
       documentedShapes,
       pasteApplied,
       stringLiteralApplied,
@@ -989,6 +1094,15 @@ try {
       duplicateDropRejected,
       mimeRejected,
       multipleRejected,
+      slowOldFastNew,
+      fileThenPaste,
+      invalidBeatsOldSuccess,
+      staleErrorDiscarded,
+      unreadableLatestSafe,
+      oversizedFileSkippedRead,
+      utf8AtBoundary,
+      utf8OverBoundary,
+      fileInputChange,
       exactCopy
     }
   })()`)

@@ -258,17 +258,23 @@ const renderControls = () => {
 
 const MAXIMUM_LADDER_IMPORT_BYTES = 128 * 1024
 const textByteLength = (value: string) => new TextEncoder().encode(value).byteLength
-const setLadderImportStatus = (message: string, status: 'ok' | 'error') => {
+let ladderImportGeneration = 0
+const beginLadderImport = () => ++ladderImportGeneration
+const isCurrentLadderImport = (generation: number) => generation === ladderImportGeneration
+const setLadderImportStatus = (message: string, status: 'ok' | 'error', generation: number) => {
+  if (!isCurrentLadderImport(generation)) return
   ladderImportStatus.textContent = message
   ladderImportStatus.dataset.status = status
 }
-const applyLadderImport = (text: string) => {
+const applyLadderImport = (text: string, generation = beginLadderImport()) => {
+  if (!isCurrentLadderImport(generation)) return false
   if (textByteLength(text) > MAXIMUM_LADDER_IMPORT_BYTES) {
-    setLadderImportStatus('Import exceeds the 128 KiB size limit.', 'error')
+    setLadderImportStatus('Import exceeds the 128 KiB size limit.', 'error', generation)
     return false
   }
   try {
     const imported = parseLadderMarketsImport(text, state.scalar.MARKET_IDS)
+    if (!isCurrentLadderImport(generation)) return false
     state.ladder.splice(0, state.ladder.length, ...imported)
     selectedLadder = state.ladder[0]
     renderControls()
@@ -276,17 +282,23 @@ const applyLadderImport = (text: string) => {
     renderDynamic()
     setLadderImportStatus(
       `Applied ${imported.length} ladder market${imported.length === 1 ? '' : 's'}.`,
-      'ok'
+      'ok',
+      generation
     )
     return true
   } catch (error) {
-    setLadderImportStatus(error instanceof Error ? error.message : 'Invalid ladder JSON.', 'error')
+    setLadderImportStatus(
+      error instanceof Error ? error.message : 'Invalid ladder JSON.',
+      'error',
+      generation
+    )
     return false
   }
 }
 const applyLadderFile = async (files: FileList | readonly File[]) => {
+  const generation = beginLadderImport()
   if (files.length !== 1) {
-    setLadderImportStatus('Choose or drop exactly one JSON file.', 'error')
+    setLadderImportStatus('Choose or drop exactly one JSON file.', 'error', generation)
     return
   }
   const file = files[0]
@@ -294,34 +306,33 @@ const applyLadderFile = async (files: FileList | readonly File[]) => {
   const supportedMime =
     file.type === '' || file.type === 'application/json' || file.type === 'text/json'
   if (!file.name.toLowerCase().endsWith('.json') || !supportedMime) {
-    setLadderImportStatus('Choose a .json JSON file with a supported JSON MIME type.', 'error')
+    setLadderImportStatus(
+      'Choose a .json JSON file with a supported JSON MIME type.',
+      'error',
+      generation
+    )
     return
   }
   if (file.size > MAXIMUM_LADDER_IMPORT_BYTES) {
-    setLadderImportStatus('Import exceeds the 128 KiB size limit.', 'error')
+    setLadderImportStatus('Import exceeds the 128 KiB size limit.', 'error', generation)
     return
   }
   try {
     const text = await file.text()
-    if (applyLadderImport(text)) ladderImportText.value = text
+    if (!isCurrentLadderImport(generation)) return
+    if (applyLadderImport(text, generation) && isCurrentLadderImport(generation)) {
+      ladderImportText.value = text
+    }
   } catch {
-    setLadderImportStatus('The JSON file could not be read.', 'error')
+    setLadderImportStatus('The JSON file could not be read.', 'error', generation)
   }
 }
 required<HTMLButtonElement>('#apply-ladder-import').addEventListener('click', () => {
   applyLadderImport(ladderImportText.value)
 })
 ladderImportFile.addEventListener('change', () => {
-  if (ladderImportFile.files) void applyLadderFile(ladderImportFile.files)
+  void applyLadderFile(ladderImportFile.files ?? [])
   ladderImportFile.value = ''
-})
-ladderImportDrop.addEventListener('keydown', event => {
-  if (event.key !== 'Enter' && event.key !== ' ') return
-  event.preventDefault()
-  ladderImportFile.click()
-})
-ladderImportDrop.addEventListener('click', event => {
-  if (event.target !== ladderImportFile) ladderImportFile.click()
 })
 for (const eventName of ['dragenter', 'dragover']) {
   ladderImportDrop.addEventListener(eventName, event => {

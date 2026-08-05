@@ -188,6 +188,19 @@ main {
 .ladder-import .status {
   margin: 0;
 }
+.ladder-import__file-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+.ladder-import__file-picker .button {
+  cursor: pointer;
+}
+.ladder-import__file-picker input {
+  min-width: 0;
+  max-width: 100%;
+}
 .ladder-import__drop {
   display: grid;
   gap: 0.35rem;
@@ -209,9 +222,6 @@ main {
   border-color: var(--acid);
   background: #d8ff500d;
   box-shadow: 0 0 0 3px #d8ff5020;
-}
-.ladder-import__drop input {
-  margin-top: 0.35rem;
 }
 .ladder-import textarea {
   min-height: 8rem;

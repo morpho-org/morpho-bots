@@ -74,16 +74,24 @@
                 either. The production parser rejects unknown keys; applying replaces every ladder
                 only after the complete input validates. Maximum 128 KiB.
               </p>
+              <div class="ladder-import__file-picker">
+                <label class="button" for="ladder-import-file">Choose ladder JSON file</label>
+                <input
+                  id="ladder-import-file"
+                  type="file"
+                  accept=".json,application/json"
+                  aria-describedby="ladder-import-help"
+                />
+              </div>
               <div
                 id="ladder-import-drop"
                 class="ladder-import__drop"
-                role="button"
-                tabindex="0"
+                role="group"
+                aria-label="JSON file drop region"
                 aria-describedby="ladder-import-help"
               >
                 <strong>Drop one ladder .json file here</strong>
-                <span>or activate to choose a file</span>
-                <input id="ladder-import-file" type="file" accept=".json,application/json" />
+                <span>or use the file chooser above</span>
               </div>
               <label class="field" for="ladder-import-text">
                 <span class="field__heading">Paste ladder JSON</span>
