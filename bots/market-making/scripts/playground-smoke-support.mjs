@@ -27,6 +27,11 @@ const commonChromiumPaths = [
 
 const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
 
+export const describeHttpFailures = responses =>
+  responses
+    .filter(({ status }) => status >= 400)
+    .map(({ url, status, type }) => `${status} ${type ?? 'Unknown'} ${url}`)
+
 export const runBounded = async (operation, { description, timeoutMs }) => {
   const controller = new AbortController()
   let timer

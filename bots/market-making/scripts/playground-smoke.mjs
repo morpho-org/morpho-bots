@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import {
   closeOwnedProcessTreeGracefully,
   createCdpClient,
+  describeHttpFailures,
   discoverChromium,
   openWebSocket,
   prepareFreshDist,
@@ -217,13 +218,10 @@ try {
     return discoveredPort
   }, browserReadiness('Chromium DevToolsActivePort; increase PLAYGROUND_SMOKE_READINESS_TIMEOUT_MS only when cold startup is expected to need longer'))
   const target = await waitForReadiness(async signal => {
-    const response = await fetch(
-      `http://127.0.0.1:${debuggingPort}/json/new?http://127.0.0.1:${port}`,
-      {
-        method: 'PUT',
-        signal
-      }
-    )
+    const response = await fetch(`http://127.0.0.1:${debuggingPort}/json/new?about:blank`, {
+      method: 'PUT',
+      signal
+    })
     if (!response.ok) throw new Error(`browser target endpoint returned HTTP ${response.status}`)
     return response.json()
   }, browserReadiness('Chromium DevTools target endpoint'))
@@ -239,7 +237,7 @@ try {
   const requests = []
   const networkRequestEvents = []
   const networkFailures = []
-  const responseUrls = []
+  const networkResponses = []
   const consoleErrors = []
   const consoleMessages = []
   browserClient = createCdpClient(socket, {
@@ -253,8 +251,13 @@ try {
         })
       }
       if (message.method === 'Network.loadingFailed') networkFailures.push(message.params)
-      if (message.method === 'Network.responseReceived')
-        responseUrls.push(message.params.response.url)
+      if (message.method === 'Network.responseReceived') {
+        networkResponses.push({
+          status: message.params.response.status,
+          type: message.params.type,
+          url: message.params.response.url
+        })
+      }
       if (message.method === 'Runtime.exceptionThrown')
         consoleErrors.push(message.params.exceptionDetails.text)
       if (message.method === 'Runtime.consoleAPICalled')
@@ -394,9 +397,10 @@ try {
     ),
     "playground CSP does not block network connections with connect-src 'none'"
   )
+  const httpFailuresBeforeCsp = describeHttpFailures(networkResponses)
   assert(
-    consoleErrors.length === 0,
-    `browser errors before CSP probes: ${consoleErrors.join('; ')}`
+    consoleErrors.length === 0 && httpFailuresBeforeCsp.length === 0,
+    `browser errors before CSP probes: ${consoleErrors.join('; ') || 'none'}; HTTP failures (status resource-type URL): ${httpFailuresBeforeCsp.join('; ') || 'none'}`
   )
   const cspRequestOffset = networkRequestEvents.length
   const cspProof = await evaluate(`(async () => {
@@ -460,8 +464,8 @@ try {
       .filter(({ blockedReason }) => blockedReason === 'csp')
       .map(({ requestId }) => requestId)
   )
-  const cspExternalResponses = responseUrls.filter(
-    url =>
+  const cspExternalResponses = networkResponses.filter(
+    ({ url }) =>
       url.startsWith('https://csp-probe.invalid/') || url.startsWith('wss://csp-probe.invalid/')
   )
   assert(
@@ -1762,6 +1766,31 @@ try {
     if (!url.startsWith(`http://127.0.0.1:${port}/`)) return false
     return !new URL(url).pathname.startsWith(basePath)
   })
+  const expectedLocalUrls = await evaluate(`(() => {
+    const isLocal = url => url.startsWith(location.origin + '/')
+    return {
+      document: location.href,
+      scripts: [...document.scripts].map(script => script.src).filter(isLocal),
+      stylesheets: [...document.querySelectorAll('link[rel="stylesheet"]')]
+        .map(link => link.href)
+        .filter(isLocal)
+    }
+  })()`)
+  const localResponses = networkResponses.filter(({ url }) =>
+    url.startsWith(`http://127.0.0.1:${port}/`)
+  )
+  const actualLocalResources = localResponses
+    .map(({ status, type, url }) => `${status} ${type} ${url}`)
+    .sort()
+  const expectedLocalResources = [
+    `200 Document ${expectedLocalUrls.document}`,
+    ...expectedLocalUrls.scripts.map(url => `200 Script ${url}`),
+    ...expectedLocalUrls.stylesheets.map(url => `200 Stylesheet ${url}`)
+  ].sort()
+  assert(
+    JSON.stringify(actualLocalResources) === JSON.stringify(expectedLocalResources),
+    `local document/JS/CSS responses were not exact: ${JSON.stringify({ actualLocalResources, expectedLocalResources })}`
+  )
   const securityTranscript = [...requests, ...consoleMessages].join('\n')
   for (const marker of [
     'rpc-password',
@@ -1782,6 +1811,10 @@ try {
     `local requests escaped ${basePath}: ${outsideBasePath.join(', ')}`
   )
   assert(consoleErrors.length === 0, `browser console errors: ${consoleErrors.join('; ')}`)
+  assert(
+    describeHttpFailures(networkResponses).length === 0,
+    `HTTP failures (status resource-type URL): ${describeHttpFailures(networkResponses).join('; ')}`
+  )
   console.log(`browser smoke: PASS (${requests.length} local requests, 0 unexpected requests)`)
 } finally {
   process.off('SIGINT', onSignal)

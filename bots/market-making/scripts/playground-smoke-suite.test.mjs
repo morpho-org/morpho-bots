@@ -67,6 +67,8 @@ test('browser lifecycle uses separate bounded build, startup, body, UI, CDP, and
   assert.match(smokeSource, /const startupDeadline = performance\.now\(\) \+ startupTimeout/)
   assert.match(smokeSource, /disposeResult: openedSocket => openedSocket\.close\(\)/)
   assert.match(smokeSource, /createCdpClient\(socket/)
+  assert.match(smokeSource, /\/json\/new\?about:blank/)
+  assert.doesNotMatch(smokeSource, /\/json\/new\?http:\/\/127\.0\.0\.1/)
   assert.match(smokeSource, /phaseDeadline = performance\.now\(\) \+ bodyTimeout/)
   assert.match(smokeSource, /uiReadiness\('clipboard fallback status'\)/)
   assert.match(smokeSource, /description: 'smoke cleanup'/)

@@ -130,6 +130,16 @@ test('browser test budget is the sum of bounded lifecycle phases plus grace', ()
   )
 })
 
+test('HTTP failure diagnostics identify status, resource type, and URL', () => {
+  assert.deepEqual(
+    smokeSupport.describeHttpFailures([
+      { status: 200, type: 'Document', url: 'http://127.0.0.1:3000/morpho-bots/' },
+      { status: 404, type: 'Image', url: 'http://127.0.0.1:3000/morpho-bots/favicon.ico' }
+    ]),
+    ['404 Image http://127.0.0.1:3000/morpho-bots/favicon.ico']
+  )
+})
+
 test('bounded lifecycle operations abort at their own monotonic deadline', async () => {
   let observedSignal
   await assert.rejects(
