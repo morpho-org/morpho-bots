@@ -292,9 +292,12 @@ try {
   })
   const command = (method, params = {}) =>
     browserClient.command(method, params, { deadline: phaseDeadline })
+  let evaluationId = 0
   const evaluate = async expression => {
+    const objectGroup = `playground-smoke-evaluation-${evaluationId++}`
     const result = await command('Runtime.evaluate', {
       expression,
+      objectGroup,
       awaitPromise: true,
       returnByValue: true
     })
