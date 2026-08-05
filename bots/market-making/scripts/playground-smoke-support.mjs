@@ -959,12 +959,13 @@ export const prepareFreshDist = async ({
   onTempCreated = async () => {},
   processRunner,
   removeTemporaryDist = rm,
-  signal
+  signal,
+  temporaryRoot = tmpdir()
 }) => {
   if (signal?.aborted) throw signal.reason
   await rm(join(root, 'playground/dist'), { recursive: true, force: true })
   if (signal?.aborted) throw signal.reason
-  const dist = mkdtempSync(join(tmpdir(), 'market-making-playground-dist-'))
+  const dist = mkdtempSync(join(temporaryRoot, 'market-making-playground-dist-'))
   let cleanupPromise
   const cleanup = () =>
     (cleanupPromise ??= Promise.resolve().then(() =>
@@ -1062,13 +1063,14 @@ const contentTypes = new Map([
 const escapesRoot = relativePath =>
   relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)
 
-const rejectStaticRequest = response => {
+const rejectStaticRequest = (request, response) => {
   if (response.destroyed) return
   if (response.headersSent) {
     response.destroy()
     return
   }
-  response.writeHead(404).end('Not found')
+  response.writeHead(404)
+  response.end(request.method === 'HEAD' ? undefined : 'Not found')
 }
 
 export const startStaticServer = async (
@@ -1077,6 +1079,10 @@ export const startStaticServer = async (
 ) => {
   const servedRoot = await realpath(root)
   const server = createServer(async (request, response) => {
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      response.writeHead(405, { Allow: 'GET, HEAD', 'Content-Length': 0 }).end()
+      return
+    }
     try {
       const requestUrl = new URL(request.url ?? '/', 'http://127.0.0.1')
       const pathname = decodeURIComponent(requestUrl.pathname)
@@ -1084,39 +1090,51 @@ export const startStaticServer = async (
       const candidate = resolve(servedRoot, `.${requestedPath}`)
       const candidateRelative = relative(servedRoot, candidate)
       if (escapesRoot(candidateRelative)) {
-        rejectStaticRequest(response)
+        rejectStaticRequest(request, response)
         return
       }
       const actual = await realpath(candidate)
       const actualRelative = relative(servedRoot, actual)
       if (escapesRoot(actualRelative)) {
-        rejectStaticRequest(response)
+        rejectStaticRequest(request, response)
         return
       }
-      if (!(await lstat(actual)).isFile()) {
-        rejectStaticRequest(response)
+      const metadata = await lstat(actual)
+      if (!metadata.isFile()) {
+        rejectStaticRequest(request, response)
+        return
+      }
+      const headers = {
+        'Cache-Control': 'no-store',
+        'Content-Length': metadata.size,
+        'Content-Type': contentTypes.get(extname(actual)) ?? 'application/octet-stream'
+      }
+      if (request.method === 'HEAD') {
+        response.writeHead(200, headers).end()
         return
       }
       const stream = createFileStream(actual)
       let streamFailed = false
       stream.once('error', () => {
         streamFailed = true
-        rejectStaticRequest(response)
+        rejectStaticRequest(request, response)
       })
       stream.once('open', () => {
         if (streamFailed || stream.destroyed || response.destroyed || response.writableEnded) return
-        response.writeHead(200, {
-          'Cache-Control': 'no-store',
-          'Content-Type': contentTypes.get(extname(actual)) ?? 'application/octet-stream'
-        })
+        response.writeHead(200, headers)
         stream.pipe(response)
       })
       response.once('close', () => {
         if (!stream.destroyed) stream.destroy()
       })
     } catch {
-      rejectStaticRequest(response)
+      rejectStaticRequest(request, response)
     }
+  })
+  server.on('connect', (_request, socket) => {
+    socket.end(
+      'HTTP/1.1 405 Method Not Allowed\r\nAllow: GET, HEAD\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'
+    )
   })
   const sockets = new Set()
   server.on('connection', socket => {

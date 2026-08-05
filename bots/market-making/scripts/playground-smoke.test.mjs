@@ -1446,20 +1446,34 @@ while True:
   }
 )
 
-test('failed fresh build removes its temporary output and reports the child failure', async () => {
+test('failed fresh build removes only its newly attributable temporary output', async () => {
   const root = await temporaryDirectory('playground-failed-build-')
+  const isolatedTmp = await temporaryDirectory('playground-failed-build-tmp-')
+  const sibling = await mkdtemp(join(isolatedTmp, 'market-making-playground-dist-sibling-'))
   const fakeBun = join(root, 'failing-bun')
   await writeFile(fakeBun, '#!/bin/sh\necho deliberate-build-failure >&2\nexit 23\n')
   await chmod(fakeBun, 0o755)
+  const baseline = new Set(await readdir(isolatedTmp))
+  let created
 
   await assert.rejects(
-    prepareFreshDist({ root, executable: fakeBun }),
+    prepareFreshDist({
+      root,
+      executable: fakeBun,
+      temporaryRoot: isolatedTmp,
+      onTempCreated: directory => {
+        created = directory
+      }
+    }),
     /Fresh playground build failed with exit code 23[\s\S]*deliberate-build-failure/
   )
+  assert.equal(created?.startsWith(`${isolatedTmp}/`), true)
+  const after = await readdir(isolatedTmp)
   assert.deepEqual(
-    (await readdir(tmpdir())).filter(name => name.startsWith('market-making-playground-dist-')),
+    after.filter(name => !baseline.has(name)),
     []
   )
+  assert.ok(after.includes(sibling.slice(isolatedTmp.length + 1)))
 })
 
 test('an ownership callback throw removes the unregistered temporary dist and preserves the error', async () => {

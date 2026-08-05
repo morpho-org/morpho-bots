@@ -1,7 +1,17 @@
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { createReadStream, unlinkSync } from 'node:fs'
-import { access, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import {
+  access,
+  chmod,
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile
+} from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { createConnection } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -9,6 +19,7 @@ import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 
 import { createPortableProcessRunner } from './playground-process.mjs'
 import {
@@ -22,6 +33,7 @@ import { prepareFreshDist, startStaticServer } from './playground-smoke-support.
 const root = fileURLToPath(new URL('..', import.meta.url))
 const launcher = fileURLToPath(new URL('./playground-serve.mjs', import.meta.url))
 const temporaryDirectories = []
+const execFileAsync = promisify(execFile)
 
 const temporaryDirectory = async prefix => {
   const directory = await mkdtemp(join(tmpdir(), prefix))
@@ -65,6 +77,21 @@ const assertProcessNotLive = async pid => {
   }
   assert.ok(state === 'missing' || state === 'Z', `process ${pid} remains live in state ${state}`)
 }
+
+const rawHttpRequest = (server, method, path = '/malformed%') =>
+  new Promise((resolve, reject) => {
+    const socket = createConnection({ host: server.host, port: server.port })
+    let response = ''
+    socket.setEncoding('utf8')
+    socket.once('error', reject)
+    socket.on('data', chunk => {
+      response += chunk
+    })
+    socket.once('end', () => resolve(response))
+    socket.once('connect', () => {
+      socket.write(`${method} ${path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n`)
+    })
+  })
 
 const writeBlockingBun = async root => {
   const executable = join(root, 'blocking-bun')
@@ -138,6 +165,184 @@ test('installed package dependencies still run the fast frozen lockfile check', 
     calls.map(call => call.args),
     [['install', '--frozen-lockfile']]
   )
+})
+
+test('declared market-making package bin retains its original tracked mode', async () => {
+  const { stdout } = await execFileAsync('git', ['ls-files', '--stage', '--', 'src/index.ts'], {
+    cwd: root
+  })
+  assert.match(stdout, /^100644 /)
+})
+
+for (const [platform, originalMode] of [
+  ['linux', 0o644],
+  ['darwin', 0o755]
+]) {
+  test(`frozen launcher install restores package bin mode ${originalMode.toString(8)} and content (${platform})`, async () => {
+    const repoRoot = await temporaryDirectory(`playground-clean-install-${platform}-`)
+    const packageRoot = join(repoRoot, 'bots/market-making')
+    const entrypoint = join(packageRoot, 'src/index.ts')
+    const executable = join(repoRoot, 'fake-bun')
+    const source = 'console.log("package bin content must stay unchanged")\n'
+    await writeResolvableDependencies(packageRoot)
+    await mkdir(join(packageRoot, 'src'), { recursive: true })
+    await writeFile(
+      join(packageRoot, 'package.json'),
+      JSON.stringify({ type: 'module', bin: { mm: './src/index.ts' } })
+    )
+    await writeFile(entrypoint, source, { mode: originalMode })
+    await writeFile(
+      executable,
+      '#!/usr/bin/env node\nrequire("node:fs").chmodSync(process.env.PACKAGE_BIN, 0o755)\n',
+      { mode: 0o755 }
+    )
+    await execFileAsync('git', ['init', '--quiet'], { cwd: repoRoot })
+    await execFileAsync('git', ['add', '.'], { cwd: repoRoot })
+    await execFileAsync(
+      'git',
+      [
+        '-c',
+        'user.name=test',
+        '-c',
+        'user.email=test@example.com',
+        'commit',
+        '--quiet',
+        '-m',
+        'baseline'
+      ],
+      { cwd: repoRoot }
+    )
+    const status = async () =>
+      (await execFileAsync('git', ['status', '--short'], { cwd: repoRoot })).stdout
+    assert.equal(await status(), '')
+
+    const processRunner = createPortableProcessRunner({ platform })
+    for (let install = 0; install < 2; install++) {
+      await ensureFrozenDependencies({
+        repoRoot,
+        packageRoot,
+        executable,
+        env: { ...process.env, PACKAGE_BIN: entrypoint },
+        processRunner
+      })
+      assert.equal(await status(), '')
+      assert.equal(await readFile(entrypoint, 'utf8'), source)
+      assert.equal((await stat(entrypoint)).mode & 0o777, originalMode)
+    }
+  })
+}
+
+for (const outcome of ['failure', 'abort']) {
+  test(`frozen install ${outcome} restores declared bin permissions and content`, async () => {
+    const repoRoot = await temporaryDirectory(`playground-restore-${outcome}-`)
+    const packageRoot = join(repoRoot, 'bots/market-making')
+    const entrypoint = join(packageRoot, 'src/index.ts')
+    const source = 'unchanged through failed install\n'
+    await writeResolvableDependencies(packageRoot)
+    await mkdir(join(packageRoot, 'src'), { recursive: true })
+    await writeFile(join(repoRoot, 'package.json'), JSON.stringify({ workspaces: ['bots/*'] }))
+    await writeFile(
+      join(packageRoot, 'package.json'),
+      JSON.stringify({ type: 'module', bin: './src/index.ts' })
+    )
+    await writeFile(entrypoint, source, { mode: 0o644 })
+    const controller = new AbortController()
+    await assert.rejects(
+      ensureFrozenDependencies({
+        repoRoot,
+        packageRoot,
+        signal: controller.signal,
+        processRunner: async () => {
+          await chmod(entrypoint, 0o755)
+          if (outcome === 'abort') controller.abort(new Error('install interrupted'))
+          return { code: outcome === 'failure' ? 23 : 0, signal: null }
+        }
+      }),
+      outcome === 'failure' ? /exit code 23/ : /install interrupted/
+    )
+    assert.equal((await stat(entrypoint)).mode & 0o777, 0o644)
+    assert.equal(await readFile(entrypoint, 'utf8'), source)
+  })
+}
+
+test('permission restoration aggregates every failure with the install error', async () => {
+  const repoRoot = await temporaryDirectory('playground-restore-errors-')
+  const packageRoot = join(repoRoot, 'bots/market-making')
+  await writeResolvableDependencies(packageRoot)
+  await mkdir(join(packageRoot, 'src'), { recursive: true })
+  await writeFile(join(repoRoot, 'package.json'), JSON.stringify({ workspaces: ['bots/*'] }))
+  await writeFile(
+    join(packageRoot, 'package.json'),
+    JSON.stringify({ bin: { first: 'src/one.js', second: 'src/two.js' } })
+  )
+  await writeFile(join(packageRoot, 'src/one.js'), '', { mode: 0o644 })
+  await writeFile(join(packageRoot, 'src/two.js'), '', { mode: 0o755 })
+  const restorationAttempts = []
+  await assert.rejects(
+    ensureFrozenDependencies({
+      repoRoot,
+      packageRoot,
+      chmodFile: async path => {
+        restorationAttempts.push(path)
+        throw new Error(`refused ${path}`)
+      },
+      processRunner: async () => ({ code: 23, signal: null })
+    }),
+    error => {
+      assert.ok(error instanceof AggregateError)
+      assert.equal(error.errors.length, 3)
+      assert.match(error.errors[0].message, /exit code 23/)
+      assert.equal(
+        error.errors.filter(item => /Could not restore permissions/.test(item.message)).length,
+        2
+      )
+      return true
+    }
+  )
+  assert.equal(restorationAttempts.length, 2)
+})
+
+test('bin mode protection is non-destructive on Windows', async () => {
+  const repoRoot = await temporaryDirectory('playground-windows-modes-')
+  const packageRoot = join(repoRoot, 'bots/market-making')
+  await writeResolvableDependencies(packageRoot)
+  await ensureFrozenDependencies({
+    repoRoot,
+    packageRoot,
+    platform: 'win32',
+    chmodFile: async () => {
+      throw new Error('chmod must not run on Windows')
+    },
+    processRunner: async () => ({ code: 0, signal: null })
+  })
+})
+
+test('workspace bin discovery skips escaping and symlink targets', async () => {
+  const repoRoot = await temporaryDirectory('playground-safe-bin-metadata-')
+  const packageRoot = join(repoRoot, 'bots/market-making')
+  const outside = join(repoRoot, 'outside.js')
+  await writeResolvableDependencies(packageRoot)
+  await writeFile(outside, 'outside\n', { mode: 0o644 })
+  await symlink(outside, join(packageRoot, 'linked-bin.js'))
+  await writeFile(
+    join(packageRoot, 'package.json'),
+    JSON.stringify({
+      bin: { escaping: '../../outside.js', linked: 'linked-bin.js' },
+      type: 'module'
+    })
+  )
+  let restorationAttempted = false
+  await ensureFrozenDependencies({
+    repoRoot,
+    packageRoot,
+    chmodFile: async () => {
+      restorationAttempted = true
+    },
+    processRunner: async () => ({ code: 0, signal: null })
+  })
+  assert.equal(restorationAttempted, false)
+  assert.equal((await stat(outside)).mode & 0o777, 0o644)
+  assert.equal(await readFile(outside, 'utf8'), 'outside\n')
 })
 
 test('frozen install failures report the exact command and exit code', async () => {
@@ -312,7 +517,7 @@ test('signal exit succeeds only for the exact signal reason after completely suc
   )
 })
 
-test('static server returns correct content types, 404s, and an exact URL', async () => {
+test('static server allows only GET and HEAD with matching representation headers', async () => {
   const served = await temporaryDirectory('playground-http-')
   const outside = await temporaryDirectory('playground-http-outside-')
   await writeFile(
@@ -334,9 +539,15 @@ test('static server returns correct content types, 404s, and an exact URL', asyn
       ['/app.js', 'text/javascript; charset=utf-8'],
       ['/app.css', 'text/css; charset=utf-8']
     ]) {
-      const response = await fetch(`${server.url}${path}`)
-      assert.equal(response.status, 200)
-      assert.equal(response.headers.get('content-type'), type)
+      const get = await fetch(`${server.url}${path}`)
+      const head = await fetch(`${server.url}${path}`, { method: 'HEAD' })
+      assert.equal(get.status, 200)
+      assert.equal(head.status, get.status)
+      for (const header of ['content-type', 'cache-control', 'content-length']) {
+        assert.equal(head.headers.get(header), get.headers.get(header), `${path} ${header}`)
+      }
+      assert.equal(get.headers.get('content-type'), type)
+      assert.equal(await head.text(), '')
     }
     assert.equal(await (await fetch(`${server.url}/..valid.txt`)).text(), 'valid root file')
     assert.equal(
@@ -344,6 +555,16 @@ test('static server returns correct content types, 404s, and an exact URL', asyn
       'valid nested file'
     )
     assert.equal((await fetch(`${server.url}/missing`)).status, 404)
+    const missingHead = await fetch(`${server.url}/missing`, { method: 'HEAD' })
+    assert.equal(missingHead.status, 404)
+    assert.equal(await missingHead.text(), '')
+    for (const method of ['POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'TRACE', 'CONNECT']) {
+      const response = await rawHttpRequest(server, method)
+      const [headers, body] = response.split('\r\n\r\n')
+      assert.match(headers, /^HTTP\/1\.1 405 Method Not Allowed\r\n/i, method)
+      assert.match(headers, /^Allow: GET, HEAD$/im, method)
+      assert.equal(body, '', method)
+    }
     for (const path of [
       '/../secret',
       '/%2e%2e%2fsecret',
@@ -402,7 +623,12 @@ test('static server safely terminates a response on a stream error after open', 
     }
   })
   try {
-    await assert.rejects(fetch(`${server.url}/broken.txt`).then(response => response.text()))
+    const rawResponse = await rawHttpRequest(server, 'GET', '/broken.txt')
+    const [headers, body] = rawResponse.split('\r\n\r\n')
+    assert.match(headers, /^HTTP\/1\.1 200 OK\r\n/i)
+    assert.match(headers, /^Content-Length: 13$/im)
+    assert.match(body, /^partial(?:\r\n)?$/)
+    assert.ok(Buffer.byteLength(body) < 13)
     assert.equal((await fetch(`${server.url}/`)).status, 200)
   } finally {
     await server.close()
