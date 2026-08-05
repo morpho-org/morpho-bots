@@ -401,7 +401,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error?: Error }
   }
 }
 
-const Playground = () => {
+const Playground = ({ rootElement }: { rootElement: HTMLElement }) => {
   const initialState = useRef<PlaygroundState | null>(null)
   if (initialState.current === null) initialState.current = createDefaultPlaygroundState()
   const uiIdSequence = useRef(0)
@@ -620,7 +620,9 @@ const Playground = () => {
     else if (event.key === 'End') next = formats.length - 1
     else return
     event.preventDefault()
-    activateTab(formats[next], true)
+    const format = formats[next]
+    if (format === undefined) return
+    activateTab(format, true)
   }
   const copyExport = async (value: string) => {
     const output = outputRefs.current[activeExport]
@@ -1252,6 +1254,6 @@ const rootElement = document.getElementById('root')
 if (!rootElement) throw new Error('Missing playground root')
 createRoot(rootElement).render(
   <ErrorBoundary>
-    <Playground />
+    <Playground rootElement={rootElement} />
   </ErrorBoundary>
 )

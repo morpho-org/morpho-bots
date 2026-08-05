@@ -2,11 +2,13 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, relative, sep } from 'node:path'
+import { gzipSync } from 'node:zlib'
 import ts from 'typescript'
 
 import { productionPlaygroundBuildArguments } from '../../scripts/playground-build-arguments.mjs'
 
 const packageRoot = join(import.meta.dir, '../..')
+const PRODUCTION_ARTIFACT_GZIP_BUDGET_BYTES = 150 * 1024
 const temporaryDirectories = new Set<string>()
 const createOutdir = async () => {
   const directory = await mkdtemp(join(tmpdir(), 'market-making-artifact-test-'))
@@ -84,7 +86,11 @@ const readArtifact = async (dist: string) => {
         : text === undefined
           ? contents
           : Buffer.from(text)
-      return { file: [name, normalizedContents] as const, text }
+      return {
+        file: [name, normalizedContents] as const,
+        gzipBytes: gzipSync(contents, { level: 9 }).byteLength,
+        text
+      }
     })
   )
   const files = entriesWithContents.map(entry => entry.file)
@@ -92,7 +98,8 @@ const readArtifact = async (dist: string) => {
   expect(new Set(names).size).toBe(names.length)
   files.sort(([left], [right]) => left.localeCompare(right))
   const text = entriesWithContents.flatMap(entry => entry.text ?? []).join('\n')
-  return { files, names, text }
+  const gzipBytes = entriesWithContents.reduce((total, entry) => total + entry.gzipBytes, 0)
+  return { files, gzipBytes, names, text }
 }
 const expectSameArtifact = (
   actual: Awaited<ReturnType<typeof readArtifact>>,
@@ -103,6 +110,10 @@ const expectSameArtifact = (
 }
 
 const expectProductionArtifact = (artifact: Awaited<ReturnType<typeof readArtifact>>) => {
+  expect(
+    artifact.gzipBytes,
+    `production playground artifact is ${artifact.gzipBytes} gzip bytes; budget is ${PRODUCTION_ARTIFACT_GZIP_BUDGET_BYTES} bytes`
+  ).toBeLessThanOrEqual(PRODUCTION_ARTIFACT_GZIP_BUDGET_BYTES)
   expect(artifact.names.some(name => name.endsWith('.map'))).toBe(false)
   const { text } = artifact
   expect(text).toContain('Minified React error')
