@@ -1,6 +1,7 @@
 import type { Logger, LogLevel } from '@repo/bot-kit'
 
-import { describe, expect, mock, spyOn, test } from 'bun:test'
+import { setTimeout as sleep } from 'node:timers/promises'
+import { describe, expect, test, vi } from 'vitest'
 
 import { createBotObservability, installProcessObservers } from '../src/bot-observability.utils'
 
@@ -24,7 +25,7 @@ const identity = { bot: 'test-bot', chainId: 8453, errorName }
 describe('createBotObservability', () => {
   test('ships lifecycle, heartbeat, and record events without consuming CLI output', async () => {
     const { logger, records } = captureLogger()
-    const heartbeat = { start: mock(async () => undefined), stop: mock(() => undefined) }
+    const heartbeat = { start: vi.fn(async () => undefined), stop: vi.fn(() => undefined) }
     const observability = createBotObservability({ ...identity, logger, heartbeat })
     const cycle = {
       event: 'market-making.cycle',
@@ -89,7 +90,7 @@ describe('createBotObservability', () => {
 
   test('records a fresh lifecycle start after a clean stop so process restarts remain queryable', async () => {
     const { logger, records } = captureLogger()
-    const heartbeat = { start: mock(async () => undefined), stop: mock(() => undefined) }
+    const heartbeat = { start: vi.fn(async () => undefined), stop: vi.fn(() => undefined) }
     const observability = createBotObservability({ ...identity, logger, heartbeat })
 
     await observability.start()
@@ -150,9 +151,9 @@ describe('createBotObservability', () => {
 
   test('sanitizes heartbeat transport failures before logging', async () => {
     const { logger, records } = captureLogger()
-    const fetchSpy = spyOn(globalThis, 'fetch').mockRejectedValue(
-      new Error('heartbeat secret URL and raw network response')
-    )
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new Error('heartbeat secret URL and raw network response'))
     try {
       const observability = createBotObservability({
         ...identity,
@@ -161,7 +162,7 @@ describe('createBotObservability', () => {
       })
 
       await observability.start()
-      await Bun.sleep(0)
+      await sleep(0)
       observability.stop('completed')
 
       expect(records).toContainEqual({
@@ -179,20 +180,20 @@ describe('createBotObservability', () => {
 
 describe('installProcessObservers', () => {
   test('observes fatal exceptions and rethrows unhandled rejections after recording', () => {
-    const unexpected = mock(
+    const unexpected = vi.fn(
       (_error: unknown, _origin: 'uncaughtException' | 'unhandledRejection') => undefined
     )
     let exceptionListener: ((error: Error, origin: string) => void) | undefined
     let rejectionListener: ((reason: unknown) => void) | undefined
     const target = {
-      on: mock((event: string, value: (...args: never[]) => void) => {
+      on: vi.fn((event: string, value: (...args: never[]) => void) => {
         if (event === 'uncaughtExceptionMonitor') {
           exceptionListener = value as typeof exceptionListener
         } else {
           rejectionListener = value as typeof rejectionListener
         }
       }),
-      removeListener: mock((_event: string, _value: (...args: never[]) => void) => undefined)
+      removeListener: vi.fn((_event: string, _value: (...args: never[]) => void) => undefined)
     }
 
     const cleanup = installProcessObservers({ unexpected }, target)

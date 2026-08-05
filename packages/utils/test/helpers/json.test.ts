@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'bun:test'
 import { Address } from 'viem'
+import { describe, expect, it } from 'vitest'
 
 import { bigintReplacer, bigIntReviver, parse, stringify } from '../../src/helpers/json'
 

@@ -1,7 +1,7 @@
 import type { Hex } from 'viem'
 
-import { describe, expect, it } from 'bun:test'
 import { createClient, custom, decodeFunctionData, encodeAbiParameters, getAddress } from 'viem'
+import { describe, expect, it } from 'vitest'
 
 import type { QuoteLogger } from '../../src/quoting'
 
@@ -115,7 +115,9 @@ describe('createErc4626Unwrapper', () => {
     })
     const unwrapper = createErc4626Unwrapper({ client, logger: NOOP_LOGGER })
 
-    expect(unwrapper.resolve({ token: VAULT, amountIn: 1n, executor: EXECUTOR })).rejects.toThrow()
+    await expect(
+      unwrapper.resolve({ token: VAULT, amountIn: 1n, executor: EXECUTOR })
+    ).rejects.toThrow()
 
     // The outage was not cached as "not a vault": once the RPC recovers, the same token resolves.
     healthy = true

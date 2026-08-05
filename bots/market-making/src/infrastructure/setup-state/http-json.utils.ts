@@ -61,5 +61,7 @@ export const booksJsonRequestFetch = (request: JsonRequest, timeoutMs: number): 
     const value = await request(inputUrl, 'morpho-api', timeoutMs)
     return Response.json(value)
   }
-  return Object.assign(adapter, { preconnect: fetch.preconnect })
+  // bun's `fetch` carried a `preconnect` property that had to be copied to satisfy `typeof fetch`;
+  // Node's `fetch` type has no such member, so the adapter alone is assignable.
+  return adapter
 }

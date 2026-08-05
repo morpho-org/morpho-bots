@@ -1,6 +1,6 @@
 import type { Hex } from 'viem'
 
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 
 import { BootstrapConfigurationError } from '../../../src/domain/bootstrap/bootstrap-configuration.error'
 import {
@@ -39,7 +39,7 @@ const parameters = {
 }
 
 describe('validateBootstrapConfig', () => {
-  test.each(['0x12', `0x${'gg'.repeat(32)}`, `0x${'11'.repeat(31)}`])(
+  test.each<`0x${string}`>(['0x12', `0x${'gg'.repeat(32)}`, `0x${'11'.repeat(31)}`])(
     'rejects malformed market id %s',
     malformedMarketId => {
       expect(() =>

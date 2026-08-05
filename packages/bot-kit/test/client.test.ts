@@ -1,8 +1,8 @@
 import type { Client } from 'viem'
 
-import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
 import { base } from 'viem/chains'
+import { describe, expect, it } from 'vitest'
 
 import { assertContractDeployed, createDeploylessClient } from '../src/client'
 
@@ -32,10 +32,10 @@ describe('createDeploylessClient', () => {
 })
 
 describe('assertContractDeployed', () => {
-  it('throws when the address holds no code', () => {
-    expect(assertContractDeployed(stubClient('0x'), ADDRESS, 'EXECUTOOOR_ADDRESS')).rejects.toThrow(
-      /EXECUTOOOR_ADDRESS/
-    )
+  it('throws when the address holds no code', async () => {
+    await expect(
+      assertContractDeployed(stubClient('0x'), ADDRESS, 'EXECUTOOOR_ADDRESS')
+    ).rejects.toThrow(/EXECUTOOOR_ADDRESS/)
   })
 
   it('resolves when the address holds code', async () => {

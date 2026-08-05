@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
+import { describe, expect, it } from 'vitest'
 
 import type { RateLimitedClient } from '../../src/http-client'
 import type { PriceParameters, QuoteParameters } from '../../src/types'

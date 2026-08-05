@@ -1,6 +1,6 @@
 import type { Hex } from 'viem'
 
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 
 import { batchProspectiveBook, crossedMarketIds, hasNegativeSpread } from '../src/book.utils'
 

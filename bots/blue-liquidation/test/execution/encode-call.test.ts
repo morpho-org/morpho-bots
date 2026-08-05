@@ -1,8 +1,8 @@
 import type { SwapPlan, SwapStep } from '@repo/swaps'
 import type { Hex } from 'viem'
 
-import { describe, expect, it } from 'bun:test'
 import { decodeAbiParameters, decodeFunctionData, getAddress } from 'viem'
+import { describe, expect, it } from 'vitest'
 
 import type { MarketParams } from '../../src/market'
 

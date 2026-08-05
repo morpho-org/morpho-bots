@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 
 import type { SetupCheckReport } from '../../src/application/setup/setup-check.service'
 import type { AnvilHandle } from './anvil'
@@ -35,7 +35,7 @@ describe('market-making setup check on a pinned Base fork', () => {
 
   beforeAll(async () => {
     anvil = await startAnvil()
-    api = startSetupApi()
+    api = await startSetupApi()
 
     const setup = await setupMaker(anvil)
     expect(setup.balance).toBe(MAKER_USDC_BALANCE)

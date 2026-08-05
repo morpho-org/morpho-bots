@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'bun:test'
 import { maxUint256 } from 'viem'
+import { describe, expect, it } from 'vitest'
 
 import { ORACLE_PRICE_SCALE, WAD } from '../../src/constants'
 import { isRcfExempt, maxRepaidPreMaturity } from '../../src/sizing/rcf'

@@ -4,52 +4,38 @@
   "private": true,
   "license": "Apache-2.0",
   "bin": {
-    "mm": "./src/index.ts"
+    "mm": "./dist/src/index.js"
   },
   "type": "module",
   "scripts": {
-    "deploy:railway": "bun run scripts/deploy-railway.ts",
-    "start": "bun src/index.ts",
-    "playground:build": "node scripts/playground-build.mjs",
-    "playground:build:dev": "bun build playground/index.html --outdir playground/dist --target browser --watch",
-    "playground:serve": "node scripts/playground-serve.mjs",
-    "playground:serve:test": "node --test scripts/playground-atomic-publish.test.mjs scripts/playground-build.test.mjs scripts/playground-process.test.mjs scripts/playground-serve.test.mjs",
-    "playground:smoke": "node scripts/playground-smoke.mjs",
-    "playground:smoke:test": "node --test scripts/playground-smoke.browser.mjs",
-    "playground:smoke:output-probe": "node scripts/playground-smoke-output-probe.mjs",
-    "test:e2e": "bun test test/e2e",
-    "typecheck": "tsc --noEmit",
-    "jsdoc:check": "bun scripts/check-jsdoc.ts",
-    "jsdoc:build": "pnpm run jsdoc:check && typedoc --options typedoc.json"
+    "build": "tsx scripts/build.ts",
+    "jsdoc:build": "pnpm run jsdoc:check && typedoc --options typedoc.json",
+    "jsdoc:check": "tsx scripts/check-jsdoc.ts",
+    "start": "node --env-file-if-exists=.env dist/src/index.js",
+    "test:e2e": "vitest run test/e2e",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@aws-sdk/client-kms": "3.1101.0",
-    "@ethereumjs/wallet": "^10.0.0",
     "@morpho-org/midnight-sdk": "catalog:",
     "@morpho-org/morpho-sdk": "5.4.1",
     "@morpho-org/morpho-ts": "catalog:",
-    "@noble/curves": "1.9.1",
-    "@repo/bot-kit": "workspace:*",
     "@repo/logging": "workspace:*",
     "@repo/monitoring": "workspace:*",
     "@repo/observability": "workspace:*",
     "@repo/offers": "workspace:*",
     "@repo/utils": "workspace:*",
-    "@tanstack/react-form": "catalog:",
-    "@tanstack/react-table": "catalog:",
-    "asn1js": "3.0.6",
     "commander": "^14.0.3",
-    "react": "catalog:",
-    "react-dom": "catalog:",
     "viem": "catalog:",
     "yaml": "2.8.3"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
-    "@types/bun": "catalog:",
-    "@types/react": "catalog:",
-    "@types/react-dom": "catalog:",
+    "@types/node": "catalog:",
+    "esbuild": "catalog:",
+    "execa": "catalog:",
+    "tsx": "catalog:",
     "typedoc": "0.28.20",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

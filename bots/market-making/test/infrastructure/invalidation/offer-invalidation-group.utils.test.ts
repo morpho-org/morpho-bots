@@ -1,6 +1,6 @@
 import type { Hex } from 'viem'
 
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 
 import { offerInvalidationGroupIds } from '../../../src/infrastructure/invalidation/offer-invalidation-group.utils'
 
