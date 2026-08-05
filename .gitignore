@@ -3,9 +3,10 @@
 # Dependencies
 node_modules
 
-# Local env files
+# Local env files (any name usable with `docker run --env-file` may hold the maker key)
 .env
 .env.*
+*.env
 !.env.example
 
 # Local market-making configuration (examples remain trackable)

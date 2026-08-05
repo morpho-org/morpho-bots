@@ -1,27 +1,32 @@
 name: Tag releases
 
-# Ported from morpho-apps' tag-releases.yml: merging a PR to main that bumps a bot's package.json
-# `version` to a new CalVer value (YYYY.MM.DD-N) creates that bot's GitHub release
+# Ported from morpho-apps' tag-releases.yml: merging a PR to main that bumps an allowlisted bot's
+# package.json `version` to a new CalVer value (YYYY.MM.DD-N) creates that bot's GitHub release
 # `<bot>-<version>`. The release is created with a GitHub App installation token so it FIRES
-# downstream `release` workflows — deploy-market-making.yml publishes the image and
-# release-slack-notify.yml announces it; tag/release events created with the default GITHUB_TOKEN
-# are intentionally blocked by GitHub from triggering further workflows.
+# downstream `release` workflows — deploy-market-making.yml publishes the image and the
+# post-publish step announces it; tag/release events created with the default GITHUB_TOKEN are
+# intentionally blocked by GitHub from triggering further workflows.
 #
-# Adaptations from the morpho-apps original: apps/* → bots/*, depot runners → ubuntu-latest, no
-# static-version skip list (every bot releases via CalVer bumps), and initial notes are
-# GitHub-generated from the bot's previous tag instead of a placeholder — this repo's Slack post
-# fires at publish time, so it must carry real content; the dispatched Claude workflow then
-# rewrites the notes in place (morpho-apps posts to Slack only after that rewrite).
+# ONLY market-making releases this way. The Railway bots (blue-liquidation, midnight-liquidation,
+# midnight-crossed-books) release through deploy-production.yml's release-* label flow, which cuts
+# their `<bot>-*` tag strictly AFTER a successful production deploy — a version-bump release here
+# would announce a production release that was never deployed. Extending the allowlist below (and
+# the paths filter) is a deliberate decision, not a directory rename away.
 #
-# A version bump that is not CalVer fails the run loud, so drive-by semver bumps cannot slip
-# through unreleased. Requires org App credentials GIT_BOT_CLIENT_ID / GIT_BOT_PRIVATE_KEY (the
-# same pair morpho-apps uses).
+# Adaptations from the morpho-apps original: apps/* → bots/*, depot runners → ubuntu-latest, an
+# allowlist instead of a static-version skip list, and initial notes are GitHub-generated from the
+# bot's previous tag instead of a placeholder; the dispatched Claude workflow then rewrites the
+# notes in place (morpho-apps posts to Slack only after that rewrite).
+#
+# An allowlisted version bump that is not CalVer fails the run loud — before any release is
+# created — so drive-by bumps cannot slip through unreleased. Requires org App credentials
+# GIT_BOT_CLIENT_ID / GIT_BOT_PRIVATE_KEY (the same pair morpho-apps uses).
 
 on:
   push:
     branches: [main]
     paths:
-      - 'bots/*/package.json'
+      - 'bots/market-making/package.json'
 
 permissions:
   contents: read
@@ -62,6 +67,9 @@ jobs:
 
           # CalVer pattern: YYYY.MM.DD-N (N must be >= 1)
           CALVER_PATTERN="^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[1-9][0-9]*$"
+          # Bots that release via version bumps. The Railway bots are deliberately absent: their
+          # releases are cut by deploy-production.yml only after a successful deploy (see header).
+          RELEASE_BUMP_BOTS="market-making"
 
           # The previous commit (before merge) — versions are compared against it.
           PREV_COMMIT=$(git rev-parse HEAD~1)
@@ -80,6 +88,10 @@ jobs:
               prev_version=$(git show "${PREV_COMMIT}:${bot_dir}package.json" 2>/dev/null | jq -r .version || echo "")
 
               if [ "$current_version" != "$prev_version" ] && [ -n "$current_version" ] && [ "$current_version" != "null" ]; then
+                if [[ " $RELEASE_BUMP_BOTS " != *" $bot_name "* ]]; then
+                  echo "Skipping $bot_name ($current_version): releases for it are cut by deploy-production.yml after deploy"
+                  continue
+                fi
                 if [[ $current_version =~ $CALVER_PATTERN ]]; then
                   pending_releases="${pending_releases}${pending_releases:+ }${bot_name}:${current_version}"
                 else

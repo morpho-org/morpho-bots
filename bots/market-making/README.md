@@ -236,6 +236,9 @@ docker run --rm \
 `docker run --env-file <file>` works with a file in [`.env.example`](./.env.example) syntax. Every
 line present in the file counts as a set variable — a `NAME=` line with an empty value overrides
 the YAML counterpart with emptiness and fails validation — so list only the variables to supply.
+Keep the file outside the repository tree (like `/etc/market-making.env` below): it holds the
+maker key, and only `.env*`/`*.env`-style names inside the tree are `.dockerignore`d out of image
+builds.
 
 ### Run with a YAML file
 
