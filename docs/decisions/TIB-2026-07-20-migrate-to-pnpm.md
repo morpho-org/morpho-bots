@@ -106,7 +106,7 @@ esbuild (bundling), and Node (runtime):
 - **Docker**: bot images build from `node:24.14.1-slim` only — no bun binary. All dists are built
   at image build (`pnpm -r --if-present run build`) and `CMD` is `node dist/src/index.js`; no
   runtime transform or container-start build.
-- **CI**: the setup action becomes `pnpm/setup` (version read from `packageManager`) +
+- **CI**: the setup action becomes `pnpm/action-setup` (version read from `packageManager`) +
   `setup-node`, installing with `pnpm install --frozen-lockfile`; `setup-bun` is removed and unit
   tests run `pnpm test`.
 
@@ -198,13 +198,16 @@ dev-tooling transitives within their declared ranges; the only runtime-reachable
 **pnpm settings live in `pnpm-workspace.yaml`, not `.npmrc`.** The tracked `.npmrc` stays empty so
 configuration does not drift across two files.
 
-**CI installs pnpm with `pnpm/setup`, not `pnpm/action-setup`.** Upstream now scopes `action-setup`
-to pnpm v10 and older; `packageManager` pins `pnpm@11.1.1`. Beyond being the supported path, `pnpm/setup`
-v2 downloads pnpm's self-contained release binary and verifies it against the SHA-256 digest GitHub
-publishes for the asset, where `action-setup` bootstraps through an `npm ci` of `@pnpm/exe`. Removing
-an npm-registry artifact from the path that installs the package manager is the same threat model this
-TIB is written against, so the newer action is the better fit and not merely the un-deprecated one.
-`install: false` is set because the composite's own install step is conditional on an input.
+**CI stays on `pnpm/action-setup`, blocked from its successor by the org allowlist.** Upstream now
+scopes `action-setup` to pnpm v10 and older and points v11+ at `pnpm/setup`; `packageManager` pins
+`pnpm@11.1.1`. The successor is the better fit on this TIB's own terms — v2 downloads pnpm's
+self-contained release binary and verifies it against the SHA-256 digest GitHub publishes for the
+asset, where `action-setup` bootstraps through an `npm ci` of `@pnpm/exe`, and removing an
+npm-registry artifact from the path that installs the package manager is exactly the threat model
+here. It cannot be adopted yet: `morpho-org`'s Actions allowlist permits `pnpm/action-setup@*` and
+not `pnpm/setup@*`, so switching fails every job at the Setup step. `action-setup` installs pnpm
+11.1.1 correctly in the meantime, and CI is green on it. **Follow-up:** have an org admin add
+`pnpm/setup@*` to the allowlist, then switch.
 
 **The images must not run as root.** `oven/bun` ends with `USER bun`, so the pre-migration images ran
 every layer and the bot process unprivileged. The official `node` images define a `node` user (uid 1000) but do not switch to it, so the base swap would silently have promoted a process holding a

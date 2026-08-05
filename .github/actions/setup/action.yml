@@ -19,15 +19,15 @@ runs:
     # pnpm owns installs, workspace resolution, and script running. The version comes from
     # package.json#packageManager, so it is not repeated here.
     #
-    # `pnpm/setup` — not the older `pnpm/action-setup`, which upstream now scopes to pnpm v10 and
-    # older. It downloads pnpm's self-contained release binary and verifies it against the SHA-256
-    # digest GitHub publishes for the asset, instead of bootstrapping through `npm ci` of
-    # `@pnpm/exe` — one fewer npm-registry artifact on the path that this migration exists to
-    # shorten. `install: false` because the install step below is conditional on an input.
+    # Upstream now scopes `action-setup` to pnpm v10 and older and points v11+ at its successor,
+    # `pnpm/setup`. We stay on `action-setup` regardless: the org's GitHub Actions allowlist permits
+    # `pnpm/action-setup@*` and not `pnpm/setup@*`, so the successor fails every job at the Setup
+    # step with "is not allowed in morpho-org/morpho-bots". `action-setup` installs pnpm 11.1.1 here
+    # correctly. Moving to `pnpm/setup` — worth doing, since it verifies pnpm's release binary
+    # against GitHub's published digest rather than bootstrapping through an `npm ci` of `@pnpm/exe`
+    # — needs an org admin to allowlist it first.
     - name: Set up pnpm
-      uses: pnpm/setup@c9883cc79df532ad1a7b81bf9ab944ceb090d65c # v2.0.0
-      with:
-        install: false
+      uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
 
     - name: Install Node.js
       uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
