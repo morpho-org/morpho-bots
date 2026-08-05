@@ -57,8 +57,10 @@ const loadInBoundedSubprocess = async (options: { configPath?: string; cwd: stri
       console.log(JSON.stringify({ reason: error?.reason ?? 'unexpected' }))
     }
   `
-  // `node -e` cannot import TypeScript, so tsx is registered as a loader for the inline module, and
-  // execa's own timeout enforces the bound instead of a manual kill. The bound is what this suite is
+  // `node -e` cannot import TypeScript, so tsx is registered as a loader for the inline module. That
+  // specifier resolves from the workspace root, which is why `tsx` stays a root devDependency (knip
+  // cannot see a usage inside `--import`, so the root workspace ignores it explicitly). execa's own
+  // timeout enforces the bound instead of a manual kill. The bound is what this suite is
   // really asserting: reading a FIFO would block forever, so any finite completion proves the loader
   // fails closed. It is 10s rather than the 1s bun used because a tsx cold start alone costs ~1.3s —
   // well under the bound, but not under one sized for bun's interpreter startup.

@@ -105,9 +105,7 @@ async function setVariable(value: string) {
 
 async function setSecret(name: string, value: string) {
   const { error } = await tryCatch(
-    Promise.resolve(
-      $({ input: value })`railway variable set ${name} --stdin -s ${SERVICE} --skip-deploys`
-    )
+    $({ input: value })`railway variable set ${name} --stdin -s ${SERVICE} --skip-deploys`
   )
   if (error) throw new Error(`Failed to set ${name} on ${SERVICE}`)
   console.log(`Set ${name} on ${SERVICE} (secret).`)
@@ -116,11 +114,9 @@ async function setSecret(name: string, value: string) {
 async function deployService() {
   const message = `deploy midnight crossed-books ${ENVIRONMENT}`
   const { error } = await tryCatch(
-    Promise.resolve(
-      $({
-        cwd: REPO_ROOT
-      })`railway up -s ${SERVICE} -p ${PROJECT_ID} -e ${ENVIRONMENT} -d -m ${message}`
-    )
+    $({
+      cwd: REPO_ROOT
+    })`railway up -s ${SERVICE} -p ${PROJECT_ID} -e ${ENVIRONMENT} -d -m ${message}`
   )
   if (error) throw new Error(`Failed to start deploy for ${SERVICE}: ${errorDetails(error)}`)
 }

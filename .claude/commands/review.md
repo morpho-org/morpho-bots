@@ -194,7 +194,7 @@ Review the provided PR thoroughly and interactively guide the user through each 
      `--sandbox danger-full-access`, `git push --force`)? Flag any escalation of tool access or
      sandbox permissions.
    - **Evaluation completeness**: For review-type commands or checklists, are there gaps in
-     coverage given the codebase's stack (viem, multi-chain, pnpm, bun, oxlint)?
+     coverage given the codebase's stack (viem, multi-chain, pnpm, vitest, esbuild, Node, oxlint)?
    - **Cross-reference accuracy**: If the file references other files (TIBs, CONVENTIONS.md
      sections, other commands), verify those references are valid and up to date.
 

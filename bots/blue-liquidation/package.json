@@ -7,6 +7,7 @@
   "scripts": {
     "build": "tsx scripts/build.ts",
     "deploy:railway": "tsx scripts/deploy-railway.ts",
+    "prestart": "pnpm --filter \"{.}...\" --if-present run build",
     "probe:lens": "node --env-file-if-exists=.env dist/scripts/probe-live-lens.js",
     "start": "node --env-file-if-exists=.env dist/src/index.js",
     "typecheck": "soltag && tsc --noEmit"

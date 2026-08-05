@@ -164,9 +164,7 @@ async function removeService(name: string): Promise<void> {
   if (!(await listServices()).some(service => service.name === name)) return
   console.log(`Removing legacy service ${name}…`)
   const { error } = await tryCatch(
-    Promise.resolve(
-      $`railway service delete --service ${name} --environment ${ENVIRONMENT} --yes --json`
-    )
+    $`railway service delete --service ${name} --environment ${ENVIRONMENT} --yes --json`
   )
   if (error)
     console.warn(
@@ -188,10 +186,8 @@ async function setVar(service: string, kv: string): Promise<void> {
 // CLI's JSON includes raw values, so it is parsed in-memory and only key NAMES ever leave here.
 async function listVarKeys(service: string): Promise<Set<string>> {
   const { data, error } = await tryCatch(
-    Promise.resolve(
-      $`railway variable list -s ${service} -e ${ENVIRONMENT} -p ${PROJECT_ID} --json`.then(
-        r => r.stdout
-      )
+    $`railway variable list -s ${service} -e ${ENVIRONMENT} -p ${PROJECT_ID} --json`.then(
+      r => r.stdout
     )
   )
   if (error || typeof data !== 'string') return new Set()
@@ -210,9 +206,7 @@ async function deleteVar(service: string, key: string): Promise<void> {
 // Secret variable: value piped via stdin (never argv), `--json` omitted (it echoes raw values).
 async function setSecret(service: string, key: string, value: string): Promise<void> {
   const { error } = await tryCatch(
-    Promise.resolve(
-      $({ input: value })`railway variable set ${key} --stdin -s ${service} --skip-deploys`
-    )
+    $({ input: value })`railway variable set ${key} --stdin -s ${service} --skip-deploys`
   )
   if (error) throw new Error(`Failed to set ${key} on ${service}`)
   console.log(`Set ${key} on ${service} (secret).`)
@@ -223,9 +217,7 @@ async function deployService(service: string): Promise<void> {
   // Pass -p/-e explicitly: `railway link` doesn't reliably carry the environment into this non-TTY
   // subprocess, so `railway up` otherwise errors "No environment specified". Self-contained > ambient.
   const { error } = await tryCatch(
-    Promise.resolve(
-      $({ cwd: REPO_ROOT })`railway up -s ${service} -e ${ENVIRONMENT} -p ${PROJECT_ID} -d`
-    )
+    $({ cwd: REPO_ROOT })`railway up -s ${service} -e ${ENVIRONMENT} -p ${PROJECT_ID} -d`
   )
   if (error) throw new Error(`Failed to start deploy for ${service}: ${stderrOf(error)}`)
 }
