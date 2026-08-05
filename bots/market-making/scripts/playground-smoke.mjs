@@ -1859,16 +1859,27 @@ try {
       Object.values(proof).every(Boolean),
       `credential ${label} DOM/clipboard proof failed: ${JSON.stringify(proof)}`
     )
-    const shot = await command('Page.captureScreenshot', {
-      format: 'png',
-      captureBeyondViewport: true,
-      fromSurface: true,
-      clip: credentialClip
-    })
-    const bytes = Buffer.from(shot.data, 'base64')
     const path = `/tmp/morpho-bots-pr122-credentials-${label}.png`
-    await writeFile(path, bytes)
-    return { hash: createHash('sha256').update(bytes).digest('hex'), path }
+    let previous
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await evaluate(
+        'document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))'
+      )
+      const shot = await command('Page.captureScreenshot', {
+        format: 'png',
+        captureBeyondViewport: true,
+        fromSurface: true,
+        clip: credentialClip
+      })
+      const bytes = Buffer.from(shot.data, 'base64')
+      const hash = createHash('sha256').update(bytes).digest('hex')
+      if (hash === previous?.hash) {
+        await writeFile(path, bytes)
+        return { hash, path }
+      }
+      previous = { bytes, hash }
+    }
+    throw new Error(`credential ${label} screenshot did not reach a stable pixel hash`)
   }
   const credentialScreenshots = {
     default: await captureCredentialState('default-redacted', false),
