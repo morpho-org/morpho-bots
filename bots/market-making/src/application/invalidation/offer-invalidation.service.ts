@@ -56,6 +56,17 @@ export interface OfferInvalidationPort {
     groupId: Hex,
     onTransactionSubmitted?: (txHash: Hex) => void | Promise<void>
   ): Promise<Hex | void>
+  /**
+   * Invalidates all selected groups in one native Midnight multicall.
+   * @param groupIds - Distinct offer-group identifiers selected by the application.
+   * @param onTransactionSubmitted - Optional observer called once after wallet submission.
+   * @returns The confirmed shared transaction hash, or no hash in read-only mode.
+   * @throws An adapter error when submission or receipt confirmation fails.
+   */
+  invalidateBatch(
+    groupIds: readonly Hex[],
+    onTransactionSubmitted?: (txHash: Hex) => void | Promise<void>
+  ): Promise<Hex | void>
   /** Removes canceled bot-owned groups from durable ownership. @param groupIds - Confirmed canceled groups. @returns Completion after ownership cleanup. */
   forgetGroups(groupIds: readonly Hex[]): Promise<void>
 }
@@ -69,11 +80,13 @@ export class OfferInvalidationService {
    * Invalidates every active maker group or one explicitly selected group.
    * @param parameters - Optional group selector and immediate transaction observer.
    * @returns Applied or read-only result after every selected group is attempted.
-   * @throws `OfferInvalidationFailedError` after all selected groups are attempted when preflight,
-   * cancellation, receipt confirmation, or ownership cleanup fails.
+   * @throws `OfferInvalidationFailedError` when preflight, selection, cancellation, receipt
+   * confirmation, or ownership cleanup fails.
    * @remarks Omitting `groupId` enumerates the maker's complete active group set. Supplying it
-   * directly targets that group even when the API has not indexed it. Observer failures never
-   * interrupt receipt handling for an already-submitted transaction.
+   * directly targets that group even when the API has not indexed it and uses one `setConsumed` call.
+   * Maker-wide write mode uses one native Midnight multicall, reports its shared hash against every
+   * group, and never retries serially after submission. Observer failures never interrupt receipt
+   * handling for an already-submitted transaction.
    */
   async run(
     parameters: {
@@ -119,6 +132,77 @@ export class OfferInvalidationService {
     }
     const invalidatedGroups: InvalidatedOfferGroup[] = []
     const failures: OfferInvalidationFailureReport['failures'][number][] = []
+
+    if (scope === 'all' && selectedGroupIds.length > 0) {
+      let submittedTxHash: Hex | undefined
+      let batchTxHash: Hex | void
+      try {
+        batchTxHash = await this.port.invalidateBatch(selectedGroupIds, async hash => {
+          submittedTxHash = hash
+          await Promise.all(
+            selectedGroupIds.map(async groupId => {
+              try {
+                await parameters.onTransactionSubmitted?.({
+                  event: 'offer-invalidation.transaction-submitted',
+                  groupId,
+                  txHash: hash
+                })
+              } catch {
+                // Diagnostic output cannot interrupt receipt handling after submission.
+              }
+            })
+          )
+        })
+      } catch (error) {
+        throw new OfferInvalidationFailedError({
+          status: 'failed',
+          scope,
+          matchedGroups: selectedGroupIds.length,
+          invalidatedGroups,
+          failures: selectedGroupIds.map(groupId => ({
+            stage: 'invalidation',
+            groupId,
+            errorName: operatorErrorName(error),
+            ...(submittedTxHash ? { txHash: submittedTxHash } : {})
+          }))
+        })
+      }
+
+      invalidatedGroups.push(
+        ...selectedGroupIds.map(groupId => ({
+          groupId,
+          ...(batchTxHash ? { txHash: batchTxHash } : {})
+        }))
+      )
+      try {
+        await this.port.forgetGroups(selectedGroupIds)
+      } catch (error) {
+        failures.push(
+          ...selectedGroupIds.map(groupId => ({
+            stage: 'ownership-cleanup' as const,
+            groupId,
+            errorName: operatorErrorName(error),
+            ...(batchTxHash ? { txHash: batchTxHash } : {})
+          }))
+        )
+      }
+
+      if (failures.length > 0) {
+        throw new OfferInvalidationFailedError({
+          status: 'failed',
+          scope,
+          matchedGroups: selectedGroupIds.length,
+          invalidatedGroups,
+          failures
+        })
+      }
+      return {
+        status: this.port.mode() === 'write' ? 'applied' : 'logged',
+        scope,
+        matchedGroups: selectedGroupIds.length,
+        invalidatedGroups
+      }
+    }
 
     for (const groupId of selectedGroupIds) {
       let submittedTxHash: Hex | undefined

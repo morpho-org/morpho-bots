@@ -9,6 +9,7 @@ import { createBootstrapGroupOwnership } from '../bootstrap/bootstrap-group-owne
 import { readBootstrapGroups } from '../bootstrap/bootstrap-groups.utils'
 import { createLadderGroupOwnership } from '../ladder/ladder-group-ownership.utils'
 import { createManagedMakerAccount } from '../make/managed-maker-account.utils'
+import { invalidateOffersBatch } from './batch-offer-invalidation.utils'
 import { OfferInvalidationAdapterError } from './offer-invalidation-adapter.error'
 import { offerInvalidationGroupIds } from './offer-invalidation-group.utils'
 import { assertOfferInvalidationTransaction } from './offer-invalidation-transaction.utils'
@@ -91,6 +92,7 @@ export const createProductionOfferInvalidationPort = (
       mode: () => 'readonly',
       preflight,
       listActiveGroupIds,
+      invalidateBatch: async () => undefined,
       invalidate: async () => undefined,
       forgetGroups: async () => undefined
     }
@@ -110,6 +112,17 @@ export const createProductionOfferInvalidationPort = (
     mode: () => 'write',
     preflight,
     listActiveGroupIds,
+    invalidateBatch: (groupIds, onTransactionSubmitted) =>
+      providerOperation('batch-transaction', () =>
+        invalidateOffersBatch({
+          wallet,
+          midnight: config.setup.midnight,
+          maker,
+          groupIds,
+          receiptTimeoutMs: config.transactionReceiptTimeoutMs,
+          onTransactionSubmitted
+        })
+      ),
     invalidate: (groupId, onTransactionSubmitted) =>
       providerOperation('transaction', async () => {
         const transaction = midnight

@@ -149,17 +149,24 @@ can cap several offers, one cancellation invalidates every offer in that group. 
 0x-prefixed bytes32 argument, `invalidate <group-id>` directly invalidates only that group without
 depending on API indexing. Before a live cancellation it still verifies the connected Base chain,
 deployed configured Midnight contract, maker/private-key agreement, and configured native gas
-reserve. Every transaction is locally restricted to the exact Midnight `setConsumed` cancellation,
-broadcast from the maker, and receipt-confirmed before success is reported. Successfully canceled
+reserve. Maker-wide invalidation submits one zero-value native Midnight `multicall(bytes[])`; each
+ordered inner call is exactly `setConsumed(groupId, MAX_OFFER_CAP, MAKER_ADDRESS)`. Midnight executes
+the inner calls with `delegatecall`, so the maker account that submits the outer transaction remains
+`msg.sender` throughout. The local transaction policy rejects any wrong target, selector, call count,
+order, group, amount, on-behalf account, or extra calldata. A reverted or failed multicall is reported
+without serial retry. Explicit single-group invalidation keeps the simpler direct Midnight
+`setConsumed` transaction. Successfully canceled
 bot-owned groups are removed from durable ownership state; explicitly configured
 `V0_OFFER_GROUP_IDS` remain configuration-owned until the operator edits configuration.
 
-Maker-wide invalidation attempts every selected group before returning. Submitted hashes stream as
+Maker-wide invalidation waits for the single multicall receipt, reports its hash against every group,
+then forgets all confirmed bot-owned groups together. Submitted hashes stream as
 `offer-invalidation.transaction-submitted` records and are retained in the terminal success or
-failure report. A partial failure exits with code `1` and includes completed groups plus sanitized
-per-group failure classifications. `invalidate --readonly` performs the cancellation preflight and,
-for maker-wide scope, lists the active groups, but never loads a private key, submits transactions,
-or edits ownership state.
+failure report. A failed atomic multicall exits with code `1` and reports the same submitted hash for
+every selected group. `invalidate --readonly` performs the cancellation preflight and, for maker-wide
+scope, lists the active groups, but never loads a private key, submits transactions, or edits
+ownership state. Normal bootstrap and ladder invalidation loops remain serial; native multicall is
+limited to the explicit maker-wide recovery command.
 
 For a maker with at least 101 USDC of both available balance and accrued credit, this
 one-rung-per-side preset caps each side at 150 USDC. USDC uses six decimals, so `150000000` is 150
