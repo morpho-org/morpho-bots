@@ -10,6 +10,7 @@ import {
   chainIdValue,
   hexListValue,
   ladderConfigsValue,
+  parseBytes32,
   privateKeyValue,
   requestTimeoutValue,
   transactionReceiptTimeoutValue,
@@ -281,66 +282,110 @@ const remapLadderValidationError = (
 ): QuickLadderValidationError => {
   const from = 'ladder[0]'
   const to = `ladder[${index}]`
+  const path = error.field === from ? to : `${to}.${error.field.slice(from.length + 1)}`
   return {
-    path: error.field.startsWith(from) ? `${to}${error.field.slice(from.length)}` : error.field,
+    path,
     reason: error.reason,
-    message: error.message.startsWith(from)
-      ? `${to}${error.message.slice(from.length)}`
-      : error.message
+    message: `${path}${error.message.slice(error.field.length)}`
   }
+}
+
+const referenceRateValidationError = (value: string): QuickLadderValidationError | undefined => {
+  try {
+    if (BigInt(value) <= 0n) {
+      return {
+        path: 'referenceRateBps',
+        reason: 'not-positive',
+        message: 'referenceRateBps must be positive'
+      }
+    }
+  } catch {
+    return {
+      path: 'referenceRateBps',
+      reason: 'invalid-integer',
+      message: 'referenceRateBps must be an integer'
+    }
+  }
+  return undefined
 }
 
 /** Validates one quick-edit ladder without depending on unrelated scalar or bootstrap validity. */
 export const validateQuickLadderState = (state: PlaygroundState, index: number) => {
   const errors: QuickLadderValidationError[] = []
   const input = state.ladder[index]
-  if (!input) return { valid: true, errors }
+  if (!input) {
+    const referenceError = referenceRateValidationError(state.referenceRateBps)
+    if (referenceError) errors.push(referenceError)
+    return { valid: errors.length === 0, errors }
+  }
 
-  let markets
+  let markets: ReturnType<typeof hexListValue> | undefined
   try {
     markets = hexListValue({ MARKET_IDS: state.scalar.MARKET_IDS }, 'MARKET_IDS', false)
   } catch (error) {
     if (error instanceof ConfigValidationError) {
       errors.push({ path: error.field, reason: error.reason, message: error.message })
-      return { valid: false, errors }
-    }
-    throw error
-  }
-
-  try {
-    ladderConfigsValue([{ ...input }], markets)
-  } catch (error) {
-    if (error instanceof ConfigValidationError) {
-      errors.push(remapLadderValidationError(error, index))
-      return { valid: false, errors }
-    }
-    throw error
-  }
-
-  try {
-    ladderConfigsValue(structuredLadder(state), markets)
-  } catch (error) {
-    if (error instanceof ConfigValidationError && !error.field.startsWith('ladder[')) {
-      errors.push({ path: error.field, reason: error.reason, message: error.message })
+    } else {
+      throw error
     }
   }
 
-  try {
-    const referenceRateBps = BigInt(state.referenceRateBps)
-    if (referenceRateBps <= 0n) {
-      errors.push({
-        path: 'referenceRateBps',
-        reason: 'not-positive',
-        message: 'referenceRateBps must be positive'
-      })
+  // Re-run the production parser after replacing each rejected selected field with a known-valid
+  // value. This preserves production syntax and domain semantics while exposing independent fields.
+  const working = { ...input }
+  const fallback = createDefaultLadder()
+  let validationMarkets = markets
+  if (!validationMarkets) {
+    try {
+      validationMarkets = [parseBytes32(input.marketId, 'ladder[0].marketId')]
+    } catch {
+      validationMarkets = [parseBytes32(fallback.marketId, 'ladder[0].marketId')]
     }
-  } catch {
+  }
+  const capturedSelected = new Set<string>()
+  for (let attempt = 0; attempt <= LADDER_FIELDS.length; attempt++) {
+    try {
+      ladderConfigsValue([working], validationMarkets)
+      break
+    } catch (error) {
+      if (!(error instanceof ConfigValidationError)) throw error
+      const field = LADDER_FIELDS.find(([name]) => error.field === `ladder[0].${name}`)?.[0]
+      if (!field) break
+      const mapped = remapLadderValidationError(error, index)
+      const signature = `${mapped.path}:${mapped.reason}`
+      if (capturedSelected.has(signature)) break
+      capturedSelected.add(signature)
+      errors.push(mapped)
+      if (field === 'marketId') {
+        const replacement = markets?.[0] ?? parseBytes32(fallback.marketId, 'ladder[0].marketId')
+        working.marketId = replacement
+        if (validationMarkets.length === 0) validationMarkets = [replacement]
+      } else {
+        working[field] = fallback[field]
+      }
+    }
+  }
+
+  // Array uniqueness is independent of item parsing and allowlist validity. Canonical production
+  // bytes32 parsing makes case-only variants equal and excludes malformed IDs from comparison.
+  const canonicalMarketIds = state.ladder.flatMap((item, itemIndex) => {
+    try {
+      return [parseBytes32(item.marketId, `ladder[${itemIndex}].marketId`)]
+    } catch (error) {
+      if (error instanceof ConfigValidationError) return []
+      throw error
+    }
+  })
+  if (new Set(canonicalMarketIds).size !== canonicalMarketIds.length) {
     errors.push({
-      path: 'referenceRateBps',
-      reason: 'invalid-integer',
-      message: 'referenceRateBps must be an integer'
+      path: 'ladder',
+      reason: 'duplicate',
+      message: 'ladder market IDs must be unique'
     })
   }
+
+  const referenceError = referenceRateValidationError(state.referenceRateBps)
+  if (referenceError) errors.push(referenceError)
 
   return { valid: errors.length === 0, errors }
 }

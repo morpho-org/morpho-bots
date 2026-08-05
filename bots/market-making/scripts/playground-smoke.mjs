@@ -1342,6 +1342,12 @@ try {
       focused.value === initial[0].stepBps && switcher.value === secondId &&
       document.querySelector('[data-quick-field=marketId]').value === secondMarketId
 
+    set(focused, '90')
+    await frame()
+    const movedExport = JSON.parse(document.querySelector('#export-ladder-env').value)
+    const movedEditOnly = movedExport[0].marketId === secondMarketId && movedExport[0].stepBps === '90' &&
+      movedExport[1].marketId === firstMarketId && movedExport[1].stepBps === initial[0].stepBps
+
 
     const marketInput = secondCard.querySelector('[data-field=marketId]')
     set(marketInput, 'invalid')
@@ -1371,6 +1377,35 @@ try {
     const exportsExcludeUiIds = [...document.querySelectorAll('#export-yaml,#export-shell,#export-json,#export-ladder-env')]
       .every(output => !output.value.includes('-ui-') && !output.value.includes('data-ui-id'))
 
+    const ladderSection = ladderCards[0].closest('.control-section')
+    ladderCards.at(-1).querySelector('.item-actions button:last-child').click()
+    await frame()
+    document.querySelector('.market-card:has([data-field=quotePremiumBps]) .item-actions button:last-child').click()
+    await frame()
+    const deleteLastEmpty = document.querySelectorAll('.market-card:has([data-field=quotePremiumBps])').length === 0 &&
+      document.querySelector('#quick-edit .empty-state')?.textContent.includes('enable quick edit')
+    ladderSection.querySelector('.section-heading button').click()
+    await frame()
+    const addedCard = document.querySelector('.market-card:has([data-field=quotePremiumBps])')
+    const emptyThenAdd = deleteLastEmpty && Boolean(addedCard?.dataset.uiId) &&
+      document.querySelector('#quick-market-select').value === addedCard.dataset.uiId
+
+    ladderSection.querySelector('.section-heading button').click()
+    await Promise.resolve()
+    const rapidCards = [...document.querySelectorAll('.market-card:has([data-field=quotePremiumBps])')]
+    rapidCards.at(-1)?.querySelector('.item-actions button:first-child')?.click()
+    rapidCards[0]?.querySelector('.item-actions button:last-child')?.click()
+    set(importText, JSON.stringify(pair))
+    apply.click()
+    await frame()
+    const rapidFinalCards = [...document.querySelectorAll('.market-card:has([data-field=quotePremiumBps])')]
+    const rapidFinalIds = rapidFinalCards.map(card => card.dataset.uiId)
+    const rapidIdsSynchronized = rapidFinalCards.length === pair.length &&
+      new Set(rapidFinalIds).size === rapidFinalIds.length &&
+      [...document.querySelector('#quick-market-select').options].every((option, index) => option.value === rapidFinalIds[index]) &&
+      rapidFinalIds.includes(document.querySelector('#quick-market-select').value) &&
+      !document.querySelector('#export-ladder-env').value.includes('-ui-')
+
     const bootstrapCards = () => [...document.querySelectorAll('.market-card:has([data-field=creditTarget])')]
     bootstrapCards()[0].closest('.control-section').querySelector('.section-heading button').click()
     await frame()
@@ -1389,12 +1424,14 @@ try {
     await frame()
     return {
       ladderFocusMoved,
-
+      movedEditOnly,
       invalidEditStable,
       duplicateEditStable,
       selectionDeleteCoherent,
       selectionImportCoherent,
       exportsExcludeUiIds,
+      emptyThenAdd,
+      rapidIdsSynchronized,
       bootstrapFocusMoved
     }
   })()`)
@@ -1406,34 +1443,98 @@ try {
   const quickValidationProof = await evaluate(`(async () => {
     const frame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
     const set = (element, value) => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(element, value)
-      element.dispatchEvent(new Event('input', { bubbles: true }))
+      const prototype = element instanceof HTMLSelectElement ? HTMLSelectElement.prototype : element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+      Object.getOwnPropertyDescriptor(prototype, 'value').set.call(element, value)
+      element.dispatchEvent(new Event(element instanceof HTMLSelectElement ? 'change' : 'input', { bubbles: true }))
     }
     const scalar = document.querySelector('[data-field=MAKER_PRIVATE_KEY]')
+    const allowlist = document.querySelector('[data-field=MARKET_IDS]')
     const bootstrapMinimum = document.querySelector('.market-card:has([data-field=creditTarget]) [data-field=minimumRateBps]')
     const ladderCard = document.querySelector('.market-card:has([data-field=quotePremiumBps])')
     const ladderStep = ladderCard.querySelector('[data-field=stepBps]')
     const ladderMinimum = ladderCard.querySelector('[data-field=minimumRateBps]')
+    const ladderRungCount = ladderCard.querySelector('[data-field=rungCount]')
+    const ladderMinimumOffer = ladderCard.querySelector('[data-field=minimumOfferAssets]')
+    const reference = document.querySelector('#preview-reference')
+    const initialMarketId = ladderCard.querySelector('[data-field=marketId]').value
+    const initial = document.querySelector('#export-ladder-env').value
     set(scalar, 'invalid')
     set(bootstrapMinimum, 'invalid-bootstrap-rate')
     set(ladderStep, 'invalid-step')
+    set(reference, 'invalid-reference')
     await frame()
     const quickStep = document.querySelector('[data-quick-field=stepBps]')
     const quickMinimum = document.querySelector('[data-quick-field=minimumRateBps]')
-    const scalarPlusStep = quickStep.getAttribute('aria-invalid') === 'true' &&
-      document.querySelector('#quick-error-stepBps').textContent === 'ladder[0].stepBps must be an integer'
-    const bootstrapNameNotAttributed = quickMinimum.getAttribute('aria-invalid') === 'false' &&
+    const quickReference = document.querySelector('[data-quick-field=referenceRateBps]')
+    const scalarStepReference = quickStep.getAttribute('aria-invalid') === 'true' &&
+      document.querySelector('#quick-error-stepBps').textContent === 'ladder[0].stepBps must be an integer' &&
+      quickReference.getAttribute('aria-invalid') === 'true' &&
+      document.querySelector('#quick-error-referenceRateBps').textContent === 'referenceRateBps must be an integer'
+    const bootstrapNameNeverAttributed = quickMinimum.getAttribute('aria-invalid') === 'false' &&
       document.querySelector('#quick-error-minimumRateBps').textContent === ''
-    set(ladderStep, '100')
-    set(ladderMinimum, 'invalid-ladder-rate')
+
+    set(ladderRungCount, 'invalid-count')
+    set(ladderMinimumOffer, '0')
     await frame()
-    const exactLadderPath = quickMinimum.getAttribute('aria-invalid') === 'true' &&
-      document.querySelector('#quick-error-minimumRateBps').textContent === 'ladder[0].minimumRateBps must be an integer'
+    const multipleSelectedFields = ['stepBps', 'rungCount', 'minimumOfferAssets'].every(field =>
+      document.querySelector('[data-quick-field=' + field + ']').getAttribute('aria-invalid') === 'true' &&
+      document.querySelector('#quick-error-' + field).textContent.startsWith('ladder[0].' + field + ' ')
+    )
+
+    set(allowlist, 'malformed-market-list')
+    set(reference, '0')
+    await frame()
+    const malformedAllowlistIndependent = document.querySelector('#quick-validation-status').textContent ===
+      'MARKET_IDS must contain 0x-prefixed 32-byte hex values' &&
+      document.querySelector('#quick-error-stepBps').textContent === 'ladder[0].stepBps must be an integer' &&
+      document.querySelector('#quick-error-referenceRateBps').textContent === 'referenceRateBps must be positive' &&
+      !document.querySelector('#quick-edit').textContent.includes('must be allowlisted')
+
+    set(allowlist, initialMarketId)
+    set(ladderStep, '100')
+    set(ladderRungCount, '3')
+    set(ladderMinimumOffer, '101000000')
+    set(reference, '500')
     set(ladderMinimum, '200')
     set(bootstrapMinimum, '200')
     set(scalar, '0x' + 'a'.repeat(64))
     await frame()
-    return { scalarPlusStep, bootstrapNameNotAttributed, exactLadderPath }
+
+    const ladderSection = ladderCard.closest('.control-section')
+    ladderSection.querySelector('.section-heading button').click()
+    await frame()
+    ladderSection.querySelector('.section-heading button').click()
+    await frame()
+    const cards = [...document.querySelectorAll('.market-card:has([data-field=quotePremiumBps])')]
+    const switcher = document.querySelector('#quick-market-select')
+    set(switcher, cards[1].dataset.uiId)
+    set(cards[2].querySelector('[data-field=stepBps]'), 'unrelated-invalid-step')
+    await frame()
+    const duplicateWithOtherInvalid = document.querySelector('#quick-validation-status').textContent ===
+      'ladder market IDs must be unique' &&
+      document.querySelector('[data-quick-field=stepBps]').getAttribute('aria-invalid') === 'false'
+
+    const mixedCaseMarketId = '0x' + 'aB'.repeat(32)
+    set(allowlist, mixedCaseMarketId + ',' + initialMarketId)
+    set(cards[0].querySelector('[data-field=marketId]'), mixedCaseMarketId)
+    set(cards[1].querySelector('[data-field=marketId]'), mixedCaseMarketId.toUpperCase().replace('0X', '0x'))
+    await frame()
+    const mixedCaseDuplicate = document.querySelector('#quick-validation-status').textContent ===
+      'ladder market IDs must be unique'
+
+    const importText = document.querySelector('#ladder-import-text')
+    set(allowlist, initialMarketId)
+    set(importText, JSON.stringify([{ ...JSON.parse(initial)[0], marketId: initialMarketId, stepBps: '100' }]))
+    document.querySelector('#apply-ladder-import').click()
+    await frame()
+    return {
+      scalarStepReference,
+      bootstrapNameNeverAttributed,
+      multipleSelectedFields,
+      malformedAllowlistIndependent,
+      duplicateWithOtherInvalid,
+      mixedCaseDuplicate
+    }
   })()`)
   assert(
     Object.values(quickValidationProof).every(Boolean),

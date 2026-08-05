@@ -114,6 +114,142 @@ describe('market-maker parameter playground', () => {
     ])
   })
 
+  test('quick validation aggregates scalar, selected step, and reference failures', () => {
+    const state = createDefaultPlaygroundState()
+    state.scalar.MAKER_PRIVATE_KEY = 'invalid-scalar'
+    state.ladder[0]!.stepBps = 'invalid-step'
+    state.referenceRateBps = 'invalid-reference'
+
+    expect(validateQuickLadderState(state, 0).errors).toEqual([
+      {
+        path: 'ladder[0].stepBps',
+        reason: 'invalid-integer',
+        message: 'ladder[0].stepBps must be an integer'
+      },
+      {
+        path: 'referenceRateBps',
+        reason: 'invalid-integer',
+        message: 'referenceRateBps must be an integer'
+      }
+    ])
+  })
+
+  test('always validates referenceRateBps when no ladder is selected', () => {
+    const state = createDefaultPlaygroundState()
+    state.ladder = []
+    state.referenceRateBps = 'invalid-reference'
+
+    expect(validateQuickLadderState(state, 0)).toEqual({
+      valid: false,
+      errors: [
+        {
+          path: 'referenceRateBps',
+          reason: 'invalid-integer',
+          message: 'referenceRateBps must be an integer'
+        }
+      ]
+    })
+  })
+
+  test('malformed MARKET_IDS does not mask selected syntax/domain or reference failures', () => {
+    const state = createDefaultPlaygroundState()
+    state.scalar.MARKET_IDS = 'not-a-market-list'
+    state.ladder[0]!.stepBps = 'invalid-step'
+    state.ladder[0]!.spreadBps = '0'
+    state.referenceRateBps = '0'
+
+    expect(validateQuickLadderState(state, 0).errors).toEqual([
+      {
+        path: 'MARKET_IDS',
+        reason: 'invalid-list-item',
+        message: 'MARKET_IDS must contain 0x-prefixed 32-byte hex values'
+      },
+      {
+        path: 'ladder[0].stepBps',
+        reason: 'invalid-integer',
+        message: 'ladder[0].stepBps must be an integer'
+      },
+      {
+        path: 'ladder[0].spreadBps',
+        reason: 'invalid-ladder',
+        message: 'ladder[0].spreadBps must be positive'
+      },
+      {
+        path: 'referenceRateBps',
+        reason: 'not-positive',
+        message: 'referenceRateBps must be positive'
+      }
+    ])
+    expect(validateQuickLadderState(state, 0).errors).not.toContainEqual(
+      expect.objectContaining({ reason: 'not-allowlisted' })
+    )
+  })
+
+  test('selected duplicate survives an unrelated malformed ladder item', () => {
+    const state = createDefaultPlaygroundState()
+    const secondMarketId = `0x${'6'.repeat(64)}`
+    state.scalar.MARKET_IDS += `,${secondMarketId}`
+    state.ladder.push(createDefaultLadder(state.ladder[0]!.marketId))
+    state.ladder.push(createDefaultLadder(secondMarketId))
+    state.ladder[2]!.stepBps = 'invalid-unrelated-step'
+
+    expect(validateQuickLadderState(state, 1).errors).toContainEqual({
+      path: 'ladder',
+      reason: 'duplicate',
+      message: 'ladder market IDs must be unique'
+    })
+    expect(validateQuickLadderState(state, 1).errors).not.toContainEqual(
+      expect.objectContaining({ path: 'ladder[2].stepBps' })
+    )
+  })
+
+  test('quick validation reports multiple independent selected fields exactly', () => {
+    const state = createDefaultPlaygroundState()
+    state.ladder[0]!.stepBps = 'bad-step'
+    state.ladder[0]!.rungCount = 'bad-count'
+    state.ladder[0]!.minimumOfferAssets = '0'
+
+    expect(validateQuickLadderState(state, 0).errors).toEqual([
+      {
+        path: 'ladder[0].stepBps',
+        reason: 'invalid-integer',
+        message: 'ladder[0].stepBps must be an integer'
+      },
+      {
+        path: 'ladder[0].rungCount',
+        reason: 'invalid-integer',
+        message: 'ladder[0].rungCount must be an integer'
+      },
+      {
+        path: 'ladder[0].minimumOfferAssets',
+        reason: 'invalid-ladder',
+        message: 'ladder[0].minimumOfferAssets must be positive'
+      }
+    ])
+  })
+
+  test('duplicate detection canonicalizes mixed-case bytes32 and ignores malformed IDs', () => {
+    const state = createDefaultPlaygroundState()
+    const mixedCase = `0x${'aB'.repeat(32)}`
+    state.scalar.MARKET_IDS = mixedCase
+    state.ladder = [
+      createDefaultLadder(mixedCase),
+      createDefaultLadder(mixedCase.toUpperCase().replace('0X', '0x'))
+    ]
+
+    expect(validateQuickLadderState(state, 1).errors).toContainEqual({
+      path: 'ladder',
+      reason: 'duplicate',
+      message: 'ladder market IDs must be unique'
+    })
+
+    state.ladder[0]!.marketId = 'malformed'
+    const errors = validateQuickLadderState(state, 1).errors
+    expect(errors).not.toContainEqual(
+      expect.objectContaining({ path: 'ladder', reason: 'duplicate' })
+    )
+  })
+
   test('inventory independently parses runtime source, env example, and YAML example', async () => {
     const [source, environmentExample, yamlExampleText] = await Promise.all([
       Bun.file(new URL('../../src/config/config-source.utils.ts', import.meta.url)).text(),
