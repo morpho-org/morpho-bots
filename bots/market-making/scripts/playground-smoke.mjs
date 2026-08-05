@@ -1777,6 +1777,8 @@ try {
         BETTERSTACK_HEARTBEAT_URL: 'https://heartbeat-user:heartbeat-password@heartbeat.example.test/credential-path?token=heartbeat-query-secret#heartbeat-fragment-secret'
       }
       const toggle = document.querySelector('#include-sensitive-values')
+      toggle.checked = ${!includeSensitive}
+      toggle.dispatchEvent(new Event('change', { bubbles: true }))
       toggle.checked = ${includeSensitive}
       toggle.dispatchEvent(new Event('change', { bubbles: true }))
       document.querySelector('#tab-json').click()
