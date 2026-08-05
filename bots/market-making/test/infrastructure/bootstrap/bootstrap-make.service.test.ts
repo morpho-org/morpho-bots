@@ -1,6 +1,6 @@
 import type { Hex } from 'viem'
 
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, mock, test } from 'bun:test'
 
 import type { BootstrapSubmittedTransaction } from '../../../src/application/bootstrap/position-bootstrap-verbose'
 
@@ -74,6 +74,38 @@ describe('MidnightBootstrapMakeService', () => {
     await service.reconcile({ marketId, desiredOffer, reason: 'publish' })
 
     expect(events).toEqual(['book', 'publish'])
+  })
+
+  test('retains an active group when raw rates resolve to the same protocol tick', async () => {
+    const metadataUpdates: string[] = []
+    const preparePublication = mock(async () => ({
+      groupId: publishedGroupId,
+      publish: async () => publicationHash
+    }))
+    const invalidate = mock(async () => cancellationHash)
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [
+        { id: groupId, marketId, assets: 100n, rateBps: 499n, tick: 100n }
+      ],
+      listBookOffers: async () => [],
+      toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
+      preparePublication,
+      reserveGroup: async (id, offer) => {
+        metadataUpdates.push(`reserve:${id}:${offer.rateBps}`)
+      },
+      confirmPublishedGroup: async id => {
+        metadataUpdates.push(`confirm:${id}`)
+      },
+      releaseGroupReservation: async () => {},
+      invalidate
+    })
+
+    const result = await service.reconcile({ marketId, desiredOffer, reason: 'replace' })
+
+    expect(result).toBe('unchanged')
+    expect(preparePublication).not.toHaveBeenCalled()
+    expect(invalidate).not.toHaveBeenCalled()
+    expect(metadataUpdates).toEqual([`reserve:${groupId}:500`, `confirm:${groupId}`])
   })
 
   test('returns confirmed cancellation and publication hashes in submission order', async () => {

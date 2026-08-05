@@ -7,6 +7,7 @@ import {
   Payload,
   SetterRatifierUtils,
   Tree,
+  type IMarketParams,
   setterRatifierAbi
 } from '@morpho-org/midnight-sdk'
 import { describe, expect, test } from 'bun:test'
@@ -26,7 +27,10 @@ import {
   strategyBootstrapGroups
 } from '../../../src/infrastructure/bootstrap/bootstrap-groups.utils'
 import { MidnightBootstrapMakeService } from '../../../src/infrastructure/bootstrap/bootstrap-make.service'
-import { bootstrapContinuousFeeCap } from '../../../src/infrastructure/bootstrap/bootstrap-offer.utils'
+import {
+  bootstrapContinuousFeeCap,
+  createBootstrapOffer
+} from '../../../src/infrastructure/bootstrap/bootstrap-offer.utils'
 import { prepareBootstrapRequirements } from '../../../src/infrastructure/bootstrap/bootstrap-requirements.utils'
 import { assertBootstrapTransaction } from '../../../src/infrastructure/bootstrap/bootstrap-transaction.utils'
 import {
@@ -44,26 +48,27 @@ const collateral: Address = '0x1111111111111111111111111111111111111111'
 const loanToken: Address = '0x2222222222222222222222222222222222222222'
 const oracle: Address = '0x3333333333333333333333333333333333333333'
 const ratifier: Address = '0x800B5F12A61B8198a5a6EfD794Cac6699B294d63'
+const publicationMarket: IMarketParams = {
+  chainId: 8453,
+  midnight: maker,
+  loanToken,
+  collateralParams: [
+    {
+      token: collateral,
+      lltv: 800_000_000_000_000_000n,
+      liquidationCursor: 0n,
+      oracle
+    }
+  ],
+  maturity: 54_000n,
+  rcfThreshold: 0n,
+  enterGate: '0x0000000000000000000000000000000000000000',
+  liquidatorGate: '0x0000000000000000000000000000000000000000'
+}
 
 const publicationOffer = (tick = 100n) =>
   Offer.create({
-    market: {
-      chainId: 8453,
-      midnight: maker,
-      loanToken,
-      collateralParams: [
-        {
-          token: collateral,
-          lltv: 800_000_000_000_000_000n,
-          liquidationCursor: 0n,
-          oracle
-        }
-      ],
-      maturity: 54_000n,
-      rcfThreshold: 0n,
-      enterGate: '0x0000000000000000000000000000000000000000',
-      liquidatorGate: '0x0000000000000000000000000000000000000000'
-    },
+    market: publicationMarket,
     buy: true,
     maker,
     tick,
@@ -512,6 +517,30 @@ describe('bootstrapContinuousFeeCap', () => {
       )
     }
   )
+})
+
+describe('createBootstrapOffer', () => {
+  test('uses the current block time to prevent reuse of a consumed group', () => {
+    const market = {
+      params: publicationMarket,
+      tickSpacing: 4,
+      continuousFee: 0
+    }
+    const offer = {
+      marketId,
+      assets: 100n,
+      rateBps: 500n,
+      referenceObservationId: 'hour:1'
+    }
+
+    const first = createBootstrapOffer({ offer, market, maker, ratifier, now: 1_000n })
+    const second = createBootstrapOffer({ offer, market, maker, ratifier, now: 1_001n })
+
+    expect(first.tick).toBe(second.tick)
+    expect(first.start).toBe(1_000n)
+    expect(second.start).toBe(1_001n)
+    expect(first.group).not.toBe(second.group)
+  })
 })
 
 describe('readBootstrapGroups', () => {

@@ -62,7 +62,8 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
    * @param parameters - Market, desired lend offer, and audited decision reason.
    * @returns Confirmed cancellation and publication transaction hashes in submission order.
    * @throws When any protocol mutation or confirmation fails.
-   * @remarks Mutations are serialized; publication never races invalidation.
+   * @remarks Mutations are serialized; publication never races invalidation. An active offer with
+   * the requested protocol tick and assets is retained even when raw reference-rate metadata moved.
    */
   reconcile(parameters: {
     marketId: Hex
@@ -79,16 +80,15 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
     return this.enqueue(async () => {
       const submittedTransactions: BootstrapSubmittedTransaction[] = []
       const groups = await this.strategyGroups()
+      const activeMarketGroupIds = new Set(bootstrapMarketGroupIds(groups, parameters.marketId))
       const spreadReplacedGroupIds = new Set([
-        ...bootstrapMarketGroupIds(groups, parameters.marketId),
+        ...activeMarketGroupIds,
         ...this.confirmedCanceledGroups
       ])
-      const invalidatedGroupIds = new Set(
-        [...spreadReplacedGroupIds].filter(groupId => !this.confirmedCanceledGroups.has(groupId))
-      )
       let publication:
         | Awaited<ReturnType<BootstrapOfferTransport['preparePublication']>>
         | undefined
+      let retainedGroupId: Hex | undefined
       if (parameters.desiredOffer) {
         const prospective = await this.transport.toProspectiveBookOffer(parameters.desiredOffer)
         assertBootstrapProspectiveSpread({
@@ -97,9 +97,23 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
           book: await this.transport.listBookOffers(),
           prospective
         })
-        publication = await this.transport.preparePublication(parameters.desiredOffer)
-        await this.transport.reserveGroup(publication.groupId, parameters.desiredOffer)
+        retainedGroupId = groups.find(
+          group =>
+            group.marketId === parameters.marketId &&
+            group.assets === parameters.desiredOffer?.assets &&
+            group.tick === prospective.tick &&
+            !this.confirmedCanceledGroups.has(group.id)
+        )?.id
+        if (!retainedGroupId) {
+          publication = await this.transport.preparePublication(parameters.desiredOffer)
+          await this.transport.reserveGroup(publication.groupId, parameters.desiredOffer)
+        }
       }
+      const invalidatedGroupIds = new Set(
+        [...activeMarketGroupIds].filter(
+          groupId => groupId !== retainedGroupId && !this.confirmedCanceledGroups.has(groupId)
+        )
+      )
       try {
         for (const groupId of invalidatedGroupIds) {
           const txHash = await this.transport.invalidate(
@@ -130,6 +144,14 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
           }
         }
         throw error
+      }
+      if (retainedGroupId && parameters.desiredOffer) {
+        await this.transport.reserveGroup(retainedGroupId, parameters.desiredOffer)
+        await this.transport.confirmPublishedGroup(retainedGroupId)
+
+        return submittedTransactions.length === 0
+          ? ('unchanged' as const)
+          : ({ submittedTransactions } satisfies BootstrapMakeResult)
       }
       if (publication) {
         try {

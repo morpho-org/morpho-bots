@@ -14,6 +14,8 @@ export type BootstrapActiveGroup = {
   marketId: Hex
   assets: bigint
   rateBps: bigint
+  /** Exact protocol tick when this projection represents a bootstrap offer. */
+  tick?: bigint
   referenceObservationId?: string
 }
 

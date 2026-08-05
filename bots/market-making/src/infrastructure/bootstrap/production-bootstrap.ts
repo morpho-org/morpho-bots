@@ -1,4 +1,4 @@
-import { Offer, TickLib, Tree } from '@morpho-org/midnight-sdk'
+import { midnightAbi, Offer, TickLib, Tree } from '@morpho-org/midnight-sdk'
 import { morphoViemExtension } from '@morpho-org/morpho-sdk'
 import { getChainAddress } from '@morpho-org/morpho-ts'
 import {
@@ -51,7 +51,7 @@ import {
   validateBootstrapMempoolPublication
 } from './bootstrap-mempool-validation.utils'
 import { createBootstrapOffer } from './bootstrap-offer.utils'
-import { pendingBootstrapGroups } from './bootstrap-pending-offer.utils'
+import { readLivePendingBootstrapOffers } from './bootstrap-pending-offer.utils'
 import { MidnightBootstrapPositionService } from './bootstrap-position.service'
 import { BlueBootstrapReferenceRateService } from './bootstrap-reference-rate.service'
 import { createBootstrapRequirementClient } from './bootstrap-requirement-client.utils'
@@ -172,6 +172,46 @@ export const createProductionBootstrapAdapters = (
       morphoApiBaseUrl: config.morphoApiBaseUrl,
       requestTimeoutMs: config.requestTimeoutMs
     })
+  const prepareOffer = async (offer: BootstrapOffer) => {
+    const [market, block] = await Promise.all([
+      midnight.getMarketData(offer.marketId),
+      client.getBlock({ blockTag: 'latest' })
+    ])
+    return createBootstrapOffer({
+      offer,
+      market,
+      maker,
+      ratifier: config.setup.ratifier,
+      now: block.timestamp
+    })
+  }
+  const readGroupConsumed = (groupId: Hex, blockNumber: bigint) =>
+    client.readContract({
+      address: config.setup.midnight,
+      abi: midnightAbi,
+      functionName: 'consumed',
+      args: [maker, groupId],
+      blockNumber
+    })
+  const readPendingGroups = async (
+    blockNumber: bigint,
+    groups: Awaited<ReturnType<typeof readGroups>>,
+    offers: Awaited<ReturnType<typeof ownership.readOffers>>
+  ): Promise<BootstrapActiveGroup[]> => {
+    const liveOffers = await readLivePendingBootstrapOffers({
+      groups,
+      offers,
+      readGroupConsumed: groupId => readGroupConsumed(groupId, blockNumber)
+    })
+
+    return Promise.all(
+      liveOffers.map(async ({ groupId, ...offer }) => ({
+        id: groupId,
+        ...offer,
+        tick: (await prepareOffer(offer)).tick
+      }))
+    )
+  }
 
   const activeGroups = async (): Promise<BootstrapActiveGroup[]> => {
     const [block, groups, ownedIds, ownedOffers] = await Promise.all([
@@ -183,6 +223,8 @@ export const createProductionBootstrapAdapters = (
     const intended = new Map(
       ownedOffers.map(offer => [`${offer.groupId}:${offer.marketId}`, offer] as const)
     )
+    const pendingGroups = await readPendingGroups(block.number, groups, ownedOffers)
+
     return [
       ...strategyBootstrapGroups(groups, ownedIds)
         .filter(
@@ -198,6 +240,7 @@ export const createProductionBootstrapAdapters = (
             id: group.id,
             marketId: group.marketId as Hex,
             assets: group.maxAssets - group.consumed,
+            tick: group.tick as bigint,
             rateBps:
               persisted?.rateBps ??
               TickLib.tickToApr(
@@ -208,7 +251,7 @@ export const createProductionBootstrapAdapters = (
             ...(persisted ? { referenceObservationId: persisted.referenceObservationId } : {})
           }
         }),
-      ...pendingBootstrapGroups(groups, ownedOffers)
+      ...pendingGroups
     ]
   }
 
@@ -223,6 +266,7 @@ export const createProductionBootstrapAdapters = (
     const intended = new Map(
       ownedOffers.map(offer => [`${offer.groupId}:${offer.marketId}`, offer] as const)
     )
+    const pendingGroups = await readPendingGroups(block.number, groups, ownedOffers)
     const project = (
       selectedGroups: ReturnType<typeof strategyBootstrapGroups>,
       includeIntent: boolean
@@ -243,6 +287,7 @@ export const createProductionBootstrapAdapters = (
             id: group.id,
             marketId: group.marketId as Hex,
             assets: group.maxAssets - group.consumed,
+            tick: group.tick as bigint,
             rateBps:
               persisted?.rateBps ??
               TickLib.tickToApr(
@@ -255,10 +300,7 @@ export const createProductionBootstrapAdapters = (
         })
 
     return {
-      activeGroups: [
-        ...project(strategyBootstrapGroups(groups, ownedIds), true),
-        ...pendingBootstrapGroups(groups, ownedOffers)
-      ],
+      activeGroups: [...project(strategyBootstrapGroups(groups, ownedIds), true), ...pendingGroups],
       cashReservations: [
         ...project(
           strategyBootstrapGroups(
@@ -316,19 +358,6 @@ export const createProductionBootstrapAdapters = (
       referenceClient as HistoricalBlockReader
     )
   )
-  const prepareOffer = async (offer: BootstrapOffer) => {
-    const [market, block] = await Promise.all([
-      midnight.getMarketData(offer.marketId),
-      client.getBlock({ blockTag: 'latest' })
-    ])
-    return createBootstrapOffer({
-      offer,
-      market,
-      maker,
-      ratifier: config.setup.ratifier,
-      now: block.timestamp
-    })
-  }
   const completeBookOffers = async () => {
     const [groups, ladderPublications] = await Promise.all([readGroups(), ladderOwnership.read()])
     const pendingLadderOffers = (

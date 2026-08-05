@@ -39,6 +39,8 @@ export const bootstrapContinuousFeeCap = (market: { continuousFee: unknown }) =>
  * @param parameters - Offer intent, fresh market state, maker policy, and current block time.
  * @returns A Midnight buy offer with the live maturity-adjusted tick and fee cap.
  * @throws `BootstrapAdapterError` when the live market fee is malformed; SDK validation failures propagate.
+ * @remarks The fresh block timestamp prevents a later publication from reusing a consumed
+ * content-addressed group while preserving the market maturity as the offer expiry.
  */
 export const createBootstrapOffer = (parameters: {
   offer: BootstrapOffer
@@ -56,6 +58,7 @@ export const createBootstrapOffer = (parameters: {
     market: parameters.market.params,
     buy: true,
     maker: parameters.maker,
+    start: parameters.now,
     tick: TickLib.priceToTick(
       TickLib.rateToPrice(periodRateWad),
       BigInt(parameters.market.tickSpacing)
