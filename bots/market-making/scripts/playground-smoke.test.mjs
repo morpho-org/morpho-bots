@@ -765,26 +765,41 @@ child.on('close', () => process.exit(0))
   })
 }
 
-const subreaperChild = String.raw`
+// This fixture must retain kernel-default dispositions from exec onward. A Python child is unsuitable:
+// CPython installs its KeyboardInterrupt SIGINT handler during interpreter startup, before fixture code
+// can restore SIG_DFL, so a signal forwarded immediately after Popen can nondeterministically exit 1.
+const defaultSubreaperChild = String.raw`
+trap - INT TERM
+printf '%s' "$$" > "$SUBREAPER_TEST_CHILD_PID_FILE"
+if [ -n "$SUBREAPER_TEST_CHILD_READY_FILE" ]; then
+  : > "$SUBREAPER_TEST_CHILD_READY_FILE"
+fi
+exec sleep 3600
+`
+
+const signalRecordingSubreaperChild = String.raw`
 import os
 import signal
 import time
 
+signals = []
+signal_file = os.environ['SUBREAPER_TEST_CHILD_SIGNAL_FILE']
+
+
+def record(signum, _frame):
+    signals.append(signal.Signals(signum).name)
+    with open(signal_file, 'a') as output:
+        output.write(signal.Signals(signum).name + '\n')
+    if len(signals) == 2:
+        raise SystemExit(0)
+
+
+signal.signal(signal.SIGTERM, record)
+signal.signal(signal.SIGINT, record)
 with open(os.environ['SUBREAPER_TEST_CHILD_PID_FILE'], 'w') as pid_file:
     pid_file.write(str(os.getpid()))
 if ready_file := os.environ.get('SUBREAPER_TEST_CHILD_READY_FILE'):
     open(ready_file, 'w').close()
-
-signals = []
-if signal_file := os.environ.get('SUBREAPER_TEST_CHILD_SIGNAL_FILE'):
-    def record(signum, _frame):
-        signals.append(signal.Signals(signum).name)
-        with open(signal_file, 'a') as output:
-            output.write(signal.Signals(signum).name + '\n')
-        if len(signals) == 2:
-            raise SystemExit(0)
-    signal.signal(signal.SIGTERM, record)
-    signal.signal(signal.SIGINT, record)
 
 while True:
     time.sleep(1)
@@ -801,7 +816,7 @@ const runSubreaperBarrierSignal = async ({ phase, signal, suffix }) => {
   const readyFile = join(root, 'barrier-ready')
   const releaseFile = join(root, 'barrier-release')
   const childPidFile = join(root, 'child-pid')
-  const owner = spawnOwnedProcess(process.env.PYTHON ?? 'python3', ['-c', subreaperChild], {
+  const owner = spawnOwnedProcess('/bin/sh', ['-c', defaultSubreaperChild], {
     env: {
       ...process.env,
       SUBREAPER_TEST_CHILD_PID_FILE: childPidFile,
@@ -837,12 +852,49 @@ test('subreaper cancellation before Popen never starts an unowned child', async 
   }
 })
 
+test('default child fixture publishes readiness with default SIGINT and SIGTERM dispositions', async () => {
+  for (const signal of ['SIGTERM', 'SIGINT']) {
+    const root = await temporaryDirectory(`subreaper-default-ready-${signal.toLowerCase()}-`)
+    const childReady = join(root, 'child-ready')
+    const childPidFile = join(root, 'child-pid')
+    const owner = spawnOwnedProcess('/bin/sh', ['-c', defaultSubreaperChild], {
+      env: {
+        ...process.env,
+        SUBREAPER_TEST_CHILD_PID_FILE: childPidFile,
+        SUBREAPER_TEST_CHILD_READY_FILE: childReady
+      },
+      stdio: 'ignore'
+    })
+    const completion = waitForClose(owner)
+    let childPid
+    try {
+      await waitFor(() => readFile(childReady))
+      childPid = Number(await readFile(childPidFile, 'utf8'))
+      const status = await readFile(`/proc/${childPid}/status`, 'utf8')
+      const caught = BigInt(`0x${status.match(/^SigCgt:\s+([0-9a-f]+)/im)?.[1]}`)
+      const ignored = BigInt(`0x${status.match(/^SigIgn:\s+([0-9a-f]+)/im)?.[1]}`)
+      for (const signalNumber of [2n, 15n]) {
+        const mask = 1n << (signalNumber - 1n)
+        assert.equal(caught & mask, 0n)
+        assert.equal(ignored & mask, 0n)
+      }
+
+      owner.kill(signal)
+      assert.deepEqual(await completion, { code: null, signal })
+      await waitForProcessesGone([childPid])
+    } finally {
+      if (owner.exitCode === null && owner.signalCode === null) owner.kill('SIGKILL')
+      if (childPid && processExists(childPid)) process.kill(childPid, 'SIGKILL')
+    }
+  }
+})
+
 test(
   'subreaper forwards startup signals from the handler-installed/Popen-assignment window',
-  { timeout: 60_000 },
+  { timeout: 120_000 },
   async () => {
     for (const signal of ['SIGTERM', 'SIGINT']) {
-      for (let iteration = 0; iteration < 50; iteration++) {
+      for (let iteration = 0; iteration < 100; iteration++) {
         await runSubreaperBarrierSignal({
           phase: 'DURING_POPEN',
           signal,
@@ -870,17 +922,21 @@ test('subreaper forwards multiple post-assignment signals exactly once', async (
   const childReady = join(root, 'child-ready')
   const childPidFile = join(root, 'child-pid')
   const childSignalFile = join(root, 'child-signals')
-  const owner = spawnOwnedProcess(process.env.PYTHON ?? 'python3', ['-c', subreaperChild], {
-    env: {
-      ...process.env,
-      SUBREAPER_TEST_AFTER_ASSIGNMENT_READY_FILE: barrierReady,
-      SUBREAPER_TEST_AFTER_ASSIGNMENT_RELEASE_FILE: barrierRelease,
-      SUBREAPER_TEST_CHILD_PID_FILE: childPidFile,
-      SUBREAPER_TEST_CHILD_READY_FILE: childReady,
-      SUBREAPER_TEST_CHILD_SIGNAL_FILE: childSignalFile
-    },
-    stdio: 'ignore'
-  })
+  const owner = spawnOwnedProcess(
+    process.env.PYTHON ?? 'python3',
+    ['-c', signalRecordingSubreaperChild],
+    {
+      env: {
+        ...process.env,
+        SUBREAPER_TEST_AFTER_ASSIGNMENT_READY_FILE: barrierReady,
+        SUBREAPER_TEST_AFTER_ASSIGNMENT_RELEASE_FILE: barrierRelease,
+        SUBREAPER_TEST_CHILD_PID_FILE: childPidFile,
+        SUBREAPER_TEST_CHILD_READY_FILE: childReady,
+        SUBREAPER_TEST_CHILD_SIGNAL_FILE: childSignalFile
+      },
+      stdio: 'ignore'
+    }
+  )
   const completion = waitForClose(owner)
   let childPid
   try {
