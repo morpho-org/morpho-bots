@@ -126,7 +126,7 @@ export type BootstrapInput = Record<Exclude<BootstrapKey, 'autoRefill'>, string>
   autoRefill: boolean
 }
 export type LadderInput = Record<LadderKey, string>
-type PlaygroundState = {
+export type PlaygroundState = {
   scalar: Record<ScalarKey, string>
   bootstrap: BootstrapInput[]
   ladder: LadderInput[]

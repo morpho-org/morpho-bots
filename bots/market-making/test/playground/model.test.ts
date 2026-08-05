@@ -131,13 +131,14 @@ describe('market-maker parameter playground', () => {
   test('does not expose the lossy dotenv format in the model or browser UI', async () => {
     const [model, application, document] = await Promise.all([
       Bun.file(new URL('../../playground/model.ts', import.meta.url)).text(),
-      Bun.file(new URL('../../playground/app.ts', import.meta.url)).text(),
+      Bun.file(new URL('../../playground/app.tsx', import.meta.url)).text(),
       Bun.file(new URL('../../playground/index.html', import.meta.url)).text()
     ])
     expect(model).not.toContain('exportDotenv')
     expect(application).not.toContain('dotenv')
     expect(document).not.toContain('Dotenv')
-    expect(document).toContain('Shell-safe ENV')
+    expect(application).toContain('Shell-safe ENV')
+    expect(document).toContain('id="root"')
   })
 
   test('shell export literally round-trips every hostile character through POSIX dash without execution', async () => {
@@ -240,7 +241,7 @@ describe('market-maker parameter playground', () => {
   })
 
   test('uses explicit allocation and offer maxAssets language in graphic rendering', async () => {
-    const application = await Bun.file(new URL('../../playground/app.ts', import.meta.url)).text()
+    const application = await Bun.file(new URL('../../playground/app.tsx', import.meta.url)).text()
     expect(application).toContain('allocation')
     expect(application).toContain('offer maxAssets')
     expect(application.toLowerCase()).not.toContain('offer-size')

@@ -953,7 +953,7 @@ export const spawnOwnedProcess = (executable, args, options = {}) => {
 
 export const prepareFreshDist = async ({
   root,
-  executable = 'bun',
+  executable = process.execPath,
   onDistCreated = () => {},
   onBuildProcess = () => () => {},
   onTempCreated = async () => {},
@@ -978,7 +978,7 @@ export const prepareFreshDist = async ({
     if (signal?.aborted) throw signal.reason
     const command = {
       executable,
-      args: ['build', 'playground/index.html', '--outdir', dist, '--target', 'browser'],
+      args: [join(root, 'scripts/playground-build.mjs'), '--outdir', dist, '--no-clean'],
       cwd: root,
       signal,
       stdio: ['ignore', 'pipe', 'pipe'],

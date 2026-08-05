@@ -161,6 +161,12 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
     const wrapperPidFile = join(isolatedTmp, 'chromium-wrapper-pid')
     await mkdir(bin)
     await symlink(chromiumPath, chromiumLink)
+    const fakeBuiltHtml = `<!doctype html><title>signal test</title><div id="root" data-react-mounted="true"><div>mounted signal test</div></div><script>document.documentElement.dataset.playgroundReady = 'true'</script>`
+    assert.match(
+      fakeBuiltHtml,
+      /<div id="root" data-react-mounted="true"><div>[^<]+<\/div><\/div><script>document\.documentElement\.dataset\.playgroundReady = 'true'<\/script>/,
+      'fake build must mount a non-empty React root before declaring playground readiness'
+    )
     await writeFile(
       fakeBun,
       `#!/usr/bin/env node
@@ -168,7 +174,7 @@ const { mkdirSync, writeFileSync } = require('node:fs')
 const outdir = process.argv[process.argv.indexOf('--outdir') + 1]
 if (!outdir) throw new Error('missing --outdir')
 mkdirSync(outdir, { recursive: true })
-writeFileSync(outdir + '/index.html', '<!doctype html><html data-playground-ready="true"><title>signal test</title>')
+writeFileSync(outdir + '/index.html', ${JSON.stringify(fakeBuiltHtml)})
 `
     )
     await chmod(fakeBun, 0o755)

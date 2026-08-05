@@ -22,7 +22,7 @@
       "ignore": ["src/infrastructure/*/generated/**"]
     },
     "bots/market-making": {
-      "entry": ["playground/app.ts"]
+      "entry": ["playground/app.tsx"]
     }
   }
 }

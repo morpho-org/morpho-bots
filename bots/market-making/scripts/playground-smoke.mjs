@@ -274,7 +274,10 @@ try {
         })
       }
       if (message.method === 'Runtime.exceptionThrown')
-        consoleErrors.push(message.params.exceptionDetails.text)
+        consoleErrors.push(
+          message.params.exceptionDetails.exception?.description ??
+            message.params.exceptionDetails.text
+        )
       if (message.method === 'Runtime.consoleAPICalled')
         consoleMessages.push(
           message.params.args
@@ -423,10 +426,24 @@ try {
   })
   await command('Page.navigate', { url: `http://127.0.0.1:${port}${basePath}` })
   await waitForReadiness(async () => {
-    if (!(await evaluate("document.documentElement.dataset.playgroundReady === 'true'"))) {
-      throw new Error('playground not ready')
+    const readiness = await evaluate(`({
+      ready: document.documentElement.dataset.playgroundReady === 'true',
+      rootChildren: document.querySelector('#root')?.childElementCount ?? -1,
+      rootText: document.querySelector('#root')?.textContent?.slice(0, 200) ?? '',
+      failure: document.querySelector('#playground-failure')?.textContent ?? ''
+    })`)
+    if (!readiness.ready) {
+      throw new Error(
+        `playground not ready: ${JSON.stringify(readiness)}; console errors: ${consoleErrors.join('; ') || 'none'}; console messages: ${consoleMessages.join('; ') || 'none'}`
+      )
     }
   }, browserReadiness('playground page readiness'))
+  assert(
+    await evaluate(
+      "document.querySelector('#root')?.dataset.reactMounted === 'true' && document.querySelector('#root')?.childElementCount > 0"
+    ),
+    'React root did not commit before the ready contract'
+  )
   console.log(
     `smoke environment: appPort=${port} chromiumDebugPort=${debuggingPort} chromium=${chromiumPath}`
   )
@@ -1025,6 +1042,69 @@ try {
       status.dataset.status === 'ok' && status.textContent.includes('Applied') &&
       document.querySelector('.ladder-graphic svg')?.outerHTML === latestGraphic
 
+    const marketIds = document.querySelector('[data-field=MARKET_IDS]')
+    const setNativeInputValue = (input, value) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    const ladderControlValues = () => controlValues(
+      '#controls .market-card:has([data-field=quotePremiumBps]) [data-field]'
+    )
+    const currentLaddersBeforeConfigRace = ladderControlValues()
+    const staleForChangedAllowlist = deferredFile('stale-for-changed-allowlist.json')
+    dispatchFiles([staleForChangedAllowlist.file])
+    const replacementMarketId = '0x' + '6'.repeat(64)
+    setNativeInputValue(marketIds, replacementMarketId)
+    await nextFrame()
+    staleForChangedAllowlist.resolve(initial)
+    const configRaceRejected = await waitForImportStatus(
+      () => status.dataset.status === 'error' && status.textContent.trim().length > 0
+    )
+    const staleConfigImportAtomic = configRaceRejected &&
+      JSON.stringify(ladderControlValues()) === JSON.stringify(currentLaddersBeforeConfigRace)
+    const validForCurrentAllowlist = JSON.parse(initial)
+    validForCurrentAllowlist[0].marketId = replacementMarketId
+    const currentValidText = JSON.stringify(validForCurrentAllowlist)
+    const currentValid = deferredFile('current-valid.json')
+    dispatchFiles([currentValid.file])
+    currentValid.resolve(currentValidText)
+    const currentValidCompletion = await waitForImportStatus(
+      () => status.dataset.status === 'ok' &&
+        document.querySelector(
+          '#controls .market-card:has([data-field=quotePremiumBps]) [data-field=marketId]'
+        )?.value === replacementMarketId
+    )
+    setNativeInputValue(marketIds, JSON.parse(initial)[0].marketId)
+    text.value = initial
+    apply.click()
+    await nextFrame()
+
+    const secondMarketId = '0x' + '7'.repeat(64)
+    setNativeInputValue(marketIds, JSON.parse(initial)[0].marketId + ',' + secondMarketId)
+    const reorderedPair = JSON.parse(initial)
+    reorderedPair.push({ ...reorderedPair[0], marketId: secondMarketId, quotePremiumBps: '17' })
+    text.value = JSON.stringify(reorderedPair)
+    apply.click()
+    await nextFrame()
+    const importDuringReorder = deferredFile('import-during-reorder.json')
+    dispatchFiles([importDuringReorder.file])
+    document.querySelector(
+      '#controls .market-card:has([data-field=quotePremiumBps]) .item-actions button:nth-of-type(2)'
+    )?.click()
+    await nextFrame()
+    importDuringReorder.resolve(initial)
+    const concurrentReorderImport = await waitForImportStatus(
+      () => status.dataset.status === 'ok' &&
+        document.querySelectorAll(
+          '#controls .market-card:has([data-field=quotePremiumBps])'
+        ).length === 1 &&
+        document.querySelector(
+          '#controls .market-card:has([data-field=quotePremiumBps]) [data-field=marketId]'
+        )?.value === JSON.parse(initial)[0].marketId
+    )
+    setNativeInputValue(marketIds, JSON.parse(initial)[0].marketId)
+    await nextFrame()
+
     const fileBeforePaste = deferredFile('file-before-paste.json')
     dispatchFiles([fileBeforePaste.file])
     text.value = initial
@@ -1114,6 +1194,9 @@ try {
       mimeRejected,
       multipleRejected,
       slowOldFastNew,
+      staleConfigImportAtomic,
+      currentValidCompletion,
+      concurrentReorderImport,
       fileThenPaste,
       invalidBeatsOldSuccess,
       staleErrorDiscarded,
@@ -1209,7 +1292,8 @@ try {
         const scrollBefore = scrollY
         const spread = document.querySelector('.market-card:has([data-field=quotePremiumBps]) [data-field=spreadBps]')
         const oldLabel = document.querySelector('.spread-gap-label')?.textContent
-        spread.value = spread.value === '180' ? '200' : '180'
+        const nextSpread = spread.value === '180' ? '200' : '180'
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(spread, nextSpread)
         spread.dispatchEvent(new Event('input', { bubbles: true }))
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
         const after = monitor.getBoundingClientRect()
@@ -1448,15 +1532,17 @@ try {
     const input = field => document.querySelector(\`.market-card:has([data-field=quotePremiumBps]) [data-field=\${field}]\`)
     const set = (field, value) => {
       const element = input(field)
-      element.value = value
+      const prototype = element instanceof HTMLSelectElement ? HTMLSelectElement.prototype : element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+      Object.getOwnPropertyDescriptor(prototype, 'value').set.call(element, value)
       element.dispatchEvent(new Event('input', { bubbles: true }))
+      if (element instanceof HTMLSelectElement) element.dispatchEvent(new Event('change', { bubbles: true }))
     }
     const callout = field => document.querySelector(\`[data-parameter~=\${field}].ladder-callout dd\`)?.textContent ?? ''
     set('minimumRateBps', '0')
     set('maximumRateBps', '2000')
     const allowlist = document.querySelector('[data-field=MARKET_IDS]')
     const secondMarket = '0x' + '6'.repeat(64)
-    allowlist.value += ',' + secondMarket
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(allowlist, allowlist.value + ',' + secondMarket)
     allowlist.dispatchEvent(new Event('input', { bubbles: true }))
     set('marketId', secondMarket)
     result.marketId = document.querySelector('.ladder-heading code')?.textContent.includes(secondMarket)
@@ -1514,10 +1600,10 @@ try {
     result.maximumRateBps = [...document.querySelectorAll('.axis-label')].some(label => label.textContent === 'MAX 1950 BPS')
     set('maximumRateBps', '2000')
     const reference = document.querySelector('#preview-reference')
-    reference.value = '510'
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(reference, '510')
     reference.dispatchEvent(new Event('input', { bubbles: true }))
     result.referenceRateBps = document.querySelector('.reference-label')?.textContent === 'REFERENCE 510'
-    reference.value = '500'
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(reference, '500')
     reference.dispatchEvent(new Event('input', { bubbles: true }))
     return result
   })()`)
@@ -1556,8 +1642,10 @@ try {
     const full = key => cards()[0].querySelector('[data-field=' + key + ']')
     const quick = key => document.querySelector('[data-quick-field=' + key + ']')
     const set = (element, value) => {
-      element.value = value
+      const prototype = element instanceof HTMLSelectElement ? HTMLSelectElement.prototype : element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+      Object.getOwnPropertyDescriptor(prototype, 'value').set.call(element, value)
       element.dispatchEvent(new Event('input', { bubbles: true }))
+      if (element instanceof HTMLSelectElement) element.dispatchEvent(new Event('change', { bubbles: true }))
     }
     const quickToFull = {}
     for (const [key, value] of Object.entries(values)) {
@@ -1618,7 +1706,7 @@ try {
     input.focus({ preventScroll: true })
     const sameNode = input
     const pageBefore = scrollY
-    input.value = ''
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '')
     input.setSelectionRange(0, 0)
     input.dispatchEvent(new Event('input', { bubbles: true }))
     const invalid = document.activeElement === sameNode &&
@@ -1681,7 +1769,7 @@ try {
 
   const hugeGeometryProof = await evaluate(`(() => {
     const input = field => document.querySelector(\`.market-card:has([data-field=quotePremiumBps]) [data-field=\${field}]\`)
-    const set = (field, value) => { const element=input(field); element.value=String(value); element.dispatchEvent(new Event('input',{bubbles:true})) }
+    const set = (field, value) => { const element=input(field); const prototype=element instanceof HTMLSelectElement?HTMLSelectElement.prototype:HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(prototype,'value').set.call(element,String(value)); element.dispatchEvent(new Event('input',{bubbles:true})) }
     const results = []
     for (const power of [100, 308, 309, 400]) {
       const unit = BigInt('1' + '0'.repeat(power))
@@ -1689,7 +1777,7 @@ try {
       set('maximumRateBps', String(unit * 8n))
       set('spreadBps', String(unit * 2n))
       set('stepBps', String(unit))
-      const reference=document.querySelector('#preview-reference'); reference.value=String(unit * 4n); reference.dispatchEvent(new Event('input',{bubbles:true}))
+      const reference=document.querySelector('#preview-reference'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(reference,String(unit * 4n)); reference.dispatchEvent(new Event('input',{bubbles:true}))
       const svg=document.querySelector('.ladder-scroll svg')
       const numericAttributes=[...document.querySelectorAll('.ladder-market [x],[y],[width],[height],[cx],[cy],[r]')].flatMap(element => ['x','y','width','height','cx','cy','r'].flatMap(name => element.hasAttribute(name) ? [Number(element.getAttribute(name))] : []))
       results.push({
@@ -1701,10 +1789,10 @@ try {
       })
     }
     set('maximumRateBps', '1' + '0'.repeat(400)); set('spreadBps', '2'); set('stepBps', '1')
-    const practicalReference=document.querySelector('#preview-reference'); practicalReference.value='4'; practicalReference.dispatchEvent(new Event('input',{bubbles:true}))
+    const practicalReference=document.querySelector('#preview-reference'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(practicalReference,'4'); practicalReference.dispatchEvent(new Event('input',{bubbles:true}))
     const practicalInvalid = document.querySelector('.ladder-invalid[role=img]')?.getAttribute('aria-label')?.includes('32768px practical plot-height limit') && document.querySelector('#ladder-status').dataset.status==='error' && document.querySelector('#validation-errors').hidden && !document.querySelector('#copy-export').disabled && [...document.querySelectorAll('#export-yaml,#export-shell,#export-json')].every(output => output.dataset.invalid==='false' && !output.value.match(/NaN|Infinity/))
     set('spreadBps', '200'); set('stepBps', '100'); set('minimumRateBps', '200'); set('maximumRateBps', '800')
-    const reference=document.querySelector('#preview-reference'); reference.value='500'; reference.dispatchEvent(new Event('input',{bubbles:true}))
+    const reference=document.querySelector('#preview-reference'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(reference,'500'); reference.dispatchEvent(new Event('input',{bubbles:true}))
     return { results, practicalInvalid }
   })()`)
   assert(
@@ -1716,7 +1804,7 @@ try {
   )
   await evaluate(`(() => {
     const input = field => document.querySelector(\`.market-card:has([data-field=quotePremiumBps]) [data-field=\${field}]\`)
-    const set = (field, value) => { const element=input(field); element.value=String(value); element.dispatchEvent(new Event('input',{bubbles:true})) }
+    const set = (field, value) => { const element=input(field); const prototype=element instanceof HTMLSelectElement?HTMLSelectElement.prototype:HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(prototype,'value').set.call(element,String(value)); element.dispatchEvent(new Event('input',{bubbles:true})) }
     set('minimumRateBps', '200')
     set('maximumRateBps', '800')
     set('groupMode', 'per-book')
@@ -1726,7 +1814,7 @@ try {
   const configureDensity = async rungCount =>
     evaluate(`(() => {
       const input = field => document.querySelector(\`.market-card:has([data-field=quotePremiumBps]) [data-field=\${field}]\`)
-      const set = (field, value) => { const element=input(field); element.value=String(value); element.dispatchEvent(new Event('input',{bubbles:true})) }
+      const set = (field, value) => { const element=input(field); const prototype=element instanceof HTMLSelectElement?HTMLSelectElement.prototype:HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(prototype,'value').set.call(element,String(value)); element.dispatchEvent(new Event('input',{bubbles:true})) }
       set('rungCount', '${rungCount}')
       set('minimumOfferAssets', '1')
       set('minimumRateBps', '0')
@@ -1989,10 +2077,9 @@ try {
         BETTERSTACK_HEARTBEAT_URL: 'https://heartbeat-user:heartbeat-password@heartbeat.example.test/credential-path?token=heartbeat-query-secret#heartbeat-fragment-secret'
       }
       const toggle = document.querySelector('#include-sensitive-values')
-      toggle.checked = ${!includeSensitive}
-      toggle.dispatchEvent(new Event('change', { bubbles: true }))
-      toggle.checked = ${includeSensitive}
-      toggle.dispatchEvent(new Event('change', { bubbles: true }))
+      const setToggle = checked => { if (toggle.checked !== checked) toggle.click() }
+      setToggle(${!includeSensitive})
+      setToggle(${includeSensitive})
       document.querySelector('#tab-json').click()
       let copied = ''
       Object.defineProperty(navigator, 'clipboard', {
@@ -2382,7 +2469,7 @@ try {
   )
 
   await evaluate(
-    "Object.defineProperty(navigator, 'clipboard', {value: undefined, configurable: true}); document.execCommand=()=>false; document.querySelector('#copy-export').disabled=false; document.querySelector('#copy-export').click()"
+    "(() => { const step=document.querySelector('.market-card [data-field=stepBps]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(step,'100'); step.dispatchEvent(new Event('input',{bubbles:true})); Object.defineProperty(navigator, 'clipboard', {value: undefined, configurable: true}); document.execCommand=()=>false; document.querySelector('#copy-export').click() })()"
   )
   await waitForReadiness(async () => {
     if (
