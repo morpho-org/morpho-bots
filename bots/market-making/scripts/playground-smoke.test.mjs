@@ -1462,6 +1462,92 @@ test('failed fresh build removes its temporary output and reports the child fail
   )
 })
 
+test('an ownership callback throw removes the unregistered temporary dist and preserves the error', async () => {
+  const root = await temporaryDirectory('playground-dist-owner-throw-')
+  const callbackError = new Error('deliberate ownership callback failure')
+  const before = (await readdir(tmpdir())).filter(name =>
+    name.startsWith('market-making-playground-dist-')
+  )
+
+  await assert.rejects(
+    prepareFreshDist({
+      root,
+      onDistCreated: () => {
+        throw callbackError
+      }
+    }),
+    error => {
+      assert.equal(error, callbackError)
+      return true
+    }
+  )
+
+  assert.deepEqual(
+    (await readdir(tmpdir())).filter(name => name.startsWith('market-making-playground-dist-')),
+    before
+  )
+})
+
+test('an ownership callback that registers then throws leaves no registered directory behind', async () => {
+  const root = await temporaryDirectory('playground-dist-owner-register-throw-')
+  const ownedDirectories = new Set()
+  const callbackError = new Error('deliberate post-registration failure')
+
+  await assert.rejects(
+    prepareFreshDist({
+      root,
+      onDistCreated: directory => {
+        ownedDirectories.add(directory)
+        throw callbackError
+      }
+    }),
+    error => {
+      assert.equal(error, callbackError)
+      return true
+    }
+  )
+
+  assert.equal(ownedDirectories.size, 1)
+  const [registeredDirectory] = ownedDirectories
+  await assert.rejects(readdir(registeredDirectory), { code: 'ENOENT' })
+})
+
+test('an ownership callback and cleanup failure are both reported with the callback as cause', async () => {
+  const root = await temporaryDirectory('playground-dist-owner-cleanup-failure-')
+  const callbackError = new Error('deliberate ownership callback failure')
+  const cleanupError = new Error('deliberate temporary dist cleanup failure')
+  let createdDirectory
+  let cleanupCalls = 0
+
+  await assert.rejects(
+    prepareFreshDist({
+      root,
+      onDistCreated: directory => {
+        createdDirectory = directory
+        throw callbackError
+      },
+      removeTemporaryDist: async directory => {
+        cleanupCalls += 1
+        assert.equal(directory, createdDirectory)
+        throw cleanupError
+      }
+    }),
+    error => {
+      assert.ok(error instanceof AggregateError)
+      assert.match(
+        error.message,
+        /ownership callback failure.*cleanup.*temporary dist cleanup failure/i
+      )
+      assert.equal(error.cause, callbackError)
+      assert.deepEqual(error.errors, [callbackError, cleanupError])
+      return true
+    }
+  )
+
+  assert.equal(cleanupCalls, 1)
+  await rm(createdDirectory, { recursive: true, force: true })
+})
+
 test('preparing the playground removes stale output and builds from an absent dist', async () => {
   const root = await temporaryDirectory('playground-build-test-')
   const dist = join(root, 'playground/dist')
@@ -1481,8 +1567,16 @@ writeFileSync(outdir + '/index.html', '<!doctype html><title>fresh</title>')
 `
   )
   await chmod(fakeBun, 0o755)
+  let temporaryDistCleanupCalls = 0
 
-  const prepared = await prepareFreshDist({ root, executable: fakeBun })
+  const prepared = await prepareFreshDist({
+    root,
+    executable: fakeBun,
+    removeTemporaryDist: async (directory, options) => {
+      temporaryDistCleanupCalls += 1
+      await rm(directory, options)
+    }
+  })
 
   assert.notEqual(prepared.dist, dist)
   assert.equal(
@@ -1491,6 +1585,8 @@ writeFileSync(outdir + '/index.html', '<!doctype html><title>fresh</title>')
   )
   await assert.rejects(readFile(join(dist, 'stale-sentinel')), { code: 'ENOENT' })
   await prepared.cleanup()
+  await prepared.cleanup()
+  assert.equal(temporaryDistCleanupCalls, 1)
   await assert.rejects(readFile(join(prepared.dist, 'index.html')), { code: 'ENOENT' })
 })
 

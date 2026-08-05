@@ -957,15 +957,20 @@ export const prepareFreshDist = async ({
   onDistCreated = () => {},
   onBuildProcess = () => () => {},
   onTempCreated = async () => {},
+  removeTemporaryDist = rm,
   signal
 }) => {
   await rm(join(root, 'playground/dist'), { recursive: true, force: true })
   if (signal?.aborted) throw signal.reason
   const dist = mkdtempSync(join(tmpdir(), 'market-making-playground-dist-'))
-  onDistCreated(dist)
-  const cleanup = () => rm(dist, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
+  let cleanupPromise
+  const cleanup = () =>
+    (cleanupPromise ??= Promise.resolve().then(() =>
+      removeTemporaryDist(dist, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
+    ))
   let releaseBuildProcess = () => {}
   try {
+    onDistCreated(dist)
     await onTempCreated(dist)
     if (signal?.aborted) throw signal.reason
     const build = spawnOwnedProcess(
@@ -1013,7 +1018,15 @@ export const prepareFreshDist = async ({
     }
     return { cleanup, dist }
   } catch (error) {
-    await cleanup()
+    try {
+      await cleanup()
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        `Fresh playground preparation failed: ${error.message}; temporary dist cleanup failed: ${cleanupError.message}`,
+        { cause: error }
+      )
+    }
     throw error
   } finally {
     releaseBuildProcess()
