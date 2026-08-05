@@ -21,9 +21,13 @@ describe('market-making playground React architecture contract', () => {
     const app = await read('bots/market-making/playground/app.tsx')
     expect(app).toContain('useForm({')
     expect(app).toContain('<form.Field')
-    expect(app).toContain('fieldInput(`${kind}.${index}.${field[0]}`, field)')
+    expect(app).toContain(
+      'fieldInput(`${kind}.${index}.${field[0]}`, field, false, [], uiIds[index])'
+    )
     expect(app).toContain('`ladder.${selectedIndex}.${key}`')
-    expect(app).toMatch(/fieldInput\(\s*path,\s*quickFieldDefinition\(key\),\s*true,\s*errors\s*\)/)
+    expect(app).toMatch(
+      /fieldInput\(\s*path,\s*quickFieldDefinition\(key\),\s*true,\s*errors,\s*selectedLadderId\s*\)/
+    )
     expect(app).toContain('useReactTable({')
     expect(app).toContain('getCoreRowModel: getCoreRowModel()')
     expect(app).toContain('table.getRowModel().rows')
@@ -58,5 +62,22 @@ describe('market-making playground React architecture contract', () => {
     )
     expect(app).not.toContain('applyFile(event.target.files ?? [], state)')
     expect(app).not.toContain('applyFile(event.dataTransfer.files, state)')
+  })
+
+  test('uses one import revision for file, drop, apply, and every paste edit', async () => {
+    const app = await read('bots/market-making/playground/app.tsx')
+    expect(app).toMatch(
+      /onChange=\{event => \{\s*beginImport\(\)\s*setImportText\(event\.target\.value\)/
+    )
+    expect(app).toContain('const generation = beginImport()')
+    expect(app).toContain('generation !== importGeneration.current')
+  })
+
+  test('keys collection cards and previews with deterministic UI-only identities', async () => {
+    const app = await read('bots/market-making/playground/app.tsx')
+    expect(app).toContain('const createUiId =')
+    expect(app).toContain('key={uiIds[index]}')
+    expect(app).toContain('key={ladderUiIds[index]}')
+    expect(app).not.toMatch(/crypto\.randomUUID|Math\.random/)
   })
 })

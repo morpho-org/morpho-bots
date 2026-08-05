@@ -29,6 +29,7 @@ import {
   generateLadderGraphicModels,
   getObservabilityStatuses,
   parseLadderMarketsImport,
+  validateQuickLadderState,
   validatePreviewState,
   validateProductionState
 } from './model'
@@ -401,8 +402,21 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error?: Error }
 }
 
 const Playground = () => {
-  const form = useForm({ defaultValues: createDefaultPlaygroundState() })
-  const [selectedLadderIndex, setSelectedLadderIndex] = useState(0)
+  const initialState = useRef<PlaygroundState | null>(null)
+  if (initialState.current === null) initialState.current = createDefaultPlaygroundState()
+  const uiIdSequence = useRef(0)
+  const createUiId = (kind: 'bootstrap' | 'ladder') => `${kind}-ui-${++uiIdSequence.current}`
+  const initialUiIds = useRef<{ bootstrap: string[]; ladder: string[] } | null>(null)
+  if (initialUiIds.current === null) {
+    initialUiIds.current = {
+      bootstrap: initialState.current.bootstrap.map(() => createUiId('bootstrap')),
+      ladder: initialState.current.ladder.map(() => createUiId('ladder'))
+    }
+  }
+  const form = useForm({ defaultValues: initialState.current })
+  const [bootstrapUiIds, setBootstrapUiIds] = useState(initialUiIds.current.bootstrap)
+  const [ladderUiIds, setLadderUiIds] = useState(initialUiIds.current.ladder)
+  const [selectedLadderId, setSelectedLadderId] = useState(initialUiIds.current.ladder[0])
   const [activeExport, setActiveExport] = useState<ExportFormat>('yaml')
   const [includeSensitiveValues, setIncludeSensitiveValues] = useState(false)
   const [copyStatus, setCopyStatus] = useState<{ message: string; status?: 'ok' | 'error' }>({
@@ -442,7 +456,8 @@ const Playground = () => {
     path: string,
     field: FieldDefinition,
     quick = false,
-    errors: readonly string[] = []
+    errors: readonly string[] = [],
+    identity = path
   ) => {
     const [key, label, help, type] = field
     const sensitive = sensitiveUiKeys.has(key)
@@ -454,7 +469,7 @@ const Playground = () => {
         : `quick-${key}`
       : `field-${path.replaceAll('.', '-').replaceAll('[', '-').replaceAll(']', '')}`
     return (
-      <form.Field key={`${quick ? 'quick' : 'full'}-${path}`} name={path as never}>
+      <form.Field key={`${quick ? 'quick' : 'full'}-${identity}-${key}`} name={path as never}>
         {fieldApi => {
           const value = fieldApi.state.value as string | boolean
           const common = {
@@ -541,8 +556,10 @@ const Playground = () => {
     try {
       const imported = parseLadderMarketsImport(text, values.scalar.MARKET_IDS)
       if (generation !== importGeneration.current) return false
+      const importedUiIds = imported.map(() => createUiId('ladder'))
       form.setFieldValue('ladder', imported)
-      setSelectedLadderIndex(0)
+      setLadderUiIds(importedUiIds)
+      setSelectedLadderId(importedUiIds[0])
       setImportText(text)
       setImportStatus({
         message: `Applied ${imported.length} ladder market${imported.length === 1 ? '' : 's'}.`,
@@ -631,8 +648,9 @@ const Playground = () => {
     <form.Subscribe selector={formState => formState.values}>
       {values => {
         const state = values
-        const selectedIndex = Math.min(selectedLadderIndex, Math.max(0, state.ladder.length - 1))
+        const selectedIndex = Math.max(0, ladderUiIds.indexOf(selectedLadderId ?? ''))
         const selected = state.ladder[selectedIndex]
+        const quickValidation = validateQuickLadderState(state, selectedIndex)
         const productionValidation = validateProductionState(state)
         const previewValidation = validatePreviewState(state)
         let graphics: LadderGraphicModel[] = []
@@ -647,7 +665,7 @@ const Playground = () => {
           }
         }
         const graphicValid = previewValidation.valid && graphicErrors.length === 0
-        const validationErrors = [...productionValidation.errors, ...previewValidation.errors]
+
         const outputs = Object.fromEntries(
           Object.entries(exporters).map(([format, exporter]) => {
             try {
@@ -672,30 +690,36 @@ const Playground = () => {
           if (to < 0 || to >= state[kind].length) return
           synchronously(() => {
             form.moveFieldValues(kind, from, to)
-            if (kind === 'ladder')
-              setSelectedLadderIndex(current =>
-                current === from ? to : current === to ? from : current
-              )
+            const update = (ids: string[]) => {
+              const reordered = [...ids]
+              const [moved] = reordered.splice(from, 1)
+              if (moved !== undefined) reordered.splice(to, 0, moved)
+              return reordered
+            }
+            if (kind === 'ladder') setLadderUiIds(update)
+            else setBootstrapUiIds(update)
           })
         }
         const remove = (kind: 'bootstrap' | 'ladder', index: number) => {
           synchronously(() => {
             void form.removeFieldValue(kind, index)
-            if (kind === 'ladder')
-              setSelectedLadderIndex(current =>
-                current === index
-                  ? Math.min(index, state.ladder.length - 2)
-                  : current > index
-                    ? current - 1
-                    : current
-              )
+            if (kind === 'ladder') {
+              const remaining = ladderUiIds.filter((_, itemIndex) => itemIndex !== index)
+              setLadderUiIds(remaining)
+              if (ladderUiIds[index] === selectedLadderId) {
+                setSelectedLadderId(remaining[Math.min(index, remaining.length - 1)])
+              }
+            } else {
+              setBootstrapUiIds(ids => ids.filter((_, itemIndex) => itemIndex !== index))
+            }
           })
         }
         const collection = <Item extends BootstrapInput | LadderInput>(
           kind: 'bootstrap' | 'ladder',
           title: string,
           fields: readonly FieldDefinition[],
-          items: Item[]
+          items: Item[],
+          uiIds: string[]
         ) => (
           <section className="control-section">
             {sectionHeading(
@@ -711,7 +735,13 @@ const Playground = () => {
                       : createDefaultLadder(firstAllowlistedMarket(state))
                   synchronously(() => {
                     form.pushFieldValue(kind, item as never)
-                    if (kind === 'ladder') setSelectedLadderIndex(state.ladder.length)
+                    const uiId = createUiId(kind)
+                    if (kind === 'ladder') {
+                      setLadderUiIds(ids => [...ids, uiId])
+                      setSelectedLadderId(uiId)
+                    } else {
+                      setBootstrapUiIds(ids => [...ids, uiId])
+                    }
                   })
                 }}
               >
@@ -722,7 +752,7 @@ const Playground = () => {
               <p className="empty-state">No {kind} markets configured.</p>
             ) : null}
             {items.map((item, index) => (
-              <fieldset className="market-card" key={`${kind}-${index}`}>
+              <fieldset className="market-card" key={uiIds[index]} data-ui-id={uiIds[index]}>
                 <legend>
                   {title} {index + 1}
                 </legend>
@@ -746,7 +776,9 @@ const Playground = () => {
                   </button>
                 </div>
                 <div className="field-grid">
-                  {fields.map(field => fieldInput(`${kind}.${index}.${field[0]}`, field))}
+                  {fields.map(field =>
+                    fieldInput(`${kind}.${index}.${field[0]}`, field, false, [], uiIds[index])
+                  )}
                 </div>
               </fieldset>
             ))}
@@ -799,7 +831,7 @@ const Playground = () => {
                         {graphicValid ? (
                           graphics.map((graphic, index) => (
                             <LadderGraphic
-                              key={`${graphic.marketId}-${index}`}
+                              key={ladderUiIds[index]}
                               graphic={graphic}
                               previewIndex={index}
                             />
@@ -832,18 +864,33 @@ const Playground = () => {
                               <select
                                 id="quick-market-select"
                                 aria-label="Selected ladder market"
-                                value={selectedIndex}
-                                onChange={event =>
-                                  setSelectedLadderIndex(Number(event.target.value))
-                                }
+                                value={selectedLadderId}
+                                onChange={event => setSelectedLadderId(event.target.value)}
                               >
                                 {state.ladder.map((ladder, index) => (
-                                  <option key={index} value={index}>
+                                  <option key={ladderUiIds[index]} value={ladderUiIds[index]}>
                                     Market {index + 1} · {ladder.marketId.slice(0, 10)}…
                                   </option>
                                 ))}
                               </select>
                             </label>
+                            <p
+                              id="quick-validation-status"
+                              className="status"
+                              role="status"
+                              aria-live="polite"
+                              data-status={quickValidation.valid ? 'ok' : 'error'}
+                            >
+                              {quickValidation.errors
+                                .filter(
+                                  error =>
+                                    error.path === 'ladder' ||
+                                    error.path === 'MARKET_IDS' ||
+                                    error.path === `ladder[${selectedIndex}]`
+                                )
+                                .map(error => error.message)
+                                .join('; ')}
+                            </p>
                             {quickGroups.map(([groupName, keys], groupIndex) => (
                               <details
                                 className="quick-group"
@@ -855,14 +902,13 @@ const Playground = () => {
                                   <legend>{groupName}</legend>
                                   <div className="quick-grid">
                                     {keys.map(key => {
-                                      const prefix = `ladder[${selectedIndex}]`
-                                      const errors = validationErrors.filter(
-                                        message =>
-                                          message.includes(key) &&
-                                          (key === 'referenceRateBps' ||
-                                            !message.includes('ladder[') ||
-                                            message.includes(prefix))
-                                      )
+                                      const exactPath =
+                                        key === 'referenceRateBps'
+                                          ? 'referenceRateBps'
+                                          : `ladder[${selectedIndex}].${key}`
+                                      const errors = quickValidation.errors
+                                        .filter(error => error.path === exactPath)
+                                        .map(error => error.message)
                                       const path =
                                         key === 'referenceRateBps'
                                           ? 'referenceRateBps'
@@ -871,7 +917,8 @@ const Playground = () => {
                                         path,
                                         quickFieldDefinition(key),
                                         true,
-                                        errors
+                                        errors,
+                                        selectedLadderId
                                       )
                                     })}
                                   </div>
@@ -957,7 +1004,10 @@ const Playground = () => {
                           aria-describedby="ladder-import-help"
                           value={importText}
                           ref={importTextArea}
-                          onChange={event => setImportText(event.target.value)}
+                          onChange={event => {
+                            beginImport()
+                            setImportText(event.target.value)
+                          }}
                         />
                       </label>
                       <button
@@ -993,9 +1043,16 @@ const Playground = () => {
                         'bootstrap',
                         'Position bootstrap',
                         BOOTSTRAP_FIELDS,
-                        state.bootstrap
+                        state.bootstrap,
+                        bootstrapUiIds
                       )}
-                      {collection('ladder', 'Live ladder', LADDER_FIELDS, state.ladder)}
+                      {collection(
+                        'ladder',
+                        'Live ladder',
+                        LADDER_FIELDS,
+                        state.ladder,
+                        ladderUiIds
+                      )}
                       <section className="control-section">
                         {sectionHeading('Observability', 'Environment-only variables')}
                         <div className="field-grid">

@@ -2,6 +2,7 @@ import { parseHttpHeartbeatUrl } from '@repo/bot-kit/heartbeat-url'
 import { classifyShippingConfig } from '@repo/bot-kit/shipping-config'
 import { base } from 'viem/chains'
 
+import { ConfigValidationError } from '../src/config/config-validation.error'
 import {
   addressValue,
   bootstrapConfigsValue,
@@ -265,6 +266,82 @@ export const validateProductionState = (state: PlaygroundState) => {
     bootstrapConfigsValue(structuredBootstrap(state), markets)
     ladderConfigsValue(structuredLadder(state), markets)
   })
+  return { valid: errors.length === 0, errors }
+}
+
+export type QuickLadderValidationError = {
+  path: string
+  reason: string
+  message: string
+}
+
+const remapLadderValidationError = (
+  error: ConfigValidationError,
+  index: number
+): QuickLadderValidationError => {
+  const from = 'ladder[0]'
+  const to = `ladder[${index}]`
+  return {
+    path: error.field.startsWith(from) ? `${to}${error.field.slice(from.length)}` : error.field,
+    reason: error.reason,
+    message: error.message.startsWith(from)
+      ? `${to}${error.message.slice(from.length)}`
+      : error.message
+  }
+}
+
+/** Validates one quick-edit ladder without depending on unrelated scalar or bootstrap validity. */
+export const validateQuickLadderState = (state: PlaygroundState, index: number) => {
+  const errors: QuickLadderValidationError[] = []
+  const input = state.ladder[index]
+  if (!input) return { valid: true, errors }
+
+  let markets
+  try {
+    markets = hexListValue({ MARKET_IDS: state.scalar.MARKET_IDS }, 'MARKET_IDS', false)
+  } catch (error) {
+    if (error instanceof ConfigValidationError) {
+      errors.push({ path: error.field, reason: error.reason, message: error.message })
+      return { valid: false, errors }
+    }
+    throw error
+  }
+
+  try {
+    ladderConfigsValue([{ ...input }], markets)
+  } catch (error) {
+    if (error instanceof ConfigValidationError) {
+      errors.push(remapLadderValidationError(error, index))
+      return { valid: false, errors }
+    }
+    throw error
+  }
+
+  try {
+    ladderConfigsValue(structuredLadder(state), markets)
+  } catch (error) {
+    if (error instanceof ConfigValidationError && !error.field.startsWith('ladder[')) {
+      errors.push({ path: error.field, reason: error.reason, message: error.message })
+    }
+  }
+
+  try {
+    const referenceRateBps = BigInt(state.referenceRateBps)
+    if (referenceRateBps <= 0n) {
+      errors.push({
+        path: 'referenceRateBps',
+        reason: 'not-positive',
+        message: 'referenceRateBps must be positive'
+      })
+    }
+  } catch {
+    errors.push({
+      path: 'referenceRateBps',
+      reason: 'invalid-integer',
+      message: 'referenceRateBps must be an integer'
+    })
+  }
+
   return { valid: errors.length === 0, errors }
 }
 

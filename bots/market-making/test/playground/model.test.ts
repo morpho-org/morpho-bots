@@ -22,6 +22,7 @@ import {
   generatePreviewLadders,
   getObservabilityStatuses,
   parseLadderMarketsImport,
+  validateQuickLadderState,
   validatePreviewState,
   validateProductionState,
   validatePlaygroundState
@@ -71,6 +72,48 @@ const productionAccepts = (state: ReturnType<typeof createDefaultPlaygroundState
 }
 
 describe('market-maker parameter playground', () => {
+  test('quick ladder validation is structured, exact, and independent of scalar/bootstrap failures', () => {
+    const state = createDefaultPlaygroundState()
+    state.scalar.MAKER_PRIVATE_KEY = 'invalid'
+    state.bootstrap[0]!.minimumRateBps = 'invalid-bootstrap-rate'
+    state.ladder[0]!.stepBps = 'invalid-step'
+
+    expect(validateQuickLadderState(state, 0)).toEqual({
+      valid: false,
+      errors: [
+        {
+          path: 'ladder[0].stepBps',
+          reason: 'invalid-integer',
+          message: 'ladder[0].stepBps must be an integer'
+        }
+      ]
+    })
+  })
+
+  test('quick ladder validation keeps exact field paths and array-global duplicate errors distinct', () => {
+    const state = createDefaultPlaygroundState()
+    state.scalar.MARKET_IDS += `,0x${'6'.repeat(64)}`
+    state.ladder.push(createDefaultLadder(`0x${'6'.repeat(64)}`))
+    state.ladder[1]!.minimumRateBps = 'not-an-integer'
+
+    expect(validateQuickLadderState(state, 1).errors).toEqual([
+      {
+        path: 'ladder[1].minimumRateBps',
+        reason: 'invalid-integer',
+        message: 'ladder[1].minimumRateBps must be an integer'
+      }
+    ])
+
+    state.ladder[1] = { ...createDefaultLadder(), marketId: state.ladder[0]!.marketId }
+    expect(validateQuickLadderState(state, 1).errors).toEqual([
+      {
+        path: 'ladder',
+        reason: 'duplicate',
+        message: 'ladder market IDs must be unique'
+      }
+    ])
+  })
+
   test('inventory independently parses runtime source, env example, and YAML example', async () => {
     const [source, environmentExample, yamlExampleText] = await Promise.all([
       Bun.file(new URL('../../src/config/config-source.utils.ts', import.meta.url)).text(),

@@ -1042,6 +1042,37 @@ try {
       status.dataset.status === 'ok' && status.textContent.includes('Applied') &&
       document.querySelector('.ladder-graphic svg')?.outerHTML === latestGraphic
 
+    const delayedBeforeDraft = deferredFile('delayed-before-draft.json')
+    const draftBefore = {
+      env: envOutput.value,
+      controls: controlValues('#controls [data-field]'),
+      selected: document.querySelector('#quick-market-select')?.value,
+      status: status.textContent,
+      statusKind: status.dataset.status
+    }
+    dispatchFiles([delayedBeforeDraft.file])
+    const unappliedDraft = variant(47)
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(text, unappliedDraft)
+    text.dispatchEvent(new Event('input', { bubbles: true }))
+    delayedBeforeDraft.resolve(variant(48))
+    await nextFrame()
+    const delayedFileSupersededByDraft = text.value === unappliedDraft &&
+      envOutput.value === draftBefore.env &&
+      JSON.stringify(controlValues('#controls [data-field]')) === JSON.stringify(draftBefore.controls) &&
+      document.querySelector('#quick-market-select')?.value === draftBefore.selected &&
+      status.textContent === draftBefore.status && status.dataset.status === draftBefore.statusKind
+
+    const rejectedBeforeDraft = deferredFile('rejected-before-draft.json')
+    dispatchFiles([rejectedBeforeDraft.file])
+    const errorDraft = variant(49)
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(text, errorDraft)
+    text.dispatchEvent(new Event('input', { bubbles: true }))
+    rejectedBeforeDraft.reject(new Error('superseded read detail'))
+    await nextFrame()
+    const delayedErrorSupersededByDraft = text.value === errorDraft &&
+      envOutput.value === draftBefore.env && status.textContent === draftBefore.status &&
+      status.dataset.status === draftBefore.statusKind && !status.textContent.includes('superseded')
+
     const marketIds = document.querySelector('[data-field=MARKET_IDS]')
     const setNativeInputValue = (input, value) => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value)
@@ -1194,6 +1225,8 @@ try {
       mimeRejected,
       multipleRejected,
       slowOldFastNew,
+      delayedFileSupersededByDraft,
+      delayedErrorSupersededByDraft,
       staleConfigImportAtomic,
       currentValidCompletion,
       concurrentReorderImport,
@@ -1211,6 +1244,137 @@ try {
   assert(
     Object.values(ladderJsonIo).every(Boolean),
     `ladder JSON import/export failed: ${JSON.stringify(ladderJsonIo)}`
+  )
+
+  const reactIdentityProof = await evaluate(`(async () => {
+    const frame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    const set = (element, value) => {
+      const prototype = element instanceof HTMLSelectElement ? HTMLSelectElement.prototype : element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+      Object.getOwnPropertyDescriptor(prototype, 'value').set.call(element, value)
+      element.dispatchEvent(new Event(element instanceof HTMLSelectElement ? 'change' : 'input', { bubbles: true }))
+    }
+    const allowlist = document.querySelector('[data-field=MARKET_IDS]')
+    const importText = document.querySelector('#ladder-import-text')
+    const apply = document.querySelector('#apply-ladder-import')
+    const initial = JSON.parse(document.querySelector('#export-ladder-env').value)
+    const firstMarketId = initial[0].marketId
+    const secondMarketId = '0x' + '6'.repeat(64)
+    set(allowlist, firstMarketId + ',' + secondMarketId)
+    const pair = [initial[0], { ...initial[0], marketId: secondMarketId, quotePremiumBps: '19' }]
+    set(importText, JSON.stringify(pair))
+    apply.click()
+    await frame()
+
+    let ladderCards = [...document.querySelectorAll('.market-card:has([data-field=quotePremiumBps])')]
+    const firstOldId = ladderCards[0].dataset.uiId
+    const secondCard = ladderCards[1]
+    const secondId = secondCard.dataset.uiId
+    const switcher = document.querySelector('#quick-market-select')
+    set(switcher, secondId)
+    await frame()
+    const focused = secondCard.querySelector('[data-field=stepBps]')
+    focused.focus()
+    secondCard.querySelector('.item-actions button:first-child').click()
+    await frame()
+    ladderCards = [...document.querySelectorAll('.market-card:has([data-field=quotePremiumBps])')]
+    const ladderFocusMoved = document.activeElement === focused && ladderCards[0] === secondCard &&
+      focused.value === initial[0].stepBps && switcher.value === secondId &&
+      document.querySelector('[data-quick-field=marketId]').value === secondMarketId
+
+    const marketInput = secondCard.querySelector('[data-field=marketId]')
+    set(marketInput, 'invalid')
+    await frame()
+    const invalidEditStable = secondCard.dataset.uiId === secondId && switcher.value === secondId
+    set(marketInput, firstMarketId)
+    await frame()
+    const duplicateEditStable = secondCard.dataset.uiId === secondId && switcher.value === secondId &&
+      document.querySelector('#quick-validation-status').textContent === 'ladder market IDs must be unique' &&
+      document.querySelector('[data-quick-field=marketId]').getAttribute('aria-invalid') === 'false'
+    set(marketInput, secondMarketId)
+    await frame()
+
+    secondCard.querySelector('.item-actions button:last-child').click()
+    await frame()
+    ladderCards = [...document.querySelectorAll('.market-card:has([data-field=quotePremiumBps])')]
+    const selectionDeleteCoherent = ladderCards.length === 1 && switcher.value === ladderCards[0].dataset.uiId &&
+      switcher.value === firstOldId && document.querySelector('[data-quick-field=marketId]').value === firstMarketId
+
+    set(importText, JSON.stringify(pair))
+    apply.click()
+    await frame()
+    ladderCards = [...document.querySelectorAll('.market-card:has([data-field=quotePremiumBps])')]
+    const importedIds = ladderCards.map(card => card.dataset.uiId)
+    const selectionImportCoherent = switcher.value === importedIds[0] &&
+      !importedIds.includes(firstOldId) && !importedIds.includes(secondId)
+    const exportsExcludeUiIds = [...document.querySelectorAll('#export-yaml,#export-shell,#export-json,#export-ladder-env')]
+      .every(output => !output.value.includes('-ui-') && !output.value.includes('data-ui-id'))
+
+    const bootstrapCards = () => [...document.querySelectorAll('.market-card:has([data-field=creditTarget])')]
+    bootstrapCards()[0].closest('.control-section').querySelector('.section-heading button').click()
+    await frame()
+    const bootstrapSecond = bootstrapCards()[1]
+    const bootstrapFocused = bootstrapSecond.querySelector('[data-field=creditTarget]')
+    bootstrapFocused.focus()
+    bootstrapSecond.querySelector('.item-actions button:first-child').click()
+    await frame()
+    const bootstrapFocusMoved = document.activeElement === bootstrapFocused && bootstrapCards()[0] === bootstrapSecond
+    bootstrapSecond.querySelector('.item-actions button:last-child').click()
+    await frame()
+
+    set(allowlist, firstMarketId)
+    set(importText, JSON.stringify(initial))
+    apply.click()
+    await frame()
+    return {
+      ladderFocusMoved,
+      invalidEditStable,
+      duplicateEditStable,
+      selectionDeleteCoherent,
+      selectionImportCoherent,
+      exportsExcludeUiIds,
+      bootstrapFocusMoved
+    }
+  })()`)
+  assert(
+    Object.values(reactIdentityProof).every(Boolean),
+    `stable React identity proof failed: ${JSON.stringify(reactIdentityProof)}`
+  )
+
+  const quickValidationProof = await evaluate(`(async () => {
+    const frame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    const set = (element, value) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(element, value)
+      element.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    const scalar = document.querySelector('[data-field=MAKER_PRIVATE_KEY]')
+    const bootstrapMinimum = document.querySelector('.market-card:has([data-field=creditTarget]) [data-field=minimumRateBps]')
+    const ladderCard = document.querySelector('.market-card:has([data-field=quotePremiumBps])')
+    const ladderStep = ladderCard.querySelector('[data-field=stepBps]')
+    const ladderMinimum = ladderCard.querySelector('[data-field=minimumRateBps]')
+    set(scalar, 'invalid')
+    set(bootstrapMinimum, 'invalid-bootstrap-rate')
+    set(ladderStep, 'invalid-step')
+    await frame()
+    const quickStep = document.querySelector('[data-quick-field=stepBps]')
+    const quickMinimum = document.querySelector('[data-quick-field=minimumRateBps]')
+    const scalarPlusStep = quickStep.getAttribute('aria-invalid') === 'true' &&
+      document.querySelector('#quick-error-stepBps').textContent === 'ladder[0].stepBps must be an integer'
+    const bootstrapNameNotAttributed = quickMinimum.getAttribute('aria-invalid') === 'false' &&
+      document.querySelector('#quick-error-minimumRateBps').textContent === ''
+    set(ladderStep, '100')
+    set(ladderMinimum, 'invalid-ladder-rate')
+    await frame()
+    const exactLadderPath = quickMinimum.getAttribute('aria-invalid') === 'true' &&
+      document.querySelector('#quick-error-minimumRateBps').textContent === 'ladder[0].minimumRateBps must be an integer'
+    set(ladderMinimum, '200')
+    set(bootstrapMinimum, '200')
+    set(scalar, '0x' + 'a'.repeat(64))
+    await frame()
+    return { scalarPlusStep, bootstrapNameNotAttributed, exactLadderPath }
+  })()`)
+  assert(
+    Object.values(quickValidationProof).every(Boolean),
+    `quick structured validation proof failed: ${JSON.stringify(quickValidationProof)}`
   )
   const captureImportViewport = async (path, selector = '#ladder-import', block = 'start') => {
     await evaluate(
@@ -2384,13 +2548,15 @@ try {
     const firstIdentity = document.querySelector('[data-quick-field=marketId]').value === '${secondMarket}' &&
       document.querySelector('[data-quick-field=loopIntervalSeconds]').value === '30'
     const orderedOptions = [...select.options].map(option => option.textContent).join('|')
-    select.value = '1'
+    const firstUiId = select.options[0].value
+    const secondUiId = select.options[1].value
+    select.value = secondUiId
     select.dispatchEvent(new Event('change', { bubbles: true }))
-    const switched = document.querySelector('#quick-market-select').value === '1' &&
+    const switched = document.querySelector('#quick-market-select').value === secondUiId &&
       document.querySelector('[data-quick-field=marketId]').value === '0x${'5'.repeat(64)}' &&
       document.querySelector('[data-quick-field=loopIntervalSeconds]').value === '60'
     const currentSelect = document.querySelector('#quick-market-select')
-    currentSelect.value = '0'
+    currentSelect.value = firstUiId
     currentSelect.dispatchEvent(new Event('change', { bubbles: true }))
     return {
       firstIdentity,
@@ -2495,7 +2661,7 @@ try {
       oneMarket: document.querySelectorAll('.market-card:has([data-field=quotePremiumBps])').length === 1 &&
         document.querySelectorAll('.ladder-market').length === 1,
       selectedFallback: document.querySelector('#quick-market-select').options.length === 1 &&
-        document.querySelector('#quick-market-select').value === '0' &&
+        document.querySelector('#quick-market-select').value === document.querySelector('#quick-market-select').options[0].value &&
         document.querySelector('[data-quick-field=marketId]').value === '0x${'5'.repeat(64)}',
       exportUpdated: JSON.parse(document.querySelector('#export-ladder-env').value).length === 1
     }
