@@ -381,29 +381,104 @@ describe('market-maker parameter playground', () => {
     }
   })
 
-  test('deterministic huge-rate fuzz never returns non-finite or impractical geometry', () => {
-    let seed = 0x122n
-    for (let sample = 0; sample < 64; sample++) {
-      seed = (seed * 1_103_515_245n + 12_345n) % 2_147_483_648n
-      const power = 100 + Number(seed % 301n)
+  test('keeps 2,048 deterministic varied production-valid huge geometries and exports bounded', () => {
+    const explicitPowers = [100, 308, 309, 400]
+    let seed = 0x1225_6ab9
+    const random = () => {
+      seed ^= seed << 13
+      seed ^= seed >>> 17
+      seed ^= seed << 5
+      return seed >>> 0
+    }
+
+    for (let sample = 0; sample < 2_048; sample++) {
+      const power = explicitPowers[sample] ?? 100 + (random() % 301)
       const unit = 10n ** BigInt(power)
       const state = createDefaultPlaygroundState()
       const input = state.ladder[0]!
-      input.minimumRateBps = '0'
-      input.maximumRateBps = String(unit * 8n)
-      input.spreadBps = String(unit * 2n)
-      input.stepBps = String(unit)
-      state.referenceRateBps = String(unit * 4n)
+      const rungCount = sample % 512 === 0 ? 512 : 1 + (random() % 64)
+      const stepUnits = rungCount === 512 ? 1n : BigInt(1 + (random() % 4))
+      const halfSpreadUnits = BigInt(1 + (random() % 4))
+      const step = unit * stepUnits
+      const spread = unit * halfSpreadUnits * 2n
+      const sideWidth = spread / 2n + BigInt(rungCount - 1) * step
+      const minimum = unit * BigInt(random() % 17)
+      const lowerPadding = unit * BigInt(1 + (random() % 7))
+      const upperPadding = unit * BigInt(1 + (random() % 7))
+      const center = minimum + sideWidth + lowerPadding
+      const maximum = center + sideWidth + upperPadding
+      const premiumUnits = BigInt((random() % 7) - 3)
+      const quotePremium = unit * premiumUnits
+      const reference = center - quotePremium
+      const minimumOfferAssets = BigInt(1 + (random() % 10_000))
+      const lowerBudget =
+        minimumOfferAssets * BigInt(rungCount) + BigInt(1 + (random() % 1_000_000))
+      const higherBudget =
+        minimumOfferAssets * BigInt(rungCount) + BigInt(1 + (random() % 1_000_000))
+      const target =
+        minimumOfferAssets + BigInt(random() % Number(higherBudget - minimumOfferAssets + 1n))
+      const maximumTotal = target + BigInt(random() % 1_000_001)
+      const negativeSkewLimit = rungCount === 1 ? 9_999 : Math.floor(9_999 / (rungCount - 1))
+      const sizeSkew = random() % 2 === 0 ? random() % 3_001 : -(random() % (negativeSkewLimit + 1))
 
+      input.quotePremiumBps = String(quotePremium)
+      input.spreadBps = String(spread)
+      input.stepBps = String(step)
+      input.rungCount = String(rungCount)
+      input.sizeSkewBps = String(sizeSkew)
+      input.lowerRateBudgetAssets = String(lowerBudget)
+      input.higherRateBudgetAssets = String(higherBudget)
+      input.targetMarketExposureAssets = String(target)
+      input.maximumTotalExposureAssets = String(maximumTotal)
+      input.minimumOfferAssets = String(minimumOfferAssets)
+      input.groupMode = random() % 2 === 0 ? 'shared-rung' : 'per-book'
+      input.loopIntervalSeconds = String(1 + (random() % 2_147_483))
+      input.movementToleranceBps = String(unit * BigInt(random() % 5))
+      input.minimumRateBps = String(minimum)
+      input.maximumRateBps = String(maximum)
+      state.referenceRateBps = String(reference)
+
+      expect(validateProductionState(state), `sample ${sample}`).toEqual({
+        valid: true,
+        errors: []
+      })
+      expect(productionAccepts(state), `production sample ${sample}`).toBe(true)
       const [graphic] = generateLadderGraphicModels(state)
-      expect(graphic!.plotHeight).toBeLessThanOrEqual(32_768)
+      const numericGeometry = [
+        graphic!.plotHeight,
+        graphic!.rateToY(graphic!.axis.minimumRateBps),
+        graphic!.rateToY(graphic!.axis.maximumRateBps),
+        ...graphic!.rungs.flatMap(rung => [rung.y, rung.allocationBarRatio, rung.offerMaxBarRatio])
+      ]
+      expect(graphic!.plotHeight, `plot height sample ${sample}`).toBeGreaterThanOrEqual(336)
+      expect(graphic!.plotHeight, `plot height sample ${sample}`).toBeLessThanOrEqual(32_768)
+      expect(numericGeometry.every(Number.isFinite), `finite geometry sample ${sample}`).toBe(true)
       expect(
-        graphic!.rungs.every(rung =>
-          [rung.y, rung.allocationBarRatio, rung.offerMaxBarRatio].every(Number.isFinite)
-        )
+        graphic!.rungs.every(
+          rung =>
+            rung.y >= 32 &&
+            rung.y <= graphic!.plotHeight + 32 &&
+            rung.allocationBarRatio >= 0 &&
+            rung.allocationBarRatio <= 1 &&
+            rung.offerMaxBarRatio >= 0 &&
+            rung.offerMaxBarRatio <= 1
+        ),
+        `bounded geometry sample ${sample}`
       ).toBe(true)
+      expect(JSON.stringify(graphic!.rungs), `tokens sample ${sample}`).not.toMatch(/NaN|Infinity/)
+
+      const yaml = exportYaml(state)
+      const shell = exportShell(state)
+      const json = exportJson(state)
+      expect(
+        () => parseDocument(yaml, { schema: 'failsafe' }).toJS(),
+        `YAML sample ${sample}`
+      ).not.toThrow()
+      expect(() => JSON.parse(json), `JSON sample ${sample}`).not.toThrow()
+      expect(shell, `shell sample ${sample}`).toContain("export LADDER_MARKETS='")
+      expect(`${yaml}${shell}${json}`, `export tokens sample ${sample}`).not.toMatch(/NaN|Infinity/)
     }
-  })
+  }, 15_000)
 
   test('keeps exports valid when practical plot dimensions require preview-only invalid state', () => {
     const state = createDefaultPlaygroundState()

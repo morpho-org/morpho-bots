@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { mkdtempSync } from 'node:fs'
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -311,6 +312,7 @@ try {
   await command('Page.addScriptToEvaluateOnNewDocument', {
     source: `(() => {
       const accesses = []
+      const securityProbeAccesses = []
       const instrumented = []
       Object.defineProperty(globalThis, '__persistenceAccesses', {
         value: accesses,
@@ -324,7 +326,20 @@ try {
         enumerable: false,
         writable: false
       })
-      const record = name => accesses.push(name)
+      Object.defineProperty(globalThis, '__securityProbeAccesses', {
+        value: securityProbeAccesses,
+        configurable: false,
+        enumerable: false,
+        writable: false
+      })
+      Object.defineProperty(globalThis, '__securityProbeActive', {
+        value: false,
+        configurable: true,
+        enumerable: false,
+        writable: true
+      })
+      const record = name =>
+        (globalThis.__securityProbeActive ? securityProbeAccesses : accesses).push(name)
       const wrapMethod = (prototype, key, label) => {
         const descriptor = prototype && Object.getOwnPropertyDescriptor(prototype, key)
         if (!descriptor || typeof descriptor.value !== 'function') return
@@ -431,11 +446,19 @@ try {
     timeoutMs: uiPollTimeout
   })
 
+  const cspStructure = await evaluate(`(() => {
+    const content = document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content ?? ''
+    const directives = Object.fromEntries(content.split(';').map(part => part.trim()).filter(Boolean).map(part => {
+      const [name, ...values] = part.split(/\\s+/)
+      return [name, values]
+    }))
+    return { content, directives }
+  })()`)
   assert(
-    await evaluate(
-      `document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content.includes("connect-src 'none'") === true`
+    ['connect-src', 'worker-src', 'frame-src', 'child-src'].every(
+      directive => JSON.stringify(cspStructure.directives[directive]) === JSON.stringify(["'none'"])
     ),
-    "playground CSP does not block network connections with connect-src 'none'"
+    `playground CSP blocking directives are incomplete: ${JSON.stringify(cspStructure)}`
   )
   const httpFailuresBeforeCsp = describeHttpFailures(networkResponses)
   assert(
@@ -447,11 +470,16 @@ try {
     const violations = []
     const errors = []
     const rejections = []
+    const executions = []
     const recordViolation = event => violations.push({
       blockedURI: event.blockedURI,
       effectiveDirective: event.effectiveDirective
     })
+    const recordMessage = event => {
+      if (event.data === 'csp-probe-executed') executions.push(event.data)
+    }
     document.addEventListener('securitypolicyviolation', recordViolation)
+    addEventListener('message', recordMessage)
     try {
       await fetch('https://csp-probe.invalid/forbidden-fetch')
     } catch (error) {
@@ -478,9 +506,66 @@ try {
       }, { once: true })
       document.head.append(script)
     })
-    await new Promise(resolve => setTimeout(resolve, 0))
+    globalThis.__securityProbeActive = true
+    const workerUrls = [
+      new URL('csp-worker-probe.js', location.href).href,
+      'data:text/javascript,postMessage(%22csp-probe-executed%22)',
+      URL.createObjectURL(new Blob(['postMessage("csp-probe-executed")'], { type: 'text/javascript' }))
+    ]
+    const workerResults = []
+    for (const url of workerUrls) {
+      workerResults.push(await new Promise(resolve => {
+        try {
+          const worker = new Worker(url)
+          let settled = false
+          const finish = result => {
+            if (settled) return
+            settled = true
+            worker.terminate()
+            resolve(result)
+          }
+          worker.addEventListener('message', () => finish('executed'), { once: true })
+          worker.addEventListener('error', event => {
+            event.preventDefault()
+            finish('blocked')
+          }, { once: true })
+          setTimeout(() => finish('blocked-timeout'), 100)
+        } catch (error) {
+          resolve('rejected:' + error.name)
+        }
+      }))
+    }
+    URL.revokeObjectURL(workerUrls[2])
+    const frameUrls = [
+      new URL('csp-frame-probe.html', location.href).href,
+      'data:text/html,<script>parent.postMessage(%22csp-probe-executed%22,%22*%22)<\\/script>',
+      URL.createObjectURL(new Blob(['<script>parent.postMessage("csp-probe-executed","*")<\\/script>'], { type: 'text/html' }))
+    ]
+    const frameResults = []
+    for (const url of frameUrls) {
+      frameResults.push(await new Promise(resolve => {
+        const frame = document.createElement('iframe')
+        frame.hidden = true
+        let settled = false
+        const finish = result => {
+          if (settled) return
+          settled = true
+          frame.remove()
+          resolve(result)
+        }
+        frame.addEventListener('load', () => finish('blocked'), { once: true })
+        frame.addEventListener('error', () => finish('blocked-error'), { once: true })
+        frame.src = url
+        document.body.append(frame)
+        setTimeout(() => finish('blocked-timeout'), 100)
+      }))
+    }
+    URL.revokeObjectURL(frameUrls[2])
+    globalThis.__securityProbeActive = false
+    await new Promise(resolve => setTimeout(resolve, 50))
     document.removeEventListener('securitypolicyviolation', recordViolation)
-    return { violations, errors, rejections }
+    removeEventListener('message', recordMessage)
+    return { violations, errors, rejections, executions, workerResults, frameResults }
   })()`)
   const cspDirectives = cspProof.violations.map(({ effectiveDirective }) => effectiveDirective)
   assert(
@@ -490,7 +575,12 @@ try {
       ) &&
       cspProof.errors.includes('websocket') &&
       cspProof.errors.includes('script') &&
-      cspProof.rejections.some(({ source }) => source === 'fetch'),
+      cspProof.rejections.some(({ source }) => source === 'fetch') &&
+      cspDirectives.filter(directive => directive === 'worker-src').length >= 3 &&
+      cspDirectives.filter(directive => directive === 'frame-src').length >= 3 &&
+      cspProof.executions.length === 0 &&
+      cspProof.workerResults.every(result => result !== 'executed') &&
+      cspProof.frameResults.every(result => result !== 'executed'),
     `deliberate CSP enforcement proof failed: ${JSON.stringify(cspProof)}`
   )
   const cspExternalRequests = networkRequestEvents
@@ -508,13 +598,132 @@ try {
     ({ url }) =>
       url.startsWith('https://csp-probe.invalid/') || url.startsWith('wss://csp-probe.invalid/')
   )
+  const cspLocalProbeResponses = networkResponses.filter(
+    ({ url }) => url.includes('/csp-worker-probe.js') || url.includes('/csp-frame-probe.html')
+  )
   assert(
     cspExternalRequests.every(({ requestId }) => cspBlockedRequestIds.has(requestId)) &&
-      cspExternalResponses.length === 0,
-    `CSP probes escaped before network: ${JSON.stringify({ cspExternalRequests, cspExternalResponses })}`
+      cspExternalResponses.length === 0 &&
+      cspLocalProbeResponses.length === 0,
+    `CSP probes escaped before network: ${JSON.stringify({ cspExternalRequests, cspExternalResponses, cspLocalProbeResponses })}`
   )
-  console.log(`browser CSP: PASS (${cspProof.violations.length} violations, 0 external responses)`)
+  console.log(`browser CSP: PASS (${cspProof.violations.length} violations, 0 probe responses)`)
   consoleErrors.length = 0
+
+  const auditVisibleText = async ({ width, height, mobile, state }) => {
+    await command('Emulation.setDeviceMetricsOverride', {
+      width,
+      height,
+      deviceScaleFactor: 1,
+      mobile
+    })
+    return evaluate(`(async () => {
+      const details = [...document.querySelectorAll('details')]
+      const detailStates = details.map(detail => detail.open)
+      details.forEach(detail => { detail.open = true })
+      const tabs = [...document.querySelectorAll('[role=tab]')]
+      const activeTab = tabs.find(tab => tab.getAttribute('aria-selected') === 'true')
+      const snapshots = []
+      const inspect = tab => {
+        const elements = [...document.querySelectorAll('body *')]
+        const rows = elements.flatMap((element, index) => {
+          if (element.matches('script,style,template,[hidden],[aria-hidden=true],.visually-hidden') ||
+              element.closest('[hidden],[aria-hidden=true],.visually-hidden')) return []
+          const style = getComputedStyle(element)
+          const rect = element.getBoundingClientRect()
+          if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0' ||
+              rect.width <= 0 || rect.height <= 0) return []
+          if (style.clipPath === 'inset(50%)' ||
+              (style.position === 'absolute' && rect.width <= 1 && rect.height <= 1)) return []
+          const ownText = [...element.childNodes].some(
+            node => node.nodeType === Node.TEXT_NODE && node.textContent.trim()
+          )
+          const textControl = element.matches('button,input:not([type=hidden]),select,textarea')
+          if (!ownText && !textControl) return []
+          const fontSize = Number.parseFloat(style.fontSize)
+          return [{
+            fontSize,
+            tag: element.tagName.toLowerCase(),
+            id: element.id,
+            className: typeof element.className === 'string' ? element.className : element.className.baseVal,
+            index
+          }]
+        })
+        snapshots.push({ tab: tab?.id ?? 'none', rows })
+      }
+      for (const tab of tabs) {
+        tab.click()
+        await new Promise(resolve => requestAnimationFrame(resolve))
+        inspect(tab)
+      }
+      if (tabs.length === 0) inspect(undefined)
+      activeTab?.click()
+      details.forEach((detail, index) => { detail.open = detailStates[index] })
+      const rows = snapshots.flatMap(snapshot => snapshot.rows.map(row => ({ ...row, tab: snapshot.tab })))
+      return {
+        minimum: Math.min(...rows.map(row => row.fontSize)),
+        count: rows.length,
+        offenders: rows.filter(row => !Number.isFinite(row.fontSize) || row.fontSize < 11).slice(0, 50),
+        tabs: snapshots.map(snapshot => snapshot.tab)
+      }
+    })()`)
+  }
+  const fontAudits = []
+  for (const viewport of [
+    { width: 1440, height: 1000, mobile: false, viewport: 'desktop' },
+    { width: 390, height: 844, mobile: true, viewport: 'mobile' }
+  ]) {
+    fontAudits.push({
+      state: 'default',
+      viewport: viewport.viewport,
+      result: await auditVisibleText({ ...viewport, state: 'default' })
+    })
+  }
+  await evaluate(`(() => {
+    const set = (selector, value) => {
+      const input = document.querySelector(selector)
+      input.value = value
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    set('[data-quick-field=spreadBps]', '')
+    set('[data-field=MAKER_PRIVATE_KEY]', 'invalid')
+    set('[data-field=BETTERSTACK_SOURCE_TOKEN]', 'font-audit-token')
+    set('[data-field=BETTERSTACK_HEARTBEAT_URL]', 'javascript:font-audit')
+  })()`)
+  for (const viewport of [
+    { width: 1440, height: 1000, mobile: false, viewport: 'desktop' },
+    { width: 390, height: 844, mobile: true, viewport: 'mobile' }
+  ]) {
+    fontAudits.push({
+      state: 'full-quick-errors-and-warning',
+      viewport: viewport.viewport,
+      result: await auditVisibleText({ ...viewport, state: 'full-quick-errors-and-warning' })
+    })
+  }
+  assert(
+    fontAudits.every(audit => audit.result.count > 0 && audit.result.offenders.length === 0),
+    `visible UI text below 11px: ${JSON.stringify(fontAudits)}`
+  )
+  console.log(
+    `visible fonts: PASS (${fontAudits.map(audit => `${audit.viewport}/${audit.state}=${audit.result.minimum}px`).join(', ')})`
+  )
+  await evaluate(`(() => {
+    const set = (selector, value) => {
+      const input = document.querySelector(selector)
+      input.value = value
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    set('[data-quick-field=spreadBps]', '200')
+    set('[data-field=MAKER_PRIVATE_KEY]', '0x' + 'a'.repeat(64))
+    set('[data-field=BETTERSTACK_SOURCE_TOKEN]', '')
+    set('[data-field=BETTERSTACK_HEARTBEAT_URL]', '')
+  })()`)
+  await command('Emulation.setDeviceMetricsOverride', {
+    width: 1440,
+    height: 1000,
+    deviceScaleFactor: 1,
+    mobile: false
+  })
   assert(
     await evaluate("document.querySelectorAll('.ladder-market').length === 1"),
     'initial ladder was not rendered immediately'
@@ -1262,7 +1471,7 @@ try {
     const input = field => document.querySelector(\`.market-card:has([data-field=quotePremiumBps]) [data-field=\${field}]\`)
     const set = (field, value) => { const element=input(field); element.value=String(value); element.dispatchEvent(new Event('input',{bubbles:true})) }
     const results = []
-    for (const power of [100, 308, 400]) {
+    for (const power of [100, 308, 309, 400]) {
       const unit = BigInt('1' + '0'.repeat(power))
       set('minimumRateBps', '0')
       set('maximumRateBps', String(unit * 8n))
@@ -1541,7 +1750,7 @@ try {
     'Home key did not activate the first tab'
   )
 
-  const secretProof = await evaluate(`(async () => {
+  await evaluate(`(() => {
     const values = {
       MAKER_PRIVATE_KEY: '0x' + '9'.repeat(64),
       BETTERSTACK_SOURCE_TOKEN: 'browser-secret-source-token',
@@ -1556,48 +1765,131 @@ try {
     }
     for (const [field, value] of Object.entries(values)) set(field, value)
     set('BETTERSTACK_INGESTING_HOST', 'logs.example.test')
-    const outputs = () => [...document.querySelectorAll('[role=tabpanel] textarea')].map(output => output.value).join('\\n')
-    const credentials = Object.values(values)
-    const defaultRedacted = credentials.every(value => !outputs().includes(value)) && outputs().includes('<redacted>')
-    const noGraphicOrWarningLeak = ![...document.querySelectorAll('.ladder-market *,#observability-status *,#ladder-status')].some(element => element.textContent && credentials.some(value => element.textContent.includes(value)) || [...element.attributes].some(attribute => credentials.some(value => attribute.value.includes(value))))
-    const passwordInputs = Object.keys(values).every(field => document.querySelector(\`[data-field=\${field}]\`)?.type === 'password')
-    const toggle = document.querySelector('#include-sensitive-values')
-    toggle.checked = true
-    toggle.dispatchEvent(new Event('change', { bubbles: true }))
-    const deliberatelyRevealed = Object.keys(values).every(field => document.querySelector(\`[data-field=\${field}]\`)?.type === 'text' && document.querySelector(\`[data-field=\${field}]\`)?.value === values[field])
-    const yaml = document.querySelector('#export-yaml').value
-    const shell = document.querySelector('#export-shell').value
-    const json = document.querySelector('#export-json').value
-    const included = [values.MAKER_PRIVATE_KEY, values.RPC_URL, values.REFERENCE_RPC_URL].every(value => yaml.includes(value)) && !yaml.includes(values.BETTERSTACK_HEARTBEAT_URL) && !yaml.includes('BETTERSTACK_HEARTBEAT_URL') && credentials.every(value => shell.includes(value) && json.includes(value))
-    let copied = ''
-    Object.defineProperty(navigator, 'clipboard', { value: { writeText: async value => { copied = value } }, configurable: true })
     document.querySelector('#tab-json').click()
-    document.querySelector('#copy-export').click()
-    await new Promise(resolve => setTimeout(resolve, 0))
-    const clipboardIncluded = credentials.every(value => copied.includes(value))
-    toggle.checked = false
-    toggle.dispatchEvent(new Event('change', { bubbles: true }))
-    document.querySelector('#copy-export').click()
-    await new Promise(resolve => setTimeout(resolve, 0))
-    const reRedacted = credentials.every(value => !outputs().includes(value) && !copied.includes(value)) && copied.includes('<redacted>')
-    const hiddenAgain = Object.keys(values).every(field => document.querySelector(\`[data-field=\${field}]\`)?.type === 'password' && document.querySelector(\`[data-field=\${field}]\`)?.value === values[field])
-    return { defaultRedacted, noGraphicOrWarningLeak, passwordInputs, deliberatelyRevealed, included, clipboardIncluded, reRedacted, hiddenAgain }
   })()`)
+  const proveCredentialState = async includeSensitive =>
+    evaluate(`(async () => {
+      const values = {
+        MAKER_PRIVATE_KEY: '0x' + '9'.repeat(64),
+        BETTERSTACK_SOURCE_TOKEN: 'browser-secret-source-token',
+        RPC_URL: 'https://rpc-user:rpc-password@rpc.example.test/path?api_key=query-secret#fragment',
+        REFERENCE_RPC_URL: 'https://archive-user:archive-password@archive.example.test/path?token=archive-secret',
+        BETTERSTACK_HEARTBEAT_URL: 'https://heartbeat-user:heartbeat-password@heartbeat.example.test/credential-path?token=heartbeat-query-secret#heartbeat-fragment-secret'
+      }
+      const toggle = document.querySelector('#include-sensitive-values')
+      toggle.checked = ${includeSensitive}
+      toggle.dispatchEvent(new Event('change', { bubbles: true }))
+      document.querySelector('#tab-json').click()
+      let copied = ''
+      Object.defineProperty(navigator, 'clipboard', {
+        value: { writeText: async value => { copied = value } },
+        configurable: true
+      })
+      document.querySelector('#copy-export').click()
+      await new Promise(resolve => setTimeout(resolve, 0))
+      const yaml = document.querySelector('#export-yaml').value
+      const shell = document.querySelector('#export-shell').value
+      const jsonText = document.querySelector('#export-json').value
+      const json = JSON.parse(jsonText)
+      const fields = Object.keys(values)
+      const expectedType = ${includeSensitive} ? 'text' : 'password'
+      const controls = fields.every(field => {
+        const input = document.querySelector(\`[data-field=\${field}]\`)
+        return input?.type === expectedType && input.value === values[field]
+      })
+      const yamlSensitive = [values.MAKER_PRIVATE_KEY, values.RPC_URL, values.REFERENCE_RPC_URL]
+      const yamlCorrect = ${includeSensitive}
+        ? yamlSensitive.every(value => yaml.includes(value)) &&
+          !yaml.includes(values.BETTERSTACK_SOURCE_TOKEN) &&
+          !yaml.includes(values.BETTERSTACK_HEARTBEAT_URL)
+        : yamlSensitive.every(value => !yaml.includes(value)) && yaml.includes('<redacted>')
+      const allSensitive = Object.values(values)
+      const shellAndJsonCorrect = ${includeSensitive}
+        ? allSensitive.every(value => shell.includes(value) && jsonText.includes(value))
+        : allSensitive.every(value => !shell.includes(value) && !jsonText.includes(value)) &&
+          shell.includes('<redacted>') && jsonText.includes('<redacted>')
+      const structuredValues = {
+        MAKER_PRIVATE_KEY: json.configuration.MAKER_PRIVATE_KEY,
+        RPC_URL: json.configuration.RPC_URL,
+        REFERENCE_RPC_URL: json.configuration.REFERENCE_RPC_URL,
+        BETTERSTACK_SOURCE_TOKEN: json.observability.BETTERSTACK_SOURCE_TOKEN,
+        BETTERSTACK_HEARTBEAT_URL: json.observability.BETTERSTACK_HEARTBEAT_URL
+      }
+      const structuredCorrect = fields.every(field =>
+        structuredValues[field] === (${includeSensitive} ? values[field] : '<redacted>')
+      )
+      const noPeripheralLeak = ![...document.querySelectorAll('.ladder-market *,#observability-status *,#ladder-status')]
+        .some(element =>
+          (element.textContent && allSensitive.some(value => element.textContent.includes(value))) ||
+          [...element.attributes].some(attribute => allSensitive.some(value => attribute.value.includes(value)))
+        )
+      return {
+        activeJson: document.querySelector('#tab-json').getAttribute('aria-selected') === 'true' &&
+          !document.querySelector('#panel-json').hidden,
+        clipboardExact: copied === jsonText,
+        clipboardSensitive: ${includeSensitive}
+          ? allSensitive.every(value => copied.includes(value))
+          : allSensitive.every(value => !copied.includes(value)) && copied.includes('<redacted>'),
+        controls,
+        noPeripheralLeak,
+        shellAndJsonCorrect,
+        structuredCorrect,
+        toggle: toggle.checked === ${includeSensitive},
+        yamlCorrect
+      }
+    })()`)
+  const credentialClip = await evaluate(`(() => {
+    const fields = ['MAKER_PRIVATE_KEY','BETTERSTACK_SOURCE_TOKEN','RPC_URL','REFERENCE_RPC_URL','BETTERSTACK_HEARTBEAT_URL']
+    const targets = [
+      ...fields.map(field => document.querySelector(\`[data-field=\${field}]\`)?.closest('.field')),
+      document.querySelector('.sensitive-export-control'),
+      document.querySelector('#panel-json')
+    ].filter(Boolean)
+    const rects = targets.map(target => target.getBoundingClientRect())
+    const padding = 12
+    const left = Math.max(0, Math.min(...rects.map(rect => rect.left + scrollX)) - padding)
+    const top = Math.max(0, Math.min(...rects.map(rect => rect.top + scrollY)) - padding)
+    const right = Math.max(...rects.map(rect => rect.right + scrollX)) + padding
+    const bottom = Math.max(...rects.map(rect => rect.bottom + scrollY)) + padding
+    return { x: left, y: top, width: right - left, height: bottom - top, scale: 1 }
+  })()`)
+  const captureCredentialState = async (label, includeSensitive) => {
+    const proof = await proveCredentialState(includeSensitive)
+    assert(
+      Object.values(proof).every(Boolean),
+      `credential ${label} DOM/clipboard proof failed: ${JSON.stringify(proof)}`
+    )
+    const shot = await command('Page.captureScreenshot', {
+      format: 'png',
+      captureBeyondViewport: true,
+      fromSurface: true,
+      clip: credentialClip
+    })
+    const bytes = Buffer.from(shot.data, 'base64')
+    const path = `/tmp/morpho-bots-pr122-credentials-${label}.png`
+    await writeFile(path, bytes)
+    return { hash: createHash('sha256').update(bytes).digest('hex'), path }
+  }
+  const credentialScreenshots = {
+    default: await captureCredentialState('default-redacted', false),
+    optIn: await captureCredentialState('opt-in-revealed', true),
+    optOut: await captureCredentialState('opt-out-redacted', false)
+  }
   assert(
-    Object.values(secretProof).every(Boolean),
-    `sensitive export proof failed: ${JSON.stringify(secretProof)}`
+    credentialScreenshots.default.hash === credentialScreenshots.optOut.hash &&
+      credentialScreenshots.optIn.hash !== credentialScreenshots.default.hash,
+    `credential screenshot pixel hashes are incorrect: ${JSON.stringify({
+      default: credentialScreenshots.default.hash,
+      optIn: credentialScreenshots.optIn.hash,
+      optOut: credentialScreenshots.optOut.hash
+    })}`
   )
-  const maskedHeartbeatScreenshot = await command('Page.captureScreenshot', {
-    format: 'png',
-    captureBeyondViewport: true
-  })
-  const maskedHeartbeatScreenshotBytes = Buffer.from(maskedHeartbeatScreenshot.data, 'base64')
-  await writeFile('/tmp/morpho-bots-pr122-heartbeat-masked.png', maskedHeartbeatScreenshotBytes)
-  assert(
-    !maskedHeartbeatScreenshotBytes.includes(Buffer.from('heartbeat-password')) &&
-      !maskedHeartbeatScreenshotBytes.includes(Buffer.from('heartbeat-query-secret')) &&
-      !maskedHeartbeatScreenshotBytes.includes(Buffer.from('heartbeat-fragment-secret')),
-    'heartbeat credentials were embedded verbatim in the masked screenshot artifact'
+  console.log(
+    `credential screenshot hashes: ${JSON.stringify({
+      default: credentialScreenshots.default.hash,
+      optIn: credentialScreenshots.optIn.hash,
+      optOut: credentialScreenshots.optOut.hash
+    })}`
   )
   await evaluate(`(() => {
     const set = (field, value) => {
@@ -1930,6 +2222,16 @@ try {
     `persistence instrumentation coverage mismatch: ${JSON.stringify(persistenceInstrumentation)}`
   )
   const persistenceAccesses = await evaluate('globalThis.__persistenceAccesses')
+  const securityProbeAccesses = await evaluate('globalThis.__securityProbeAccesses')
+  assert(
+    JSON.stringify(securityProbeAccesses) ===
+      JSON.stringify([
+        'Window.Worker.construct',
+        'Window.Worker.construct',
+        'Window.Worker.construct'
+      ]),
+    `security probe instrumentation was not scoped exactly: ${JSON.stringify(securityProbeAccesses)}`
+  )
   assert(
     Array.isArray(persistenceAccesses) && persistenceAccesses.length === 0,
     `playground accessed persistence APIs: ${JSON.stringify(persistenceAccesses)}`
