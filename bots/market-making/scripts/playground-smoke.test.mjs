@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { chmod, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { get } from 'node:http'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import test from 'node:test'
@@ -16,6 +17,7 @@ import {
   inspectProcessGroup,
   prepareFreshDist,
   readinessTimeoutMs,
+  resignalAfterCleanup,
   smokeBudgets,
   spawnOwnedProcess,
   startStaticServer,
@@ -154,6 +156,257 @@ test('bounded lifecycle operations abort at their own monotonic deadline', async
   )
   assert.equal(observedSignal.aborted, true)
 })
+
+test('bounded cleanup settles its abort path before the wrapper rejects', async () => {
+  const events = []
+  await assert.rejects(
+    runBounded(
+      signal =>
+        new Promise((resolve, reject) => {
+          signal.addEventListener(
+            'abort',
+            () => {
+              events.push('abort observed')
+              queueMicrotask(() => {
+                events.push('cleanup settled')
+                reject(signal.reason)
+              })
+            },
+            { once: true }
+          )
+        }),
+      { description: 'cooperative cleanup', timeoutMs: 5 }
+    ),
+    /Timed out after 5ms during cooperative cleanup/
+  )
+  events.push('wrapper rejected')
+  await new Promise(resolve => setTimeout(resolve, 10))
+  assert.deepEqual(events, ['abort observed', 'cleanup settled', 'wrapper rejected'])
+})
+
+test('bounded cleanup rejects near its 5ms deadline when the operation ignores abort', async () => {
+  const started = performance.now()
+  await assert.rejects(
+    Promise.race([
+      runBounded(() => new Promise(() => {}), {
+        description: 'non-cooperative cleanup',
+        timeoutMs: 5
+      }),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('bounded cleanup did not settle promptly')), 250)
+      )
+    ]),
+    /Timed out after 5ms during non-cooperative cleanup/
+  )
+  assert.ok(performance.now() - started < 250)
+})
+
+test('late bounded-operation success and rejection are terminally handled', async () => {
+  const unhandled = []
+  const onUnhandled = reason => unhandled.push(reason)
+  process.on('unhandledRejection', onUnhandled)
+  try {
+    for (const outcome of ['success', 'rejection']) {
+      let settle
+      await assert.rejects(
+        Promise.race([
+          runBounded(
+            () =>
+              new Promise((resolve, reject) => {
+                settle = outcome === 'success' ? resolve : reject
+              }),
+            { description: `late ${outcome}`, timeoutMs: 5 }
+          ),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error(`late ${outcome} did not settle promptly`)), 250)
+          )
+        ]),
+        new RegExp(`Timed out after 5ms during late ${outcome}`)
+      )
+      settle(outcome === 'success' ? 'late value' : new Error('late operation rejection'))
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    assert.deepEqual(unhandled, [])
+  } finally {
+    process.off('unhandledRejection', onUnhandled)
+  }
+})
+
+test('static server abort closes a held connection and lets bounded close settle', async () => {
+  const root = await temporaryDirectory('playground-held-server-')
+  await writeFile(join(root, 'index.html'), 'held')
+  let markStreamCreated
+  const streamCreated = new Promise(resolve => {
+    markStreamCreated = resolve
+  })
+  const heldStream = new EventEmitter()
+  heldStream.destroyed = false
+  heldStream.destroy = () => {
+    heldStream.destroyed = true
+  }
+  const staticServer = await startStaticServer(root, {
+    createFileStream: () => {
+      markStreamCreated()
+      return heldStream
+    }
+  })
+  const request = get(staticServer.url)
+  request.on('error', () => {})
+  await streamCreated
+  try {
+    await assert.rejects(
+      Promise.race([
+        runBounded(signal => staticServer.close(signal), {
+          description: 'held static server close',
+          timeoutMs: 20
+        }),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('held static server did not close promptly')), 250)
+        )
+      ]),
+      /Timed out after 20ms during held static server close/
+    )
+    if (!process.versions.bun) {
+      await waitFor(() => {
+        assert.equal(request.socket?.destroyed, true)
+        assert.equal(heldStream.destroyed, true)
+      }, 25)
+    }
+  } finally {
+    request.destroy()
+    await staticServer.close().catch(() => {})
+  }
+})
+
+test('cleanup timeout preserves the original signal and re-signals promptly', async () => {
+  const events = []
+  const processImpl = {
+    off: signal => events.push(`off:${signal}`),
+    kill: (_pid, signal) => events.push(`kill:${signal}`),
+    pid: 999
+  }
+  await Promise.race([
+    resignalAfterCleanup({
+      cleanup: () =>
+        runBounded(() => new Promise(() => {}), {
+          description: 'non-cooperative signal cleanup',
+          timeoutMs: 5
+        }),
+      processImpl,
+      report: message => events.push(`report:${message}`),
+      signal: 'SIGINT',
+      signalHandler: () => {}
+    }),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('signal cleanup did not re-signal promptly')), 250)
+    )
+  ])
+  assert.match(events[0], /Timed out after 5ms during non-cooperative signal cleanup/)
+  assert.deepEqual(events.slice(1), ['off:SIGINT', 'off:SIGTERM', 'kill:SIGINT'])
+})
+
+test('owned-tree cleanup uses one deadline and reports survivors without post-deadline work', async () => {
+  let now = 0
+  let scans = 0
+  const controller = new AbortController()
+  const root = { pid: 101, ppid: 1, processGroup: 101, startTime: 'root', state: 'S' }
+  const sleep = async milliseconds => {
+    now += milliseconds
+    if (now >= 50) controller.abort(new Error('global cleanup deadline'))
+  }
+
+  await assert.rejects(
+    terminateOwnedProcessTree(
+      { pid: root.pid },
+      {
+        deadline: 50,
+        inspectProcesses: async () => {
+          scans += 1
+          return [root]
+        },
+        now: () => now,
+        quietIntervalMs: 10,
+        signal: controller.signal,
+        signalProcess: () => {},
+        sleep
+      }
+    ),
+    error => {
+      assert.match(error.message, /Owned process tree cleanup aborted/)
+      assert.match(error.message, /101\(ppid=1,state=S\)/)
+      assert.match(error.message, /global cleanup deadline/)
+      return true
+    }
+  )
+  const scansAtDeadline = scans
+  await Promise.resolve()
+  await new Promise(resolve => setTimeout(resolve, 5))
+  assert.equal(now, 50)
+  assert.equal(scans, scansAtDeadline)
+})
+
+test('owned-tree cleanup requires a quiet second empty scan and catches a late child', async () => {
+  let now = 0
+  let scan = 0
+  const signalled = []
+  const root = { pid: 201, ppid: 1, processGroup: 201, startTime: 'root', state: 'S' }
+  const late = { pid: 202, ppid: 201, processGroup: 201, startTime: 'late', state: 'S' }
+  const snapshots = [[root], [], [late], [late], [], []]
+
+  await terminateOwnedProcessTree(
+    { pid: root.pid },
+    {
+      deadline: 100,
+      inspectProcesses: async () => snapshots[Math.min(scan++, snapshots.length - 1)],
+      now: () => now,
+      quietIntervalMs: 5,
+      signalProcess: (pid, signal) => signalled.push(`${pid}:${signal}`),
+      sleep: async milliseconds => {
+        now += milliseconds
+      }
+    }
+  )
+
+  assert.ok(scan >= 6, `expected both final empty scans, observed ${scan}`)
+  assert.ok(
+    signalled.some(entry => entry.startsWith('202:')),
+    signalled
+  )
+  assert.ok(now >= 5)
+})
+
+for (const cleanupFailure of [undefined, new Error('deliberate cleanup failure')]) {
+  test(`signal result is preserved after ${cleanupFailure ? 'failed' : 'successful'} cleanup`, async () => {
+    const events = []
+    const processImpl = {
+      off: signal => events.push(`off:${signal}`),
+      kill: (_pid, signal) => events.push(`kill:${signal}`),
+      pid: 999
+    }
+    await resignalAfterCleanup({
+      cleanup: async () => {
+        events.push('cleanup')
+        if (cleanupFailure) throw cleanupFailure
+      },
+      processImpl,
+      report: message => events.push(`report:${message}`),
+      signal: 'SIGTERM',
+      signalHandler: () => {}
+    })
+    assert.deepEqual(
+      events,
+      cleanupFailure
+        ? [
+            'cleanup',
+            'report:Smoke cleanup failed before SIGTERM re-signal: deliberate cleanup failure',
+            'off:SIGINT',
+            'off:SIGTERM',
+            'kill:SIGTERM'
+          ]
+        : ['cleanup', 'off:SIGINT', 'off:SIGTERM', 'kill:SIGTERM']
+    )
+  })
+}
 
 test('readiness rejects an operation that succeeds 50ms after a 10ms deadline', async () => {
   let operationSettled = false
@@ -657,7 +910,11 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
       stdio: 'ignore'
     })
     try {
-      const createdDirectory = await waitFor(async () => readFile(readyFile, 'utf8'))
+      const createdDirectory = await waitFor(async () => {
+        const directory = await readFile(readyFile, 'utf8')
+        assert.match(directory, /market-making-playground-dist-/)
+        return directory
+      })
       assert.match(createdDirectory, /market-making-playground-dist-/)
       smoke.kill(signal)
       const result = await new Promise((resolve, reject) => {

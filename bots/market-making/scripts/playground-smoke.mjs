@@ -11,6 +11,7 @@ import {
   discoverChromium,
   openWebSocket,
   prepareFreshDist,
+  resignalAfterCleanup,
   runBounded,
   smokeBudgets,
   spawnOwnedProcess,
@@ -46,42 +47,68 @@ let browserSocket
 let browserClient
 let browserReady = false
 
-const stopChild = child => terminateOwnedProcessTree(child)
+const stopChild = (child, cleanupOptions) => terminateOwnedProcessTree(child, cleanupOptions)
 const trackChild = child => {
   children.add(child)
   const release = () => children.delete(child)
   child.once('close', release)
   return release
 }
-const stopOwnedChild = async child => {
+const stopOwnedChild = async (child, cleanupOptions) => {
   if (child === browser && browserReady && browserSocket?.readyState === WebSocket.OPEN) {
     try {
-      await closeOwnedProcessTreeGracefully(child, () => {
-        browserSocket.send(JSON.stringify({ id: 0, method: 'Browser.close' }))
-      })
+      await closeOwnedProcessTreeGracefully(
+        child,
+        () => {
+          browserSocket.send(JSON.stringify({ id: 0, method: 'Browser.close' }))
+        },
+        cleanupOptions
+      )
       return
     } catch (error) {
       console.error(`Graceful Chromium shutdown failed; escalating: ${error.message}`)
       // Fall through to bounded direct-parent/deepest-first termination.
     }
   }
-  await stopChild(child)
+  await stopChild(child, cleanupOptions)
 }
 const cleanup = () =>
   (cleanupPromise ??= runBounded(
-    async () => {
+    async (signal, deadline) => {
       browserClient?.dispose(new Error('Smoke cleanup started'))
-      const childResults = await Promise.allSettled([...children].map(stopOwnedChild))
+      const cleanupOptions = { deadline, signal }
+      const childResults = await Promise.allSettled(
+        [...children].map(child => stopOwnedChild(child, cleanupOptions))
+      )
+      if (signal.aborted) {
+        const failures = childResults.flatMap(result =>
+          result.status === 'rejected' ? [result.reason] : []
+        )
+        throw new AggregateError(
+          failures,
+          `Smoke child cleanup exceeded its global deadline: ${failures
+            .map(error => error.message)
+            .join('; ')}`
+        )
+      }
       const resourceResults = await Promise.allSettled([
-        ...(server ? [server.close()] : []),
+        ...(server ? [server.close(signal)] : []),
+        // Node fs promises do not guarantee cancellation. These removals are best effort:
+        // runBounded may return at the deadline while their terminally-handled aggregate
+        // completes later. The signal path re-signals immediately after that bounded return.
         ...[...ownedDirectories].map(directory =>
           rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
         )
       ])
-      const failure = [...childResults, ...resourceResults].find(
-        ({ status }) => status === 'rejected'
+      const failures = [...childResults, ...resourceResults].flatMap(result =>
+        result.status === 'rejected' ? [result.reason] : []
       )
-      if (failure) throw failure.reason
+      if (failures.length) {
+        throw new AggregateError(
+          failures,
+          `Smoke cleanup failed: ${failures.map(error => error.message).join('; ')}`
+        )
+      }
     },
     { description: 'smoke cleanup', timeoutMs: cleanupTimeout }
   ))
@@ -89,23 +116,7 @@ const onSignal = signal => {
   if (terminatingSignal) return
   terminatingSignal = signal
   shutdown.abort(new Error(`Smoke test interrupted by ${signal}`))
-  void cleanup().then(
-    () => {
-      process.off('SIGINT', onSignal)
-      process.off('SIGTERM', onSignal)
-      try {
-        process.kill(process.pid, signal)
-      } catch {
-        process.exit(signal === 'SIGINT' ? 130 : 143)
-      }
-    },
-    error => {
-      process.off('SIGINT', onSignal)
-      process.off('SIGTERM', onSignal)
-      console.error(`Smoke cleanup failed before ${signal} could be re-signalled: ${error.message}`)
-      process.exitCode = 1
-    }
-  )
+  void resignalAfterCleanup({ cleanup, signal, signalHandler: onSignal })
 }
 process.once('SIGINT', onSignal)
 process.once('SIGTERM', onSignal)

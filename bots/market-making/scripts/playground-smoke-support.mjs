@@ -34,18 +34,47 @@ export const describeHttpFailures = responses =>
 
 export const runBounded = async (operation, { description, timeoutMs }) => {
   const controller = new AbortController()
+  const deadline = performance.now() + timeoutMs
   let timer
+  const operationPromise = Promise.resolve().then(() => operation(controller.signal, deadline))
+  // The deadline wins even when the operation ignores AbortSignal. Keep a terminal
+  // rejection handler attached because the operation may settle after this returns.
+  void operationPromise.catch(() => {})
   const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => {
-      const error = new Error(`Timed out after ${timeoutMs}ms during ${description}`)
-      controller.abort(error)
-      reject(error)
-    }, timeoutMs)
+    timer = setTimeout(
+      () => {
+        const error = new Error(`Timed out after ${timeoutMs}ms during ${description}`)
+        controller.abort(error)
+        reject(error)
+      },
+      Math.max(0, deadline - performance.now())
+    )
   })
   try {
-    return await Promise.race([Promise.resolve().then(() => operation(controller.signal)), timeout])
+    return await Promise.race([operationPromise, timeout])
   } finally {
     clearTimeout(timer)
+  }
+}
+
+export const resignalAfterCleanup = async ({
+  cleanup,
+  processImpl = process,
+  report = message => console.error(message),
+  signal,
+  signalHandler
+}) => {
+  try {
+    await cleanup()
+  } catch (error) {
+    report(`Smoke cleanup failed before ${signal} re-signal: ${error.message}`)
+  }
+  processImpl.off('SIGINT', signalHandler)
+  processImpl.off('SIGTERM', signalHandler)
+  try {
+    processImpl.kill(processImpl.pid, signal)
+  } catch {
+    processImpl.exit(signal === 'SIGINT' ? 130 : 143)
   }
 }
 
@@ -476,12 +505,6 @@ const signalPid = (pid, signal) => {
   }
 }
 
-const trackGroup = async (processGroup, tracked) => {
-  for (const processInfo of await inspectProcessGroup(processGroup)) {
-    tracked.set(identity(processInfo), processInfo)
-  }
-}
-
 const remainingTracked = async tracked => {
   const processes = new Map(
     (await listProcesses()).map(processInfo => [identity(processInfo), processInfo])
@@ -489,60 +512,24 @@ const remainingTracked = async tracked => {
   return [...tracked.keys()].flatMap(key => (processes.has(key) ? [processes.get(key)] : []))
 }
 
-const terminateDescendantsDeepestFirst = async ({ processGroup, rootPid, tracked }) => {
-  while (true) {
-    await trackGroup(processGroup, tracked)
-    const members = (await inspectProcessGroup(processGroup)).filter(
-      ({ pid, state }) => pid !== rootPid && state !== 'Z'
-    )
-    if (members.length === 0) return
-    const parentPids = new Set(members.map(({ ppid }) => ppid))
-    const leaves = members.filter(({ pid }) => !parentPids.has(pid))
-    for (const leaf of leaves) signalPid(leaf.pid, 'SIGTERM')
-    let remaining = await waitForIdentitiesGone(
-      new Map(leaves.map(processInfo => [identity(processInfo), processInfo])),
-      2000
-    )
-    if (remaining.length) {
-      for (const leaf of remaining) signalPid(leaf.pid, 'SIGKILL')
-      remaining = await waitForIdentitiesGone(
-        new Map(remaining.map(processInfo => [identity(processInfo), processInfo])),
-        2000
-      )
-    }
-    if (remaining.length) {
-      throw new Error(
-        `Process parents did not reap terminated descendants: ${remaining
-          .map(({ pid, ppid, state }) => `${pid}(ppid=${ppid},state=${state})`)
-          .join(', ')}`
-      )
-    }
-  }
-}
-
-const waitForTrackedTreeExit = async (processGroup, tracked, timeoutMs) => {
-  const deadline = performance.now() + timeoutMs
-  while (true) {
-    await trackGroup(processGroup, tracked)
-    const remaining = await remainingTracked(tracked)
-    if (remaining.length === 0) return
-    if (performance.now() >= deadline) {
-      throw new Error(
-        `Owned process tree did not exit: ${remaining
-          .map(({ pid, ppid, state }) => `${pid}(ppid=${ppid},state=${state})`)
-          .join(', ')}`
-      )
-    }
-    await delay(25)
-  }
-}
-
-export const closeOwnedProcessTreeGracefully = async (child, close, { timeoutMs = 4000 } = {}) => {
+export const closeOwnedProcessTreeGracefully = async (
+  child,
+  close,
+  { deadline, now = performance.now.bind(performance), signal, timeoutMs = 4000 } = {}
+) => {
   if (child.pid === undefined) return
-  const tracked = new Map()
-  await trackGroup(child.pid, tracked)
+  const context = ownedTreeContext(child.pid, {
+    deadline: Math.min(deadline ?? Number.POSITIVE_INFINITY, now() + timeoutMs),
+    now,
+    signal
+  })
+  await scanOwnedTree(context)
   await close()
-  await waitForTrackedTreeExit(child.pid, tracked, timeoutMs)
+  while (true) {
+    const remaining = await requireStableEmptyOwnedTree(context)
+    if (remaining.length === 0) return
+    await sleepWithinCleanupBudget(context, 25)
+  }
 }
 
 export const terminateProcessSnapshot = async processes => {
@@ -583,29 +570,237 @@ export const terminateProcessSnapshot = async processes => {
   }
 }
 
-export const terminateOwnedProcessTree = async child => {
+const abortableDelay = (milliseconds, signal) =>
+  new Promise((resolve, reject) => {
+    let timer
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(signal.reason)
+    }
+    timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, milliseconds)
+    signal?.addEventListener('abort', onAbort, { once: true })
+    if (signal?.aborted) onAbort()
+  })
+
+const describeProcesses = processes =>
+  processes.map(({ pid, ppid, state }) => `${pid}(ppid=${ppid},state=${state})`).join(', ')
+
+const readChildren = async pid => {
+  try {
+    const children = await readFile(`/proc/${pid}/task/${pid}/children`, 'utf8')
+    return children.trim().split(/\s+/).filter(Boolean).map(Number)
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ESRCH') return []
+    throw error
+  }
+}
+
+const listOwnedProcesses = async (rootPid, tracked) => {
+  const queued = new Set([rootPid, ...[...tracked.values()].map(({ pid }) => pid)])
+  const queue = [...queued]
+  const processes = []
+  while (queue.length) {
+    const pid = queue.shift()
+    const [processInfo, children] = await Promise.all([readProcess(pid), readChildren(pid)])
+    if (processInfo) processes.push(processInfo)
+    for (const childPid of children) {
+      if (queued.has(childPid)) continue
+      queued.add(childPid)
+      queue.push(childPid)
+    }
+  }
+  return processes
+}
+
+const ownedTreeContext = (rootPid, options) => {
+  const now = options.now ?? performance.now.bind(performance)
+  return {
+    deadline: options.deadline ?? now() + 15_000,
+    errors: [],
+    inspectProcesses: options.inspectProcesses,
+    lastRemaining: [],
+    now,
+    quietIntervalMs: options.quietIntervalMs ?? 25,
+    rootPid,
+    signal: options.signal,
+    signalProcess: options.signalProcess ?? signalPid,
+    sleep: options.sleep ?? abortableDelay,
+    tracked: new Map()
+  }
+}
+
+const cleanupAbortError = context => {
+  const reason = context.signal?.aborted
+    ? context.signal.reason
+    : new Error(`global deadline ${context.deadline} reached`)
+  const survivors = context.lastRemaining.length
+    ? describeProcesses(context.lastRemaining)
+    : 'none observed in the final completed scan'
+  const failures = [...context.errors, reason]
+  const error = new AggregateError(
+    failures,
+    `Owned process tree cleanup aborted; survivors: ${survivors}; errors: ${failures
+      .map(error => error?.message ?? String(error))
+      .join('; ')}`
+  )
+  error.code = 'OWNED_TREE_CLEANUP_ABORTED'
+  return error
+}
+
+const assertCleanupBudget = context => {
+  if (context.signal?.aborted || context.now() >= context.deadline) {
+    throw cleanupAbortError(context)
+  }
+}
+
+const sleepWithinCleanupBudget = async (context, milliseconds) => {
+  assertCleanupBudget(context)
+  const bounded = Math.min(milliseconds, context.deadline - context.now())
+  try {
+    await context.sleep(bounded, context.signal)
+  } catch (error) {
+    if (context.signal?.aborted) throw cleanupAbortError(context)
+    throw error
+  }
+  assertCleanupBudget(context)
+}
+
+const scanOwnedTree = async context => {
+  assertCleanupBudget(context)
+  const processes = context.inspectProcesses
+    ? await context.inspectProcesses()
+    : await listOwnedProcesses(context.rootPid, context.tracked)
+  assertCleanupBudget(context)
+  const included = new Set([context.rootPid])
+  for (const processInfo of processes) {
+    if (processInfo.processGroup === context.rootPid) included.add(processInfo.pid)
+  }
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const processInfo of processes) {
+      if (!included.has(processInfo.pid) && included.has(processInfo.ppid)) {
+        included.add(processInfo.pid)
+        changed = true
+      }
+    }
+  }
+  for (const processInfo of processes) {
+    if (included.has(processInfo.pid)) context.tracked.set(identity(processInfo), processInfo)
+  }
+  const current = new Map(processes.map(processInfo => [identity(processInfo), processInfo]))
+  context.lastRemaining = [...context.tracked.keys()].flatMap(key =>
+    current.has(key) ? [current.get(key)] : []
+  )
+  return context.lastRemaining
+}
+
+const signalForCleanup = (context, pid, signal) => {
+  assertCleanupBudget(context)
+  try {
+    context.signalProcess(pid, signal)
+  } catch (error) {
+    context.errors.push(
+      new Error(`${signal} to pid ${pid} failed: ${error.message}`, { cause: error })
+    )
+  }
+}
+
+const waitForCleanupTargets = async (context, targets, stageDurationMs) => {
+  const targetIdentities = new Set(targets.map(identity))
+  const stageDeadline = Math.min(context.deadline, context.now() + stageDurationMs)
+  while (true) {
+    const current = await scanOwnedTree(context)
+    const remaining = current.filter(processInfo => targetIdentities.has(identity(processInfo)))
+    if (remaining.length === 0 || context.now() >= stageDeadline) return remaining
+    await sleepWithinCleanupBudget(context, Math.min(25, stageDeadline - context.now()))
+  }
+}
+
+const requireStableEmptyOwnedTree = async context => {
+  const first = await scanOwnedTree(context)
+  if (first.length) return first
+  await sleepWithinCleanupBudget(context, context.quietIntervalMs)
+  return scanOwnedTree(context)
+}
+
+export const terminateOwnedProcessTree = async (child, options = {}) => {
   if (child.pid === undefined) return
   assertProcessInspection()
-  const rootPid = child.pid
-  const tracked = new Map()
-  await trackGroup(rootPid, tracked)
-  signalPid(rootPid, 'SIGTERM')
-  let remaining = await waitForIdentitiesGone(tracked, 2000)
-  if (remaining.length === 0) return
+  const context = ownedTreeContext(child.pid, options)
+  try {
+    let remaining = await scanOwnedTree(context)
+    signalForCleanup(context, child.pid, 'SIGTERM')
+    remaining = await waitForCleanupTargets(context, remaining, 2_000)
+    if (remaining.length === 0) {
+      remaining = await requireStableEmptyOwnedTree(context)
+      if (remaining.length === 0) return
+    }
 
-  await terminateDescendantsDeepestFirst({ processGroup: rootPid, rootPid, tracked })
-  signalPid(rootPid, 'SIGTERM')
-  remaining = await waitForIdentitiesGone(tracked, 500)
-  if (remaining.length) {
-    signalPid(rootPid, 'SIGKILL')
-    remaining = await waitForIdentitiesGone(tracked, 500)
-  }
-  if (remaining.length) {
-    throw new Error(
-      `Owned process tree survived bounded termination: ${remaining
-        .map(({ pid, ppid, state }) => `${pid}(ppid=${ppid},state=${state})`)
-        .join(', ')}`
-    )
+    while (true) {
+      remaining = await scanOwnedTree(context)
+      if (remaining.length === 0) {
+        remaining = await requireStableEmptyOwnedTree(context)
+        if (remaining.length === 0) return
+        continue
+      }
+
+      const descendants = remaining.filter(
+        ({ pid, state }) => pid !== context.rootPid && state !== 'Z'
+      )
+      if (descendants.length) {
+        const descendantPids = new Set(descendants.map(({ pid }) => pid))
+        const parentPids = new Set(
+          descendants.map(({ ppid }) => ppid).filter(pid => descendantPids.has(pid))
+        )
+        const leaves = descendants.filter(({ pid }) => !parentPids.has(pid))
+        for (const leaf of leaves) signalForCleanup(context, leaf.pid, 'SIGTERM')
+        let survivingLeaves = await waitForCleanupTargets(context, leaves, 2_000)
+        if (survivingLeaves.length) {
+          for (const leaf of survivingLeaves) signalForCleanup(context, leaf.pid, 'SIGKILL')
+          survivingLeaves = await waitForCleanupTargets(context, survivingLeaves, 2_000)
+        }
+        if (survivingLeaves.length) {
+          throw new AggregateError(
+            context.errors,
+            `Owned process tree descendants survived escalation: ${describeProcesses(survivingLeaves)}`
+          )
+        }
+        continue
+      }
+
+      const root = remaining.find(({ pid }) => pid === context.rootPid)
+      if (root) {
+        signalForCleanup(context, root.pid, 'SIGTERM')
+        let survivingRoot = await waitForCleanupTargets(context, [root], 500)
+        if (survivingRoot.length) {
+          signalForCleanup(context, root.pid, 'SIGKILL')
+          survivingRoot = await waitForCleanupTargets(context, survivingRoot, 500)
+        }
+        if (survivingRoot.length) {
+          throw new AggregateError(
+            context.errors,
+            `Owned process tree root survived escalation: ${describeProcesses(survivingRoot)}`
+          )
+        }
+        continue
+      }
+
+      throw new AggregateError(
+        context.errors,
+        `Owned process tree zombies were not reaped: ${describeProcesses(remaining)}`
+      )
+    }
+  } catch (error) {
+    if (context.signal?.aborted || context.now() >= context.deadline) {
+      if (error.code === 'OWNED_TREE_CLEANUP_ABORTED') throw error
+      if (!context.errors.includes(error)) context.errors.push(error)
+      throw cleanupAbortError(context)
+    }
+    throw error
   }
 }
 
@@ -893,6 +1088,11 @@ export const startStaticServer = async (
       rejectStaticRequest(response)
     }
   })
+  const sockets = new Set()
+  server.on('connection', socket => {
+    sockets.add(socket)
+    socket.once('close', () => sockets.delete(socket))
+  })
   server.on('clientError', (_error, socket) => socket.end('HTTP/1.1 400 Bad Request\r\n\r\n'))
   await new Promise((resolveListen, rejectListen) => {
     const onError = error => {
@@ -919,9 +1119,21 @@ export const startStaticServer = async (
     host,
     port: address.port,
     url: `http://${urlHost}:${address.port}`,
-    close: () =>
-      new Promise((resolveClose, rejectClose) =>
-        server.close(error => (error ? rejectClose(error) : resolveClose()))
-      )
+    close: signal =>
+      new Promise((resolveClose, rejectClose) => {
+        const onAbort = () => {
+          server.closeAllConnections()
+          server.closeIdleConnections()
+          for (const socket of sockets) socket.destroy()
+        }
+        const finish = error => {
+          signal?.removeEventListener('abort', onAbort)
+          if (error) rejectClose(error)
+          else resolveClose()
+        }
+        signal?.addEventListener('abort', onAbort, { once: true })
+        server.close(finish)
+        if (signal?.aborted) onAbort()
+      })
   }
 }
