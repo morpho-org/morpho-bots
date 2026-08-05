@@ -3,7 +3,7 @@ import { constants, createReadStream, mkdtempSync } from 'node:fs'
 import { access, lstat, readFile, readdir, realpath, rm, stat } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
-import { delimiter, extname, isAbsolute, join, relative, resolve } from 'node:path'
+import { delimiter, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 const chromiumNames = [
   'chromium',
@@ -782,7 +782,22 @@ const contentTypes = new Map([
   ['.svg', 'image/svg+xml; charset=utf-8']
 ])
 
-export const startStaticServer = async (root, { host = '127.0.0.1', port = 0 } = {}) => {
+const escapesRoot = relativePath =>
+  relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)
+
+const rejectStaticRequest = response => {
+  if (response.destroyed) return
+  if (response.headersSent) {
+    response.destroy()
+    return
+  }
+  response.writeHead(404).end('Not found')
+}
+
+export const startStaticServer = async (
+  root,
+  { host = '127.0.0.1', port = 0, createFileStream = createReadStream } = {}
+) => {
   const servedRoot = await realpath(root)
   const server = createServer(async (request, response) => {
     try {
@@ -791,28 +806,39 @@ export const startStaticServer = async (root, { host = '127.0.0.1', port = 0 } =
       const requestedPath = pathname.endsWith('/') ? `${pathname}index.html` : pathname
       const candidate = resolve(servedRoot, `.${requestedPath}`)
       const candidateRelative = relative(servedRoot, candidate)
-      if (candidateRelative.startsWith('..') || isAbsolute(candidateRelative)) {
-        response.writeHead(404).end('Not found')
+      if (escapesRoot(candidateRelative)) {
+        rejectStaticRequest(response)
         return
       }
       const actual = await realpath(candidate)
       const actualRelative = relative(servedRoot, actual)
-      if (actualRelative.startsWith('..') || isAbsolute(actualRelative)) {
-        response.writeHead(404).end('Not found')
+      if (escapesRoot(actualRelative)) {
+        rejectStaticRequest(response)
         return
       }
       if (!(await lstat(actual)).isFile()) {
-        response.writeHead(404).end('Not found')
+        rejectStaticRequest(response)
         return
       }
-      response.writeHead(200, {
-        'Cache-Control': 'no-store',
-        'Content-Type': contentTypes.get(extname(actual)) ?? 'application/octet-stream'
+      const stream = createFileStream(actual)
+      let streamFailed = false
+      stream.once('error', () => {
+        streamFailed = true
+        rejectStaticRequest(response)
       })
-      createReadStream(actual).pipe(response)
+      stream.once('open', () => {
+        if (streamFailed || stream.destroyed || response.destroyed || response.writableEnded) return
+        response.writeHead(200, {
+          'Cache-Control': 'no-store',
+          'Content-Type': contentTypes.get(extname(actual)) ?? 'application/octet-stream'
+        })
+        stream.pipe(response)
+      })
+      response.once('close', () => {
+        if (!stream.destroyed) stream.destroy()
+      })
     } catch {
-      if (!response.headersSent) response.writeHead(404)
-      response.end('Not found')
+      rejectStaticRequest(response)
     }
   })
   server.on('clientError', (_error, socket) => socket.end('HTTP/1.1 400 Bad Request\r\n\r\n'))
