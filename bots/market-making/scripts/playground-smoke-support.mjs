@@ -27,33 +27,117 @@ const commonChromiumPaths = [
 
 const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
 
+export const runBounded = async (operation, { description, timeoutMs }) => {
+  const controller = new AbortController()
+  let timer
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(`Timed out after ${timeoutMs}ms during ${description}`)
+      controller.abort(error)
+      reject(error)
+    }, timeoutMs)
+  })
+  try {
+    return await Promise.race([Promise.resolve().then(() => operation(controller.signal)), timeout])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 const DEFAULT_READINESS_TIMEOUT_MS = 90_000
 const MAX_READINESS_TIMEOUT_MS = 90_000
+const DEFAULT_BUILD_TIMEOUT_MS = 30_000
+const DEFAULT_BODY_TIMEOUT_MS = 60_000
+const DEFAULT_UI_POLL_TIMEOUT_MS = 5_000
+const DEFAULT_CDP_COMMAND_TIMEOUT_MS = 5_000
+const DEFAULT_CLEANUP_TIMEOUT_MS = 15_000
 const OUTER_READINESS_GRACE_MS = 15_000
-const BROWSER_TEST_GRACE_MS = 30_000
+const BROWSER_TEST_GRACE_MS = 15_000
+const MAX_BROWSER_TEST_TIMEOUT_MS = 300_000
 
-export const readinessTimeoutMs = value => {
-  if (value === undefined) return DEFAULT_READINESS_TIMEOUT_MS
+const positiveBoundedTimeout = (name, value, defaultValue, maximum) => {
+  if (value === undefined) return defaultValue
   if (!/^\d+$/.test(value) || Number(value) <= 0 || !Number.isSafeInteger(Number(value))) {
-    throw new Error(
-      `PLAYGROUND_SMOKE_READINESS_TIMEOUT_MS must be a positive integer; received: ${value || 'empty'}`
-    )
+    throw new Error(`${name} must be a positive integer; received: ${value || 'empty'}`)
   }
   const timeoutMs = Number(value)
-  if (timeoutMs > MAX_READINESS_TIMEOUT_MS) {
-    throw new Error(
-      `PLAYGROUND_SMOKE_READINESS_TIMEOUT_MS must be at most ${MAX_READINESS_TIMEOUT_MS}ms; received: ${value}`
-    )
+  if (timeoutMs > maximum) {
+    throw new Error(`${name} must be at most ${maximum}ms; received: ${value}`)
   }
   return timeoutMs
 }
 
-export const readinessBudgets = value => {
-  const readinessTimeout = readinessTimeoutMs(value)
+export const readinessTimeoutMs = value =>
+  positiveBoundedTimeout(
+    'PLAYGROUND_SMOKE_READINESS_TIMEOUT_MS',
+    value,
+    DEFAULT_READINESS_TIMEOUT_MS,
+    MAX_READINESS_TIMEOUT_MS
+  )
+
+export const smokeBudgets = (env = process.env) => {
+  const startupTimeout = readinessTimeoutMs(env.PLAYGROUND_SMOKE_READINESS_TIMEOUT_MS)
+  const buildTimeout = positiveBoundedTimeout(
+    'PLAYGROUND_SMOKE_BUILD_TIMEOUT_MS',
+    env.PLAYGROUND_SMOKE_BUILD_TIMEOUT_MS,
+    DEFAULT_BUILD_TIMEOUT_MS,
+    60_000
+  )
+  const bodyTimeout = positiveBoundedTimeout(
+    'PLAYGROUND_SMOKE_BODY_TIMEOUT_MS',
+    env.PLAYGROUND_SMOKE_BODY_TIMEOUT_MS,
+    DEFAULT_BODY_TIMEOUT_MS,
+    120_000
+  )
+  const uiPollTimeout = positiveBoundedTimeout(
+    'PLAYGROUND_SMOKE_UI_POLL_TIMEOUT_MS',
+    env.PLAYGROUND_SMOKE_UI_POLL_TIMEOUT_MS,
+    DEFAULT_UI_POLL_TIMEOUT_MS,
+    30_000
+  )
+  const cdpCommandTimeout = positiveBoundedTimeout(
+    'PLAYGROUND_SMOKE_CDP_COMMAND_TIMEOUT_MS',
+    env.PLAYGROUND_SMOKE_CDP_COMMAND_TIMEOUT_MS,
+    DEFAULT_CDP_COMMAND_TIMEOUT_MS,
+    30_000
+  )
+  const cleanupTimeout = positiveBoundedTimeout(
+    'PLAYGROUND_SMOKE_CLEANUP_TIMEOUT_MS',
+    env.PLAYGROUND_SMOKE_CLEANUP_TIMEOUT_MS,
+    DEFAULT_CLEANUP_TIMEOUT_MS,
+    30_000
+  )
+  const derivedBrowserTestTimeout =
+    buildTimeout + startupTimeout + bodyTimeout + cleanupTimeout + BROWSER_TEST_GRACE_MS
+  const override = env.PLAYGROUND_SMOKE_BROWSER_TEST_TIMEOUT_MS
+  let browserTestTimeout = derivedBrowserTestTimeout
+  if (override !== undefined) {
+    if (!/^\d+$/.test(override) || !Number.isSafeInteger(Number(override))) {
+      throw new Error(
+        `PLAYGROUND_SMOKE_BROWSER_TEST_TIMEOUT_MS must be a positive integer; received: ${override || 'empty'}`
+      )
+    }
+    browserTestTimeout = Number(override)
+    if (browserTestTimeout < derivedBrowserTestTimeout) {
+      throw new Error(
+        `PLAYGROUND_SMOKE_BROWSER_TEST_TIMEOUT_MS must be at least the derived lifecycle budget of ${derivedBrowserTestTimeout}ms; received: ${override}`
+      )
+    }
+    if (browserTestTimeout > MAX_BROWSER_TEST_TIMEOUT_MS) {
+      throw new Error(
+        `PLAYGROUND_SMOKE_BROWSER_TEST_TIMEOUT_MS must be at most ${MAX_BROWSER_TEST_TIMEOUT_MS}ms; received: ${override}`
+      )
+    }
+  }
   return {
-    readinessTimeout,
-    outerReadinessTimeout: readinessTimeout + OUTER_READINESS_GRACE_MS,
-    browserTestTimeout: readinessTimeout + BROWSER_TEST_GRACE_MS
+    buildTimeout,
+    startupTimeout,
+    bodyTimeout,
+    uiPollTimeout,
+    cdpCommandTimeout,
+    cleanupTimeout,
+    outerReadinessTimeout: buildTimeout + startupTimeout + OUTER_READINESS_GRACE_MS,
+    browserTestTimeout
   }
 }
 
@@ -65,17 +149,25 @@ export const openWebSocket = (url, { signal, WebSocketImpl = globalThis.WebSocke
       socket.removeEventListener('error', onError)
       signal?.removeEventListener('abort', onAbort)
     }
+    const dispose = () => {
+      try {
+        socket.close()
+      } catch {
+        // A failed handshake may leave a partially initialized implementation; disposal is best-effort.
+      }
+    }
     const onOpen = () => {
       cleanup()
       resolve(socket)
     }
     const onError = event => {
       cleanup()
+      dispose()
       reject(event.error ?? new Error(`WebSocket handshake failed for ${url}`))
     }
     const onAbort = () => {
       cleanup()
-      socket.close()
+      dispose()
       reject(signal.reason)
     }
     socket.addEventListener('open', onOpen, { once: true })
@@ -83,6 +175,83 @@ export const openWebSocket = (url, { signal, WebSocketImpl = globalThis.WebSocke
     signal?.addEventListener('abort', onAbort, { once: true })
     if (signal?.aborted) onAbort()
   })
+
+export const createCdpClient = (
+  socket,
+  { commandTimeoutMs, onMessage = () => {}, now = performance.now.bind(performance) }
+) => {
+  let nextId = 0
+  let disposed = false
+  const pending = new Map()
+  const rejectPending = error => {
+    for (const { reject, timer } of pending.values()) {
+      clearTimeout(timer)
+      reject(error)
+    }
+    pending.clear()
+  }
+  const onSocketMessage = event => {
+    let message
+    try {
+      message = JSON.parse(String(event.data))
+      onMessage(message)
+    } catch (error) {
+      rejectPending(error)
+      return
+    }
+    if (!message.id || !pending.has(message.id)) return
+    const { resolve, reject, timer } = pending.get(message.id)
+    pending.delete(message.id)
+    clearTimeout(timer)
+    if (message.error) reject(new Error(message.error.message))
+    else resolve(message.result)
+  }
+  const onSocketClose = event => {
+    const detail = [event.code, event.reason]
+      .filter(value => value !== undefined && value !== '')
+      .join(' ')
+    rejectPending(new Error(`DevTools WebSocket closed${detail ? ` (${detail})` : ''}`))
+  }
+  const onSocketError = event =>
+    rejectPending(event.error ?? new Error('DevTools WebSocket failed'))
+  socket.addEventListener('message', onSocketMessage)
+  socket.addEventListener('close', onSocketClose)
+  socket.addEventListener('error', onSocketError)
+
+  return {
+    command(method, params = {}, { deadline } = {}) {
+      if (disposed) return Promise.reject(new Error('DevTools client is disposed'))
+      const phaseRemaining = deadline === undefined ? commandTimeoutMs : deadline - now()
+      const timeoutMs = Math.min(commandTimeoutMs, phaseRemaining)
+      if (timeoutMs <= 0) {
+        return Promise.reject(new Error(`CDP command ${method} exceeded its phase deadline`))
+      }
+      return new Promise((resolve, reject) => {
+        const id = ++nextId
+        const timer = setTimeout(() => {
+          pending.delete(id)
+          reject(new Error(`CDP command ${method} timed out after ${timeoutMs}ms`))
+        }, timeoutMs)
+        pending.set(id, { reject, resolve, timer })
+        try {
+          socket.send(JSON.stringify({ id, method, params }))
+        } catch (error) {
+          clearTimeout(timer)
+          pending.delete(id)
+          reject(error)
+        }
+      })
+    },
+    dispose(reason = new Error('DevTools client disposed')) {
+      if (disposed) return
+      disposed = true
+      socket.removeEventListener('message', onSocketMessage)
+      socket.removeEventListener('close', onSocketClose)
+      socket.removeEventListener('error', onSocketError)
+      rejectPending(reason)
+    }
+  }
+}
 
 export const waitForReadiness = async (
   operation,
@@ -95,7 +264,8 @@ export const waitForReadiness = async (
     childName = 'Child process',
     getChildError = () => undefined,
     getStderr = () => '',
-    now = Date.now,
+    disposeResult = () => {},
+    now = performance.now.bind(performance),
     sleep = delay
   }
 ) => {
@@ -144,7 +314,22 @@ export const waitForReadiness = async (
     const controller = new AbortController()
     let timer
     let removeChildListeners = () => {}
-    const competitors = [Promise.resolve().then(() => task(controller.signal))]
+    let outcomeDecided = false
+    let accepted = false
+    let completedResult
+    let disposalPromise
+    const disposeOnce = result =>
+      (disposalPromise ??= Promise.resolve()
+        .then(() => disposeResult(result))
+        .catch(() => {}))
+    const taskPromise = Promise.resolve()
+      .then(() => task(controller.signal))
+      .then(result => {
+        completedResult = result
+        if (outcomeDecided && !accepted) void disposeOnce(result)
+        return result
+      })
+    const competitors = [taskPromise]
     competitors.push(
       new Promise((_, reject) => {
         timer = setTimeout(() => {
@@ -181,11 +366,14 @@ export const waitForReadiness = async (
       const result = await Promise.race(competitors)
       assertChildRunning()
       if (now() >= deadline) throw timeoutError()
+      accepted = true
       return result
     } catch (error) {
+      if (completedResult !== undefined) await disposeOnce(completedResult)
       if (controller.signal.aborted) throw controller.signal.reason
       throw error
     } finally {
+      outcomeDecided = true
       clearTimeout(timer)
       removeChildListeners()
     }
@@ -246,15 +434,31 @@ const identity = processInfo => `${processInfo.pid}:${processInfo.startTime}`
 export const inspectProcessGroup = async processGroup =>
   (await listProcesses()).filter(processInfo => processInfo.processGroup === processGroup)
 
+export const inspectProcessTree = async rootPid => {
+  const processes = await listProcesses()
+  const included = new Set([rootPid])
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const processInfo of processes) {
+      if (!included.has(processInfo.pid) && included.has(processInfo.ppid)) {
+        included.add(processInfo.pid)
+        changed = true
+      }
+    }
+  }
+  return processes.filter(processInfo => included.has(processInfo.pid))
+}
+
 const waitForIdentitiesGone = async (tracked, timeoutMs) => {
-  const deadline = Date.now() + timeoutMs
+  const deadline = performance.now() + timeoutMs
   while (true) {
     const liveIdentities = new Set((await listProcesses()).map(identity))
     const remaining = [...tracked.values()].filter(processInfo =>
       liveIdentities.has(identity(processInfo))
     )
     if (remaining.length === 0) return []
-    if (Date.now() >= deadline) return remaining
+    if (performance.now() >= deadline) return remaining
     await delay(25)
   }
 }
@@ -312,12 +516,12 @@ const terminateDescendantsDeepestFirst = async ({ processGroup, rootPid, tracked
 }
 
 const waitForTrackedTreeExit = async (processGroup, tracked, timeoutMs) => {
-  const deadline = Date.now() + timeoutMs
+  const deadline = performance.now() + timeoutMs
   while (true) {
     await trackGroup(processGroup, tracked)
     const remaining = await remainingTracked(tracked)
     if (remaining.length === 0) return
-    if (Date.now() >= deadline) {
+    if (performance.now() >= deadline) {
       throw new Error(
         `Owned process tree did not exit: ${remaining
           .map(({ pid, ppid, state }) => `${pid}(ppid=${ppid},state=${state})`)
@@ -334,6 +538,44 @@ export const closeOwnedProcessTreeGracefully = async (child, close, { timeoutMs 
   await trackGroup(child.pid, tracked)
   await close()
   await waitForTrackedTreeExit(child.pid, tracked, timeoutMs)
+}
+
+export const terminateProcessSnapshot = async processes => {
+  const tracked = new Map(processes.map(processInfo => [identity(processInfo), processInfo]))
+  while (true) {
+    const current = await remainingTracked(tracked)
+    if (current.length === 0) return
+    const live = current.filter(({ state }) => state !== 'Z')
+    if (live.length === 0) {
+      const zombies = await waitForIdentitiesGone(tracked, 2_000)
+      if (zombies.length === 0) return
+      throw new Error(
+        `Captured process-tree zombies were not reaped: ${zombies.map(({ pid, ppid }) => `${pid}(ppid=${ppid})`).join(', ')}`
+      )
+    }
+    const livePids = new Set(live.map(({ pid }) => pid))
+    const parentPids = new Set(live.map(({ ppid }) => ppid).filter(pid => livePids.has(pid)))
+    const leaves = live.filter(({ pid }) => !parentPids.has(pid))
+    for (const leaf of leaves) signalPid(leaf.pid, 'SIGTERM')
+    let remainingLeaves = await waitForIdentitiesGone(
+      new Map(leaves.map(processInfo => [identity(processInfo), processInfo])),
+      2_000
+    )
+    if (remainingLeaves.length) {
+      for (const leaf of remainingLeaves) signalPid(leaf.pid, 'SIGKILL')
+      remainingLeaves = await waitForIdentitiesGone(
+        new Map(remainingLeaves.map(processInfo => [identity(processInfo), processInfo])),
+        2_000
+      )
+    }
+    if (remainingLeaves.length) {
+      throw new Error(
+        `Captured process-tree leaves survived bounded termination: ${remainingLeaves
+          .map(({ pid, ppid, state }) => `${pid}(ppid=${ppid},state=${state})`)
+          .join(', ')}`
+      )
+    }
+  }
 }
 
 export const terminateOwnedProcessTree = async child => {

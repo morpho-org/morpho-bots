@@ -6,10 +6,12 @@ import { fileURLToPath } from 'node:url'
 
 import {
   closeOwnedProcessTreeGracefully,
+  createCdpClient,
   discoverChromium,
   openWebSocket,
   prepareFreshDist,
-  readinessTimeoutMs,
+  runBounded,
+  smokeBudgets,
   spawnOwnedProcess,
   startStaticServer,
   terminateOwnedProcessTree,
@@ -17,6 +19,15 @@ import {
 } from './playground-smoke-support.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
+const budgets = smokeBudgets(process.env)
+const {
+  bodyTimeout,
+  buildTimeout,
+  cdpCommandTimeout,
+  cleanupTimeout,
+  startupTimeout,
+  uiPollTimeout
+} = budgets
 const shutdown = new AbortController()
 const ownedDirectories = new Set([join(root, 'playground/dist')])
 const children = new Set()
@@ -25,6 +36,7 @@ let cleanupPromise
 let terminatingSignal
 let browser
 let browserSocket
+let browserClient
 let browserReady = false
 
 const stopChild = child => terminateOwnedProcessTree(child)
@@ -49,19 +61,23 @@ const stopOwnedChild = async child => {
   await stopChild(child)
 }
 const cleanup = () =>
-  (cleanupPromise ??= (async () => {
-    const childResults = await Promise.allSettled([...children].map(stopOwnedChild))
-    const resourceResults = await Promise.allSettled([
-      ...(server ? [server.close()] : []),
-      ...[...ownedDirectories].map(directory =>
-        rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
+  (cleanupPromise ??= runBounded(
+    async () => {
+      browserClient?.dispose(new Error('Smoke cleanup started'))
+      const childResults = await Promise.allSettled([...children].map(stopOwnedChild))
+      const resourceResults = await Promise.allSettled([
+        ...(server ? [server.close()] : []),
+        ...[...ownedDirectories].map(directory =>
+          rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
+        )
+      ])
+      const failure = [...childResults, ...resourceResults].find(
+        ({ status }) => status === 'rejected'
       )
-    ])
-    const failure = [...childResults, ...resourceResults].find(
-      ({ status }) => status === 'rejected'
-    )
-    if (failure) throw failure.reason
-  })())
+      if (failure) throw failure.reason
+    },
+    { description: 'smoke cleanup', timeoutMs: cleanupTimeout }
+  ))
 const onSignal = signal => {
   if (terminatingSignal) return
   terminatingSignal = signal
@@ -117,18 +133,25 @@ const assert = (condition, message) => {
 }
 
 try {
-  const readinessTimeout = readinessTimeoutMs(process.env.PLAYGROUND_SMOKE_READINESS_TIMEOUT_MS)
   const chromiumPath = await discoverChromium()
-  const preparedDist = await prepareFreshDist({
-    root,
-    onDistCreated: directory => ownedDirectories.add(directory),
-    onBuildProcess: trackChild,
-    onTempCreated: waitAtTempCreationBoundary,
-    signal: shutdown.signal
-  })
+  const preparedDist = await runBounded(
+    signal =>
+      prepareFreshDist({
+        root,
+        onDistCreated: directory => ownedDirectories.add(directory),
+        onBuildProcess: trackChild,
+        onTempCreated: waitAtTempCreationBoundary,
+        signal: AbortSignal.any([shutdown.signal, signal])
+      }),
+    { description: 'fresh playground build', timeoutMs: buildTimeout }
+  )
   const dist = preparedDist.dist
   const userDataDir = await createOwnedTempDirectory('market-making-playground-')
-  const startedServer = await startStaticServer(dist)
+  const startupDeadline = performance.now() + startupTimeout
+  const startedServer = await runBounded(() => startStaticServer(dist), {
+    description: 'static server startup',
+    timeoutMs: startupTimeout
+  })
   if (shutdown.signal.aborted) {
     await startedServer.close()
     throw shutdown.signal.reason
@@ -158,16 +181,16 @@ try {
   browser.stderr.on('data', chunk => {
     browserStderr = `${browserStderr}${chunk}`.slice(-4000)
   })
-  const readinessDeadline = Date.now() + readinessTimeout
+  let phaseDeadline = startupDeadline
   const browserReadiness = description => ({
     child: browser,
     childName: 'Chromium',
-    deadline: readinessDeadline,
+    deadline: startupDeadline,
     description,
     getChildError: () => browserSpawnError,
     getStderr: () => browserStderr,
     pollIntervalMs: 25,
-    timeoutMs: readinessTimeout
+    timeoutMs: startupTimeout
   })
 
   const debuggingPort = await waitForReadiness(async () => {
@@ -193,56 +216,48 @@ try {
   }, browserReadiness('Chromium DevTools target endpoint'))
   const socket = await waitForReadiness(
     signal => openWebSocket(target.webSocketDebuggerUrl, { signal }),
-    browserReadiness('Chromium DevTools WebSocket handshake')
+    {
+      ...browserReadiness('Chromium DevTools WebSocket handshake'),
+      disposeResult: openedSocket => openedSocket.close()
+    }
   )
   browserSocket = socket
   browserReady = true
-  console.log(
-    `smoke environment: appPort=${port} chromiumDebugPort=${debuggingPort} chromium=${chromiumPath}`
-  )
-  let id = 0
-  const pending = new Map()
   const requests = []
   const networkRequestEvents = []
   const networkFailures = []
   const responseUrls = []
   const consoleErrors = []
   const consoleMessages = []
-  socket.addEventListener('message', event => {
-    const message = JSON.parse(String(event.data))
-    if (message.method === 'Network.requestWillBeSent') {
-      requests.push(message.params.request.url)
-      networkRequestEvents.push({
-        requestId: message.params.requestId,
-        url: message.params.request.url
-      })
-    }
-    if (message.method === 'Network.loadingFailed') networkFailures.push(message.params)
-    if (message.method === 'Network.responseReceived')
-      responseUrls.push(message.params.response.url)
-    if (message.method === 'Runtime.exceptionThrown')
-      consoleErrors.push(message.params.exceptionDetails.text)
-    if (message.method === 'Runtime.consoleAPICalled')
-      consoleMessages.push(
-        message.params.args.map(argument => argument.value ?? argument.description ?? '').join(' ')
-      )
-    if (message.method === 'Log.entryAdded') {
-      consoleMessages.push(message.params.entry.text)
-      if (message.params.entry.level === 'error') consoleErrors.push(message.params.entry.text)
-    }
-    if (message.id && pending.has(message.id)) {
-      const { resolve, reject } = pending.get(message.id)
-      pending.delete(message.id)
-      if (message.error) reject(new Error(message.error.message))
-      else resolve(message.result)
+  browserClient = createCdpClient(socket, {
+    commandTimeoutMs: cdpCommandTimeout,
+    onMessage: message => {
+      if (message.method === 'Network.requestWillBeSent') {
+        requests.push(message.params.request.url)
+        networkRequestEvents.push({
+          requestId: message.params.requestId,
+          url: message.params.request.url
+        })
+      }
+      if (message.method === 'Network.loadingFailed') networkFailures.push(message.params)
+      if (message.method === 'Network.responseReceived')
+        responseUrls.push(message.params.response.url)
+      if (message.method === 'Runtime.exceptionThrown')
+        consoleErrors.push(message.params.exceptionDetails.text)
+      if (message.method === 'Runtime.consoleAPICalled')
+        consoleMessages.push(
+          message.params.args
+            .map(argument => argument.value ?? argument.description ?? '')
+            .join(' ')
+        )
+      if (message.method === 'Log.entryAdded') {
+        consoleMessages.push(message.params.entry.text)
+        if (message.params.entry.level === 'error') consoleErrors.push(message.params.entry.text)
+      }
     }
   })
   const command = (method, params = {}) =>
-    new Promise((resolve, reject) => {
-      const messageId = ++id
-      pending.set(messageId, { resolve, reject })
-      socket.send(JSON.stringify({ id: messageId, method, params }))
-    })
+    browserClient.command(method, params, { deadline: phaseDeadline })
   const evaluate = async expression => {
     const result = await command('Runtime.evaluate', {
       expression,
@@ -338,6 +353,27 @@ try {
       throw new Error('playground not ready')
     }
   }, browserReadiness('playground page readiness'))
+  console.log(
+    `smoke environment: appPort=${port} chromiumDebugPort=${debuggingPort} chromium=${chromiumPath}`
+  )
+  phaseDeadline = performance.now() + bodyTimeout
+  const bodyDelayMs = Number(process.env.PLAYGROUND_SMOKE_BODY_DELAY_MS ?? 0)
+  if (bodyDelayMs > 0) {
+    await runBounded(() => new Promise(resolve => setTimeout(resolve, bodyDelayMs)), {
+      description: 'browser smoke body delay',
+      timeoutMs: bodyTimeout
+    })
+  }
+  const uiReadiness = description => ({
+    child: browser,
+    childName: 'Chromium',
+    deadline: Math.min(performance.now() + uiPollTimeout, phaseDeadline),
+    description,
+    getChildError: () => browserSpawnError,
+    getStderr: () => browserStderr,
+    pollIntervalMs: 25,
+    timeoutMs: uiPollTimeout
+  })
 
   assert(
     await evaluate(
@@ -1377,7 +1413,7 @@ try {
       ))
     )
       throw new Error('fallback status missing')
-  }, browserReadiness('clipboard fallback status'))
+  }, uiReadiness('clipboard fallback status'))
   assert(
     await evaluate("document.querySelector('#copy-status').getAttribute('aria-live') === 'polite'"),
     'clipboard fallback is not announced in a live region'

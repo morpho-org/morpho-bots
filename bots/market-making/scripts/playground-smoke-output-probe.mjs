@@ -33,8 +33,8 @@ assert.deepEqual(
 const output = `${result.stdout}\n${result.stderr}`
 assert.equal(markerCount(output, 'browser CSP: PASS'), 1, 'browser CSP marker count')
 assert.equal(markerCount(output, 'browser smoke: PASS'), 1, 'browser smoke marker count')
-assert.match(output, /ℹ tests 3/)
-assert.match(output, /ℹ pass 3/)
+assert.match(output, /ℹ tests 6/)
+assert.match(output, /ℹ pass 6/)
 assert.match(output, /ℹ fail 0/)
 assert.match(output, /ℹ skipped 0/)
-console.log('explicit browser suite: exit=0, pass=3, skip=0, fail=0, CSP=1, smoke=1')
+console.log('explicit browser suite: exit=0, pass=6, skip=0, fail=0, CSP=1, smoke=1')

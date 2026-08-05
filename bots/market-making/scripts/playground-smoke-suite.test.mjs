@@ -56,26 +56,24 @@ test('CI keeps real-browser tests out of Bun discovery and runs them explicitly 
   assert.match(browserSource, /two complete smoke runs/)
 })
 
-test('Chromium startup uses one bounded readiness source for all nested and outer budgets', async () => {
+test('browser lifecycle uses separate bounded build, startup, body, UI, CDP, and cleanup budgets', async () => {
   const [smokeSource, browserSource] = await Promise.all([
     readFile(join(scriptsDirectory, 'playground-smoke.mjs'), 'utf8'),
     readFile(join(scriptsDirectory, 'playground-smoke.browser.mjs'), 'utf8')
   ])
 
-  assert.doesNotMatch(smokeSource, /const waitFor = async operation/)
-  assert.doesNotMatch(smokeSource, /const debuggingPort = await waitFor\(/)
-  assert.match(
-    smokeSource,
-    /readinessTimeoutMs\(process\.env\.PLAYGROUND_SMOKE_READINESS_TIMEOUT_MS\)/
-  )
-  assert.match(smokeSource, /const readinessDeadline = Date\.now\(\) \+ readinessTimeout/)
-  assert.match(smokeSource, /signal =>[\s\S]*fetch\([\s\S]*signal/)
-  assert.match(smokeSource, /openWebSocket\([\s\S]*Chromium DevTools WebSocket handshake/)
-  assert.doesNotMatch(browserSource, /const waitFor = async/)
-  assert.match(
-    browserSource,
-    /readinessBudgets\(\s*process\.env\.PLAYGROUND_SMOKE_READINESS_TIMEOUT_MS\s*\)/
-  )
+  assert.match(smokeSource, /smokeBudgets\(process\.env\)/)
+  assert.match(smokeSource, /runBounded\([\s\S]*fresh playground build/)
+  assert.match(smokeSource, /const startupDeadline = performance\.now\(\) \+ startupTimeout/)
+  assert.match(smokeSource, /disposeResult: openedSocket => openedSocket\.close\(\)/)
+  assert.match(smokeSource, /createCdpClient\(socket/)
+  assert.match(smokeSource, /phaseDeadline = performance\.now\(\) \+ bodyTimeout/)
+  assert.match(smokeSource, /uiReadiness\('clipboard fallback status'\)/)
+  assert.match(smokeSource, /description: 'smoke cleanup'/)
+  assert.doesNotMatch(smokeSource, /browserReadiness\('clipboard fallback status'\)/)
+  assert.match(browserSource, /smokeBudgets\(process\.env\)/)
   assert.match(browserSource, /timeoutMs: outerReadinessTimeout/)
   assert.match(browserSource, /timeout: browserTestTimeout/g)
+  assert.match(browserSource, /signalSmokeEntrypoint\(run, 'SIGTERM'\)/)
+  assert.doesNotMatch(browserSource, /smoke\.kill\('SIGKILL'\)/)
 })

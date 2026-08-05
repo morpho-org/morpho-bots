@@ -10,10 +10,13 @@ import { fileURLToPath } from 'node:url'
 import * as smokeSupport from './playground-smoke-support.mjs'
 import {
   chromiumAvailability,
+  createCdpClient,
+  runBounded,
   discoverChromium,
   inspectProcessGroup,
   prepareFreshDist,
   readinessTimeoutMs,
+  smokeBudgets,
   spawnOwnedProcess,
   startStaticServer,
   terminateOwnedProcessTree,
@@ -98,6 +101,50 @@ test('readiness timeout uses one bounded CI-safe configuration source', () => {
   }
 })
 
+test('browser test budget is the sum of bounded lifecycle phases plus grace', () => {
+  assert.deepEqual(smokeBudgets({}), {
+    buildTimeout: 30_000,
+    startupTimeout: 90_000,
+    bodyTimeout: 60_000,
+    uiPollTimeout: 5_000,
+    cdpCommandTimeout: 5_000,
+    cleanupTimeout: 15_000,
+    outerReadinessTimeout: 135_000,
+    browserTestTimeout: 210_000
+  })
+  assert.equal(
+    smokeBudgets({ PLAYGROUND_SMOKE_READINESS_TIMEOUT_MS: '1000' }).browserTestTimeout,
+    121_000
+  )
+  assert.equal(
+    smokeBudgets({ PLAYGROUND_SMOKE_BROWSER_TEST_TIMEOUT_MS: '240000' }).browserTestTimeout,
+    240_000
+  )
+  assert.throws(
+    () => smokeBudgets({ PLAYGROUND_SMOKE_BROWSER_TEST_TIMEOUT_MS: '209999' }),
+    /must be at least the derived lifecycle budget of 210000ms/
+  )
+  assert.throws(
+    () => smokeBudgets({ PLAYGROUND_SMOKE_BROWSER_TEST_TIMEOUT_MS: '300001' }),
+    /must be at most 300000ms/
+  )
+})
+
+test('bounded lifecycle operations abort at their own monotonic deadline', async () => {
+  let observedSignal
+  await assert.rejects(
+    runBounded(
+      signal => {
+        observedSignal = signal
+        return new Promise(() => {})
+      },
+      { description: 'playground build', timeoutMs: 10 }
+    ),
+    /Timed out after 10ms during playground build/
+  )
+  assert.equal(observedSignal.aborted, true)
+})
+
 test('readiness rejects an operation that succeeds 50ms after a 10ms deadline', async () => {
   let operationSettled = false
 
@@ -156,6 +203,223 @@ test('readiness rejects immediately when the child exits during a stalled operat
       return true
     }
   )
+})
+
+test('DevTools WebSocket handshake error closes the socket and removes every listener', async () => {
+  let socket
+  class FailingWebSocket extends EventTarget {
+    constructor() {
+      super()
+      socket = this
+      this.closed = false
+      this.listeners = 0
+      queueMicrotask(() => this.dispatchEvent(new Event('error')))
+    }
+
+    addEventListener(...args) {
+      this.listeners += 1
+      return super.addEventListener(...args)
+    }
+
+    removeEventListener(...args) {
+      this.listeners -= 1
+      return super.removeEventListener(...args)
+    }
+
+    close() {
+      this.closed = true
+    }
+  }
+
+  await assert.rejects(
+    smokeSupport.openWebSocket('ws://127.0.0.1/devtools', { WebSocketImpl: FailingWebSocket }),
+    /WebSocket handshake failed/
+  )
+  assert.equal(socket.closed, true)
+  assert.equal(socket.listeners, 0)
+})
+
+test('successful DevTools WebSocket handshake restores its listener baseline', async () => {
+  let socket
+  class OpeningWebSocket extends EventTarget {
+    constructor() {
+      super()
+      socket = this
+      this.listeners = 0
+      queueMicrotask(() => this.dispatchEvent(new Event('open')))
+    }
+
+    addEventListener(...args) {
+      this.listeners += 1
+      return super.addEventListener(...args)
+    }
+
+    removeEventListener(...args) {
+      this.listeners -= 1
+      return super.removeEventListener(...args)
+    }
+
+    close() {}
+  }
+
+  assert.equal(
+    await smokeSupport.openWebSocket('ws://127.0.0.1/devtools', {
+      WebSocketImpl: OpeningWebSocket
+    }),
+    socket
+  )
+  assert.equal(socket.listeners, 0)
+})
+
+test('late DevTools WebSocket open after timeout stays closed without unhandled rejection', async () => {
+  let socket
+  const unhandled = []
+  const onUnhandled = error => unhandled.push(error)
+  process.on('unhandledRejection', onUnhandled)
+  class LateWebSocket extends EventTarget {
+    constructor() {
+      super()
+      socket = this
+      this.closed = false
+      setTimeout(() => this.dispatchEvent(new Event('open')), 30)
+    }
+
+    close() {
+      this.closed = true
+    }
+  }
+
+  try {
+    await assert.rejects(
+      waitForReadiness(
+        signal =>
+          smokeSupport.openWebSocket('ws://127.0.0.1/devtools', {
+            signal,
+            WebSocketImpl: LateWebSocket
+          }),
+        { description: 'late WebSocket open', timeoutMs: 5 }
+      ),
+      /Timed out after 5ms waiting for late WebSocket open/
+    )
+    await new Promise(resolve => setTimeout(resolve, 40))
+    assert.equal(socket.closed, true)
+    assert.deepEqual(unhandled, [])
+  } finally {
+    process.off('unhandledRejection', onUnhandled)
+  }
+})
+
+test('CDP commands are bounded, reject on socket close, and restore listener baseline', async () => {
+  class FakeSocket extends EventTarget {
+    constructor() {
+      super()
+      this.listeners = 0
+      this.sent = []
+    }
+
+    addEventListener(...args) {
+      this.listeners += 1
+      return super.addEventListener(...args)
+    }
+
+    removeEventListener(...args) {
+      this.listeners -= 1
+      return super.removeEventListener(...args)
+    }
+
+    send(message) {
+      this.sent.push(JSON.parse(message))
+    }
+  }
+
+  const socket = new FakeSocket()
+  const client = createCdpClient(socket, { commandTimeoutMs: 10 })
+  assert.equal(socket.listeners, 3)
+  await assert.rejects(client.command('Runtime.evaluate'), /timed out after 10ms/)
+
+  const closingCommand = client.command('Page.enable')
+  socket.dispatchEvent(new CloseEvent('close', { code: 1006, reason: 'browser exited' }))
+  await assert.rejects(closingCommand, /DevTools WebSocket closed.*1006.*browser exited/)
+  client.dispose()
+  assert.equal(socket.listeners, 0)
+})
+
+test('readiness disposes a WebSocket that opens exactly at the deadline', async () => {
+  let now = 1_000
+  let socket
+  class BoundaryWebSocket extends EventTarget {
+    constructor() {
+      super()
+      socket = this
+      this.closed = false
+      queueMicrotask(() => {
+        now = 1_010
+        this.dispatchEvent(new Event('open'))
+      })
+    }
+
+    close() {
+      this.closed = true
+    }
+  }
+
+  await assert.rejects(
+    waitForReadiness(
+      signal =>
+        smokeSupport.openWebSocket('ws://127.0.0.1/devtools', {
+          signal,
+          WebSocketImpl: BoundaryWebSocket
+        }),
+      {
+        deadline: 1_010,
+        description: 'boundary WebSocket',
+        disposeResult: openedSocket => openedSocket.close(),
+        now: () => now,
+        timeoutMs: 10
+      }
+    ),
+    /Timed out after 10ms waiting for boundary WebSocket/
+  )
+  assert.equal(socket.closed, true)
+})
+
+test('readiness disposes a WebSocket when the supervised child exits as it opens', async () => {
+  const child = { exitCode: null, signalCode: null }
+  let socket
+  class ExitBoundaryWebSocket extends EventTarget {
+    constructor() {
+      super()
+      socket = this
+      this.closed = false
+      queueMicrotask(() => {
+        child.exitCode = 23
+        this.dispatchEvent(new Event('open'))
+      })
+    }
+
+    close() {
+      this.closed = true
+    }
+  }
+
+  await assert.rejects(
+    waitForReadiness(
+      signal =>
+        smokeSupport.openWebSocket('ws://127.0.0.1/devtools', {
+          signal,
+          WebSocketImpl: ExitBoundaryWebSocket
+        }),
+      {
+        child,
+        childName: 'Chromium',
+        description: 'child-exit WebSocket',
+        disposeResult: openedSocket => openedSocket.close(),
+        timeoutMs: 100
+      }
+    ),
+    /Chromium exited with exit code 23 before readiness/
+  )
+  assert.equal(socket.closed, true)
 })
 
 test('stalled DevTools WebSocket handshake is cancelled at the readiness deadline', async () => {
