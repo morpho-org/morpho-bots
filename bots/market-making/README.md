@@ -10,6 +10,30 @@ every intended action before enabling signing.
 See [Architecture](./docs/architecture.md) for the contributor-facing package design and code
 structure.
 
+## Parameter playground
+
+Run the stateless parameter playground locally from the repository root:
+
+```sh
+bun install --frozen-lockfile
+bun run market-making:playground
+```
+
+The local server prints its URL after building the browser artifact. For a production-equivalent
+build without starting a server, run:
+
+```sh
+bun run --filter @morpho-org/market-making-bot playground:build
+```
+
+After this pull request is merged to `main`, relevant playground, browser-safe bot-kit, package, lock,
+or deployment-workflow changes deploy through GitHub Actions to
+<https://morpho-org.github.io/morpho-bots/>. Repository Pages settings must use **GitHub Actions** as
+the publishing source; the workflow intentionally cannot change that repository setting with its
+least-privilege token. The Pages site is not live until that post-merge workflow completes
+successfully; check the repository's **Deploy market-making playground to GitHub Pages** workflow and
+its `github-pages` environment for deployment status.
+
 ## Run
 
 ```sh

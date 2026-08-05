@@ -788,7 +788,8 @@ export const startStaticServer = async (root, { host = '127.0.0.1', port = 0 } =
     try {
       const requestUrl = new URL(request.url ?? '/', 'http://127.0.0.1')
       const pathname = decodeURIComponent(requestUrl.pathname)
-      const candidate = resolve(servedRoot, `.${pathname === '/' ? '/index.html' : pathname}`)
+      const requestedPath = pathname.endsWith('/') ? `${pathname}index.html` : pathname
+      const candidate = resolve(servedRoot, `.${requestedPath}`)
       const candidateRelative = relative(servedRoot, candidate)
       if (candidateRelative.startsWith('..') || isAbsolute(candidateRelative)) {
         response.writeHead(404).end('Not found')

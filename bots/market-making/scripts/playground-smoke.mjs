@@ -1,5 +1,5 @@
 import { mkdtempSync } from 'node:fs'
-import { readFile, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -19,6 +19,12 @@ import {
 } from './playground-smoke-support.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
+const basePath = process.env.PLAYGROUND_SMOKE_BASE_PATH ?? '/'
+if (!/^\/(?:[A-Za-z0-9._-]+\/)*$/.test(basePath)) {
+  throw new Error(
+    `PLAYGROUND_SMOKE_BASE_PATH must be / or a slash-delimited path ending in /; received: ${basePath}`
+  )
+}
 const budgets = smokeBudgets(process.env)
 const {
   bodyTimeout,
@@ -146,9 +152,16 @@ try {
     { description: 'fresh playground build', timeoutMs: buildTimeout }
   )
   const dist = preparedDist.dist
+  let servedRoot = dist
+  if (basePath !== '/') {
+    servedRoot = await createOwnedTempDirectory('market-making-playground-site-')
+    const mountedDist = join(servedRoot, ...basePath.split('/').filter(Boolean))
+    await mkdir(mountedDist, { recursive: true })
+    await cp(dist, mountedDist, { recursive: true })
+  }
   const userDataDir = await createOwnedTempDirectory('market-making-playground-')
   const startupDeadline = performance.now() + startupTimeout
-  const startedServer = await runBounded(() => startStaticServer(dist), {
+  const startedServer = await runBounded(() => startStaticServer(servedRoot), {
     description: 'static server startup',
     timeoutMs: startupTimeout
   })
@@ -347,7 +360,7 @@ try {
       wrapAccessor(globalThis.Document?.prototype, 'cookie', 'Document.cookie')
     })()`
   })
-  await command('Page.navigate', { url: `http://127.0.0.1:${port}` })
+  await command('Page.navigate', { url: `http://127.0.0.1:${port}${basePath}` })
   await waitForReadiness(async () => {
     if (!(await evaluate("document.documentElement.dataset.playgroundReady === 'true'"))) {
       throw new Error('playground not ready')
@@ -1461,6 +1474,10 @@ try {
     .filter(({ requestId }) => !cspBlockedRequestIds.has(requestId))
     .map(({ url }) => url)
     .filter(url => !url.startsWith(`http://127.0.0.1:${port}/`) && !url.startsWith('data:'))
+  const outsideBasePath = requests.filter(url => {
+    if (!url.startsWith(`http://127.0.0.1:${port}/`)) return false
+    return !new URL(url).pathname.startsWith(basePath)
+  })
   const securityTranscript = [...requests, ...consoleMessages].join('\n')
   for (const marker of [
     'rpc-password',
@@ -1476,6 +1493,10 @@ try {
     )
   }
   assert(unexpected.length === 0, `unexpected network requests: ${unexpected.join(', ')}`)
+  assert(
+    outsideBasePath.length === 0,
+    `local requests escaped ${basePath}: ${outsideBasePath.join(', ')}`
+  )
   assert(consoleErrors.length === 0, `browser console errors: ${consoleErrors.join('; ')}`)
   console.log(`browser smoke: PASS (${requests.length} local requests, 0 unexpected requests)`)
 } finally {
