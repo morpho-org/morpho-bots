@@ -295,12 +295,29 @@ try {
   let evaluationId = 0
   const evaluate = async expression => {
     const objectGroup = `playground-smoke-evaluation-${evaluationId++}`
-    const result = await command('Runtime.evaluate', {
-      expression,
-      objectGroup,
-      awaitPromise: true,
-      returnByValue: true
-    })
+    let result
+    try {
+      result = await command('Runtime.evaluate', {
+        expression,
+        objectGroup,
+        awaitPromise: false,
+        returnByValue: false
+      })
+      if (!result.exceptionDetails && result.result.subtype === 'promise') {
+        result = await command('Runtime.awaitPromise', {
+          promiseObjectId: result.result.objectId,
+          returnByValue: true
+        })
+      } else if (!result.exceptionDetails && result.result.objectId) {
+        result = await command('Runtime.callFunctionOn', {
+          functionDeclaration: 'function () { return this }',
+          objectId: result.result.objectId,
+          returnByValue: true
+        })
+      }
+    } finally {
+      await command('Runtime.releaseObjectGroup', { objectGroup }).catch(() => {})
+    }
     if (result.exceptionDetails)
       throw new Error(
         result.exceptionDetails.exception?.description ?? result.exceptionDetails.text
