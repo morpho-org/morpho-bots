@@ -18,8 +18,16 @@ runs:
   steps:
     # pnpm owns installs, workspace resolution, and script running. The version comes from
     # package.json#packageManager, so it is not repeated here.
+    #
+    # `pnpm/setup` — not the older `pnpm/action-setup`, which upstream now scopes to pnpm v10 and
+    # older. It downloads pnpm's self-contained release binary and verifies it against the SHA-256
+    # digest GitHub publishes for the asset, instead of bootstrapping through `npm ci` of
+    # `@pnpm/exe` — one fewer npm-registry artifact on the path that this migration exists to
+    # shorten. `install: false` because the install step below is conditional on an input.
     - name: Set up pnpm
-      uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      uses: pnpm/setup@c9883cc79df532ad1a7b81bf9ab944ceb090d65c # v2.0.0
+      with:
+        install: false
 
     - name: Install Node.js
       uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
