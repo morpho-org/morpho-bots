@@ -7,10 +7,13 @@ import { fileURLToPath } from 'node:url'
 import {
   closeOwnedProcessTreeGracefully,
   discoverChromium,
+  openWebSocket,
   prepareFreshDist,
+  readinessTimeoutMs,
   spawnOwnedProcess,
   startStaticServer,
-  terminateOwnedProcessTree
+  terminateOwnedProcessTree,
+  waitForReadiness
 } from './playground-smoke-support.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
@@ -109,25 +112,12 @@ const createOwnedTempDirectory = async prefix => {
   throw shutdown.signal.reason
 }
 
-const waitFor = async operation => {
-  let lastError
-  for (let attempt = 0; attempt < 100; attempt++) {
-    try {
-      return await operation()
-    } catch (error) {
-      if (error.fatal) throw error
-      lastError = error
-      await new Promise(resolve => setTimeout(resolve, 50))
-    }
-  }
-  throw lastError
-}
-
 const assert = (condition, message) => {
   if (!condition) throw new Error(message)
 }
 
 try {
+  const readinessTimeout = readinessTimeoutMs(process.env.PLAYGROUND_SMOKE_READINESS_TIMEOUT_MS)
   const chromiumPath = await discoverChromium()
   const preparedDist = await prepareFreshDist({
     root,
@@ -168,20 +158,19 @@ try {
   browser.stderr.on('data', chunk => {
     browserStderr = `${browserStderr}${chunk}`.slice(-4000)
   })
-
-  await waitFor(async () => {
-    const response = await fetch(`http://127.0.0.1:${port}`)
-    if (!response.ok) throw new Error('server not ready')
+  const readinessDeadline = Date.now() + readinessTimeout
+  const browserReadiness = description => ({
+    child: browser,
+    childName: 'Chromium',
+    deadline: readinessDeadline,
+    description,
+    getChildError: () => browserSpawnError,
+    getStderr: () => browserStderr,
+    pollIntervalMs: 25,
+    timeoutMs: readinessTimeout
   })
-  const debuggingPort = await waitFor(async () => {
-    if (browserSpawnError || browser.exitCode !== null) {
-      const detail = browserSpawnError?.message ?? `exit code ${browser.exitCode}`
-      const error = new Error(
-        `Chromium failed before exposing its debugging port (${detail}). ${browserStderr.trim()}`
-      )
-      error.fatal = true
-      throw error
-    }
+
+  const debuggingPort = await waitForReadiness(async () => {
     const [portText] = (await readFile(join(userDataDir, 'DevToolsActivePort'), 'utf8')).split(
       /\r?\n/
     )
@@ -190,23 +179,23 @@ try {
       throw new Error(`invalid Chromium debugging port: ${portText}`)
     }
     return discoveredPort
-  })
-  const target = await waitFor(async () => {
+  }, browserReadiness('Chromium DevToolsActivePort; increase PLAYGROUND_SMOKE_READINESS_TIMEOUT_MS only when cold startup is expected to need longer'))
+  const target = await waitForReadiness(async signal => {
     const response = await fetch(
       `http://127.0.0.1:${debuggingPort}/json/new?http://127.0.0.1:${port}`,
       {
-        method: 'PUT'
+        method: 'PUT',
+        signal
       }
     )
-    if (!response.ok) throw new Error('browser not ready')
+    if (!response.ok) throw new Error(`browser target endpoint returned HTTP ${response.status}`)
     return response.json()
-  })
-  const socket = new WebSocket(target.webSocketDebuggerUrl)
+  }, browserReadiness('Chromium DevTools target endpoint'))
+  const socket = await waitForReadiness(
+    signal => openWebSocket(target.webSocketDebuggerUrl, { signal }),
+    browserReadiness('Chromium DevTools WebSocket handshake')
+  )
   browserSocket = socket
-  await new Promise((resolve, reject) => {
-    socket.addEventListener('open', resolve, { once: true })
-    socket.addEventListener('error', reject, { once: true })
-  })
   browserReady = true
   console.log(
     `smoke environment: appPort=${port} chromiumDebugPort=${debuggingPort} chromium=${chromiumPath}`
@@ -344,11 +333,11 @@ try {
     })()`
   })
   await command('Page.navigate', { url: `http://127.0.0.1:${port}` })
-  await waitFor(async () => {
+  await waitForReadiness(async () => {
     if (!(await evaluate("document.documentElement.dataset.playgroundReady === 'true'"))) {
       throw new Error('playground not ready')
     }
-  })
+  }, browserReadiness('playground page readiness'))
 
   assert(
     await evaluate(
@@ -1381,14 +1370,14 @@ try {
   await evaluate(
     "Object.defineProperty(navigator, 'clipboard', {value: undefined, configurable: true}); document.execCommand=()=>false; document.querySelector('#copy-export').disabled=false; document.querySelector('#copy-export').click()"
   )
-  await waitFor(async () => {
+  await waitForReadiness(async () => {
     if (
       !(await evaluate(
         "document.querySelector('#copy-status').textContent.includes('Copy was blocked')"
       ))
     )
       throw new Error('fallback status missing')
-  })
+  }, browserReadiness('clipboard fallback status'))
   assert(
     await evaluate("document.querySelector('#copy-status').getAttribute('aria-live') === 'polite'"),
     'clipboard fallback is not announced in a live region'

@@ -1,26 +1,27 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import { chmod, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
+import * as smokeSupport from './playground-smoke-support.mjs'
 import {
   chromiumAvailability,
   discoverChromium,
   inspectProcessGroup,
   prepareFreshDist,
+  readinessTimeoutMs,
   spawnOwnedProcess,
   startStaticServer,
-  terminateOwnedProcessTree
+  terminateOwnedProcessTree,
+  waitForReadiness
 } from './playground-smoke-support.mjs'
 
 const temporaryDirectories = []
 const smokeScript = fileURLToPath(new URL('./playground-smoke.mjs', import.meta.url))
-const chromium = await chromiumAvailability()
-const t = chromium.path ? test : test.skip
-const n = name => (chromium.path ? name : `${name} — ${chromium.reason}`)
 const temporaryDirectory = async prefix => {
   const directory = await mkdtemp(join(tmpdir(), prefix))
   temporaryDirectories.push(directory)
@@ -81,6 +82,288 @@ const waitForProcessesGone = async pids =>
     const remaining = (await Promise.all(pids.map(processStatus))).filter(Boolean)
     assert.deepEqual(remaining, [])
   })
+
+test('readiness timeout uses one bounded CI-safe configuration source', () => {
+  assert.equal(readinessTimeoutMs(undefined), 90_000)
+  assert.equal(readinessTimeoutMs('90000'), 90_000)
+  assert.throws(
+    () => readinessTimeoutMs('90001'),
+    /PLAYGROUND_SMOKE_READINESS_TIMEOUT_MS.*at most 90000ms.*90001/
+  )
+  for (const invalid of ['', '0', '-1', '1.5', 'not-a-number']) {
+    assert.throws(
+      () => readinessTimeoutMs(invalid),
+      new RegExp(`PLAYGROUND_SMOKE_READINESS_TIMEOUT_MS.*positive integer.*${invalid || 'empty'}`)
+    )
+  }
+})
+
+test('readiness rejects an operation that succeeds 50ms after a 10ms deadline', async () => {
+  let operationSettled = false
+
+  await assert.rejects(
+    waitForReadiness(
+      () =>
+        new Promise(resolve =>
+          setTimeout(() => {
+            operationSettled = true
+            resolve('too late')
+          }, 50)
+        ),
+      {
+        description: 'late readiness success',
+        timeoutMs: 10,
+        pollIntervalMs: 1
+      }
+    ),
+    /Timed out after 10ms waiting for late readiness success/
+  )
+
+  assert.equal(operationSettled, false)
+})
+
+test('readiness rejects a never-settling operation at its deadline', async () => {
+  await assert.rejects(
+    waitForReadiness(() => new Promise(() => {}), {
+      description: 'stalled readiness operation',
+      timeoutMs: 10,
+      pollIntervalMs: 1
+    }),
+    /Timed out after 10ms waiting for stalled readiness operation/
+  )
+})
+
+test('readiness rejects immediately when the child exits during a stalled operation', async () => {
+  const child = new EventEmitter()
+  child.exitCode = null
+  child.signalCode = null
+  setTimeout(() => {
+    child.exitCode = 23
+    child.emit('exit', 23, null)
+  }, 10)
+
+  await assert.rejects(
+    waitForReadiness(() => new Promise(() => {}), {
+      child,
+      childName: 'Chromium',
+      description: 'stalled child readiness',
+      getStderr: () => 'zygote failed',
+      timeoutMs: 100
+    }),
+    error => {
+      assert.match(error.message, /Chromium exited with exit code 23 before readiness/)
+      assert.match(error.message, /zygote failed/)
+      return true
+    }
+  )
+})
+
+test('stalled DevTools WebSocket handshake is cancelled at the readiness deadline', async () => {
+  let socket
+  class StalledWebSocket extends EventTarget {
+    constructor() {
+      super()
+      socket = this
+      this.closed = false
+    }
+
+    close() {
+      this.closed = true
+    }
+  }
+
+  await assert.rejects(
+    waitForReadiness(
+      signal =>
+        smokeSupport.openWebSocket('ws://127.0.0.1/devtools', {
+          signal,
+          WebSocketImpl: StalledWebSocket
+        }),
+      {
+        description: 'Chromium DevTools WebSocket handshake',
+        timeoutMs: 10
+      }
+    ),
+    /Timed out after 10ms waiting for Chromium DevTools WebSocket handshake/
+  )
+  assert.equal(socket.closed, true)
+})
+
+test('DevTools WebSocket handshake aborts immediately when Chromium exits', async () => {
+  let socket
+  class StalledWebSocket extends EventTarget {
+    constructor() {
+      super()
+      socket = this
+      this.closed = false
+    }
+
+    close() {
+      this.closed = true
+    }
+  }
+  const child = new EventEmitter()
+  child.exitCode = null
+  child.signalCode = null
+  setTimeout(() => {
+    child.signalCode = 'SIGKILL'
+    child.emit('exit', null, 'SIGKILL')
+  }, 10)
+
+  await assert.rejects(
+    waitForReadiness(
+      signal =>
+        smokeSupport.openWebSocket('ws://127.0.0.1/devtools', {
+          signal,
+          WebSocketImpl: StalledWebSocket
+        }),
+      {
+        child,
+        childName: 'Chromium',
+        description: 'Chromium DevTools WebSocket handshake',
+        timeoutMs: 100
+      }
+    ),
+    /Chromium exited with signal SIGKILL before readiness/
+  )
+  assert.equal(socket.closed, true)
+})
+
+test('readiness rejects success exactly at the absolute deadline', async () => {
+  let now = 5_000
+
+  await assert.rejects(
+    waitForReadiness(
+      () => {
+        now = 5_010
+        return 'boundary success'
+      },
+      {
+        deadline: 5_010,
+        description: 'exact-boundary readiness',
+        timeoutMs: 10,
+        now: () => now
+      }
+    ),
+    /Timed out after 10ms waiting for exact-boundary readiness/
+  )
+})
+
+test('readiness waits through a delayed file until it succeeds before the wall-clock deadline', async () => {
+  const directory = await temporaryDirectory('playground-readiness-delayed-file-')
+  const readyFile = join(directory, 'ready')
+  let now = 1_000
+
+  const contents = await waitForReadiness(() => readFile(readyFile, 'utf8'), {
+    description: 'delayed readiness file',
+    timeoutMs: 100,
+    pollIntervalMs: 10,
+    now: () => now,
+    sleep: async milliseconds => {
+      now += milliseconds
+      if (now === 1_030) await writeFile(readyFile, 'ready')
+    }
+  })
+
+  assert.equal(contents, 'ready')
+  assert.equal(now, 1_030)
+})
+
+test('readiness reports a fake child exit and stderr without waiting for the deadline', async () => {
+  let now = 2_000
+  const child = { exitCode: null, signalCode: null }
+
+  await assert.rejects(
+    waitForReadiness(
+      () => {
+        const error = new Error('ENOENT: DevToolsActivePort')
+        error.code = 'ENOENT'
+        throw error
+      },
+      {
+        child,
+        childName: 'Chromium',
+        description: 'Chromium DevToolsActivePort',
+        getStderr: () => 'zygote startup failed',
+        timeoutMs: 100,
+        pollIntervalMs: 10,
+        now: () => now,
+        sleep: async milliseconds => {
+          now += milliseconds
+          child.exitCode = 23
+        }
+      }
+    ),
+    error => {
+      assert.match(error.message, /Chromium exited with exit code 23 before readiness/)
+      assert.match(error.message, /zygote startup failed/)
+      return true
+    }
+  )
+  assert.equal(now, 2_010)
+})
+
+test('readiness deadline reports the last root cause and child stderr deterministically', async () => {
+  let now = 3_000
+  const rootCause = new Error('ENOENT: DevToolsActivePort')
+
+  await assert.rejects(
+    waitForReadiness(
+      () => {
+        throw rootCause
+      },
+      {
+        description: 'Chromium DevToolsActivePort',
+        getStderr: () => 'Chrome is still starting',
+        timeoutMs: 30,
+        pollIntervalMs: 10,
+        now: () => now,
+        sleep: async milliseconds => {
+          now += milliseconds
+        }
+      }
+    ),
+    error => {
+      assert.match(error.message, /Timed out after 30ms waiting for Chromium DevToolsActivePort/)
+      assert.match(error.message, /Last readiness error: ENOENT: DevToolsActivePort/)
+      assert.match(error.message, /Chrome is still starting/)
+      assert.equal(error.cause, rootCause)
+      return true
+    }
+  )
+  assert.equal(now, 3_030)
+})
+
+test('readiness calls share one absolute deadline instead of resetting nested counters', async () => {
+  let now = 4_000
+  const deadline = 4_030
+  let firstAttempts = 0
+  const options = {
+    deadline,
+    description: 'shared startup readiness',
+    timeoutMs: 30,
+    pollIntervalMs: 10,
+    now: () => now,
+    sleep: async milliseconds => {
+      now += milliseconds
+    }
+  }
+
+  await waitForReadiness(() => {
+    firstAttempts += 1
+    if (firstAttempts < 3) throw new Error('first stage pending')
+    return 'ready'
+  }, options)
+  assert.equal(now, 4_020)
+
+  await assert.rejects(
+    waitForReadiness(() => {
+      throw new Error('second stage pending')
+    }, options),
+    /Timed out after 30ms waiting for shared startup readiness/
+  )
+  assert.equal(now, deadline)
+})
 
 for (const signal of ['SIGTERM', 'SIGINT']) {
   test(`${signal} at the temp creation boundary removes the created directory`, async () => {
@@ -282,96 +565,6 @@ child.on('close', () => process.exit(0))
   })
 }
 
-for (const signal of ['SIGTERM', 'SIGINT']) {
-  const testName = `${signal} after Chromium readiness closes the browser gracefully and reaps its tree`
-  t(n(testName), { timeout: 60_000 }, async () => {
-    const isolatedTmp = await temporaryDirectory(`playground-browser-${signal.toLowerCase()}-`)
-    const bin = join(isolatedTmp, 'bin')
-    const fakeBun = join(bin, 'bun')
-    const wrapper = join(isolatedTmp, 'chromium-wrapper')
-    const wrapperPidFile = join(isolatedTmp, 'chromium-wrapper-pid')
-    const chromium = await discoverChromium()
-    await mkdir(bin)
-    await writeFile(
-      fakeBun,
-      `#!/usr/bin/env node
-const { mkdirSync, writeFileSync } = require('node:fs')
-const outdir = process.argv[process.argv.indexOf('--outdir') + 1]
-if (!outdir) throw new Error('missing --outdir')
-mkdirSync(outdir, { recursive: true })
-writeFileSync(outdir + '/index.html', '<!doctype html><title>signal test</title>')
-`
-    )
-    await chmod(fakeBun, 0o755)
-    await writeFile(
-      wrapper,
-      `#!/usr/bin/env python3
-import os
-import sys
-
-with open(os.environ['SMOKE_CHROMIUM_WRAPPER_PID_FILE'], 'w') as pid_file:
-    pid_file.write(str(os.getpid()))
-chromium = ${JSON.stringify(chromium)}
-os.execv(chromium, [chromium, *sys.argv[1:]])
-`
-    )
-    await chmod(wrapper, 0o755)
-
-    const smoke = spawn(process.execPath, [smokeScript], {
-      env: {
-        ...process.env,
-        CHROMIUM_PATH: wrapper,
-        SMOKE_CHROMIUM_WRAPPER_PID_FILE: wrapperPidFile,
-        PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
-        TMPDIR: isolatedTmp
-      },
-      stdio: ['ignore', 'pipe', 'pipe']
-    })
-    smoke.stdout.setEncoding('utf8')
-    smoke.stderr.setEncoding('utf8')
-    let output = ''
-    smoke.stdout.on('data', chunk => {
-      output += chunk
-    })
-    smoke.stderr.on('data', chunk => {
-      output += chunk
-    })
-    let recordedPids = []
-    try {
-      await waitFor(async () => {
-        assert.match(output, /smoke environment:/)
-      }, 3000)
-      const wrapperPid = Number(await readFile(wrapperPidFile, 'utf8'))
-      const processGroup = await processGroupOf(wrapperPid)
-      recordedPids = (await inspectProcessGroup(processGroup)).map(({ pid }) => pid)
-      assert.ok(recordedPids.length > 1, `expected a real Chromium tree, got ${recordedPids}`)
-
-      smoke.kill(signal)
-      const result = await new Promise((resolve, reject) => {
-        smoke.once('error', reject)
-        smoke.once('close', (code, closeSignal) => resolve({ code, signal: closeSignal }))
-      })
-
-      assert.deepEqual(result, { code: null, signal })
-      await waitForProcessesGone(recordedPids)
-      assert.doesNotMatch(output, /Graceful Chromium shutdown failed/)
-      assert.deepEqual(
-        (await readdir(isolatedTmp)).filter(
-          name =>
-            name.startsWith('market-making-playground-dist-') ||
-            name.startsWith('market-making-playground-')
-        ),
-        []
-      )
-    } finally {
-      if (smoke.exitCode === null && smoke.signalCode === null) smoke.kill('SIGKILL')
-      for (const pid of recordedPids) {
-        if (processExists(pid)) process.kill(pid, 'SIGKILL')
-      }
-    }
-  })
-}
-
 test(
   'bounded fallback terminates stubborn descendants deepest-first without zombies',
   { timeout: 30_000 },
@@ -418,6 +611,78 @@ setInterval(() => {}, 1000)
       for (const pid of recordedPids) {
         if (processExists(pid)) process.kill(pid, 'SIGKILL')
       }
+    }
+  }
+)
+
+test(
+  'zombie descendants do not block live-parent termination or touch unrelated groups',
+  { timeout: 30_000 },
+  async () => {
+    const isolatedTmp = await temporaryDirectory('playground-zombie-tree-')
+    const parentScript = join(isolatedTmp, 'non-reaping-parent.py')
+    const parentPidFile = join(isolatedTmp, 'parent-pid')
+    const childPidFile = join(isolatedTmp, 'child-pid')
+    await writeFile(
+      parentScript,
+      `import os
+import signal
+import subprocess
+import sys
+import time
+
+term_count = 0
+
+def on_term(_signum, _frame):
+    global term_count
+    term_count += 1
+    if term_count >= 2:
+        sys.exit(0)
+
+signal.signal(signal.SIGTERM, on_term)
+child = subprocess.Popen([sys.executable, '-c', 'import os; os._exit(0)'])
+with open(os.environ['ZOMBIE_PARENT_PID_FILE'], 'w') as parent_file:
+    parent_file.write(str(os.getpid()))
+with open(os.environ['ZOMBIE_CHILD_PID_FILE'], 'w') as child_file:
+    child_file.write(str(child.pid))
+while True:
+    time.sleep(1)
+`
+    )
+
+    const unrelated = spawnOwnedProcess(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+      stdio: 'ignore'
+    })
+    const owner = spawnOwnedProcess(process.env.PYTHON ?? 'python3', [parentScript], {
+      env: {
+        ...process.env,
+        ZOMBIE_PARENT_PID_FILE: parentPidFile,
+        ZOMBIE_CHILD_PID_FILE: childPidFile
+      },
+      stdio: 'ignore'
+    })
+    let targetPids = []
+    let parentPid
+    try {
+      await waitFor(async () => {
+        parentPid = Number(await readFile(parentPidFile, 'utf8'))
+        const childPid = Number(await readFile(childPidFile, 'utf8'))
+        assert.equal((await processStatus(childPid))?.state, 'Z')
+      })
+      targetPids = (await inspectProcessGroup(owner.pid)).map(({ pid }) => pid)
+      const unrelatedBefore = await inspectProcessGroup(unrelated.pid)
+      assert.ok(targetPids.length >= 3, `expected root+parent+zombie, got ${targetPids}`)
+      assert.ok(unrelatedBefore.length >= 2, 'expected a separate unrelated process group')
+
+      await terminateOwnedProcessTree(owner)
+
+      await waitForProcessesGone(targetPids)
+      assert.deepEqual(await inspectProcessGroup(owner.pid), [])
+      assert.deepEqual(await inspectProcessGroup(unrelated.pid), unrelatedBefore)
+    } finally {
+      if (parentPid && processExists(parentPid)) process.kill(parentPid, 'SIGKILL')
+      if (owner.exitCode === null && owner.signalCode === null) owner.kill('SIGKILL')
+      await terminateOwnedProcessTree(unrelated)
     }
   }
 )
@@ -488,46 +753,6 @@ test('two static servers allocate distinct application ports and only serve thei
   } finally {
     await Promise.all([first.close(), second.close()])
   }
-})
-
-const concurrentSmokeTest =
-  'two complete smoke runs use isolated builds and dynamic ports concurrently'
-t(n(concurrentSmokeTest), { timeout: 30_000 }, async () => {
-  const runs = Array.from({ length: 2 }, () => {
-    const child = spawn(process.execPath, [smokeScript], { stdio: ['ignore', 'pipe', 'pipe'] })
-    child.stdout.setEncoding('utf8')
-    child.stderr.setEncoding('utf8')
-    let stdout = ''
-    let stderr = ''
-    child.stdout.on('data', chunk => {
-      stdout += chunk
-    })
-    child.stderr.on('data', chunk => {
-      stderr += chunk
-    })
-    return new Promise((resolve, reject) => {
-      child.once('error', reject)
-      child.once('close', (code, signal) => resolve({ code, signal, stdout, stderr }))
-    })
-  })
-
-  const results = await Promise.all(runs)
-  for (const result of results) {
-    assert.deepEqual(
-      { code: result.code, signal: result.signal },
-      { code: 0, signal: null },
-      `stdout (tail):\n${result.stdout.slice(-4000)}\nstderr (tail):\n${result.stderr.slice(-4000)}`
-    )
-    assert.equal(result.stdout.match(/browser CSP: PASS/g)?.length, 1)
-    assert.equal(result.stdout.match(/browser smoke: PASS/g)?.length, 1)
-  }
-  const ports = results.map(({ stdout }) => Number(stdout.match(/appPort=(\d+)/)?.[1]))
-  assert.equal(new Set(ports).size, 2)
-
-  const evidence = results[0].stdout
-    .split(/\r?\n/)
-    .filter(line => line.startsWith('browser CSP: PASS') || line.startsWith('browser smoke: PASS'))
-  process.stdout.write(`${evidence.join('\n')}\n`)
 })
 
 test('invalid CHROMIUM_PATH fails clearly', async () => {

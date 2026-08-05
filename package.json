@@ -42,7 +42,8 @@
     "lint:fix": "oxlint --fix --no-error-on-unmatched-pattern",
     "market-making:playground": "node bots/market-making/scripts/playground-serve.mjs",
     "prepare": "husky",
-    "test": "bun test"
+    "test": "bun test",
+    "test:browser": "bun run --filter @morpho-org/market-making-bot playground:smoke:test"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",

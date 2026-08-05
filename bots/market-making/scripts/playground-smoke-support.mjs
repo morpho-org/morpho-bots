@@ -27,6 +27,183 @@ const commonChromiumPaths = [
 
 const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
 
+const DEFAULT_READINESS_TIMEOUT_MS = 90_000
+const MAX_READINESS_TIMEOUT_MS = 90_000
+const OUTER_READINESS_GRACE_MS = 15_000
+const BROWSER_TEST_GRACE_MS = 30_000
+
+export const readinessTimeoutMs = value => {
+  if (value === undefined) return DEFAULT_READINESS_TIMEOUT_MS
+  if (!/^\d+$/.test(value) || Number(value) <= 0 || !Number.isSafeInteger(Number(value))) {
+    throw new Error(
+      `PLAYGROUND_SMOKE_READINESS_TIMEOUT_MS must be a positive integer; received: ${value || 'empty'}`
+    )
+  }
+  const timeoutMs = Number(value)
+  if (timeoutMs > MAX_READINESS_TIMEOUT_MS) {
+    throw new Error(
+      `PLAYGROUND_SMOKE_READINESS_TIMEOUT_MS must be at most ${MAX_READINESS_TIMEOUT_MS}ms; received: ${value}`
+    )
+  }
+  return timeoutMs
+}
+
+export const readinessBudgets = value => {
+  const readinessTimeout = readinessTimeoutMs(value)
+  return {
+    readinessTimeout,
+    outerReadinessTimeout: readinessTimeout + OUTER_READINESS_GRACE_MS,
+    browserTestTimeout: readinessTimeout + BROWSER_TEST_GRACE_MS
+  }
+}
+
+export const openWebSocket = (url, { signal, WebSocketImpl = globalThis.WebSocket } = {}) =>
+  new Promise((resolve, reject) => {
+    const socket = new WebSocketImpl(url)
+    const cleanup = () => {
+      socket.removeEventListener('open', onOpen)
+      socket.removeEventListener('error', onError)
+      signal?.removeEventListener('abort', onAbort)
+    }
+    const onOpen = () => {
+      cleanup()
+      resolve(socket)
+    }
+    const onError = event => {
+      cleanup()
+      reject(event.error ?? new Error(`WebSocket handshake failed for ${url}`))
+    }
+    const onAbort = () => {
+      cleanup()
+      socket.close()
+      reject(signal.reason)
+    }
+    socket.addEventListener('open', onOpen, { once: true })
+    socket.addEventListener('error', onError, { once: true })
+    signal?.addEventListener('abort', onAbort, { once: true })
+    if (signal?.aborted) onAbort()
+  })
+
+export const waitForReadiness = async (
+  operation,
+  {
+    description,
+    timeoutMs,
+    deadline: suppliedDeadline,
+    pollIntervalMs = 25,
+    child,
+    childName = 'Child process',
+    getChildError = () => undefined,
+    getStderr = () => '',
+    now = Date.now,
+    sleep = delay
+  }
+) => {
+  const deadline = suppliedDeadline ?? now() + timeoutMs
+  let lastError
+  const terminalErrors = new WeakSet()
+  const timeoutError = () => {
+    const stderr = getStderr().trim()
+    const lastErrorDetail = lastError ? ` Last readiness error: ${lastError.message}` : ''
+    const error = new Error(
+      `Timed out after ${timeoutMs}ms waiting for ${description}.${lastErrorDetail}${stderr ? `\nChild stderr:\n${stderr}` : ''}`,
+      { cause: lastError }
+    )
+    terminalErrors.add(error)
+    return error
+  }
+  const childExitError = (exitCode = child?.exitCode, signalCode = child?.signalCode) => {
+    const status = signalCode !== null ? `signal ${signalCode}` : `exit code ${exitCode}`
+    const stderr = getStderr().trim()
+    const error = new Error(
+      `${childName} exited with ${status} before readiness.${stderr ? `\n${stderr}` : ''}`,
+      { cause: lastError }
+    )
+    terminalErrors.add(error)
+    return error
+  }
+  const childSpawnError = cause => {
+    const stderr = getStderr().trim()
+    const error = new Error(
+      `${childName} failed before readiness (${cause.message}).${stderr ? `\n${stderr}` : ''}`,
+      { cause }
+    )
+    terminalErrors.add(error)
+    return error
+  }
+  const assertChildRunning = () => {
+    const childError = getChildError()
+    if (childError) throw childSpawnError(childError)
+    if (child && (child.exitCode !== null || child.signalCode !== null)) throw childExitError()
+  }
+  const runSupervised = async task => {
+    assertChildRunning()
+    const remainingMs = deadline - now()
+    if (remainingMs <= 0) throw timeoutError()
+
+    const controller = new AbortController()
+    let timer
+    let removeChildListeners = () => {}
+    const competitors = [Promise.resolve().then(() => task(controller.signal))]
+    competitors.push(
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          const error = timeoutError()
+          reject(error)
+          controller.abort(error)
+        }, remainingMs)
+      })
+    )
+    if (child?.once && child?.off) {
+      competitors.push(
+        new Promise((_, reject) => {
+          const onError = error => {
+            const failure = childSpawnError(error)
+            reject(failure)
+            controller.abort(failure)
+          }
+          const onExit = (exitCode, signalCode) => {
+            const failure = childExitError(exitCode, signalCode)
+            reject(failure)
+            controller.abort(failure)
+          }
+          child.once('error', onError)
+          child.once('exit', onExit)
+          removeChildListeners = () => {
+            child.off('error', onError)
+            child.off('exit', onExit)
+          }
+        })
+      )
+    }
+
+    try {
+      const result = await Promise.race(competitors)
+      assertChildRunning()
+      if (now() >= deadline) throw timeoutError()
+      return result
+    } catch (error) {
+      if (controller.signal.aborted) throw controller.signal.reason
+      throw error
+    } finally {
+      clearTimeout(timer)
+      removeChildListeners()
+    }
+  }
+  while (true) {
+    assertChildRunning()
+    try {
+      return await runSupervised(operation)
+    } catch (error) {
+      if (terminalErrors.has(error)) throw error
+      lastError = error
+    }
+    const remainingMs = deadline - now()
+    if (remainingMs <= 0) throw timeoutError()
+    await runSupervised(() => sleep(Math.min(pollIntervalMs, remainingMs)))
+  }
+}
+
 const assertProcessInspection = () => {
   if (process.platform !== 'linux') {
     throw new Error(
@@ -106,7 +283,9 @@ const remainingTracked = async tracked => {
 const terminateDescendantsDeepestFirst = async ({ processGroup, rootPid, tracked }) => {
   while (true) {
     await trackGroup(processGroup, tracked)
-    const members = (await inspectProcessGroup(processGroup)).filter(({ pid }) => pid !== rootPid)
+    const members = (await inspectProcessGroup(processGroup)).filter(
+      ({ pid, state }) => pid !== rootPid && state !== 'Z'
+    )
     if (members.length === 0) return
     const parentPids = new Set(members.map(({ ppid }) => ppid))
     const leaves = members.filter(({ pid }) => !parentPids.has(pid))

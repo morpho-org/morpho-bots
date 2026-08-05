@@ -13,7 +13,7 @@
     "playground:serve": "node scripts/playground-serve.mjs",
     "playground:serve:test": "node --test scripts/playground-serve.test.mjs",
     "playground:smoke": "node scripts/playground-smoke.mjs",
-    "playground:smoke:test": "node --test scripts/playground-smoke.test.mjs",
+    "playground:smoke:test": "node --test scripts/playground-smoke.browser.mjs",
     "playground:smoke:output-probe": "node scripts/playground-smoke-output-probe.mjs",
     "test:e2e": "bun test test/e2e",
     "typecheck": "tsc --noEmit",
