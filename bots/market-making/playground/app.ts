@@ -544,7 +544,7 @@ const renderGraphic = (
   headingRow.className = 'ladder-heading'
   const title = document.createElement('h3')
   title.id = `ladder-heading-${previewIndex}`
-  title.textContent = `Ladder market ${previewIndex + 1}`
+  title.textContent = `Ladder market ${previewIndex + 1}: allocation and offer maxAssets`
   const market = document.createElement('code')
   market.dataset.parameter = 'marketId'
   market.textContent = `MARKET ID · ${graphic.marketId}`
@@ -553,6 +553,11 @@ const renderGraphic = (
   const figure = document.createElement('figure')
   figure.className = 'ladder-graphic'
   figure.setAttribute('aria-labelledby', title.id)
+  const description = document.createElement('p')
+  description.id = `ladder-description-${previewIndex}`
+  description.className = 'visually-hidden'
+  description.textContent = `Allocation is the configured asset amount assigned to one rung. Offer maxAssets is the protocol maximum asset amount for that rung’s offer. In shared-rung mode, allocation and offer maxAssets are equal and their rectangles share identical geometry. In per-book mode, each rung allocation is nested inside its side-wide offer maxAssets cap. This stateless graphic does not model live capacities, current offers, or the current book. The vertical rate axis runs from ${graphic.axis.minimumRateBps} to ${graphic.axis.maximumRateBps} BPS, with reference ${graphic.axis.referenceRateBps} BPS and quote center ${graphic.axis.centerRateBps} BPS.`
+  figure.setAttribute('aria-describedby', description.id)
   const chartWidth = 1120
   const chartHeight = graphic.plotHeight + 64
   const svg = svgElement('svg', {
@@ -560,14 +565,13 @@ const renderGraphic = (
     width: chartWidth,
     height: chartHeight,
     role: 'img',
-    'aria-labelledby': `ladder-title-${previewIndex} ladder-description-${previewIndex}`,
+    'aria-labelledby': `ladder-title-${previewIndex}`,
+    'aria-describedby': description.id,
     preserveAspectRatio: 'xMidYMid meet'
   })
   const svgTitle = svgElement('title', { id: `ladder-title-${previewIndex}` })
-  svgTitle.textContent = `Ladder market ${previewIndex + 1} rate, allocation, and offer maxAssets graphic`
-  const description = svgElement('desc', { id: `ladder-description-${previewIndex}` })
-  description.textContent = `Vertical rate axis from ${graphic.axis.minimumRateBps} to ${graphic.axis.maximumRateBps} BPS. Reference ${graphic.axis.referenceRateBps} BPS, quote center ${graphic.axis.centerRateBps} BPS, higher-rate lend rungs and lower-rate reduce-only rungs. Every rung has an outlined offer maxAssets bar and a nested allocation fill. An associated semantic table enumerates every exact rate, allocation, offer maxAssets, and side.`
-  svg.append(svgTitle, description)
+  svgTitle.textContent = `Ladder market ${previewIndex + 1}: allocation and offer maxAssets graphic`
+  svg.append(svgTitle)
 
   const axisX = 180
   const rightX = 1096
@@ -665,8 +669,14 @@ const renderGraphic = (
       y2: rung.y,
       class: 'rung-guide'
     })
-    const offerCapWidth = Math.max(28, Math.round(470 * rung.offerMaxBarRatio))
-    const allocationWidth = Math.max(12, Math.round(470 * rung.allocationBarRatio))
+    const valuesAreEqual = rung.allocationAssets === rung.offerMaxAssets
+    const equalValueWidth = Math.max(28, Math.round(470 * rung.allocationBarRatio))
+    const offerCapWidth = valuesAreEqual
+      ? equalValueWidth
+      : Math.max(28, Math.round(470 * rung.offerMaxBarRatio))
+    const allocationWidth = valuesAreEqual
+      ? equalValueWidth
+      : Math.min(offerCapWidth, Math.max(12, Math.round(470 * rung.allocationBarRatio)))
     const offerCap = svgElement('rect', {
       x: 206,
       y: rung.y - 10,
@@ -707,22 +717,26 @@ const renderGraphic = (
     svg.append(group)
   }
   const scrollHint = document.createElement('p')
+  scrollHint.id = `ladder-scroll-hint-${previewIndex}`
   scrollHint.className = 'ladder-scroll-hint'
   scrollHint.textContent = 'Scroll the plot horizontally or vertically to reach every exact rung.'
   const scroll = document.createElement('div')
   scroll.className = 'ladder-scroll'
   scroll.tabIndex = 0
   scroll.setAttribute('role', 'region')
-  scroll.setAttribute('aria-label', `Scrollable ladder plot for market ${previewIndex + 1}`)
+  scroll.setAttribute('aria-labelledby', title.id)
+  scroll.setAttribute('aria-describedby', `${description.id} ${scrollHint.id}`)
   scroll.append(svg)
-  figure.append(scrollHint, scroll)
+  figure.append(description, scrollHint, scroll)
 
   const semanticTable = document.createElement('div')
   semanticTable.className = 'visually-hidden'
   const table = document.createElement('table')
   table.className = 'rung-table'
+  table.setAttribute('aria-labelledby', title.id)
+  table.setAttribute('aria-describedby', description.id)
   const caption = document.createElement('caption')
-  caption.textContent = `Exact ladder rungs for market ${previewIndex + 1}`
+  caption.textContent = `Exact allocation and offer maxAssets rungs for ladder market ${previewIndex + 1}`
   const tableHead = document.createElement('thead')
   const headingRowElement = document.createElement('tr')
   for (const headingText of [

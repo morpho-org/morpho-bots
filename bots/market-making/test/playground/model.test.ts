@@ -235,7 +235,7 @@ describe('market-maker parameter playground', () => {
       shared?.rungs.map(rung => rung.offerMaxBarRatio)
     )
     expect(perBook?.callouts.find(callout => callout.label === 'Grouping')?.value).toBe(
-      'per-book · side-wide shared cap · Reduce-only 10,000,000,000 · Lend 10,000,000,000 offer maxAssets'
+      'per-book · side-wide shared offer maxAssets caps · Reduce-only: 10,000,000,000 · Lend: 10,000,000,000'
     )
   })
 
@@ -318,7 +318,7 @@ describe('market-maker parameter playground', () => {
       '4/side · 1000 BPS skew · 1 floor',
       '1200 reduce-only · 900 lend',
       '700 target (static binding cap) · 800 configured total ceiling; current aggregate exposure and live capacity excluded',
-      'per-book · side-wide shared cap · Reduce-only 1,200 · Lend 700 offer maxAssets',
+      'per-book · side-wide shared offer maxAssets caps · Reduce-only: 1,200 · Lend: 700',
       '30s configured interval · 30s effective runtime cycle (minimum across configured markets) · 20 BPS informational deadband against retained active center; fresh stateless center unchanged',
       '0–2000 BPS'
     ])

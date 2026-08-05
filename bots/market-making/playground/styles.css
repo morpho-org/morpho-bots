@@ -909,7 +909,14 @@ main {
   white-space: nowrap !important;
 }
 .rung-table {
+  width: 1px;
+  table-layout: fixed;
   border-collapse: collapse;
+}
+.rung-table * {
+  max-width: 1px;
+  overflow: hidden;
+  white-space: normal;
 }
 .ladder-scroll-hint {
   margin: 0;

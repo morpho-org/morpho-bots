@@ -776,7 +776,7 @@ const graphicCallouts = (
     label: 'Grouping',
     value:
       values.groupMode === 'per-book'
-        ? `per-book · side-wide shared cap · Reduce-only ${graphicAssets(sideTotals.lower)} · Lend ${graphicAssets(sideTotals.higher)} offer maxAssets`
+        ? `per-book · side-wide shared offer maxAssets caps · Reduce-only: ${graphicAssets(sideTotals.lower)} · Lend: ${graphicAssets(sideTotals.higher)}`
         : 'shared-rung · each offer maxAssets equals its rung allocation',
     parameters: ['groupMode']
   },

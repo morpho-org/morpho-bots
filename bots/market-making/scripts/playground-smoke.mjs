@@ -301,6 +301,7 @@ try {
   await command('Runtime.enable')
   await command('Log.enable')
   await command('Network.enable')
+  await command('Accessibility.enable')
   await command('Emulation.setDeviceMetricsOverride', {
     width: 1440,
     height: 1000,
@@ -504,15 +505,54 @@ try {
   )
   assert(
     await evaluate(
-      "document.querySelector('.ladder-scroll') && document.querySelector('.rung-table:not([hidden])') && getComputedStyle(document.querySelector('.rung-table')).display !== 'none' && document.querySelectorAll('.rung-table tbody tr').length === 6 && [...document.querySelectorAll('.rung-table thead th')].map(cell => cell.textContent).join('|') === 'Side|Rate (BPS)|Allocation (assets)|Offer maxAssets (assets)'"
+      "document.querySelector('.ladder-scroll') && document.querySelector('.rung-table:not([hidden])') && getComputedStyle(document.querySelector('.rung-table')).display !== 'none' && document.querySelectorAll('.rung-table tbody tr').length === 6 && [...document.querySelectorAll('.rung-table thead th')].map(cell => cell.textContent).join('|') === 'Side|Rate (BPS)|Allocation (assets)|Offer maxAssets (assets)' && [...document.querySelectorAll('.rung-table tbody tr')].map(row => [row.cells[2].textContent, row.cells[3].textContent]).every(([allocation, maxAssets]) => allocation === maxAssets) && [...document.querySelectorAll('.rung-table tbody tr')].map(row => row.cells[2].textContent + ' (' + row.cells[3].textContent + ')').join('|') === '3333333334 (3333333334)|3333333333 (3333333333)|3333333333 (3333333333)|3333333333 (3333333333)|3333333333 (3333333333)|3333333334 (3333333334)'"
     ),
     'exact allocation and offer maxAssets enumeration is unavailable to assistive technology'
   )
   assert(
-    await evaluate(
-      "document.querySelector('.ladder-graphic svg[role=img] title')?.textContent.includes('allocation, and offer maxAssets') && document.querySelector('.ladder-graphic svg desc')?.textContent.includes('outlined offer maxAssets bar') && document.querySelector('.ladder-graphic svg desc')?.textContent.includes('nested allocation fill')"
+    await evaluate(`(() => {
+      const heading = document.querySelector('.ladder-heading h3')
+      const figure = document.querySelector('.ladder-graphic')
+      const description = document.querySelector('#ladder-description-0')
+      const scroll = document.querySelector('.ladder-scroll')
+      const svg = document.querySelector('.ladder-graphic svg[role=img]')
+      const table = document.querySelector('.rung-table')
+      const text = description?.textContent ?? ''
+      return heading?.textContent === 'Ladder market 1: allocation and offer maxAssets' &&
+        figure?.getAttribute('aria-labelledby') === heading.id &&
+        figure?.getAttribute('aria-describedby') === description.id &&
+        scroll?.getAttribute('aria-labelledby') === heading.id &&
+        scroll?.getAttribute('aria-describedby')?.split(/\\s+/).includes(description.id) &&
+        svg?.getAttribute('aria-describedby') === description.id &&
+        table?.getAttribute('aria-labelledby') === heading.id &&
+        table?.getAttribute('aria-describedby') === description.id &&
+        table?.caption?.textContent === 'Exact allocation and offer maxAssets rungs for ladder market 1' &&
+        text.includes('Allocation is the configured asset amount assigned to one rung.') &&
+        text.includes('Offer maxAssets is the protocol maximum asset amount for that rung’s offer.') &&
+        text.includes('In shared-rung mode, allocation and offer maxAssets are equal and their rectangles share identical geometry.') &&
+        text.includes('In per-book mode, each rung allocation is nested inside its side-wide offer maxAssets cap.') &&
+        text.includes('This stateless graphic does not model live capacities, current offers, or the current book.')
+    })()`),
+    'ladder accessible description or relationships are incomplete'
+  )
+  const initialAccessibilityTree = await command('Accessibility.getFullAXTree')
+  const initialAxNodes = initialAccessibilityTree.nodes.map(node => ({
+    role: node.role?.value,
+    name: node.name?.value,
+    description: node.description?.value
+  }))
+  const expectedLadderDescription =
+    'Allocation is the configured asset amount assigned to one rung. Offer maxAssets is the protocol maximum asset amount for that rung’s offer. In shared-rung mode, allocation and offer maxAssets are equal and their rectangles share identical geometry. In per-book mode, each rung allocation is nested inside its side-wide offer maxAssets cap. This stateless graphic does not model live capacities, current offers, or the current book.'
+  assert(
+    ['figure', 'region', 'image', 'table'].every(role =>
+      initialAxNodes.some(
+        node =>
+          node.role === role &&
+          node.name?.includes('allocation and offer maxAssets') &&
+          node.description?.includes(expectedLadderDescription)
+      )
     ),
-    'ladder SVG is missing an accessible title or description'
+    `ladder accessibility tree is incomplete: ${JSON.stringify(initialAxNodes.filter(node => ['figure', 'region', 'image', 'table'].includes(node.role)))}`
   )
   assert(
     await evaluate(
@@ -1010,7 +1050,7 @@ try {
     const sharedCapWidths = [...document.querySelectorAll('.offer-cap-bar')].map(rung => rung.getAttribute('width')).join('|')
     set('groupMode', 'per-book')
     const perBookCaps = [...document.querySelectorAll('.offer-cap-bar')]
-    result.groupMode = callout('groupMode').includes('side-wide shared cap') && callout('groupMode').includes('Reduce-only 10,000,000,000') && callout('groupMode').includes('Lend 10,000,000,000') && perBookCaps.map(rung => rung.getAttribute('width')).join('|') !== sharedCapWidths && perBookCaps.every(rung => rung.dataset.offerMaxAssets === '10000000000') && perBookCaps.map(rung => rung.dataset.allocationAssets).join('|') === '3333333334|3333333333|3333333333|3333333333|3333333333|3333333334' && [...document.querySelectorAll('.rung-table tbody tr')].every(row => row.cells[2]?.textContent && row.cells[3]?.textContent === '10000000000')
+    result.groupMode = callout('groupMode').includes('side-wide shared offer maxAssets caps') && callout('groupMode').includes('Reduce-only: 10,000,000,000') && callout('groupMode').includes('Lend: 10,000,000,000') && perBookCaps.map(rung => rung.getAttribute('width')).join('|') !== sharedCapWidths && perBookCaps.every(rung => rung.dataset.offerMaxAssets === '10000000000') && perBookCaps.map(rung => rung.dataset.allocationAssets).join('|') === '3333333334|3333333333|3333333333|3333333333|3333333333|3333333334' && [...document.querySelectorAll('.rung-table tbody tr')].every(row => row.cells[2]?.textContent && row.cells[3]?.textContent === '10000000000')
     set('groupMode', 'shared-rung')
     set('loopIntervalSeconds', '30')
     result.loopIntervalSeconds = callout('loopIntervalSeconds').includes('30s configured interval') && callout('loopIntervalSeconds').includes('30s effective runtime cycle')
@@ -1266,7 +1306,15 @@ try {
         }).map(element=>parseFloat(getComputedStyle(element).fontSize))),
         viewportHeight:scroll.clientHeight,
         contentHeight:scroll.scrollHeight,
-        svgWidth:document.querySelector('.ladder-scroll svg').getBoundingClientRect().width
+        svgWidth:document.querySelector('.ladder-scroll svg').getBoundingClientRect().width,
+        equalGeometryPairs:[...document.querySelectorAll('.rung-group')].filter(group => {
+          const offer=group.querySelector('.offer-cap-bar'); const allocation=group.querySelector('.allocation-bar')
+          return offer?.dataset.offerMaxAssets === allocation?.dataset.allocationAssets && offer.getAttribute('x') === allocation.getAttribute('x') && offer.getAttribute('width') === allocation.getAttribute('width')
+        }).length,
+        nestedGeometryPairs:[...document.querySelectorAll('.rung-group')].filter(group => {
+          const offer=group.querySelector('.offer-cap-bar'); const allocation=group.querySelector('.allocation-bar')
+          return Number(allocation?.getAttribute('x')) >= Number(offer?.getAttribute('x')) && Number(allocation?.getAttribute('x')) + Number(allocation?.getAttribute('width')) < Number(offer?.getAttribute('x')) + Number(offer?.getAttribute('width'))
+        }).length
       }
     })()`)
 
@@ -1320,7 +1368,8 @@ try {
       mobileLayout.scrollWidth <= 358 &&
       mobileLayout.quickTouchMinimum >= 44 &&
       mobileLayout.quickWithinViewport &&
-      mobileLayout.monitorBounded,
+      mobileLayout.monitorBounded &&
+      mobileLayout.overflow.length === 0,
     `mobile layout overflows its viewport or quick controls are unusable: ${JSON.stringify(mobileLayout)}`
   )
   assert(
@@ -1330,6 +1379,9 @@ try {
     `32-rung mobile density is unreadable: ${JSON.stringify(density32Mobile)}`
   )
 
+  await evaluate(
+    `(() => { const input=document.querySelector('.market-card:has([data-field=quotePremiumBps]) [data-field=groupMode]'); input.value='shared-rung'; input.dispatchEvent(new Event('input',{bubbles:true})) })()`
+  )
   await configureDensity(512)
   const density512Mobile = await densityMetrics()
   assert(
@@ -1345,8 +1397,9 @@ try {
   assert(
     density512Mobile.minimumLabelPx >= 11 &&
       density512Mobile.viewportHeight <= 900 &&
-      density512Mobile.contentHeight > density512Mobile.viewportHeight,
-    '512-rung chart is not a bounded readable scroll viewport'
+      density512Mobile.contentHeight > density512Mobile.viewportHeight &&
+      density512Mobile.equalGeometryPairs === 1024,
+    '512-rung chart is not bounded/readable or shared-rung pairs do not have exact equal geometry'
   )
   await command('Emulation.setDeviceMetricsOverride', {
     width: 1440,
@@ -1358,8 +1411,31 @@ try {
   assert(
     density512Desktop.rungs === 1024 &&
       density512Desktop.minGap >= 28 &&
-      density512Desktop.minimumLabelPx >= 11,
-    `512-rung desktop density is unreadable: ${JSON.stringify(density512Desktop)}`
+      density512Desktop.minimumLabelPx >= 11 &&
+      density512Desktop.equalGeometryPairs === 1024,
+    `512-rung desktop density or shared-rung geometry is incorrect: ${JSON.stringify(density512Desktop)}`
+  )
+  const shared512ConfigurationExports = await evaluate(
+    "[...document.querySelectorAll('#export-yaml,#export-shell,#export-json,#export-ladder-env')].map(output => output.value)"
+  )
+  await evaluate(
+    `(() => { const input=document.querySelector('.market-card:has([data-field=quotePremiumBps]) [data-field=groupMode]'); input.value='per-book'; input.dispatchEvent(new Event('input',{bubbles:true})) })()`
+  )
+  const density512PerBook = await densityMetrics()
+  assert(
+    density512PerBook.rungs === 1024 && density512PerBook.nestedGeometryPairs === 1024,
+    `512-rung per-book allocations are not nested inside side caps: ${JSON.stringify(density512PerBook)}`
+  )
+  await evaluate(
+    `(() => { const input=document.querySelector('.market-card:has([data-field=quotePremiumBps]) [data-field=groupMode]'); input.value='shared-rung'; input.dispatchEvent(new Event('input',{bubbles:true})) })()`
+  )
+  const shared512ConfigurationExportsAfterRoundTrip = await evaluate(
+    "[...document.querySelectorAll('#export-yaml,#export-shell,#export-json,#export-ladder-env')].map(output => output.value)"
+  )
+  assert(
+    JSON.stringify(shared512ConfigurationExportsAfterRoundTrip) ===
+      JSON.stringify(shared512ConfigurationExports),
+    '512-rung graphic and accessibility checks changed configuration export bytes'
   )
 
   await command('Emulation.setDeviceMetricsOverride', {
@@ -1397,7 +1473,10 @@ try {
     `density 32 desktop/mobile: ${JSON.stringify({ desktop: density32Desktop, mobile: density32Mobile })}`
   )
   console.log(
-    `density 512 desktop/mobile: ${JSON.stringify({ desktop: density512Desktop, mobile: density512Mobile })}`
+    `density 512 desktop/mobile/per-book: ${JSON.stringify({ desktop: density512Desktop, mobile: density512Mobile, perBook: density512PerBook })}`
+  )
+  console.log(
+    `mobile overflow: ${JSON.stringify({ elements: mobileLayout.overflow, documentWidth: mobileLayout.documentWidth, viewportWidth: 390 })}`
   )
   await command('Emulation.setEmulatedMedia', {
     features: [{ name: 'prefers-reduced-motion', value: 'reduce' }]
