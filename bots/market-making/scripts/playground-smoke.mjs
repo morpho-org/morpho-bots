@@ -498,7 +498,7 @@ try {
   )
   assert(
     await evaluate(
-      "document.querySelector('#include-sensitive-values')?.checked === false && document.querySelector('#include-sensitive-warning')?.textContent.includes('complete RPC URLs')"
+      "document.querySelector('#include-sensitive-values')?.checked === false && document.querySelector('#include-sensitive-warning')?.textContent.includes('complete RPC URLs') && document.querySelector('#include-sensitive-warning')?.textContent.includes('heartbeat URLs may contain credentials')"
     ),
     'sensitive export opt-in is not explicit, unchecked, and warned'
   )
@@ -1439,7 +1439,8 @@ try {
       MAKER_PRIVATE_KEY: '0x' + '9'.repeat(64),
       BETTERSTACK_SOURCE_TOKEN: 'browser-secret-source-token',
       RPC_URL: 'https://rpc-user:rpc-password@rpc.example.test/path?api_key=query-secret#fragment',
-      REFERENCE_RPC_URL: 'https://archive-user:archive-password@archive.example.test/path?token=archive-secret'
+      REFERENCE_RPC_URL: 'https://archive-user:archive-password@archive.example.test/path?token=archive-secret',
+      BETTERSTACK_HEARTBEAT_URL: 'https://heartbeat-user:heartbeat-password@heartbeat.example.test/credential-path?token=heartbeat-query-secret#heartbeat-fragment-secret'
     }
     const set = (field, value) => {
       const input = document.querySelector(\`[data-field=\${field}]\`)
@@ -1460,7 +1461,7 @@ try {
     const yaml = document.querySelector('#export-yaml').value
     const shell = document.querySelector('#export-shell').value
     const json = document.querySelector('#export-json').value
-    const included = [values.MAKER_PRIVATE_KEY, values.RPC_URL, values.REFERENCE_RPC_URL].every(value => yaml.includes(value)) && credentials.every(value => shell.includes(value) && json.includes(value))
+    const included = [values.MAKER_PRIVATE_KEY, values.RPC_URL, values.REFERENCE_RPC_URL].every(value => yaml.includes(value)) && !yaml.includes(values.BETTERSTACK_HEARTBEAT_URL) && !yaml.includes('BETTERSTACK_HEARTBEAT_URL') && credentials.every(value => shell.includes(value) && json.includes(value))
     let copied = ''
     Object.defineProperty(navigator, 'clipboard', { value: { writeText: async value => { copied = value } }, configurable: true })
     document.querySelector('#tab-json').click()
@@ -1473,17 +1474,37 @@ try {
     await new Promise(resolve => setTimeout(resolve, 0))
     const reRedacted = credentials.every(value => !outputs().includes(value) && !copied.includes(value)) && copied.includes('<redacted>')
     const hiddenAgain = Object.keys(values).every(field => document.querySelector(\`[data-field=\${field}]\`)?.type === 'password' && document.querySelector(\`[data-field=\${field}]\`)?.value === values[field])
-    set('MAKER_PRIVATE_KEY', '0x' + 'a'.repeat(64))
-    set('BETTERSTACK_SOURCE_TOKEN', '')
-    set('BETTERSTACK_INGESTING_HOST', '')
-    set('RPC_URL', 'https://base-rpc.example')
-    set('REFERENCE_RPC_URL', 'https://base-archive-rpc.example')
     return { defaultRedacted, noGraphicOrWarningLeak, passwordInputs, deliberatelyRevealed, included, clipboardIncluded, reRedacted, hiddenAgain }
   })()`)
   assert(
     Object.values(secretProof).every(Boolean),
     `sensitive export proof failed: ${JSON.stringify(secretProof)}`
   )
+  const maskedHeartbeatScreenshot = await command('Page.captureScreenshot', {
+    format: 'png',
+    captureBeyondViewport: true
+  })
+  const maskedHeartbeatScreenshotBytes = Buffer.from(maskedHeartbeatScreenshot.data, 'base64')
+  await writeFile('/tmp/morpho-bots-pr122-heartbeat-masked.png', maskedHeartbeatScreenshotBytes)
+  assert(
+    !maskedHeartbeatScreenshotBytes.includes(Buffer.from('heartbeat-password')) &&
+      !maskedHeartbeatScreenshotBytes.includes(Buffer.from('heartbeat-query-secret')) &&
+      !maskedHeartbeatScreenshotBytes.includes(Buffer.from('heartbeat-fragment-secret')),
+    'heartbeat credentials were embedded verbatim in the masked screenshot artifact'
+  )
+  await evaluate(`(() => {
+    const set = (field, value) => {
+      const input = document.querySelector(\`[data-field=\${field}]\`)
+      input.value = value
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    set('MAKER_PRIVATE_KEY', '0x' + 'a'.repeat(64))
+    set('BETTERSTACK_SOURCE_TOKEN', '')
+    set('BETTERSTACK_INGESTING_HOST', '')
+    set('BETTERSTACK_HEARTBEAT_URL', '')
+    set('RPC_URL', 'https://base-rpc.example')
+    set('REFERENCE_RPC_URL', 'https://base-archive-rpc.example')
+  })()`)
 
   const previewIsolationProof = await evaluate(`(async () => {
     const copied = []
@@ -1693,13 +1714,13 @@ try {
     const exportsAvailable = [...document.querySelectorAll('#export-yaml,#export-shell,#export-json')].every(output => output.dataset.invalid === 'false')
     const warningAccessible = warning?.getAttribute('role') === 'status' && warning.textContent.includes('disabled at runtime') && warning.textContent.includes('Log shipping') && warning.textContent.includes('Heartbeat')
     const warningSafe = !warning.textContent.includes('browser-warning-secret-token') && !warning.textContent.includes('secret.example') && !warning.textContent.includes('heartbeat-token')
-    const valuesCorrect = !yaml.includes('BETTERSTACK_') && !yaml.includes('browser-warning-secret-token') && shell.includes("export BETTERSTACK_SOURCE_TOKEN='<redacted>'") && shell.includes("export BETTERSTACK_HEARTBEAT_URL='javascript:https://secret.example/heartbeat-token'") && !json.includes('browser-warning-secret-token') && JSON.parse(json).observability.BETTERSTACK_SOURCE_TOKEN === '<redacted>'
+    const valuesCorrect = !yaml.includes('BETTERSTACK_') && !yaml.includes('browser-warning-secret-token') && !yaml.includes('heartbeat-token') && shell.includes("export BETTERSTACK_SOURCE_TOKEN='<redacted>'") && shell.includes("export BETTERSTACK_HEARTBEAT_URL='<redacted>'") && !json.includes('browser-warning-secret-token') && !json.includes('heartbeat-token') && JSON.parse(json).observability.BETTERSTACK_SOURCE_TOKEN === '<redacted>' && JSON.parse(json).observability.BETTERSTACK_HEARTBEAT_URL === '<redacted>'
     let copied = ''
     Object.defineProperty(navigator, 'clipboard', { value: { writeText: async value => { copied = value } }, configurable: true })
     document.querySelector('#tab-json').click()
     document.querySelector('#copy-export').click()
     await new Promise(resolve => setTimeout(resolve, 0))
-    const copyAvailableAndRedacted = copied.includes('<redacted>') && !copied.includes('browser-warning-secret-token')
+    const copyAvailableAndRedacted = copied.includes('<redacted>') && !copied.includes('browser-warning-secret-token') && !copied.includes('heartbeat-token')
     return { exportsAvailable, warningAccessible, warningSafe, valuesCorrect, copyAvailableAndRedacted, previewAvailable: document.querySelector('#ladder-status').dataset.status === 'ok' && document.querySelectorAll('.ladder-rung').length > 0, validationNonblocking: document.querySelector('#validation-errors').hidden && !document.querySelector('#copy-export').disabled }
   })()`)
   assert(
@@ -1835,6 +1856,9 @@ try {
     'archive-password',
     'archive-secret',
     'browser-secret-source-token',
+    'heartbeat-password',
+    'heartbeat-query-secret',
+    'heartbeat-fragment-secret',
     `0x${'9'.repeat(64)}`
   ]) {
     assert(

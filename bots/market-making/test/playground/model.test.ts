@@ -424,12 +424,13 @@ describe('market-maker parameter playground', () => {
     }
   })
 
-  test('centrally inventories all UI credentials and redacts complete RPC URLs by default', async () => {
+  test('centrally inventories all UI credentials and redacts complete secret URLs by default', async () => {
     expect([...SENSITIVE_UI_KEYS]).toEqual([
       'MAKER_PRIVATE_KEY',
       'BETTERSTACK_SOURCE_TOKEN',
       'RPC_URL',
-      'REFERENCE_RPC_URL'
+      'REFERENCE_RPC_URL',
+      'BETTERSTACK_HEARTBEAT_URL'
     ])
     const sensitiveFieldTypes = new Map(
       [...SCALAR_FIELDS, ...OBSERVABILITY_FIELDS].map(([key, , , type]) => [key, type])
@@ -442,23 +443,35 @@ describe('market-maker parameter playground', () => {
       BETTERSTACK_SOURCE_TOKEN: 'super-private-source-token',
       RPC_URL: 'https://rpc-user:rpc-password@rpc.example.test/path?api_key=query-secret#fragment',
       REFERENCE_RPC_URL:
-        'https://archive-user:archive-password@archive.example.test/path?token=archive-secret'
+        'https://archive-user:archive-password@archive.example.test/path?token=archive-secret',
+      BETTERSTACK_HEARTBEAT_URL:
+        'https://heartbeat-user:heartbeat-password@heartbeat.example.test/credential-path?token=heartbeat-query-secret#heartbeat-fragment-secret'
     }
     state.scalar.MAKER_PRIVATE_KEY = values.MAKER_PRIVATE_KEY
     state.scalar.RPC_URL = values.RPC_URL
     state.scalar.REFERENCE_RPC_URL = values.REFERENCE_RPC_URL
     state.observability.BETTERSTACK_SOURCE_TOKEN = values.BETTERSTACK_SOURCE_TOKEN
     state.observability.BETTERSTACK_INGESTING_HOST = 'logs.example.test'
+    state.observability.BETTERSTACK_HEARTBEAT_URL = values.BETTERSTACK_HEARTBEAT_URL
 
     for (const exporter of [exportYaml, exportShell, exportJson]) {
       const redacted = exporter(state)
       for (const value of Object.values(values)) expect(redacted).not.toContain(value)
       expect(redacted).not.toContain('rpc.example.test')
       expect(redacted).not.toContain('archive.example.test')
+      expect(redacted).not.toContain('heartbeat.example.test')
       const included = exporter(state, { includeSensitiveValues: true })
       for (const [key, value] of Object.entries(values)) {
-        if (exporter === exportYaml && key === 'BETTERSTACK_SOURCE_TOKEN') continue
+        if (
+          exporter === exportYaml &&
+          (key === 'BETTERSTACK_SOURCE_TOKEN' || key === 'BETTERSTACK_HEARTBEAT_URL')
+        )
+          continue
         expect(included).toContain(value)
+      }
+      if (exporter === exportYaml) {
+        expect(included).not.toContain(values.BETTERSTACK_HEARTBEAT_URL)
+        expect(included).not.toContain('BETTERSTACK_HEARTBEAT_URL')
       }
     }
     const redactedEnvironment = await loadShellEnvironment(exportShell(state))
@@ -469,31 +482,39 @@ describe('market-maker parameter playground', () => {
     const state = createDefaultPlaygroundState()
     const privateKey = `0x${'9'.repeat(64)}`
     const sourceToken = 'super-private-source-token'
+    const heartbeatUrl =
+      'https://heartbeat-user:heartbeat-password@heartbeat.example.test/credential-path?token=heartbeat-query-secret#heartbeat-fragment-secret'
     state.scalar.MAKER_PRIVATE_KEY = privateKey
     state.observability.BETTERSTACK_SOURCE_TOKEN = sourceToken
     state.observability.BETTERSTACK_INGESTING_HOST = 'logs.example.test'
+    state.observability.BETTERSTACK_HEARTBEAT_URL = heartbeatUrl
 
     const yamlRedacted = exportYaml(state)
     expect(yamlRedacted).not.toContain(privateKey)
     expect(yamlRedacted).not.toContain(sourceToken)
+    expect(yamlRedacted).not.toContain(heartbeatUrl)
     expect(yamlRedacted).toContain('<redacted>')
     const yamlIncluded = exportYaml(state, { includeSensitiveValues: true })
     expect(yamlIncluded).toContain(privateKey)
     expect(yamlIncluded).not.toContain(sourceToken)
+    expect(yamlIncluded).not.toContain(heartbeatUrl)
 
     for (const exporter of [exportShell, exportJson]) {
       const redacted = exporter(state)
       expect(redacted).not.toContain(privateKey)
       expect(redacted).not.toContain(sourceToken)
+      expect(redacted).not.toContain(heartbeatUrl)
       expect(redacted).toContain('<redacted>')
       const included = exporter(state, { includeSensitiveValues: true })
       expect(included).toContain(privateKey)
       expect(included).toContain(sourceToken)
+      expect(included).toContain(heartbeatUrl)
       expect(exporter(state)).not.toContain(privateKey)
     }
     const redactedEnvironment = await loadShellEnvironment(exportShell(state))
     expect(redactedEnvironment.MAKER_PRIVATE_KEY).toBe('<redacted>')
     expect(redactedEnvironment.BETTERSTACK_SOURCE_TOKEN).toBe('<redacted>')
+    expect(redactedEnvironment.BETTERSTACK_HEARTBEAT_URL).toBe('<redacted>')
   })
 
   test('builds ordered vertical geometry around center, gap, bounds, and relative rung sizes', () => {
@@ -665,7 +686,7 @@ describe('market-maker parameter playground', () => {
     const shellEnvironment = await loadShellEnvironment(shell)
     expect(shellEnvironment.BETTERSTACK_SOURCE_TOKEN).toBe('<redacted>')
     expect(shellEnvironment.BETTERSTACK_INGESTING_HOST).toBe('')
-    expect(shellEnvironment.BETTERSTACK_HEARTBEAT_URL).toBe(heartbeat)
+    expect(shellEnvironment.BETTERSTACK_HEARTBEAT_URL).toBe('<redacted>')
 
     const json = JSON.parse(exportJson(state)) as {
       observability: Record<string, string>
@@ -673,10 +694,12 @@ describe('market-maker parameter playground', () => {
     expect(json.observability).toEqual({
       BETTERSTACK_SOURCE_TOKEN: '<redacted>',
       BETTERSTACK_INGESTING_HOST: '',
-      BETTERSTACK_HEARTBEAT_URL: heartbeat
+      BETTERSTACK_HEARTBEAT_URL: '<redacted>'
     })
     expect(exportShell(state, { includeSensitiveValues: true })).toContain(token)
     expect(exportJson(state, { includeSensitiveValues: true })).toContain(token)
+    expect(exportShell(state, { includeSensitiveValues: true })).toContain(heartbeat)
+    expect(exportJson(state, { includeSensitiveValues: true })).toContain(heartbeat)
   })
 
   test('matches ConfigService across accepted and rejected boundaries for all 17 scalar fields', () => {

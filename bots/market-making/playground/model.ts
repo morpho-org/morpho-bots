@@ -46,7 +46,8 @@ export const SENSITIVE_UI_KEYS = [
   'MAKER_PRIVATE_KEY',
   'BETTERSTACK_SOURCE_TOKEN',
   'RPC_URL',
-  'REFERENCE_RPC_URL'
+  'REFERENCE_RPC_URL',
+  'BETTERSTACK_HEARTBEAT_URL'
 ] as const
 
 export const SCALAR_FIELDS = [
@@ -114,7 +115,7 @@ export const OBSERVABILITY_FIELDS = [
     'password'
   ],
   ['BETTERSTACK_INGESTING_HOST', 'Better Stack ingest host', 'Optional; pair with token', 'text'],
-  ['BETTERSTACK_HEARTBEAT_URL', 'Better Stack heartbeat URL', 'Optional heartbeat', 'url']
+  ['BETTERSTACK_HEARTBEAT_URL', 'Better Stack heartbeat URL', 'Optional heartbeat', 'password']
 ] as const
 
 type ScalarKey = (typeof SCALAR_FIELDS)[number][0]
@@ -573,13 +574,14 @@ type ExportOptions = { includeSensitiveValues?: boolean }
 const REDACTED_VALUE = '<redacted>'
 const exportSensitiveValue = (value: string, options: ExportOptions) =>
   options.includeSensitiveValues || value === '' ? value : REDACTED_VALUE
-const exportScalar = (state: PlaygroundState, options: ExportOptions) => {
-  const scalar = canonicalScalar(state)
+const redactSensitiveRecord = (record: Record<string, string>, options: ExportOptions) => {
   for (const key of SENSITIVE_UI_KEYS) {
-    if (key === 'BETTERSTACK_SOURCE_TOKEN') continue
-    scalar[key] = exportSensitiveValue(scalar[key], options)
+    if (key in record) record[key] = exportSensitiveValue(record[key] ?? '', options)
   }
-  return scalar
+  return record
+}
+const exportScalar = (state: PlaygroundState, options: ExportOptions) => {
+  return redactSensitiveRecord(canonicalScalar(state), options) as PlaygroundState['scalar']
 }
 
 export const exportYaml = (state: PlaygroundState, options: ExportOptions = {}) => {
@@ -634,10 +636,7 @@ const shellQuote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`
 /** POSIX-shell-safe export. Values are single-quoted so expansion and command substitution stay inert. */
 export const exportShell = (state: PlaygroundState, options: ExportOptions = {}) => {
   assertExportable(state)
-  const environment = environmentRecord(state)
-  for (const key of SENSITIVE_UI_KEYS) {
-    environment[key] = exportSensitiveValue(environment[key] ?? '', options)
-  }
+  const environment = redactSensitiveRecord(environmentRecord(state), options)
   return `${Object.entries(environment)
     .map(([key, value]) => `export ${key}=${shellQuote(value)}`)
     .join('\n')}\n`
@@ -653,11 +652,7 @@ export const exportJson = (state: PlaygroundState, options: ExportOptions = {}) 
     BOOTSTRAP_MARKETS: structuredBootstrap(state),
     LADDER_MARKETS: structuredLadder(state)
   }
-  const observability = { ...state.observability }
-  observability.BETTERSTACK_SOURCE_TOKEN = exportSensitiveValue(
-    observability.BETTERSTACK_SOURCE_TOKEN,
-    options
-  )
+  const observability = redactSensitiveRecord({ ...state.observability }, options)
   return `${JSON.stringify({ configuration, observability }, null, 2)}\n`
 }
 
