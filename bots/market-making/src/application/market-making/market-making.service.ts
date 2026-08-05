@@ -113,9 +113,10 @@ export class MarketMakingService {
    * Runs all three monitors concurrently and stops the peers after any terminal outcome.
    * @param parameters - Operator signal, tagged event observer, and verbose writer diagnostics.
    * @returns A combined report only after bootstrap and ladder shutdown cleanup have settled.
-   * @remarks Writer workflows share one queue around each full read-decision-write cycle and
-   * cleanup. A handled cycle failure aborts peers before releasing that queue, while a rejection is
-   * reduced to an allowlisted name and cleanup still drains before the combined report resolves.
+   * @remarks The initial ladder cycle enters the shared queue before bootstrap so existing usable
+   * credit is quoted immediately. Later full read-decision-write cycles and cleanup remain serialized
+   * across both writers. A handled cycle failure aborts peers before releasing the queue, while a
+   * rejection is reduced to an allowlisted name and cleanup still drains before the report resolves.
    */
   async runContinuously(parameters: {
     signal: AbortSignal
@@ -162,14 +163,14 @@ export class MarketMakingService {
         })
       )
       .finally(stopFromWorkflow)
-    const bootstrapMonitor = Promise.resolve()
+    const ladderMonitor = Promise.resolve()
       .then(() =>
-        this.bootstrap.runContinuously({
+        this.ladder.runContinuously({
           signal: controller.signal,
           onCycle: async results => {
             await parameters.onEvent?.({
               event: 'market-making.cycle',
-              workflow: 'bootstrap',
+              workflow: 'ladder',
               results
             })
             if (cycleHasFailure(results)) stopFromWorkflow()
@@ -181,14 +182,14 @@ export class MarketMakingService {
         })
       )
       .finally(stopFromWorkflow)
-    const ladderMonitor = Promise.resolve()
+    const bootstrapMonitor = Promise.resolve()
       .then(() =>
-        this.ladder.runContinuously({
+        this.bootstrap.runContinuously({
           signal: controller.signal,
           onCycle: async results => {
             await parameters.onEvent?.({
               event: 'market-making.cycle',
-              workflow: 'ladder',
+              workflow: 'bootstrap',
               results
             })
             if (cycleHasFailure(results)) stopFromWorkflow()
