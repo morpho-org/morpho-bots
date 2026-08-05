@@ -285,7 +285,7 @@ export class ViemSetupStateService implements SetupStateService {
       listed: registered !== undefined,
       deployed,
       midnightMatches: isAddressEqual(ratifierMidnight, this.options.midnight),
-      surfaceMatches: surfaceMatches && (type !== 'setter' || !rootState),
+      surfaceMatches,
       authorized
     }
   }

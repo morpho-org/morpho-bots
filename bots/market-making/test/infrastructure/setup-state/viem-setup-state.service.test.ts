@@ -570,19 +570,20 @@ describe('ViemSetupStateService', () => {
       surfaceMatches: true,
       authorized: true
     })
-    expect(
-      (
-        await createState(
-          {},
-          {
-            code: authoritativeSetterRatifierRuntime,
-            routerRatifier: setterRatifier,
-            routerRatifierName: 'setterRatifier',
-            rootRatified: true
-          }
-        ).state.getRatifier(maker, setterRatifier)
-      ).surfaceMatches
-    ).toBe(false)
+  })
+
+  test('keeps mutable Setter root state out of deployed surface readiness', async () => {
+    const result = await createState(
+      {},
+      {
+        code: authoritativeSetterRatifierRuntime,
+        routerRatifier: setterRatifier,
+        routerRatifierName: 'setterRatifier',
+        rootRatified: true
+      }
+    ).state.getRatifier(maker, setterRatifier)
+
+    expect(result.surfaceMatches).toBe(true)
   })
 
   test('rejects a non-canonical ratifier even when Router labels compatible runtime bytecode', async () => {
