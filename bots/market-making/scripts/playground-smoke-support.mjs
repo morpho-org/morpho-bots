@@ -963,8 +963,6 @@ export const prepareFreshDist = async ({
   temporaryRoot = tmpdir()
 }) => {
   if (signal?.aborted) throw signal.reason
-  await rm(join(root, 'playground/dist'), { recursive: true, force: true })
-  if (signal?.aborted) throw signal.reason
   const dist = mkdtempSync(join(temporaryRoot, 'market-making-playground-dist-'))
   let cleanupPromise
   const cleanup = () =>

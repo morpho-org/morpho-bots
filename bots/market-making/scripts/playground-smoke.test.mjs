@@ -1562,7 +1562,7 @@ test('an ownership callback and cleanup failure are both reported with the callb
   await rm(createdDirectory, { recursive: true, force: true })
 })
 
-test('preparing the playground removes stale output and builds from an absent dist', async () => {
+test('preparing the playground builds only in temporary output and preserves canonical dist', async () => {
   const root = await temporaryDirectory('playground-build-test-')
   const dist = join(root, 'playground/dist')
   const bin = join(root, 'bin')
@@ -1597,7 +1597,7 @@ writeFileSync(outdir + '/index.html', '<!doctype html><title>fresh</title>')
     await readFile(join(prepared.dist, 'index.html'), 'utf8'),
     '<!doctype html><title>fresh</title>'
   )
-  await assert.rejects(readFile(join(dist, 'stale-sentinel')), { code: 'ENOENT' })
+  assert.equal(await readFile(join(dist, 'stale-sentinel'), 'utf8'), 'must be removed')
   await prepared.cleanup()
   await prepared.cleanup()
   assert.equal(temporaryDistCleanupCalls, 1)

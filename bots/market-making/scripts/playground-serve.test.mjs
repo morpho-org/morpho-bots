@@ -415,7 +415,7 @@ test('signal during frozen install kills its descendant tree', { timeout: 10_000
   await assertProcessNotLive(descendantPid)
 })
 
-test('fresh build removes stale dist, uses the injected runner, and validates index', async () => {
+test('fresh build preserves canonical dist, uses only temporary output, and validates index', async () => {
   const packageRoot = await temporaryDirectory('playground-fresh-injected-')
   const stale = join(packageRoot, 'playground/dist')
   await mkdir(stale, { recursive: true })
@@ -431,7 +431,7 @@ test('fresh build removes stale dist, uses the injected runner, and validates in
     }
   })
   try {
-    await assert.rejects(access(join(stale, 'stale.txt')), { code: 'ENOENT' })
+    assert.equal(await readFile(join(stale, 'stale.txt'), 'utf8'), 'stale')
     assert.equal(calls.length, 1)
     assert.equal(await readFile(join(prepared.dist, 'index.html'), 'utf8'), 'fresh')
   } finally {

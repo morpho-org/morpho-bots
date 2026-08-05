@@ -9,11 +9,14 @@ describe('market-making playground React architecture contract', () => {
   test('mounts a real React root and contains no imperative DOM controller', async () => {
     const app = await read('bots/market-making/playground/app.tsx')
     expect(app).toContain("from 'react-dom/client'")
-    expect(app).toMatch(/createRoot\([^)]*\)\.render\(/)
+    expect(app).toMatch(/const reactRoot = createRoot\([^)]*\)/)
+    expect(app).toContain('reactRoot.render(')
     expect(app).toContain("from '@tanstack/react-form'")
     expect(app).toContain("from '@tanstack/react-table'")
     expect(app).not.toMatch(/document\.(?:querySelector|createElement|createElementNS)/)
     expect(app).not.toContain('replaceChildren')
+    expect(app).not.toContain('flushSync')
+    expect(app).not.toContain('synchronously')
     expect(app).not.toContain('dangerouslySetInnerHTML')
   })
 

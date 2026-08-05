@@ -8,7 +8,7 @@
     ],
     "catalog": {
       "@internationalized/date": "^3.11.0",
-      "@tanstack/react-form": "1.33.3",
+      "@tanstack/react-form": "1.20.0",
       "@tanstack/react-table": "8.21.3",
       "@morpho-org/midnight-sdk": "1.3.0",
       "@morpho-org/morpho-ts": "2.8.0",
@@ -53,6 +53,7 @@
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
+    "esbuild": "0.25.12",
     "husky": "catalog:",
     "knip": "catalog:",
     "lint-staged": "catalog:",

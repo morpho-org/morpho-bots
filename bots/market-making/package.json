@@ -12,7 +12,7 @@
     "playground:build": "node scripts/playground-build.mjs",
     "playground:build:dev": "bun build playground/index.html --outdir playground/dist --target browser --watch",
     "playground:serve": "node scripts/playground-serve.mjs",
-    "playground:serve:test": "node --test scripts/playground-process.test.mjs scripts/playground-serve.test.mjs",
+    "playground:serve:test": "node --test scripts/playground-outdir.test.mjs scripts/playground-process.test.mjs scripts/playground-serve.test.mjs",
     "playground:smoke": "node scripts/playground-smoke.mjs",
     "playground:smoke:test": "node --test scripts/playground-smoke.browser.mjs",
     "playground:smoke:output-probe": "node scripts/playground-smoke-output-probe.mjs",

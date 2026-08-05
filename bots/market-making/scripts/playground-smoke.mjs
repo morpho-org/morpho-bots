@@ -317,9 +317,34 @@ try {
   })
   await command('Page.addScriptToEvaluateOnNewDocument', {
     source: `(() => {
+      Object.defineProperty(globalThis, '__playgroundSmoke', { value: true })
       const accesses = []
       const securityProbeAccesses = []
       const instrumented = []
+      const formBusActivity = { events: [], listeners: [], intervals: [] }
+      Object.defineProperty(globalThis, '__formBusActivity', {
+        value: formBusActivity,
+        configurable: false,
+        enumerable: false,
+        writable: false
+      })
+      const nativeWindowDispatchEvent = Window.prototype.dispatchEvent
+      Window.prototype.dispatchEvent = function (event) {
+        if (event instanceof CustomEvent) formBusActivity.events.push(event.type)
+        return Reflect.apply(nativeWindowDispatchEvent, this, [event])
+      }
+      const nativeWindowAddEventListener = Window.prototype.addEventListener
+      Window.prototype.addEventListener = function (type, listener, options) {
+        if (/tanstack|form|devtools|connect/i.test(String(type))) {
+          formBusActivity.listeners.push(String(type))
+        }
+        return Reflect.apply(nativeWindowAddEventListener, this, [type, listener, options])
+      }
+      const nativeSetInterval = globalThis.setInterval
+      globalThis.setInterval = function (...args) {
+        formBusActivity.intervals.push(String(args[0]))
+        return Reflect.apply(nativeSetInterval, this, args)
+      }
       Object.defineProperty(globalThis, '__persistenceAccesses', {
         value: accesses,
         configurable: false,
@@ -880,6 +905,7 @@ try {
   )
 
   const ladderJsonIo = await evaluate(`(async () => {
+    const nextFrame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
     const area = document.querySelector('#ladder-import')
     const drop = document.querySelector('#ladder-import-drop')
     const file = document.querySelector('#ladder-import-file')
@@ -909,7 +935,7 @@ try {
       !documentedCopy.includes('full playground JSON export')
     text.value = initial
     apply.click()
-    await new Promise(resolve => requestAnimationFrame(resolve))
+    await nextFrame()
     const pasteApplied = status.dataset.status === 'ok' && status.textContent.includes('1 ladder') &&
       document.querySelectorAll('#controls .market-card:has([data-field=quotePremiumBps])').length === 1 &&
       document.querySelectorAll('.ladder-market').length === 1 &&
@@ -917,22 +943,26 @@ try {
       document.querySelector('[data-quick-field=marketId]').value === JSON.parse(initial)[0].marketId
     text.value = JSON.stringify(initial)
     apply.click()
+    await nextFrame()
     const stringLiteralApplied = status.dataset.status === 'ok' && envOutput.value === initial
     const beforeShapeFailure = envOutput.value
     text.value = JSON.stringify({ LADDER_MARKETS: JSON.parse(initial) })
     apply.click()
+    await nextFrame()
     const wrapperRejected = status.dataset.status === 'error' && envOutput.value === beforeShapeFailure
     const originalGraphic = document.querySelector('.ladder-graphic svg')?.outerHTML
     const modified = JSON.parse(initial)
     modified[0].quotePremiumBps = '25'
     text.value = JSON.stringify(modified)
     apply.click()
+    await nextFrame()
     const previewUpdated = envOutput.value === JSON.stringify(modified) &&
       document.querySelector('.ladder-graphic svg')?.outerHTML !== originalGraphic &&
       document.querySelector('[data-quick-field=quotePremiumBps]').value === '25' &&
       getComputedStyle(document.querySelector('.monitor-surface')).position === 'sticky'
     text.value = initial
     apply.click()
+    await nextFrame()
     const roundTripRestored = envOutput.value === initial &&
       document.querySelector('.ladder-graphic svg')?.outerHTML === originalGraphic
     const beforeFailure = envOutput.value
@@ -940,15 +970,18 @@ try {
     const duplicate = initial.replace('{', '{"marketId":"0x' + '5'.repeat(64) + '",')
     text.value = duplicate
     apply.click()
+    await nextFrame()
     const duplicatePasteRejected = status.dataset.status === 'error' &&
       status.textContent === 'Import contains duplicate JSON member names' &&
       envOutput.value === beforeFailure && document.querySelector('.ladder-graphic svg')?.outerHTML === beforeGraphic
     text.value = JSON.stringify([{ marketId: '0x' + '5'.repeat(64), rungCount: '0' }])
     apply.click()
+    await nextFrame()
     const atomicFailure = status.dataset.status === 'error' && status.textContent.includes('ladder[0]') &&
       envOutput.value === beforeFailure && document.querySelector('.ladder-graphic svg')?.outerHTML === beforeGraphic
     text.value = 'x'.repeat(131073)
     apply.click()
+    await nextFrame()
     const oversizedRejected = status.dataset.status === 'error' && status.textContent.includes('128 KiB') &&
       envOutput.value === beforeFailure
     const dropFiles = files => {
@@ -957,8 +990,10 @@ try {
       drop.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }))
     }
     drop.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: new DataTransfer() }))
+    await nextFrame()
     const dragStateVisible = drop.classList.contains('is-dragging')
     drop.dispatchEvent(new DragEvent('dragleave', { bubbles: true, cancelable: true }))
+    await nextFrame()
     const dragStateCleared = !drop.classList.contains('is-dragging')
     const waitForImportStatus = async predicate => {
       for (let attempt = 0; attempt < 100; attempt++) {
@@ -1006,7 +1041,6 @@ try {
     await new Promise(resolve => setTimeout(resolve, 0))
     const multipleRejected = status.dataset.status === 'error' && status.textContent.includes('one JSON file') && envOutput.value === initial
 
-    const nextFrame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
     const variant = premium => {
       const value = JSON.parse(initial)
       value[0].quotePremiumBps = String(premium)
@@ -1140,6 +1174,7 @@ try {
     dispatchFiles([fileBeforePaste.file])
     text.value = initial
     apply.click()
+    await nextFrame()
     fileBeforePaste.resolve(variant(51))
     await nextFrame()
     const fileThenPaste = envOutput.value === initial && text.value === initial && status.dataset.status === 'ok'
@@ -1147,6 +1182,7 @@ try {
     const oldBeforeInvalid = deferredFile('old-before-invalid.json')
     dispatchFiles([oldBeforeInvalid.file])
     dispatchFiles([new File([variant(61)], 'invalid.txt', { type: 'text/plain' })])
+    await nextFrame()
     const invalidStatus = status.textContent
     oldBeforeInvalid.resolve(variant(62))
     await nextFrame()
@@ -1158,6 +1194,7 @@ try {
     const afterStaleError = variant(71)
     text.value = afterStaleError
     apply.click()
+    await nextFrame()
     const successStatus = status.textContent
     staleUnreadable.reject(new Error('secret stale read detail'))
     await nextFrame()
@@ -1182,9 +1219,11 @@ try {
 
     text.value = '"' + 'é'.repeat(65535) + '"'
     apply.click()
+    await nextFrame()
     const utf8AtBoundary = status.dataset.status === 'error' && !status.textContent.includes('128 KiB')
     text.value = '"' + 'é'.repeat(65536) + '"'
     apply.click()
+    await nextFrame()
     const utf8OverBoundary = status.dataset.status === 'error' && status.textContent.includes('128 KiB')
 
     const inputChangeValue = variant(81)
@@ -1198,7 +1237,9 @@ try {
 
     text.value = initial
     apply.click()
+    await nextFrame()
     envTab.click()
+    await nextFrame()
     let copied = ''
     Object.defineProperty(navigator, 'clipboard', { value: { writeText: async value => { copied = value } }, configurable: true })
     document.querySelector('#copy-export').click()
@@ -1281,6 +1322,7 @@ try {
       focused.value === initial[0].stepBps && switcher.value === secondId &&
       document.querySelector('[data-quick-field=marketId]').value === secondMarketId
 
+
     const marketInput = secondCard.querySelector('[data-field=marketId]')
     set(marketInput, 'invalid')
     await frame()
@@ -1327,6 +1369,7 @@ try {
     await frame()
     return {
       ladderFocusMoved,
+
       invalidEditStable,
       duplicateEditStable,
       selectionDeleteCoherent,
@@ -2398,6 +2441,7 @@ try {
   })()`)
 
   const previewIsolationProof = await evaluate(`(async () => {
+    const frame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
     const copied = []
     Object.defineProperty(navigator, 'clipboard', { value: { writeText: async value => { copied.push(value) } }, configurable: true })
     const reference = document.querySelector('#preview-reference')
@@ -2407,7 +2451,7 @@ try {
     const prove = async value => {
       reference.value = value
       reference.dispatchEvent(new Event('input', { bubbles: true }))
-      await new Promise(resolve => setTimeout(resolve, 0))
+      await frame()
       const outputs = [...document.querySelectorAll('#export-yaml,#export-shell,#export-json')]
       const validExports = outputs.every((output, index) => output.dataset.invalid === 'false' && output.value === exportBaseline[index])
       const previewInvalid = document.querySelector('#ladder-status').dataset.status === 'error' && document.querySelector('.ladder-invalid[role=img]')?.getAttribute('aria-label')?.includes('Invalid ladder graphic') && document.querySelectorAll('.ladder-rung').length === 0
@@ -2415,8 +2459,9 @@ try {
       const exportUiValid = document.querySelector('#validation-errors').hidden && !document.querySelector('#copy-export').disabled
       for (const id of ['tab-yaml', 'tab-shell', 'tab-json']) {
         document.querySelector('#' + id).click()
+        await frame()
         document.querySelector('#copy-export').click()
-        await new Promise(resolve => setTimeout(resolve, 0))
+        await frame()
       }
       const copiedPayloads = copied.splice(0)
       const clipboardExact = JSON.stringify(copiedPayloads) === JSON.stringify(exportBaseline)
@@ -2454,6 +2499,7 @@ try {
   )
 
   const scalarParityProof = await evaluate(`(async () => {
+    const frame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
     const set = (field, value) => {
       const input = document.querySelector(\`[data-field=\${field}]\`)
       input.value = value
@@ -2466,15 +2512,16 @@ try {
     const accepted = []
     for (const value of ['8453', '0008453', '  0008453  ']) {
       set('CHAIN_ID', value)
-      await new Promise(resolve => setTimeout(resolve, 0))
+      await frame()
       const yaml = document.querySelector('#export-yaml').value
       const shell = document.querySelector('#export-shell').value
       const json = JSON.parse(document.querySelector('#export-json').value)
       const copies = []
       for (const tab of ['yaml', 'shell', 'json']) {
         document.querySelector('#tab-' + tab).click()
+        await frame()
         document.querySelector('#copy-export').click()
-        await new Promise(resolve => setTimeout(resolve, 0))
+        await frame()
         copies.push(copied)
       }
       accepted.push(
@@ -2492,7 +2539,7 @@ try {
     const rejected = []
     for (const value of ['+8453', '8453.0', '8.453e3', '-8453', '0', '8454', '9007199254740992']) {
       set('CHAIN_ID', value)
-      await new Promise(resolve => setTimeout(resolve, 0))
+      await frame()
       rejected.push(
         !document.querySelector('#validation-errors').hidden && document.querySelector('#copy-export').disabled &&
         document.querySelector('#ladder-status').dataset.status === 'error' &&
@@ -2518,7 +2565,29 @@ try {
     "document.querySelector('.market-card:has([data-field=quotePremiumBps]) [data-field=loopIntervalSeconds]').scrollIntoView({block:'center'})"
   )
   await evaluate(
-    `(() => { const input=document.querySelector('[data-field=MARKET_IDS]'); if (!input.value.includes('${secondMarket}')) input.value += ',${secondMarket}'; input.dispatchEvent(new Event('input',{bubbles:true})); const firstLadder=document.querySelector('.market-card:has([data-field=quotePremiumBps]) [data-field=loopIntervalSeconds]'); firstLadder.value='60'; firstLadder.dispatchEvent(new Event('input',{bubbles:true})); [...document.querySelectorAll('button')].find(button=>button.textContent==='Add ladder market').click(); const ladderCards=[...document.querySelectorAll('.market-card:has([data-field=quotePremiumBps])')]; const added=ladderCards.at(-1); const input2=added.querySelector('[data-field=marketId]'); input2.value='${secondMarket}'; input2.dispatchEvent(new Event('input',{bubbles:true})); const interval2=added.querySelector('[data-field=loopIntervalSeconds]'); interval2.value='30'; interval2.dispatchEvent(new Event('input',{bubbles:true})); [...added.querySelectorAll('button')].find(button=>button.textContent==='Move up').click(); })()`
+    `(async () => {
+      const frame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+      const input = document.querySelector('[data-field=MARKET_IDS]')
+      if (!input.value.includes('${secondMarket}')) input.value += ',${secondMarket}'
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      const firstLadder = document.querySelector('.market-card:has([data-field=quotePremiumBps]) [data-field=loopIntervalSeconds]')
+      firstLadder.value = '60'
+      firstLadder.dispatchEvent(new Event('input', { bubbles: true }))
+      await frame()
+      ;[...document.querySelectorAll('button')].find(button => button.textContent === 'Add ladder market').click()
+      await frame()
+      const ladderCards = [...document.querySelectorAll('.market-card:has([data-field=quotePremiumBps])')]
+      const added = ladderCards.at(-1)
+      const input2 = added.querySelector('[data-field=marketId]')
+      input2.value = '${secondMarket}'
+      input2.dispatchEvent(new Event('input', { bubbles: true }))
+      const interval2 = added.querySelector('[data-field=loopIntervalSeconds]')
+      interval2.value = '30'
+      interval2.dispatchEvent(new Event('input', { bubbles: true }))
+      await frame()
+      ;[...added.querySelectorAll('button')].find(button => button.textContent === 'Move up').click()
+      await frame()
+    })()`
   )
   assert(
     await evaluate(
@@ -2543,7 +2612,8 @@ try {
     ),
     'ladder export did not preserve reordered market order'
   )
-  const quickMarketProof = await evaluate(`(() => {
+  const quickMarketProof = await evaluate(`(async () => {
+    const frame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
     const select = document.querySelector('#quick-market-select')
     const firstIdentity = document.querySelector('[data-quick-field=marketId]').value === '${secondMarket}' &&
       document.querySelector('[data-quick-field=loopIntervalSeconds]').value === '30'
@@ -2552,12 +2622,14 @@ try {
     const secondUiId = select.options[1].value
     select.value = secondUiId
     select.dispatchEvent(new Event('change', { bubbles: true }))
+    await frame()
     const switched = document.querySelector('#quick-market-select').value === secondUiId &&
       document.querySelector('[data-quick-field=marketId]').value === '0x${'5'.repeat(64)}' &&
       document.querySelector('[data-quick-field=loopIntervalSeconds]').value === '60'
     const currentSelect = document.querySelector('#quick-market-select')
     currentSelect.value = firstUiId
     currentSelect.dispatchEvent(new Event('change', { bubbles: true }))
+    await frame()
     return {
       firstIdentity,
       orderedOptions: orderedOptions.includes('Market 1 · ${secondMarket.slice(0, 10)}') &&
@@ -2650,13 +2722,16 @@ try {
     'clipboard fallback is not announced in a live region'
   )
 
-  const quickDeleteProof = await evaluate(`(() => {
+  const quickDeleteProof = await evaluate(`(async () => {
+    const frame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
     const firstCard = document.querySelector('.market-card:has([data-field=quotePremiumBps])')
     const step = firstCard.querySelector('[data-field=stepBps]')
     step.value = '100'
     step.dispatchEvent(new Event('input', { bubbles: true }))
+    await frame()
     const remove = [...firstCard.querySelectorAll('button')].find(button => button.textContent === 'Remove ladder')
     remove.click()
+    await frame()
     return {
       oneMarket: document.querySelectorAll('.market-card:has([data-field=quotePremiumBps])').length === 1 &&
         document.querySelectorAll('.ladder-market').length === 1,
@@ -2669,6 +2744,13 @@ try {
   assert(
     Object.values(quickDeleteProof).every(Boolean),
     `quick market delete fallback failed: ${JSON.stringify(quickDeleteProof)}`
+  )
+  const formBusActivity = await evaluate('globalThis.__formBusActivity')
+  assert(
+    formBusActivity.events.length === 0 &&
+      formBusActivity.listeners.length === 0 &&
+      formBusActivity.intervals.length === 0,
+    `secret form changes touched a window bus/listener/interval: ${JSON.stringify(formBusActivity)}`
   )
   const persistenceInstrumentation = await evaluate('globalThis.__persistenceInstrumentation')
   const expectedPersistenceInstrumentation = [
@@ -2785,6 +2867,36 @@ try {
   assert(
     outsideBasePath.length === 0,
     `local requests escaped ${basePath}: ${outsideBasePath.join(', ')}`
+  )
+  const delayedImportUnmountProof = await evaluate(`(async () => {
+    const status = document.querySelector('#ladder-import-status')
+    const output = document.querySelector('#export-ladder-env')
+    const statusBefore = { text: status.textContent, kind: status.dataset.status }
+    const outputBefore = output.value
+    let finishRead
+    const delayed = new File(['{}'], 'delayed-unmount.json', { type: 'application/json' })
+    Object.defineProperty(delayed, 'text', {
+      value: () => new Promise(resolve => { finishRead = resolve })
+    })
+    const input = document.querySelector('#ladder-import-file')
+    Object.defineProperty(input, 'files', { value: [delayed], configurable: true })
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+    await Promise.resolve()
+    globalThis.__unmountPlaygroundForSmoke()
+    finishRead(outputBefore)
+    await Promise.resolve()
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    return {
+      outputUnchanged: output.value === outputBefore,
+      readyRemoved: document.documentElement.dataset.playgroundReady === undefined,
+      rootEmpty: document.querySelector('#root').childElementCount === 0,
+      rootMarkerRemoved: document.querySelector('#root').dataset.reactMounted === undefined,
+      statusUnchanged: status.textContent === statusBefore.text && status.dataset.status === statusBefore.kind
+    }
+  })()`)
+  assert(
+    Object.values(delayedImportUnmountProof).every(Boolean),
+    `delayed import wrote after root unmount: ${JSON.stringify(delayedImportUnmountProof)}`
   )
   assert(consoleErrors.length === 0, `browser console errors: ${consoleErrors.join('; ')}`)
   assert(

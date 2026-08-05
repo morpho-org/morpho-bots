@@ -7,8 +7,7 @@ import {
   getCoreRowModel,
   useReactTable
 } from '@tanstack/react-table'
-import React, { Component, useEffect, useRef, useState } from 'react'
-import { flushSync } from 'react-dom'
+import React, { Component, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 
 import type { BootstrapInput, LadderGraphicModel, LadderInput, PlaygroundState } from './model'
@@ -85,7 +84,6 @@ const firstAllowlistedMarket = (state: PlaygroundState) =>
     .map(value => value.trim())
     .find(Boolean)
 const formatAssets = (value: string) => Intl.NumberFormat('en-US').format(BigInt(value))
-const synchronously = (operation: () => void) => flushSync(operation)
 
 const columnHelper = createColumnHelper<LadderGraphicModel['rungs'][number]>()
 const rungColumns = [
@@ -428,6 +426,12 @@ const Playground = ({ rootElement }: { rootElement: HTMLElement }) => {
   })
   const [dragging, setDragging] = useState(false)
   const importGeneration = useRef(0)
+  const mounted = useRef(true)
+  const pendingFocus = useRef<{
+    uiId: string
+    focusKey: string
+    selection?: readonly [number, number, 'backward' | 'forward' | 'none']
+  } | null>(null)
   const importTextArea = useRef<HTMLTextAreaElement | null>(null)
   const outputRefs = useRef<Record<ExportFormat, HTMLTextAreaElement | null>>({
     yaml: null,
@@ -437,13 +441,40 @@ const Playground = ({ rootElement }: { rootElement: HTMLElement }) => {
   })
 
   useEffect(() => {
+    mounted.current = true
     rootElement.dataset.reactMounted = 'true'
     document.documentElement.dataset.playgroundReady = 'true'
     return () => {
+      mounted.current = false
+      importGeneration.current += 1
       delete rootElement.dataset.reactMounted
       delete document.documentElement.dataset.playgroundReady
     }
-  }, [])
+  }, [rootElement])
+
+  useLayoutEffect(() => {
+    const pending = pendingFocus.current
+    if (!pending) return undefined
+    const restore = () => {
+      const card = [...rootElement.querySelectorAll<HTMLElement>('[data-ui-id]')].find(
+        element => element.dataset.uiId === pending.uiId
+      )
+      const target = [...(card?.querySelectorAll<HTMLElement>('[data-focus-key]') ?? [])].find(
+        element => element.dataset.focusKey === pending.focusKey
+      )
+      target?.focus()
+      if (target instanceof HTMLInputElement && pending.selection) {
+        target.setSelectionRange(...pending.selection)
+      }
+    }
+    restore()
+    const frame = requestAnimationFrame(() => {
+      if (pendingFocus.current !== pending) return
+      restore()
+      pendingFocus.current = null
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [bootstrapUiIds, ladderUiIds, rootElement])
 
   const sectionHeading = (title: string, eyebrow: string, action?: ReactNode) => (
     <div className="section-heading">
@@ -469,11 +500,15 @@ const Playground = ({ rootElement }: { rootElement: HTMLElement }) => {
         : `quick-${key}`
       : `field-${path.replaceAll('.', '-').replaceAll('[', '-').replaceAll(']', '')}`
     return (
-      <form.Field key={`${quick ? 'quick' : 'full'}-${identity}-${key}`} name={path as never}>
+      <form.Field
+        key={`${quick ? 'quick' : 'full'}-${identity}-${quick ? path : ''}-${key}`}
+        name={path as never}
+      >
         {fieldApi => {
           const value = fieldApi.state.value as string | boolean
           const common = {
             id,
+            'data-focus-key': `field-${key}`,
             'data-field': quick ? undefined : key,
             'data-quick-field': quick ? key : undefined,
             'aria-describedby': quick ? `${hintId} ${errorId}` : undefined,
@@ -485,9 +520,7 @@ const Playground = ({ rootElement }: { rootElement: HTMLElement }) => {
               <select
                 {...common}
                 value={String(value)}
-                onInput={event =>
-                  synchronously(() => fieldApi.handleChange(event.currentTarget.value as never))
-                }
+                onInput={event => fieldApi.handleChange(event.currentTarget.value as never)}
               >
                 <option value="shared-rung">shared-rung</option>
                 <option value="per-book">per-book</option>
@@ -511,12 +544,10 @@ const Playground = ({ rootElement }: { rootElement: HTMLElement }) => {
                 checked={type === 'checkbox' ? Boolean(value) : undefined}
                 value={type === 'checkbox' ? undefined : String(value)}
                 onInput={event =>
-                  synchronously(() =>
-                    fieldApi.handleChange(
-                      (type === 'checkbox'
-                        ? event.currentTarget.checked
-                        : event.currentTarget.value) as never
-                    )
+                  fieldApi.handleChange(
+                    (type === 'checkbox'
+                      ? event.currentTarget.checked
+                      : event.currentTarget.value) as never
                   )
                 }
               />
@@ -548,14 +579,14 @@ const Playground = ({ rootElement }: { rootElement: HTMLElement }) => {
 
   const beginImport = () => ++importGeneration.current
   const applyImport = (text: string, values: PlaygroundState, generation = beginImport()) => {
-    if (generation !== importGeneration.current) return false
+    if (!mounted.current || generation !== importGeneration.current) return false
     if (textByteLength(text) > MAXIMUM_LADDER_IMPORT_BYTES) {
       setImportStatus({ message: 'Import exceeds the 128 KiB size limit.', status: 'error' })
       return false
     }
     try {
       const imported = parseLadderMarketsImport(text, values.scalar.MARKET_IDS)
-      if (generation !== importGeneration.current) return false
+      if (!mounted.current || generation !== importGeneration.current) return false
       const importedUiIds = imported.map(() => createUiId('ladder'))
       form.setFieldValue('ladder', imported)
       setLadderUiIds(importedUiIds)
@@ -597,18 +628,22 @@ const Playground = ({ rootElement }: { rootElement: HTMLElement }) => {
     }
     try {
       const text = await file.text()
-      if (generation !== importGeneration.current) return
+      if (!mounted.current || generation !== importGeneration.current) return
       const currentValues = form.state.values
-      if (applyImport(text, currentValues, generation) && generation === importGeneration.current)
+      if (
+        applyImport(text, currentValues, generation) &&
+        mounted.current &&
+        generation === importGeneration.current
+      )
         setImportText(text)
     } catch {
-      if (generation === importGeneration.current)
+      if (mounted.current && generation === importGeneration.current)
         setImportStatus({ message: 'The JSON file could not be read.', status: 'error' })
     }
   }
 
   const activateTab = (format: ExportFormat, focus = false) => {
-    synchronously(() => setActiveExport(format))
+    setActiveExport(format)
     if (focus) globalThis.document.getElementById(`tab-${format}`)?.focus()
   }
   const tabKeyDown = (event: React.KeyboardEvent, index: number) => {
@@ -633,16 +668,15 @@ const Playground = ({ rootElement }: { rootElement: HTMLElement }) => {
         output?.select()
         if (!document.execCommand('copy')) throw new Error('Clipboard API unavailable')
       }
-      synchronously(() => setCopyStatus({ message: 'Copied to clipboard.', status: 'ok' }))
+      if (mounted.current) setCopyStatus({ message: 'Copied to clipboard.', status: 'ok' })
     } catch {
       output?.focus()
       output?.select()
-      synchronously(() =>
+      if (mounted.current)
         setCopyStatus({
           message: 'Copy was blocked. The full export is selected; press Ctrl/Cmd+C.',
           status: 'error'
         })
-      )
     }
   }
 
@@ -690,31 +724,49 @@ const Playground = ({ rootElement }: { rootElement: HTMLElement }) => {
         const observabilityWarnings = observability.some(status => status.level === 'warning')
         const move = (kind: 'bootstrap' | 'ladder', from: number, to: number) => {
           if (to < 0 || to >= state[kind].length) return
-          synchronously(() => {
-            form.moveFieldValues(kind, from, to)
-            const update = (ids: string[]) => {
-              const reordered = [...ids]
-              const [moved] = reordered.splice(from, 1)
-              if (moved !== undefined) reordered.splice(to, 0, moved)
-              return reordered
+          const active = document.activeElement
+          const card =
+            active instanceof Element ? active.closest<HTMLElement>('[data-ui-id]') : null
+          const focusTarget =
+            active instanceof HTMLElement ? active.closest<HTMLElement>('[data-focus-key]') : null
+          if (card?.dataset.uiId && focusTarget?.dataset.focusKey) {
+            const selection =
+              active instanceof HTMLInputElement &&
+              active.selectionStart !== null &&
+              active.selectionEnd !== null
+                ? ([
+                    active.selectionStart,
+                    active.selectionEnd,
+                    active.selectionDirection ?? 'none'
+                  ] as const)
+                : undefined
+            pendingFocus.current = {
+              uiId: card.dataset.uiId,
+              focusKey: focusTarget.dataset.focusKey,
+              selection
             }
-            if (kind === 'ladder') setLadderUiIds(update)
-            else setBootstrapUiIds(update)
-          })
+          }
+          form.moveFieldValues(kind, from, to)
+          const update = (ids: string[]) => {
+            const reordered = [...ids]
+            const [moved] = reordered.splice(from, 1)
+            if (moved !== undefined) reordered.splice(to, 0, moved)
+            return reordered
+          }
+          if (kind === 'ladder') setLadderUiIds(update)
+          else setBootstrapUiIds(update)
         }
         const remove = (kind: 'bootstrap' | 'ladder', index: number) => {
-          synchronously(() => {
-            void form.removeFieldValue(kind, index)
-            if (kind === 'ladder') {
-              const remaining = ladderUiIds.filter((_, itemIndex) => itemIndex !== index)
-              setLadderUiIds(remaining)
-              if (ladderUiIds[index] === selectedLadderId) {
-                setSelectedLadderId(remaining[Math.min(index, remaining.length - 1)])
-              }
-            } else {
-              setBootstrapUiIds(ids => ids.filter((_, itemIndex) => itemIndex !== index))
+          void form.removeFieldValue(kind, index)
+          if (kind === 'ladder') {
+            const remaining = ladderUiIds.filter((_, itemIndex) => itemIndex !== index)
+            setLadderUiIds(remaining)
+            if (ladderUiIds[index] === selectedLadderId) {
+              setSelectedLadderId(remaining[Math.min(index, remaining.length - 1)])
             }
-          })
+          } else {
+            setBootstrapUiIds(ids => ids.filter((_, itemIndex) => itemIndex !== index))
+          }
         }
         const collection = <Item extends BootstrapInput | LadderInput>(
           kind: 'bootstrap' | 'ladder',
@@ -735,16 +787,14 @@ const Playground = ({ rootElement }: { rootElement: HTMLElement }) => {
                     kind === 'bootstrap'
                       ? createDefaultBootstrap(firstAllowlistedMarket(state))
                       : createDefaultLadder(firstAllowlistedMarket(state))
-                  synchronously(() => {
-                    form.pushFieldValue(kind, item as never)
-                    const uiId = createUiId(kind)
-                    if (kind === 'ladder') {
-                      setLadderUiIds(ids => [...ids, uiId])
-                      setSelectedLadderId(uiId)
-                    } else {
-                      setBootstrapUiIds(ids => [...ids, uiId])
-                    }
-                  })
+                  form.pushFieldValue(kind, item as never)
+                  const uiId = createUiId(kind)
+                  if (kind === 'ladder') {
+                    setLadderUiIds(ids => [...ids, uiId])
+                    setSelectedLadderId(uiId)
+                  } else {
+                    setBootstrapUiIds(ids => [...ids, uiId])
+                  }
                 }}
               >
                 Add {kind} market
@@ -762,6 +812,7 @@ const Playground = ({ rootElement }: { rootElement: HTMLElement }) => {
                   <button
                     type="button"
                     disabled={index === 0}
+                    data-focus-key="move-up"
                     onClick={() => move(kind, index, index - 1)}
                   >
                     Move up
@@ -769,11 +820,12 @@ const Playground = ({ rootElement }: { rootElement: HTMLElement }) => {
                   <button
                     type="button"
                     disabled={index === items.length - 1}
+                    data-focus-key="move-down"
                     onClick={() => move(kind, index, index + 1)}
                   >
                     Move down
                   </button>
-                  <button type="button" onClick={() => remove(kind, index)}>
+                  <button type="button" data-focus-key="remove" onClick={() => remove(kind, index)}>
                     Remove {kind}
                   </button>
                 </div>
@@ -960,9 +1012,7 @@ const Playground = ({ rootElement }: { rootElement: HTMLElement }) => {
                           accept=".json,application/json"
                           aria-describedby="ladder-import-help"
                           onChange={event => {
-                            synchronously(() => {
-                              void applyFile(event.target.files ?? [])
-                            })
+                            void applyFile(event.target.files ?? [])
                             event.target.value = ''
                           }}
                         />
@@ -975,20 +1025,18 @@ const Playground = ({ rootElement }: { rootElement: HTMLElement }) => {
                         aria-describedby="ladder-import-help"
                         onDragEnter={event => {
                           event.preventDefault()
-                          synchronously(() => setDragging(true))
+                          setDragging(true)
                         }}
                         onDragOver={event => {
                           event.preventDefault()
-                          synchronously(() => setDragging(true))
+                          setDragging(true)
                         }}
-                        onDragLeave={() => synchronously(() => setDragging(false))}
-                        onDragEnd={() => synchronously(() => setDragging(false))}
+                        onDragLeave={() => setDragging(false)}
+                        onDragEnd={() => setDragging(false)}
                         onDrop={event => {
                           event.preventDefault()
-                          synchronously(() => {
-                            setDragging(false)
-                            void applyFile(event.dataTransfer.files)
-                          })
+                          setDragging(false)
+                          void applyFile(event.dataTransfer.files)
                         }}
                       >
                         <strong>Drop one ladder .json file here</strong>
@@ -1017,9 +1065,7 @@ const Playground = ({ rootElement }: { rootElement: HTMLElement }) => {
                         type="button"
                         className="button"
                         onClick={() =>
-                          synchronously(() => {
-                            applyImport(importTextArea.current?.value ?? importText, state)
-                          })
+                          applyImport(importTextArea.current?.value ?? importText, state)
                         }
                       >
                         Apply ladder JSON
@@ -1252,7 +1298,16 @@ const Playground = ({ rootElement }: { rootElement: HTMLElement }) => {
 
 const rootElement = document.getElementById('root')
 if (!rootElement) throw new Error('Missing playground root')
-createRoot(rootElement).render(
+const reactRoot = createRoot(rootElement)
+if (Reflect.get(globalThis, '__playgroundSmoke') === true) {
+  Object.defineProperty(globalThis, '__unmountPlaygroundForSmoke', {
+    configurable: false,
+    enumerable: false,
+    value: () => reactRoot.unmount(),
+    writable: false
+  })
+}
+reactRoot.render(
   <ErrorBoundary>
     <Playground rootElement={rootElement} />
   </ErrorBoundary>
