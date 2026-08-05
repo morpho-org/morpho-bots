@@ -353,6 +353,24 @@ try {
           }
         })
       }
+      const wrapConstructor = (prototype, key, label) => {
+        const descriptor = prototype && Object.getOwnPropertyDescriptor(prototype, key)
+        if (!descriptor || typeof descriptor.value !== 'function') return
+        instrumented.push(label)
+        Object.defineProperty(prototype, key, {
+          ...descriptor,
+          value: new Proxy(descriptor.value, {
+            apply(target, thisArgument, argumentsList) {
+              record(label + '.call')
+              return Reflect.apply(target, thisArgument, argumentsList)
+            },
+            construct(target, argumentsList, newTarget) {
+              record(label + '.construct')
+              return Reflect.construct(target, argumentsList, newTarget)
+            }
+          })
+        })
+      }
       for (const key of ['getItem', 'setItem', 'removeItem', 'clear', 'key']) {
         wrapMethod(globalThis.Storage?.prototype, key, 'Storage.' + key)
       }
@@ -373,6 +391,16 @@ try {
       }
       wrapAccessor(globalThis.ServiceWorkerContainer?.prototype, 'ready', 'ServiceWorkerContainer.ready')
       wrapAccessor(globalThis.Document?.prototype, 'cookie', 'Document.cookie')
+      wrapAccessor(globalThis, 'cookieStore', 'Window.cookieStore')
+      for (const key of ['get', 'getAll', 'set', 'delete']) {
+        wrapMethod(globalThis.CookieStore?.prototype, key, 'CookieStore.' + key)
+      }
+      wrapAccessor(globalThis.Navigator?.prototype, 'storage', 'Navigator.storage')
+      for (const key of ['estimate', 'persist', 'persisted', 'getDirectory']) {
+        wrapMethod(globalThis.StorageManager?.prototype, key, 'StorageManager.' + key)
+      }
+      wrapConstructor(globalThis, 'Worker', 'Window.Worker')
+      wrapConstructor(globalThis, 'SharedWorker', 'Window.SharedWorker')
     })()`
   })
   await command('Page.navigate', { url: `http://127.0.0.1:${port}${basePath}` })
@@ -1882,7 +1910,19 @@ try {
     'ServiceWorkerContainer.getRegistration',
     'ServiceWorkerContainer.getRegistrations',
     'ServiceWorkerContainer.ready',
-    'Document.cookie'
+    'Document.cookie',
+    'Window.cookieStore',
+    'CookieStore.get',
+    'CookieStore.getAll',
+    'CookieStore.set',
+    'CookieStore.delete',
+    'Navigator.storage',
+    'StorageManager.estimate',
+    'StorageManager.persist',
+    'StorageManager.persisted',
+    'StorageManager.getDirectory',
+    'Window.Worker',
+    'Window.SharedWorker'
   ]
   assert(
     JSON.stringify(persistenceInstrumentation) ===
