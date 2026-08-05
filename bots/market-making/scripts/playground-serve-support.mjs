@@ -1,8 +1,10 @@
-import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 
+import { runPortableProcess } from './playground-process.mjs'
+
 const requiredDependencies = ['viem', '@repo/bot-kit']
+const loopbackHosts = new Set(['localhost', '127.0.0.1', '::1'])
 
 const parsePort = value => {
   if (!/^\d+$/.test(value)) throw new Error(`Invalid port: ${value}`)
@@ -14,10 +16,13 @@ const parsePort = value => {
 }
 
 const parseHost = value => {
-  if (!value || value.length > 253 || !/^[\p{L}\p{N}.:[\]-]+$/u.test(value)) {
-    throw new Error(`Invalid host: ${value}`)
+  const normalized = value === '[::1]' ? '::1' : value
+  if (!loopbackHosts.has(normalized)) {
+    throw new Error(
+      `Invalid host: ${value}; playground must listen on loopback (localhost, 127.0.0.1, or ::1)`
+    )
   }
-  return value
+  return normalized
 }
 
 export const parseServeOptions = (args, env = process.env) => {
@@ -57,53 +62,36 @@ const unresolvedDependencies = packageRoot => {
   })
 }
 
-const run = ({ executable, args, cwd, env, signal }) =>
-  new Promise((resolve, reject) => {
-    const child = spawn(executable, args, {
-      cwd,
-      env,
-      shell: false,
-      stdio: 'inherit'
-    })
-    const stop = () => child.kill('SIGTERM')
-    signal?.addEventListener('abort', stop, { once: true })
-    child.once('error', reject)
-    child.once('close', (code, closeSignal) => {
-      signal?.removeEventListener('abort', stop)
-      if (signal?.aborted) {
-        reject(signal.reason)
-      } else if (code === 0) {
-        resolve()
-      } else {
-        reject(
-          new Error(
-            `${executable} ${args.join(' ')} failed with ${closeSignal ? `signal ${closeSignal}` : `exit code ${code}`}`
-          )
-        )
-      }
-    })
-  })
-
 export const ensureFrozenDependencies = async ({
   repoRoot,
   packageRoot,
   executable = 'bun',
   env = process.env,
+  processRunner = runPortableProcess,
   signal
 }) => {
-  let unresolved = unresolvedDependencies(packageRoot)
-  if (unresolved.length === 0) return false
-  console.log(
-    `Workspace dependencies are unresolved from ${packageRoot} (${unresolved.join(', ')}); running bun install --frozen-lockfile...`
-  )
-  await run({
+  if (signal?.aborted) throw signal.reason
+  console.log('Checking workspace dependencies with bun install --frozen-lockfile...')
+  const result = await processRunner({
     executable,
     args: ['install', '--frozen-lockfile'],
     cwd: repoRoot,
     env,
-    signal
+    signal,
+    stdio: 'inherit'
   })
-  unresolved = unresolvedDependencies(packageRoot)
+  if (signal?.aborted) throw signal.reason
+  if (result?.error) {
+    throw new Error(
+      `Failed to start ${executable} install --frozen-lockfile: ${result.error.message}`
+    )
+  }
+  if (result?.code !== 0) {
+    throw new Error(
+      `${executable} install --frozen-lockfile failed with ${result?.signal ? `signal ${result.signal}` : `exit code ${result?.code}`}`
+    )
+  }
+  const unresolved = unresolvedDependencies(packageRoot)
   if (unresolved.length > 0) {
     throw new Error(
       `Frozen install completed but required dependencies remain unresolved from ${packageRoot}: ${unresolved.join(', ')}`
@@ -111,3 +99,23 @@ export const ensureFrozenDependencies = async ({
   }
   return true
 }
+
+export const cleanupOwnedResources = ({ server, prepared } = {}) => {
+  let cleanupPromise
+  return () =>
+    (cleanupPromise ??= (async () => {
+      const operations = []
+      if (server) operations.push(server.close())
+      if (prepared) operations.push(prepared.cleanup())
+      const results = await Promise.allSettled(operations)
+      const errors = results
+        .filter(result => result.status === 'rejected')
+        .map(result => result.reason)
+      if (errors.length > 0) {
+        throw new AggregateError(errors, `Playground cleanup failed (${errors.length} error(s))`)
+      }
+    })())
+}
+
+export const isSuccessfulSignalShutdown = ({ cleanupError, error, signal }) =>
+  signal.aborted && error === signal.reason && cleanupError === undefined

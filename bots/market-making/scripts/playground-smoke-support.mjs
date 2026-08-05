@@ -957,9 +957,11 @@ export const prepareFreshDist = async ({
   onDistCreated = () => {},
   onBuildProcess = () => () => {},
   onTempCreated = async () => {},
+  processRunner,
   removeTemporaryDist = rm,
   signal
 }) => {
+  if (signal?.aborted) throw signal.reason
   await rm(join(root, 'playground/dist'), { recursive: true, force: true })
   if (signal?.aborted) throw signal.reason
   const dist = mkdtempSync(join(tmpdir(), 'market-making-playground-dist-'))
@@ -973,34 +975,46 @@ export const prepareFreshDist = async ({
     onDistCreated(dist)
     await onTempCreated(dist)
     if (signal?.aborted) throw signal.reason
-    const build = spawnOwnedProcess(
+    const command = {
       executable,
-      ['build', 'playground/index.html', '--outdir', dist, '--target', 'browser'],
-      {
-        cwd: root,
-        stdio: ['ignore', 'pipe', 'pipe']
+      args: ['build', 'playground/index.html', '--outdir', dist, '--target', 'browser'],
+      cwd: root,
+      signal,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      onProcess: build => {
+        releaseBuildProcess = onBuildProcess(build)
       }
-    )
-    releaseBuildProcess = onBuildProcess(build)
-    build.stdout.setEncoding('utf8')
-    build.stderr.setEncoding('utf8')
-    let stdout = ''
-    let stderr = ''
-    build.stdout.on('data', chunk => {
-      stdout += chunk
-    })
-    build.stderr.on('data', chunk => {
-      stderr += chunk
-    })
-    const result = await new Promise(resolveResult => {
-      let spawnError
-      build.once('error', error => {
-        spawnError = error
+    }
+    let result
+    if (processRunner) {
+      result = await processRunner(command)
+    } else {
+      const build = spawnOwnedProcess(command.executable, command.args, {
+        cwd: command.cwd,
+        stdio: command.stdio
       })
-      build.once('close', (code, closeSignal) =>
-        resolveResult({ code, error: spawnError, signal: closeSignal })
-      )
-    })
+      command.onProcess(build)
+      build.stdout.setEncoding('utf8')
+      build.stderr.setEncoding('utf8')
+      let stdout = ''
+      let stderr = ''
+      build.stdout.on('data', chunk => {
+        stdout += chunk
+      })
+      build.stderr.on('data', chunk => {
+        stderr += chunk
+      })
+      result = await new Promise(resolveResult => {
+        let spawnError
+        build.once('error', error => {
+          spawnError = error
+        })
+        build.once('close', (code, closeSignal) =>
+          resolveResult({ code, error: spawnError, signal: closeSignal, stderr, stdout })
+        )
+      })
+    }
+    if (signal?.aborted) throw signal.reason
     if (result.error) {
       throw new Error(
         `Failed to start fresh playground build with ${executable}: ${result.error.message}`
@@ -1008,7 +1022,9 @@ export const prepareFreshDist = async ({
     }
     if (result.code !== 0) {
       const status = result.signal ? `signal ${result.signal}` : `exit code ${result.code}`
-      throw new Error(`Fresh playground build failed with ${status}.\n${stdout}${stderr}`)
+      throw new Error(
+        `Fresh playground build failed with ${status}.\n${result.stdout ?? ''}${result.stderr ?? ''}`
+      )
     }
     const index = join(dist, 'index.html')
     try {
@@ -1016,6 +1032,7 @@ export const prepareFreshDist = async ({
     } catch (error) {
       throw new Error(`Fresh playground build did not create ${index}: ${error.message}`)
     }
+    if (signal?.aborted) throw signal.reason
     return { cleanup, dist }
   } catch (error) {
     try {
@@ -1056,7 +1073,7 @@ const rejectStaticRequest = response => {
 
 export const startStaticServer = async (
   root,
-  { host = '127.0.0.1', port = 0, createFileStream = createReadStream } = {}
+  { host = '127.0.0.1', port = 0, createFileStream = createReadStream, closeTimeoutMs = 1_000 } = {}
 ) => {
   const servedRoot = await realpath(root)
   const server = createServer(async (request, response) => {
@@ -1128,25 +1145,68 @@ export const startStaticServer = async (
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('Static server has no TCP address')
   const urlHost = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
+  let closePromise
+  const close = argument =>
+    (closePromise ??= new Promise((resolveClose, rejectClose) => {
+      const signal = argument?.addEventListener ? argument : argument?.signal
+      const timeoutMs = argument?.timeoutMs ?? closeTimeoutMs
+      const errors = []
+      let settled = false
+      let forceTimer
+      let hardTimer
+      const finish = error => {
+        if (settled) return
+        settled = true
+        clearTimeout(forceTimer)
+        clearTimeout(hardTimer)
+        signal?.removeEventListener('abort', forceClose)
+        if (error) errors.push(error)
+        if (errors.length > 0) {
+          rejectClose(
+            new AggregateError(errors, `Static server cleanup failed (${errors.length} error(s))`)
+          )
+        } else {
+          resolveClose()
+        }
+      }
+      const attempt = operation => {
+        try {
+          operation?.call(server)
+        } catch (error) {
+          errors.push(error)
+        }
+      }
+      const forceClose = () => {
+        attempt(server.closeIdleConnections)
+        attempt(server.closeAllConnections)
+        for (const socket of sockets) {
+          try {
+            socket.destroy()
+          } catch (error) {
+            errors.push(error)
+          }
+        }
+      }
+      signal?.addEventListener('abort', forceClose, { once: true })
+      try {
+        server.close(finish)
+      } catch (error) {
+        finish(error)
+        return
+      }
+      if (signal?.aborted) forceClose()
+      forceTimer = setTimeout(forceClose, timeoutMs)
+      hardTimer = setTimeout(
+        () => finish(new Error(`Static server did not close within ${timeoutMs + 250}ms`)),
+        timeoutMs + 250
+      )
+      forceTimer.unref?.()
+      hardTimer.unref?.()
+    }))
   return {
     host,
     port: address.port,
     url: `http://${urlHost}:${address.port}`,
-    close: signal =>
-      new Promise((resolveClose, rejectClose) => {
-        const onAbort = () => {
-          server.closeAllConnections()
-          server.closeIdleConnections()
-          for (const socket of sockets) socket.destroy()
-        }
-        const finish = error => {
-          signal?.removeEventListener('abort', onAbort)
-          if (error) rejectClose(error)
-          else resolveClose()
-        }
-        signal?.addEventListener('abort', onAbort, { once: true })
-        server.close(finish)
-        if (signal?.aborted) onAbort()
-      })
+    close
   }
 }

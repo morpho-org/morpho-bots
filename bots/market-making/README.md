@@ -15,11 +15,11 @@ structure.
 Run the stateless parameter playground locally from the repository root:
 
 ```sh
-bun install --frozen-lockfile
 bun run market-making:playground
 ```
 
-The local server prints its URL after building the browser artifact. For a production-equivalent
+The launcher performs a frozen-lockfile dependency check before every build, then prints the local
+server URL after building the browser artifact. For a production-equivalent
 build without starting a server, run:
 
 ```sh
@@ -618,19 +618,24 @@ accessible errors and cannot be copied as valid exports. It does not
 read current offers or a live market book, persist edits, or connect to a backend. Live offers and
 order-book simulation are future scope only.
 
-From the repository root, one command handles first-run frozen dependency installation, creates a
-fresh isolated build, and serves it on loopback. It does not run test assertions or require Chromium:
+From the repository root, one command runs `bun install --frozen-lockfile` (also on already-installed
+workspaces, where it is fast), creates a fresh isolated build, and serves it on loopback. It does not
+run test assertions or require Chromium:
 
 ```sh
 bun run market-making:playground
 ```
 
 Open the exact URL printed by the command (default `http://127.0.0.1:4173`). Override the listener
-with `PORT=5173`, `HOST=localhost`, `--port 5173`, or `--host localhost`; command-line flags take
-precedence over environment variables. Binding stays local unless you explicitly choose an external
-host. If the selected port is occupied, the launcher exits with an actionable error instead of
-claiming success. Press Ctrl-C to stop; `SIGINT` and `SIGTERM` shut down the server and remove its
-temporary fresh build.
+with `PORT=5173`, `HOST=localhost`, `--port 5173`, or `--host ::1`; command-line flags take precedence
+over environment variables. Only `localhost`, `127.0.0.1`, and `::1` are accepted. IPv6 may be entered
+as `::1` or `[::1]`; the printed URL uses brackets. If the selected port is occupied, the launcher
+exits with an actionable error instead of claiming success.
+
+The interactive launcher owns install and build process trees portably: Linux and macOS use detached
+process groups, while Windows uses non-shell task-tree termination. Press Ctrl-C to stop; `SIGINT` and
+`SIGTERM` perform bounded server shutdown, terminate owned process trees, and remove the temporary
+fresh build. Cleanup failures are reported and produce a nonzero exit.
 
 Sensitive values are redacted in YAML, ENV, and JSON exports by default. Exporting private
 credentials requires checking the explicit sensitive-values opt-in in the playground; keep real

@@ -1,6 +1,12 @@
 import { fileURLToPath } from 'node:url'
 
-import { ensureFrozenDependencies, parseServeOptions } from './playground-serve-support.mjs'
+import { runPortableProcess } from './playground-process.mjs'
+import {
+  cleanupOwnedResources,
+  ensureFrozenDependencies,
+  isSuccessfulSignalShutdown,
+  parseServeOptions
+} from './playground-serve-support.mjs'
 import { prepareFreshDist, startStaticServer } from './playground-smoke-support.mjs'
 
 const botRoot = fileURLToPath(new URL('..', import.meta.url))
@@ -11,21 +17,19 @@ let prepared
 let server
 let cleanupPromise
 
-const cleanup = () =>
-  (cleanupPromise ??= (async () => {
-    const results = await Promise.allSettled([
-      ...(server ? [server.close()] : []),
-      ...(prepared ? [prepared.cleanup()] : [])
-    ])
-    const failure = results.find(result => result.status === 'rejected')
-    if (failure) throw failure.reason
-  })())
+const cleanup = () => (cleanupPromise ??= cleanupOwnedResources({ prepared, server })())
 
 const stop = signal => {
   if (terminating) return
   terminating = true
   shutdown.abort(new Error(`Playground stopped by ${signal}`))
 }
+
+const errorMessages = error => {
+  if (error instanceof AggregateError) return error.errors.flatMap(errorMessages)
+  return [error?.message ?? String(error)]
+}
+
 process.once('SIGINT', stop)
 process.once('SIGTERM', stop)
 
@@ -34,11 +38,16 @@ try {
   await ensureFrozenDependencies({
     repoRoot,
     packageRoot: botRoot,
+    processRunner: runPortableProcess,
     signal: shutdown.signal
   })
   if (shutdown.signal.aborted) throw shutdown.signal.reason
 
-  prepared = await prepareFreshDist({ root: botRoot, signal: shutdown.signal })
+  prepared = await prepareFreshDist({
+    root: botRoot,
+    processRunner: runPortableProcess,
+    signal: shutdown.signal
+  })
   if (shutdown.signal.aborted) throw shutdown.signal.reason
 
   server = await startStaticServer(prepared.dist, options)
@@ -53,13 +62,23 @@ try {
   await cleanup()
   process.exitCode = 0
 } catch (error) {
-  await cleanup().catch(cleanupError => {
-    console.error(`Playground cleanup failed: ${cleanupError.message}`)
-  })
-  if (shutdown.signal.aborted) {
+  let cleanupError
+  try {
+    await cleanup()
+  } catch (caught) {
+    cleanupError = caught
+  }
+  if (cleanupError) {
+    for (const message of errorMessages(cleanupError)) {
+      console.error(`Playground cleanup failed: ${message}`)
+    }
+  }
+  if (isSuccessfulSignalShutdown({ cleanupError, error, signal: shutdown.signal })) {
     process.exitCode = 0
   } else {
-    console.error(`Playground failed: ${error.message}`)
+    if (error !== shutdown.signal.reason) {
+      for (const message of errorMessages(error)) console.error(`Playground failed: ${message}`)
+    }
     process.exitCode = 1
   }
 } finally {

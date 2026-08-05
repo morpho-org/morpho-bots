@@ -3,14 +3,21 @@ import { spawn } from 'node:child_process'
 import { createReadStream, unlinkSync } from 'node:fs'
 import { access, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
+import { createConnection } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { ensureFrozenDependencies, parseServeOptions } from './playground-serve-support.mjs'
-import { startStaticServer } from './playground-smoke-support.mjs'
+import { createPortableProcessRunner } from './playground-process.mjs'
+import {
+  cleanupOwnedResources,
+  ensureFrozenDependencies,
+  isSuccessfulSignalShutdown,
+  parseServeOptions
+} from './playground-serve-support.mjs'
+import { prepareFreshDist, startStaticServer } from './playground-smoke-support.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const launcher = fileURLToPath(new URL('./playground-serve.mjs', import.meta.url))
@@ -49,33 +56,54 @@ const waitFor = async operation => {
   throw lastError
 }
 
+const assertProcessNotLive = async pid => {
+  let state = 'missing'
+  try {
+    state = (await readFile(`/proc/${pid}/stat`, 'utf8')).split(' ')[2]
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+  }
+  assert.ok(state === 'missing' || state === 'Z', `process ${pid} remains live in state ${state}`)
+}
+
+const writeBlockingBun = async root => {
+  const executable = join(root, 'blocking-bun')
+  await writeFile(
+    executable,
+    `#!/bin/sh\ntrap '' TERM\nsh -c 'trap "" TERM; echo $$ > "$PID_FILE"; while :; do sleep 1; done' &\nwait\n`,
+    { mode: 0o755 }
+  )
+  return executable
+}
+
 test.after(async () => {
   await Promise.all(temporaryDirectories.map(path => rm(path, { recursive: true, force: true })))
 })
 
-test('serve options default to loopback:4173 and safely accept flags or environment', () => {
+test('serve options accept only loopback hosts and normalize bracketed IPv6', () => {
   assert.deepEqual(parseServeOptions([], {}), { host: '127.0.0.1', port: 4173 })
   assert.deepEqual(parseServeOptions([], { HOST: 'localhost', PORT: '8123' }), {
     host: 'localhost',
     port: 8123
   })
-  assert.deepEqual(parseServeOptions(['--host', '0.0.0.0', '--port=0'], {}), {
-    host: '0.0.0.0',
+  assert.deepEqual(parseServeOptions(['--host', '[::1]', '--port=0'], {}), {
+    host: '::1',
     port: 0
   })
+  assert.deepEqual(parseServeOptions(['--host=::1'], {}), { host: '::1', port: 4173 })
+  assert.throws(() => parseServeOptions(['--host', '0.0.0.0'], {}), /loopback/)
   assert.throws(() => parseServeOptions(['--port', '4173;echo bad'], {}), /Invalid port/)
   assert.throws(() => parseServeOptions(['--host', '../socket'], {}), /Invalid host/)
   assert.throws(() => parseServeOptions(['--unknown'], {}), /Unknown option/)
 })
 
-test('missing workspace dependencies trigger a frozen install and resolve from the package', async () => {
+test('a frozen install runs unconditionally and resolves partial workspace dependencies', async () => {
   const repoRoot = await temporaryDirectory('playground-install-')
   const packageRoot = join(repoRoot, 'bots/market-making')
   const bin = join(repoRoot, 'bin')
   const log = join(repoRoot, 'install.json')
-  await mkdir(packageRoot, { recursive: true })
+  await writeResolvableDependencies(packageRoot, ['viem'])
   await mkdir(bin)
-  await writeFile(join(packageRoot, 'package.json'), '{"type":"module"}')
   await writeFile(
     join(bin, 'bun'),
     `#!/usr/bin/env node\nconst { mkdirSync, writeFileSync } = require('node:fs')\nconst { join } = require('node:path')\nwriteFileSync(process.env.INSTALL_LOG, JSON.stringify(process.argv.slice(2)))\nfor (const name of ['viem', '@repo/bot-kit']) { const root = join(process.env.PACKAGE_ROOT, 'node_modules', name); mkdirSync(root, { recursive: true }); writeFileSync(join(root, 'package.json'), JSON.stringify({ name, main: 'index.js' })); writeFileSync(join(root, 'index.js'), '') }\n`,
@@ -92,18 +120,23 @@ test('missing workspace dependencies trigger a frozen install and resolve from t
   assert.deepEqual(JSON.parse(await readFile(log, 'utf8')), ['install', '--frozen-lockfile'])
 })
 
-test('installed package dependencies do not trigger a needless install', async () => {
+test('installed package dependencies still run the fast frozen lockfile check', async () => {
   const repoRoot = await temporaryDirectory('playground-installed-')
   const packageRoot = join(repoRoot, 'bots/market-making')
   await writeResolvableDependencies(packageRoot)
 
-  assert.equal(
-    await ensureFrozenDependencies({
-      repoRoot,
-      packageRoot,
-      executable: join(repoRoot, 'must-not-run')
-    }),
-    false
+  const calls = []
+  await ensureFrozenDependencies({
+    repoRoot,
+    packageRoot,
+    processRunner: async command => {
+      calls.push(command)
+      return { code: 0, signal: null, stdout: '', stderr: '' }
+    }
+  })
+  assert.deepEqual(
+    calls.map(call => call.args),
+    [['install', '--frozen-lockfile']]
   )
 })
 
@@ -133,6 +166,150 @@ test('successful install clearly lists dependencies that remain unresolved', asy
     assert.match(error.message, /viem, @repo\/bot-kit/)
     return true
   })
+})
+
+test('frozen dependency install honors a pre-aborted signal without running', async () => {
+  const repoRoot = await temporaryDirectory('playground-install-aborted-')
+  const packageRoot = join(repoRoot, 'bots/market-making')
+  await writeResolvableDependencies(packageRoot)
+  const controller = new AbortController()
+  controller.abort(new Error('pre-aborted install'))
+  let ran = false
+  await assert.rejects(
+    ensureFrozenDependencies({
+      repoRoot,
+      packageRoot,
+      signal: controller.signal,
+      processRunner: async () => {
+        ran = true
+      }
+    }),
+    /pre-aborted install/
+  )
+  assert.equal(ran, false)
+})
+
+test('signal during frozen install kills its descendant tree', { timeout: 10_000 }, async () => {
+  const repoRoot = await temporaryDirectory('playground-install-signal-')
+  const packageRoot = join(repoRoot, 'bots/market-making')
+  const pidFile = join(repoRoot, 'descendant.pid')
+  await writeResolvableDependencies(packageRoot)
+  const executable = await writeBlockingBun(repoRoot)
+  const controller = new AbortController()
+  const pending = ensureFrozenDependencies({
+    repoRoot,
+    packageRoot,
+    executable,
+    env: { ...process.env, PID_FILE: pidFile },
+    processRunner: createPortableProcessRunner({ terminationGraceMs: 25, forceKillGraceMs: 250 }),
+    signal: controller.signal
+  })
+  const descendantPid = await waitFor(async () => Number(await readFile(pidFile, 'utf8')))
+  controller.abort(new Error('install interrupted'))
+  await assert.rejects(pending, /install interrupted/)
+  await assertProcessNotLive(descendantPid)
+})
+
+test('fresh build removes stale dist, uses the injected runner, and validates index', async () => {
+  const packageRoot = await temporaryDirectory('playground-fresh-injected-')
+  const stale = join(packageRoot, 'playground/dist')
+  await mkdir(stale, { recursive: true })
+  await writeFile(join(stale, 'stale.txt'), 'stale')
+  const calls = []
+  const prepared = await prepareFreshDist({
+    root: packageRoot,
+    processRunner: async command => {
+      calls.push(command)
+      const outdir = command.args[command.args.indexOf('--outdir') + 1]
+      await writeFile(join(outdir, 'index.html'), 'fresh')
+      return { code: 0, signal: null, stdout: '', stderr: '' }
+    }
+  })
+  try {
+    await assert.rejects(access(join(stale, 'stale.txt')), { code: 'ENOENT' })
+    assert.equal(calls.length, 1)
+    assert.equal(await readFile(join(prepared.dist, 'index.html'), 'utf8'), 'fresh')
+  } finally {
+    await prepared.cleanup()
+  }
+})
+
+test(
+  'signal during fresh build kills descendants and removes its temporary dist',
+  { timeout: 10_000 },
+  async () => {
+    const packageRoot = await temporaryDirectory('playground-build-signal-')
+    const pidFile = join(packageRoot, 'descendant.pid')
+    const executable = await writeBlockingBun(packageRoot)
+    const controller = new AbortController()
+    let dist
+    const runner = createPortableProcessRunner({ terminationGraceMs: 25, forceKillGraceMs: 250 })
+    const pending = prepareFreshDist({
+      root: packageRoot,
+      executable,
+      onDistCreated: created => {
+        dist = created
+      },
+      processRunner: command => runner({ ...command, env: { ...process.env, PID_FILE: pidFile } }),
+      signal: controller.signal
+    })
+    const descendantPid = await waitFor(async () => Number(await readFile(pidFile, 'utf8')))
+    controller.abort(new Error('build interrupted'))
+    await assert.rejects(pending, /build interrupted/)
+    await assertProcessNotLive(descendantPid)
+    await assert.rejects(access(dist), { code: 'ENOENT' })
+  }
+)
+
+test('cleanup is idempotent and aggregates server and temporary-dist failures', async () => {
+  const failures = [new Error('server close failed'), new Error('dist remove failed')]
+  let serverCalls = 0
+  let distCalls = 0
+  const cleanup = cleanupOwnedResources({
+    server: {
+      close: async () => {
+        serverCalls++
+        throw failures[0]
+      }
+    },
+    prepared: {
+      cleanup: async () => {
+        distCalls++
+        throw failures[1]
+      }
+    }
+  })
+  const first = cleanup()
+  assert.equal(first, cleanup())
+  await assert.rejects(first, error => {
+    assert.ok(error instanceof AggregateError)
+    assert.deepEqual(error.errors, failures)
+    return true
+  })
+  assert.equal(serverCalls, 1)
+  assert.equal(distCalls, 1)
+})
+
+test('signal exit succeeds only for the exact signal reason after completely successful cleanup', () => {
+  const controller = new AbortController()
+  const reason = new Error('stopped')
+  controller.abort(reason)
+  assert.equal(isSuccessfulSignalShutdown({ error: reason, signal: controller.signal }), true)
+  assert.equal(
+    isSuccessfulSignalShutdown({
+      error: new AggregateError([reason, new Error('tree survived')]),
+      signal: controller.signal
+    }),
+    false
+  )
+  assert.equal(
+    isSuccessfulSignalShutdown({
+      cleanupError: new Error('dist cleanup failed'),
+      error: reason,
+      signal: controller.signal
+    }),
+    false
+  )
 })
 
 test('static server returns correct content types, 404s, and an exact URL', async () => {
@@ -250,6 +427,51 @@ test('static server reports a clear port conflict instead of false success', asy
   } finally {
     await new Promise(resolve => blocker.close(resolve))
   }
+})
+
+test('static server brackets IPv6 URLs while listening on normalized ::1', async t => {
+  const served = await temporaryDirectory('playground-ipv6-')
+  await writeFile(join(served, 'index.html'), 'ipv6')
+  let server
+  try {
+    server = await startStaticServer(served, { host: '::1', port: 0 })
+  } catch (error) {
+    if (/EAFNOSUPPORT/.test(error.message)) {
+      t.skip('IPv6 loopback unavailable')
+      return
+    }
+    throw error
+  }
+  try {
+    assert.match(server.url, /^http:\/\/\[::1\]:\d+$/)
+    assert.equal(await (await fetch(server.url)).text(), 'ipv6')
+  } finally {
+    await server.close()
+  }
+})
+
+test('static server close is bounded even with a held keep-alive connection', async () => {
+  const served = await temporaryDirectory('playground-held-connection-')
+  await writeFile(join(served, 'index.html'), 'held')
+  const server = await startStaticServer(served, { closeTimeoutMs: 25 })
+  const socket = createConnection({ host: server.host, port: server.port })
+  await new Promise((resolve, reject) => {
+    socket.once('connect', resolve)
+    socket.once('error', reject)
+  })
+  socket.write('GET / HTTP/1.1\r\nHost: localhost\r\n')
+  const socketClosed = new Promise(resolve => socket.once('close', resolve))
+  const started = performance.now()
+  await server.close()
+  assert.ok(performance.now() - started < 500)
+  await socketClosed
+  assert.equal(socket.destroyed, true)
+  const replacement = createServer()
+  await new Promise((resolve, reject) => {
+    replacement.once('error', reject)
+    replacement.listen(server.port, server.host, resolve)
+  })
+  await new Promise(resolve => replacement.close(resolve))
 })
 
 for (const signal of ['SIGTERM', 'SIGINT']) {
