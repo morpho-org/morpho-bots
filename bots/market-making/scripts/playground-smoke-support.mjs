@@ -673,16 +673,63 @@ if ctypes.CDLL(None, use_errno=True).prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) !
     errno = ctypes.get_errno()
     raise OSError(errno, os.strerror(errno))
 
-child = subprocess.Popen(sys.argv[1:])
+child = None
+pending_signals = []
+
 
 def forward(signum, _frame):
+    if child is None:
+        pending_signals.append(signum)
+        return
     try:
         child.send_signal(signum)
     except ProcessLookupError:
         pass
 
+
+def finish_with_signal(signum):
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+    os._exit(128 + signum)
+
+
+def test_barrier(phase):
+    ready = os.environ.get('SUBREAPER_TEST_' + phase + '_READY_FILE')
+    release = os.environ.get('SUBREAPER_TEST_' + phase + '_RELEASE_FILE')
+    if not ready or not release:
+        return
+    open(ready, 'w').close()
+    while not os.path.exists(release):
+        time.sleep(0.001)
+
+
 signal.signal(signal.SIGINT, forward)
 signal.signal(signal.SIGTERM, forward)
+test_barrier('BEFORE_POPEN')
+if pending_signals:
+    finish_with_signal(pending_signals[0])
+
+preexec_fn = None
+if os.environ.get('SUBREAPER_TEST_DURING_POPEN_READY_FILE'):
+    preexec_fn = lambda: test_barrier('DURING_POPEN')
+
+try:
+    child = subprocess.Popen(sys.argv[1:], preexec_fn=preexec_fn)
+except BaseException:
+    if pending_signals:
+        finish_with_signal(pending_signals[0])
+    raise
+
+signals_to_forward = pending_signals
+pending_signals = []
+for signum in signals_to_forward:
+    try:
+        child.send_signal(signum)
+    except ProcessLookupError:
+        pass
+
+test_barrier('AFTER_ASSIGNMENT')
 returncode = child.wait()
 
 while True:

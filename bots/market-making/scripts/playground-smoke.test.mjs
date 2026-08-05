@@ -765,6 +765,178 @@ child.on('close', () => process.exit(0))
   })
 }
 
+const subreaperChild = String.raw`
+import os
+import signal
+import time
+
+with open(os.environ['SUBREAPER_TEST_CHILD_PID_FILE'], 'w') as pid_file:
+    pid_file.write(str(os.getpid()))
+if ready_file := os.environ.get('SUBREAPER_TEST_CHILD_READY_FILE'):
+    open(ready_file, 'w').close()
+
+signals = []
+if signal_file := os.environ.get('SUBREAPER_TEST_CHILD_SIGNAL_FILE'):
+    def record(signum, _frame):
+        signals.append(signal.Signals(signum).name)
+        with open(signal_file, 'a') as output:
+            output.write(signal.Signals(signum).name + '\n')
+        if len(signals) == 2:
+            raise SystemExit(0)
+    signal.signal(signal.SIGTERM, record)
+    signal.signal(signal.SIGINT, record)
+
+while True:
+    time.sleep(1)
+`
+
+const waitForClose = child =>
+  new Promise((resolve, reject) => {
+    child.once('error', reject)
+    child.once('close', (code, signal) => resolve({ code, signal }))
+  })
+
+const runSubreaperBarrierSignal = async ({ phase, signal, suffix }) => {
+  const root = await temporaryDirectory(`subreaper-${phase.toLowerCase()}-${suffix}-`)
+  const readyFile = join(root, 'barrier-ready')
+  const releaseFile = join(root, 'barrier-release')
+  const childPidFile = join(root, 'child-pid')
+  const owner = spawnOwnedProcess(process.env.PYTHON ?? 'python3', ['-c', subreaperChild], {
+    env: {
+      ...process.env,
+      SUBREAPER_TEST_CHILD_PID_FILE: childPidFile,
+      [`SUBREAPER_TEST_${phase}_READY_FILE`]: readyFile,
+      [`SUBREAPER_TEST_${phase}_RELEASE_FILE`]: releaseFile
+    },
+    stdio: 'ignore'
+  })
+  const completion = waitForClose(owner)
+  let childPid
+  try {
+    await waitFor(() => readFile(readyFile))
+    process.kill(owner.pid, signal)
+    await writeFile(releaseFile, 'release')
+    const result = await completion
+    assert.deepEqual(result, { code: null, signal })
+    try {
+      childPid = Number(await readFile(childPidFile, 'utf8'))
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error
+    }
+    if (phase === 'BEFORE_POPEN') assert.equal(childPid, undefined)
+    if (childPid) await waitForProcessesGone([childPid])
+  } finally {
+    if (owner.exitCode === null && owner.signalCode === null) owner.kill('SIGKILL')
+    if (childPid && processExists(childPid)) process.kill(childPid, 'SIGKILL')
+  }
+}
+
+test('subreaper cancellation before Popen never starts an unowned child', async () => {
+  for (const signal of ['SIGTERM', 'SIGINT']) {
+    await runSubreaperBarrierSignal({ phase: 'BEFORE_POPEN', signal, suffix: signal.toLowerCase() })
+  }
+})
+
+test(
+  'subreaper forwards startup signals from the handler-installed/Popen-assignment window',
+  { timeout: 60_000 },
+  async () => {
+    for (const signal of ['SIGTERM', 'SIGINT']) {
+      for (let iteration = 0; iteration < 50; iteration++) {
+        await runSubreaperBarrierSignal({
+          phase: 'DURING_POPEN',
+          signal,
+          suffix: `${signal.toLowerCase()}-${iteration}`
+        })
+      }
+    }
+  }
+)
+
+test('subreaper forwards signals just after child assignment without a startup gap', async () => {
+  for (const signal of ['SIGTERM', 'SIGINT']) {
+    await runSubreaperBarrierSignal({
+      phase: 'AFTER_ASSIGNMENT',
+      signal,
+      suffix: signal.toLowerCase()
+    })
+  }
+})
+
+test('subreaper forwards multiple post-assignment signals exactly once', async () => {
+  const root = await temporaryDirectory('subreaper-multiple-signals-')
+  const barrierReady = join(root, 'barrier-ready')
+  const barrierRelease = join(root, 'barrier-release')
+  const childReady = join(root, 'child-ready')
+  const childPidFile = join(root, 'child-pid')
+  const childSignalFile = join(root, 'child-signals')
+  const owner = spawnOwnedProcess(process.env.PYTHON ?? 'python3', ['-c', subreaperChild], {
+    env: {
+      ...process.env,
+      SUBREAPER_TEST_AFTER_ASSIGNMENT_READY_FILE: barrierReady,
+      SUBREAPER_TEST_AFTER_ASSIGNMENT_RELEASE_FILE: barrierRelease,
+      SUBREAPER_TEST_CHILD_PID_FILE: childPidFile,
+      SUBREAPER_TEST_CHILD_READY_FILE: childReady,
+      SUBREAPER_TEST_CHILD_SIGNAL_FILE: childSignalFile
+    },
+    stdio: 'ignore'
+  })
+  const completion = waitForClose(owner)
+  let childPid
+  try {
+    await Promise.all([waitFor(() => readFile(barrierReady)), waitFor(() => readFile(childReady))])
+    childPid = Number(await readFile(childPidFile, 'utf8'))
+    owner.kill('SIGTERM')
+    await waitFor(async () => assert.equal(await readFile(childSignalFile, 'utf8'), 'SIGTERM\n'))
+    owner.kill('SIGINT')
+    await writeFile(barrierRelease, 'release')
+    assert.deepEqual(await completion, { code: 0, signal: null })
+    assert.equal(await readFile(childSignalFile, 'utf8'), 'SIGTERM\nSIGINT\n')
+    await waitForProcessesGone([childPid])
+  } finally {
+    if (owner.exitCode === null && owner.signalCode === null) owner.kill('SIGKILL')
+    if (childPid && processExists(childPid)) process.kill(childPid, 'SIGKILL')
+  }
+})
+
+test('subreaper preserves a Popen error when no child was started', async () => {
+  const owner = spawnOwnedProcess('/definitely/missing/subreaper-child', [], {
+    stdio: ['ignore', 'ignore', 'pipe']
+  })
+  let stderr = ''
+  owner.stderr.setEncoding('utf8')
+  owner.stderr.on('data', chunk => {
+    stderr += chunk
+  })
+  assert.deepEqual(await waitForClose(owner), { code: 1, signal: null })
+  assert.match(stderr, /FileNotFoundError.*definitely\/missing\/subreaper-child/s)
+})
+
+test('subreaper preserves a pending signal when Popen fails', async () => {
+  for (const signal of ['SIGTERM', 'SIGINT']) {
+    const root = await temporaryDirectory(`subreaper-popen-error-${signal.toLowerCase()}-`)
+    const readyFile = join(root, 'barrier-ready')
+    const releaseFile = join(root, 'barrier-release')
+    const owner = spawnOwnedProcess('/definitely/missing/subreaper-child', [], {
+      env: {
+        ...process.env,
+        SUBREAPER_TEST_DURING_POPEN_READY_FILE: readyFile,
+        SUBREAPER_TEST_DURING_POPEN_RELEASE_FILE: releaseFile
+      },
+      stdio: 'ignore'
+    })
+    const completion = waitForClose(owner)
+    try {
+      await waitFor(() => readFile(readyFile))
+      process.kill(owner.pid, signal)
+      await writeFile(releaseFile, 'release')
+      assert.deepEqual(await completion, { code: null, signal })
+    } finally {
+      if (owner.exitCode === null && owner.signalCode === null) owner.kill('SIGKILL')
+    }
+  }
+})
+
 for (const signal of ['SIGTERM', 'SIGINT']) {
   test(`${signal} before Chromium readiness lets the browser parent reap its descendant`, async () => {
     const isolatedTmp = await temporaryDirectory(
