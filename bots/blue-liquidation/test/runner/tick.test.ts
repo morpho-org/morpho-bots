@@ -43,17 +43,16 @@ const PARAMS: MarketParams = {
   irm: IRM,
   lltv: 86n * 10n ** 16n
 }
-const LABEL = lensKey(marketId(PARAMS), BORROWER)
 const MARKET_ID = marketId(PARAMS)
+const LABEL = lensKey(MARKET_ID, BORROWER)
 const TX_HASH: Hex = `0x${'b'.repeat(64)}`
 const SENT: SubmitOutcome = { kind: 'sent', nonce: 7, txHash: TX_HASH }
 
 type TickCounters = Awaited<ReturnType<typeof runTick>>
 
 /**
- * Every counter identity the tick promises for a completed tick. Asserted for EVERY case built by
- * `runWith`, so a stage added without a counter breaks the sums instead of silently dropping a
- * position — the exact class of bug these counters exist to catch.
+ * Asserted for EVERY case built by `runWith`, so a stage added without a counter breaks a sum rather
+ * than silently dropping a position — the exact class of bug these counters exist to catch.
  */
 function expectCountersConsistent(c: TickCounters) {
   expect(c.pairs).toBeGreaterThanOrEqual(c.liquidatable)
@@ -337,7 +336,7 @@ describe('runTick', () => {
 
   describe('unplannable positions (plan.skipped)', () => {
     it('logs plan.skipped with a closed causal chain: sizing inputs AND the derived trace', async () => {
-      // Dust: a tiny debt against an expensive slot floors the full-debt seize to zero collateral.
+      // Dust: a tiny debt against an expensive slot floors the full-debt seize to zero.
       const { counters, events } = await runWith({
         out: lensOut({ borrowShares: 1n, collateralPrice: ORACLE_PRICE_SCALE * 10n ** 6n })
       })
@@ -425,10 +424,9 @@ describe('runTick', () => {
     })
 
     it('lets the backoff delay GROW across repeated send failures', async () => {
-      // The precise mechanism of bug 3: `clear` deletes the attempt count, so clearing on a
-      // non-broadcast resets the delay to `baseBlocks` forever and the exponential never accrues.
-      // Seeded at block 1 (attempts=1) and failing again at 100 must reach attempts=2 → a 4-block
-      // wait (until 104), not the 2-block wait a reset would give.
+      // `clear` deletes the attempt count, so clearing on a non-broadcast pins the delay at
+      // `baseBlocks` forever. Seeded at block 1 (attempts=1) then failing at 100 must reach
+      // attempts=2 → a 4-block wait (until 104), not the 2-block wait a reset would give.
       const { backoff } = await runWith({
         seedBackoffAt: 1n,
         submitOutcome: { kind: 'failed', reason: 'submit_failed' }

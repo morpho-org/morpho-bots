@@ -20,17 +20,16 @@ import { isBadDebtRealization, planWithReason } from '../sizing/plan'
 import { isLiquidatable, planInputFromLens } from './eligibility'
 
 /**
- * Per-tick outcome tally, emitted as `tick.end`. Ordered as the pipeline runs, and exhaustive by
- * construction: for a tick that finished (`complete: true` on the event) these identities hold, so a
- * future stage added without a counter shows up as a broken sum rather than a silent drop.
+ * Per-tick outcome tally, emitted as `tick.end`, ordered as the pipeline runs. For a tick that
+ * finished (`complete: true`) these identities hold, so a stage added without a counter breaks a sum
+ * instead of silently dropping a position:
  *
  *   pairs       >= liquidatable
  *   liquidatable === inflightSkipped + planSkipped + planned
  *   planned      === cooledDown + backoffSkipped + noSwapPath + quoteFailed + ok + reverted
  *   ok           === submitted + notSent
  *
- * They do NOT hold when `complete` is `false`: an aborting `submit` throws after `ok` was counted but
- * before `submitted`/`notSent`, so the last identity is short by one.
+ * On `complete: false` the last is short by one: an aborting `submit` throws after `ok` was counted.
  */
 type TickCounters = {
   /** Lens inputs read this tick — the post-whitelist discovery universe. */
@@ -38,9 +37,8 @@ type TickCounters = {
   /** Positions the chain says are liquidatable at this block. A market gauge, not a bot decision. */
   liquidatable: number
   /**
-   * Skipped because a tx for this label is already in flight. Note the queue's backpressure set also
-   * holds labels whose tx SETTLED within `settledCooldownBlocks`, so this can be non-zero while the
-   * queue itself is empty.
+   * Skipped because a tx for this label is in flight. The queue's backpressure set also holds labels
+   * that SETTLED within `settledCooldownBlocks`, so this can be non-zero while the queue is empty.
    */
   inflightSkipped: number
   /** Skipped because sizing produced no plan — see the `plan.skipped` event for the reason. */
@@ -59,9 +57,8 @@ type TickCounters = {
 }
 
 /**
- * `warn` marks a reason that should be impossible, so it reads as a live assertion rather than noise:
- * the first three are the exact negation of `isLiquidatable`, and `cap_not_positive` means the RCF
- * numerator went negative. The dust reasons are ordinary and stay `info`.
+ * `warn` marks a reason that should be unreachable — the first three negate `isLiquidatable`, and
+ * `cap_not_positive` means the RCF numerator went negative — so the line reads as a live assertion.
  */
 const LEVEL_BY_REASON: Record<PlanSkipReason, 'info' | 'warn'> = {
   no_debt: 'warn',
@@ -134,9 +131,7 @@ export async function runTick(deps: {
   cooldown: CooldownStore
   /**
    * Bounds how often the per-position `plan.skipped` diagnostic is emitted. Asked at most once per
-   * tick and only when there is something to explain, so a quiet stretch never consumes the window:
-   * the first skip after any gap is always reported, and a persistent one settles to a single burst
-   * per cadence. All lines in a burst share one `chainHead`, so they read as one coherent snapshot.
+   * tick, so every line in a burst shares one `chainHead` and reads as a single snapshot.
    */
   planSkipSampler: BlockSampler
   /** Labels (`${id}:${borrower}`) already in flight — skipped to avoid re-submitting each block. */
@@ -172,11 +167,10 @@ export async function runTick(deps: {
 
   // 2. Read the lens fresh for the whole batch in one deployless eth_call.
   const lensOut = await readLens(pairs)
-  // `returned` is always `pairs` (the batch lens maps every input row); `invalid` is the informative
-  // one — it counts rows the lens zeroed (unknown market, reverting oracle), which would otherwise be
-  // indistinguishable from a healthy position in `pairs - liquidatable`.
-  let invalid = 0
-  for (const out of lensOut.values()) if (!out.valid) invalid += 1
+  // `returned` always equals `pairs` (the batch lens maps every input row); `invalid` is the
+  // informative one — a row the lens zeroed (unknown market, reverting oracle) would otherwise be
+  // indistinguishable from a healthy position inside `pairs - liquidatable`.
+  const invalid = [...lensOut.values()].filter(out => !out.valid).length
   logger.info('lens.read', { pairs: pairs.length, returned: lensOut.size, invalid })
 
   const counters: TickCounters = {
@@ -198,8 +192,7 @@ export async function runTick(deps: {
   // 3. Compose liquidatability off-chain → plan → simulate → submit. `inflight` is captured once;
   // discovery yields distinct (id, borrower) pairs, so no label repeats within a single tick.
   const inflight = inflightLabels()
-  // Resolved lazily on the first skip of the tick and reused for the rest, so one tick emits either a
-  // full snapshot of the blocker set or nothing — never a staggered subset.
+  // Resolved on the first skip and reused, so a tick emits the whole blocker set or none of it.
   let explainSkips: boolean | null = null
 
   const processPairs = async () => {
@@ -209,9 +202,8 @@ export async function runTick(deps: {
       if (!out || !isLiquidatable(out)) continue
       counters.liquidatable += 1
 
-      // Backpressure: a tx for this position is already pending — don't re-plan/simulate/submit it
-      // every block while it confirms. No log: the queue already narrates this label's whole
-      // lifecycle (`tx.sent` → `tx.confirmed`/`tx.reverted`/`tx.dropped`) under the same key.
+      // Backpressure: don't re-plan/simulate/submit while a tx confirms. No log — the queue already
+      // narrates this label end to end (`tx.sent` → `tx.confirmed`/`tx.reverted`/`tx.dropped`).
       if (inflight.has(label)) {
         counters.inflightSkipped += 1
         continue
@@ -223,9 +215,8 @@ export async function runTick(deps: {
         counters.planSkipped += 1
         explainSkips ??= planSkipSampler.claim(chainHead)
         if (explainSkips) {
-          // Spread the inputs AND the derived trace so the line is a closed causal chain — an
-          // operator can replay sizing from it without re-deriving anything. `marketId`/`borrower`
-          // last so a future `PlanInput` field can never shadow them.
+          // Inputs AND derived trace, so sizing replays from this one line. `marketId`/`borrower`
+          // last, so a future `PlanInput` field can never shadow them.
           logger[LEVEL_BY_REASON[outcome.reason]]('plan.skipped', {
             ...planInput,
             ...outcome.trace,
@@ -333,10 +324,9 @@ export async function runTick(deps: {
         continue
       }
       counters.notSent += 1
-      // Only a per-position send failure earns a backoff. `send_aborted`, `nonce_hole` and
-      // `nonce_sync_failed` are queue-WIDE refusals that reject every send this tick, so backing off
-      // here would suppress positions that did nothing wrong — for 2, 4, 8… blocks after the latch
-      // itself has cleared. The queue has already logged which exit it took.
+      // Only a per-position send failure earns a backoff. The other reasons are queue-WIDE refusals
+      // that reject every send this tick, so backing off here would suppress positions that did
+      // nothing wrong, for 2, 4, 8… blocks after the latch itself cleared.
       if (sendOutcome.reason === 'submit_failed') {
         backoff.record(label, chainHead)
         cooldown.mark(label)
@@ -345,9 +335,8 @@ export async function runTick(deps: {
   }
 
   // Emit counters even when a position aborts the tick (a hashless send after the nonce was claimed
-  // throws by design). Without `complete` an aborted tick's partial counters are indistinguishable
-  // from a genuinely idle one. `ensureError` preserves the instance, so rethrowing keeps `TxSendError`
-  // intact for the runner's `tick.error` decode.
+  // throws by design) — without `complete`, partial counters look exactly like an idle tick.
+  // `tryCatch` preserves the error instance, so the rethrow keeps `TxSendError` intact downstream.
   const { error } = await tryCatch(processPairs())
   logger.info('tick.end', { ...counters, complete: !error })
   if (error) throw error

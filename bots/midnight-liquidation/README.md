@@ -451,9 +451,8 @@ real broadcasts. The queue has five exits:
 | nonce cursor unusable          | `nonce.sync_failed` | `notSent` only — a queue-wide refusal        |
 | nonce hole below the cursor    | `queue.nonce_hole`  | `notSent` only — a queue-wide refusal        |
 
-The three queue-wide refusals reject _every_ send that tick, so they deliberately do NOT back off the
-position that happened to be in hand — otherwise a single latch would suppress every healthy position
-for several blocks after the latch itself cleared.
+A queue-wide refusal rejects _every_ send that tick, so backing off the position that happened to be
+in hand would suppress healthy positions for several blocks after the latch itself cleared.
 
 If the initial raw broadcast fails after a nonce is claimed but before a hash is returned, the signer
 rolls the cursor back and the queue aborts that tick instead of counting a hashless transaction as

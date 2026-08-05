@@ -52,10 +52,8 @@ export const LISTED_MARKETS_MAX_AGE_MS = 10 * 60_000
 export const BPS = 10_000n
 
 /**
- * Block cadence bounding the per-position `plan.skipped` diagnostic. A liquidatable position that
- * cannot be sized recurs every tick, so logging one line per position per block would dominate the
- * log source while repeating one fact (~12 positions × ~1780 ticks/hour on Base). At ~2s blocks this
- * is roughly every 5 minutes. The sampler is asked only when a skip actually happens, so a quiet
- * stretch never consumes the window and the first skip after any gap is always reported.
+ * Block cadence bounding the per-position `plan.skipped` diagnostic (~5 min at ~2s Base blocks). An
+ * unsizable position recurs every tick, so one line per position per block would be ~21k
+ * lines/hour/bot — all repeating one fact. The `planSkipped` counter stays exact regardless.
  */
 export const PLAN_SKIP_SAMPLE_EVERY_BLOCKS = 150n
