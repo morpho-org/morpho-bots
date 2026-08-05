@@ -1,8 +1,11 @@
+import type { BootstrapSubmittedTransaction } from '../../application/bootstrap/position-bootstrap-verbose'
+
 /** Stable production-adapter failure without provider URLs, payloads, or secret material. */
 export class BootstrapAdapterError extends Error {
   readonly code = 'BOOTSTRAP_ADAPTER_FAILED'
   readonly kind = 'provider-error'
   reservationCleanupErrorName?: string
+  confirmedTransactions: readonly BootstrapSubmittedTransaction[] = []
 
   /** Creates a sanitized failure for one fixed adapter operation. @param operation - Stable operation code. */
   constructor(readonly operation: string) {
@@ -17,6 +20,16 @@ export class BootstrapAdapterError extends Error {
    */
   recordReservationCleanupFailure(errorName: string) {
     this.reservationCleanupErrorName = errorName
+    return this
+  }
+
+  /**
+   * Retains confirmed transactions that completed before this adapter failure.
+   * @param transactions - Confirmed protocol mutations in submission order.
+   * @returns This original adapter failure with supplementary transaction evidence.
+   */
+  recordConfirmedTransactions(transactions: readonly BootstrapSubmittedTransaction[]) {
+    this.confirmedTransactions = [...transactions]
     return this
   }
 }

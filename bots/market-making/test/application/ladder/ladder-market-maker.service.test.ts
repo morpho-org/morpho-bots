@@ -14,9 +14,11 @@ import type {
 } from '../../../src/domain/ladder/ladder'
 
 import { LadderMarketMakerService } from '../../../src/application/ladder/ladder-market-maker.service'
+import { LadderAdapterError } from '../../../src/infrastructure/ladder/ladder-adapter.error'
 
 const marketId: Hex = `0x${'55'.repeat(32)}`
 const secondMarketId: Hex = `0x${'66'.repeat(32)}`
+const ratificationHash: Hex = `0x${'dd'.repeat(32)}`
 const config = (id = marketId): LadderConfig => ({
   marketId: id,
   quotePremiumBps: 0n,
@@ -101,6 +103,7 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
     liveDesired,
     halts,
     cleanup,
+    make,
     setRate: (value: bigint) => (rate = value),
     setCapacity: (value: bigint) => (marketState = state(value)),
     failMarket: (id: Hex) => (readFailure = id),
@@ -351,6 +354,25 @@ describe('LadderMarketMakerService', () => {
       { marketId: secondMarketId, action: 'publish' }
     ])
     expect(subject.halts).toEqual([])
+  })
+
+  test('retains a confirmed ratification hash when publication later fails', async () => {
+    const subject = harness()
+    subject.make.reconcile = mock(async () => {
+      throw new LadderAdapterError(
+        'publication-transaction-reverted-after-ratification'
+      ).recordConfirmedTransactions([{ operation: 'ratify', txHash: ratificationHash }])
+    })
+
+    expect(await subject.service.runOnce({ verbose: true })).toMatchObject([
+      {
+        status: 'failed',
+        stage: 'reconcile',
+        verbose: {
+          submittedTransactions: [{ operation: 'ratify', txHash: ratificationHash }]
+        }
+      }
+    ])
   })
 
   test('retains a safe active center before generating an out-of-bounds fresh center', async () => {

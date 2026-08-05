@@ -74,7 +74,7 @@ const readyState = (): SetupStateService => {
       listed: true,
       deployed: true,
       midnightMatches: true,
-      ecrecoverSurface: true,
+      surfaceMatches: true,
       authorized: true
     }),
     getBook: async id => ({

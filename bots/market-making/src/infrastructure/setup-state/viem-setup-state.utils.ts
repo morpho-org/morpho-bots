@@ -15,6 +15,8 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 10_000
 // The deployment-specific runtime hash includes the immutable Midnight target.
 export const BASE_ECRECOVER_RATIFIER_RUNTIME_HASH =
   '0xcce1e0dd38ae831e81a9270627af2c24c208409ec03d5654a28a33ead53b1ac1'
+export const BASE_SETTER_RATIFIER_RUNTIME_HASH =
+  '0xace63c5b7c1b611d0b9c04df3993ce0cf24a172287c9e0755d18606b7465c235'
 const invalidProviderValue = (message: string) =>
   new ProviderResponseError('provider', 'decode', message)
 /**
@@ -183,12 +185,12 @@ export const offersFromGroups = (value: unknown) =>
   })
 
 /**
- * Extracts Base Ecrecover ratifier addresses from Router configuration.
+ * Extracts supported Base ratifier addresses and kinds from Router configuration.
  * @param value - Untrusted Router config-contracts response.
- * @returns Checksummed Base Ecrecover ratifier addresses.
+ * @returns Checksummed Base ratifier addresses paired with their canonical kinds.
  * @throws When the response shape or selected contract fields are malformed.
  */
-export const routerEcrecoverRatifiers = (value: unknown) => {
+export const routerRatifiers = (value: unknown) => {
   const data = arrayValue(
     objectValue(value, 'Router config contracts response').data,
     'Router config contracts'
@@ -196,8 +198,15 @@ export const routerEcrecoverRatifiers = (value: unknown) => {
   return data.flatMap(item => {
     const contract = objectValue(item, 'Router config contract')
     if (integerValue(contract.chain_id, 'config contract chain_id') !== BASE_CHAIN_ID) return []
-    if (contract.name !== 'ecrecoverRatifier') return []
-    return [addressValue(contract.address, 'config contract address')]
+    const type =
+      contract.name === 'ecrecoverRatifier'
+        ? ('ecrecover' as const)
+        : contract.name === 'setterRatifier'
+          ? ('setter' as const)
+          : undefined
+    return type
+      ? [{ type, address: addressValue(contract.address, 'config contract address') }]
+      : []
   })
 }
 

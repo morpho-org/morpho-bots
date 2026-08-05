@@ -30,17 +30,19 @@ export interface LadderOfferTransport {
   listActiveGroupIds(marketId?: Hex): Promise<readonly Hex[]>
   /** Lists the maker's complete live offer book. @returns Every offer needed for spread safety. */
   listBookOffers(): Promise<readonly LadderBookOffer[]>
-  /** Prepares and signs a desired tree without broadcasting it. @param quote - Exact desired quote set. @returns Publication metadata and one-shot publisher. */
+  /** Prepares a policy-checked desired tree without broadcasting it. @param quote - Exact desired quote set. @returns Publication metadata and one-shot ratifier/publisher. */
   preparePublication(quote: LadderQuoteSet): Promise<{
     groupIds: readonly Hex[]
     groups: readonly LadderGroupReference[]
     prospective: readonly LadderBookOffer[]
     /**
-     * Broadcasts the already signed and policy-checked tree and waits for its receipt.
-     * @param onTransactionSubmitted - Optional safe observer notified after wallet submission.
-     * @returns Canonical transaction hash after receipt confirmation.
+     * Ratifies when required, publishes the policy-checked tree, and waits for every receipt.
+     * @param onTransactionSubmitted - Optional safe observer notified after each wallet submission.
+     * @returns Confirmed ratification and publication transactions in submission order.
      */
-    publish(onTransactionSubmitted?: LadderTransactionSubmittedObserver): Promise<Hex | void>
+    publish(
+      onTransactionSubmitted?: LadderTransactionSubmittedObserver
+    ): Promise<Hex | void | readonly LadderSubmittedTransaction[]>
   }>
   /** Durably reserves future groups. @param publication - Desired quote and derived group mapping. @returns Completion after atomic storage. */
   reservePublication(publication: {
@@ -142,12 +144,19 @@ export class MidnightLadderMakeService implements LadderMakeService {
 
       if (!publication) return { submittedTransactions }
       try {
-        const txHash = await publication.publish(
+        const publicationResult = await publication.publish(
           this.safeObserver(parameters.onTransactionSubmitted)
         )
-        if (txHash) submittedTransactions.push({ operation: 'publish', txHash })
+        if (publicationResult && typeof publicationResult !== 'string') {
+          submittedTransactions.push(...publicationResult)
+        } else if (publicationResult) {
+          submittedTransactions.push({ operation: 'publish', txHash: publicationResult })
+        }
       } catch (error) {
-        if (error instanceof LadderAdapterError && error.operation === 'transaction-reverted') {
+        if (
+          error instanceof LadderAdapterError &&
+          ['transaction-reverted', 'ratifier-transaction-reverted'].includes(error.operation)
+        ) {
           try {
             await this.transport.releasePublication(publication.groupIds)
           } catch {

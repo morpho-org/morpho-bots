@@ -11,7 +11,7 @@ import type {
 /** Bootstrap transaction identity shared by immediate submission and confirmed-result records. */
 export type BootstrapSubmittedTransaction = {
   /** Protocol mutation represented by the transaction. */
-  operation: 'cancel' | 'publish'
+  operation: 'cancel' | 'ratify' | 'publish'
   /** Canonical transaction hash returned by the wallet client. */
   txHash: Hex
 }

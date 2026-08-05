@@ -2,9 +2,15 @@ import type { Address, Hex } from 'viem'
 
 import { describe, expect, test } from 'bun:test'
 
+import type { LadderQuoteSet } from '../../../src/domain/ladder/ladder'
+
 import { ConfigService } from '../../../src/config/config.service'
 import { LadderAdapterError } from '../../../src/infrastructure/ladder/ladder-adapter.error'
-import { createProductionLadderAdapters } from '../../../src/infrastructure/ladder/production-ladder'
+import { MidnightLadderMakeService } from '../../../src/infrastructure/ladder/ladder-make.service'
+import {
+  createProductionLadderAdapters,
+  publishLadderPublication
+} from '../../../src/infrastructure/ladder/production-ladder'
 
 const maker: Address = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
 const foreignMaker: Address = '0x1111111111111111111111111111111111111111'
@@ -13,6 +19,16 @@ const loanToken: Address = '0x3333333333333333333333333333333333333333'
 const ratifier: Address = '0x4444444444444444444444444444444444444444'
 const marketId: Hex = `0x${'55'.repeat(32)}`
 const referenceMarketId: Hex = `0x${'66'.repeat(32)}`
+const groupId: Hex = `0x${'77'.repeat(32)}`
+const approvalHash: Hex = `0x${'88'.repeat(32)}`
+const publicationHash: Hex = `0x${'99'.repeat(32)}`
+const quote: LadderQuoteSet = {
+  marketId,
+  centerRateBps: 500n,
+  groupMode: 'shared-rung',
+  lower: [{ index: 0, rateBps: 450n, assets: 10n }],
+  higher: [{ index: 0, rateBps: 550n, assets: 10n }]
+}
 
 const environment = {
   CHAIN_ID: '8453',
@@ -59,5 +75,91 @@ describe('createProductionLadderAdapters', () => {
 
     expect(error).toBeInstanceOf(LadderAdapterError)
     expect((error as LadderAdapterError).operation).toBe('maker-private-key-mismatch')
+  })
+})
+
+describe('publishLadderPublication', () => {
+  test('retains the durable Setter reservation when publication receipt confirmation times out', async () => {
+    const retained = new Set<Hex>()
+    const service = new MidnightLadderMakeService({
+      readActive: async () => undefined,
+      listOwnedGroups: async () => [],
+      readGroupConsumed: async () => 0n,
+      listActiveGroupIds: async () => [],
+      listBookOffers: async () => [],
+      preparePublication: async () => ({
+        groupIds: [groupId],
+        groups: [{ groupId, side: 'lower', rungIndexes: [0] }],
+        prospective: [],
+        publish: () =>
+          publishLadderPublication({
+            approve: async () => ({ operation: 'ratify', txHash: approvalHash }),
+            validate: async () => {},
+            sendPublication: async () => ({ operation: 'publish', txHash: publicationHash }),
+            confirmPublication: async () => {
+              throw new Error('receipt timeout')
+            }
+          })
+      }),
+      reservePublication: async publication => {
+        for (const group of publication.groups) retained.add(group.groupId)
+      },
+      confirmPublication: async () => {},
+      releasePublication: async groupIds => {
+        for (const id of groupIds) retained.delete(id)
+      },
+      invalidate: async () => {},
+      forgetGroups: async () => {}
+    })
+
+    await expect(
+      service.reconcile({ marketId, desired: quote, reason: 'recenter' })
+    ).rejects.toMatchObject({
+      operation: 'publication-after-ratification',
+      confirmedTransactions: [{ operation: 'ratify', txHash: approvalHash }]
+    })
+    expect([...retained]).toEqual([groupId])
+  })
+
+  test('retains the durable Setter reservation when publication submission fails', async () => {
+    const retained = new Set<Hex>()
+    const service = new MidnightLadderMakeService({
+      readActive: async () => undefined,
+      listOwnedGroups: async () => [],
+      readGroupConsumed: async () => 0n,
+      listActiveGroupIds: async () => [],
+      listBookOffers: async () => [],
+      preparePublication: async () => ({
+        groupIds: [groupId],
+        groups: [{ groupId, side: 'lower', rungIndexes: [0] }],
+        prospective: [],
+        publish: () =>
+          publishLadderPublication({
+            approve: async () => ({ operation: 'ratify', txHash: approvalHash }),
+            validate: async () => {},
+            sendPublication: async () => {
+              throw new Error('send failed')
+            },
+            confirmPublication: async () => {}
+          })
+      }),
+      reservePublication: async publication => {
+        for (const group of publication.groups) retained.add(group.groupId)
+      },
+      confirmPublication: async () => {},
+      releasePublication: async groupIds => {
+        for (const id of groupIds) retained.delete(id)
+      },
+      invalidate: async () => {},
+      forgetGroups: async () => {}
+    })
+
+    await expect(
+      service.reconcile({ marketId, desired: quote, reason: 'recenter' })
+    ).rejects.toMatchObject({
+      operation: 'publication-after-ratification',
+      confirmedTransactions: [{ operation: 'ratify', txHash: approvalHash }]
+    })
+    expect([...retained]).toEqual([groupId])
   })
 })
