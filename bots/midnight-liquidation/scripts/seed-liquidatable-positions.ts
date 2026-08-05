@@ -21,7 +21,7 @@
  * tool's OWN swap-route file (it needs a WETH route to fund the seed swaps); it is unrelated to the
  * bot's runtime, which no longer uses a swap-config file:
  *   RPC_URL=... PRIVATE_KEY_LENDER=0x... PRIVATE_KEY_BORROWER=0x... \
- *     bun scripts/seed-liquidatable-positions.ts \
+ *     pnpm --filter @morpho-org/midnight-liquidation run seed:positions -- \
  *       --config ./swap.config.json --pair WETH/USDC --count 100 --drawdown-bps 0 --dry-run
  *
  * Never prints secrets (keys, full RPC URL).
@@ -33,6 +33,7 @@ import { MidnightAbi } from '@repo/contracts'
 import { parseSwapConfig } from '@repo/swaps'
 import { delay as sleep, lensKey, tryCatch } from '@repo/utils'
 import { readFileSync } from 'node:fs'
+import { createInterface } from 'node:readline/promises'
 import { parseArgs } from 'node:util'
 import {
   createPublicClient,
@@ -63,6 +64,19 @@ import { ORACLE_ABI, SWAP_ROUTER_ABI, WETH_ABI } from './seed/abis'
 import { encodeRatifierData, hashOffer, isLeaf, signOfferTree, toId } from './seed/offers'
 import { DEFAULT_TICK_SPACING, priceToTick, tickToPrice } from './seed/price-tick'
 import { priceDropToLiquidateBps, sizePosition } from './seed/sizing'
+
+// bun exposed a global synchronous `confirm()`; Node does not. Same contract: anything other than an
+// explicit y/yes is a decline, and a non-interactive stdin declines rather than hanging a CI run.
+const confirmPrompt = async (question: string): Promise<boolean> => {
+  if (!process.stdin.isTTY) return false
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  try {
+    const answer = await rl.question(`${question} [y/N] `)
+    return /^y(es)?$/i.test(answer.trim())
+  } finally {
+    rl.close()
+  }
+}
 
 const CHAIN_ID = 8453
 const MIDNIGHT = getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A')
@@ -768,7 +782,7 @@ async function main() {
     logger.info('seed.dry_run_complete', { detail: 'self-checks passed; no transactions sent' })
     return
   }
-  if (!args.yes && !confirm('Proceed to send REAL transactions on Base mainnet?')) {
+  if (!args.yes && !(await confirmPrompt('Proceed to send REAL transactions on Base mainnet?'))) {
     logger.warn('seed.aborted', { detail: 'user declined' })
     return
   }

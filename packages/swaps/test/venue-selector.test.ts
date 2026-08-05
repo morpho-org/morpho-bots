@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'bun:test'
 import { getAddress, parseUnits } from 'viem'
+import { describe, expect, it } from 'vitest'
 
 import type { QuoteLogger } from '../src/quoting'
 import type { PriceParameters, Venue } from '../src/types'

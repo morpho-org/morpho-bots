@@ -149,7 +149,7 @@ historical block and requires `anvil` on `PATH` plus an archive-capable `RPC_URL
 Run package-focused checks with:
 
 ```sh
-bun test bots/market-making/test
+pnpm --filter @morpho-org/market-making-bot exec vitest run
 pnpm --filter @morpho-org/market-making-bot run test:e2e
 pnpm --filter @morpho-org/market-making-bot run typecheck
 pnpm --filter @morpho-org/market-making-bot run jsdoc:build

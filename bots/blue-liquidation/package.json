@@ -5,10 +5,10 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "deploy:railway": "bun run scripts/deploy-railway.ts",
-    "probe:lens": "bun run scripts/probe-live-lens.ts",
-    "prestart": "pnpm -r --parallel --if-present run build",
-    "start": "bun src/index.ts",
+    "build": "tsx scripts/build.ts",
+    "deploy:railway": "tsx scripts/deploy-railway.ts",
+    "probe:lens": "node --env-file-if-exists=.env dist/scripts/probe-live-lens.js",
+    "start": "node --env-file-if-exists=.env dist/src/index.js",
     "typecheck": "soltag && tsc --noEmit"
   },
   "dependencies": {
@@ -23,7 +23,12 @@
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
-    "@types/bun": "catalog:",
-    "typescript": "catalog:"
+    "@types/node": "catalog:",
+    "esbuild": "catalog:",
+    "execa": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:"
   }
 }

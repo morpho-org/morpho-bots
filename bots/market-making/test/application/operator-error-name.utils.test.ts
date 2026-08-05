@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 
 import { MarketMakingMonitorHaltedError } from '../../src/application/market-making/market-making-monitor-halted.error'
 import {

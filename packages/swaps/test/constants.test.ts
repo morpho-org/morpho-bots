@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
+import { describe, expect, it } from 'vitest'
 
 import { ONEINCH_ROUTER, PENDLE_CHAIN_IDS } from '../src/constants'
 

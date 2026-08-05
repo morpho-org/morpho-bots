@@ -1,8 +1,8 @@
 import type { Logger } from '@repo/bot-kit'
 import type { RateLimitedClient, VenuePair, VenueQuoteEstimate, VenueSelector } from '@repo/swaps'
 
-import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
+import { describe, expect, it } from 'vitest'
 
 import type { Market } from '../src/execution/encode-call'
 import type { LiquidationPlan } from '../src/sizing/plan'

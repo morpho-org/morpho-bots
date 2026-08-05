@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from 'bun:test'
+import { describe, expect, test, vi } from 'vitest'
 
 import { RouterApiError } from '../../../src/infrastructure/openapi/error'
 import { RouterApiService } from '../../../src/infrastructure/router-api/service'
@@ -49,7 +49,7 @@ function response(body: unknown, status = 200) {
 
 describe('RouterApiService', () => {
   test('requests asks and bids concurrently through typed paths', async () => {
-    const GET = mock(async (_path: string, request: { params: { path: { side: string } } }) => ({
+    const GET = vi.fn(async (_path: string, request: { params: { path: { side: string } } }) => ({
       data: { data: [wireOffer(MARKET_ID, request.params.path.side === 'bids')] },
       response: response({})
     }))
@@ -67,7 +67,7 @@ describe('RouterApiService', () => {
   })
 
   test('maps generated snake-case offer fields to the domain model', async () => {
-    const GET = mock(async (_path: string, request: { params: { path: { side: string } } }) => ({
+    const GET = vi.fn(async (_path: string, request: { params: { path: { side: string } } }) => ({
       data: { data: [wireOffer(MARKET_ID, request.params.path.side === 'bids')] },
       response: response({})
     }))
@@ -89,7 +89,7 @@ describe('RouterApiService', () => {
   })
 
   test('drops zero-sized and wrong-market rows', async () => {
-    const GET = mock(async (_path: string, request: { params: { path: { side: string } } }) => ({
+    const GET = vi.fn(async (_path: string, request: { params: { path: { side: string } } }) => ({
       data: {
         data: [
           wireOffer(MARKET_ID, request.params.path.side === 'bids'),
@@ -108,7 +108,7 @@ describe('RouterApiService', () => {
   })
 
   test('wraps one-side HTTP failures as RouterApiError', async () => {
-    const GET = mock(async (_path: string, request: { params: { path: { side: string } } }) =>
+    const GET = vi.fn(async (_path: string, request: { params: { path: { side: string } } }) =>
       request.params.path.side === 'asks'
         ? { error: { code: 'SERVICE_UNAVAILABLE' }, response: response({}, 503) }
         : { data: { data: [] }, response: response({}) }
@@ -119,7 +119,7 @@ describe('RouterApiService', () => {
   })
 
   test('wraps rejected requests as RouterApiError', async () => {
-    const GET = mock(async () => {
+    const GET = vi.fn(async () => {
       throw new Error('timeout')
     })
     const service = new RouterApiService({ GET } as never)

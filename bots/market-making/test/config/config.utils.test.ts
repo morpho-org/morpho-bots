@@ -1,7 +1,7 @@
 import type { Hex } from 'viem'
 
-import { describe, expect, test } from 'bun:test'
 import { bytesToHex, getAddress, hexToBytes } from 'viem'
+import { describe, expect, test } from 'vitest'
 
 import { parseAddress, parseBytes32 } from '../../src/config/config.utils'
 

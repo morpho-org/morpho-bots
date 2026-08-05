@@ -1,7 +1,7 @@
 import type { Address } from 'viem'
 
-import { describe, expect, it } from 'bun:test'
 import { getAddress, isAddressEqual } from 'viem'
+import { describe, expect, it } from 'vitest'
 
 import type { Unwrapper } from '../../src/unwrappers/resolve'
 
@@ -110,7 +110,7 @@ describe('resolveUnwraps', () => {
         throw new Error('probe exploded')
       }
     }
-    expect(
+    await expect(
       resolveUnwraps([broken], { token: A, amountIn: 1n, executor: EXECUTOR, stopToken: LOAN })
     ).rejects.toThrow('probe exploded')
   })

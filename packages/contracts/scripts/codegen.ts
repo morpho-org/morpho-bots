@@ -11,10 +11,11 @@
  * The output is checked in — we don't run codegen on every build.
  */
 import { readdirSync, writeFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 // This script lives in `scripts/`, so paths resolve against the package root one level up.
-const ROOT = resolve(import.meta.dir, '..')
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const SOLIDITY_DIR = resolve(ROOT, 'solidity')
 const INTERFACES_DIR = resolve(SOLIDITY_DIR, 'interfaces')
 

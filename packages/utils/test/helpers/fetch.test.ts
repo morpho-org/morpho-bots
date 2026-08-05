@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { fetchJsonResponse, fetchWithRetry, parseJsonResponse } from '../../src/helpers/fetch'
 
@@ -168,10 +168,10 @@ describe('fetchWithRetry', () => {
 
 describe('fetchJsonResponse', () => {
   const originalFetch = globalThis.fetch
-  let fetchMock: ReturnType<typeof mock>
+  let fetchMock: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
-    fetchMock = mock(() => Promise.reject(new Error('fetch mock not configured')))
+    fetchMock = vi.fn(() => Promise.reject(new Error('fetch mock not configured')))
     globalThis.fetch = fetchMock as unknown as typeof fetch
   })
 

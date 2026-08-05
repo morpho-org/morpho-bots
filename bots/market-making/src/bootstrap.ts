@@ -153,7 +153,7 @@ const defaultState = async (config: ConfigService) => {
  * cannot race signer nonces.
  */
 export const createApplication = (
-  environment: Environment = Bun.env,
+  environment: Environment = process.env,
   dependencies: Dependencies = {}
 ): {
   /**

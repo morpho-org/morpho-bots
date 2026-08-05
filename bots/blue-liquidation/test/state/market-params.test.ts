@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'bun:test'
 import { getAddress, type Hex } from 'viem'
+import { describe, expect, it } from 'vitest'
 
 import type { MarketParams } from '../../src/market'
 import type { MarketParamsResolver } from '../../src/state/market-params'

@@ -58,7 +58,7 @@ export class ConfigService {
    * permits fallback; unsafe entries fail closed. No file means env-only loading. Read-only mode
    * omits YAML and environment private-key values before typed validation.
    */
-  static async load(environment: Environment = Bun.env, options: ConfigurationLoadOptions = {}) {
+  static async load(environment: Environment = process.env, options: ConfigurationLoadOptions = {}) {
     const source = await loadConfigurationSources(environment, options)
     const declaredMethod = source.values.KEY_STORAGE_METHOD?.toString().trim()
     const keystorePath = source.values.KEYSTORE_PATH?.toString().trim()

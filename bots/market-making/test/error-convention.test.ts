@@ -1,23 +1,16 @@
-import { describe, expect, test } from 'bun:test'
 import { readdirSync, readFileSync } from 'node:fs'
-import { basename, extname, join, relative } from 'node:path'
+import { basename, dirname, extname, join, relative } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
+import { describe, expect, test } from 'vitest'
 
-const packageRoot = join(import.meta.dir, '..')
-const roots = [
-  join(packageRoot, 'src'),
-  join(packageRoot, 'scripts'),
-  join(packageRoot, 'playground')
-]
+const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
+const roots = [join(packageRoot, 'src'), join(packageRoot, 'scripts')]
 const sourceFiles = roots.flatMap(root => {
   const walk = (directory: string): string[] =>
     readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
       const path = join(directory, entry.name)
-      return entry.isDirectory()
-        ? walk(path)
-        : ['.ts', '.tsx'].includes(extname(path))
-          ? [path]
-          : []
+      return entry.isDirectory() ? walk(path) : extname(path) === '.ts' ? [path] : []
     })
   return walk(root)
 })

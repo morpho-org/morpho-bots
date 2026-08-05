@@ -1,6 +1,6 @@
 import type { Hex } from 'viem'
 
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 
 import type { OwnedLadderPublication } from '../../../src/infrastructure/ladder/ladder-group-ownership.utils'
 

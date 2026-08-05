@@ -1,6 +1,6 @@
 import type { Hex } from 'viem'
 
-import { describe, expect, mock, test } from 'bun:test'
+import { describe, expect, test, vi } from 'vitest'
 
 import type { LadderQuoteSet } from '../../../src/domain/ladder/ladder'
 import type { LadderOfferTransport } from '../../../src/infrastructure/ladder/ladder-make.service'
@@ -344,7 +344,7 @@ describe('MidnightLadderMakeService', () => {
 
   test('attempts every active group before reporting aggregate hard-halt failure', async () => {
     const subject = harness()
-    const invalidate = mock(async (groupId: Hex) => {
+    const invalidate = vi.fn(async (groupId: Hex) => {
       subject.events.push(`cancel:${groupId}`)
       if (groupId === oldGroup) throw new TypeError('provider detail')
     })

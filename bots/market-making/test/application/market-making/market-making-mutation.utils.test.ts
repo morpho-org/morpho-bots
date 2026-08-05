@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from 'bun:test'
+import { describe, expect, test, vi } from 'vitest'
 
 import type { BootstrapMakeService } from '../../../src/application/bootstrap/position-bootstrap.service'
 import type { LadderMakeService } from '../../../src/application/ladder/ladder-market-maker.service'
@@ -9,28 +9,28 @@ const marketId = `0x${'11'.repeat(32)}` as const
 
 const createServices = (events: string[]) => {
   const bootstrap: BootstrapMakeService = {
-    reconcile: mock(async () => {
+    reconcile: vi.fn(async () => {
       events.push('bootstrap:reconcile')
     }),
-    hardHalt: mock(async () => {
+    hardHalt: vi.fn(async () => {
       events.push('bootstrap:halt')
     }),
-    cleanup: mock(async () => {
+    cleanup: vi.fn(async () => {
       events.push('bootstrap:cleanup')
     })
   }
   const ladder: LadderMakeService = {
-    readActive: mock(async () => {
+    readActive: vi.fn(async () => {
       events.push('ladder:read')
       return undefined
     }),
-    reconcile: mock(async () => {
+    reconcile: vi.fn(async () => {
       events.push('ladder:reconcile')
     }),
-    hardHalt: mock(async () => {
+    hardHalt: vi.fn(async () => {
       events.push('ladder:halt')
     }),
-    cleanup: mock(async () => {
+    cleanup: vi.fn(async () => {
       events.push('ladder:cleanup')
     })
   }
@@ -42,7 +42,7 @@ describe('serializeMarketMakingWrites', () => {
     const events: string[] = []
     let releaseBootstrap: (() => void) | undefined
     const services = createServices(events)
-    services.bootstrap.reconcile = mock(
+    services.bootstrap.reconcile = vi.fn(
       () =>
         new Promise<void>(resolve => {
           events.push('bootstrap:start')
@@ -64,7 +64,7 @@ describe('serializeMarketMakingWrites', () => {
   test('continues draining mutations after a preceding operation rejects', async () => {
     const events: string[] = []
     const services = createServices(events)
-    services.bootstrap.cleanup = mock(async () => {
+    services.bootstrap.cleanup = vi.fn(async () => {
       events.push('bootstrap:failed')
       throw new TypeError('publication failed')
     })
@@ -82,7 +82,7 @@ describe('serializeMarketMakingWrites', () => {
     const events: string[] = []
     let releaseBootstrap: (() => void) | undefined
     const services = createServices(events)
-    services.bootstrap.hardHalt = mock(
+    services.bootstrap.hardHalt = vi.fn(
       () =>
         new Promise<void>(resolve => {
           events.push('bootstrap:start')

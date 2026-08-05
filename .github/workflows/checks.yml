@@ -52,7 +52,7 @@ jobs:
         run: forge test --root packages/contracts -vv
 
       - name: Run unit tests
-        run: bun test
+        run: pnpm test
         env:
           # Base (chain 8453) archive RPC for the midnight-liquidation fork suite, which forks at a
           # pinned block and fails loud if this is unset. See test/fork/harness.ts.

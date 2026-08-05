@@ -1,9 +1,10 @@
 import type { Address, Hex } from 'viem'
 
-import { describe, expect, mock, spyOn, test } from 'bun:test'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { setTimeout as sleep } from 'node:timers/promises'
+import { describe, expect, test, vi } from 'vitest'
 
 import type {
   SetupCheckReport,
@@ -643,8 +644,8 @@ describe('createApplication', () => {
   })
 
   test('routes --readonly bootstrap make operations to terminal output', async () => {
-    const reconcile = mock(async () => {})
-    const hardHalt = mock(async () => {})
+    const reconcile = vi.fn(async () => {})
+    const hardHalt = vi.fn(async () => {})
     const events: unknown[] = []
     const bootstrapEnvironment = {
       ...environment,
@@ -751,7 +752,7 @@ describe('createApplication', () => {
     await writeStarted.promise
     const state = await Promise.race([
       run.then(() => 'completed' as const),
-      Bun.sleep(20).then(() => 'pending' as const)
+      sleep(20).then(() => 'pending' as const)
     ])
     releaseWrite.resolve()
 
@@ -760,9 +761,9 @@ describe('createApplication', () => {
   })
 
   test('routes --readonly ladder make operations to terminal output', async () => {
-    const reconcile = mock(async () => {})
-    const hardHalt = mock(async () => {})
-    const validateReconcile = mock(async () => {})
+    const reconcile = vi.fn(async () => {})
+    const hardHalt = vi.fn(async () => {})
+    const validateReconcile = vi.fn(async () => {})
     const events: unknown[] = []
     const application = createApplication(
       {
@@ -826,7 +827,7 @@ describe('createApplication', () => {
       }
     )
 
-    expect(
+    await expect(
       application.run(['--readonly', 'ladder'], {
         writeEvent: async () => {
           throw writeError
@@ -839,10 +840,10 @@ describe('createApplication', () => {
   })
 
   test('runs the exact read-only ladder monitor surface without loading or invoking a signer', async () => {
-    const reconcile = mock(async () => {})
-    const hardHalt = mock(async () => {})
-    const cleanup = mock(async () => {})
-    const terminal = spyOn(console, 'log').mockImplementation(() => {})
+    const reconcile = vi.fn(async () => {})
+    const hardHalt = vi.fn(async () => {})
+    const cleanup = vi.fn(async () => {})
+    const terminal = vi.spyOn(console, 'log').mockImplementation(() => {})
     const controller = new AbortController()
     controller.abort()
     const application = createApplication(
@@ -889,8 +890,8 @@ describe('createApplication', () => {
   })
 
   test('composes the combined start lifecycle and drains both writer cleanups', async () => {
-    const bootstrapCleanup = mock(async () => {})
-    const ladderCleanup = mock(async () => {})
+    const bootstrapCleanup = vi.fn(async () => {})
+    const ladderCleanup = vi.fn(async () => {})
     const controller = new AbortController()
     controller.abort()
     const application = createApplication(
@@ -1146,6 +1147,6 @@ setup:
     state.getChainId = async () => 1
     const application = createApplication(environment, { createState: () => state })
 
-    expect(application.run(['setup-check'])).rejects.toBeInstanceOf(SetupFailedError)
+    await expect(application.run(['setup-check'])).rejects.toBeInstanceOf(SetupFailedError)
   })
 })

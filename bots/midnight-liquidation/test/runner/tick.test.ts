@@ -5,8 +5,8 @@ import type { Address, Hex } from 'viem'
 
 import { createBackoff, createCooldownStore } from '@repo/bot-kit'
 import { lensKey } from '@repo/utils'
-import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
+import { describe, expect, it } from 'vitest'
 
 import type { BorrowerCandidate } from '../../src/discovery/borrowers'
 import type { LensInput, LensOut } from '../../src/state/lens.sol'

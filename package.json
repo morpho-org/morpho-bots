@@ -6,24 +6,24 @@
     "format": "oxfmt",
     "format:check": "oxfmt --check",
     "knip": "knip",
-    "lint": "oxlint --no-error-on-unmatched-pattern && bun run lint:playground-smoke",
+    "lint": "oxlint --no-error-on-unmatched-pattern",
     "lint:fix": "oxlint --fix --no-error-on-unmatched-pattern",
-    "lint:playground-smoke": "oxlint --config bots/market-making/scripts/playground-smoke.oxlintrc.json bots/market-making/scripts/playground-smoke*.mjs",
-    "market-making:playground": "node bots/market-making/scripts/playground-serve.mjs",
     "prepare": "husky",
-    "test": "bun test",
-    "test:browser": "bun run --filter @morpho-org/market-making-bot playground:smoke:test"
+    "test": "vitest run"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
-    "esbuild": "0.25.12",
+    "@types/node": "catalog:",
     "husky": "catalog:",
     "knip": "catalog:",
     "lint-staged": "catalog:",
     "oxfmt": "catalog:",
     "oxlint": "catalog:",
     "oxlint-tsgolint": "catalog:",
-    "typescript": "catalog:"
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:"
   },
   "engines": {
     "node": "^24.14.1"

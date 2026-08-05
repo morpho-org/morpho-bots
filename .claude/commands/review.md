@@ -58,7 +58,7 @@ Review the provided PR thoroughly and interactively guide the user through each 
      destructured object; omit inferable type annotations; helper-before-main ordering.
    - **Error Handling**: explicit handling, typed errors, structured logs with bot/operation/inputs
      context, `tryCatch` from `@repo/utils` for promise throws.
-   - **Environment Variables**: direct `Bun.env.VARIABLE_NAME` access; fail loudly at startup if a
+   - **Environment Variables**: direct `process.env.VARIABLE_NAME` access; fail loudly at startup if a
      required var is missing; never commit secrets.
    - **Performance Considerations**: batch on-chain reads (`readDeploylessBatchLens` for Lens-shaped
      data, `multicall` for heterogeneous reads); use explicit block tags for deterministic
@@ -116,7 +116,7 @@ Review the provided PR thoroughly and interactively guide the user through each 
 5. **Use Context7 MCP**: When reviewing implementation details, use the Context7 MCP tools to verify
    against official documentation for:
    - viem (contract interactions, encoding, decoding, transports)
-   - pnpm (workspaces, catalog, lockfile semantics) and bun (test runner, runtime)
+   - pnpm (workspaces, catalog, lockfile semantics), vitest, esbuild bundles on Node
 
 6. **TIB Consideration**: Check if the PR introduces changes that warrant a Technical Intent Brief
    (TIB) (see `docs/GUIDANCE.md`). Flag as "Minor" severity if the PR:

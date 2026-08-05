@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test'
+import { describe, expect, it } from 'vitest'
 
 import { LIQUIDATION_CURSOR, MAX_LIQUIDATION_INCENTIVE_FACTOR, WAD } from '../../src/constants'
 import { lifFromLltv } from '../../src/sizing/lif'

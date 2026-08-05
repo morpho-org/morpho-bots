@@ -10,11 +10,11 @@ import {
   type IMarketParams,
   setterRatifierAbi
 } from '@morpho-org/midnight-sdk'
-import { describe, expect, test } from 'bun:test'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { encodeFunctionData } from 'viem'
+import { describe, expect, test } from 'vitest'
 
 import { ConfigService } from '../../../src/config/config.service'
 import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/bootstrap-adapter.error'

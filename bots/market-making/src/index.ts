@@ -36,9 +36,9 @@ await observability.start()
 try {
   process.exitCode = await runMarketMakingEntrypoint(
     createApplication(),
-    enhanceVerboseArgv(Bun.argv.slice(2), {
+    enhanceVerboseArgv(process.argv.slice(2), {
       commands: MARKET_MAKING_VERBOSE_COMMANDS,
-      env: Bun.env
+      env: process.env
     }),
     {
       writeOut: value => console.log(value),
