@@ -2,7 +2,11 @@ import type { Hex } from 'viem'
 
 import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
 import type { BootstrapRawGroup } from './bootstrap-groups.utils'
-type OwnedBootstrapOffer = BootstrapOffer & { groupId: Hex; tick?: bigint }
+type OwnedBootstrapOffer = BootstrapOffer & {
+  groupId: Hex
+  tick?: bigint
+  continuousFeeCap?: bigint
+}
 
 /**
  * Selects persisted bootstrap intents whose groups are still absent from the provider book.

@@ -99,6 +99,7 @@ const group = (overrides: Record<string, unknown> = {}) => ({
       maker,
       buy: true,
       tick: 100,
+      continuous_fee_cap: '0',
       market: { maturity: 2_000 }
     }
   ],
@@ -548,14 +549,15 @@ describe('recoverLegacyBootstrapOfferTick', () => {
   test('recovers the exact tick of an offer persisted before ticks were stored', () => {
     const market = {
       params: publicationMarket,
-      tickSpacing: 4,
+      tickSpacing: 2,
       continuousFee: 17
     }
     const legacyOffer = Offer.create({
       market: publicationMarket,
       buy: true,
       maker,
-      tick: 412n,
+      tick: 410n,
+      tickSpacing: 2n,
       expiry: publicationMarket.maturity,
       ratifier,
       maxAssets: 1_000n,
@@ -570,7 +572,7 @@ describe('recoverLegacyBootstrapOfferTick', () => {
         maker,
         ratifier
       })
-    ).toBe(412n)
+    ).toBe(410n)
   })
 
   test('rejects a reconstruction that does not match the persisted group identity', () => {
@@ -740,7 +742,13 @@ describe('readBootstrapGroups', () => {
     )
 
     expect(strategyBootstrapGroups(groups, [groupId])).toEqual([
-      expect.objectContaining({ id: groupId, marketId, tick: 100n, maturity: 2_000n }),
+      expect.objectContaining({
+        id: groupId,
+        marketId,
+        tick: 100n,
+        maturity: 2_000n,
+        continuousFeeCap: 0n
+      }),
       expect.objectContaining({
         id: groupId,
         marketId: secondMarketId,
@@ -930,7 +938,8 @@ describe('createBootstrapGroupOwnership', () => {
       assets: 100n,
       rateBps: 450n,
       referenceObservationId: 'blocks:100-200',
-      tick: -123n
+      tick: -123n,
+      continuousFeeCap: 17n
     }
     try {
       await ownership.reserve(groupId, offer)

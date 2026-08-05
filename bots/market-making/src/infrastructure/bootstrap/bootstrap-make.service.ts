@@ -15,7 +15,13 @@ import { BootstrapAdapterError } from './bootstrap-adapter.error'
 import { BootstrapHardHaltError } from './bootstrap-hard-halt.error'
 import { assertBootstrapProspectiveSpread, bootstrapMarketGroupIds } from './bootstrap-spread.utils'
 
-type BootstrapBookOffer = { groupId?: Hex; marketId: Hex; buy: boolean; tick: bigint }
+type BootstrapBookOffer = {
+  groupId?: Hex
+  marketId: Hex
+  buy: boolean
+  tick: bigint
+  continuousFeeCap?: bigint
+}
 
 /** Protocol transport for confirmed Midnight publication and group invalidation. */
 interface BootstrapOfferTransport {
@@ -36,7 +42,10 @@ interface BootstrapOfferTransport {
     ): Promise<Hex | void | readonly BootstrapSubmittedTransaction[]>
   }>
   /** Durably records publication intent before broadcast. @param group - Future group ID. @returns Completion after durable storage. */
-  reserveGroup(group: Hex, offer: BootstrapOffer & { tick?: bigint }): Promise<void>
+  reserveGroup(
+    group: Hex,
+    offer: BootstrapOffer & { tick?: bigint; continuousFeeCap?: bigint }
+  ): Promise<void>
   /** Finalizes a confirmed group while retaining ownership. @param group - Confirmed group ID. @returns Completion after durable storage. */
   confirmPublishedGroup(group: Hex): Promise<void>
   /** Removes intent after publication fails. @param group - Unpublished group ID. @returns Completion after durable storage. */
@@ -64,7 +73,8 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
    * @returns Confirmed cancellation and publication transaction hashes in submission order.
    * @throws When any protocol mutation or confirmation fails.
    * @remarks Mutations are serialized; publication never races invalidation. An active offer with
-   * the requested protocol tick and assets is retained even when raw reference-rate metadata moved.
+   * the requested protocol tick, assets, and continuous-fee cap is retained even when raw
+   * reference-rate metadata moved.
    */
   reconcile(parameters: {
     marketId: Hex
@@ -104,13 +114,18 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
             group.assets === parameters.desiredOffer?.assets &&
             group.tick === prospective.tick &&
             group.offerCount === 1 &&
+            group.continuousFeeCap !== undefined &&
+            group.continuousFeeCap === prospective.continuousFeeCap &&
             !this.confirmedCanceledGroups.has(group.id)
         )
         if (!retainedGroup) {
           publication = await this.transport.preparePublication(parameters.desiredOffer)
           await this.transport.reserveGroup(publication.groupId, {
             ...parameters.desiredOffer,
-            ...(publication.tick === undefined ? {} : { tick: publication.tick })
+            ...(publication.tick === undefined ? {} : { tick: publication.tick }),
+            ...(prospective.continuousFeeCap === undefined
+              ? {}
+              : { continuousFeeCap: prospective.continuousFeeCap })
           })
         }
       }
@@ -154,7 +169,10 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
         await this.transport.reserveGroup(retainedGroup.id, {
           ...parameters.desiredOffer,
           assets: retainedGroup.maximumAssets ?? retainedGroup.assets,
-          ...(retainedGroup.tick === undefined ? {} : { tick: retainedGroup.tick })
+          ...(retainedGroup.tick === undefined ? {} : { tick: retainedGroup.tick }),
+          ...(retainedGroup.continuousFeeCap === undefined
+            ? {}
+            : { continuousFeeCap: retainedGroup.continuousFeeCap })
         })
         await this.transport.confirmPublishedGroup(retainedGroup.id)
 

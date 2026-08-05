@@ -18,7 +18,8 @@ const offer = {
   assets: 100n,
   rateBps: 450n,
   referenceObservationId: 'blocks:100-200',
-  tick: 123n
+  tick: 123n,
+  continuousFeeCap: 17n
 }
 
 const indexedGroup = (consumed: bigint): BootstrapRawGroup => ({

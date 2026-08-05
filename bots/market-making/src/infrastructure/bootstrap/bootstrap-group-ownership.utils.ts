@@ -26,6 +26,7 @@ type PersistedOffer = {
   rateBps: string
   referenceObservationId: string
   tick?: string
+  continuousFeeCap?: string
 }
 
 type OwnershipState =
@@ -45,8 +46,15 @@ type OwnershipState =
       reservedGroupIds: string[]
       offers: PersistedOffer[]
     }
+  | {
+      version: 5
+      strategy: string
+      confirmedGroupIds: string[]
+      reservedGroupIds: string[]
+      offers: PersistedOffer[]
+    }
 
-type OwnedOffer = BootstrapOffer & { groupId: Hex; tick?: bigint }
+type OwnedOffer = BootstrapOffer & { groupId: Hex; tick?: bigint; continuousFeeCap?: bigint }
 
 type CanonicalOwnershipState = {
   confirmedGroupIds: Hex[]
@@ -90,7 +98,13 @@ const canonicalOffer = (value: unknown): OwnedOffer => {
     rateBps: canonicalAmount(offer.rateBps),
     referenceObservationId: offer.referenceObservationId
   }
-  return offer.tick === undefined ? canonical : { ...canonical, tick: canonicalTick(offer.tick) }
+  return {
+    ...canonical,
+    ...(offer.tick === undefined ? {} : { tick: canonicalTick(offer.tick) }),
+    ...(offer.continuousFeeCap === undefined
+      ? {}
+      : { continuousFeeCap: canonicalAmount(offer.continuousFeeCap) })
+  }
 }
 
 const strategyId = (config: BootstrapGroupOwnershipConfig) =>
@@ -160,7 +174,7 @@ export const createBootstrapGroupOwnership = (
         }
       }
       if (
-        (value.version === 3 || value.version === 4) &&
+        (value.version === 3 || value.version === 4 || value.version === 5) &&
         Array.isArray(value.confirmedGroupIds) &&
         Array.isArray(value.reservedGroupIds) &&
         Array.isArray(value.offers)
@@ -185,15 +199,18 @@ export const createBootstrapGroupOwnership = (
       await writeFile(
         temporary,
         JSON.stringify({
-          version: 4,
+          version: 5,
           strategy,
           confirmedGroupIds: state.confirmedGroupIds,
           reservedGroupIds: state.reservedGroupIds,
-          offers: state.offers.map(({ tick, ...offer }) => ({
+          offers: state.offers.map(({ tick, continuousFeeCap, ...offer }) => ({
             ...offer,
             assets: String(offer.assets),
             rateBps: String(offer.rateBps),
-            ...(tick === undefined ? {} : { tick: String(tick) })
+            ...(tick === undefined ? {} : { tick: String(tick) }),
+            ...(continuousFeeCap === undefined
+              ? {}
+              : { continuousFeeCap: String(continuousFeeCap) })
           }))
         } satisfies OwnershipState),
         { encoding: 'utf8', mode: 0o600, flag: 'wx' }
@@ -221,8 +238,11 @@ export const createBootstrapGroupOwnership = (
     readPersistedGroupIds,
     /** Reads persisted offer intent for safe live-offer comparison. @returns Confirmed or reserved offers with their group IDs. */
     readOffers: async () => (await readPersisted()).offers,
-    /** Durably reserves a group ID and offer intent before publication. @param groupId - Prepared group ID. @param offer - Intended domain semantics and optional exact protocol tick. @returns Completion after atomic storage. */
-    reserve: async (groupId: Hex, offer?: BootstrapOffer & { tick?: bigint }) => {
+    /** Durably reserves a group ID and offer intent before publication. @param groupId - Prepared group ID. @param offer - Intended domain semantics plus optional exact protocol tick and fee cap. @returns Completion after atomic storage. */
+    reserve: async (
+      groupId: Hex,
+      offer?: BootstrapOffer & { tick?: bigint; continuousFeeCap?: bigint }
+    ) => {
       const state = await readPersisted()
       const id = canonicalId(groupId)
       await writePersisted({

@@ -1,12 +1,6 @@
 import type { Address, Hex } from 'viem'
 
-import {
-  DEFAULT_TICK_SPACING,
-  MAX_TICK,
-  Offer,
-  TickLib,
-  type IMarketParams
-} from '@morpho-org/midnight-sdk'
+import { MAX_TICK, Offer, TickLib, type IMarketParams } from '@morpho-org/midnight-sdk'
 
 import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
 
@@ -84,8 +78,9 @@ export const createBootstrapOffer = (parameters: {
  * the legacy offer cannot be reconstructed exactly.
  * @throws `BootstrapAdapterError` when the live market fee is malformed; SDK validation failures propagate.
  * @remarks Bootstrap ownership v3 did not persist ticks. Those offers used the SDK's historical
- * default `start` of zero, so scanning the bounded protocol tick domain and accepting only an exact
- * group hash match recovers their price without deriving it from a later block timestamp.
+ * default `start` of zero, so scanning the bounded protocol tick domain at the market's live spacing
+ * and accepting only an exact group hash match recovers their price without deriving it from a later
+ * block timestamp.
  */
 export const recoverLegacyBootstrapOfferTick = (parameters: {
   groupId: Hex
@@ -95,12 +90,14 @@ export const recoverLegacyBootstrapOfferTick = (parameters: {
   ratifier: Address
 }) => {
   const continuousFeeCap = bootstrapContinuousFeeCap(parameters.market)
-  for (let tick = 0n; tick <= MAX_TICK; tick += DEFAULT_TICK_SPACING) {
+  const tickSpacing = BigInt(parameters.market.tickSpacing)
+  for (let tick = 0n; tick <= MAX_TICK; tick += tickSpacing) {
     const candidate = Offer.create({
       market: parameters.market.params,
       buy: true,
       maker: parameters.maker,
       tick,
+      tickSpacing,
       expiry: parameters.market.params.maturity,
       ratifier: parameters.ratifier,
       maxAssets: parameters.maximumAssets,

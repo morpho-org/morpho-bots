@@ -20,6 +20,8 @@ export type BootstrapActiveGroup = {
   maximumAssets?: bigint
   /** Total number of offers sharing the protocol group. */
   offerCount?: number
+  /** Maximum market continuous fee accepted by the resting protocol offer. */
+  continuousFeeCap?: bigint
   referenceObservationId?: string
 }
 

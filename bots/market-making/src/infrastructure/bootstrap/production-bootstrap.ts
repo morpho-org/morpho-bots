@@ -237,6 +237,7 @@ export const createProductionBootstrapAdapters = (
             tick: group.tick as bigint,
             maximumAssets: group.maxAssets,
             offerCount: group.offers.length,
+            continuousFeeCap: group.continuousFeeCap,
             rateBps:
               persisted?.rateBps ??
               TickLib.tickToApr(
@@ -286,6 +287,7 @@ export const createProductionBootstrapAdapters = (
             tick: group.tick as bigint,
             maximumAssets: group.maxAssets,
             offerCount: group.offers.length,
+            continuousFeeCap: group.continuousFeeCap,
             rateBps:
               persisted?.rateBps ??
               TickLib.tickToApr(
@@ -480,7 +482,12 @@ export const createProductionBootstrapAdapters = (
     toProspectiveBookOffer: async offer => {
       const created = await prepareOffer(offer)
       preparedOffers.set(offer.marketId, created)
-      return { marketId: offer.marketId, buy: true, tick: created.tick }
+      return {
+        marketId: offer.marketId,
+        buy: true,
+        tick: created.tick,
+        continuousFeeCap: created.continuousFeeCap
+      }
     },
     invalidate: async (group, onTransactionSubmitted) => {
       return execute(
