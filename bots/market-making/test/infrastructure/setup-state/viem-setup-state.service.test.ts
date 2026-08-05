@@ -1,8 +1,9 @@
 import type { Address, Hex } from 'viem'
 
+import { setterRatifierAbi } from '@morpho-org/midnight-sdk'
 import { blueAbi } from '@morpho-org/morpho-sdk/abis'
 import { describe, expect, test } from 'bun:test'
-import { bytesToHex, hexToBytes, keccak256 } from 'viem'
+import { bytesToHex, hexToBytes, keccak256, zeroHash } from 'viem'
 
 import { SafeProviderError } from '../../../src/application/setup/safe-provider.error'
 import { requestJson } from '../../../src/infrastructure/setup-state/http-json.utils'
@@ -53,6 +54,7 @@ const createState = (
   } = {}
 ) => {
   const calls: string[] = []
+  const chainReadCalls: Record<string, unknown>[] = []
   const requestBudgets: (number | undefined)[] = []
   const referenceAbis: unknown[] = []
   const chain = {
@@ -60,7 +62,9 @@ const createState = (
     getCode: async () => overrides.code ?? authoritativeRatifierRuntime,
     getBalance: async () => 10n,
     getBlock: async () => ({ number: 100n, timestamp: 1_000n }),
-    readContract: async ({ functionName }: { functionName: string }) => {
+    readContract: async (parameters: Record<string, unknown>) => {
+      chainReadCalls.push(parameters)
+      const { functionName } = parameters
       if (functionName === 'allowance') return 100n
       if (functionName === 'isAuthorized') return true
       if (functionName === 'MIDNIGHT') {
@@ -88,7 +92,7 @@ const createState = (
         }
       }
       if (functionName === 'tickSpacing') return 4
-      throw new Error(`unexpected ${functionName}`)
+      throw new Error(`unexpected ${String(functionName)}`)
     }
   }
   const reference = {
@@ -157,6 +161,7 @@ const createState = (
   }
   return {
     calls,
+    chainReadCalls,
     requestBudgets,
     referenceAbis,
     state: new ViemSetupStateService(chain, reference, request, {
@@ -572,18 +577,47 @@ describe('ViemSetupStateService', () => {
     })
   })
 
-  test('keeps mutable Setter root state out of deployed surface readiness', async () => {
-    const result = await createState(
+  test.each([false, true])(
+    'checks the Setter root getter without treating rootRatified=%s as deployed surface state',
+    async rootRatified => {
+      const { state, chainReadCalls } = createState(
+        {},
+        {
+          code: authoritativeSetterRatifierRuntime,
+          routerRatifier: setterRatifier,
+          routerRatifierName: 'setterRatifier',
+          rootRatified
+        }
+      )
+
+      const result = await state.getRatifier(maker, setterRatifier)
+
+      expect(result.surfaceMatches).toBe(true)
+      expect(chainReadCalls).toContainEqual({
+        address: setterRatifier,
+        abi: setterRatifierAbi,
+        functionName: 'isRootRatified',
+        args: [maker, zeroHash]
+      })
+    }
+  )
+
+  test('fails closed when the Setter root getter does not decode to a boolean', async () => {
+    const { state } = createState(
       {},
       {
         code: authoritativeSetterRatifierRuntime,
         routerRatifier: setterRatifier,
         routerRatifierName: 'setterRatifier',
-        rootRatified: true
+        rootRatified: 'false'
       }
-    ).state.getRatifier(maker, setterRatifier)
+    )
 
-    expect(result.surfaceMatches).toBe(true)
+    const error = await state.getRatifier(maker, setterRatifier).catch(value => value)
+
+    expect(error).toBeInstanceOf(ProviderResponseError)
+    expect(error).toMatchObject({ provider: 'rpc', operation: 'ratifier-root' })
+    expect(error.message).toBe('SetterRatifier isRootRatified response must be boolean')
   })
 
   test('rejects a non-canonical ratifier even when Router labels compatible runtime bytecode', async () => {
