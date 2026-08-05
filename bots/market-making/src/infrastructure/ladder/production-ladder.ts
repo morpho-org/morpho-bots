@@ -28,6 +28,7 @@ import type { OwnedLadderPublication } from './ladder-group-ownership.utils'
 
 import { createBootstrapGroupOwnership } from '../bootstrap/bootstrap-group-ownership.utils'
 import { bootstrapBookOffers, readBootstrapGroups } from '../bootstrap/bootstrap-groups.utils'
+import { recoverLegacyBootstrapOfferTick } from '../bootstrap/bootstrap-offer.utils'
 import { readLivePendingBootstrapOffers } from '../bootstrap/bootstrap-pending-offer.utils'
 import { BlueBootstrapReferenceRateService } from '../bootstrap/bootstrap-reference-rate.service'
 import { createManagedMakerAccount } from '../make/managed-maker-account.utils'
@@ -275,12 +276,23 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
       offers: persistedBootstrapOffers,
       readGroupConsumed
     })
-    const pendingOffers = pendingBootstrapOffers.map(offer => {
-      if (offer.tick === undefined) {
-        throw new LadderAdapterError('bootstrap-offer-tick-unavailable')
-      }
-      return { marketId: offer.marketId, buy: true, tick: offer.tick }
-    })
+    const pendingOffers = await Promise.all(
+      pendingBootstrapOffers.map(async offer => {
+        const tick =
+          offer.tick ??
+          recoverLegacyBootstrapOfferTick({
+            groupId: offer.groupId,
+            maximumAssets: offer.maximumAssets,
+            market: await midnight.getMarketData(offer.marketId),
+            maker,
+            ratifier: config.setup.ratifier
+          })
+        if (tick === undefined) {
+          throw new LadderAdapterError('bootstrap-offer-tick-unavailable')
+        }
+        return { marketId: offer.marketId, buy: true, tick }
+      })
+    )
     return { groups, book: [...bootstrapBookOffers(groups), ...pendingOffers] }
   }
 

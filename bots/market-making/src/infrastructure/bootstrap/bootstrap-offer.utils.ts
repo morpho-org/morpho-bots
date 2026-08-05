@@ -1,6 +1,12 @@
-import type { Address } from 'viem'
+import type { Address, Hex } from 'viem'
 
-import { Offer, TickLib, type IMarketParams } from '@morpho-org/midnight-sdk'
+import {
+  DEFAULT_TICK_SPACING,
+  MAX_TICK,
+  Offer,
+  TickLib,
+  type IMarketParams
+} from '@morpho-org/midnight-sdk'
 
 import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
 
@@ -68,4 +74,39 @@ export const createBootstrapOffer = (parameters: {
     maxAssets: parameters.offer.assets,
     continuousFeeCap: bootstrapContinuousFeeCap(parameters.market)
   })
+}
+
+/**
+ * Recovers the exact protocol tick of a pre-v4 persisted bootstrap offer.
+ * @param parameters - Legacy group identity, original offer cap, current immutable market data,
+ * maker, and ratifier used by the original publication.
+ * @returns The aligned tick whose singleton content-addressed group matches, or `undefined` when
+ * the legacy offer cannot be reconstructed exactly.
+ * @throws `BootstrapAdapterError` when the live market fee is malformed; SDK validation failures propagate.
+ * @remarks Bootstrap ownership v3 did not persist ticks. Those offers used the SDK's historical
+ * default `start` of zero, so scanning the bounded protocol tick domain and accepting only an exact
+ * group hash match recovers their price without deriving it from a later block timestamp.
+ */
+export const recoverLegacyBootstrapOfferTick = (parameters: {
+  groupId: Hex
+  maximumAssets: bigint
+  market: BootstrapOfferMarket
+  maker: Address
+  ratifier: Address
+}) => {
+  const continuousFeeCap = bootstrapContinuousFeeCap(parameters.market)
+  for (let tick = 0n; tick <= MAX_TICK; tick += DEFAULT_TICK_SPACING) {
+    const candidate = Offer.create({
+      market: parameters.market.params,
+      buy: true,
+      maker: parameters.maker,
+      tick,
+      expiry: parameters.market.params.maturity,
+      ratifier: parameters.ratifier,
+      maxAssets: parameters.maximumAssets,
+      continuousFeeCap
+    })
+    if (candidate.group === parameters.groupId) return tick
+  }
+  return undefined
 }

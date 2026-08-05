@@ -29,7 +29,8 @@ import {
 import { MidnightBootstrapMakeService } from '../../../src/infrastructure/bootstrap/bootstrap-make.service'
 import {
   bootstrapContinuousFeeCap,
-  createBootstrapOffer
+  createBootstrapOffer,
+  recoverLegacyBootstrapOfferTick
 } from '../../../src/infrastructure/bootstrap/bootstrap-offer.utils'
 import { prepareBootstrapRequirements } from '../../../src/infrastructure/bootstrap/bootstrap-requirements.utils'
 import { assertBootstrapTransaction } from '../../../src/infrastructure/bootstrap/bootstrap-transaction.utils'
@@ -540,6 +541,48 @@ describe('createBootstrapOffer', () => {
     expect(first.start).toBe(1_000n)
     expect(second.start).toBe(1_001n)
     expect(first.group).not.toBe(second.group)
+  })
+})
+
+describe('recoverLegacyBootstrapOfferTick', () => {
+  test('recovers the exact tick of an offer persisted before ticks were stored', () => {
+    const market = {
+      params: publicationMarket,
+      tickSpacing: 4,
+      continuousFee: 17
+    }
+    const legacyOffer = Offer.create({
+      market: publicationMarket,
+      buy: true,
+      maker,
+      tick: 412n,
+      expiry: publicationMarket.maturity,
+      ratifier,
+      maxAssets: 1_000n,
+      continuousFeeCap: 17n
+    })
+
+    expect(
+      recoverLegacyBootstrapOfferTick({
+        groupId: legacyOffer.group,
+        maximumAssets: legacyOffer.maxAssets,
+        market,
+        maker,
+        ratifier
+      })
+    ).toBe(412n)
+  })
+
+  test('rejects a reconstruction that does not match the persisted group identity', () => {
+    expect(
+      recoverLegacyBootstrapOfferTick({
+        groupId,
+        maximumAssets: 1_000n,
+        market: { params: publicationMarket, tickSpacing: 4, continuousFee: 17 },
+        maker,
+        ratifier
+      })
+    ).toBeUndefined()
   })
 })
 
