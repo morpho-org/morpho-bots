@@ -980,7 +980,7 @@ describe('createBootstrapGroupOwnership', () => {
       assets: 100n,
       rateBps: 450n,
       referenceObservationId: 'blocks:100-200',
-      tick: -123n,
+      tick: 123n,
       continuousFeeCap: 17n
     }
     try {
@@ -992,6 +992,32 @@ describe('createBootstrapGroupOwnership', () => {
         { stateDirectory: directory }
       )
       expect(await restarted.readOffers()).toEqual([{ groupId, ...offer }])
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  test('rejects a negative protocol tick before persisting offer ownership', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'market-making-invalid-tick-'))
+    const ownership = createBootstrapGroupOwnership(
+      { maker, marketIds: [marketId], configuredGroupIds: [] },
+      { stateDirectory: directory }
+    )
+    try {
+      const error = await ownership
+        .reserve(groupId, {
+          marketId,
+          assets: 100n,
+          rateBps: 450n,
+          referenceObservationId: 'blocks:100-200',
+          tick: -1n,
+          continuousFeeCap: 17n
+        })
+        .catch(value => value)
+
+      expect(error).toBeInstanceOf(BootstrapAdapterError)
+      expect(error).toMatchObject({ operation: 'group-ownership-state' })
+      expect(await ownership.read()).toEqual([])
     } finally {
       await rm(directory, { recursive: true, force: true })
     }

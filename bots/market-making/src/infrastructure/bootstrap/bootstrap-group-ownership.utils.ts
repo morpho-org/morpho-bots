@@ -1,5 +1,6 @@
 import type { Address, Hex } from 'viem'
 
+import { MAX_TICK } from '@morpho-org/midnight-sdk'
 import { mkdir, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -76,11 +77,18 @@ const canonicalAmount = (value: unknown) => {
   return BigInt(value)
 }
 
-const canonicalTick = (value: unknown) => {
-  if (typeof value !== 'string' || !/^(0|-?[1-9]\d*)$/.test(value)) {
+const protocolTick = (value: bigint) => {
+  if (value < 0n || value > MAX_TICK) {
     throw new BootstrapAdapterError('group-ownership-state')
   }
-  return BigInt(value)
+  return value
+}
+
+const canonicalTick = (value: unknown) => {
+  if (typeof value !== 'string' || !/^(0|[1-9]\d*)$/.test(value)) {
+    throw new BootstrapAdapterError('group-ownership-state')
+  }
+  return protocolTick(BigInt(value))
 }
 
 const canonicalOffer = (value: unknown): OwnedOffer => {
@@ -245,11 +253,17 @@ export const createBootstrapGroupOwnership = (
     ) => {
       const state = await readPersisted()
       const id = canonicalId(groupId)
+      const intendedOffer = offer
+        ? {
+            ...offer,
+            ...(offer.tick === undefined ? {} : { tick: protocolTick(offer.tick) })
+          }
+        : undefined
       await writePersisted({
         ...state,
         reservedGroupIds: [...new Set([...state.reservedGroupIds, id])],
-        offers: offer
-          ? [...state.offers.filter(item => item.groupId !== id), { groupId: id, ...offer }]
+        offers: intendedOffer
+          ? [...state.offers.filter(item => item.groupId !== id), { groupId: id, ...intendedOffer }]
           : state.offers
       })
     },

@@ -50,7 +50,7 @@ import {
   validateBootstrapMempoolPayload,
   validateBootstrapMempoolPublication
 } from './bootstrap-mempool-validation.utils'
-import { createBootstrapOffer } from './bootstrap-offer.utils'
+import { bootstrapContinuousFeeCap, createBootstrapOffer } from './bootstrap-offer.utils'
 import { readLivePendingBootstrapOffers } from './bootstrap-pending-offer.utils'
 import { MidnightBootstrapPositionService } from './bootstrap-position.service'
 import { BlueBootstrapReferenceRateService } from './bootstrap-reference-rate.service'
@@ -348,6 +348,8 @@ export const createProductionBootstrapAdapters = (
         functionName: 'balanceOf',
         args: [maker]
       }),
+    readMarketContinuousFeeCap: async marketId =>
+      bootstrapContinuousFeeCap(await midnight.getMarketData(marketId)),
     readGroupInventory
   }
 
