@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const browserTest = fileURLToPath(new URL('./playground-smoke.browser.mjs', import.meta.url))
-const expectedBrowserTests = 7
+const expectedBrowserTests = 13
 const markerCount = (output, marker) => output.split(marker).length - 1
 const diagnostics = output => output.slice(-8000)
 const summaryCount = (output, label) => {
