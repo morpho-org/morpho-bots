@@ -1,7 +1,7 @@
 import type { Logger } from '@repo/bot-kit'
 import type { Address, Hex } from 'viem'
 
-import { delay, fetchWithRetry } from '@repo/utils'
+import { delay, fetchWithRetry, tryCatch } from '@repo/utils'
 import createClient from 'openapi-fetch'
 import { isAddress, isHex } from 'viem'
 
@@ -23,18 +23,19 @@ export type ApiMarket = Omit<ApiMarketRow, 'market_id' | 'loan_token' | 'collate
 }
 
 /**
- * The market whitelist: `GET /v0/midnight/markets?listed=true` defines the set of markets the bot is
- * allowed to touch. `isListed` gates borrower candidates before the lens read, probing, and
- * liquidation — a market not in the listed set is never acted on (fail-closed). The set is refreshed
- * on a timer and serves last-known-good on a transient API failure, so a blip never silently widens
- * or empties the whitelist mid-flight; only a never-successful first fetch yields an empty set (safe).
- * `snapshot().updatedAt` is the caller's staleness signal — past `LISTED_MARKETS_MAX_AGE_MS` the
- * caller must treat the set as empty (fail-closed) so a since-delisted market can never linger.
+ * ONE source's view of the market whitelist: `GET /v0/midnight/markets?listed=true` defines the set of
+ * markets the bot is allowed to touch. `isListed` gates borrower candidates before the lens read,
+ * probing, and liquidation — a market not in the listed set is never acted on (fail-closed). The set is
+ * refreshed on a timer and serves last-known-good on a transient API failure, so a blip never silently
+ * widens or empties the whitelist mid-flight; only a never-successful first fetch yields an empty set
+ * (safe). `snapshot().updatedAt` is the staleness signal — past `LISTED_MARKETS_MAX_AGE_MS` the set
+ * must be treated as empty so a since-delisted market can never linger. Deployments read one or more
+ * sources; {@link createUnionListedMarketFilter} composes them and applies that staleness rule.
  */
 type ListedMarketFilter = {
   isListed: (marketId: Hex) => boolean
   refresh: () => Promise<void>
-  snapshot: () => { markets: number; updatedAt: number | null }
+  snapshot: () => { source: string; markets: number; updatedAt: number | null }
 }
 
 /** The `fetch` shape `openapi-fetch` calls — a single `Request`. The global `fetch` satisfies it. */
@@ -72,6 +73,9 @@ export function createListedMarketFilter(deps: {
     ? deps.apiUrl.slice(0, -PATH.length)
     : new URL(deps.apiUrl).origin
   const client = createClient<paths>({ baseUrl, fetch: deps.fetchImpl ?? fetch })
+  // Log/snapshot label for this source. The HOST only: enough to tell two sources apart in logs, with
+  // no room for a query string or credential to ride along (these endpoints are public either way).
+  const source = new URL(deps.apiUrl).host
 
   // Last-known-good: only replaced by a fully-successful refresh, so a transient failure keeps serving
   // the prior set rather than emptying the whitelist.
@@ -101,12 +105,109 @@ export function createListedMarketFilter(deps: {
     }
     listed = next
     updatedAt = now()
-    deps.logger.info('markets.listed', { chainId: deps.chainId, markets: listed.size })
+    deps.logger.info('markets.listed', { chainId: deps.chainId, source, markets: listed.size })
   }
 
   return {
     isListed: marketId => listed.has(marketId.toLowerCase()),
     refresh,
-    snapshot: () => ({ markets: listed.size, updatedAt })
+    snapshot: () => ({ source, markets: listed.size, updatedAt })
+  }
+}
+
+/** One source's contribution to the union, as reported by {@link UnionListedMarketFilter.snapshot}. */
+type UnionSourceSnapshot = {
+  /** Host of the endpoint this source reads (see the single-source `source` label). */
+  source: string
+  markets: number
+  updatedAt: number | null
+  /** `true` when this source is past `maxAgeMs` and therefore contributes nothing to the union. */
+  expired: boolean
+}
+
+/**
+ * The composed whitelist across every configured markets source. `isListed` is the UNION over sources
+ * that are still fresh, so deployments can read more than one endpoint (e.g. the public list plus an
+ * additional list carrying extra markets) without either endpoint becoming a single point of failure.
+ */
+type UnionListedMarketFilter = {
+  isListed: (marketId: Hex) => boolean
+  refresh: () => Promise<void>
+  snapshot: () => { sources: UnionSourceSnapshot[]; fresh: number }
+}
+
+/**
+ * Composes single-source {@link ListedMarketFilter}s into one union filter.
+ *
+ * The staleness rule is applied PER SOURCE: a source older than `maxAgeMs` (or never successfully
+ * fetched) contributes nothing, while its still-fresh peers keep working. That is what makes reading
+ * two endpoints safe in both directions — one endpoint going down or going stale narrows the whitelist
+ * to the sources that are still trustworthy instead of either emptying it (halting all liquidations) or
+ * letting a stale set keep a since-delisted market in scope.
+ *
+ * Union semantics are additive, so the whitelist is only ever as wide as the sources the operator
+ * configured; it stays fail-closed on a cold start (every source has `updatedAt === null` → nothing is
+ * listed).
+ *
+ * `refresh` fans out to every source concurrently and NEVER throws: each source's failure is logged
+ * (`markets.refresh_failed`, with its host) and the others still land, because a partial refresh must
+ * not read as a total one. After the fan-out it re-evaluates freshness and warns — `markets.source_expired`
+ * when some sources are stale, `markets.whitelist_expired` when all of them are (the whitelist is then
+ * empty and no liquidation can proceed). `now` is injectable for tests.
+ */
+export function createUnionListedMarketFilter(deps: {
+  filters: ListedMarketFilter[]
+  maxAgeMs: number
+  logger: Logger
+  now?: () => number
+}): UnionListedMarketFilter {
+  const now = deps.now ?? (() => Date.now())
+  const ageOf = (filter: ListedMarketFilter): number => {
+    const { updatedAt } = filter.snapshot()
+    return updatedAt === null ? Infinity : now() - updatedAt
+  }
+  const isFresh = (filter: ListedMarketFilter): boolean => ageOf(filter) <= deps.maxAgeMs
+  const snapshot = () => {
+    const sources = deps.filters.map(filter => ({
+      ...filter.snapshot(),
+      expired: !isFresh(filter)
+    }))
+    return { sources, fresh: sources.filter(source => !source.expired).length }
+  }
+
+  return {
+    isListed: marketId => deps.filters.some(filter => isFresh(filter) && filter.isListed(marketId)),
+    refresh: async () => {
+      await Promise.all(
+        deps.filters.map(async filter => {
+          const { error } = await tryCatch(filter.refresh())
+          if (error) {
+            deps.logger.warn('markets.refresh_failed', {
+              source: filter.snapshot().source,
+              detail: error.message
+            })
+          }
+        })
+      )
+      const { sources, fresh } = snapshot()
+      const expired = sources.filter(source => source.expired).map(source => source.source)
+      if (expired.length === 0) return
+      if (fresh === 0) {
+        deps.logger.warn('markets.whitelist_expired', {
+          expired,
+          maxAgeMs: deps.maxAgeMs,
+          detail:
+            'every markets source is older than max age — whitelist is empty (fail-closed) until a refresh lands'
+        })
+        return
+      }
+      deps.logger.warn('markets.source_expired', {
+        expired,
+        maxAgeMs: deps.maxAgeMs,
+        detail:
+          'markets source older than max age — excluded from the whitelist until a refresh lands'
+      })
+    },
+    snapshot
   }
 }
