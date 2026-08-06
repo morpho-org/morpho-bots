@@ -371,18 +371,46 @@ const yamlEnvironmentPaths: Partial<
   TRANSACTION_RECEIPT_TIMEOUT_MS: ['setup', 'transactionReceiptTimeoutMs']
 }
 
+type SignerEnvironmentKey =
+  | 'MAKER_PRIVATE_KEY'
+  | 'KEY_STORAGE_METHOD'
+  | 'KEYSTORE_PATH'
+  | 'KEYSTORE_PASSWORD'
+  | 'KEYSTORE_INTERACTIVE'
+  | 'AWS_KMS_KEY_ID'
+  | 'AWS_REGION'
+
+const signerEnvironmentKeys = new Set<SignerEnvironmentKey>([
+  'MAKER_PRIVATE_KEY',
+  'KEY_STORAGE_METHOD',
+  'KEYSTORE_PATH',
+  'KEYSTORE_PASSWORD',
+  'KEYSTORE_INTERACTIVE',
+  'AWS_KMS_KEY_ID',
+  'AWS_REGION'
+])
+
+const hasSignerEnvironmentOverride = (environment: Environment, key: SignerEnvironmentKey) => {
+  const value = environment[key]
+  if (value === undefined) return false
+  if (key === 'KEYSTORE_PASSWORD') {
+    return value.length > 0 || environment.KEYSTORE_INTERACTIVE?.trim() === 'true'
+  }
+  return value.trim().length > 0
+}
+
 const removeOverriddenYamlValues = (input: unknown, environment: Environment) => {
   if (typeof input !== 'object' || input === null || Array.isArray(input)) return
   const root = input as Record<string, unknown>
-  const environmentMethod =
-    environment.KEY_STORAGE_METHOD ??
-    (environment.MAKER_PRIVATE_KEY !== undefined
+  const environmentMethod = hasSignerEnvironmentOverride(environment, 'KEY_STORAGE_METHOD')
+    ? environment.KEY_STORAGE_METHOD!.trim()
+    : hasSignerEnvironmentOverride(environment, 'MAKER_PRIVATE_KEY')
       ? 'private-key'
-      : environment.KEYSTORE_PATH !== undefined
+      : hasSignerEnvironmentOverride(environment, 'KEYSTORE_PATH')
         ? 'keystore'
-        : environment.AWS_KMS_KEY_ID !== undefined
+        : hasSignerEnvironmentOverride(environment, 'AWS_KMS_KEY_ID')
           ? 'aws'
-          : undefined)
+          : undefined
   if (environmentMethod !== undefined) {
     const identity = root.identity
     if (typeof identity === 'object' && identity !== null && !Array.isArray(identity)) {
@@ -400,6 +428,11 @@ const removeOverriddenYamlValues = (input: unknown, environment: Environment) =>
   }
   for (const key of environmentKeys) {
     if (environment[key] === undefined) continue
+    if (
+      signerEnvironmentKeys.has(key as SignerEnvironmentKey) &&
+      !hasSignerEnvironmentOverride(environment, key as SignerEnvironmentKey)
+    )
+      continue
     const path = yamlEnvironmentPaths[key]
     if (!path) continue
     const group = root[path[0]]
@@ -540,7 +573,12 @@ export const loadConfigurationSources = async (
   for (const key of environmentKeys) {
     if (readOnly && key !== 'MAKER_ADDRESS' && yamlEnvironmentPaths[key]?.[0] === 'identity')
       continue
-    if (environment[key] !== undefined) source.values[key] = environment[key]
+    if (
+      environment[key] !== undefined &&
+      (!signerEnvironmentKeys.has(key as SignerEnvironmentKey) ||
+        hasSignerEnvironmentOverride(environment, key as SignerEnvironmentKey))
+    )
+      source.values[key] = environment[key]
   }
   if (environment.BOOTSTRAP_MARKETS !== undefined) {
     source.bootstrap = parseMarketsValue('BOOTSTRAP_MARKETS', environment.BOOTSTRAP_MARKETS)
@@ -572,7 +610,12 @@ export const configurationFromEnvironment = (
       yamlEnvironmentPaths[key]?.[0] === 'identity'
     )
       continue
-    if (environment[key] !== undefined) values[key] = environment[key]
+    if (
+      environment[key] !== undefined &&
+      (!signerEnvironmentKeys.has(key as SignerEnvironmentKey) ||
+        hasSignerEnvironmentOverride(environment, key as SignerEnvironmentKey))
+    )
+      values[key] = environment[key]
   }
   let bootstrap: unknown = []
   if (environment.BOOTSTRAP_MARKETS !== undefined) {

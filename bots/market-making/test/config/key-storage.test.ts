@@ -24,6 +24,9 @@ const baseEnvironment = {
 }
 const directories: string[] = []
 
+const configurationYaml = (identity: string) =>
+  `chain:\n  id: 8453\n  rpcUrl: https://yaml-rpc.example\n  archiveRpcUrl: https://archive.example\nidentity:\n${identity}\ncontracts:\n  midnightAddress: 0x2222222222222222222222222222222222222222\n  loanAssetAddress: 0x3333333333333333333333333333333333333333\n  ratifierAddress: 0x4444444444444444444444444444444444444444\napis:\n  morphoBaseUrl: https://api.example\n  routerBaseUrl: https://router.example\nmarkets:\n  allowlist: [0x${'55'.repeat(32)}]\n  referenceMarketId: 0x${'77'.repeat(32)}\nsetup:\n  nativeReserveWei: 10\n  maximumLendExposureAssets: 100\n`
+
 afterEach(async () => {
   mock.restore()
   await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true })))
@@ -153,4 +156,93 @@ describe('maker key storage configuration', () => {
     expect(config.identity).toMatchObject({ method: 'aws', keyId: 'alias/from-env' })
     expect(config.rpcUrl).toBe('https://env-rpc.example')
   })
+
+  test.each([
+    [
+      'private-key',
+      `  makerAddress: ${baseEnvironment.MAKER_ADDRESS}\n  keyStorageMethod: private-key\n  makerPrivateKey: ${privateKey}`,
+      { KEY_STORAGE_METHOD: ' \t ', MAKER_PRIVATE_KEY: '' },
+      { method: 'private-key', privateKey }
+    ],
+    [
+      'keystore',
+      `  makerAddress: ${baseEnvironment.MAKER_ADDRESS}\n  keyStorageMethod: keystore\n  keystorePath: /yaml/maker.json\n  keystorePassword: yaml-password`,
+      {
+        KEY_STORAGE_METHOD: '',
+        KEYSTORE_PATH: ' \t ',
+        KEYSTORE_PASSWORD: '',
+        KEYSTORE_INTERACTIVE: '   '
+      },
+      { method: 'keystore', path: '/yaml/maker.json', password: 'yaml-password' }
+    ],
+    [
+      'aws',
+      `  makerAddress: ${baseEnvironment.MAKER_ADDRESS}\n  keyStorageMethod: aws\n  awsKmsKeyId: alias/yaml-maker\n  awsRegion: eu-west-1`,
+      { KEY_STORAGE_METHOD: '\n', AWS_KMS_KEY_ID: ' \t', AWS_REGION: '  ' },
+      { method: 'aws', keyId: 'alias/yaml-maker', region: 'eu-west-1' }
+    ]
+  ])(
+    'blank environment signer selectors do not override valid YAML %s configuration',
+    async (_method, identity, signerEnvironment, expectedIdentity) => {
+      const directory = await mkdtemp(join(tmpdir(), 'market-making-key-storage-blank-env-'))
+      directories.push(directory)
+      const path = join(directory, 'operator.yaml')
+      await writeFile(path, configurationYaml(identity))
+
+      const config = await ConfigService.load(signerEnvironment, { configPath: path })
+
+      expect(config.identity).toMatchObject(expectedIdentity)
+    }
+  )
+
+  test('a whitespace-only environment password overrides the YAML password byte-for-byte', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'market-making-key-storage-password-env-'))
+    directories.push(directory)
+    const path = join(directory, 'operator.yaml')
+    await writeFile(
+      path,
+      configurationYaml(
+        `  makerAddress: ${baseEnvironment.MAKER_ADDRESS}\n  keyStorageMethod: keystore\n  keystorePath: /yaml/maker.json\n  keystorePassword: yaml-password`
+      )
+    )
+
+    const config = await ConfigService.load({ KEYSTORE_PASSWORD: ' \t ' }, { configPath: path })
+
+    expect(config.identity).toMatchObject({ method: 'keystore', password: ' \t ' })
+  })
+
+  test.each([
+    [
+      'KEY_STORAGE_METHOD',
+      { KEY_STORAGE_METHOD: 'unsupported' },
+      'unsupported',
+      `  makerAddress: ${baseEnvironment.MAKER_ADDRESS}\n  keyStorageMethod: private-key\n  makerPrivateKey: ${privateKey}`
+    ],
+    [
+      'MAKER_PRIVATE_KEY',
+      { MAKER_PRIVATE_KEY: 'not-a-private-key' },
+      'invalid-bytes32',
+      `  makerAddress: ${baseEnvironment.MAKER_ADDRESS}\n  keyStorageMethod: private-key\n  makerPrivateKey: ${privateKey}`
+    ],
+    [
+      'KEYSTORE_INTERACTIVE',
+      { KEYSTORE_INTERACTIVE: 'yes' },
+      'invalid-boolean',
+      `  makerAddress: ${baseEnvironment.MAKER_ADDRESS}\n  keyStorageMethod: keystore\n  keystorePath: /yaml/maker.json\n  keystorePassword: yaml-password`
+    ]
+  ])(
+    'non-blank malformed %s still reaches final validation',
+    async (_field, signerEnvironment, reason, identity) => {
+      const directory = await mkdtemp(join(tmpdir(), 'market-making-key-storage-invalid-env-'))
+      directories.push(directory)
+      const path = join(directory, 'operator.yaml')
+      await writeFile(path, configurationYaml(identity))
+
+      await expect(
+        ConfigService.load(signerEnvironment, { configPath: path })
+      ).rejects.toMatchObject({
+        reason
+      })
+    }
+  )
 })
