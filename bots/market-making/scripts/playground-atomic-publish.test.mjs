@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import {
+  chmod,
   lstat,
   mkdir,
   mkdtemp,
@@ -9,6 +10,7 @@ import {
   rename,
   rm,
   symlink,
+  unlink,
   writeFile
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -261,17 +263,120 @@ test('exclusive publication temps are private regular files in their trusted can
   const root = await makeRoot()
   const dist = join(root, 'playground', 'dist')
   const tree = await makeTree(root, 'private-temps')
-  const observed = []
+  const observedPrivate = []
+  const observedFinal = []
   await publish(dist, tree, {
     afterStep: async (phase, detail) => {
-      if (phase !== 'asset-temp-open' && phase !== 'index-temp-open') return
+      if (
+        phase !== 'asset-temp-open' &&
+        phase !== 'index-temp-open' &&
+        phase !== 'asset-write' &&
+        phase !== 'index-write' &&
+        phase !== 'asset-fsync' &&
+        phase !== 'index-fsync' &&
+        phase !== 'asset-close' &&
+        phase !== 'index-close'
+      ) {
+        return
+      }
       const metadata = await lstat(detail.temp)
       assert.equal(metadata.isFile(), true)
-      if (process.platform !== 'win32') assert.equal(metadata.mode & 0o777, 0o600)
-      observed.push(detail.temp)
+      const isPrivatePhase = phase.endsWith('-open') || phase.endsWith('-write')
+      if (process.platform !== 'win32') {
+        assert.equal(metadata.mode & 0o777, isPrivatePhase ? 0o600 : 0o644)
+      }
+      ;(isPrivatePhase ? observedPrivate : observedFinal).push(detail.temp)
     }
   })
-  assert.equal(observed.length, 3)
+  assert.equal(observedPrivate.length, 6)
+  assert.equal(observedFinal.length, 6)
+  await assertNoTempDebris(dist)
+})
+
+test('final files are 0644 and publication directories are 0755 independent of umask', async () => {
+  const root = await makeRoot()
+  const dist = join(root, 'playground', 'dist')
+  const first = await makeTree(root, 'mode-normalization')
+  const same = await makeTree(root, 'mode-normalization')
+  const previousUmask = process.umask(0o077)
+  try {
+    await publish(dist, first)
+    // An already-canonical identical asset is normalized too, rather than inheriting old metadata.
+    await chmod(join(dist, 'assets', first.jsName), 0o600)
+    await publish(dist, same)
+  } finally {
+    process.umask(previousUmask)
+  }
+
+  for (const directory of [dist, join(dist, 'assets')]) {
+    assert.equal((await lstat(directory)).mode & 0o777, 0o755)
+  }
+  for (const file of [
+    join(dist, 'index.html'),
+    join(dist, 'assets', first.jsName),
+    join(dist, 'assets', first.cssName)
+  ]) {
+    const metadata = await lstat(file)
+    assert.equal(metadata.mode & 0o777, 0o644)
+    assert.notEqual(metadata.mode & 0o004, 0, `${file} must be readable by a separate uid`)
+  }
+  await assertNoTempDebris(dist)
+})
+
+test('asset replacement, symlink substitution, and deletion after readiness reject the index commit', async () => {
+  for (const attack of ['different-bytes', 'symlink', 'delete']) {
+    const root = await makeRoot()
+    const dist = join(root, 'playground', 'dist')
+    const old = await makeTree(root, `old-${attack}`)
+    const next = await makeTree(root, `next-${attack}`)
+    await publish(dist, old)
+    const oldHtml = await readFile(join(dist, 'index.html'))
+    const oldJs = await readFile(join(dist, 'assets', old.jsName))
+    const target = join(dist, 'assets', next.jsName)
+
+    await assert.rejects(
+      publish(dist, next, {
+        beforeIndexRename: async () => {
+          if (attack === 'different-bytes') await writeFile(target, 'attacker bytes')
+          if (attack === 'symlink') {
+            await unlink(target)
+            await symlink(join(dist, 'assets', old.jsName), target)
+          }
+          if (attack === 'delete') await unlink(target)
+        }
+      }),
+      /asset|regular file|ENOENT|identity|bytes|digest/i
+    )
+    assert.deepEqual(await readFile(join(dist, 'index.html')), oldHtml)
+    assert.deepEqual(await readFile(join(dist, 'assets', old.jsName)), oldJs)
+    await readGeneration(dist)
+    await assertNoTempDebris(dist)
+  }
+})
+
+test('asset parent identity replacement after readiness rejects the index commit', async () => {
+  const root = await makeRoot()
+  const dist = join(root, 'playground', 'dist')
+  const old = await makeTree(root, 'old-asset-parent')
+  const next = await makeTree(root, 'next-asset-parent')
+  await publish(dist, old)
+  const oldHtml = await readFile(join(dist, 'index.html'))
+  const displaced = join(dist, 'assets-displaced')
+  const marker = join(dist, 'assets', 'marker')
+
+  await assert.rejects(
+    publish(dist, next, {
+      beforeIndexRename: async () => {
+        await rename(join(dist, 'assets'), displaced)
+        await mkdir(join(dist, 'assets'))
+        await writeFile(marker, 'untouched')
+      }
+    }),
+    /asset parent|asset directory|identity|replaced/i
+  )
+  assert.deepEqual(await readFile(join(dist, 'index.html')), oldHtml)
+  assert.equal(await readFile(marker, 'utf8'), 'untouched')
+  assert.equal(await readFile(join(displaced, old.jsName), 'utf8'), old.js)
   await assertNoTempDebris(dist)
 })
 

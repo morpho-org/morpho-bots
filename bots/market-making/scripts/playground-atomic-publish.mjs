@@ -60,10 +60,43 @@ const revalidateDirectory = async (expected, label) => {
   return expected
 }
 
+const openNoFollow = async (path, flags) => {
+  const noFollowSupported = process.platform !== 'win32' && typeof constants.O_NOFOLLOW === 'number'
+  if (noFollowSupported) {
+    try {
+      return await open(path, flags | constants.O_NOFOLLOW)
+    } catch (error) {
+      if (!['EINVAL', 'ENOTSUP', 'EOPNOTSUPP'].includes(error?.code)) throw error
+    }
+  }
+  return open(path, flags)
+}
+
+const setPinnedDirectoryMode = async (expected, label) => {
+  await revalidateDirectory(expected, label)
+  const handle = await openNoFollow(expected.path, constants.O_RDONLY)
+  try {
+    const opened = await handle.stat()
+    if (!opened.isDirectory() || !sameIdentity(opened, expected)) {
+      throw new Error(`${label} changed while opening: ${expected.path}`)
+    }
+    await handle.chmod(0o755)
+    const normalized = await handle.stat()
+    if ((normalized.mode & 0o777) !== 0o755) {
+      throw new Error(`${label} mode was not normalized to 0755: ${expected.path}`)
+    }
+    await revalidateDirectory(expected, label)
+  } finally {
+    await handle.close()
+  }
+  return expected
+}
+
 const ensureCanonicalDirectory = async canonical => {
   const current = await entry(canonical)
-  if (!current) await mkdir(canonical)
-  return captureDirectory(canonical, 'Canonical output')
+  if (!current) await mkdir(canonical, { mode: 0o755 })
+  const identity = await captureDirectory(canonical, 'Canonical output')
+  return setPinnedDirectoryMode(identity, 'Canonical output')
 }
 
 const ensureCanonicalSubdirectory = async (
@@ -78,11 +111,12 @@ const ensureCanonicalSubdirectory = async (
     await revalidateDirectory(current, 'Canonical asset parent')
     const path = join(current.path, component)
     try {
-      await mkdir(path)
+      await mkdir(path, { mode: 0o755 })
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error
     }
     current = await captureDirectory(path, 'Canonical asset directory')
+    await setPinnedDirectoryMode(current, 'Canonical asset directory')
   }
   return current
 }
@@ -163,6 +197,8 @@ const writeSyncedTemp = async ({ afterStep, contents, kind, relativePath, truste
     await step(afterStep, `${kind}-temp-open`, { relativePath, temp })
     await handle.writeFile(contents)
     await step(afterStep, `${kind}-write`, { relativePath, temp })
+    // Creation stays private while bytes are incomplete; publishable mode is explicit and umask-free.
+    await handle.chmod(0o644)
     await handle.sync()
     await step(afterStep, `${kind}-fsync`, { relativePath, temp })
     await handle.close()
@@ -178,27 +214,22 @@ const writeSyncedTemp = async ({ afterStep, contents, kind, relativePath, truste
   }
 }
 
-const readExistingRegularFile = async target => {
-  const before = await lstat(target)
+const readExistingRegularFile = async (target, expectedIdentity) => {
+  let before
+  try {
+    before = await lstat(target)
+  } catch (error) {
+    throw new Error(`Canonical immutable asset is missing: ${target}`, { cause: error })
+  }
   if (before.isSymbolicLink() || !before.isFile()) {
     throw new Error(`Canonical immutable asset must be a non-symlink regular file: ${target}`)
   }
+  if (expectedIdentity && !sameIdentity(before, expectedIdentity)) {
+    throw new Error(`Canonical immutable asset identity was replaced: ${target}`)
+  }
   let handle
   try {
-    const noFollowSupported =
-      process.platform !== 'win32' && typeof constants.O_NOFOLLOW === 'number'
-    if (noFollowSupported) {
-      try {
-        handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW)
-      } catch (error) {
-        if (!['EINVAL', 'ENOTSUP', 'EOPNOTSUPP'].includes(error?.code)) throw error
-        // Some filesystems expose O_NOFOLLOW but reject it. The fallback remains lstat/fstat pinned.
-        handle = await open(target, constants.O_RDONLY)
-      }
-    } else {
-      // Windows and runtimes without O_NOFOLLOW use identity-matched lstat/open/fstat.
-      handle = await open(target, constants.O_RDONLY)
-    }
+    handle = await openNoFollow(target, constants.O_RDONLY)
     const opened = await handle.stat()
     if (!opened.isFile() || !sameIdentity(opened, before)) {
       throw new Error(`Canonical immutable asset changed while opening: ${target}`)
@@ -207,9 +238,46 @@ const readExistingRegularFile = async target => {
     if (after.isSymbolicLink() || !after.isFile() || !sameIdentity(after, opened)) {
       throw new Error(`Canonical immutable asset was replaced while opening: ${target}`)
     }
-    return await handle.readFile()
+    const contents = await handle.readFile()
+    const afterRead = await handle.stat()
+    const finalEntry = await lstat(target)
+    if (
+      !sameIdentity(afterRead, opened) ||
+      finalEntry.isSymbolicLink() ||
+      !finalEntry.isFile() ||
+      !sameIdentity(finalEntry, opened)
+    ) {
+      throw new Error(`Canonical immutable asset changed while reading: ${target}`)
+    }
+    return {
+      contents,
+      digest: createHash('sha256').update(contents).digest('hex'),
+      identity: { dev: Number(opened.dev), ino: Number(opened.ino) },
+      mode: afterRead.mode & 0o777
+    }
   } finally {
     await handle?.close()
+  }
+}
+
+const normalizePinnedRegularFileMode = async (target, expectedIdentity) => {
+  const handle = await openNoFollow(target, constants.O_RDONLY)
+  try {
+    const opened = await handle.stat()
+    const current = await lstat(target)
+    if (
+      !opened.isFile() ||
+      current.isSymbolicLink() ||
+      !current.isFile() ||
+      !sameIdentity(opened, current) ||
+      !sameIdentity(opened, expectedIdentity)
+    ) {
+      throw new Error(`Canonical immutable asset changed before mode normalization: ${target}`)
+    }
+    await handle.chmod(0o644)
+    await handle.sync()
+  } finally {
+    await handle.close()
   }
 }
 
@@ -239,9 +307,10 @@ const publishImmutableAsset = async ({ afterStep, canonicalIdentity, file, reval
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error
       const existing = await readExistingRegularFile(target)
-      if (!existing.equals(file.contents)) {
+      if (!existing.contents.equals(file.contents)) {
         throw new Error(`Canonical immutable asset collision has different bytes: ${file.relative}`)
       }
+      await normalizePinnedRegularFileMode(target, existing.identity)
     }
     await syncDirectory(trustedDirectory.path)
     await step(afterStep, 'asset-publish', { relativePath: file.relative, target })
@@ -249,6 +318,33 @@ const publishImmutableAsset = async ({ afterStep, canonicalIdentity, file, reval
     await unlinkFromTrustedDirectory(temp, trustedDirectory)
   }
   await step(afterStep, 'asset-temp-remove', { relativePath: file.relative, temp })
+  const published = await readExistingRegularFile(target)
+  if (!published.contents.equals(file.contents) || published.mode !== 0o644) {
+    throw new Error(`Canonical immutable asset final bytes or mode are invalid: ${file.relative}`)
+  }
+  return {
+    contents: file.contents,
+    digest: createHash('sha256').update(file.contents).digest('hex'),
+    identity: published.identity,
+    parentIdentity: trustedDirectory,
+    relativePath: file.relative,
+    target
+  }
+}
+
+const revalidatePublishedAsset = async (asset, revalidateRoots) => {
+  await revalidateRoots()
+  await revalidateDirectory(asset.parentIdentity, 'Canonical asset parent')
+  const current = await readExistingRegularFile(asset.target, asset.identity)
+  if (
+    !current.contents.equals(asset.contents) ||
+    current.digest !== asset.digest ||
+    current.mode !== 0o644
+  ) {
+    throw new Error(
+      `Canonical immutable asset bytes, digest, or mode changed: ${asset.relativePath}`
+    )
+  }
 }
 
 /**
@@ -277,8 +373,11 @@ export const publishCanonicalPlayground = async ({
   await step(afterStep, 'canonical-ready', { canonical })
 
   await revalidateRoots()
+  const publishedAssets = []
   for (const file of generation.assets) {
-    await publishImmutableAsset({ afterStep, canonicalIdentity, file, revalidateRoots })
+    publishedAssets.push(
+      await publishImmutableAsset({ afterStep, canonicalIdentity, file, revalidateRoots })
+    )
   }
   await step(afterStep, 'assets-ready', { canonical })
 
@@ -293,7 +392,15 @@ export const publishCanonicalPlayground = async ({
   })
   try {
     await beforeIndexRename?.({ canonical, staging, temp })
+    // Validate immediately after the hook, then again after the final injectable phase so rename has
+    // no callback-shaped gap in which a referenced immutable asset can change unnoticed.
+    for (const asset of publishedAssets) {
+      await revalidatePublishedAsset(asset, revalidateRoots)
+    }
     await step(afterStep, 'before-index-rename', { canonical, temp })
+    for (const asset of publishedAssets) {
+      await revalidatePublishedAsset(asset, revalidateRoots)
+    }
     await revalidateRoots()
     await rename(temp, target)
     await syncDirectory(canonical)
