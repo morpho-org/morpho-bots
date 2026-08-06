@@ -9,8 +9,18 @@ class FakeInput extends EventEmitter {
   pauses = 0
   resumes = 0
 
+  constructor(
+    private readonly failures: {
+      setRawMode?: Error
+      resume?: Error
+    } = {}
+  ) {
+    super()
+  }
+
   setRawMode(value: boolean) {
     this.rawModes.push(value)
+    if (value && this.failures.setRawMode) throw this.failures.setRawMode
     return this
   }
 
@@ -21,15 +31,25 @@ class FakeInput extends EventEmitter {
 
   resume() {
     this.resumes += 1
+    if (this.failures.resume) throw this.failures.resume
     return this
   }
 }
 
-const prompt = (signal?: AbortSignal) => {
-  const input = new FakeInput()
+const prompt = (
+  signal?: AbortSignal,
+  failures: { outputWrite?: Error; setRawMode?: Error; resume?: Error } = {}
+) => {
+  const input = new FakeInput(failures)
   const writes: string[] = []
   const secretBytes: number[] = []
-  const output = { isTTY: true, write: (value: string) => writes.push(value) }
+  const output = {
+    isTTY: true,
+    write: (value: string) => {
+      if (failures.outputWrite) throw failures.outputWrite
+      writes.push(value)
+    }
+  }
   const result = readPasswordInteractively({ input, output, signal, secretBytes })
   return { input, writes, result, secretBytes }
 }
@@ -60,6 +80,25 @@ describe('hidden keystore password input', () => {
     expectClean(input)
   })
 
+  test('preserves tab and non-reserved control bytes', async () => {
+    const { input, result, secretBytes } = prompt()
+    input.emit('data', Buffer.from([0x61, 0x09, 0x01, 0x62, 0x0a]))
+
+    expect(await result).toBe('a\t\u0001b')
+    expectWiped(secretBytes, 4)
+    expectClean(input)
+  })
+
+  test('removes one Unicode code point on backspace and preserves remaining UTF-8', async () => {
+    const { input, result, secretBytes } = prompt()
+    input.emit('data', Buffer.from('秘密🔐', 'utf8'))
+    input.emit('data', Buffer.from([0x7f, 0x0a]))
+
+    expect(await result).toBe('秘密')
+    expectWiped(secretBytes, Buffer.byteLength('秘密'))
+    expectClean(input)
+  })
+
   test.each(['error', 'end'] as const)(
     'wipes mutable bytes and cleans up after input %s',
     async event => {
@@ -80,6 +119,32 @@ describe('hidden keystore password input', () => {
     await expect(result).rejects.toMatchObject({ code: 'INVALID_USAGE' })
     expectWiped(secretBytes, 'partial-secret'.length)
     expectClean(input)
+  })
+
+  test('wipes mutable bytes and cleans up after raw Ctrl-D cancellation', async () => {
+    const { input, result, secretBytes } = prompt()
+    input.emit('data', Buffer.from('partial-secret'))
+    input.emit('data', Buffer.from([0x04]))
+    await expect(result).rejects.toMatchObject({ code: 'INVALID_USAGE' })
+    expectWiped(secretBytes, 'partial-secret'.length)
+    expectClean(input)
+  })
+
+  test.each([
+    ['output.write', 'outputWrite'],
+    ['setRawMode(true)', 'setRawMode'],
+    ['resume', 'resume']
+  ] as const)('cleans up without masking an original %s failure', async (_name, failureKey) => {
+    const failure = new Error(`safe ${failureKey} failure`)
+    const { input, result, secretBytes } = prompt(undefined, { [failureKey]: failure })
+
+    await expect(result).rejects.toBe(failure)
+    expect(secretBytes).toEqual([])
+    expect(input.pauses).toBe(1)
+    expect(input.listenerCount('data')).toBe(0)
+    expect(input.listenerCount('error')).toBe(0)
+    expect(input.listenerCount('end')).toBe(0)
+    expect(input.rawModes).toEqual(failureKey === 'outputWrite' ? [] : [true, false])
   })
 
   test('wipes mutable bytes and cleans up after abort termination', async () => {

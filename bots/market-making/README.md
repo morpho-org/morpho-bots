@@ -44,9 +44,15 @@ bun run --filter @morpho-org/market-making-bot start -- --readonly setup-check
 
 # Explicit signer sources (root options precede the command).
 bun run --filter @morpho-org/market-making-bot start -- --private-key '<key>' setup-check
-KEYSTORE_PASSWORD='...' bun run --filter @morpho-org/market-making-bot start -- --keystore ./maker.json setup-check
 bun run --filter @morpho-org/market-making-bot start -- --keystore ./maker.json --interactive setup-check
 bun run --filter @morpho-org/market-making-bot start -- --aws setup-check
+```
+
+For unattended keystore operation, provision `KEYSTORE_PASSWORD` separately through the deployment
+secret manager or process environment, then run the keystore command without an inline value:
+
+```sh
+bun run --filter @morpho-org/market-making-bot start -- --keystore ./maker.json setup-check
 ```
 
 `--private-key <key>` and `--password <password>` remain available for explicit automation, but they

@@ -60,11 +60,12 @@ export const readPasswordInteractively = (options: PasswordPromptOptions = {}) =
       }
       passwordBytes.fill(0)
     }
-    const finish = (password?: string) => {
+    const finish = (password?: string, failure?: unknown) => {
       if (settled) return
       settled = true
       cleanup()
-      if (password === undefined || password.length === 0) reject(new CliUsageError())
+      if (failure !== undefined) reject(failure)
+      else if (password === undefined || password.length === 0) reject(new CliUsageError())
       else resolve(password)
     }
     const onFailure = () => finish()
@@ -74,6 +75,10 @@ export const readPasswordInteractively = (options: PasswordPromptOptions = {}) =
       try {
         for (const byte of bytes) {
           if (byte === 3) {
+            finish()
+            return
+          }
+          if (byte === 4) {
             finish()
             return
           }
@@ -100,7 +105,7 @@ export const readPasswordInteractively = (options: PasswordPromptOptions = {}) =
                 replacement?.fill(0)
               }
             }
-          } else if (byte >= 32) passwordBytes.push(byte)
+          } else passwordBytes.push(byte)
         }
       } finally {
         converted?.fill(0)
@@ -118,7 +123,7 @@ export const readPasswordInteractively = (options: PasswordPromptOptions = {}) =
       input.setRawMode(true)
       input.resume()
       if (options.signal?.aborted) onFailure()
-    } catch {
-      onFailure()
+    } catch (error) {
+      finish(undefined, error)
     }
   })

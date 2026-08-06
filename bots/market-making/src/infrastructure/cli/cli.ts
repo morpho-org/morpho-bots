@@ -331,6 +331,7 @@ export class Cli {
       aws?: boolean
     }>()
     const readOnly = options.readonly === true
+    if (options.password !== undefined && options.interactive === true) throw new CliUsageError()
     const hasExplicitSigner =
       options.privateKey !== undefined ||
       options.keystore !== undefined ||

@@ -69,6 +69,19 @@ describe('maker key storage CLI options', () => {
     })
   })
 
+  test('rejects simultaneous direct and interactive keystore password modes', async () => {
+    await expect(
+      createCli().run([
+        '--keystore',
+        '/secure/maker.json',
+        '--password',
+        'not-reported',
+        '--interactive',
+        'setup-check'
+      ])
+    ).rejects.toBeInstanceOf(CliUsageError)
+  })
+
   test('passes --aws selection while companion AWS fields remain config-driven', async () => {
     expect(await captured(['--aws', 'setup-check'])).toMatchObject({
       signerEnvironment: { KEY_STORAGE_METHOD: 'aws' }
@@ -96,5 +109,32 @@ describe('maker key storage CLI options', () => {
     expect(help).toContain('--password <password>')
     expect(help).toContain('KEYSTORE_PASSWORD')
     expect(help).toContain('--interactive')
+  })
+
+  test('entrypoint --help emits both argv warnings without exposing an ambient secret', async () => {
+    const secret = 'must-not-appear-in-help-output'
+    const process = Bun.spawn(
+      [Bun.which('bun') ?? 'bun', 'bots/market-making/src/index.ts', '--help'],
+      {
+        cwd: `${import.meta.dir}/../../../../..`,
+        env: { PATH: Bun.env.PATH, MAKER_PRIVATE_KEY: secret, KEYSTORE_PASSWORD: secret },
+        stdout: 'pipe',
+        stderr: 'pipe'
+      }
+    )
+    const [exitCode, stdout, stderr] = await Promise.all([
+      process.exited,
+      new Response(process.stdout).text(),
+      new Response(process.stderr).text()
+    ])
+    const output = stdout + stderr
+
+    expect(exitCode).toBe(0)
+    expect(output).toContain('--private-key <key>')
+    expect(output).toContain('MAKER_PRIVATE_KEY')
+    expect(output).toContain('--password <password>')
+    expect(output).toContain('KEYSTORE_PASSWORD')
+    expect(output).toContain('process listings and shell history')
+    expect(output).not.toContain(secret)
   })
 })
