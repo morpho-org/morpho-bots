@@ -238,12 +238,13 @@ bun run --filter @morpho-org/market-making-bot deploy:railway
 ```
 
 Provide the required values from [`.env.example`](./.env.example) in the invoking environment.
-Every optional value is synchronized on a full run: omitted collections and timeouts return to their
-documented defaults, and omitted BetterStack settings are disabled. `RAILWAY_ENVIRONMENT` defaults
-to `production`. CI uses `DEPLOY_ONLY=true` with the `market-making-production` GitHub Environment,
-so it reads only `RAILWAY_PROJECT_ID` and `RAILWAY_TOKEN`, enforces the reviewed package Dockerfile
-and persistent ownership-state path, requires the already-provisioned volume, and re-ships the
-service without reading its bot secrets.
+`BOOTSTRAP_MARKETS` and `LADDER_MARKETS` must each be populated JSON arrays so a full run cannot
+replace a working strategy with an empty list. Every remaining optional value is synchronized:
+omitted timeouts return to their documented defaults, and omitted group IDs and BetterStack settings
+are disabled. `RAILWAY_ENVIRONMENT` defaults to `production`. CI uses `DEPLOY_ONLY=true` with the
+`market-making-production` GitHub Environment, so it reads only `RAILWAY_PROJECT_ID` and
+`RAILWAY_TOKEN`, enforces the reviewed package Dockerfile and persistent ownership-state path,
+requires the already-provisioned volume, and re-ships the service without reading its bot secrets.
 
 The local Compose service uses the same `/state` ownership path through a named volume and supplies
 the runtime timeout defaults when the corresponding host variables are absent.

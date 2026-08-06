@@ -20,8 +20,6 @@ const optionalRuntimeVariableDefaults = [
   ['V0_OFFER_GROUP_IDS', ' '],
   ['REQUEST_TIMEOUT_MS', '10000'],
   ['TRANSACTION_RECEIPT_TIMEOUT_MS', '180000'],
-  ['BOOTSTRAP_MARKETS', '[]'],
-  ['LADDER_MARKETS', '[]'],
   ['BETTERSTACK_SOURCE_TOKEN', ' '],
   ['BETTERSTACK_INGESTING_HOST', ' '],
   ['BETTERSTACK_HEARTBEAT_URL', ' ']
@@ -55,10 +53,22 @@ const rowsFrom = (value: unknown, key: 'deployments' | 'services' | 'volumes') =
 }
 
 /**
+ * Checks whether a deployment strategy value is a populated JSON array.
+ * @param raw - Candidate environment value before runtime configuration parsing.
+ * @returns `true` only when the value is valid JSON whose root array contains at least one entry.
+ * @remarks Entry-level validation remains the responsibility of the runtime configuration loader.
+ */
+export const isNonEmptyJsonArray = (raw: string) => {
+  const { data } = tryCatch(() => JSON.parse(raw) as unknown)
+
+  return Array.isArray(data) && data.length > 0
+}
+
+/**
  * Produces the complete optional Railway configuration for a full operator deployment.
  * @param environment - Invoking environment whose non-blank values override safe defaults.
- * @returns Every optional variable exactly once, with collections and timeouts reset to runtime
- * defaults and trimmed string options represented by a whitespace sentinel when absent.
+ * @returns Every optional variable exactly once, with timeouts reset to runtime defaults and
+ * trimmed string options represented by a whitespace sentinel when absent.
  * @remarks Railway CLI 5.30.4 rejects empty stdin values. The bot trims the sentinel to an unset
  * value, allowing full runs to clear stale optional configuration without triggering intermediate
  * deployments.

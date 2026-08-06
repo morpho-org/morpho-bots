@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 
 import {
+  isNonEmptyJsonArray,
   isTerminalRailwayDeploymentStatus,
   parseLatestRailwayDeployment,
   parseRailwayServices,
@@ -10,6 +11,13 @@ import {
 } from '../../scripts/railway.utils'
 
 describe('Railway CLI output parsing', () => {
+  test('identifies only populated JSON arrays as deployable strategy lists', () => {
+    expect(isNonEmptyJsonArray('[{"marketId":"configured"}]')).toBe(true)
+    expect(isNonEmptyJsonArray('[]')).toBe(false)
+    expect(isNonEmptyJsonArray('{"marketId":"configured"}')).toBe(false)
+    expect(isNonEmptyJsonArray('not-json')).toBe(false)
+  })
+
   test('parses named services from array and wrapped response shapes', () => {
     const array = JSON.stringify([{ name: 'market-making' }, { id: 'nameless' }])
     const wrapped = JSON.stringify({ services: [{ serviceName: 'market-making' }] })
@@ -50,7 +58,6 @@ describe('Railway CLI output parsing', () => {
   test('synchronizes every optional variable with explicit safe defaults', () => {
     const variables = Object.fromEntries(
       synchronizedOptionalRailwayVariables({
-        LADDER_MARKETS: '  [{"marketId":"configured"}]  ',
         REQUEST_TIMEOUT_MS: '25000'
       })
     )
@@ -59,8 +66,6 @@ describe('Railway CLI output parsing', () => {
       BETTERSTACK_HEARTBEAT_URL: ' ',
       BETTERSTACK_INGESTING_HOST: ' ',
       BETTERSTACK_SOURCE_TOKEN: ' ',
-      BOOTSTRAP_MARKETS: '[]',
-      LADDER_MARKETS: '[{"marketId":"configured"}]',
       REQUEST_TIMEOUT_MS: '25000',
       TRANSACTION_RECEIPT_TIMEOUT_MS: '180000',
       V0_OFFER_GROUP_IDS: ' '

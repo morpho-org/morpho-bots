@@ -13,6 +13,7 @@ import { resolve } from 'node:path'
 
 import { RailwayDeploymentError } from './railway-deployment.error'
 import {
+  isNonEmptyJsonArray,
   isTerminalRailwayDeploymentStatus,
   parseLatestRailwayDeployment,
   parseRailwayServices,
@@ -46,7 +47,9 @@ const requiredRuntimeVariableNames = [
   'MARKET_IDS',
   'REFERENCE_MARKET_ID',
   'NATIVE_RESERVE_WEI',
-  'MAXIMUM_LEND_EXPOSURE_ASSETS'
+  'MAXIMUM_LEND_EXPOSURE_ASSETS',
+  'BOOTSTRAP_MARKETS',
+  'LADDER_MARKETS'
 ] as const
 
 type RequiredRuntimeVariableName = (typeof requiredRuntimeVariableNames)[number]
@@ -55,6 +58,9 @@ type RuntimeVariable = readonly [name: string, value: string]
 const required = (name: RequiredRuntimeVariableName) => {
   const value = Bun.env[name]?.trim()
   if (!value) throw new RailwayDeploymentError(`Missing required environment variable: ${name}`)
+  if ((name === 'BOOTSTRAP_MARKETS' || name === 'LADDER_MARKETS') && !isNonEmptyJsonArray(value)) {
+    throw new RailwayDeploymentError(`${name} must be a non-empty JSON array`)
+  }
 
   return value
 }
@@ -164,7 +170,7 @@ const ensureStateVolume = async (createIfMissing: boolean) => {
 const setRuntimeVariable = async ([name, value]: RuntimeVariable) => {
   const { error } = await tryCatch(
     Promise.resolve(
-      $`railway variable set ${name} --stdin --service ${SERVICE} --project ${PROJECT_ID} --environment ${ENVIRONMENT} --skip-deploys < ${Buffer.from(value, 'utf8')}`.quiet()
+      $`railway variable set ${name} --stdin --service ${SERVICE} --environment ${ENVIRONMENT} --skip-deploys < ${Buffer.from(value, 'utf8')}`.quiet()
     )
   )
   if (error) throw new RailwayDeploymentError(`Failed to set Railway variable: ${name}`)
