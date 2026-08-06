@@ -11,6 +11,7 @@ import {
 
 const marketId: Hex = `0x${'11'.repeat(32)}`
 const groupId: Hex = `0x${'22'.repeat(32)}`
+const pendingGroupId: Hex = `0x${'44'.repeat(32)}`
 const maker: Address = '0x3333333333333333333333333333333333333333'
 const offer = {
   groupId,
@@ -47,16 +48,33 @@ describe('pendingBootstrapOffers', () => {
 })
 
 describe('readLivePendingBootstrapOffers', () => {
-  test('does not read consumption for an offer already indexed by the API', async () => {
-    const readGroupConsumed = mock(async () => 0n)
+  test('accepts a provider-indexed owned group without persisted intent while resolving pending offers', async () => {
+    const readGroupConsumed = mock(async () => 40n)
+    const pendingOffer = { ...offer, groupId: pendingGroupId }
 
     const result = await readLivePendingBootstrapOffers({
       groups: [indexedGroup(0n)],
-      offers: [offer],
+      ownedGroupIds: [groupId, pendingGroupId],
+      offers: [pendingOffer],
       readGroupConsumed
     })
 
-    expect(result).toEqual([])
+    expect(result).toEqual([{ ...pendingOffer, maximumAssets: 100n, assets: 60n }])
+    expect(readGroupConsumed).toHaveBeenCalledTimes(1)
+    expect(readGroupConsumed).toHaveBeenCalledWith(pendingGroupId)
+  })
+
+  test('fails closed when an owned group is API-missing without persisted offer intent', async () => {
+    const readGroupConsumed = mock(async () => 0n)
+
+    await expect(
+      readLivePendingBootstrapOffers({
+        groups: [],
+        ownedGroupIds: [groupId],
+        offers: [],
+        readGroupConsumed
+      })
+    ).rejects.toMatchObject({ operation: 'missing-owned-group-intent' })
     expect(readGroupConsumed).not.toHaveBeenCalled()
   })
 
@@ -65,6 +83,7 @@ describe('readLivePendingBootstrapOffers', () => {
 
     const result = await readLivePendingBootstrapOffers({
       groups: [],
+      ownedGroupIds: [groupId],
       offers: [offer],
       readGroupConsumed
     })
@@ -78,6 +97,7 @@ describe('readLivePendingBootstrapOffers', () => {
 
     const result = await readLivePendingBootstrapOffers({
       groups: [],
+      ownedGroupIds: [groupId],
       offers: [offer],
       readGroupConsumed
     })

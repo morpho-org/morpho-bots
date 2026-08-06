@@ -196,10 +196,12 @@ export const createProductionBootstrapAdapters = (
   const readPendingGroups = async (
     blockNumber: bigint,
     groups: Awaited<ReturnType<typeof readGroups>>,
+    ownedGroupIds: readonly Hex[],
     offers: Awaited<ReturnType<typeof ownership.readOffers>>
   ): Promise<BootstrapActiveGroup[]> => {
     const liveOffers = await readLivePendingBootstrapOffers({
       groups,
+      ownedGroupIds,
       offers,
       readGroupConsumed: groupId => readGroupConsumed(groupId, blockNumber)
     })
@@ -217,7 +219,7 @@ export const createProductionBootstrapAdapters = (
     const intended = new Map(
       ownedOffers.map(offer => [`${offer.groupId}:${offer.marketId}`, offer] as const)
     )
-    const pendingGroups = await readPendingGroups(block.number, groups, ownedOffers)
+    const pendingGroups = await readPendingGroups(block.number, groups, ownedIds, ownedOffers)
 
     return [
       ...strategyBootstrapGroups(groups, ownedIds)
@@ -263,7 +265,7 @@ export const createProductionBootstrapAdapters = (
     const intended = new Map(
       ownedOffers.map(offer => [`${offer.groupId}:${offer.marketId}`, offer] as const)
     )
-    const pendingGroups = await readPendingGroups(block.number, groups, ownedOffers)
+    const pendingGroups = await readPendingGroups(block.number, groups, ownedIds, ownedOffers)
     const project = (
       selectedGroups: ReturnType<typeof strategyBootstrapGroups>,
       includeIntent: boolean
