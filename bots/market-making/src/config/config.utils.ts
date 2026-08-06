@@ -108,7 +108,7 @@ export const privateKeyValue = (environment: Environment): Hex => {
 }
 
 /** Validated write-mode signer source without the configured maker address. */
-export type MakerSigner =
+type MakerSigner =
   | { method: 'private-key'; privateKey: Hex }
   | { method: 'keystore'; path: string; password: string }
   | { method: 'aws'; keyId: string; region: string }

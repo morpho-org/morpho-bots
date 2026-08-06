@@ -27,7 +27,7 @@ import { createManagedMakerAccount } from './managed-maker-account.utils'
 const SECP256K1_ORDER = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n
 const HALF_SECP256K1_ORDER = SECP256K1_ORDER / 2n
 
-export type KmsSigner = {
+type KmsSigner = {
   getPublicKey(keyId: string, region: string): Promise<Uint8Array>
   signDigest(keyId: string, region: string, digest: Uint8Array): Promise<Uint8Array>
 }
