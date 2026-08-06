@@ -243,8 +243,9 @@ replace a working strategy with an empty list. Every remaining optional value is
 omitted timeouts return to their documented defaults, and omitted group IDs and BetterStack settings
 are disabled. `RAILWAY_ENVIRONMENT` defaults to `production`. CI uses `DEPLOY_ONLY=true` with the
 `market-making-production` GitHub Environment, so it reads only `RAILWAY_PROJECT_ID` and
-`RAILWAY_TOKEN`, enforces the reviewed package Dockerfile and persistent ownership-state path,
-requires the already-provisioned volume, and re-ships the service without reading its bot secrets.
+`RAILWAY_TOKEN` and uses project-token deployment permissions to re-ship the service. Deploy-only
+runs rely on the Dockerfile path, runtime variables, and persistent volume established by a full run;
+they neither read nor mutate that provisioned configuration.
 
 The local Compose service uses the same `/state` ownership path through a named volume, requires both
 strategy arrays, and supplies the runtime timeout defaults when the corresponding host variables are

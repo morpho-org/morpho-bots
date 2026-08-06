@@ -2,10 +2,9 @@
  * Reproducible Railway provisioning and deployment for the market-making bot.
  *
  * A full run creates the service, configures its package-owned Dockerfile, and uploads runtime
- * variables through stdin. CI sets DEPLOY_ONLY=true to re-ship the existing service without reading
- * or changing bot runtime configuration while still enforcing the reviewed Dockerfile. Both modes
- * wait for the newly created deployment to reach a terminal state and succeed only on Railway
- * `SUCCESS`.
+ * variables through stdin. CI sets DEPLOY_ONLY=true to re-ship the already-provisioned service using
+ * only project-token deployment permissions. Both modes wait for the newly created deployment to
+ * reach a terminal state and succeed only on Railway `SUCCESS`.
  */
 import { delay, tryCatch } from '@repo/utils'
 import { $ } from 'bun'
@@ -242,17 +241,17 @@ const assertDeploymentSucceeded = (status: string) => {
   console.log(`${SERVICE} deployment succeeded`)
 }
 
-const configuration = DEPLOY_ONLY ? [] : runtimeVariables()
-
 await assertCli()
 await ensureContext()
 
-const service = DEPLOY_ONLY ? undefined : await ensureService()
+if (!DEPLOY_ONLY) {
+  const service = await ensureService()
 
-await setRuntimeVariable(['RAILWAY_DOCKERFILE_PATH', DOCKERFILE_PATH])
-await setRuntimeVariable(['XDG_STATE_HOME', STATE_MOUNT_PATH])
-for (const variable of configuration) await setRuntimeVariable(variable)
-await ensureStateVolume(service?.id)
+  await setRuntimeVariable(['RAILWAY_DOCKERFILE_PATH', DOCKERFILE_PATH])
+  await setRuntimeVariable(['XDG_STATE_HOME', STATE_MOUNT_PATH])
+  for (const variable of runtimeVariables()) await setRuntimeVariable(variable)
+  await ensureStateVolume(service.id)
+}
 
 const previousDeployment = parseLatestRailwayDeployment(await latestDeploymentJson())
 await startDeployment()
