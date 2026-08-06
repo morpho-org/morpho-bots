@@ -4,7 +4,9 @@ import {
   isTerminalRailwayDeploymentStatus,
   parseLatestRailwayDeployment,
   parseRailwayServices,
-  selectNewRailwayDeployment
+  parseRailwayVolumes,
+  selectNewRailwayDeployment,
+  synchronizedOptionalRailwayVariables
 } from '../../scripts/railway.utils'
 
 describe('Railway CLI output parsing', () => {
@@ -18,6 +20,51 @@ describe('Railway CLI output parsing', () => {
 
   test('returns no services for malformed JSON', () => {
     expect(parseRailwayServices('not-json')).toEqual([])
+  })
+
+  test('parses only complete attached Railway volumes', () => {
+    const raw = JSON.stringify({
+      volumes: [
+        {
+          id: 'volume-id',
+          isPendingDeletion: false,
+          mountPath: '/state',
+          serviceName: 'market-making'
+        },
+        { id: 'unattached', isPendingDeletion: false, mountPath: '/other', serviceName: null },
+        { id: 'incomplete', mountPath: '/other', serviceName: 'market-making' }
+      ]
+    })
+
+    expect(parseRailwayVolumes(raw)).toEqual([
+      {
+        id: 'volume-id',
+        isPendingDeletion: false,
+        mountPath: '/state',
+        serviceName: 'market-making'
+      }
+    ])
+    expect(parseRailwayVolumes('not-json')).toEqual([])
+  })
+
+  test('synchronizes every optional variable with explicit safe defaults', () => {
+    const variables = Object.fromEntries(
+      synchronizedOptionalRailwayVariables({
+        LADDER_MARKETS: '  [{"marketId":"configured"}]  ',
+        REQUEST_TIMEOUT_MS: '25000'
+      })
+    )
+
+    expect(variables).toEqual({
+      BETTERSTACK_HEARTBEAT_URL: ' ',
+      BETTERSTACK_INGESTING_HOST: ' ',
+      BETTERSTACK_SOURCE_TOKEN: ' ',
+      BOOTSTRAP_MARKETS: '[]',
+      LADDER_MARKETS: '[{"marketId":"configured"}]',
+      REQUEST_TIMEOUT_MS: '25000',
+      TRANSACTION_RECEIPT_TIMEOUT_MS: '180000',
+      V0_OFFER_GROUP_IDS: ' '
+    })
   })
 
   test('reads the newest complete deployment and rejects incomplete output', () => {

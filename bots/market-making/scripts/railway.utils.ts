@@ -9,6 +9,27 @@ type RailwayService = {
   name: string
 }
 
+type RailwayVolume = {
+  id: string
+  isPendingDeletion: boolean
+  mountPath: string
+  serviceName: string
+}
+
+const optionalRuntimeVariableDefaults = [
+  ['V0_OFFER_GROUP_IDS', ' '],
+  ['REQUEST_TIMEOUT_MS', '10000'],
+  ['TRANSACTION_RECEIPT_TIMEOUT_MS', '180000'],
+  ['BOOTSTRAP_MARKETS', '[]'],
+  ['LADDER_MARKETS', '[]'],
+  ['BETTERSTACK_SOURCE_TOKEN', ' '],
+  ['BETTERSTACK_INGESTING_HOST', ' '],
+  ['BETTERSTACK_HEARTBEAT_URL', ' ']
+] as const
+
+type OptionalRuntimeVariableName = (typeof optionalRuntimeVariableDefaults)[number][0]
+type OptionalRuntimeVariable = readonly [name: OptionalRuntimeVariableName, value: string]
+
 const terminalStatuses = new Set([
   'SUCCESS',
   'FAILED',
@@ -25,13 +46,30 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const stringField = (value: unknown) => (typeof value === 'string' ? value : '')
 
-const rowsFrom = (value: unknown, key: 'deployments' | 'services') => {
+const rowsFrom = (value: unknown, key: 'deployments' | 'services' | 'volumes') => {
   if (Array.isArray(value)) return value
   if (!isRecord(value)) return []
 
   const rows = value[key]
   return Array.isArray(rows) ? rows : []
 }
+
+/**
+ * Produces the complete optional Railway configuration for a full operator deployment.
+ * @param environment - Invoking environment whose non-blank values override safe defaults.
+ * @returns Every optional variable exactly once, with collections and timeouts reset to runtime
+ * defaults and trimmed string options represented by a whitespace sentinel when absent.
+ * @remarks Railway CLI 5.30.4 rejects empty stdin values. The bot trims the sentinel to an unset
+ * value, allowing full runs to clear stale optional configuration without triggering intermediate
+ * deployments.
+ */
+export const synchronizedOptionalRailwayVariables = (
+  environment: Readonly<Record<string, string | undefined>>
+): OptionalRuntimeVariable[] =>
+  optionalRuntimeVariableDefaults.map(([name, defaultValue]) => [
+    name,
+    environment[name]?.trim() || defaultValue
+  ])
 
 /**
  * Parses Railway service-list JSON without exposing unknown response fields.
@@ -46,6 +84,32 @@ export const parseRailwayServices = (raw: string): RailwayService[] => {
     .filter(isRecord)
     .map(row => ({ name: stringField(row.name) || stringField(row.serviceName) }))
     .filter(service => service.name.length > 0)
+}
+
+/**
+ * Parses attached Railway volume identity and mount metadata from CLI JSON.
+ * @param raw - Complete JSON emitted by `railway volume list --json`.
+ * @returns Complete attached volumes in response order; malformed or unattached rows are omitted.
+ */
+export const parseRailwayVolumes = (raw: string): RailwayVolume[] => {
+  const { data } = tryCatch(() => JSON.parse(raw) as unknown)
+  const rows = rowsFrom(data, 'volumes')
+
+  return rows.filter(isRecord).flatMap(row => {
+    const id = stringField(row.id)
+    const mountPath = stringField(row.mountPath)
+    const serviceName = stringField(row.serviceName)
+    if (!id || !mountPath || !serviceName || typeof row.isPendingDeletion !== 'boolean') return []
+
+    return [
+      {
+        id,
+        isPendingDeletion: row.isPendingDeletion,
+        mountPath,
+        serviceName
+      }
+    ]
+  })
 }
 
 /**

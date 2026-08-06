@@ -228,9 +228,9 @@ The package owns its production [Dockerfile](./Dockerfile), local
 repository root so Bun can resolve every workspace dependency; the image starts the combined setup,
 bootstrap, and ladder monitor.
 
-A full deployment creates the `market-making` Railway service, selects the package Dockerfile, and
-writes the effective environment configuration through stdin so values never appear in process
-arguments or logs:
+A full deployment creates the `market-making` Railway service, selects the package Dockerfile,
+provisions a persistent volume at `/state`, and writes the effective environment configuration
+through stdin so values never appear in process arguments or logs:
 
 ```sh
 RAILWAY_PROJECT_ID=... \
@@ -238,10 +238,15 @@ bun run --filter @morpho-org/market-making-bot deploy:railway
 ```
 
 Provide the required values from [`.env.example`](./.env.example) in the invoking environment.
-`RAILWAY_ENVIRONMENT` defaults to `production`. CI uses `DEPLOY_ONLY=true` with the
-`market-making-production` GitHub Environment, so it reads only `RAILWAY_PROJECT_ID` and
-`RAILWAY_TOKEN`, enforces the reviewed package Dockerfile without changing bot runtime
-configuration, and re-ships the already-provisioned service.
+Every optional value is synchronized on a full run: omitted collections and timeouts return to their
+documented defaults, and omitted BetterStack settings are disabled. `RAILWAY_ENVIRONMENT` defaults
+to `production`. CI uses `DEPLOY_ONLY=true` with the `market-making-production` GitHub Environment,
+so it reads only `RAILWAY_PROJECT_ID` and `RAILWAY_TOKEN`, enforces the reviewed package Dockerfile
+and persistent ownership-state path, requires the already-provisioned volume, and re-ships the
+service without reading its bot secrets.
+
+The local Compose service uses the same `/state` ownership path through a named volume and supplies
+the runtime timeout defaults when the corresponding host variables are absent.
 
 Both modes snapshot the previous deployment, start a detached upload, and poll the new deployment to
 a terminal state. A GitHub release is created only after Railway reports `SUCCESS`; failed, crashed,

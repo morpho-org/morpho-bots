@@ -16,11 +16,14 @@ import {
   isTerminalRailwayDeploymentStatus,
   parseLatestRailwayDeployment,
   parseRailwayServices,
-  selectNewRailwayDeployment
+  parseRailwayVolumes,
+  selectNewRailwayDeployment,
+  synchronizedOptionalRailwayVariables
 } from './railway.utils'
 
 const SERVICE = 'market-making'
 const DOCKERFILE_PATH = 'bots/market-making/Dockerfile'
+const STATE_MOUNT_PATH = '/state'
 const REPO_ROOT = resolve(import.meta.dir, '..', '..', '..')
 const ENVIRONMENT = Bun.env.RAILWAY_ENVIRONMENT?.trim() || 'production'
 const DEPLOY_ONLY = /^(1|true)$/i.test(Bun.env.DEPLOY_ONLY?.trim() || '')
@@ -46,27 +49,10 @@ const requiredRuntimeVariableNames = [
   'MAXIMUM_LEND_EXPOSURE_ASSETS'
 ] as const
 
-const optionalRuntimeVariableNames = [
-  'V0_OFFER_GROUP_IDS',
-  'REQUEST_TIMEOUT_MS',
-  'TRANSACTION_RECEIPT_TIMEOUT_MS',
-  'BOOTSTRAP_MARKETS',
-  'LADDER_MARKETS',
-  'BETTERSTACK_SOURCE_TOKEN',
-  'BETTERSTACK_INGESTING_HOST',
-  'BETTERSTACK_HEARTBEAT_URL'
-] as const
+type RequiredRuntimeVariableName = (typeof requiredRuntimeVariableNames)[number]
+type RuntimeVariable = readonly [name: string, value: string]
 
-type RuntimeVariableName =
-  | (typeof requiredRuntimeVariableNames)[number]
-  | (typeof optionalRuntimeVariableNames)[number]
-
-type RuntimeVariable = readonly [
-  name: RuntimeVariableName | 'RAILWAY_DOCKERFILE_PATH',
-  value: string
-]
-
-const required = (name: 'RAILWAY_PROJECT_ID' | RuntimeVariableName) => {
+const required = (name: RequiredRuntimeVariableName) => {
   const value = Bun.env[name]?.trim()
   if (!value) throw new RailwayDeploymentError(`Missing required environment variable: ${name}`)
 
@@ -77,10 +63,7 @@ const runtimeVariables = (): RuntimeVariable[] => {
   const requiredVariables = requiredRuntimeVariableNames.map(
     name => [name, required(name)] as const
   )
-  const optionalVariables = optionalRuntimeVariableNames.flatMap(name => {
-    const value = Bun.env[name]?.trim()
-    return value ? ([[name, value]] as const) : []
-  })
+  const optionalVariables = synchronizedOptionalRailwayVariables(Bun.env)
 
   return [...requiredVariables, ...optionalVariables]
 }
@@ -122,6 +105,60 @@ const ensureService = async () => {
     Promise.resolve($`railway add --service ${SERVICE} --json`.quiet())
   )
   if (error) throw new RailwayDeploymentError('Failed to create the Railway service')
+}
+
+const listVolumes = async () => {
+  const { data, error } = await tryCatch(
+    Promise.resolve(
+      $`railway volume list --service ${SERVICE} --project ${PROJECT_ID} --environment ${ENVIRONMENT} --json`
+        .quiet()
+        .text()
+    )
+  )
+  if (error || typeof data !== 'string') {
+    throw new RailwayDeploymentError('Failed to list Railway volumes')
+  }
+
+  return parseRailwayVolumes(data)
+}
+
+const configuredStateVolume = async () => {
+  const volumes = (await listVolumes()).filter(candidate => candidate.serviceName === SERVICE)
+  if (volumes.length > 1) {
+    throw new RailwayDeploymentError('Railway service has multiple attached volumes')
+  }
+
+  const volume = volumes[0]
+  if (!volume) return undefined
+  if (volume.isPendingDeletion) {
+    throw new RailwayDeploymentError('Railway state volume is pending deletion')
+  }
+  if (volume.mountPath !== STATE_MOUNT_PATH) {
+    throw new RailwayDeploymentError('Railway state volume uses an unexpected mount path')
+  }
+
+  return volume
+}
+
+const ensureStateVolume = async (createIfMissing: boolean) => {
+  if (await configuredStateVolume()) return
+  if (!createIfMissing) {
+    throw new RailwayDeploymentError('Railway state volume is not configured')
+  }
+
+  const { error } = await tryCatch(
+    Promise.resolve(
+      $`railway volume add --service ${SERVICE} --project ${PROJECT_ID} --environment ${ENVIRONMENT} --mount-path ${STATE_MOUNT_PATH} --json`.quiet()
+    )
+  )
+  if (error) throw new RailwayDeploymentError('Failed to create the Railway state volume')
+
+  for (let attempt = 1; attempt <= 10; attempt++) {
+    if (await configuredStateVolume()) return
+    if (attempt < 10) await delay(1_000)
+  }
+
+  throw new RailwayDeploymentError('Railway state volume confirmation timed out')
 }
 
 const setRuntimeVariable = async ([name, value]: RuntimeVariable) => {
@@ -197,7 +234,9 @@ await ensureContext()
 if (!DEPLOY_ONLY) await ensureService()
 
 await setRuntimeVariable(['RAILWAY_DOCKERFILE_PATH', DOCKERFILE_PATH])
+await setRuntimeVariable(['XDG_STATE_HOME', STATE_MOUNT_PATH])
 for (const variable of configuration) await setRuntimeVariable(variable)
+await ensureStateVolume(!DEPLOY_ONLY)
 
 const previousDeployment = parseLatestRailwayDeployment(await latestDeploymentJson())
 await startDeployment()
