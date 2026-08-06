@@ -107,8 +107,8 @@ export type SetupCheckConfig = {
   ratifier: Address
   /** Non-empty set of Midnight market identifiers to validate concurrently. */
   marketIds: readonly Hex[]
-  /** Morpho Blue market read through the archive-capable reference provider. */
-  referenceMarketId: Hex
+  /** Morpho Blue market read through the archive-capable reference provider when required. */
+  referenceMarketId?: Hex
 }
 
 /** API and on-chain facts used to validate one configured Midnight market. */
@@ -197,11 +197,13 @@ export class SetupCheckService {
    * @param state - Read-only provider port.
    * @param config - Validated setup requirements.
    * @param readOnly - Whether signer-only readiness reads must be skipped.
+   * @param referenceRequired - Whether an active target-rate strategy requires Blue history.
    */
   constructor(
     private readonly state: SetupStateService,
     private readonly config: SetupCheckConfig,
-    private readonly readOnly = false
+    private readonly readOnly = false,
+    private readonly referenceRequired = true
   ) {}
 
   /**
@@ -272,6 +274,9 @@ export class SetupCheckService {
     const derivedMakerRead = this.readOnly
       ? Promise.resolve(undefined)
       : capture(() => this.state.getDerivedMaker())
+    const referenceRead = this.referenceRequired
+      ? capture(() => this.state.checkReference(), 'archive-rpc')
+      : Promise.resolve(undefined)
     const reads = await Promise.all([
       capture(() => this.state.getChainId()),
       capture(() => this.state.getCode(this.config.midnight)),
@@ -281,7 +286,7 @@ export class SetupCheckService {
       capture(() => this.state.getRatifier(this.config.maker, this.config.ratifier)),
       capture(() => this.state.getLatestTimestamp()),
       Promise.all(bookReads.map(async book => ({ ...book, response: await book.response }))),
-      capture(() => this.state.checkReference(), 'archive-rpc'),
+      referenceRead,
       capture(() => this.state.inspectOffers(this.config.maker), 'morpho-api'),
       capture(() => this.state.checkPositionHealth())
     ])
@@ -374,16 +379,24 @@ export class SetupCheckService {
       referenceReadable: true,
       archiveReadable: true
     }
-    const referenceCheck = !reference.ok
-      ? providerFailure('reference', reference.error, referenceRequired)
-      : setupResult(
-          'reference',
-          reference.value.marketId === this.config.referenceMarketId &&
-            reference.value.referenceReadable &&
-            reference.value.archiveReadable,
-          reference.value,
-          referenceRequired
-        )
+    const referenceCheck =
+      reference === undefined
+        ? {
+            name: 'reference' as const,
+            status: 'not-required' as const,
+            observed: { reason: 'no variable_rate_avg target-rate strategy is active' },
+            required: 'only for variable_rate_avg target-rate strategies'
+          }
+        : !reference.ok
+          ? providerFailure('reference', reference.error, referenceRequired)
+          : setupResult(
+              'reference',
+              reference.value.marketId === this.config.referenceMarketId &&
+                reference.value.referenceReadable &&
+                reference.value.archiveReadable,
+              reference.value,
+              referenceRequired
+            )
     const offersRequired = { unknownNamespaces: [], unknownMarketIds: [], invertedMarketIds: [] }
     const offersCheck = !offers.ok
       ? providerFailure('offers', offers.error, offersRequired)

@@ -114,16 +114,19 @@ its exact tick, comparing the prospective offer with the complete current maker 
 the SDK's live Mempool-policy validation without signing or broadcasting.
 The corresponding final cycle outcome uses `status: "logged"` rather than `"applied"`.
 
-`bootstrap --monitor` requires at least one explicit `bootstrap` / `BOOTSTRAP_MARKETS` entry. It
-serially runs a cycle every minute and streams each result. `SIGINT` or `SIGTERM` lets an in-flight
-cycle finish, then invalidates every explicitly owned bootstrap group through the same mutation
-queue and waits for bounded transaction receipts. The final record reports the number of cycles and
-whether cleanup was applied, logged, or failed. Read-only monitoring logs the cleanup request and
-never loads a private key. In live mode, Ecrecover bootstrap signs and publishes the validated payload
-in one transaction. Setter bootstrap durably reserves the future group, confirms any replacement
-cancellations, submits and confirms `setIsRootRatified`, revalidates the exact final proof payload with
-the Mempool API, then publishes it in a second transaction and confirms ownership. A post-approval
-validation failure does not publish and retains the reservation for safe cleanup.
+`bootstrap --monitor` requires at least one explicit `bootstrap` / `BOOTSTRAP_MARKETS` entry. Each
+market independently selects `targetRate.strategy: variable_rate_avg` (the existing Morpho Blue
+variable-rate average) or `hardcoded` with `hardcodedRateBps`; `premiumBps` is then added to derive
+the published offer rate. It serially runs a cycle every minute
+and streams each result. `SIGINT` or `SIGTERM` lets an in-flight cycle finish, then invalidates every
+explicitly owned bootstrap group through the same mutation queue and waits for bounded transaction
+receipts. The final record reports the number of cycles and whether cleanup was applied, logged, or
+failed. Read-only monitoring logs the cleanup request and never loads a private key. In live mode,
+Ecrecover bootstrap signs and publishes the validated payload in one transaction. Setter bootstrap
+durably reserves the future group, confirms any replacement cancellations, submits and confirms
+`setIsRootRatified`, revalidates the exact final proof payload with the Mempool API, then publishes it
+in a second transaction and confirms ownership. A post-approval validation failure does not publish
+and retains the reservation for safe cleanup.
 
 Add `--verbose` to either one-shot or monitored bootstrap mode to include the complete market
 configuration, fresh credit, debt, cash balance, per-market and total exposure, active offer,
@@ -138,7 +141,8 @@ unchanged.
 
 `ladder` requires at least one `ladder` / `LADDER_MARKETS` entry. It runs readiness first, derives
 fresh wallet, allowance, credit, position, active-group, and strategy-wide exposure capacities, and
-then builds one deterministic quote set from the current Blue reference rate. Lower-rate rungs are
+then builds one deterministic quote set from that market's independently selected target-rate
+strategy. Lower-rate rungs are
 reduce-only borrow-side sells; higher-rate rungs are lend-side buys. The complete mixed-side tree is
 Mempool-validated before and after ratification. Ecrecover trees are signed and published in one
 transaction; Setter trees first submit and confirm `setIsRootRatified`, then publish the proof-only
@@ -206,7 +210,8 @@ limited to the explicit maker-wide recovery command.
 For a maker with at least 101 USDC of both available balance and accrued credit, this
 one-rung-per-side preset caps each side at 150 USDC. USDC uses six decimals, so `150000000` is 150
 USDC and `101000000` is the Router-compatible 101 USDC offer floor. Duplicate the exact market ID
-already present in `MARKET_IDS`:
+already present in `MARKET_IDS`. This legacy preset intentionally omits `targetRate`, so it uses the
+backward-compatible `variable_rate_avg` default:
 
 ```dotenv
 LADDER_MARKETS=[{"marketId":"0x05959752fdeff325962b9d263edb421efc6e2186a49360dba6c32e86ebf6c84c","quotePremiumBps":"0","spreadBps":"200","stepBps":"100","rungCount":"1","sizeSkewBps":"0","lowerRateBudgetAssets":"150000000","higherRateBudgetAssets":"150000000","targetMarketExposureAssets":"300000000","maximumTotalExposureAssets":"300000000","minimumOfferAssets":"101000000","groupMode":"shared-rung","loopIntervalSeconds":"60","movementToleranceBps":"10","minimumRateBps":"200","maximumRateBps":"800"}]
@@ -307,7 +312,7 @@ unit; for six-decimal USDC, `101000000` is 101 USDC. No value is inferred from a
 | -------------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `CHAIN_ID`                       | `chain.id`                          | Required. Must be `8453`; all protocol, token, market, and transaction operations run on Base.                                                                                                            |
 | `RPC_URL`                        | `chain.rpcUrl`                      | Required. Current-state Base JSON-RPC endpoint used for blocks, balances, allowances, positions, contract reads, simulation, transaction submission, and receipts.                                        |
-| `REFERENCE_RPC_URL`              | `chain.archiveRpcUrl`               | Required. Archive-capable Base JSON-RPC endpoint used to read the reference Morpho Blue market at historical blocks.                                                                                      |
+| `REFERENCE_RPC_URL`              | `chain.archiveRpcUrl`               | Required when the selected command has an active `variable_rate_avg` target. Archive-capable Base JSON-RPC endpoint used to read the reference Morpho Blue market at historical blocks.                   |
 | `MAKER_ADDRESS`                  | `identity.makerAddress`             | Required. EVM address whose balance, allowance, credit, offers, and exposure the bot manages. In write mode it must be derived by `MAKER_PRIVATE_KEY`.                                                    |
 | `MAKER_PRIVATE_KEY`              | `identity.makerPrivateKey`          | Required in write mode; omitted and never loaded with `--readonly`. Must be a 0x-prefixed 32-byte secp256k1 key. Never include it in committed configuration or logs.                                     |
 | `MIDNIGHT_ADDRESS`               | `contracts.midnightAddress`         | Required. Expected deployed Midnight singleton. Setup verifies its bytecode before a writer starts.                                                                                                       |
@@ -316,7 +321,7 @@ unit; for six-decimal USDC, `101000000` is 101 USDC. No value is inferred from a
 | `MORPHO_API_BASE_URL`            | `apis.morphoBaseUrl`                | Required. Morpho API origin used for Midnight books, market metadata, prospective-offer validation, and cursor-paginated maker offer groups. No API-key header is supported.                              |
 | `ROUTER_API_BASE_URL`            | `apis.routerBaseUrl`                | Required. Router API origin used only to verify the configured ratifier against `/v0/config/contracts`. No API-key header is supported.                                                                   |
 | `MARKET_IDS`                     | `markets.allowlist`                 | Required comma-separated list of unique 0x-prefixed bytes32 Midnight market IDs. Every bootstrap or ladder `marketId` must appear here.                                                                   |
-| `REFERENCE_MARKET_ID`            | `markets.referenceMarketId`         | Required 0x-prefixed bytes32 Morpho Blue market ID whose historical variable borrow rate supplies the reference rate for all configured strategies.                                                       |
+| `REFERENCE_MARKET_ID`            | `markets.referenceMarketId`         | Required when the selected command has an active `variable_rate_avg` target. Must be a 0x-prefixed bytes32 Morpho Blue market ID.                                                                         |
 | `V0_OFFER_GROUP_IDS`             | `markets.v0OfferGroupIds`           | Optional comma-separated list of unique, explicitly strategy-owned bytes32 offer-group IDs; defaults to empty. Use it to adopt known pre-existing groups safely.                                          |
 | `NATIVE_RESERVE_WEI`             | `setup.nativeReserveWei`            | Required unsigned integer. Minimum maker native-token balance, in wei, required by readiness for transaction fees.                                                                                        |
 | `MAXIMUM_LEND_EXPOSURE_ASSETS`   | `setup.maximumLendExposureAssets`   | Required unsigned integer in raw loan-token units. Minimum maker allowance to Midnight required by readiness; it is not a strategy position cap.                                                          |
@@ -420,20 +425,22 @@ reference hard-fails when its latest checkpoint is more than five minutes behind
 ### Position-bootstrap fields
 
 Each `bootstrap` entry must use a unique `marketId` present in `markets.allowlist`.
-There are no per-field defaults: every field in each entry is required.
+`targetRate` defaults to `{ strategy: "variable_rate_avg" }` when omitted for backward compatibility;
+every other field in each entry is required.
 
-| Field                   | Unit / behavior                                                 | Validation                                                |
-| ----------------------- | --------------------------------------------------------------- | --------------------------------------------------------- |
-| `marketId`              | 0x-prefixed 32-byte Midnight market ID                          | Required, unique, and allowlisted                         |
-| `creditTarget`          | Raw credit units; complete at `creditTarget - acceptanceAssets` | Positive unsigned integer                                 |
-| `acceptanceAssets`      | Raw acceptable shortfall                                        | Non-negative and no greater than `creditTarget`           |
-| `offerSize`             | Raw desired offer size before capacity caps                     | Positive unsigned integer                                 |
-| `premiumBps`            | Integer BPS added to the reference rate                         | Zero or negative                                          |
-| `maximumMarketExposure` | Raw per-market exposure cap                                     | Positive and no greater than `maximumTotalExposure`       |
-| `maximumTotalExposure`  | Raw strategy-wide exposure cap                                  | Positive                                                  |
-| `minimumRateBps`        | Inclusive final-rate minimum                                    | Non-negative and no greater than `maximumRateBps`         |
-| `maximumRateBps`        | Inclusive final-rate maximum                                    | Non-negative                                              |
-| `autoRefill`            | Resume after first observed completion if credit later falls    | Boolean; completion memory lasts for one service instance |
+| Field                   | Unit / behavior                                                 | Validation                                                                                            |
+| ----------------------- | --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `marketId`              | 0x-prefixed 32-byte Midnight market ID                          | Required, unique, and allowlisted                                                                     |
+| `targetRate`            | Target-rate method selection                                    | `variable_rate_avg`, or `hardcoded` with positive `hardcodedRateBps`; defaults to `variable_rate_avg` |
+| `creditTarget`          | Raw credit units; complete at `creditTarget - acceptanceAssets` | Positive unsigned integer                                                                             |
+| `acceptanceAssets`      | Raw acceptable shortfall                                        | Non-negative and no greater than `creditTarget`                                                       |
+| `offerSize`             | Raw desired offer size before capacity caps                     | Positive unsigned integer                                                                             |
+| `premiumBps`            | Integer BPS added to the reference rate                         | Zero or negative                                                                                      |
+| `maximumMarketExposure` | Raw per-market exposure cap                                     | Positive and no greater than `maximumTotalExposure`                                                   |
+| `maximumTotalExposure`  | Raw strategy-wide exposure cap                                  | Positive                                                                                              |
+| `minimumRateBps`        | Inclusive final-rate minimum                                    | Non-negative and no greater than `maximumRateBps`                                                     |
+| `maximumRateBps`        | Inclusive final-rate maximum                                    | Non-negative                                                                                          |
+| `autoRefill`            | Resume after first observed completion if credit later falls    | Boolean; completion memory lasts for one service instance                                             |
 
 For a market below its accepted target, desired assets are the minimum of `offerSize`, remaining
 credit target, cash balance, remaining per-market exposure, and remaining total exposure. Replacement
@@ -453,6 +460,27 @@ rates, and `premiumBps`—must be a quoted decimal-integer string. JSON number t
 when integral; `marketId` remains a string and `autoRefill` remains a JSON boolean. Supplying it replaces
 every YAML bootstrap entry, which avoids ambiguous partial-array merge behavior. See
 [`.env.example`](./.env.example) for exact syntax.
+
+Bootstrap and ladder select their methods independently. These two valid YAML combinations show both
+directions:
+
+```yaml
+# Bootstrap fixed at 4%; ladder follows the Blue variable-rate average.
+bootstrap:
+  - marketId: '0x...'
+    targetRate: { strategy: 'hardcoded', hardcodedRateBps: '400' }
+ladder:
+  - marketId: '0x...'
+    targetRate: { strategy: 'variable_rate_avg' }
+
+# Bootstrap follows Blue; ladder is fixed at 4%.
+bootstrap:
+  - marketId: '0x...'
+    targetRate: { strategy: 'variable_rate_avg' }
+ladder:
+  - marketId: '0x...'
+    targetRate: { strategy: 'hardcoded', hardcodedRateBps: '400' }
+```
 
 `mm setup-check --monitor` repeats non-overlapping read-only readiness observations every minute
 until its shutdown signal or the first failed report. `mm bootstrap` first runs the same one-shot
@@ -476,12 +504,13 @@ mutation and graceful-cleanup operation instead.
 
 Each `ladder` entry has a unique allowlisted `marketId`. Rates are integer BPS and asset/exposure
 amounts are exact raw loan-asset units. `quotePremiumBps` and `sizeSkewBps` are signed; all other
-integer fields are nonnegative or positive as shown below. There are no per-field defaults: every
-field in each entry is required.
+integer fields are nonnegative or positive as shown below. `targetRate` defaults to
+`{ strategy: "variable_rate_avg" }`; every other field in each entry is required.
 
 | Field                        | Unit / behavior                                                                                                                                                      | Validation                                                                                                |
 | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | `marketId`                   | 0x-prefixed 32-byte Midnight market ID quoted by this entry.                                                                                                         | Required, unique across the array, and present in `MARKET_IDS`.                                           |
+| `targetRate`                 | Target-rate method used as reference `R`.                                                                                                                            | `variable_rate_avg`, or `hardcoded` with positive `hardcodedRateBps`; defaults to `variable_rate_avg`.    |
 | `quotePremiumBps`            | Signed BPS added to the fresh reference rate before the ladder spread is applied. Positive moves both sides higher; negative moves both lower.                       | Signed decimal integer; the resulting funded rungs must remain inside the configured rate range.          |
 | `spreadBps`                  | Full distance in BPS between the nearest lower and higher rates. Each nearest rung is half this value from the center.                                               | Positive and even, so each half-spread is an exact integer BPS value.                                     |
 | `stepBps`                    | Additional BPS between successive rungs on the same side, moving farther from the center.                                                                            | Positive.                                                                                                 |
@@ -535,7 +564,8 @@ The ladder is state reconciliation, not a collection of independently refilled o
 one-shot `ladder` invocation and every non-overlapping `ladder --monitor` cycle:
 
 1. Reads fresh market credit, wallet balance, allowance, market and strategy exposure, active owned
-   groups, group consumption, and the Blue reference rate.
+   groups, group consumption, and the configured target rate (including Blue history only for
+   `variable_rate_avg`).
 2. Reconstructs the remaining active quote. A partially consumed group contributes only its
    remaining assets, and a fully consumed indexed group contributes no rung. A persisted group that
    has not appeared in the eventually consistent API remains pending-active so the bot cannot

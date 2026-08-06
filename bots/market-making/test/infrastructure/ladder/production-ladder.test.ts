@@ -47,6 +47,40 @@ const environment = {
 }
 
 describe('createProductionLadderAdapters', () => {
+  test('selects the configured hardcoded ladder target independently from bootstrap', async () => {
+    const config = ConfigService.from(
+      {
+        ...environment,
+        LADDER_MARKETS: JSON.stringify([
+          {
+            marketId,
+            targetRate: { strategy: 'hardcoded', hardcodedRateBps: '475' },
+            quotePremiumBps: '0',
+            spreadBps: '200',
+            stepBps: '100',
+            rungCount: '1',
+            sizeSkewBps: '0',
+            lowerRateBudgetAssets: '10',
+            higherRateBudgetAssets: '10',
+            targetMarketExposureAssets: '20',
+            maximumTotalExposureAssets: '20',
+            minimumOfferAssets: '1',
+            groupMode: 'shared-rung',
+            loopIntervalSeconds: '60',
+            movementToleranceBps: '10',
+            minimumRateBps: '200',
+            maximumRateBps: '800'
+          }
+        ])
+      },
+      { readOnly: true }
+    )
+
+    const adapters = createProductionLadderAdapters(config)
+
+    expect(await adapters.rates.readRate(marketId)).toBe(475n)
+  })
+
   test('constructs read-only ports without loading a private key or starting provider reads', () => {
     const config = ConfigService.from(environment, { readOnly: true })
 

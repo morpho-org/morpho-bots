@@ -11,6 +11,7 @@ import type {
 } from './application/ladder/ladder-market-maker.service'
 import type { SetupStateService } from './application/setup/setup-check.service'
 import type { ConfigService } from './config/config.service'
+import type { TargetRateStrategyConfig } from './domain/target-rate'
 import type { CliRuntimeOptions } from './infrastructure/cli/cli'
 
 import { PositionBootstrapService } from './application/bootstrap/position-bootstrap.service'
@@ -20,9 +21,11 @@ import { serializeMarketMakingWrites } from './application/market-making/market-
 import { MarketMakingService } from './application/market-making/market-making.service'
 import { SetupCheckService } from './application/setup/setup-check.service'
 import { VersionService } from './application/version.service'
+import { ConfigValidationError } from './config/config-validation.error'
 import { ConfigService as RuntimeConfigService } from './config/config.service'
 import { BootstrapConfigurationError } from './domain/bootstrap/bootstrap-configuration.error'
 import { LadderConfigurationError } from './domain/ladder/ladder-configuration.error'
+import { requiresVariableRateReference } from './domain/target-rate'
 import { createBootstrapGroupOwnership } from './infrastructure/bootstrap/bootstrap-group-ownership.utils'
 import { createProductionBootstrapAdapters } from './infrastructure/bootstrap/production-bootstrap'
 import { Cli } from './infrastructure/cli/cli'
@@ -42,6 +45,33 @@ const readOnlyWriter = (writeEvent?: CliRuntimeOptions['writeEvent']) =>
 
 const parseEventWriter = (writeEvent?: CliRuntimeOptions['writeEvent']) =>
   writeEvent === undefined ? undefined : (line: string) => writeEvent(JSON.parse(line))
+
+/**
+ * Enforces Blue configuration only for the workflows active in the selected command.
+ * @param config - Fully parsed runtime configuration.
+ * @param configurations - Bootstrap or ladder configurations active for this invocation.
+ * @throws `ConfigValidationError` when an active variable-rate strategy lacks Blue configuration.
+ */
+const assertReferenceConfigured = (
+  config: ConfigService,
+  configurations: readonly { targetRate: TargetRateStrategyConfig }[]
+) => {
+  if (!requiresVariableRateReference(configurations)) return
+  if (config.setup.referenceMarketId === undefined) {
+    throw new ConfigValidationError(
+      'REFERENCE_MARKET_ID',
+      'missing',
+      'Missing required env var: REFERENCE_MARKET_ID'
+    )
+  }
+  if (config.referenceRpcUrl === undefined) {
+    throw new ConfigValidationError(
+      'REFERENCE_RPC_URL',
+      'missing',
+      'Missing required env var: REFERENCE_RPC_URL'
+    )
+  }
+}
 
 type Dependencies = {
   createState?: (config: ConfigService) => SetupStateService
@@ -80,7 +110,7 @@ const defaultState = (config: ConfigService) => {
 
   return new ViemSetupStateService(
     createChainReader(config.rpcUrl, config.requestTimeoutMs),
-    createChainReader(config.referenceRpcUrl, config.requestTimeoutMs),
+    createChainReader(config.referenceRpcUrl ?? config.rpcUrl, config.requestTimeoutMs),
     (url, provider, timeoutMs) =>
       requestJson(url, provider, Math.min(config.requestTimeoutMs, timeoutMs ?? Infinity)),
     {
@@ -90,7 +120,7 @@ const defaultState = (config: ConfigService) => {
       morphoApiBaseUrl: config.morphoApiBaseUrl,
       routerApiBaseUrl: config.routerApiBaseUrl,
       marketIds: config.setup.marketIds,
-      referenceMarketId: config.setup.referenceMarketId,
+      referenceMarketId: config.setup.referenceMarketId ?? config.setup.marketIds[0]!,
       v0OfferGroupIds: config.v0OfferGroupIds,
       readOwnedGroupIds: async () => [
         ...new Set([...(await ownership.read()), ...(await ladderOwnership.readGroupIds())])
@@ -133,13 +163,25 @@ export const createApplication = (
     new VersionService(),
     async options => {
       const config = await loadConfig(options)
+      assertReferenceConfigured(config, [...config.bootstrap, ...config.ladder])
       const state = dependencies.createState?.(config) ?? defaultState(config)
-      return new SetupCheckService(state, config.setup, config.readOnly)
+      return new SetupCheckService(
+        state,
+        config.setup,
+        config.readOnly,
+        requiresVariableRateReference([...config.bootstrap, ...config.ladder])
+      )
     },
     async options => {
       const config = await loadConfig(options)
+      assertReferenceConfigured(config, config.bootstrap)
       const state = dependencies.createState?.(config) ?? defaultState(config)
-      await new SetupCheckService(state, config.setup, config.readOnly).assertReady()
+      await new SetupCheckService(
+        state,
+        config.setup,
+        config.readOnly,
+        requiresVariableRateReference(config.bootstrap)
+      ).assertReady()
       const injectedAdapters = dependencies.createBootstrapAdapters?.(config)
       const writeReadOnlyEvent = parseEventWriter(options.writeEvent)
       const adapters =
@@ -157,8 +199,14 @@ export const createApplication = (
     },
     async options => {
       const config = await loadConfig(options)
+      assertReferenceConfigured(config, config.ladder)
       const state = dependencies.createState?.(config) ?? defaultState(config)
-      await new SetupCheckService(state, config.setup, config.readOnly).assertReady()
+      await new SetupCheckService(
+        state,
+        config.setup,
+        config.readOnly,
+        requiresVariableRateReference(config.ladder)
+      ).assertReady()
       const adapters =
         dependencies.createLadderAdapters?.(config) ?? createProductionLadderAdapters(config)
       const writeReadOnlyEvent = parseEventWriter(options.writeEvent)
@@ -193,8 +241,14 @@ export const createApplication = (
         )
       }
 
+      assertReferenceConfigured(config, [...config.bootstrap, ...config.ladder])
       const state = dependencies.createState?.(config) ?? defaultState(config)
-      const setup = new SetupCheckService(state, config.setup, config.readOnly)
+      const setup = new SetupCheckService(
+        state,
+        config.setup,
+        config.readOnly,
+        requiresVariableRateReference([...config.bootstrap, ...config.ladder])
+      )
       await setup.assertReady()
 
       const injectedBootstrapAdapters = dependencies.createBootstrapAdapters?.(config)

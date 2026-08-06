@@ -108,7 +108,7 @@ const group = (overrides: Record<string, unknown> = {}) => ({
 })
 
 describe('createProductionBootstrapAdapters', () => {
-  test('constructs address-only readers and a terminal make adapter without a private key', () => {
+  test('constructs address-only readers and selects the configured hardcoded bootstrap rate', async () => {
     const config = ConfigService.from(
       {
         CHAIN_ID: '8453',
@@ -123,7 +123,22 @@ describe('createProductionBootstrapAdapters', () => {
         NATIVE_RESERVE_WEI: '10',
         MAXIMUM_LEND_EXPOSURE_ASSETS: '100',
         MORPHO_API_BASE_URL: 'https://api.example',
-        ROUTER_API_BASE_URL: 'https://router.example'
+        ROUTER_API_BASE_URL: 'https://router.example',
+        BOOTSTRAP_MARKETS: JSON.stringify([
+          {
+            marketId,
+            creditTarget: '10',
+            acceptanceAssets: '1',
+            offerSize: '2',
+            targetRate: { strategy: 'hardcoded', hardcodedRateBps: '400' },
+            premiumBps: '0',
+            maximumMarketExposure: '20',
+            maximumTotalExposure: '20',
+            minimumRateBps: '200',
+            maximumRateBps: '800',
+            autoRefill: false
+          }
+        ])
       },
       { readOnly: true }
     )
@@ -131,6 +146,11 @@ describe('createProductionBootstrapAdapters', () => {
     const adapters = createProductionBootstrapAdapters(config)
 
     expect(adapters.make).toBeInstanceOf(ReadOnlyBootstrapMakeService)
+    expect(await adapters.rates.readRate(marketId)).toEqual({
+      mode: 'static',
+      rateBps: 400n,
+      observationId: 'static:400'
+    })
   })
 
   test('rejects a write configuration whose private key does not match the maker', () => {

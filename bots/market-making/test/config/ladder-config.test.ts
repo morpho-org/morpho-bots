@@ -5,6 +5,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { ConfigValidationError } from '../../src/config/config-validation.error'
 import { ConfigService } from '../../src/config/config.service'
 
 const marketId: Hex = `0x${'55'.repeat(32)}`
@@ -44,6 +45,19 @@ const item = (overrides: Record<string, unknown> = {}) => ({
   maximumRateBps: '800',
   ...overrides
 })
+const bootstrapItem = (overrides: Record<string, unknown> = {}) => ({
+  marketId,
+  creditTarget: '10',
+  acceptanceAssets: '1',
+  offerSize: '2',
+  premiumBps: '0',
+  maximumMarketExposure: '20',
+  maximumTotalExposure: '20',
+  minimumRateBps: '200',
+  maximumRateBps: '800',
+  autoRefill: false,
+  ...overrides
+})
 const directories: string[] = []
 
 afterEach(async () => {
@@ -51,6 +65,115 @@ afterEach(async () => {
 })
 
 describe('ladder configuration loading', () => {
+  test('loads variable-rate and hardcoded target strategies independently', () => {
+    const config = ConfigService.from({
+      ...baseEnvironment,
+      BOOTSTRAP_MARKETS: JSON.stringify([
+        bootstrapItem({ targetRate: { strategy: 'hardcoded', hardcodedRateBps: '400' } })
+      ]),
+      LADDER_MARKETS: JSON.stringify([item({ targetRate: { strategy: 'variable_rate_avg' } })])
+    })
+
+    expect(config.bootstrap[0]?.targetRate).toEqual({
+      strategy: 'hardcoded',
+      hardcodedRateBps: 400n
+    })
+    expect(config.ladder[0]?.targetRate).toEqual({ strategy: 'variable_rate_avg' })
+  })
+
+  test('defaults each omitted target strategy to variable-rate average', () => {
+    const config = ConfigService.from({
+      ...baseEnvironment,
+      LADDER_MARKETS: JSON.stringify([item({ targetRate: undefined })])
+    })
+
+    expect(config.ladder[0]?.targetRate).toEqual({ strategy: 'variable_rate_avg' })
+  })
+
+  test.each([
+    [
+      'BOOTSTRAP_MARKETS',
+      bootstrapItem,
+      { strategy: 'hardcoded' },
+      'bootstrap[0].targetRate.hardcodedRateBps',
+      'missing',
+      'bootstrap[0].targetRate.hardcodedRateBps is required'
+    ],
+    [
+      'LADDER_MARKETS',
+      item,
+      { strategy: 'hardcoded', hardcodedRateBps: '1e2' },
+      'ladder[0].targetRate.hardcodedRateBps',
+      'invalid-integer',
+      'ladder[0].targetRate.hardcodedRateBps must be an integer'
+    ],
+    [
+      'BOOTSTRAP_MARKETS',
+      bootstrapItem,
+      { strategy: 'hardcoded', hardcodedRateBps: 400 },
+      'bootstrap[0].targetRate.hardcodedRateBps',
+      'invalid-integer',
+      'bootstrap[0].targetRate.hardcodedRateBps must be an integer'
+    ],
+    [
+      'LADDER_MARKETS',
+      item,
+      { strategy: 'hardcoded', hardcodedRateBps: '0' },
+      'ladder[0].targetRate.hardcodedRateBps',
+      'out-of-range',
+      'ladder[0].targetRate.hardcodedRateBps must be positive'
+    ],
+    [
+      'BOOTSTRAP_MARKETS',
+      bootstrapItem,
+      { strategy: 'hardcoded', hardcodedRateBps: '-1' },
+      'bootstrap[0].targetRate.hardcodedRateBps',
+      'invalid-integer',
+      'bootstrap[0].targetRate.hardcodedRateBps must be an integer'
+    ],
+    [
+      'BOOTSTRAP_MARKETS',
+      bootstrapItem,
+      { strategy: 'unsupported' },
+      'bootstrap[0].targetRate.strategy',
+      'invalid-strategy',
+      'bootstrap[0].targetRate.strategy must be variable_rate_avg or hardcoded'
+    ],
+    [
+      'LADDER_MARKETS',
+      item,
+      { strategy: 'variable_rate_avg', hardcodedRateBps: '400' },
+      'ladder[0].targetRate',
+      'unknown-key',
+      'ladder[0].targetRate contains an unsupported key'
+    ],
+    [
+      'BOOTSTRAP_MARKETS',
+      bootstrapItem,
+      { strategy: 'hardcoded', hardcodedRateBps: '400', unsupported: true },
+      'bootstrap[0].targetRate',
+      'unknown-key',
+      'bootstrap[0].targetRate contains an unsupported key'
+    ]
+  ])(
+    'rejects invalid %s target-rate configuration %#',
+    (field, makeItem, targetRate, expectedField, reason, message) => {
+      let error: unknown
+      try {
+        ConfigService.from({
+          ...baseEnvironment,
+          [field]: JSON.stringify([makeItem({ targetRate })])
+        })
+      } catch (value) {
+        error = value
+      }
+
+      expect(error).toBeInstanceOf(ConfigValidationError)
+      expect(error).toMatchObject({ field: expectedField, reason })
+      expect((error as ConfigValidationError).message).toBe(message)
+    }
+  )
+
   test('defaults to an empty list and loads a root YAML ladder list', async () => {
     expect(ConfigService.from(baseEnvironment).ladder).toEqual([])
     const directory = await mkdtemp(join(tmpdir(), 'ladder-config-'))

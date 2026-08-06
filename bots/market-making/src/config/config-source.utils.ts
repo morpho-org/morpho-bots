@@ -87,6 +87,7 @@ const yamlKeys = {
   ],
   bootstrap: [
     'marketId',
+    'targetRate',
     'creditTarget',
     'acceptanceAssets',
     'offerSize',
@@ -99,6 +100,7 @@ const yamlKeys = {
   ],
   ladder: [
     'marketId',
+    'targetRate',
     'quotePremiumBps',
     'spreadBps',
     'stepBps',

@@ -3,14 +3,16 @@ import type { Address, Hex } from 'viem'
 import type { SetupCheckConfig } from '../application/setup/setup-check.service'
 import type { BootstrapConfig } from '../domain/bootstrap/position-bootstrap'
 import type { LadderConfig } from '../domain/ladder/ladder'
+import type { TargetRateConfigured } from '../domain/target-rate'
 import type { ConfigurationLoadOptions, ConfigurationSource } from './config-source.utils'
 import type { Environment } from './config.utils'
 
 import { configurationFromEnvironment, loadConfigurationSources } from './config-source.utils'
 import {
   addressValue,
-  bytes32Value,
   chainIdValue,
+  optionalBytes32Value,
+  optionalUrlValue,
   privateKeyValue,
   requestTimeoutValue,
   transactionReceiptTimeoutValue,
@@ -70,6 +72,9 @@ export class ConfigService {
     const identity: MakerIdentity = readOnly
       ? { readOnly: true, maker }
       : { readOnly: false, maker, privateKey: privateKeyValue(environment) }
+    const marketIds = hexListValue(environment, 'MARKET_IDS', false)
+    const bootstrap = bootstrapConfigsValue(source.bootstrap, marketIds)
+    const ladder = ladderConfigsValue(source.ladder, marketIds)
 
     return new ConfigService({
       identity,
@@ -81,21 +86,18 @@ export class ConfigService {
         loanAsset: addressValue(environment, 'LOAN_ASSET_ADDRESS'),
         maximumLendExposure: unsignedBigIntValue(environment, 'MAXIMUM_LEND_EXPOSURE_ASSETS'),
         ratifier: addressValue(environment, 'RATIFIER_ADDRESS'),
-        marketIds: hexListValue(environment, 'MARKET_IDS', false),
-        referenceMarketId: bytes32Value(environment, 'REFERENCE_MARKET_ID')
+        marketIds,
+        referenceMarketId: optionalBytes32Value(environment, 'REFERENCE_MARKET_ID')
       },
       rpcUrl: urlValue(environment, 'RPC_URL'),
-      referenceRpcUrl: urlValue(environment, 'REFERENCE_RPC_URL'),
+      referenceRpcUrl: optionalUrlValue(environment, 'REFERENCE_RPC_URL'),
       morphoApiBaseUrl: urlValue(environment, 'MORPHO_API_BASE_URL'),
       routerApiBaseUrl: urlValue(environment, 'ROUTER_API_BASE_URL'),
       v0OfferGroupIds: hexListValue(environment, 'V0_OFFER_GROUP_IDS', false),
       requestTimeoutMs: requestTimeoutValue(environment),
       transactionReceiptTimeoutMs: transactionReceiptTimeoutValue(environment),
-      bootstrap: bootstrapConfigsValue(
-        source.bootstrap,
-        hexListValue(environment, 'MARKET_IDS', false)
-      ),
-      ladder: ladderConfigsValue(source.ladder, hexListValue(environment, 'MARKET_IDS', false))
+      bootstrap,
+      ladder
     })
   }
 
@@ -104,14 +106,14 @@ export class ConfigService {
       identity: MakerIdentity
       setup: SetupCheckConfig
       rpcUrl: string
-      referenceRpcUrl: string
+      referenceRpcUrl?: string
       morphoApiBaseUrl: string
       routerApiBaseUrl: string
       v0OfferGroupIds: readonly Hex[]
       requestTimeoutMs: number
       transactionReceiptTimeoutMs: number
-      bootstrap: readonly BootstrapConfig[]
-      ladder: readonly LadderConfig[]
+      bootstrap: readonly TargetRateConfigured<BootstrapConfig>[]
+      ladder: readonly TargetRateConfigured<LadderConfig>[]
     }
   ) {}
 

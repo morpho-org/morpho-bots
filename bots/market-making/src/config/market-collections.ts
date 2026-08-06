@@ -2,6 +2,7 @@ import type { Hex } from 'viem'
 
 import type { BootstrapConfig } from '../domain/bootstrap/position-bootstrap'
 import type { LadderConfig } from '../domain/ladder/ladder'
+import type { TargetRateConfigured, TargetRateStrategyConfig } from '../domain/target-rate'
 
 import { BootstrapConfigurationError } from '../domain/bootstrap/bootstrap-configuration.error'
 import { validateBootstrapConfig } from '../domain/bootstrap/position-bootstrap'
@@ -125,10 +126,59 @@ const integerBigInt = (value: unknown, field: string, signed: boolean) => {
   return BigInt(value)
 }
 
+const targetRateStrategyValue = (value: unknown, field: string): TargetRateStrategyConfig => {
+  if (value === undefined) return { strategy: 'variable_rate_avg' }
+  const targetRate = plainRecord(value, field)
+  if (typeof targetRate.strategy !== 'string') {
+    throw new ConfigValidationError(
+      `${field}.strategy`,
+      'wrong-type',
+      `${field}.strategy must be a string`
+    )
+  }
+  if (targetRate.strategy === 'variable_rate_avg') {
+    if (Object.keys(targetRate).some(key => key !== 'strategy')) {
+      throw new ConfigValidationError(field, 'unknown-key', `${field} contains an unsupported key`)
+    }
+    return { strategy: 'variable_rate_avg' }
+  }
+  if (targetRate.strategy !== 'hardcoded') {
+    throw new ConfigValidationError(
+      `${field}.strategy`,
+      'invalid-strategy',
+      `${field}.strategy must be variable_rate_avg or hardcoded`
+    )
+  }
+  if (Object.keys(targetRate).some(key => key !== 'strategy' && key !== 'hardcodedRateBps')) {
+    throw new ConfigValidationError(field, 'unknown-key', `${field} contains an unsupported key`)
+  }
+  if (targetRate.hardcodedRateBps === undefined) {
+    throw new ConfigValidationError(
+      `${field}.hardcodedRateBps`,
+      'missing',
+      `${field}.hardcodedRateBps is required`
+    )
+  }
+  const hardcodedRateBps = integerBigInt(
+    targetRate.hardcodedRateBps,
+    `${field}.hardcodedRateBps`,
+    false
+  )
+  if (hardcodedRateBps <= 0n) {
+    throw new ConfigValidationError(
+      `${field}.hardcodedRateBps`,
+      'out-of-range',
+      `${field}.hardcodedRateBps must be positive`
+    )
+  }
+  return { strategy: 'hardcoded', hardcodedRateBps }
+}
+
 const exactRecord = <Field extends string>(
   value: unknown,
   prefix: string,
-  fields: readonly Field[]
+  fields: readonly Field[],
+  optionalFields: readonly Field[] = []
 ) => {
   const record = plainRecord(value, prefix)
   const keys = Object.keys(record)
@@ -138,12 +188,14 @@ const exactRecord = <Field extends string>(
   if (keys.some(key => !fields.includes(key as Field))) {
     throw new ConfigValidationError(prefix, 'unknown-key', `${prefix} contains an unsupported key`)
   }
-  if (keys.length !== fields.length) {
-    const missing = fields.find(field => record[field] === undefined)
+  const missing = fields.find(
+    field => !optionalFields.includes(field) && record[field] === undefined
+  )
+  if (missing !== undefined) {
     throw new ConfigValidationError(
-      `${prefix}.${missing ?? 'field'}`,
+      `${prefix}.${missing}`,
       'missing',
-      `${prefix}.${missing ?? 'field'} is required`
+      `${prefix}.${missing} is required`
     )
   }
   return record
@@ -158,13 +210,18 @@ const exactRecord = <Field extends string>(
 export const bootstrapConfigsValue = (
   value: unknown,
   allowlistedMarkets: readonly Hex[]
-): BootstrapConfig[] => {
+): TargetRateConfigured<BootstrapConfig>[] => {
   if (!Array.isArray(value)) {
     throw new ConfigValidationError('bootstrap', 'wrong-type', 'bootstrap must be a list')
   }
   const configs = value.map((item, index) => {
     const prefix = `bootstrap[${index}]`
-    const record = exactRecord(item, prefix, BOOTSTRAP_MARKET_FIELDS)
+    const record = exactRecord(
+      item,
+      prefix,
+      [...BOOTSTRAP_MARKET_FIELDS, 'targetRate'],
+      ['targetRate']
+    )
     const required = (name: (typeof BOOTSTRAP_MARKET_FIELDS)[number]) => record[name]
     const marketValue = required('marketId')
     if (typeof marketValue !== 'string') {
@@ -174,8 +231,9 @@ export const bootstrapConfigsValue = (
         `${prefix}.marketId must be a string`
       )
     }
-    const config: BootstrapConfig = {
+    const config: TargetRateConfigured<BootstrapConfig> = {
       marketId: parseBytes32(marketValue, `${prefix}.marketId`),
+      targetRate: targetRateStrategyValue(record.targetRate, `${prefix}.targetRate`),
       creditTarget: integerBigInt(required('creditTarget'), `${prefix}.creditTarget`, false),
       acceptanceAssets: integerBigInt(
         required('acceptanceAssets'),
@@ -254,13 +312,18 @@ const safeInteger = (value: unknown, field: string) => {
 export const ladderConfigsValue = (
   value: unknown,
   allowlistedMarkets: readonly Hex[]
-): LadderConfig[] => {
+): TargetRateConfigured<LadderConfig>[] => {
   if (!Array.isArray(value)) {
     throw new ConfigValidationError('ladder', 'wrong-type', 'ladder must be a list')
   }
   const configs = value.map((item, index) => {
     const prefix = `ladder[${index}]`
-    const record = exactRecord(item, prefix, LADDER_MARKET_FIELDS)
+    const record = exactRecord(
+      item,
+      prefix,
+      [...LADDER_MARKET_FIELDS, 'targetRate'],
+      ['targetRate']
+    )
     const required = (name: (typeof LADDER_MARKET_FIELDS)[number]) => record[name]
     const marketValue = required('marketId')
     const groupMode = required('groupMode')
@@ -271,8 +334,9 @@ export const ladderConfigsValue = (
         `${prefix} string fields must be strings`
       )
     }
-    const config: LadderConfig = {
+    const config: TargetRateConfigured<LadderConfig> = {
       marketId: parseBytes32(marketValue, `${prefix}.marketId`),
+      targetRate: targetRateStrategyValue(record.targetRate, `${prefix}.targetRate`),
       quotePremiumBps: integerBigInt(
         required('quotePremiumBps'),
         `${prefix}.quotePremiumBps`,
