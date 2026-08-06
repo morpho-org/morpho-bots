@@ -1,6 +1,16 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  symlink,
+  writeFile
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, test } from 'node:test'
@@ -215,4 +225,99 @@ test('same immutable name with identical bytes is accepted, and symlink canonica
   const linked = join(root, 'playground', 'linked-dist')
   await symlink(outside, linked)
   await assert.rejects(publish(linked, await makeTree(root, 'linked')), /non-symlink directory/)
+})
+
+test('symlink asset parents and immutable asset links are rejected without touching their targets', async () => {
+  const root = await makeRoot()
+  const outside = await mkdtemp(join(tmpdir(), 'playground-publish-target-'))
+  owned.add(outside)
+  const marker = join(outside, 'marker')
+  await writeFile(marker, 'untouched')
+
+  const linkedParentDist = join(root, 'playground', 'linked-parent-dist')
+  await mkdir(linkedParentDist)
+  await symlink(outside, join(linkedParentDist, 'assets'))
+  await assert.rejects(
+    publish(linkedParentDist, await makeTree(root, 'linked-parent')),
+    /symlink|directory/
+  )
+  assert.equal(await readFile(marker, 'utf8'), 'untouched')
+  assert.deepEqual(await readdir(outside), ['marker'])
+
+  const linkedAssetDist = join(root, 'playground', 'linked-asset-dist')
+  const linkedAssetTree = await makeTree(root, 'linked-asset')
+  await mkdir(join(linkedAssetDist, 'assets'), { recursive: true })
+  await symlink(marker, join(linkedAssetDist, 'assets', linkedAssetTree.jsName))
+  await assert.rejects(publish(linkedAssetDist, linkedAssetTree), /symlink|regular file/)
+  assert.equal(await readFile(marker, 'utf8'), 'untouched')
+
+  const nonregularDist = join(root, 'playground', 'nonregular-asset-dist')
+  const nonregularTree = await makeTree(root, 'nonregular-asset')
+  await mkdir(join(nonregularDist, 'assets', nonregularTree.jsName), { recursive: true })
+  await assert.rejects(publish(nonregularDist, nonregularTree), /regular file/)
+})
+
+test('exclusive publication temps are private regular files in their trusted canonical directories', async () => {
+  const root = await makeRoot()
+  const dist = join(root, 'playground', 'dist')
+  const tree = await makeTree(root, 'private-temps')
+  const observed = []
+  await publish(dist, tree, {
+    afterStep: async (phase, detail) => {
+      if (phase !== 'asset-temp-open' && phase !== 'index-temp-open') return
+      const metadata = await lstat(detail.temp)
+      assert.equal(metadata.isFile(), true)
+      if (process.platform !== 'win32') assert.equal(metadata.mode & 0o777, 0o600)
+      observed.push(detail.temp)
+    }
+  })
+  assert.equal(observed.length, 3)
+  await assertNoTempDebris(dist)
+})
+
+test('canonical replacement before assets is rejected and replacement target is untouched', async () => {
+  const root = await makeRoot()
+  const dist = join(root, 'playground', 'dist')
+  const old = await makeTree(root, 'old-replaced-before-assets')
+  const next = await makeTree(root, 'next-replaced-before-assets')
+  await publish(dist, old)
+  const displaced = `${dist}-displaced`
+  const marker = join(dist, 'marker')
+
+  await assert.rejects(
+    publish(dist, next, {
+      afterStep: async phase => {
+        if (phase !== 'canonical-ready') return
+        await rename(dist, displaced)
+        await mkdir(dist)
+        await writeFile(marker, 'untouched')
+      }
+    }),
+    /replaced|identity/
+  )
+  assert.equal(await readFile(marker, 'utf8'), 'untouched')
+  assert.deepEqual(await readdir(dist), ['marker'])
+})
+
+test('canonical replacement immediately before index commit is rejected and replacement target is untouched', async () => {
+  const root = await makeRoot()
+  const dist = join(root, 'playground', 'dist')
+  const old = await makeTree(root, 'old-replaced-before-index')
+  const next = await makeTree(root, 'next-replaced-before-index')
+  await publish(dist, old)
+  const displaced = `${dist}-displaced`
+  const marker = join(dist, 'marker')
+
+  await assert.rejects(
+    publish(dist, next, {
+      beforeIndexRename: async () => {
+        await rename(dist, displaced)
+        await mkdir(dist)
+        await writeFile(marker, 'untouched')
+      }
+    }),
+    /replaced|identity/
+  )
+  assert.equal(await readFile(marker, 'utf8'), 'untouched')
+  assert.deepEqual(await readdir(dist), ['marker'])
 })

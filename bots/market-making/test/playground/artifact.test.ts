@@ -1,28 +1,15 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
-import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { readdir, readFile, rm } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'
 import { gzipSync } from 'node:zlib'
 
 const packageRoot = join(import.meta.dir, '../..')
 const PRODUCTION_ARTIFACT_GZIP_BUDGET_BYTES = 132 * 1024
 const temporaryDirectories = new Set<string>()
-const createOutdir = async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'market-making-playground-dist-artifact-'))
-  temporaryDirectories.add(directory)
-  return directory
-}
 const runBuild = async (nodeEnv: string) => {
-  const dist = await createOutdir()
   const buildProcess = Bun.spawn(
-    [
-      Bun.which('node')!,
-      join(packageRoot, 'scripts/playground-build.mjs'),
-      '--outdir',
-      dist,
-      '--no-clean'
-    ],
+    [Bun.which('node')!, join(packageRoot, 'scripts/playground-build.mjs'), '--temporary'],
     {
       cwd: packageRoot,
       env: {
@@ -42,6 +29,23 @@ const runBuild = async (nodeEnv: string) => {
     new Response(buildProcess.stdout).text()
   ])
   expect(exitCode, `${stdout}\n${stderr}`).toBe(0)
+  const records = stdout
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .flatMap(line => {
+      try {
+        const value = JSON.parse(line)
+        return value?.kind === 'market-making-playground-build' && value?.mode === 'temporary'
+          ? [value]
+          : []
+      } catch {
+        return []
+      }
+    })
+  expect(records).toHaveLength(1)
+  expect(Object.keys(records[0]).toSorted()).toEqual(['kind', 'mode', 'path'])
+  const dist = records[0].path as string
+  temporaryDirectories.add(dist)
   return dist
 }
 const readArtifact = async (dist: string) => {

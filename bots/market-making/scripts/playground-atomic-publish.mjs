@@ -1,8 +1,19 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { lstat, link, mkdir, open, readFile, readdir, rename, rm, unlink } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import {
+  lstat,
+  link,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  unlink
+} from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, sep } from 'node:path'
 
-export const CANONICAL_STAGING_MARKER = '.staging-'
 export const CANONICAL_PUBLISH_TEMP_MARKER = '.__publish-'
 
 const missing = error => error?.code === 'ENOENT'
@@ -12,7 +23,6 @@ const sameIdentity = (left, right) =>
   Number(left.dev) === Number(right.dev) &&
   Number(left.ino) === Number(right.ino)
 const step = async (afterStep, name, detail = {}) => afterStep?.(name, detail)
-
 const entry = path =>
   lstat(path).catch(error => {
     if (missing(error)) return undefined
@@ -27,24 +37,54 @@ const requireRealDirectory = async (path, label) => {
   return value
 }
 
-const ensureCanonicalDirectory = async canonical => {
-  const current = await entry(canonical)
-  if (!current) await mkdir(canonical, { recursive: true })
-  return requireRealDirectory(canonical, 'Canonical output')
+const captureDirectory = async (path, label) => {
+  const value = await requireRealDirectory(path, label)
+  return {
+    dev: Number(value.dev),
+    ino: Number(value.ino),
+    path,
+    realpath: await realpath(path)
+  }
 }
 
-const ensureCanonicalSubdirectory = async (canonical, relativeDirectory) => {
-  if (!relativeDirectory || relativeDirectory === '.') return
-  let current = canonical
+const revalidateDirectory = async (expected, label) => {
+  let current
+  try {
+    current = await captureDirectory(expected.path, label)
+  } catch (error) {
+    throw new Error(`${label} identity was replaced: ${expected.path}`, { cause: error })
+  }
+  if (!sameIdentity(current, expected) || current.realpath !== expected.realpath) {
+    throw new Error(`${label} identity was replaced: ${expected.path}`)
+  }
+  return expected
+}
+
+const ensureCanonicalDirectory = async canonical => {
+  const current = await entry(canonical)
+  if (!current) await mkdir(canonical)
+  return captureDirectory(canonical, 'Canonical output')
+}
+
+const ensureCanonicalSubdirectory = async (
+  canonicalIdentity,
+  relativeDirectory,
+  revalidateRoots
+) => {
+  if (!relativeDirectory || relativeDirectory === '.') return canonicalIdentity
+  let current = canonicalIdentity
   for (const component of relativeDirectory.split(sep)) {
-    current = join(current, component)
+    await revalidateRoots()
+    await revalidateDirectory(current, 'Canonical asset parent')
+    const path = join(current.path, component)
     try {
-      await mkdir(current)
+      await mkdir(path)
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error
     }
-    await requireRealDirectory(current, 'Canonical asset directory')
+    current = await captureDirectory(path, 'Canonical asset directory')
   }
+  return current
 }
 
 const listStagedFiles = async staging => {
@@ -73,7 +113,6 @@ const validateAndReadStaging = async staging => {
   if (files.filter(file => file.relative === 'index.html').length !== 1) {
     throw new Error(`Canonical staging must contain exactly one root index.html: ${staging}`)
   }
-
   const assets = []
   for (const file of files.filter(candidate => candidate !== index)) {
     const contents = await readFile(file.absolute)
@@ -101,14 +140,26 @@ const syncDirectory = async path => {
   }
 }
 
-const uniqueTemp = target =>
-  join(dirname(target), `${CANONICAL_PUBLISH_TEMP_MARKER}${process.pid}-${randomUUID()}`)
+const uniqueTemp = directory =>
+  join(directory, `${CANONICAL_PUBLISH_TEMP_MARKER}${process.pid}-${randomUUID()}`)
 
-const writeSyncedTemp = async ({ afterStep, contents, kind, relativePath, target }) => {
-  const temp = uniqueTemp(target)
+const unlinkFromTrustedDirectory = async (temp, trustedDirectory) => {
+  try {
+    await revalidateDirectory(trustedDirectory, 'Publication temp parent')
+  } catch {
+    return
+  }
+  await unlink(temp).catch(error => {
+    if (!missing(error)) throw error
+  })
+}
+
+const writeSyncedTemp = async ({ afterStep, contents, kind, relativePath, trustedDirectory }) => {
+  await revalidateDirectory(trustedDirectory, 'Publication temp parent')
+  const temp = uniqueTemp(trustedDirectory.path)
   let handle
   try {
-    handle = await open(temp, 'wx', 0o644)
+    handle = await open(temp, 'wx', 0o600)
     await step(afterStep, `${kind}-temp-open`, { relativePath, temp })
     await handle.writeFile(contents)
     await step(afterStep, `${kind}-write`, { relativePath, temp })
@@ -120,43 +171,82 @@ const writeSyncedTemp = async ({ afterStep, contents, kind, relativePath, target
     return temp
   } catch (error) {
     if (handle) await handle.close().catch(() => {})
-    await unlink(temp).catch(cleanupError => {
-      if (!missing(cleanupError)) {
-        error = new AggregateError(
-          [error, cleanupError],
-          `Failed to clean publication temp ${temp}`
-        )
-      }
+    await unlinkFromTrustedDirectory(temp, trustedDirectory).catch(cleanupError => {
+      error = new AggregateError([error, cleanupError], `Failed to clean publication temp ${temp}`)
     })
     throw error
   }
 }
 
-const publishImmutableAsset = async ({ afterStep, canonical, file }) => {
-  const target = join(canonical, file.relative)
-  await ensureCanonicalSubdirectory(canonical, dirname(file.relative))
+const readExistingRegularFile = async target => {
+  const before = await lstat(target)
+  if (before.isSymbolicLink() || !before.isFile()) {
+    throw new Error(`Canonical immutable asset must be a non-symlink regular file: ${target}`)
+  }
+  let handle
+  try {
+    const noFollowSupported =
+      process.platform !== 'win32' && typeof constants.O_NOFOLLOW === 'number'
+    if (noFollowSupported) {
+      try {
+        handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW)
+      } catch (error) {
+        if (!['EINVAL', 'ENOTSUP', 'EOPNOTSUPP'].includes(error?.code)) throw error
+        // Some filesystems expose O_NOFOLLOW but reject it. The fallback remains lstat/fstat pinned.
+        handle = await open(target, constants.O_RDONLY)
+      }
+    } else {
+      // Windows and runtimes without O_NOFOLLOW use identity-matched lstat/open/fstat.
+      handle = await open(target, constants.O_RDONLY)
+    }
+    const opened = await handle.stat()
+    if (!opened.isFile() || !sameIdentity(opened, before)) {
+      throw new Error(`Canonical immutable asset changed while opening: ${target}`)
+    }
+    const after = await lstat(target)
+    if (after.isSymbolicLink() || !after.isFile() || !sameIdentity(after, opened)) {
+      throw new Error(`Canonical immutable asset was replaced while opening: ${target}`)
+    }
+    return await handle.readFile()
+  } finally {
+    await handle?.close()
+  }
+}
+
+const publishImmutableAsset = async ({ afterStep, canonicalIdentity, file, revalidateRoots }) => {
+  await revalidateRoots()
+  const trustedDirectory = await ensureCanonicalSubdirectory(
+    canonicalIdentity,
+    dirname(file.relative),
+    revalidateRoots
+  )
+  await revalidateRoots()
+  await revalidateDirectory(trustedDirectory, 'Canonical asset directory')
+  const target = join(canonicalIdentity.path, file.relative)
   const temp = await writeSyncedTemp({
     afterStep,
     contents: file.contents,
     kind: 'asset',
     relativePath: file.relative,
-    target
+    trustedDirectory
   })
   try {
+    await revalidateRoots()
+    await revalidateDirectory(trustedDirectory, 'Canonical asset directory')
     try {
-      // Hard-link creation is atomic and, unlike rename, never replaces an existing immutable name.
+      // Hard-link creation is atomic and never replaces an existing immutable name.
       await link(temp, target)
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error
-      const existing = await readFile(target)
+      const existing = await readExistingRegularFile(target)
       if (!existing.equals(file.contents)) {
         throw new Error(`Canonical immutable asset collision has different bytes: ${file.relative}`)
       }
     }
-    await syncDirectory(dirname(target))
+    await syncDirectory(trustedDirectory.path)
     await step(afterStep, 'asset-publish', { relativePath: file.relative, target })
   } finally {
-    await unlink(temp)
+    await unlinkFromTrustedDirectory(temp, trustedDirectory)
   }
   await step(afterStep, 'asset-temp-remove', { relativePath: file.relative, temp })
 }
@@ -171,39 +261,45 @@ export const publishCanonicalPlayground = async ({
   afterStep,
   beforeIndexRename,
   canonical,
+  revalidateTrustedPath = async () => {},
   staging
 }) => {
-  // Read and validate the complete private tree before touching canonical output.
   const generation = await validateAndReadStaging(staging)
-  await ensureCanonicalDirectory(canonical)
+  await revalidateTrustedPath()
+  const parentIdentity = await captureDirectory(dirname(canonical), 'Canonical parent')
+  await revalidateTrustedPath()
+  const canonicalIdentity = await ensureCanonicalDirectory(canonical)
+  const revalidateRoots = async () => {
+    await revalidateTrustedPath()
+    await revalidateDirectory(parentIdentity, 'Canonical parent')
+    await revalidateDirectory(canonicalIdentity, 'Canonical output')
+  }
   await step(afterStep, 'canonical-ready', { canonical })
 
+  await revalidateRoots()
   for (const file of generation.assets) {
-    await publishImmutableAsset({ afterStep, canonical, file })
+    await publishImmutableAsset({ afterStep, canonicalIdentity, file, revalidateRoots })
   }
   await step(afterStep, 'assets-ready', { canonical })
 
+  await revalidateRoots()
   const target = join(canonical, 'index.html')
   const temp = await writeSyncedTemp({
     afterStep,
     contents: generation.index.contents,
     kind: 'index',
     relativePath: 'index.html',
-    target
+    trustedDirectory: canonicalIdentity
   })
   try {
     await beforeIndexRename?.({ canonical, staging, temp })
     await step(afterStep, 'before-index-rename', { canonical, temp })
+    await revalidateRoots()
     await rename(temp, target)
     await syncDirectory(canonical)
   } catch (error) {
-    await unlink(temp).catch(cleanupError => {
-      if (!missing(cleanupError)) {
-        error = new AggregateError(
-          [error, cleanupError],
-          `Failed to clean publication temp ${temp}`
-        )
-      }
+    await unlinkFromTrustedDirectory(temp, canonicalIdentity).catch(cleanupError => {
+      error = new AggregateError([error, cleanupError], `Failed to clean publication temp ${temp}`)
     })
     throw error
   }

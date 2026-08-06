@@ -122,23 +122,6 @@ const onSignal = signal => {
 process.once('SIGINT', onSignal)
 process.once('SIGTERM', onSignal)
 
-const waitAtTempCreationBoundary = async directory => {
-  const readyFile = process.env.PLAYGROUND_SMOKE_TEMP_BOUNDARY_READY_FILE
-  if (!readyFile) return
-  const releaseFile = process.env.PLAYGROUND_SMOKE_TEMP_BOUNDARY_RELEASE_FILE
-  if (!releaseFile) throw new Error('Temp creation boundary hook requires a release file')
-  await writeFile(readyFile, directory)
-  while (true) {
-    try {
-      await readFile(releaseFile)
-      return
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error
-      await new Promise(resolve => setTimeout(resolve, 10))
-    }
-  }
-}
-
 const createOwnedTempDirectory = async prefix => {
   const directory = mkdtempSync(join(tmpdir(), prefix))
   ownedDirectories.add(directory)
@@ -159,7 +142,6 @@ try {
         root,
         onDistCreated: directory => ownedDirectories.add(directory),
         onBuildProcess: trackChild,
-        onTempCreated: waitAtTempCreationBoundary,
         signal: AbortSignal.any([shutdown.signal, signal])
       }),
     { description: 'fresh playground build', timeoutMs: buildTimeout }

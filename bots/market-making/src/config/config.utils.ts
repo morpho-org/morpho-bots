@@ -36,7 +36,12 @@ const requiredValue = (environment: Environment, name: string) => {
   return value
 }
 
-/** Parses the only supported chain from trimmed unsigned decimal notation. */
+/**
+ * Parses the only supported chain from trimmed unsigned decimal notation.
+ * @param environment - Environment map containing the required chain identifier.
+ * @returns The supported chain identifier.
+ * @throws When CHAIN_ID is absent, malformed, unsafe, or unsupported.
+ */
 export const chainIdValue = (environment: Environment) => {
   const raw = requiredValue(environment, 'CHAIN_ID')
   const chainId = /^\d+$/.test(raw) ? Number(raw) : Number.NaN

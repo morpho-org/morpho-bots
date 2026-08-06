@@ -345,22 +345,26 @@ test(
   { timeout: browserTestTimeout },
   async () => {
     const isolatedTmp = await temporaryDirectory('playground-browser-concurrent-failure-')
-    const readyFile = join(isolatedTmp, 'temp-created')
     const sibling = spawnSmoke({
       env: {
         ...process.env,
         CHROMIUM_PATH: chromiumPath,
-        PLAYGROUND_SMOKE_TEMP_BOUNDARY_READY_FILE: readyFile,
-        PLAYGROUND_SMOKE_TEMP_BOUNDARY_RELEASE_FILE: join(isolatedTmp, 'never-release'),
+        PLAYGROUND_SMOKE_BODY_DELAY_MS: '60000',
         TMPDIR: isolatedTmp
       }
     })
-    await waitForReadiness(() => readFile(readyFile), {
-      child: sibling.child,
-      childName: 'Sibling smoke',
-      description: 'sibling temporary build directory',
-      timeoutMs: 2_000
-    })
+    await waitForReadiness(
+      () => {
+        assert.match(sibling.stdout, /smoke environment:/)
+      },
+      {
+        child: sibling.child,
+        childName: 'Sibling smoke',
+        description: 'sibling browser readiness',
+        getStderr: () => sibling.stderr,
+        timeoutMs: outerReadinessTimeout
+      }
+    )
     const siblingTree = await inspectProcessTree(sibling.child.pid)
     const failing = spawnSmoke({
       env: { ...process.env, CHROMIUM_PATH: '/definitely/missing/chromium' }

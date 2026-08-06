@@ -1,31 +1,48 @@
 import { transform } from 'esbuild'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { lstat, mkdtemp, readFile, readdir, rename, writeFile } from 'node:fs/promises'
-import { basename, dirname, extname, join } from 'node:path'
+import { chmod, lstat, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { basename, extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
-  CANONICAL_STAGING_MARKER,
   publishCanonicalPlayground,
   removeOwnedCanonicalStaging
 } from './playground-atomic-publish.mjs'
 import { productionPlaygroundBuildArguments } from './playground-build-arguments.mjs'
-import { revalidatePlaygroundOutdir, validatePlaygroundOutdir } from './playground-outdir.mjs'
+import {
+  captureCanonicalPathIdentity,
+  revalidateCanonicalPathIdentity
+} from './playground-path-safety.mjs'
+
+export const TEMPORARY_BUILD_PREFIX = 'market-making-playground-dist-'
+export const CANONICAL_STAGING_PREFIX = 'market-making-playground-staging-'
+export const BUILD_OUTPUT_KIND = 'market-making-playground-build'
 
 const packageRoot = fileURLToPath(new URL('..', import.meta.url))
+const repoRoot = fileURLToPath(new URL('../../..', import.meta.url))
+const playground = join(packageRoot, 'playground')
+const canonical = join(playground, 'dist')
 const argumentsList = process.argv.slice(2)
-const outdirIndexes = argumentsList.flatMap((argument, index) =>
-  argument === '--outdir' ? [index] : []
-)
-if (outdirIndexes.length > 1) throw new Error('--outdir may be provided only once')
-const outdirIndex = outdirIndexes[0] ?? -1
-if (outdirIndex >= 0 && !argumentsList[outdirIndex + 1]) {
-  throw new Error('--outdir requires a directory')
+if (
+  argumentsList.length > 1 ||
+  (argumentsList.length === 1 && argumentsList[0] !== '--temporary')
+) {
+  throw new Error('Usage: playground-build.mjs [--temporary]')
 }
-const requestedOutdir = outdirIndex >= 0 ? argumentsList[outdirIndex + 1] : 'playground/dist'
-const validatedOutdir = await validatePlaygroundOutdir({ packageRoot, requestedOutdir })
-const { canonical, outdir } = validatedOutdir
+const temporary = argumentsList[0] === '--temporary'
+
+const requireCanonicalDist = async () => {
+  try {
+    const entry = await lstat(canonical)
+    if (entry.isSymbolicLink() || !entry.isDirectory()) {
+      throw new Error(`Canonical output must be a non-symlink directory: ${canonical}`)
+    }
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error
+  }
+}
 
 const finalizeContentHashedAssets = async directory => {
   let entries = await readdir(directory, { recursive: true, withFileTypes: true })
@@ -55,10 +72,8 @@ const finalizeContentHashedAssets = async directory => {
       ''
     )
     const hash = createHash('sha256').update(contents).digest('hex').slice(0, 12)
-    const hashedName = `${unhashedStem}.${hash}${extension}`
-    renames.push({ entry, hashedName })
+    renames.push({ entry, hashedName: `${unhashedStem}.${hash}${extension}` })
   }
-
   for (const { entry, hashedName } of renames) {
     if (entry.name !== hashedName) {
       await rename(join(entry.parentPath, entry.name), join(entry.parentPath, hashedName))
@@ -66,8 +81,9 @@ const finalizeContentHashedAssets = async directory => {
   }
 
   entries = await readdir(directory, { recursive: true, withFileTypes: true })
-  const htmlEntries = entries.filter(entry => entry.isFile() && extname(entry.name) === '.html')
-  for (const htmlEntry of htmlEntries) {
+  for (const htmlEntry of entries.filter(
+    entry => entry.isFile() && extname(entry.name) === '.html'
+  )) {
     const htmlPath = join(htmlEntry.parentPath, htmlEntry.name)
     let html = await readFile(htmlPath, 'utf8')
     for (const { entry, hashedName } of renames) html = html.replaceAll(entry.name, hashedName)
@@ -75,24 +91,20 @@ const finalizeContentHashedAssets = async directory => {
   }
 }
 
-let buildOutdir = outdir
-let canonicalStagingIdentity
-if (canonical) {
-  buildOutdir = await mkdtemp(
-    join(dirname(outdir), `.${basename(outdir)}${CANONICAL_STAGING_MARKER}`)
-  )
-  const created = await lstat(buildOutdir)
-  canonicalStagingIdentity = { dev: Number(created.dev), ino: Number(created.ino) }
-} else {
-  // Callers own custom cleanup. This is deliberately the final await before spawn so replacement,
-  // permission, symlink, and non-empty races are rejected as close to Bun execution as possible.
-  await revalidatePlaygroundOutdir(validatedOutdir)
-}
+const pathIdentity = await captureCanonicalPathIdentity({ packageRoot, playground, repoRoot })
+if (!temporary) await requireCanonicalDist()
+await revalidateCanonicalPathIdentity(pathIdentity)
+const buildOutdir = await mkdtemp(
+  join(tmpdir(), temporary ? TEMPORARY_BUILD_PREFIX : CANONICAL_STAGING_PREFIX)
+)
+if (process.platform !== 'win32') await chmod(buildOutdir, 0o700)
+const created = await lstat(buildOutdir)
+const buildIdentity = { dev: Number(created.dev), ino: Number(created.ino) }
+let keepTemporary = false
 
 try {
   const bun = process.env.BUN_EXE || 'bun'
-  const buildArguments = productionPlaygroundBuildArguments(buildOutdir)
-  const child = spawn(bun, buildArguments, {
+  const child = spawn(bun, productionPlaygroundBuildArguments(buildOutdir), {
     cwd: packageRoot,
     env: { ...process.env, NODE_ENV: 'production' },
     shell: false,
@@ -118,8 +130,19 @@ try {
     }
     if (!terminatingSignal) {
       await finalizeContentHashedAssets(buildOutdir)
-      if (canonical) {
-        await publishCanonicalPlayground({ canonical: outdir, staging: buildOutdir })
+      if (temporary) {
+        console.log(
+          JSON.stringify({ kind: BUILD_OUTPUT_KIND, mode: 'temporary', path: buildOutdir })
+        )
+        keepTemporary = true
+      } else {
+        await revalidateCanonicalPathIdentity(pathIdentity)
+        await requireCanonicalDist()
+        await publishCanonicalPlayground({
+          canonical,
+          revalidateTrustedPath: () => revalidateCanonicalPathIdentity(pathIdentity),
+          staging: buildOutdir
+        })
       }
     }
   } finally {
@@ -127,7 +150,5 @@ try {
     process.off('SIGTERM', forwardSignal)
   }
 } finally {
-  if (canonicalStagingIdentity) {
-    await removeOwnedCanonicalStaging(buildOutdir, canonicalStagingIdentity)
-  }
+  if (!keepTemporary) await removeOwnedCanonicalStaging(buildOutdir, buildIdentity)
 }

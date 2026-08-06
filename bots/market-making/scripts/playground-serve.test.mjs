@@ -425,9 +425,19 @@ test('fresh build preserves canonical dist, uses only temporary output, and vali
     root: packageRoot,
     processRunner: async command => {
       calls.push(command)
-      const outdir = command.args[command.args.indexOf('--outdir') + 1]
-      await writeFile(join(outdir, 'index.html'), 'fresh')
-      return { code: 0, signal: null, stdout: '', stderr: '' }
+      assert.deepEqual(command.args, [
+        join(packageRoot, 'scripts/playground-build.mjs'),
+        '--temporary'
+      ])
+      const dist = await mkdtemp(join(tmpdir(), 'market-making-playground-dist-'))
+      temporaryDirectories.push(dist)
+      await writeFile(join(dist, 'index.html'), 'fresh')
+      return {
+        code: 0,
+        signal: null,
+        stderr: '',
+        stdout: `${JSON.stringify({ kind: 'market-making-playground-build', mode: 'temporary', path: dist })}\n`
+      }
     }
   })
   try {
@@ -447,13 +457,13 @@ test(
     const pidFile = join(packageRoot, 'descendant.pid')
     const executable = await writeBlockingBun(packageRoot)
     const controller = new AbortController()
-    let dist
+    let reported = false
     const runner = createPortableProcessRunner({ terminationGraceMs: 25, forceKillGraceMs: 250 })
     const pending = prepareFreshDist({
       root: packageRoot,
       executable,
-      onDistCreated: created => {
-        dist = created
+      onDistCreated: () => {
+        reported = true
       },
       processRunner: command => runner({ ...command, env: { ...process.env, PID_FILE: pidFile } }),
       signal: controller.signal
@@ -462,7 +472,7 @@ test(
     controller.abort(new Error('build interrupted'))
     await assert.rejects(pending, /build interrupted/)
     await assertProcessNotLive(descendantPid)
-    await assert.rejects(access(dist), { code: 'ENOENT' })
+    assert.equal(reported, false)
   }
 )
 

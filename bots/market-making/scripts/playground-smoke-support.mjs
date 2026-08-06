@@ -1,9 +1,19 @@
 import { spawn } from 'node:child_process'
-import { constants, createReadStream, mkdtempSync } from 'node:fs'
+import { constants, createReadStream } from 'node:fs'
 import { access, lstat, readFile, readdir, realpath, rm, stat } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
-import { delimiter, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import {
+  basename,
+  delimiter,
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep
+} from 'node:path'
 
 const chromiumNames = [
   'chromium',
@@ -956,27 +966,41 @@ export const prepareFreshDist = async ({
   executable = process.execPath,
   onDistCreated = () => {},
   onBuildProcess = () => () => {},
-  onTempCreated = async () => {},
   processRunner,
   removeTemporaryDist = rm,
-  signal,
-  temporaryRoot = tmpdir()
+  signal
 }) => {
   if (signal?.aborted) throw signal.reason
-  const dist = mkdtempSync(join(temporaryRoot, 'market-making-playground-dist-'))
+  let dist
+  let distIdentity
   let cleanupPromise
   const cleanup = () =>
-    (cleanupPromise ??= Promise.resolve().then(() =>
-      removeTemporaryDist(dist, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
-    ))
+    (cleanupPromise ??= Promise.resolve().then(async () => {
+      if (!dist || !distIdentity) return
+      const current = await lstat(dist).catch(error => {
+        if (error?.code === 'ENOENT') return undefined
+        throw error
+      })
+      if (
+        !current ||
+        Number(current.dev) !== distIdentity.dev ||
+        Number(current.ino) !== distIdentity.ino
+      ) {
+        return
+      }
+      await removeTemporaryDist(dist, {
+        recursive: true,
+        force: true,
+        maxRetries: 3,
+        retryDelay: 50
+      })
+    }))
   let releaseBuildProcess = () => {}
   try {
-    onDistCreated(dist)
-    await onTempCreated(dist)
     if (signal?.aborted) throw signal.reason
     const command = {
       executable,
-      args: [join(root, 'scripts/playground-build.mjs'), '--outdir', dist, '--no-clean'],
+      args: [join(root, 'scripts/playground-build.mjs'), '--temporary'],
       cwd: root,
       signal,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -1025,9 +1049,48 @@ export const prepareFreshDist = async ({
         `Fresh playground build failed with ${status}.\n${result.stdout ?? ''}${result.stderr ?? ''}`
       )
     }
+    const records = String(result.stdout ?? '')
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .flatMap(line => {
+        try {
+          const value = JSON.parse(line)
+          return value?.kind === 'market-making-playground-build' && value?.mode === 'temporary'
+            ? [value]
+            : []
+        } catch {
+          return []
+        }
+      })
+    if (records.length !== 1 || typeof records[0].path !== 'string') {
+      throw new Error('Fresh playground build did not report exactly one structured temporary path')
+    }
+    dist = records[0].path
+    const allowedRoot = await realpath(tmpdir())
+    const metadata = await lstat(dist)
+    const actual = await realpath(dist)
+    if (
+      metadata.isSymbolicLink() ||
+      !metadata.isDirectory() ||
+      dirname(actual) !== allowedRoot ||
+      !/^market-making-playground-dist-.+/.test(basename(dist))
+    ) {
+      throw new Error(`Fresh playground build reported an invalid temporary directory: ${dist}`)
+    }
+    if (typeof process.getuid === 'function' && metadata.uid !== process.getuid()) {
+      throw new Error(
+        `Fresh playground temporary directory is not owned by uid ${process.getuid()}`
+      )
+    }
+    if (process.platform !== 'win32' && (metadata.mode & 0o777) !== 0o700) {
+      throw new Error(`Fresh playground temporary directory must have mode 0700: ${dist}`)
+    }
+    distIdentity = { dev: Number(metadata.dev), ino: Number(metadata.ino) }
+    onDistCreated(dist)
     const index = join(dist, 'index.html')
     try {
-      if (!(await lstat(index)).isFile()) throw new Error('not a file')
+      const indexEntry = await lstat(index)
+      if (indexEntry.isSymbolicLink() || !indexEntry.isFile()) throw new Error('not a regular file')
     } catch (error) {
       throw new Error(`Fresh playground build did not create ${index}: ${error.message}`)
     }

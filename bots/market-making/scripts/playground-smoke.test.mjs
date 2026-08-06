@@ -1,7 +1,17 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { chmod, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import {
+  chmod,
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  symlink,
+  writeFile
+} from 'node:fs/promises'
 import { get } from 'node:http'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
@@ -893,49 +903,6 @@ test('readiness calls share one absolute deadline instead of resetting nested co
 })
 
 for (const signal of ['SIGTERM', 'SIGINT']) {
-  test(`${signal} at the temp creation boundary removes the created directory`, async () => {
-    const isolatedTmp = await temporaryDirectory(
-      `playground-temp-boundary-${signal.toLowerCase()}-`
-    )
-    const readyFile = join(isolatedTmp, 'temp-created')
-    const releaseFile = join(isolatedTmp, 'release-temp-creation')
-    const smoke = spawn(process.execPath, [smokeScript], {
-      env: {
-        ...process.env,
-        CHROMIUM_PATH: process.execPath,
-        PLAYGROUND_SMOKE_TEMP_BOUNDARY_READY_FILE: readyFile,
-        PLAYGROUND_SMOKE_TEMP_BOUNDARY_RELEASE_FILE: releaseFile,
-        TMPDIR: isolatedTmp
-      },
-      stdio: 'ignore'
-    })
-    try {
-      const createdDirectory = await waitFor(async () => {
-        const directory = await readFile(readyFile, 'utf8')
-        assert.match(directory, /market-making-playground-dist-/)
-        return directory
-      })
-      assert.match(createdDirectory, /market-making-playground-dist-/)
-      smoke.kill(signal)
-      const result = await new Promise((resolve, reject) => {
-        smoke.once('error', reject)
-        smoke.once('close', (code, closeSignal) => resolve({ code, signal: closeSignal }))
-      })
-
-      assert.deepEqual(result, { code: null, signal })
-      assert.deepEqual(
-        (await readdir(isolatedTmp)).filter(name =>
-          name.startsWith('market-making-playground-dist-')
-        ),
-        []
-      )
-    } finally {
-      if (smoke.exitCode === null && smoke.signalCode === null) smoke.kill('SIGKILL')
-    }
-  })
-}
-
-for (const signal of ['SIGTERM', 'SIGINT']) {
   test(`${signal} during a slow build lets the build parent reap its descendant`, async () => {
     const isolatedTmp = await temporaryDirectory(`playground-signal-${signal.toLowerCase()}-`)
     const bin = join(isolatedTmp, 'bin')
@@ -1116,7 +1083,8 @@ test('default child fixture publishes readiness with default SIGINT and SIGTERM 
     const childPidFile = join(root, 'child-pid')
     const owner = spawnOwnedProcess('/bin/sh', ['-c', defaultSubreaperChild], {
       env: {
-        ...process.env,
+        PATH: process.env.PATH,
+        TMPDIR: root,
         SUBREAPER_TEST_CHILD_PID_FILE: childPidFile,
         SUBREAPER_TEST_CHILD_READY_FILE: childReady
       },
@@ -1127,7 +1095,11 @@ test('default child fixture publishes readiness with default SIGINT and SIGTERM 
     try {
       await waitFor(() => readFile(childReady))
       childPid = Number(await readFile(childPidFile, 'utf8'))
-      const status = await readFile(`/proc/${childPid}/status`, 'utf8')
+      const status = await waitFor(async () => {
+        const current = await readFile(`/proc/${childPid}/status`, 'utf8')
+        assert.match(current, /^Name:\s+sleep$/im)
+        return current
+      })
       const caught = BigInt(`0x${status.match(/^SigCgt:\s+([0-9a-f]+)/im)?.[1]}`)
       const ignored = BigInt(`0x${status.match(/^SigIgn:\s+([0-9a-f]+)/im)?.[1]}`)
       for (const signalNumber of [2n, 15n]) {
@@ -1446,40 +1418,41 @@ while True:
   }
 )
 
-test('failed fresh build removes only its newly attributable temporary output', async () => {
+test('failed fresh build preserves canonical output and does not invent a caller path', async () => {
   const root = await temporaryDirectory('playground-failed-build-')
-  const isolatedTmp = await temporaryDirectory('playground-failed-build-tmp-')
-  const sibling = await mkdtemp(join(isolatedTmp, 'market-making-playground-dist-sibling-'))
   const canonical = join(root, 'playground/dist')
   const sentinel = Buffer.from([0, 255, 17, 99, 10])
   await mkdir(canonical, { recursive: true })
   await writeFile(join(canonical, 'sentinel.bin'), sentinel)
-  const fakeBun = join(root, 'failing-bun')
-  await writeFile(fakeBun, '#!/bin/sh\necho deliberate-build-failure >&2\nexit 23\n')
-  await chmod(fakeBun, 0o755)
-  const baseline = new Set(await readdir(isolatedTmp))
-  let created
+  let command
 
   await assert.rejects(
     prepareFreshDist({
       root,
-      executable: fakeBun,
-      temporaryRoot: isolatedTmp,
-      onTempCreated: directory => {
-        created = directory
+      processRunner: async value => {
+        command = value
+        return { code: 23, signal: null, stdout: '', stderr: 'deliberate-build-failure' }
       }
     }),
     /Fresh playground build failed with exit code 23[\s\S]*deliberate-build-failure/
   )
-  assert.equal(created?.startsWith(`${isolatedTmp}/`), true)
-  const after = await readdir(isolatedTmp)
-  assert.deepEqual(
-    after.filter(name => !baseline.has(name)),
-    []
-  )
-  assert.ok(after.includes(sibling.slice(isolatedTmp.length + 1)))
+  assert.deepEqual(command.args, [join(root, 'scripts/playground-build.mjs'), '--temporary'])
   assert.deepEqual(await readFile(join(canonical, 'sentinel.bin')), sentinel)
 })
+
+const reportTemporaryDist = async (html = '<!doctype html><title>fresh</title>') => {
+  const dist = await temporaryDirectory('market-making-playground-dist-')
+  await writeFile(join(dist, 'index.html'), html)
+  return {
+    dist,
+    result: {
+      code: 0,
+      signal: null,
+      stderr: '',
+      stdout: `${JSON.stringify({ kind: 'market-making-playground-build', mode: 'temporary', path: dist })}\n`
+    }
+  }
+}
 
 test('an ownership callback throw removes the unregistered temporary dist and preserves the error', async () => {
   const root = await temporaryDirectory('playground-dist-owner-throw-')
@@ -1491,6 +1464,7 @@ test('an ownership callback throw removes the unregistered temporary dist and pr
   await assert.rejects(
     prepareFreshDist({
       root,
+      processRunner: async () => (await reportTemporaryDist()).result,
       onDistCreated: () => {
         throw callbackError
       }
@@ -1515,6 +1489,7 @@ test('an ownership callback that registers then throws leaves no registered dire
   await assert.rejects(
     prepareFreshDist({
       root,
+      processRunner: async () => (await reportTemporaryDist()).result,
       onDistCreated: directory => {
         ownedDirectories.add(directory)
         throw callbackError
@@ -1541,6 +1516,7 @@ test('an ownership callback and cleanup failure are both reported with the callb
   await assert.rejects(
     prepareFreshDist({
       root,
+      processRunner: async () => (await reportTemporaryDist()).result,
       onDistCreated: directory => {
         createdDirectory = directory
         throw callbackError
@@ -1567,46 +1543,73 @@ test('an ownership callback and cleanup failure are both reported with the callb
   await rm(createdDirectory, { recursive: true, force: true })
 })
 
-test('preparing the playground builds only in temporary output and preserves canonical dist', async () => {
+test('preparing the playground uses the exact temporary CLI contract and preserves canonical dist', async () => {
   const root = await temporaryDirectory('playground-build-test-')
-  const dist = join(root, 'playground/dist')
-  const bin = join(root, 'bin')
-  await mkdir(dist, { recursive: true })
-  await mkdir(bin)
-  await writeFile(join(dist, 'stale-sentinel'), 'must be removed')
-  const fakeBun = join(bin, 'bun')
-  await writeFile(
-    fakeBun,
-    `#!/usr/bin/env node
-const { mkdirSync, writeFileSync } = require('node:fs')
-const outdir = process.argv[process.argv.indexOf('--outdir') + 1]
-if (!outdir) throw new Error('missing --outdir')
-mkdirSync(outdir, { recursive: true })
-writeFileSync(outdir + '/index.html', '<!doctype html><title>fresh</title>')
-`
-  )
-  await chmod(fakeBun, 0o755)
+  const canonical = join(root, 'playground/dist')
+  await mkdir(canonical, { recursive: true })
+  await writeFile(join(canonical, 'stale-sentinel'), 'must be preserved')
   let temporaryDistCleanupCalls = 0
+  let command
 
   const prepared = await prepareFreshDist({
     root,
-    executable: fakeBun,
+    processRunner: async value => {
+      command = value
+      return (await reportTemporaryDist()).result
+    },
     removeTemporaryDist: async (directory, options) => {
       temporaryDistCleanupCalls += 1
       await rm(directory, options)
     }
   })
 
-  assert.notEqual(prepared.dist, dist)
+  assert.deepEqual(command.args, [join(root, 'scripts/playground-build.mjs'), '--temporary'])
+  assert.notEqual(prepared.dist, canonical)
   assert.equal(
     await readFile(join(prepared.dist, 'index.html'), 'utf8'),
     '<!doctype html><title>fresh</title>'
   )
-  assert.equal(await readFile(join(dist, 'stale-sentinel'), 'utf8'), 'must be removed')
+  assert.equal(await readFile(join(canonical, 'stale-sentinel'), 'utf8'), 'must be preserved')
   await prepared.cleanup()
   await prepared.cleanup()
   assert.equal(temporaryDistCleanupCalls, 1)
   await assert.rejects(readFile(join(prepared.dist, 'index.html')), { code: 'ENOENT' })
+})
+
+test('fresh-dist cleanup does not follow a replacement into a new target', async () => {
+  const root = await temporaryDirectory('playground-cleanup-identity-')
+  const prepared = await prepareFreshDist({
+    root,
+    processRunner: async () => (await reportTemporaryDist()).result
+  })
+  const displaced = `${prepared.dist}-displaced`
+  await rename(prepared.dist, displaced)
+  temporaryDirectories.push(displaced)
+  await mkdir(prepared.dist)
+  const marker = join(prepared.dist, 'marker')
+  await writeFile(marker, 'untouched')
+  await prepared.cleanup()
+  assert.equal(await readFile(marker, 'utf8'), 'untouched')
+})
+
+test('fresh-dist parser rejects a caller-shaped path without touching it', async () => {
+  const root = await temporaryDirectory('playground-invalid-output-')
+  const callerPath = await temporaryDirectory('caller-owned-playground-output-')
+  const marker = join(callerPath, 'marker')
+  await writeFile(marker, 'untouched')
+  await assert.rejects(
+    prepareFreshDist({
+      root,
+      processRunner: async () => ({
+        code: 0,
+        signal: null,
+        stderr: '',
+        stdout: `${JSON.stringify({ kind: 'market-making-playground-build', mode: 'temporary', path: callerPath })}\n`
+      })
+    }),
+    /invalid temporary directory/
+  )
+  assert.equal(await readFile(marker, 'utf8'), 'untouched')
 })
 
 test('two static servers allocate distinct application ports and only serve their roots', async () => {
