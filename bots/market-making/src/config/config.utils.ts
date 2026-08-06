@@ -30,10 +30,29 @@ const MAXIMUM_TRANSACTION_RECEIPT_TIMEOUT_MS = 900_000
  * @returns The non-empty trimmed value.
  * @throws When the variable is absent or empty.
  */
-export const requiredValue = (environment: Environment, name: string) => {
+const requiredValue = (environment: Environment, name: string) => {
   const value = environment[name]?.trim()
   if (!value) throw new ConfigValidationError(name, 'missing', `Missing required env var: ${name}`)
   return value
+}
+
+/**
+ * Parses the only supported chain from trimmed unsigned decimal notation.
+ * @param environment - Environment map containing the required chain identifier.
+ * @returns The supported chain identifier.
+ * @throws When CHAIN_ID is absent, malformed, unsafe, or unsupported.
+ */
+export const chainIdValue = (environment: Environment) => {
+  const raw = requiredValue(environment, 'CHAIN_ID')
+  const chainId = /^\d+$/.test(raw) ? Number(raw) : Number.NaN
+  if (!Number.isSafeInteger(chainId) || chainId !== BASE_CHAIN_ID) {
+    throw new ConfigValidationError(
+      'CHAIN_ID',
+      'unsupported-chain',
+      `Unsupported CHAIN_ID; supported: ${BASE_CHAIN_ID}`
+    )
+  }
+  return chainId
 }
 
 /**

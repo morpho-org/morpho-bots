@@ -5,6 +5,7 @@ import { describe, expect, test } from 'bun:test'
 
 import type { LadderQuoteSet } from '../../../src/domain/ladder/ladder'
 
+import { offerMaxAssetsByRung } from '../../../src/domain/ladder/ladder'
 import { buildLadderTree } from '../../../src/infrastructure/ladder/ladder-offer.utils'
 
 const maker: Address = '0x1111111111111111111111111111111111111111'
@@ -52,6 +53,17 @@ const quote = (groupMode: LadderQuoteSet['groupMode']): LadderQuoteSet => ({
 })
 
 describe('buildLadderTree', () => {
+  test('derives exact production offer maxAssets for the [10,20,30,40] fixture in both modes', () => {
+    expect(offerMaxAssetsByRung(quote('shared-rung'))).toEqual({
+      lower: [10n, 20n],
+      higher: [30n, 40n]
+    })
+    expect(offerMaxAssetsByRung(quote('per-book'))).toEqual({
+      lower: [30n, 30n],
+      higher: [70n, 70n]
+    })
+  })
+
   test('maps lower sells and higher buys without crossing Midnight ticks', () => {
     const result = buildLadderTree({
       quote: quote('shared-rung'),

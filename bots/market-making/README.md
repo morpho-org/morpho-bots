@@ -10,6 +10,30 @@ every intended action before enabling signing.
 See [Architecture](./docs/architecture.md) for the contributor-facing package design and code
 structure.
 
+## Parameter playground
+
+Run the stateless parameter playground locally from the repository root:
+
+```sh
+bun run market-making:playground
+```
+
+The launcher performs a frozen-lockfile dependency check before every build, then prints the local
+server URL after building the browser artifact. For a production-equivalent
+build without starting a server, run:
+
+```sh
+bun run --filter @morpho-org/market-making-bot playground:build
+```
+
+After this pull request is merged to `main`, relevant playground, browser-safe bot-kit, package, lock,
+or deployment-workflow changes deploy through GitHub Actions to
+<https://morpho-org.github.io/morpho-bots/>. Repository Pages settings must use **GitHub Actions** as
+the publishing source; the workflow intentionally cannot change that repository setting with its
+least-privilege token. The Pages site is not live until that post-merge workflow completes
+successfully; check the repository's **Deploy market-making playground to GitHub Pages** workflow and
+its `github-pages` environment for deployment status.
+
 ## Run
 
 ```sh
@@ -600,3 +624,38 @@ example `chmod 600 market-making.yaml`).
 Configuration errors contain stable field/reason metadata but never rejected values, URLs, private
 keys, parser snippets, or nested third-party errors. Explicit file failures are loud but do not echo
 the supplied path. Runtime setup reports identify providers by stable IDs only.
+
+## Parameter playground
+
+The stateless local playground exposes the complete current YAML/environment configuration surface,
+including bootstrap, ladder, and environment-only Better Stack settings. It renders a synthetic
+offer ladder immediately as inputs change and exports matching YAML, clearly labeled POSIX-shell-safe ENV,
+and JSON formats. Use only the shell-safe output with `source`. The ladder JSON importer accepts only
+an exact `LADDER_MARKETS` array, one exact ladder object, or a JSON string literal containing either;
+wrappers and full playground exports are not import shapes. Invalid configurations remain visible with
+accessible errors and cannot be copied as valid exports. It does not
+read current offers or a live market book, persist edits, or connect to a backend. Live offers and
+order-book simulation are future scope only.
+
+From the repository root, one command runs `bun install --frozen-lockfile` (also on already-installed
+workspaces, where it is fast), creates a fresh isolated build, and serves it on loopback. It does not
+run test assertions or require Chromium:
+
+```sh
+bun run market-making:playground
+```
+
+Open the exact URL printed by the command (default `http://127.0.0.1:4173`). Override the listener
+with `PORT=5173`, `HOST=localhost`, `--port 5173`, or `--host ::1`; command-line flags take precedence
+over environment variables. Only `localhost`, `127.0.0.1`, and `::1` are accepted. IPv6 may be entered
+as `::1` or `[::1]`; the printed URL uses brackets. If the selected port is occupied, the launcher
+exits with an actionable error instead of claiming success.
+
+The interactive launcher owns install and build process trees portably: Linux and macOS use detached
+process groups, while Windows uses non-shell task-tree termination. Press Ctrl-C to stop; `SIGINT` and
+`SIGTERM` perform bounded server shutdown, terminate owned process trees, and remove the temporary
+fresh build. Cleanup failures are reported and produce a nonzero exit.
+
+Sensitive values are redacted in YAML, ENV, and JSON exports by default. Exporting private
+credentials requires checking the explicit sensitive-values opt-in in the playground; keep real
+values in the deployment secret store even when using that opt-in.

@@ -1,7 +1,5 @@
 import type { Address, Hex } from 'viem'
 
-import { base } from 'viem/chains'
-
 import type { SetupCheckConfig } from '../application/setup/setup-check.service'
 import type { BootstrapConfig } from '../domain/bootstrap/position-bootstrap'
 import type { LadderConfig } from '../domain/ladder/ladder'
@@ -9,16 +7,15 @@ import type { ConfigurationLoadOptions, ConfigurationSource } from './config-sou
 import type { Environment } from './config.utils'
 
 import { configurationFromEnvironment, loadConfigurationSources } from './config-source.utils'
-import { ConfigValidationError } from './config-validation.error'
 import {
   addressValue,
   bootstrapConfigsValue,
   bytes32Value,
+  chainIdValue,
   hexListValue,
   ladderConfigsValue,
   privateKeyValue,
   requestTimeoutValue,
-  requiredValue,
   transactionReceiptTimeoutValue,
   unsignedBigIntValue,
   urlValue
@@ -69,15 +66,7 @@ export class ConfigService {
 
   private static fromSource(source: ConfigurationSource, readOnly = false) {
     const environment = source.values as Environment
-    const rawChainId = requiredValue(environment, 'CHAIN_ID')
-    const chainId = /^\d+$/.test(rawChainId) ? Number(rawChainId) : Number.NaN
-    if (!Number.isSafeInteger(chainId) || chainId !== base.id) {
-      throw new ConfigValidationError(
-        'CHAIN_ID',
-        'unsupported-chain',
-        `Unsupported CHAIN_ID; supported: ${base.id}`
-      )
-    }
+    const chainId = chainIdValue(environment)
 
     const maker = addressValue(environment, 'MAKER_ADDRESS')
     const identity: MakerIdentity = readOnly
@@ -94,7 +83,7 @@ export class ConfigService {
         loanAsset: addressValue(environment, 'LOAN_ASSET_ADDRESS'),
         maximumLendExposure: unsignedBigIntValue(environment, 'MAXIMUM_LEND_EXPOSURE_ASSETS'),
         ratifier: addressValue(environment, 'RATIFIER_ADDRESS'),
-        marketIds: hexListValue(environment, 'MARKET_IDS', true),
+        marketIds: hexListValue(environment, 'MARKET_IDS', false),
         referenceMarketId: bytes32Value(environment, 'REFERENCE_MARKET_ID')
       },
       rpcUrl: urlValue(environment, 'RPC_URL'),
@@ -106,9 +95,9 @@ export class ConfigService {
       transactionReceiptTimeoutMs: transactionReceiptTimeoutValue(environment),
       bootstrap: bootstrapConfigsValue(
         source.bootstrap,
-        hexListValue(environment, 'MARKET_IDS', true)
+        hexListValue(environment, 'MARKET_IDS', false)
       ),
-      ladder: ladderConfigsValue(source.ladder, hexListValue(environment, 'MARKET_IDS', true))
+      ladder: ladderConfigsValue(source.ladder, hexListValue(environment, 'MARKET_IDS', false))
     })
   }
 

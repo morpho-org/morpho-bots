@@ -2,6 +2,8 @@ import { ensureError, tryCatch } from '@repo/utils'
 
 import type { Logger } from './logger'
 
+import { parseHttpHeartbeatUrl } from './heartbeat-url'
+
 export const HEARTBEAT_INTERVAL_MS = 60_000
 export const HEARTBEAT_TIMEOUT_MS = 5_000
 
@@ -20,8 +22,8 @@ export function createHeartbeatMonitor(deps: {
   const url = deps.url?.trim()
   if (!url) return { start: async () => undefined, stop: () => undefined }
 
-  const parsed = tryCatch(() => new URL(url))
-  if (parsed.error || !/^https?:$/.test(parsed.data.protocol)) {
+  const parsed = parseHttpHeartbeatUrl(url)
+  if (!parsed) {
     deps.logger.warn('heartbeat.misconfigured', {
       detail: 'BETTERSTACK_HEARTBEAT_URL must be an HTTP(S) URL — heartbeat disabled'
     })
@@ -36,7 +38,7 @@ export function createHeartbeatMonitor(deps: {
   let timer: ReturnType<typeof setInterval> | null = null
 
   const pingHeartbeat = async () => {
-    const response = await tryCatch(ping(parsed.data.toString()))
+    const response = await tryCatch(ping(url))
     if (response.error) {
       deps.logger.warn('heartbeat.failed', { detail: ensureError(response.error).message })
     } else if (!response.data.ok) {

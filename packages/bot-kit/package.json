@@ -9,6 +9,14 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./heartbeat-url": {
+      "types": "./src/heartbeat-url.ts",
+      "default": "./src/heartbeat-url.ts"
+    },
+    "./shipping-config": {
+      "types": "./src/shipping-config.ts",
+      "default": "./src/shipping-config.ts"
     }
   },
   "scripts": {
