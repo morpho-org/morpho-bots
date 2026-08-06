@@ -52,6 +52,7 @@ describe('readLivePendingBootstrapOffers', () => {
 
     const result = await readLivePendingBootstrapOffers({
       groups: [indexedGroup(0n)],
+      ownedGroupIds: [groupId],
       offers: [offer],
       readGroupConsumed
     })
@@ -60,11 +61,26 @@ describe('readLivePendingBootstrapOffers', () => {
     expect(readGroupConsumed).not.toHaveBeenCalled()
   })
 
+  test('fails closed when an owned group is API-missing without persisted offer intent', async () => {
+    const readGroupConsumed = mock(async () => 0n)
+
+    await expect(
+      readLivePendingBootstrapOffers({
+        groups: [],
+        ownedGroupIds: [groupId],
+        offers: [],
+        readGroupConsumed
+      })
+    ).rejects.toMatchObject({ operation: 'missing-owned-group-intent' })
+    expect(readGroupConsumed).not.toHaveBeenCalled()
+  })
+
   test('retains the remaining capacity of an API-missing partially consumed offer', async () => {
     const readGroupConsumed = mock(async () => 40n)
 
     const result = await readLivePendingBootstrapOffers({
       groups: [],
+      ownedGroupIds: [groupId],
       offers: [offer],
       readGroupConsumed
     })
@@ -78,6 +94,7 @@ describe('readLivePendingBootstrapOffers', () => {
 
     const result = await readLivePendingBootstrapOffers({
       groups: [],
+      ownedGroupIds: [groupId],
       offers: [offer],
       readGroupConsumed
     })

@@ -219,6 +219,7 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
       if (!selectedPosition) throw new LadderAdapterError('position-unavailable')
       const pendingBootstrapOffers = await readLivePendingBootstrapOffers({
         groups,
+        ownedGroupIds: bootstrapGroupIds,
         offers: persistedBootstrapOffers,
         readGroupConsumed: groupId => readGroupConsumed(groupId, block.number)
       })
@@ -270,12 +271,14 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
   }
 
   const completeBookOffers = async () => {
-    const [groups, persistedBootstrapOffers] = await Promise.all([
+    const [groups, bootstrapGroupIds, persistedBootstrapOffers] = await Promise.all([
       readGroups(),
+      bootstrapOwnership.read(),
       bootstrapOwnership.readOffers()
     ])
     const pendingBootstrapOffers = await readLivePendingBootstrapOffers({
       groups,
+      ownedGroupIds: bootstrapGroupIds,
       offers: persistedBootstrapOffers,
       readGroupConsumed
     })
