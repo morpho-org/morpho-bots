@@ -30,8 +30,8 @@ describe('enhanceVerboseArgv', () => {
       enhanceVerboseArgv(['--config', 'start', 'setup-check'], { commands, env: full })
     ).toEqual(['--config', 'start', 'setup-check'])
     expect(
-      enhanceVerboseArgv(['--config=market-making.yaml', 'ladder'], { commands, env: full })
-    ).toEqual(['--config=market-making.yaml', 'ladder', '--verbose'])
+      enhanceVerboseArgv(['--config=quoter-bot.yaml', 'ladder'], { commands, env: full })
+    ).toEqual(['--config=quoter-bot.yaml', 'ladder', '--verbose'])
   })
 
   test.each([

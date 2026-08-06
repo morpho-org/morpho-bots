@@ -35,8 +35,8 @@
         "typescript": "catalog:",
       },
     },
-    "bots/market-making": {
-      "name": "@morpho-org/market-making-bot",
+    "bots/quoter-bot": {
+      "name": "@morpho-org/quoter-bot",
       "version": "0.0.0",
       "bin": {
         "mm": "./src/index.ts",
@@ -345,7 +345,7 @@
 
     "@morpho-org/blue-sdk-viem": ["@morpho-org/blue-sdk-viem@5.2.1", "", { "peerDependencies": { "@morpho-org/blue-sdk": "^6.4.0", "@morpho-org/morpho-ts": "^2.7.0", "viem": "^2.0.0" } }, "sha512-3XFxpnKcoglzYm+Ph9BCLScqafWSBlmDyjQcUgEQ0z2VFOiUSpyWb+aF5NawdpCwMz/TyZBc4LedAf2ahm4f8A=="],
 
-    "@morpho-org/market-making-bot": ["@morpho-org/market-making-bot@workspace:bots/market-making"],
+    "@morpho-org/quoter-bot": ["@morpho-org/quoter-bot@workspace:bots/quoter-bot"],
 
     "@morpho-org/midnight-crossed-books": ["@morpho-org/midnight-crossed-books@workspace:bots/midnight-crossed-books"],
 

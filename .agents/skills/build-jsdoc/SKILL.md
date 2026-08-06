@@ -1,29 +1,29 @@
 ---
 name: build-jsdoc
-description: Use when changing externally facing TypeScript in the market-making bot. Inventory public callables, enforce substantive JSDoc, and build browsable TypeDoc output before completion.
+description: Use when changing externally facing TypeScript in the quoter bot. Inventory public callables, enforce substantive JSDoc, and build browsable TypeDoc output before completion.
 version: 1.1.0
 author: Morpho
 license: Apache-2.0
 metadata:
   hermes:
-    tags: [typescript, jsdoc, typedoc, market-making, verification]
+    tags: [typescript, jsdoc, typedoc, quoter-bot, verification]
     related_skills: []
 ---
 
-# Build Market-Making JSDoc
+# Build Quoter-Bot JSDoc
 
 ## Overview
 
-Use the package-owned TypeScript AST inventory and TypeDoc configuration to keep the market-making
+Use the package-owned TypeScript AST inventory and TypeDoc configuration to keep the quoter-bot
 public surface documented. The build treats TypeDoc warnings as errors and writes ignored, browsable
 HTML; generated output is verification evidence, not a committed artifact.
 
 ## When to Use
 
 - Any change to an exported function, class, interface, or type under
-  `bots/market-making/src/**`.
+  `bots/quoter-bot/src/**`.
 - Any change to a public constructor, method, accessor, or exported callable signature.
-- Before completing market-making work that could alter runtime/package boundaries.
+- Before completing quoter-bot work that could alter runtime/package boundaries.
 
 Do not use this workflow to document private implementation helpers unless their safety behavior cannot
 be understood from the public contract.
@@ -53,13 +53,13 @@ Use the repository-pinned Bun version from `packageManager` (`bun@1.3.12`):
 
 ```sh
 bun install --frozen-lockfile
-bun run --filter @morpho-org/market-making-bot jsdoc:check
-bun run --filter @morpho-org/market-making-bot jsdoc:build
+bun run --filter @morpho-org/quoter-bot jsdoc:check
+bun run --filter @morpho-org/quoter-bot jsdoc:build
 ```
 
 - Coverage command: `jsdoc:check`
-- TypeDoc config: `bots/market-making/typedoc.json`
-- Output: `bots/market-making/build/jsdoc/index.html`
+- TypeDoc config: `bots/quoter-bot/typedoc.json`
+- Output: `bots/quoter-bot/build/jsdoc/index.html`
 - Output policy: `build/` is ignored; do not stage generated HTML.
 
 Completion criterion: the AST inventory exits zero, TypeDoc emits zero warnings/errors, and
@@ -94,7 +94,7 @@ Completion criterion: no named utility function declaration remains in changed s
 shares a file with a class, and each protocol/viem reuse or local exception is evidenced in code or
 the change report.
 
-For the current market-making implementation, preserve these verified package boundaries:
+For the current quoter-bot implementation, preserve these verified package boundaries:
 
 - `@morpho-org/midnight-sdk@1.3.0/api` owns active-book URL construction and mapping through
   `MidnightApi.fetchBooks`; inject the package's sanitized timeout-aware fetch adapter.
@@ -115,8 +115,8 @@ every added public callable exactly once.
 ## Inspect Generated Docs
 
 ```sh
-test -s bots/market-making/build/jsdoc/index.html
-python3 -m http.server 8000 --directory bots/market-making/build/jsdoc
+test -s bots/quoter-bot/build/jsdoc/index.html
+python3 -m http.server 8000 --directory bots/quoter-bot/build/jsdoc
 ```
 
 Open `http://127.0.0.1:8000/` and inspect the setup-check service, state port, viem adapter,
@@ -143,7 +143,7 @@ URL, default runtime environment, raw provider response, or generated source-map
 - [ ] Pinned Bun install succeeds with the lockfile frozen.
 - [ ] AST coverage prints the exhaustive public declaration inventory and exits zero.
 - [ ] TypeDoc exits zero with warnings-as-errors enabled.
-- [ ] `bots/market-making/build/jsdoc/index.html` exists and is non-empty.
+- [ ] `bots/quoter-bot/build/jsdoc/index.html` exists and is non-empty.
 - [ ] Generated output is ignored and absent from `git status`.
 - [ ] Public docs explain failure, side-effect, timeout/deadline, and concurrency behavior where relevant.
 - [ ] Independent checks still run concurrently through `Promise.all` where possible.

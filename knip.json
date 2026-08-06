@@ -21,7 +21,7 @@
     "bots/midnight-crossed-books": {
       "ignore": ["src/infrastructure/*/generated/**"]
     },
-    "bots/market-making": {
+    "bots/quoter-bot": {
       "entry": ["playground/app.tsx"]
     }
   }
