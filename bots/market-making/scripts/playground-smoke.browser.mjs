@@ -161,6 +161,15 @@ const successfulSmokeResult = async run => {
   return { ...result, stderr: run.stderr, stdout: run.stdout }
 }
 
+const failedSmokeResult = async run => {
+  const result = await run.completion
+  assert.notEqual(result.code, 0, `smoke unexpectedly passed\n${run.stdout}\n${run.stderr}`)
+  return { ...result, output: `${run.stdout}\n${run.stderr}` }
+}
+
+const terminalMutationProof =
+  'persistence access and form-bus activity mutation proof covered 15 phases across 4 documents'
+
 const runSmokesConcurrently = async runs => {
   try {
     return await Promise.all(runs.map(successfulSmokeResult))
@@ -678,14 +687,22 @@ test(
   }
 )
 
-for (const { name, env } of [
+for (const { name, env, secondary } of [
   {
     name: 'every supported persistence patch is required to succeed',
-    env: { PLAYGROUND_SMOKE_MUTATION_DISABLE_PATCH: 'all-supported' }
+    env: { PLAYGROUND_SMOKE_MUTATION_DISABLE_PATCH: 'all-supported' },
+    secondary: {
+      diagnostic: /form-bus activity detected during initial baseline/,
+      env: { PLAYGROUND_SMOKE_MUTATION_EARLY_FORM_BUS_ACTIVITY: 'initial baseline' }
+    }
   },
   {
     name: 'late persistence and form-bus activity fails the desktop root smoke in every document',
-    env: { PLAYGROUND_SMOKE_MUTATION_LATE_ACTIVITY: 'all-documents' }
+    env: { PLAYGROUND_SMOKE_MUTATION_LATE_ACTIVITY: 'all-documents' },
+    secondary: {
+      diagnostic: /persistence access detected during terminal completion/,
+      env: { PLAYGROUND_SMOKE_MUTATION_TERMINAL_ACTIVITY: 'after-final-phase' }
+    }
   },
   {
     name: 'late persistence and form-bus activity fails the mobile subpath smoke in every document',
@@ -693,15 +710,39 @@ for (const { name, env } of [
       PLAYGROUND_SMOKE_BASE_PATH: '/morpho-bots/',
       PLAYGROUND_SMOKE_MUTATION_LATE_ACTIVITY: 'all-documents',
       PLAYGROUND_SMOKE_VIEWPORT: 'mobile'
+    },
+    secondary: {
+      diagnostic: /persistence access detected during terminal completion/,
+      env: {
+        PLAYGROUND_SMOKE_BASE_PATH: '/morpho-bots/',
+        PLAYGROUND_SMOKE_MUTATION_TERMINAL_ACTIVITY: 'after-final-phase',
+        PLAYGROUND_SMOKE_VIEWPORT: 'mobile'
+      }
     }
   }
 ]) {
   test(name, { timeout: browserTestTimeout }, async () => {
     const run = spawnSmoke({ env: { ...process.env, ...env } })
-    await assert.rejects(
-      successfulSmokeResult(run),
-      /persistence instrumentation|persistence access|form-bus activity/
-    )
-    await cleanupHarnessRun(run)
+    try {
+      const result = await failedSmokeResult(run)
+      if (env.PLAYGROUND_SMOKE_MUTATION_LATE_ACTIVITY === 'all-documents') {
+        assert.match(result.output, new RegExp(terminalMutationProof))
+      } else {
+        assert.match(result.output, /persistence instrumentation missing during initial baseline/)
+        assert.doesNotMatch(result.output, new RegExp(terminalMutationProof))
+      }
+    } finally {
+      await cleanupHarnessRun(run)
+    }
+
+    const secondaryRun = spawnSmoke({ env: { ...process.env, ...secondary.env } })
+    try {
+      const result = await failedSmokeResult(secondaryRun)
+      assert.match(result.output, secondary.diagnostic)
+      assert.doesNotMatch(result.output, new RegExp(terminalMutationProof))
+      assert.doesNotMatch(result.output, /browser smoke: PASS/)
+    } finally {
+      await cleanupHarnessRun(secondaryRun)
+    }
   })
 }
