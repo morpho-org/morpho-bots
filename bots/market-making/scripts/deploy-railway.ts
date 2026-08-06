@@ -36,7 +36,6 @@ const requiredRuntimeVariableNames = [
   'CHAIN_ID',
   'RPC_URL',
   'REFERENCE_RPC_URL',
-  'MAKER_PRIVATE_KEY',
   'MAKER_ADDRESS',
   'MIDNIGHT_ADDRESS',
   'LOAN_ASSET_ADDRESS',
@@ -69,8 +68,34 @@ const runtimeVariables = (): RuntimeVariable[] => {
     name => [name, required(name)] as const
   )
   const optionalVariables = synchronizedOptionalRailwayVariables(Bun.env)
+  const method =
+    Bun.env.KEY_STORAGE_METHOD?.trim() || (Bun.env.MAKER_PRIVATE_KEY?.trim() ? 'private-key' : '')
+  if (!['private-key', 'keystore', 'aws'].includes(method)) {
+    throw new RailwayDeploymentError('KEY_STORAGE_METHOD must select exactly one signer')
+  }
+  const signerValues: Record<string, string> = {
+    KEY_STORAGE_METHOD: method,
+    MAKER_PRIVATE_KEY: ' ',
+    KEYSTORE_PATH: ' ',
+    KEYSTORE_PASSWORD: ' ',
+    KEYSTORE_INTERACTIVE: 'false',
+    AWS_KMS_KEY_ID: ' ',
+    AWS_REGION: ' '
+  }
+  const signerRequired =
+    method === 'private-key'
+      ? ['MAKER_PRIVATE_KEY']
+      : method === 'keystore'
+        ? ['KEYSTORE_PATH', 'KEYSTORE_PASSWORD']
+        : ['AWS_KMS_KEY_ID', 'AWS_REGION']
+  for (const name of signerRequired) {
+    const value = Bun.env[name]?.trim()
+    if (!value) throw new RailwayDeploymentError(`Missing required environment variable: ${name}`)
+    signerValues[name] = value
+  }
+  const signerVariables = Object.entries(signerValues) as RuntimeVariable[]
 
-  return [...requiredVariables, ...optionalVariables]
+  return [...requiredVariables, ...signerVariables, ...optionalVariables]
 }
 
 const assertCli = async () => {

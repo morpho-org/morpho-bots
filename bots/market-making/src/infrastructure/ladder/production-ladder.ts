@@ -34,7 +34,7 @@ import {
 } from '../bootstrap/bootstrap-offer.utils'
 import { readLivePendingBootstrapOffers } from '../bootstrap/bootstrap-pending-offer.utils'
 import { BlueBootstrapReferenceRateService } from '../bootstrap/bootstrap-reference-rate.service'
-import { createManagedMakerAccount } from '../make/managed-maker-account.utils'
+import { createMakerAccount } from '../make/maker-account.utils'
 import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
 import {
   activeOwnedLadderGroupIds,
@@ -133,7 +133,10 @@ const ownedGroups = (publications: readonly OwnedLadderPublication[]) =>
  * publication transaction; its durable reservation remains owned after approval if publication is
  * not confirmed.
  */
-export const createProductionLadderAdapters = (config: ConfigService): ProductionLadderAdapters => {
+export const createProductionLadderAdapters = (
+  config: ConfigService,
+  configuredAccount?: Awaited<ReturnType<typeof createMakerAccount>>
+): ProductionLadderAdapters | Promise<ProductionLadderAdapters> => {
   const maker = config.identity.maker
   const client = createPublicClient({
     chain: base,
@@ -369,7 +372,10 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
     return { positions, rates, make: readOnlyMake, validateReconcile }
   }
 
-  const account = createManagedMakerAccount(config.identity.privateKey)
+  const account = configuredAccount ?? createMakerAccount(config.identity)
+  if (account instanceof Promise) {
+    return account.then(value => createProductionLadderAdapters(config, value))
+  }
   if (!isAddressEqual(account.address, maker)) {
     throw new LadderAdapterError('maker-private-key-mismatch')
   }

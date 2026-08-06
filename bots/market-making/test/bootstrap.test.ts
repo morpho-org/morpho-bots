@@ -110,6 +110,30 @@ describe('createApplication', () => {
     expect((output as { checks: unknown[] }).checks).toHaveLength(9)
   })
 
+  test('applies CLI signer selection over environment configuration', async () => {
+    let method: string | undefined
+    const application = createApplication(
+      { ...environment, AWS_KMS_KEY_ID: 'alias/cli-selected', AWS_REGION: 'eu-west-1' },
+      {
+        createState: config => {
+          method = config.keyStorageMethod
+          return readyState()
+        }
+      }
+    )
+
+    await application.run(['--aws', 'setup-check'])
+
+    expect(method).toBe('aws')
+  })
+
+  test('rejects conflicting CLI signer selections', async () => {
+    const application = createApplication(environment, { createState: readyState })
+    await expect(
+      application.run(['--private-key', `0x${'11'.repeat(32)}`, '--aws', 'setup-check'])
+    ).rejects.toMatchObject({ field: 'KEY_STORAGE_METHOD', reason: 'conflicting-sources' })
+  })
+
   test('composes explicit invalidation without the offer-readiness gate', async () => {
     const groupId: Hex = `0x${'12'.repeat(32)}`
     const txHash: Hex = `0x${'ab'.repeat(32)}`

@@ -87,6 +87,7 @@ interface MarketMakingMonitorService {
 type CliConfigurationOptions = {
   configPath?: string
   readOnly: boolean
+  signerEnvironment?: Record<string, string>
   writeEvent?: (value: unknown) => void | Promise<void>
 }
 
@@ -154,6 +155,11 @@ export class Cli {
       .option('-c, --config <path>', 'load configuration from an explicit .yaml or .yml file')
       .option('--json', 'emit machine-parseable JSON Lines instead of human-readable output')
       .option('--readonly', 'use a maker address without signing or submitting transactions')
+      .option('--private-key <key>', 'sign with a local 0x-prefixed private key')
+      .option('--keystore <path>', 'sign with an encrypted JSON keystore file')
+      .option('--password <password>', 'decrypt the selected keystore with this password')
+      .option('--interactive', 'prompt without echoing for the selected keystore password')
+      .option('--aws', 'sign remotely with the configured non-exportable AWS KMS key')
       .exitOverride()
       .configureOutput({ writeOut: () => {}, writeErr: () => {} })
 
@@ -163,11 +169,10 @@ export class Cli {
       .option('--monitor', 'repeat readiness checks every minute until shutdown')
 
     setupCommand.action(async () => {
-      const options = this.program.opts<{ config?: string; readonly?: boolean }>()
+      const options = this.configurationOptions()
       const setupOptions = setupCommand.opts<{ monitor?: boolean }>()
       const setupService = await setup({
-        configPath: options.config,
-        readOnly: options.readonly === true,
+        ...options,
         writeEvent: this.runtime.writeEvent
       })
       if (setupOptions.monitor === true) {
@@ -194,11 +199,10 @@ export class Cli {
       )
 
     bootstrapCommand.action(async () => {
-      const options = this.program.opts<{ config?: string; readonly?: boolean }>()
+      const options = this.configurationOptions()
       const bootstrapOptions = bootstrapCommand.opts<{ monitor?: boolean; verbose?: boolean }>()
       const bootstrapService = await bootstrap({
-        configPath: options.config,
-        readOnly: options.readonly === true,
+        ...options,
         writeEvent: this.runtime.writeEvent
       })
       const verbose = bootstrapOptions.verbose === true
@@ -235,11 +239,10 @@ export class Cli {
       )
 
     ladderCommand.action(async () => {
-      const options = this.program.opts<{ config?: string; readonly?: boolean }>()
+      const options = this.configurationOptions()
       const ladderOptions = ladderCommand.opts<{ monitor?: boolean; verbose?: boolean }>()
       const ladderService = await ladder({
-        configPath: options.config,
-        readOnly: options.readonly === true,
+        ...options,
         writeEvent: this.runtime.writeEvent
       })
       const verbose = ladderOptions.verbose === true
@@ -273,11 +276,10 @@ export class Cli {
 
     startCommand.action(async () => {
       if (!marketMaking) throw new CliUsageError()
-      const options = this.program.opts<{ config?: string; readonly?: boolean }>()
+      const options = this.configurationOptions()
       const startOptions = startCommand.opts<{ verbose?: boolean }>()
       const service = await marketMaking({
-        configPath: options.config,
-        readOnly: options.readonly === true,
+        ...options,
         writeEvent: this.runtime.writeEvent
       })
       const result = await service.runContinuously({
@@ -297,10 +299,9 @@ export class Cli {
     invalidateCommand.action(async (rawGroupId?: string) => {
       if (!invalidation) throw new CliUsageError()
       const groupId = offerInvalidationGroup(rawGroupId)
-      const options = this.program.opts<{ config?: string; readonly?: boolean }>()
+      const options = this.configurationOptions()
       const invalidationService = await invalidation({
-        configPath: options.config,
-        readOnly: options.readonly === true,
+        ...options,
         writeEvent: this.runtime.writeEvent
       })
       this.capture(
@@ -310,6 +311,35 @@ export class Cli {
         })
       )
     })
+  }
+
+  private configurationOptions(): CliConfigurationOptions {
+    const options = this.program.opts<{
+      config?: string
+      readonly?: boolean
+      privateKey?: string
+      keystore?: string
+      password?: string
+      interactive?: boolean
+      aws?: boolean
+    }>()
+    const signerEnvironment: Record<string, string> = {}
+    if (options.privateKey !== undefined) {
+      signerEnvironment.KEY_STORAGE_METHOD = 'private-key'
+      signerEnvironment.MAKER_PRIVATE_KEY = options.privateKey
+    }
+    if (options.keystore !== undefined) {
+      signerEnvironment.KEY_STORAGE_METHOD = 'keystore'
+      signerEnvironment.KEYSTORE_PATH = options.keystore
+    }
+    if (options.password !== undefined) signerEnvironment.KEYSTORE_PASSWORD = options.password
+    if (options.interactive === true) signerEnvironment.KEYSTORE_INTERACTIVE = 'true'
+    if (options.aws === true) signerEnvironment.KEY_STORAGE_METHOD = 'aws'
+    return {
+      configPath: options.config,
+      readOnly: options.readonly === true,
+      signerEnvironment: Object.keys(signerEnvironment).length === 0 ? undefined : signerEnvironment
+    }
   }
 
   /**

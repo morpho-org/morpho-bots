@@ -21,8 +21,10 @@ export type ConfigurationLoadOptions = {
   configPath?: string
   cwd?: string
   fileSystem?: ConfigurationFileSystem
-  /** Selects address-only configuration and suppresses maker private-key loading. */
+  /** Selects address-only configuration and suppresses maker signing-secret loading. */
   readOnly?: boolean
+  /** Reads a keystore password without echoing it when interactive storage is selected. */
+  readPassword?: () => Promise<string>
 }
 
 type ConfigurationFileMetadata = {
@@ -57,6 +59,12 @@ const environmentKeys = [
   'RPC_URL',
   'REFERENCE_RPC_URL',
   'MAKER_PRIVATE_KEY',
+  'KEY_STORAGE_METHOD',
+  'KEYSTORE_PATH',
+  'KEYSTORE_PASSWORD',
+  'KEYSTORE_INTERACTIVE',
+  'AWS_KMS_KEY_ID',
+  'AWS_REGION',
   'MAKER_ADDRESS',
   'MIDNIGHT_ADDRESS',
   'LOAN_ASSET_ADDRESS',
@@ -75,7 +83,16 @@ const environmentKeys = [
 const yamlKeys = {
   root: ['chain', 'identity', 'contracts', 'apis', 'markets', 'setup', 'bootstrap', 'ladder'],
   chain: ['id', 'rpcUrl', 'archiveRpcUrl'],
-  identity: ['makerAddress', 'makerPrivateKey'],
+  identity: [
+    'makerAddress',
+    'keyStorageMethod',
+    'makerPrivateKey',
+    'keystorePath',
+    'keystorePassword',
+    'keystoreInteractive',
+    'awsKmsKeyId',
+    'awsRegion'
+  ],
   contracts: ['midnightAddress', 'loanAssetAddress', 'ratifierAddress'],
   apis: ['morphoBaseUrl', 'routerBaseUrl'],
   markets: ['allowlist', 'referenceMarketId', 'v0OfferGroupIds'],
@@ -213,7 +230,13 @@ const yamlSource = (input: unknown, readOnly: boolean): ConfigurationSource => {
       ? { makerAddress: 'MAKER_ADDRESS' }
       : {
           makerAddress: 'MAKER_ADDRESS',
-          makerPrivateKey: 'MAKER_PRIVATE_KEY'
+          keyStorageMethod: 'KEY_STORAGE_METHOD',
+          makerPrivateKey: 'MAKER_PRIVATE_KEY',
+          keystorePath: 'KEYSTORE_PATH',
+          keystorePassword: 'KEYSTORE_PASSWORD',
+          keystoreInteractive: 'KEYSTORE_INTERACTIVE',
+          awsKmsKeyId: 'AWS_KMS_KEY_ID',
+          awsRegion: 'AWS_REGION'
         }
   )
   mapGroup('contracts', {
@@ -327,6 +350,12 @@ const yamlEnvironmentPaths: Partial<
   RPC_URL: ['chain', 'rpcUrl'],
   REFERENCE_RPC_URL: ['chain', 'archiveRpcUrl'],
   MAKER_PRIVATE_KEY: ['identity', 'makerPrivateKey'],
+  KEY_STORAGE_METHOD: ['identity', 'keyStorageMethod'],
+  KEYSTORE_PATH: ['identity', 'keystorePath'],
+  KEYSTORE_PASSWORD: ['identity', 'keystorePassword'],
+  KEYSTORE_INTERACTIVE: ['identity', 'keystoreInteractive'],
+  AWS_KMS_KEY_ID: ['identity', 'awsKmsKeyId'],
+  AWS_REGION: ['identity', 'awsRegion'],
   MAKER_ADDRESS: ['identity', 'makerAddress'],
   MIDNIGHT_ADDRESS: ['contracts', 'midnightAddress'],
   LOAN_ASSET_ADDRESS: ['contracts', 'loanAssetAddress'],
@@ -345,6 +374,30 @@ const yamlEnvironmentPaths: Partial<
 const removeOverriddenYamlValues = (input: unknown, environment: Environment) => {
   if (typeof input !== 'object' || input === null || Array.isArray(input)) return
   const root = input as Record<string, unknown>
+  const environmentMethod =
+    environment.KEY_STORAGE_METHOD ??
+    (environment.MAKER_PRIVATE_KEY !== undefined
+      ? 'private-key'
+      : environment.KEYSTORE_PATH !== undefined
+        ? 'keystore'
+        : environment.AWS_KMS_KEY_ID !== undefined
+          ? 'aws'
+          : undefined)
+  if (environmentMethod !== undefined) {
+    const identity = root.identity
+    if (typeof identity === 'object' && identity !== null && !Array.isArray(identity)) {
+      const retained = new Set(
+        environmentMethod === 'private-key'
+          ? ['makerAddress', 'makerPrivateKey']
+          : environmentMethod === 'keystore'
+            ? ['makerAddress', 'keystorePath', 'keystorePassword', 'keystoreInteractive']
+            : ['makerAddress', 'awsKmsKeyId', 'awsRegion']
+      )
+      for (const key of yamlKeys.identity) {
+        if (!retained.has(key)) delete (identity as Record<string, unknown>)[key]
+      }
+    }
+  }
   for (const key of environmentKeys) {
     if (environment[key] === undefined) continue
     const path = yamlEnvironmentPaths[key]
@@ -485,7 +538,8 @@ export const loadConfigurationSources = async (
   const source = yamlSource(raw, readOnly)
 
   for (const key of environmentKeys) {
-    if (readOnly && key === 'MAKER_PRIVATE_KEY') continue
+    if (readOnly && key !== 'MAKER_ADDRESS' && yamlEnvironmentPaths[key]?.[0] === 'identity')
+      continue
     if (environment[key] !== undefined) source.values[key] = environment[key]
   }
   if (environment.BOOTSTRAP_MARKETS !== undefined) {
@@ -512,7 +566,12 @@ export const configurationFromEnvironment = (
 ): ConfigurationSource => {
   const values: Record<string, unknown> = {}
   for (const key of environmentKeys) {
-    if (options.readOnly && key === 'MAKER_PRIVATE_KEY') continue
+    if (
+      options.readOnly &&
+      key !== 'MAKER_ADDRESS' &&
+      yamlEnvironmentPaths[key]?.[0] === 'identity'
+    )
+      continue
     if (environment[key] !== undefined) values[key] = environment[key]
   }
   let bootstrap: unknown = []

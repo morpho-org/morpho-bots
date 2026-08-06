@@ -89,7 +89,11 @@ type SetupStateOptions = {
   referenceLookbackBlocks?: bigint
   requestTimeoutMs?: number
   now?: () => number
-} & ({ readOnly: true } | { readOnly?: false; privateKey: Hex })
+} & (
+  | { readOnly: true }
+  | { readOnly?: false; privateKey: Hex }
+  | { readOnly?: false; signerAddress: Address }
+)
 
 /** Read-only viem/API adapter that gathers setup facts and validates provider agreement. */
 export class ViemSetupStateService implements SetupStateService {
@@ -112,7 +116,9 @@ export class ViemSetupStateService implements SetupStateService {
   ) {
     this.derivedMaker = options.readOnly
       ? undefined
-      : privateKeyToAccount(options.privateKey).address
+      : 'privateKey' in options
+        ? privateKeyToAccount(options.privateKey).address
+        : options.signerAddress
   }
 
   /**

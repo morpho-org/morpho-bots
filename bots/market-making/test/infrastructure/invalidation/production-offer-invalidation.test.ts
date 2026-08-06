@@ -27,23 +27,23 @@ const environment = {
 }
 
 describe('createProductionOfferInvalidationPort', () => {
-  test('constructs a read-only port without loading a private key or starting provider reads', () => {
+  test('constructs a read-only port without loading a private key or starting provider reads', async () => {
     const config = ConfigService.from(environment, { readOnly: true })
 
-    const port = createProductionOfferInvalidationPort(config)
+    const port = await createProductionOfferInvalidationPort(config)
 
     expect(port.mode()).toBe('readonly')
   })
 
-  test('rejects a write configuration whose key does not control the maker', () => {
+  test('rejects a write configuration whose key does not control the maker', async () => {
     const config = ConfigService.from({
       ...environment,
       MAKER_PRIVATE_KEY: `0x${'11'.repeat(32)}`,
       MAKER_ADDRESS: foreignMaker
     })
 
-    expect(() => createProductionOfferInvalidationPort(config)).toThrow(
-      OfferInvalidationAdapterError
-    )
+    await expect(
+      Promise.resolve().then(() => createProductionOfferInvalidationPort(config))
+    ).rejects.toBeInstanceOf(OfferInvalidationAdapterError)
   })
 })

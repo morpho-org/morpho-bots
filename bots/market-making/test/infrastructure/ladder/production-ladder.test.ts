@@ -47,26 +47,26 @@ const environment = {
 }
 
 describe('createProductionLadderAdapters', () => {
-  test('constructs read-only ports without loading a private key or starting provider reads', () => {
+  test('constructs read-only ports without loading a private key or starting provider reads', async () => {
     const config = ConfigService.from(environment, { readOnly: true })
 
-    const adapters = createProductionLadderAdapters(config)
+    const adapters = await createProductionLadderAdapters(config)
 
     expect(Object.hasOwn(adapters.positions, 'readMarket')).toBe(true)
     expect(Object.hasOwn(adapters.rates, 'readRate')).toBe(true)
     expect(Object.hasOwn(adapters.make, 'readActive')).toBe(true)
   })
 
-  test('rejects a write configuration whose key does not control the maker', () => {
+  test('rejects a write configuration whose key does not control the maker', async () => {
     const config = ConfigService.from({
       ...environment,
       MAKER_PRIVATE_KEY: `0x${'11'.repeat(32)}`,
       MAKER_ADDRESS: foreignMaker
     })
 
-    const error = (() => {
+    const error = await (async () => {
       try {
-        createProductionLadderAdapters(config)
+        await createProductionLadderAdapters(config)
       } catch (value) {
         return value
       }

@@ -682,6 +682,7 @@ describe('market-maker parameter playground', () => {
   test('centrally inventories all UI credentials and redacts complete secret URLs by default', async () => {
     expect([...SENSITIVE_UI_KEYS]).toEqual([
       'MAKER_PRIVATE_KEY',
+      'KEYSTORE_PASSWORD',
       'BETTERSTACK_SOURCE_TOKEN',
       'RPC_URL',
       'REFERENCE_RPC_URL',
@@ -730,7 +731,9 @@ describe('market-maker parameter playground', () => {
       }
     }
     const redactedEnvironment = await loadShellEnvironment(exportShell(state))
-    for (const key of SENSITIVE_UI_KEYS) expect(redactedEnvironment[key]).toBe('<redacted>')
+    for (const key of SENSITIVE_UI_KEYS) {
+      expect(redactedEnvironment[key]).toBe(key === 'KEYSTORE_PASSWORD' ? '' : '<redacted>')
+    }
   })
 
   test('redacts sensitive values by default and includes them only with explicit opt-in', async () => {
@@ -957,13 +960,19 @@ describe('market-maker parameter playground', () => {
     expect(exportJson(state, { includeSensitiveValues: true })).toContain(heartbeat)
   })
 
-  test('matches ConfigService across accepted and rejected boundaries for all 17 scalar fields', () => {
+  test('matches ConfigService across accepted and rejected boundaries for all scalar fields', () => {
     const validKey = `0x${'11'.repeat(32)}`
     const matrix = [
       ['CHAIN_ID', ' 8453 ', '8454'],
       ['RPC_URL', ' https://rpc.example/path/ ', 'not a url'],
       ['REFERENCE_RPC_URL', 'http://localhost:8545', '://missing-scheme'],
       ['MAKER_PRIVATE_KEY', ` ${validKey} `, `0x${'00'.repeat(32)}`],
+      ['KEY_STORAGE_METHOD', 'private-key', 'unsupported'],
+      ['KEYSTORE_PATH', '', '/secure/maker.json'],
+      ['KEYSTORE_PASSWORD', '', 'unexpected-password'],
+      ['KEYSTORE_INTERACTIVE', 'false', 'true'],
+      ['AWS_KMS_KEY_ID', '', 'alias/unexpected'],
+      ['AWS_REGION', '', 'eu-west-1'],
       ['MAKER_ADDRESS', ` 0x${'1'.repeat(40)} `, '0x12'],
       ['MIDNIGHT_ADDRESS', `0x${'0'.repeat(40)}`, 'midnight'],
       ['LOAN_ASSET_ADDRESS', `0x${'3'.repeat(40)}`, '0x1234'],

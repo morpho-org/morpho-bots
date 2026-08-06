@@ -30,7 +30,7 @@ import { pendingLadderQuoteSets } from '../ladder/ladder-active-publication.util
 import { pendingLadderBuyReservations } from '../ladder/ladder-cash-reservation.utils'
 import { createLadderGroupOwnership } from '../ladder/ladder-group-ownership.utils'
 import { buildLadderTree } from '../ladder/ladder-offer.utils'
-import { createManagedMakerAccount } from '../make/managed-maker-account.utils'
+import { createMakerAccount } from '../make/maker-account.utils'
 import { ReadOnlyBootstrapMakeService } from '../make/read-only-bootstrap-make.service'
 import {
   createBlueReferenceReader,
@@ -145,8 +145,9 @@ type ProductionBootstrapAdapters = {
  */
 export const createProductionBootstrapAdapters = (
   config: ConfigService,
-  writeReadOnlyEvent?: (line: string) => void | Promise<void>
-): ProductionBootstrapAdapters => {
+  writeReadOnlyEvent?: (line: string) => void | Promise<void>,
+  configuredAccount?: Awaited<ReturnType<typeof createMakerAccount>>
+): ProductionBootstrapAdapters | Promise<ProductionBootstrapAdapters> => {
   const maker = config.identity.maker
   const client = createPublicClient({
     chain: base,
@@ -448,7 +449,12 @@ export const createProductionBootstrapAdapters = (
     }
   }
 
-  const account = createManagedMakerAccount(config.identity.privateKey)
+  const account = configuredAccount ?? createMakerAccount(config.identity)
+  if (account instanceof Promise) {
+    return account.then(value =>
+      createProductionBootstrapAdapters(config, writeReadOnlyEvent, value)
+    )
+  }
   if (!isAddressEqual(account.address, maker)) {
     throw new BootstrapAdapterError('maker-private-key-mismatch')
   }

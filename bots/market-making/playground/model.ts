@@ -10,8 +10,8 @@ import {
   chainIdValue,
   hexListValue,
   ladderConfigsValue,
+  makerSignerValue,
   parseBytes32,
-  privateKeyValue,
   requestTimeoutValue,
   transactionReceiptTimeoutValue,
   unsignedBigIntValue,
@@ -24,6 +24,12 @@ export const BOT_ENVIRONMENT_KEYS = [
   'RPC_URL',
   'REFERENCE_RPC_URL',
   'MAKER_PRIVATE_KEY',
+  'KEY_STORAGE_METHOD',
+  'KEYSTORE_PATH',
+  'KEYSTORE_PASSWORD',
+  'KEYSTORE_INTERACTIVE',
+  'AWS_KMS_KEY_ID',
+  'AWS_REGION',
   'MAKER_ADDRESS',
   'MIDNIGHT_ADDRESS',
   'LOAN_ASSET_ADDRESS',
@@ -46,6 +52,7 @@ export const BOT_ENVIRONMENT_KEYS = [
 
 export const SENSITIVE_UI_KEYS = [
   'MAKER_PRIVATE_KEY',
+  'KEYSTORE_PASSWORD',
   'BETTERSTACK_SOURCE_TOKEN',
   'RPC_URL',
   'REFERENCE_RPC_URL',
@@ -57,6 +64,12 @@ export const SCALAR_FIELDS = [
   ['RPC_URL', 'Current-state RPC URL', 'Base JSON-RPC endpoint', 'password'],
   ['REFERENCE_RPC_URL', 'Archive RPC URL', 'Historical reference reads', 'password'],
   ['MAKER_PRIVATE_KEY', 'Maker private key', 'Prefer environment secrets', 'password'],
+  ['KEY_STORAGE_METHOD', 'Key storage method', 'private-key, keystore, or aws', 'text'],
+  ['KEYSTORE_PATH', 'Keystore path', 'Encrypted Web3 Secret Storage file', 'text'],
+  ['KEYSTORE_PASSWORD', 'Keystore password', 'Never export unredacted', 'password'],
+  ['KEYSTORE_INTERACTIVE', 'Interactive keystore password', 'true or false', 'text'],
+  ['AWS_KMS_KEY_ID', 'AWS KMS key ID', 'ECC_SECG_P256K1 signing key', 'text'],
+  ['AWS_REGION', 'AWS region', 'Region containing the KMS key', 'text'],
   ['MAKER_ADDRESS', 'Maker address', 'Balance, allowance, offers, and exposure owner', 'text'],
   ['MIDNIGHT_ADDRESS', 'Midnight address', 'Expected singleton contract', 'text'],
   ['LOAN_ASSET_ADDRESS', 'Loan asset address', 'Asset used by every configured market', 'text'],
@@ -178,6 +191,12 @@ export const createDefaultPlaygroundState = (): PlaygroundState => ({
     RPC_URL: 'https://base-rpc.example',
     REFERENCE_RPC_URL: 'https://base-archive-rpc.example',
     MAKER_PRIVATE_KEY: `0x${'a'.repeat(64)}`,
+    KEY_STORAGE_METHOD: 'private-key',
+    KEYSTORE_PATH: '',
+    KEYSTORE_PASSWORD: '',
+    KEYSTORE_INTERACTIVE: 'false',
+    AWS_KMS_KEY_ID: '',
+    AWS_REGION: '',
     MAKER_ADDRESS: `0x${'1'.repeat(40)}`,
     MIDNIGHT_ADDRESS: `0x${'2'.repeat(40)}`,
     LOAN_ASSET_ADDRESS: `0x${'3'.repeat(40)}`,
@@ -241,8 +260,8 @@ export const validateProductionState = (state: PlaygroundState) => {
   }
   const environment = rawEnvironmentRecord(state)
   capture(() => {
+    makerSignerValue(environment)
     chainIdValue(environment)
-    privateKeyValue(environment)
     for (const field of [
       'MAKER_ADDRESS',
       'MIDNIGHT_ADDRESS',
@@ -743,7 +762,13 @@ export const exportYaml = (state: PlaygroundState, options: ExportOptions = {}) 
     `  archiveRpcUrl: ${yamlQuote(scalar.REFERENCE_RPC_URL)}`,
     'identity:',
     `  makerAddress: ${yamlQuote(scalar.MAKER_ADDRESS)}`,
+    `  keyStorageMethod: ${yamlQuote(scalar.KEY_STORAGE_METHOD)}`,
     `  makerPrivateKey: ${yamlQuote(scalar.MAKER_PRIVATE_KEY)}`,
+    `  keystorePath: ${yamlQuote(scalar.KEYSTORE_PATH)}`,
+    `  keystorePassword: ${yamlQuote(scalar.KEYSTORE_PASSWORD)}`,
+    `  keystoreInteractive: ${yamlQuote(scalar.KEYSTORE_INTERACTIVE)}`,
+    `  awsKmsKeyId: ${yamlQuote(scalar.AWS_KMS_KEY_ID)}`,
+    `  awsRegion: ${yamlQuote(scalar.AWS_REGION)}`,
     'contracts:',
     `  midnightAddress: ${yamlQuote(scalar.MIDNIGHT_ADDRESS)}`,
     `  loanAssetAddress: ${yamlQuote(scalar.LOAN_ASSET_ADDRESS)}`,

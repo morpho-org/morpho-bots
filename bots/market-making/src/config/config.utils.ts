@@ -107,6 +107,109 @@ export const privateKeyValue = (environment: Environment): Hex => {
   return privateKey
 }
 
+/** Validated write-mode signer source without the configured maker address. */
+export type MakerSigner =
+  | { method: 'private-key'; privateKey: Hex }
+  | { method: 'keystore'; path: string; password: string }
+  | { method: 'aws'; keyId: string; region: string }
+
+/** Selects and validates exactly one local, keystore, or AWS KMS signing source. */
+export const makerSignerValue = (environment: Environment): MakerSigner => {
+  const declared = environment.KEY_STORAGE_METHOD?.trim()
+  if (declared && !['private-key', 'keystore', 'aws'].includes(declared)) {
+    throw new ConfigValidationError(
+      'KEY_STORAGE_METHOD',
+      'unsupported',
+      'KEY_STORAGE_METHOD must be private-key, keystore, or aws'
+    )
+  }
+  const selected = [
+    environment.MAKER_PRIVATE_KEY?.trim() ? 'private-key' : undefined,
+    environment.KEYSTORE_PATH?.trim() ? 'keystore' : undefined,
+    environment.AWS_KMS_KEY_ID?.trim() ? 'aws' : undefined
+  ].filter((value): value is MakerSigner['method'] => value !== undefined)
+  if (selected.length > 1 || (declared && selected.some(value => value !== declared))) {
+    throw new ConfigValidationError(
+      'KEY_STORAGE_METHOD',
+      'conflicting-sources',
+      'Exactly one maker key storage method must be configured'
+    )
+  }
+  const method = (declared ?? selected[0]) as MakerSigner['method'] | undefined
+  if (!method) {
+    throw new ConfigValidationError(
+      'MAKER_PRIVATE_KEY',
+      'missing',
+      'Missing required env var: MAKER_PRIVATE_KEY'
+    )
+  }
+  if (method === 'private-key') {
+    if (
+      environment.KEYSTORE_PATH?.trim() ||
+      environment.KEYSTORE_PASSWORD?.trim() ||
+      environment.KEYSTORE_INTERACTIVE?.trim() === 'true' ||
+      environment.AWS_KMS_KEY_ID?.trim() ||
+      environment.AWS_REGION?.trim()
+    ) {
+      throw new ConfigValidationError(
+        'KEY_STORAGE_METHOD',
+        'conflicting-sources',
+        'Exactly one maker key storage method must be configured'
+      )
+    }
+    return { method, privateKey: privateKeyValue(environment) }
+  }
+  if (method === 'keystore') {
+    if (environment.AWS_KMS_KEY_ID?.trim() || environment.AWS_REGION?.trim()) {
+      throw new ConfigValidationError(
+        'KEY_STORAGE_METHOD',
+        'conflicting-sources',
+        'Exactly one maker key storage method must be configured'
+      )
+    }
+    const password = environment.KEYSTORE_PASSWORD?.trim()
+    const interactive = environment.KEYSTORE_INTERACTIVE?.trim()
+    if (interactive !== undefined && interactive !== 'true' && interactive !== 'false') {
+      throw new ConfigValidationError(
+        'KEYSTORE_INTERACTIVE',
+        'invalid-boolean',
+        'KEYSTORE_INTERACTIVE must be true or false'
+      )
+    }
+    if ((password ? 1 : 0) + (interactive === 'true' ? 1 : 0) !== 1) {
+      throw new ConfigValidationError(
+        'KEYSTORE_PASSWORD',
+        'password-mode',
+        'Keystore signing requires exactly one of a password or interactive prompt'
+      )
+    }
+    if (!password) {
+      throw new ConfigValidationError(
+        'KEYSTORE_PASSWORD',
+        'interactive-unresolved',
+        'Interactive keystore password was not provided'
+      )
+    }
+    return { method, path: requiredValue(environment, 'KEYSTORE_PATH'), password }
+  }
+  if (
+    environment.KEYSTORE_PATH?.trim() ||
+    environment.KEYSTORE_PASSWORD?.trim() ||
+    environment.KEYSTORE_INTERACTIVE?.trim() === 'true'
+  ) {
+    throw new ConfigValidationError(
+      'KEY_STORAGE_METHOD',
+      'conflicting-sources',
+      'Exactly one maker key storage method must be configured'
+    )
+  }
+  return {
+    method,
+    keyId: requiredValue(environment, 'AWS_KMS_KEY_ID'),
+    region: requiredValue(environment, 'AWS_REGION')
+  }
+}
+
 /**
  * Reads an unsigned base-10 integer as bigint.
  * @param environment - Environment map to inspect.

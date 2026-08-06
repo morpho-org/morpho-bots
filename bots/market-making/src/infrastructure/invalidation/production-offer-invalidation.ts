@@ -8,7 +8,7 @@ import type { ConfigService } from '../../config/config.service'
 import { createBootstrapGroupOwnership } from '../bootstrap/bootstrap-group-ownership.utils'
 import { readBootstrapGroups } from '../bootstrap/bootstrap-groups.utils'
 import { createLadderGroupOwnership } from '../ladder/ladder-group-ownership.utils'
-import { createManagedMakerAccount } from '../make/managed-maker-account.utils'
+import { createMakerAccount } from '../make/maker-account.utils'
 import { invalidateOffersBatch } from './batch-offer-invalidation.utils'
 import { OfferInvalidationAdapterError } from './offer-invalidation-adapter.error'
 import { offerInvalidationGroupIds } from './offer-invalidation-group.utils'
@@ -36,8 +36,9 @@ const providerOperation = async <Result>(
  * known offer namespaces. Read-only mode never derives an account, signs, submits, or edits state.
  */
 export const createProductionOfferInvalidationPort = (
-  config: ConfigService
-): OfferInvalidationPort => {
+  config: ConfigService,
+  configuredAccount?: Awaited<ReturnType<typeof createMakerAccount>>
+): OfferInvalidationPort | Promise<OfferInvalidationPort> => {
   const maker = config.identity.maker
   const client = createPublicClient({
     chain: base,
@@ -98,7 +99,10 @@ export const createProductionOfferInvalidationPort = (
     }
   }
 
-  const account = createManagedMakerAccount(config.identity.privateKey)
+  const account = configuredAccount ?? createMakerAccount(config.identity)
+  if (account instanceof Promise) {
+    return account.then(value => createProductionOfferInvalidationPort(config, value))
+  }
   if (!isAddressEqual(account.address, maker)) {
     throw new OfferInvalidationAdapterError('maker-private-key-mismatch')
   }
