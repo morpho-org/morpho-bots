@@ -33,6 +33,7 @@ export type BootstrapTransactionSubmittedObserver = (
 export type BootstrapMakeResult =
   | void
   | 'logged'
+  | 'unchanged'
   | {
       /** Confirmed transactions submitted by this mutation request, in submission order. */
       submittedTransactions: readonly BootstrapSubmittedTransaction[]

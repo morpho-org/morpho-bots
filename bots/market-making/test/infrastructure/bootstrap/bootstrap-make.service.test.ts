@@ -1,6 +1,6 @@
 import type { Hex } from 'viem'
 
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, mock, test } from 'bun:test'
 
 import type { BootstrapSubmittedTransaction } from '../../../src/application/bootstrap/position-bootstrap-verbose'
 
@@ -74,6 +74,204 @@ describe('MidnightBootstrapMakeService', () => {
     await service.reconcile({ marketId, desiredOffer, reason: 'publish' })
 
     expect(events).toEqual(['book', 'publish'])
+  })
+
+  test('retains an active group when raw rates resolve to the same protocol tick', async () => {
+    const metadataUpdates: string[] = []
+    const preparePublication = mock(async () => ({
+      groupId: publishedGroupId,
+      publish: async () => publicationHash
+    }))
+    const invalidate = mock(async () => cancellationHash)
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [
+        {
+          id: groupId,
+          marketId,
+          assets: 100n,
+          maximumAssets: 140n,
+          rateBps: 499n,
+          tick: 100n,
+          offerCount: 1,
+          continuousFeeCap: 17n
+        }
+      ],
+      listBookOffers: async () => [],
+      toProspectiveBookOffer: async () => ({
+        marketId,
+        buy: true,
+        tick: 100n,
+        continuousFeeCap: 17n
+      }),
+      preparePublication,
+      reserveGroup: async (id, offer) => {
+        metadataUpdates.push(
+          `reserve:${id}:${offer.assets}:${offer.rateBps}:${offer.tick}:${offer.continuousFeeCap}`
+        )
+      },
+      confirmPublishedGroup: async id => {
+        metadataUpdates.push(`confirm:${id}`)
+      },
+      releaseGroupReservation: async () => {},
+      invalidate
+    })
+
+    const result = await service.reconcile({ marketId, desiredOffer, reason: 'replace' })
+
+    expect(result).toBe('unchanged')
+    expect(preparePublication).not.toHaveBeenCalled()
+    expect(invalidate).not.toHaveBeenCalled()
+    expect(metadataUpdates).toEqual([`reserve:${groupId}:140:500:100:17`, `confirm:${groupId}`])
+  })
+
+  test('replaces a matching offer after the market continuous fee changes', async () => {
+    const events: string[] = []
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [
+        {
+          id: groupId,
+          marketId,
+          assets: 100n,
+          maximumAssets: 100n,
+          rateBps: 500n,
+          tick: 100n,
+          offerCount: 1,
+          continuousFeeCap: 16n
+        }
+      ],
+      listBookOffers: async () => [],
+      toProspectiveBookOffer: async () => ({
+        marketId,
+        buy: true,
+        tick: 100n,
+        continuousFeeCap: 17n
+      }),
+      preparePublication: async () => ({
+        groupId: publishedGroupId,
+        tick: 100n,
+        publish: async () => {
+          events.push('publish')
+        }
+      }),
+      reserveGroup: async (id, offer) => {
+        events.push(`reserve:${id}:${offer.continuousFeeCap}`)
+      },
+      confirmPublishedGroup: async id => {
+        events.push(`confirm:${id}`)
+      },
+      releaseGroupReservation: async () => {},
+      invalidate: async id => {
+        events.push(`invalidate:${id}`)
+      }
+    })
+
+    await service.reconcile({ marketId, desiredOffer, reason: 'replace' })
+
+    expect(events).toEqual([
+      `reserve:${publishedGroupId}:17`,
+      `invalidate:${groupId}`,
+      'publish',
+      `confirm:${publishedGroupId}`
+    ])
+  })
+
+  test('replaces a matching projection when its group contains multiple offers', async () => {
+    const events: string[] = []
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [
+        {
+          id: groupId,
+          marketId,
+          assets: 100n,
+          maximumAssets: 100n,
+          rateBps: 500n,
+          tick: 100n,
+          offerCount: 2
+        }
+      ],
+      listBookOffers: async () => [],
+      toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
+      preparePublication: async () => ({
+        groupId: publishedGroupId,
+        tick: 100n,
+        publish: async () => {
+          events.push('publish')
+        }
+      }),
+      reserveGroup: async id => {
+        events.push(`reserve:${id}`)
+      },
+      confirmPublishedGroup: async id => {
+        events.push(`confirm:${id}`)
+      },
+      releaseGroupReservation: async () => {},
+      invalidate: async id => {
+        events.push(`invalidate:${id}`)
+      }
+    })
+
+    await service.reconcile({ marketId, desiredOffer, reason: 'replace' })
+
+    expect(events).toEqual([
+      `reserve:${publishedGroupId}`,
+      `invalidate:${groupId}`,
+      'publish',
+      `confirm:${publishedGroupId}`
+    ])
+  })
+
+  test('preserves duplicate cancellation evidence when retained metadata refresh fails', async () => {
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [
+        {
+          id: groupId,
+          marketId,
+          assets: 100n,
+          maximumAssets: 100n,
+          rateBps: 500n,
+          tick: 100n,
+          offerCount: 1,
+          continuousFeeCap: 17n
+        },
+        {
+          id: publishedGroupId,
+          marketId,
+          assets: 100n,
+          rateBps: 500n,
+          tick: 100n,
+          offerCount: 1,
+          continuousFeeCap: 17n
+        }
+      ],
+      listBookOffers: async () => [],
+      toProspectiveBookOffer: async () => ({
+        marketId,
+        buy: true,
+        tick: 100n,
+        continuousFeeCap: 17n
+      }),
+      preparePublication: async () => ({
+        groupId: publishedGroupId,
+        publish: async () => publicationHash
+      }),
+      reserveGroup: async () => {
+        throw new BootstrapAdapterError('group-ownership-state')
+      },
+      confirmPublishedGroup: async () => {},
+      releaseGroupReservation: async () => {},
+      forgetGroups: async () => {},
+      invalidate: async () => cancellationHash
+    })
+
+    const error = await service
+      .reconcile({ marketId, desiredOffer, reason: 'replace' })
+      .catch(value => value)
+
+    expect(error).toBeInstanceOf(BootstrapAdapterError)
+    expect(error).toMatchObject({
+      operation: 'group-ownership-state',
+      confirmedTransactions: [{ operation: 'cancel', txHash: cancellationHash }]
+    })
   })
 
   test('returns confirmed cancellation and publication hashes in submission order', async () => {

@@ -14,6 +14,14 @@ export type BootstrapActiveGroup = {
   marketId: Hex
   assets: bigint
   rateBps: bigint
+  /** Exact protocol tick when this projection represents a bootstrap offer. */
+  tick?: bigint
+  /** Original protocol group cap before cumulative consumption. */
+  maximumAssets?: bigint
+  /** Total number of offers sharing the protocol group. */
+  offerCount?: number
+  /** Maximum market continuous fee accepted by the resting protocol offer. */
+  continuousFeeCap?: bigint
   referenceObservationId?: string
 }
 
@@ -29,6 +37,8 @@ export interface BootstrapInventoryReader {
   readPositions(): Promise<readonly MidnightPositionSnapshot[]>
   /** Reads the maker's current loan-token wallet balance. @returns Current raw token balance. */
   readCashBalance(): Promise<bigint>
+  /** Reads the current protocol fee that a new offer must accept. @param marketId - Market whose live fee policy is required. @returns Current continuous fee as an unsigned protocol value. */
+  readMarketContinuousFeeCap(marketId: Hex): Promise<bigint>
   /** Reads bootstrap offers and independently owned buy-side reservations in one snapshot. @returns Current grouped inventory without treating reservations as replaceable bootstrap offers. */
   readGroupInventory(): Promise<BootstrapGroupInventory>
 }
@@ -51,9 +61,10 @@ export class MidnightBootstrapPositionService implements BootstrapPositionServic
    */
   async readPosition(marketId: Hex) {
     void this.maker
-    const [positions, cashBalance, groupInventory] = await Promise.all([
+    const [positions, cashBalance, marketContinuousFeeCap, groupInventory] = await Promise.all([
       this.reader.readPositions(),
       this.reader.readCashBalance(),
+      this.reader.readMarketContinuousFeeCap(marketId),
       this.reader.readGroupInventory()
     ])
     const position = positions.find(item => item.marketId === marketId)
@@ -109,7 +120,13 @@ export class MidnightBootstrapPositionService implements BootstrapPositionServic
       marketExposure: position.credit + reservedByMarket,
       totalExposure,
       ...(activeOffer ? { activeOffer } : {}),
-      requiresReconciliation: marketGroups.length > 1
+      requiresReconciliation:
+        marketGroups.length > 1 ||
+        marketGroups.some(
+          group =>
+            (group.offerCount !== undefined && group.offerCount !== 1) ||
+            group.continuousFeeCap !== marketContinuousFeeCap
+        )
     }
   }
 }

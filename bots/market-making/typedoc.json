@@ -62,7 +62,6 @@
     "src/infrastructure/invalidation/production-offer-invalidation.ts",
     "src/infrastructure/ladder/ladder-adapter.error.ts",
     "src/infrastructure/ladder/ladder-active-publication.utils.ts",
-    "src/infrastructure/ladder/ladder-bootstrap-offer.utils.ts",
     "src/infrastructure/ladder/ladder-cash-reservation.utils.ts",
     "src/infrastructure/ladder/ladder-group-ownership.utils.ts",
     "src/infrastructure/ladder/ladder-hard-halt.error.ts",
