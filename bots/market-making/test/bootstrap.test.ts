@@ -74,7 +74,7 @@ const readyState = (): SetupStateService => {
       listed: true,
       deployed: true,
       midnightMatches: true,
-      ecrecoverSurface: true,
+      surfaceMatches: true,
       authorized: true
     }),
     getBook: async id => ({
@@ -127,6 +127,10 @@ describe('createApplication', () => {
           events.push('list')
           return [groupId]
         },
+        invalidateBatch: async groupIds => {
+          events.push(`invalidateBatch:${groupIds.join(',')}`)
+          return txHash
+        },
         invalidate: async selectedGroupId => {
           events.push(`invalidate:${selectedGroupId}`)
           return txHash
@@ -143,7 +147,7 @@ describe('createApplication', () => {
       matchedGroups: 1,
       invalidatedGroups: [{ groupId, txHash }]
     })
-    expect(events).toEqual(['preflight', 'list', `invalidate:${groupId}`, `forget:${groupId}`])
+    expect(events).toEqual(['preflight', 'list', `invalidateBatch:${groupId}`, `forget:${groupId}`])
   })
 
   test('mm bootstrap passes readiness before composing one bootstrap cycle', async () => {

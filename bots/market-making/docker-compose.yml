@@ -1,5 +1,5 @@
-# Runs the market-making combined monitor (`mm start`). Copy market-making.example.yaml to
-# market-making.yaml next to this file (gitignored, chmod 600) and edit it; every environment
+# Runs the market-making combined monitor (`mm start --verbose`). Copy market-making.example.yaml
+# to market-making.yaml next to this file (gitignored, chmod 600) and edit it; every environment
 # variable exported in the invoking shell overrides its YAML counterpart. The build context is the
 # repo root so the bun workspace (packages/*) resolves — see Dockerfile.
 services:
@@ -7,7 +7,7 @@ services:
     build:
       context: ../..
       dockerfile: bots/market-making/Dockerfile
-    command: ['--config', '/config/market-making.yaml', 'start']
+    command: ['--config', '/config/market-making.yaml', 'start', '--verbose']
     volumes:
       - type: bind
         source: ./market-making.yaml
@@ -20,7 +20,7 @@ services:
       # outlive the container: recreating without it makes the bot forget which live on-chain offer
       # groups it owns, so it treats its own offers as foreign and cannot clean them up.
       - type: volume
-        source: state
+        source: market-making-state
         target: /state
     # Null-valued entries pass a variable through ONLY when the invoking shell sets it. Never use
     # `${VAR:-}` defaults here: they set empty strings, and any SET variable — even empty — replaces
@@ -58,4 +58,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  state:
+  market-making-state:

@@ -17,6 +17,8 @@ export type BootstrapBookOffer = {
   maker: Address
   buy: boolean
   tick: bigint
+  /** Maximum market continuous fee accepted by this offer. */
+  continuousFeeCap?: bigint
 }
 
 /** Canonical maker group with shared consumption and nested book offers. */
@@ -27,6 +29,7 @@ export type BootstrapRawGroup = {
   marketId?: Hex
   tick?: bigint
   maturity?: bigint
+  continuousFeeCap?: bigint
   offers: readonly BootstrapBookOffer[]
 }
 
@@ -76,7 +79,13 @@ const parseOffer = (value: unknown, maker: Address): BootstrapBookOffer => {
     if (error instanceof BootstrapAdapterError) throw error
     throw new BootstrapAdapterError('offer-groups-response')
   }
-  return { marketId: bytes32(offer.market_id), maker, buy: offer.buy, tick: BigInt(offer.tick) }
+  return {
+    marketId: bytes32(offer.market_id),
+    maker,
+    buy: offer.buy,
+    tick: BigInt(offer.tick),
+    continuousFeeCap: unsignedDecimal(offer.continuous_fee_cap)
+  }
 }
 
 const parseGroup = (value: unknown, maker: Address) => {
@@ -117,7 +126,8 @@ const parseGroup = (value: unknown, maker: Address) => {
         ...common,
         marketId: bytes32(buy.market_id),
         tick: BigInt(buy.tick),
-        maturity: BigInt(market.maturity)
+        maturity: BigInt(market.maturity),
+        continuousFeeCap: unsignedDecimal(buy.continuous_fee_cap)
       }
     } catch (error) {
       if (error instanceof BootstrapAdapterError) throw error

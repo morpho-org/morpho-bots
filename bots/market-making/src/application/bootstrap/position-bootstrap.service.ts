@@ -27,6 +27,7 @@ import {
   decidePositionBootstrapTransition,
   validateBootstrapConfig
 } from '../../domain/bootstrap/position-bootstrap'
+import { BootstrapAdapterError } from '../../infrastructure/bootstrap/bootstrap-adapter.error'
 import { operatorErrorDetails, operatorErrorName } from '../operator-error-name.utils'
 import { BootstrapOwnershipCleanupError } from './bootstrap-ownership-cleanup.error'
 
@@ -77,7 +78,8 @@ export interface BootstrapMakeService {
   /**
    * Reconciles one market's desired bootstrap offer or invalidates that market group.
    * @param parameters - Canonical market, optional desired offer, and stable action reason.
-   * @returns `logged` for a dry-run, or confirmed transaction hashes for a live reconciliation.
+   * @returns `logged` for a dry-run, `unchanged` when requested terms retain the same canonical
+   * protocol offer, or confirmed transaction hashes for a live reconciliation.
    * @throws Error when simulation, publication, replacement, or invalidation fails.
    * @remarks Live adapters may change only the requested strategy-owned market group. Dry-run
    * adapters must return `logged` after recording the same request without mutation.
@@ -715,6 +717,9 @@ export class PositionBootstrapService {
         })
       } catch (error) {
         const ownershipCleanup = error instanceof BootstrapOwnershipCleanupError ? error : undefined
+        const confirmedTransactions =
+          ownershipCleanup?.submittedTransactions ??
+          (error instanceof BootstrapAdapterError ? error.confirmedTransactions : [])
         results.push(
           await this.withVerboseDetails(
             {
@@ -730,25 +735,27 @@ export class PositionBootstrapService {
             verbose,
             plan.verbose,
             true,
-            ownershipCleanup
-              ? { submittedTransactions: ownershipCleanup.submittedTransactions }
+            confirmedTransactions.length > 0
+              ? { submittedTransactions: confirmedTransactions }
               : undefined
           )
         )
         return results
       }
+      const outcome =
+        reconciliation === 'unchanged'
+          ? ({
+              marketId: config.marketId,
+              status: 'observed' as const,
+              action: 'rest' as const
+            } satisfies BootstrapRunOutcome)
+          : ({
+              marketId: config.marketId,
+              status: reconciliation === 'logged' ? ('logged' as const) : ('applied' as const),
+              action: decision.kind
+            } satisfies BootstrapRunOutcome)
       results.push(
-        await this.withVerboseDetails(
-          {
-            marketId: config.marketId,
-            status: reconciliation === 'logged' ? ('logged' as const) : ('applied' as const),
-            action: decision.kind
-          },
-          verbose,
-          plan.verbose,
-          false,
-          reconciliation
-        )
+        await this.withVerboseDetails(outcome, verbose, plan.verbose, false, reconciliation)
       )
     }
     return results
@@ -934,7 +941,9 @@ export class PositionBootstrapService {
   private submittedTransactions(
     result: BootstrapMakeResult
   ): readonly BootstrapSubmittedTransaction[] {
-    return result && result !== 'logged' ? result.submittedTransactions : []
+    return result && result !== 'logged' && result !== 'unchanged'
+      ? result.submittedTransactions
+      : []
   }
 
   private transactionObserver(

@@ -15,7 +15,13 @@ import { BootstrapAdapterError } from './bootstrap-adapter.error'
 import { BootstrapHardHaltError } from './bootstrap-hard-halt.error'
 import { assertBootstrapProspectiveSpread, bootstrapMarketGroupIds } from './bootstrap-spread.utils'
 
-type BootstrapBookOffer = { groupId?: Hex; marketId: Hex; buy: boolean; tick: bigint }
+type BootstrapBookOffer = {
+  groupId?: Hex
+  marketId: Hex
+  buy: boolean
+  tick: bigint
+  continuousFeeCap?: bigint
+}
 
 /** Protocol transport for confirmed Midnight publication and group invalidation. */
 interface BootstrapOfferTransport {
@@ -27,13 +33,19 @@ interface BootstrapOfferTransport {
   listBookOffers(): Promise<readonly BootstrapBookOffer[]>
   /** Projects a domain offer into its exact protocol tick. @param offer - Desired offer. @returns Prospective book offer. */
   toProspectiveBookOffer(offer: BootstrapOffer): Promise<BootstrapBookOffer>
-  /** Builds and signs one publication without broadcasting it. @param offer - Desired offer. @returns Reserved group ID and a one-shot confirmed publisher. */
+  /** Prepares one policy-checked publication without broadcasting it. @param offer - Desired offer. @returns Reserved group ID and a one-shot confirmed ratifier/publisher. */
   preparePublication(offer: BootstrapOffer): Promise<{
     groupId: Hex
-    publish(onTransactionSubmitted?: BootstrapTransactionSubmittedObserver): Promise<Hex | void>
+    tick?: bigint
+    publish(
+      onTransactionSubmitted?: BootstrapTransactionSubmittedObserver
+    ): Promise<Hex | void | readonly BootstrapSubmittedTransaction[]>
   }>
   /** Durably records publication intent before broadcast. @param group - Future group ID. @returns Completion after durable storage. */
-  reserveGroup(group: Hex, offer: BootstrapOffer): Promise<void>
+  reserveGroup(
+    group: Hex,
+    offer: BootstrapOffer & { tick?: bigint; continuousFeeCap?: bigint }
+  ): Promise<void>
   /** Finalizes a confirmed group while retaining ownership. @param group - Confirmed group ID. @returns Completion after durable storage. */
   confirmPublishedGroup(group: Hex): Promise<void>
   /** Removes intent after publication fails. @param group - Unpublished group ID. @returns Completion after durable storage. */
@@ -60,7 +72,9 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
    * @param parameters - Market, desired lend offer, and audited decision reason.
    * @returns Confirmed cancellation and publication transaction hashes in submission order.
    * @throws When any protocol mutation or confirmation fails.
-   * @remarks Mutations are serialized; publication never races invalidation.
+   * @remarks Mutations are serialized; publication never races invalidation. An active offer with
+   * the requested protocol tick, assets, and continuous-fee cap is retained even when raw
+   * reference-rate metadata moved.
    */
   reconcile(parameters: {
     marketId: Hex
@@ -77,16 +91,15 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
     return this.enqueue(async () => {
       const submittedTransactions: BootstrapSubmittedTransaction[] = []
       const groups = await this.strategyGroups()
+      const activeMarketGroupIds = new Set(bootstrapMarketGroupIds(groups, parameters.marketId))
       const spreadReplacedGroupIds = new Set([
-        ...bootstrapMarketGroupIds(groups, parameters.marketId),
+        ...activeMarketGroupIds,
         ...this.confirmedCanceledGroups
       ])
-      const invalidatedGroupIds = new Set(
-        [...spreadReplacedGroupIds].filter(groupId => !this.confirmedCanceledGroups.has(groupId))
-      )
       let publication:
         | Awaited<ReturnType<BootstrapOfferTransport['preparePublication']>>
         | undefined
+      let retainedGroup: BootstrapActiveGroup | undefined
       if (parameters.desiredOffer) {
         const prospective = await this.transport.toProspectiveBookOffer(parameters.desiredOffer)
         assertBootstrapProspectiveSpread({
@@ -95,9 +108,32 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
           book: await this.transport.listBookOffers(),
           prospective
         })
-        publication = await this.transport.preparePublication(parameters.desiredOffer)
-        await this.transport.reserveGroup(publication.groupId, parameters.desiredOffer)
+        retainedGroup = groups.find(
+          group =>
+            group.marketId === parameters.marketId &&
+            group.assets === parameters.desiredOffer?.assets &&
+            group.tick === prospective.tick &&
+            group.offerCount === 1 &&
+            group.continuousFeeCap !== undefined &&
+            group.continuousFeeCap === prospective.continuousFeeCap &&
+            !this.confirmedCanceledGroups.has(group.id)
+        )
+        if (!retainedGroup) {
+          publication = await this.transport.preparePublication(parameters.desiredOffer)
+          await this.transport.reserveGroup(publication.groupId, {
+            ...parameters.desiredOffer,
+            ...(publication.tick === undefined ? {} : { tick: publication.tick }),
+            ...(prospective.continuousFeeCap === undefined
+              ? {}
+              : { continuousFeeCap: prospective.continuousFeeCap })
+          })
+        }
       }
+      const invalidatedGroupIds = new Set(
+        [...activeMarketGroupIds].filter(
+          groupId => groupId !== retainedGroup?.id && !this.confirmedCanceledGroups.has(groupId)
+        )
+      )
       try {
         for (const groupId of invalidatedGroupIds) {
           const txHash = await this.transport.invalidate(
@@ -129,16 +165,43 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
         }
         throw error
       }
+      if (retainedGroup && parameters.desiredOffer) {
+        try {
+          await this.transport.reserveGroup(retainedGroup.id, {
+            ...parameters.desiredOffer,
+            assets: retainedGroup.maximumAssets ?? retainedGroup.assets,
+            ...(retainedGroup.tick === undefined ? {} : { tick: retainedGroup.tick }),
+            ...(retainedGroup.continuousFeeCap === undefined
+              ? {}
+              : { continuousFeeCap: retainedGroup.continuousFeeCap })
+          })
+          await this.transport.confirmPublishedGroup(retainedGroup.id)
+        } catch (error) {
+          const failure =
+            error instanceof BootstrapAdapterError
+              ? error
+              : new BootstrapAdapterError('retained-group-metadata-refresh')
+          throw failure.recordConfirmedTransactions(submittedTransactions)
+        }
+
+        return submittedTransactions.length === 0
+          ? ('unchanged' as const)
+          : ({ submittedTransactions } satisfies BootstrapMakeResult)
+      }
       if (publication) {
         try {
-          const txHash = await publication.publish(
+          const publicationResult = await publication.publish(
             this.safeObserver(parameters.onTransactionSubmitted)
           )
-          if (txHash) submittedTransactions.push({ operation: 'publish', txHash })
+          if (publicationResult && typeof publicationResult !== 'string') {
+            submittedTransactions.push(...publicationResult)
+          } else if (publicationResult) {
+            submittedTransactions.push({ operation: 'publish', txHash: publicationResult })
+          }
         } catch (error) {
           if (
             error instanceof BootstrapAdapterError &&
-            error.operation === 'transaction-reverted'
+            ['transaction-reverted', 'ratifier-transaction-reverted'].includes(error.operation)
           ) {
             try {
               await this.transport.releaseGroupReservation(publication.groupId)

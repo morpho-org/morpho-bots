@@ -67,58 +67,13 @@ Completion criterion: the AST inventory exits zero, TypeDoc emits zero warnings/
 
 ## Public-Surface Inventory
 
-The coverage script inventories these market-making boundary and utility files:
-
-- `src/application/operator-error-name.utils.ts`
-- `src/application/bootstrap/position-bootstrap-halted.error.ts`
-- `src/application/bootstrap/position-bootstrap.service.ts`
-- `src/application/ladder/ladder-cycle-halted.error.ts`
-- `src/application/ladder/ladder-market-maker.service.ts`
-- `src/application/ladder/ladder-market-maker.utils.ts`
-- `src/application/setup/setup-check.service.ts`
-- `src/application/setup/setup-check.utils.ts`
-- `src/application/setup/safe-provider.error.ts`
-- `src/application/setup/setup-failed.error.ts`
-- `src/application/version.service.ts`
-- `src/bootstrap.ts`
-- `src/config/config-file.error.ts`
-- `src/config/config-source.utils.ts`
-- `src/config/config-validation.error.ts`
-- `src/config/config.service.ts`
-- `src/config/config.utils.ts`
-- `src/domain/bootstrap/bootstrap-configuration.error.ts`
-- `src/domain/bootstrap/position-bootstrap.ts`
-- `src/domain/ladder/ladder-configuration.error.ts`
-- `src/domain/ladder/ladder.ts`
-- `src/infrastructure/bootstrap/bootstrap-hard-halt.error.ts`
-- `src/infrastructure/bootstrap/bootstrap-exposure.utils.ts`
-- `src/infrastructure/bootstrap/bootstrap-make.service.ts`
-- `src/infrastructure/bootstrap/bootstrap-offer.utils.ts`
-- `src/infrastructure/bootstrap/bootstrap-adapter.error.ts`
-- `src/infrastructure/bootstrap/bootstrap-group-ownership.utils.ts`
-- `src/infrastructure/bootstrap/bootstrap-groups.utils.ts`
-- `src/infrastructure/bootstrap/bootstrap-position.service.ts`
-- `src/infrastructure/bootstrap/bootstrap-reference-rate.service.ts`
-- `src/infrastructure/bootstrap/bootstrap-requirements.utils.ts`
-- `src/infrastructure/bootstrap/bootstrap-transaction.utils.ts`
-- `src/infrastructure/bootstrap/production-bootstrap.ts`
-- `src/infrastructure/cli/cli-usage.error.ts`
-- `src/infrastructure/cli/cli.ts`
-- `src/infrastructure/cli/market-making-entrypoint.ts`
-- `src/infrastructure/make/read-only-bootstrap-make.service.ts`
-- `src/infrastructure/make/read-only-ladder-make.service.ts`
-- `src/infrastructure/make/read-only-make.utils.ts`
-- `src/infrastructure/setup-state/http-json.utils.ts`
-- `src/infrastructure/setup-state/provider-pagination.error.ts`
-- `src/infrastructure/setup-state/provider-read.error.ts`
-- `src/infrastructure/setup-state/provider-read.utils.ts`
-- `src/infrastructure/setup-state/provider-response.error.ts`
-- `src/infrastructure/setup-state/viem-setup-state.service.ts`
-- `src/infrastructure/setup-state/viem-setup-state.utils.ts`
-- `scripts/js-doc-validation.error.ts`
+The coverage script dynamically discovers TypeScript files under `src/**` and `scripts/**` in
+deterministic package-relative order. It excludes the executable `src/index.ts` entrypoint and test
+files; generated output and dependencies are outside the scanned roots. Newly added source files
+therefore enter the JSDoc check without a manually maintained path list.
 
 It checks exported functions/classes/interfaces/type aliases, interface methods, callable members of
-exported type literals, and public constructors/methods/accessors. Every listed declaration needs a
+exported type literals, and public constructors/methods/accessors. Every discovered declaration needs a
 substantive `/** ... */` block. The checker requires a non-filler summary, exact `@param` names,
 `@returns` for non-void callables, and `@throws` at its provider-boundary rule. Scoped rules also
 enforce read-only, aggregate-deadline, and `Promise.all` concurrency semantics. Do not satisfy
@@ -153,9 +108,9 @@ For the current market-making implementation, preserve these verified package bo
 Completion criterion: package source/exports still support each imported symbol, the active-offer
 source remains complete, and every local exception has a concrete missing-SDK-export justification.
 
-When adding another boundary file, add it to both `scripts/check-jsdoc.ts` and `typedoc.json` in the
-same change. Completion criterion: the command's printed inventory contains every added public
-callable exactly once.
+When adding another boundary file, confirm the dynamic check discovers it and add it to
+`typedoc.json` in the same change. Completion criterion: the command's printed inventory contains
+every added public callable exactly once.
 
 ## Inspect Generated Docs
 

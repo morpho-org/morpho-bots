@@ -10,6 +10,30 @@ every intended action before enabling signing.
 See [Architecture](./docs/architecture.md) for the contributor-facing package design and code
 structure.
 
+## Parameter playground
+
+Run the stateless parameter playground locally from the repository root:
+
+```sh
+bun run market-making:playground
+```
+
+The launcher performs a frozen-lockfile dependency check before every build, then prints the local
+server URL after building the browser artifact. For a production-equivalent
+build without starting a server, run:
+
+```sh
+bun run --filter @morpho-org/market-making-bot playground:build
+```
+
+After this pull request is merged to `main`, relevant playground, browser-safe bot-kit, package, lock,
+or deployment-workflow changes deploy through GitHub Actions to
+<https://morpho-org.github.io/morpho-bots/>. Repository Pages settings must use **GitHub Actions** as
+the publishing source; the workflow intentionally cannot change that repository setting with its
+least-privilege token. The Pages site is not live until that post-merge workflow completes
+successfully; check the repository's **Deploy market-making playground to GitHub Pages** workflow and
+its `github-pages` environment for deployment status.
+
 ## Run
 
 ```sh
@@ -95,13 +119,17 @@ serially runs a cycle every minute and streams each result. `SIGINT` or `SIGTERM
 cycle finish, then invalidates every explicitly owned bootstrap group through the same mutation
 queue and waits for bounded transaction receipts. The final record reports the number of cycles and
 whether cleanup was applied, logged, or failed. Read-only monitoring logs the cleanup request and
-never loads a private key.
+never loads a private key. In live mode, Ecrecover bootstrap signs and publishes the validated payload
+in one transaction. Setter bootstrap durably reserves the future group, confirms any replacement
+cancellations, submits and confirms `setIsRootRatified`, revalidates the exact final proof payload with
+the Mempool API, then publishes it in a second transaction and confirms ownership. A post-approval
+validation failure does not publish and retains the reservation for safe cleanup.
 
 Add `--verbose` to either one-shot or monitored bootstrap mode to include the complete market
 configuration, fresh credit, debt, cash balance, per-market and total exposure, active offer,
 reference rate, premium-adjusted target rate, deterministic decision, desired bootstrap offer, and
 a fresh position read after every check. Live mode immediately emits a
-`bootstrap.transaction-submitted` record when the wallet returns each publication or cancellation
+`bootstrap.transaction-submitted` record when the wallet returns each ratification, publication, or cancellation
 hash. Completed results also list confirmed transaction hashes in submission order, and verbose
 monitor cleanup reports its confirmed cancellation hashes. These diagnostics deliberately omit the
 maker identity, private key, RPC/API URLs, signatures, raw transactions, provider payloads, and
@@ -112,7 +140,9 @@ unchanged.
 fresh wallet, allowance, credit, position, active-group, and strategy-wide exposure capacities, and
 then builds one deterministic quote set from the current Blue reference rate. Lower-rate rungs are
 reduce-only borrow-side sells; higher-rate rungs are lend-side buys. The complete mixed-side tree is
-Mempool-validated before and after signing and is submitted in one transaction. Replacement
+Mempool-validated before and after ratification. Ecrecover trees are signed and published in one
+transaction; Setter trees first submit and confirm `setIsRootRatified`, then publish the proof-only
+payload in a second transaction. Replacement
 reserves the future group IDs durably, verifies the resulting whole maker book has positive spread,
 confirms cancellation receipts for old owned groups, and only then broadcasts the replacement.
 `ladder --readonly` performs the same readiness, state, rate, and decision reads, reconstructs any
@@ -149,17 +179,29 @@ can cap several offers, one cancellation invalidates every offer in that group. 
 0x-prefixed bytes32 argument, `invalidate <group-id>` directly invalidates only that group without
 depending on API indexing. Before a live cancellation it still verifies the connected Base chain,
 deployed configured Midnight contract, maker/private-key agreement, and configured native gas
-reserve. Every transaction is locally restricted to the exact Midnight `setConsumed` cancellation,
-broadcast from the maker, and receipt-confirmed before success is reported. Successfully canceled
+reserve. Maker-wide invalidation submits one zero-value native Midnight `multicall(bytes[])`; each
+ordered inner call is exactly `setConsumed(groupId, MAX_OFFER_CAP, MAKER_ADDRESS)`. Midnight executes
+the inner calls with `delegatecall`, so the maker account that submits the outer transaction remains
+`msg.sender` throughout. The local transaction policy rejects any wrong target, selector, call count,
+order, group, amount, on-behalf account, or extra calldata. A reverted or failed multicall is reported
+without serial retry. Explicit single-group invalidation keeps the simpler direct Midnight
+`setConsumed` transaction. Successfully canceled
 bot-owned groups are removed from durable ownership state; explicitly configured
-`V0_OFFER_GROUP_IDS` remain configuration-owned until the operator edits configuration.
+`V0_OFFER_GROUP_IDS` remain configuration-owned until the operator edits configuration. If the
+provider omits one of these configured groups, bootstrap and ladder reads deliberately fail closed
+because neither omission nor on-chain consumption reveals the group's original maximum capacity.
+After explicitly invalidating the group when necessary, remove its ID from `V0_OFFER_GROUP_IDS` to
+acknowledge that it is no longer owned; leaving the ID configured keeps the reservation active and
+prevents publication from assuming zero exposure.
 
-Maker-wide invalidation attempts every selected group before returning. Submitted hashes stream as
+Maker-wide invalidation waits for the single multicall receipt, reports its hash against every group,
+then forgets all confirmed bot-owned groups together. Submitted hashes stream as
 `offer-invalidation.transaction-submitted` records and are retained in the terminal success or
-failure report. A partial failure exits with code `1` and includes completed groups plus sanitized
-per-group failure classifications. `invalidate --readonly` performs the cancellation preflight and,
-for maker-wide scope, lists the active groups, but never loads a private key, submits transactions,
-or edits ownership state.
+failure report. A failed atomic multicall exits with code `1` and reports the same submitted hash for
+every selected group. `invalidate --readonly` performs the cancellation preflight and, for maker-wide
+scope, lists the active groups, but never loads a private key, submits transactions, or edits
+ownership state. Normal bootstrap and ladder invalidation loops remain serial; native multicall is
+limited to the explicit maker-wide recovery command.
 
 For a maker with at least 101 USDC of both available balance and accrued credit, this
 one-rung-per-side preset caps each side at 150 USDC. USDC uses six decimals, so `150000000` is 150
@@ -186,7 +228,9 @@ bun run --filter @morpho-org/market-making-bot start -- --version
 ## Docker
 
 The bot ships as a standalone Docker image whose entrypoint is the `mm` CLI itself, so every command
-and flag documented above is available as the container command; the default command is `start`.
+and flag documented above is available as the container command; the default command is the verbose
+combined monitor (`start --verbose`). This section covers operator-run containers and the Docker Hub
+distribution; the Morpho-run Railway instance is documented under [Deploy](#deploy).
 Configuration follows the exact precedence documented under [Configuration](#configuration):
 environment variables passed to the container override values from a mounted YAML file, and either
 source alone is sufficient. The build context must be the repo root so the bun workspace
@@ -296,7 +340,10 @@ morpho-apps — creates the `market-making-<version>` GitHub release with genera
 GitHub App token precisely so the release event fires the publish workflow (GitHub never runs
 workflows for events raised with the default `GITHUB_TOKEN`), then dispatches
 [`claude-write-release-notes.yml`](../../.github/workflows/claude-write-release-notes.yml) to
-rewrite the notes into a reviewed summary. A non-CalVer version bump fails the run loud.
+rewrite the notes into a reviewed summary. A non-CalVer version bump fails the run loud. A
+`release-market-making`-labeled merge produces a release the same way through
+`deploy-production.yml` after its [Railway deploy](#deploy) succeeds, so that release also
+publishes an image.
 
 Creating the release directly also works and publishes identically:
 
@@ -312,10 +359,12 @@ dispatched ref (defaults to `main` HEAD) and pushes the `tag` input (default `la
 gh workflow run deploy-market-making.yml -f tag=latest
 ```
 
-One-time repository setup: create the `market-making-production` GitHub Environment holding the
-publish configuration. In its deployment branches/tags policy allow branch `main` **and** tags
-matching `market-making-*` — release runs execute on the tag ref, so a branch-only policy rejects
-them, while the tag pattern keeps the token unreachable from arbitrary PR branches. The release
+One-time repository setup: create the `market-making-dockerhub` GitHub Environment holding the
+publish configuration (distinct from `market-making-production`, which holds the [Railway
+deploy](#deploy) credentials). In its deployment branches/tags policy allow branch `main` **and**
+tags matching `market-making-*` — release runs execute on the tag ref, so a branch-only policy
+rejects them, while the tag pattern keeps the token unreachable from arbitrary PR branches. The
+release
 automation additionally needs the org GitHub App credentials `GIT_BOT_CLIENT_ID` /
 `GIT_BOT_PRIVATE_KEY` (the same pair morpho-apps uses) available to this repository, and
 optionally `ANTHROPIC_API_KEY` — without it the notes-rewrite step skips cleanly and the
@@ -337,6 +386,41 @@ docker run --pull always --detach --restart unless-stopped \
   -v market-making-state:/state \
   <namespace>/<name>:latest start
 ```
+
+## Deploy
+
+The package owns its production [Dockerfile](./Dockerfile), local
+[docker-compose.yml](./docker-compose.yml), and idempotent
+[`scripts/deploy-railway.ts`](./scripts/deploy-railway.ts) entrypoint. The Docker build context is the
+repository root so Bun can resolve every workspace dependency; the image starts the combined setup,
+bootstrap, and ladder monitor. This is the Morpho-run Railway path; operator-run containers and the
+Docker Hub distribution are documented under [Docker](#docker) and share the same image.
+
+A full deployment creates the `market-making` Railway service, selects the package Dockerfile,
+provisions a persistent volume at `/state`, and writes the effective environment configuration
+through stdin so values never appear in process arguments or logs:
+
+```sh
+RAILWAY_PROJECT_ID=... \
+bun run --filter @morpho-org/market-making-bot deploy:railway
+```
+
+Provide the required values from [`.env.example`](./.env.example) in the invoking environment.
+`BOOTSTRAP_MARKETS` and `LADDER_MARKETS` must each be populated JSON arrays so a full run cannot
+replace a working strategy with an empty list. Every remaining optional value is synchronized:
+omitted timeouts return to their documented defaults, and omitted group IDs and BetterStack settings
+are disabled. `RAILWAY_ENVIRONMENT` defaults to `production`. CI uses `DEPLOY_ONLY=true` with the
+`market-making-production` GitHub Environment, so it reads only `RAILWAY_PROJECT_ID` and
+`RAILWAY_TOKEN` and uses project-token deployment permissions to re-ship the service. Deploy-only
+runs rely on the Dockerfile path, runtime variables, and persistent volume established by a full run;
+they neither read nor mutate that provisioned configuration.
+
+The local Compose service uses the same `/state` ownership path through a named volume; its YAML
+mount and environment passthrough behavior are documented under [docker compose](#docker-compose).
+
+Both modes snapshot the previous deployment, start a detached upload, and poll the new deployment to
+a terminal state. A GitHub release is created only after Railway reports `SUCCESS`; failed, crashed,
+approval-blocked, removed, skipped, sleeping, unknown, or timed-out deployments fail the workflow.
 
 ## Configuration
 
@@ -381,30 +465,30 @@ bun run --filter @morpho-org/market-making-bot start -- --readonly setup-check
 Every supported environment variable is listed below. “Raw assets” means the loan token's smallest
 unit; for six-decimal USDC, `101000000` is 101 USDC. No value is inferred from another variable.
 
-| Environment variable             | YAML key                            | Requirement and behavior                                                                                                                                                     |
-| -------------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CHAIN_ID`                       | `chain.id`                          | Required. Must be `8453`; all protocol, token, market, and transaction operations run on Base.                                                                               |
-| `RPC_URL`                        | `chain.rpcUrl`                      | Required. Current-state Base JSON-RPC endpoint used for blocks, balances, allowances, positions, contract reads, simulation, transaction submission, and receipts.           |
-| `REFERENCE_RPC_URL`              | `chain.archiveRpcUrl`               | Required. Archive-capable Base JSON-RPC endpoint used to read the reference Morpho Blue market at historical blocks.                                                         |
-| `MAKER_ADDRESS`                  | `identity.makerAddress`             | Required. EVM address whose balance, allowance, credit, offers, and exposure the bot manages. In write mode it must be derived by `MAKER_PRIVATE_KEY`.                       |
-| `MAKER_PRIVATE_KEY`              | `identity.makerPrivateKey`          | Required in write mode; omitted and never loaded with `--readonly`. Must be a 0x-prefixed 32-byte secp256k1 key. Never include it in committed configuration or logs.        |
-| `MIDNIGHT_ADDRESS`               | `contracts.midnightAddress`         | Required. Expected deployed Midnight singleton. Setup verifies its bytecode before a writer starts.                                                                          |
-| `LOAN_ASSET_ADDRESS`             | `contracts.loanAssetAddress`        | Required. Loan token used by every configured Midnight market. Balances, allowances, budgets, offer sizes, and exposure values use this token's raw units.                   |
-| `RATIFIER_ADDRESS`               | `contracts.ratifierAddress`         | Required. Router-listed Ecrecover ratifier authorized by the maker; the bot signs offer trees for this ratifier and verifies its deployed Midnight binding.                  |
-| `MORPHO_API_BASE_URL`            | `apis.morphoBaseUrl`                | Required. Morpho API origin used for Midnight books, market metadata, prospective-offer validation, and cursor-paginated maker offer groups. No API-key header is supported. |
-| `ROUTER_API_BASE_URL`            | `apis.routerBaseUrl`                | Required. Router API origin used only to verify the configured ratifier against `/v0/config/contracts`. No API-key header is supported.                                      |
-| `MARKET_IDS`                     | `markets.allowlist`                 | Required comma-separated list of unique 0x-prefixed bytes32 Midnight market IDs. Every bootstrap or ladder `marketId` must appear here.                                      |
-| `REFERENCE_MARKET_ID`            | `markets.referenceMarketId`         | Required 0x-prefixed bytes32 Morpho Blue market ID whose historical variable borrow rate supplies the reference rate for all configured strategies.                          |
-| `V0_OFFER_GROUP_IDS`             | `markets.v0OfferGroupIds`           | Optional comma-separated list of unique, explicitly strategy-owned bytes32 offer-group IDs; defaults to empty. Use it to adopt known pre-existing groups safely.             |
-| `NATIVE_RESERVE_WEI`             | `setup.nativeReserveWei`            | Required unsigned integer. Minimum maker native-token balance, in wei, required by readiness for transaction fees.                                                           |
-| `MAXIMUM_LEND_EXPOSURE_ASSETS`   | `setup.maximumLendExposureAssets`   | Required unsigned integer in raw loan-token units. Minimum maker allowance to Midnight required by readiness; it is not a strategy position cap.                             |
-| `REQUEST_TIMEOUT_MS`             | `setup.requestTimeoutMs`            | Optional provider-operation and aggregate pagination timeout in milliseconds. Defaults to `10000`; accepted range is `1` through `120000`.                                   |
-| `TRANSACTION_RECEIPT_TIMEOUT_MS` | `setup.transactionReceiptTimeoutMs` | Optional timeout for confirming an already-submitted transaction, in milliseconds. Defaults to `180000`; accepted range is `1` through `900000`.                             |
-| `BOOTSTRAP_MARKETS`              | `bootstrap`                         | Optional exact JSON array of position-bootstrap entries documented below; defaults to `[]` and replaces the complete YAML `bootstrap` list when supplied.                    |
-| `LADDER_MARKETS`                 | `ladder`                            | Optional exact JSON array of ladder entries documented below; defaults to `[]` and replaces the complete YAML `ladder` list when supplied.                                   |
-| `BETTERSTACK_SOURCE_TOKEN`       | —                                   | Optional Better Stack source token. Must be set together with `BETTERSTACK_INGESTING_HOST`; partial configuration emits `logship.misconfigured` and ships nothing.           |
-| `BETTERSTACK_INGESTING_HOST`     | —                                   | Optional Better Stack ingest host, with or without an `https://` prefix. Must be set together with `BETTERSTACK_SOURCE_TOKEN`.                                               |
-| `BETTERSTACK_HEARTBEAT_URL`      | —                                   | Optional HTTP(S) heartbeat URL pinged at startup and once per minute. Invalid URLs and ping failures are reported safely and never interrupt market making.                  |
+| Environment variable             | YAML key                            | Requirement and behavior                                                                                                                                                                                  |
+| -------------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CHAIN_ID`                       | `chain.id`                          | Required. Must be `8453`; all protocol, token, market, and transaction operations run on Base.                                                                                                            |
+| `RPC_URL`                        | `chain.rpcUrl`                      | Required. Current-state Base JSON-RPC endpoint used for blocks, balances, allowances, positions, contract reads, simulation, transaction submission, and receipts.                                        |
+| `REFERENCE_RPC_URL`              | `chain.archiveRpcUrl`               | Required. Archive-capable Base JSON-RPC endpoint used to read the reference Morpho Blue market at historical blocks.                                                                                      |
+| `MAKER_ADDRESS`                  | `identity.makerAddress`             | Required. EVM address whose balance, allowance, credit, offers, and exposure the bot manages. In write mode it must be derived by `MAKER_PRIVATE_KEY`.                                                    |
+| `MAKER_PRIVATE_KEY`              | `identity.makerPrivateKey`          | Required in write mode; omitted and never loaded with `--readonly`. Must be a 0x-prefixed 32-byte secp256k1 key. Never include it in committed configuration or logs.                                     |
+| `MIDNIGHT_ADDRESS`               | `contracts.midnightAddress`         | Required. Expected deployed Midnight singleton. Setup verifies its bytecode before a writer starts.                                                                                                       |
+| `LOAN_ASSET_ADDRESS`             | `contracts.loanAssetAddress`        | Required. Loan token used by every configured Midnight market. Balances, allowances, budgets, offer sizes, and exposure values use this token's raw units.                                                |
+| `RATIFIER_ADDRESS`               | `contracts.ratifierAddress`         | Required. Router-listed Ecrecover or Setter ratifier authorized by the maker. The bot signs Ecrecover trees or approves Setter roots onchain, then verifies the selected deployment and Midnight binding. |
+| `MORPHO_API_BASE_URL`            | `apis.morphoBaseUrl`                | Required. Morpho API origin used for Midnight books, market metadata, prospective-offer validation, and cursor-paginated maker offer groups. No API-key header is supported.                              |
+| `ROUTER_API_BASE_URL`            | `apis.routerBaseUrl`                | Required. Router API origin used only to verify the configured ratifier against `/v0/config/contracts`. No API-key header is supported.                                                                   |
+| `MARKET_IDS`                     | `markets.allowlist`                 | Required comma-separated list of unique 0x-prefixed bytes32 Midnight market IDs. Every bootstrap or ladder `marketId` must appear here.                                                                   |
+| `REFERENCE_MARKET_ID`            | `markets.referenceMarketId`         | Required 0x-prefixed bytes32 Morpho Blue market ID whose historical variable borrow rate supplies the reference rate for all configured strategies.                                                       |
+| `V0_OFFER_GROUP_IDS`             | `markets.v0OfferGroupIds`           | Optional comma-separated list of unique, explicitly strategy-owned bytes32 offer-group IDs; defaults to empty. Use it to adopt known pre-existing groups safely.                                          |
+| `NATIVE_RESERVE_WEI`             | `setup.nativeReserveWei`            | Required unsigned integer. Minimum maker native-token balance, in wei, required by readiness for transaction fees.                                                                                        |
+| `MAXIMUM_LEND_EXPOSURE_ASSETS`   | `setup.maximumLendExposureAssets`   | Required unsigned integer in raw loan-token units. Minimum maker allowance to Midnight required by readiness; it is not a strategy position cap.                                                          |
+| `REQUEST_TIMEOUT_MS`             | `setup.requestTimeoutMs`            | Optional provider-operation and aggregate pagination timeout in milliseconds. Defaults to `10000`; accepted range is `1` through `120000`.                                                                |
+| `TRANSACTION_RECEIPT_TIMEOUT_MS` | `setup.transactionReceiptTimeoutMs` | Optional timeout for confirming an already-submitted transaction, in milliseconds. Defaults to `180000`; accepted range is `1` through `900000`.                                                          |
+| `BOOTSTRAP_MARKETS`              | `bootstrap`                         | Optional exact JSON array of position-bootstrap entries documented below; defaults to `[]` and replaces the complete YAML `bootstrap` list when supplied.                                                 |
+| `LADDER_MARKETS`                 | `ladder`                            | Optional exact JSON array of ladder entries documented below; defaults to `[]` and replaces the complete YAML `ladder` list when supplied.                                                                |
+| `BETTERSTACK_SOURCE_TOKEN`       | —                                   | Optional Better Stack source token. Must be set together with `BETTERSTACK_INGESTING_HOST`; partial configuration emits `logship.misconfigured` and ships nothing.                                        |
+| `BETTERSTACK_INGESTING_HOST`     | —                                   | Optional Better Stack ingest host, with or without an `https://` prefix. Must be set together with `BETTERSTACK_SOURCE_TOKEN`.                                                                            |
+| `BETTERSTACK_HEARTBEAT_URL`      | —                                   | Optional HTTP(S) heartbeat URL pinged at startup and once per minute. Invalid URLs and ping failures are reported safely and never interrupt market making.                                               |
 
 There is no separate Mempool endpoint or API-key field. Books and cursor-paginated maker offer groups
 are read through `MORPHO_API_BASE_URL`; `ROUTER_API_BASE_URL` is used only for the
@@ -518,6 +602,12 @@ credit target, cash balance, remaining per-market exposure, and remaining total 
 capacity excludes that market's representative live group while retaining every other active group's
 exposure. Zero or negative capacity leaves no offer. The final requested rate is `reference rate +
 premiumBps`; an out-of-bounds result is rejected rather than clamped.
+
+Live reconciliation retains an owned offer when its assets, canonical Midnight tick, and continuous
+fee cap still match, even if a raw reference-rate change produced the same tick. A market fee-policy
+change therefore replaces an offer that is no longer takeable. Every genuinely new publication uses
+the current block timestamp as its start, so replacing a consumed offer cannot recreate its
+content-addressed group ID.
 
 `BOOTSTRAP_MARKETS` uses an exact JSON array with the same fields; YAML syntax, duplicate object keys,
 and prototype keys are rejected. Every integer-valued property—including asset amounts, exposure caps,
@@ -736,3 +826,38 @@ example `chmod 600 market-making.yaml`).
 Configuration errors contain stable field/reason metadata but never rejected values, URLs, private
 keys, parser snippets, or nested third-party errors. Explicit file failures are loud but do not echo
 the supplied path. Runtime setup reports identify providers by stable IDs only.
+
+## Parameter playground
+
+The stateless local playground exposes the complete current YAML/environment configuration surface,
+including bootstrap, ladder, and environment-only Better Stack settings. It renders a synthetic
+offer ladder immediately as inputs change and exports matching YAML, clearly labeled POSIX-shell-safe ENV,
+and JSON formats. Use only the shell-safe output with `source`. The ladder JSON importer accepts only
+an exact `LADDER_MARKETS` array, one exact ladder object, or a JSON string literal containing either;
+wrappers and full playground exports are not import shapes. Invalid configurations remain visible with
+accessible errors and cannot be copied as valid exports. It does not
+read current offers or a live market book, persist edits, or connect to a backend. Live offers and
+order-book simulation are future scope only.
+
+From the repository root, one command runs `bun install --frozen-lockfile` (also on already-installed
+workspaces, where it is fast), creates a fresh isolated build, and serves it on loopback. It does not
+run test assertions or require Chromium:
+
+```sh
+bun run market-making:playground
+```
+
+Open the exact URL printed by the command (default `http://127.0.0.1:4173`). Override the listener
+with `PORT=5173`, `HOST=localhost`, `--port 5173`, or `--host ::1`; command-line flags take precedence
+over environment variables. Only `localhost`, `127.0.0.1`, and `::1` are accepted. IPv6 may be entered
+as `::1` or `[::1]`; the printed URL uses brackets. If the selected port is occupied, the launcher
+exits with an actionable error instead of claiming success.
+
+The interactive launcher owns install and build process trees portably: Linux and macOS use detached
+process groups, while Windows uses non-shell task-tree termination. Press Ctrl-C to stop; `SIGINT` and
+`SIGTERM` perform bounded server shutdown, terminate owned process trees, and remove the temporary
+fresh build. Cleanup failures are reported and produce a nonzero exit.
+
+Sensitive values are redacted in YAML, ENV, and JSON exports by default. Exporting private
+credentials requires checking the explicit sensitive-values opt-in in the playground; keep real
+values in the deployment secret store even when using that opt-in.

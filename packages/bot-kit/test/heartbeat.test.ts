@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test'
 import type { Logger, LogLevel } from '../src/logger'
 
 import { createHeartbeatMonitor } from '../src/heartbeat'
+import { parseHttpHeartbeatUrl } from '../src/heartbeat-url'
 
 function captureLogger() {
   const events: { level: LogLevel; event: string; fields?: Record<string, unknown> }[] = []
@@ -34,6 +35,27 @@ describe('createHeartbeatMonitor', () => {
 
     await monitor.start()
     expect(pings).toBe(0)
+  })
+
+  it('is inert without warning or scheduling when the URL contains only whitespace', async () => {
+    const { logger, events } = captureLogger()
+    const setIntervalSpy = spyOn(globalThis, 'setInterval')
+    let pings = 0
+    const monitor = createHeartbeatMonitor({
+      url: ' \t\r\n ',
+      logger,
+      ping: async () => {
+        pings += 1
+        return { ok: true, status: 200 }
+      }
+    })
+
+    await monitor.start()
+    monitor.stop()
+
+    expect(events).toEqual([])
+    expect(pings).toBe(0)
+    expect(setIntervalSpy).not.toHaveBeenCalled()
   })
 
   it('pings immediately and then on a wall-clock interval', async () => {
@@ -87,5 +109,90 @@ describe('createHeartbeatMonitor', () => {
       }
     ])
     monitor.stop()
+  })
+
+  it.each([
+    [
+      '  https://uptime.betterstack.com:443/api/v1/heartbeat/secret?source=maker#status  ',
+      'https://uptime.betterstack.com:443/api/v1/heartbeat/secret?source=maker#status'
+    ],
+    ['http://example.test:8080/heartbeat', 'http://example.test:8080/heartbeat']
+  ])('uses the exact trimmed HTTP(S) URL %s', async (url, expectedUrl) => {
+    const { logger } = captureLogger()
+    const setIntervalSpy = spyOn(globalThis, 'setInterval').mockImplementation(
+      (() => 1 as unknown as ReturnType<typeof setInterval>) as typeof setInterval
+    )
+    const urls: string[] = []
+    const monitor = createHeartbeatMonitor({
+      url,
+      logger,
+      ping: async endpoint => {
+        urls.push(endpoint)
+        return { ok: true, status: 200 }
+      }
+    })
+
+    await monitor.start()
+    monitor.stop()
+
+    expect(urls).toEqual([expectedUrl])
+    expect(setIntervalSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    'ftp://example.test/heartbeat',
+    'file:///tmp/heartbeat',
+    'ws://example.test/heartbeat',
+    'wss://example.test/heartbeat',
+    'javascript:alert(1)',
+    'not a URL',
+    'https://example.test:bad-port/heartbeat'
+  ])('warns once and stays inert for invalid URL %s', async url => {
+    const { logger, events } = captureLogger()
+    const setIntervalSpy = spyOn(globalThis, 'setInterval')
+    let pings = 0
+    const monitor = createHeartbeatMonitor({
+      url,
+      logger,
+      ping: async () => {
+        pings += 1
+        return { ok: true, status: 200 }
+      }
+    })
+
+    await monitor.start()
+    monitor.stop()
+
+    expect(pings).toBe(0)
+    expect(setIntervalSpy).not.toHaveBeenCalled()
+    expect(events).toEqual([
+      {
+        level: 'warn',
+        event: 'heartbeat.misconfigured',
+        fields: {
+          detail: 'BETTERSTACK_HEARTBEAT_URL must be an HTTP(S) URL — heartbeat disabled'
+        }
+      }
+    ])
+  })
+})
+
+describe('parseHttpHeartbeatUrl', () => {
+  const cases = [
+    ['https://uptime.betterstack.com/api/v1/heartbeat/secret', true],
+    ['http://example.test/heartbeat?source=maker#status', true],
+    ['  HTTPS://user:pass@example.test:8443/heartbeat  ', true],
+    ['ftp://example.test/heartbeat', false],
+    ['file:///tmp/heartbeat', false],
+    ['ws://example.test/heartbeat', false],
+    ['wss://example.test/heartbeat', false],
+    ['javascript:alert(1)', false],
+    ['not a URL', false],
+    ['https://example.test:bad-port/heartbeat', false],
+    ['', false]
+  ] as const
+
+  it.each(cases)('classifies %s as HTTP(S)=%s', (value, accepted) => {
+    expect(Boolean(parseHttpHeartbeatUrl(value))).toBe(accepted)
   })
 })

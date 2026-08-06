@@ -15,6 +15,7 @@ describe('MidnightBootstrapPositionService', () => {
       {
         readPositions: async () => [{ marketId, credit: 0n, debt: 0n }],
         readCashBalance: async () => 100n,
+        readMarketContinuousFeeCap: async () => 17n,
         readGroupInventory: async () => ({
           activeGroups: [{ id: firstGroup, marketId, assets: 100n, rateBps: 500n }],
           cashReservations: []
@@ -38,6 +39,7 @@ describe('MidnightBootstrapPositionService', () => {
           { marketId: otherMarketId, credit: 5n, debt: 0n }
         ],
         readCashBalance: async () => 100n,
+        readMarketContinuousFeeCap: async () => 17n,
         readGroupInventory: async () => ({
           activeGroups: [
             { id: firstGroup, marketId, assets: 20n, rateBps: 500n },
@@ -65,6 +67,7 @@ describe('MidnightBootstrapPositionService', () => {
           { marketId: otherMarketId, credit: 0n, debt: 0n }
         ],
         readCashBalance: async () => 100n,
+        readMarketContinuousFeeCap: async () => 17n,
         readGroupInventory: async () => ({
           activeGroups: [
             { id: firstGroup, marketId, assets: 20n, rateBps: 500n },
@@ -92,6 +95,7 @@ describe('MidnightBootstrapPositionService', () => {
           { marketId: inspectionMarketId, credit: 0n, debt: 0n }
         ],
         readCashBalance: async () => 100n,
+        readMarketContinuousFeeCap: async () => 17n,
         readGroupInventory: async () => ({
           activeGroups: [
             { id: firstGroup, marketId, assets: 100n, rateBps: 500n },
@@ -117,6 +121,7 @@ describe('MidnightBootstrapPositionService', () => {
       {
         readPositions: async () => [{ marketId, credit: 0n, debt: 0n }],
         readCashBalance: async () => 100n,
+        readMarketContinuousFeeCap: async () => 17n,
         readGroupInventory: async () => ({
           activeGroups: [
             {
@@ -146,6 +151,7 @@ describe('MidnightBootstrapPositionService', () => {
       {
         readPositions: async () => [{ marketId, credit: 10n, debt: 0n }],
         readCashBalance: async () => 100n,
+        readMarketContinuousFeeCap: async () => 17n,
         readGroupInventory: async () => ({
           activeGroups: [
             { id: firstGroup, marketId, assets: 20n, rateBps: 500n },
@@ -169,6 +175,92 @@ describe('MidnightBootstrapPositionService', () => {
     expect(position.marketExposure).toBe(30n)
   })
 
+  test('forces reconciliation when one group contains multiple offers', async () => {
+    const service = new MidnightBootstrapPositionService(
+      {
+        readPositions: async () => [{ marketId, credit: 10n, debt: 0n }],
+        readCashBalance: async () => 100n,
+        readMarketContinuousFeeCap: async () => 17n,
+        readGroupInventory: async () => ({
+          activeGroups: [{ id: firstGroup, marketId, assets: 20n, rateBps: 500n, offerCount: 2 }],
+          cashReservations: []
+        })
+      },
+      maker
+    )
+
+    expect((await service.readPosition(marketId)).requiresReconciliation).toBe(true)
+  })
+
+  test('forces reconciliation when a pending group has no persisted fee cap', async () => {
+    const service = new MidnightBootstrapPositionService(
+      {
+        readPositions: async () => [{ marketId, credit: 10n, debt: 0n }],
+        readCashBalance: async () => 100n,
+        readMarketContinuousFeeCap: async () => 17n,
+        readGroupInventory: async () => ({
+          activeGroups: [{ id: firstGroup, marketId, assets: 20n, rateBps: 500n, offerCount: 1 }],
+          cashReservations: []
+        })
+      },
+      maker
+    )
+
+    expect((await service.readPosition(marketId)).requiresReconciliation).toBe(true)
+  })
+
+  test('forces reconciliation when a resting fee cap differs from live policy', async () => {
+    const service = new MidnightBootstrapPositionService(
+      {
+        readPositions: async () => [{ marketId, credit: 10n, debt: 0n }],
+        readCashBalance: async () => 100n,
+        readMarketContinuousFeeCap: async () => 17n,
+        readGroupInventory: async () => ({
+          activeGroups: [
+            {
+              id: firstGroup,
+              marketId,
+              assets: 20n,
+              rateBps: 500n,
+              offerCount: 1,
+              continuousFeeCap: 16n
+            }
+          ],
+          cashReservations: []
+        })
+      },
+      maker
+    )
+
+    expect((await service.readPosition(marketId)).requiresReconciliation).toBe(true)
+  })
+
+  test('keeps a singleton group resting when its fee cap matches live policy', async () => {
+    const service = new MidnightBootstrapPositionService(
+      {
+        readPositions: async () => [{ marketId, credit: 10n, debt: 0n }],
+        readCashBalance: async () => 100n,
+        readMarketContinuousFeeCap: async () => 17n,
+        readGroupInventory: async () => ({
+          activeGroups: [
+            {
+              id: firstGroup,
+              marketId,
+              assets: 20n,
+              rateBps: 500n,
+              offerCount: 1,
+              continuousFeeCap: 17n
+            }
+          ],
+          cashReservations: []
+        })
+      },
+      maker
+    )
+
+    expect((await service.readPosition(marketId)).requiresReconciliation).toBe(false)
+  })
+
   test('reserves ladder buys without treating them as replaceable bootstrap offers', async () => {
     const otherMarketId: Hex = `0x${'44'.repeat(32)}`
     const service = new MidnightBootstrapPositionService(
@@ -178,6 +270,7 @@ describe('MidnightBootstrapPositionService', () => {
           { marketId: otherMarketId, credit: 5n, debt: 0n }
         ],
         readCashBalance: async () => 200n,
+        readMarketContinuousFeeCap: async () => 17n,
         readGroupInventory: async () => ({
           activeGroups: [],
           cashReservations: [

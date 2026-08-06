@@ -3,6 +3,8 @@ import type { LogLayerTransport, LogLayerTransportParams } from 'loglayer'
 import { BetterStackTransport } from '@loglayer/transport-betterstack'
 import { BlankTransport, LogLayer } from 'loglayer'
 
+import { classifyShippingConfig } from './shipping-config'
+
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
 
 export type Logger = Record<LogLevel, (event: string, fields?: Record<string, unknown>) => void>
@@ -99,20 +101,20 @@ function betterStackTransport(
 ): BetterStackTransport | null {
   const sourceToken = env.BETTERSTACK_SOURCE_TOKEN?.trim()
   const host = env.BETTERSTACK_INGESTING_HOST?.trim()
-  if (!sourceToken || !host) {
-    if (sourceToken || host) {
-      const missing = sourceToken ? 'BETTERSTACK_INGESTING_HOST' : 'BETTERSTACK_SOURCE_TOKEN'
-      console.error(
-        JSON.stringify({
-          level: 'error',
-          time: formatTime(new Date()),
-          event: 'logship.misconfigured',
-          detail: `partial BetterStack config: ${missing} is unset — shipping nothing`
-        })
-      )
-    }
+  const config = classifyShippingConfig(env)
+  if (config.state === 'disabled') return null
+  if (config.state === 'misconfigured') {
+    console.error(
+      JSON.stringify({
+        level: 'error',
+        time: formatTime(new Date()),
+        event: 'logship.misconfigured',
+        detail: `partial BetterStack config: ${config.missing} is unset — shipping nothing`
+      })
+    )
     return null
   }
+  if (!sourceToken || !host) return null
   const url = /^https?:\/\//.test(host) ? host : `https://${host}`
   return new BetterStackTransport({
     sourceToken,

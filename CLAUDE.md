@@ -155,9 +155,10 @@ This is a **bun workspaces monorepo** housing off-chain Morpho curator bots:
   positions, reads fresh on-chain state, sizes/simulates a liquidation, and broadcasts only
   simulation-ok transactions through an in-process pending-tx queue. No bot imports another bot.
   Each bot owns its own operator surface — `README.md`, `Dockerfile`, `docker-compose.yml`, and a
-  deploy path (`scripts/deploy-railway.ts` for the liquidators and crossed-books; the
-  `deploy-market-making` GitHub Actions workflow publishes market-making to Docker Hub) — so it
-  ships as its own image and deploys independently. `bots/blue-liquidation` and `bots/midnight-liquidation` are the live
+  deploy path (`scripts/deploy-railway.ts` per bot for the Railway instances; the
+  `deploy-market-making` GitHub Actions workflow additionally publishes market-making's image to
+  Docker Hub for operator-run deployments) — so it ships as its own image and deploys
+  independently. `bots/blue-liquidation` and `bots/midnight-liquidation` are the live
   liquidators; `bots/market-making` is the Midnight maker bot (setup checks, position bootstrap,
   ladder quoting, combined monitoring); `bots/midnight-crossed-books` resolves crossed Midnight
   books; `bots/kill-switch` is a proposal bot (docs only).

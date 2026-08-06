@@ -8,22 +8,24 @@ name: Deploy market-making
 # release events and the final step here re-enters it through its manual `tag` input once every
 # image tag is pushed — so an announced release always has its image.
 #
-# Releases normally come from tag-releases.yml (a merged PR bumping the bot's package.json version
-# to a new CalVer value), which creates them with a GitHub App installation token precisely so this
-# workflow fires — GitHub never runs workflows for events raised with the default GITHUB_TOKEN. A
-# user-created release (`gh release create` or the releases UI) triggers identically.
-# workflow_dispatch stays as the escape hatch for re-publishing, e.g.
+# Releases come from tag-releases.yml (a merged PR bumping the bot's package.json version to a new
+# CalVer value) or from deploy-production.yml's Release-market-making job after a successful
+# `release-market-making`-labeled Railway deploy. Both create the release with a GitHub App
+# installation token precisely so this workflow fires — GitHub never runs workflows for events
+# raised with the default GITHUB_TOKEN. A user-created release (`gh release create` or the releases
+# UI) triggers identically. workflow_dispatch stays as the escape hatch for re-publishing, e.g.
 # `gh workflow run deploy-market-making.yml -f tag=latest`.
 #
 # A release publish builds the tagged commit and pushes `<release tag>` plus `git-<shortsha>`, and
 # moves `latest` unless the release is marked a prerelease. A dispatch builds the dispatched ref
 # and pushes the `tag` input (default `latest`) plus `git-<shortsha>`.
 #
-# Credentials live in the `market-making-production` GitHub Environment: secrets DOCKERHUB_USERNAME
-# and DOCKERHUB_TOKEN (a Docker Hub access token, write scope) plus variable DOCKERHUB_REPOSITORY
-# (`<namespace>/<name>`, e.g. `morphoorg/market-making-bot`). In the environment's deployment
-# branches/tags policy allow branch `main` AND tags matching `market-making-*` — release runs
-# execute on the tag ref, so a branch-only policy rejects them.
+# Credentials live in the `market-making-dockerhub` GitHub Environment (distinct from
+# `market-making-production`, which holds the Railway deploy credentials): secrets
+# DOCKERHUB_USERNAME and DOCKERHUB_TOKEN (a Docker Hub access token, write scope) plus variable
+# DOCKERHUB_REPOSITORY (`<namespace>/<name>`, e.g. `morphoorg/market-making-bot`). In the
+# environment's deployment branches/tags policy allow branch `main` AND tags matching
+# `market-making-*` — release runs execute on the tag ref, so a branch-only policy rejects them.
 
 on:
   release:
@@ -50,7 +52,7 @@ jobs:
     # concern this image. Other releases simply skip this job.
     if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'market-making-') }}
     runs-on: ubuntu-latest
-    environment: market-making-production
+    environment: market-making-dockerhub
     permissions:
       contents: read
       # `gh workflow run` for the post-publish Slack announcement.
@@ -67,8 +69,8 @@ jobs:
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           set -euo pipefail
-          : "${DOCKERHUB_USERNAME:?set secret DOCKERHUB_USERNAME on the market-making-production environment}"
-          : "${DOCKERHUB_TOKEN:?set secret DOCKERHUB_TOKEN on the market-making-production environment}"
+          : "${DOCKERHUB_USERNAME:?set secret DOCKERHUB_USERNAME on the market-making-dockerhub environment}"
+          : "${DOCKERHUB_TOKEN:?set secret DOCKERHUB_TOKEN on the market-making-dockerhub environment}"
           printf '%s' "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
 
       # The build context is the repo root so the bun workspace (packages/*) resolves — see
@@ -84,7 +86,7 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          : "${REPOSITORY:?set variable DOCKERHUB_REPOSITORY on the market-making-production environment}"
+          : "${REPOSITORY:?set variable DOCKERHUB_REPOSITORY on the market-making-dockerhub environment}"
           # Docker Hub `<namespace>/<name>` only. A dotted (or `localhost`) first component would be
           # read by docker as a registry host and silently push somewhere other than Docker Hub.
           echo "$REPOSITORY" | grep -Eq '^[a-z0-9]+((_|__|-+)[a-z0-9]+)*/[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*$' \

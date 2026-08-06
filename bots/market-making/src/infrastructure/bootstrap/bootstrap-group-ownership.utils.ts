@@ -1,5 +1,6 @@
 import type { Address, Hex } from 'viem'
 
+import { MAX_TICK } from '@morpho-org/midnight-sdk'
 import { mkdir, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -25,6 +26,8 @@ type PersistedOffer = {
   assets: string
   rateBps: string
   referenceObservationId: string
+  tick?: string
+  continuousFeeCap?: string
 }
 
 type OwnershipState =
@@ -37,8 +40,22 @@ type OwnershipState =
       reservedGroupIds: string[]
       offers: PersistedOffer[]
     }
+  | {
+      version: 4
+      strategy: string
+      confirmedGroupIds: string[]
+      reservedGroupIds: string[]
+      offers: PersistedOffer[]
+    }
+  | {
+      version: 5
+      strategy: string
+      confirmedGroupIds: string[]
+      reservedGroupIds: string[]
+      offers: PersistedOffer[]
+    }
 
-type OwnedOffer = BootstrapOffer & { groupId: Hex }
+type OwnedOffer = BootstrapOffer & { groupId: Hex; tick?: bigint; continuousFeeCap?: bigint }
 
 type CanonicalOwnershipState = {
   confirmedGroupIds: Hex[]
@@ -60,6 +77,20 @@ const canonicalAmount = (value: unknown) => {
   return BigInt(value)
 }
 
+const protocolTick = (value: bigint) => {
+  if (value < 0n || value > MAX_TICK) {
+    throw new BootstrapAdapterError('group-ownership-state')
+  }
+  return value
+}
+
+const canonicalTick = (value: unknown) => {
+  if (typeof value !== 'string' || !/^(0|[1-9]\d*)$/.test(value)) {
+    throw new BootstrapAdapterError('group-ownership-state')
+  }
+  return protocolTick(BigInt(value))
+}
+
 const canonicalOffer = (value: unknown): OwnedOffer => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new BootstrapAdapterError('group-ownership-state')
@@ -68,12 +99,19 @@ const canonicalOffer = (value: unknown): OwnedOffer => {
   if (typeof offer.referenceObservationId !== 'string') {
     throw new BootstrapAdapterError('group-ownership-state')
   }
-  return {
+  const canonical = {
     groupId: canonicalId(offer.groupId),
     marketId: canonicalId(offer.marketId),
     assets: canonicalAmount(offer.assets),
     rateBps: canonicalAmount(offer.rateBps),
     referenceObservationId: offer.referenceObservationId
+  }
+  return {
+    ...canonical,
+    ...(offer.tick === undefined ? {} : { tick: canonicalTick(offer.tick) }),
+    ...(offer.continuousFeeCap === undefined
+      ? {}
+      : { continuousFeeCap: canonicalAmount(offer.continuousFeeCap) })
   }
 }
 
@@ -144,7 +182,7 @@ export const createBootstrapGroupOwnership = (
         }
       }
       if (
-        value.version === 3 &&
+        (value.version === 3 || value.version === 4 || value.version === 5) &&
         Array.isArray(value.confirmedGroupIds) &&
         Array.isArray(value.reservedGroupIds) &&
         Array.isArray(value.offers)
@@ -169,14 +207,18 @@ export const createBootstrapGroupOwnership = (
       await writeFile(
         temporary,
         JSON.stringify({
-          version: 3,
+          version: 5,
           strategy,
           confirmedGroupIds: state.confirmedGroupIds,
           reservedGroupIds: state.reservedGroupIds,
-          offers: state.offers.map(offer => ({
+          offers: state.offers.map(({ tick, continuousFeeCap, ...offer }) => ({
             ...offer,
             assets: String(offer.assets),
-            rateBps: String(offer.rateBps)
+            rateBps: String(offer.rateBps),
+            ...(tick === undefined ? {} : { tick: String(tick) }),
+            ...(continuousFeeCap === undefined
+              ? {}
+              : { continuousFeeCap: String(continuousFeeCap) })
           }))
         } satisfies OwnershipState),
         { encoding: 'utf8', mode: 0o600, flag: 'wx' }
@@ -204,15 +246,24 @@ export const createBootstrapGroupOwnership = (
     readPersistedGroupIds,
     /** Reads persisted offer intent for safe live-offer comparison. @returns Confirmed or reserved offers with their group IDs. */
     readOffers: async () => (await readPersisted()).offers,
-    /** Durably reserves a group ID and offer intent before publication. @param groupId - Prepared group ID. @param offer - Intended offer semantics. @returns Completion after atomic storage. */
-    reserve: async (groupId: Hex, offer?: BootstrapOffer) => {
+    /** Durably reserves a group ID and offer intent before publication. @param groupId - Prepared group ID. @param offer - Intended domain semantics plus optional exact protocol tick and fee cap. @returns Completion after atomic storage. */
+    reserve: async (
+      groupId: Hex,
+      offer?: BootstrapOffer & { tick?: bigint; continuousFeeCap?: bigint }
+    ) => {
       const state = await readPersisted()
       const id = canonicalId(groupId)
+      const intendedOffer = offer
+        ? {
+            ...offer,
+            ...(offer.tick === undefined ? {} : { tick: protocolTick(offer.tick) })
+          }
+        : undefined
       await writePersisted({
         ...state,
         reservedGroupIds: [...new Set([...state.reservedGroupIds, id])],
-        offers: offer
-          ? [...state.offers.filter(item => item.groupId !== id), { groupId: id, ...offer }]
+        offers: intendedOffer
+          ? [...state.offers.filter(item => item.groupId !== id), { groupId: id, ...intendedOffer }]
           : state.offers
       })
     },

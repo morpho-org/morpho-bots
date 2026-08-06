@@ -11,12 +11,14 @@ import type { BootstrapConfig } from '../../../src/domain/bootstrap/position-boo
 
 import { PositionBootstrapService } from '../../../src/application/bootstrap/position-bootstrap.service'
 import { BootstrapConfigurationError } from '../../../src/domain/bootstrap/bootstrap-configuration.error'
+import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/bootstrap-adapter.error'
 import { BootstrapMempoolValidationError } from '../../../src/infrastructure/bootstrap/bootstrap-mempool-validation.error'
 
 const marketId: Hex = `0x${'11'.repeat(32)}`
 const secondMarketId: Hex = `0x${'22'.repeat(32)}`
 const publicationHash: Hex = `0x${'aa'.repeat(32)}`
 const cancellationHash: Hex = `0x${'bb'.repeat(32)}`
+const ratificationHash: Hex = `0x${'cc'.repeat(32)}`
 
 const config = (id = marketId, autoRefill = false): BootstrapConfig => ({
   marketId: id,
@@ -452,11 +454,39 @@ describe('PositionBootstrapService', () => {
     expect(transactionOrder).toEqual(['submitted', 'confirmed'])
   })
 
+  test('retains a confirmed ratification hash when publication later fails', async () => {
+    const { service, make } = setup()
+    make.reconcile = mock(async () => {
+      throw new BootstrapAdapterError(
+        'publication-transaction-reverted-after-ratification'
+      ).recordConfirmedTransactions([{ operation: 'ratify', txHash: ratificationHash }])
+    })
+
+    expect(await service.runOnce({ verbose: true })).toMatchObject([
+      {
+        status: 'failed',
+        stage: 'make',
+        verbose: {
+          submittedTransactions: [{ operation: 'ratify', txHash: ratificationHash }]
+        }
+      }
+    ])
+  })
+
   test('keeps non-verbose cycles compact and avoids the diagnostic after-state read', async () => {
     const { service, readPosition } = setup()
 
     expect(await service.runOnce()).toEqual([{ marketId, status: 'applied', action: 'publish' }])
     expect(readPosition).toHaveBeenCalledTimes(1)
+  })
+
+  test('reports canonical protocol no-ops as observed resting offers', async () => {
+    const { service, make } = setup()
+    make.reconcile = mock(async () => 'unchanged' as const)
+
+    const result = await service.runOnce()
+
+    expect(result).toEqual([{ marketId, status: 'observed', action: 'rest' }])
   })
 
   test('keeps an applied result when only its verbose after-state read fails', async () => {

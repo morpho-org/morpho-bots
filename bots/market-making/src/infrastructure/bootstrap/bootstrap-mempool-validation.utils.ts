@@ -1,4 +1,10 @@
-import { MempoolPayloadValidationRule } from '@morpho-org/midnight-sdk/api'
+import { MidnightMempoolValidationError } from '@morpho-org/midnight-sdk'
+import {
+  MempoolPayloadValidationRule,
+  MidnightApi,
+  type MempoolPayloadValidationResult,
+  type ValidateMempoolPayloadParams
+} from '@morpho-org/midnight-sdk/api'
 
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 import {
@@ -60,4 +66,29 @@ export const validateBootstrapMempoolPublication = async <Result>(
     if (issues) throw new BootstrapMempoolValidationError(issues)
     throw new BootstrapAdapterError('mempool-validation')
   }
+}
+
+type MempoolPayloadValidator = (
+  parameters: ValidateMempoolPayloadParams
+) => Promise<MempoolPayloadValidationResult>
+
+const defaultMempoolPayloadValidator: MempoolPayloadValidator = parameters =>
+  MidnightApi.validateMempoolPayload(parameters)
+
+/**
+ * Validates the exact encoded bootstrap publication payload against live Mempool API policy.
+ * @param parameters - Chain, API endpoint, and final SDK-built payload bytes.
+ * @param validate - Injectable raw-payload API validator; defaults to the Midnight SDK client.
+ * @returns Completion only when the API reports no payload issues.
+ * @throws `BootstrapMempoolValidationError` for sanitized policy issues, or
+ * `BootstrapAdapterError` for every other SDK/provider validation failure.
+ */
+export const validateBootstrapMempoolPayload = async (
+  parameters: ValidateMempoolPayloadParams,
+  validate: MempoolPayloadValidator = defaultMempoolPayloadValidator
+): Promise<void> => {
+  await validateBootstrapMempoolPublication(async () => {
+    const result = await validate(parameters)
+    if (!result.valid) throw new MidnightMempoolValidationError(result.issues)
+  })
 }

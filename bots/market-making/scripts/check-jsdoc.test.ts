@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'bun:test'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join, relative } from 'node:path'
 
-import { inspectJSDocSource } from './check-jsdoc'
+import { discoverJSDocSourceFiles, inspectJSDocSource } from './check-jsdoc'
 import { JSDocValidationError } from './js-doc-validation.error'
 
 const inspect = (source: string) => inspectJSDocSource('fixture.ts', source)
@@ -19,6 +22,39 @@ export interface Reader {
 `
 
 describe('JSDoc contract checker', () => {
+  test('discovers relevant TypeScript files in deterministic order', async () => {
+    const packageRoot = await mkdtemp(join(tmpdir(), 'market-making-jsdoc-'))
+    try {
+      await Promise.all([
+        mkdir(join(packageRoot, 'src/nested'), { recursive: true }),
+        mkdir(join(packageRoot, 'scripts'), { recursive: true }),
+        mkdir(join(packageRoot, 'build/generated'), { recursive: true }),
+        mkdir(join(packageRoot, 'node_modules/dependency'), { recursive: true })
+      ])
+      await Promise.all([
+        writeFile(join(packageRoot, 'src/z.ts'), ''),
+        writeFile(join(packageRoot, 'src/nested/a.ts'), ''),
+        writeFile(join(packageRoot, 'src/index.ts'), ''),
+        writeFile(join(packageRoot, 'scripts/check-jsdoc.ts'), ''),
+        writeFile(join(packageRoot, 'scripts/js-doc-validation.error.ts'), ''),
+        writeFile(join(packageRoot, 'scripts/check-jsdoc.test.ts'), ''),
+        writeFile(join(packageRoot, 'build/generated/output.ts'), ''),
+        writeFile(join(packageRoot, 'node_modules/dependency/index.ts'), '')
+      ])
+
+      const files = await discoverJSDocSourceFiles(packageRoot)
+
+      expect(files.map(file => relative(packageRoot, file))).toEqual([
+        'scripts/check-jsdoc.ts',
+        'scripts/js-doc-validation.error.ts',
+        'src/nested/a.ts',
+        'src/z.ts'
+      ])
+    } finally {
+      await rm(packageRoot, { recursive: true, force: true })
+    }
+  })
+
   test('uses a stable typed tooling failure with a safe violation count', () => {
     const error = new JSDocValidationError(3)
 

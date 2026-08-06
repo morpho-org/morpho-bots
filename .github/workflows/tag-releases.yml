@@ -11,7 +11,10 @@ name: Tag releases
 # midnight-crossed-books) release through deploy-production.yml's release-* label flow, which cuts
 # their `<bot>-*` tag strictly AFTER a successful production deploy — a version-bump release here
 # would announce a production release that was never deployed. Extending the allowlist below (and
-# the paths filter) is a deliberate decision, not a directory rename away.
+# the paths filter) is a deliberate decision, not a directory rename away. Market-making's own
+# label flow (Release-market-making in deploy-production.yml, after its Railway deploy) coexists
+# with this version-bump path: both mint the App token, both trigger the image publish, and the
+# already-exists guard below keeps the two origins from double-creating a tag.
 #
 # Adaptations from the morpho-apps original: apps/* → bots/*, depot runners → ubuntu-latest, an
 # allowlist instead of a static-version skip list, and initial notes are GitHub-generated from the

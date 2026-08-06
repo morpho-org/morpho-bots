@@ -15,6 +15,7 @@ import type {
 
 import { generateLadder, shouldRecenter, validateLadderConfig } from '../../domain/ladder/ladder'
 import { LadderConfigurationError } from '../../domain/ladder/ladder-configuration.error'
+import { LadderAdapterError } from '../../infrastructure/ladder/ladder-adapter.error'
 import { operatorErrorName } from '../operator-error-name.utils'
 import { sameLadderQuoteSet } from './ladder-market-maker.utils'
 import { LadderOwnershipCleanupError } from './ladder-ownership-cleanup.error'
@@ -457,6 +458,9 @@ export class LadderMarketMakerService {
         })
       } catch (error) {
         const ownershipCleanup = error instanceof LadderOwnershipCleanupError ? error : undefined
+        const confirmedTransactions =
+          ownershipCleanup?.submittedTransactions ??
+          (error instanceof LadderAdapterError ? error.confirmedTransactions : [])
         results.push(
           await this.completeResult(
             config,
@@ -473,8 +477,8 @@ export class LadderMarketMakerService {
             parameters,
             {
               ...verbosePlan,
-              ...(ownershipCleanup
-                ? { submittedTransactions: ownershipCleanup.submittedTransactions }
+              ...(confirmedTransactions.length > 0
+                ? { submittedTransactions: confirmedTransactions }
                 : {})
             }
           )

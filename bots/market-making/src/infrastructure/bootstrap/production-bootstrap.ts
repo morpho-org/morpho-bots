@@ -1,4 +1,4 @@
-import { Offer, TickLib } from '@morpho-org/midnight-sdk'
+import { midnightAbi, Offer, TickLib, Tree } from '@morpho-org/midnight-sdk'
 import { morphoViemExtension } from '@morpho-org/morpho-sdk'
 import { getChainAddress } from '@morpho-org/morpho-ts'
 import {
@@ -13,7 +13,10 @@ import {
 } from 'viem'
 import { base } from 'viem/chains'
 
-import type { BootstrapTransactionSubmittedObserver } from '../../application/bootstrap/position-bootstrap-verbose'
+import type {
+  BootstrapSubmittedTransaction,
+  BootstrapTransactionSubmittedObserver
+} from '../../application/bootstrap/position-bootstrap-verbose'
 import type {
   BootstrapMakeService,
   BootstrapPositionService,
@@ -43,12 +46,16 @@ import {
   strategyBootstrapGroups
 } from './bootstrap-groups.utils'
 import { MidnightBootstrapMakeService } from './bootstrap-make.service'
-import { validateBootstrapMempoolPublication } from './bootstrap-mempool-validation.utils'
-import { createBootstrapOffer } from './bootstrap-offer.utils'
-import { pendingBootstrapGroups } from './bootstrap-pending-offer.utils'
+import {
+  validateBootstrapMempoolPayload,
+  validateBootstrapMempoolPublication
+} from './bootstrap-mempool-validation.utils'
+import { bootstrapContinuousFeeCap, createBootstrapOffer } from './bootstrap-offer.utils'
+import { readLivePendingBootstrapOffers } from './bootstrap-pending-offer.utils'
 import { MidnightBootstrapPositionService } from './bootstrap-position.service'
 import { BlueBootstrapReferenceRateService } from './bootstrap-reference-rate.service'
-import { signBootstrapRequirements } from './bootstrap-requirements.utils'
+import { createBootstrapRequirementClient } from './bootstrap-requirement-client.utils'
+import { prepareBootstrapRequirements } from './bootstrap-requirements.utils'
 import { assertBootstrapProspectiveSpread, bootstrapMarketGroupIds } from './bootstrap-spread.utils'
 import { assertBootstrapTransaction } from './bootstrap-transaction.utils'
 
@@ -71,6 +78,52 @@ type BootstrapMakeLendArguments = {
 export const bootstrapMakeLendArguments = (
   parameters: BootstrapMakeLendArguments
 ): BootstrapMakeLendArguments => parameters
+
+type PublishBootstrapPublicationParameters = {
+  ratifierType: 'ecrecover' | 'setter'
+  payload: Hex
+  ratify: () => Promise<readonly BootstrapSubmittedTransaction[]>
+  validate: (payload: Hex) => Promise<void>
+  publish: () => Promise<BootstrapSubmittedTransaction>
+}
+
+/**
+ * Executes a prepared bootstrap publication with Setter's final payload validation barrier.
+ * @param parameters - Exact payload plus confirmed ratification, validation, and publication steps.
+ * @returns Confirmed ratification and publication transactions in submission order.
+ * @throws `BootstrapAdapterError` after a confirmed approval when final validation or publication
+ * fails; failures before approval confirmation pass through unchanged.
+ * @remarks Ecrecover payloads were already validated after signing by the SDK preparation path and
+ * therefore skip this Setter-only second validation. A confirmed Setter approval is retained in the
+ * thrown error so the caller preserves its durable reservation for safe cleanup.
+ */
+export const publishBootstrapPublication = async (
+  parameters: PublishBootstrapPublicationParameters
+): Promise<readonly BootstrapSubmittedTransaction[]> => {
+  const submittedTransactions: BootstrapSubmittedTransaction[] = []
+  try {
+    submittedTransactions.push(...(await parameters.ratify()))
+    if (parameters.ratifierType === 'setter') {
+      try {
+        await parameters.validate(parameters.payload)
+      } catch (error) {
+        if (submittedTransactions.length > 0) {
+          throw new BootstrapAdapterError('mempool-validation-after-ratification')
+        }
+        throw error
+      }
+    }
+    submittedTransactions.push(await parameters.publish())
+    return submittedTransactions
+  } catch (error) {
+    if (submittedTransactions.length === 0) throw error
+    const failure =
+      error instanceof BootstrapAdapterError
+        ? error
+        : new BootstrapAdapterError('publication-after-ratification')
+    throw failure.recordConfirmedTransactions(submittedTransactions)
+  }
+}
 
 /** Production ports used by the default position-bootstrap application service. */
 type ProductionBootstrapAdapters = {
@@ -119,6 +172,42 @@ export const createProductionBootstrapAdapters = (
       morphoApiBaseUrl: config.morphoApiBaseUrl,
       requestTimeoutMs: config.requestTimeoutMs
     })
+  const prepareOffer = async (offer: BootstrapOffer) => {
+    const [market, block] = await Promise.all([
+      midnight.getMarketData(offer.marketId),
+      client.getBlock({ blockTag: 'latest' })
+    ])
+    return createBootstrapOffer({
+      offer,
+      market,
+      maker,
+      ratifier: config.setup.ratifier,
+      now: block.timestamp
+    })
+  }
+  const readGroupConsumed = (groupId: Hex, blockNumber: bigint) =>
+    client.readContract({
+      address: config.setup.midnight,
+      abi: midnightAbi,
+      functionName: 'consumed',
+      args: [maker, groupId],
+      blockNumber
+    })
+  const readPendingGroups = async (
+    blockNumber: bigint,
+    groups: Awaited<ReturnType<typeof readGroups>>,
+    ownedGroupIds: readonly Hex[],
+    offers: Awaited<ReturnType<typeof ownership.readOffers>>
+  ): Promise<BootstrapActiveGroup[]> => {
+    const liveOffers = await readLivePendingBootstrapOffers({
+      groups,
+      ownedGroupIds,
+      offers,
+      readGroupConsumed: groupId => readGroupConsumed(groupId, blockNumber)
+    })
+
+    return liveOffers.map(({ groupId, ...offer }) => ({ id: groupId, ...offer, offerCount: 1 }))
+  }
 
   const activeGroups = async (): Promise<BootstrapActiveGroup[]> => {
     const [block, groups, ownedIds, ownedOffers] = await Promise.all([
@@ -130,6 +219,8 @@ export const createProductionBootstrapAdapters = (
     const intended = new Map(
       ownedOffers.map(offer => [`${offer.groupId}:${offer.marketId}`, offer] as const)
     )
+    const pendingGroups = await readPendingGroups(block.number, groups, ownedIds, ownedOffers)
+
     return [
       ...strategyBootstrapGroups(groups, ownedIds)
         .filter(
@@ -145,6 +236,10 @@ export const createProductionBootstrapAdapters = (
             id: group.id,
             marketId: group.marketId as Hex,
             assets: group.maxAssets - group.consumed,
+            tick: group.tick as bigint,
+            maximumAssets: group.maxAssets,
+            offerCount: group.offers.length,
+            continuousFeeCap: group.continuousFeeCap,
             rateBps:
               persisted?.rateBps ??
               TickLib.tickToApr(
@@ -155,7 +250,7 @@ export const createProductionBootstrapAdapters = (
             ...(persisted ? { referenceObservationId: persisted.referenceObservationId } : {})
           }
         }),
-      ...pendingBootstrapGroups(groups, ownedOffers)
+      ...pendingGroups
     ]
   }
 
@@ -170,6 +265,7 @@ export const createProductionBootstrapAdapters = (
     const intended = new Map(
       ownedOffers.map(offer => [`${offer.groupId}:${offer.marketId}`, offer] as const)
     )
+    const pendingGroups = await readPendingGroups(block.number, groups, ownedIds, ownedOffers)
     const project = (
       selectedGroups: ReturnType<typeof strategyBootstrapGroups>,
       includeIntent: boolean
@@ -190,6 +286,10 @@ export const createProductionBootstrapAdapters = (
             id: group.id,
             marketId: group.marketId as Hex,
             assets: group.maxAssets - group.consumed,
+            tick: group.tick as bigint,
+            maximumAssets: group.maxAssets,
+            offerCount: group.offers.length,
+            continuousFeeCap: group.continuousFeeCap,
             rateBps:
               persisted?.rateBps ??
               TickLib.tickToApr(
@@ -202,10 +302,7 @@ export const createProductionBootstrapAdapters = (
         })
 
     return {
-      activeGroups: [
-        ...project(strategyBootstrapGroups(groups, ownedIds), true),
-        ...pendingBootstrapGroups(groups, ownedOffers)
-      ],
+      activeGroups: [...project(strategyBootstrapGroups(groups, ownedIds), true), ...pendingGroups],
       cashReservations: [
         ...project(
           strategyBootstrapGroups(
@@ -253,6 +350,8 @@ export const createProductionBootstrapAdapters = (
         functionName: 'balanceOf',
         args: [maker]
       }),
+    readMarketContinuousFeeCap: async marketId =>
+      bootstrapContinuousFeeCap(await midnight.getMarketData(marketId)),
     readGroupInventory
   }
 
@@ -263,19 +362,6 @@ export const createProductionBootstrapAdapters = (
       referenceClient as HistoricalBlockReader
     )
   )
-  const prepareOffer = async (offer: BootstrapOffer) => {
-    const [market, block] = await Promise.all([
-      midnight.getMarketData(offer.marketId),
-      client.getBlock({ blockTag: 'latest' })
-    ])
-    return createBootstrapOffer({
-      offer,
-      market,
-      maker,
-      ratifier: config.setup.ratifier,
-      now: block.timestamp
-    })
-  }
   const completeBookOffers = async () => {
     const [groups, ladderPublications] = await Promise.all([readGroups(), ladderOwnership.read()])
     const pendingLadderOffers = (
@@ -377,8 +463,9 @@ export const createProductionBootstrapAdapters = (
   const execute = async (
     transaction: { to: `0x${string}`; data: Hex; value: bigint },
     policy: Parameters<typeof assertBootstrapTransaction>[1],
-    operation: 'cancel' | 'publish',
-    onTransactionSubmitted?: BootstrapTransactionSubmittedObserver
+    operation: 'cancel' | 'ratify' | 'publish',
+    onTransactionSubmitted?: BootstrapTransactionSubmittedObserver,
+    revertOperation = 'transaction-reverted'
   ) => {
     await assertBootstrapTransaction(transaction, policy)
     const hash = await wallet.sendTransaction(transaction)
@@ -387,7 +474,7 @@ export const createProductionBootstrapAdapters = (
       hash,
       timeout: config.transactionReceiptTimeoutMs
     })
-    if (receipt.status !== 'success') throw new BootstrapAdapterError('transaction-reverted')
+    if (receipt.status !== 'success') throw new BootstrapAdapterError(revertOperation)
     return hash
   }
 
@@ -399,7 +486,12 @@ export const createProductionBootstrapAdapters = (
     toProspectiveBookOffer: async offer => {
       const created = await prepareOffer(offer)
       preparedOffers.set(offer.marketId, created)
-      return { marketId: offer.marketId, buy: true, tick: created.tick }
+      return {
+        marketId: offer.marketId,
+        buy: true,
+        tick: created.tick,
+        continuousFeeCap: created.continuousFeeCap
+      }
     },
     invalidate: async (group, onTransactionSubmitted) => {
       return execute(
@@ -436,24 +528,91 @@ export const createProductionBootstrapAdapters = (
         [...ownedIds, ...ladderOwnedIds],
         replacedGroupIds
       )
-      const signatures = await signBootstrapRequirements(
-        await output.getRequirements(),
-        requirement =>
-          requirement.sign(wallet, maker) as Promise<
-            import('@morpho-org/morpho-sdk').MidnightOfferRootSignature
-          >
-      )
+      const tree = Tree.create([created])
+      if (tree.root !== output.root) {
+        throw new BootstrapAdapterError('unexpected-requirement')
+      }
+      const requirementClient = createBootstrapRequirementClient({ account, chain: base, tree })
+      const { signatures, transactions: ratificationTransactions } =
+        await prepareBootstrapRequirements(
+          await output.getRequirements(),
+          (requirement, requirementAccount) =>
+            requirement.sign(requirementClient, requirementAccount) as Promise<
+              import('@morpho-org/morpho-sdk').MidnightOfferRootSignature
+            >,
+          output.ratifierType === 'ecrecover'
+            ? {
+                kind: 'ecrecover',
+                target: config.setup.ratifier,
+                root: output.root,
+                account: maker,
+                offers: tree.offers.length
+              }
+            : { kind: 'setter', target: config.setup.ratifier, root: output.root, account: maker }
+        )
+      if (
+        (output.ratifierType === 'setter' && signatures.length > 0) ||
+        (output.ratifierType === 'ecrecover' &&
+          (signatures.length !== 1 || ratificationTransactions.length > 0))
+      ) {
+        throw new BootstrapAdapterError('unexpected-requirement')
+      }
       const transaction = output.buildTx(signatures)
       const publicationPolicy = {
         kind: 'publication' as const,
         target: getChainAddress(base.id, 'midnightMempool'),
-        offer: created
+        offer: created,
+        ratifierType: output.ratifierType,
+        chainId: base.id,
+        root: output.root,
+        maker
       }
       await assertBootstrapTransaction(transaction, publicationPolicy)
       return {
         groupId: output.groups[0] as Hex,
+        tick: created.tick,
         publish: onTransactionSubmitted =>
-          execute(transaction, publicationPolicy, 'publish', onTransactionSubmitted)
+          publishBootstrapPublication({
+            ratifierType: output.ratifierType,
+            payload: transaction.data,
+            ratify: async () => {
+              const submittedTransactions: BootstrapSubmittedTransaction[] = []
+              for (const ratification of ratificationTransactions) {
+                const txHash = await execute(
+                  ratification,
+                  {
+                    kind: 'ratification',
+                    target: config.setup.ratifier,
+                    root: output.root,
+                    account: maker
+                  },
+                  'ratify',
+                  onTransactionSubmitted,
+                  'ratifier-transaction-reverted'
+                )
+                submittedTransactions.push({ operation: 'ratify' as const, txHash })
+              }
+              return submittedTransactions
+            },
+            validate: payload =>
+              validateBootstrapMempoolPayload({
+                chainId: base.id,
+                baseUrl: `${config.morphoApiBaseUrl}/v0/midnight`,
+                payload
+              }),
+            publish: async () => {
+              const txHash = await execute(
+                transaction,
+                publicationPolicy,
+                'publish',
+                onTransactionSubmitted,
+                output.ratifierType === 'setter'
+                  ? 'publication-transaction-reverted-after-ratification'
+                  : 'transaction-reverted'
+              )
+              return { operation: 'publish' as const, txHash }
+            }
+          })
       }
     }
   })
