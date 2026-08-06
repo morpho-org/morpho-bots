@@ -104,7 +104,9 @@ export const buildLadderTree = (parameters: BuildLadderTreeParameters): Prepared
                 {
                   groupId: tree.offers[0]!.group,
                   side: 'lower' as const,
-                  rungIndexes: lower.map(item => item.rung.index)
+                  rungIndexes: lower.map(item => item.rung.index),
+                  ticks: lower.map(item => item.offer.tick),
+                  continuousFeeCap: BigInt(parameters.market.continuousFee)
                 }
               ]
             : []),
@@ -113,7 +115,9 @@ export const buildLadderTree = (parameters: BuildLadderTreeParameters): Prepared
                 {
                   groupId: tree.offers[lower.length]!.group,
                   side: 'higher' as const,
-                  rungIndexes: higher.map(item => item.rung.index)
+                  rungIndexes: higher.map(item => item.rung.index),
+                  ticks: higher.map(item => item.offer.tick),
+                  continuousFeeCap: BigInt(parameters.market.continuousFee)
                 }
               ]
             : [])
@@ -121,7 +125,9 @@ export const buildLadderTree = (parameters: BuildLadderTreeParameters): Prepared
       : tree.offers.map((offer, index) => ({
           groupId: offer.group,
           side: tagged[index]!.side,
-          rungIndexes: [tagged[index]!.rung.index]
+          rungIndexes: [tagged[index]!.rung.index],
+          ticks: [offer.tick],
+          continuousFeeCap: BigInt(parameters.market.continuousFee)
         }))
 
   return {

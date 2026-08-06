@@ -1,18 +1,30 @@
 import type { Address, Hex } from 'viem'
 
+import { TickLib } from '@morpho-org/midnight-sdk'
 import { describe, expect, test } from 'bun:test'
 
+import type { BootstrapInventoryReader } from '../../../src/infrastructure/bootstrap/bootstrap-position.service'
+
 import { MidnightBootstrapPositionService } from '../../../src/infrastructure/bootstrap/bootstrap-position.service'
+import { buyerAssetReservationCredit } from '../../../src/infrastructure/reservation-credit.utils'
 
 const maker: Address = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
 const marketId: Hex = `0x${'11'.repeat(32)}`
 const firstGroup: Hex = `0x${'22'.repeat(32)}`
 const secondGroup: Hex = `0x${'33'.repeat(32)}`
 
+const fixtureReader = (
+  reader: Omit<BootstrapInventoryReader, 'readReservationCredit'> &
+    Partial<Pick<BootstrapInventoryReader, 'readReservationCredit'>>
+): BootstrapInventoryReader => ({
+  readReservationCredit: async group => group.assets,
+  ...reader
+})
+
 describe('MidnightBootstrapPositionService', () => {
   test('excludes a live group from the capacity available to replace itself', async () => {
     const service = new MidnightBootstrapPositionService(
-      {
+      fixtureReader({
         readPositions: async () => [{ marketId, credit: 0n, debt: 0n }],
         readCashBalance: async () => 100n,
         readMarketContinuousFeeCap: async () => 17n,
@@ -20,7 +32,7 @@ describe('MidnightBootstrapPositionService', () => {
           activeGroups: [{ id: firstGroup, marketId, assets: 100n, rateBps: 500n }],
           cashReservations: []
         })
-      },
+      }),
       maker
     )
 
@@ -33,7 +45,7 @@ describe('MidnightBootstrapPositionService', () => {
   test('keeps every other group in replacement exposure', async () => {
     const otherMarketId: Hex = `0x${'44'.repeat(32)}`
     const service = new MidnightBootstrapPositionService(
-      {
+      fixtureReader({
         readPositions: async () => [
           { marketId, credit: 10n, debt: 0n },
           { marketId: otherMarketId, credit: 5n, debt: 0n }
@@ -48,7 +60,7 @@ describe('MidnightBootstrapPositionService', () => {
           ],
           cashReservations: []
         })
-      },
+      }),
       maker
     )
 
@@ -61,7 +73,7 @@ describe('MidnightBootstrapPositionService', () => {
   test('subtracts other outstanding lend groups from wallet cash capacity', async () => {
     const otherMarketId: Hex = `0x${'44'.repeat(32)}`
     const service = new MidnightBootstrapPositionService(
-      {
+      fixtureReader({
         readPositions: async () => [
           { marketId, credit: 0n, debt: 0n },
           { marketId: otherMarketId, credit: 0n, debt: 0n }
@@ -75,7 +87,7 @@ describe('MidnightBootstrapPositionService', () => {
           ],
           cashReservations: []
         })
-      },
+      }),
       maker
     )
 
@@ -88,7 +100,7 @@ describe('MidnightBootstrapPositionService', () => {
     const otherMarketId: Hex = `0x${'44'.repeat(32)}`
     const inspectionMarketId: Hex = `0x${'55'.repeat(32)}`
     const service = new MidnightBootstrapPositionService(
-      {
+      fixtureReader({
         readPositions: async () => [
           { marketId, credit: 0n, debt: 0n },
           { marketId: otherMarketId, credit: 0n, debt: 0n },
@@ -103,7 +115,7 @@ describe('MidnightBootstrapPositionService', () => {
           ],
           cashReservations: []
         })
-      },
+      }),
       maker
     )
 
@@ -118,7 +130,7 @@ describe('MidnightBootstrapPositionService', () => {
 
   test('rehydrates persisted intended rate and reference observation', async () => {
     const service = new MidnightBootstrapPositionService(
-      {
+      fixtureReader({
         readPositions: async () => [{ marketId, credit: 0n, debt: 0n }],
         readCashBalance: async () => 100n,
         readMarketContinuousFeeCap: async () => 17n,
@@ -134,7 +146,7 @@ describe('MidnightBootstrapPositionService', () => {
           ],
           cashReservations: []
         })
-      },
+      }),
       maker
     )
 
@@ -148,7 +160,7 @@ describe('MidnightBootstrapPositionService', () => {
 
   test('forces reconciliation when duplicate active groups exist for one market', async () => {
     const service = new MidnightBootstrapPositionService(
-      {
+      fixtureReader({
         readPositions: async () => [{ marketId, credit: 10n, debt: 0n }],
         readCashBalance: async () => 100n,
         readMarketContinuousFeeCap: async () => 17n,
@@ -159,7 +171,7 @@ describe('MidnightBootstrapPositionService', () => {
           ],
           cashReservations: []
         })
-      },
+      }),
       maker
     )
 
@@ -177,7 +189,7 @@ describe('MidnightBootstrapPositionService', () => {
 
   test('forces reconciliation when one group contains multiple offers', async () => {
     const service = new MidnightBootstrapPositionService(
-      {
+      fixtureReader({
         readPositions: async () => [{ marketId, credit: 10n, debt: 0n }],
         readCashBalance: async () => 100n,
         readMarketContinuousFeeCap: async () => 17n,
@@ -185,7 +197,7 @@ describe('MidnightBootstrapPositionService', () => {
           activeGroups: [{ id: firstGroup, marketId, assets: 20n, rateBps: 500n, offerCount: 2 }],
           cashReservations: []
         })
-      },
+      }),
       maker
     )
 
@@ -194,7 +206,7 @@ describe('MidnightBootstrapPositionService', () => {
 
   test('forces reconciliation when a pending group has no persisted fee cap', async () => {
     const service = new MidnightBootstrapPositionService(
-      {
+      fixtureReader({
         readPositions: async () => [{ marketId, credit: 10n, debt: 0n }],
         readCashBalance: async () => 100n,
         readMarketContinuousFeeCap: async () => 17n,
@@ -202,7 +214,7 @@ describe('MidnightBootstrapPositionService', () => {
           activeGroups: [{ id: firstGroup, marketId, assets: 20n, rateBps: 500n, offerCount: 1 }],
           cashReservations: []
         })
-      },
+      }),
       maker
     )
 
@@ -211,7 +223,7 @@ describe('MidnightBootstrapPositionService', () => {
 
   test('forces reconciliation when a resting fee cap differs from live policy', async () => {
     const service = new MidnightBootstrapPositionService(
-      {
+      fixtureReader({
         readPositions: async () => [{ marketId, credit: 10n, debt: 0n }],
         readCashBalance: async () => 100n,
         readMarketContinuousFeeCap: async () => 17n,
@@ -228,7 +240,7 @@ describe('MidnightBootstrapPositionService', () => {
           ],
           cashReservations: []
         })
-      },
+      }),
       maker
     )
 
@@ -237,7 +249,7 @@ describe('MidnightBootstrapPositionService', () => {
 
   test('keeps a singleton group resting when its fee cap matches live policy', async () => {
     const service = new MidnightBootstrapPositionService(
-      {
+      fixtureReader({
         readPositions: async () => [{ marketId, credit: 10n, debt: 0n }],
         readCashBalance: async () => 100n,
         readMarketContinuousFeeCap: async () => 17n,
@@ -254,17 +266,55 @@ describe('MidnightBootstrapPositionService', () => {
           ],
           cashReservations: []
         })
-      },
+      }),
       maker
     )
 
     expect((await service.readPosition(marketId)).requiresReconciliation).toBe(false)
   })
 
+  test('converts reserved buyer assets to worst-case credit units', async () => {
+    expect(TickLib.tickToPrice(3_976n)).toBe(953_129_400_000_000_000n)
+    const service = new MidnightBootstrapPositionService(
+      fixtureReader({
+        readPositions: async () => [{ marketId, credit: 0n, debt: 0n }],
+        readCashBalance: async () => 200n,
+        readMarketContinuousFeeCap: async () => 0n,
+        readGroupInventory: async () => ({
+          activeGroups: [],
+          cashReservations: [
+            {
+              id: firstGroup,
+              marketId,
+              assets: 100n,
+              rateBps: 500n,
+              tick: 3_976n,
+              continuousFeeCap: 0n
+            }
+          ]
+        }),
+        readReservationCredit: async group =>
+          buyerAssetReservationCredit({
+            assets: group.assets,
+            tick: group.tick!,
+            settlementFee: 0n,
+            continuousFeeCap: group.continuousFeeCap!
+          })
+      }),
+      maker
+    )
+
+    const position = await service.readPosition(marketId)
+
+    expect(position.cashBalance).toBe(100n)
+    expect(position.marketExposure).toBe(105n)
+    expect(position.totalExposure).toBe(105n)
+  })
+
   test('reserves ladder buys without treating them as replaceable bootstrap offers', async () => {
     const otherMarketId: Hex = `0x${'44'.repeat(32)}`
     const service = new MidnightBootstrapPositionService(
-      {
+      fixtureReader({
         readPositions: async () => [
           { marketId, credit: 10n, debt: 0n },
           { marketId: otherMarketId, credit: 5n, debt: 0n }
@@ -278,7 +328,7 @@ describe('MidnightBootstrapPositionService', () => {
             { id: secondGroup, marketId: otherMarketId, assets: 40n, rateBps: 600n }
           ]
         })
-      },
+      }),
       maker
     )
 

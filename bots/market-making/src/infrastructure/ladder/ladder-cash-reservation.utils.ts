@@ -3,12 +3,21 @@ import type { Hex } from 'viem'
 import type { BootstrapRawGroup } from '../bootstrap/bootstrap-groups.utils'
 import type { OwnedLadderPublication } from './ladder-group-ownership.utils'
 
-type BootstrapOfferIntent = { groupId: Hex; marketId: Hex; assets: bigint }
+import { LadderAdapterError } from './ladder-adapter.error'
+
+type BootstrapOfferIntent = {
+  groupId: Hex
+  marketId: Hex
+  assets: bigint
+  tick?: bigint
+  continuousFeeCap?: bigint
+}
 
 type LadderCashReservation = {
   id: Hex
   marketIds: readonly Hex[]
   assets: bigint
+  offers: readonly { marketId: Hex; tick: bigint; continuousFeeCap: bigint }[]
 }
 
 /**
@@ -30,7 +39,23 @@ export const pendingLadderBuyReservations = (
         const assets = publication.quote.higher
           .filter(rung => indexes.has(rung.index))
           .reduce((sum, rung) => sum + rung.assets, 0n)
-        return { id: group.groupId, marketIds: [publication.marketId], assets }
+        if (
+          group.ticks === undefined ||
+          group.ticks.length !== group.rungIndexes.length ||
+          group.continuousFeeCap === undefined
+        ) {
+          throw new LadderAdapterError('group-ownership-state')
+        }
+        return {
+          id: group.groupId,
+          marketIds: [publication.marketId],
+          assets,
+          offers: group.ticks.map(tick => ({
+            marketId: publication.marketId,
+            tick,
+            continuousFeeCap: group.continuousFeeCap as bigint
+          }))
+        }
       })
   )
 }
@@ -70,7 +95,14 @@ export const ladderCashReservations = (parameters: {
       reservations.set(group.id, {
         id: group.id,
         marketIds,
-        assets: group.maxAssets - group.consumed
+        assets: group.maxAssets - group.consumed,
+        offers: group.offers
+          .filter(offer => offer.buy)
+          .map(offer => ({
+            marketId: offer.marketId,
+            tick: offer.tick,
+            continuousFeeCap: group.continuousFeeCap ?? 0n
+          }))
       })
     }
   }
@@ -88,7 +120,17 @@ export const ladderCashReservations = (parameters: {
       reservations.set(offer.groupId, {
         id: offer.groupId,
         marketIds: [offer.marketId],
-        assets: offer.assets
+        assets: offer.assets,
+        offers:
+          offer.tick === undefined
+            ? []
+            : [
+                {
+                  marketId: offer.marketId,
+                  tick: offer.tick,
+                  continuousFeeCap: offer.continuousFeeCap ?? 0n
+                }
+              ]
       })
     }
   }

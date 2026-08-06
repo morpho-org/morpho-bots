@@ -36,6 +36,10 @@ import {
   createBlueReferenceReader,
   type HistoricalBlockReader
 } from '../reference/blue-reference-reader.utils'
+import {
+  buyerAssetReservationCredit,
+  createBuyerAssetReservation
+} from '../reservation-credit.utils'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 import { bootstrapExposureMarketIds } from './bootstrap-exposure.utils'
 import { createBootstrapGroupOwnership } from './bootstrap-group-ownership.utils'
@@ -314,11 +318,13 @@ export const createProductionBootstrapAdapters = (
           false
         ),
         ...pendingLadderBuyReservations(groups, ladderPublications).flatMap(reservation =>
-          reservation.marketIds.map(marketId => ({
+          reservation.offers.map(offer => ({
             id: reservation.id,
-            marketId,
+            marketId: offer.marketId,
             assets: reservation.assets,
-            rateBps: 0n
+            rateBps: 0n,
+            tick: offer.tick,
+            continuousFeeCap: offer.continuousFeeCap
           }))
         )
       ]
@@ -352,7 +358,24 @@ export const createProductionBootstrapAdapters = (
       }),
     readMarketContinuousFeeCap: async marketId =>
       bootstrapContinuousFeeCap(await midnight.getMarketData(marketId)),
-    readGroupInventory
+    readGroupInventory,
+    readReservationCredit: async group => {
+      if (group.tick === undefined || group.continuousFeeCap === undefined) {
+        throw new BootstrapAdapterError('group-ownership-state')
+      }
+      const [market, block] = await Promise.all([
+        midnight.getMarketData(group.marketId),
+        client.getBlock({ blockTag: 'latest' })
+      ])
+      return buyerAssetReservationCredit(
+        createBuyerAssetReservation({
+          assets: group.assets,
+          tick: group.tick,
+          market,
+          now: block.timestamp
+        })
+      )
+    }
   }
 
   const positions = new MidnightBootstrapPositionService(inventory, maker)

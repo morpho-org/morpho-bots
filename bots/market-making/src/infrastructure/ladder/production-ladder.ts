@@ -37,6 +37,10 @@ import { BlueBootstrapReferenceRateService } from '../bootstrap/bootstrap-refere
 import { createManagedMakerAccount } from '../make/managed-maker-account.utils'
 import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
 import {
+  buyerAssetReservationCredit,
+  createBuyerAssetReservation
+} from '../reservation-credit.utils'
+import {
   activeOwnedLadderGroupIds,
   reconstructOwnedLadderPublication
 } from './ladder-active-publication.utils'
@@ -238,12 +242,50 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
       })
       const reservedCash = reservations.reduce((sum, reservation) => sum + reservation.assets, 0n)
       const availableCash = remaining(minimum(cashBalance, allowance), reservedCash)
+      const reservationMarketIds = [
+        ...new Set(
+          reservations.flatMap(reservation => reservation.offers.map(offer => offer.marketId))
+        )
+      ]
+      const marketById = new Map(
+        await Promise.all(
+          reservationMarketIds.map(
+            async reservationMarketId =>
+              [reservationMarketId, await midnight.getMarketData(reservationMarketId)] as const
+          )
+        )
+      )
+      const reservationCredit = (
+        reservation: (typeof reservations)[number],
+        selectedMarketId?: Hex
+      ) => {
+        const credits = reservation.offers
+          .filter(offer => selectedMarketId === undefined || offer.marketId === selectedMarketId)
+          .map(offer => {
+            const market = marketById.get(offer.marketId)
+            if (!market) throw new LadderAdapterError('position-unavailable')
+            return buyerAssetReservationCredit(
+              createBuyerAssetReservation({
+                assets: reservation.assets,
+                tick: offer.tick,
+                market,
+                now: block.timestamp
+              })
+            )
+          })
+        if (credits.length === 0) throw new LadderAdapterError('group-ownership-state')
+        return credits.reduce((largest, credit) => (credit > largest ? credit : largest), 0n)
+      }
       const marketReserved = reservations
         .filter(reservation => reservation.marketIds.includes(marketId))
-        .reduce((sum, reservation) => sum + reservation.assets, 0n)
+        .reduce((sum, reservation) => sum + reservationCredit(reservation, marketId), 0n)
       const marketExposure = selectedPosition.credit + marketReserved
       const totalCredit = positionSnapshots.reduce((sum, position) => sum + position.credit, 0n)
-      const totalExposure = totalCredit + reservedCash
+      const totalReservedCredit = reservations.reduce(
+        (sum, reservation) => sum + reservationCredit(reservation),
+        0n
+      )
+      const totalExposure = totalCredit + totalReservedCredit
 
       return {
         lowerRateCapacityAssets: selectedPosition.credit,

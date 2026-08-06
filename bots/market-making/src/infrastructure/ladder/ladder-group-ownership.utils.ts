@@ -14,6 +14,10 @@ export type LadderGroupReference = {
   groupId: Hex
   side: 'lower' | 'higher'
   rungIndexes: readonly number[]
+  /** Exact encoded ticks for the referenced rungs, persisted before publication. */
+  ticks?: readonly bigint[]
+  /** Exact continuous fee cap accepted by the referenced offers. */
+  continuousFeeCap?: bigint
 }
 
 /** Durable publication intent used to reconstruct active ladder state safely. */
@@ -34,7 +38,13 @@ type LadderOwnershipDependencies = {
 }
 
 type PersistedRung = { index: number; rateBps: string; assets: string }
-type PersistedGroup = { groupId: string; side: string; rungIndexes: number[] }
+type PersistedGroup = {
+  groupId: string
+  side: string
+  rungIndexes: number[]
+  ticks?: string[]
+  continuousFeeCap?: string
+}
 type PersistedPublication = {
   marketId: string
   status: string
@@ -125,7 +135,11 @@ const canonicalGroup = (value: unknown): LadderGroupReference => {
   return {
     groupId: canonicalId(group.groupId),
     side: group.side,
-    rungIndexes: group.rungIndexes.map(canonicalIndex)
+    rungIndexes: group.rungIndexes.map(canonicalIndex),
+    ...(group.ticks === undefined ? {} : { ticks: group.ticks.map(canonicalAmount) }),
+    ...(group.continuousFeeCap === undefined
+      ? {}
+      : { continuousFeeCap: canonicalAmount(group.continuousFeeCap) })
   }
 }
 
@@ -183,7 +197,11 @@ const serializePublication = (publication: OwnedLadderPublication): PersistedPub
   groups: publication.groups.map(group => ({
     groupId: group.groupId,
     side: group.side,
-    rungIndexes: [...group.rungIndexes]
+    rungIndexes: [...group.rungIndexes],
+    ...(group.ticks === undefined ? {} : { ticks: group.ticks.map(String) }),
+    ...(group.continuousFeeCap === undefined
+      ? {}
+      : { continuousFeeCap: String(group.continuousFeeCap) })
   }))
 })
 

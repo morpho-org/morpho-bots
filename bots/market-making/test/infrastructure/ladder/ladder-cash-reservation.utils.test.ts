@@ -25,13 +25,29 @@ const publication: OwnedLadderPublication = {
       { index: 1, rateBps: 700n, assets: 20n }
     ]
   },
-  groups: [{ groupId: ladderGroupId, side: 'higher', rungIndexes: [0, 1] }]
+  groups: [
+    {
+      groupId: ladderGroupId,
+      side: 'higher',
+      rungIndexes: [0, 1],
+      ticks: [3_976n, 4_000n],
+      continuousFeeCap: 0n
+    }
+  ]
 }
 
 describe('ladder cash reservations', () => {
   test('projects an API-missing persisted ladder buy at its full intended assets', () => {
     expect(pendingLadderBuyReservations([], [publication])).toEqual([
-      { id: ladderGroupId, marketIds: [marketId], assets: 50n }
+      {
+        id: ladderGroupId,
+        marketIds: [marketId],
+        assets: 50n,
+        offers: [
+          { marketId, tick: 3_976n, continuousFeeCap: 0n },
+          { marketId, tick: 4_000n, continuousFeeCap: 0n }
+        ]
+      }
     ])
   })
 
@@ -45,14 +61,29 @@ describe('ladder cash reservations', () => {
           {
             groupId: bootstrapGroupId,
             marketId,
-            assets: 40n
+            assets: 40n,
+            tick: 4_100n,
+            continuousFeeCap: 17n
           }
         ],
         replacedGroupIds: new Set()
       })
     ).toEqual([
-      { id: ladderGroupId, marketIds: [marketId], assets: 50n },
-      { id: bootstrapGroupId, marketIds: [marketId], assets: 40n }
+      {
+        id: ladderGroupId,
+        marketIds: [marketId],
+        assets: 50n,
+        offers: [
+          { marketId, tick: 3_976n, continuousFeeCap: 0n },
+          { marketId, tick: 4_000n, continuousFeeCap: 0n }
+        ]
+      },
+      {
+        id: bootstrapGroupId,
+        marketIds: [marketId],
+        assets: 40n,
+        offers: [{ marketId, tick: 4_100n, continuousFeeCap: 17n }]
+      }
     ])
   })
 

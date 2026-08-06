@@ -41,6 +41,8 @@ export interface BootstrapInventoryReader {
   readMarketContinuousFeeCap(marketId: Hex): Promise<bigint>
   /** Reads bootstrap offers and independently owned buy-side reservations in one snapshot. @returns Current grouped inventory without treating reservations as replaceable bootstrap offers. */
   readGroupInventory(): Promise<BootstrapGroupInventory>
+  /** Converts one raw buy reservation into conservative credit units at its exact offer terms. @param group - Resting or prospective buy reservation. @returns Maximum credit units created by consuming its remaining assets. */
+  readReservationCredit(group: BootstrapActiveGroup): Promise<bigint>
 }
 
 /** Concrete position adapter deriving exposure from accrued credit and active lend reserves. */
@@ -97,13 +99,16 @@ export class MidnightBootstrapPositionService implements BootstrapPositionServic
     ]
     const reservedCash = replacementGroups.reduce((total, group) => total + group.assets, 0n)
     const availableCash = cashBalance > reservedCash ? cashBalance - reservedCash : 0n
-    const reservedByMarket = marketReplacementGroups.reduce(
-      (total, group) => total + group.assets,
-      0n
-    )
+    const reservedByMarket = (
+      await Promise.all(
+        marketReplacementGroups.map(group => this.reader.readReservationCredit(group))
+      )
+    ).reduce((total, credit) => total + credit, 0n)
     const totalExposure =
       positions.reduce((total, item) => total + item.credit, 0n) +
-      replacementGroups.reduce((total, group) => total + group.assets, 0n)
+      (
+        await Promise.all(replacementGroups.map(group => this.reader.readReservationCredit(group)))
+      ).reduce((total, credit) => total + credit, 0n)
     const activeOffer: BootstrapOffer | undefined = activeGroup
       ? {
           marketId,
