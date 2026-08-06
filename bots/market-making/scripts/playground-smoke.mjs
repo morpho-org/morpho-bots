@@ -11,6 +11,7 @@ import {
   createCdpClient,
   describeHttpFailures,
   discoverChromium,
+  inspectProcessTree,
   openWebSocket,
   prepareFreshDist,
   resignalAfterCleanup,
@@ -31,6 +32,8 @@ const injectEarlyFormBusActivity =
   process.env.PLAYGROUND_SMOKE_MUTATION_EARLY_FORM_BUS_ACTIVITY ?? ''
 const injectTerminalActivity =
   process.env.PLAYGROUND_SMOKE_MUTATION_TERMINAL_ACTIVITY === 'after-final-phase'
+const buildCaptureBarrierFile = process.env.PLAYGROUND_SMOKE_BUILD_CAPTURE_BARRIER_FILE
+const buildCaptureFile = process.env.PLAYGROUND_SMOKE_BUILD_CAPTURE_FILE
 const expectedPersistencePhases = Object.freeze([
   'initial baseline',
   'collection edits',
@@ -93,12 +96,48 @@ let browser
 let browserSocket
 let browserClient
 let browserReady = false
+let buildCapturePromise
+
+if (Boolean(buildCaptureBarrierFile) !== Boolean(buildCaptureFile)) {
+  throw new Error(
+    'PLAYGROUND_SMOKE_BUILD_CAPTURE_BARRIER_FILE and PLAYGROUND_SMOKE_BUILD_CAPTURE_FILE must be set together'
+  )
+}
 
 const stopChild = (child, cleanupOptions) => terminateOwnedProcessTree(child, cleanupOptions)
 const trackChild = child => {
   children.add(child)
   const release = () => children.delete(child)
   child.once('close', release)
+  return release
+}
+const captureBuildTree = async build => {
+  const initialProcesses = await inspectProcessTree(build.pid)
+  const root = initialProcesses.find(({ pid }) => pid === build.pid)
+  assert.ok(root, `build process ${build.pid} disappeared before identity capture`)
+  await waitForReadiness(() => readFile(buildCaptureBarrierFile), {
+    child: build,
+    childName: 'Fresh playground build',
+    description: 'test-owned build process capture barrier',
+    timeoutMs: cleanupTimeout,
+    pollIntervalMs: 1
+  })
+  const descendants = (await inspectProcessTree(build.pid)).filter(({ pid }) => pid !== build.pid)
+  await writeFile(
+    buildCaptureFile,
+    JSON.stringify({
+      kind: 'market-making-playground-build-process-tree',
+      processes: [root, ...descendants],
+      rootPid: build.pid
+    })
+  )
+}
+const trackBuildProcess = build => {
+  const release = trackChild(build)
+  if (buildCaptureFile) {
+    buildCapturePromise = captureBuildTree(build)
+    void buildCapturePromise.catch(() => {})
+  }
   return release
 }
 const stopOwnedChild = async (child, cleanupOptions) => {
@@ -123,12 +162,15 @@ const cleanup = () =>
   (cleanupPromise ??= runBounded(
     async (signal, deadline) => {
       browserClient?.dispose(new Error('Smoke cleanup started'))
+      const captureResults = buildCapturePromise
+        ? await Promise.allSettled([buildCapturePromise])
+        : []
       const cleanupOptions = { deadline, signal }
       const childResults = await Promise.allSettled(
         [...children].map(child => stopOwnedChild(child, cleanupOptions))
       )
       if (signal.aborted) {
-        const failures = childResults.flatMap(result =>
+        const failures = [...captureResults, ...childResults].flatMap(result =>
           result.status === 'rejected' ? [result.reason] : []
         )
         throw new AggregateError(
@@ -147,7 +189,7 @@ const cleanup = () =>
           rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
         )
       ])
-      const failures = [...childResults, ...resourceResults].flatMap(result =>
+      const failures = [...captureResults, ...childResults, ...resourceResults].flatMap(result =>
         result.status === 'rejected' ? [result.reason] : []
       )
       if (failures.length) {
@@ -187,7 +229,7 @@ try {
       prepareFreshDist({
         root,
         onDistCreated: directory => ownedDirectories.add(directory),
-        onBuildProcess: trackChild,
+        onBuildProcess: trackBuildProcess,
         signal: AbortSignal.any([shutdown.signal, signal])
       }),
     { description: 'fresh playground build', timeoutMs: buildTimeout }

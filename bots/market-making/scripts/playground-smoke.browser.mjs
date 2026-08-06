@@ -57,7 +57,7 @@ const sameIdentityExists = async expected => {
   return current?.startTime === expected.startTime
 }
 
-const waitForIdentitiesGone = async identities =>
+const waitForIdentitiesGoneWithin = async (identities, timeoutMs) =>
   waitForReadiness(
     async () => {
       const remaining = []
@@ -68,10 +68,11 @@ const waitForIdentitiesGone = async identities =>
     },
     {
       description: 'Chromium process identities to be reaped',
-      timeoutMs: 2_000,
+      timeoutMs,
       pollIntervalMs: 10
     }
   )
+const waitForIdentitiesGone = identities => waitForIdentitiesGoneWithin(identities, 2_000)
 
 const assertPortClosed = port =>
   new Promise((resolve, reject) => {
@@ -409,87 +410,133 @@ test(
   }
 )
 
-test(
-  'build timeout reaps the build process tree and removes temporary build output',
-  { timeout: browserTestTimeout },
-  async () => {
-    const runTimeoutCase = async ({ publishFixture, timeoutMs, waitForFixture }) => {
-      const isolatedTmp = await temporaryDirectory('playground-browser-build-timeout-')
-      const bin = join(isolatedTmp, 'bin')
-      const fakeBun = join(bin, 'bun')
-      const buildPidFile = join(isolatedTmp, 'build-pid')
-      const descendantPidFile = join(isolatedTmp, 'build-descendant-pid')
-      await mkdir(bin)
-      await writeFile(
-        fakeBun,
-        `#!/usr/bin/env node
+const runBuildTimeoutCase = async ({ publishFixture, timeoutMs, waitForFixture }) => {
+  const isolatedTmp = await temporaryDirectory('playground-browser-build-timeout-')
+  const bin = join(isolatedTmp, 'bin')
+  const fakeBun = join(bin, 'bun')
+  const buildPidFile = join(isolatedTmp, 'build-pid')
+  const descendantPidFile = join(isolatedTmp, 'build-descendant-pid')
+  const captureBarrierFile = join(isolatedTmp, 'build-capture-ready')
+  const captureFile = join(isolatedTmp, 'build-capture.json')
+  await mkdir(bin)
+  await writeFile(
+    fakeBun,
+    `#!/usr/bin/env node
 const { spawn } = require('node:child_process')
 const { writeFileSync } = require('node:fs')
+const child = spawn(process.execPath, ['-e', \`setInterval(() => {}, 1000)\`], {
+  stdio: 'ignore'
+})
+writeFileSync(process.env.PLAYGROUND_SMOKE_BUILD_CAPTURE_BARRIER_FILE, '')
 if (${publishFixture}) {
-  const child = spawn(process.execPath, ['-e', \`
-    const { writeFileSync } = require('node:fs')
-    writeFileSync(process.env.SMOKE_BUILD_DESCENDANT_PID_FILE, String(process.pid))
-    setInterval(() => {}, 1000)
-  \`], { stdio: 'ignore' })
-  writeFileSync(process.env.SMOKE_BUILD_PID_FILE, String(process.pid))
-  child.on('close', () => process.exit(0))
+  setTimeout(() => {
+    writeFileSync(process.env.SMOKE_BUILD_PID_FILE, String(process.pid))
+    writeFileSync(process.env.SMOKE_BUILD_DESCENDANT_PID_FILE, String(child.pid))
+  }, 250)
 }
+child.on('close', () => process.exit(0))
 setInterval(() => {}, 1000)
 `
-      )
-      await chmod(fakeBun, 0o755)
-      const run = spawnSmoke({
-        env: {
-          ...process.env,
-          CHROMIUM_PATH: chromiumPath,
-          PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
-          PLAYGROUND_SMOKE_BUILD_TIMEOUT_MS: String(timeoutMs),
-          SMOKE_BUILD_PID_FILE: buildPidFile,
-          SMOKE_BUILD_DESCENDANT_PID_FILE: descendantPidFile,
-          TMPDIR: isolatedTmp
-        }
-      })
-      let captured = [await processIdentity(run.child.pid)].filter(Boolean)
-      if (waitForFixture) {
-        await waitForReadiness(
-          () => Promise.all([readFile(buildPidFile), readFile(descendantPidFile)]),
-          {
-            child: run.child,
-            childName: 'Smoke test',
-            description: 'post-spawn build process capture',
-            getStderr: () => run.stderr,
-            timeoutMs: 2_000
-          }
-        )
-        captured = await inspectProcessTree(run.child.pid)
-        assert.ok(captured.length >= 4, `expected owned build tree, got ${captured.length}`)
-      }
-
-      await assert.rejects(
-        successfulSmokeResult(run),
-        new RegExp(`Timed out after ${timeoutMs}ms during fresh playground build`)
-      )
-      await cleanupHarnessRun(run)
-
-      await waitForIdentitiesGone(captured)
-      assert.deepEqual(
-        (await readdir(isolatedTmp)).filter(name =>
-          name.startsWith('market-making-playground-dist-')
-        ),
-        []
-      )
-      return { buildPidFile, descendantPidFile }
+  )
+  await chmod(fakeBun, 0o755)
+  const run = spawnSmoke({
+    env: {
+      ...process.env,
+      CHROMIUM_PATH: chromiumPath,
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
+      PLAYGROUND_SMOKE_BUILD_CAPTURE_BARRIER_FILE: captureBarrierFile,
+      PLAYGROUND_SMOKE_BUILD_CAPTURE_FILE: captureFile,
+      PLAYGROUND_SMOKE_BUILD_TIMEOUT_MS: String(timeoutMs),
+      SMOKE_BUILD_PID_FILE: buildPidFile,
+      SMOKE_BUILD_DESCENDANT_PID_FILE: descendantPidFile,
+      TMPDIR: isolatedTmp
     }
+  })
+  let captured = [await processIdentity(run.child.pid)].filter(Boolean)
+  if (waitForFixture) {
+    await waitForReadiness(
+      () => Promise.all([readFile(buildPidFile), readFile(descendantPidFile)]),
+      {
+        child: run.child,
+        childName: 'Smoke test',
+        description: 'post-spawn build process capture',
+        getStderr: () => run.stderr,
+        timeoutMs: 2_000
+      }
+    )
+    captured = await inspectProcessTree(run.child.pid)
+    assert.ok(captured.length >= 4, `expected owned build tree, got ${captured.length}`)
+  }
 
-    const beforeReadiness = await runTimeoutCase({
+  await assert.rejects(
+    successfulSmokeResult(run),
+    new RegExp(`Timed out after ${timeoutMs}ms during fresh playground build`)
+  )
+  const recordedBuildTree = JSON.parse(await readFile(captureFile, 'utf8'))
+  assert.equal(recordedBuildTree.kind, 'market-making-playground-build-process-tree')
+  assert.equal(recordedBuildTree.rootPid, recordedBuildTree.processes[0]?.pid)
+  assert.ok(
+    recordedBuildTree.processes.length >= 4,
+    `expected the build subreaper, build runner, fake Bun, and descendant; got ${JSON.stringify(recordedBuildTree)}`
+  )
+  captured = [
+    ...captured,
+    ...recordedBuildTree.processes.filter(
+      processInfo =>
+        !captured.some(
+          existing =>
+            existing.pid === processInfo.pid && existing.startTime === processInfo.startTime
+        )
+    )
+  ]
+  await cleanupHarnessRun(run)
+
+  await waitForIdentitiesGone(captured)
+  assert.deepEqual(
+    (await readdir(isolatedTmp)).filter(name => name.startsWith('market-making-playground-dist-')),
+    []
+  )
+  await Promise.all([rm(captureFile), rm(captureBarrierFile)])
+  await assert.rejects(readFile(captureFile, 'utf8'), { code: 'ENOENT' })
+  await assert.rejects(readFile(captureBarrierFile, 'utf8'), { code: 'ENOENT' })
+  return { buildPidFile, captured, descendantPidFile }
+}
+
+test(
+  'build timeout captures and reaps pre-readiness and post-spawn process trees',
+  { timeout: browserTestTimeout },
+  async () => {
+    const preReadiness = await runBuildTimeoutCase({
       publishFixture: false,
       timeoutMs: 100,
       waitForFixture: false
     })
-    await assert.rejects(readFile(beforeReadiness.buildPidFile, 'utf8'), { code: 'ENOENT' })
-    await assert.rejects(readFile(beforeReadiness.descendantPidFile, 'utf8'), { code: 'ENOENT' })
+    assert.ok(
+      preReadiness.captured.length >= 5,
+      `expected smoke harness plus build tree: ${preReadiness.captured}`
+    )
+    await assert.rejects(readFile(preReadiness.buildPidFile, 'utf8'), { code: 'ENOENT' })
+    await assert.rejects(readFile(preReadiness.descendantPidFile, 'utf8'), { code: 'ENOENT' })
 
-    await runTimeoutCase({ publishFixture: true, timeoutMs: 3_000, waitForFixture: true })
+    const controlledLeak = spawnOwnedProcess(
+      process.execPath,
+      ['-e', 'setInterval(() => {}, 1000)'],
+      {
+        stdio: 'ignore'
+      }
+    )
+    try {
+      const leakedIdentity = await processIdentity(controlledLeak.pid)
+      assert.ok(leakedIdentity)
+      await assert.rejects(
+        waitForIdentitiesGoneWithin([leakedIdentity], 25),
+        /Timed out after 25ms waiting for Chromium process identities to be reaped/
+      )
+    } finally {
+      await terminateOwnedProcessTree(controlledLeak)
+    }
+
+    await runBuildTimeoutCase({ publishFixture: true, timeoutMs: 3_000, waitForFixture: true })
   }
 )
 
