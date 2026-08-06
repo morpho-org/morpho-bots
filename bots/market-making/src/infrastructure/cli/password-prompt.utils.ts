@@ -18,12 +18,14 @@ type PasswordPromptOptions = {
   input?: InteractiveInput
   output?: InteractiveOutput
   signal?: AbortSignal
+  secretBytes?: number[]
 }
 
 /**
  * Reads one password from an interactive TTY without echoing secret bytes.
- * @param options - Optional input, output, and cancellation overrides.
- * @returns Password entered before the first line ending.
+ * @param options - Optional input, output, cancellation, and mutable-byte-storage overrides.
+ * @returns Password entered before the first line ending. Mutable accumulation and conversion
+ * buffers are zeroed during cleanup; the returned immutable JavaScript string cannot be wiped.
  */
 export const readPasswordInteractively = (options: PasswordPromptOptions = {}) =>
   new Promise<string>((resolve, reject) => {
@@ -34,7 +36,7 @@ export const readPasswordInteractively = (options: PasswordPromptOptions = {}) =
       return
     }
 
-    const passwordBytes: number[] = []
+    const passwordBytes = options.secretBytes ?? []
     let settled = false
     let rawMode = false
     let prompted = false
@@ -56,6 +58,7 @@ export const readPasswordInteractively = (options: PasswordPromptOptions = {}) =
           output.write('\n')
         } catch {}
       }
+      passwordBytes.fill(0)
     }
     const finish = (password?: string) => {
       if (settled) return
@@ -66,27 +69,41 @@ export const readPasswordInteractively = (options: PasswordPromptOptions = {}) =
     }
     const onFailure = () => finish()
     const onData = (chunk: Buffer | Uint8Array | string) => {
-      const bytes = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk
-      for (const byte of bytes) {
-        if (byte === 3) {
-          finish()
-          return
-        }
-        if (byte === 13 || byte === 10) {
-          finish(Buffer.from(passwordBytes).toString('utf8'))
-          return
-        }
-        if (byte === 8 || byte === 127) {
-          if (passwordBytes.length > 0) {
-            const characters = Array.from(Buffer.from(passwordBytes).toString('utf8'))
-            characters.pop()
-            passwordBytes.splice(
-              0,
-              passwordBytes.length,
-              ...Buffer.from(characters.join(''), 'utf8')
-            )
+      const converted = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : undefined
+      const bytes: Uint8Array = typeof chunk === 'string' ? converted! : chunk
+      try {
+        for (const byte of bytes) {
+          if (byte === 3) {
+            finish()
+            return
           }
-        } else if (byte >= 32) passwordBytes.push(byte)
+          if (byte === 13 || byte === 10) {
+            const passwordBuffer = Buffer.from(passwordBytes)
+            try {
+              finish(passwordBuffer.toString('utf8'))
+            } finally {
+              passwordBuffer.fill(0)
+            }
+            return
+          }
+          if (byte === 8 || byte === 127) {
+            if (passwordBytes.length > 0) {
+              const current = Buffer.from(passwordBytes)
+              let replacement: Buffer | undefined
+              try {
+                const characters = Array.from(current.toString('utf8'))
+                characters.pop()
+                replacement = Buffer.from(characters.join(''), 'utf8')
+                passwordBytes.splice(0, passwordBytes.length, ...replacement)
+              } finally {
+                current.fill(0)
+                replacement?.fill(0)
+              }
+            }
+          } else if (byte >= 32) passwordBytes.push(byte)
+        }
+      } finally {
+        converted?.fill(0)
       }
     }
 

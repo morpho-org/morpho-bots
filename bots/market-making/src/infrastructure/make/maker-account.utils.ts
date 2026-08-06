@@ -2,6 +2,8 @@ import type { Hex, LocalAccount, SignableMessage } from 'viem'
 
 import { GetPublicKeyCommand, KMSClient, SignCommand } from '@aws-sdk/client-kms'
 import { Wallet } from '@ethereumjs/wallet'
+import { secp256k1 } from '@noble/curves/secp256k1'
+import { BitString, ObjectIdentifier, Sequence, fromBER } from 'asn1js'
 import { readFile } from 'node:fs/promises'
 import {
   bytesToHex,
@@ -73,11 +75,56 @@ const decryptKeystore = async (json: string, password: string): Promise<Hex> => 
 }
 
 const publicKeyFromSpki = (spki: Uint8Array): Hex => {
-  const publicKey = spki.slice(-65)
-  if (publicKey.length !== 65 || publicKey[0] !== 4) {
+  try {
+    const decoded = fromBER(spki)
+    const canonical = new Uint8Array(decoded.result.toBER(false))
+    if (
+      decoded.offset !== spki.length ||
+      !Buffer.from(canonical).equals(Buffer.from(spki)) ||
+      !(decoded.result instanceof Sequence) ||
+      decoded.result.lenBlock.isIndefiniteForm ||
+      decoded.result.lenBlock.longFormUsed ||
+      decoded.result.warnings.length !== 0
+    ) {
+      throw new MakerAccountError('kms-public-key')
+    }
+    const [algorithmValue, subjectPublicKeyValue, ...spkiTrailing] = decoded.result.valueBlock.value
+    if (
+      !(algorithmValue instanceof Sequence) ||
+      !(subjectPublicKeyValue instanceof BitString) ||
+      spkiTrailing.length !== 0
+    ) {
+      throw new MakerAccountError('kms-public-key')
+    }
+    const [algorithm, curve, ...algorithmTrailing] = algorithmValue.valueBlock.value
+    const derBlocks = [algorithmValue, subjectPublicKeyValue, algorithm, curve]
+    if (
+      derBlocks.some(
+        block =>
+          block === undefined ||
+          block.lenBlock.isIndefiniteForm ||
+          block.lenBlock.longFormUsed ||
+          block.warnings.length !== 0
+      ) ||
+      !(algorithm instanceof ObjectIdentifier) ||
+      algorithm.valueBlock.toString() !== '1.2.840.10045.2.1' ||
+      !(curve instanceof ObjectIdentifier) ||
+      curve.valueBlock.toString() !== '1.3.132.0.10' ||
+      algorithmTrailing.length !== 0 ||
+      subjectPublicKeyValue.valueBlock.unusedBits !== 0
+    ) {
+      throw new MakerAccountError('kms-public-key')
+    }
+    const publicKey = Uint8Array.from(subjectPublicKeyValue.valueBlock.valueHexView)
+    if (publicKey.length !== 65 || publicKey[0] !== 4) {
+      throw new MakerAccountError('kms-public-key')
+    }
+    secp256k1.ProjectivePoint.fromHex(publicKey)
+    return bytesToHex(publicKey)
+  } catch (error) {
+    if (error instanceof MakerAccountError) throw error
     throw new MakerAccountError('kms-public-key')
   }
-  return bytesToHex(publicKey)
 }
 
 const derInteger = (bytes: Uint8Array, offset: number) => {
@@ -180,7 +227,13 @@ export const createMakerAccount = async (
   identity: Exclude<MakerIdentity, { readOnly: true }>,
   dependencies: MakerAccountDependencies = {}
 ): Promise<LocalAccount> => {
-  if (identity.method === 'private-key') return createManagedMakerAccount(identity.privateKey)
+  if (identity.method === 'private-key') {
+    const account = createManagedMakerAccount(identity.privateKey)
+    if (!isAddressEqual(account.address, identity.maker)) {
+      throw new MakerAccountError('maker-address')
+    }
+    return account
+  }
   if (identity.method === 'keystore') {
     let json: string
     try {
@@ -192,9 +245,13 @@ export const createMakerAccount = async (
       json,
       identity.password
     )
-    return privateKeyToAccount(privateKey, {
+    const account = privateKeyToAccount(privateKey, {
       nonceManager: createNonceManager({ source: jsonRpc() })
     })
+    if (!isAddressEqual(account.address, identity.maker)) {
+      throw new MakerAccountError('maker-address')
+    }
+    return account
   }
   return createKmsAccount(identity, dependencies.kms ?? awsKmsSigner)
 }

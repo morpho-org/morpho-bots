@@ -2,6 +2,15 @@ import { describe, expect, test } from 'bun:test'
 
 import { VersionService } from '../../../src/application/version.service'
 import { Cli } from '../../../src/infrastructure/cli/cli'
+import { CliUsageError } from '../../../src/infrastructure/cli/cli-usage.error'
+
+const createCli = () =>
+  new Cli(
+    new VersionService(),
+    () => ({ assertReady: async () => ({ ready: true, checks: [] }) }),
+    () => ({ runOnce: async () => [] }),
+    () => ({ runOnce: async () => [] })
+  )
 
 describe('maker key storage CLI options', () => {
   const captured = async (argv: readonly string[]) => {
@@ -64,5 +73,28 @@ describe('maker key storage CLI options', () => {
     expect(await captured(['--aws', 'setup-check'])).toMatchObject({
       signerEnvironment: { KEY_STORAGE_METHOD: 'aws' }
     })
+  })
+
+  test.each([
+    ['private key', ['--private-key', `0x${'11'.repeat(32)}`]],
+    ['keystore', ['--keystore', '/secure/maker.json']],
+    ['password', ['--password', 'not-reported']],
+    ['interactive', ['--interactive']],
+    ['AWS', ['--aws']]
+  ])('rejects explicit --readonly combined with %s signer options', async (_name, signerArgs) => {
+    await expect(
+      createCli().run(['--readonly', ...signerArgs, 'setup-check'])
+    ).rejects.toBeInstanceOf(CliUsageError)
+  })
+
+  test('warns in CLI help that private-key and password argv values are exposed', async () => {
+    const help = await createCli().run(['--help'])
+
+    expect(help).toContain('--private-key <key>')
+    expect(help).toContain('MAKER_PRIVATE_KEY')
+    expect(help).toContain('process listings and shell history')
+    expect(help).toContain('--password <password>')
+    expect(help).toContain('KEYSTORE_PASSWORD')
+    expect(help).toContain('--interactive')
   })
 })

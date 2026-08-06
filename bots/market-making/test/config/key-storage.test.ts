@@ -11,7 +11,7 @@ const baseEnvironment = {
   CHAIN_ID: '8453',
   RPC_URL: 'https://rpc.example',
   REFERENCE_RPC_URL: 'https://archive.example',
-  MAKER_ADDRESS: '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A',
+  MAKER_ADDRESS: '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A' as const,
   MIDNIGHT_ADDRESS: '0x2222222222222222222222222222222222222222',
   LOAN_ASSET_ADDRESS: '0x3333333333333333333333333333333333333333',
   RATIFIER_ADDRESS: '0x4444444444444444444444444444444444444444',
@@ -110,6 +110,27 @@ describe('maker key storage configuration', () => {
       region: 'eu-west-1'
     })
     expect(config.privateKey).toBeUndefined()
+  })
+
+  test('read-only mode ignores conflicting ambient environment signer sources', () => {
+    const config = ConfigService.from(
+      {
+        ...baseEnvironment,
+        KEY_STORAGE_METHOD: 'aws',
+        MAKER_PRIVATE_KEY: privateKey,
+        KEYSTORE_PATH: '/ambient/maker.json',
+        KEYSTORE_PASSWORD: 'ambient-password',
+        AWS_KMS_KEY_ID: 'alias/ambient',
+        AWS_REGION: 'eu-west-1'
+      },
+      { readOnly: true }
+    )
+
+    expect(config.identity).toEqual({
+      readOnly: true,
+      maker: baseEnvironment.MAKER_ADDRESS
+    })
+    expect(config.keyStorageMethod).toBeUndefined()
   })
 
   test.each([

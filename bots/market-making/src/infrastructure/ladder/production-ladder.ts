@@ -375,7 +375,12 @@ export const createProductionLadderAdapters = (
 
   const account = configuredAccount ?? createMakerAccount(config.identity)
   if (account instanceof Promise) {
-    return account.then(value => createProductionLadderAdapters(config, value))
+    return account.then(
+      value => createProductionLadderAdapters(config, value),
+      () => {
+        throw new LadderAdapterError('maker-private-key-mismatch')
+      }
+    )
   }
   if (!isAddressEqual(account.address, maker)) {
     throw new LadderAdapterError('maker-private-key-mismatch')

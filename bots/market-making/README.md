@@ -43,15 +43,16 @@ bun run --filter @morpho-org/market-making-bot start -- setup-check
 bun run --filter @morpho-org/market-making-bot start -- --readonly setup-check
 
 # Explicit signer sources (root options precede the command).
-bun run --filter @morpho-org/market-making-bot start -- --private-key 0x... setup-check
+bun run --filter @morpho-org/market-making-bot start -- --private-key '<key>' setup-check
 KEYSTORE_PASSWORD='...' bun run --filter @morpho-org/market-making-bot start -- --keystore ./maker.json setup-check
 bun run --filter @morpho-org/market-making-bot start -- --keystore ./maker.json --interactive setup-check
 bun run --filter @morpho-org/market-making-bot start -- --aws setup-check
 ```
 
-`--password <password>` remains available for explicit automation, but it places the secret in argv,
-where process listings and shell history may expose it. Prefer `KEYSTORE_PASSWORD` for unattended
-operation or hidden `--interactive` input for attended operation.
+`--private-key <key>` and `--password <password>` remain available for explicit automation, but they
+place secrets in argv, where process listings and shell history may expose them. Prefer
+`MAKER_PRIVATE_KEY` and `KEYSTORE_PASSWORD` respectively for unattended operation, or hidden
+`--interactive` password input for attended keystore operation.
 
 ```sh
 # Repeat read-only readiness checks every minute until SIGINT/SIGTERM.

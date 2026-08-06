@@ -7,7 +7,12 @@ export class MakerAccountError extends Error {
    * @param operation - Stable signer operation that failed without retaining secret material.
    */
   constructor(
-    readonly operation: 'keystore-read' | 'keystore-decrypt' | 'kms-public-key' | 'kms-sign'
+    readonly operation:
+      | 'maker-address'
+      | 'keystore-read'
+      | 'keystore-decrypt'
+      | 'kms-public-key'
+      | 'kms-sign'
   ) {
     super(`Maker account ${operation} failed`)
   }

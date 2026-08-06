@@ -452,8 +452,11 @@ export const createProductionBootstrapAdapters = (
 
   const account = configuredAccount ?? createMakerAccount(config.identity)
   if (account instanceof Promise) {
-    return account.then(value =>
-      createProductionBootstrapAdapters(config, writeReadOnlyEvent, value)
+    return account.then(
+      value => createProductionBootstrapAdapters(config, writeReadOnlyEvent, value),
+      () => {
+        throw new BootstrapAdapterError('maker-private-key-mismatch')
+      }
     )
   }
   if (!isAddressEqual(account.address, maker)) {

@@ -80,6 +80,18 @@ describe('market-maker parameter playground', () => {
     expect(exportYaml(createDefaultPlaygroundState())).not.toContain('keystorePassword')
   })
 
+  test('documents argv secret exposure without literal private keys or passwords', async () => {
+    const readme = await Bun.file('bots/market-making/README.md').text()
+
+    expect(readme).toContain('`--private-key <key>`')
+    expect(readme).toContain('`MAKER_PRIVATE_KEY`')
+    expect(readme).toContain('`--password <password>`')
+    expect(readme).toContain('`KEYSTORE_PASSWORD`')
+    expect(readme).toContain('process listings and shell history')
+    expect(readme).not.toMatch(/--private-key\s+0x[0-9a-fA-F]{64}/)
+    expect(readme).not.toMatch(/--password\s+(?!<password>)["'][^"']+["']/)
+  })
+
   test('quick ladder validation is structured, exact, and independent of scalar/bootstrap failures', () => {
     const state = createDefaultPlaygroundState()
     state.scalar.MAKER_PRIVATE_KEY = 'invalid'

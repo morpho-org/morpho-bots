@@ -156,7 +156,10 @@ export class Cli {
       .option('-c, --config <path>', 'load configuration from an explicit .yaml or .yml file')
       .option('--json', 'emit machine-parseable JSON Lines instead of human-readable output')
       .option('--readonly', 'use a maker address without signing or submitting transactions')
-      .option('--private-key <key>', 'sign with a local 0x-prefixed private key')
+      .option(
+        '--private-key <key>',
+        'sign locally (warning: argv may appear in process listings and shell history; prefer MAKER_PRIVATE_KEY)'
+      )
       .option('--keystore <path>', 'sign with an encrypted JSON keystore file')
       .option(
         '--password <password>',
@@ -327,6 +330,14 @@ export class Cli {
       interactive?: boolean
       aws?: boolean
     }>()
+    const readOnly = options.readonly === true
+    const hasExplicitSigner =
+      options.privateKey !== undefined ||
+      options.keystore !== undefined ||
+      options.password !== undefined ||
+      options.interactive === true ||
+      options.aws === true
+    if (readOnly && hasExplicitSigner) throw new CliUsageError()
     const signerEnvironment: Record<string, string> = {}
     if (options.privateKey !== undefined) {
       signerEnvironment.KEY_STORAGE_METHOD = 'private-key'
@@ -347,7 +358,7 @@ export class Cli {
     if (options.aws === true) signerEnvironment.KEY_STORAGE_METHOD = 'aws'
     return {
       configPath: options.config,
-      readOnly: options.readonly === true,
+      readOnly,
       signerEnvironment:
         Object.keys(signerEnvironment).length === 0 ? undefined : signerEnvironment,
       signal: this.signal
@@ -370,6 +381,9 @@ export class Cli {
    */
   async run(argv: readonly string[], runtime: CliRuntimeOptions = {}): Promise<unknown> {
     if (argv.length === 0) throw new CliUsageError()
+    if (argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h')) {
+      return this.program.helpInformation()
+    }
     this.output = undefined
     this.hasOutput = false
     this.runtime = runtime

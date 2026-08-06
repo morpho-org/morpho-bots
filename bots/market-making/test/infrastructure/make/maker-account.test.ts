@@ -37,6 +37,19 @@ describe('maker signer selection', () => {
     ).toBe(maker)
   })
 
+  test('rejects a local private key that does not derive the configured maker', async () => {
+    const wrongMaker = privateKeyToAccount(`0x${'22'.repeat(32)}`).address
+
+    await expect(
+      createMakerAccount({
+        readOnly: false,
+        maker: wrongMaker,
+        method: 'private-key',
+        privateKey
+      })
+    ).rejects.toMatchObject({ operation: 'maker-address' })
+  })
+
   test('decrypts a keystore only at the signer boundary', async () => {
     const password = '  keystore-秘密🔐  '
     const readFile = mock(async () => '{"encrypted":true}')
@@ -52,6 +65,23 @@ describe('maker signer selection', () => {
     expect(account.address).toBe(maker)
     expect(readFile).toHaveBeenCalledWith('/secure/maker.json')
     expect(decryptKeystore).toHaveBeenCalledTimes(1)
+  })
+
+  test('rejects a decrypted keystore that does not derive the configured maker', async () => {
+    const wrongMaker = privateKeyToAccount(`0x${'22'.repeat(32)}`).address
+
+    await expect(
+      createMakerAccount(
+        {
+          readOnly: false,
+          maker: wrongMaker,
+          method: 'keystore',
+          path: '/secure/maker.json',
+          password: 'not-reported'
+        },
+        { readFile: async () => '{}', decryptKeystore: async () => privateKey }
+      )
+    ).rejects.toMatchObject({ operation: 'maker-address' })
   })
 
   test('decrypts and signs with a real Web3 Secret Storage keystore', async () => {
@@ -206,11 +236,58 @@ describe('maker signer selection', () => {
   })
 
   test.each([
+    ['truncated SPKI', '3056301006072a8648ce3d020106052b8104000a03420004'],
+    [
+      'BER indefinite-length SPKI',
+      `3080301006072a8648ce3d020106052b8104000a034200${Buffer.from(
+        secp256k1.getPublicKey(Uint8Array.from(Buffer.from(privateKey.slice(2), 'hex')), false)
+      ).toString('hex')}0000`
+    ],
+    [
+      'wrong P-256 curve',
+      `3059301306072a8648ce3d020106082a8648ce3d030107034200${Buffer.from(
+        secp256k1.getPublicKey(Uint8Array.from(Buffer.from(privateKey.slice(2), 'hex')), false)
+      ).toString('hex')}`
+    ],
+    [
+      'trailing data',
+      `3056301006072a8648ce3d020106052b8104000a034200${Buffer.from(
+        secp256k1.getPublicKey(Uint8Array.from(Buffer.from(privateKey.slice(2), 'hex')), false)
+      ).toString('hex')}00`
+    ],
+    [
+      'trailing SPKI field',
+      `3058301006072a8648ce3d020106052b8104000a034200${Buffer.from(
+        secp256k1.getPublicKey(Uint8Array.from(Buffer.from(privateKey.slice(2), 'hex')), false)
+      ).toString('hex')}0500`
+    ],
+    [
+      'compressed point',
+      `3036301006072a8648ce3d020106052b8104000a032200${Buffer.from(
+        secp256k1.getPublicKey(Uint8Array.from(Buffer.from(privateKey.slice(2), 'hex')), true)
+      ).toString('hex')}`
+    ]
+  ])('rejects malformed or unsupported AWS KMS SPKI: %s', async (_name, spkiHex) => {
+    await expect(
+      createMakerAccount(
+        { readOnly: false, maker, method: 'aws', keyId: 'alias/maker', region: 'eu-west-1' },
+        {
+          kms: {
+            getPublicKey: async () => Buffer.from(spkiHex, 'hex'),
+            signDigest: async () => new Uint8Array()
+          }
+        }
+      )
+    ).rejects.toMatchObject({ operation: 'kms-public-key' })
+  })
+
+  test.each([
     ['wrong sequence tag', '3106020101020101'],
     ['wrong sequence length', '3007020101020101'],
     ['wrong r tag', '3006030101020101'],
     ['wrong s tag', '3006020101030101'],
     ['empty r', '30050200020101'],
+    ['empty s', '30050201010200'],
     ['oversized r', `30250222${'01'.repeat(34)}020101`],
     ['33-byte r without sign padding', `30250221${'01'.repeat(33)}020101`],
     ['truncated r', '300402030102'],
@@ -218,7 +295,9 @@ describe('maker signer selection', () => {
     ['zero r', '3006020100020101'],
     ['zero s', '3006020101020100'],
     ['negative r', '3006020180020101'],
+    ['negative s', '3006020101020180'],
     ['redundant r padding', '300702020001020101'],
+    ['redundant s padding', '300702010102020001'],
     [
       'r at curve order',
       `3026022100fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141020101`
