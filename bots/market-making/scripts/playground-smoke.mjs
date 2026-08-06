@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict'
-import { createHash } from 'node:crypto'
 import { mkdtempSync } from 'node:fs'
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -25,6 +24,8 @@ import {
 const root = fileURLToPath(new URL('..', import.meta.url))
 const basePath = process.env.PLAYGROUND_SMOKE_BASE_PATH ?? '/'
 const mobile = process.env.PLAYGROUND_SMOKE_VIEWPORT === 'mobile'
+const disabledPersistencePatch = process.env.PLAYGROUND_SMOKE_MUTATION_DISABLE_PATCH ?? ''
+const injectLateActivity = process.env.PLAYGROUND_SMOKE_MUTATION_LATE_ACTIVITY === 'all-documents'
 if (!/^\/(?:[A-Za-z0-9._-]+\/)*$/.test(basePath)) {
   throw new Error(
     `PLAYGROUND_SMOKE_BASE_PATH must be / or a slash-delimited path ending in /; received: ${basePath}`
@@ -240,6 +241,10 @@ try {
   const networkResponses = []
   const consoleErrors = []
   const consoleMessages = []
+  const persistenceActivity = []
+  const documentSnapshots = []
+  const mutationProofs = []
+  let activityPhase = 'browser-startup'
   browserClient = createCdpClient(socket, {
     commandTimeoutMs: cdpCommandTimeout,
     onMessage: message => {
@@ -272,6 +277,12 @@ try {
       if (message.method === 'Log.entryAdded') {
         consoleMessages.push(message.params.entry.text)
         if (message.params.entry.level === 'error') consoleErrors.push(message.params.entry.text)
+      }
+      if (
+        message.method === 'Runtime.bindingCalled' &&
+        message.params.name === '__recordSmokeActivity'
+      ) {
+        persistenceActivity.push({ ...JSON.parse(message.params.payload), phase: activityPhase })
       }
     }
   })
@@ -314,6 +325,7 @@ try {
   await command('Log.enable')
   await command('Network.enable')
   await command('Accessibility.enable')
+  await command('Runtime.addBinding', { name: '__recordSmokeActivity' })
   await command('Emulation.setDeviceMetricsOverride', {
     width: mobile ? 390 : 1440,
     height: mobile ? 844 : 1000,
@@ -347,7 +359,15 @@ try {
       const accesses = []
       const securityProbeAccesses = []
       const instrumented = []
+      const expectedInstrumentation = []
       const formBusActivity = { events: [], listeners: [], intervals: [] }
+      const disabledPatch = ${JSON.stringify(disabledPersistencePatch)}
+      const reportActivity = (kind, name) => {
+        try { globalThis.__recordSmokeActivity(JSON.stringify({ kind, name })) } catch {}
+      }
+      Object.defineProperty(globalThis, '__persistenceDocumentId', {
+        value: crypto.randomUUID(), configurable: false, enumerable: false, writable: false
+      })
       Object.defineProperty(globalThis, '__formBusActivity', {
         value: formBusActivity,
         configurable: false,
@@ -356,19 +376,24 @@ try {
       })
       const nativeWindowDispatchEvent = Window.prototype.dispatchEvent
       Window.prototype.dispatchEvent = function (event) {
-        if (event instanceof CustomEvent) formBusActivity.events.push(event.type)
+        if (event instanceof CustomEvent) {
+          formBusActivity.events.push(event.type)
+          reportActivity('form-bus event', event.type)
+        }
         return Reflect.apply(nativeWindowDispatchEvent, this, [event])
       }
       const nativeWindowAddEventListener = Window.prototype.addEventListener
       Window.prototype.addEventListener = function (type, listener, options) {
         if (/tanstack|form|devtools|connect/i.test(String(type))) {
           formBusActivity.listeners.push(String(type))
+          reportActivity('form-bus listener', String(type))
         }
         return Reflect.apply(nativeWindowAddEventListener, this, [type, listener, options])
       }
       const nativeSetInterval = globalThis.setInterval
       globalThis.setInterval = function (...args) {
         formBusActivity.intervals.push(String(args[0]))
+        reportActivity('form-bus interval', String(args[0]))
         return Reflect.apply(nativeSetInterval, this, args)
       }
       Object.defineProperty(globalThis, '__persistenceAccesses', {
@@ -379,6 +404,12 @@ try {
       })
       Object.defineProperty(globalThis, '__persistenceInstrumentation', {
         value: instrumented,
+        configurable: false,
+        enumerable: false,
+        writable: false
+      })
+      Object.defineProperty(globalThis, '__expectedPersistenceInstrumentation', {
+        value: expectedInstrumentation,
         configurable: false,
         enumerable: false,
         writable: false
@@ -397,60 +428,79 @@ try {
       })
       __smoke.storage = accesses
       __smoke.cookies = accesses
-      const record = name =>
-        (globalThis.__securityProbeActive ? securityProbeAccesses : accesses).push(name)
-      const wrapMethod = (prototype, key, label) => {
-        const descriptor = prototype && Object.getOwnPropertyDescriptor(prototype, key)
-        if (!descriptor || typeof descriptor.value !== 'function') return
-        instrumented.push(label)
-        Object.defineProperty(prototype, key, {
-          ...descriptor,
-          value: function (...args) {
-            record(label)
-            return Reflect.apply(descriptor.value, this, args)
-          }
-        })
+      const record = name => {
+        if (globalThis.__securityProbeActive) securityProbeAccesses.push(name)
+        else {
+          accesses.push(name)
+          reportActivity('persistence access', name)
+        }
       }
-      const wrapAccessor = (prototype, key, label) => {
+      const expected = (label, available, mandatory = false) => {
+        expectedInstrumentation.push({ label, available, mandatory })
+        return available
+      }
+      const shouldDisable = label => disabledPatch === label || disabledPatch === 'all-supported'
+      const wrapMethod = (prototype, key, label, mandatory = false) => {
         const descriptor = prototype && Object.getOwnPropertyDescriptor(prototype, key)
-        if (!descriptor || (!descriptor.get && !descriptor.set)) return
-        instrumented.push(label)
-        Object.defineProperty(prototype, key, {
-          ...descriptor,
-          get: descriptor.get && function () {
-            record(label + '.get')
-            return Reflect.apply(descriptor.get, this, [])
-          },
-          set: descriptor.set && function (value) {
-            record(label + '.set')
-            return Reflect.apply(descriptor.set, this, [value])
-          }
-        })
+        if (!expected(label, Boolean(descriptor && typeof descriptor.value === 'function'), mandatory)) return
+        if (shouldDisable(label)) return
+        try {
+          Object.defineProperty(prototype, key, {
+            ...descriptor,
+            value: function (...args) {
+              record(label)
+              return Reflect.apply(descriptor.value, this, args)
+            }
+          })
+          instrumented.push(label)
+        } catch {}
+      }
+      const wrapAccessor = (prototype, key, label, mandatory = false) => {
+        const descriptor = prototype && Object.getOwnPropertyDescriptor(prototype, key)
+        if (!expected(label, Boolean(descriptor && (descriptor.get || descriptor.set)), mandatory)) return
+        if (shouldDisable(label)) return
+        try {
+          Object.defineProperty(prototype, key, {
+            ...descriptor,
+            get: descriptor.get && function () {
+              record(label + '.get')
+              return Reflect.apply(descriptor.get, this, [])
+            },
+            set: descriptor.set && function (value) {
+              record(label + '.set')
+              return Reflect.apply(descriptor.set, this, [value])
+            }
+          })
+          instrumented.push(label)
+        } catch {}
       }
       const wrapConstructor = (prototype, key, label) => {
         const descriptor = prototype && Object.getOwnPropertyDescriptor(prototype, key)
-        if (!descriptor || typeof descriptor.value !== 'function') return
-        instrumented.push(label)
-        Object.defineProperty(prototype, key, {
-          ...descriptor,
-          value: new Proxy(descriptor.value, {
-            apply(target, thisArgument, argumentsList) {
-              record(label + '.call')
-              return Reflect.apply(target, thisArgument, argumentsList)
-            },
-            construct(target, argumentsList, newTarget) {
-              record(label + '.construct')
-              return Reflect.construct(target, argumentsList, newTarget)
-            }
+        if (!expected(label, Boolean(descriptor && typeof descriptor.value === 'function'))) return
+        if (shouldDisable(label)) return
+        try {
+          Object.defineProperty(prototype, key, {
+            ...descriptor,
+            value: new Proxy(descriptor.value, {
+              apply(target, thisArgument, argumentsList) {
+                record(label + '.call')
+                return Reflect.apply(target, thisArgument, argumentsList)
+              },
+              construct(target, argumentsList, newTarget) {
+                record(label + '.construct')
+                return Reflect.construct(target, argumentsList, newTarget)
+              }
+            })
           })
-        })
+          instrumented.push(label)
+        } catch {}
       }
       for (const key of ['getItem', 'setItem', 'removeItem', 'clear', 'key']) {
         wrapMethod(globalThis.Storage?.prototype, key, 'Storage.' + key)
       }
       wrapAccessor(globalThis.Storage?.prototype, 'length', 'Storage.length')
-      wrapAccessor(globalThis, 'localStorage', 'Window.localStorage')
-      wrapAccessor(globalThis, 'sessionStorage', 'Window.sessionStorage')
+      wrapAccessor(globalThis, 'localStorage', 'Window.localStorage', true)
+      wrapAccessor(globalThis, 'sessionStorage', 'Window.sessionStorage', true)
       wrapAccessor(globalThis, 'indexedDB', 'Window.indexedDB')
       for (const key of ['open', 'deleteDatabase', 'databases', 'cmp']) {
         wrapMethod(globalThis.IDBFactory?.prototype, key, 'IDBFactory.' + key)
@@ -464,7 +514,7 @@ try {
         wrapMethod(globalThis.ServiceWorkerContainer?.prototype, key, 'ServiceWorkerContainer.' + key)
       }
       wrapAccessor(globalThis.ServiceWorkerContainer?.prototype, 'ready', 'ServiceWorkerContainer.ready')
-      wrapAccessor(globalThis.Document?.prototype, 'cookie', 'Document.cookie')
+      wrapAccessor(globalThis.Document?.prototype, 'cookie', 'Document.cookie', true)
       wrapAccessor(globalThis, 'cookieStore', 'Window.cookieStore')
       for (const key of ['get', 'getAll', 'set', 'delete']) {
         wrapMethod(globalThis.CookieStore?.prototype, key, 'CookieStore.' + key)
@@ -475,6 +525,47 @@ try {
       }
       wrapConstructor(globalThis, 'Worker', 'Window.Worker')
       wrapConstructor(globalThis, 'SharedWorker', 'Window.SharedWorker')
+      const assertCleanBeforeTransition = transition => {
+        const activity = accesses.length + formBusActivity.events.length + formBusActivity.listeners.length + formBusActivity.intervals.length
+        if (activity) throw new Error('persistence access or form-bus activity before ' + transition)
+      }
+      Object.defineProperty(globalThis, '__assertPersistenceCleanBeforeTransition', {
+        value: assertCleanBeforeTransition, configurable: false, enumerable: false, writable: false
+      })
+      if (${JSON.stringify(injectLateActivity)}) {
+        const runCanaries = () => {
+          const safely = operation => { try { return operation() } catch {} }
+          const settle = value => value?.catch?.(() => {})
+          safely(() => localStorage.setItem('__smoke_canary', '1')); safely(() => localStorage.getItem('__smoke_canary'))
+          safely(() => localStorage.removeItem('__smoke_canary')); safely(() => localStorage.key(0))
+          safely(() => localStorage.length); safely(() => localStorage.clear())
+          safely(() => sessionStorage.setItem('__smoke_canary', '1')); safely(() => sessionStorage.getItem('__smoke_canary'))
+          safely(() => sessionStorage.removeItem('__smoke_canary')); safely(() => sessionStorage.key(0))
+          safely(() => sessionStorage.length); safely(() => sessionStorage.clear())
+          safely(() => { document.cookie = '__smoke_canary=1; SameSite=Strict' }); safely(() => document.cookie)
+          safely(() => { document.cookie = '__smoke_canary=; Max-Age=0; SameSite=Strict' })
+          safely(() => indexedDB.cmp('a', 'b')); settle(safely(() => indexedDB.databases()))
+          safely(() => indexedDB.open('__smoke_canary')); safely(() => indexedDB.deleteDatabase('__smoke_canary'))
+          settle(safely(() => caches.keys())); settle(safely(() => caches.match('/__smoke_canary')))
+          settle(safely(() => caches.has('__smoke_canary'))); settle(safely(() => caches.delete('__smoke_canary')))
+          settle(safely(() => caches.open('__smoke_canary').then(() => caches.delete('__smoke_canary'))))
+          settle(safely(() => navigator.serviceWorker.getRegistration()))
+          settle(safely(() => navigator.serviceWorker.getRegistrations()))
+          settle(safely(() => navigator.serviceWorker.register('data:text/javascript,')))
+          safely(() => navigator.serviceWorker.ready)
+          settle(safely(() => cookieStore.get('__smoke_canary'))); settle(safely(() => cookieStore.getAll('__smoke_canary')))
+          settle(safely(() => cookieStore.set('__smoke_canary', '1'))); settle(safely(() => cookieStore.delete('__smoke_canary')))
+          settle(safely(() => navigator.storage.estimate())); settle(safely(() => navigator.storage.persist()))
+          settle(safely(() => navigator.storage.persisted())); settle(safely(() => navigator.storage.getDirectory()))
+          safely(() => Worker('data:text/javascript,')); safely(() => SharedWorker('data:text/javascript,'))
+          dispatchEvent(new CustomEvent('tanstack-form-smoke-canary'))
+          addEventListener('tanstack-form-smoke-canary', () => {})
+          const interval = setInterval(() => {}, 60_000); clearInterval(interval)
+        }
+        Object.defineProperty(globalThis, '__runPersistenceCanaries', {
+          value: runCanaries, configurable: false, enumerable: false, writable: false
+        })
+      }
     })()`
   })
   const pageUrl = `http://127.0.0.1:${port}${basePath}`
@@ -517,6 +608,76 @@ try {
     pollIntervalMs: 25,
     timeoutMs: uiPollTimeout
   })
+  const assertDocumentPersistenceClean = async phase => {
+    activityPhase = phase
+    if (injectLateActivity) await evaluate('__runPersistenceCanaries()')
+    await evaluate('new Promise(resolve => setTimeout(resolve, 0))')
+    const snapshot = await evaluate(`({
+      documentId: __persistenceDocumentId,
+      expected: __expectedPersistenceInstrumentation,
+      formBus: __formBusActivity,
+      instrumented: __persistenceInstrumentation,
+      persistenceAccesses: __persistenceAccesses
+    })`)
+    documentSnapshots.push({ ...snapshot, phase })
+    const missing = snapshot.expected
+      .filter(({ available, mandatory }) => (mandatory ? !available : false))
+      .map(({ label }) => label + ' (mandatory API unavailable)')
+      .concat(
+        snapshot.expected
+          .filter(({ available, label }) => available && !snapshot.instrumented.includes(label))
+          .map(({ label }) => label)
+      )
+    if (missing.length) {
+      throw new Error(`persistence instrumentation missing during ${phase}: ${missing.join(', ')}`)
+    }
+    if (injectLateActivity) {
+      const unobserved = snapshot.expected
+        .filter(({ available }) => available)
+        .map(({ label }) => label)
+        .filter(label => !snapshot.persistenceAccesses.some(access => access.startsWith(label)))
+      if (unobserved.length) {
+        throw new Error(
+          `persistence mutation canaries did not exercise during ${phase}: ${unobserved.join(', ')}`
+        )
+      }
+      const formBusEntries = [
+        ...snapshot.formBus.events,
+        ...snapshot.formBus.listeners,
+        ...snapshot.formBus.intervals
+      ]
+      if (formBusEntries.length !== 3 || persistenceActivity.length === 0) {
+        throw new Error(`form-bus activity mutation canaries were incomplete during ${phase}`)
+      }
+      mutationProofs.push({ documentId: snapshot.documentId, phase })
+      await evaluate(`(() => {
+        __persistenceAccesses.length = 0
+        __formBusActivity.events.length = 0
+        __formBusActivity.listeners.length = 0
+        __formBusActivity.intervals.length = 0
+      })()`)
+      persistenceActivity.length = 0
+      return
+    }
+    if (snapshot.persistenceAccesses.length) {
+      throw new Error(
+        `persistence access detected during ${phase}: ${snapshot.persistenceAccesses.join(', ')}`
+      )
+    }
+    const formBusEntries = [
+      ...snapshot.formBus.events,
+      ...snapshot.formBus.listeners,
+      ...snapshot.formBus.intervals
+    ]
+    if (formBusEntries.length) {
+      throw new Error(`form-bus activity detected during ${phase}: ${formBusEntries.join(', ')}`)
+    }
+    if (persistenceActivity.length) {
+      throw new Error(
+        `cross-document persistence access or form-bus activity detected during ${phase}: ${persistenceActivity.map(({ kind, name, phase: activityAt }) => `${activityAt}:${kind}:${name}`).join(', ')}`
+      )
+    }
+  }
 
   const cspStructure = await evaluate(`(() => {
     const content = document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content ?? ''
@@ -709,8 +870,7 @@ try {
   assert.equal(baseline.fileInputs, 0)
   assert.equal(baseline.oldText, false)
   assert.equal(baseline.sticky, 'sticky')
-  assert.deepEqual(baseline.storage, [])
-  assert.deepEqual(baseline.cookies, [])
+  await assertDocumentPersistenceClean('initial baseline')
   assert.match(baseline.href, new RegExp(`${basePath.replaceAll('/', '\\/')}#`))
   const accessibilityTree = await command('Accessibility.getFullAXTree')
   const accessibleTabs = accessibilityTree.nodes
@@ -731,6 +891,7 @@ try {
     ladder: 1,
     focus: 'add-ladder'
   })
+  await assertDocumentPersistenceClean('collection edits')
 
   const invalidSync = await evaluate(`(async () => {
     const input = document.querySelector('#ladder-0-stepBps');
@@ -748,6 +909,7 @@ try {
   assert.deepEqual(invalidSync.independentExports, ['false', 'false', 'true', 'true'])
   assert.notEqual(invalidSync.finalHash, '')
   assert.match(invalidSync.status, /synchronized/i)
+  await assertDocumentPersistenceClean('invalid and valid edits')
 
   const markerPositions = await evaluate(`(async () => {
     const input = document.querySelector('#ladder-0-quotePremiumBps');
@@ -773,6 +935,7 @@ try {
     referenceLabel: 'Reference 400 BPS',
     centerLabel: 'Center 500 BPS'
   })
+  await assertDocumentPersistenceClean('preview edit')
 
   const immediateShare = await evaluate(`(async () => {
     const input = document.querySelector('#bootstrap-0-creditTarget');
@@ -791,6 +954,7 @@ try {
     return { copied: __smoke.copied.at(-1), expected: location.origin + location.pathname + location.search + fragment };
   })()`)
   assert.equal(immediateShare.copied, immediateShare.expected)
+  await assertDocumentPersistenceClean('share copy')
 
   const clipboardFallback = await evaluate(`(async () => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('forced rejection'); } } });
@@ -817,6 +981,7 @@ try {
       /Copy blocked/
     )
   }, uiReadiness('clipboard fallback status'))
+  await assertDocumentPersistenceClean('clipboard fallback')
 
   const runtimePreviewParity = await evaluate(`(async () => {
     const set = (selector, value) => {
@@ -849,6 +1014,7 @@ try {
     shareDisabled: false,
     copiedMatchesDisplayed: true
   })
+  await assertDocumentPersistenceClean('runtime preview edits')
 
   const importAtomic = await evaluate(`(async () => {
     const area = document.querySelector('#collection-import'); const apply = document.querySelector('#apply-import');
@@ -880,6 +1046,7 @@ try {
   assert.equal(importAtomic.valid, true)
   assert.equal(importAtomic.reordered[0], `0x${'6'.repeat(64)}`)
   assert.equal(importAtomic.focus, 'ladder-0-marketId')
+  await assertDocumentPersistenceClean('import')
 
   const copyTabs = await evaluate(`(async () => {
     const tabs=[...document.querySelectorAll('[role=tab]')];
@@ -892,6 +1059,7 @@ try {
   assert.equal(copyTabs.panels, 4)
   assert.equal(copyTabs.active, 'tab-ladder-string')
   assert.equal(copyTabs.selected, 'tab-ladder-string')
+  await assertDocumentPersistenceClean('export and before share navigation')
 
   const shareUrl = copyTabs.copied.at(-1)
   await command('Page.navigate', { url: shareUrl })
@@ -900,6 +1068,7 @@ try {
     timeoutMs: 20_000,
     pollIntervalMs: 50
   })
+  await assertDocumentPersistenceClean('share document before reload')
   await command('Page.reload', { ignoreCache: true })
   await waitForReadiness(
     async () =>
@@ -910,12 +1079,14 @@ try {
     await evaluate("[...document.querySelectorAll('.exports textarea')].map(x=>x.value)"),
     copyTabs.outputs
   )
+  await assertDocumentPersistenceClean('share reload before malformed navigation')
 
   await command('Page.navigate', { url: `${pageUrl}#%7Bbad` })
   await waitForReadiness(
     async () => assert.equal(await evaluate('location.hash'), '#%7Bbad'),
     uiReadiness('malformed URL navigation')
   )
+  await assertDocumentPersistenceClean('malformed document before reload')
   await command('Page.reload', { ignoreCache: true })
   await waitForReadiness(
     async () =>
@@ -933,6 +1104,7 @@ try {
     return { copied: __smoke.copied[0], expected: location.origin + location.pathname + location.search + fragment };
   })()`)
   assert.equal(malformedFirstShare.copied, malformedFirstShare.expected)
+  await assertDocumentPersistenceClean('malformed reload before oversized navigation')
 
   const oversizedHash = `#${'x'.repeat(140_000)}`
   await command('Page.navigate', { url: `${pageUrl}${oversizedHash}` })
@@ -940,6 +1112,7 @@ try {
     async () => assert.equal(await evaluate('location.hash.length'), oversizedHash.length),
     uiReadiness('oversized URL navigation')
   )
+  await assertDocumentPersistenceClean('oversized document before reload')
   await command('Page.reload', { ignoreCache: true })
   await waitForReadiness(
     async () =>
@@ -950,6 +1123,18 @@ try {
     uiReadiness('oversized fallback')
   )
   assert.equal(await evaluate("document.querySelectorAll('[data-preview=ladder]').length"), 1)
+  await assertDocumentPersistenceClean('final oversized reload')
+  assert.ok(
+    new Set(documentSnapshots.map(({ documentId }) => documentId)).size >= 4,
+    `expected persistence snapshots for every document, got ${JSON.stringify(documentSnapshots)}`
+  )
+  if (injectLateActivity) {
+    assert.equal(mutationProofs.length, documentSnapshots.length)
+    assert.ok(new Set(mutationProofs.map(({ documentId }) => documentId)).size >= 4)
+    throw new Error(
+      `persistence access and form-bus activity mutation proof covered ${mutationProofs.length} phases across ${new Set(mutationProofs.map(({ documentId }) => documentId)).size} documents`
+    )
+  }
 
   const unexpected = requests.filter(
     url =>

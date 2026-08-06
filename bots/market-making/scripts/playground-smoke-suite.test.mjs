@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
-import { readFile, readdir } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -84,4 +86,48 @@ test('browser lifecycle uses separate bounded build, startup, body, UI, CDP, and
   assert.match(browserSource, /timeout: browserTestTimeout/g)
   assert.match(browserSource, /signalSmokeEntrypoint\(run, 'SIGTERM'\)/)
   assert.doesNotMatch(browserSource, /smoke\.kill\('SIGKILL'\)/)
+})
+
+test('the declared root lint path effectively checks only the playground smoke mjs files', async () => {
+  const [rootPackage, workflow] = await Promise.all([
+    readJson(join(root, 'package.json')),
+    readFile(join(root, '.github/workflows/checks.yml'), 'utf8')
+  ])
+
+  assert.equal(
+    rootPackage.scripts['lint:playground-smoke'],
+    'oxlint --config bots/market-making/scripts/playground-smoke.oxlintrc.json bots/market-making/scripts/playground-smoke*.mjs'
+  )
+  assert.match(rootPackage.scripts.lint, /bun run lint:playground-smoke/)
+  assert.match(workflow, /- name: Run lint\n        run: bun lint/)
+})
+
+test('the scoped playground smoke lint config rejects an unused mjs import', async () => {
+  const temporaryRoot = await mkdtemp(join(tmpdir(), 'playground-smoke-lint-'))
+  const mutation = join(temporaryRoot, 'playground-smoke-unused-import.mjs')
+  await writeFile(mutation, "import { readFile } from 'node:fs/promises'\n")
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const lint = spawn(
+        join(root, 'node_modules/.bin/oxlint'),
+        ['--config', join(scriptsDirectory, 'playground-smoke.oxlintrc.json'), mutation],
+        { cwd: root, shell: false, stdio: ['ignore', 'pipe', 'pipe'] }
+      )
+      let output = ''
+      lint.stdout.setEncoding('utf8')
+      lint.stderr.setEncoding('utf8')
+      lint.stdout.on('data', chunk => {
+        output += chunk
+      })
+      lint.stderr.on('data', chunk => {
+        output += chunk
+      })
+      lint.once('error', reject)
+      lint.once('close', (code, signal) => resolve({ code, output, signal }))
+    })
+    assert.deepEqual({ code: result.code, signal: result.signal }, { code: 1, signal: null })
+    assert.match(result.output, /no-unused-vars[\s\S]*readFile/)
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true })
+  }
 })

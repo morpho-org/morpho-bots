@@ -9,7 +9,6 @@ import { fileURLToPath } from 'node:url'
 import {
   closeOwnedProcessTreeGracefully,
   discoverChromium,
-  inspectProcessGroup,
   inspectProcessTree,
   smokeBudgets,
   spawnOwnedProcess,
@@ -659,3 +658,31 @@ test(
     process.stdout.write(`${evidence.join('\n')}\n`)
   }
 )
+
+for (const { name, env } of [
+  {
+    name: 'every supported persistence patch is required to succeed',
+    env: { PLAYGROUND_SMOKE_MUTATION_DISABLE_PATCH: 'all-supported' }
+  },
+  {
+    name: 'late persistence and form-bus activity fails the desktop root smoke in every document',
+    env: { PLAYGROUND_SMOKE_MUTATION_LATE_ACTIVITY: 'all-documents' }
+  },
+  {
+    name: 'late persistence and form-bus activity fails the mobile subpath smoke in every document',
+    env: {
+      PLAYGROUND_SMOKE_BASE_PATH: '/morpho-bots/',
+      PLAYGROUND_SMOKE_MUTATION_LATE_ACTIVITY: 'all-documents',
+      PLAYGROUND_SMOKE_VIEWPORT: 'mobile'
+    }
+  }
+]) {
+  test(name, { timeout: browserTestTimeout }, async () => {
+    const run = spawnSmoke({ env: { ...process.env, ...env } })
+    await assert.rejects(
+      successfulSmokeResult(run),
+      /persistence instrumentation|persistence access|form-bus activity/
+    )
+    await cleanupHarnessRun(run)
+  })
+}
