@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { PlaygroundSmokePersistenceError } from './playground-smoke-persistence.error.mjs'
 import {
   closeOwnedProcessTreeGracefully,
   createCdpClient,
@@ -333,6 +334,7 @@ try {
   })
   await command('Page.addScriptToEvaluateOnNewDocument', {
     source: `(() => {
+      const PersistenceError = (${PlaygroundSmokePersistenceError.toString()})
       Object.defineProperty(globalThis, '__playgroundSmoke', { value: true })
       Object.defineProperty(globalThis, '__smoke', {
         value: { replacements: 0, copied: [], storage: [], cookies: [] }
@@ -527,7 +529,7 @@ try {
       wrapConstructor(globalThis, 'SharedWorker', 'Window.SharedWorker')
       const assertCleanBeforeTransition = transition => {
         const activity = accesses.length + formBusActivity.events.length + formBusActivity.listeners.length + formBusActivity.intervals.length
-        if (activity) throw new Error('persistence access or form-bus activity before ' + transition)
+        if (activity) throw new PersistenceError('persistence access or form-bus activity before ' + transition)
       }
       if (${JSON.stringify(injectLateActivity)}) {
         const runCanaries = () => {
@@ -625,7 +627,9 @@ try {
           .map(({ label }) => label)
       )
     if (missing.length) {
-      throw new Error(`persistence instrumentation missing during ${phase}: ${missing.join(', ')}`)
+      throw new PlaygroundSmokePersistenceError(
+        `persistence instrumentation missing during ${phase}: ${missing.join(', ')}`
+      )
     }
     if (injectLateActivity) {
       const unobserved = snapshot.expected
@@ -633,7 +637,7 @@ try {
         .map(({ label }) => label)
         .filter(label => !snapshot.persistenceAccesses.some(access => access.startsWith(label)))
       if (unobserved.length) {
-        throw new Error(
+        throw new PlaygroundSmokePersistenceError(
           `persistence mutation canaries did not exercise during ${phase}: ${unobserved.join(', ')}`
         )
       }
@@ -643,7 +647,9 @@ try {
         ...snapshot.formBus.intervals
       ]
       if (formBusEntries.length !== 3 || persistenceActivity.length === 0) {
-        throw new Error(`form-bus activity mutation canaries were incomplete during ${phase}`)
+        throw new PlaygroundSmokePersistenceError(
+          `form-bus activity mutation canaries were incomplete during ${phase}`
+        )
       }
       mutationProofs.push({ documentId: snapshot.documentId, phase })
       await evaluate(`(() => {
@@ -656,7 +662,7 @@ try {
       return
     }
     if (snapshot.persistenceAccesses.length) {
-      throw new Error(
+      throw new PlaygroundSmokePersistenceError(
         `persistence access detected during ${phase}: ${snapshot.persistenceAccesses.join(', ')}`
       )
     }
@@ -666,10 +672,12 @@ try {
       ...snapshot.formBus.intervals
     ]
     if (formBusEntries.length) {
-      throw new Error(`form-bus activity detected during ${phase}: ${formBusEntries.join(', ')}`)
+      throw new PlaygroundSmokePersistenceError(
+        `form-bus activity detected during ${phase}: ${formBusEntries.join(', ')}`
+      )
     }
     if (persistenceActivity.length) {
-      throw new Error(
+      throw new PlaygroundSmokePersistenceError(
         `cross-document persistence access or form-bus activity detected during ${phase}: ${persistenceActivity.map(({ kind, name }) => `${kind}:${name}`).join(', ')}`
       )
     }
@@ -1127,7 +1135,7 @@ try {
   if (injectLateActivity) {
     assert.equal(mutationProofs.length, documentSnapshots.length)
     assert.ok(new Set(mutationProofs.map(({ documentId }) => documentId)).size >= 4)
-    throw new Error(
+    throw new PlaygroundSmokePersistenceError(
       `persistence access and form-bus activity mutation proof covered ${mutationProofs.length} phases across ${new Set(mutationProofs.map(({ documentId }) => documentId)).size} documents`
     )
   }

@@ -140,3 +140,19 @@ test('transition guards are live and cross-document diagnostics use the detectin
   assert.doesNotMatch(smokeSource, /__assertPersistenceCleanBeforeTransition/)
   assert.doesNotMatch(smokeSource, /activityPhase/)
 })
+
+test('expected persistence failures use one isolated typed tooling error', async () => {
+  const [smokeSource, errorSource] = await Promise.all([
+    readFile(join(scriptsDirectory, 'playground-smoke.mjs'), 'utf8'),
+    readFile(join(scriptsDirectory, 'playground-smoke-persistence.error.mjs'), 'utf8').catch(
+      () => ''
+    )
+  ])
+
+  assert.match(
+    errorSource,
+    /export class PlaygroundSmokePersistenceError extends Error[\s\S]*this\.name = 'PlaygroundSmokePersistenceError'/
+  )
+  assert.match(smokeSource, /import \{ PlaygroundSmokePersistenceError \}/)
+  assert.match(smokeSource, /throw new PlaygroundSmokePersistenceError/g)
+})
