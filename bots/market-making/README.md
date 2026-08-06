@@ -246,8 +246,9 @@ are disabled. `RAILWAY_ENVIRONMENT` defaults to `production`. CI uses `DEPLOY_ON
 `RAILWAY_TOKEN`, enforces the reviewed package Dockerfile and persistent ownership-state path,
 requires the already-provisioned volume, and re-ships the service without reading its bot secrets.
 
-The local Compose service uses the same `/state` ownership path through a named volume and supplies
-the runtime timeout defaults when the corresponding host variables are absent.
+The local Compose service uses the same `/state` ownership path through a named volume, requires both
+strategy arrays, and supplies the runtime timeout defaults when the corresponding host variables are
+absent.
 
 Both modes snapshot the previous deployment, start a detached upload, and poll the new deployment to
 a terminal state. A GitHub release is created only after Railway reports `SUCCESS`; failed, crashed,

@@ -105,12 +105,22 @@ const listServices = async () => {
 
 const ensureService = async () => {
   const services = await listServices()
-  if (services.some(service => service.name === SERVICE)) return
+  const existingService = services.find(service => service.name === SERVICE)
+  if (existingService) return existingService
 
-  const { error } = await tryCatch(
-    Promise.resolve($`railway add --service ${SERVICE} --json`.quiet())
+  const { data, error } = await tryCatch(
+    Promise.resolve($`railway add --service ${SERVICE} --json`.quiet().text())
   )
-  if (error) throw new RailwayDeploymentError('Failed to create the Railway service')
+  if (error || typeof data !== 'string') {
+    throw new RailwayDeploymentError('Failed to create the Railway service')
+  }
+
+  const createdService = parseRailwayServices(data).find(service => service.name === SERVICE)
+  if (!createdService) {
+    throw new RailwayDeploymentError('Railway service creation returned incomplete identity')
+  }
+
+  return createdService
 }
 
 const listVolumes = async () => {
@@ -146,15 +156,15 @@ const configuredStateVolume = async () => {
   return volume
 }
 
-const ensureStateVolume = async (createIfMissing: boolean) => {
+const ensureStateVolume = async (serviceId: string | undefined) => {
   if (await configuredStateVolume()) return
-  if (!createIfMissing) {
+  if (!serviceId) {
     throw new RailwayDeploymentError('Railway state volume is not configured')
   }
 
   const { error } = await tryCatch(
     Promise.resolve(
-      $`railway volume add --service ${SERVICE} --project ${PROJECT_ID} --environment ${ENVIRONMENT} --mount-path ${STATE_MOUNT_PATH} --json`.quiet()
+      $`railway volume add --service ${serviceId} --project ${PROJECT_ID} --environment ${ENVIRONMENT} --mount-path ${STATE_MOUNT_PATH} --json`.quiet()
     )
   )
   if (error) throw new RailwayDeploymentError('Failed to create the Railway state volume')
@@ -237,12 +247,12 @@ const configuration = DEPLOY_ONLY ? [] : runtimeVariables()
 await assertCli()
 await ensureContext()
 
-if (!DEPLOY_ONLY) await ensureService()
+const service = DEPLOY_ONLY ? undefined : await ensureService()
 
 await setRuntimeVariable(['RAILWAY_DOCKERFILE_PATH', DOCKERFILE_PATH])
 await setRuntimeVariable(['XDG_STATE_HOME', STATE_MOUNT_PATH])
 for (const variable of configuration) await setRuntimeVariable(variable)
-await ensureStateVolume(!DEPLOY_ONLY)
+await ensureStateVolume(service?.id)
 
 const previousDeployment = parseLatestRailwayDeployment(await latestDeploymentJson())
 await startDeployment()

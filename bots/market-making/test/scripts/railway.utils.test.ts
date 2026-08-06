@@ -19,11 +19,15 @@ describe('Railway CLI output parsing', () => {
   })
 
   test('parses named services from array and wrapped response shapes', () => {
-    const array = JSON.stringify([{ name: 'market-making' }, { id: 'nameless' }])
-    const wrapped = JSON.stringify({ services: [{ serviceName: 'market-making' }] })
+    const array = JSON.stringify([{ id: 'service-id', name: 'market-making' }, { id: 'nameless' }])
+    const wrapped = JSON.stringify({
+      services: [{ id: 'service-id', serviceName: 'market-making' }]
+    })
+    const created = JSON.stringify({ id: 'service-id', name: 'market-making' })
 
-    expect(parseRailwayServices(array)).toEqual([{ name: 'market-making' }])
-    expect(parseRailwayServices(wrapped)).toEqual([{ name: 'market-making' }])
+    expect(parseRailwayServices(array)).toEqual([{ id: 'service-id', name: 'market-making' }])
+    expect(parseRailwayServices(wrapped)).toEqual([{ id: 'service-id', name: 'market-making' }])
+    expect(parseRailwayServices(created)).toEqual([{ id: 'service-id', name: 'market-making' }])
   })
 
   test('returns no services for malformed JSON', () => {

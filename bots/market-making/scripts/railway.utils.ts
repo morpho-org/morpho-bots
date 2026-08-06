@@ -6,6 +6,7 @@ type RailwayDeployment = {
 }
 
 type RailwayService = {
+  id: string
   name: string
 }
 
@@ -82,18 +83,21 @@ export const synchronizedOptionalRailwayVariables = (
   ])
 
 /**
- * Parses Railway service-list JSON without exposing unknown response fields.
- * @param raw - Complete JSON emitted by `railway service list --json`.
- * @returns Named services in response order; malformed and nameless rows are omitted.
+ * Parses Railway service JSON without exposing unknown response fields.
+ * @param raw - Complete JSON emitted by `railway service list --json` or `railway add --json`.
+ * @returns Identified, named services in response order; malformed or incomplete rows are omitted.
  */
 export const parseRailwayServices = (raw: string): RailwayService[] => {
   const { data } = tryCatch(() => JSON.parse(raw) as unknown)
-  const rows = rowsFrom(data, 'services')
+  const rows = isRecord(data) && stringField(data.id) ? [data] : rowsFrom(data, 'services')
 
   return rows
     .filter(isRecord)
-    .map(row => ({ name: stringField(row.name) || stringField(row.serviceName) }))
-    .filter(service => service.name.length > 0)
+    .map(row => ({
+      id: stringField(row.id),
+      name: stringField(row.name) || stringField(row.serviceName)
+    }))
+    .filter(service => service.id.length > 0 && service.name.length > 0)
 }
 
 /**
