@@ -28,7 +28,14 @@ type PreparedLadderTree = {
   bookOffers: readonly { marketId: Hex; buy: boolean; tick: bigint }[]
 }
 
-const rateToTick = (rateBps: bigint, market: IMarket, now: bigint) => {
+/**
+ * Derives the aligned protocol tick for one ladder annualized rate at a block timestamp.
+ * @param rateBps - Annualized ladder rate in basis points.
+ * @param market - Hydrated market maturity and tick-spacing terms.
+ * @param now - Block timestamp used to annualize the remaining term.
+ * @returns Exact aligned Midnight tick.
+ */
+export const ladderOfferTick = (rateBps: bigint, market: IMarket, now: bigint) => {
   const timeToMaturity = BigInt(market.params.maturity) - now
   if (timeToMaturity <= 0n) throw new LadderAdapterError('market-matured')
   const periodRateWad = (rateBps * (WAD / 10_000n) * timeToMaturity) / YEAR_SECONDS
@@ -62,7 +69,7 @@ const sideOffers = (
     rung,
     offer: Offer.create({
       ...common,
-      tick: rateToTick(rung.rateBps, parameters.market, parameters.now),
+      tick: ladderOfferTick(rung.rateBps, parameters.market, parameters.now),
       maxAssets: maxAssetsByRung[index]!
     })
   }))

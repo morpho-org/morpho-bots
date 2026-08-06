@@ -29,7 +29,7 @@ import type { BootstrapActiveGroup, BootstrapInventoryReader } from './bootstrap
 import { pendingLadderQuoteSets } from '../ladder/ladder-active-publication.utils'
 import { pendingLadderBuyReservations } from '../ladder/ladder-cash-reservation.utils'
 import { createLadderGroupOwnership } from '../ladder/ladder-group-ownership.utils'
-import { buildLadderTree } from '../ladder/ladder-offer.utils'
+import { buildLadderTree, ladderOfferTick } from '../ladder/ladder-offer.utils'
 import { createManagedMakerAccount } from '../make/managed-maker-account.utils'
 import { ReadOnlyBootstrapMakeService } from '../make/read-only-bootstrap-make.service'
 import {
@@ -339,9 +339,11 @@ export const createProductionBootstrapAdapters = (
             id: reservation.id,
             marketId: offer.marketId,
             assets: reservation.assets,
-            rateBps: 0n,
-            tick: offer.tick,
-            continuousFeeCap: offer.continuousFeeCap
+            rateBps: offer.rateBps ?? 0n,
+            ...(offer.tick === undefined ? {} : { tick: offer.tick }),
+            ...(offer.continuousFeeCap === undefined
+              ? {}
+              : { continuousFeeCap: offer.continuousFeeCap })
           }))
         )
       ]
@@ -377,20 +379,19 @@ export const createProductionBootstrapAdapters = (
       bootstrapContinuousFeeCap(await midnight.getMarketData(marketId)),
     readGroupInventory,
     readReservationCredit: async group => {
-      if (group.tick === undefined || group.continuousFeeCap === undefined) {
-        throw new BootstrapAdapterError('group-ownership-state')
-      }
       const [market, block] = await Promise.all([
         midnight.getMarketData(group.marketId),
         client.getBlock({ blockTag: 'latest' })
       ])
       return buyerAssetReservationCredit({
         assets: group.assets,
-        tick: group.tick,
+        tick: group.tick ?? ladderOfferTick(group.rateBps, market, block.timestamp),
         market,
         start: 0n,
         expiry: market.params.maturity,
-        continuousFeeCap: group.continuousFeeCap,
+        // Legacy ownership did not persist the cap. Assuming the current fee keeps exposure
+        // conservatively eligible; buyer-price credit conversion is independent of the fee amount.
+        continuousFeeCap: group.continuousFeeCap ?? BigInt(market.continuousFee),
         timestamp: block.timestamp
       })
     },

@@ -4,8 +4,10 @@ import { TickLib } from '@morpho-org/midnight-sdk'
 import { describe, expect, test } from 'bun:test'
 
 import type { BootstrapInventoryReader } from '../../../src/infrastructure/bootstrap/bootstrap-position.service'
+import type { OwnedLadderPublication } from '../../../src/infrastructure/ladder/ladder-group-ownership.utils'
 
 import { MidnightBootstrapPositionService } from '../../../src/infrastructure/bootstrap/bootstrap-position.service'
+import { pendingLadderBuyReservations } from '../../../src/infrastructure/ladder/ladder-cash-reservation.utils'
 
 const maker: Address = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
 const marketId: Hex = `0x${'11'.repeat(32)}`
@@ -25,6 +27,50 @@ const fixtureReader = (reader: FixtureReader): BootstrapInventoryReader => ({
 })
 
 describe('MidnightBootstrapPositionService', () => {
+  test('reserves cash and canonical credit for an API-missing pre-upgrade ladder buy', async () => {
+    const publication: OwnedLadderPublication = {
+      marketId,
+      status: 'confirmed',
+      quote: {
+        marketId,
+        centerRateBps: 500n,
+        groupMode: 'shared-rung',
+        lower: [],
+        higher: [{ index: 0, rateBps: 600n, assets: 100n }]
+      },
+      groups: [{ groupId: secondGroup, side: 'higher', rungIndexes: [0] }]
+    }
+    const cashReservations = pendingLadderBuyReservations([], [publication]).flatMap(reservation =>
+      reservation.offers.map(offer => ({
+        id: reservation.id,
+        marketId: offer.marketId,
+        assets: reservation.assets,
+        rateBps: offer.rateBps ?? 0n,
+        ...(offer.tick === undefined ? {} : { tick: offer.tick }),
+        ...(offer.continuousFeeCap === undefined
+          ? {}
+          : { continuousFeeCap: offer.continuousFeeCap })
+      }))
+    )
+    const service = new MidnightBootstrapPositionService(
+      fixtureReader({
+        readPositions: async () => [{ marketId, credit: 0n, debt: 0n }],
+        readCashBalance: async () => 100n,
+        readMarketContinuousFeeCap: async () => 17n,
+        readGroupInventory: async () => ({ activeGroups: [], cashReservations }),
+        readReservationCredit: async group => (group.rateBps === 600n ? 120n : 0n)
+      }),
+      maker
+    )
+
+    const position = await service.readPosition(marketId)
+
+    expect(cashReservations).toHaveLength(1)
+    expect(position.cashBalance).toBe(0n)
+    expect(position.marketExposure).toBe(120n)
+    expect(position.totalExposure).toBe(120n)
+  })
+
   test('excludes a live group from the capacity available to replace itself', async () => {
     const service = new MidnightBootstrapPositionService(
       fixtureReader({

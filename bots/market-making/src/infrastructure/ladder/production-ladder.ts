@@ -45,7 +45,7 @@ import { LadderAdapterError } from './ladder-adapter.error'
 import { ladderCashReservations } from './ladder-cash-reservation.utils'
 import { createLadderGroupOwnership } from './ladder-group-ownership.utils'
 import { MidnightLadderMakeService, type LadderOfferTransport } from './ladder-make.service'
-import { capLadderBuyCredit } from './ladder-offer.utils'
+import { capLadderBuyCredit, ladderOfferTick } from './ladder-offer.utils'
 import { configuredRatifierType, prepareLadderRatification } from './ladder-ratification.utils'
 import { assertLadderProspectiveSpread } from './ladder-spread.utils'
 import {
@@ -261,13 +261,17 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
           .map(offer => {
             const market = marketById.get(offer.marketId)
             if (!market) throw new LadderAdapterError('position-unavailable')
+            if (offer.tick === undefined && offer.rateBps === undefined) {
+              throw new LadderAdapterError('group-ownership-state')
+            }
             return buyerAssetReservationCredit({
               assets: reservation.assets,
-              tick: offer.tick,
+              tick: offer.tick ?? ladderOfferTick(offer.rateBps as bigint, market, block.timestamp),
               market,
               start: 0n,
               expiry: market.params.maturity,
-              continuousFeeCap: offer.continuousFeeCap,
+              // A missing legacy cap must remain eligible for conservative exposure sizing.
+              continuousFeeCap: offer.continuousFeeCap ?? BigInt(market.continuousFee),
               timestamp: block.timestamp
             })
           })

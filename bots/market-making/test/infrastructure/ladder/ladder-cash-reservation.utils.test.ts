@@ -62,7 +62,10 @@ describe('ladder cash reservations', () => {
         id: ladderGroupId,
         marketIds: [marketId],
         assets: 50n,
-        offers: []
+        offers: [
+          { marketId, rateBps: 600n },
+          { marketId, rateBps: 700n }
+        ]
       }
     ])
   })

@@ -15,7 +15,12 @@ type LadderCashReservation = {
   id: Hex
   marketIds: readonly Hex[]
   assets: bigint
-  offers: readonly { marketId: Hex; tick: bigint; continuousFeeCap: bigint }[]
+  offers: readonly {
+    marketId: Hex
+    rateBps?: bigint
+    tick?: bigint
+    continuousFeeCap?: bigint
+  }[]
 }
 
 /**
@@ -34,9 +39,8 @@ export const pendingLadderBuyReservations = (
       .filter(group => group.side === 'higher' && !indexed.has(group.groupId))
       .map(group => {
         const indexes = new Set(group.rungIndexes)
-        const assets = publication.quote.higher
-          .filter(rung => indexes.has(rung.index))
-          .reduce((sum, rung) => sum + rung.assets, 0n)
+        const rungs = publication.quote.higher.filter(rung => indexes.has(rung.index))
+        const assets = rungs.reduce((sum, rung) => sum + rung.assets, 0n)
         const offers =
           group.ticks !== undefined &&
           group.ticks.length === group.rungIndexes.length &&
@@ -46,7 +50,10 @@ export const pendingLadderBuyReservations = (
                 tick,
                 continuousFeeCap: group.continuousFeeCap as bigint
               }))
-            : []
+            : rungs.map(rung => ({
+                marketId: publication.marketId,
+                rateBps: rung.rateBps
+              }))
         return {
           id: group.groupId,
           marketIds: [publication.marketId],
