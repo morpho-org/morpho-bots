@@ -220,6 +220,33 @@ Version output remains available:
 bun run --filter @morpho-org/market-making-bot start -- --version
 ```
 
+## Deploy
+
+The package owns its production [Dockerfile](./Dockerfile), local
+[docker-compose.yml](./docker-compose.yml), and idempotent
+[`scripts/deploy-railway.ts`](./scripts/deploy-railway.ts) entrypoint. The Docker build context is the
+repository root so Bun can resolve every workspace dependency; the image starts the combined setup,
+bootstrap, and ladder monitor.
+
+A full deployment creates the `market-making` Railway service, selects the package Dockerfile, and
+writes the effective environment configuration through stdin so values never appear in process
+arguments or logs:
+
+```sh
+RAILWAY_PROJECT_ID=... \
+bun run --filter @morpho-org/market-making-bot deploy:railway
+```
+
+Provide the required values from [`.env.example`](./.env.example) in the invoking environment.
+`RAILWAY_ENVIRONMENT` defaults to `production`. CI uses `DEPLOY_ONLY=true` with the
+`market-making-production` GitHub Environment, so it reads only `RAILWAY_PROJECT_ID` and
+`RAILWAY_TOKEN`, enforces the reviewed package Dockerfile without changing bot runtime
+configuration, and re-ships the already-provisioned service.
+
+Both modes snapshot the previous deployment, start a detached upload, and poll the new deployment to
+a terminal state. A GitHub release is created only after Railway reports `SUCCESS`; failed, crashed,
+approval-blocked, removed, skipped, sleeping, unknown, or timed-out deployments fail the workflow.
+
 ## Configuration
 
 ### Configuration sources and precedence

@@ -28,18 +28,18 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
+      - name: Setup
+        uses: ./.github/actions/setup
+        with:
+          build-contracts: 'false'
+
       - name: Install Railway CLI
         run: npm install -g @railway/cli@5.30.4
 
       - name: Deploy
         env:
+          DEPLOY_ONLY: 'true'
+          RAILWAY_ENVIRONMENT: production
           RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-        run: |
-          set -euo pipefail
-          railway up \
-            --project "$RAILWAY_PROJECT_ID" \
-            --environment production \
-            --service market-making \
-            --ci \
-            --message "deploy market-making production $GITHUB_SHA"
+        run: bun run --filter @morpho-org/market-making-bot deploy:railway

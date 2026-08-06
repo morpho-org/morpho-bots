@@ -8,6 +8,7 @@
   },
   "type": "module",
   "scripts": {
+    "deploy:railway": "bun run scripts/deploy-railway.ts",
     "start": "bun src/index.ts",
     "playground:build": "node scripts/playground-build.mjs",
     "playground:build:dev": "bun build playground/index.html --outdir playground/dist --target browser --watch",
