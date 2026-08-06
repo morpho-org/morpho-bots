@@ -12,6 +12,7 @@ import { resolve } from 'node:path'
 
 import { RailwayDeploymentError } from './railway-deployment.error'
 import {
+  assertFullRailwaySignerProvisioning,
   isNonEmptyJsonArray,
   isTerminalRailwayDeploymentStatus,
   parseLatestRailwayDeployment,
@@ -73,6 +74,7 @@ const runtimeVariables = (): RuntimeVariable[] => {
   if (!['private-key', 'keystore', 'aws'].includes(method)) {
     throw new RailwayDeploymentError('KEY_STORAGE_METHOD must select exactly one signer')
   }
+  assertFullRailwaySignerProvisioning(method as 'private-key' | 'keystore' | 'aws')
   const signerValues: Record<string, string> = {
     KEY_STORAGE_METHOD: method,
     MAKER_PRIVATE_KEY: ' ',

@@ -96,6 +96,24 @@ describe('maker key storage configuration', () => {
     expect(config.identity).toMatchObject({ method: 'keystore', password: '  prompted-秘密🔐  ' })
   })
 
+  test('normalizes keystore selectors before resolving an empty interactive password', async () => {
+    const readPassword = mock(async () => 'prompted-password')
+    const config = await ConfigService.load(
+      {
+        ...baseEnvironment,
+        MAKER_PRIVATE_KEY: undefined,
+        KEY_STORAGE_METHOD: ' keystore ',
+        KEYSTORE_PATH: ' /secure/maker.json ',
+        KEYSTORE_PASSWORD: '',
+        KEYSTORE_INTERACTIVE: ' true '
+      },
+      { readPassword }
+    )
+
+    expect(readPassword).toHaveBeenCalledTimes(1)
+    expect(config.identity).toMatchObject({ method: 'keystore', password: 'prompted-password' })
+  })
+
   test('selects non-exportable AWS KMS signing with required key and region', () => {
     const config = ConfigService.from({
       ...baseEnvironment,
@@ -110,6 +128,18 @@ describe('maker key storage configuration', () => {
       region: 'eu-west-1'
     })
     expect(config.privateKey).toBeUndefined()
+  })
+
+  test('ignores ambient AWS region and blank companion sentinels outside KMS mode', () => {
+    const config = ConfigService.from({
+      ...baseEnvironment,
+      KEY_STORAGE_METHOD: 'private-key',
+      MAKER_PRIVATE_KEY: privateKey,
+      KEYSTORE_PASSWORD: ' ',
+      AWS_REGION: 'us-east-1'
+    })
+
+    expect(config.identity).toMatchObject({ method: 'private-key', privateKey })
   })
 
   test('read-only mode ignores conflicting ambient environment signer sources', () => {

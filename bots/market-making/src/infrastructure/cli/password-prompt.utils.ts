@@ -26,11 +26,16 @@ type PasswordPromptOptions = {
  * @param options - Optional input, output, cancellation, and mutable-byte-storage overrides.
  * @returns Password entered before the first line ending. Mutable accumulation and conversion
  * buffers are zeroed during cleanup; the returned immutable JavaScript string cannot be wiped.
+ * @throws `CliUsageError` for unavailable TTYs, empty input, Ctrl-C, Ctrl-D, aborts, and input
+ * stream failures; propagates the original output, raw-mode, or input-resume setup failure.
+ * @remarks Enables raw mode, resumes and later pauses input, writes the prompt and trailing newline
+ * to stderr by default, removes all installed listeners, restores terminal mode, and wipes mutable
+ * password buffers on every terminal path.
  */
 export const readPasswordInteractively = (options: PasswordPromptOptions = {}) =>
   new Promise<string>((resolve, reject) => {
     const input = options.input ?? process.stdin
-    const output = options.output ?? process.stdout
+    const output = options.output ?? process.stderr
     if (!input.isTTY || !output.isTTY || !input.setRawMode) {
       reject(new CliUsageError())
       return

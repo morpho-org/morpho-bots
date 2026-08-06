@@ -262,6 +262,14 @@ bun run --filter @morpho-org/market-making-bot deploy:railway
 ```
 
 Provide the required values from [`.env.example`](./.env.example) in the invoking environment.
+A full provisioning run supports only `private-key`, because the script cannot safely seed a local
+keystore file or an AWS credential source into a newly created service. For `keystore`, first
+provision the encrypted file at `KEYSTORE_PATH` in the existing service. For `aws`, first provision
+an AWS SDK credential source with KMS access in the existing service. Then set the corresponding
+signer variables out of band and use `DEPLOY_ONLY=true`; deploy-only does not inspect or mutate those
+credentials or files. Full provisioning fails closed for both modes instead of launching a service
+that cannot resolve its signer.
+
 `BOOTSTRAP_MARKETS` and `LADDER_MARKETS` must each be populated JSON arrays so a full run cannot
 replace a working strategy with an empty list. Every remaining optional value is synchronized:
 omitted timeouts return to their documented defaults, and omitted group IDs and BetterStack settings

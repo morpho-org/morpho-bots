@@ -40,9 +40,18 @@ type MakerAccountDependencies = {
   kms?: KmsSigner
 }
 
+const kmsClients = new Map<string, KMSClient>()
+const kmsClient = (region: string) => {
+  const cached = kmsClients.get(region)
+  if (cached) return cached
+  const client = new KMSClient({ region })
+  kmsClients.set(region, client)
+  return client
+}
+
 const awsKmsSigner: KmsSigner = {
   async getPublicKey(keyId, region) {
-    const response = await new KMSClient({ region }).send(new GetPublicKeyCommand({ KeyId: keyId }))
+    const response = await kmsClient(region).send(new GetPublicKeyCommand({ KeyId: keyId }))
     if (
       !response.PublicKey ||
       response.KeySpec !== 'ECC_SECG_P256K1' ||
@@ -53,7 +62,7 @@ const awsKmsSigner: KmsSigner = {
     return response.PublicKey
   },
   async signDigest(keyId, region, digest) {
-    const response = await new KMSClient({ region }).send(
+    const response = await kmsClient(region).send(
       new SignCommand({
         KeyId: keyId,
         Message: digest,
@@ -222,6 +231,10 @@ const createKmsAccount = async (
  * @param identity - Validated write-enabled signer identity.
  * @param dependencies - Optional file, decryption, and KMS dependency overrides.
  * @returns Local-compatible account backed by the selected signing method.
+ * @throws `MakerAccountError` when credential loading, decryption, KMS validation/signing, or the
+ * configured-maker address check fails.
+ * @remarks Keystore mode reads and decrypts one local file. AWS mode reuses one client per region,
+ * calls KMS for public-key discovery and later signatures, and never exports remote private keys.
  */
 export const createMakerAccount = async (
   identity: Exclude<MakerIdentity, { readOnly: true }>,

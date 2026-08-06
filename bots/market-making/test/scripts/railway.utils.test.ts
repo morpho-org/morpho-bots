@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 
 import {
+  assertFullRailwaySignerProvisioning,
   isNonEmptyJsonArray,
   isTerminalRailwayDeploymentStatus,
   parseLatestRailwayDeployment,
@@ -11,6 +12,16 @@ import {
 } from '../../scripts/railway.utils'
 
 describe('Railway CLI output parsing', () => {
+  test('fails closed for signer modes that require out-of-band Railway provisioning', () => {
+    expect(() => assertFullRailwaySignerProvisioning('private-key')).not.toThrow()
+    expect(() => assertFullRailwaySignerProvisioning('keystore')).toThrow(
+      'Keystore Railway deployment requires a pre-provisioned file; use DEPLOY_ONLY=true'
+    )
+    expect(() => assertFullRailwaySignerProvisioning('aws')).toThrow(
+      'AWS KMS Railway deployment requires pre-provisioned credentials; use DEPLOY_ONLY=true'
+    )
+  })
+
   test('identifies only populated JSON arrays as deployable strategy lists', () => {
     expect(isNonEmptyJsonArray('[{"marketId":"configured"}]')).toBe(true)
     expect(isNonEmptyJsonArray('[]')).toBe(false)

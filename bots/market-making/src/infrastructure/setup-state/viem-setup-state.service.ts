@@ -93,6 +93,7 @@ type SetupStateOptions = {
   | { readOnly: true }
   | { readOnly?: false; privateKey: Hex }
   | { readOnly?: false; signerAddress: Address }
+  | { readOnly?: false; deriveSignerAddress: () => Promise<Address> }
 )
 
 /** Read-only viem/API adapter that gathers setup facts and validates provider agreement. */
@@ -114,11 +115,14 @@ export class ViemSetupStateService implements SetupStateService {
     private readonly request: JsonRequest,
     private readonly options: SetupStateOptions
   ) {
-    this.derivedMaker = options.readOnly
-      ? undefined
-      : 'privateKey' in options
-        ? privateKeyToAccount(options.privateKey).address
-        : options.signerAddress
+    this.derivedMaker =
+      options.readOnly || 'deriveSignerAddress' in options
+        ? undefined
+        : 'privateKey' in options
+          ? privateKeyToAccount(options.privateKey).address
+          : 'signerAddress' in options
+            ? options.signerAddress
+            : undefined
   }
 
   /**
@@ -144,8 +148,14 @@ export class ViemSetupStateService implements SetupStateService {
     )
   }
 
-  /** Derives no new state and returns the cached signer identity. @returns The locally derived maker, or `undefined` when constructed read-only; no signing or provider request occurs. */
+  /**
+   * Resolves the configured signer address for the captured setup maker check.
+   * @returns The locally derived or lazily resolved maker, or `undefined` in read-only mode.
+   * @throws The sanitized signer-construction failure when lazy keystore or KMS resolution fails.
+   * @remarks Lazy resolution may read a keystore or call KMS, but performs no signing or chain write.
+   */
   async getDerivedMaker() {
+    if ('deriveSignerAddress' in this.options) return this.options.deriveSignerAddress()
     return this.derivedMaker
   }
 

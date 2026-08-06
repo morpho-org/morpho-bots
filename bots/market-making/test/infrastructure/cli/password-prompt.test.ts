@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { EventEmitter } from 'node:events'
+import { readFile } from 'node:fs/promises'
 
 import { readPasswordInteractively } from '../../../src/infrastructure/cli/password-prompt.utils'
 
@@ -67,6 +68,16 @@ const expectWiped = (secretBytes: number[], length: number) => {
 }
 
 describe('hidden keystore password input', () => {
+  test('defaults prompts and trailing newlines to stderr', async () => {
+    const source = await readFile(
+      `${import.meta.dir}/../../../src/infrastructure/cli/password-prompt.utils.ts`,
+      'utf8'
+    )
+
+    expect(source).toContain('const output = options.output ?? process.stderr')
+    expect(source).not.toContain('const output = options.output ?? process.stdout')
+  })
+
   test('preserves split UTF-8 input and whitespace without echoing it, then wipes mutable bytes', async () => {
     const { input, writes, result, secretBytes } = prompt()
     const bytes = Buffer.from('  秘密🔐  ', 'utf8')

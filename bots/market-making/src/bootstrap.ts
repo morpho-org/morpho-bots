@@ -45,6 +45,10 @@ const readOnlyWriter = (writeEvent?: CliRuntimeOptions['writeEvent']) =>
 const parseEventWriter = (writeEvent?: CliRuntimeOptions['writeEvent']) =>
   writeEvent === undefined ? undefined : (line: string) => writeEvent(JSON.parse(line))
 
+const makerAccountAddress = async (
+  identity: Exclude<ConfigService['identity'], { readOnly: true }>
+) => (await createMakerAccount(identity)).address
+
 type Dependencies = {
   createState?: (config: ConfigService) => SetupStateService
   /** Replaces provider ports while retaining default application-service composition. */
@@ -69,11 +73,12 @@ type Dependencies = {
 }
 
 const defaultState = async (config: ConfigService) => {
-  const identityOptions = config.identity.readOnly
+  const identity = config.identity
+  const identityOptions = identity.readOnly
     ? { readOnly: true as const }
     : {
         readOnly: false as const,
-        signerAddress: (await createMakerAccount(config.identity)).address
+        deriveSignerAddress: () => makerAccountAddress(identity)
       }
   const ownership = createBootstrapGroupOwnership({
     maker: config.setup.maker,

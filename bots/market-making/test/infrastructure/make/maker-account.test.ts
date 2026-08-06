@@ -3,7 +3,7 @@ import type { TransactionSerializedLegacy } from 'viem'
 import { Wallet } from '@ethereumjs/wallet'
 import { secp256k1 } from '@noble/curves/secp256k1'
 import { describe, expect, mock, test } from 'bun:test'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -21,6 +21,16 @@ const privateKey = `0x${'11'.repeat(32)}` as const
 const maker = privateKeyToAccount(privateKey).address
 
 describe('maker signer selection', () => {
+  test('reuses one AWS KMS client per region across public-key and signing calls', async () => {
+    const source = await readFile(
+      `${import.meta.dir}/../../../src/infrastructure/make/maker-account.utils.ts`,
+      'utf8'
+    )
+
+    expect(source).toContain('const kmsClients = new Map<string, KMSClient>()')
+    expect(source.match(/new KMSClient/g)).toHaveLength(1)
+  })
+
   test('creates the legacy local private-key signer', async () => {
     const account = await createMakerAccount({
       readOnly: false,

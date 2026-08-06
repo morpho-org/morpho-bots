@@ -2,10 +2,11 @@ import type { Address, Hex } from 'viem'
 
 import { setterRatifierAbi } from '@morpho-org/midnight-sdk'
 import { blueAbi } from '@morpho-org/morpho-sdk/abis'
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, mock, test } from 'bun:test'
 import { bytesToHex, hexToBytes, keccak256, zeroHash } from 'viem'
 
 import { SafeProviderError } from '../../../src/application/setup/safe-provider.error'
+import { MakerAccountError } from '../../../src/infrastructure/make/maker-account.error'
 import { requestJson } from '../../../src/infrastructure/setup-state/http-json.utils'
 import { ProviderPaginationError } from '../../../src/infrastructure/setup-state/provider-pagination.error'
 import { ProviderReadError } from '../../../src/infrastructure/setup-state/provider-read.error'
@@ -188,6 +189,26 @@ describe('ViemSetupStateService', () => {
     const { state } = createState({}, { readOnly: true })
 
     expect(await state.getDerivedMaker()).toBeUndefined()
+  })
+
+  test('defers remote signer derivation until the captured maker check runs', async () => {
+    const failure = new MakerAccountError('kms-public-key')
+    const deriveSignerAddress = mock(async (): Promise<Address> => Promise.reject(failure))
+    const state = new ViemSetupStateService({} as never, {} as never, async () => ({}), {
+      deriveSignerAddress,
+      midnight,
+      loanAsset,
+      morphoApiBaseUrl: 'https://api.example',
+      routerApiBaseUrl: 'https://router.example',
+      marketIds: [marketId],
+      v0OfferGroupIds: [knownGroup],
+      readOwnedGroupIds: async () => [],
+      referenceMarketId
+    })
+
+    expect(deriveSignerAddress).toHaveBeenCalledTimes(0)
+    await expect(state.getDerivedMaker()).rejects.toBe(failure)
+    expect(deriveSignerAddress).toHaveBeenCalledTimes(1)
   })
 
   test.each([
