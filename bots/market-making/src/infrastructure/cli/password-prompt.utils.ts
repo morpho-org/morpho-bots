@@ -20,7 +20,11 @@ type PasswordPromptOptions = {
   signal?: AbortSignal
 }
 
-/** Reads one password from an interactive TTY without echoing secret bytes. */
+/**
+ * Reads one password from an interactive TTY without echoing secret bytes.
+ * @param options - Optional input, output, and cancellation overrides.
+ * @returns Password entered before the first line ending.
+ */
 export const readPasswordInteractively = (options: PasswordPromptOptions = {}) =>
   new Promise<string>((resolve, reject) => {
     const input = options.input ?? process.stdin

@@ -170,7 +170,12 @@ const createKmsAccount = async (
   return { ...account, publicKey, source: 'aws-kms' }
 }
 
-/** Creates the configured local or remote maker account without ever exporting an AWS KMS key. */
+/**
+ * Creates the configured local or remote maker account without ever exporting an AWS KMS key.
+ * @param identity - Validated write-enabled signer identity.
+ * @param dependencies - Optional file, decryption, and KMS dependency overrides.
+ * @returns Local-compatible account backed by the selected signing method.
+ */
 export const createMakerAccount = async (
   identity: Exclude<MakerIdentity, { readOnly: true }>,
   dependencies: MakerAccountDependencies = {}

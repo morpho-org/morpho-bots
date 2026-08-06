@@ -311,17 +311,17 @@ export class ConfigService {
       : undefined
   }
 
-  /** Exposes the effective validated signing backend without exposing credentials. */
+  /** Exposes the effective validated signing backend without exposing credentials. @returns Selected signing method, or `undefined` in read-only mode. */
   get keyStorageMethod() {
     return this.values.identity.readOnly ? undefined : this.values.identity.method
   }
 
-  /** Prevents private keys and keystore passwords from entering JSON logs. */
+  /** Prevents private keys and keystore passwords from entering JSON logs. @returns Redacted signing method and read-only state. */
   toJSON() {
     return { keyStorageMethod: this.keyStorageMethod, readOnly: this.readOnly }
   }
 
-  /** Prevents private keys and keystore passwords from entering diagnostic inspection. */
+  /** Prevents private keys and keystore passwords from entering diagnostic inspection. @returns Redacted diagnostic representation. */
   [inspect.custom]() {
     return `ConfigService ${inspect(this.toJSON())}`
   }

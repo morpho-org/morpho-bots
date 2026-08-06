@@ -124,6 +124,7 @@ const ownedGroups = (publications: readonly OwnedLadderPublication[]) =>
 /**
  * Composes live chain, archive reference, Mempool, signing, and ownership ladder adapters.
  * @param config - Fully validated runtime configuration.
+ * @param configuredAccount - Optional preconstructed account for write-mode adapter reuse.
  * @returns Production position, reference-rate, and make ports.
  * @throws `LadderAdapterError` when write-mode signer identity differs from the maker; later reads,
  * validation, signing, publication, storage, or receipt confirmation may also fail.

@@ -136,6 +136,7 @@ type ProductionBootstrapAdapters = {
  * Composes concrete viem, Morpho SDK, Midnight SDK, and Mempool adapters.
  * @param config - Fully validated runtime configuration.
  * @param writeReadOnlyEvent - Optional terminal writer for read-only make records.
+ * @param configuredAccount - Optional preconstructed account for write-mode adapter reuse.
  * @returns Production read ports and either a live mutation queue or terminal-only make adapter.
  * @throws `BootstrapAdapterError` when write-mode signer identity differs from the configured maker;
  * later provider reads, signing, publication, or invalidation may also fail.

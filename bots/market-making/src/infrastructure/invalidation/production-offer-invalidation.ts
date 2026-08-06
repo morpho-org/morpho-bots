@@ -29,6 +29,7 @@ const providerOperation = async <Result>(
 /**
  * Composes the cancellation-specific provider, signer, and ownership port.
  * @param config - Fully validated runtime configuration and selected mutation mode.
+ * @param configuredAccount - Optional preconstructed account for write-mode adapter reuse.
  * @returns A port that targets every active maker group or an explicit bytes32 group.
  * @throws `OfferInvalidationAdapterError` when write-mode signer identity differs from the maker.
  * @remarks The preflight checks connected Base identity, deployed Midnight bytecode, and write-mode
