@@ -196,14 +196,20 @@ main {
 .rung--lower {
   color: #83c7ff;
 }
-.center-marker {
+.ladder-marker {
   position: absolute;
-  top: 48%;
-  left: 26%;
   padding: 0.25rem 0.45rem;
   background: #06100c;
-  color: #ff9bb4;
   font-size: 0.72rem;
+  transform: translateY(-50%);
+}
+.ladder-reference-marker {
+  left: 26%;
+  color: #f8d477;
+}
+.ladder-center-marker {
+  right: 26%;
+  color: #ff9bb4;
 }
 .callouts {
   display: grid;
@@ -281,6 +287,7 @@ main {
 }
 .field input,
 .field select,
+.share-card input,
 textarea {
   width: 100%;
   border: 1px solid #46725f;

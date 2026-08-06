@@ -24,6 +24,7 @@ import {
   createDefaultBootstrap,
   createDefaultLadder,
   createDefaultPlaygroundState,
+  createPlaygroundShareUrl,
   decodePlaygroundFragment,
   deriveBootstrapGraphicModels,
   encodePlaygroundFragment,
@@ -190,8 +191,17 @@ const LadderGraphic = ({ graphic, index }: { graphic: LadderGraphicModel; index:
               {rung.side === 'higher' ? '▲' : '●'} {rung.rateBps}
             </i>
           ))}
-          <b className="center-marker">
-            Reference {graphic.referenceRateBps} / center {graphic.centerRateBps}
+          <b
+            className="ladder-marker ladder-reference-marker"
+            style={{ top: `${graphic.rateToY(graphic.referenceRateBps)}%` }}
+          >
+            Reference {graphic.referenceRateBps} BPS
+          </b>
+          <b
+            className="ladder-marker ladder-center-marker"
+            style={{ top: `${graphic.rateToY(graphic.centerRateBps)}%` }}
+          >
+            Center {graphic.centerRateBps} BPS
           </b>
         </div>
         <figcaption>▲ Lend · ● Reduce-only · values are also available in the table</figcaption>
@@ -315,6 +325,7 @@ const Playground = () => {
     'ladder-json': null,
     'ladder-string': null
   })
+  const shareUrlRef = useRef<HTMLInputElement | null>(null)
   const onUrlStatus = React.useCallback((status: Status) => setUrlStatus(status), [])
 
   useEffect(() => {
@@ -324,15 +335,26 @@ const Playground = () => {
     }
   }, [])
 
-  const copy = async (value: string, fallback: HTMLTextAreaElement | null, label: string) => {
+  const copy = async (
+    value: string,
+    fallback: HTMLInputElement | HTMLTextAreaElement | null,
+    label: string
+  ) => {
     try {
       await navigator.clipboard.writeText(value)
       setCopyStatus({ message: `${label} copied.`, status: 'ok' })
     } catch {
-      fallback?.focus()
-      fallback?.select()
+      if (fallback) {
+        fallback.focus()
+        fallback.select()
+        setCopyStatus({
+          message: `Copy blocked; ${label} selected. Press Ctrl/Cmd+C.`,
+          status: 'error'
+        })
+        return
+      }
       setCopyStatus({
-        message: `Copy blocked; ${label} selected. Press Ctrl/Cmd+C.`,
+        message: `Copy blocked; ${label} could not be selected.`,
         status: 'error'
       })
     }
@@ -367,6 +389,7 @@ const Playground = () => {
           'ladder-json': exportResult(() => exportLadderJson(state.ladder)),
           'ladder-string': exportResult(() => exportLadderMarketsEnvValue(state.ladder))
         }
+        const shareUrl = exportResult(() => createPlaygroundShareUrl(state, window.location))
         const move = (kind: CollectionKind, from: number, to: number) => {
           if (to < 0 || to >= state[kind].length) return
           form.moveFieldValues(kind, from, to)
@@ -572,11 +595,25 @@ const Playground = () => {
                   >
                     {urlStatus.message}
                   </p>
+                  <label htmlFor="share-url-output">
+                    Canonical URL for the current configuration
+                  </label>
+                  <input
+                    id="share-url-output"
+                    readOnly
+                    value={shareUrl.value}
+                    aria-invalid={shareUrl.invalid}
+                    ref={shareUrlRef}
+                  />
                   <button
                     id="copy-share-url"
                     type="button"
-                    disabled={!validatePlaygroundState(state).valid}
-                    onClick={() => void copy(window.location.href, null, 'Share URL')}
+                    disabled={shareUrl.invalid}
+                    onClick={() => {
+                      const value = createPlaygroundShareUrl(form.state.values, window.location)
+                      if (shareUrlRef.current) shareUrlRef.current.value = value
+                      void copy(value, shareUrlRef.current, 'Share URL')
+                    }}
                   >
                     Copy share URL
                   </button>

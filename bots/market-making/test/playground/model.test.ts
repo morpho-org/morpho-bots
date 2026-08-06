@@ -56,7 +56,7 @@ describe('bootstrap + ladder only playground follow-up', () => {
     const state = createDefaultPlaygroundState()
     state.ladder[0]!.quotePremiumBps = '-1000'
     expect(() => generateLadderGraphicModels(state.ladder)).toThrow('configured bounds')
-    expect(validateLadderCollection(state.ladder).valid).toBe(false)
+    expect(validateLadderCollection(state.ladder).valid).toBe(true)
   })
 
   test('keeps higher rung rate, allocation, and cap correspondence under display reversal', () => {
@@ -140,6 +140,82 @@ describe('bootstrap + ladder only playground follow-up', () => {
     ).toEqual({ ladder: state.ladder })
   })
 
+  test('rejects escaped prototype-pollution member names before collection validation', () => {
+    const item = JSON.stringify(createDefaultBootstrap())
+    for (const unsafeName of ['\\u005f\\u005fproto__', '\\u0063onstructor', '\\u0070rototype']) {
+      const unsafe = item.replace('{', `{"${unsafeName}":true,`)
+      expect(() => parseCollectionsImport(unsafe), unsafeName).toThrow('unsafe JSON member name')
+    }
+  })
+
+  test('normalizes Unicode member names and rejects unpaired surrogates deterministically', () => {
+    expect(() => parseCollectionsImport('{"é":1,"e\\u0301":2}')).toThrow('duplicate JSON member')
+    expect(() => parseCollectionsImport('{"\\ud83d\\ude00":1,"😀":2}')).toThrow(
+      'duplicate JSON member'
+    )
+    expect(() => parseCollectionsImport('{"bootstrap":"\\ud800"}')).toThrow(
+      'invalid Unicode surrogate'
+    )
+  })
+
+  test('does not echo rejected payload member names in import errors', () => {
+    const canary = 'PRIVATE_CANARY_DO_NOT_ECHO'
+    const payload = JSON.stringify({
+      bootstrap: createDefaultPlaygroundState().bootstrap,
+      [canary]: true
+    })
+    let error: unknown
+    try {
+      parseCollectionsImport(payload)
+    } catch (value) {
+      error = value
+    }
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toBe('Object contains an unsupported key')
+    expect((error as Error).message).not.toContain(canary)
+  })
+
+  test('enforces the exact JSON nesting boundary', () => {
+    const nested = (depth: number) => `${'['.repeat(depth)}0${']'.repeat(depth)}`
+    const withinBoundary = `{"bootstrap":${nested(127)}}`
+    const overBoundary = `{"bootstrap":${nested(128)}}`
+
+    expect(() => parseCollectionsImport(withinBoundary)).not.toThrow('nesting limit')
+    expect(() => parseCollectionsImport(overBoundary)).toThrow('nesting limit')
+  })
+
+  test('counts exact UTF-8 bytes at the 128 KiB boundary', () => {
+    const limit = 128 * 1024
+    const valid = JSON.stringify(createDefaultPlaygroundState().bootstrap)
+    const exactValid = `${valid}${' '.repeat(limit - new TextEncoder().encode(valid).byteLength)}`
+    expect(new TextEncoder().encode(exactValid).byteLength).toBe(limit)
+    expect(parseCollectionsImport(exactValid)).toEqual({
+      bootstrap: createDefaultPlaygroundState().bootstrap
+    })
+    expect(() => parseCollectionsImport(`${exactValid} `)).toThrow('size limit')
+
+    const exactMultibyte = `"${'é'.repeat((limit - 2) / 2)}"`
+    expect(new TextEncoder().encode(exactMultibyte).byteLength).toBe(limit)
+    expect(() => parseCollectionsImport(exactMultibyte)).toThrow('valid JSON')
+    expect(() => parseCollectionsImport(`${exactMultibyte}é`)).toThrow('size limit')
+  })
+
+  test('rejects a deterministic malformed scanner corpus', () => {
+    for (const malformed of [
+      '',
+      '[',
+      '{"a":}',
+      '{"a":"\\x"}',
+      '01',
+      '[1,]',
+      '{"a":1,}',
+      '"unterminated',
+      '{"a":true} trailing'
+    ]) {
+      expect(() => parseCollectionsImport(malformed), malformed).toThrow('valid JSON')
+    }
+  })
+
   test('rejects duplicate, mixed, primitive, and invalid imports atomically', () => {
     const state = createDefaultPlaygroundState()
     expect(() => parseCollectionsImport('{"bootstrap":[],"bootstrap":[]}')).toThrow(
@@ -156,6 +232,23 @@ describe('bootstrap + ladder only playground follow-up', () => {
     expect(() =>
       parseCollectionsImport(JSON.stringify({ bootstrap: [], ladder: [], extra: true }))
     ).toThrow('unsupported key')
+  })
+
+  test('keeps runtime-valid collections exportable when only synthetic previews cannot derive', () => {
+    const state = createDefaultPlaygroundState()
+    state.bootstrap[0]!.premiumBps = '-1000'
+    state.ladder[0]!.quotePremiumBps = '-1000'
+
+    expect(validateBootstrapCollection(state.bootstrap)).toEqual({ valid: true, errors: [] })
+    expect(validateLadderCollection(state.ladder)).toEqual({ valid: true, errors: [] })
+    expect(exportBootstrapJson(state.bootstrap)).toBe(
+      `${JSON.stringify(state.bootstrap, null, 2)}\n`
+    )
+    expect(exportBootstrapMarketsEnvValue(state.bootstrap)).toBe(JSON.stringify(state.bootstrap))
+    expect(exportLadderJson(state.ladder)).toBe(`${JSON.stringify(state.ladder, null, 2)}\n`)
+    expect(exportLadderMarketsEnvValue(state.ladder)).toBe(JSON.stringify(state.ladder))
+    expect(() => deriveBootstrapGraphicModels(state.bootstrap)).toThrow('configured bounds')
+    expect(() => generateLadderGraphicModels(state.ladder)).toThrow('configured bounds')
   })
 
   test('exports exactly four independently validated collection values', () => {

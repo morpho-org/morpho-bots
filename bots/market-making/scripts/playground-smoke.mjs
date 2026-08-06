@@ -138,6 +138,15 @@ try {
   await command('Page.addScriptToEvaluateOnNewDocument', {
     source: `(() => {
     Object.defineProperty(globalThis, '__smoke', { value: { replacements: 0, copied: [], storage: [], cookies: [] } });
+    if (location.hash === '#%7Bbad') {
+      const observer = new MutationObserver(() => {
+        const button = document.querySelector('#copy-share-url');
+        if (!button) return;
+        observer.disconnect();
+        button.click();
+      });
+      observer.observe(document, { childList: true, subtree: true });
+    }
     const replace = history.replaceState.bind(history);
     history.replaceState = (...args) => { __smoke.replacements++; return replace(...args); };
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async value => { __smoke.copied.push(value); } } });
@@ -217,6 +226,101 @@ try {
   assert.notEqual(invalidSync.finalHash, '')
   assert.match(invalidSync.status, /synchronized/i)
 
+  const markerPositions = await evaluate(`(async () => {
+    const input = document.querySelector('#ladder-0-quotePremiumBps');
+    const old = input.value;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(input, '100');
+    input._valueTracker?.setValue(old);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 30));
+    const reference = document.querySelector('.ladder-reference-marker');
+    const center = document.querySelector('.ladder-center-marker');
+    return {
+      referenceTop: reference?.style.top,
+      centerTop: center?.style.top,
+      referenceLabel: reference?.textContent.trim(),
+      centerLabel: center?.textContent.trim()
+    };
+  })()`)
+  assert.deepEqual(markerPositions, {
+    referenceTop: '66.66%',
+    centerTop: '50%',
+    referenceLabel: 'Reference 400 BPS',
+    centerLabel: 'Center 500 BPS'
+  })
+
+  const immediateShare = await evaluate(`(async () => {
+    const input = document.querySelector('#bootstrap-0-creditTarget');
+    const old = input.value;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(input, '10000000001');
+    input._valueTracker?.setValue(old);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    document.querySelector('#copy-share-url').click();
+    await new Promise(r => setTimeout(r, 0));
+    const bootstrap = JSON.parse(document.querySelector('[aria-label="Bootstrap JSON output"]').value);
+    bootstrap[0].creditTarget = '10000000001';
+    const ladder = JSON.parse(document.querySelector('[aria-label="Ladder JSON output"]').value);
+    const fragment = '#' + encodeURIComponent(JSON.stringify({ version: 1, bootstrap, ladder }));
+    return { copied: __smoke.copied.at(-1), expected: location.origin + location.pathname + location.search + fragment };
+  })()`)
+  assert.equal(immediateShare.copied, immediateShare.expected)
+
+  const clipboardFallback = await evaluate(`(async () => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('forced rejection'); } } });
+    const button = document.querySelector('#copy-share-url');
+    button.click();
+    await new Promise(r => setTimeout(r, 30));
+    const control = document.querySelector('#share-url-output');
+    const result = {
+      focused: document.activeElement === control,
+      selected: control.selectionStart === 0 && control.selectionEnd === control.value.length,
+      message: document.querySelector('#copy-status').textContent.trim()
+    };
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async value => { __smoke.copied.push(value); } } });
+    return result;
+  })()`)
+  assert.deepEqual(clipboardFallback, {
+    focused: true,
+    selected: true,
+    message: 'Copy blocked; Share URL selected. Press Ctrl/Cmd+C.'
+  })
+
+  const runtimePreviewParity = await evaluate(`(async () => {
+    const set = (selector, value) => {
+      const input = document.querySelector(selector);
+      const old = input.value;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, value);
+      input._valueTracker?.setValue(old);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    set('#bootstrap-0-premiumBps', '-1000');
+    set('#ladder-0-quotePremiumBps', '-1000');
+    await new Promise(r => setTimeout(r, 30));
+    const invalid = [...document.querySelectorAll('.exports textarea')].map(x => x.dataset.invalid);
+    const previewErrors = document.querySelectorAll('[data-preview-error]').length;
+    const shareDisabled = document.querySelector('#copy-share-url').disabled;
+    document.querySelector('#copy-share-url').click();
+    await new Promise(r => setTimeout(r, 0));
+    const copied = __smoke.copied.at(-1);
+    const displayed = document.querySelector('#share-url-output').value;
+    set('#bootstrap-0-premiumBps', '-50');
+    set('#ladder-0-quotePremiumBps', '100');
+    await new Promise(r => setTimeout(r, 30));
+    return { invalid, previewErrors, shareDisabled, copiedMatchesDisplayed: copied === displayed };
+  })()`)
+  assert.deepEqual(runtimePreviewParity, {
+    invalid: ['false', 'false', 'false', 'false'],
+    previewErrors: 2,
+    shareDisabled: false,
+    copiedMatchesDisplayed: true
+  })
+
   const importAtomic = await evaluate(`(async () => {
     const area = document.querySelector('#collection-import'); const apply = document.querySelector('#apply-import');
     const set = value => { const old = area.value; const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set; setter.call(area, value); area._valueTracker?.setValue(old); area.dispatchEvent(new Event('input', { bubbles: true })); area.dispatchEvent(new Event('change', { bubbles: true })); };
@@ -224,6 +328,10 @@ try {
     set('[{"marketId":"x"},42]'); apply.click(); await new Promise(r => setTimeout(r, 20)); const mixed = location.hash === before && document.querySelector('#import-status').dataset.status === 'error';
     set('{"bootstrap":[],"bootstrap":[]}'); apply.click(); await new Promise(r => setTimeout(r, 20)); const duplicate = location.hash === before && document.querySelector('#import-status').dataset.status === 'error';
     set('42'); apply.click(); await new Promise(r => setTimeout(r, 20)); const primitive = location.hash === before && document.querySelector('#import-status').dataset.status === 'error';
+    const beforeCanary = [...document.querySelectorAll('.exports textarea')].map(x => x.value);
+    const canary = 'PRIVATE_CANARY_DO_NOT_ECHO';
+    set(JSON.stringify({ bootstrap: JSON.parse(beforeCanary[0]), [canary]: true })); apply.click(); await new Promise(r => setTimeout(r, 20));
+    const atomicNoEcho = JSON.stringify(beforeCanary) === JSON.stringify([...document.querySelectorAll('.exports textarea')].map(x => x.value)) && !document.querySelector('#import-status').textContent.includes(canary);
     const bootstrap = JSON.parse(document.querySelector('[aria-label="Bootstrap JSON output"]').value);
     const ladder = JSON.parse(document.querySelector('[aria-label="Ladder JSON output"]').value);
     const secondId = '0x' + '6'.repeat(64);
@@ -234,11 +342,12 @@ try {
     document.querySelectorAll('[data-market-kind=ladder]')[1].querySelector('button').click(); await new Promise(r => setTimeout(r, 50));
     const reordered = JSON.parse(document.querySelector('[aria-label="Ladder JSON output"]').value).map(x => x.marketId);
     const focus = document.activeElement.id;
-    return { mixed, duplicate, primitive, valid, reordered, focus };
+    return { mixed, duplicate, primitive, atomicNoEcho, valid, reordered, focus };
   })()`)
   assert.equal(importAtomic.mixed, true)
   assert.equal(importAtomic.duplicate, true)
   assert.equal(importAtomic.primitive, true)
+  assert.equal(importAtomic.atomicNoEcho, true)
   assert.equal(importAtomic.valid, true)
   assert.equal(importAtomic.reordered[0], `0x${'6'.repeat(64)}`)
   assert.equal(importAtomic.focus, 'ladder-0-marketId')
@@ -250,7 +359,7 @@ try {
     tabs[0].focus(); tabs[0].dispatchEvent(new KeyboardEvent('keydown',{key:'End',bubbles:true})); await new Promise(r=>setTimeout(r,30));
     return { copied: __smoke.copied, outputs: [...document.querySelectorAll('.exports textarea')].map(x=>x.value), selected: document.activeElement.id, active: document.querySelector('[role=tab][aria-selected=true]').id, panels: document.querySelectorAll('[role=tabpanel]').length };
   })()`)
-  assert.equal(copyTabs.copied.length, 5)
+  assert.equal(copyTabs.copied.length, 7)
   assert.equal(copyTabs.panels, 4)
   assert.equal(copyTabs.active, 'tab-ladder-string')
   assert.equal(copyTabs.selected, 'tab-ladder-string')
@@ -289,6 +398,13 @@ try {
     { description: 'malformed fallback', timeoutMs: 20_000, pollIntervalMs: 50 }
   )
   assert.equal(await evaluate("document.querySelectorAll('[data-preview=bootstrap]').length"), 1)
+  const malformedFirstShare = await evaluate(`(() => {
+    const bootstrap = JSON.parse(document.querySelector('[aria-label="Bootstrap JSON output"]').value);
+    const ladder = JSON.parse(document.querySelector('[aria-label="Ladder JSON output"]').value);
+    const fragment = '#' + encodeURIComponent(JSON.stringify({ version: 1, bootstrap, ladder }));
+    return { copied: __smoke.copied[0], expected: location.origin + location.pathname + location.search + fragment };
+  })()`)
+  assert.equal(malformedFirstShare.copied, malformedFirstShare.expected)
 
   const oversizedHash = `#${'x'.repeat(140_000)}`
   await command('Page.navigate', { url: `${pageUrl}${oversizedHash}` })

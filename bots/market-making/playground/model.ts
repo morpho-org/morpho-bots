@@ -147,9 +147,9 @@ const validation = (operation: () => unknown): CollectionValidation => {
   }
 }
 export const validateBootstrapCollection = (items: BootstrapInput[]) =>
-  validation(() => deriveBootstrapGraphicModels(items))
+  validation(() => parseBootstrap(items))
 export const validateLadderCollection = (items: LadderInput[]) =>
-  validation(() => generateLadderGraphicModels(items))
+  validation(() => parseLadder(items))
 
 export type BootstrapGraphicModel = {
   marketId: string
@@ -392,11 +392,24 @@ const assertNoDuplicateJsonMembers = (text: string) => {
       const character = text[position++]!
       if (character === '"') {
         const encoded = text.slice(start, position)
+        let decoded: string
         try {
-          return JSON.parse(encoded) as string
+          decoded = JSON.parse(encoded) as string
         } catch {
           return syntax()
         }
+        for (let index = 0; index < decoded.length; index++) {
+          const code = decoded.charCodeAt(index)
+          if (code >= 0xd800 && code <= 0xdbff) {
+            const next = decoded.charCodeAt(index + 1)
+            if (Number.isNaN(next) || next < 0xdc00 || next > 0xdfff)
+              throw new StrictJsonError('Import contains an invalid Unicode surrogate')
+            index++
+          } else if (code >= 0xdc00 && code <= 0xdfff) {
+            throw new StrictJsonError('Import contains an invalid Unicode surrogate')
+          }
+        }
+        return decoded
       }
       if (character === '\\') {
         const escape = text[position++]
@@ -426,6 +439,8 @@ const assertNoDuplicateJsonMembers = (text: string) => {
       while (position < text.length) {
         whitespace()
         const name = string().normalize('NFC')
+        if (['__proto__', 'constructor', 'prototype'].includes(name))
+          throw new StrictJsonError('Import contains an unsafe JSON member name')
         if (names.has(name))
           throw new StrictJsonError('Import contains duplicate JSON member names')
         names.add(name)
@@ -490,7 +505,7 @@ const plainObject = (value: unknown): value is Record<string, unknown> =>
   Object.getPrototypeOf(value) === Object.prototype
 const exactKeys = (record: Record<string, unknown>, allowed: readonly string[]) => {
   const unsupported = Object.keys(record).find(key => !allowed.includes(key))
-  if (unsupported) throw new Error(`Object contains an unsupported key: ${unsupported}`)
+  if (unsupported) throw new Error('Object contains an unsupported key')
 }
 const itemKind = (value: unknown): 'bootstrap' | 'ladder' => {
   if (!plainObject(value)) throw new Error('Import item must be a supported collection object')
@@ -550,6 +565,20 @@ export const encodePlaygroundFragment = (state: PlaygroundState) => {
   }
   return `#${encoded}`
 }
+
+/**
+ * Builds the canonical share URL for a runtime-valid playground state.
+ *
+ * @param state - Current TanStack form values to encode.
+ * @param location - Current document origin, path, and query components.
+ * @returns A canonical absolute URL containing the exact encoded playground fragment.
+ * @throws When either collection is runtime-invalid or the encoded fragment exceeds its size bound.
+ */
+export const createPlaygroundShareUrl = (
+  state: PlaygroundState,
+  location: Pick<Location, 'origin' | 'pathname' | 'search'>
+) => `${location.origin}${location.pathname}${location.search}${encodePlaygroundFragment(state)}`
+
 export const decodePlaygroundFragment = (fragment: string): PlaygroundState => {
   const encoded = fragment.startsWith('#') ? fragment.slice(1) : fragment
   if (encoded === '') return createDefaultPlaygroundState()
