@@ -20,6 +20,7 @@ on:
           - blue-liq
           - midnight-liq
           - crossed-books
+          - market-making
 
 permissions:
   contents: read
@@ -40,6 +41,7 @@ jobs:
       blue_liq: ${{ steps.pick.outputs.blue_liq }}
       midnight_liq: ${{ steps.pick.outputs.midnight_liq }}
       crossed_books: ${{ steps.pick.outputs.crossed_books }}
+      market_making: ${{ steps.pick.outputs.market_making }}
     steps:
       - id: pick
         env:
@@ -61,6 +63,7 @@ jobs:
             echo "blue_liq=$(has blue-liq)"
             echo "midnight_liq=$(has midnight-liq)"
             echo "crossed_books=$(has crossed-books)"
+            echo "market_making=$(has market-making)"
           } >> "$GITHUB_OUTPUT"
 
   Blue:
@@ -96,6 +99,14 @@ jobs:
       bot: crossed-books
       stage: production
       github_environment: crossed-books-prod
+      ref: ${{ github.sha }}
+
+  Market-making:
+    needs: Select
+    if: ${{ needs.Select.outputs.market_making == 'true' }}
+    uses: ./.github/workflows/deploy-market-making-production.yml
+    secrets: inherit
+    with:
       ref: ${{ github.sha }}
 
   Release-blue:
@@ -170,6 +181,34 @@ jobs:
       - name: Create release
         env:
           BOT: crossed-books
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          date="$(date -u +%Y.%m.%d)"
+          n=$(( $(git tag -l "${BOT}-${date}-*" | wc -l) + 1 ))
+          tag="${BOT}-${date}-${n}"
+          # `|| true` guards against SIGPIPE aborting the job under `set -o pipefail` (git is
+          # killed when head closes the pipe early once there are many tags).
+          prev="$(git tag -l "${BOT}-*" --sort=-version:refname | head -n 1 || true)"
+          echo "Creating release $tag (previous: ${prev:-none})"
+          gh release create "$tag" --target "$SHA" --title "$tag" --generate-notes \
+            ${prev:+--notes-start-tag "$prev"}
+
+  Release-market-making:
+    needs: Market-making
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Create release
+        env:
+          BOT: market-making
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail

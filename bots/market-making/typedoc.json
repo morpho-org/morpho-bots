@@ -86,7 +86,9 @@
     "src/infrastructure/setup-state/viem-setup-state.utils.ts",
     "src/infrastructure/reference/blue-reference-reader.utils.ts",
     "src/infrastructure/reference/reference-adapter.error.ts",
-    "scripts/js-doc-validation.error.ts"
+    "scripts/js-doc-validation.error.ts",
+    "scripts/railway-deployment.error.ts",
+    "scripts/railway.utils.ts"
   ],
   "tsconfig": "tsconfig.json",
   "out": "build/jsdoc",
