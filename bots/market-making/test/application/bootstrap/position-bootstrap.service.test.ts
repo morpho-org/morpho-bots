@@ -580,6 +580,33 @@ describe('PositionBootstrapService', () => {
       }
     ])
   })
+  test('plans multiple markets with canonical credit deltas while keeping raw cash deltas', async () => {
+    const capped = {
+      ...config(),
+      creditTarget: 100n,
+      acceptanceAssets: 0n,
+      offerSize: 100n,
+      maximumMarketExposure: 100n,
+      maximumTotalExposure: 200n
+    }
+    const { service, positions, make } = setup({
+      configs: [capped, { ...capped, marketId: secondMarketId }]
+    })
+    positions.prepareReservationCredit = mock(
+      async () => (assets: bigint) => ((assets + 1n) * 10n ** 18n - 1n) / 953_129_400_000_000_000n
+    )
+    const desiredAssets: bigint[] = []
+    make.reconcile = mock(async parameters => {
+      if (parameters.desiredOffer) desiredAssets.push(parameters.desiredOffer.assets)
+    })
+
+    expect(await service.runOnce()).toEqual([
+      { marketId, status: 'applied', action: 'publish' },
+      { marketId: secondMarketId, status: 'applied', action: 'publish' }
+    ])
+    expect(desiredAssets).toEqual([95n, 95n])
+  })
+
   test('reserves planned exposure before deciding a later under-target market', async () => {
     const capped = {
       ...config(),

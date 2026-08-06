@@ -6,18 +6,21 @@ import { describe, expect, test } from 'bun:test'
 import type { BootstrapInventoryReader } from '../../../src/infrastructure/bootstrap/bootstrap-position.service'
 
 import { MidnightBootstrapPositionService } from '../../../src/infrastructure/bootstrap/bootstrap-position.service'
-import { buyerAssetReservationCredit } from '../../../src/infrastructure/reservation-credit.utils'
 
 const maker: Address = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
 const marketId: Hex = `0x${'11'.repeat(32)}`
 const firstGroup: Hex = `0x${'22'.repeat(32)}`
 const secondGroup: Hex = `0x${'33'.repeat(32)}`
 
-const fixtureReader = (
-  reader: Omit<BootstrapInventoryReader, 'readReservationCredit'> &
-    Partial<Pick<BootstrapInventoryReader, 'readReservationCredit'>>
-): BootstrapInventoryReader => ({
+type FixtureReader = Omit<
+  BootstrapInventoryReader,
+  'readReservationCredit' | 'prepareReservationCredit'
+> &
+  Partial<Pick<BootstrapInventoryReader, 'readReservationCredit' | 'prepareReservationCredit'>>
+
+const fixtureReader = (reader: FixtureReader): BootstrapInventoryReader => ({
   readReservationCredit: async group => group.assets,
+  prepareReservationCredit: async () => assets => assets,
   ...reader
 })
 
@@ -293,13 +296,7 @@ describe('MidnightBootstrapPositionService', () => {
             }
           ]
         }),
-        readReservationCredit: async group =>
-          buyerAssetReservationCredit({
-            assets: group.assets,
-            tick: group.tick!,
-            settlementFee: 0n,
-            continuousFeeCap: group.continuousFeeCap!
-          })
+        readReservationCredit: async () => 105n
       }),
       maker
     )
@@ -309,6 +306,66 @@ describe('MidnightBootstrapPositionService', () => {
     expect(position.cashBalance).toBe(100n)
     expect(position.marketExposure).toBe(105n)
     expect(position.totalExposure).toBe(105n)
+  })
+
+  test('reconciles filled credit against the reduced reserve without growing exposure', async () => {
+    const service = new MidnightBootstrapPositionService(
+      fixtureReader({
+        readPositions: async () => [{ marketId, credit: 10n, debt: 0n }],
+        readCashBalance: async () => 100n,
+        readMarketContinuousFeeCap: async () => 0n,
+        readGroupInventory: async () => ({
+          activeGroups: [],
+          cashReservations: [
+            {
+              id: firstGroup,
+              marketId,
+              assets: 90n,
+              rateBps: 500n,
+              tick: 3_976n,
+              continuousFeeCap: 0n
+            }
+          ]
+        }),
+        readReservationCredit: async group =>
+          ((group.assets + 1n) * 10n ** 18n - 1n) / 953_129_400_000_000_000n
+      }),
+      maker
+    )
+
+    const position = await service.readPosition(marketId)
+    expect(position.cashBalance).toBe(10n)
+    expect(position.marketExposure).toBe(105n)
+    expect(position.totalExposure).toBe(105n)
+  })
+
+  test('reserves the maximum canonical credit outcome once for a shared group', async () => {
+    const otherMarketId: Hex = `0x${'44'.repeat(32)}`
+    const service = new MidnightBootstrapPositionService(
+      fixtureReader({
+        readPositions: async () => [
+          { marketId, credit: 0n, debt: 0n },
+          { marketId: otherMarketId, credit: 0n, debt: 0n }
+        ],
+        readCashBalance: async () => 1_000n,
+        readMarketContinuousFeeCap: async () => 0n,
+        readGroupInventory: async () => ({
+          activeGroups: [],
+          cashReservations: [
+            { id: firstGroup, marketId: otherMarketId, assets: 100n, rateBps: 500n, tick: 3_000n },
+            { id: firstGroup, marketId, assets: 100n, rateBps: 500n, tick: 3_976n }
+          ]
+        }),
+        readReservationCredit: async group => (group.tick === 3_000n ? 740n : 105n)
+      }),
+      maker
+    )
+
+    const selected = await service.readPosition(marketId)
+
+    expect(selected.cashBalance).toBe(900n)
+    expect(selected.marketExposure).toBe(105n)
+    expect(selected.totalExposure).toBe(740n)
   })
 
   test('reserves ladder buys without treating them as replaceable bootstrap offers', async () => {

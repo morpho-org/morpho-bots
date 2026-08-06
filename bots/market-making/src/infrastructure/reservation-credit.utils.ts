@@ -1,36 +1,46 @@
 import type { IMarket } from '@morpho-org/midnight-sdk'
 
-import { MarketUtils, TakeAmountsLib } from '@morpho-org/midnight-sdk'
+import { OfferUtils } from '@morpho-org/midnight-sdk'
 
-/** One buy-side cash reservation at its exact protocol pricing terms. */
+/** One buy-side cash reservation at its exact protocol pricing and eligibility terms. */
 type BuyerAssetReservation = {
   assets: bigint
   tick: bigint
-  settlementFee: bigint
+  market: IMarket
+  start: bigint
+  expiry: bigint
   continuousFeeCap: bigint
+  timestamp: bigint
 }
 
 /**
- * Converts a remaining raw buyer-asset cap into conservative credit units.
- * @param reservation - Remaining maxAssets and the exact encoded offer pricing terms.
- * @returns Maximum credit units that consuming the buyer-asset cap can create.
- * @remarks Midnight buy offers round buyer-assets-to-units up. The canonical SDK conversion also
- * applies the protocol's settlement-fee side semantics; continuousFeeCap is carried explicitly so
- * callers cannot conflate reservations created under different accepted fee policies.
+ * Converts a remaining raw buyer-asset cap into the canonical maximum consumable credit units.
+ * @param reservation - Remaining maxAssets, hydrated market, encoded offer terms, and timestamp.
+ * @returns Greatest credit units accepted by Midnight's floor-rounded maxAssets cap, or zero when
+ *   the offer is not live or no longer accepts the market continuous fee.
+ * @remarks This deliberately uses the SDK's max-cap conversion rather than target-asset conversion.
+ * Continuous fee is an eligibility gate; settlement fees are resolved from the hydrated market.
  */
-export const buyerAssetReservationCredit = (reservation: BuyerAssetReservation): bigint => {
-  void reservation.continuousFeeCap
-  return TakeAmountsLib.buyerAssetsToUnits({
-    offer: { buy: true, tick: reservation.tick },
-    targetBuyerAssets: reservation.assets,
-    settlementFee: reservation.settlementFee
+export const buyerAssetReservationCredit = (reservation: BuyerAssetReservation): bigint =>
+  OfferUtils.getConsumableUnits({
+    offer: {
+      market: reservation.market,
+      buy: true,
+      start: reservation.start,
+      expiry: reservation.expiry,
+      tick: reservation.tick,
+      maxUnits: 0n,
+      maxAssets: reservation.assets,
+      continuousFeeCap: reservation.continuousFeeCap
+    },
+    consumed: 0n,
+    timestamp: reservation.timestamp
   })
-}
 
 /**
- * Captures canonical live fee terms for one exact encoded buy tick.
+ * Captures exact live terms for a prospective buy reservation.
  * @param parameters - Raw buyer assets, encoded tick, hydrated market, and observation timestamp.
- * @returns Immutable conversion inputs used by cash and credit accounting independently.
+ * @returns Immutable canonical SDK conversion inputs.
  */
 export const createBuyerAssetReservation = (parameters: {
   assets: bigint
@@ -40,9 +50,9 @@ export const createBuyerAssetReservation = (parameters: {
 }): BuyerAssetReservation => ({
   assets: parameters.assets,
   tick: parameters.tick,
-  settlementFee: MarketUtils.getSettlementFee({
-    settlementFeeCbps: parameters.market.settlementFeeCbps,
-    timeToMaturity: BigInt(parameters.market.params.maturity) - parameters.now
-  }),
-  continuousFeeCap: BigInt(parameters.market.continuousFee)
+  market: parameters.market,
+  start: parameters.now,
+  expiry: BigInt(parameters.market.params.maturity),
+  continuousFeeCap: BigInt(parameters.market.continuousFee),
+  timestamp: parameters.now
 })

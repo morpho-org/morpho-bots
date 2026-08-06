@@ -36,10 +36,7 @@ import { readLivePendingBootstrapOffers } from '../bootstrap/bootstrap-pending-o
 import { BlueBootstrapReferenceRateService } from '../bootstrap/bootstrap-reference-rate.service'
 import { createManagedMakerAccount } from '../make/managed-maker-account.utils'
 import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
-import {
-  buyerAssetReservationCredit,
-  createBuyerAssetReservation
-} from '../reservation-credit.utils'
+import { buyerAssetReservationCredit } from '../reservation-credit.utils'
 import {
   activeOwnedLadderGroupIds,
   reconstructOwnedLadderPublication
@@ -48,7 +45,7 @@ import { LadderAdapterError } from './ladder-adapter.error'
 import { ladderCashReservations } from './ladder-cash-reservation.utils'
 import { createLadderGroupOwnership } from './ladder-group-ownership.utils'
 import { MidnightLadderMakeService, type LadderOfferTransport } from './ladder-make.service'
-import { buildLadderTree } from './ladder-offer.utils'
+import { capLadderBuyCredit } from './ladder-offer.utils'
 import { configuredRatifierType, prepareLadderRatification } from './ladder-ratification.utils'
 import { assertLadderProspectiveSpread } from './ladder-spread.utils'
 import {
@@ -264,16 +261,17 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
           .map(offer => {
             const market = marketById.get(offer.marketId)
             if (!market) throw new LadderAdapterError('position-unavailable')
-            return buyerAssetReservationCredit(
-              createBuyerAssetReservation({
-                assets: reservation.assets,
-                tick: offer.tick,
-                market,
-                now: block.timestamp
-              })
-            )
+            return buyerAssetReservationCredit({
+              assets: reservation.assets,
+              tick: offer.tick,
+              market,
+              start: 0n,
+              expiry: market.params.maturity,
+              continuousFeeCap: offer.continuousFeeCap,
+              timestamp: block.timestamp
+            })
           })
-        if (credits.length === 0) throw new LadderAdapterError('group-ownership-state')
+        if (credits.length === 0) return (1n << 256n) - 1n
         return credits.reduce((largest, credit) => (credit > largest ? credit : largest), 0n)
       }
       const marketReserved = reservations
@@ -360,16 +358,22 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
   }
 
   const prepareUnsignedPublication = async (quote: LadderQuoteSet) => {
-    const [market, block] = await Promise.all([
+    const [market, block, capacity] = await Promise.all([
       midnight.getMarketData(quote.marketId),
-      client.getBlock({ blockTag: 'latest' })
+      client.getBlock({ blockTag: 'latest' }),
+      positions.readMarket(quote.marketId)
     ])
-    const prepared = buildLadderTree({
+    const maximumCredit = minimum(
+      capacity.targetMarketCapacityAssets ?? 0n,
+      capacity.maximumTotalCapacityAssets ?? 0n
+    )
+    const prepared = capLadderBuyCredit({
       quote,
       market,
       maker,
       ratifier: config.setup.ratifier,
-      now: block.timestamp
+      now: block.timestamp,
+      maximumCredit
     })
     await prepared.tree.mempoolValidate({
       chainId: base.id,
@@ -461,6 +465,7 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
       const groupIds = [...new Set(prepared.groups.map(group => group.groupId))]
       return {
         groupIds,
+        quote: prepared.quote,
         groups: prepared.groups,
         prospective: prepared.bookOffers,
         publish: onTransactionSubmitted =>

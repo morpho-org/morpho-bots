@@ -33,6 +33,7 @@ export interface LadderOfferTransport {
   /** Prepares a policy-checked desired tree without broadcasting it. @param quote - Exact desired quote set. @returns Publication metadata and one-shot ratifier/publisher. */
   preparePublication(quote: LadderQuoteSet): Promise<{
     groupIds: readonly Hex[]
+    quote?: LadderQuoteSet
     groups: readonly LadderGroupReference[]
     prospective: readonly LadderBookOffer[]
     /**
@@ -107,7 +108,7 @@ export class MidnightLadderMakeService implements LadderMakeService {
         })
         await this.transport.reservePublication({
           marketId: parameters.marketId,
-          quote: parameters.desired!,
+          quote: publication.quote ?? (parameters.desired as LadderQuoteSet),
           groups: publication.groups
         })
       }

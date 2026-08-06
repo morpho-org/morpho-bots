@@ -51,6 +51,22 @@ describe('ladder cash reservations', () => {
     ])
   })
 
+  test('keeps pre-upgrade ownership records safe while API indexing catches up', () => {
+    const legacy: OwnedLadderPublication = {
+      ...publication,
+      groups: publication.groups.map(({ ticks: _ticks, continuousFeeCap: _fee, ...group }) => group)
+    }
+
+    expect(pendingLadderBuyReservations([], [legacy])).toEqual([
+      {
+        id: ladderGroupId,
+        marketIds: [marketId],
+        assets: 50n,
+        offers: []
+      }
+    ])
+  })
+
   test('combines API-missing ladder and bootstrap buys for cash and exposure sizing', () => {
     expect(
       ladderCashReservations({

@@ -6,7 +6,11 @@ import { describe, expect, test } from 'bun:test'
 import type { LadderQuoteSet } from '../../../src/domain/ladder/ladder'
 
 import { offerMaxAssetsByRung } from '../../../src/domain/ladder/ladder'
-import { buildLadderTree } from '../../../src/infrastructure/ladder/ladder-offer.utils'
+import {
+  buildLadderTree,
+  capLadderBuyCredit,
+  preparedLadderBuyCredit
+} from '../../../src/infrastructure/ladder/ladder-offer.utils'
 
 const maker: Address = '0x1111111111111111111111111111111111111111'
 const midnight: Address = '0x2222222222222222222222222222222222222222'
@@ -34,9 +38,14 @@ const market = {
     enterGate: '0x0000000000000000000000000000000000000000',
     liquidatorGate: '0x0000000000000000000000000000000000000000'
   },
+  totalUnits: 1_000n,
+  lossFactor: 0n,
+  withdrawable: 500n,
+  continuousFeeCredit: 0n,
+  settlementFeeCbps: [0, 0, 0, 0, 0, 0, 0],
   tickSpacing: 1,
   continuousFee: 0
-} as unknown as IMarket
+} as IMarket
 
 const quote = (groupMode: LadderQuoteSet['groupMode']): LadderQuoteSet => ({
   marketId,
@@ -106,6 +115,30 @@ describe('buildLadderTree', () => {
 
     const firstGroups = new Set(first.groups.map(group => group.groupId))
     expect(later.groups.every(group => !firstGroups.has(group.groupId))).toBe(true)
+  })
+
+  test('caps a prospective buy ladder at canonical credit rather than raw maxAssets', () => {
+    const singleBuy: LadderQuoteSet = {
+      ...quote('shared-rung'),
+      lower: [],
+      higher: [{ index: 0, rateBps: 549n, assets: 100n }]
+    }
+    const uncapped = buildLadderTree({ quote: singleBuy, market, maker, ratifier, now })
+    expect(uncapped.tree.offers[0]?.tick).toBe(3_954n)
+    expect(preparedLadderBuyCredit(uncapped, market, now)).toBe(106n)
+
+    const capped = capLadderBuyCredit({
+      quote: singleBuy,
+      market,
+      maker,
+      ratifier,
+      now,
+      maximumCredit: 100n
+    })
+
+    expect(capped.quote.higher[0]?.assets).toBe(94n)
+    expect(capped.tree.offers[0]?.maxAssets).toBe(94n)
+    expect(preparedLadderBuyCredit(capped, market, now)).toBe(100n)
   })
 
   test('shares one exact cap across every rung in each per-book side', () => {

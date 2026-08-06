@@ -1,7 +1,7 @@
 import type { IMarket, TreeInput } from '@morpho-org/midnight-sdk'
 import type { Address, Hex } from 'viem'
 
-import { Group, Offer, TickLib, Tree } from '@morpho-org/midnight-sdk'
+import { Group, Offer, OfferUtils, TickLib, Tree } from '@morpho-org/midnight-sdk'
 
 import type { LadderQuoteSet, LadderRung } from '../../domain/ladder/ladder'
 import type { LadderGroupReference } from './ladder-group-ownership.utils'
@@ -22,6 +22,7 @@ type BuildLadderTreeParameters = {
 
 /** Complete locally built ladder tree plus group/rung ownership metadata. */
 type PreparedLadderTree = {
+  quote: LadderQuoteSet
   tree: Tree
   groups: readonly LadderGroupReference[]
   bookOffers: readonly { marketId: Hex; buy: boolean; tick: bigint }[]
@@ -131,6 +132,7 @@ export const buildLadderTree = (parameters: BuildLadderTreeParameters): Prepared
         }))
 
   return {
+    quote: parameters.quote,
     tree,
     groups,
     bookOffers: tree.offers.map(offer => ({
@@ -139,4 +141,79 @@ export const buildLadderTree = (parameters: BuildLadderTreeParameters): Prepared
       tick: offer.tick
     }))
   }
+}
+
+/**
+ * Returns canonical group-deduplicated credit reserved by prepared buy-side offers.
+ * @param prepared - Exact prepared tree, group mapping, and quote.
+ * @param market - Hydrated market used for fee and maturity semantics.
+ * @param timestamp - Timestamp at which offer eligibility and settlement fees are evaluated.
+ * @returns Sum of each independent group's maximum eligible credit outcome.
+ */
+export const preparedLadderBuyCredit = (
+  prepared: PreparedLadderTree,
+  market: IMarket,
+  timestamp: bigint
+) =>
+  prepared.groups
+    .filter(group => group.side === 'higher')
+    .reduce((total, group) => {
+      const credits = prepared.tree.offers
+        .filter(offer => offer.group === group.groupId && offer.buy)
+        .map(offer =>
+          OfferUtils.getConsumableUnits({
+            offer: {
+              market,
+              buy: offer.buy,
+              start: offer.start,
+              expiry: offer.expiry,
+              tick: offer.tick,
+              maxUnits: offer.maxUnits,
+              maxAssets: offer.maxAssets,
+              continuousFeeCap: offer.continuousFeeCap
+            },
+            consumed: 0n,
+            timestamp
+          })
+        )
+      return total + credits.reduce((largest, credit) => (credit > largest ? credit : largest), 0n)
+    }, 0n)
+
+/**
+ * Caps a prospective ladder's raw buy allocations at an exact canonical credit boundary.
+ * @param parameters - Quote, hydrated market, publication identity, timestamp, and credit ceiling.
+ * @returns Prepared tree whose group-deduplicated canonical buy credit does not exceed the ceiling.
+ * @remarks Raw cash allocations remain proportional; shared protocol groups reserve only their
+ * maximum eligible offer outcome while independent rung groups add their individual outcomes.
+ */
+export const capLadderBuyCredit = (
+  parameters: BuildLadderTreeParameters & { maximumCredit: bigint }
+): PreparedLadderTree => {
+  const totalAssets = parameters.quote.higher.reduce((sum, rung) => sum + rung.assets, 0n)
+  const quoteAt = (assets: bigint): LadderQuoteSet => {
+    if (totalAssets === 0n || assets === totalAssets) return parameters.quote
+    const higher = parameters.quote.higher.map(rung => ({
+      ...rung,
+      assets: (rung.assets * assets) / totalAssets
+    }))
+    const allocated = higher.reduce((sum, rung) => sum + rung.assets, 0n)
+    const first = higher.find(rung => rung.assets > 0n) ?? higher[0]
+    if (first) first.assets += assets - allocated
+    return { ...parameters.quote, higher: higher.filter(rung => rung.assets > 0n) }
+  }
+  let lower = 0n
+  let upper = totalAssets
+  while (lower < upper) {
+    const candidate = lower + (upper - lower + 1n) / 2n
+    const prepared = buildLadderTree({ ...parameters, quote: quoteAt(candidate) })
+    if (
+      preparedLadderBuyCredit(prepared, parameters.market, parameters.now) <=
+      parameters.maximumCredit
+    ) {
+      lower = candidate
+    } else {
+      upper = candidate - 1n
+    }
+  }
+  return buildLadderTree({ ...parameters, quote: quoteAt(lower) })
 }

@@ -17,7 +17,14 @@ type BootstrapOfferMarket = {
   continuousFee: unknown
 }
 
-const bootstrapOfferTick = (
+/**
+ * Encodes an annualized basis-point rate at the market's exact spacing and timestamp.
+ * @param rateBps - Annualized offer rate in basis points.
+ * @param market - Immutable market parameters and tick spacing.
+ * @param now - Offer start timestamp.
+ * @returns Exact aligned Midnight tick.
+ */
+export const bootstrapOfferTick = (
   rateBps: bigint,
   market: Pick<BootstrapOfferMarket, 'params' | 'tickSpacing'>,
   now: bigint

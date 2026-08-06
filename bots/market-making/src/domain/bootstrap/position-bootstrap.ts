@@ -49,6 +49,8 @@ type PositionBootstrapParameters = {
   activeOffer?: BootstrapOffer
   requiresReconciliation?: boolean
   initialTargetCompleted: boolean
+  /** Exact canonical credit reserved by a prospective raw maxAssets value. */
+  reservationCredit?: (assets: bigint) => bigint
 }
 
 type PositionBootstrapTransitionParameters = Pick<
@@ -185,7 +187,8 @@ export const decidePositionBootstrap = ({
   rate,
   activeOffer,
   requiresReconciliation = false,
-  initialTargetCompleted
+  initialTargetCompleted,
+  reservationCredit = assets => assets
 }: PositionBootstrapParameters): PositionBootstrapDecision => {
   const transition = decidePositionBootstrapTransition({
     config,
@@ -203,13 +206,20 @@ export const decidePositionBootstrap = ({
     throw new BootstrapConfigurationError('requestedRateBps', 'must be at most maximumRateBps')
   }
 
-  const assets = [
-    config.offerSize,
+  const rawAssetLimit = [config.offerSize, position.cashBalance].reduce(bigintMin)
+  const creditLimit = [
     config.creditTarget - position.credit,
-    position.cashBalance,
     config.maximumMarketExposure - position.marketExposure,
     config.maximumTotalExposure - position.totalExposure
   ].reduce(bigintMin)
+  let lower = 0n
+  let upper = rawAssetLimit > 0n ? rawAssetLimit : 0n
+  while (lower < upper) {
+    const candidate = lower + (upper - lower + 1n) / 2n
+    if (reservationCredit(candidate) <= creditLimit) lower = candidate
+    else upper = candidate - 1n
+  }
+  const assets = lower
 
   if (assets <= 0n) {
     if (activeOffer) {

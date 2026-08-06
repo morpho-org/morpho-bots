@@ -3,8 +3,6 @@ import type { Hex } from 'viem'
 import type { BootstrapRawGroup } from '../bootstrap/bootstrap-groups.utils'
 import type { OwnedLadderPublication } from './ladder-group-ownership.utils'
 
-import { LadderAdapterError } from './ladder-adapter.error'
-
 type BootstrapOfferIntent = {
   groupId: Hex
   marketId: Hex
@@ -39,22 +37,21 @@ export const pendingLadderBuyReservations = (
         const assets = publication.quote.higher
           .filter(rung => indexes.has(rung.index))
           .reduce((sum, rung) => sum + rung.assets, 0n)
-        if (
-          group.ticks === undefined ||
-          group.ticks.length !== group.rungIndexes.length ||
-          group.continuousFeeCap === undefined
-        ) {
-          throw new LadderAdapterError('group-ownership-state')
-        }
+        const offers =
+          group.ticks !== undefined &&
+          group.ticks.length === group.rungIndexes.length &&
+          group.continuousFeeCap !== undefined
+            ? group.ticks.map(tick => ({
+                marketId: publication.marketId,
+                tick,
+                continuousFeeCap: group.continuousFeeCap as bigint
+              }))
+            : []
         return {
           id: group.groupId,
           marketIds: [publication.marketId],
           assets,
-          offers: group.ticks.map(tick => ({
-            marketId: publication.marketId,
-            tick,
-            continuousFeeCap: group.continuousFeeCap as bigint
-          }))
+          offers
         }
       })
   )

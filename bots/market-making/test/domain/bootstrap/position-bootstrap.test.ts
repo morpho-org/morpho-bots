@@ -241,6 +241,24 @@ describe('decidePositionBootstrap', () => {
     })
   })
 
+  test('caps raw maxAssets by canonical reserved credit at the exact boundary', () => {
+    const decision = decidePositionBootstrap({
+      ...parameters,
+      config: {
+        ...parameters.config,
+        creditTarget: 100n,
+        acceptanceAssets: 0n,
+        offerSize: 100n,
+        maximumMarketExposure: 100n,
+        maximumTotalExposure: 100n
+      },
+      position: { ...parameters.position, credit: 0n },
+      reservationCredit: assets => (assets === 100n ? 105n : assets)
+    })
+
+    expect(decision).toMatchObject({ kind: 'publish', offer: { assets: 99n } })
+  })
+
   test('caps the offer by every remaining target, balance, market, and total exposure limit', () => {
     const limits = [
       { field: 'remaining-target', expected: 400n, values: {} },

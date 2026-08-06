@@ -43,6 +43,13 @@ export interface BootstrapInventoryReader {
   readGroupInventory(): Promise<BootstrapGroupInventory>
   /** Converts one raw buy reservation into conservative credit units at its exact offer terms. @param group - Resting or prospective buy reservation. @returns Maximum credit units created by consuming its remaining assets. */
   readReservationCredit(group: BootstrapActiveGroup): Promise<bigint>
+  /**
+   * Hydrates one market snapshot and prepares canonical prospective credit conversion at a rate.
+   * @param marketId - Market whose pricing terms are required.
+   * @param rateBps - Prospective annualized rate in basis points.
+   * @returns Converter from raw maxAssets to canonical reserved credit units.
+   */
+  prepareReservationCredit(marketId: Hex, rateBps: bigint): Promise<(assets: bigint) => bigint>
 }
 
 /** Concrete position adapter deriving exposure from accrued credit and active lend reserves. */
@@ -72,43 +79,47 @@ export class MidnightBootstrapPositionService implements BootstrapPositionServic
     const position = positions.find(item => item.marketId === marketId)
     if (!position) throw new BootstrapAdapterError('position-unavailable')
     const groups = groupInventory.activeGroups
-    const uniqueGroups = [...new Map(groups.map(group => [group.id, group])).values()]
+    const grouped = (items: readonly BootstrapActiveGroup[]) => {
+      const byId = new Map<Hex, BootstrapActiveGroup[]>()
+      for (const item of items) byId.set(item.id, [...(byId.get(item.id) ?? []), item])
+      return byId
+    }
+    const uniqueGroups = [...grouped(groups).values()].map(items => items[0]!)
     const marketGroups = [
-      ...new Map(
-        groups.filter(group => group.marketId === marketId).map(group => [group.id, group])
-      ).values()
-    ]
+      ...grouped(groups.filter(group => group.marketId === marketId)).values()
+    ].map(items => items[0]!)
     const activeGroup = marketGroups[0]
     const remainingBootstrapGroups = activeGroup
-      ? uniqueGroups.filter(group => group.id !== activeGroup.id)
-      : uniqueGroups
+      ? groups.filter(group => group.id !== activeGroup.id)
+      : groups
     const bootstrapGroupIds = new Set(uniqueGroups.map(group => group.id))
     const cashReservations = groupInventory.cashReservations.filter(
       group => !bootstrapGroupIds.has(group.id)
     )
-    const uniqueCashReservations = [
-      ...new Map(cashReservations.map(group => [group.id, group])).values()
-    ]
-    const replacementGroups = [...remainingBootstrapGroups, ...uniqueCashReservations]
-    const marketReplacementGroups = [
-      ...new Map(
-        [...remainingBootstrapGroups, ...cashReservations]
-          .filter(group => group.marketId === marketId)
-          .map(group => [group.id, group])
-      ).values()
-    ]
-    const reservedCash = replacementGroups.reduce((total, group) => total + group.assets, 0n)
+    const replacementGroups = [...remainingBootstrapGroups, ...cashReservations]
+    const replacementGroupsById = grouped(replacementGroups)
+    const marketReplacementGroupsById = grouped(
+      replacementGroups.filter(group => group.marketId === marketId)
+    )
+    const reservedCash = [...replacementGroupsById.values()].reduce(
+      (total, offers) => total + offers[0]!.assets,
+      0n
+    )
     const availableCash = cashBalance > reservedCash ? cashBalance - reservedCash : 0n
-    const reservedByMarket = (
-      await Promise.all(
-        marketReplacementGroups.map(group => this.reader.readReservationCredit(group))
+    const maximumReservationCredit = async (offers: readonly BootstrapActiveGroup[]) =>
+      (await Promise.all(offers.map(group => this.reader.readReservationCredit(group)))).reduce(
+        (largest, credit) => (credit > largest ? credit : largest),
+        0n
       )
+    const reservedByMarket = (
+      await Promise.all([...marketReplacementGroupsById.values()].map(maximumReservationCredit))
     ).reduce((total, credit) => total + credit, 0n)
     const totalExposure =
       positions.reduce((total, item) => total + item.credit, 0n) +
-      (
-        await Promise.all(replacementGroups.map(group => this.reader.readReservationCredit(group)))
-      ).reduce((total, credit) => total + credit, 0n)
+      (await Promise.all([...replacementGroupsById.values()].map(maximumReservationCredit))).reduce(
+        (total, credit) => total + credit,
+        0n
+      )
     const activeOffer: BootstrapOffer | undefined = activeGroup
       ? {
           marketId,
@@ -117,6 +128,9 @@ export class MidnightBootstrapPositionService implements BootstrapPositionServic
           referenceObservationId: activeGroup.referenceObservationId ?? `group:${activeGroup.id}`
         }
       : undefined
+    const activeOfferCredit = activeGroup
+      ? await this.reader.readReservationCredit(activeGroup)
+      : undefined
 
     return {
       credit: position.credit,
@@ -124,7 +138,7 @@ export class MidnightBootstrapPositionService implements BootstrapPositionServic
       cashBalance: availableCash,
       marketExposure: position.credit + reservedByMarket,
       totalExposure,
-      ...(activeOffer ? { activeOffer } : {}),
+      ...(activeOffer ? { activeOffer, activeOfferCredit } : {}),
       requiresReconciliation:
         marketGroups.length > 1 ||
         marketGroups.some(
@@ -133,5 +147,15 @@ export class MidnightBootstrapPositionService implements BootstrapPositionServic
             group.continuousFeeCap !== marketContinuousFeeCap
         )
     }
+  }
+
+  /**
+   * Prepares canonical prospective credit conversion from a fresh hydrated market snapshot.
+   * @param marketId - Market whose pricing terms are required.
+   * @param rateBps - Prospective annualized rate in basis points.
+   * @returns Converter from raw maxAssets to canonical reserved credit units.
+   */
+  prepareReservationCredit(marketId: Hex, rateBps: bigint) {
+    return this.reader.prepareReservationCredit(marketId, rateBps)
   }
 }

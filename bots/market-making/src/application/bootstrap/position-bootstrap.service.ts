@@ -56,9 +56,18 @@ export interface BootstrapPositionService {
     BootstrapPosition & {
       debt: bigint
       activeOffer?: BootstrapOffer
+      /** Canonical credit already reserved by the representative active offer. */
+      activeOfferCredit?: bigint
       requiresReconciliation?: boolean
     }
   >
+  /**
+   * Prepares synchronous canonical maxAssets-to-credit conversion from one fresh market snapshot.
+   * @param marketId - Market whose exact protocol pricing terms are required.
+   * @param rateBps - Prospective annualized offer rate in basis points.
+   * @returns Converter from raw offer maxAssets to canonical reserved credit units.
+   */
+  prepareReservationCredit?(marketId: Hex, rateBps: bigint): Promise<(assets: bigint) => bigint>
 }
 
 /** Port for reading a stable reference-rate observation for one bootstrap market. */
@@ -412,6 +421,7 @@ export class PositionBootstrapService {
     const plans: BootstrapRunPlan[] = []
     const preflightResults = () => plans.flatMap(plan => ('result' in plan ? [plan.result] : []))
     let reservedAssetsDelta = 0n
+    let reservedCreditDelta = 0n
     const reservedAssetsDeltaByMarket = new Map<Hex, bigint>()
 
     for (const config of this.configs) {
@@ -459,9 +469,9 @@ export class PositionBootstrapService {
             ? observedPosition.marketExposure + marketReservationDelta
             : zeroFloorSub(observedPosition.marketExposure, -marketReservationDelta),
         totalExposure:
-          reservedAssetsDelta >= 0n
-            ? observedPosition.totalExposure + reservedAssetsDelta
-            : zeroFloorSub(observedPosition.totalExposure, -reservedAssetsDelta)
+          reservedCreditDelta >= 0n
+            ? observedPosition.totalExposure + reservedCreditDelta
+            : zeroFloorSub(observedPosition.totalExposure, -reservedCreditDelta)
       }
       const effectiveState = this.verbosePosition(config.marketId, position)
 
@@ -498,6 +508,7 @@ export class PositionBootstrapService {
       }
       let decision: PositionBootstrapDecision
       let rate: BootstrapRate | undefined
+      let reservationCredit = (assets: bigint) => assets
 
       if (transition) {
         decision = transition
@@ -529,13 +540,19 @@ export class PositionBootstrapService {
         }
 
         try {
+          reservationCredit =
+            (await this.positions.prepareReservationCredit?.(
+              config.marketId,
+              rate.rateBps + config.premiumBps
+            )) ?? reservationCredit
           decision = decidePositionBootstrap({
             config,
             position,
             rate,
             activeOffer: position.activeOffer,
             requiresReconciliation: position.requiresReconciliation,
-            initialTargetCompleted: this.completedMarkets.has(config.marketId)
+            initialTargetCompleted: this.completedMarkets.has(config.marketId),
+            reservationCredit
           })
         } catch (error) {
           const halt = await this.haltStrategy(
@@ -586,14 +603,24 @@ export class PositionBootstrapService {
           : {})
       })
       if (decision.kind === 'publish' || decision.kind === 'replace') {
-        const replacedAssets =
-          decision.kind === 'replace' ? (position.activeOffer?.assets ?? 0n) : 0n
-        const exposureDelta = decision.offer.assets - replacedAssets
-        reservedAssetsDelta += exposureDelta
+        const replacedCredit =
+          decision.kind === 'replace'
+            ? (position.activeOfferCredit ??
+              (position.activeOffer ? reservationCredit(position.activeOffer.assets) : 0n))
+            : 0n
+        const exposureDelta = reservationCredit(decision.offer.assets) - replacedCredit
+        const rawAssetsDelta =
+          decision.offer.assets -
+          (decision.kind === 'replace' ? (position.activeOffer?.assets ?? 0n) : 0n)
+        reservedAssetsDelta += rawAssetsDelta
+        reservedCreditDelta += exposureDelta
         reservedAssetsDeltaByMarket.set(config.marketId, marketReservationDelta + exposureDelta)
       } else if (decision.kind === 'invalidate' && position.activeOffer) {
-        const exposureDelta = -position.activeOffer.assets
-        reservedAssetsDelta += exposureDelta
+        const exposureDelta = -(
+          position.activeOfferCredit ?? reservationCredit(position.activeOffer.assets)
+        )
+        reservedAssetsDelta -= position.activeOffer.assets
+        reservedCreditDelta += exposureDelta
         reservedAssetsDeltaByMarket.set(config.marketId, marketReservationDelta + exposureDelta)
       }
     }

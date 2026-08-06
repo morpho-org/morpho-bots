@@ -54,7 +54,11 @@ import {
   validateBootstrapMempoolPayload,
   validateBootstrapMempoolPublication
 } from './bootstrap-mempool-validation.utils'
-import { bootstrapContinuousFeeCap, createBootstrapOffer } from './bootstrap-offer.utils'
+import {
+  bootstrapContinuousFeeCap,
+  bootstrapOfferTick,
+  createBootstrapOffer
+} from './bootstrap-offer.utils'
 import { readLivePendingBootstrapOffers } from './bootstrap-pending-offer.utils'
 import { MidnightBootstrapPositionService } from './bootstrap-position.service'
 import { BlueBootstrapReferenceRateService } from './bootstrap-reference-rate.service'
@@ -176,17 +180,30 @@ export const createProductionBootstrapAdapters = (
       morphoApiBaseUrl: config.morphoApiBaseUrl,
       requestTimeoutMs: config.requestTimeoutMs
     })
+  const prospectiveTerms = new Map<
+    Hex,
+    {
+      rateBps: bigint
+      market: Awaited<ReturnType<typeof midnight.getMarketData>>
+      now: bigint
+    }
+  >()
   const prepareOffer = async (offer: BootstrapOffer) => {
-    const [market, block] = await Promise.all([
-      midnight.getMarketData(offer.marketId),
-      client.getBlock({ blockTag: 'latest' })
-    ])
+    const preparedTerms = prospectiveTerms.get(offer.marketId)
+    const [market, now] =
+      preparedTerms?.rateBps === offer.rateBps
+        ? [preparedTerms.market, preparedTerms.now]
+        : await Promise.all([
+            midnight.getMarketData(offer.marketId),
+            client.getBlock({ blockTag: 'latest' }).then(block => block.timestamp)
+          ])
+    prospectiveTerms.delete(offer.marketId)
     return createBootstrapOffer({
       offer,
       market,
       maker,
       ratifier: config.setup.ratifier,
-      now: block.timestamp
+      now
     })
   }
   const readGroupConsumed = (groupId: Hex, blockNumber: bigint) =>
@@ -367,14 +384,27 @@ export const createProductionBootstrapAdapters = (
         midnight.getMarketData(group.marketId),
         client.getBlock({ blockTag: 'latest' })
       ])
-      return buyerAssetReservationCredit(
-        createBuyerAssetReservation({
-          assets: group.assets,
-          tick: group.tick,
-          market,
-          now: block.timestamp
-        })
-      )
+      return buyerAssetReservationCredit({
+        assets: group.assets,
+        tick: group.tick,
+        market,
+        start: 0n,
+        expiry: market.params.maturity,
+        continuousFeeCap: group.continuousFeeCap,
+        timestamp: block.timestamp
+      })
+    },
+    prepareReservationCredit: async (marketId, rateBps) => {
+      const [market, block] = await Promise.all([
+        midnight.getMarketData(marketId),
+        client.getBlock({ blockTag: 'latest' })
+      ])
+      const tick = bootstrapOfferTick(rateBps, market, block.timestamp)
+      prospectiveTerms.set(marketId, { rateBps, market, now: block.timestamp })
+      return assets =>
+        buyerAssetReservationCredit(
+          createBuyerAssetReservation({ assets, tick, market, now: block.timestamp })
+        )
     }
   }
 
