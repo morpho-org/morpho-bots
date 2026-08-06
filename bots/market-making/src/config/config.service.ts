@@ -12,17 +12,15 @@ import { configurationFromEnvironment, loadConfigurationSources } from './config
 import { ConfigValidationError } from './config-validation.error'
 import {
   addressValue,
-  bootstrapConfigsValue,
   bytes32Value,
   chainIdValue,
-  hexListValue,
-  ladderConfigsValue,
   privateKeyValue,
   requestTimeoutValue,
   transactionReceiptTimeoutValue,
   unsignedBigIntValue,
   urlValue
 } from './config.utils'
+import { bootstrapConfigsValue, hexListValue, ladderConfigsValue } from './market-collections'
 
 /** Validated maker identity selected by the CLI runtime mode. */
 export type MakerIdentity =

@@ -53,6 +53,8 @@ test('CI keeps real-browser tests out of Bun discovery and runs them explicitly 
   assert.match(browserSource, /from 'node:test'/)
   assert.match(browserSource, /\['SIGTERM', 'SIGINT'\]/)
   assert.match(browserSource, /\$\{signal\} after Chromium readiness/)
+  assert.match(browserSource, /mobile Chromium smoke remains deployable/)
+  assert.match(browserSource, /PLAYGROUND_SMOKE_VIEWPORT: 'mobile'/)
   assert.match(browserSource, /two complete smoke runs/)
 })
 
@@ -64,11 +66,13 @@ test('browser lifecycle uses separate bounded build, startup, body, UI, CDP, and
 
   assert.match(smokeSource, /smokeBudgets\(process\.env\)/)
   assert.match(smokeSource, /const ownedDirectories = new Set\(\)/)
+  assert.match(smokeSource, /TMPDIR: runTemporaryRoot/)
   assert.doesNotMatch(smokeSource, /new Set\(\[join\(root, 'playground\/dist'\)\]\)/)
   assert.match(smokeSource, /runBounded\([\s\S]*fresh playground build/)
   assert.match(smokeSource, /const startupDeadline = performance\.now\(\) \+ startupTimeout/)
   assert.match(smokeSource, /disposeResult: openedSocket => openedSocket\.close\(\)/)
   assert.match(smokeSource, /createCdpClient\(socket/)
+  assert.match(smokeSource, /Accessibility\.getFullAXTree/)
   assert.match(smokeSource, /\/json\/new\?about:blank/)
   assert.doesNotMatch(smokeSource, /\/json\/new\?http:\/\/127\.0\.0\.1/)
   assert.match(smokeSource, /phaseDeadline = performance\.now\(\) \+ bodyTimeout/)
