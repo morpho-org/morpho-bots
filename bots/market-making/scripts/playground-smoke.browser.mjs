@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { chmod, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import test from 'node:test'
@@ -72,6 +73,25 @@ const waitForIdentitiesGone = async identities =>
       pollIntervalMs: 10
     }
   )
+
+const assertPortClosed = port =>
+  new Promise((resolve, reject) => {
+    const socket = connect({ host: '127.0.0.1', port })
+    const timer = setTimeout(() => {
+      socket.destroy()
+      reject(new Error(`port ${port} did not reject a connection before the deadline`))
+    }, 1_000)
+    socket.once('connect', () => {
+      clearTimeout(timer)
+      socket.destroy()
+      reject(new Error(`port ${port} still accepts connections`))
+    })
+    socket.once('error', error => {
+      clearTimeout(timer)
+      if (error.code === 'ECONNREFUSED') resolve()
+      else reject(error)
+    })
+  })
 
 const spawnSmoke = ({ env = process.env } = {}) => {
   const child = spawnOwnedProcess(process.execPath, [smokeScript], {
@@ -382,6 +402,150 @@ test(
 )
 
 test(
+  'build timeout reaps the build process tree and removes temporary build output',
+  { timeout: browserTestTimeout },
+  async () => {
+    const isolatedTmp = await temporaryDirectory('playground-browser-build-timeout-')
+    const bin = join(isolatedTmp, 'bin')
+    const fakeBun = join(bin, 'bun')
+    const buildPidFile = join(isolatedTmp, 'build-pid')
+    const descendantPidFile = join(isolatedTmp, 'build-descendant-pid')
+    await mkdir(bin)
+    await writeFile(
+      fakeBun,
+      `#!/usr/bin/env node
+const { spawn } = require('node:child_process')
+const { writeFileSync } = require('node:fs')
+const child = spawn(process.execPath, ['-e', \`
+  const { writeFileSync } = require('node:fs')
+  writeFileSync(process.env.SMOKE_BUILD_DESCENDANT_PID_FILE, String(process.pid))
+  setInterval(() => {}, 1000)
+\`], { stdio: 'ignore' })
+writeFileSync(process.env.SMOKE_BUILD_PID_FILE, String(process.pid))
+child.on('close', () => process.exit(0))
+setInterval(() => {}, 1000)
+`
+    )
+    await chmod(fakeBun, 0o755)
+    const run = spawnSmoke({
+      env: {
+        ...process.env,
+        CHROMIUM_PATH: chromiumPath,
+        PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
+        PLAYGROUND_SMOKE_BUILD_TIMEOUT_MS: '100',
+        SMOKE_BUILD_PID_FILE: buildPidFile,
+        SMOKE_BUILD_DESCENDANT_PID_FILE: descendantPidFile,
+        TMPDIR: isolatedTmp
+      }
+    })
+    await waitForReadiness(
+      () => Promise.all([readFile(buildPidFile), readFile(descendantPidFile)]),
+      {
+        child: run.child,
+        childName: 'Smoke test',
+        description: 'build-timeout process capture',
+        getStderr: () => run.stderr,
+        timeoutMs: 2_000
+      }
+    )
+    const captured = await inspectProcessTree(run.child.pid)
+
+    await assert.rejects(
+      successfulSmokeResult(run),
+      /Timed out after 100ms during fresh playground build/
+    )
+    await cleanupHarnessRun(run)
+
+    await waitForIdentitiesGone(captured)
+    assert.deepEqual(
+      (await readdir(isolatedTmp)).filter(name =>
+        name.startsWith('market-making-playground-dist-')
+      ),
+      []
+    )
+  }
+)
+
+test(
+  'normal completion reaps every captured identity and removes all isolated resources',
+  { timeout: browserTestTimeout },
+  async () => {
+    const isolatedTmp = await temporaryDirectory('playground-browser-normal-cleanup-')
+    const run = spawnSmoke({
+      env: {
+        ...process.env,
+        PLAYGROUND_SMOKE_BODY_DELAY_MS: '1000',
+        TMPDIR: isolatedTmp
+      }
+    })
+    await waitForReadiness(() => assert.match(run.stdout, /smoke environment:/), {
+      child: run.child,
+      childName: 'Smoke test',
+      description: 'normal-completion process capture',
+      getStderr: () => run.stderr,
+      timeoutMs: outerReadinessTimeout
+    })
+    const captured = await inspectProcessTree(run.child.pid)
+    assert.ok(captured.length > 3, `expected the smoke and Chromium tree, got ${captured.length}`)
+    const smokeTemporaryRoot = run.stdout.match(/smokeTemporaryRoot=([^ ]+)/)?.[1]
+    assert.ok(smokeTemporaryRoot)
+    assert.ok((await readdir(smokeTemporaryRoot)).some(name => name.startsWith('profile-')))
+    const ports = [...run.stdout.matchAll(/(?:appPort|chromiumDebugPort)=(\d+)/g)].map(match =>
+      Number(match[1])
+    )
+    assert.equal(ports.length, 2)
+
+    await successfulSmokeResult(run)
+    await Promise.all([cleanupHarnessRun(run), cleanupHarnessRun(run)])
+
+    await waitForIdentitiesGone(captured)
+    await Promise.all(ports.map(assertPortClosed))
+    await assert.rejects(readdir(smokeTemporaryRoot), { code: 'ENOENT' })
+    assert.deepEqual(await readdir(isolatedTmp), [])
+  }
+)
+
+test(
+  'body timeout after readiness reaps Chromium, closes ports, and removes owned resources',
+  { timeout: browserTestTimeout },
+  async () => {
+    const isolatedTmp = await temporaryDirectory('playground-browser-body-timeout-')
+    const run = spawnSmoke({
+      env: {
+        ...process.env,
+        PLAYGROUND_SMOKE_BODY_DELAY_MS: '60000',
+        PLAYGROUND_SMOKE_BODY_TIMEOUT_MS: '100',
+        TMPDIR: isolatedTmp
+      }
+    })
+    await waitForReadiness(() => assert.match(run.stdout, /smoke environment:/), {
+      child: run.child,
+      childName: 'Smoke test',
+      description: 'body-timeout process capture',
+      getStderr: () => run.stderr,
+      timeoutMs: outerReadinessTimeout
+    })
+    const captured = await inspectProcessTree(run.child.pid)
+    const smokeTemporaryRoot = run.stdout.match(/smokeTemporaryRoot=([^ ]+)/)?.[1]
+    assert.ok(smokeTemporaryRoot)
+    const ports = [...run.stdout.matchAll(/(?:appPort|chromiumDebugPort)=(\d+)/g)].map(match =>
+      Number(match[1])
+    )
+
+    await assert.rejects(
+      successfulSmokeResult(run),
+      /Timed out after 100ms during browser smoke body delay/
+    )
+    await cleanupHarnessRun(run)
+
+    await waitForIdentitiesGone(captured)
+    await Promise.all(ports.map(assertPortClosed))
+    await assert.rejects(readdir(smokeTemporaryRoot), { code: 'ENOENT' })
+    assert.deepEqual(await readdir(isolatedTmp), [])
+  }
+)
+
+test(
   'full browser body gets a fresh deadline after startup has elapsed',
   { timeout: browserTestTimeout },
   async () => {
@@ -398,18 +562,27 @@ test(
 )
 
 test(
-  'complete Chromium smoke remains deployable below the /morpho-bots/ Pages subpath',
+  'mobile Chromium smoke remains deployable below the /morpho-bots/ Pages subpath',
   { timeout: browserTestTimeout },
   async () => {
     const run = spawnSmoke({
       env: {
         ...process.env,
-        PLAYGROUND_SMOKE_BASE_PATH: '/morpho-bots/'
+        PLAYGROUND_SMOKE_BASE_PATH: '/morpho-bots/',
+        PLAYGROUND_SMOKE_VIEWPORT: 'mobile'
       }
     })
     const result = await runSmokesConcurrently([run])
     assert.match(result[0].stdout, /browser CSP: PASS/)
     assert.match(result[0].stdout, /browser smoke: PASS/)
+    const summary = JSON.parse(result[0].stdout.trim().split(/\r?\n/).at(-1))
+    assert.deepEqual(summary, {
+      basePath: '/morpho-bots/',
+      mobile: true,
+      checks: 'passed',
+      requests: summary.requests
+    })
+    assert.ok(summary.requests >= 3)
   }
 )
 
@@ -417,7 +590,43 @@ test(
   'two complete smoke runs use isolated builds and dynamic ports concurrently',
   { timeout: browserTestTimeout },
   async () => {
-    const runs = Array.from({ length: 2 }, () => spawnSmoke())
+    const isolatedRoots = await Promise.all(
+      Array.from({ length: 2 }, (_, index) =>
+        temporaryDirectory(`playground-browser-concurrent-${index}-`)
+      )
+    )
+    const runs = isolatedRoots.map(isolatedTmp =>
+      spawnSmoke({
+        env: {
+          ...process.env,
+          PLAYGROUND_SMOKE_BODY_DELAY_MS: '1000',
+          TMPDIR: isolatedTmp
+        }
+      })
+    )
+    await Promise.all(
+      runs.map(run =>
+        waitForReadiness(() => assert.match(run.stdout, /smoke environment:/), {
+          child: run.child,
+          childName: 'Smoke test',
+          description: 'concurrent smoke process capture',
+          getStderr: () => run.stderr,
+          timeoutMs: outerReadinessTimeout
+        })
+      )
+    )
+    const capturedTrees = await Promise.all(runs.map(run => inspectProcessTree(run.child.pid)))
+    const smokeTemporaryRoots = runs.map(run => run.stdout.match(/smokeTemporaryRoot=([^ ]+)/)?.[1])
+    assert.equal(new Set(smokeTemporaryRoots).size, 2)
+    for (const [index, isolatedTmp] of isolatedRoots.entries()) {
+      const resources = await readdir(isolatedTmp)
+      assert.ok(resources.some(name => name.startsWith('market-making-playground-dist-')))
+      assert.ok(capturedTrees[index].length > 3)
+      assert.ok(
+        (await readdir(smokeTemporaryRoots[index])).some(name => name.startsWith('profile-'))
+      )
+    }
+
     const results = await runSmokesConcurrently(runs)
     for (const result of results) {
       assert.deepEqual(
@@ -428,8 +637,19 @@ test(
       assert.equal(result.stdout.match(/browser CSP: PASS/g)?.length, 1)
       assert.equal(result.stdout.match(/browser smoke: PASS/g)?.length, 1)
     }
-    const ports = results.map(({ stdout }) => Number(stdout.match(/appPort=(\d+)/)?.[1]))
-    assert.equal(new Set(ports).size, 2)
+    const appPorts = results.map(({ stdout }) => Number(stdout.match(/appPort=(\d+)/)?.[1]))
+    const debugPorts = results.map(({ stdout }) =>
+      Number(stdout.match(/chromiumDebugPort=(\d+)/)?.[1])
+    )
+    assert.equal(new Set(appPorts).size, 2)
+    assert.equal(new Set(debugPorts).size, 2)
+    assert.equal(new Set([...appPorts, ...debugPorts]).size, 4)
+    await Promise.all(capturedTrees.map(waitForIdentitiesGone))
+    await Promise.all([...appPorts, ...debugPorts].map(assertPortClosed))
+    await Promise.all(
+      smokeTemporaryRoots.map(root => assert.rejects(readdir(root), { code: 'ENOENT' }))
+    )
+    for (const isolatedTmp of isolatedRoots) assert.deepEqual(await readdir(isolatedTmp), [])
 
     const evidence = results[0].stdout
       .split(/\r?\n/)

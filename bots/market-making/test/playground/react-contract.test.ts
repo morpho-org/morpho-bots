@@ -1,86 +1,63 @@
 import { describe, expect, test } from 'bun:test'
 import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
 
-const root = join(import.meta.dir, '../../../..')
-const read = (path: string) => readFile(join(root, path), 'utf8')
+const read = (path: string) => readFile(new URL(`../../${path}`, import.meta.url), 'utf8')
 
-describe('market-making playground React architecture contract', () => {
-  test('mounts a real React root and contains no imperative DOM controller', async () => {
-    const app = await read('bots/market-making/playground/app.tsx')
-    expect(app).toContain("from 'react-dom/client'")
-    expect(app).toMatch(/const reactRoot = createRoot\([^)]*\)/)
-    expect(app).toContain('reactRoot.render(')
-    expect(app).toContain("from '@tanstack/react-form'")
-    expect(app).toContain("from '@tanstack/react-table'")
-    expect(app).not.toMatch(/document\.(?:querySelector|createElement|createElementNS)/)
-    expect(app).not.toContain('replaceChildren')
-    expect(app).not.toContain('flushSync')
-    expect(app).not.toContain('synchronously')
-    expect(app).not.toContain('dangerouslySetInnerHTML')
+describe('bootstrap + ladder only browser contract', () => {
+  test('removes runtime, secret, observability, reference, and File API surfaces', async () => {
+    const app = await read('playground/app.tsx')
+    for (const forbidden of [
+      'SCALAR_FIELDS',
+      'OBSERVABILITY_FIELDS',
+      'SENSITIVE_UI_KEYS',
+      'state.referenceRateBps',
+      'preview-reference',
+      'MAKER_PRIVATE_KEY',
+      'FileList',
+      'file.text()',
+      'type="file"',
+      'onDrop',
+      'onDragEnter',
+      'dragging'
+    ])
+      expect(app).not.toContain(forbidden)
   })
 
-  test('uses one TanStack form path for full and quick editors and TanStack Table for exact rows', async () => {
-    const app = await read('bots/market-making/playground/app.tsx')
-    expect(app).toContain('useForm({')
-    expect(app).toContain('<form.Field')
-    expect(app).toContain(
-      'fieldInput(`${kind}.${index}.${field[0]}`, field, false, [], uiIds[index])'
-    )
-    expect(app).toContain('`ladder.${selectedIndex}.${key}`')
-    expect(app).toMatch(
-      /fieldInput\(\s*path,\s*quickFieldDefinition\(key\),\s*true,\s*errors,\s*selectedLadderId\s*\)/
-    )
+  test('renders bootstrap and ladder graphics and exactly four collection outputs', async () => {
+    const app = await read('playground/app.tsx')
+    expect(app).toContain('BootstrapGraphic')
+    expect(app).toContain('LadderGraphic')
     expect(app).toContain('useReactTable({')
-    expect(app).toContain('getCoreRowModel: getCoreRowModel()')
-    expect(app).toContain('table.getRowModel().rows')
-  })
-
-  test('declares cataloged React and TanStack dependencies and a TSX shell entry', async () => {
-    const rootPackage = JSON.parse(await read('package.json'))
-    const botPackage = JSON.parse(await read('bots/market-making/package.json'))
-    const html = await read('bots/market-making/playground/index.html')
-    for (const dependency of [
-      'react',
-      'react-dom',
-      '@types/react',
-      '@types/react-dom',
-      '@tanstack/react-form',
-      '@tanstack/react-table'
-    ]) {
-      expect(rootPackage.workspaces.catalog[dependency]).toBeString()
-      const section = dependency.startsWith('@types/') ? 'devDependencies' : 'dependencies'
-      expect(botPackage[section][dependency]).toBe('catalog:')
+    expect(app).toContain('Bootstrap JSON')
+    expect(app).toContain('Bootstrap JSON string')
+    expect(app).toContain('Ladder JSON')
+    expect(app).toContain('Ladder JSON string')
+    for (const forbidden of ['YAML', 'Shell-safe', 'Runtime & setup', 'Observability']) {
+      expect(app).not.toContain(forbidden)
     }
-    expect(html).toContain('id="root"')
-    expect(html).toContain('src="./app.tsx"')
-    expect(html).not.toContain('src="./app.ts"')
   })
 
-  test('validates asynchronous file imports against form state read only after the file completes', async () => {
-    const app = await read('bots/market-making/playground/app.tsx')
-    expect(app).toContain('const applyFile = async (files: FileList | readonly File[]) =>')
-    expect(app).toMatch(
-      /const text = await file\.text\(\)[\s\S]*?generation !== importGeneration\.current[\s\S]*?form\.state\.values/
-    )
-    expect(app).not.toContain('applyFile(event.target.files ?? [], state)')
-    expect(app).not.toContain('applyFile(event.dataTransfer.files, state)')
+  test('uses stable atomic fragment synchronization and paste-only import', async () => {
+    const app = await read('playground/app.tsx')
+    expect(app).toContain('decodePlaygroundFragment(window.location.hash)')
+    expect(app).toContain("history.replaceState(null, '', nextUrl)")
+    expect(app).toContain('lastFragment.current')
+    expect(app).toContain('if (fragment === lastFragment.current) {')
+    expect(app).toContain('Paste bootstrap, ladder, or combined JSON')
+    expect(app).toContain('Apply pasted JSON')
   })
 
-  test('uses one import revision for file, drop, apply, and every paste edit', async () => {
-    const app = await read('bots/market-making/playground/app.tsx')
-    expect(app).toMatch(
-      /onChange=\{event => \{\s*beginImport\(\)\s*setImportText\(event\.target\.value\)/
-    )
-    expect(app).toContain('const generation = beginImport()')
-    expect(app).toContain('generation !== importGeneration.current')
-  })
-
-  test('keys collection cards and previews with deterministic UI-only identities', async () => {
-    const app = await read('bots/market-making/playground/app.tsx')
-    expect(app).toContain('const createUiId =')
-    expect(app).toContain('key={uiIds[index]}')
-    expect(app).toContain('key={ladderUiIds[index]}')
-    expect(app).not.toMatch(/crypto\.randomUUID|Math\.random/)
+  test('browser model imports only the dedicated shared parser and pure ladder domain', async () => {
+    const model = await read('playground/model.ts')
+    expect(model).toContain("from '../src/config/market-collections'")
+    expect(model).not.toContain('config.utils')
+    for (const forbidden of [
+      'MAKER_PRIVATE_KEY',
+      'RPC_URL',
+      "from '@repo/observability'",
+      "from '@repo/logging'"
+    ]) {
+      expect(model).not.toContain(forbidden)
+    }
   })
 })
