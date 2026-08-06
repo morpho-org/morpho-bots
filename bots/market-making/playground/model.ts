@@ -9,6 +9,11 @@ import {
   parseBytes32
 } from '../src/config/market-collections'
 import { generateLadder, offerMaxAssetsByRung } from '../src/domain/ladder/ladder'
+import { CollectionImportError } from './collection-import.error'
+import { CollectionValidationError } from './collection-validation.error'
+import { FragmentCodecError } from './fragment-codec.error'
+import { PreviewGenerationError } from './preview-generation.error'
+import { StrictJsonError } from './strict-json.error'
 
 export type BootstrapInput = Record<
   Exclude<(typeof BOOTSTRAP_MARKET_FIELDS)[number], 'autoRefill'>,
@@ -177,7 +182,7 @@ export const deriveBootstrapGraphicModels = (items: BootstrapInput[]): Bootstrap
       reference + BigInt(item.premiumBps) < minimum ||
       reference + BigInt(item.premiumBps) > maximum
     ) {
-      throw new Error(
+      throw new PreviewGenerationError(
         'Bootstrap derived reference and quoted rates must be positive and remain inside configured bounds'
       )
     }
@@ -264,7 +269,7 @@ export const generateLadderGraphicModels = (
     const center = (minimum + maximum) / 2n
     const reference = center - config.quotePremiumBps
     if (reference <= 0n || reference < minimum || reference > maximum) {
-      throw new Error(
+      throw new PreviewGenerationError(
         'Ladder derived reference and center rates must remain inside configured bounds'
       )
     }
@@ -373,14 +378,13 @@ export const generateLadderGraphicModels = (
 
 const MAXIMUM_COLLECTION_JSON_BYTES = 128 * 1024
 const MAXIMUM_JSON_NESTING = 128
-class StrictJsonError extends Error {}
-class ScannerSyntaxError extends Error {}
+const scannerSyntax = Symbol('scannerSyntax')
 
 /** Detects duplicate object names before JSON.parse can overwrite them. */
 const assertNoDuplicateJsonMembers = (text: string) => {
   let position = 0
   const syntax = (): never => {
-    throw new ScannerSyntaxError()
+    throw scannerSyntax
   }
   const whitespace = () => {
     while (/\s/.test(text[position] ?? '')) position++
@@ -474,7 +478,7 @@ const assertNoDuplicateJsonMembers = (text: string) => {
     const token = text
       .slice(position)
       .match(/^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/)?.[0]
-    if (token === undefined) throw new ScannerSyntaxError()
+    if (token === undefined) throw scannerSyntax
     position += token.length
   }
   try {
@@ -482,7 +486,7 @@ const assertNoDuplicateJsonMembers = (text: string) => {
     whitespace()
     if (position !== text.length) syntax()
   } catch (error) {
-    if (!(error instanceof ScannerSyntaxError)) throw error
+    if (error !== scannerSyntax) throw error
   }
 }
 
@@ -494,7 +498,7 @@ const parseJson = (text: string): unknown => {
   try {
     return JSON.parse(text)
   } catch {
-    throw new Error('Import must be valid JSON')
+    throw new StrictJsonError('Import must be valid JSON')
   }
 }
 
@@ -503,19 +507,24 @@ const plainObject = (value: unknown): value is Record<string, unknown> =>
   value !== null &&
   !Array.isArray(value) &&
   Object.getPrototypeOf(value) === Object.prototype
-const exactKeys = (record: Record<string, unknown>, allowed: readonly string[]) => {
+const exactKeys = (
+  record: Record<string, unknown>,
+  allowed: readonly string[],
+  createError: (message: string) => Error = message => new CollectionImportError(message)
+) => {
   const unsupported = Object.keys(record).find(key => !allowed.includes(key))
-  if (unsupported) throw new Error('Object contains an unsupported key')
+  if (unsupported) throw createError('Object contains an unsupported key')
 }
 const itemKind = (value: unknown): 'bootstrap' | 'ladder' => {
-  if (!plainObject(value)) throw new Error('Import item must be a supported collection object')
+  if (!plainObject(value))
+    throw new CollectionImportError('Import item must be a supported collection object')
   const keys = Object.keys(value)
   const bootstrap =
     keys.every(key => BOOTSTRAP_MARKET_FIELDS.includes(key as never)) && keys.includes('autoRefill')
   const ladder =
     keys.every(key => LADDER_MARKET_FIELDS.includes(key as never)) && keys.includes('groupMode')
   if (bootstrap === ladder)
-    throw new Error('Import item is not a supported exact collection object')
+    throw new CollectionImportError('Import item is not a supported exact collection object')
   return bootstrap ? 'bootstrap' : 'ladder'
 }
 
@@ -523,21 +532,25 @@ export type CollectionsImport = Partial<Pick<PlaygroundState, 'bootstrap' | 'lad
 export const parseCollectionsImport = (text: string): CollectionsImport => {
   let parsed = parseJson(text)
   if (typeof parsed === 'string') parsed = parseJson(parsed)
-  if (typeof parsed === 'string') throw new Error('Import accepts at most one JSON string layer')
+  if (typeof parsed === 'string')
+    throw new CollectionImportError('Import accepts at most one JSON string layer')
   if (Array.isArray(parsed)) {
-    if (parsed.length === 0) throw new Error('Empty array is not a supported unlabelled import')
+    if (parsed.length === 0)
+      throw new CollectionImportError('Empty array is not a supported unlabelled import')
     const kinds = parsed.map(itemKind)
     if (new Set(kinds).size !== 1)
-      throw new Error('Import cannot contain mixed collection item types')
+      throw new CollectionImportError('Import cannot contain mixed collection item types')
     return kinds[0] === 'bootstrap'
       ? { bootstrap: parseBootstrap(parsed) }
       : { ladder: parseLadder(parsed) }
   }
-  if (!plainObject(parsed)) throw new Error('Import must use a supported collection shape')
+  if (!plainObject(parsed))
+    throw new CollectionImportError('Import must use a supported collection shape')
   const keys = Object.keys(parsed)
   if (keys.includes('bootstrap') || keys.includes('ladder')) {
     exactKeys(parsed, ['bootstrap', 'ladder'])
-    if (keys.length === 0) throw new Error('Import must contain a supported collection')
+    if (keys.length === 0)
+      throw new CollectionImportError('Import must contain a supported collection')
     const result: CollectionsImport = {}
     if ('bootstrap' in parsed) result.bootstrap = parseBootstrap(parsed.bootstrap)
     if ('ladder' in parsed) result.ladder = parseLadder(parsed.ladder)
@@ -552,8 +565,7 @@ export const parseCollectionsImport = (text: string): CollectionsImport => {
 export const COLLECTION_FRAGMENT_VERSION = 1
 export const encodePlaygroundFragment = (state: PlaygroundState) => {
   const validation = validatePlaygroundState(state)
-  if (!validation.valid)
-    throw new Error(`Fragment state is invalid: ${validation.errors.join('; ')}`)
+  if (!validation.valid) throw new FragmentCodecError('Fragment state is invalid')
   const canonical = {
     version: COLLECTION_FRAGMENT_VERSION,
     bootstrap: parseBootstrap(state.bootstrap),
@@ -561,7 +573,7 @@ export const encodePlaygroundFragment = (state: PlaygroundState) => {
   }
   const encoded = encodeURIComponent(JSON.stringify(canonical))
   if (new TextEncoder().encode(encoded).byteLength > MAXIMUM_COLLECTION_JSON_BYTES) {
-    throw new Error('Fragment exceeds the 128 KiB size limit')
+    throw new FragmentCodecError('Fragment exceeds the 128 KiB size limit')
   }
   return `#${encoded}`
 }
@@ -583,31 +595,30 @@ export const decodePlaygroundFragment = (fragment: string): PlaygroundState => {
   const encoded = fragment.startsWith('#') ? fragment.slice(1) : fragment
   if (encoded === '') return createDefaultPlaygroundState()
   if (new TextEncoder().encode(encoded).byteLength > MAXIMUM_COLLECTION_JSON_BYTES) {
-    throw new Error('Fragment exceeds the 128 KiB size limit')
+    throw new FragmentCodecError('Fragment exceeds the 128 KiB size limit')
   }
   let text: string
   try {
     text = decodeURIComponent(encoded)
   } catch {
-    throw new Error('Fragment must be valid percent-encoded JSON')
+    throw new FragmentCodecError('Fragment must be valid percent-encoded JSON')
   }
   const parsed = parseJson(text)
-  if (!plainObject(parsed)) throw new Error('Fragment payload must be an object')
-  exactKeys(parsed, ['version', 'bootstrap', 'ladder'])
+  if (!plainObject(parsed)) throw new FragmentCodecError('Fragment payload must be an object')
+  exactKeys(parsed, ['version', 'bootstrap', 'ladder'], message => new FragmentCodecError(message))
   if (Object.keys(parsed).length !== 3)
-    throw new Error('Fragment payload is missing a required key')
+    throw new FragmentCodecError('Fragment payload is missing a required key')
   if (parsed.version !== COLLECTION_FRAGMENT_VERSION)
-    throw new Error('Unsupported fragment version')
+    throw new FragmentCodecError('Unsupported fragment version')
   const state = { bootstrap: parseBootstrap(parsed.bootstrap), ladder: parseLadder(parsed.ladder) }
   const validation = validatePlaygroundState(state)
-  if (!validation.valid)
-    throw new Error(`Fragment state is invalid: ${validation.errors.join('; ')}`)
+  if (!validation.valid) throw new FragmentCodecError('Fragment state is invalid')
   return state
 }
 
 const assertValid = <T>(items: T[], validate: (items: T[]) => CollectionValidation) => {
   const result = validate(items)
-  if (!result.valid) throw new Error(`Collection is invalid: ${result.errors.join('; ')}`)
+  if (!result.valid) throw new CollectionValidationError('Collection is invalid')
 }
 export const exportBootstrapJson = (items: BootstrapInput[]) => {
   assertValid(items, validateBootstrapCollection)

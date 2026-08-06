@@ -18,6 +18,7 @@ import type {
   PlaygroundState
 } from './model'
 
+import { CollectionImportError } from './collection-import.error'
 import {
   BOOTSTRAP_FIELDS,
   LADDER_FIELDS,
@@ -38,6 +39,8 @@ import {
   validateLadderCollection,
   validatePlaygroundState
 } from './model'
+import { playgroundErrorMessage } from './playground-error.utils'
+import { PlaygroundInitializationError } from './playground-initialization.error'
 
 type CollectionKind = keyof PlaygroundState
 type FieldDefinition = readonly [string, string, string, string]
@@ -76,7 +79,7 @@ const initial = () => {
   } catch (error) {
     return {
       state: createDefaultPlaygroundState(),
-      error: error instanceof Error ? `Share URL ignored: ${error.message}` : 'Share URL ignored.'
+      error: `Share URL ignored: ${playgroundErrorMessage(error)}`
     }
   }
 }
@@ -234,10 +237,12 @@ const InvalidPreview = ({ kind, errors }: { kind: CollectionKind; errors: string
 const FragmentSync = ({
   state,
   onStatus,
+  onUnexpected,
   suspendInitial
 }: {
   state: PlaygroundState
   onStatus: (status: Status) => void
+  onUnexpected: (error: unknown) => void
   suspendInitial: boolean
 }) => {
   const lastFragment = useRef(window.location.hash)
@@ -276,14 +281,19 @@ const FragmentSync = ({
         onStatus({ message, status: 'ok' })
       }
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : 'Share URL could not be synchronized.'
+      let message: string
+      try {
+        message = playgroundErrorMessage(error)
+      } catch (unexpected) {
+        onUnexpected(unexpected)
+        return
+      }
       if (!preserveInitialError && lastMessage.current !== message) {
         lastMessage.current = message
         onStatus({ message, status: 'error' })
       }
     }
-  }, [state, onStatus])
+  }, [state, onStatus, onUnexpected])
   return null
 }
 
@@ -318,6 +328,7 @@ const Playground = () => {
     status: initialValue.error ? 'error' : undefined
   })
   const [copyStatus, setCopyStatus] = useState<Status>({ message: '' })
+  const [unexpectedFailure, setUnexpectedFailure] = useState<{ error: unknown }>()
   const [activeExport, setActiveExport] = useState<ExportFormat>('bootstrap-json')
   const outputRefs = useRef<Record<ExportFormat, HTMLTextAreaElement | null>>({
     'bootstrap-json': null,
@@ -327,6 +338,7 @@ const Playground = () => {
   })
   const shareUrlRef = useRef<HTMLInputElement | null>(null)
   const onUrlStatus = React.useCallback((status: Status) => setUrlStatus(status), [])
+  const onUnexpected = React.useCallback((error: unknown) => setUnexpectedFailure({ error }), [])
 
   useEffect(() => {
     document.documentElement.dataset.playgroundReady = 'true'
@@ -334,6 +346,8 @@ const Playground = () => {
       delete document.documentElement.dataset.playgroundReady
     }
   }, [])
+
+  if (unexpectedFailure) throw unexpectedFailure.error
 
   const copy = async (
     value: string,
@@ -373,14 +387,14 @@ const Playground = () => {
           try {
             bootstrapGraphics = deriveBootstrapGraphicModels(state.bootstrap)
           } catch (error) {
-            bootstrapErrors = [error instanceof Error ? error.message : 'Bootstrap preview failed']
+            bootstrapErrors = [playgroundErrorMessage(error)]
           }
         }
         if (ladderValidation.valid) {
           try {
             ladderGraphics = generateLadderGraphicModels(state.ladder)
           } catch (error) {
-            ladderErrors = [error instanceof Error ? error.message : 'Ladder preview failed']
+            ladderErrors = [playgroundErrorMessage(error)]
           }
         }
         const outputs: Record<ExportFormat, { value: string; invalid: boolean }> = {
@@ -533,6 +547,7 @@ const Playground = () => {
             <FragmentSync
               state={state}
               onStatus={onUrlStatus}
+              onUnexpected={onUnexpected}
               suspendInitial={Boolean(initialValue.error)}
             />
             <header className="topbar">
@@ -644,7 +659,7 @@ const Playground = () => {
                           ladder: imported.ladder ?? state.ladder
                         }
                         if (!validatePlaygroundState(next).valid)
-                          throw new Error('Imported state is invalid')
+                          throw new CollectionImportError('Imported state is invalid')
                         form.setFieldValue('bootstrap', next.bootstrap)
                         form.setFieldValue('ladder', next.ladder)
                         setUiIds(idsFor(next))
@@ -653,10 +668,14 @@ const Playground = () => {
                           status: 'ok'
                         })
                       } catch (error) {
-                        setImportStatus({
-                          message: error instanceof Error ? error.message : 'Import failed.',
-                          status: 'error'
-                        })
+                        try {
+                          setImportStatus({
+                            message: playgroundErrorMessage(error),
+                            status: 'error'
+                          })
+                        } catch (unexpected) {
+                          setUnexpectedFailure({ error: unexpected })
+                        }
                       }
                     }}
                   >
@@ -747,14 +766,14 @@ const exportResult = (operation: () => string) => {
     return { value: operation(), invalid: false }
   } catch (error) {
     return {
-      value: error instanceof Error ? error.message : 'Collection is invalid',
+      value: playgroundErrorMessage(error),
       invalid: true
     }
   }
 }
 
 const rootElement = document.getElementById('root')
-if (!rootElement) throw new Error('Missing playground root')
+if (!rootElement) throw new PlaygroundInitializationError('Missing playground root')
 createRoot(rootElement).render(
   <ErrorBoundary>
     <Playground />

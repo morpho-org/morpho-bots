@@ -27,7 +27,14 @@ describe('playground browser module graph', () => {
     )
     expect(local.toSorted()).toEqual([
       'playground/app.tsx',
+      'playground/collection-import.error.ts',
+      'playground/collection-validation.error.ts',
+      'playground/fragment-codec.error.ts',
       'playground/model.ts',
+      'playground/playground-error.utils.ts',
+      'playground/playground-initialization.error.ts',
+      'playground/preview-generation.error.ts',
+      'playground/strict-json.error.ts',
       'src/config/config-validation.error.ts',
       'src/config/market-collections.ts',
       'src/domain/bootstrap/bootstrap-configuration.error.ts',

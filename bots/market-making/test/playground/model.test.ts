@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 
+import { CollectionImportError } from '../../playground/collection-import.error'
+import { CollectionValidationError } from '../../playground/collection-validation.error'
+import { FragmentCodecError } from '../../playground/fragment-codec.error'
 import {
   COLLECTION_FRAGMENT_VERSION,
   createDefaultBootstrap,
@@ -17,6 +20,8 @@ import {
   validateBootstrapCollection,
   validateLadderCollection
 } from '../../playground/model'
+import { PreviewGenerationError } from '../../playground/preview-generation.error'
+import { StrictJsonError } from '../../playground/strict-json.error'
 
 describe('bootstrap + ladder only playground follow-up', () => {
   test('canonical state contains exactly the two ordered collections', () => {
@@ -170,9 +175,35 @@ describe('bootstrap + ladder only playground follow-up', () => {
     } catch (value) {
       error = value
     }
-    expect(error).toBeInstanceOf(Error)
+    expect(error).toBeInstanceOf(CollectionImportError)
     expect((error as Error).message).toBe('Object contains an unsupported key')
     expect((error as Error).message).not.toContain(canary)
+  })
+
+  test('classifies expected playground failures by concern without echoing rejected payloads', () => {
+    const state = createDefaultPlaygroundState()
+    state.bootstrap[0]!.premiumBps = '-1000'
+    expect(() => deriveBootstrapGraphicModels(state.bootstrap)).toThrow(PreviewGenerationError)
+
+    expect(() => parseCollectionsImport('{"bootstrap":')).toThrow(StrictJsonError)
+    expect(() => parseCollectionsImport('42')).toThrow(CollectionImportError)
+    expect(() => decodePlaygroundFragment('#%')).toThrow(FragmentCodecError)
+
+    state.ladder[0]!.stepBps = '0'
+    expect(() => exportLadderJson(state.ladder)).toThrow(CollectionValidationError)
+
+    const canary = 'PRIVATE_CANARY_DO_NOT_ECHO'
+    for (const operation of [
+      () => parseCollectionsImport(`{"${canary}":true}`),
+      () => decodePlaygroundFragment(`#${encodeURIComponent(JSON.stringify({ [canary]: true }))}`)
+    ]) {
+      try {
+        operation()
+      } catch (error) {
+        expect(error).toBeInstanceOf(Error)
+        expect((error as Error).message).not.toContain(canary)
+      }
+    }
   })
 
   test('enforces the exact JSON nesting boundary', () => {
