@@ -163,7 +163,12 @@ order, group, amount, on-behalf account, or extra calldata. A reverted or failed
 without serial retry. Explicit single-group invalidation keeps the simpler direct Midnight
 `setConsumed` transaction. Successfully canceled
 bot-owned groups are removed from durable ownership state; explicitly configured
-`V0_OFFER_GROUP_IDS` remain configuration-owned until the operator edits configuration.
+`V0_OFFER_GROUP_IDS` remain configuration-owned until the operator edits configuration. If the
+provider omits one of these configured groups, bootstrap and ladder reads deliberately fail closed
+because neither omission nor on-chain consumption reveals the group's original maximum capacity.
+After explicitly invalidating the group when necessary, remove its ID from `V0_OFFER_GROUP_IDS` to
+acknowledge that it is no longer owned; leaving the ID configured keeps the reservation active and
+prevents publication from assuming zero exposure.
 
 Maker-wide invalidation waits for the single multicall receipt, reports its hash against every group,
 then forgets all confirmed bot-owned groups together. Submitted hashes stream as

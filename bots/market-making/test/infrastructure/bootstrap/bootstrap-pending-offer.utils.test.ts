@@ -47,13 +47,13 @@ describe('pendingBootstrapOffers', () => {
 })
 
 describe('readLivePendingBootstrapOffers', () => {
-  test('does not read consumption for an offer already indexed by the API', async () => {
+  test('accepts an explicitly owned group already indexed by the API without persisted intent', async () => {
     const readGroupConsumed = mock(async () => 0n)
 
     const result = await readLivePendingBootstrapOffers({
       groups: [indexedGroup(0n)],
       ownedGroupIds: [groupId],
-      offers: [offer],
+      offers: [],
       readGroupConsumed
     })
 
