@@ -377,6 +377,12 @@ capacity excludes that market's representative live group while retaining every 
 exposure. Zero or negative capacity leaves no offer. The final requested rate is `reference rate +
 premiumBps`; an out-of-bounds result is rejected rather than clamped.
 
+Live reconciliation retains an owned offer when its assets, canonical Midnight tick, and continuous
+fee cap still match, even if a raw reference-rate change produced the same tick. A market fee-policy
+change therefore replaces an offer that is no longer takeable. Every genuinely new publication uses
+the current block timestamp as its start, so replacing a consumed offer cannot recreate its
+content-addressed group ID.
+
 `BOOTSTRAP_MARKETS` uses an exact JSON array with the same fields; YAML syntax, duplicate object keys,
 and prototype keys are rejected. Every integer-valued property—including asset amounts, exposure caps,
 rates, and `premiumBps`—must be a quoted decimal-integer string. JSON number tokens are rejected even

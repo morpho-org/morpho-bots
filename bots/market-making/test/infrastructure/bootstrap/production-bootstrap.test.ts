@@ -7,6 +7,7 @@ import {
   Payload,
   SetterRatifierUtils,
   Tree,
+  type IMarketParams,
   setterRatifierAbi
 } from '@morpho-org/midnight-sdk'
 import { describe, expect, test } from 'bun:test'
@@ -26,7 +27,12 @@ import {
   strategyBootstrapGroups
 } from '../../../src/infrastructure/bootstrap/bootstrap-groups.utils'
 import { MidnightBootstrapMakeService } from '../../../src/infrastructure/bootstrap/bootstrap-make.service'
-import { bootstrapContinuousFeeCap } from '../../../src/infrastructure/bootstrap/bootstrap-offer.utils'
+import {
+  bootstrapContinuousFeeCap,
+  createBootstrapOffer,
+  legacyBootstrapOfferTickUpperBound,
+  recoverLegacyBootstrapOfferTick
+} from '../../../src/infrastructure/bootstrap/bootstrap-offer.utils'
 import { prepareBootstrapRequirements } from '../../../src/infrastructure/bootstrap/bootstrap-requirements.utils'
 import { assertBootstrapTransaction } from '../../../src/infrastructure/bootstrap/bootstrap-transaction.utils'
 import {
@@ -44,26 +50,27 @@ const collateral: Address = '0x1111111111111111111111111111111111111111'
 const loanToken: Address = '0x2222222222222222222222222222222222222222'
 const oracle: Address = '0x3333333333333333333333333333333333333333'
 const ratifier: Address = '0x800B5F12A61B8198a5a6EfD794Cac6699B294d63'
+const publicationMarket: IMarketParams = {
+  chainId: 8453,
+  midnight: maker,
+  loanToken,
+  collateralParams: [
+    {
+      token: collateral,
+      lltv: 800_000_000_000_000_000n,
+      liquidationCursor: 0n,
+      oracle
+    }
+  ],
+  maturity: 54_000n,
+  rcfThreshold: 0n,
+  enterGate: '0x0000000000000000000000000000000000000000',
+  liquidatorGate: '0x0000000000000000000000000000000000000000'
+}
 
 const publicationOffer = (tick = 100n) =>
   Offer.create({
-    market: {
-      chainId: 8453,
-      midnight: maker,
-      loanToken,
-      collateralParams: [
-        {
-          token: collateral,
-          lltv: 800_000_000_000_000_000n,
-          liquidationCursor: 0n,
-          oracle
-        }
-      ],
-      maturity: 54_000n,
-      rcfThreshold: 0n,
-      enterGate: '0x0000000000000000000000000000000000000000',
-      liquidatorGate: '0x0000000000000000000000000000000000000000'
-    },
+    market: publicationMarket,
     buy: true,
     maker,
     tick,
@@ -93,6 +100,7 @@ const group = (overrides: Record<string, unknown> = {}) => ({
       maker,
       buy: true,
       tick: 100,
+      continuous_fee_cap: '0',
       market: { maturity: 2_000 }
     }
   ],
@@ -514,6 +522,114 @@ describe('bootstrapContinuousFeeCap', () => {
   )
 })
 
+describe('createBootstrapOffer', () => {
+  test('uses the current block time to prevent reuse of a consumed group', () => {
+    const market = {
+      params: publicationMarket,
+      tickSpacing: 4,
+      continuousFee: 0
+    }
+    const offer = {
+      marketId,
+      assets: 100n,
+      rateBps: 500n,
+      referenceObservationId: 'hour:1'
+    }
+
+    const first = createBootstrapOffer({ offer, market, maker, ratifier, now: 1_000n })
+    const second = createBootstrapOffer({ offer, market, maker, ratifier, now: 1_001n })
+
+    expect(first.tick).toBe(second.tick)
+    expect(first.start).toBe(1_000n)
+    expect(second.start).toBe(1_001n)
+    expect(first.group).not.toBe(second.group)
+  })
+})
+
+describe('recoverLegacyBootstrapOfferTick', () => {
+  test('recovers the exact tick of an offer persisted before ticks were stored', () => {
+    const market = {
+      params: publicationMarket,
+      tickSpacing: 2,
+      continuousFee: 17
+    }
+    const legacyOffer = Offer.create({
+      market: publicationMarket,
+      buy: true,
+      maker,
+      tick: 410n,
+      tickSpacing: 2n,
+      expiry: publicationMarket.maturity,
+      ratifier,
+      maxAssets: 1_000n,
+      continuousFeeCap: 17n
+    })
+
+    expect(
+      recoverLegacyBootstrapOfferTick({
+        groupId: legacyOffer.group,
+        maximumAssets: legacyOffer.maxAssets,
+        market,
+        maker,
+        ratifier
+      })
+    ).toBe(410n)
+  })
+
+  test('uses a persisted fee cap when the live market fee changed after publication', () => {
+    const legacyOffer = Offer.create({
+      market: publicationMarket,
+      buy: true,
+      maker,
+      tick: 410n,
+      tickSpacing: 2n,
+      expiry: publicationMarket.maturity,
+      ratifier,
+      maxAssets: 1_000n,
+      continuousFeeCap: 16n
+    })
+
+    expect(
+      recoverLegacyBootstrapOfferTick({
+        groupId: legacyOffer.group,
+        maximumAssets: legacyOffer.maxAssets,
+        market: { params: publicationMarket, tickSpacing: 2, continuousFee: 17 },
+        maker,
+        ratifier,
+        continuousFeeCap: legacyOffer.continuousFeeCap
+      })
+    ).toBe(410n)
+  })
+
+  test('bounds a pre-v5 tick from its original observation when the fee cap is unavailable', () => {
+    const market = { params: publicationMarket, tickSpacing: 2, continuousFee: 17 }
+    const offer = {
+      marketId,
+      assets: 1_000n,
+      rateBps: 500n,
+      referenceObservationId: 'hour:1'
+    }
+    const firstPossible = createBootstrapOffer({ offer, market, maker, ratifier, now: 3_600n })
+    const lastPossible = createBootstrapOffer({ offer, market, maker, ratifier, now: 7_500n })
+
+    expect(legacyBootstrapOfferTickUpperBound({ offer, market })).toBe(
+      firstPossible.tick > lastPossible.tick ? firstPossible.tick : lastPossible.tick
+    )
+  })
+
+  test('rejects a reconstruction that does not match the persisted group identity', () => {
+    expect(
+      recoverLegacyBootstrapOfferTick({
+        groupId,
+        maximumAssets: 1_000n,
+        market: { params: publicationMarket, tickSpacing: 4, continuousFee: 17 },
+        maker,
+        ratifier
+      })
+    ).toBeUndefined()
+  })
+})
+
 describe('readBootstrapGroups', () => {
   test('counts each owned group unfilled reserve once across multi-market projections', async () => {
     const secondOffer = {
@@ -668,7 +784,13 @@ describe('readBootstrapGroups', () => {
     )
 
     expect(strategyBootstrapGroups(groups, [groupId])).toEqual([
-      expect.objectContaining({ id: groupId, marketId, tick: 100n, maturity: 2_000n }),
+      expect.objectContaining({
+        id: groupId,
+        marketId,
+        tick: 100n,
+        maturity: 2_000n,
+        continuousFeeCap: 0n
+      }),
       expect.objectContaining({
         id: groupId,
         marketId: secondMarketId,
@@ -857,7 +979,9 @@ describe('createBootstrapGroupOwnership', () => {
       marketId,
       assets: 100n,
       rateBps: 450n,
-      referenceObservationId: 'blocks:100-200'
+      referenceObservationId: 'blocks:100-200',
+      tick: 123n,
+      continuousFeeCap: 17n
     }
     try {
       await ownership.reserve(groupId, offer)
@@ -868,6 +992,32 @@ describe('createBootstrapGroupOwnership', () => {
         { stateDirectory: directory }
       )
       expect(await restarted.readOffers()).toEqual([{ groupId, ...offer }])
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  test('rejects a negative protocol tick before persisting offer ownership', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'market-making-invalid-tick-'))
+    const ownership = createBootstrapGroupOwnership(
+      { maker, marketIds: [marketId], configuredGroupIds: [] },
+      { stateDirectory: directory }
+    )
+    try {
+      const error = await ownership
+        .reserve(groupId, {
+          marketId,
+          assets: 100n,
+          rateBps: 450n,
+          referenceObservationId: 'blocks:100-200',
+          tick: -1n,
+          continuousFeeCap: 17n
+        })
+        .catch(value => value)
+
+      expect(error).toBeInstanceOf(BootstrapAdapterError)
+      expect(error).toMatchObject({ operation: 'group-ownership-state' })
+      expect(await ownership.read()).toEqual([])
     } finally {
       await rm(directory, { recursive: true, force: true })
     }

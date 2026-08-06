@@ -2,9 +2,11 @@ import type { Hex } from 'viem'
 
 import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
 import type { BootstrapRawGroup } from './bootstrap-groups.utils'
-import type { BootstrapActiveGroup } from './bootstrap-position.service'
-
-type OwnedBootstrapOffer = BootstrapOffer & { groupId: Hex }
+type OwnedBootstrapOffer = BootstrapOffer & {
+  groupId: Hex
+  tick?: bigint
+  continuousFeeCap?: bigint
+}
 
 /**
  * Selects persisted bootstrap intents whose groups are still absent from the provider book.
@@ -21,21 +23,27 @@ export const pendingBootstrapOffers = (
 }
 
 /**
- * Projects persisted bootstrap publications that have not appeared in the Morpho API yet.
- * @param groups - Current maker groups returned by the eventually consistent API.
- * @param ownedOffers - Reserved or confirmed offer intents persisted before publication.
- * @returns Pending active groups with their original sizing, rate, and reference observation.
- * @remarks Indexed groups are omitted even when consumed; only API absence is treated as pending so monitor cycles cannot duplicate a confirmed publication.
+ * Resolves API-missing bootstrap offer intents against authoritative on-chain consumption.
+ * @param parameters - Indexed groups, persisted intents, and the Midnight consumption reader.
+ * @returns Still-live pending intents with exact persisted ticks and both original and remaining capacity.
+ * @throws When on-chain consumption cannot be read for an API-missing persisted group.
+ * @remarks Reads only API-missing groups. Fully consumed groups are omitted; partially consumed
+ * groups retain their original rate and ownership identity with only their remaining assets.
  */
-export const pendingBootstrapGroups = (
-  groups: readonly BootstrapRawGroup[],
-  ownedOffers: readonly OwnedBootstrapOffer[]
-): BootstrapActiveGroup[] => {
-  return pendingBootstrapOffers(groups, ownedOffers).map(offer => ({
-    id: offer.groupId,
-    marketId: offer.marketId,
-    assets: offer.assets,
-    rateBps: offer.rateBps,
-    referenceObservationId: offer.referenceObservationId
-  }))
+export const readLivePendingBootstrapOffers = async (parameters: {
+  groups: readonly BootstrapRawGroup[]
+  offers: readonly OwnedBootstrapOffer[]
+  readGroupConsumed: (groupId: Hex) => Promise<bigint>
+}) => {
+  const pendingOffers = pendingBootstrapOffers(parameters.groups, parameters.offers)
+  const resolvedOffers = await Promise.all(
+    pendingOffers.map(async offer => {
+      const consumed = await parameters.readGroupConsumed(offer.groupId)
+      if (consumed >= offer.assets) return undefined
+
+      return { ...offer, maximumAssets: offer.assets, assets: offer.assets - consumed }
+    })
+  )
+
+  return resolvedOffers.flatMap(offer => (offer ? [offer] : []))
 }

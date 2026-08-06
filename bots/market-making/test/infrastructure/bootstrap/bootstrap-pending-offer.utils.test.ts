@@ -1,12 +1,12 @@
 import type { Address, Hex } from 'viem'
 
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, mock, test } from 'bun:test'
 
 import type { BootstrapRawGroup } from '../../../src/infrastructure/bootstrap/bootstrap-groups.utils'
 
 import {
-  pendingBootstrapGroups,
-  pendingBootstrapOffers
+  pendingBootstrapOffers,
+  readLivePendingBootstrapOffers
 } from '../../../src/infrastructure/bootstrap/bootstrap-pending-offer.utils'
 
 const marketId: Hex = `0x${'11'.repeat(32)}`
@@ -17,7 +17,9 @@ const offer = {
   marketId,
   assets: 100n,
   rateBps: 450n,
-  referenceObservationId: 'blocks:100-200'
+  referenceObservationId: 'blocks:100-200',
+  tick: 123n,
+  continuousFeeCap: 17n
 }
 
 const indexedGroup = (consumed: bigint): BootstrapRawGroup => ({
@@ -30,18 +32,9 @@ const indexedGroup = (consumed: bigint): BootstrapRawGroup => ({
   offers: [{ marketId, maker, buy: true, tick: 1n }]
 })
 
-describe('pendingBootstrapGroups', () => {
-  test('projects persisted publication intent while API indexing is pending', () => {
+describe('pendingBootstrapOffers', () => {
+  test('selects persisted publication intent while API indexing is pending', () => {
     expect(pendingBootstrapOffers([], [offer])).toEqual([offer])
-    expect(pendingBootstrapGroups([], [offer])).toEqual([
-      {
-        id: groupId,
-        marketId,
-        assets: 100n,
-        rateBps: 450n,
-        referenceObservationId: 'blocks:100-200'
-      }
-    ])
   })
 
   test.each([0n, 100n])(
@@ -49,7 +42,47 @@ describe('pendingBootstrapGroups', () => {
     consumed => {
       const groups = [indexedGroup(consumed)]
       expect(pendingBootstrapOffers(groups, [offer])).toEqual([])
-      expect(pendingBootstrapGroups(groups, [offer])).toEqual([])
     }
   )
+})
+
+describe('readLivePendingBootstrapOffers', () => {
+  test('does not read consumption for an offer already indexed by the API', async () => {
+    const readGroupConsumed = mock(async () => 0n)
+
+    const result = await readLivePendingBootstrapOffers({
+      groups: [indexedGroup(0n)],
+      offers: [offer],
+      readGroupConsumed
+    })
+
+    expect(result).toEqual([])
+    expect(readGroupConsumed).not.toHaveBeenCalled()
+  })
+
+  test('retains the remaining capacity of an API-missing partially consumed offer', async () => {
+    const readGroupConsumed = mock(async () => 40n)
+
+    const result = await readLivePendingBootstrapOffers({
+      groups: [],
+      offers: [offer],
+      readGroupConsumed
+    })
+
+    expect(result).toEqual([{ ...offer, maximumAssets: 100n, assets: 60n }])
+    expect(readGroupConsumed).toHaveBeenCalledWith(groupId)
+  })
+
+  test('omits an API-missing offer that is fully consumed on-chain', async () => {
+    const readGroupConsumed = mock(async () => 100n)
+
+    const result = await readLivePendingBootstrapOffers({
+      groups: [],
+      offers: [offer],
+      readGroupConsumed
+    })
+
+    expect(result).toEqual([])
+    expect(readGroupConsumed).toHaveBeenCalledWith(groupId)
+  })
 })

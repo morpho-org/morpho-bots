@@ -480,6 +480,15 @@ describe('PositionBootstrapService', () => {
     expect(readPosition).toHaveBeenCalledTimes(1)
   })
 
+  test('reports canonical protocol no-ops as observed resting offers', async () => {
+    const { service, make } = setup()
+    make.reconcile = mock(async () => 'unchanged' as const)
+
+    const result = await service.runOnce()
+
+    expect(result).toEqual([{ marketId, status: 'observed', action: 'rest' }])
+  })
+
   test('keeps an applied result when only its verbose after-state read fails', async () => {
     const { service, positions } = setup()
     let read = 0
