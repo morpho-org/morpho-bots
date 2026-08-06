@@ -131,3 +131,12 @@ test('the scoped playground smoke lint config rejects an unused mjs import', asy
     await rm(temporaryRoot, { recursive: true, force: true })
   }
 })
+
+test('transition guards are live and cross-document diagnostics use the detecting phase', async () => {
+  const smokeSource = await readFile(join(scriptsDirectory, 'playground-smoke.mjs'), 'utf8')
+
+  assert.match(smokeSource, /history\.replaceState = \(\.\.\.args\) =>/)
+  assert.match(smokeSource, /assertCleanBeforeTransition\('history\.replaceState'\)/)
+  assert.doesNotMatch(smokeSource, /__assertPersistenceCleanBeforeTransition/)
+  assert.doesNotMatch(smokeSource, /activityPhase/)
+})

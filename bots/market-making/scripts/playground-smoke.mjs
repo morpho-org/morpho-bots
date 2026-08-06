@@ -244,7 +244,6 @@ try {
   const persistenceActivity = []
   const documentSnapshots = []
   const mutationProofs = []
-  let activityPhase = 'browser-startup'
   browserClient = createCdpClient(socket, {
     commandTimeoutMs: cdpCommandTimeout,
     onMessage: message => {
@@ -282,7 +281,7 @@ try {
         message.method === 'Runtime.bindingCalled' &&
         message.params.name === '__recordSmokeActivity'
       ) {
-        persistenceActivity.push({ ...JSON.parse(message.params.payload), phase: activityPhase })
+        persistenceActivity.push(JSON.parse(message.params.payload))
       }
     }
   })
@@ -349,6 +348,7 @@ try {
       }
       const replaceState = history.replaceState.bind(history)
       history.replaceState = (...args) => {
+        assertCleanBeforeTransition('history.replaceState')
         __smoke.replacements++
         return replaceState(...args)
       }
@@ -529,9 +529,6 @@ try {
         const activity = accesses.length + formBusActivity.events.length + formBusActivity.listeners.length + formBusActivity.intervals.length
         if (activity) throw new Error('persistence access or form-bus activity before ' + transition)
       }
-      Object.defineProperty(globalThis, '__assertPersistenceCleanBeforeTransition', {
-        value: assertCleanBeforeTransition, configurable: false, enumerable: false, writable: false
-      })
       if (${JSON.stringify(injectLateActivity)}) {
         const runCanaries = () => {
           const safely = operation => { try { return operation() } catch {} }
@@ -548,7 +545,7 @@ try {
           safely(() => indexedDB.open('__smoke_canary')); safely(() => indexedDB.deleteDatabase('__smoke_canary'))
           settle(safely(() => caches.keys())); settle(safely(() => caches.match('/__smoke_canary')))
           settle(safely(() => caches.has('__smoke_canary'))); settle(safely(() => caches.delete('__smoke_canary')))
-          settle(safely(() => caches.open('__smoke_canary').then(() => caches.delete('__smoke_canary'))))
+          settle(safely(() => caches.open('__smoke_canary')))
           settle(safely(() => navigator.serviceWorker.getRegistration()))
           settle(safely(() => navigator.serviceWorker.getRegistrations()))
           settle(safely(() => navigator.serviceWorker.register('data:text/javascript,')))
@@ -609,7 +606,6 @@ try {
     timeoutMs: uiPollTimeout
   })
   const assertDocumentPersistenceClean = async phase => {
-    activityPhase = phase
     if (injectLateActivity) await evaluate('__runPersistenceCanaries()')
     await evaluate('new Promise(resolve => setTimeout(resolve, 0))')
     const snapshot = await evaluate(`({
@@ -674,7 +670,7 @@ try {
     }
     if (persistenceActivity.length) {
       throw new Error(
-        `cross-document persistence access or form-bus activity detected during ${phase}: ${persistenceActivity.map(({ kind, name, phase: activityAt }) => `${activityAt}:${kind}:${name}`).join(', ')}`
+        `cross-document persistence access or form-bus activity detected during ${phase}: ${persistenceActivity.map(({ kind, name }) => `${kind}:${name}`).join(', ')}`
       )
     }
   }
