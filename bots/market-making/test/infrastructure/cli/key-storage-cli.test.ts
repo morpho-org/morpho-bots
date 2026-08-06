@@ -41,7 +41,8 @@ describe('maker key storage CLI options', () => {
       signerEnvironment: {
         KEY_STORAGE_METHOD: 'keystore',
         KEYSTORE_PATH: '/secure/maker.json',
-        KEYSTORE_PASSWORD: 'cli-secret'
+        KEYSTORE_PASSWORD: 'cli-secret',
+        KEYSTORE_INTERACTIVE: 'false'
       }
     })
   })
@@ -53,6 +54,7 @@ describe('maker key storage CLI options', () => {
       signerEnvironment: {
         KEY_STORAGE_METHOD: 'keystore',
         KEYSTORE_PATH: '/secure/maker.json',
+        KEYSTORE_PASSWORD: '',
         KEYSTORE_INTERACTIVE: 'true'
       }
     })

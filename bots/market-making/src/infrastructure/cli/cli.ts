@@ -88,6 +88,7 @@ type CliConfigurationOptions = {
   configPath?: string
   readOnly: boolean
   signerEnvironment?: Record<string, string>
+  signal: AbortSignal
   writeEvent?: (value: unknown) => void | Promise<void>
 }
 
@@ -157,7 +158,10 @@ export class Cli {
       .option('--readonly', 'use a maker address without signing or submitting transactions')
       .option('--private-key <key>', 'sign with a local 0x-prefixed private key')
       .option('--keystore <path>', 'sign with an encrypted JSON keystore file')
-      .option('--password <password>', 'decrypt the selected keystore with this password')
+      .option(
+        '--password <password>',
+        'decrypt the keystore (warning: argv may appear in process listings and shell history; prefer KEYSTORE_PASSWORD or --interactive)'
+      )
       .option('--interactive', 'prompt without echoing for the selected keystore password')
       .option('--aws', 'sign remotely with the configured non-exportable AWS KMS key')
       .exitOverride()
@@ -332,13 +336,21 @@ export class Cli {
       signerEnvironment.KEY_STORAGE_METHOD = 'keystore'
       signerEnvironment.KEYSTORE_PATH = options.keystore
     }
-    if (options.password !== undefined) signerEnvironment.KEYSTORE_PASSWORD = options.password
-    if (options.interactive === true) signerEnvironment.KEYSTORE_INTERACTIVE = 'true'
+    if (options.password !== undefined) {
+      signerEnvironment.KEYSTORE_PASSWORD = options.password
+      signerEnvironment.KEYSTORE_INTERACTIVE = 'false'
+    }
+    if (options.interactive === true) {
+      signerEnvironment.KEYSTORE_PASSWORD = ''
+      signerEnvironment.KEYSTORE_INTERACTIVE = 'true'
+    }
     if (options.aws === true) signerEnvironment.KEY_STORAGE_METHOD = 'aws'
     return {
       configPath: options.config,
       readOnly: options.readonly === true,
-      signerEnvironment: Object.keys(signerEnvironment).length === 0 ? undefined : signerEnvironment
+      signerEnvironment:
+        Object.keys(signerEnvironment).length === 0 ? undefined : signerEnvironment,
+      signal: this.signal
     }
   }
 

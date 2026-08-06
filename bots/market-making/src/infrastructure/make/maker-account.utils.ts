@@ -83,10 +83,19 @@ const publicKeyFromSpki = (spki: Uint8Array): Hex => {
 const derInteger = (bytes: Uint8Array, offset: number) => {
   if (bytes[offset] !== 2) throw new MakerAccountError('kms-sign')
   const length = bytes[offset + 1]
-  if (length === undefined || length > 33) throw new MakerAccountError('kms-sign')
+  if (length === undefined || length === 0 || length > 33) throw new MakerAccountError('kms-sign')
   const start = offset + 2
   const end = start + length
   if (end > bytes.length) throw new MakerAccountError('kms-sign')
+  const first = bytes[start]
+  const second = bytes[start + 1]
+  if (
+    first === undefined ||
+    (first & 0x80) !== 0 ||
+    (first === 0 && length > 1 && second !== undefined && (second & 0x80) === 0) ||
+    (length === 33 && first !== 0)
+  )
+    throw new MakerAccountError('kms-sign')
   return { value: BigInt(bytesToHex(bytes.slice(start, end))), offset: end }
 }
 
@@ -134,7 +143,11 @@ const createKmsAccount = async (
     const s = numberToHex(parsed.s, { size: 32 })
     for (const yParity of [0, 1] as const) {
       const signature = serializeSignature({ r, s, yParity })
-      if (isAddressEqual(await recoverAddress({ hash, signature }), address)) return signature
+      try {
+        if (isAddressEqual(await recoverAddress({ hash, signature }), address)) return signature
+      } catch {
+        // Try the other recovery parity; malformed/unrecoverable signatures fail below.
+      }
     }
     throw new MakerAccountError('kms-sign')
   }

@@ -39,7 +39,7 @@ describe('maker key storage configuration', () => {
   })
 
   test('loads a keystore with a direct password without exposing the password through serialization', () => {
-    const password = 'correct horse battery staple'
+    const password = '  correct horse battery staple  '
     const config = ConfigService.from({
       ...baseEnvironment,
       KEY_STORAGE_METHOD: 'keystore',
@@ -58,8 +58,28 @@ describe('maker key storage configuration', () => {
     expect(Bun.inspect(config.identity)).not.toContain(password)
   })
 
+  test('rejects only a truly empty keystore password while preserving whitespace byte-for-byte', () => {
+    expect(
+      ConfigService.from({
+        ...baseEnvironment,
+        KEY_STORAGE_METHOD: 'keystore',
+        KEYSTORE_PATH: '/secure/maker.json',
+        KEYSTORE_PASSWORD: ' \t秘密🔐 '
+      }).identity
+    ).toMatchObject({ method: 'keystore', password: ' \t秘密🔐 ' })
+
+    expect(() =>
+      ConfigService.from({
+        ...baseEnvironment,
+        KEY_STORAGE_METHOD: 'keystore',
+        KEYSTORE_PATH: '/secure/maker.json',
+        KEYSTORE_PASSWORD: ''
+      })
+    ).toThrow(ConfigValidationError)
+  })
+
   test('loads a keystore password from the interactive reader', async () => {
-    const readPassword = mock(async () => 'prompted-secret')
+    const readPassword = mock(async () => '  prompted-秘密🔐  ')
     const config = await ConfigService.load(
       {
         ...baseEnvironment,
@@ -70,7 +90,7 @@ describe('maker key storage configuration', () => {
       { readPassword }
     )
     expect(readPassword).toHaveBeenCalledTimes(1)
-    expect(config.identity).toMatchObject({ method: 'keystore', password: 'prompted-secret' })
+    expect(config.identity).toMatchObject({ method: 'keystore', password: '  prompted-秘密🔐  ' })
   })
 
   test('selects non-exportable AWS KMS signing with required key and region', () => {

@@ -1,45 +1,103 @@
+import type { EventEmitter } from 'node:events'
+
 import { CliUsageError } from './cli-usage.error'
 
+type InteractiveInput = Pick<EventEmitter, 'on' | 'off'> & {
+  isTTY?: boolean
+  setRawMode?: (enabled: boolean) => unknown
+  pause: () => unknown
+  resume: () => unknown
+}
+
+type InteractiveOutput = {
+  isTTY?: boolean
+  write: (value: string) => unknown
+}
+
+type PasswordPromptOptions = {
+  input?: InteractiveInput
+  output?: InteractiveOutput
+  signal?: AbortSignal
+}
+
 /** Reads one password from an interactive TTY without echoing secret bytes. */
-export const readPasswordInteractively = () =>
+export const readPasswordInteractively = (options: PasswordPromptOptions = {}) =>
   new Promise<string>((resolve, reject) => {
-    if (!process.stdin.isTTY || !process.stdout.isTTY || !process.stdin.setRawMode) {
+    const input = options.input ?? process.stdin
+    const output = options.output ?? process.stdout
+    if (!input.isTTY || !output.isTTY || !input.setRawMode) {
       reject(new CliUsageError())
       return
     }
-    const input = process.stdin
+
     const passwordBytes: number[] = []
+    let settled = false
+    let rawMode = false
+    let prompted = false
     const cleanup = () => {
       input.off('data', onData)
-      input.setRawMode(false)
-      input.pause()
-      process.stdout.write('\n')
+      input.off('error', onFailure)
+      input.off('end', onFailure)
+      options.signal?.removeEventListener('abort', onFailure)
+      if (rawMode) {
+        try {
+          input.setRawMode?.(false)
+        } catch {}
+      }
+      try {
+        input.pause()
+      } catch {}
+      if (prompted) {
+        try {
+          output.write('\n')
+        } catch {}
+      }
     }
-    const onData = (chunk: Buffer) => {
-      for (const byte of chunk) {
+    const finish = (password?: string) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      if (password === undefined || password.length === 0) reject(new CliUsageError())
+      else resolve(password)
+    }
+    const onFailure = () => finish()
+    const onData = (chunk: Buffer | Uint8Array | string) => {
+      const bytes = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk
+      for (const byte of bytes) {
         if (byte === 3) {
-          cleanup()
-          reject(new CliUsageError())
+          finish()
           return
         }
         if (byte === 13 || byte === 10) {
-          cleanup()
-          if (passwordBytes.length === 0) reject(new CliUsageError())
-          else resolve(Buffer.from(passwordBytes).toString('utf8'))
+          finish(Buffer.from(passwordBytes).toString('utf8'))
           return
         }
         if (byte === 8 || byte === 127) {
           if (passwordBytes.length > 0) {
-            passwordBytes.pop()
-            while (passwordBytes.length > 0 && ((passwordBytes.at(-1) ?? 0) & 0xc0) === 0x80)
-              passwordBytes.pop()
-            if ((passwordBytes.at(-1) ?? 0) >= 0xc0) passwordBytes.pop()
+            const characters = Array.from(Buffer.from(passwordBytes).toString('utf8'))
+            characters.pop()
+            passwordBytes.splice(
+              0,
+              passwordBytes.length,
+              ...Buffer.from(characters.join(''), 'utf8')
+            )
           }
         } else if (byte >= 32) passwordBytes.push(byte)
       }
     }
-    process.stdout.write('Keystore password: ')
-    input.setRawMode(true)
-    input.resume()
+
     input.on('data', onData)
+    input.on('error', onFailure)
+    input.on('end', onFailure)
+    options.signal?.addEventListener('abort', onFailure, { once: true })
+    try {
+      output.write('Keystore password: ')
+      prompted = true
+      rawMode = true
+      input.setRawMode(true)
+      input.resume()
+      if (options.signal?.aborted) onFailure()
+    } catch {
+      onFailure()
+    }
   })

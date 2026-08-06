@@ -92,7 +92,7 @@ const signerIdentity = (environment: Environment, maker: Address): MakerIdentity
   if (method === 'private-key') {
     if (
       environment.KEYSTORE_PATH?.trim() ||
-      environment.KEYSTORE_PASSWORD?.trim() ||
+      (environment.KEYSTORE_PASSWORD !== undefined && environment.KEYSTORE_PASSWORD.length > 0) ||
       environment.KEYSTORE_INTERACTIVE?.trim() === 'true' ||
       environment.AWS_KMS_KEY_ID?.trim() ||
       environment.AWS_REGION?.trim()
@@ -118,7 +118,7 @@ const signerIdentity = (environment: Environment, maker: Address): MakerIdentity
         'Exactly one maker key storage method must be configured'
       )
     }
-    const password = environment.KEYSTORE_PASSWORD?.trim()
+    const password = environment.KEYSTORE_PASSWORD
     const interactive = environment.KEYSTORE_INTERACTIVE?.trim()
     if (interactive !== undefined && interactive !== 'true' && interactive !== 'false') {
       throw new ConfigValidationError(
@@ -127,14 +127,17 @@ const signerIdentity = (environment: Environment, maker: Address): MakerIdentity
         'KEYSTORE_INTERACTIVE must be true or false'
       )
     }
-    if ((password ? 1 : 0) + (interactive === 'true' ? 1 : 0) !== 1) {
+    if (
+      (password !== undefined && password.length > 0 ? 1 : 0) + (interactive === 'true' ? 1 : 0) !==
+      1
+    ) {
       throw new ConfigValidationError(
         'KEYSTORE_PASSWORD',
         'password-mode',
         'Keystore signing requires exactly one of a password or interactive prompt'
       )
     }
-    if (!password) {
+    if (password === undefined || password.length === 0) {
       throw new ConfigValidationError(
         'KEYSTORE_PASSWORD',
         'interactive-unresolved',
@@ -151,7 +154,7 @@ const signerIdentity = (environment: Environment, maker: Address): MakerIdentity
   }
   if (
     environment.KEYSTORE_PATH?.trim() ||
-    environment.KEYSTORE_PASSWORD?.trim() ||
+    (environment.KEYSTORE_PASSWORD !== undefined && environment.KEYSTORE_PASSWORD.length > 0) ||
     environment.KEYSTORE_INTERACTIVE?.trim() === 'true'
   ) {
     throw new ConfigValidationError(
@@ -208,7 +211,7 @@ export class ConfigService {
         (source.values.KEY_STORAGE_METHOD === undefined &&
           source.values.KEYSTORE_PATH !== undefined)) &&
       source.values.KEYSTORE_INTERACTIVE === 'true' &&
-      source.values.KEYSTORE_PASSWORD === undefined
+      (source.values.KEYSTORE_PASSWORD === undefined || source.values.KEYSTORE_PASSWORD === '')
     ) {
       if (!options.readPassword) {
         throw new ConfigValidationError(

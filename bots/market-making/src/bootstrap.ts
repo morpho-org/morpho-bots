@@ -134,6 +134,7 @@ export const createApplication = (
     configPath?: string
     readOnly: boolean
     signerEnvironment?: Record<string, string>
+    signal: AbortSignal
   }) => {
     const effectiveEnvironment = { ...environment }
     const method = options.signerEnvironment?.KEY_STORAGE_METHOD
@@ -163,7 +164,8 @@ export const createApplication = (
       configPath: options.configPath,
       cwd: dependencies.cwd,
       readOnly: options.readOnly,
-      readPassword: dependencies.readPassword ?? readPasswordInteractively
+      readPassword:
+        dependencies.readPassword ?? (() => readPasswordInteractively({ signal: options.signal }))
     })
   }
   const cli = new Cli(

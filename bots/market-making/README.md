@@ -44,10 +44,16 @@ bun run --filter @morpho-org/market-making-bot start -- --readonly setup-check
 
 # Explicit signer sources (root options precede the command).
 bun run --filter @morpho-org/market-making-bot start -- --private-key 0x... setup-check
-bun run --filter @morpho-org/market-making-bot start -- --keystore ./maker.json --password "$KEYSTORE_PASSWORD" setup-check
+KEYSTORE_PASSWORD='...' bun run --filter @morpho-org/market-making-bot start -- --keystore ./maker.json setup-check
 bun run --filter @morpho-org/market-making-bot start -- --keystore ./maker.json --interactive setup-check
 bun run --filter @morpho-org/market-making-bot start -- --aws setup-check
+```
 
+`--password <password>` remains available for explicit automation, but it places the secret in argv,
+where process listings and shell history may expose it. Prefer `KEYSTORE_PASSWORD` for unattended
+operation or hidden `--interactive` input for attended operation.
+
+```sh
 # Repeat read-only readiness checks every minute until SIGINT/SIGTERM.
 bun run --filter @morpho-org/market-making-bot start -- setup-check --monitor
 
@@ -320,7 +326,7 @@ unit; for six-decimal USDC, `101000000` is 101 USDC. No value is inferred from a
 | `KEY_STORAGE_METHOD`             | `identity.keyStorageMethod`         | Optional only for backward-compatible `MAKER_PRIVATE_KEY` use; otherwise `private-key`, `keystore`, or `aws`. Exactly one effective source is required in write mode.                                     |
 | `MAKER_PRIVATE_KEY`              | `identity.makerPrivateKey`          | Local private-key source. Must be a 0x-prefixed 32-byte secp256k1 key. `--private-key` overrides config. Never include it in committed configuration or logs.                                             |
 | `KEYSTORE_PATH`                  | `identity.keystorePath`             | Encrypted Web3 Secret Storage file used by the `keystore` method. CLI equivalent: `--keystore <path>`.                                                                                                    |
-| `KEYSTORE_PASSWORD`              | `identity.keystorePassword`         | Keystore password. Exactly one of this value/`--password` or interactive input must be selected. Never logged or included in diagnostics.                                                                 |
+| `KEYSTORE_PASSWORD`              | `identity.keystorePassword`         | Keystore password. Exactly one direct or interactive mode is required; see the argv exposure warning above. Never logged or included in diagnostics.                                                      |
 | `KEYSTORE_INTERACTIVE`           | `identity.keystoreInteractive`      | `true` prompts without echoing for the keystore password; CLI equivalent: `--interactive`. Not suitable for unattended deployment.                                                                        |
 | `AWS_KMS_KEY_ID`                 | `identity.awsKmsKeyId`              | KMS key ID/ARN/alias for an asymmetric `ECC_SECG_P256K1` signing key. `--aws` selects this backend.                                                                                                       |
 | `AWS_REGION`                     | `identity.awsRegion`                | AWS region containing the KMS key. AWS credentials use the standard AWS SDK credential chain.                                                                                                             |

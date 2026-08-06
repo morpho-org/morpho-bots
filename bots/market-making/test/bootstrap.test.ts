@@ -127,6 +127,110 @@ describe('createApplication', () => {
     expect(method).toBe('aws')
   })
 
+  test('CLI --interactive clears an environment keystore password', async () => {
+    let password: string | undefined
+    const application = createApplication(
+      {
+        ...environment,
+        MAKER_PRIVATE_KEY: undefined,
+        KEY_STORAGE_METHOD: 'keystore',
+        KEYSTORE_PATH: '/environment/maker.json',
+        KEYSTORE_PASSWORD: 'environment-password'
+      },
+      {
+        readPassword: async () => ' interactive-password ',
+        createState: config => {
+          password =
+            !config.identity.readOnly && config.identity.method === 'keystore'
+              ? config.identity.password
+              : undefined
+          return readyState()
+        }
+      }
+    )
+
+    await application.run(['--keystore', '/cli/maker.json', '--interactive', 'setup-check'])
+
+    expect(password).toBe(' interactive-password ')
+  })
+
+  test('CLI --password clears environment interactive mode', async () => {
+    let password: string | undefined
+    const application = createApplication(
+      {
+        ...environment,
+        MAKER_PRIVATE_KEY: undefined,
+        KEY_STORAGE_METHOD: 'keystore',
+        KEYSTORE_PATH: '/environment/maker.json',
+        KEYSTORE_INTERACTIVE: 'true'
+      },
+      {
+        readPassword: async () => {
+          throw new Error('interactive reader must not be called')
+        },
+        createState: config => {
+          password =
+            !config.identity.readOnly && config.identity.method === 'keystore'
+              ? config.identity.password
+              : undefined
+          return readyState()
+        }
+      }
+    )
+
+    await application.run([
+      '--keystore',
+      '/cli/maker.json',
+      '--password',
+      ' cli-password ',
+      'setup-check'
+    ])
+
+    expect(password).toBe(' cli-password ')
+  })
+
+  test.each([
+    ['interactive', 'keystorePassword: yaml-password', ['--interactive'], ' prompted-password '],
+    ['password', 'keystoreInteractive: true', ['--password', ' cli-password '], ' cli-password ']
+  ])(
+    'CLI --%s clears the opposite YAML keystore password mode',
+    async (_mode, yamlPasswordMode, cliPasswordMode, expectedPassword) => {
+      const directory = await mkdtemp(join(tmpdir(), 'market-making-cli-precedence-'))
+      const configPath = join(directory, 'operator.yaml')
+      await writeFile(
+        configPath,
+        `chain:\n  id: 8453\n  rpcUrl: https://rpc.example\n  archiveRpcUrl: https://archive.example\nidentity:\n  makerAddress: ${maker}\n  keyStorageMethod: keystore\n  keystorePath: /yaml/maker.json\n  ${yamlPasswordMode}\ncontracts:\n  midnightAddress: ${midnight}\n  loanAssetAddress: ${loanAsset}\n  ratifierAddress: ${ratifier}\napis:\n  morphoBaseUrl: https://api.example\n  routerBaseUrl: https://router.example\nmarkets:\n  allowlist: [${marketId}]\n  referenceMarketId: ${referenceMarketId}\nsetup:\n  nativeReserveWei: 10\n  maximumLendExposureAssets: 100\n`
+      )
+      let password: string | undefined
+      try {
+        const application = createApplication(
+          {},
+          {
+            readPassword: async () => ' prompted-password ',
+            createState: config => {
+              password =
+                !config.identity.readOnly && config.identity.method === 'keystore'
+                  ? config.identity.password
+                  : undefined
+              return readyState()
+            }
+          }
+        )
+        await application.run([
+          '--config',
+          configPath,
+          '--keystore',
+          '/cli/maker.json',
+          ...cliPasswordMode,
+          'setup-check'
+        ])
+        expect(password).toBe(expectedPassword)
+      } finally {
+        await rm(directory, { recursive: true })
+      }
+    }
+  )
+
   test('rejects conflicting CLI signer selections', async () => {
     const application = createApplication(environment, { createState: readyState })
     await expect(
