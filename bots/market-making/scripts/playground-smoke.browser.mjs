@@ -404,64 +404,83 @@ test(
   'build timeout reaps the build process tree and removes temporary build output',
   { timeout: browserTestTimeout },
   async () => {
-    const isolatedTmp = await temporaryDirectory('playground-browser-build-timeout-')
-    const bin = join(isolatedTmp, 'bin')
-    const fakeBun = join(bin, 'bun')
-    const buildPidFile = join(isolatedTmp, 'build-pid')
-    const descendantPidFile = join(isolatedTmp, 'build-descendant-pid')
-    await mkdir(bin)
-    await writeFile(
-      fakeBun,
-      `#!/usr/bin/env node
+    const runTimeoutCase = async ({ publishFixture, timeoutMs, waitForFixture }) => {
+      const isolatedTmp = await temporaryDirectory('playground-browser-build-timeout-')
+      const bin = join(isolatedTmp, 'bin')
+      const fakeBun = join(bin, 'bun')
+      const buildPidFile = join(isolatedTmp, 'build-pid')
+      const descendantPidFile = join(isolatedTmp, 'build-descendant-pid')
+      await mkdir(bin)
+      await writeFile(
+        fakeBun,
+        `#!/usr/bin/env node
 const { spawn } = require('node:child_process')
 const { writeFileSync } = require('node:fs')
-const child = spawn(process.execPath, ['-e', \`
-  const { writeFileSync } = require('node:fs')
-  writeFileSync(process.env.SMOKE_BUILD_DESCENDANT_PID_FILE, String(process.pid))
-  setInterval(() => {}, 1000)
-\`], { stdio: 'ignore' })
-writeFileSync(process.env.SMOKE_BUILD_PID_FILE, String(process.pid))
-child.on('close', () => process.exit(0))
+if (${publishFixture}) {
+  const child = spawn(process.execPath, ['-e', \`
+    const { writeFileSync } = require('node:fs')
+    writeFileSync(process.env.SMOKE_BUILD_DESCENDANT_PID_FILE, String(process.pid))
+    setInterval(() => {}, 1000)
+  \`], { stdio: 'ignore' })
+  writeFileSync(process.env.SMOKE_BUILD_PID_FILE, String(process.pid))
+  child.on('close', () => process.exit(0))
+}
 setInterval(() => {}, 1000)
 `
-    )
-    await chmod(fakeBun, 0o755)
-    const run = spawnSmoke({
-      env: {
-        ...process.env,
-        CHROMIUM_PATH: chromiumPath,
-        PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
-        PLAYGROUND_SMOKE_BUILD_TIMEOUT_MS: '100',
-        SMOKE_BUILD_PID_FILE: buildPidFile,
-        SMOKE_BUILD_DESCENDANT_PID_FILE: descendantPidFile,
-        TMPDIR: isolatedTmp
+      )
+      await chmod(fakeBun, 0o755)
+      const run = spawnSmoke({
+        env: {
+          ...process.env,
+          CHROMIUM_PATH: chromiumPath,
+          PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
+          PLAYGROUND_SMOKE_BUILD_TIMEOUT_MS: String(timeoutMs),
+          SMOKE_BUILD_PID_FILE: buildPidFile,
+          SMOKE_BUILD_DESCENDANT_PID_FILE: descendantPidFile,
+          TMPDIR: isolatedTmp
+        }
+      })
+      let captured = [await processIdentity(run.child.pid)].filter(Boolean)
+      if (waitForFixture) {
+        await waitForReadiness(
+          () => Promise.all([readFile(buildPidFile), readFile(descendantPidFile)]),
+          {
+            child: run.child,
+            childName: 'Smoke test',
+            description: 'post-spawn build process capture',
+            getStderr: () => run.stderr,
+            timeoutMs: 2_000
+          }
+        )
+        captured = await inspectProcessTree(run.child.pid)
+        assert.ok(captured.length >= 4, `expected owned build tree, got ${captured.length}`)
       }
+
+      await assert.rejects(
+        successfulSmokeResult(run),
+        new RegExp(`Timed out after ${timeoutMs}ms during fresh playground build`)
+      )
+      await cleanupHarnessRun(run)
+
+      await waitForIdentitiesGone(captured)
+      assert.deepEqual(
+        (await readdir(isolatedTmp)).filter(name =>
+          name.startsWith('market-making-playground-dist-')
+        ),
+        []
+      )
+      return { buildPidFile, descendantPidFile }
+    }
+
+    const beforeReadiness = await runTimeoutCase({
+      publishFixture: false,
+      timeoutMs: 100,
+      waitForFixture: false
     })
-    await waitForReadiness(
-      () => Promise.all([readFile(buildPidFile), readFile(descendantPidFile)]),
-      {
-        child: run.child,
-        childName: 'Smoke test',
-        description: 'build-timeout process capture',
-        getStderr: () => run.stderr,
-        timeoutMs: 2_000
-      }
-    )
-    const captured = await inspectProcessTree(run.child.pid)
+    await assert.rejects(readFile(beforeReadiness.buildPidFile, 'utf8'), { code: 'ENOENT' })
+    await assert.rejects(readFile(beforeReadiness.descendantPidFile, 'utf8'), { code: 'ENOENT' })
 
-    await assert.rejects(
-      successfulSmokeResult(run),
-      /Timed out after 100ms during fresh playground build/
-    )
-    await cleanupHarnessRun(run)
-
-    await waitForIdentitiesGone(captured)
-    assert.deepEqual(
-      (await readdir(isolatedTmp)).filter(name =>
-        name.startsWith('market-making-playground-dist-')
-      ),
-      []
-    )
+    await runTimeoutCase({ publishFixture: true, timeoutMs: 3_000, waitForFixture: true })
   }
 )
 

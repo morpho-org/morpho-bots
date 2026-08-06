@@ -582,7 +582,7 @@ test('late DevTools WebSocket open after timeout stays closed without unhandled 
   }
 })
 
-test('CDP commands are bounded, reject on socket close, and restore listener baseline', async () => {
+test('CDP commands honor phase deadlines, reject on close, and restore listener baselines', async () => {
   class FakeSocket extends EventTarget {
     constructor() {
       super()
@@ -615,6 +615,31 @@ test('CDP commands are bounded, reject on socket close, and restore listener bas
   await assert.rejects(closingCommand, /DevTools WebSocket closed.*1006.*browser exited/)
   client.dispose()
   assert.equal(socket.listeners, 0)
+
+  class ColdStartupSocket extends EventTarget {
+    send(message) {
+      const request = JSON.parse(message)
+      setTimeout(() => {
+        this.dispatchEvent(
+          new MessageEvent('message', {
+            data: JSON.stringify({ id: request.id, result: {} })
+          })
+        )
+      }, 25)
+    }
+  }
+
+  const coldSocket = new ColdStartupSocket()
+  const coldClient = createCdpClient(coldSocket, { commandTimeoutMs: 5 })
+  await coldClient.command(
+    'Page.enable',
+    {},
+    {
+      deadline: performance.now() + 100,
+      usePhaseDeadline: true
+    }
+  )
+  coldClient.dispose()
 })
 
 test('readiness disposes a WebSocket that opens exactly at the deadline', async () => {

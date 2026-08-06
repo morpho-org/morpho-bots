@@ -198,6 +198,7 @@ try {
     browserStderr = `${browserStderr}${chunk}`.slice(-4000)
   })
   let phaseDeadline = startupDeadline
+  let startupPhase = true
   const browserReadiness = description => ({
     child: browser,
     childName: 'Chromium',
@@ -287,7 +288,10 @@ try {
     }
   })
   const command = (method, params = {}) =>
-    browserClient.command(method, params, { deadline: phaseDeadline })
+    browserClient.command(method, params, {
+      deadline: phaseDeadline,
+      usePhaseDeadline: startupPhase
+    })
   let evaluationId = 0
   const evaluate = async expression => {
     const objectGroup = `playground-smoke-evaluation-${evaluationId++}`
@@ -589,6 +593,7 @@ try {
   console.log(
     `smoke environment: appPort=${port} chromiumDebugPort=${debuggingPort} smokeTemporaryRoot=${runTemporaryRoot} chromium=${chromiumPath}`
   )
+  startupPhase = false
   phaseDeadline = performance.now() + bodyTimeout
   const bodyDelayMs = Number(process.env.PLAYGROUND_SMOKE_BODY_DELAY_MS ?? 0)
   if (bodyDelayMs > 0) {
