@@ -632,15 +632,24 @@ the supplied path. Runtime setup reports identify providers by stable IDs only.
 
 ## Parameter playground
 
-The stateless local playground exposes the complete current YAML/environment configuration surface,
-including bootstrap, ladder, and environment-only Better Stack settings. It renders a synthetic
-offer ladder immediately as inputs change and exports matching YAML, clearly labeled POSIX-shell-safe ENV,
-and JSON formats. Use only the shell-safe output with `source`. The ladder JSON importer accepts only
-an exact `LADDER_MARKETS` array, one exact ladder object, or a JSON string literal containing either;
-wrappers and full playground exports are not import shapes. Invalid configurations remain visible with
-accessible errors and cannot be copied as valid exports. It does not
-read current offers or a live market book, persist edits, or connect to a backend. Live offers and
-order-book simulation are future scope only.
+The stateless local playground exposes exactly the ordered `BOOTSTRAP_MARKETS` and `LADDER_MARKETS`
+collections. It renders accessible bootstrap and ladder graphics from deterministic per-market derived
+rates, validates them with the same browser-safe pure parsers used by runtime configuration, and never
+imports secret, provider, logging, or observability modules. It does not read current offers, balances,
+positions, or a live market book; use storage, cookies, a backend, or network requests; or model runtime
+capacity.
+
+The URL fragment is a strict, bounded, versioned JSON payload containing only `version`, `bootstrap`,
+and `ladder`. Valid edits synchronize with `history.replaceState`; invalid edits leave the last valid
+URL untouched. The copied URL reproduces collection order, configuration, and graphics on a fresh page,
+including under the GitHub Pages subpath.
+
+Import is paste-only. It accepts a strict bootstrap object/array, ladder object/array, documented
+`{"bootstrap": [...], "ladder": [...]}` envelope, or one JSON-string layer containing an unambiguous
+supported shape. Unknown or duplicate keys, mixed arrays, malformed/oversized input, and invalid
+collections are rejected atomically. The four outputs are Bootstrap JSON, the compact exact
+`BOOTSTRAP_MARKETS` value, Ladder JSON, and the compact exact `LADDER_MARKETS` value; each collection
+validates independently.
 
 From the repository root, one command runs `bun install --frozen-lockfile` (also on already-installed
 workspaces, where it is fast), creates a fresh isolated build, and serves it on loopback. It does not
@@ -660,7 +669,3 @@ The interactive launcher owns install and build process trees portably: Linux an
 process groups, while Windows uses non-shell task-tree termination. Press Ctrl-C to stop; `SIGINT` and
 `SIGTERM` perform bounded server shutdown, terminate owned process trees, and remove the temporary
 fresh build. Cleanup failures are reported and produce a nonzero exit.
-
-Sensitive values are redacted in YAML, ENV, and JSON exports by default. Exporting private
-credentials requires checking the explicit sensitive-values opt-in in the playground; keep real
-values in the deployment secret store even when using that opt-in.
