@@ -3,7 +3,6 @@ import type { Address, Hex } from 'viem'
 import { describe, expect, test } from 'bun:test'
 
 import { ConfigService } from '../../../src/config/config.service'
-import { OfferInvalidationAdapterError } from '../../../src/infrastructure/invalidation/offer-invalidation-adapter.error'
 import { createProductionOfferInvalidationPort } from '../../../src/infrastructure/invalidation/production-offer-invalidation'
 
 const maker: Address = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
@@ -35,7 +34,7 @@ describe('createProductionOfferInvalidationPort', () => {
     expect(port.mode()).toBe('readonly')
   })
 
-  test('rejects a write configuration whose key does not control the maker', async () => {
+  test('preserves a write configuration signer-address mismatch', async () => {
     const config = ConfigService.from({
       ...environment,
       MAKER_PRIVATE_KEY: `0x${'11'.repeat(32)}`,
@@ -44,6 +43,20 @@ describe('createProductionOfferInvalidationPort', () => {
 
     await expect(
       Promise.resolve().then(() => createProductionOfferInvalidationPort(config))
-    ).rejects.toBeInstanceOf(OfferInvalidationAdapterError)
+    ).rejects.toMatchObject({ name: 'MakerAccountError', operation: 'maker-address' })
+  })
+
+  test('preserves a sanitized signer-loading failure', async () => {
+    const config = ConfigService.from({
+      ...environment,
+      KEY_STORAGE_METHOD: 'keystore',
+      KEYSTORE_PATH: '/definitely-missing/maker.json',
+      KEYSTORE_PASSWORD: 'secret'
+    })
+
+    await expect(createProductionOfferInvalidationPort(config)).rejects.toMatchObject({
+      name: 'MakerAccountError',
+      operation: 'keystore-read'
+    })
   })
 })

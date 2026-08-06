@@ -145,11 +145,12 @@ describe('hidden keystore password input', () => {
     ['output.write', 'outputWrite'],
     ['setRawMode(true)', 'setRawMode'],
     ['resume', 'resume']
-  ] as const)('cleans up without masking an original %s failure', async (_name, failureKey) => {
+  ] as const)('wraps and cleans up after a %s setup failure', async (_name, failureKey) => {
     const failure = new Error(`safe ${failureKey} failure`)
     const { input, result, secretBytes } = prompt(undefined, { [failureKey]: failure })
 
-    await expect(result).rejects.toBe(failure)
+    await expect(result).rejects.toMatchObject({ code: 'INVALID_USAGE' })
+    await expect(result).rejects.not.toBe(failure)
     expect(secretBytes).toEqual([])
     expect(input.pauses).toBe(1)
     expect(input.listenerCount('data')).toBe(0)

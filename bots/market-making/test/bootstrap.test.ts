@@ -238,6 +238,14 @@ describe('createApplication', () => {
     ).rejects.toMatchObject({ field: 'KEY_STORAGE_METHOD', reason: 'conflicting-sources' })
   })
 
+  test('rejects a CLI password without an explicit keystore path', async () => {
+    const application = createApplication(environment, { createState: readyState })
+
+    await expect(application.run(['--password', 'secret', 'setup-check'])).rejects.toMatchObject({
+      code: 'INVALID_USAGE'
+    })
+  })
+
   test('composes explicit invalidation without the offer-readiness gate', async () => {
     const groupId: Hex = `0x${'12'.repeat(32)}`
     const txHash: Hex = `0x${'ab'.repeat(32)}`

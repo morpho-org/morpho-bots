@@ -35,6 +35,19 @@ const SAFE_PROVIDER_IDS = new Set(['provider', 'rpc', 'archive-rpc', 'morpho-api
 /** Fulfilled provider value or sanitized provider failure captured without short-circuiting peers. */
 type Captured<T> = { ok: true; value: T } | { ok: false; error: SafeProviderFailure }
 
+type SafeSignerFailure = {
+  kind: 'signer-error'
+  operation: 'maker-address' | 'keystore-read' | 'keystore-decrypt' | 'kms-public-key' | 'kms-sign'
+}
+
+const SAFE_SIGNER_OPERATIONS = new Set<SafeSignerFailure['operation']>([
+  'maker-address',
+  'keystore-read',
+  'keystore-decrypt',
+  'kms-public-key',
+  'kms-sign'
+])
+
 const safeProviderFailure = (
   error: unknown,
   provider: SafeProviderFailure['provider']
@@ -115,6 +128,40 @@ export const capture = async <T>(
     return { ok: true, value: await read() }
   } catch (error) {
     return { ok: false, error: safeProviderFailure(error, provider) }
+  }
+}
+
+/**
+ * Captures signer derivation while preserving only an allowlisted signer operation.
+ * @param read - Deferred signer-address derivation.
+ * @returns A fulfilled capture containing the value, a sanitized signer operation, or a sanitized
+ * RPC-shaped fallback for an unexpected rejection.
+ * @throws Never; synchronous throws and promise rejections are converted to failure values.
+ */
+export const captureSigner = async <T>(
+  read: () => Promise<T>
+): Promise<
+  { ok: true; value: T } | { ok: false; error: SafeSignerFailure | SafeProviderFailure }
+> => {
+  try {
+    return { ok: true, value: await read() }
+  } catch (error) {
+    const candidate =
+      typeof error === 'object' && error !== null ? (error as Record<string, unknown>) : undefined
+    if (
+      candidate?.name === 'MakerAccountError' &&
+      typeof candidate.operation === 'string' &&
+      SAFE_SIGNER_OPERATIONS.has(candidate.operation as SafeSignerFailure['operation'])
+    ) {
+      return {
+        ok: false,
+        error: {
+          kind: 'signer-error',
+          operation: candidate.operation as SafeSignerFailure['operation']
+        }
+      }
+    }
+    return { ok: false, error: safeProviderFailure(error, 'rpc') }
   }
 }
 

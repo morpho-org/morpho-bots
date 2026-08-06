@@ -102,12 +102,7 @@ export const createProductionOfferInvalidationPort = (
 
   const account = configuredAccount ?? createMakerAccount(config.identity)
   if (account instanceof Promise) {
-    return account.then(
-      value => createProductionOfferInvalidationPort(config, value),
-      () => {
-        throw new OfferInvalidationAdapterError('maker-private-key-mismatch')
-      }
-    )
+    return account.then(value => createProductionOfferInvalidationPort(config, value))
   }
   if (!isAddressEqual(account.address, maker)) {
     throw new OfferInvalidationAdapterError('maker-private-key-mismatch')
