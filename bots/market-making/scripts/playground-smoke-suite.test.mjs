@@ -66,6 +66,7 @@ test('browser lifecycle uses separate bounded build, startup, body, UI, CDP, and
 
   assert.match(smokeSource, /smokeBudgets\(process\.env\)/)
   assert.match(smokeSource, /const ownedDirectories = new Set\(\)/)
+  assert.match(smokeSource, /TMPDIR: runTemporaryRoot/)
   assert.doesNotMatch(smokeSource, /new Set\(\[join\(root, 'playground\/dist'\)\]\)/)
   assert.match(smokeSource, /runBounded\([\s\S]*fresh playground build/)
   assert.match(smokeSource, /const startupDeadline = performance\.now\(\) \+ startupTimeout/)

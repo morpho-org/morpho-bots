@@ -487,6 +487,9 @@ test(
     })
     const captured = await inspectProcessTree(run.child.pid)
     assert.ok(captured.length > 3, `expected the smoke and Chromium tree, got ${captured.length}`)
+    const smokeTemporaryRoot = run.stdout.match(/smokeTemporaryRoot=([^ ]+)/)?.[1]
+    assert.ok(smokeTemporaryRoot)
+    assert.ok((await readdir(smokeTemporaryRoot)).some(name => name.startsWith('profile-')))
     const ports = [...run.stdout.matchAll(/(?:appPort|chromiumDebugPort)=(\d+)/g)].map(match =>
       Number(match[1])
     )
@@ -497,6 +500,7 @@ test(
 
     await waitForIdentitiesGone(captured)
     await Promise.all(ports.map(assertPortClosed))
+    await assert.rejects(readdir(smokeTemporaryRoot), { code: 'ENOENT' })
     assert.deepEqual(await readdir(isolatedTmp), [])
   }
 )
@@ -522,6 +526,8 @@ test(
       timeoutMs: outerReadinessTimeout
     })
     const captured = await inspectProcessTree(run.child.pid)
+    const smokeTemporaryRoot = run.stdout.match(/smokeTemporaryRoot=([^ ]+)/)?.[1]
+    assert.ok(smokeTemporaryRoot)
     const ports = [...run.stdout.matchAll(/(?:appPort|chromiumDebugPort)=(\d+)/g)].map(match =>
       Number(match[1])
     )
@@ -534,6 +540,7 @@ test(
 
     await waitForIdentitiesGone(captured)
     await Promise.all(ports.map(assertPortClosed))
+    await assert.rejects(readdir(smokeTemporaryRoot), { code: 'ENOENT' })
     assert.deepEqual(await readdir(isolatedTmp), [])
   }
 )
@@ -609,11 +616,15 @@ test(
       )
     )
     const capturedTrees = await Promise.all(runs.map(run => inspectProcessTree(run.child.pid)))
+    const smokeTemporaryRoots = runs.map(run => run.stdout.match(/smokeTemporaryRoot=([^ ]+)/)?.[1])
+    assert.equal(new Set(smokeTemporaryRoots).size, 2)
     for (const [index, isolatedTmp] of isolatedRoots.entries()) {
       const resources = await readdir(isolatedTmp)
       assert.ok(resources.some(name => name.startsWith('market-making-playground-dist-')))
-      assert.ok(resources.some(name => name.startsWith('market-making-playground-')))
       assert.ok(capturedTrees[index].length > 3)
+      assert.ok(
+        (await readdir(smokeTemporaryRoots[index])).some(name => name.startsWith('profile-'))
+      )
     }
 
     const results = await runSmokesConcurrently(runs)
@@ -635,6 +646,9 @@ test(
     assert.equal(new Set([...appPorts, ...debugPorts]).size, 4)
     await Promise.all(capturedTrees.map(waitForIdentitiesGone))
     await Promise.all([...appPorts, ...debugPorts].map(assertPortClosed))
+    await Promise.all(
+      smokeTemporaryRoots.map(root => assert.rejects(readdir(root), { code: 'ENOENT' }))
+    )
     for (const isolatedTmp of isolatedRoots) assert.deepEqual(await readdir(isolatedTmp), [])
 
     const evidence = results[0].stdout

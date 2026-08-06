@@ -124,8 +124,8 @@ const onSignal = signal => {
 process.once('SIGINT', onSignal)
 process.once('SIGTERM', onSignal)
 
-const createOwnedTempDirectory = async prefix => {
-  const directory = mkdtempSync(join(tmpdir(), prefix))
+const createOwnedTempDirectory = async (prefix, parent = tmpdir()) => {
+  const directory = mkdtempSync(join(parent, prefix))
   ownedDirectories.add(directory)
   if (!shutdown.signal.aborted) return directory
   await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
@@ -134,6 +134,10 @@ const createOwnedTempDirectory = async prefix => {
 
 try {
   const chromiumPath = await discoverChromium()
+  const runTemporaryRoot = await createOwnedTempDirectory(
+    'mm-smoke-',
+    process.platform === 'win32' ? tmpdir() : '/tmp'
+  )
   const preparedDist = await runBounded(
     signal =>
       prepareFreshDist({
@@ -147,15 +151,13 @@ try {
   const dist = preparedDist.dist
   let servedRoot = dist
   if (basePath !== '/') {
-    servedRoot = await createOwnedTempDirectory('market-making-playground-site-')
+    servedRoot = await createOwnedTempDirectory('site-', runTemporaryRoot)
     const mountedDist = join(servedRoot, ...basePath.split('/').filter(Boolean))
     await mkdir(mountedDist, { recursive: true })
     await cp(dist, mountedDist, { recursive: true })
   }
-  const userDataDir = await createOwnedTempDirectory('market-making-playground-')
-  const screenshotDirectory = await createOwnedTempDirectory(
-    'market-making-playground-screenshots-'
-  )
+  const userDataDir = await createOwnedTempDirectory('profile-', runTemporaryRoot)
+  const screenshotDirectory = await createOwnedTempDirectory('screenshots-', runTemporaryRoot)
   const startupDeadline = performance.now() + startupTimeout
   const startedServer = await runBounded(() => startStaticServer(servedRoot), {
     description: 'static server startup',
@@ -180,7 +182,10 @@ try {
       `--user-data-dir=${userDataDir}`,
       'about:blank'
     ],
-    { stdio: ['ignore', 'ignore', 'pipe'] }
+    {
+      env: { ...process.env, TMPDIR: runTemporaryRoot },
+      stdio: ['ignore', 'ignore', 'pipe']
+    }
   )
   trackChild(browser)
   browser.once('error', error => {
@@ -492,7 +497,7 @@ try {
     'Playground root did not commit before the ready contract'
   )
   console.log(
-    `smoke environment: appPort=${port} chromiumDebugPort=${debuggingPort} chromium=${chromiumPath}`
+    `smoke environment: appPort=${port} chromiumDebugPort=${debuggingPort} smokeTemporaryRoot=${runTemporaryRoot} chromium=${chromiumPath}`
   )
   phaseDeadline = performance.now() + bodyTimeout
   const bodyDelayMs = Number(process.env.PLAYGROUND_SMOKE_BODY_DELAY_MS ?? 0)
