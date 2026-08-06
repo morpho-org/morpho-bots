@@ -702,6 +702,14 @@ test('static server close is bounded even with a held keep-alive connection', as
 
 for (const signal of ['SIGTERM', 'SIGINT']) {
   test(`launcher prints its URL, serves the app, and cleans up on ${signal}`, async () => {
+    const canonicalPath = join(root, 'playground/dist')
+    const canonicalBefore = await stat(canonicalPath).catch(error => {
+      if (error?.code === 'ENOENT') return undefined
+      throw error
+    })
+    const canonicalIndexBefore = canonicalBefore
+      ? await readFile(join(canonicalPath, 'index.html'))
+      : undefined
     const child = spawn(process.execPath, [launcher, '--port', '0'], {
       cwd: root,
       env: process.env,
@@ -733,7 +741,14 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
       })
       assert.deepEqual(result, { code: 0, signal: null })
       await assert.rejects(fetch(url))
-      await assert.rejects(access(join(root, 'playground/dist')), { code: 'ENOENT' })
+      if (canonicalBefore) {
+        const canonicalAfter = await stat(canonicalPath)
+        assert.equal(canonicalAfter.dev, canonicalBefore.dev)
+        assert.equal(canonicalAfter.ino, canonicalBefore.ino)
+        assert.deepEqual(await readFile(join(canonicalPath, 'index.html')), canonicalIndexBefore)
+      } else {
+        await assert.rejects(access(canonicalPath), { code: 'ENOENT' })
+      }
     } finally {
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
     }

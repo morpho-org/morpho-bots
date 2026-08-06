@@ -38,7 +38,7 @@ const {
   uiPollTimeout
 } = budgets
 const shutdown = new AbortController()
-const ownedDirectories = new Set([join(root, 'playground/dist')])
+const ownedDirectories = new Set()
 const children = new Set()
 let server
 let cleanupPromise
@@ -2954,6 +2954,14 @@ try {
   })()`)
   const localResponses = networkResponses.filter(({ url }) =>
     url.startsWith(`http://127.0.0.1:${port}/`)
+  )
+  const hashedAssets = [...expectedLocalUrls.scripts, ...expectedLocalUrls.stylesheets].map(
+    url => new URL(url).pathname
+  )
+  assert(
+    hashedAssets.length === 2 &&
+      hashedAssets.every(path => /\/index\.[0-9a-f]{12}\.(?:css|js)$/.test(path)),
+    `HTML did not request exact content-hashed JS/CSS assets: ${JSON.stringify(hashedAssets)}`
   )
   const actualLocalResources = localResponses
     .map(({ status, type, url }) => `${status} ${type} ${url}`)

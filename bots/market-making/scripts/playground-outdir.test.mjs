@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
-import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, test } from 'node:test'
 
 import {
   CUSTOM_OUTDIR_PREFIX,
-  cleanCanonicalPlaygroundOutdir,
+  revalidatePlaygroundOutdir,
   validatePlaygroundOutdir
 } from './playground-outdir.mjs'
 
@@ -57,28 +57,41 @@ describe('production playground output confinement', () => {
       canonical: true,
       outdir: join(packageRoot, 'playground', 'dist')
     })
-    assert.deepEqual(await validate(packageRoot, custom), { canonical: false, outdir: custom })
+    const validated = await validate(packageRoot, custom)
+    assert.equal(validated.canonical, false)
+    assert.equal(validated.outdir, custom)
+    assert.equal(validated.identity.realpath, custom)
+    assert.equal(typeof validated.identity.dev, 'number')
+    assert.equal(typeof validated.identity.ino, 'number')
   })
 
-  test('concurrent canonical cleanup cannot remove or modify caller-owned temporary output', async () => {
+  test('custom output must be empty, direct, private, and have an exact owned prefix', async () => {
     const packageRoot = await temporaryDirectory('market-making-package-')
-    const canonical = join(packageRoot, 'playground', 'dist')
+    await mkdir(join(packageRoot, 'playground'), { recursive: true })
+    const nonempty = await temporaryDirectory(CUSTOM_OUTDIR_PREFIX)
+    await writeFile(join(nonempty, 'entry'), 'not empty')
+    const nested = await temporaryDirectory(CUSTOM_OUTDIR_PREFIX)
+    await mkdir(join(nested, 'nested'))
+    const wrongMode = await temporaryDirectory(CUSTOM_OUTDIR_PREFIX)
+    if (process.platform !== 'win32') await chmod(wrongMode, 0o755)
+    const wrongPrefix = await temporaryDirectory(`x${CUSTOM_OUTDIR_PREFIX}`)
+
+    await assert.rejects(validate(packageRoot, nonempty), /empty/)
+    await assert.rejects(validate(packageRoot, nested), /empty/)
+    await assert.rejects(validate(packageRoot, wrongPrefix), /direct .* directory/)
+    if (process.platform !== 'win32') {
+      await assert.rejects(validate(packageRoot, wrongMode), /mode 0700/)
+    }
+  })
+
+  test('revalidation detects replacement after initial validation', async () => {
+    const packageRoot = await temporaryDirectory('market-making-package-')
+    await mkdir(join(packageRoot, 'playground'), { recursive: true })
     const custom = await temporaryDirectory(CUSTOM_OUTDIR_PREFIX)
-    await mkdir(canonical, { recursive: true })
-    await writeFile(join(canonical, 'canonical-marker'), 'canonical')
-    await writeFile(join(custom, 'caller-marker'), 'caller-owned')
+    const validated = await validate(packageRoot, custom)
+    await rm(custom, { recursive: true })
+    await mkdir(custom, { mode: 0o700 })
 
-    const [canonicalResult, customResult] = await Promise.all([
-      validate(packageRoot, canonical).then(async result => {
-        await cleanCanonicalPlaygroundOutdir(result.outdir)
-        return result
-      }),
-      validate(packageRoot, custom)
-    ])
-
-    assert.equal(canonicalResult.outdir, canonical)
-    assert.deepEqual(customResult, { canonical: false, outdir: custom })
-    assert.equal(await readFile(join(custom, 'caller-marker'), 'utf8'), 'caller-owned')
-    await assert.rejects(access(join(canonical, 'canonical-marker')))
+    await assert.rejects(revalidatePlaygroundOutdir(validated), /replaced/)
   })
 })

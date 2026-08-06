@@ -1450,6 +1450,10 @@ test('failed fresh build removes only its newly attributable temporary output', 
   const root = await temporaryDirectory('playground-failed-build-')
   const isolatedTmp = await temporaryDirectory('playground-failed-build-tmp-')
   const sibling = await mkdtemp(join(isolatedTmp, 'market-making-playground-dist-sibling-'))
+  const canonical = join(root, 'playground/dist')
+  const sentinel = Buffer.from([0, 255, 17, 99, 10])
+  await mkdir(canonical, { recursive: true })
+  await writeFile(join(canonical, 'sentinel.bin'), sentinel)
   const fakeBun = join(root, 'failing-bun')
   await writeFile(fakeBun, '#!/bin/sh\necho deliberate-build-failure >&2\nexit 23\n')
   await chmod(fakeBun, 0o755)
@@ -1474,6 +1478,7 @@ test('failed fresh build removes only its newly attributable temporary output', 
     []
   )
   assert.ok(after.includes(sibling.slice(isolatedTmp.length + 1)))
+  assert.deepEqual(await readFile(join(canonical, 'sentinel.bin')), sentinel)
 })
 
 test('an ownership callback throw removes the unregistered temporary dist and preserves the error', async () => {

@@ -6,7 +6,7 @@ import { join, relative, sep } from 'node:path'
 import { gzipSync } from 'node:zlib'
 
 const packageRoot = join(import.meta.dir, '../..')
-const PRODUCTION_ARTIFACT_GZIP_BUDGET_BYTES = 150 * 1024
+const PRODUCTION_ARTIFACT_GZIP_BUDGET_BYTES = 132 * 1024
 const temporaryDirectories = new Set<string>()
 const createOutdir = async () => {
   const directory = await mkdtemp(join(tmpdir(), 'market-making-playground-dist-artifact-'))
@@ -102,6 +102,15 @@ const expectProductionArtifact = (artifact: Awaited<ReturnType<typeof readArtifa
   expect(text).not.toContain('tanstack-connect')
   expect(text).not.toContain('form-devtools')
   expect(text.split('\n').length).toBeLessThan(100)
+  const html = artifact.files.find(([name]) => name === 'index.html')?.[1].toString('utf8')
+  expect(html).toBeDefined()
+  for (const [name, contents] of artifact.files.filter(([name]) => /\.(?:css|js)$/.test(name))) {
+    const match = name.match(/\.([0-9a-f]{12})\.(?:css|js)$/)
+    expect(match, `${name} must have a content hash`).not.toBeNull()
+    expect(match?.[1]).toBe(createHash('sha256').update(contents).digest('hex').slice(0, 12))
+    expect(html).toContain(`./${name}`)
+  }
+  expect(html).not.toMatch(/\.\/(?:index|chunk)\.(?:css|js)/)
 }
 
 describe('market-making playground production artifact', () => {
@@ -117,14 +126,14 @@ describe('market-making playground production artifact', () => {
     expectSameArtifact(second, first)
     expectProductionArtifact(first)
 
-    for (let batch = 0; batch < 5; batch += 1) {
+    for (let batch = 0; batch < 10; batch += 1) {
       const artifacts = await Promise.all(
-        Array.from({ length: 4 }, async () => readArtifact(await runBuild('development')))
+        Array.from({ length: 5 }, async () => readArtifact(await runBuild('development')))
       )
       for (const artifact of artifacts) {
-        expect(artifact.names).toEqual(first.names)
+        expectSameArtifact(artifact, first)
         expectProductionArtifact(artifact)
       }
     }
-  }, 120_000)
+  }, 300_000)
 })

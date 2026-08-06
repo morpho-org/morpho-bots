@@ -1,4 +1,4 @@
-import { lstat, realpath, rm, stat } from 'node:fs/promises'
+import { lstat, readdir, realpath, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
@@ -23,26 +23,7 @@ const rejectProtectedPath = (path, packageRoot) => {
   }
 }
 
-export const validatePlaygroundOutdir = async ({ packageRoot, requestedOutdir }) => {
-  const root = await realpath(packageRoot)
-  const requested = isAbsolute(requestedOutdir)
-    ? resolve(requestedOutdir)
-    : resolve(root, requestedOutdir)
-  const canonical = join(root, 'playground', 'dist')
-  rejectProtectedPath(requested, root)
-
-  if (requested === canonical) {
-    try {
-      const entry = await lstat(canonical)
-      if (entry.isSymbolicLink())
-        throw new Error(`Canonical output must not be a symlink: ${canonical}`)
-    } catch (error) {
-      if (error?.code !== 'ENOENT') throw error
-    }
-    return { canonical: true, outdir: canonical }
-  }
-
-  const allowedRoot = await realpath(tmpdir())
+const customOutdirIdentity = async (requested, allowedRoot) => {
   if (dirname(requested) !== allowedRoot || !basename(requested).startsWith(CUSTOM_OUTDIR_PREFIX)) {
     throw new Error(
       `Custom output must be a direct ${CUSTOM_OUTDIR_PREFIX}* directory under ${allowedRoot}`
@@ -61,20 +42,62 @@ export const validatePlaygroundOutdir = async ({ packageRoot, requestedOutdir })
   if (typeof process.getuid === 'function' && entry.uid !== process.getuid()) {
     throw new Error(`Custom output must be owned by uid ${process.getuid()}: ${requested}`)
   }
+  if (process.platform !== 'win32' && (entry.mode & 0o777) !== 0o700) {
+    throw new Error(`Custom output must have mode 0700: ${requested}`)
+  }
   const actual = await realpath(requested)
   if (actual !== requested || dirname(actual) !== allowedRoot) {
     throw new Error(`Custom output resolves outside the allowed temporary root: ${requested}`)
   }
-  const rootEntry = await stat(allowedRoot)
-  if (!rootEntry.isDirectory()) throw new Error(`Temporary root is not a directory: ${allowedRoot}`)
-  return { canonical: false, outdir: requested }
+  const entries = await readdir(requested)
+  if (entries.length !== 0) throw new Error(`Custom output must be empty: ${requested}`)
+  return { dev: Number(entry.dev), ino: Number(entry.ino), realpath: actual }
 }
 
-export const cleanCanonicalPlaygroundOutdir = async outdir => {
-  const entry = await lstat(outdir).catch(error => {
-    if (error?.code === 'ENOENT') return undefined
-    throw error
-  })
-  if (entry?.isSymbolicLink()) throw new Error(`Refusing to clean symlink output: ${outdir}`)
-  await rm(outdir, { recursive: true, force: true })
+export const validatePlaygroundOutdir = async ({ packageRoot, requestedOutdir }) => {
+  const root = await realpath(packageRoot)
+  const requested = isAbsolute(requestedOutdir)
+    ? resolve(requestedOutdir)
+    : resolve(root, requestedOutdir)
+  const canonical = join(root, 'playground', 'dist')
+  rejectProtectedPath(requested, root)
+
+  if (requested === canonical) {
+    try {
+      const entry = await lstat(canonical)
+      if (entry.isSymbolicLink() || !entry.isDirectory()) {
+        throw new Error(`Canonical output must be a non-symlink directory: ${canonical}`)
+      }
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error
+    }
+    return { canonical: true, outdir: canonical }
+  }
+
+  const allowedRoot = await realpath(tmpdir())
+  const rootEntry = await stat(allowedRoot)
+  if (!rootEntry.isDirectory()) throw new Error(`Temporary root is not a directory: ${allowedRoot}`)
+  const identity = await customOutdirIdentity(requested, allowedRoot)
+  return { canonical: false, identity, outdir: requested }
+}
+
+export const revalidatePlaygroundOutdir = async validated => {
+  if (validated.canonical) return validated
+  const allowedRoot = await realpath(tmpdir())
+  let identity
+  try {
+    identity = await customOutdirIdentity(validated.outdir, allowedRoot)
+  } catch (error) {
+    throw new Error(`Custom output was replaced or changed after validation: ${validated.outdir}`, {
+      cause: error
+    })
+  }
+  if (
+    identity.realpath !== validated.identity.realpath ||
+    identity.dev !== validated.identity.dev ||
+    identity.ino !== validated.identity.ino
+  ) {
+    throw new Error(`Custom output was replaced after validation: ${validated.outdir}`)
+  }
+  return validated
 }
