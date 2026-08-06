@@ -1,0 +1,45 @@
+name: Deploy market-making production
+
+# Reusable deploy-only job for market-making's single Railway environment. Production's release
+# selector calls this workflow after a `release-market-making` label lands on main.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Git SHA/ref to deploy
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-market-making-production
+  cancel-in-progress: false
+
+jobs:
+  Deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: market-making-production
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli@5.30.4
+
+      - name: Deploy
+        env:
+          RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          set -euo pipefail
+          railway up \
+            --project "$RAILWAY_PROJECT_ID" \
+            --environment production \
+            --service market-making \
+            --ci \
+            --message "deploy market-making production $GITHUB_SHA"
