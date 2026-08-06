@@ -151,8 +151,8 @@ async function main() {
   // Market whitelist: only listed markets are discovered / probed / liquidated. One filter per
   // configured markets source, unioned — the union applies the max-age rule PER SOURCE, so a source
   // that goes down or goes stale drops out of the whitelist instead of emptying it. Refresh once at
-  // startup (non-fatal by construction — `refresh` never throws, and a failed first fetch leaves the
-  // set empty = fail-closed), then poll on an interval.
+  // startup (non-fatal — a failed first fetch leaves the set empty = fail-closed, and the timer below
+  // retries), then poll on an interval.
   const listedMarkets = createUnionListedMarketFilter({
     filters: config.markets.apiUrls.map(apiUrl =>
       createListedMarketFilter({ apiUrl, chainId: config.chainId, logger })
@@ -160,7 +160,7 @@ async function main() {
     maxAgeMs: LISTED_MARKETS_MAX_AGE_MS,
     logger
   })
-  await listedMarkets.refresh()
+  await tryCatch(listedMarkets.refresh())
 
   // Pre-swap converters for exotic collateral (ERC4626 shares, Pendle PTs → underlying).
   // Auto-detecting with per-process memoization. erc4626 first: a memoized eth_call beats consulting
@@ -229,13 +229,28 @@ async function main() {
     healthFactorLte: config.discovery.healthFactorLte
   })
   // Filter candidates to the market whitelist BEFORE the lens read — a non-listed market is never
-  // touched (fail-closed), and this also shrinks the lens batch. `isListed` already excludes any source
-  // past the fail-closed max-age (a sustained markets-API outage the refresh loop could not recover
-  // from), so a since-delisted market can never linger in scope on the back of a stale set; the union
-  // warns (`markets.source_expired` / `markets.whitelist_expired`) when that happens.
+  // touched (fail-closed), and this also shrinks the lens batch. `current()` freezes the fresh-source
+  // set for the whole pass, excluding any source past the fail-closed max-age (a sustained markets-API
+  // outage the refresh loop could not recover from), so a since-delisted market can never linger in
+  // scope on the back of a stale set.
+  //
+  // The all-sources-expired case is reported HERE, every tick, rather than from the refresh loop: the
+  // whitelist expires on `LISTED_MARKETS_MAX_AGE_MS` but is only re-checked on `MARKETS_REFRESH_MS`, so
+  // a longer refresh interval (or a wedged refresh loop) would otherwise leave a total liquidation halt
+  // unreported for most of each interval — visible only as `discover.filtered` reading `listed: 0`,
+  // which is indistinguishable from "nothing to do".
   const discover = async () => {
     const candidates = await discoverBorrowers(fetchPage, { logger, maxPages: MAX_DISCOVERY_PAGES })
-    const listed = candidates.filter(candidate => listedMarkets.isListed(candidate.marketId))
+    const whitelist = listedMarkets.current()
+    if (whitelist.fresh === 0) {
+      logger.warn('markets.whitelist_expired', {
+        maxAgeMs: LISTED_MARKETS_MAX_AGE_MS,
+        sources: listedMarkets.snapshot().sources,
+        detail:
+          'every markets source is older than max age — whitelist is empty (fail-closed) until a refresh lands'
+      })
+    }
+    const listed = candidates.filter(candidate => whitelist.isListed(candidate.marketId))
     if (listed.length < candidates.length) {
       logger.info('discover.filtered', { total: candidates.length, listed: listed.length })
     }
@@ -352,8 +367,9 @@ async function main() {
     await delay(config.markets.refreshMs)
     if (stopped) return
     const { error } = await tryCatch(listedMarkets.refresh())
-    // `refresh` is contractually non-throwing, so reaching this is a bug, not an API blip.
-    if (error) logger.warn('markets.refresh_error', { detail: error.message })
+    // `refresh` is contractually non-throwing (it reports each source's failure itself), so reaching
+    // this is a bug in the union, not an API blip — hence `error`, not `warn`.
+    if (error) logger.error('markets.refresh_error', { detail: error.message })
     if (venues.length === 0) {
       logger.warn('quoting.no_routes', { detail: 'still no venue API keys — bad-debt-only' })
     }

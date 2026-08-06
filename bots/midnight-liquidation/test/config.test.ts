@@ -285,6 +285,16 @@ describe('loadConfig', () => {
     ])
   })
 
+  // Two spellings of one endpoint must collapse — otherwise the same source is polled twice and
+  // counted twice in the union's freshness bookkeeping.
+  it('de-duplicates MARKETS_API_URL entries that differ only in spelling', () => {
+    const config = loadConfig(
+      baseEnv({ MARKETS_API_URL: 'https://a.example/markets,https://a.example:443/markets' }),
+      deps
+    )
+    expect(config.markets.apiUrls).toEqual(['https://a.example/markets'])
+  })
+
   it('throws on a malformed MARKETS_API_URL', () => {
     expect(() => loadConfig(baseEnv({ MARKETS_API_URL: 'not a url' }), deps)).toThrow(
       /MARKETS_API_URL is not a valid URL/
