@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, test } from 'node:test'
@@ -76,6 +76,7 @@ process.exit(23)
 })
 
 test('canonical build compiles privately, publishes finalized files, and never cleans old assets', async () => {
+  await mkdir(canonical, { recursive: true })
   await writeFile(staleCanonicalAsset, 'retained until an explicit offline clean')
   const fakeBun = await makeFakeBun(`
 const { writeFileSync } = require('node:fs')
@@ -99,6 +100,8 @@ writeFileSync(outdir + '/index.js', 'globalThis.built = true')
 })
 
 test('failed canonical build preserves the prior artifact and removes its private staging tree', async () => {
+  await mkdir(canonical, { recursive: true })
+  await writeFile(join(canonical, 'index.html'), '<p>prior artifact</p>')
   const before = await readFile(join(canonical, 'index.html'))
   const fakeBun = await makeFakeBun(`
 const { writeFileSync } = require('node:fs')

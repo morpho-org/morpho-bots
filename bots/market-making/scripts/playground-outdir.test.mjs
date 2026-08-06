@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, test } from 'node:test'
@@ -89,7 +89,9 @@ describe('production playground output confinement', () => {
     await mkdir(join(packageRoot, 'playground'), { recursive: true })
     const custom = await temporaryDirectory(CUSTOM_OUTDIR_PREFIX)
     const validated = await validate(packageRoot, custom)
-    await rm(custom, { recursive: true })
+    const displaced = `${custom}-displaced`
+    await rename(custom, displaced)
+    owned.add(displaced)
     await mkdir(custom, { mode: 0o700 })
 
     await assert.rejects(revalidatePlaygroundOutdir(validated), /replaced/)
