@@ -1,4 +1,5 @@
-import { describe, expect, test } from 'bun:test'
+import { readFile } from 'node:fs/promises'
+import { describe, expect, test } from 'vitest'
 
 import { createDefaultBootstrap, createDefaultLadder } from '../../playground/model'
 import {
@@ -33,9 +34,9 @@ describe('shared market collection boundary', () => {
 
   test('keeps the browser model graph off runtime configuration and secret parsing modules', async () => {
     const [model, shared, runtime] = await Promise.all([
-      Bun.file(new URL('../../playground/model.ts', import.meta.url)).text(),
-      Bun.file(new URL('../../src/config/market-collections.ts', import.meta.url)).text(),
-      Bun.file(new URL('../../src/config/config.service.ts', import.meta.url)).text()
+      readFile(new URL('../../playground/model.ts', import.meta.url), 'utf8'),
+      readFile(new URL('../../src/config/market-collections.ts', import.meta.url), 'utf8'),
+      readFile(new URL('../../src/config/config.service.ts', import.meta.url), 'utf8')
     ])
 
     expect(model).not.toContain('src/config/config.utils')

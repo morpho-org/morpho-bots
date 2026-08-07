@@ -1,6 +1,5 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
 
 import {
   assertFreshRailwayReferenceProvisioning,
@@ -103,12 +102,12 @@ describe('Railway CLI output parsing', () => {
   })
 
   test('checks fresh-service references before Railway can create the service', () => {
-    const deploy = readFileSync(resolve(import.meta.dir, '../../scripts/deploy-railway.ts'), 'utf8')
+    const deploy = readFileSync(new URL('../../scripts/deploy-railway.ts', import.meta.url), 'utf8')
 
     expect(
-      deploy.indexOf('assertFreshRailwayReferenceProvisioning(Bun.env, true)')
+      deploy.indexOf('assertFreshRailwayReferenceProvisioning(process.env, true)')
     ).toBeGreaterThan(-1)
-    expect(deploy.indexOf('assertFreshRailwayReferenceProvisioning(Bun.env, true)')).toBeLessThan(
+    expect(deploy.indexOf('assertFreshRailwayReferenceProvisioning(process.env, true)')).toBeLessThan(
       deploy.indexOf('railway add --service')
     )
   })

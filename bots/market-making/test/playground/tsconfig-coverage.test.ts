@@ -1,8 +1,9 @@
-import { describe, expect, test } from 'bun:test'
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
+import { describe, expect, test } from 'vitest'
 
-const packageRoot = resolve(import.meta.dir, '../..')
+const packageRoot = dirname(fileURLToPath(new URL('../../package.json', import.meta.url)))
 const configPath = resolve(packageRoot, 'tsconfig.json')
 const appPath = resolve(packageRoot, 'playground/app.tsx')
 

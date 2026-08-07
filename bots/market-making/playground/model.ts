@@ -601,6 +601,12 @@ export const parseCollectionsImport = (text: string): CollectionsImport => {
 }
 
 export const COLLECTION_FRAGMENT_VERSION = 1
+type PlaygroundLocation = {
+  origin: string
+  pathname: string
+  search: string
+}
+
 export const encodePlaygroundFragment = (state: PlaygroundState) => {
   const validation = validatePlaygroundState(state)
   if (!validation.valid) throw new FragmentCodecError('Fragment state is invalid')
@@ -624,10 +630,8 @@ export const encodePlaygroundFragment = (state: PlaygroundState) => {
  * @returns A canonical absolute URL containing the exact encoded playground fragment.
  * @throws When either collection is runtime-invalid or the encoded fragment exceeds its size bound.
  */
-export const createPlaygroundShareUrl = (
-  state: PlaygroundState,
-  location: Pick<Location, 'origin' | 'pathname' | 'search'>
-) => `${location.origin}${location.pathname}${location.search}${encodePlaygroundFragment(state)}`
+export const createPlaygroundShareUrl = (state: PlaygroundState, location: PlaygroundLocation) =>
+  `${location.origin}${location.pathname}${location.search}${encodePlaygroundFragment(state)}`
 
 export const decodePlaygroundFragment = (fragment: string): PlaygroundState => {
   const encoded = fragment.startsWith('#') ? fragment.slice(1) : fragment

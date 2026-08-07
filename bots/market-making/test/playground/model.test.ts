@@ -1,4 +1,5 @@
-import { describe, expect, test } from 'bun:test'
+import { readFile } from 'node:fs/promises'
+import { describe, expect, test } from 'vitest'
 
 import { CollectionImportError } from '../../playground/collection-import.error'
 import { CollectionValidationError } from '../../playground/collection-validation.error'
@@ -33,9 +34,9 @@ describe('bootstrap + ladder only playground follow-up', () => {
 
   test('does not expose key-storage configuration in the collection-only playground', async () => {
     const [model, application, document] = await Promise.all([
-      Bun.file(new URL('../../playground/model.ts', import.meta.url)).text(),
-      Bun.file(new URL('../../playground/app.tsx', import.meta.url)).text(),
-      Bun.file(new URL('../../playground/index.html', import.meta.url)).text()
+      readFile(new URL('../../playground/model.ts', import.meta.url), 'utf8'),
+      readFile(new URL('../../playground/app.tsx', import.meta.url), 'utf8'),
+      readFile(new URL('../../playground/index.html', import.meta.url), 'utf8')
     ])
     const exposedPlaygroundSurface = `${JSON.stringify(createDefaultPlaygroundState())}\n${model}\n${application}\n${document}`
 
@@ -50,7 +51,7 @@ describe('bootstrap + ladder only playground follow-up', () => {
   })
 
   test('documents argv secret exposure without literal private keys or passwords', async () => {
-    const readme = await Bun.file('bots/market-making/README.md').text()
+    const readme = await readFile(new URL('../../README.md', import.meta.url), 'utf8')
 
     expect(readme).toContain('`--private-key <key>`')
     expect(readme).toContain('`MAKER_PRIVATE_KEY`')

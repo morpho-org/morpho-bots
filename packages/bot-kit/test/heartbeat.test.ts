@@ -39,7 +39,7 @@ describe('createHeartbeatMonitor', () => {
 
   it('is inert without warning or scheduling when the URL contains only whitespace', async () => {
     const { logger, events } = captureLogger()
-    const setIntervalSpy = spyOn(globalThis, 'setInterval')
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval')
     let pings = 0
     const monitor = createHeartbeatMonitor({
       url: ' \t\r\n ',
@@ -119,9 +119,11 @@ describe('createHeartbeatMonitor', () => {
     ['http://example.test:8080/heartbeat', 'http://example.test:8080/heartbeat']
   ])('uses the exact trimmed HTTP(S) URL %s', async (url, expectedUrl) => {
     const { logger } = captureLogger()
-    const setIntervalSpy = spyOn(globalThis, 'setInterval').mockImplementation(
-      (() => 1 as unknown as ReturnType<typeof setInterval>) as typeof setInterval
-    )
+    const setIntervalSpy = vi
+      .spyOn(globalThis, 'setInterval')
+      .mockImplementation(
+        (() => 1 as unknown as ReturnType<typeof setInterval>) as typeof setInterval
+      )
     const urls: string[] = []
     const monitor = createHeartbeatMonitor({
       url,
@@ -149,7 +151,7 @@ describe('createHeartbeatMonitor', () => {
     'https://example.test:bad-port/heartbeat'
   ])('warns once and stays inert for invalid URL %s', async url => {
     const { logger, events } = captureLogger()
-    const setIntervalSpy = spyOn(globalThis, 'setInterval')
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval')
     let pings = 0
     const monitor = createHeartbeatMonitor({
       url,

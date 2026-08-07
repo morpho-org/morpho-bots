@@ -31,14 +31,14 @@ export type { MakerIdentity } from './signer-identity.utils'
 export class ConfigService {
   /**
    * Parses the existing environment-only representation through the shared validation path.
-   * @param environment - Environment map; defaults to `Bun.env` at the runtime boundary.
+   * @param environment - Environment map; defaults to `process.env` at the runtime boundary.
    * @param options - Runtime mode; read-only operation accepts only the configured maker address.
    * @returns An immutable configuration with checksummed addresses and narrowed IDs.
    * @throws `ConfigValidationError` on missing, malformed, duplicated, unsupported, or out-of-range
    * values; rejected values and secrets are not retained by the error.
    */
   static from(
-    environment: Environment = Bun.env,
+    environment: Environment = process.env,
     options: Pick<ConfigurationLoadOptions, 'readOnly'> = {}
   ) {
     return ConfigService.fromSource(
@@ -58,7 +58,10 @@ export class ConfigService {
    * permits fallback; unsafe entries fail closed. No file means env-only loading. Read-only mode
    * omits YAML and environment private-key values before typed validation.
    */
-  static async load(environment: Environment = process.env, options: ConfigurationLoadOptions = {}) {
+  static async load(
+    environment: Environment = process.env,
+    options: ConfigurationLoadOptions = {}
+  ) {
     const source = await loadConfigurationSources(environment, options)
     const declaredMethod = source.values.KEY_STORAGE_METHOD?.toString().trim()
     const keystorePath = source.values.KEYSTORE_PATH?.toString().trim()

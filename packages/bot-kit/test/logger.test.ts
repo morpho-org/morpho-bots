@@ -159,7 +159,7 @@ describe('createLogger BetterStack opt-in contract', () => {
   })
 
   it('accepts a nonblank malformed paired host without synchronous validation', () => {
-    const err = spyOn(console, 'error').mockImplementation(() => undefined)
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
 
     expect(() =>
       createLogger('info', {

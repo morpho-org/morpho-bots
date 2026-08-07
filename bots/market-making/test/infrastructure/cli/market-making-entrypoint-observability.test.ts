@@ -63,7 +63,7 @@ describe('runMarketMakingEntrypoint observability', () => {
 
   test('surfaces sanitized maker-account failures without reporting them as unexpected', async () => {
     const stderr: string[] = []
-    const unexpected = mock((_error: unknown, _origin: 'entrypoint') => undefined)
+    const unexpected = vi.fn((_error: unknown, _origin: 'entrypoint') => undefined)
     const error = new MakerAccountError('keystore-decrypt')
 
     const exitCode = await runMarketMakingEntrypoint(
@@ -71,7 +71,7 @@ describe('runMarketMakingEntrypoint observability', () => {
       ['setup-check'],
       { writeOut: () => undefined, writeError: value => stderr.push(value) },
       {},
-      { record: mock(() => undefined), unexpected }
+      { record: vi.fn(() => undefined), unexpected }
     )
 
     expect(exitCode).toBe(1)
