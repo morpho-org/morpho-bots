@@ -88,7 +88,7 @@ describe('playground browser artifact boundary', () => {
     const firstParty = inputs.filter(path => !path.includes('node_modules/'))
     expect(
       firstParty.every(path =>
-        /playground\/(?:app|model|playground-error\.utils|(?:collection-import|collection-validation|fragment-codec|playground-initialization|preview-generation|strict-json)\.error)\.tsx?$|src\/config\/(?:market-collections|config-validation\.error)\.ts$|src\/domain\/(?:bootstrap|ladder)\/|src\/domain\/bytes32\.ts$|packages\/utils\//.test(
+        /playground\/(?:app|model|playground-error\.utils|field-visibility\.utils|(?:collection-import|collection-validation|fragment-codec|playground-initialization|preview-generation|strict-json)\.error)\.tsx?$|src\/config\/(?:market-collections|config-validation\.error)\.ts$|src\/domain\/(?:bootstrap|ladder)\/|src\/domain\/bytes32\.ts$|packages\/utils\//.test(
           path
         )
       ),

@@ -112,6 +112,20 @@ describe('bootstrap + ladder only playground follow-up', () => {
     expect(validateLadderCollection(state.ladder).valid).toBe(true)
   })
 
+  test('previews hardcoded ladder references outside bounds when generated rungs remain bounded', () => {
+    const state = createDefaultPlaygroundState()
+    const ladder = state.ladder[0]!
+    ladder.targetRate = { strategy: 'hardcoded', hardcodedRateBps: '900' }
+    ladder.quotePremiumBps = '-200'
+    ladder.rungCount = '1'
+
+    expect(generateLadderGraphicModels(state.ladder)[0]).toMatchObject({
+      referenceRateBps: '900',
+      centerRateBps: '700'
+    })
+    expect(validateLadderCollection(state.ladder)).toEqual({ valid: true, errors: [] })
+  })
+
   test('keeps higher rung rate, allocation, and cap correspondence under display reversal', () => {
     const state = createDefaultPlaygroundState()
     const ladder = state.ladder[0]!

@@ -29,6 +29,7 @@ describe('playground browser module graph', () => {
       'playground/app.tsx',
       'playground/collection-import.error.ts',
       'playground/collection-validation.error.ts',
+      'playground/field-visibility.utils.ts',
       'playground/fragment-codec.error.ts',
       'playground/model.ts',
       'playground/playground-error.utils.ts',

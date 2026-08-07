@@ -10,16 +10,17 @@ import {
 import React, { Component, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 
+import type { FieldDefinition } from './field-visibility.utils'
 import type {
   BootstrapGraphicModel,
   BootstrapInput,
   LadderGraphicModel,
   LadderInput,
-  PlaygroundState,
-  TargetRateInput
+  PlaygroundState
 } from './model'
 
 import { CollectionImportError } from './collection-import.error'
+import { visibleFields } from './field-visibility.utils'
 import {
   BOOTSTRAP_FIELDS,
   LADDER_FIELDS,
@@ -44,13 +45,8 @@ import { playgroundErrorMessage } from './playground-error.utils'
 import { PlaygroundInitializationError } from './playground-initialization.error'
 
 type CollectionKind = keyof PlaygroundState
-type FieldDefinition = readonly [string, string, string, string]
 type ExportFormat = 'bootstrap-json' | 'bootstrap-string' | 'ladder-json' | 'ladder-string'
 type Status = { message: string; status?: 'ok' | 'error' }
-const visibleFields = (fields: readonly FieldDefinition[], targetRate: TargetRateInput) =>
-  fields.filter(
-    ([key]) => key !== 'targetRate.hardcodedRateBps' || targetRate.strategy === 'hardcoded'
-  )
 const EXPORT_FORMATS: ExportFormat[] = [
   'bootstrap-json',
   'bootstrap-string',

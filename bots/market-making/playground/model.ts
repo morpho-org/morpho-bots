@@ -304,7 +304,10 @@ export const generateLadderGraphicModels = (
       input.targetRate.strategy === 'hardcoded'
         ? BigInt(input.targetRate.hardcodedRateBps)
         : (minimum + maximum) / 2n - config.quotePremiumBps
-    if (reference <= 0n || reference < minimum || reference > maximum) {
+    if (
+      reference <= 0n ||
+      (input.targetRate.strategy !== 'hardcoded' && (reference < minimum || reference > maximum))
+    ) {
       throw new PreviewGenerationError(
         'Ladder derived reference and center rates must remain inside configured bounds'
       )
