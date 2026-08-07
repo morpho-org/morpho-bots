@@ -9,6 +9,8 @@ export const productionPlaygroundBuildArguments = outdir => [
   'esbuild',
   '--assetsDir',
   '.',
+  '--base',
+  './',
   '--sourcemap',
   'false'
 ]
