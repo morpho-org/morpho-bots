@@ -57,7 +57,7 @@ describe('loadConfig', () => {
     expect(config.venues.zeroxBaseUrl).toBeUndefined()
 
     // Market whitelist + probe defaults.
-    expect(config.markets.apiUrl).toBe('https://api.morpho.org/v0/midnight/markets')
+    expect(config.markets.apiUrls).toEqual(['https://api.morpho.org/v0/midnight/markets'])
     expect(config.markets.refreshMs).toBe(60_000)
     expect(config.probe.staleMs).toBe(600_000)
     expect(config.probe.httpRps).toBe(1)
@@ -267,13 +267,51 @@ describe('loadConfig', () => {
       baseEnv({ MARKETS_API_URL: 'https://custom.example/markets', MARKETS_REFRESH_MS: '5000' }),
       deps
     )
-    expect(config.markets.apiUrl).toBe('https://custom.example/markets')
+    expect(config.markets.apiUrls).toEqual(['https://custom.example/markets'])
     expect(config.markets.refreshMs).toBe(5000)
+  })
+
+  it('parses a comma-separated MARKETS_API_URL into ordered, de-duplicated sources', () => {
+    const config = loadConfig(
+      baseEnv({
+        MARKETS_API_URL:
+          'https://a.example/v0/midnight/markets, https://b.example/v0/midnight/markets ,https://a.example/v0/midnight/markets'
+      }),
+      deps
+    )
+    expect(config.markets.apiUrls).toEqual([
+      'https://a.example/v0/midnight/markets',
+      'https://b.example/v0/midnight/markets'
+    ])
+  })
+
+  // Two spellings of one endpoint must collapse — otherwise the same source is polled twice and
+  // counted twice in the union's freshness bookkeeping.
+  it('de-duplicates MARKETS_API_URL entries that differ only in spelling', () => {
+    const config = loadConfig(
+      baseEnv({ MARKETS_API_URL: 'https://a.example/markets,https://a.example:443/markets' }),
+      deps
+    )
+    expect(config.markets.apiUrls).toEqual(['https://a.example/markets'])
   })
 
   it('throws on a malformed MARKETS_API_URL', () => {
     expect(() => loadConfig(baseEnv({ MARKETS_API_URL: 'not a url' }), deps)).toThrow(
       /MARKETS_API_URL is not a valid URL/
+    )
+  })
+
+  // A malformed entry must fail loud rather than leaving the valid sources behind: silently dropping
+  // one would narrow the whitelist with no signal.
+  it('throws when any entry of a MARKETS_API_URL list is malformed', () => {
+    expect(() =>
+      loadConfig(baseEnv({ MARKETS_API_URL: 'https://a.example/markets,not a url' }), deps)
+    ).toThrow(/MARKETS_API_URL is not a valid URL: not a url/)
+  })
+
+  it('throws when MARKETS_API_URL holds only separators', () => {
+    expect(() => loadConfig(baseEnv({ MARKETS_API_URL: ' , ' }), deps)).toThrow(
+      /MARKETS_API_URL must contain at least one URL/
     )
   })
 
