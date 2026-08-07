@@ -75,6 +75,18 @@ describe('Railway CLI output parsing', () => {
   test('synchronizes every optional variable with explicit safe defaults', () => {
     const variables = Object.fromEntries(
       synchronizedOptionalRailwayVariables({
+        BOOTSTRAP_MARKETS: JSON.stringify([
+          {
+            marketId: 'configured',
+            targetRate: { strategy: 'hardcoded', hardcodedRateBps: '400' }
+          }
+        ]),
+        LADDER_MARKETS: JSON.stringify([
+          {
+            marketId: 'configured',
+            targetRate: { strategy: 'hardcoded', hardcodedRateBps: '400' }
+          }
+        ]),
         REQUEST_TIMEOUT_MS: '25000'
       })
     )
@@ -101,6 +113,25 @@ describe('Railway CLI output parsing', () => {
 
     expect(variables.REFERENCE_RPC_URL).toBe('https://archive.example/')
     expect(variables.REFERENCE_MARKET_ID).toBe('0xreference')
+  })
+
+  test('preserves Railway reference variables when a workflow uses a variable rate', () => {
+    for (const targetRate of [undefined, { strategy: 'variable_rate_avg' }]) {
+      const variables = Object.fromEntries(
+        synchronizedOptionalRailwayVariables({
+          BOOTSTRAP_MARKETS: JSON.stringify([{ marketId: 'configured', targetRate }]),
+          LADDER_MARKETS: JSON.stringify([
+            {
+              marketId: 'configured',
+              targetRate: { strategy: 'hardcoded', hardcodedRateBps: '400' }
+            }
+          ])
+        })
+      )
+
+      expect(variables).not.toHaveProperty('REFERENCE_RPC_URL')
+      expect(variables).not.toHaveProperty('REFERENCE_MARKET_ID')
+    }
   })
 
   test('allows Compose deployments to omit inactive reference configuration', () => {

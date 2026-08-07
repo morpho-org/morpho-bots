@@ -30,6 +30,8 @@ const optionalRuntimeVariableDefaults = [
   ['BETTERSTACK_HEARTBEAT_URL', ' ']
 ] as const
 
+const referenceVariableNames = new Set(['REFERENCE_RPC_URL', 'REFERENCE_MARKET_ID'])
+
 type OptionalRuntimeVariableName = (typeof optionalRuntimeVariableDefaults)[number][0]
 type OptionalRuntimeVariable = readonly [name: OptionalRuntimeVariableName, value: string]
 
@@ -89,22 +91,46 @@ export const isNonEmptyJsonArray = (raw: string) => {
   return Array.isArray(data) && data.length > 0
 }
 
+const everyConfiguredWorkflowUsesHardcodedRate = (
+  environment: Readonly<Record<string, string | undefined>>
+) =>
+  ['BOOTSTRAP_MARKETS', 'LADDER_MARKETS'].every(name => {
+    const { data } = tryCatch(() => JSON.parse(environment[name] ?? '') as unknown)
+    return (
+      Array.isArray(data) &&
+      data.length > 0 &&
+      data.every(
+        item =>
+          isRecord(item) && isRecord(item.targetRate) && item.targetRate.strategy === 'hardcoded'
+      )
+    )
+  })
+
 /**
- * Produces the complete optional Railway configuration for a full operator deployment.
+ * Produces optional Railway configuration for a full operator deployment.
  * @param environment - Invoking environment whose non-blank values override safe defaults.
- * @returns Every optional variable exactly once, with timeouts reset to runtime defaults and
- * trimmed string options represented by a whitespace sentinel when absent.
- * @remarks Railway CLI 5.30.4 rejects empty stdin values. The bot trims the sentinel to an unset
- * value, allowing full runs to clear stale optional configuration without triggering intermediate
- * deployments.
+ * @returns Optional variables with timeouts reset to runtime defaults. Missing reference variables
+ * are cleared only when every configured workflow uses a hardcoded target rate; otherwise they are
+ * omitted so a full deployment preserves any existing Railway Blue configuration.
+ * @remarks Railway CLI 5.30.4 rejects empty stdin values. The bot trims whitespace sentinels to an
+ * unset value, allowing full runs to clear stale inactive configuration without triggering
+ * intermediate deployments.
  */
 export const synchronizedOptionalRailwayVariables = (
   environment: Readonly<Record<string, string | undefined>>
 ): OptionalRuntimeVariable[] =>
-  optionalRuntimeVariableDefaults.map(([name, defaultValue]) => [
-    name,
-    environment[name]?.trim() || defaultValue
-  ])
+  optionalRuntimeVariableDefaults.flatMap(([name, defaultValue]) => {
+    const configuredValue = environment[name]?.trim()
+    if (
+      referenceVariableNames.has(name) &&
+      !configuredValue &&
+      !everyConfiguredWorkflowUsesHardcodedRate(environment)
+    ) {
+      return []
+    }
+
+    return [[name, configuredValue || defaultValue]]
+  })
 
 /**
  * Parses Railway service JSON without exposing unknown response fields.
