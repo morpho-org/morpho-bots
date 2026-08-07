@@ -9,18 +9,25 @@
     "start": "bun src/index.ts",
     "typecheck": "bun run generate:api && tsc --noEmit",
     "deploy:railway": "bun run scripts/deploy-railway.ts",
-    "generate:api": "openapi-typescript morpho-api.json -o src/infrastructure/morpho-api/generated/morpho-api.types.ts && openapi-typescript router-api.json -o src/infrastructure/router-api/generated/router-api.types.ts"
+    "generate:api": "openapi-typescript morpho-api.json -o src/infrastructure/morpho-api/generated/morpho-api.types.ts && openapi-typescript router-api.json -o src/infrastructure/router-api/generated/router-api.types.ts",
+    "playground:build": "bun build playground/index.html --outdir playground/dist --target browser --production --env=disable"
   },
   "dependencies": {
     "@repo/bot-kit": "workspace:*",
     "@repo/contracts": "workspace:*",
     "@repo/utils": "workspace:*",
+    "@tanstack/react-form": "catalog:",
+    "@tanstack/react-table": "catalog:",
     "openapi-fetch": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
     "viem": "catalog:"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
     "@types/bun": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
     "openapi-typescript": "catalog:",
     "typescript": "catalog:"
   }

@@ -4,7 +4,7 @@ import { CrossedBooksResolver } from '@repo/contracts'
 import { getAddress, isAddress, isHex, parseGwei } from 'viem'
 import { base } from 'viem/chains'
 
-import { DEFAULT_MAX_MATCHES } from '../domain/matching.service'
+import { parseCrossedBooksStrategyEnvironment } from './strategy-config'
 
 const MIDNIGHT = getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A')
 const PRIVATE_KEY_HEX_LENGTH = 66
@@ -54,17 +54,7 @@ export class ConfigService {
       throw new Error('ROUTER_API_BASE_URL must be a valid URL')
     }
 
-    const scanIntervalMs = Number(unsignedDecimal(environment, 'SCAN_INTERVAL_MS', '15000'))
-    if (scanIntervalMs <= 0) throw new Error('SCAN_INTERVAL_MS must be a positive integer')
-
-    const minimumProfit = BigInt(unsignedDecimal(environment, 'MIN_PROFIT_ASSETS', '1'))
-
-    const maxMatches = Number(
-      unsignedDecimal(environment, 'MAX_MATCHES', String(DEFAULT_MAX_MATCHES))
-    )
-    if (!Number.isSafeInteger(maxMatches) || maxMatches <= 0) {
-      throw new Error('MAX_MATCHES must be a positive safe integer')
-    }
+    const strategy = parseCrossedBooksStrategyEnvironment(environment)
 
     return new ConfigService({
       chain: base,
@@ -77,9 +67,9 @@ export class ConfigService {
       privateKey,
       apiBaseUrl,
       routerApiBaseUrl,
-      scanIntervalMs,
-      minimumProfit,
-      maxMatches,
+      scanIntervalMs: strategy.scanIntervalMs,
+      minimumProfit: strategy.minimumProfitAssets,
+      maxMatches: strategy.maxMatches,
       maxFeeWei: parseGwei(environment.MAX_FEE_GWEI?.trim() || '300')
     })
   }

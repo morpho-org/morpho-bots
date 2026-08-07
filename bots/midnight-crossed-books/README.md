@@ -47,6 +47,19 @@ The generated files live under each infrastructure adapter's `generated/` direct
 - `SCAN_INTERVAL_MS` — default `15000`.
 - `MAX_FEE_GWEI` — default `300`.
 
+### Configuration playground
+
+The stateless local playground exposes only the ordered crossed-books strategy controls
+(`MIN_PROFIT_ASSETS`, `MAX_MATCHES`, and `SCAN_INTERVAL_MS`). It deliberately excludes runtime,
+core, secret, and observability configuration. State is shareable in the URL fragment; imports are
+paste-only JSON; exports are readable JSON or a compact JSON environment string.
+
+```sh
+bun run --filter @morpho-org/midnight-crossed-books playground:build
+```
+
+Open `playground/dist/index.html` through a local static-file server.
+
 ## Deploy the contract
 
 ```sh

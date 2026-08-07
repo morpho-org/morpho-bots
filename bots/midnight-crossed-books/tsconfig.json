@@ -1,6 +1,6 @@
 {
   "extends": "@repo/typescript-config/base",
-  "compilerOptions": { "types": ["bun"] },
-  "include": ["src", "test", "scripts"],
+  "compilerOptions": { "types": ["bun"], "lib": ["ESNext", "DOM"], "jsx": "react-jsx" },
+  "include": ["src", "test", "scripts", "playground/*.ts", "playground/*.tsx"],
   "exclude": ["node_modules"]
 }
