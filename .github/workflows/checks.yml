@@ -59,7 +59,7 @@ jobs:
           RPC_URL_8453: ${{ secrets.RPC_URL_8453 }}
 
       - name: Run browser smoke tests
-        run: bun test:browser
+        run: pnpm --filter @morpho-org/market-making-bot run playground:smoke:test
 
   Dead-Code:
     runs-on: ubuntu-latest
