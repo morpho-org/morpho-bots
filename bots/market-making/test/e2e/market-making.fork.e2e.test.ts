@@ -286,7 +286,9 @@ describe('market-making workflow on a pinned Base fork', () => {
     const completedFill = await takeMakerLend(anvil, api, remainingAssets)
     expect(completedFill.makerPosition.credit).toBeGreaterThanOrEqual(500_000_000n)
     const completeResult = await createApplication(applicationEnvironment).run(['bootstrap'])
-    expect(completeResult).toMatchObject([{ status: 'applied', action: 'invalidate' }])
+    expect(completeResult).toEqual([
+      { marketId: MARKET_ID, status: 'observed', action: 'target-reached' }
+    ])
     expect(await api.activeOffers()).toHaveLength(0)
 
     expect((await repayTakerDebt(anvil)).status).toBe('success')
