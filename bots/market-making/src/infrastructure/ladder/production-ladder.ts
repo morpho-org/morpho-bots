@@ -41,6 +41,8 @@ import {
   reconstructOwnedLadderPublication
 } from './ladder-active-publication.utils'
 import { LadderAdapterError } from './ladder-adapter.error'
+import { readLadderBookOffers } from './ladder-book.utils'
+import { calculateLadderCapacities } from './ladder-capacity.utils'
 import { ladderCashReservations } from './ladder-cash-reservation.utils'
 import { createLadderGroupOwnership } from './ladder-group-ownership.utils'
 import { MidnightLadderMakeService, type LadderOfferTransport } from './ladder-make.service'
@@ -62,7 +64,51 @@ type ProductionLadderAdapters = {
 }
 
 const minimum = (left: bigint, right: bigint) => (left < right ? left : right)
-const remaining = (limit: bigint, used: bigint) => (limit > used ? limit - used : 0n)
+
+type ProductionLadderCapacityParameters = {
+  marketId: Hex
+  balance: bigint
+  currentCredit: bigint
+  otherMarketCredit: bigint
+  targetMarketExposureAssets: bigint
+  maximumTotalExposureAssets: bigint
+  reservations: readonly { id: Hex; marketIds: readonly Hex[]; assets: bigint }[]
+}
+
+/**
+ * Derives production ladder capacities while reserving current market credit for reduce-only sells.
+ * @param parameters - Market balance, current and cross-market credit, exposure limits, and durable
+ * reservations. Reservations spanning this market reduce available balance exactly once, while all
+ * current market credit remains available to size higher-side reduce-only rungs.
+ * @returns Capacity limits for the lower and higher sides of the requested market.
+ * @throws When the shared capacity calculator rejects inconsistent or invalid sizing inputs.
+ * @remarks This pure calculation does not read, write, publish, or mutate reservation state.
+ */
+export const calculateProductionLadderCapacities = (
+  parameters: ProductionLadderCapacityParameters
+) =>
+  calculateLadderCapacities({
+    ...parameters,
+    creditSaleCapacityAssets: parameters.currentCredit
+  })
+
+/**
+ * Deduplicates concurrent async work while allowing a fresh attempt after the active call settles.
+ * @param operation - Async operation to execute at most once concurrently.
+ * @returns A callable that shares the active promise and reruns the operation after settlement.
+ * @throws Forwards the rejection from the active operation to every caller sharing that attempt.
+ * @remarks The returned function retains only the currently active promise. Concurrent calls are
+ * deduplicated, while every call made after settlement starts a new operation.
+ */
+export const createRepeatableSingleFlight = (operation: () => Promise<void>) => {
+  let active: Promise<void> | undefined
+  return () => {
+    active ??= operation().finally(() => {
+      active = undefined
+    })
+    return active
+  }
+}
 
 const notifySubmitted = async (
   observer: LadderTransactionSubmittedObserver | undefined,
@@ -240,27 +286,19 @@ export const createProductionLadderAdapters = (
         bootstrapOffers: pendingBootstrapOffers,
         replacedGroupIds
       })
-      const reservedCash = reservations.reduce((sum, reservation) => sum + reservation.assets, 0n)
-      const availableCash = remaining(minimum(cashBalance, allowance), reservedCash)
-      const marketReserved = reservations
-        .filter(reservation => reservation.marketIds.includes(marketId))
-        .reduce((sum, reservation) => sum + reservation.assets, 0n)
-      const marketExposure = selectedPosition.credit + marketReserved
-      const totalCredit = positionSnapshots.reduce((sum, position) => sum + position.credit, 0n)
-      const totalExposure = totalCredit + reservedCash
+      const otherMarketCredit = positionSnapshots
+        .filter(position => position.marketId !== marketId)
+        .reduce((sum, position) => sum + position.credit, 0n)
 
-      return {
-        lowerRateCapacityAssets: selectedPosition.credit,
-        higherRateCapacityAssets: availableCash,
-        targetMarketCapacityAssets: remaining(
-          selectedConfig.targetMarketExposureAssets,
-          marketExposure
-        ),
-        maximumTotalCapacityAssets: remaining(
-          selectedConfig.maximumTotalExposureAssets,
-          totalExposure
-        )
-      }
+      return calculateProductionLadderCapacities({
+        marketId,
+        balance: minimum(cashBalance, allowance),
+        currentCredit: selectedPosition.credit,
+        otherMarketCredit,
+        targetMarketExposureAssets: selectedConfig.targetMarketExposureAssets,
+        maximumTotalExposureAssets: selectedConfig.maximumTotalExposureAssets,
+        reservations
+      })
     }
   }
 
@@ -275,10 +313,15 @@ export const createProductionLadderAdapters = (
   }
 
   const completeBookOffers = async () => {
-    const [groups, bootstrapGroupIds, persistedBootstrapOffers] = await Promise.all([
+    const [groups, bootstrapGroupIds, persistedBootstrapOffers, wholeBook] = await Promise.all([
       readGroups(),
       bootstrapOwnership.read(),
-      bootstrapOwnership.readOffers()
+      bootstrapOwnership.readOffers(),
+      readLadderBookOffers({
+        baseUrl: config.morphoApiBaseUrl,
+        marketIds: config.setup.marketIds,
+        timeoutMs: config.requestTimeoutMs
+      })
     ])
     const pendingBootstrapOffers = await readLivePendingBootstrapOffers({
       groups,
@@ -309,10 +352,12 @@ export const createProductionLadderAdapters = (
         }
       })
     )
-    return { groups, book: [...bootstrapBookOffers(groups), ...pendingOffers] }
+    return { groups, book: [...wholeBook, ...bootstrapBookOffers(groups), ...pendingOffers] }
   }
 
+  let cleanupRemovedMarkets = async () => {}
   const readActive = async (marketId: Hex) => {
+    await cleanupRemovedMarkets()
     const [groups, publications] = await Promise.all([readGroups(), ladderOwnership.read()])
     return publications
       .filter(item => item.marketId === marketId)
@@ -322,6 +367,8 @@ export const createProductionLadderAdapters = (
   }
 
   const prepareUnsignedPublication = async (quote: LadderQuoteSet) => {
+    const selectedConfig = config.ladder.find(item => item.marketId === quote.marketId)
+    if (!selectedConfig) throw new LadderAdapterError('market-not-configured')
     const [market, block] = await Promise.all([
       midnight.getMarketData(quote.marketId),
       client.getBlock({ blockTag: 'latest' })
@@ -331,7 +378,9 @@ export const createProductionLadderAdapters = (
       market,
       maker,
       ratifier: config.setup.ratifier,
-      now: block.timestamp
+      now: block.timestamp,
+      minimumRateBps: selectedConfig.minimumRateBps,
+      maximumRateBps: selectedConfig.maximumRateBps
     })
     await prepared.tree.mempoolValidate({
       chainId: base.id,
@@ -508,10 +557,38 @@ export const createProductionLadderAdapters = (
     forgetGroups: ladderOwnership.forget
   }
 
+  cleanupRemovedMarkets = createRepeatableSingleFlight(async () => {
+    await ladderOwnership.migrate()
+    const publications = await ladderOwnership.read()
+    const configuredMarkets = new Set(config.ladder.map(item => item.marketId))
+    const retainedGroupIds = new Set(
+      publications
+        .filter(publication => configuredMarkets.has(publication.marketId))
+        .flatMap(publication => publication.groups.map(group => group.groupId))
+    )
+    const removed = new Map(
+      ownedGroups(publications)
+        .filter(group => !retainedGroupIds.has(group.groupId))
+        .map(group => [group.groupId, group.maxAssets] as const)
+    )
+    if (removed.size === 0) return
+    const indexedGroupIds = new Set((await readGroups()).map(group => group.id))
+    const failures: unknown[] = []
+    for (const [groupId, maxAssets] of removed) {
+      try {
+        if ((await readGroupConsumed(groupId)) < maxAssets) await transport.invalidate(groupId)
+        if (!indexedGroupIds.has(groupId)) await ladderOwnership.forget([groupId])
+      } catch (error) {
+        failures.push(error)
+      }
+    }
+    if (failures.length > 0) throw new LadderAdapterError('removed-market-cleanup')
+  })
+
   return {
     positions,
     rates,
-    make: new MidnightLadderMakeService(transport),
+    make: Object.assign(new MidnightLadderMakeService(transport), { cleanupRemovedMarkets }),
     validateReconcile
   }
 }

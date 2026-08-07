@@ -295,6 +295,19 @@ describe('createApplication', () => {
     }
     const application = createApplication(environment, {
       createState: () => state,
+      createLadderAdapters: () => ({
+        positions: { readMarket: async () => ({}) },
+        rates: { readRate: async () => 500n },
+        make: {
+          cleanupRemovedMarkets: async () => {
+            events.push('cleanup')
+          },
+          readActive: async () => undefined,
+          reconcile: async () => {},
+          hardHalt: async () => {},
+          cleanup: async () => {}
+        }
+      }),
       createBootstrapAdapters: () => {
         events.push('bootstrap')
         return {
@@ -324,7 +337,7 @@ describe('createApplication', () => {
     })
 
     expect(await application.run(['bootstrap'])).toEqual([])
-    expect(events).toEqual(['readiness', 'bootstrap'])
+    expect(events).toEqual(['cleanup', 'readiness', 'bootstrap'])
   })
 
   test('mm ladder passes readiness before running one ladder cycle', async () => {
@@ -362,14 +375,31 @@ describe('createApplication', () => {
     expect(events).toEqual(['readiness', 'ladder'])
   })
 
-  test('default-composes the ladder command and rejects an empty ladder config', async () => {
+  test('default-composes the ladder command and rejects an empty ladder config after cleanup', async () => {
+    const events: string[] = []
     let readinessReads = 0
     const state = readyState()
     state.getChainId = async () => {
+      events.push('readiness')
       readinessReads += 1
       return 8453
     }
-    const application = createApplication(environment, { createState: () => state })
+    const application = createApplication(environment, {
+      createState: () => state,
+      createLadderAdapters: () => ({
+        positions: { readMarket: async () => ({}) },
+        rates: { readRate: async () => 500n },
+        make: {
+          cleanupRemovedMarkets: async () => {
+            events.push('cleanup')
+          },
+          readActive: async () => undefined,
+          reconcile: async () => {},
+          hardHalt: async () => {},
+          cleanup: async () => {}
+        }
+      })
+    })
 
     const error = await application.run(['ladder']).catch(value => value)
 
@@ -378,6 +408,30 @@ describe('createApplication', () => {
       field: 'ladder'
     })
     expect(readinessReads).toBe(1)
+    expect(events).toEqual(['cleanup', 'readiness', 'cleanup'])
+  })
+
+  test('runs removed-market cleanup before the start command zero-config guard', async () => {
+    const cleanupRemovedMarkets = mock(async () => {})
+    const application = createApplication(environment, {
+      createLadderAdapters: () => ({
+        positions: { readMarket: async () => ({}) },
+        rates: { readRate: async () => 500n },
+        make: {
+          cleanupRemovedMarkets,
+          readActive: async () => undefined,
+          reconcile: async () => {},
+          hardHalt: async () => {},
+          cleanup: async () => {}
+        }
+      })
+    })
+
+    await expect(application.run(['start'])).rejects.toMatchObject({
+      name: 'BootstrapConfigurationError',
+      field: 'bootstrap'
+    })
+    expect(cleanupRemovedMarkets).toHaveBeenCalledTimes(1)
   })
 
   test('default-composes PositionBootstrapService when only its production ports are replaced', async () => {
