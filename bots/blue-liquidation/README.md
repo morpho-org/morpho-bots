@@ -240,7 +240,17 @@ per-`(id, borrower)` exponential backoff suppresses repeated failures.
 ### Simulation
 
 The exact `Executor.exec_606BaXt(...)` bytes are `eth_call`-simulated from the EOA. Only an `ok`
-result is broadcast (`simulate.ok` gate). The exec is `liquidate` + an in-callback queue (via
+result is broadcast (`simulate.ok` gate).
+
+`tick.end`'s `submitted` counts only real broadcasts: `submit` reports whether a transaction went out,
+and only that clears the position's backoff. A send that failed for this position (`tx.submit_failed`)
+counts `notSent` and backs the position off; the three queue-wide refusals (`tx.send_aborted`,
+`nonce.sync_failed`, `queue.nonce_hole`) count `notSent` only, since they reject every send that tick.
+A tick aborted by a hashless nonce-bearing send still emits `tick.end` with `complete: false`.
+
+A position the chain reports liquidatable can still fail to size; the tick counts it as `planSkipped`
+and emits a sampled `plan.skipped` with the reason (`no_collateral`, `zero_price`,
+`seize_rounds_to_zero`) plus the sizing inputs and derived numbers. The exec is `liquidate` + an in-callback queue (via
 `onMorphoLiquidate`) that runs the plan's steps — a plain collateral is one venue swap; exotic
 collateral is unwrap step(s) then usually a venue swap — followed by the repay-token approval. After
 `liquidate` returns, trailing `skim` sweeps drain both market tokens **plus every intermediate token

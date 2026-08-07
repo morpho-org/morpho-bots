@@ -39,3 +39,10 @@ export const VIRTUAL_ASSETS = 1n
  * terminal, so a brief suppression of an already-acted position is harmless.
  */
 export const SETTLED_COOLDOWN_BLOCKS = 20n
+
+/**
+ * Block cadence bounding the per-position `plan.skipped` diagnostic (~5 min at ~2s Base blocks). An
+ * unsizable position recurs every tick, so one line per position per block would be ~21k
+ * lines/hour/bot — all repeating one fact. The `planSkipped` counter stays exact regardless.
+ */
+export const PLAN_SKIP_SAMPLE_EVERY_BLOCKS = 150n

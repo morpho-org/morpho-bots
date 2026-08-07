@@ -10,7 +10,11 @@ export type Backoff = {
   shouldSkip: (label: string, block: bigint) => boolean
   /** Record a failure at `block`; the next attempt is allowed after an exponentially growing delay. */
   record: (label: string, block: bigint) => void
-  /** Clear the position's backoff (call on a successful submit). */
+  /**
+   * Clear the position's backoff. Call ONLY on a real broadcast — a `submit` that returned without
+   * sending must `record` instead. Clearing deletes the accumulated attempt count, so clearing on a
+   * non-broadcast resets the delay to `baseBlocks` and the exponential growth never accrues.
+   */
   clear: (label: string) => void
   /** Number of positions currently tracked. */
   readonly size: number
