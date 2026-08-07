@@ -7,8 +7,17 @@ chain:
 
 identity:
   makerAddress: '0x1111111111111111111111111111111111111111'
-  # Placeholder only. Prefer MAKER_PRIVATE_KEY in the environment, or omit in --readonly mode.
+  # Configure exactly one signer. This legacy private-key example remains backward compatible.
+  keyStorageMethod: 'private-key'
   makerPrivateKey: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  # Keystore alternatives remain blank while private-key is selected. Prefer KEYSTORE_PASSWORD or
+  # --interactive over storing a real password here.
+  keystorePath: ''
+  keystorePassword: ''
+  keystoreInteractive: false
+  # AWS KMS alternatives remain blank while private-key is selected. KMS signing is remote.
+  awsKmsKeyId: ''
+  awsRegion: ''
 
 contracts:
   midnightAddress: '0x2222222222222222222222222222222222222222'

@@ -108,7 +108,7 @@ const group = (overrides: Record<string, unknown> = {}) => ({
 })
 
 describe('createProductionBootstrapAdapters', () => {
-  test('constructs address-only readers and a terminal make adapter without a private key', () => {
+  test('constructs address-only readers and a terminal make adapter without a private key', async () => {
     const config = ConfigService.from(
       {
         CHAIN_ID: '8453',
@@ -128,12 +128,12 @@ describe('createProductionBootstrapAdapters', () => {
       { readOnly: true }
     )
 
-    const adapters = createProductionBootstrapAdapters(config)
+    const adapters = await createProductionBootstrapAdapters(config)
 
     expect(adapters.make).toBeInstanceOf(ReadOnlyBootstrapMakeService)
   })
 
-  test('rejects a write configuration whose private key does not match the maker', () => {
+  test('rejects a write configuration whose private key does not match the maker', async () => {
     const config = ConfigService.from({
       CHAIN_ID: '8453',
       RPC_URL: 'https://rpc.example',
@@ -153,7 +153,7 @@ describe('createProductionBootstrapAdapters', () => {
 
     let error: unknown
     try {
-      createProductionBootstrapAdapters(config)
+      await createProductionBootstrapAdapters(config)
     } catch (value) {
       error = value
     }

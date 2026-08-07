@@ -1,5 +1,7 @@
 import { tryCatch } from '@repo/utils'
 
+import { RailwayDeploymentError } from './railway-deployment.error'
+
 type RailwayDeployment = {
   id: string
   status: string
@@ -44,6 +46,26 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null
 
 const stringField = (value: unknown) => (typeof value === 'string' ? value : '')
+
+/**
+ * Rejects full Railway provisioning for signer modes whose credentials or files cannot be seeded.
+ * @param method - Validated signer method selected by the invoking environment.
+ * @throws `RailwayDeploymentError` for keystore or AWS KMS full provisioning.
+ * @remarks Existing services may use those modes only after out-of-band provisioning followed by
+ * `DEPLOY_ONLY=true`; this guard performs no Railway or filesystem side effects.
+ */
+export const assertFullRailwaySignerProvisioning = (method: 'private-key' | 'keystore' | 'aws') => {
+  if (method === 'keystore') {
+    throw new RailwayDeploymentError(
+      'Keystore Railway deployment requires a pre-provisioned file; use DEPLOY_ONLY=true'
+    )
+  }
+  if (method === 'aws') {
+    throw new RailwayDeploymentError(
+      'AWS KMS Railway deployment requires pre-provisioned credentials; use DEPLOY_ONLY=true'
+    )
+  }
+}
 
 const rowsFrom = (value: unknown, key: 'deployments' | 'services' | 'volumes') => {
   if (Array.isArray(value)) return value

@@ -6,6 +6,7 @@ import {
   MARKET_MAKING_VERBOSE_COMMANDS,
   runMarketMakingEntrypoint
 } from '../../../src/infrastructure/cli/market-making-entrypoint'
+import { MakerAccountError } from '../../../src/infrastructure/make/maker-account.error'
 
 describe('runMarketMakingEntrypoint observability', () => {
   test('mirrors streamed actions and terminal results while preserving stdout', async () => {
@@ -58,6 +59,24 @@ describe('runMarketMakingEntrypoint observability', () => {
     expect(unexpected).toHaveBeenCalledWith(error, 'entrypoint')
     expect(stderr.join('')).not.toContain('raw provider')
     expect(stderr.join('')).not.toContain('credential')
+  })
+
+  test('surfaces sanitized maker-account failures without reporting them as unexpected', async () => {
+    const stderr: string[] = []
+    const unexpected = mock((_error: unknown, _origin: 'entrypoint') => undefined)
+    const error = new MakerAccountError('keystore-decrypt')
+
+    const exitCode = await runMarketMakingEntrypoint(
+      { run: async () => Promise.reject(error) },
+      ['setup-check'],
+      { writeOut: () => undefined, writeError: value => stderr.push(value) },
+      {},
+      { record: mock(() => undefined), unexpected }
+    )
+
+    expect(exitCode).toBe(1)
+    expect(stderr).toEqual(['Error: Maker account keystore-decrypt failed'])
+    expect(unexpected).toHaveBeenCalledTimes(0)
   })
 
   test('suppresses report payloads from errors outside the audited allowlist', async () => {
