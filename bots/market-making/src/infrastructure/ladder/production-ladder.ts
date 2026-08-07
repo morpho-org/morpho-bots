@@ -274,7 +274,11 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
     blueRates
   )
   const rates: LadderReferenceRateService = {
-    readRate: async marketId => (await strategyRates.readRate(marketId)).rateBps
+    readRate: async marketId => (await strategyRates.readRate(marketId)).rateBps,
+    readObservation: async marketId => {
+      const observation = await strategyRates.readRate(marketId)
+      return { rateBps: observation.rateBps, observationId: observation.observationId }
+    }
   }
 
   const completeBookOffers = async () => {

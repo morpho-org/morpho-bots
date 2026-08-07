@@ -1,6 +1,6 @@
 import type { Hex } from 'viem'
 
-import { describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, setSystemTime, test } from 'bun:test'
 
 import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/bootstrap-adapter.error'
 import {
@@ -10,6 +10,8 @@ import {
 
 const marketId = `0x${'11'.repeat(32)}` as const
 const secondMarketId = `0x${'22'.repeat(32)}` as const
+
+afterEach(() => setSystemTime())
 
 describe('StrategyBootstrapReferenceRateService', () => {
   test('uses a configured hardcoded target without reading the Blue variable-rate average', async () => {
@@ -27,7 +29,7 @@ describe('StrategyBootstrapReferenceRateService', () => {
     expect(await service.readRate(marketId)).toEqual({
       mode: 'static',
       rateBps: 400n,
-      observationId: 'static:400'
+      observationId: expect.stringMatching(/^static:400:hour:\d+$/)
     })
     expect(variableReads).toBe(0)
   })
@@ -55,9 +57,24 @@ describe('StrategyBootstrapReferenceRateService', () => {
     expect(await service.readRate(secondMarketId)).toEqual({
       mode: 'static',
       rateBps: 400n,
-      observationId: 'static:400'
+      observationId: expect.stringMatching(/^static:400:hour:\d+$/)
     })
     expect(variableReads).toEqual([marketId])
+  })
+
+  test('changes a hardcoded observation when its hourly refresh bucket advances', async () => {
+    const service = new StrategyBootstrapReferenceRateService(
+      new Map([[marketId, { strategy: 'hardcoded', hardcodedRateBps: 400n }]]),
+      { readRate: async () => ({ mode: 'variable', rateBps: 500n, observationId: 'hour:1' }) }
+    )
+
+    setSystemTime(new Date(3_599_000))
+    const first = await service.readRate(marketId)
+    setSystemTime(new Date(3_600_000))
+    const second = await service.readRate(marketId)
+
+    expect(first.observationId).toBe('static:400:hour:0')
+    expect(second.observationId).toBe('static:400:hour:1')
   })
 })
 

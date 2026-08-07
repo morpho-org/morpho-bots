@@ -90,6 +90,32 @@ describe('ladder configuration loading', () => {
     expect(config.ladder[0]?.targetRate).toEqual({ strategy: 'variable_rate_avg' })
   })
 
+  test('rejects a hardcoded bootstrap target whose premium-adjusted rate exceeds its bounds', () => {
+    expect(() =>
+      ConfigService.from({
+        ...baseEnvironment,
+        BOOTSTRAP_MARKETS: JSON.stringify([
+          bootstrapItem({
+            targetRate: { strategy: 'hardcoded', hardcodedRateBps: '801' }
+          })
+        ])
+      })
+    ).toThrow('must be at most maximumRateBps')
+  })
+
+  test('rejects a hardcoded ladder target whose outer rung exceeds its bounds', () => {
+    expect(() =>
+      ConfigService.from({
+        ...baseEnvironment,
+        LADDER_MARKETS: JSON.stringify([
+          item({
+            targetRate: { strategy: 'hardcoded', hardcodedRateBps: '700' }
+          })
+        ])
+      })
+    ).toThrow('higher rung is outside the configured hard range')
+  })
+
   test.each([
     [
       'BOOTSTRAP_MARKETS',

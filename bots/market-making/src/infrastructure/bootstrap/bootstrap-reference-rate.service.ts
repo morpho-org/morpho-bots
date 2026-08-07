@@ -51,7 +51,7 @@ export class StrategyBootstrapReferenceRateService implements BootstrapReference
     return {
       mode: 'static' as const,
       rateBps: strategy.hardcodedRateBps,
-      observationId: `static:${strategy.hardcodedRateBps}`
+      observationId: `static:${strategy.hardcodedRateBps}:hour:${BigInt(Math.floor(Date.now() / 1_000)) / REFERENCE_REFRESH_SECONDS}`
     }
   }
 }

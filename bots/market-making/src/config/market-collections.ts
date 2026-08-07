@@ -7,7 +7,7 @@ import type { TargetRateConfigured, TargetRateStrategyConfig } from '../domain/t
 import { BootstrapConfigurationError } from '../domain/bootstrap/bootstrap-configuration.error'
 import { validateBootstrapConfig } from '../domain/bootstrap/position-bootstrap'
 import { isBytes32, normalizeBytes32 } from '../domain/bytes32'
-import { validateLadderConfig } from '../domain/ladder/ladder'
+import { generateLadder, validateLadderConfig } from '../domain/ladder/ladder'
 import { LadderConfigurationError } from '../domain/ladder/ladder-configuration.error'
 import { ConfigValidationError } from './config-validation.error'
 
@@ -272,6 +272,21 @@ export const bootstrapConfigsValue = (
     }
     try {
       validateBootstrapConfig(config)
+      if (config.targetRate.strategy === 'hardcoded') {
+        const requestedRateBps = config.targetRate.hardcodedRateBps + config.premiumBps
+        if (requestedRateBps < config.minimumRateBps) {
+          throw new BootstrapConfigurationError(
+            'requestedRateBps',
+            'must be at least minimumRateBps'
+          )
+        }
+        if (requestedRateBps > config.maximumRateBps) {
+          throw new BootstrapConfigurationError(
+            'requestedRateBps',
+            'must be at most maximumRateBps'
+          )
+        }
+      }
     } catch (error) {
       if (error instanceof BootstrapConfigurationError) {
         throw new ConfigValidationError(
@@ -393,6 +408,9 @@ export const ladderConfigsValue = (
     }
     try {
       validateLadderConfig(config)
+      if (config.targetRate.strategy === 'hardcoded') {
+        generateLadder({ config, referenceRateBps: config.targetRate.hardcodedRateBps })
+      }
     } catch (error) {
       if (error instanceof LadderConfigurationError) {
         throw new ConfigValidationError(

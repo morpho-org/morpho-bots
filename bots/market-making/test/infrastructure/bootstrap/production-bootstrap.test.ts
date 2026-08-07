@@ -149,7 +149,7 @@ describe('createProductionBootstrapAdapters', () => {
     expect(await adapters.rates.readRate(marketId)).toEqual({
       mode: 'static',
       rateBps: 400n,
-      observationId: 'static:400'
+      observationId: expect.stringMatching(/^static:400:hour:\d+$/)
     })
   })
 

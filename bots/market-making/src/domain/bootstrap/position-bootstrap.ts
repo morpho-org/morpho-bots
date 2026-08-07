@@ -229,8 +229,7 @@ export const decidePositionBootstrap = ({
     referenceObservationId: rate.observationId
   }
 
-  const observationMatches =
-    rate.mode === 'static' || activeOffer?.referenceObservationId === offer.referenceObservationId
+  const observationMatches = activeOffer?.referenceObservationId === offer.referenceObservationId
   if (
     activeOffer &&
     !requiresReconciliation &&
