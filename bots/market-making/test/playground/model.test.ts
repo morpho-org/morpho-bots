@@ -87,6 +87,19 @@ describe('bootstrap + ladder only playground follow-up', () => {
     expect(() => deriveBootstrapGraphicModels(state.bootstrap)).toThrow('configured bounds')
   })
 
+  test('renders a hardcoded bootstrap reference outside bounds when its premium-adjusted quote is valid', () => {
+    const state = createDefaultPlaygroundState()
+    state.bootstrap[0]!.minimumRateBps = '200'
+    state.bootstrap[0]!.maximumRateBps = '800'
+    state.bootstrap[0]!.targetRate = { strategy: 'hardcoded', hardcodedRateBps: '900' }
+    state.bootstrap[0]!.premiumBps = '-200'
+
+    expect(deriveBootstrapGraphicModels(state.bootstrap)[0]).toMatchObject({
+      referenceRateBps: '900',
+      quotedRateBps: '700'
+    })
+  })
+
   test('renders hardcoded target rates as the preview reference', () => {
     const state = createDefaultPlaygroundState()
     state.bootstrap[0]!.targetRate = { strategy: 'hardcoded', hardcodedRateBps: '400' }

@@ -211,10 +211,9 @@ export const deriveBootstrapGraphicModels = (items: BootstrapInput[]): Bootstrap
     const quoted = reference + premium
     if (
       reference <= 0n ||
-      reference < minimum ||
-      reference > maximum ||
-      reference + BigInt(item.premiumBps) < minimum ||
-      reference + BigInt(item.premiumBps) > maximum
+      (item.targetRate.strategy !== 'hardcoded' && (reference < minimum || reference > maximum)) ||
+      quoted < minimum ||
+      quoted > maximum
     ) {
       throw new PreviewGenerationError(
         'Bootstrap derived reference and quoted rates must be positive and remain inside configured bounds'
