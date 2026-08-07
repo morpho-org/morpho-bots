@@ -491,7 +491,30 @@ const Playground = () => {
                           <small>
                             {key} · {help}
                           </small>
-                          {type === 'select' ? (
+                          {type === 'target-rate-select' ? (
+                            <select
+                              id={`${kind}-${index}-${key}`}
+                              value={item.targetRate.strategy}
+                              onBlur={field.handleBlur}
+                              onChange={event =>
+                                form.setFieldValue(
+                                  `${kind}.${index}.targetRate` as never,
+                                  (event.target.value === 'hardcoded'
+                                    ? {
+                                        strategy: 'hardcoded',
+                                        hardcodedRateBps:
+                                          item.targetRate.strategy === 'hardcoded'
+                                            ? item.targetRate.hardcodedRateBps
+                                            : '500'
+                                      }
+                                    : { strategy: 'variable_rate_avg' }) as never
+                                )
+                              }
+                            >
+                              <option value="variable_rate_avg">variable_rate_avg</option>
+                              <option value="hardcoded">hardcoded</option>
+                            </select>
+                          ) : type === 'select' ? (
                             <select
                               id={`${kind}-${index}-${key}`}
                               value={String(field.state.value)}
@@ -505,9 +528,23 @@ const Playground = () => {
                             <input
                               id={`${kind}-${index}-${key}`}
                               type={type === 'checkbox' ? 'checkbox' : 'text'}
-                              inputMode={type === 'number' ? 'numeric' : undefined}
+                              inputMode={
+                                type === 'number' || type === 'target-rate-number'
+                                  ? 'numeric'
+                                  : undefined
+                              }
                               checked={type === 'checkbox' ? Boolean(field.state.value) : undefined}
-                              value={type === 'checkbox' ? undefined : String(field.state.value)}
+                              value={
+                                type === 'checkbox'
+                                  ? undefined
+                                  : field.state.value === undefined
+                                    ? ''
+                                    : String(field.state.value)
+                              }
+                              disabled={
+                                type === 'target-rate-number' &&
+                                item.targetRate.strategy !== 'hardcoded'
+                              }
                               onBlur={field.handleBlur}
                               onChange={event =>
                                 field.handleChange(

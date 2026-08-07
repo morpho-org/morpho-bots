@@ -73,6 +73,7 @@ export const hexListValue = (
 
 export const BOOTSTRAP_MARKET_FIELDS = [
   'marketId',
+  'targetRate',
   'creditTarget',
   'acceptanceAssets',
   'offerSize',
@@ -86,6 +87,7 @@ export const BOOTSTRAP_MARKET_FIELDS = [
 
 export const LADDER_MARKET_FIELDS = [
   'marketId',
+  'targetRate',
   'quotePremiumBps',
   'spreadBps',
   'stepBps',
@@ -216,12 +218,7 @@ export const bootstrapConfigsValue = (
   }
   const configs = value.map((item, index) => {
     const prefix = `bootstrap[${index}]`
-    const record = exactRecord(
-      item,
-      prefix,
-      [...BOOTSTRAP_MARKET_FIELDS, 'targetRate'],
-      ['targetRate']
-    )
+    const record = exactRecord(item, prefix, BOOTSTRAP_MARKET_FIELDS, ['targetRate'])
     const required = (name: (typeof BOOTSTRAP_MARKET_FIELDS)[number]) => record[name]
     const marketValue = required('marketId')
     if (typeof marketValue !== 'string') {
@@ -333,12 +330,7 @@ export const ladderConfigsValue = (
   }
   const configs = value.map((item, index) => {
     const prefix = `ladder[${index}]`
-    const record = exactRecord(
-      item,
-      prefix,
-      [...LADDER_MARKET_FIELDS, 'targetRate'],
-      ['targetRate']
-    )
+    const record = exactRecord(item, prefix, LADDER_MARKET_FIELDS, ['targetRate'])
     const required = (name: (typeof LADDER_MARKET_FIELDS)[number]) => record[name]
     const marketValue = required('marketId')
     const groupMode = required('groupMode')

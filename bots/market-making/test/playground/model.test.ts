@@ -175,6 +175,22 @@ describe('bootstrap + ladder only playground follow-up', () => {
     ).toEqual({ ladder: state.ladder })
   })
 
+  test('round-trips hardcoded target rates through unlabelled imports and exports', () => {
+    const bootstrap = {
+      ...createDefaultBootstrap(),
+      targetRate: { strategy: 'hardcoded' as const, hardcodedRateBps: '450' }
+    }
+    const ladder = {
+      ...createDefaultLadder(),
+      targetRate: { strategy: 'hardcoded' as const, hardcodedRateBps: '500' }
+    }
+
+    expect(parseCollectionsImport(JSON.stringify([bootstrap]))).toEqual({ bootstrap: [bootstrap] })
+    expect(parseCollectionsImport(JSON.stringify([ladder]))).toEqual({ ladder: [ladder] })
+    expect(exportBootstrapMarketsEnvValue([bootstrap])).toBe(JSON.stringify([bootstrap]))
+    expect(exportLadderMarketsEnvValue([ladder])).toBe(JSON.stringify([ladder]))
+  })
+
   test('rejects escaped prototype-pollution member names before collection validation', () => {
     const item = JSON.stringify(createDefaultBootstrap())
     for (const unsafeName of ['\\u005f\\u005fproto__', '\\u0063onstructor', '\\u0070rototype']) {
