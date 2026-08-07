@@ -11,6 +11,7 @@ import {
   createCdpClient,
   describeHttpFailures,
   discoverChromium,
+  inspectProcessTree,
   openWebSocket,
   prepareFreshDist,
   resignalAfterCleanup,
@@ -27,6 +28,50 @@ const basePath = process.env.PLAYGROUND_SMOKE_BASE_PATH ?? '/'
 const mobile = process.env.PLAYGROUND_SMOKE_VIEWPORT === 'mobile'
 const disabledPersistencePatch = process.env.PLAYGROUND_SMOKE_MUTATION_DISABLE_PATCH ?? ''
 const injectLateActivity = process.env.PLAYGROUND_SMOKE_MUTATION_LATE_ACTIVITY === 'all-documents'
+const injectEarlyFormBusActivity =
+  process.env.PLAYGROUND_SMOKE_MUTATION_EARLY_FORM_BUS_ACTIVITY ?? ''
+const injectTerminalActivity =
+  process.env.PLAYGROUND_SMOKE_MUTATION_TERMINAL_ACTIVITY === 'after-final-phase'
+const buildCaptureBarrierFile = process.env.PLAYGROUND_SMOKE_BUILD_CAPTURE_BARRIER_FILE
+const buildCaptureFile = process.env.PLAYGROUND_SMOKE_BUILD_CAPTURE_FILE
+const expectedPersistencePhases = Object.freeze([
+  'initial baseline',
+  'collection edits',
+  'invalid and valid edits',
+  'preview edit',
+  'share copy',
+  'clipboard fallback',
+  'runtime preview edits',
+  'import',
+  'export and before share navigation',
+  'share document before reload',
+  'share reload before malformed navigation',
+  'malformed document before reload',
+  'malformed reload before oversized navigation',
+  'oversized document before reload',
+  'final oversized reload'
+])
+const expectedPersistenceDocumentOrdinals = Object.freeze([
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 3
+])
+const assertPersistencePhaseContract = snapshots => {
+  assert.deepEqual(
+    snapshots.map(({ phase }) => phase),
+    expectedPersistencePhases,
+    'persistence phases must match the exact ordered smoke contract'
+  )
+  const documentOrdinals = new Map()
+  const observedOrdinals = snapshots.map(({ documentId }) => {
+    if (!documentOrdinals.has(documentId)) documentOrdinals.set(documentId, documentOrdinals.size)
+    return documentOrdinals.get(documentId)
+  })
+  assert.deepEqual(
+    observedOrdinals,
+    expectedPersistenceDocumentOrdinals,
+    'persistence document transitions must match the exact four-document smoke contract'
+  )
+  assert.equal(documentOrdinals.size, 4)
+}
 if (!/^\/(?:[A-Za-z0-9._-]+\/)*$/.test(basePath)) {
   throw new Error(
     `PLAYGROUND_SMOKE_BASE_PATH must be / or a slash-delimited path ending in /; received: ${basePath}`
@@ -51,12 +96,48 @@ let browser
 let browserSocket
 let browserClient
 let browserReady = false
+let buildCapturePromise
+
+if (Boolean(buildCaptureBarrierFile) !== Boolean(buildCaptureFile)) {
+  throw new Error(
+    'PLAYGROUND_SMOKE_BUILD_CAPTURE_BARRIER_FILE and PLAYGROUND_SMOKE_BUILD_CAPTURE_FILE must be set together'
+  )
+}
 
 const stopChild = (child, cleanupOptions) => terminateOwnedProcessTree(child, cleanupOptions)
 const trackChild = child => {
   children.add(child)
   const release = () => children.delete(child)
   child.once('close', release)
+  return release
+}
+const captureBuildTree = async build => {
+  const initialProcesses = await inspectProcessTree(build.pid)
+  const root = initialProcesses.find(({ pid }) => pid === build.pid)
+  assert.ok(root, `build process ${build.pid} disappeared before identity capture`)
+  await waitForReadiness(() => readFile(buildCaptureBarrierFile), {
+    child: build,
+    childName: 'Fresh playground build',
+    description: 'test-owned build process capture barrier',
+    timeoutMs: cleanupTimeout,
+    pollIntervalMs: 1
+  })
+  const descendants = (await inspectProcessTree(build.pid)).filter(({ pid }) => pid !== build.pid)
+  await writeFile(
+    buildCaptureFile,
+    JSON.stringify({
+      kind: 'market-making-playground-build-process-tree',
+      processes: [root, ...descendants],
+      rootPid: build.pid
+    })
+  )
+}
+const trackBuildProcess = build => {
+  const release = trackChild(build)
+  if (buildCaptureFile) {
+    buildCapturePromise = captureBuildTree(build)
+    void buildCapturePromise.catch(() => {})
+  }
   return release
 }
 const stopOwnedChild = async (child, cleanupOptions) => {
@@ -81,12 +162,15 @@ const cleanup = () =>
   (cleanupPromise ??= runBounded(
     async (signal, deadline) => {
       browserClient?.dispose(new Error('Smoke cleanup started'))
+      const captureResults = buildCapturePromise
+        ? await Promise.allSettled([buildCapturePromise])
+        : []
       const cleanupOptions = { deadline, signal }
       const childResults = await Promise.allSettled(
         [...children].map(child => stopOwnedChild(child, cleanupOptions))
       )
       if (signal.aborted) {
-        const failures = childResults.flatMap(result =>
+        const failures = [...captureResults, ...childResults].flatMap(result =>
           result.status === 'rejected' ? [result.reason] : []
         )
         throw new AggregateError(
@@ -105,7 +189,7 @@ const cleanup = () =>
           rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
         )
       ])
-      const failures = [...childResults, ...resourceResults].flatMap(result =>
+      const failures = [...captureResults, ...childResults, ...resourceResults].flatMap(result =>
         result.status === 'rejected' ? [result.reason] : []
       )
       if (failures.length) {
@@ -145,7 +229,7 @@ try {
       prepareFreshDist({
         root,
         onDistCreated: directory => ownedDirectories.add(directory),
-        onBuildProcess: trackChild,
+        onBuildProcess: trackBuildProcess,
         signal: AbortSignal.any([shutdown.signal, signal])
       }),
     { description: 'fresh playground build', timeoutMs: buildTimeout }
@@ -198,6 +282,7 @@ try {
     browserStderr = `${browserStderr}${chunk}`.slice(-4000)
   })
   let phaseDeadline = startupDeadline
+  let startupPhase = true
   const browserReadiness = description => ({
     child: browser,
     childName: 'Chromium',
@@ -287,7 +372,10 @@ try {
     }
   })
   const command = (method, params = {}) =>
-    browserClient.command(method, params, { deadline: phaseDeadline })
+    browserClient.command(method, params, {
+      deadline: phaseDeadline,
+      usePhaseDeadline: startupPhase
+    })
   let evaluationId = 0
   const evaluate = async expression => {
     const objectGroup = `playground-smoke-evaluation-${evaluationId++}`
@@ -531,7 +619,7 @@ try {
         const activity = accesses.length + formBusActivity.events.length + formBusActivity.listeners.length + formBusActivity.intervals.length
         if (activity) throw new PersistenceError('persistence access or form-bus activity before ' + transition)
       }
-      if (${JSON.stringify(injectLateActivity)}) {
+      if (${JSON.stringify(injectLateActivity || injectTerminalActivity)}) {
         const runCanaries = () => {
           const safely = operation => { try { return operation() } catch {} }
           const settle = value => value?.catch?.(() => {})
@@ -589,6 +677,7 @@ try {
   console.log(
     `smoke environment: appPort=${port} chromiumDebugPort=${debuggingPort} smokeTemporaryRoot=${runTemporaryRoot} chromium=${chromiumPath}`
   )
+  startupPhase = false
   phaseDeadline = performance.now() + bodyTimeout
   const bodyDelayMs = Number(process.env.PLAYGROUND_SMOKE_BODY_DELAY_MS ?? 0)
   if (bodyDelayMs > 0) {
@@ -607,9 +696,15 @@ try {
     pollIntervalMs: 25,
     timeoutMs: uiPollTimeout
   })
-  const assertDocumentPersistenceClean = async phase => {
-    if (injectLateActivity) await evaluate('__runPersistenceCanaries()')
-    await evaluate('new Promise(resolve => setTimeout(resolve, 0))')
+  const assertDocumentPersistenceClean = async (phase, { recordPhase = true } = {}) => {
+    if (injectLateActivity && recordPhase) await evaluate('__runPersistenceCanaries()')
+    if (injectEarlyFormBusActivity === phase) {
+      await evaluate("dispatchEvent(new CustomEvent('tanstack-form-early-mutation'))")
+    }
+    await evaluate(
+      'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))'
+    )
+    await new Promise(resolve => setImmediate(resolve))
     const snapshot = await evaluate(`({
       documentId: __persistenceDocumentId,
       expected: __expectedPersistenceInstrumentation,
@@ -617,7 +712,7 @@ try {
       instrumented: __persistenceInstrumentation,
       persistenceAccesses: __persistenceAccesses
     })`)
-    documentSnapshots.push({ ...snapshot, phase })
+    if (recordPhase) documentSnapshots.push({ ...snapshot, phase })
     const missing = snapshot.expected
       .filter(({ available, mandatory }) => (mandatory ? !available : false))
       .map(({ label }) => label + ' (mandatory API unavailable)')
@@ -631,7 +726,7 @@ try {
         `persistence instrumentation missing during ${phase}: ${missing.join(', ')}`
       )
     }
-    if (injectLateActivity) {
+    if (injectLateActivity && recordPhase) {
       const unobserved = snapshot.expected
         .filter(({ available }) => available)
         .map(({ label }) => label)
@@ -1038,31 +1133,51 @@ try {
     ladder.push({ ...ladder[0], marketId: secondId });
     set(JSON.stringify({ bootstrap, ladder })); apply.click(); await new Promise(r => setTimeout(r, 50));
     const valid = document.querySelector('#import-status').dataset.status === 'ok' && document.querySelectorAll('[data-preview=bootstrap]').length === 2 && document.querySelectorAll('[data-preview=ladder]').length === 2;
-    document.querySelectorAll('[data-market-kind=ladder]')[1].querySelector('button').click(); await new Promise(r => setTimeout(r, 50));
-    const reordered = JSON.parse(document.querySelector('[aria-label="Ladder JSON output"]').value).map(x => x.marketId);
-    const focus = document.activeElement.id;
-    return { mixed, duplicate, primitive, atomicNoEcho, valid, reordered, focus };
+    document.querySelectorAll('[data-market-kind=ladder]')[1].querySelector('button').click();
+    return { mixed, duplicate, primitive, atomicNoEcho, valid };
   })()`)
   assert.equal(importAtomic.mixed, true)
   assert.equal(importAtomic.duplicate, true)
   assert.equal(importAtomic.primitive, true)
   assert.equal(importAtomic.atomicNoEcho, true)
   assert.equal(importAtomic.valid, true)
-  assert.equal(importAtomic.reordered[0], `0x${'6'.repeat(64)}`)
-  assert.equal(importAtomic.focus, 'ladder-0-marketId')
+  const importState = await waitForReadiness(async () => {
+    const state = await evaluate(`({
+      focus: document.activeElement?.id,
+      reordered: JSON.parse(document.querySelector('[aria-label="Ladder JSON output"]').value).map(x => x.marketId)
+    })`)
+    assert.equal(state.focus, 'ladder-0-marketId')
+    assert.equal(state.reordered[0], `0x${'6'.repeat(64)}`)
+    return state
+  }, uiReadiness('import reorder completion'))
+  assert.equal(importState.focus, 'ladder-0-marketId')
+  assert.equal(importState.reordered[0], `0x${'6'.repeat(64)}`)
   await assertDocumentPersistenceClean('import')
 
   const copyTabs = await evaluate(`(async () => {
     const tabs=[...document.querySelectorAll('[role=tab]')];
     for (const tab of tabs) { tab.click(); await new Promise(r=>setTimeout(r,0)); document.querySelector('[role=tabpanel]:not([hidden]) button').click(); await new Promise(r=>setTimeout(r,0)); }
     document.querySelector('#copy-share-url').click(); await new Promise(r=>setTimeout(r,0));
-    tabs[0].focus(); tabs[0].dispatchEvent(new KeyboardEvent('keydown',{key:'End',bubbles:true})); await new Promise(r=>setTimeout(r,30));
-    return { copied: __smoke.copied, outputs: [...document.querySelectorAll('.exports textarea')].map(x=>x.value), selected: document.activeElement.id, active: document.querySelector('[role=tab][aria-selected=true]').id, panels: document.querySelectorAll('[role=tabpanel]').length };
+    tabs[0].focus(); tabs[0].dispatchEvent(new KeyboardEvent('keydown',{key:'End',bubbles:true}));
+    return { copied: __smoke.copied, outputs: [...document.querySelectorAll('.exports textarea')].map(x=>x.value), panels: document.querySelectorAll('[role=tabpanel]').length };
   })()`)
+  const endKeyTabState = await waitForReadiness(async () => {
+    const state = await evaluate(`({
+      selected: document.activeElement?.id,
+      active: document.querySelector('[role=tab][aria-selected=true]')?.id,
+      panel: document.querySelector('[role=tabpanel]:not([hidden])')?.id
+    })`)
+    assert.deepEqual(state, {
+      active: 'tab-ladder-string',
+      selected: 'tab-ladder-string',
+      panel: 'panel-ladder-string'
+    })
+    return state
+  }, uiReadiness('End-key tab selection'))
   assert.equal(copyTabs.copied.length, 7)
   assert.equal(copyTabs.panels, 4)
-  assert.equal(copyTabs.active, 'tab-ladder-string')
-  assert.equal(copyTabs.selected, 'tab-ladder-string')
+  assert.equal(endKeyTabState.active, 'tab-ladder-string')
+  assert.equal(endKeyTabState.selected, 'tab-ladder-string')
   await assertDocumentPersistenceClean('export and before share navigation')
 
   const shareUrl = copyTabs.copied.at(-1)
@@ -1128,17 +1243,8 @@ try {
   )
   assert.equal(await evaluate("document.querySelectorAll('[data-preview=ladder]').length"), 1)
   await assertDocumentPersistenceClean('final oversized reload')
-  assert.ok(
-    new Set(documentSnapshots.map(({ documentId }) => documentId)).size >= 4,
-    `expected persistence snapshots for every document, got ${JSON.stringify(documentSnapshots)}`
-  )
-  if (injectLateActivity) {
-    assert.equal(mutationProofs.length, documentSnapshots.length)
-    assert.ok(new Set(mutationProofs.map(({ documentId }) => documentId)).size >= 4)
-    throw new PlaygroundSmokePersistenceError(
-      `persistence access and form-bus activity mutation proof covered ${mutationProofs.length} phases across ${new Set(mutationProofs.map(({ documentId }) => documentId)).size} documents`
-    )
-  }
+  assertPersistencePhaseContract(documentSnapshots)
+  if (injectLateActivity) assertPersistencePhaseContract(mutationProofs)
 
   const unexpected = requests.filter(
     url =>
@@ -1152,8 +1258,16 @@ try {
   const screenshot = await command('Page.captureScreenshot', { format: 'png' })
   await writeFile(screenshotPath, Buffer.from(screenshot.data, 'base64'))
   assert.equal(describeHttpFailures(networkResponses).length, 0)
+  const resultSummary = { basePath, mobile, checks: 'passed', requests: requests.length }
+  if (injectTerminalActivity) await evaluate('__runPersistenceCanaries()')
+  await assertDocumentPersistenceClean('terminal completion', { recordPhase: false })
+  if (injectLateActivity) {
+    throw new PlaygroundSmokePersistenceError(
+      `persistence access and form-bus activity mutation proof covered ${mutationProofs.length} phases across 4 documents`
+    )
+  }
   console.log(`browser smoke: PASS (${requests.length} local requests, 0 unexpected requests)`)
-  console.log(JSON.stringify({ basePath, mobile, checks: 'passed', requests: requests.length }))
+  console.log(JSON.stringify(resultSummary))
 } finally {
   process.off('SIGINT', onSignal)
   process.off('SIGTERM', onSignal)

@@ -86,6 +86,33 @@ test('browser lifecycle uses separate bounded build, startup, body, UI, CDP, and
   assert.match(browserSource, /timeout: browserTestTimeout/g)
   assert.match(browserSource, /signalSmokeEntrypoint\(run, 'SIGTERM'\)/)
   assert.doesNotMatch(browserSource, /smoke\.kill\('SIGKILL'\)/)
+  assert.match(smokeSource, /const expectedPersistencePhases = Object\.freeze\(\[/)
+  for (const phase of [
+    'initial baseline',
+    'collection edits',
+    'invalid and valid edits',
+    'preview edit',
+    'share copy',
+    'clipboard fallback',
+    'runtime preview edits',
+    'import',
+    'export and before share navigation',
+    'share document before reload',
+    'share reload before malformed navigation',
+    'malformed document before reload',
+    'malformed reload before oversized navigation',
+    'oversized document before reload',
+    'final oversized reload'
+  ]) {
+    assert.equal(smokeSource.match(new RegExp(`'${phase}'`, 'g'))?.length, 2, phase)
+  }
+  assert.match(smokeSource, /const expectedPersistenceDocumentOrdinals = Object\.freeze\(\[/)
+  assert.match(smokeSource, /assertPersistencePhaseContract\(documentSnapshots\)/)
+  assert.match(smokeSource, /assertPersistencePhaseContract\(mutationProofs\)/)
+  assert.match(smokeSource, /uiReadiness\('End-key tab selection'\)/)
+  assert.match(smokeSource, /active: 'tab-ladder-string'/)
+  assert.match(smokeSource, /selected: 'tab-ladder-string'/)
+  assert.match(smokeSource, /panel: 'panel-ladder-string'/)
 })
 
 test('the declared root lint path effectively checks only the playground smoke mjs files', async () => {
@@ -102,31 +129,47 @@ test('the declared root lint path effectively checks only the playground smoke m
   assert.match(workflow, /- name: Run lint\n        run: bun lint/)
 })
 
-test('the scoped playground smoke lint config rejects an unused mjs import', async () => {
+test('the scoped playground smoke lint config accepts clean source and rejects an injected unused import', async () => {
   const temporaryRoot = await mkdtemp(join(tmpdir(), 'playground-smoke-lint-'))
   const mutation = join(temporaryRoot, 'playground-smoke-unused-import.mjs')
-  await writeFile(mutation, "import { readFile } from 'node:fs/promises'\n")
+  const cleanSource = await readFile(
+    join(scriptsDirectory, 'playground-smoke-persistence.error.mjs')
+  )
+  await writeFile(mutation, cleanSource)
   try {
-    const result = await new Promise((resolve, reject) => {
-      const lint = spawn(
-        join(root, 'node_modules/.bin/oxlint'),
-        ['--config', join(scriptsDirectory, 'playground-smoke.oxlintrc.json'), mutation],
-        { cwd: root, shell: false, stdio: ['ignore', 'pipe', 'pipe'] }
-      )
-      let output = ''
-      lint.stdout.setEncoding('utf8')
-      lint.stderr.setEncoding('utf8')
-      lint.stdout.on('data', chunk => {
-        output += chunk
+    const lintMutation = () =>
+      new Promise((resolve, reject) => {
+        const lint = spawn(
+          join(root, 'node_modules/.bin/oxlint'),
+          ['--config', join(scriptsDirectory, 'playground-smoke.oxlintrc.json'), mutation],
+          { cwd: root, shell: false, stdio: ['ignore', 'pipe', 'pipe'] }
+        )
+        let output = ''
+        lint.stdout.setEncoding('utf8')
+        lint.stderr.setEncoding('utf8')
+        lint.stdout.on('data', chunk => {
+          output += chunk
+        })
+        lint.stderr.on('data', chunk => {
+          output += chunk
+        })
+        lint.once('error', reject)
+        lint.once('close', (code, signal) => resolve({ code, output, signal }))
       })
-      lint.stderr.on('data', chunk => {
-        output += chunk
-      })
-      lint.once('error', reject)
-      lint.once('close', (code, signal) => resolve({ code, output, signal }))
-    })
+    const cleanResult = await lintMutation()
+    assert.deepEqual(
+      { code: cleanResult.code, signal: cleanResult.signal },
+      { code: 0, signal: null },
+      cleanResult.output
+    )
+
+    await writeFile(
+      mutation,
+      `import { readFile as deliberatelyUnusedReadFile } from 'node:fs/promises'\n${cleanSource}`
+    )
+    const result = await lintMutation()
     assert.deepEqual({ code: result.code, signal: result.signal }, { code: 1, signal: null })
-    assert.match(result.output, /no-unused-vars[\s\S]*readFile/)
+    assert.match(result.output, /no-unused-vars[\s\S]*deliberatelyUnusedReadFile/)
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true })
   }
