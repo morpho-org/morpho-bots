@@ -2,6 +2,7 @@ import { describe, expect, mock, test } from 'bun:test'
 
 import type { LadderTransactionSubmittedEvent } from '../../../src/application/ladder/ladder-verbose'
 
+import packageJson from '../../../package.json' with { type: 'json' }
 import { PositionBootstrapHaltedError } from '../../../src/application/bootstrap/position-bootstrap-halted.error'
 import { PositionBootstrapMonitorHaltedError } from '../../../src/application/bootstrap/position-bootstrap-monitor-halted.error'
 import { OfferInvalidationFailedError } from '../../../src/application/invalidation/offer-invalidation-failed.error'
@@ -63,8 +64,8 @@ const expectHumanFailure = (stderr: string[], message: string, details: unknown)
 }
 
 describe('Cli', () => {
-  test('mm --version returns 0.0.0', async () => {
-    expect(await cli().run(['--version'])).toBe('0.0.0')
+  test('mm --version returns the package.json version', async () => {
+    expect(await cli().run(['--version'])).toBe(packageJson.version)
   })
 
   test('entrypoint --version succeeds without loading runtime setup environment', async () => {
@@ -84,7 +85,7 @@ describe('Cli', () => {
     ])
 
     expect(exitCode).toBe(0)
-    expect(stdout.trim()).toBe('0.0.0')
+    expect(stdout.trim()).toBe(packageJson.version)
     expect(stderr).toBe('')
   })
 
@@ -105,7 +106,7 @@ describe('Cli', () => {
     ])
 
     expect(exitCode).toBe(0)
-    expect(JSON.parse(stdout)).toBe('0.0.0')
+    expect(JSON.parse(stdout)).toBe(packageJson.version)
     expect(stderr).toBe('')
   })
 
@@ -166,7 +167,7 @@ describe('Cli', () => {
   })
 
   test('mm -v is an alias for --version', async () => {
-    expect(await cli().run(['-v'])).toBe('0.0.0')
+    expect(await cli().run(['-v'])).toBe(packageJson.version)
   })
 
   test('rejects an unknown command', async () => {

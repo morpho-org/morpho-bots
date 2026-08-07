@@ -297,7 +297,10 @@ docker run --rm \
 Both sources combine freely — for example, keep `identity.makerPrivateKey` out of the file and add
 `-e MAKER_PRIVATE_KEY=0x…` only for write-mode commands. The container works from
 `/repo/bots/market-making`, so a file mounted at `/repo/bots/market-making/market-making.yaml` is
-also picked up by default discovery without `--config`.
+also picked up by default discovery without `--config`. When keeping a custom-named config inside
+the repository tree, include `market-making` in its filename — only such names (and no non-example
+YAML at all, docker-side) are ignored by git, so an arbitrary `prod.yaml` holding the maker key
+could be committed by mistake.
 
 ### docker compose
 

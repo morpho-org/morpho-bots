@@ -13,8 +13,12 @@ name: Tag releases
 # would announce a production release that was never deployed. Extending the allowlist below (and
 # the paths filter) is a deliberate decision, not a directory rename away. Market-making's own
 # label flow (Release-market-making in deploy-production.yml, after its Railway deploy) coexists
-# with this version-bump path: both mint the App token, both trigger the image publish, and the
-# already-exists guard below keeps the two origins from double-creating a tag.
+# with this version-bump path: both mint the App token and both trigger the image publish. A merge
+# carrying BOTH a version bump and the release-market-making label yields entirely to the label
+# flow (see the deploy-label check below) so one merge never races itself into two same-day tags,
+# and the already-exists guard keeps any remaining origin overlap from double-creating a tag.
+# Version changes are detected against the pre-push baseline (github.event.before), not HEAD~1,
+# so a bump buried in a multi-commit push is still released.
 #
 # Adaptations from the morpho-apps original: apps/* → bots/*, depot runners → ubuntu-latest, an
 # allowlist instead of a static-version skip list, and initial notes are GitHub-generated from the
@@ -41,6 +45,10 @@ concurrency:
 jobs:
   create-releases:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The deploy-label lookup reads the merged PR's labels.
+      pull-requests: read
     outputs:
       release_tags: ${{ steps.create.outputs.tags }}
 
@@ -51,6 +59,26 @@ jobs:
 
       - name: Fetch all tags
         run: git fetch --tags --prune --force
+
+      # A merge that carries the `release-market-making` label is owned by deploy-production.yml:
+      # it cuts the release only AFTER the Railway deploy succeeds, and that release publishes the
+      # image identically. Running here too would race it — a release/image before the deploy
+      # settles, or two same-day tags for one commit — so this flow yields to the label flow.
+      - name: Check deploy label
+        id: label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # Labels of the PR whose merge produced this commit.
+          labels="$(gh api "repos/$REPO/commits/$SHA/pulls" --jq '.[].labels[].name' 2>/dev/null || true)"
+          if echo "$labels" | grep -qx 'release-market-making'; then
+            echo "deploy_labeled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy_labeled=false" >> "$GITHUB_OUTPUT"
+          fi
 
       # Mint a GitHub App installation token so the release/tag events fire downstream workflows
       # (image publish, Slack notify). See the header for why the default GITHUB_TOKEN cannot.
@@ -65,6 +93,8 @@ jobs:
         id: create
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          DEPLOY_LABELED: ${{ steps.label.outputs.deploy_labeled }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
 
@@ -74,8 +104,18 @@ jobs:
           # releases are cut by deploy-production.yml only after a successful deploy (see header).
           RELEASE_BUMP_BOTS="market-making"
 
-          # The previous commit (before merge) — versions are compared against it.
-          PREV_COMMIT=$(git rev-parse HEAD~1)
+          # Versions are compared against the pre-push main SHA, not HEAD~1: a multi-commit push
+          # (batched or rebase merge) may carry the bump in an earlier commit, where HEAD~1 would
+          # silently see no change. Fall back to HEAD~1 when the event baseline is absent or
+          # unreachable (e.g. a forced history rewrite).
+          PREV_COMMIT=""
+          if [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ] \
+            && git cat-file -e "$BEFORE_SHA" 2>/dev/null; then
+            PREV_COMMIT="$BEFORE_SHA"
+          else
+            PREV_COMMIT=$(git rev-parse HEAD~1)
+            echo "Push baseline unavailable; falling back to HEAD~1 ($PREV_COMMIT)"
+          fi
 
           invalid_versions=""
           pending_releases=""
@@ -93,6 +133,10 @@ jobs:
               if [ "$current_version" != "$prev_version" ] && [ -n "$current_version" ] && [ "$current_version" != "null" ]; then
                 if [[ " $RELEASE_BUMP_BOTS " != *" $bot_name "* ]]; then
                   echo "Skipping $bot_name ($current_version): releases for it are cut by deploy-production.yml after deploy"
+                  continue
+                fi
+                if [ "$DEPLOY_LABELED" = "true" ]; then
+                  echo "Skipping $bot_name ($current_version): release-market-making label present — deploy-production.yml cuts the release after its Railway deploy"
                   continue
                 fi
                 if [[ $current_version =~ $CALVER_PATTERN ]]; then
