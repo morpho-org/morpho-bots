@@ -1,9 +1,0 @@
-# bun remains the runtime + test runner; pnpm owns installs (see pnpm-workspace.yaml).
-
-# Compile the liquidation bots' soltag `sol``` lens templates during `bun test` (each plugin
-# self-scopes to its own bot's files, so both can be preloaded — other workspaces are untouched).
-[test]
-preload = [
-  "./bots/midnight-liquidation/soltag.preload.ts",
-  "./bots/blue-liquidation/soltag.preload.ts"
-]

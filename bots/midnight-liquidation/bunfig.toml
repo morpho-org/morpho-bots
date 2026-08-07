@@ -1,6 +1,0 @@
-# Compile soltag `sol``` lens templates at runtime (`bun run start` in the Docker image) and for
-# `bun test` when run from this directory. See soltag.preload.ts for why the plugin is hand-rolled.
-preload = ["./soltag.preload.ts"]
-
-[test]
-preload = ["./soltag.preload.ts"]

@@ -7,8 +7,9 @@
  * reach a terminal state and succeed only on Railway `SUCCESS`.
  */
 import { delay, tryCatch } from '@repo/utils'
-import { $ } from 'bun'
-import { resolve } from 'node:path'
+import { $ } from 'execa'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { RailwayDeploymentError } from './railway-deployment.error'
 import {
@@ -25,10 +26,10 @@ import {
 const SERVICE = 'market-making'
 const DOCKERFILE_PATH = 'bots/market-making/Dockerfile'
 const STATE_MOUNT_PATH = '/state'
-const REPO_ROOT = resolve(import.meta.dir, '..', '..', '..')
-const ENVIRONMENT = Bun.env.RAILWAY_ENVIRONMENT?.trim() || 'production'
-const DEPLOY_ONLY = /^(1|true)$/i.test(Bun.env.DEPLOY_ONLY?.trim() || '')
-const PROJECT_ID = Bun.env.RAILWAY_PROJECT_ID?.trim()
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
+const ENVIRONMENT = process.env.RAILWAY_ENVIRONMENT?.trim() || 'production'
+const DEPLOY_ONLY = /^(1|true)$/i.test(process.env.DEPLOY_ONLY?.trim() || '')
+const PROJECT_ID = process.env.RAILWAY_PROJECT_ID?.trim()
 if (!PROJECT_ID) {
   throw new RailwayDeploymentError('Missing required environment variable: RAILWAY_PROJECT_ID')
 }
@@ -55,7 +56,7 @@ type RequiredRuntimeVariableName = (typeof requiredRuntimeVariableNames)[number]
 type RuntimeVariable = readonly [name: string, value: string]
 
 const required = (name: RequiredRuntimeVariableName) => {
-  const value = Bun.env[name]?.trim()
+  const value = process.env[name]?.trim()
   if (!value) throw new RailwayDeploymentError(`Missing required environment variable: ${name}`)
   if ((name === 'BOOTSTRAP_MARKETS' || name === 'LADDER_MARKETS') && !isNonEmptyJsonArray(value)) {
     throw new RailwayDeploymentError(`${name} must be a non-empty JSON array`)
@@ -68,9 +69,10 @@ const runtimeVariables = (): RuntimeVariable[] => {
   const requiredVariables = requiredRuntimeVariableNames.map(
     name => [name, required(name)] as const
   )
-  const optionalVariables = synchronizedOptionalRailwayVariables(Bun.env)
+  const optionalVariables = synchronizedOptionalRailwayVariables(process.env)
   const method =
-    Bun.env.KEY_STORAGE_METHOD?.trim() || (Bun.env.MAKER_PRIVATE_KEY?.trim() ? 'private-key' : '')
+    process.env.KEY_STORAGE_METHOD?.trim() ||
+    (process.env.MAKER_PRIVATE_KEY?.trim() ? 'private-key' : '')
   if (!['private-key', 'keystore', 'aws'].includes(method)) {
     throw new RailwayDeploymentError('KEY_STORAGE_METHOD must select exactly one signer')
   }
@@ -91,7 +93,7 @@ const runtimeVariables = (): RuntimeVariable[] => {
         ? ['KEYSTORE_PATH', 'KEYSTORE_PASSWORD']
         : ['AWS_KMS_KEY_ID', 'AWS_REGION']
   for (const name of signerRequired) {
-    const value = Bun.env[name]?.trim()
+    const value = process.env[name]?.trim()
     if (!value) throw new RailwayDeploymentError(`Missing required environment variable: ${name}`)
     signerValues[name] = value
   }
@@ -101,25 +103,23 @@ const runtimeVariables = (): RuntimeVariable[] => {
 }
 
 const assertCli = async () => {
-  const { error } = await tryCatch(Promise.resolve($`railway --version`.quiet()))
+  const { error } = await tryCatch($`railway --version`)
   if (error) throw new RailwayDeploymentError('Railway CLI is unavailable')
 }
 
 const ensureContext = async () => {
-  if (Bun.env.RAILWAY_TOKEN) return
+  if (process.env.RAILWAY_TOKEN) return
 
   const { error } = await tryCatch(
-    Promise.resolve($`railway link --project ${PROJECT_ID} --environment ${ENVIRONMENT}`.quiet())
+    $`railway link --project ${PROJECT_ID} --environment ${ENVIRONMENT}`
   )
   if (error) throw new RailwayDeploymentError('Failed to select the Railway project environment')
 }
 
 const listServices = async () => {
   const { data, error } = await tryCatch(
-    Promise.resolve(
-      $`railway service list --project ${PROJECT_ID} --environment ${ENVIRONMENT} --json`
-        .quiet()
-        .text()
+    $`railway service list --project ${PROJECT_ID} --environment ${ENVIRONMENT} --json`.then(
+      result => result.stdout
     )
   )
   if (error || typeof data !== 'string') {
@@ -135,7 +135,7 @@ const ensureService = async () => {
   if (existingService) return existingService
 
   const { data, error } = await tryCatch(
-    Promise.resolve($`railway add --service ${SERVICE} --json`.quiet().text())
+    $`railway add --service ${SERVICE} --json`.then(result => result.stdout)
   )
   if (error || typeof data !== 'string') {
     throw new RailwayDeploymentError('Failed to create the Railway service')
@@ -151,10 +151,8 @@ const ensureService = async () => {
 
 const listVolumes = async () => {
   const { data, error } = await tryCatch(
-    Promise.resolve(
-      $`railway volume list --service ${SERVICE} --project ${PROJECT_ID} --environment ${ENVIRONMENT} --json`
-        .quiet()
-        .text()
+    $`railway volume list --service ${SERVICE} --project ${PROJECT_ID} --environment ${ENVIRONMENT} --json`.then(
+      result => result.stdout
     )
   )
   if (error || typeof data !== 'string') {
@@ -189,9 +187,7 @@ const ensureStateVolume = async (serviceId: string | undefined) => {
   }
 
   const { error } = await tryCatch(
-    Promise.resolve(
-      $`railway volume add --service ${serviceId} --project ${PROJECT_ID} --environment ${ENVIRONMENT} --mount-path ${STATE_MOUNT_PATH} --json`.quiet()
-    )
+    $`railway volume add --service ${serviceId} --project ${PROJECT_ID} --environment ${ENVIRONMENT} --mount-path ${STATE_MOUNT_PATH} --json`
   )
   if (error) throw new RailwayDeploymentError('Failed to create the Railway state volume')
 
@@ -205,9 +201,9 @@ const ensureStateVolume = async (serviceId: string | undefined) => {
 
 const setRuntimeVariable = async ([name, value]: RuntimeVariable) => {
   const { error } = await tryCatch(
-    Promise.resolve(
-      $`railway variable set ${name} --stdin --service ${SERVICE} --environment ${ENVIRONMENT} --skip-deploys < ${Buffer.from(value, 'utf8')}`.quiet()
-    )
+    $({
+      input: value
+    })`railway variable set ${name} --stdin --service ${SERVICE} --environment ${ENVIRONMENT} --skip-deploys`
   )
   if (error) throw new RailwayDeploymentError(`Failed to set Railway variable: ${name}`)
 
@@ -216,10 +212,8 @@ const setRuntimeVariable = async ([name, value]: RuntimeVariable) => {
 
 const latestDeploymentJson = async () => {
   const { data, error } = await tryCatch(
-    Promise.resolve(
-      $`railway deployment list --service ${SERVICE} --project ${PROJECT_ID} --environment ${ENVIRONMENT} --limit 1 --json`
-        .quiet()
-        .text()
+    $`railway deployment list --service ${SERVICE} --project ${PROJECT_ID} --environment ${ENVIRONMENT} --limit 1 --json`.then(
+      result => result.stdout
     )
   )
   if (error || typeof data !== 'string') {
@@ -232,11 +226,9 @@ const latestDeploymentJson = async () => {
 const startDeployment = async () => {
   const message = `deploy market-making ${ENVIRONMENT}`
   const { error } = await tryCatch(
-    Promise.resolve(
-      $`railway up --service ${SERVICE} --project ${PROJECT_ID} --environment ${ENVIRONMENT} --detach --message ${message}`
-        .cwd(REPO_ROOT)
-        .quiet()
-    )
+    $({
+      cwd: REPO_ROOT
+    })`railway up --service ${SERVICE} --project ${PROJECT_ID} --environment ${ENVIRONMENT} --detach --message ${message}`
   )
   if (error) throw new RailwayDeploymentError('Failed to start the Railway deployment')
 }

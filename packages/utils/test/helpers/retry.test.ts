@@ -1,10 +1,10 @@
-import { describe, expect, it, mock } from 'bun:test'
+import { describe, expect, it, vi } from 'vitest'
 
 import { retryUntilDefined } from '../../src/helpers/retry'
 
 describe('retryUntilDefined', () => {
   it('should return value immediately if defined on first try', async () => {
-    const fn = mock(() => 'success')
+    const fn = vi.fn(() => 'success')
 
     const result = await retryUntilDefined(fn)
 
@@ -13,7 +13,8 @@ describe('retryUntilDefined', () => {
   })
 
   it('should retry until value is defined', async () => {
-    const fn = mock<() => string | undefined>(() => undefined)
+    const fn = vi
+      .fn<() => string | undefined>(() => undefined)
       .mockReturnValueOnce(undefined)
       .mockReturnValueOnce(undefined)
       .mockReturnValue('success')
@@ -25,7 +26,7 @@ describe('retryUntilDefined', () => {
   })
 
   it('should throw error after max retries', async () => {
-    const fn = mock<() => string | undefined>(() => undefined)
+    const fn = vi.fn<() => string | undefined>(() => undefined)
 
     await expect(retryUntilDefined(fn, { maxRetries: 3, retryDelay: 1 })).rejects.toThrow(
       'Value not defined after 3 retries'
@@ -34,11 +35,12 @@ describe('retryUntilDefined', () => {
   })
 
   it('should call onRetry callback with attempt number', async () => {
-    const fn = mock<() => string | undefined>(() => undefined)
+    const fn = vi
+      .fn<() => string | undefined>(() => undefined)
       .mockReturnValueOnce(undefined)
       .mockReturnValueOnce(undefined)
       .mockReturnValue('success')
-    const onRetry = mock(() => {})
+    const onRetry = vi.fn(() => {})
 
     await retryUntilDefined(fn, { retryDelay: 1, onRetry })
 
@@ -48,10 +50,10 @@ describe('retryUntilDefined', () => {
   })
 
   it('should handle different return types', async () => {
-    const fnNumber = mock(() => 42)
-    const fnBoolean = mock(() => false)
-    const fnObject = mock(() => ({ foo: 'bar' }))
-    const fnArray = mock(() => [1, 2, 3])
+    const fnNumber = vi.fn(() => 42)
+    const fnBoolean = vi.fn(() => false)
+    const fnObject = vi.fn(() => ({ foo: 'bar' }))
+    const fnArray = vi.fn(() => [1, 2, 3])
 
     const [num, bool, obj, arr] = await Promise.all([
       retryUntilDefined(fnNumber),
@@ -67,7 +69,7 @@ describe('retryUntilDefined', () => {
   })
 
   it('should treat null as defined value', async () => {
-    const fn = mock(() => null)
+    const fn = vi.fn(() => null)
 
     const result = await retryUntilDefined(fn)
 
@@ -76,8 +78,8 @@ describe('retryUntilDefined', () => {
   })
 
   it('should not call onRetry on last failed attempt', async () => {
-    const fn = mock<() => string | undefined>(() => undefined)
-    const onRetry = mock(() => {})
+    const fn = vi.fn<() => string | undefined>(() => undefined)
+    const onRetry = vi.fn(() => {})
 
     await expect(retryUntilDefined(fn, { maxRetries: 3, retryDelay: 1, onRetry })).rejects.toThrow()
     expect(onRetry).toHaveBeenCalledTimes(2)
@@ -85,7 +87,7 @@ describe('retryUntilDefined', () => {
   })
 
   it('should handle functions that throw errors', async () => {
-    const fn = mock<() => string | undefined>(() => {
+    const fn = vi.fn<() => string | undefined>(() => {
       throw new Error('First error')
     })
 
@@ -94,7 +96,7 @@ describe('retryUntilDefined', () => {
   })
 
   it('should handle zero as a defined value', async () => {
-    const fn = mock(() => 0)
+    const fn = vi.fn(() => 0)
 
     const result = await retryUntilDefined(fn)
 
@@ -103,7 +105,7 @@ describe('retryUntilDefined', () => {
   })
 
   it('should handle empty string as a defined value', async () => {
-    const fn = mock(() => '')
+    const fn = vi.fn(() => '')
 
     const result = await retryUntilDefined(fn)
 

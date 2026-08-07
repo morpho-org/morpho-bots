@@ -2,7 +2,6 @@ import type { SwapPlan } from '@repo/swaps'
 import type { Hex } from 'viem'
 
 import { MidnightAbi } from '@repo/contracts'
-import { describe, expect, it } from 'bun:test'
 import { executorAbi } from 'executooor-viem'
 import {
   decodeAbiParameters,
@@ -12,6 +11,7 @@ import {
   isAddressEqual,
   zeroAddress
 } from 'viem'
+import { describe, expect, it } from 'vitest'
 
 import type { CollateralParams, Market } from '../../src/execution/encode-call'
 

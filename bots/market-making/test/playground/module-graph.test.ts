@@ -1,9 +1,10 @@
-import { describe, expect, test } from 'bun:test'
 import { build } from 'esbuild'
-import { join } from 'node:path'
+import { dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { describe, expect, test } from 'vitest'
 
 const normalize = (value: string) => value.replaceAll('\\', '/')
-const packageRoot = join(import.meta.dir, '../..')
+const packageRoot = dirname(fileURLToPath(new URL('../../package.json', import.meta.url)))
 
 describe('playground browser module graph', () => {
   test('uses an explicit browser-safe local allowlist and excludes runtime capabilities', async () => {

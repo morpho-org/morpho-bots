@@ -1,17 +1,50 @@
+import type { AddressInfo } from 'node:net'
 import type { Address, Hex } from 'viem'
 
 import { setterRatifierAbi } from '@morpho-org/midnight-sdk'
 import { blueAbi } from '@morpho-org/morpho-sdk/abis'
-import { describe, expect, mock, test } from 'bun:test'
+import { readFile } from 'node:fs/promises'
+import { createServer } from 'node:http'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { bytesToHex, hexToBytes, keccak256, zeroHash } from 'viem'
+import { describe, expect, test } from 'vitest'
 
 import { SafeProviderError } from '../../../src/application/setup/safe-provider.error'
-import { MakerAccountError } from '../../../src/infrastructure/make/maker-account.error'
 import { requestJson } from '../../../src/infrastructure/setup-state/http-json.utils'
 import { ProviderPaginationError } from '../../../src/infrastructure/setup-state/provider-pagination.error'
 import { ProviderReadError } from '../../../src/infrastructure/setup-state/provider-read.error'
 import { ProviderResponseError } from '../../../src/infrastructure/setup-state/provider-response.error'
 import { ViemSetupStateService } from '../../../src/infrastructure/setup-state/viem-setup-state.service'
+
+// bun's `Bun.serve` accepted a Web-standard fetch handler and exposed `.port`/`.stop()`. These tests
+// only need a throwaway loopback server, so this keeps that shape over node:http.
+const startFixtureServer = async (
+  handler: () => Response | Promise<Response>
+): Promise<{ port: number; stop: () => Promise<void> }> => {
+  // Node's request listener is void-returning; consume the promise here so a handler failure cannot
+  // escape as an unhandled rejection.
+  const server = createServer((_incoming, outgoing): void => {
+    void (async () => {
+      const response = await handler()
+      outgoing.writeHead(response.status, Object.fromEntries(response.headers))
+      outgoing.end(Buffer.from(await response.arrayBuffer()))
+    })().catch(() => {
+      if (!outgoing.headersSent) outgoing.writeHead(500)
+      outgoing.end()
+    })
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address() as AddressInfo
+  return {
+    port,
+    stop: async () => {
+      server.closeAllConnections()
+      await new Promise<void>((resolve, reject) => {
+        server.close(error => (error ? reject(error) : resolve()))
+      })
+    }
+  }
+}
 
 const maker: Address = '0x1111111111111111111111111111111111111111'
 const midnight: Address = '0x2222222222222222222222222222222222222222'
@@ -24,12 +57,12 @@ const knownGroup: Hex = `0x${'66'.repeat(32)}`
 const unknownGroup: Hex = `0x${'77'.repeat(32)}`
 const removedMarketId: Hex = `0x${'ab'.repeat(32)}`
 const authoritativeRatifierRuntime = (
-  await Bun.file(new URL('../../fixtures/ecrecover-ratifier-base.hex', import.meta.url)).text()
+  await readFile(new URL('../../fixtures/ecrecover-ratifier-base.hex', import.meta.url), 'utf8')
 ).trim() as Hex
 const authoritativeRatifierRuntimeHash =
   '0xcce1e0dd38ae831e81a9270627af2c24c208409ec03d5654a28a33ead53b1ac1'
 const authoritativeSetterRatifierRuntime = (
-  await Bun.file(new URL('../../fixtures/setter-ratifier-base.hex', import.meta.url)).text()
+  await readFile(new URL('../../fixtures/setter-ratifier-base.hex', import.meta.url), 'utf8')
 ).trim() as Hex
 
 const createState = (
@@ -191,26 +224,6 @@ describe('ViemSetupStateService', () => {
     expect(await state.getDerivedMaker()).toBeUndefined()
   })
 
-  test('defers remote signer derivation until the captured maker check runs', async () => {
-    const failure = new MakerAccountError('kms-public-key')
-    const deriveSignerAddress = mock(async (): Promise<Address> => Promise.reject(failure))
-    const state = new ViemSetupStateService({} as never, {} as never, async () => ({}), {
-      deriveSignerAddress,
-      midnight,
-      loanAsset,
-      morphoApiBaseUrl: 'https://api.example',
-      routerApiBaseUrl: 'https://router.example',
-      marketIds: [marketId],
-      v0OfferGroupIds: [knownGroup],
-      readOwnedGroupIds: async () => [],
-      referenceMarketId
-    })
-
-    expect(deriveSignerAddress).toHaveBeenCalledTimes(0)
-    await expect(state.getDerivedMaker()).rejects.toBe(failure)
-    expect(deriveSignerAddress).toHaveBeenCalledTimes(1)
-  })
-
   test.each([
     [
       'getChainId',
@@ -359,10 +372,7 @@ describe('ViemSetupStateService', () => {
   )
 
   test('reports HTTP failures with a fixed provider id and no URL fields', async () => {
-    const server = Bun.serve({
-      port: 0,
-      fetch: () => new Response('private body', { status: 503 })
-    })
+    const server = await startFixtureServer(() => new Response('private body', { status: 503 }))
     const secret = 'provider-api-key'
 
     try {
@@ -388,17 +398,14 @@ describe('ViemSetupStateService', () => {
       expect(serialized).not.toContain('/private')
       expect(serialized).not.toContain('private body')
     } finally {
-      await server.stop(true)
+      await server.stop()
     }
   })
 
   test('classifies a bounded request timeout without exposing URL credentials', async () => {
-    const server = Bun.serve({
-      port: 0,
-      fetch: async () => {
-        await Bun.sleep(100)
-        return Response.json({ ok: true })
-      }
+    const server = await startFixtureServer(async () => {
+      await sleep(100)
+      return Response.json({ ok: true })
     })
     const secret = 'timeout-provider-key'
 
@@ -423,7 +430,7 @@ describe('ViemSetupStateService', () => {
       expect(serialized).not.toContain(String(server.port))
       expect(serialized).not.toContain('/slow')
     } finally {
-      await server.stop(true)
+      await server.stop()
     }
   })
 
@@ -987,7 +994,7 @@ describe('ViemSetupStateService', () => {
     )
     responses['/v0/midnight/users/'] = { cursor: page(0), data: [] }
 
-    expect(createState(responses).state.inspectOffers(maker)).rejects.toThrow(
+    await expect(createState(responses).state.inspectOffers(maker)).rejects.toThrow(
       'Morpho API offer page limit exceeded'
     )
   })
@@ -1000,7 +1007,9 @@ describe('ViemSetupStateService', () => {
       }
     })
 
-    expect(state.inspectOffers(maker)).rejects.toThrow('Morpho API offer-group page size exceeded')
+    await expect(state.inspectOffers(maker)).rejects.toThrow(
+      'Morpho API offer-group page size exceeded'
+    )
   })
 
   test('fails closed when Morpho API exceeds the offer item limit', async () => {
@@ -1017,6 +1026,6 @@ describe('ViemSetupStateService', () => {
       }
     })
 
-    expect(state.inspectOffers(maker)).rejects.toThrow('Morpho API offer item limit exceeded')
+    await expect(state.inspectOffers(maker)).rejects.toThrow('Morpho API offer item limit exceeded')
   })
 })

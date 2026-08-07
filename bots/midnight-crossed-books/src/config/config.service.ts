@@ -24,7 +24,7 @@ function unsignedDecimal(environment: Environment, name: string, fallback?: stri
 }
 
 export class ConfigService {
-  static from(environment: Environment = Bun.env) {
+  static from(environment: Environment = process.env) {
     const chainId = Number(unsignedDecimal(environment, 'CHAIN_ID'))
     if (chainId !== base.id) {
       throw new Error(`Unsupported CHAIN_ID ${chainId}; supported: ${base.id}`)

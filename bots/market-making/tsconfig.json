@@ -1,6 +1,10 @@
 {
   "extends": "@repo/typescript-config/base",
-  "compilerOptions": { "types": ["bun"], "lib": ["ESNext", "DOM"], "jsx": "react-jsx" },
-  "include": ["src", "test", "scripts", "playground/*.ts", "playground/*.tsx"],
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "lib": ["ESNext", "DOM"],
+    "types": ["node", "react", "react-dom"]
+  },
+  "include": ["playground", "src", "test", "scripts"],
   "exclude": ["node_modules"]
 }

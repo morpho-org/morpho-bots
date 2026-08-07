@@ -36,16 +36,17 @@
  * the variable key, never its value; variable values are never logged.
  */
 import { delay, tryCatch } from '@repo/utils'
-import { $ } from 'bun'
-import { resolve } from 'node:path'
+import { $ } from 'execa'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 // The target project is env-driven so no project identifier is baked into this (open-source) file.
 // RAILWAY_PROJECT_ID is required; RAILWAY_ENVIRONMENT defaults to the conventional `production`.
-const PROJECT_ID = required(Bun.env, 'RAILWAY_PROJECT_ID')
-const ENVIRONMENT = Bun.env.RAILWAY_ENVIRONMENT?.trim() || 'production'
+const PROJECT_ID = required(process.env, 'RAILWAY_PROJECT_ID')
+const ENVIRONMENT = process.env.RAILWAY_ENVIRONMENT?.trim() || 'production'
 const DOCKERFILE_PATH = 'bots/blue-liquidation/Dockerfile'
 // Repo root is three levels up from this file (scripts → blue-liquidation → bots → repo root).
-const REPO_ROOT = resolve(import.meta.dir, '..', '..', '..')
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 
 type Env = Record<string, string | undefined>
 type RailwayService = { id: string; name: string }
@@ -75,8 +76,8 @@ function str(value: unknown): string {
 }
 
 // Surface a failed `railway` command's stderr so failures are actionable (the CLI writes the real
-// reason — plan limits, auth, selection prompts — to stderr). Bun's ShellError carries `.stderr` as
-// bytes; fall back to the generic message. Safe for non-secret commands; never used on setSecret.
+// reason — plan limits, auth, selection prompts — to stderr). execa's error carries `.stderr` as a
+// string; fall back to the generic message. Safe for non-secret commands; never used on setSecret.
 function stderrOf(error: unknown): string {
   if (isRecord(error) && 'stderr' in error) {
     const s = (error as { stderr: unknown }).stderr
@@ -120,7 +121,7 @@ function parseLatestStatus(raw: string): string {
 }
 
 async function assertCli(): Promise<void> {
-  const { error } = await tryCatch(Promise.resolve($`railway --version`.quiet()))
+  const { error } = await tryCatch($`railway --version`)
   if (error)
     throw new Error('Railway CLI not found. Install it: https://docs.railway.com/guides/cli')
 }
@@ -128,13 +129,11 @@ async function assertCli(): Promise<void> {
 // `railway add` has no --project/--environment flag, so it acts on the linked context. A project
 // token scopes every command implicitly; otherwise we link the project id once for this run.
 async function ensureContext(): Promise<void> {
-  if (Bun.env.RAILWAY_TOKEN) {
+  if (process.env.RAILWAY_TOKEN) {
     console.log('Using RAILWAY_TOKEN for project context.')
     return
   }
-  const { error } = await tryCatch(
-    Promise.resolve($`railway link -p ${PROJECT_ID} -e ${ENVIRONMENT}`.quiet())
-  )
+  const { error } = await tryCatch($`railway link -p ${PROJECT_ID} -e ${ENVIRONMENT}`)
   if (error) {
     throw new Error(
       `Failed to link ${PROJECT_ID} (${ENVIRONMENT}). Set RAILWAY_TOKEN or run \`railway login\`.`
@@ -144,9 +143,7 @@ async function ensureContext(): Promise<void> {
 }
 
 async function listServices(): Promise<RailwayService[]> {
-  const { data, error } = await tryCatch(
-    Promise.resolve($`railway service list --json`.quiet().text())
-  )
+  const { data, error } = await tryCatch($`railway service list --json`.then(r => r.stdout))
   return error || typeof data !== 'string' ? [] : parseServices(data)
 }
 
@@ -156,7 +153,7 @@ async function ensureService(name: string): Promise<void> {
     return
   }
   console.log(`Creating service ${name}…`)
-  const { error } = await tryCatch(Promise.resolve($`railway add --service ${name} --json`.quiet()))
+  const { error } = await tryCatch($`railway add --service ${name} --json`)
   if (error) throw new Error(`Failed to create service ${name}: ${stderrOf(error)}`)
 }
 
@@ -167,9 +164,7 @@ async function removeService(name: string): Promise<void> {
   if (!(await listServices()).some(service => service.name === name)) return
   console.log(`Removing legacy service ${name}…`)
   const { error } = await tryCatch(
-    Promise.resolve(
-      $`railway service delete --service ${name} --environment ${ENVIRONMENT} --yes --json`.quiet()
-    )
+    $`railway service delete --service ${name} --environment ${ENVIRONMENT} --yes --json`
   )
   if (error)
     console.warn(
@@ -182,9 +177,7 @@ async function removeService(name: string): Promise<void> {
 // Non-secret variable. `kv` is a single "KEY=VALUE" arg; only the key is logged.
 async function setVar(service: string, kv: string): Promise<void> {
   const key = kv.split('=')[0]
-  const { error } = await tryCatch(
-    Promise.resolve($`railway variable set ${kv} -s ${service} --skip-deploys`.quiet())
-  )
+  const { error } = await tryCatch($`railway variable set ${kv} -s ${service} --skip-deploys`)
   if (error) throw new Error(`Failed to set ${key} on ${service}: ${stderrOf(error)}`)
   console.log(`Set ${key} on ${service}.`)
 }
@@ -193,10 +186,8 @@ async function setVar(service: string, kv: string): Promise<void> {
 // CLI's JSON includes raw values, so it is parsed in-memory and only key NAMES ever leave here.
 async function listVarKeys(service: string): Promise<Set<string>> {
   const { data, error } = await tryCatch(
-    Promise.resolve(
-      $`railway variable list -s ${service} -e ${ENVIRONMENT} -p ${PROJECT_ID} --json`
-        .quiet()
-        .text()
+    $`railway variable list -s ${service} -e ${ENVIRONMENT} -p ${PROJECT_ID} --json`.then(
+      r => r.stdout
     )
   )
   if (error || typeof data !== 'string') return new Set()
@@ -207,9 +198,7 @@ async function listVarKeys(service: string): Promise<Set<string>> {
 // Delete a variable (used to clear a stale venue secret). Fatal on failure: a stale key that
 // survives the delete silently keeps its venue enabled, which is exactly the drift this prevents.
 async function deleteVar(service: string, key: string): Promise<void> {
-  const { error } = await tryCatch(
-    Promise.resolve($`railway variable delete ${key} -s ${service} --skip-deploys`.quiet())
-  )
+  const { error } = await tryCatch($`railway variable delete ${key} -s ${service} --skip-deploys`)
   if (error) throw new Error(`Failed to delete ${key} on ${service}: ${stderrOf(error)}`)
   console.log(`Deleted ${key} on ${service} (stale).`)
 }
@@ -217,9 +206,7 @@ async function deleteVar(service: string, key: string): Promise<void> {
 // Secret variable: value piped via stdin (never argv), `--json` omitted (it echoes raw values).
 async function setSecret(service: string, key: string, value: string): Promise<void> {
   const { error } = await tryCatch(
-    Promise.resolve(
-      $`railway variable set ${key} --stdin -s ${service} --skip-deploys < ${Buffer.from(value, 'utf8')}`.quiet()
-    )
+    $({ input: value })`railway variable set ${key} --stdin -s ${service} --skip-deploys`
   )
   if (error) throw new Error(`Failed to set ${key} on ${service}`)
   console.log(`Set ${key} on ${service} (secret).`)
@@ -230,9 +217,7 @@ async function deployService(service: string): Promise<void> {
   // Pass -p/-e explicitly: `railway link` doesn't reliably carry the environment into this non-TTY
   // subprocess, so `railway up` otherwise errors "No environment specified". Self-contained > ambient.
   const { error } = await tryCatch(
-    Promise.resolve(
-      $`railway up -s ${service} -e ${ENVIRONMENT} -p ${PROJECT_ID} -d`.cwd(REPO_ROOT).quiet()
-    )
+    $({ cwd: REPO_ROOT })`railway up -s ${service} -e ${ENVIRONMENT} -p ${PROJECT_ID} -d`
   )
   if (error) throw new Error(`Failed to start deploy for ${service}: ${stderrOf(error)}`)
 }
@@ -253,7 +238,7 @@ async function latestStatus(service: string): Promise<string> {
     '1',
     '--json'
   ]
-  const { data, error } = await tryCatch(Promise.resolve($`${args}`.quiet().text()))
+  const { data, error } = await tryCatch($(args[0] ?? 'railway', args.slice(1)).then(r => r.stdout))
   return error || typeof data !== 'string' ? 'UNKNOWN' : parseLatestStatus(data)
 }
 
@@ -295,7 +280,7 @@ const LEGACY_BOT_SERVICE = 'bot'
 // GitHub Environment holds only RAILWAY_TOKEN + RAILWAY_PROJECT_ID, and the services/secrets were
 // provisioned once by a full (secret-bearing) run of this script. Skips the RPC/key requirements the
 // full path enforces, so it never needs those secrets in CI. Runs before `chainSecrets` is read.
-if (/^(1|true)$/i.test(Bun.env.DEPLOY_ONLY?.trim() ?? '')) {
+if (/^(1|true)$/i.test(process.env.DEPLOY_ONLY?.trim() ?? '')) {
   await ensureContext()
   const services = CHAINS.map(chain => chain.service)
   for (const service of services) await deployService(service)
@@ -310,7 +295,7 @@ if (/^(1|true)$/i.test(Bun.env.DEPLOY_ONLY?.trim() ?? '')) {
 // Read a chainId-suffixed env var (e.g. RPC_URL_8453). RPC endpoints differ per chain so these are
 // effectively required per chain; the private key may instead fall back to a shared unsuffixed key.
 function suffixed(name: string, chainId: number): string | undefined {
-  return Bun.env[`${name}_${chainId}`]?.trim() || undefined
+  return process.env[`${name}_${chainId}`]?.trim() || undefined
 }
 function requiredSuffixed(name: string, chainId: number): string {
   const value = suffixed(name, chainId)
@@ -319,7 +304,7 @@ function requiredSuffixed(name: string, chainId: number): string {
 }
 // A chainId-suffixed boolean flag with an unsuffixed fallback (e.g. ALLOW_DETECTION_ONLY_4663).
 function suffixedFlag(name: string, chainId: number): boolean {
-  const raw = suffixed(name, chainId) ?? Bun.env[name]?.trim()
+  const raw = suffixed(name, chainId) ?? process.env[name]?.trim()
   return /^(1|true)$/i.test(raw ?? '')
 }
 
@@ -331,17 +316,17 @@ const chainSecrets = CHAINS.map(chain => {
   const rpcUrl = requiredSuffixed('RPC_URL', chain.chainId)
   // A single funded key may be reused across chains (unsuffixed fallback), or set one per chain.
   const liquidatorPrivateKey =
-    suffixed('LIQUIDATOR_PRIVATE_KEY', chain.chainId) ?? Bun.env.LIQUIDATOR_PRIVATE_KEY?.trim()
+    suffixed('LIQUIDATOR_PRIVATE_KEY', chain.chainId) ?? process.env.LIQUIDATOR_PRIVATE_KEY?.trim()
   if (!liquidatorPrivateKey)
     throw new Error(
       `Missing required env var: LIQUIDATOR_PRIVATE_KEY_${chain.chainId} (or a shared LIQUIDATOR_PRIVATE_KEY)`
     )
   assertPrivateKey(liquidatorPrivateKey)
   // Venue keys enable their venue on this chain (no per-collateral routing file anymore).
-  const zeroxApiKey = suffixed('ZEROX_API_KEY', chain.chainId) ?? Bun.env.ZEROX_API_KEY?.trim()
+  const zeroxApiKey = suffixed('ZEROX_API_KEY', chain.chainId) ?? process.env.ZEROX_API_KEY?.trim()
   const oneInchApiKey =
-    suffixed('ONEINCH_API_KEY', chain.chainId) ?? Bun.env.ONEINCH_API_KEY?.trim()
-  const lifiApiKey = suffixed('LIFI_API_KEY', chain.chainId) ?? Bun.env.LIFI_API_KEY?.trim()
+    suffixed('ONEINCH_API_KEY', chain.chainId) ?? process.env.ONEINCH_API_KEY?.trim()
+  const lifiApiKey = suffixed('LIFI_API_KEY', chain.chainId) ?? process.env.LIFI_API_KEY?.trim()
   const enableLifi = suffixedFlag('ENABLE_LIFI', chain.chainId) || Boolean(lifiApiKey)
   const allowDetectionOnly = suffixedFlag('ALLOW_DETECTION_ONLY', chain.chainId)
   const hasVenue = Boolean(zeroxApiKey || oneInchApiKey || enableLifi)
@@ -371,8 +356,8 @@ await ensureContext()
 // Optional BetterStack log shipping, one source for blue-liq shared across its chains (told apart by
 // the bot/chainId fields the logger stamps). Host is a plain var; token is a secret. Off when unset —
 // the bot's in-process loglayer transport stays inert, so the container behaves exactly as before.
-const betterstackHost = Bun.env.BETTERSTACK_INGESTING_HOST?.trim()
-const betterstackToken = Bun.env.BETTERSTACK_SOURCE_TOKEN?.trim()
+const betterstackHost = process.env.BETTERSTACK_INGESTING_HOST?.trim()
+const betterstackToken = process.env.BETTERSTACK_SOURCE_TOKEN?.trim()
 
 // --- bot-<chainId>: one liquidation runner per chain. The in-container var names stay RPC_URL /
 // LIQUIDATOR_PRIVATE_KEY (the chainId suffix is only an operator-side convention). The whole venue

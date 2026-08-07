@@ -1,17 +1,20 @@
+import { build as esbuild } from 'esbuild'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { readFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { transformSolTemplates } from 'soltag/unplugin'
 
 // Bundles `src/{index,v2/index}.ts` to `dist/` with the soltag `sol``` templates in `src/abis.ts`
 // and `src/contracts.ts` compiled to literal ABIs (and, for contracts, bytecode + a deployless
 // factory). The narrowed `.d.ts` is emitted separately by
 // `tsc -p tsconfig.build.json --emitDeclarationOnly` (see the `build` script), which reads the
-// `.soltag/types.d.ts` augmentation cache the `soltag` CLI writes first. We bundle (rather than
-// shell out to tsdown) to stay bun-native; the soltag onLoad plugin is the same transform the
-// repo's preloads use, scoped here to this package's `src/` so bundled deps are untouched.
+// `.soltag/types.d.ts` augmentation cache the `soltag` CLI writes first. We bundle with esbuild
+// (rather than shell out to tsdown) to keep the toolchain to one bundler; the soltag onLoad plugin
+// is scoped to this package's `src/` so bundled deps are untouched.
 
 // This script lives in `scripts/`, so paths resolve against the package root one level up.
-const ROOT = join(import.meta.dir, '..')
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 const DIST_DIR = join(ROOT, 'dist')
 // Clean first so renamed/removed sources don't leave stale `dist/*.{js,d.ts}` behind (the `tsc`
@@ -22,18 +25,19 @@ const SRC_DIR = join(ROOT, 'src')
 const ESCAPED = SRC_DIR.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 const INCLUDE = new RegExp(`^${ESCAPED}/.*\\.tsx?$`)
 
-const result = await Bun.build({
-  entrypoints: [join(SRC_DIR, 'index.ts')],
+await esbuild({
+  entryPoints: [join(SRC_DIR, 'index.ts')],
   outdir: DIST_DIR,
-  root: SRC_DIR,
-  target: 'node',
+  outbase: SRC_DIR,
+  bundle: true,
+  platform: 'node',
   format: 'esm',
   plugins: [
     {
       name: 'soltag-contracts',
       setup(build) {
         build.onLoad({ filter: INCLUDE }, async ({ path }) => {
-          const source = await Bun.file(path).text()
+          const source = await readFile(path, 'utf8')
           const transformed = transformSolTemplates(source, path, {
             solc: { optimizer: { enabled: true, runs: 200 } }
           })
@@ -43,11 +47,6 @@ const result = await Bun.build({
     }
   ]
 })
-
-if (!result.success) {
-  for (const log of result.logs) console.error(log)
-  process.exit(1)
-}
 
 // Emit each interface ABI as JSON under `abis/`, for tools that need ABIs on disk rather than the
 // TS `as const` exports (e.g. rindexer, which the midnight-liquidation image feeds from here). The

@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'bun:test'
 import { parseEther } from 'viem'
+import { describe, expect, it } from 'vitest'
 
 import type { Logger, LogLevel } from '../src/logger'
 

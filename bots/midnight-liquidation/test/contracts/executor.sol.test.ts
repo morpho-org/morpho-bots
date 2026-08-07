@@ -1,10 +1,11 @@
 import { Executor } from '@repo/contracts'
-import { describe, expect, test } from 'bun:test'
 import { executorAbi as upstreamExecutorAbi } from 'executooor-viem'
 import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import solc from 'solc'
 import { toFunctionSelector } from 'viem'
+import { describe, expect, test } from 'vitest'
 
 // Verifies the vendored Executor singleton (@repo/contracts/solidity/Executor.sol — a single
 // self-contained file with IExecutor/Placeholder inlined): it must compile clean for Cancun, its
@@ -13,7 +14,10 @@ import { toFunctionSelector } from 'viem'
 // constructor, same call surface). solc runs once per file (~seconds), so all assertions share one
 // compile.
 
-const CONTRACTS_DIR = join(import.meta.dir, '../../../../packages/contracts/solidity')
+const CONTRACTS_DIR = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../../../packages/contracts/solidity'
+)
 
 function compile() {
   const input = {

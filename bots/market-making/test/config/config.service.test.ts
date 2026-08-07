@@ -1,7 +1,7 @@
 import type { Address, Hex } from 'viem'
 
-import { describe, expect, test } from 'bun:test'
 import { bytesToHex, hexToBytes } from 'viem'
+import { describe, expect, test } from 'vitest'
 
 import { ConfigValidationError } from '../../src/config/config-validation.error'
 import { ConfigService } from '../../src/config/config.service'

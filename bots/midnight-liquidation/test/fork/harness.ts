@@ -1,8 +1,10 @@
-import type { Subprocess } from 'bun'
+import type { ChildProcess } from 'node:child_process'
 import type { Address, Hex } from 'viem'
 
 import { Executor } from '@repo/contracts'
 import { ensureError } from '@repo/utils'
+import { spawn } from 'node:child_process'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { createTestClient, createWalletClient, http, parseEther, publicActions } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
@@ -14,7 +16,7 @@ import { base } from 'viem/chains'
 // end-to-end), then the suite warps past `maturity` to make it post-maturity liquidatable. FORK_BLOCK
 // is a fixed block shortly after the deploy so the WETH oracle price and the WETH/USDC pool are
 // deterministic; RPC_URL_8453 must be an archive endpoint that serves it (CI secret; locally set it in
-// .env.test.local — bun does NOT load .env.local under NODE_ENV=test).
+// .env.test.local — loaded explicitly by vitest.config.ts via vite's loadEnv).
 const FORK_BLOCK = 48_300_000n
 export const MIDNIGHT = '0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A' as Address
 
@@ -68,8 +70,23 @@ export type TestClient = ReturnType<typeof testClient>
 // instances: when the process is slow to exit (its keep-alive sockets stall the SIGTERM it sends), an
 // internal `stopTimeout` promise escapes as an unhandled "Anvil failed to stop in time" rejection
 // that bun's test runner fails the suite on, and the child is left orphaned (port bound for the next
-// run). A bare `Bun.spawn` gives us `.kill('SIGKILL')` + `.exited`, which terminate deterministically.
-export type ForkHandle = Subprocess
+// run). A bare child_process spawn gives us SIGKILL + an exit promise, which terminate deterministically.
+export type ForkHandle = {
+  kill: (signal: NodeJS.Signals) => void
+  /** Resolves with the exit code once the child has actually gone (Node has no `.exited`). */
+  exited: Promise<number | null>
+}
+
+// Wraps a ChildProcess in the tiny surface the teardown needs. The `exited` promise is built here,
+// at spawn time, so its `exit` listener is attached before the child can possibly exit.
+const toForkHandle = (child: ChildProcess): ForkHandle => ({
+  kill: signal => {
+    child.kill(signal)
+  },
+  exited: new Promise(resolve => {
+    child.once('exit', code => resolve(code))
+  })
+})
 
 /** Polls the JSON-RPC endpoint until it answers `eth_blockNumber`, so callers see a ready node. */
 async function waitForRpc(url: string, timeoutMs = 30_000): Promise<void> {
@@ -89,35 +106,43 @@ async function waitForRpc(url: string, timeoutMs = 30_000): Promise<void> {
     } catch (error) {
       lastError = ensureError(error)
     }
-    await Bun.sleep(100)
+    await sleep(100)
   }
   const detail = lastError ? `: ${lastError.message}` : ''
   throw new Error(`anvil RPC at ${url} not ready within ${timeoutMs}ms${detail}`)
 }
 
+// Anvil port registry — vitest runs test FILES IN PARALLEL (bun's runner was serial, so fixed ports
+// used to be safe within a bot only). Every fork suite in the repo must claim a distinct port:
+//   8545 bots/blue-liquidation      fork/liquidation
+//   8546 bots/market-making         e2e/setup-check
+//   8547 bots/midnight-liquidation  fork/liquidation
+//   8548 bots/midnight-liquidation  fork/queue
 /**
  * Boots an anvil instance forking Base at FORK_BLOCK (chain id pinned to Base so signatures match).
- * `port` is explicit so multiple fork test files can run in one `bun test` process without colliding.
+ * `port` is explicit so parallel fork test files never collide — see the registry above.
  * Requires the `anvil` binary on PATH (Foundry locally; foundry-toolchain in CI).
  */
 export async function startFork(port = 8545): Promise<{ anvil: ForkHandle; rpcUrl: string }> {
-  const anvil = Bun.spawn(
-    [
+  const anvil = toForkHandle(
+    spawn(
       'anvil',
-      '--fork-url',
-      FORK_URL,
-      '--fork-block-number',
-      String(FORK_BLOCK),
-      '--chain-id',
-      String(base.id),
-      // The deployed Midnight is compiled for the `osaka` EVM and uses the CLZ opcode (EIP-7939) in
-      // liquidate; anvil's default hardfork lacks CLZ, so it would revert with empty data. Pin osaka.
-      '--hardfork',
-      'osaka',
-      '--port',
-      String(port)
-    ],
-    { stdout: 'ignore', stderr: 'ignore' }
+      [
+        '--fork-url',
+        FORK_URL,
+        '--fork-block-number',
+        String(FORK_BLOCK),
+        '--chain-id',
+        String(base.id),
+        // The deployed Midnight is compiled for the `osaka` EVM and uses the CLZ opcode (EIP-7939) in
+        // liquidate; anvil's default hardfork lacks CLZ, so it would revert with empty data. Pin osaka.
+        '--hardfork',
+        'osaka',
+        '--port',
+        String(port)
+      ],
+      { stdio: 'ignore' }
+    )
   )
   const rpcUrl = `http://127.0.0.1:${port}`
   await waitForRpc(rpcUrl)

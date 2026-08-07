@@ -15,7 +15,8 @@ import type { Market } from '../execution/encode-call'
 // struct, so no off-chain market input or `id == toId(market)` re-check is needed — then composes
 // liquidatability + the sizing inputs (maxDebt/badDebt/best-collateral) the way liquidate() does and
 // returns the Market so the caller can encode the liquidate call. Compiled to a deployless factory by
-// the soltag bun preload (see ../../soltag.preload.ts); `sol``` throws if not active.
+// the soltag transform — the esbuild plugin in scripts/build.ts for the shipped bundle, and
+// soltag/vite for tests; `sol``` throws if neither is active.
 export const MidnightLiquidationLens = sol('MidnightLiquidationLens')`
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity ^0.8.19;

@@ -95,7 +95,7 @@ const assertPortClosed = port =>
 
 const spawnSmoke = ({ env = process.env } = {}) => {
   const child = spawnOwnedProcess(process.execPath, [smokeScript], {
-    env,
+    env: { ...env, NODE_DISABLE_COMPILE_CACHE: '1' },
     stdio: ['ignore', 'pipe', 'pipe']
   })
   child.stdout.setEncoding('utf8')
@@ -444,6 +444,8 @@ setInterval(() => {}, 1000)
       ...process.env,
       CHROMIUM_PATH: chromiumPath,
       PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
+      BUN_EXE: fakeBun,
+      NODE_DISABLE_COMPILE_CACHE: '1',
       PLAYGROUND_SMOKE_BUILD_CAPTURE_BARRIER_FILE: captureBarrierFile,
       PLAYGROUND_SMOKE_BUILD_CAPTURE_FILE: captureFile,
       PLAYGROUND_SMOKE_BUILD_TIMEOUT_MS: String(timeoutMs),

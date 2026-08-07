@@ -1,6 +1,6 @@
 import type { Address, Hex } from 'viem'
 
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 
 import { MidnightBootstrapPositionService } from '../../../src/infrastructure/bootstrap/bootstrap-position.service'
 

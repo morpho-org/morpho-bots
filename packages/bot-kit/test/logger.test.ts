@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Logger } from '../src/logger'
 
@@ -17,12 +17,12 @@ function parseLine(raw: unknown) {
 describe('createLogger', () => {
   // Restore console spies even when an assertion throws first, so a failure in one test
   // cannot leak its captured calls into the next.
-  afterEach(() => mock.restore())
+  afterEach(() => vi.restoreAllMocks())
 
   it('drops lines below the configured minimum level', () => {
     const logger: Logger = createLogger('warn')
-    const log = spyOn(console, 'log').mockImplementation(() => undefined)
-    const err = spyOn(console, 'error').mockImplementation(() => undefined)
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
 
     logger.debug('rindexer.lag')
     logger.info('block.new')
@@ -35,8 +35,8 @@ describe('createLogger', () => {
 
   it('routes every level to stderr', () => {
     const logger = createLogger('debug')
-    const log = spyOn(console, 'log').mockImplementation(() => undefined)
-    const err = spyOn(console, 'error').mockImplementation(() => undefined)
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
 
     logger.debug('a')
     logger.info('b')
@@ -49,7 +49,7 @@ describe('createLogger', () => {
 
   it('stamps the current utc time onto every line', () => {
     const logger = createLogger('debug')
-    const err = spyOn(console, 'error').mockImplementation(() => undefined)
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
 
     const fmt = (date: Date) =>
       `${date.toISOString().slice(5, 10)} ${date.toISOString().slice(11, 19)}`
@@ -64,7 +64,7 @@ describe('createLogger', () => {
 
   it('serializes bigint fields as decimal strings', () => {
     const logger = createLogger('debug')
-    const err = spyOn(console, 'error').mockImplementation(() => undefined)
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
 
     logger.info('tx.sent', { nonce: 7n, maxFee: 300_000_000_000n })
 
@@ -78,7 +78,7 @@ describe('createLogger', () => {
 
   it('recurses into nested bigint fields', () => {
     const logger = createLogger('debug')
-    const err = spyOn(console, 'error').mockImplementation(() => undefined)
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
 
     logger.info('tx.bumped', { tx: { nonce: 7n }, attempts: [1n, 2n] })
 
@@ -92,7 +92,7 @@ describe('createLogger', () => {
 
   it('stamps bound context onto every line', () => {
     const logger = createLogger('debug', { context: { bot: 'blue-liquidation', chainId: 8453 } })
-    const err = spyOn(console, 'error').mockImplementation(() => undefined)
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
 
     logger.info('block.new', { height: 42n })
     logger.warn('state.reset')
@@ -117,17 +117,17 @@ describe('createLogger', () => {
 })
 
 describe('createLogger BetterStack opt-in contract', () => {
-  afterEach(() => mock.restore())
+  afterEach(() => vi.restoreAllMocks())
 
   it('stays fully silent when BOTH env vars are unset', () => {
-    const err = spyOn(console, 'error').mockImplementation(() => undefined)
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     createLogger('info', { env: {} })
     // Both unset is the opt-out: no warning line at construction.
     expect(err).not.toHaveBeenCalled()
   })
 
   it('token-only fails loud (names the missing host)', () => {
-    const err = spyOn(console, 'error').mockImplementation(() => undefined)
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     createLogger('info', { env: { BETTERSTACK_SOURCE_TOKEN: 'tok' } })
 
     expect(err).toHaveBeenCalledTimes(1)
@@ -138,7 +138,7 @@ describe('createLogger BetterStack opt-in contract', () => {
   })
 
   it('host-only fails loud (names the missing token)', () => {
-    const err = spyOn(console, 'error').mockImplementation(() => undefined)
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     createLogger('info', { env: { BETTERSTACK_INGESTING_HOST: 's1.betterstackdata.com' } })
 
     expect(err).toHaveBeenCalledTimes(1)
@@ -148,7 +148,7 @@ describe('createLogger BetterStack opt-in contract', () => {
   })
 
   it('treats blank/whitespace as unset — a blank token with a host still fails loud', () => {
-    const err = spyOn(console, 'error').mockImplementation(() => undefined)
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     // Blank/whitespace does not count as set: this is token-unset + host-set → partial config.
     createLogger('info', {
       env: { BETTERSTACK_SOURCE_TOKEN: '  ', BETTERSTACK_INGESTING_HOST: 'h' }
@@ -159,7 +159,7 @@ describe('createLogger BetterStack opt-in contract', () => {
   })
 
   it('accepts a nonblank malformed paired host without synchronous validation', () => {
-    const err = spyOn(console, 'error').mockImplementation(() => undefined)
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
 
     expect(() =>
       createLogger('info', {
@@ -178,12 +178,14 @@ describe('createLogger BetterStack opt-in contract', () => {
 })
 
 describe('createLogger BetterStack path', () => {
-  afterEach(() => mock.restore())
+  afterEach(() => vi.restoreAllMocks())
 
   it('performs zero network activity when the env vars are unset', () => {
-    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((() =>
-      Promise.reject(new Error('network must not be touched'))) as unknown as typeof fetch)
-    spyOn(console, 'error').mockImplementation(() => undefined)
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation((() =>
+        Promise.reject(new Error('network must not be touched'))) as unknown as typeof fetch)
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
 
     const logger = createLogger('debug', { env: {} })
     logger.info('tx.sent', { nonce: 1n })
@@ -192,9 +194,11 @@ describe('createLogger BetterStack path', () => {
   })
 
   it('warns and performs zero network activity under partial (token-only) config', () => {
-    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((() =>
-      Promise.reject(new Error('network must not be touched'))) as unknown as typeof fetch)
-    const err = spyOn(console, 'error').mockImplementation(() => undefined)
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation((() =>
+        Promise.reject(new Error('network must not be touched'))) as unknown as typeof fetch)
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
 
     const logger = createLogger('debug', { env: { BETTERSTACK_SOURCE_TOKEN: 'tok' } })
     logger.info('tx.sent', { nonce: 1n })
@@ -207,9 +211,11 @@ describe('createLogger BetterStack path', () => {
 
   it('serializes nested bigints without throwing when BetterStack is enabled (HTTP mocked)', () => {
     // Mock the HTTP layer so no real request can escape even if a batch were to flush.
-    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((() =>
-      Promise.resolve(new Response(null, { status: 202 }))) as unknown as typeof fetch)
-    const err = spyOn(console, 'error').mockImplementation(() => undefined)
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation((() =>
+        Promise.resolve(new Response(null, { status: 202 }))) as unknown as typeof fetch)
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
 
     const logger = createLogger('debug', {
       env: {

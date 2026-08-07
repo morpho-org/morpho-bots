@@ -1,4 +1,6 @@
-import { relative, resolve } from 'node:path'
+import { readFile } from 'node:fs/promises'
+import { dirname, relative, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
 
 import { JSDocValidationError } from './js-doc-validation.error'
@@ -295,7 +297,99 @@ export const inspectJSDocSource = (file: string, source: string): JSDocInspectio
   return { declarations, failures }
 }
 
-const packageRoot = resolve(import.meta.dir, '..')
+const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const sourceRoot = resolve(packageRoot, 'src')
+const sourceFiles = [
+  'application/operator-error-name.utils.ts',
+  'application/bootstrap/bootstrap-ownership-cleanup.error.ts',
+  'application/bootstrap/position-bootstrap-halted.error.ts',
+  'application/bootstrap/position-bootstrap-monitor-halted.error.ts',
+  'application/bootstrap/position-bootstrap-verbose.ts',
+  'application/bootstrap/position-bootstrap.service.ts',
+  'application/invalidation/offer-invalidation-failed.error.ts',
+  'application/invalidation/offer-invalidation.service.ts',
+  'application/ladder/ladder-cycle-halted.error.ts',
+  'application/ladder/ladder-market-maker.service.ts',
+  'application/ladder/ladder-market-maker.utils.ts',
+  'application/ladder/ladder-monitor-halted.error.ts',
+  'application/ladder/ladder-ownership-cleanup.error.ts',
+  'application/ladder/ladder-verbose.ts',
+  'application/market-making/market-making-monitor-halted.error.ts',
+  'application/market-making/market-making-mutation.utils.ts',
+  'application/market-making/market-making.service.ts',
+  'application/setup/setup-check.service.ts',
+  'application/setup/setup-check.utils.ts',
+  'application/setup/safe-provider.error.ts',
+  'application/setup/setup-failed.error.ts',
+  'application/setup/setup-monitor-configuration.error.ts',
+  'application/setup/setup-monitor-halted.error.ts',
+  'application/version.service.ts',
+  'bootstrap.ts',
+  'config/config-file.error.ts',
+  'config/config-source.utils.ts',
+  'config/config-validation.error.ts',
+  'config/config.service.ts',
+  'config/config.utils.ts',
+  'domain/bootstrap/bootstrap-configuration.error.ts',
+  'domain/bootstrap/position-bootstrap.ts',
+  'domain/ladder/ladder-configuration.error.ts',
+  'domain/ladder/ladder.ts',
+  'infrastructure/bootstrap/bootstrap-hard-halt.error.ts',
+  'infrastructure/bootstrap/bootstrap-exposure.utils.ts',
+  'infrastructure/bootstrap/bootstrap-make.service.ts',
+  'infrastructure/bootstrap/bootstrap-mempool-validation.error.ts',
+  'infrastructure/bootstrap/bootstrap-mempool-validation.utils.ts',
+  'infrastructure/bootstrap/bootstrap-offer.utils.ts',
+  'infrastructure/bootstrap/bootstrap-pending-offer.utils.ts',
+  'infrastructure/bootstrap/bootstrap-adapter.error.ts',
+  'infrastructure/bootstrap/bootstrap-group-ownership.utils.ts',
+  'infrastructure/bootstrap/bootstrap-groups.utils.ts',
+  'infrastructure/bootstrap/bootstrap-position.service.ts',
+  'infrastructure/bootstrap/bootstrap-reference-rate.service.ts',
+  'infrastructure/bootstrap/bootstrap-requirement-client.utils.ts',
+  'infrastructure/bootstrap/bootstrap-requirements.utils.ts',
+  'infrastructure/bootstrap/bootstrap-spread.utils.ts',
+  'infrastructure/bootstrap/bootstrap-transaction.utils.ts',
+  'infrastructure/bootstrap/production-bootstrap.ts',
+  'infrastructure/cli/cli-usage.error.ts',
+  'infrastructure/cli/cli.ts',
+  'infrastructure/cli/market-making-entrypoint.ts',
+  'infrastructure/cli/offer-invalidation-argument.utils.ts',
+  'infrastructure/invalidation/offer-invalidation-adapter.error.ts',
+  'infrastructure/invalidation/offer-invalidation-group.utils.ts',
+  'infrastructure/invalidation/offer-invalidation-transaction.utils.ts',
+  'infrastructure/invalidation/production-offer-invalidation.ts',
+  'infrastructure/ladder/ladder-adapter.error.ts',
+  'infrastructure/ladder/ladder-active-publication.utils.ts',
+  'infrastructure/ladder/ladder-bootstrap-offer.utils.ts',
+  'infrastructure/ladder/ladder-cash-reservation.utils.ts',
+  'infrastructure/ladder/ladder-group-ownership.utils.ts',
+  'infrastructure/ladder/ladder-hard-halt.error.ts',
+  'infrastructure/ladder/ladder-make.service.ts',
+  'infrastructure/ladder/ladder-offer.utils.ts',
+  'infrastructure/ladder/ladder-ratification.utils.ts',
+  'infrastructure/ladder/ladder-signature.utils.ts',
+  'infrastructure/ladder/ladder-spread.utils.ts',
+  'infrastructure/ladder/ladder-transaction.utils.ts',
+  'infrastructure/ladder/production-ladder.ts',
+  'infrastructure/make/managed-maker-account.utils.ts',
+  'infrastructure/make/read-only-bootstrap-make.service.ts',
+  'infrastructure/make/read-only-ladder-make.service.ts',
+  'infrastructure/make/read-only-make.utils.ts',
+  'infrastructure/reference/blue-reference-reader.utils.ts',
+  'infrastructure/setup-state/chain-reader.utils.ts',
+  'infrastructure/reference/reference-adapter.error.ts',
+  'infrastructure/setup-state/http-json.utils.ts',
+  'infrastructure/setup-state/provider-pagination.error.ts',
+  'infrastructure/setup-state/provider-read.error.ts',
+  'infrastructure/setup-state/provider-read.utils.ts',
+  'infrastructure/setup-state/provider-response.error.ts',
+  'infrastructure/setup-state/viem-setup-state.service.ts',
+  'infrastructure/setup-state/viem-setup-state.utils.ts'
+].map(path => resolve(sourceRoot, path))
+sourceFiles.push(resolve(packageRoot, 'scripts/js-doc-validation.error.ts'))
+sourceFiles.push(resolve(packageRoot, 'scripts/bundle-failed.error.ts'))
+sourceFiles.push(resolve(packageRoot, 'scripts/check-jsdoc.ts'))
 
 /**
  * Discovers the TypeScript files that define the documented market-making surface.
@@ -303,23 +397,21 @@ const packageRoot = resolve(import.meta.dir, '..')
  * @returns Relevant source and checker files in deterministic package-relative order.
  * @remarks The scan is read-only and excludes the executable entrypoint and test files.
  */
-export const discoverJSDocSourceFiles = async (root: string) => {
-  const glob = new Bun.Glob('{src,scripts}/**/*.ts')
-  const files: string[] = []
-  for await (const file of glob.scan({ cwd: root, absolute: true, onlyFiles: true })) {
-    const packagePath = relative(root, file)
-    if (packagePath === 'src/index.ts' || packagePath.endsWith('.test.ts')) continue
-    files.push(file)
-  }
-  return files.toSorted()
-}
+export const discoverJSDocSourceFiles = async (root: string) =>
+  ts.sys
+    .readDirectory(root, ['.ts'], ['node_modules'], ['src', 'scripts'])
+    .filter(file => {
+      const packagePath = relative(root, file)
+      return packagePath !== 'src/index.ts' && !packagePath.endsWith('.test.ts')
+    })
+    .toSorted()
 
 const run = async () => {
-  const sourceFiles = await discoverJSDocSourceFiles(packageRoot)
+  sourceFiles.splice(0, sourceFiles.length, ...(await discoverJSDocSourceFiles(packageRoot)))
   const failures: JSDocFailure[] = []
   const declarations: string[] = []
   for (const file of sourceFiles) {
-    const source = await Bun.file(file).text()
+    const source = await readFile(file, 'utf8')
     const inspection = inspectJSDocSource(relative(packageRoot, file), source)
     declarations.push(
       ...inspection.declarations.map(item => `${relative(packageRoot, file)} ${item}`)
@@ -340,4 +432,6 @@ const run = async () => {
   }
 }
 
-if (import.meta.main) await run()
+// bun's `import.meta.main`; under Node (and under an esbuild bundle, where it is unreliable) compare
+// the resolved entry path instead.
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await run()

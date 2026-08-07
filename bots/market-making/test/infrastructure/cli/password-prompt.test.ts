@@ -1,6 +1,6 @@
-import { describe, expect, test } from 'bun:test'
 import { EventEmitter } from 'node:events'
 import { readFile } from 'node:fs/promises'
+import { describe, expect, test } from 'vitest'
 
 import { readPasswordInteractively } from '../../../src/infrastructure/cli/password-prompt.utils'
 
@@ -70,7 +70,7 @@ const expectWiped = (secretBytes: number[], length: number) => {
 describe('hidden keystore password input', () => {
   test('defaults prompts and trailing newlines to stderr', async () => {
     const source = await readFile(
-      `${import.meta.dir}/../../../src/infrastructure/cli/password-prompt.utils.ts`,
+      new URL('../../../src/infrastructure/cli/password-prompt.utils.ts', import.meta.url),
       'utf8'
     )
 

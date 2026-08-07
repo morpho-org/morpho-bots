@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'bun:test'
 import { BaseError, encodeErrorResult, ExecutionRevertedError } from 'viem'
+import { describe, expect, it } from 'vitest'
 
 import { abiRevertDecoder, isExecutionRevert, revertReason, TxSendError } from '../src/tx-error'
 

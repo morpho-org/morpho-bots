@@ -1,6 +1,6 @@
 import type { Hex } from 'viem'
 
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 
 import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/bootstrap-adapter.error'
 import {

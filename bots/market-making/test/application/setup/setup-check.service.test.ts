@@ -1,6 +1,6 @@
 import type { Hex } from 'viem'
 
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 
 import {
   SetupCheckService,
@@ -323,8 +323,8 @@ describe('SetupCheckService', () => {
 
     const readiness = new SetupCheckService(state, config).assertReady()
 
-    expect(readiness).rejects.toBeInstanceOf(SetupFailedError)
-    expect(readiness).rejects.toMatchObject({
+    await expect(readiness).rejects.toBeInstanceOf(SetupFailedError)
+    await expect(readiness).rejects.toMatchObject({
       report: {
         ready: false,
         checks: expect.arrayContaining([

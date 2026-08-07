@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'bun:test'
 import { readFile } from 'node:fs/promises'
+import { describe, expect, test } from 'vitest'
 import { parse } from 'yaml'
 
 const workflowPath = new URL(

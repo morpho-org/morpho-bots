@@ -107,7 +107,7 @@ test('--temporary creates a private owned OS-temp directory, reports its exact p
 const { writeFileSync } = require('node:fs')
 const { tmpdir } = require('node:os')
 const { basename, dirname } = require('node:path')
-const outdir = process.argv[process.argv.indexOf('--outdir') + 1]
+const outdir = process.argv[process.argv.indexOf('--outDir') + 1]
 if (dirname(outdir) !== tmpdir()) throw new Error('not under OS temp')
 if (!basename(outdir).startsWith('market-making-playground-dist-')) throw new Error('wrong prefix')
 writeFileSync(outdir + '/index.html', '<script src="./index.js"></script>')
@@ -133,7 +133,7 @@ test('failed temporary build removes its internally-created partial output', asy
   )
   const fakeBun = await makeFakeBun(`
 const { writeFileSync } = require('node:fs')
-const outdir = process.argv[process.argv.indexOf('--outdir') + 1]
+const outdir = process.argv[process.argv.indexOf('--outDir') + 1]
 writeFileSync(outdir + '/partial.bin', 'partial')
 process.exit(23)
 `)
@@ -153,7 +153,7 @@ test('canonical build stages in owned OS temp, publishes finalized files, and re
 const { writeFileSync } = require('node:fs')
 const { tmpdir } = require('node:os')
 const { basename, dirname } = require('node:path')
-const outdir = process.argv[process.argv.indexOf('--outdir') + 1]
+const outdir = process.argv[process.argv.indexOf('--outDir') + 1]
 if (dirname(outdir) !== tmpdir()) throw new Error('canonical staging not in OS temp')
 if (!basename(outdir).startsWith('market-making-playground-staging-')) throw new Error('wrong staging prefix')
 writeFileSync(outdir + '/index.html', '<link rel="stylesheet" href="./index.css"><script src="./index.js"></script>')
@@ -182,7 +182,7 @@ test('failed canonical build preserves the prior index and removes OS-temp stagi
   )
   const fakeBun = await makeFakeBun(`
 const { writeFileSync } = require('node:fs')
-const outdir = process.argv[process.argv.indexOf('--outdir') + 1]
+const outdir = process.argv[process.argv.indexOf('--outDir') + 1]
 writeFileSync(outdir + '/partial', 'never publish me')
 process.exit(29)
 `)

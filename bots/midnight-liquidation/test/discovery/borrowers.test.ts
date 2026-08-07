@@ -1,8 +1,8 @@
 import type { Logger } from '@repo/bot-kit'
 import type { Hex } from 'viem'
 
-import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
+import { describe, expect, it } from 'vitest'
 
 import type { CandidatePage, FetchCandidatePage } from '../../src/discovery/borrowers'
 
@@ -213,6 +213,6 @@ describe('createApiCandidateSource', () => {
       healthFactorLte: 1.02,
       fetchImpl
     })
-    expect(source('bad-cursor')).rejects.toThrow('HTTP 400')
+    await expect(source('bad-cursor')).rejects.toThrow('HTTP 400')
   })
 })

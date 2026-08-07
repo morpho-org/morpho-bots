@@ -1,6 +1,6 @@
 import type { Hex } from 'viem'
 
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 
 import { LadderAdapterError } from '../../../src/infrastructure/ladder/ladder-adapter.error'
 import { assertLadderProspectiveSpread } from '../../../src/infrastructure/ladder/ladder-spread.utils'

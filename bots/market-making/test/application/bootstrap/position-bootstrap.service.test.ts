@@ -1,6 +1,6 @@
 import type { Hex } from 'viem'
 
-import { describe, expect, mock, test } from 'bun:test'
+import { describe, expect, test, vi } from 'vitest'
 
 import type {
   BootstrapMakeService,
@@ -40,7 +40,7 @@ const setup = ({
   configs?: BootstrapConfig[]
   credit?: bigint
 } = {}) => {
-  const readPosition = mock(async () => ({
+  const readPosition = vi.fn(async () => ({
     credit,
     debt: 0n,
     cashBalance: 2_000n,
@@ -48,14 +48,14 @@ const setup = ({
     totalExposure: 0n,
     activeOffer: undefined
   }))
-  const readRate = mock(async () => ({
+  const readRate = vi.fn(async () => ({
     mode: 'static' as const,
     rateBps: 500n,
     observationId: 'static:500'
   }))
-  const reconcile = mock(async () => undefined)
-  const hardHalt = mock(async () => undefined)
-  const cleanup = mock(async () => undefined)
+  const reconcile = vi.fn(async () => undefined)
+  const hardHalt = vi.fn(async () => undefined)
+  const cleanup = vi.fn(async () => undefined)
   const positions: BootstrapPositionService = { readPosition }
   const rates: BootstrapReferenceRateService = { readRate }
   const make: BootstrapMakeService = { reconcile, hardHalt, cleanup }
@@ -79,10 +79,10 @@ describe('PositionBootstrapService', () => {
     const events: string[] = []
     const controller = new AbortController()
     const { service, make } = setup()
-    make.reconcile = mock(async () => {
+    make.reconcile = vi.fn(async () => {
       events.push('reconcile')
     })
-    const cleanup = mock(async () => {
+    const cleanup = vi.fn(async () => {
       events.push('cleanup')
     })
     make.cleanup = cleanup
@@ -150,10 +150,10 @@ describe('PositionBootstrapService', () => {
   test('stops monitoring on a handled failed cycle and still cleans owned groups', async () => {
     const controller = new AbortController()
     const { service, make } = setup()
-    make.reconcile = mock(async () => {
+    make.reconcile = vi.fn(async () => {
       throw new Error('publication unavailable')
     })
-    const cleanup = mock(async () => 'logged' as const)
+    const cleanup = vi.fn(async () => 'logged' as const)
     make.cleanup = cleanup
 
     const report = await service.runContinuously({
@@ -174,7 +174,7 @@ describe('PositionBootstrapService', () => {
   test('reports a sanitized cleanup failure after a stop signal', async () => {
     const controller = new AbortController()
     const { service, make } = setup()
-    make.cleanup = mock(async () => {
+    make.cleanup = vi.fn(async () => {
       const error = new Error('provider https://rpc.example/?key=secret')
       error.name = 'https://rpc.example/?key=secret'
       throw error
@@ -279,7 +279,7 @@ describe('PositionBootstrapService', () => {
     const { service, make, readPosition, readRate, reconcile } = setup({
       configs: [{ ...config(), maximumTotalExposure: 0n }]
     })
-    const hardHalt = mock(async () => {
+    const hardHalt = vi.fn(async () => {
       throw new RangeError('cleanup reverted')
     })
     make.hardHalt = hardHalt
@@ -331,7 +331,7 @@ describe('PositionBootstrapService', () => {
     const submittedEvents: unknown[] = []
     const transactionOrder: string[] = []
     let read = 0
-    const readPosition = mock(async () => {
+    const readPosition = vi.fn(async () => {
       read += 1
       return {
         credit: read === 1 ? 0n : 100n,
@@ -352,7 +352,7 @@ describe('PositionBootstrapService', () => {
       }
     })
     positions.readPosition = readPosition
-    make.reconcile = mock(async parameters => {
+    make.reconcile = vi.fn(async parameters => {
       await parameters.onTransactionSubmitted?.({
         operation: 'publish',
         txHash: publicationHash
@@ -456,7 +456,7 @@ describe('PositionBootstrapService', () => {
 
   test('retains a confirmed ratification hash when publication later fails', async () => {
     const { service, make } = setup()
-    make.reconcile = mock(async () => {
+    make.reconcile = vi.fn(async () => {
       throw new BootstrapAdapterError(
         'publication-transaction-reverted-after-ratification'
       ).recordConfirmedTransactions([{ operation: 'ratify', txHash: ratificationHash }])
@@ -482,7 +482,7 @@ describe('PositionBootstrapService', () => {
 
   test('reports canonical protocol no-ops as observed resting offers', async () => {
     const { service, make } = setup()
-    make.reconcile = mock(async () => 'unchanged' as const)
+    make.reconcile = vi.fn(async () => 'unchanged' as const)
 
     const result = await service.runOnce()
 
@@ -492,7 +492,7 @@ describe('PositionBootstrapService', () => {
   test('keeps an applied result when only its verbose after-state read fails', async () => {
     const { service, positions } = setup()
     let read = 0
-    positions.readPosition = mock(async () => {
+    positions.readPosition = vi.fn(async () => {
       read += 1
       if (read === 2) throw new TypeError('after-state provider unavailable')
       return {
@@ -521,7 +521,7 @@ describe('PositionBootstrapService', () => {
   test('reports verbose monitor cycles and confirmed shutdown cancellation hashes', async () => {
     const controller = new AbortController()
     const { service, make } = setup({ credit: 900n })
-    make.cleanup = mock(async parameters => {
+    make.cleanup = vi.fn(async parameters => {
       await parameters?.onTransactionSubmitted?.({
         operation: 'cancel',
         txHash: cancellationHash
@@ -625,7 +625,7 @@ describe('PositionBootstrapService', () => {
     const { service, positions, reconcile } = setup({
       configs: [capped, { ...capped, marketId: secondMarketId }]
     })
-    positions.readPosition = mock(async id => ({
+    positions.readPosition = vi.fn(async id => ({
       credit: 0n,
       debt: 0n,
       cashBalance: id === marketId ? 1_000n : 500n,
@@ -667,7 +667,7 @@ describe('PositionBootstrapService', () => {
     const { service, positions, reconcile } = setup({
       configs: [capped, { ...capped, marketId: secondMarketId }]
     })
-    positions.readPosition = mock(async id => ({
+    positions.readPosition = vi.fn(async id => ({
       credit: id === marketId ? 900n : 0n,
       debt: 0n,
       cashBalance: id === marketId ? 1_000n : 500n,
@@ -703,7 +703,7 @@ describe('PositionBootstrapService', () => {
   test('invalidates at target and stays observational after completion when auto-refill is off', async () => {
     const { service, positions, reconcile } = setup()
     let cycle = 0
-    positions.readPosition = mock(async () => {
+    positions.readPosition = vi.fn(async () => {
       cycle += 1
       return {
         credit: cycle === 1 ? 900n : 500n,
@@ -761,7 +761,7 @@ describe('PositionBootstrapService', () => {
         configs: [config(), config(secondMarketId, true)]
       })
       let preparingCompletion = warmup
-      positions.readPosition = mock(async id => {
+      positions.readPosition = vi.fn(async id => {
         if (preparingCompletion) {
           return {
             credit: 900n,
@@ -795,7 +795,7 @@ describe('PositionBootstrapService', () => {
         reconcile.mockClear()
         hardHalt.mockClear()
       }
-      const failedReconcile = mock(async request => {
+      const failedReconcile = vi.fn(async request => {
         if (request.marketId === marketId && request.desiredOffer === undefined) {
           throw new RangeError('market invalidation reverted')
         }
@@ -823,7 +823,7 @@ describe('PositionBootstrapService', () => {
     const { service, positions, make } = setup({
       configs: [config(), config(secondMarketId)]
     })
-    positions.readPosition = mock(async id => ({
+    positions.readPosition = vi.fn(async id => ({
       credit: id === marketId ? 900n : 0n,
       debt: 0n,
       cashBalance: 2_000n,
@@ -839,7 +839,7 @@ describe('PositionBootstrapService', () => {
             }
           : undefined
     }))
-    const failedReconcile = mock(async request => {
+    const failedReconcile = vi.fn(async request => {
       if (request.marketId === marketId) {
         const hostileInvalidation = new Error('market invalidation reverted')
         hostileInvalidation.name = 'https://invalidator.example/?token=secret-invalidation'
@@ -847,7 +847,7 @@ describe('PositionBootstrapService', () => {
       }
     })
     make.reconcile = failedReconcile
-    const hardHalt = mock(async () => {
+    const hardHalt = vi.fn(async () => {
       const hostileCleanup = new Error('hard halt reverted')
       hostileCleanup.name = 'https://cleanup.example/?token=secret-cleanup'
       throw hostileCleanup
@@ -878,7 +878,7 @@ describe('PositionBootstrapService', () => {
     const { service, positions, reconcile, hardHalt } = setup({
       configs: [config(), config(secondMarketId)]
     })
-    positions.readPosition = mock(async id => ({
+    positions.readPosition = vi.fn(async id => ({
       credit: id === marketId ? 900n : 0n,
       debt: 0n,
       cashBalance: 2_000n,
@@ -907,7 +907,7 @@ describe('PositionBootstrapService', () => {
     const { service, positions, reconcile } = setup({
       configs: [config(), config(secondMarketId)]
     })
-    positions.readPosition = mock(async id => {
+    positions.readPosition = vi.fn(async id => {
       if (id === marketId) throw new Error('provider unavailable')
       return {
         credit: 0n,
@@ -950,10 +950,10 @@ describe('PositionBootstrapService', () => {
 
   test('halts after market invalidation fails while preserving the read failure', async () => {
     const { service, positions, make, hardHalt } = setup()
-    positions.readPosition = mock(async () => {
+    positions.readPosition = vi.fn(async () => {
       throw new TypeError('position unavailable')
     })
-    make.reconcile = mock(async () => {
+    make.reconcile = vi.fn(async () => {
       throw new RangeError('invalidation reverted')
     })
 
@@ -974,7 +974,7 @@ describe('PositionBootstrapService', () => {
     const { service, positions, make } = setup({
       configs: [config(), config(secondMarketId)]
     })
-    positions.readPosition = mock(async id => {
+    positions.readPosition = vi.fn(async id => {
       if (id === marketId) throw new TypeError('position unavailable')
       return {
         credit: 0n,
@@ -985,7 +985,7 @@ describe('PositionBootstrapService', () => {
         activeOffer: undefined
       }
     })
-    const failedReconcile = mock(async request => {
+    const failedReconcile = vi.fn(async request => {
       if (request.marketId === marketId) throw new RangeError('invalidation reverted')
     })
     make.reconcile = failedReconcile
@@ -1005,13 +1005,13 @@ describe('PositionBootstrapService', () => {
 
   test('preserves market invalidation and hard-halt failure classifications', async () => {
     const { service, positions, make } = setup()
-    positions.readPosition = mock(async () => {
+    positions.readPosition = vi.fn(async () => {
       throw new TypeError('position unavailable')
     })
-    make.reconcile = mock(async () => {
+    make.reconcile = vi.fn(async () => {
       throw new RangeError('invalidation reverted')
     })
-    make.hardHalt = mock(async () => {
+    make.hardHalt = vi.fn(async () => {
       throw new URIError('hard halt reverted')
     })
 
@@ -1032,7 +1032,7 @@ describe('PositionBootstrapService', () => {
     const { service, positions } = setup()
     const hostile = new Error('provider failed')
     hostile.name = 'https://rpc.example/?token=secret-token'
-    positions.readPosition = mock(async () => {
+    positions.readPosition = vi.fn(async () => {
       throw hostile
     })
 
@@ -1053,7 +1053,7 @@ describe('PositionBootstrapService', () => {
     'hard-halts an out-of-bounds rate with zero capacity (%s BPS)',
     async rateBps => {
       const { service, positions, rates, reconcile, hardHalt } = setup()
-      positions.readPosition = mock(async () => ({
+      positions.readPosition = vi.fn(async () => ({
         credit: 0n,
         debt: 0n,
         cashBalance: 0n,
@@ -1061,7 +1061,7 @@ describe('PositionBootstrapService', () => {
         totalExposure: 0n,
         activeOffer: undefined
       }))
-      rates.readRate = mock(async () => ({
+      rates.readRate = vi.fn(async () => ({
         mode: 'static' as const,
         rateBps,
         observationId: `static:${rateBps}`
@@ -1085,7 +1085,7 @@ describe('PositionBootstrapService', () => {
     const { service, rates, reconcile, hardHalt } = setup({
       configs: [config(), config(secondMarketId)]
     })
-    rates.readRate = mock(async () => {
+    rates.readRate = vi.fn(async () => {
       throw new TypeError('stale reference')
     })
 
@@ -1110,7 +1110,7 @@ describe('PositionBootstrapService', () => {
     const { service, rates, reconcile, hardHalt } = setup({
       configs: [config(), config(secondMarketId)]
     })
-    rates.readRate = mock(async id => {
+    rates.readRate = vi.fn(async id => {
       if (id === secondMarketId) throw new TypeError('stale reference')
       return { mode: 'static' as const, rateBps: 500n, observationId: 'static:500' }
     })
@@ -1130,10 +1130,10 @@ describe('PositionBootstrapService', () => {
 
   test('preserves the reference failure classification when strategy cleanup also fails', async () => {
     const { service, rates, make } = setup()
-    rates.readRate = mock(async () => {
+    rates.readRate = vi.fn(async () => {
       throw new TypeError('stale reference')
     })
-    make.hardHalt = mock(async () => {
+    make.hardHalt = vi.fn(async () => {
       throw new RangeError('cleanup reverted')
     })
 
@@ -1151,7 +1151,7 @@ describe('PositionBootstrapService', () => {
 
   test('halts and invalidates the strategy when the bootstrap decision rejects active offers', async () => {
     const { service, positions, rates, hardHalt } = setup()
-    positions.readPosition = mock(async () => ({
+    positions.readPosition = vi.fn(async () => ({
       credit: 0n,
       debt: 0n,
       cashBalance: 2_000n,
@@ -1164,7 +1164,7 @@ describe('PositionBootstrapService', () => {
         referenceObservationId: 'static:500'
       }
     }))
-    rates.readRate = mock(async () => ({
+    rates.readRate = vi.fn(async () => ({
       mode: 'static' as const,
       rateBps: 100n,
       observationId: 'static:100'
@@ -1186,7 +1186,7 @@ describe('PositionBootstrapService', () => {
     const { service, positions, readRate, reconcile, hardHalt } = setup({
       configs: [{ ...config(), acceptanceAssets: -1n }, config(secondMarketId)]
     })
-    const readPosition = mock(async (id: Hex) => ({
+    const readPosition = vi.fn(async (id: Hex) => ({
       credit: 0n,
       debt: 0n,
       cashBalance: 2_000n,
@@ -1221,7 +1221,7 @@ describe('PositionBootstrapService', () => {
     const { service, positions, make, readRate, reconcile } = setup({
       configs: [{ ...config(), acceptanceAssets: 1_001n }, config(secondMarketId)]
     })
-    const readPosition = mock(async (id: Hex) => ({
+    const readPosition = vi.fn(async (id: Hex) => ({
       credit: 0n,
       debt: 0n,
       cashBalance: 2_000n,
@@ -1235,7 +1235,7 @@ describe('PositionBootstrapService', () => {
       }
     }))
     positions.readPosition = readPosition
-    const hardHalt = mock(async () => {
+    const hardHalt = vi.fn(async () => {
       throw new RangeError('cleanup reverted')
     })
     make.hardHalt = hardHalt
@@ -1260,7 +1260,7 @@ describe('PositionBootstrapService', () => {
   test('completes before a failed reference read and stays stopped with auto-refill disabled', async () => {
     const { service, positions, rates, reconcile } = setup()
     let cycle = 0
-    positions.readPosition = mock(async () => {
+    positions.readPosition = vi.fn(async () => {
       cycle += 1
       return {
         credit: cycle === 1 ? 900n : 500n,
@@ -1279,7 +1279,7 @@ describe('PositionBootstrapService', () => {
             : undefined
       }
     })
-    const failedReadRate = mock(async () => {
+    const failedReadRate = vi.fn(async () => {
       throw new TypeError('reference unavailable')
     })
     rates.readRate = failedReadRate
@@ -1306,7 +1306,7 @@ describe('PositionBootstrapService', () => {
 
   test('stops dependent plans after a make failure', async () => {
     const { service, make } = setup({ configs: [config(), config(secondMarketId)] })
-    const failedReconcile = mock(async request => {
+    const failedReconcile = vi.fn(async request => {
       if (request.marketId === marketId) throw new RangeError('publish rejected')
     })
     make.reconcile = failedReconcile
@@ -1327,7 +1327,7 @@ describe('PositionBootstrapService', () => {
 
   test('reports a sanitized Mempool asset floor after publication validation fails', async () => {
     const { service, make } = setup()
-    make.reconcile = mock(async () => {
+    make.reconcile = vi.fn(async () => {
       throw new BootstrapMempoolValidationError([
         { rule: 'min_offer_assets_usd', minimumAssets: 100_000_000n }
       ])
@@ -1348,7 +1348,7 @@ describe('PositionBootstrapService', () => {
   test('resumes after initial completion when auto-refill is enabled', async () => {
     const { service, positions, reconcile } = setup({ configs: [config(marketId, true)] })
     let cycle = 0
-    positions.readPosition = mock(async () => {
+    positions.readPosition = vi.fn(async () => {
       cycle += 1
       return {
         credit: cycle === 1 ? 900n : 500n,
