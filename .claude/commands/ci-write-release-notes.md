@@ -9,40 +9,41 @@ with a comprehensive summary.
 
 The release tags are provided in the `RELEASE_TAGS` environment variable as a space-separated list.
 
-Tag format: `{app-name}-{version}` where version follows CalVer pattern `YYYY.MM.DD-N`
+Tag format: `{bot-name}-{version}` where version follows CalVer pattern `YYYY.MM.DD-N`
 
-Example: `curator-app-2025.10.16-1`
+Example: `market-making-2026.08.04-1`
 
-Loop through each tag and extract the app name and version. Skip any tags that don't match the
+Loop through each tag and extract the bot name and version. Skip any tags that don't match the
 expected pattern.
 
-### Step 2: Analyze Each App
+### Step 2: Analyze Each Bot
 
 For each release tag:
 
-1. **Find the previous release tag** for that app:
+1. **Find the previous release tag** for that bot:
 
    ```bash
-   git tag -l "{app}-*" --sort=-version:refname | head -5
+   git tag -l "{bot}-*" --sort=-version:refname | head -5
    ```
 
-2. **Compare the diff** between the newly-published tag and the previous one:
+2. **Compare the diff** between the newly-published tag and the previous one. Bots assemble their
+   behavior from the shared `packages/*` workspace, so include it alongside the bot's own tree:
 
    ```bash
-   git diff {previous-tag}...{new-tag} -- packages/{bot}
+   git diff {previous-tag}...{new-tag} -- bots/{bot} packages
    ```
 
 3. **Get commit messages** in the release range for context:
 
    ```bash
-   git log {previous-tag}...{new-tag} --oneline -- packages/{bot}
+   git log {previous-tag}...{new-tag} --oneline -- bots/{bot} packages
    ```
 
 4. **Extract PR numbers** from commit messages:
 
    ```bash
    # Get PR numbers from merge commits and PR references
-   git log {previous-tag}...{new-tag} --oneline -- packages/{bot} | \
+   git log {previous-tag}...{new-tag} --oneline -- bots/{bot} packages | \
      grep -oE '#[0-9]+' | \
      sort -u
    ```

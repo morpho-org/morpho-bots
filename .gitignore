@@ -3,14 +3,19 @@
 # Dependencies
 node_modules
 
-# Local env files
+# Local env files (any name usable with `docker run --env-file` may hold the maker key)
 .env
 .env.*
+*.env
 !.env.example
 
-# Local market-making configuration (examples remain trackable)
-**/market-making.yaml
-**/market-making.yml
+# Local market-making configuration under any market-making-named variant (`--config` accepts
+# arbitrary filenames and the file may hold the maker key). Workflow files and the committed
+# examples remain trackable. Name custom configs with "market-making" in the filename, or keep
+# them outside the repository tree entirely.
+**/*market-making*.yaml
+**/*market-making*.yml
+!.github/**
 !**/market-making.example.yaml
 !**/market-making.example.yml
 

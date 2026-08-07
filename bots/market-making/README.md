@@ -244,13 +244,179 @@ Version output remains available:
 bun run --filter @morpho-org/market-making-bot start -- --version
 ```
 
+## Docker
+
+The bot ships as a standalone Docker image whose entrypoint is the `mm` CLI itself, so every command
+and flag documented above is available as the container command; the default command is the verbose
+combined monitor (`start --verbose`). This section covers operator-run containers and the Docker Hub
+distribution; the Morpho-run Railway instance is documented under [Deploy](#deploy).
+Configuration follows the exact precedence documented under [Configuration](#configuration):
+environment variables passed to the container override values from a mounted YAML file, and either
+source alone is sufficient. The build context must be the repo root so the bun workspace
+(`packages/*`) resolves. The repo-root `.dockerignore` keeps every non-example YAML and `.env`
+file out of the build context — whatever filename `--config` points at — so a local configuration
+holding a private key is never baked into an image.
+
+The image pins `XDG_STATE_HOME=/state`, where the bot persists its durable offer-group ownership
+records. Writer deployments (`start`, `bootstrap`, `ladder`) must mount a volume at `/state` so
+that state outlives the container — the compose file below does this automatically. A recreated
+container without it forgets which live on-chain offer groups the bot owns, treats its own offers
+as foreign, and cannot clean them up. Read-only commands need no state volume.
+
+### Build
+
+```sh
+# From the repo root.
+docker build -f bots/market-making/Dockerfile -t market-making-bot .
+```
+
+On Apple Silicon add `--platform linux/amd64` when the image is destined for x86 servers, or keep
+the host platform for purely local runs.
+
+### Run with environment variables
+
+Pass any subset of the variables documented under
+[Environment variables](#environment-variables):
+
+```sh
+docker run --rm \
+  -e CHAIN_ID=8453 \
+  -e RPC_URL=https://base-rpc.example \
+  -e REFERENCE_RPC_URL=https://base-archive-rpc.example \
+  -e MAKER_ADDRESS=0x1111111111111111111111111111111111111111 \
+  -e MIDNIGHT_ADDRESS=0x2222222222222222222222222222222222222222 \
+  -e LOAN_ASSET_ADDRESS=0x3333333333333333333333333333333333333333 \
+  -e RATIFIER_ADDRESS=0x4444444444444444444444444444444444444444 \
+  -e MARKET_IDS=0x5555555555555555555555555555555555555555555555555555555555555555 \
+  -e REFERENCE_MARKET_ID=0x7777777777777777777777777777777777777777777777777777777777777777 \
+  -e NATIVE_RESERVE_WEI=10000000000000000 \
+  -e MAXIMUM_LEND_EXPOSURE_ASSETS=10000000000 \
+  -e MORPHO_API_BASE_URL=https://api.example \
+  -e ROUTER_API_BASE_URL=https://router.example \
+  market-making-bot --readonly setup-check
+```
+
+`docker run --env-file <file>` works with a file in [`.env.example`](./.env.example) syntax. Every
+line present in the file counts as a set variable — a `NAME=` line with an empty value overrides
+the YAML counterpart with emptiness and fails validation — so list only the variables to supply.
+Keep the file outside the repository tree (like `/etc/market-making.env` below): it holds the
+maker key, and only `.env*`/`*.env`-style names inside the tree are `.dockerignore`d out of image
+builds.
+
+### Run with a YAML file
+
+Mount the configuration read-only and select it explicitly:
+
+```sh
+docker run --rm \
+  -v "$PWD/bots/market-making/market-making.yaml:/config/market-making.yaml:ro" \
+  market-making-bot --config /config/market-making.yaml --readonly setup-check
+```
+
+Both sources combine freely — for example, keep `identity.makerPrivateKey` out of the file and add
+`-e MAKER_PRIVATE_KEY=0x…` only for write-mode commands. The container works from
+`/repo/bots/market-making`, so a file mounted at `/repo/bots/market-making/market-making.yaml` is
+also picked up by default discovery without `--config`. When keeping a custom-named config inside
+the repository tree, include `market-making` in its filename — only such names (and no non-example
+YAML at all, docker-side) are ignored by git, so an arbitrary `prod.yaml` holding the maker key
+could be committed by mistake.
+
+### docker compose
+
+[`docker-compose.yml`](./docker-compose.yml) runs the combined `start` monitor from a YAML file
+next to it plus optional environment overrides:
+
+```sh
+cd bots/market-making
+cp market-making.example.yaml market-making.yaml   # then edit values; chmod 600
+docker compose up --build --detach
+docker compose logs --follow
+```
+
+- The compose file bind-mounts `./market-making.yaml` read-only and fails loud when it is missing.
+- Every supported environment variable is declared as a null passthrough entry: it reaches the
+  container only when the invoking shell sets it, so unset variables never mask YAML values. Export
+  overrides before starting, e.g. `export MAKER_PRIVATE_KEY=0x…`.
+- `stop_grace_period` defaults to `15m` so shutdown cleanup — drain the in-flight cycle, then
+  cancel owned offers serially with each receipt bounded by `TRANSACTION_RECEIPT_TIMEOUT_MS`
+  (default 3 minutes, max 15) — can finish before compose escalates to SIGKILL. Export
+  `STOP_GRACE_PERIOD` to raise it for long receipt timeouts or many owned groups; `docker compose
+stop` delivers the same graceful SIGTERM the CLI handles everywhere else.
+
+### Publish to Docker Hub
+
+Publishing is release-driven. A GitHub release whose tag starts with `market-making-` (repo CalVer
+convention: `market-making-YYYY.MM.DD-N`) triggers the `Deploy market-making` workflow
+([`.github/workflows/deploy-market-making.yml`](../../.github/workflows/deploy-market-making.yml)),
+which builds the **tagged commit** from the repo root on an `ubuntu-latest` (`linux/amd64`) runner
+and pushes three tags to Docker Hub: the release tag verbatim (immutable), `latest` (moved unless
+the release is marked a prerelease), and `git-<shortsha>` for the built commit. The Slack
+announcement is sent by the publish workflow only after every image tag is pushed — the repo-wide
+release notifier deliberately skips market-making release events — so an announced release always
+has its image.
+
+To release, bump `version` in [`package.json`](./package.json) to the new CalVer value inside the
+PR (for example `2026.08.04-1`; increment the trailing `-N` for further same-day releases). On
+merge to `main`, [`tag-releases.yml`](../../.github/workflows/tag-releases.yml) — ported from
+morpho-apps — creates the `market-making-<version>` GitHub release with generated notes, using a
+GitHub App token precisely so the release event fires the publish workflow (GitHub never runs
+workflows for events raised with the default `GITHUB_TOKEN`), then dispatches
+[`claude-write-release-notes.yml`](../../.github/workflows/claude-write-release-notes.yml) to
+rewrite the notes into a reviewed summary. A non-CalVer version bump fails the run loud. A
+`release-market-making`-labeled merge produces a release the same way through
+`deploy-production.yml` after its [Railway deploy](#deploy) succeeds, so that release also
+publishes an image.
+
+Creating the release directly also works and publishes identically:
+
+```sh
+gh release create "market-making-$(date -u +%Y.%m.%d)-1" --generate-notes
+```
+
+Manual dispatch remains available as the escape hatch and for re-publishing; it builds the
+dispatched ref (defaults to `main` HEAD) and pushes the `tag` input (default `latest`) plus
+`git-<shortsha>`:
+
+```sh
+gh workflow run deploy-market-making.yml -f tag=latest
+```
+
+One-time repository setup: create the `market-making-dockerhub` GitHub Environment holding the
+publish configuration (distinct from `market-making-production`, which holds the [Railway
+deploy](#deploy) credentials). In its deployment branches/tags policy allow branch `main` **and**
+tags matching `market-making-*` — release runs execute on the tag ref, so a branch-only policy
+rejects them, while the tag pattern keeps the token unreachable from arbitrary PR branches. The
+release
+automation additionally needs the org GitHub App credentials `GIT_BOT_CLIENT_ID` /
+`GIT_BOT_PRIVATE_KEY` (the same pair morpho-apps uses) available to this repository, and
+optionally `ANTHROPIC_API_KEY` — without it the notes-rewrite step skips cleanly and the
+GitHub-generated notes remain.
+
+| Environment entry      | Kind     | Requirement and behavior                                                                                                                          |
+| ---------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DOCKERHUB_REPOSITORY` | Variable | Required lowercase `<namespace>/<name>` Docker Hub repository, e.g. `morphoorg/market-making-bot`. Registry hosts and embedded tags are rejected. |
+| `DOCKERHUB_USERNAME`   | Secret   | Required Docker Hub account with write access to the repository.                                                                                  |
+| `DOCKERHUB_TOKEN`      | Secret   | Required Docker Hub access token (write scope); it reaches `docker login` via stdin and never appears in argv or workflow logs.                   |
+
+A deployed host then runs the published image with the exact parametrization documented above —
+substitute a `market-making-YYYY.MM.DD-N` release tag for `latest` to pin an immutable version. The
+named volume keeps offer-group ownership across re-pulls and recreations:
+
+```sh
+docker run --pull always --detach --restart unless-stopped \
+  --env-file /etc/market-making.env \
+  -v market-making-state:/state \
+  <namespace>/<name>:latest start
+```
+
 ## Deploy
 
 The package owns its production [Dockerfile](./Dockerfile), local
 [docker-compose.yml](./docker-compose.yml), and idempotent
 [`scripts/deploy-railway.ts`](./scripts/deploy-railway.ts) entrypoint. The Docker build context is the
 repository root so Bun can resolve every workspace dependency; the image starts the combined setup,
-bootstrap, and ladder monitor.
+bootstrap, and ladder monitor. This is the Morpho-run Railway path; operator-run containers and the
+Docker Hub distribution are documented under [Docker](#docker) and share the same image.
 
 A full deployment creates the `market-making` Railway service, selects the package Dockerfile,
 provisions a persistent volume at `/state`, and writes the effective environment configuration
@@ -279,9 +445,8 @@ are disabled. `RAILWAY_ENVIRONMENT` defaults to `production`. CI uses `DEPLOY_ON
 runs rely on the Dockerfile path, runtime variables, and persistent volume established by a full run;
 they neither read nor mutate that provisioned configuration.
 
-The local Compose service uses the same `/state` ownership path through a named volume, requires both
-strategy arrays, and supplies the runtime timeout defaults when the corresponding host variables are
-absent.
+The local Compose service uses the same `/state` ownership path through a named volume; its YAML
+mount and environment passthrough behavior are documented under [docker compose](#docker-compose).
 
 Both modes snapshot the previous deployment, start a detached upload, and poll the new deployment to
 a terminal state. A GitHub release is created only after Railway reports `SUCCESS`; failed, crashed,

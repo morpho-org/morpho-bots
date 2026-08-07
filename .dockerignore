@@ -8,3 +8,13 @@
 **/*.log
 **/.env
 **/.env.*
+# Env files under any name (`docker run --env-file` accepts arbitrary filenames such as
+# market-making.env) hold secrets like MAKER_PRIVATE_KEY and must never enter the build context.
+**/*.env
+# No non-example YAML enters the build context: market-making configuration is YAML, may hold a
+# private key, and `--config` accepts any operator-chosen filename — not just the default
+# market-making.yaml. Images need no YAML at runtime; committed *.example.* templates stay copyable.
+**/*.yaml
+**/*.yml
+!**/*.example.yaml
+!**/*.example.yml

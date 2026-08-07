@@ -1,0 +1,215 @@
+name: Tag releases
+
+# Ported from morpho-apps' tag-releases.yml: merging a PR to main that bumps an allowlisted bot's
+# package.json `version` to a new CalVer value (YYYY.MM.DD-N) creates that bot's GitHub release
+# `<bot>-<version>`. The release is created with a GitHub App installation token so it FIRES
+# downstream `release` workflows — deploy-market-making.yml publishes the image and the
+# post-publish step announces it; tag/release events created with the default GITHUB_TOKEN are
+# intentionally blocked by GitHub from triggering further workflows.
+#
+# ONLY market-making releases this way. The Railway bots (blue-liquidation, midnight-liquidation,
+# midnight-crossed-books) release through deploy-production.yml's release-* label flow, which cuts
+# their `<bot>-*` tag strictly AFTER a successful production deploy — a version-bump release here
+# would announce a production release that was never deployed. Extending the allowlist below (and
+# the paths filter) is a deliberate decision, not a directory rename away. Market-making's own
+# label flow (Release-market-making in deploy-production.yml, after its Railway deploy) coexists
+# with this version-bump path: both mint the App token and both trigger the image publish. A merge
+# carrying BOTH a version bump and the release-market-making label yields entirely to the label
+# flow (see the deploy-label check below) so one merge never races itself into two same-day tags,
+# and the already-exists guard keeps any remaining origin overlap from double-creating a tag.
+# Version changes are detected against the pre-push baseline (github.event.before), not HEAD~1,
+# so a bump buried in a multi-commit push is still released.
+#
+# Adaptations from the morpho-apps original: apps/* → bots/*, depot runners → ubuntu-latest, an
+# allowlist instead of a static-version skip list, and initial notes are GitHub-generated from the
+# bot's previous tag instead of a placeholder; the dispatched Claude workflow then rewrites the
+# notes in place (morpho-apps posts to Slack only after that rewrite).
+#
+# An allowlisted version bump that is not CalVer fails the run loud — before any release is
+# created — so drive-by bumps cannot slip through unreleased. Requires org App credentials
+# GIT_BOT_CLIENT_ID / GIT_BOT_PRIVATE_KEY (the same pair morpho-apps uses).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'bots/market-making/package.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  create-releases:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The deploy-label lookup reads the merged PR's labels.
+      pull-requests: read
+    outputs:
+      release_tags: ${{ steps.create.outputs.tags }}
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Fetch all tags
+        run: git fetch --tags --prune --force
+
+      # A merge that carries the `release-market-making` label is owned by deploy-production.yml:
+      # it cuts the release only AFTER the Railway deploy succeeds, and that release publishes the
+      # image identically. Running here too would race it — a release/image before the deploy
+      # settles, or two same-day tags for one commit — so this flow yields to the label flow.
+      - name: Check deploy label
+        id: label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # Labels of the PR whose merge produced this commit.
+          labels="$(gh api "repos/$REPO/commits/$SHA/pulls" --jq '.[].labels[].name' 2>/dev/null || true)"
+          if echo "$labels" | grep -qx 'release-market-making'; then
+            echo "deploy_labeled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy_labeled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Mint a GitHub App installation token so the release/tag events fire downstream workflows
+      # (image publish, Slack notify). See the header for why the default GITHUB_TOKEN cannot.
+      - name: Mint app installation token
+        id: app-token
+        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2.1.4
+        with:
+          app-id: ${{ secrets.GIT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.GIT_BOT_PRIVATE_KEY }}
+
+      - name: Check and create releases
+        id: create
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          DEPLOY_LABELED: ${{ steps.label.outputs.deploy_labeled }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+
+          # CalVer pattern: YYYY.MM.DD-N (N must be >= 1)
+          CALVER_PATTERN="^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[1-9][0-9]*$"
+          # Bots that release via version bumps. The Railway bots are deliberately absent: their
+          # releases are cut by deploy-production.yml only after a successful deploy (see header).
+          RELEASE_BUMP_BOTS="market-making"
+
+          # Versions are compared against the pre-push main SHA, not HEAD~1: a multi-commit push
+          # (batched or rebase merge) may carry the bump in an earlier commit, where HEAD~1 would
+          # silently see no change. Fall back to HEAD~1 when the event baseline is absent or
+          # unreachable (e.g. a forced history rewrite).
+          PREV_COMMIT=""
+          if [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ] \
+            && git cat-file -e "$BEFORE_SHA" 2>/dev/null; then
+            PREV_COMMIT="$BEFORE_SHA"
+          else
+            PREV_COMMIT=$(git rev-parse HEAD~1)
+            echo "Push baseline unavailable; falling back to HEAD~1 ($PREV_COMMIT)"
+          fi
+
+          invalid_versions=""
+          pending_releases=""
+
+          # Phase 1: collect and validate every bumped version. No release is created until the
+          # whole push validates — releases fire downstream image/Slack workflows, so one bad bump
+          # must not leave partial release side effects behind a run that fails loud.
+          for bot_dir in bots/*/; do
+            if [ -f "${bot_dir}package.json" ]; then
+              bot_name=$(basename "$bot_dir")
+
+              current_version=$(jq -r .version "${bot_dir}package.json")
+              prev_version=$(git show "${PREV_COMMIT}:${bot_dir}package.json" 2>/dev/null | jq -r .version || echo "")
+
+              if [ "$current_version" != "$prev_version" ] && [ -n "$current_version" ] && [ "$current_version" != "null" ]; then
+                if [[ " $RELEASE_BUMP_BOTS " != *" $bot_name "* ]]; then
+                  echo "Skipping $bot_name ($current_version): releases for it are cut by deploy-production.yml after deploy"
+                  continue
+                fi
+                if [ "$DEPLOY_LABELED" = "true" ]; then
+                  echo "Skipping $bot_name ($current_version): release-market-making label present — deploy-production.yml cuts the release after its Railway deploy"
+                  continue
+                fi
+                if [[ $current_version =~ $CALVER_PATTERN ]]; then
+                  pending_releases="${pending_releases}${pending_releases:+ }${bot_name}:${current_version}"
+                else
+                  echo "Invalid CalVer format for $bot_name: $current_version (expected YYYY.MM.DD-N)"
+                  invalid_versions="${invalid_versions}${bot_name}: ${current_version}\n"
+                fi
+              fi
+            fi
+          done
+
+          if [ -n "$invalid_versions" ]; then
+            echo -e "\nERROR: invalid CalVer format in the following version bumps (no releases created):"
+            echo -e "$invalid_versions"
+            echo -e "\nExpected format: YYYY.MM.DD-N (e.g., 2026.08.04-1)"
+            exit 1
+          fi
+
+          created_tags=""
+
+          # Phase 2: create the fully validated releases. Bot directory names never contain `:`,
+          # so `bot:version` entries split unambiguously.
+          for entry in $pending_releases; do
+            bot_name="${entry%%:*}"
+            current_version="${entry#*:}"
+            tag_name="${bot_name}-${current_version}"
+            echo "Processing release: $tag_name"
+
+            if gh release view "$tag_name" &>/dev/null; then
+              echo "Release already exists: $tag_name (skipping)"
+            else
+              # `|| true` guards against SIGPIPE aborting the job under `set -o pipefail`
+              # (git is killed when head closes the pipe early once there are many tags).
+              prev_tag="$(git tag -l "${bot_name}-*" --sort=-version:refname | head -n 1 || true)"
+              # Target the exact triggering commit, not `main`: the branch pointer is resolved
+              # server-side at API-call time, so a commit landing between the push and this call
+              # would silently ship code the release never reviewed.
+              gh release create "$tag_name" \
+                --title "${bot_name} v${current_version}" \
+                --target "$GITHUB_SHA" \
+                --generate-notes \
+                ${prev_tag:+--notes-start-tag "$prev_tag"}
+
+              echo "Created release: $tag_name"
+              created_tags="${created_tags}${created_tags:+ }${tag_name}"
+            fi
+          done
+
+          if [ -n "$created_tags" ]; then
+            echo -e "\nSuccessfully created releases: ${created_tags}"
+            echo "tags=${created_tags}" >> "$GITHUB_OUTPUT"
+          else
+            echo -e "\nNo new releases created (all versions unchanged or already released)"
+            echo "tags=" >> "$GITHUB_OUTPUT"
+          fi
+
+  # repository_dispatch events fired with the default GITHUB_TOKEN DO trigger workflows (unlike
+  # tag/release events), so no App token is needed here.
+  dispatch-write-release-notes:
+    needs: create-releases
+    if: needs.create-releases.outputs.release_tags != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Dispatch write-release-notes event
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAGS: ${{ needs.create-releases.outputs.release_tags }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${{ github.repository }}/dispatches" \
+            --method POST \
+            --field event_type='write-release-notes' \
+            --field "client_payload[release_tags]=$TAGS"

@@ -1,12 +1,31 @@
 # syntax=docker/dockerfile:1
-# The build context is the repository root so every workspace dependency remains available.
+# Bun-workspace image for the market-making bot. The build context MUST be the repo root so the
+# workspace packages (packages/*) resolve — docker-compose.yml sets `context: ../..`, the
+# deploy-market-making GitHub Actions workflow builds from the repo root for Docker Hub, and
+# scripts/deploy-railway.ts points Railway at this file via RAILWAY_DOCKERFILE_PATH. State is
+# on-chain plus the Morpho/Router APIs, so there is no indexer/database sidecar to build.
 FROM oven/bun:1.3.12-slim
 WORKDIR /repo
 
+# Manifests + workspace members first, so `bun install` is layer-cached. All members' package.json are
+# needed for bun to resolve the `workspace:*` links.
 COPY package.json bun.lock bunfig.toml ./
 COPY packages ./packages
 COPY bots ./bots
 RUN bun install --frozen-lockfile
 
+# The entrypoint is the `mm` CLI itself, so the container command selects the subcommand and flags
+# (e.g. `--readonly setup-check`, `--config /config/market-making.yaml start`). Configuration comes
+# from environment variables and/or a mounted YAML file; a set variable overrides its YAML value.
+# The workdir is the package dir, so default discovery also finds a market-making.yaml mounted
+# there. The default command is the verbose combined setup, bootstrap, and ladder monitor — Railway
+# runs this CMD as provisioned by scripts/deploy-railway.ts.
+#
+# Durable offer-group ownership state lives under XDG_STATE_HOME (see the *-group-ownership utils).
+# Pin it to a stable mountable path: writer deployments MUST mount a volume at /state (Railway
+# provisions one; compose declares one), or a recreated container forgets which live on-chain offer
+# groups the bot owns.
+ENV XDG_STATE_HOME=/state
 WORKDIR /repo/bots/market-making
-CMD ["bun", "run", "start", "--", "start", "--verbose"]
+ENTRYPOINT ["bun", "src/index.ts"]
+CMD ["start", "--verbose"]
