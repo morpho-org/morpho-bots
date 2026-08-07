@@ -133,6 +133,7 @@ const ensureService = async () => {
   const existingService = services.find(service => service.name === SERVICE)
   if (existingService) return { service: existingService, isFreshService: false }
 
+  assertFreshRailwayReferenceProvisioning(Bun.env, true)
   const { data, error } = await tryCatch(
     Promise.resolve($`railway add --service ${SERVICE} --json`.quiet().text())
   )
@@ -271,8 +272,7 @@ await assertCli()
 await ensureContext()
 
 if (!DEPLOY_ONLY) {
-  const { service, isFreshService } = await ensureService()
-  assertFreshRailwayReferenceProvisioning(Bun.env, isFreshService)
+  const { service } = await ensureService()
 
   await setRuntimeVariable(['RAILWAY_DOCKERFILE_PATH', DOCKERFILE_PATH])
   await setRuntimeVariable(['XDG_STATE_HOME', STATE_MOUNT_PATH])

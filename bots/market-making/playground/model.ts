@@ -203,8 +203,12 @@ export const deriveBootstrapGraphicModels = (items: BootstrapInput[]): Bootstrap
   parseBootstrap(items).map(item => {
     const minimum = BigInt(item.minimumRateBps)
     const maximum = BigInt(item.maximumRateBps)
-    const quoted = (minimum + maximum) / 2n
-    const reference = quoted - BigInt(item.premiumBps)
+    const premium = BigInt(item.premiumBps)
+    const reference =
+      item.targetRate.strategy === 'hardcoded'
+        ? BigInt(item.targetRate.hardcodedRateBps)
+        : (minimum + maximum) / 2n - premium
+    const quoted = reference + premium
     if (
       reference <= 0n ||
       reference < minimum ||
@@ -296,8 +300,10 @@ export const generateLadderGraphicModels = (
     )[0]!
     const minimum = config.minimumRateBps
     const maximum = config.maximumRateBps
-    const center = (minimum + maximum) / 2n
-    const reference = center - config.quotePremiumBps
+    const reference =
+      input.targetRate.strategy === 'hardcoded'
+        ? BigInt(input.targetRate.hardcodedRateBps)
+        : (minimum + maximum) / 2n - config.quotePremiumBps
     if (reference <= 0n || reference < minimum || reference > maximum) {
       throw new PreviewGenerationError(
         'Ladder derived reference and center rates must remain inside configured bounds'

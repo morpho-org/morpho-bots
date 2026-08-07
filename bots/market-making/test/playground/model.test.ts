@@ -87,6 +87,24 @@ describe('bootstrap + ladder only playground follow-up', () => {
     expect(() => deriveBootstrapGraphicModels(state.bootstrap)).toThrow('configured bounds')
   })
 
+  test('renders hardcoded target rates as the preview reference', () => {
+    const state = createDefaultPlaygroundState()
+    state.bootstrap[0]!.targetRate = { strategy: 'hardcoded', hardcodedRateBps: '400' }
+    state.bootstrap[0]!.premiumBps = '-50'
+    state.ladder[0]!.targetRate = { strategy: 'hardcoded', hardcodedRateBps: '500' }
+    state.ladder[0]!.quotePremiumBps = '50'
+    state.ladder[0]!.rungCount = '2'
+
+    expect(deriveBootstrapGraphicModels(state.bootstrap)[0]).toMatchObject({
+      referenceRateBps: '400',
+      quotedRateBps: '350'
+    })
+    expect(generateLadderGraphicModels(state.ladder)[0]).toMatchObject({
+      referenceRateBps: '500',
+      centerRateBps: '550'
+    })
+  })
+
   test('rejects a deterministic ladder reference outside its own configured bounds', () => {
     const state = createDefaultPlaygroundState()
     state.ladder[0]!.quotePremiumBps = '-1000'

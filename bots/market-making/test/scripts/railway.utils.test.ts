@@ -102,6 +102,17 @@ describe('Railway CLI output parsing', () => {
     ).not.toThrow()
   })
 
+  test('checks fresh-service references before Railway can create the service', () => {
+    const deploy = readFileSync(resolve(import.meta.dir, '../../scripts/deploy-railway.ts'), 'utf8')
+
+    expect(
+      deploy.indexOf('assertFreshRailwayReferenceProvisioning(Bun.env, true)')
+    ).toBeGreaterThan(-1)
+    expect(deploy.indexOf('assertFreshRailwayReferenceProvisioning(Bun.env, true)')).toBeLessThan(
+      deploy.indexOf('railway add --service')
+    )
+  })
+
   test('synchronizes every optional variable with explicit safe defaults', () => {
     const variables = Object.fromEntries(
       synchronizedOptionalRailwayVariables({
