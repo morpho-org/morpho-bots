@@ -37,10 +37,10 @@ its `github-pages` environment for deployment status.
 ## Run
 
 ```sh
-bun run --filter @morpho-org/market-making-bot start -- setup-check
+pnpm --filter @morpho-org/market-making-bot run start -- setup-check
 
 # Address-only setup inspection: MAKER_PRIVATE_KEY may be omitted.
-bun run --filter @morpho-org/market-making-bot start -- --readonly setup-check
+pnpm --filter @morpho-org/market-making-bot run start -- --readonly setup-check
 
 # Explicit signer sources (root options precede the command).
 bun run --filter @morpho-org/market-making-bot start -- --private-key '<key>' setup-check
@@ -62,49 +62,49 @@ place secrets in argv, where process listings and shell history may expose them.
 
 ```sh
 # Repeat read-only readiness checks every minute until SIGINT/SIGTERM.
-bun run --filter @morpho-org/market-making-bot start -- setup-check --monitor
+pnpm --filter @morpho-org/market-making-bot run start -- setup-check --monitor
 
 # Emit compact JSON Lines for automation instead of the default human-readable output.
-bun run --filter @morpho-org/market-making-bot start -- --json setup-check
+pnpm --filter @morpho-org/market-making-bot run start -- --json setup-check
 
 # One live position-bootstrap cycle.
-bun run --filter @morpho-org/market-making-bot start -- bootstrap
+pnpm --filter @morpho-org/market-making-bot run start -- bootstrap
 
 # One address-only cycle that logs desired make operations without submitting them.
-bun run --filter @morpho-org/market-making-bot start -- --readonly bootstrap
+pnpm --filter @morpho-org/market-making-bot run start -- --readonly bootstrap
 
 # Repeat bootstrap every minute; SIGINT/SIGTERM drains the current cycle and removes owned offers.
-bun run --filter @morpho-org/market-making-bot start -- bootstrap --monitor
+pnpm --filter @morpho-org/market-making-bot run start -- bootstrap --monitor
 
 # Stream full safe diagnostics and emit publication/cancellation hashes as soon as submitted.
-bun run --filter @morpho-org/market-making-bot start -- bootstrap --monitor --verbose
+pnpm --filter @morpho-org/market-making-bot run start -- bootstrap --monitor --verbose
 
 # Exercise the complete monitor and cleanup lifecycle without signing or submitting.
-bun run --filter @morpho-org/market-making-bot start -- --readonly bootstrap --monitor
+pnpm --filter @morpho-org/market-making-bot run start -- --readonly bootstrap --monitor
 
 # Validate and continuously render ladder decisions without loading a private key or submitting.
-bun run --filter @morpho-org/market-making-bot start -- ladder --monitor --verbose --readonly
+pnpm --filter @morpho-org/market-making-bot run start -- ladder --monitor --verbose --readonly
 
 # Sign, broadcast, and confirm one ladder reconciliation cycle.
-bun run --filter @morpho-org/market-making-bot start -- ladder
+pnpm --filter @morpho-org/market-making-bot run start -- ladder
 
 # Continuously reconcile the live ladder and remove owned offers on SIGINT/SIGTERM.
-bun run --filter @morpho-org/market-making-bot start -- ladder --monitor --verbose
+pnpm --filter @morpho-org/market-making-bot run start -- ladder --monitor --verbose
 
 # Run setup checks, bootstrap, and ladder monitoring together until SIGINT/SIGTERM.
-bun run --filter @morpho-org/market-making-bot start -- start --verbose
+pnpm --filter @morpho-org/market-making-bot run start -- start --verbose
 
 # Exercise the same combined lifecycle without signing or submitting transactions.
-bun run --filter @morpho-org/market-making-bot start -- --readonly start --verbose
+pnpm --filter @morpho-org/market-making-bot run start -- --readonly start --verbose
 
 # Cancel every active offer group for the configured maker.
-bun run --filter @morpho-org/market-making-bot start -- invalidate
+pnpm --filter @morpho-org/market-making-bot run start -- invalidate
 
 # Cancel one explicit offer group, even when it has not been indexed by the API.
-bun run --filter @morpho-org/market-making-bot start -- invalidate 0x<64-hex-characters>
+pnpm --filter @morpho-org/market-making-bot run start -- invalidate 0x<64-hex-characters>
 
 # Preview the active groups that maker-wide invalidation would cancel.
-bun run --filter @morpho-org/market-making-bot start -- invalidate --readonly
+pnpm --filter @morpho-org/market-making-bot run start -- invalidate --readonly
 ```
 
 Success exits zero and writes human-readable output to standard output. Add the root `--json` flag for
@@ -235,13 +235,13 @@ Run the exact read-only monitor command first to inspect whether current cash/cr
 produces a lower side, a higher side, or both:
 
 ```sh
-bun run --filter @morpho-org/market-making-bot start -- ladder --monitor --verbose --readonly
+pnpm --filter @morpho-org/market-making-bot run start -- ladder --monitor --verbose --readonly
 ```
 
 Version output remains available:
 
 ```sh
-bun run --filter @morpho-org/market-making-bot start -- --version
+pnpm --filter @morpho-org/market-making-bot run start -- --version
 ```
 
 ## Deploy
@@ -318,13 +318,13 @@ example filename.
 
 ```sh
 # Explicit file; relative paths resolve from the invocation working directory.
-bun run --filter @morpho-org/market-making-bot start -- --config ./market-making.yml setup-check
+pnpm --filter @morpho-org/market-making-bot run start -- --config ./market-making.yml setup-check
 
 # Default discovery in the current working directory.
-bun run --filter @morpho-org/market-making-bot start -- setup-check
+pnpm --filter @morpho-org/market-making-bot run start -- setup-check
 
 # Address-only mode works with either configuration source.
-bun run --filter @morpho-org/market-making-bot start -- --readonly setup-check
+pnpm --filter @morpho-org/market-making-bot run start -- --readonly setup-check
 ```
 
 ### Environment variables

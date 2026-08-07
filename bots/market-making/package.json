@@ -20,7 +20,7 @@
     "test:e2e": "bun test test/e2e",
     "typecheck": "tsc --noEmit",
     "jsdoc:check": "bun scripts/check-jsdoc.ts",
-    "jsdoc:build": "bun run jsdoc:check && typedoc --options typedoc.json"
+    "jsdoc:build": "pnpm run jsdoc:check && typedoc --options typedoc.json"
   },
   "dependencies": {
     "@aws-sdk/client-kms": "3.1101.0",

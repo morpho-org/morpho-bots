@@ -27,9 +27,9 @@ The upstream schemas are checked in so builds never depend on network access:
 Regenerate types after updating either schema:
 
 ```sh
-bun run --filter @morpho-org/midnight-crossed-books generate:api
-bun format
-bun run --filter @morpho-org/midnight-crossed-books typecheck
+pnpm --filter @morpho-org/midnight-crossed-books run generate:api
+pnpm format
+pnpm --filter @morpho-org/midnight-crossed-books run typecheck
 ```
 
 The generated files live under each infrastructure adapter's `generated/` directory and are not edited by hand.
@@ -52,14 +52,14 @@ The generated files live under each infrastructure adapter's `generated/` direct
 ```sh
 RPC_URL=https://… DEPLOYER_PRIVATE_KEY=0x… \
 MIDNIGHT_ADDRESS=0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A \
-bun run --filter @repo/contracts deploy:crossed-books-resolver
+pnpm --filter @repo/contracts run deploy:crossed-books-resolver
 ```
 
 ## Run
 
 ```sh
 CHAIN_ID=8453 RPC_URL=https://… RESOLVER_PRIVATE_KEY=0x… \
-bun run --filter @morpho-org/midnight-crossed-books start
+pnpm --filter @morpho-org/midnight-crossed-books run start
 ```
 
 The signer policy pins chain, resolver, `resolve` selector, zero ETH value, calldata, gas, and fee ceilings. The pending queue manages nonces and replacement. Every transaction is simulated byte-for-byte before submission.
@@ -72,7 +72,7 @@ Railway:
 ```sh
 RAILWAY_PROJECT_ID=… RAILWAY_ENVIRONMENT=staging \
 RPC_URL=https://… RESOLVER_PRIVATE_KEY=0x… \
-bun run --filter @morpho-org/midnight-crossed-books deploy:railway
+pnpm --filter @morpho-org/midnight-crossed-books run deploy:railway
 ```
 
 CI subsequently runs the same command with `DEPLOY_ONLY=true`, so GitHub holds only a

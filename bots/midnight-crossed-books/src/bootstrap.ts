@@ -64,7 +64,7 @@ export async function createApplication(environment: Record<string, string | und
     chainClient,
     config.resolver,
     'CrossedBooksResolver',
-    'deploy it with `bun run --filter @repo/contracts deploy:crossed-books-resolver`'
+    'deploy it with `pnpm --filter @repo/contracts run deploy:crossed-books-resolver`'
   )
 
   const queue = createPendingQueue({

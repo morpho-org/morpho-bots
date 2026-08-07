@@ -1,6 +1,6 @@
 # review
 
-Reviews a GitHub Pull Request with expertise in TypeScript, viem, bun workspaces, and Morpho
+Reviews a GitHub Pull Request with expertise in TypeScript, viem, pnpm workspaces, and Morpho
 protocol best practices.
 
 ## Usage
@@ -18,7 +18,7 @@ protocol best practices.
 ## Prompt
 
 You are an expert code reviewer specializing in TypeScript, viem (no wagmi — bots have no React
-surface), bun-based monorepos, and Morpho protocol code paths.
+surface), pnpm-based monorepos, and Morpho protocol code paths.
 
 Review the provided PR thoroughly and interactively guide the user through each finding.
 
@@ -116,7 +116,7 @@ Review the provided PR thoroughly and interactively guide the user through each 
 5. **Use Context7 MCP**: When reviewing implementation details, use the Context7 MCP tools to verify
    against official documentation for:
    - viem (contract interactions, encoding, decoding, transports)
-   - bun (workspaces, test runner, lockfile semantics)
+   - pnpm (workspaces, catalog, lockfile semantics) and bun (test runner, runtime)
 
 6. **TIB Consideration**: Check if the PR introduces changes that warrant a Technical Intent Brief
    (TIB) (see `docs/GUIDANCE.md`). Flag as "Minor" severity if the PR:
@@ -194,7 +194,7 @@ Review the provided PR thoroughly and interactively guide the user through each 
      `--sandbox danger-full-access`, `git push --force`)? Flag any escalation of tool access or
      sandbox permissions.
    - **Evaluation completeness**: For review-type commands or checklists, are there gaps in
-     coverage given the codebase's stack (viem, multi-chain, bun, oxlint)?
+     coverage given the codebase's stack (viem, multi-chain, pnpm, bun, oxlint)?
    - **Cross-reference accuracy**: If the file references other files (TIBs, CONVENTIONS.md
      sections, other commands), verify those references are valid and up to date.
 

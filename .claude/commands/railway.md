@@ -24,7 +24,7 @@ and redeploys that bot's services. Secrets come from the bot's `.env.local`.
 
    ```bash
    set -a; source bots/<bot>/.env.local; set +a
-   bun run --filter @morpho-org/<bot> deploy:railway
+   pnpm --filter @morpho-org/<bot> run deploy:railway
    ```
 
 3. Success = the script prints `SUCCESS` for each service. Then verify with `logs`.
