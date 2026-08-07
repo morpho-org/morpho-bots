@@ -1,6 +1,6 @@
 import type { Address, Hex } from 'viem'
 
-import { mkdir, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { bytesToHex, hexToBytes, isHex, keccak256, size, stringToHex } from 'viem'
@@ -161,13 +161,13 @@ const strategyId = (config: LadderOwnershipConfig) =>
     )
   )
 
-const legacyStrategyId = (config: LadderOwnershipConfig) =>
+const legacyStrategyId = (maker: Address, marketIds: readonly Hex[]) =>
   keccak256(
     stringToHex(
       JSON.stringify({
         strategy: 'ladder',
-        maker: config.maker,
-        marketIds: config.strategyMarketIds.map(canonicalId).toSorted()
+        maker,
+        marketIds: marketIds.map(canonicalId).toSorted()
       })
     )
   )
@@ -211,7 +211,7 @@ export const createLadderGroupOwnership = (
   dependencies: LadderOwnershipDependencies = {}
 ) => {
   const strategy = strategyId(config)
-  const legacyStrategy = legacyStrategyId(config)
+  const legacyStrategy = legacyStrategyId(config.maker, config.strategyMarketIds)
   const directory =
     dependencies.stateDirectory ??
     join(process.env.XDG_STATE_HOME ?? join(homedir(), '.local', 'state'), 'morpho-market-making')
@@ -232,7 +232,7 @@ export const createLadderGroupOwnership = (
         { encoding: 'utf8', mode: 0o600, flag: 'wx' }
       )
       await rename(temporary, path)
-      await rm(legacyPath, { force: true })
+      for (const state of await discoverLegacyStates()) await rm(state.path, { force: true })
     } finally {
       await rm(temporary, { force: true })
     }
@@ -240,7 +240,8 @@ export const createLadderGroupOwnership = (
 
   const readPath = async (
     statePath: string,
-    expectedStrategy: Hex
+    expectedStrategy: Hex,
+    ignoreNonLadderState = false
   ): Promise<OwnedLadderPublication[] | undefined> => {
     let metadata
     try {
@@ -257,6 +258,7 @@ export const createLadderGroupOwnership = (
     }
     try {
       const value = JSON.parse(await readFile(statePath, 'utf8')) as Record<string, unknown>
+      if (ignoreNonLadderState && !Array.isArray(value.publications)) return undefined
       if (
         value.version !== 1 ||
         value.strategy !== expectedStrategy ||
@@ -271,10 +273,54 @@ export const createLadderGroupOwnership = (
     }
   }
 
+  const discoverLegacyStates = async () => {
+    let names: string[]
+    try {
+      names = await readdir(directory)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+      throw new LadderAdapterError('group-ownership-state')
+    }
+
+    const states: { path: string; publications: OwnedLadderPublication[] }[] = []
+    for (const name of names.toSorted()) {
+      const match = /^(0x[0-9a-f]{64})\.json$/.exec(name)
+      if (!match) continue
+      const candidateStrategy = match[1] as Hex
+      const candidatePath = join(directory, name)
+      if (candidatePath === path) continue
+      const publications = await readPath(candidatePath, candidateStrategy, true)
+      if (publications === undefined) continue
+      const marketIds = [...new Set(publications.map(publication => publication.marketId))]
+      if (
+        candidatePath !== legacyPath &&
+        (marketIds.length === 0 || legacyStrategyId(config.maker, marketIds) !== candidateStrategy)
+      ) {
+        continue
+      }
+      states.push({ path: candidatePath, publications })
+    }
+    return states
+  }
+
+  const legacyPublications = async () => {
+    const publications = new Map<string, OwnedLadderPublication>()
+    for (const state of await discoverLegacyStates()) {
+      for (const publication of state.publications) {
+        const key = publication.groups
+          .map(group => group.groupId)
+          .toSorted()
+          .join(':')
+        publications.set(key, publication)
+      }
+    }
+    return [...publications.values()]
+  }
+
   const read = async (): Promise<OwnedLadderPublication[]> => {
     const publications = await readPath(path, strategy)
     if (publications !== undefined) return publications
-    return (await readPath(legacyPath, legacyStrategy)) ?? []
+    return legacyPublications()
   }
 
   const publicationKey = (groups: readonly LadderGroupReference[]) =>
@@ -286,12 +332,13 @@ export const createLadderGroupOwnership = (
   return {
     /** Migrates valid legacy ownership into the stable namespace. @returns Completion after atomic durable migration. */
     migrate: async (): Promise<void> => {
-      if ((await readPath(path, strategy)) !== undefined) {
-        await rm(legacyPath, { force: true })
+      const publications = await readPath(path, strategy)
+      if (publications !== undefined) {
+        for (const state of await discoverLegacyStates()) await rm(state.path, { force: true })
         return
       }
-      const publications = await readPath(legacyPath, legacyStrategy)
-      if (publications !== undefined) await write(publications)
+      const legacy = await legacyPublications()
+      if (legacy.length > 0) await write(legacy)
     },
     /** Reads every reserved or confirmed publication. @returns Canonical durable publication intents. */
     read,

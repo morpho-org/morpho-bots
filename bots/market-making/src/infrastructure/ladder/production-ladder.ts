@@ -65,6 +65,21 @@ type ProductionLadderAdapters = {
 
 const minimum = (left: bigint, right: bigint) => (left < right ? left : right)
 
+/**
+ * Deduplicates concurrent async work while allowing a fresh attempt after the active call settles.
+ * @param operation - Async operation to execute at most once concurrently.
+ * @returns A callable that shares the active promise and reruns the operation after settlement.
+ */
+export const createRepeatableSingleFlight = (operation: () => Promise<void>) => {
+  let active: Promise<void> | undefined
+  return () => {
+    active ??= operation().finally(() => {
+      active = undefined
+    })
+    return active
+  }
+}
+
 const notifySubmitted = async (
   observer: LadderTransactionSubmittedObserver | undefined,
   operation: 'cancel' | 'ratify' | 'publish',
@@ -513,40 +528,33 @@ export const createProductionLadderAdapters = (
     forgetGroups: ladderOwnership.forget
   }
 
-  let removedCleanup: Promise<void> | undefined
-  cleanupRemovedMarkets = () => {
-    removedCleanup ??= (async () => {
-      await ladderOwnership.migrate()
-      const publications = await ladderOwnership.read()
-      const configuredMarkets = new Set(config.ladder.map(item => item.marketId))
-      const retainedGroupIds = new Set(
-        publications
-          .filter(publication => configuredMarkets.has(publication.marketId))
-          .flatMap(publication => publication.groups.map(group => group.groupId))
-      )
-      const removed = new Map(
-        ownedGroups(publications)
-          .filter(group => !retainedGroupIds.has(group.groupId))
-          .map(group => [group.groupId, group.maxAssets] as const)
-      )
-      if (removed.size === 0) return
-      const indexedGroupIds = new Set((await readGroups()).map(group => group.id))
-      const failures: unknown[] = []
-      for (const [groupId, maxAssets] of removed) {
-        try {
-          if ((await readGroupConsumed(groupId)) < maxAssets) await transport.invalidate(groupId)
-          if (!indexedGroupIds.has(groupId)) await ladderOwnership.forget([groupId])
-        } catch (error) {
-          failures.push(error)
-        }
+  cleanupRemovedMarkets = createRepeatableSingleFlight(async () => {
+    await ladderOwnership.migrate()
+    const publications = await ladderOwnership.read()
+    const configuredMarkets = new Set(config.ladder.map(item => item.marketId))
+    const retainedGroupIds = new Set(
+      publications
+        .filter(publication => configuredMarkets.has(publication.marketId))
+        .flatMap(publication => publication.groups.map(group => group.groupId))
+    )
+    const removed = new Map(
+      ownedGroups(publications)
+        .filter(group => !retainedGroupIds.has(group.groupId))
+        .map(group => [group.groupId, group.maxAssets] as const)
+    )
+    if (removed.size === 0) return
+    const indexedGroupIds = new Set((await readGroups()).map(group => group.id))
+    const failures: unknown[] = []
+    for (const [groupId, maxAssets] of removed) {
+      try {
+        if ((await readGroupConsumed(groupId)) < maxAssets) await transport.invalidate(groupId)
+        if (!indexedGroupIds.has(groupId)) await ladderOwnership.forget([groupId])
+      } catch (error) {
+        failures.push(error)
       }
-      if (failures.length > 0) throw new LadderAdapterError('removed-market-cleanup')
-    })().catch(error => {
-      removedCleanup = undefined
-      throw error
-    })
-    return removedCleanup
-  }
+    }
+    if (failures.length > 0) throw new LadderAdapterError('removed-market-cleanup')
+  })
 
   return {
     positions,
