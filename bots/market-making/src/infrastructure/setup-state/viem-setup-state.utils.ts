@@ -1,10 +1,12 @@
 import type { Hex } from 'viem'
 
-import { crossedMarketIds } from '@repo/offers'
 import { bytesToHex, getAddress, hexToBytes, isAddress, isHex, size } from 'viem'
+
+import type { OwnedOverlapBookOffer } from '../intentional-overlap.utils'
 
 import { SafeProviderError } from '../../application/setup/safe-provider.error'
 import { BASE_CHAIN_ID } from '../../config/config.utils'
+import { hasInvalidOwnedBootstrapLadderSpread } from '../intentional-overlap.utils'
 import { ProviderResponseError } from './provider-response.error'
 
 export const PAGE_SIZE = 100
@@ -210,15 +212,47 @@ export const routerRatifiers = (value: unknown) => {
   })
 }
 
+type OverlapOwnership = {
+  bootstrapBuyGroupIds?: ReadonlySet<Hex>
+  ladderSellGroupIds?: ReadonlySet<Hex>
+}
+
+const ownedOverlapRole = (offer: ReturnType<typeof offerFromApi>, ownership: OverlapOwnership) => {
+  if (offer.buy && ownership.bootstrapBuyGroupIds?.has(offer.group)) {
+    return 'bootstrap-buy' as const
+  }
+  if (!offer.buy && ownership.ladderSellGroupIds?.has(offer.group)) {
+    return 'ladder-sell' as const
+  }
+  return undefined
+}
+
 /**
  * Detects every active market whose maker buy and sell ticks cross.
  * @param offers - All validated active maker offers, including unconfigured markets.
  * @returns Canonical IDs having a highest buy tick at or above the lowest sell tick.
  */
-export const invertedMarketIds = (offers: readonly ReturnType<typeof offerFromApi>[]) =>
-  crossedMarketIds(
-    offers.map(offer => ({ marketId: offer.marketId, buy: offer.buy, tick: BigInt(offer.tick) }))
-  )
+export const invertedMarketIds = (
+  offers: readonly ReturnType<typeof offerFromApi>[],
+  ownership: OverlapOwnership = {}
+) => {
+  const offersByMarket = new Map<Hex, OwnedOverlapBookOffer[]>()
+  for (const offer of offers) {
+    const overlapOwner = ownedOverlapRole(offer, ownership)
+    const projected = {
+      marketId: offer.marketId,
+      buy: offer.buy,
+      tick: BigInt(offer.tick),
+      ...(overlapOwner === undefined ? {} : { overlapOwner })
+    }
+    const marketOffers = offersByMarket.get(offer.marketId)
+    if (marketOffers) marketOffers.push(projected)
+    else offersByMarket.set(offer.marketId, [projected])
+  }
+  return [...offersByMarket]
+    .filter(([, marketOffers]) => hasInvalidOwnedBootstrapLadderSpread(marketOffers))
+    .map(([marketId]) => marketId)
+}
 
 /**
  * Creates a sanitized aggregate Morpho API deadline failure.

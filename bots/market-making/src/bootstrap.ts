@@ -95,6 +95,11 @@ const defaultState = (config: ConfigService) => {
       readOwnedGroupIds: async () => [
         ...new Set([...(await ownership.read()), ...(await ladderOwnership.readGroupIds())])
       ],
+      readBootstrapGroupIds: ownership.read,
+      readLadderSellGroupIds: async () =>
+        (await ladderOwnership.read()).flatMap(publication =>
+          publication.groups.filter(group => group.side === 'lower').map(group => group.groupId)
+        ),
       requestTimeoutMs: config.requestTimeoutMs
     }
   )

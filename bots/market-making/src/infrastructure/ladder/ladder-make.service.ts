@@ -7,6 +7,7 @@ import type {
   LadderTransactionSubmittedObserver
 } from '../../application/ladder/ladder-verbose'
 import type { LadderQuoteSet } from '../../domain/ladder/ladder'
+import type { OwnedOverlapBookOffer } from '../intentional-overlap.utils'
 import type { LadderGroupReference } from './ladder-group-ownership.utils'
 
 import { LadderOwnershipCleanupError } from '../../application/ladder/ladder-ownership-cleanup.error'
@@ -15,7 +16,7 @@ import { LadderAdapterError } from './ladder-adapter.error'
 import { LadderHardHaltError } from './ladder-hard-halt.error'
 import { assertLadderProspectiveSpread } from './ladder-spread.utils'
 
-type LadderBookOffer = { groupId?: Hex; marketId: Hex; buy: boolean; tick: bigint }
+type LadderBookOffer = OwnedOverlapBookOffer
 type LadderOwnedGroup = { groupId: Hex; maxAssets: bigint }
 
 /** Blocking transport used by the serialized ladder make adapter. */

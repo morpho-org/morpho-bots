@@ -616,6 +616,37 @@ describe('PositionBootstrapService', () => {
     })
   })
 
+  test('does not reserve a bootstrap offer fully covered by ladder liquidity', async () => {
+    const capped = {
+      ...config(),
+      maximumMarketExposure: 600n,
+      maximumTotalExposure: 600n
+    }
+    const { service, make, reconcile } = setup({
+      configs: [capped, { ...capped, marketId: secondMarketId }]
+    })
+    const preview = mock(async parameters =>
+      parameters.marketId === marketId ? undefined : parameters.desiredOffer
+    )
+    make.preview = preview
+
+    expect(await service.runOnce()).toEqual([
+      { marketId, status: 'applied', action: 'publish' },
+      { marketId: secondMarketId, status: 'applied', action: 'publish' }
+    ])
+    expect(preview).toHaveBeenCalledTimes(2)
+    expect(reconcile).toHaveBeenNthCalledWith(2, {
+      marketId: secondMarketId,
+      desiredOffer: {
+        marketId: secondMarketId,
+        assets: 500n,
+        rateBps: 450n,
+        referenceObservationId: 'static:500'
+      },
+      reason: 'publish'
+    })
+  })
+
   test('reserves only the net replacement delta before deciding a later market', async () => {
     const capped = {
       ...config(),

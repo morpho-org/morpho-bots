@@ -17,6 +17,8 @@ export type BootstrapBookOffer = {
   maker: Address
   buy: boolean
   tick: bigint
+  /** Market maturity when the provider included a valid embedded market projection. */
+  maturity?: bigint
   /** Maximum market continuous fee accepted by this offer. */
   continuousFeeCap?: bigint
 }
@@ -63,6 +65,11 @@ const parseOffer = (value: unknown, maker: Address): BootstrapBookOffer => {
     throw new BootstrapAdapterError('offer-groups-response')
   }
   const offer = value as Record<string, unknown>
+  const market =
+    typeof offer.market === 'object' && offer.market !== null
+      ? (offer.market as Record<string, unknown>)
+      : undefined
+  const maturity = market?.maturity
   if (
     typeof offer.maker !== 'string' ||
     typeof offer.buy !== 'boolean' ||
@@ -84,6 +91,9 @@ const parseOffer = (value: unknown, maker: Address): BootstrapBookOffer => {
     maker,
     buy: offer.buy,
     tick: BigInt(offer.tick),
+    ...(typeof maturity === 'number' && Number.isSafeInteger(maturity)
+      ? { maturity: BigInt(maturity) }
+      : {}),
     continuousFeeCap: unsignedDecimal(offer.continuous_fee_cap)
   }
 }
@@ -265,13 +275,23 @@ export const bootstrapReservedLoanAssets = (
  */
 export const bootstrapBookOffers = (groups: readonly BootstrapRawGroup[]) => {
   const visitedGroups = new Set<Hex>()
-  const offers = new Map<string, BootstrapBookOffer & { groupId: Hex }>()
+  const offers = new Map<
+    string,
+    BootstrapBookOffer & {
+      groupId: Hex
+      remainingAssets: bigint
+    }
+  >()
   for (const group of groups) {
     if (visitedGroups.has(group.id)) continue
     visitedGroups.add(group.id)
     for (const offer of group.offers) {
       const key = `${group.id}:${offer.marketId}:${offer.buy ? 'buy' : 'sell'}:${offer.tick}`
-      offers.set(key, { ...offer, groupId: group.id })
+      offers.set(key, {
+        ...offer,
+        groupId: group.id,
+        remainingAssets: group.maxAssets - group.consumed
+      })
     }
   }
   return [...offers.values()]
