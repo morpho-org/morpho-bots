@@ -29,6 +29,7 @@ type RouterOffer = {
  * Serializes an SDK offer into the Router offer-group response shape consumed by production readers.
  * @param offer - Decoded SDK offer struct.
  * @returns Router-compatible nested offer DTO.
+ * @remarks The explicit continuous-fee-cap field keeps the fixture aligned with production parsing.
  */
 export const routerOfferDto = (offer: RouterOffer) => ({
   market_id: MARKET_ID,
