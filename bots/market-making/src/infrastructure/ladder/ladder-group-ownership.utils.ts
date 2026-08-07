@@ -294,7 +294,8 @@ export const createLadderGroupOwnership = (
       const marketIds = [...new Set(publications.map(publication => publication.marketId))]
       if (
         candidatePath !== legacyPath &&
-        (marketIds.length === 0 || legacyStrategyId(config.maker, marketIds) !== candidateStrategy)
+        (marketIds.length === 0 ||
+          !marketIds.every(marketId => config.strategyMarketIds.includes(marketId)))
       ) {
         continue
       }

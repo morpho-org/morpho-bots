@@ -8,6 +8,7 @@ import { ConfigService } from '../../../src/config/config.service'
 import { LadderAdapterError } from '../../../src/infrastructure/ladder/ladder-adapter.error'
 import { MidnightLadderMakeService } from '../../../src/infrastructure/ladder/ladder-make.service'
 import {
+  calculateProductionLadderCapacities,
   createProductionLadderAdapters,
   createRepeatableSingleFlight,
   publishLadderPublication
@@ -46,6 +47,27 @@ const environment = {
   MORPHO_API_BASE_URL: 'https://api.example',
   ROUTER_API_BASE_URL: 'https://router.example'
 }
+
+describe('calculateProductionLadderCapacities', () => {
+  test('makes the current accrued credit available to lower-rate sell rungs', () => {
+    expect(
+      calculateProductionLadderCapacities({
+        marketId,
+        balance: 100n,
+        currentCredit: 90n,
+        otherMarketCredit: 0n,
+        targetMarketExposureAssets: 100n,
+        maximumTotalExposureAssets: 1_000n,
+        reservations: []
+      })
+    ).toEqual({
+      lowerRateCapacityAssets: 90n,
+      higherRateCapacityAssets: 10n,
+      targetMarketCapacityAssets: 100n,
+      maximumTotalCapacityAssets: 1_000n
+    })
+  })
+})
 
 describe('createRepeatableSingleFlight', () => {
   test('deduplicates concurrent cleanup but reruns after each settled attempt', async () => {

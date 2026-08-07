@@ -65,6 +65,25 @@ type ProductionLadderAdapters = {
 
 const minimum = (left: bigint, right: bigint) => (left < right ? left : right)
 
+type ProductionLadderCapacityParameters = {
+  marketId: Hex
+  balance: bigint
+  currentCredit: bigint
+  otherMarketCredit: bigint
+  targetMarketExposureAssets: bigint
+  maximumTotalExposureAssets: bigint
+  reservations: readonly { id: Hex; marketIds: readonly Hex[]; assets: bigint }[]
+}
+
+/** Derives production capacities with all current credit available to reduce-only sell rungs. */
+export const calculateProductionLadderCapacities = (
+  parameters: ProductionLadderCapacityParameters
+) =>
+  calculateLadderCapacities({
+    ...parameters,
+    creditSaleCapacityAssets: parameters.currentCredit
+  })
+
 /**
  * Deduplicates concurrent async work while allowing a fresh attempt after the active call settles.
  * @param operation - Async operation to execute at most once concurrently.
@@ -260,12 +279,11 @@ export const createProductionLadderAdapters = (
         .filter(position => position.marketId !== marketId)
         .reduce((sum, position) => sum + position.credit, 0n)
 
-      return calculateLadderCapacities({
+      return calculateProductionLadderCapacities({
         marketId,
         balance: minimum(cashBalance, allowance),
         currentCredit: selectedPosition.credit,
         otherMarketCredit,
-        creditSaleCapacityAssets: 0n,
         targetMarketExposureAssets: selectedConfig.targetMarketExposureAssets,
         maximumTotalExposureAssets: selectedConfig.maximumTotalExposureAssets,
         reservations
