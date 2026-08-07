@@ -331,7 +331,7 @@ describe('planWithReason', () => {
       debt: 1000n,
       badDebt: 500n,
       maxDebt: 900n,
-      rcfThreshold: 0n, // not rcf-exempt, so the negative cap actually binds
+      rcfThreshold: 10n ** 30n, // even an otherwise exempt slot must reject a negative RCF cap
       bestCollateralAmt: 5000n,
       bestCollateralPrice: ORACLE_PRICE_SCALE,
       bestCollateralMaxLif: 1100000000000000000n

@@ -16,7 +16,7 @@ import { ORACLE_PRICE_SCALE, WAD } from '../../src/constants'
 import { marketId } from '../../src/market'
 import { runTick } from '../../src/runner/tick'
 
-function spyLogger() {
+const spyLogger = () => {
   const events: { level: string; event: string; fields?: Record<string, unknown> }[] = []
   const make = (level: string) => (event: string, fields?: Record<string, unknown>) =>
     events.push({ level, event, fields })
@@ -54,7 +54,7 @@ type TickCounters = Awaited<ReturnType<typeof runTick>>
  * Asserted for EVERY case built by `runWith`, so a stage added without a counter breaks a sum rather
  * than silently dropping a position — the exact class of bug these counters exist to catch.
  */
-function expectCountersConsistent(c: TickCounters) {
+const expectCountersConsistent = (c: TickCounters) => {
   expect(c.pairs).toBeGreaterThanOrEqual(c.liquidatable)
   expect(c.liquidatable).toBe(c.inflightSkipped + c.planSkipped + c.planned)
   expect(c.planned).toBe(
@@ -80,7 +80,7 @@ const SWAP_PLAN: SwapPlan = {
 }
 
 // A liquidatable reading: valid, has debt, unhealthy, ample collateral (debt-binds → seize > 0).
-function lensOut(overrides: Partial<LensOut> = {}): LensOut {
+const lensOut = (overrides: Partial<LensOut> = {}): LensOut => {
   return {
     params: PARAMS,
     valid: true,
@@ -100,7 +100,7 @@ function lensOut(overrides: Partial<LensOut> = {}): LensOut {
 const candidates = (...borrowers: Address[]): BorrowerCandidate[] =>
   borrowers.map(borrower => ({ marketParams: PARAMS, borrower }))
 
-function stubReadLens(out: LensOut | null) {
+const stubReadLens = (out: LensOut | null) => {
   return async (pairs: LensInput[]) => {
     const map = new Map<string, LensOut>()
     if (out) for (const pair of pairs) map.set(lensKey(marketId(pair.params), pair.borrower), out)
@@ -129,7 +129,7 @@ type RunOpts = {
 }
 
 // Shared dep construction so the throwing case exercises exactly the same wiring as `runWith`.
-function buildDeps(opts: RunOpts) {
+const buildDeps = (opts: RunOpts) => {
   const { logger, events } = spyLogger()
   let simulateCalls = 0
   let submitCalls = 0
@@ -184,7 +184,7 @@ function buildDeps(opts: RunOpts) {
   }
 }
 
-function runWith(opts: RunOpts) {
+const runWith = (opts: RunOpts) => {
   const { deps, probes } = buildDeps(opts)
   return runTick(deps).then(counters => {
     expectCountersConsistent(counters)
@@ -193,7 +193,7 @@ function runWith(opts: RunOpts) {
 }
 
 /** For the abort path: `runTick` rejects, so counters come from the emitted `tick.end` instead. */
-async function runExpectingThrow(opts: RunOpts) {
+const runExpectingThrow = async (opts: RunOpts) => {
   const { deps, probes } = buildDeps(opts)
   await expect(runTick(deps)).rejects.toThrow()
   return probes
