@@ -27,6 +27,7 @@ import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
 import type { BootstrapActiveGroup, BootstrapInventoryReader } from './bootstrap-position.service'
 
 import { pendingLadderQuoteSets } from '../ladder/ladder-active-publication.utils'
+import { readLadderBookOffers } from '../ladder/ladder-book.utils'
 import { pendingLadderBuyReservations } from '../ladder/ladder-cash-reservation.utils'
 import { createLadderGroupOwnership } from '../ladder/ladder-group-ownership.utils'
 import { buildLadderTree } from '../ladder/ladder-offer.utils'
@@ -365,7 +366,15 @@ export const createProductionBootstrapAdapters = (
     )
   )
   const completeBookOffers = async () => {
-    const [groups, ladderPublications] = await Promise.all([readGroups(), ladderOwnership.read()])
+    const [groups, ladderPublications, wholeBook] = await Promise.all([
+      readGroups(),
+      ladderOwnership.read(),
+      readLadderBookOffers({
+        baseUrl: config.morphoApiBaseUrl,
+        marketIds: config.setup.marketIds,
+        timeoutMs: config.requestTimeoutMs
+      })
+    ])
     const pendingLadderOffers = (
       await Promise.all(
         pendingLadderQuoteSets(ladderPublications, groups).map(async quote => {
@@ -386,7 +395,7 @@ export const createProductionBootstrapAdapters = (
     return {
       groups,
       ladderPublications,
-      book: [...bootstrapBookOffers(groups), ...pendingLadderOffers]
+      book: [...wholeBook, ...bootstrapBookOffers(groups), ...pendingLadderOffers]
     }
   }
   const prepareMempoolPublication = (

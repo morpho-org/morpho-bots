@@ -1,9 +1,10 @@
 import type { Address, Hex } from 'viem'
 
 import { describe, expect, test } from 'bun:test'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { keccak256, stringToHex } from 'viem'
 
 import type { LadderQuoteSet } from '../../../src/domain/ladder/ladder'
 
@@ -22,7 +23,7 @@ const quote: LadderQuoteSet = {
 }
 
 describe('createLadderGroupOwnership', () => {
-  test('persists ownership keyed only by maker and ladder strategy markets', async () => {
+  test('keeps ownership stable when configured ladder markets change', async () => {
     const stateDirectory = await mkdtemp(join(tmpdir(), 'ladder-ownership-'))
     try {
       const ownership = createLadderGroupOwnership(
@@ -45,7 +46,7 @@ describe('createLadderGroupOwnership', () => {
       expect(await ownership.read()).toMatchObject([{ status: 'confirmed' }])
 
       const ownershipAfterUnrelatedAllowlistEdit = createLadderGroupOwnership(
-        { maker, strategyMarketIds: [marketId] },
+        { maker, strategyMarketIds: [marketId, `0x${'55'.repeat(32)}`] },
         { stateDirectory }
       )
       expect(await ownershipAfterUnrelatedAllowlistEdit.readGroupIds()).toEqual([
@@ -57,6 +58,43 @@ describe('createLadderGroupOwnership', () => {
       expect(await ownership.readGroupIds()).toEqual([higherGroup])
       await ownership.forget([higherGroup])
       expect(await ownership.read()).toEqual([])
+    } finally {
+      await rm(stateDirectory, { recursive: true })
+    }
+  })
+
+  test('reads legacy ownership without mutation and migrates it explicitly for writers', async () => {
+    const stateDirectory = await mkdtemp(join(tmpdir(), 'ladder-ownership-migration-'))
+    try {
+      const ownership = createLadderGroupOwnership(
+        { maker, strategyMarketIds: [marketId] },
+        { stateDirectory }
+      )
+      await ownership.reserve({
+        marketId,
+        quote,
+        groups: [{ groupId: lowerGroup, side: 'lower', rungIndexes: [0] }]
+      })
+      const [stableName] = Array.from(new Bun.Glob('*.json').scanSync(stateDirectory))
+      if (!stableName) throw new TypeError('Expected stable ownership state')
+      const stablePath = join(stateDirectory, stableName)
+      const state = JSON.parse(await readFile(stablePath, 'utf8')) as Record<string, unknown>
+      const legacyStrategy = keccak256(
+        stringToHex(JSON.stringify({ strategy: 'ladder', maker, marketIds: [marketId] }))
+      )
+      await rm(stablePath)
+      await writeFile(
+        join(stateDirectory, `${legacyStrategy}.json`),
+        JSON.stringify({ ...state, strategy: legacyStrategy }),
+        { mode: 0o600 }
+      )
+
+      expect(await ownership.readGroupIds()).toEqual([lowerGroup])
+      expect(Array.from(new Bun.Glob('*.json').scanSync(stateDirectory))).toEqual([
+        `${legacyStrategy}.json`
+      ])
+      await ownership.migrate()
+      expect(Array.from(new Bun.Glob('*.json').scanSync(stateDirectory))).toEqual([stableName])
     } finally {
       await rm(stateDirectory, { recursive: true })
     }

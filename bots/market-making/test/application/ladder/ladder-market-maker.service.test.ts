@@ -71,11 +71,14 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
       return rate
     }
   }
+  const cleanupRemovedMarkets = mock(async () => {})
   const cleanup = mock(async () => {
     liveDesired.clear()
   })
   const make: LadderMakeService = {
+    cleanupRemovedMarkets,
     async readActive(id) {
+      reads.push(`active:${id}`)
       return liveDesired.get(id)
     },
     async reconcile(parameters) {
@@ -102,6 +105,7 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
     reconciliations,
     liveDesired,
     halts,
+    cleanupRemovedMarkets,
     cleanup,
     make,
     setRate: (value: bigint) => (rate = value),
@@ -114,6 +118,29 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
 }
 
 describe('LadderMarketMakerService', () => {
+  test('cleans removed markets before rejecting an empty strategy', async () => {
+    const subject = harness([])
+
+    await expect(subject.service.runOnce()).rejects.toMatchObject({
+      name: 'LadderConfigurationError',
+      field: 'ladder'
+    })
+
+    expect(subject.cleanupRemovedMarkets).toHaveBeenCalledTimes(1)
+  })
+
+  test('reads active ownership before position capacity', async () => {
+    const subject = harness()
+
+    await subject.service.runOnce()
+
+    expect(subject.reads.slice(0, 3)).toEqual([
+      `active:${marketId}`,
+      `market:${marketId}`,
+      `rate:${marketId}`
+    ])
+  })
+
   test('monitors sequential cycles and cleans owned groups after shutdown', async () => {
     const subject = harness([{ ...config(), loopIntervalSeconds: 1 }])
     const controller = new AbortController()

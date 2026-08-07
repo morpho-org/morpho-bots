@@ -117,10 +117,20 @@ const defaultState = async (config: ConfigService) => {
  * @param environment - Environment map used for lazy validated configuration.
  * @param dependencies - Optional state and workflow-port factories used by isolated tests.
  * @returns An application exposing a single asynchronous CLI `run` boundary.
- * @remarks Composition is side-effect free: configuration and providers are built lazily per
- * command, writer commands gate on readiness first, and `--readonly` swaps every mutation port for
- * terminal output. `start` shares one cross-strategy mutation queue so separate writer adapters
- * cannot race signer nonces.
+ * @remarks Composition is side-effect free. Configuration and provider construction occur lazily
+ * for `setup-check`, `bootstrap`, `ladder`, `start`, or `invalidate`. Setup is read-only and preserves
+ * concurrent independent reads through `Promise.all`. `--readonly` selects address-only identity
+ * before any private-key validation and replaces every workflow mutation port with terminal output.
+ * Writer commands first clean up durable ladder groups for removed markets, then assert readiness
+ * before running their application service. Setup monitoring emits read-only readiness reports
+ * at a one-minute cadence and halts nonzero on the first failed report. Bootstrap monitoring uses
+ * the same cadence and invalidates strategy-owned groups after its shutdown signal. Ladder
+ * monitoring uses the shortest configured ladder cadence and invalidates active owned ladder groups
+ * after shutdown. `start` gates readiness once, launches all three monitors concurrently, and uses
+ * one cross-strategy mutation queue so separate writer adapters cannot race signer nonces. Explicit
+ * invalidation uses a narrower cancellation preflight so unknown maker
+ * groups can be removed without weakening normal readiness. One-shot writers run only for their
+ * respective explicit commands.
  */
 export const createApplication = (
   environment: Environment = Bun.env,
@@ -182,6 +192,9 @@ export const createApplication = (
     },
     async options => {
       const config = await loadConfig(options)
+      const ladderAdapters = await (dependencies.createLadderAdapters?.(config) ??
+        createProductionLadderAdapters(config))
+      if (!config.readOnly) await ladderAdapters.make.cleanupRemovedMarkets?.()
       const state = dependencies.createState?.(config) ?? (await defaultState(config))
       await new SetupCheckService(state, config.setup, config.readOnly).assertReady()
       const injectedAdapters = dependencies.createBootstrapAdapters?.(config)
@@ -201,10 +214,11 @@ export const createApplication = (
     },
     async options => {
       const config = await loadConfig(options)
-      const state = dependencies.createState?.(config) ?? (await defaultState(config))
-      await new SetupCheckService(state, config.setup, config.readOnly).assertReady()
       const adapters = await (dependencies.createLadderAdapters?.(config) ??
         createProductionLadderAdapters(config))
+      if (!config.readOnly) await adapters.make.cleanupRemovedMarkets?.()
+      const state = dependencies.createState?.(config) ?? (await defaultState(config))
+      await new SetupCheckService(state, config.setup, config.readOnly).assertReady()
       const writeReadOnlyEvent = parseEventWriter(options.writeEvent)
       const make = config.readOnly
         ? new ReadOnlyLadderMakeService(
@@ -223,6 +237,9 @@ export const createApplication = (
     },
     async options => {
       const config = await loadConfig(options)
+      const ladderAdapters = await (dependencies.createLadderAdapters?.(config) ??
+        createProductionLadderAdapters(config))
+      if (!config.readOnly) await ladderAdapters.make.cleanupRemovedMarkets?.()
       if (config.bootstrap.length === 0) {
         throw new BootstrapConfigurationError(
           'bootstrap',
@@ -248,8 +265,6 @@ export const createApplication = (
           ? new ReadOnlyBootstrapMakeService(readOnlyWriter(options.writeEvent))
           : bootstrapAdapters.make
 
-      const ladderAdapters = await (dependencies.createLadderAdapters?.(config) ??
-        createProductionLadderAdapters(config))
       const ladderMake = config.readOnly
         ? new ReadOnlyLadderMakeService(
             ladderAdapters.make,
