@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 import {
+  assertFreshRailwayReferenceProvisioning,
   assertFullRailwaySignerProvisioning,
   isNonEmptyJsonArray,
   isTerminalRailwayDeploymentStatus,
@@ -70,6 +71,35 @@ describe('Railway CLI output parsing', () => {
       }
     ])
     expect(parseRailwayVolumes('not-json')).toEqual([])
+  })
+
+  test('requires Blue references when provisioning a fresh variable-rate service', () => {
+    const environment = {
+      BOOTSTRAP_MARKETS: JSON.stringify([
+        { marketId: 'configured', targetRate: { strategy: 'variable_rate_avg' } }
+      ]),
+      LADDER_MARKETS: JSON.stringify([
+        {
+          marketId: 'configured',
+          targetRate: { strategy: 'hardcoded', hardcodedRateBps: '400' }
+        }
+      ])
+    }
+
+    expect(() => assertFreshRailwayReferenceProvisioning(environment, true)).toThrow(
+      'Missing required environment variable: REFERENCE_RPC_URL'
+    )
+    expect(() => assertFreshRailwayReferenceProvisioning(environment, false)).not.toThrow()
+    expect(() =>
+      assertFreshRailwayReferenceProvisioning(
+        {
+          ...environment,
+          REFERENCE_RPC_URL: 'https://archive.example',
+          REFERENCE_MARKET_ID: '0xreference'
+        },
+        true
+      )
+    ).not.toThrow()
   })
 
   test('synchronizes every optional variable with explicit safe defaults', () => {

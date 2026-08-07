@@ -12,6 +12,7 @@ import { resolve } from 'node:path'
 
 import { RailwayDeploymentError } from './railway-deployment.error'
 import {
+  assertFreshRailwayReferenceProvisioning,
   assertFullRailwaySignerProvisioning,
   isNonEmptyJsonArray,
   isTerminalRailwayDeploymentStatus,
@@ -130,7 +131,7 @@ const listServices = async () => {
 const ensureService = async () => {
   const services = await listServices()
   const existingService = services.find(service => service.name === SERVICE)
-  if (existingService) return existingService
+  if (existingService) return { service: existingService, isFreshService: false }
 
   const { data, error } = await tryCatch(
     Promise.resolve($`railway add --service ${SERVICE} --json`.quiet().text())
@@ -144,7 +145,7 @@ const ensureService = async () => {
     throw new RailwayDeploymentError('Railway service creation returned incomplete identity')
   }
 
-  return createdService
+  return { service: createdService, isFreshService: true }
 }
 
 const listVolumes = async () => {
@@ -270,7 +271,8 @@ await assertCli()
 await ensureContext()
 
 if (!DEPLOY_ONLY) {
-  const service = await ensureService()
+  const { service, isFreshService } = await ensureService()
+  assertFreshRailwayReferenceProvisioning(Bun.env, isFreshService)
 
   await setRuntimeVariable(['RAILWAY_DOCKERFILE_PATH', DOCKERFILE_PATH])
   await setRuntimeVariable(['XDG_STATE_HOME', STATE_MOUNT_PATH])

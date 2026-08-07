@@ -107,6 +107,27 @@ const everyConfiguredWorkflowUsesHardcodedRate = (
   })
 
 /**
+ * Rejects fresh Railway services that would start a variable-rate workflow without Blue references.
+ * @param environment - Invoking environment containing strategy and optional reference variables.
+ * @param isFreshService - Whether this provisioning run created the Railway service.
+ * @throws `RailwayDeploymentError` when a fresh variable-rate service lacks either Blue reference.
+ * @remarks Existing services preserve omitted Railway reference variables; hardcoded-only services do
+ * not require Blue configuration.
+ */
+export const assertFreshRailwayReferenceProvisioning = (
+  environment: Readonly<Record<string, string | undefined>>,
+  isFreshService: boolean
+) => {
+  if (!isFreshService || everyConfiguredWorkflowUsesHardcodedRate(environment)) return
+
+  for (const name of ['REFERENCE_RPC_URL', 'REFERENCE_MARKET_ID'] as const) {
+    if (!environment[name]?.trim()) {
+      throw new RailwayDeploymentError(`Missing required environment variable: ${name}`)
+    }
+  }
+}
+
+/**
  * Produces optional Railway configuration for a full operator deployment.
  * @param environment - Invoking environment whose non-blank values override safe defaults.
  * @returns Optional variables with timeouts reset to runtime defaults. Missing reference variables
