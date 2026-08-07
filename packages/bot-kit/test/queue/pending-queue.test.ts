@@ -6,6 +6,7 @@ import { ExecutionRevertedError } from 'viem'
 import type { Logger, LogLevel } from '../../src/logger'
 import type {
   GetBaseFee,
+  GetBlockNumber,
   GetConsumedNonce,
   GetReceipt,
   PendingQueue,
@@ -55,6 +56,7 @@ function captureLogger() {
 function setup(
   opts: {
     getReceipt?: GetReceipt
+    getBlockNumber?: GetBlockNumber
     baseFee?: bigint
     maxFeeWei?: bigint
     send?: SendTx
@@ -83,6 +85,7 @@ function setup(
     send: opts.send ?? defaultSend,
     getReceipt: opts.getReceipt ?? (async () => null),
     getBaseFee,
+    getBlockNumber: opts.getBlockNumber ?? (async () => 0n),
     ...(opts.syncNonce === null ? {} : { syncNonce: opts.syncNonce ?? defaultSyncNonce }),
     ...(opts.withCooldown === false ? {} : { settledCooldownBlocks: SETTLED_COOLDOWN_BLOCKS }),
     ...(opts.getConsumedNonce ? { getConsumedNonce: opts.getConsumedNonce } : {}),
@@ -133,6 +136,41 @@ describe('createPendingQueue', () => {
     expect(sends).toHaveLength(1) // no replacement
   })
 
+  it('uses the broadcast-time head when the caller block is stale', async () => {
+    const { queue, sends } = setup({
+      getBlockNumber: async () => {
+        expect(sends).toHaveLength(1)
+        return 12n
+      }
+    })
+    await submitOne(queue, 0n)
+    await queue.onBlock(13n)
+    expect(sends).toHaveLength(1)
+    expect(queue.snapshot()[0]?.attempt).toBe(0)
+  })
+
+  it('falls back to the caller block when the broadcast-time head read fails', async () => {
+    const { logger, events } = captureLogger()
+    const { queue, sends } = setup({
+      getBlockNumber: async () => {
+        throw new Error('rpc down')
+      },
+      logger
+    })
+    await submitOne(queue, 10n)
+    await queue.onBlock(11n)
+    expect(sends).toHaveLength(1)
+    expect(events.find(e => e.event === 'head.read_failed')?.level).toBe('warn')
+  })
+
+  it('keeps the caller block when the fetched head is lower', async () => {
+    const { queue, sends } = setup({ getBlockNumber: async () => 5n })
+    await submitOne(queue, 10n)
+    await queue.onBlock(11n)
+    expect(sends).toHaveLength(1)
+    expect(queue.snapshot()[0]?.attempt).toBe(0)
+  })
+
   it('bumps and replaces a stuck tx at the same nonce', async () => {
     const { queue, sends } = setup({ baseFee: 100n })
     await submitOne(queue, 0n)
@@ -142,6 +180,22 @@ describe('createPendingQueue', () => {
     expect(sends[1]?.maxPriorityFeePerGas).toBe(1125n) // +12.5%
     expect(sends[1]?.maxFeePerGas).toBe(1325n) // max(1125, 2*100 + 1125)
     expect(queue.snapshot()[0]).toEqual({ nonce: 7, txHash: hashOf(2), attempt: 1 })
+  })
+
+  it('uses a post-broadcast head for replacements', async () => {
+    let headReads = 0
+    const { queue, sends } = setup({
+      getBlockNumber: async () => {
+        headReads += 1
+        return headReads === 1 ? 0n : 12n
+      }
+    })
+    await submitOne(queue, 0n)
+    await queue.onBlock(5n)
+    expect(sends).toHaveLength(2)
+    await queue.onBlock(13n)
+    expect(sends).toHaveLength(2)
+    expect(queue.snapshot()[0]?.attempt).toBe(1)
   })
 
   it('drops a tx after maxBumpAttempts bumps', async () => {
@@ -403,6 +457,34 @@ describe('drop', () => {
 })
 
 describe('nonce-consumed reconciliation', () => {
+  it('confirms from the original hash after a replacement and avoids nonce_consumed', async () => {
+    let originalMined = false
+    let consumedNonce = 7
+    const { logger, events } = captureLogger()
+    const { queue } = setup({
+      getReceipt: async txHash =>
+        txHash === hashOf(1) && originalMined ? { status: 'success', blockNumber: 6n } : null,
+      getConsumedNonce: async () => consumedNonce,
+      reconcileEveryBlocks: 1,
+      logger
+    })
+    await submitOne(queue, 0n)
+    await queue.onBlock(5n)
+    expect(queue.snapshot()[0]?.txHash).toBe(hashOf(2))
+    originalMined = true
+    consumedNonce = 8
+    await queue.onBlock(6n)
+    expect(queue.size).toBe(0)
+    expect(events.find(e => e.event === 'tx.confirmed')?.fields).toMatchObject({
+      nonce: 7,
+      txHash: hashOf(1),
+      blockNumber: 6n
+    })
+    expect(
+      events.some(e => e.event === 'tx.dropped' && e.fields?.reason === 'nonce_consumed')
+    ).toBe(false)
+  })
+
   it('drops a tracked tx whose nonce is consumed on-chain with no receipt for us', async () => {
     const { logger, events } = captureLogger()
     // getConsumedNonce reports 8 (> our nonce 7) while getReceipt never returns one: an external
@@ -511,6 +593,7 @@ describe('nonce-hole latch', () => {
       send,
       getReceipt: async () => null,
       getBaseFee: async () => 100n,
+      getBlockNumber: async () => 0n,
       syncNonce: async () => {
         syncNonceCalls += 1
       },
