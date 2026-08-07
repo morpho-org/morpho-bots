@@ -482,7 +482,7 @@ describe('PositionBootstrapService', () => {
 
   test('reports canonical protocol no-ops as observed resting offers', async () => {
     const { service, make } = setup()
-    make.reconcile = mock(async () => 'unchanged' as const)
+    make.reconcile = vi.fn(async () => 'unchanged' as const)
 
     const result = await service.runOnce()
 

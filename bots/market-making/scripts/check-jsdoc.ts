@@ -391,7 +391,23 @@ sourceFiles.push(resolve(packageRoot, 'scripts/js-doc-validation.error.ts'))
 sourceFiles.push(resolve(packageRoot, 'scripts/bundle-failed.error.ts'))
 sourceFiles.push(resolve(packageRoot, 'scripts/check-jsdoc.ts'))
 
+/**
+ * Discovers the TypeScript files that define the documented market-making surface.
+ * @param root - Absolute market-making package directory to scan.
+ * @returns Relevant source and checker files in deterministic package-relative order.
+ * @remarks The scan is read-only and excludes the executable entrypoint and test files.
+ */
+export const discoverJSDocSourceFiles = async (root: string) =>
+  ts.sys
+    .readDirectory(root, ['.ts'], ['node_modules'], ['src', 'scripts'])
+    .filter(file => {
+      const packagePath = relative(root, file)
+      return packagePath !== 'src/index.ts' && !packagePath.endsWith('.test.ts')
+    })
+    .toSorted()
+
 const run = async () => {
+  sourceFiles.splice(0, sourceFiles.length, ...(await discoverJSDocSourceFiles(packageRoot)))
   const failures: JSDocFailure[] = []
   const declarations: string[] = []
   for (const file of sourceFiles) {

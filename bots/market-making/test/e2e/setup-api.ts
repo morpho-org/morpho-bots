@@ -98,7 +98,9 @@ const toNodeHandler =
             incoming.on('data', chunk => chunks.push(chunk as Buffer))
             incoming.on('end', () => resolve(Buffer.concat(chunks)))
           })
-    const response = handler(new Request(url, { method, headers, body }))
+    const response = handler(
+      new Request(url, { method, headers, body: body ? new Uint8Array(body) : undefined })
+    )
     outgoing.writeHead(response.status, Object.fromEntries(response.headers))
     outgoing.end(Buffer.from(await response.arrayBuffer()))
   }

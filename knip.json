@@ -27,8 +27,7 @@
       "ignore": ["src/infrastructure/*/generated/**"]
     },
     "bots/market-making": {
-      "entry": ["playground/app.tsx"],
-      "ignore": ["scripts/playground-smoke-support.mjs"],
+      "entry": ["src/index.ts", "playground/app.tsx"],
       "ignoreDependencies": ["@repo/bot-kit"]
     }
   }

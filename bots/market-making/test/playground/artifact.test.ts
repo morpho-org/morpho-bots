@@ -1,10 +1,12 @@
-import { afterEach, describe, expect, test } from 'bun:test'
 import { build } from 'esbuild'
+import { execa } from 'execa'
 import { readdir, readFile, rm } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { gzipSync } from 'node:zlib'
+import { afterEach, describe, expect, test } from 'vitest'
 
-const packageRoot = join(import.meta.dir, '../..')
+const packageRoot = dirname(fileURLToPath(new URL('../../package.json', import.meta.url)))
 let temporaryDirectory = ''
 
 afterEach(async () => {
@@ -13,21 +15,16 @@ afterEach(async () => {
 })
 
 const productionBuild = async () => {
-  const child = Bun.spawn(
-    [Bun.which('node')!, join(packageRoot, 'scripts/playground-build.mjs'), '--temporary'],
+  const child = await execa(
+    process.execPath,
+    [join(packageRoot, 'scripts/playground-build.mjs'), '--temporary'],
     {
       cwd: packageRoot,
-      env: { ...Bun.env, BUN_EXE: Bun.which('bun')! },
-      stdout: 'pipe',
-      stderr: 'pipe'
+      reject: false
     }
   )
-  const [code, stdout, stderr] = await Promise.all([
-    child.exited,
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text()
-  ])
-  expect(code, `${stdout}\n${stderr}`).toBe(0)
+  expect(child.exitCode, `${child.stdout}\n${child.stderr}`).toBe(0)
+  const { stdout } = child
   const record = stdout.split(/\r?\n/).flatMap(line => {
     try {
       const value = JSON.parse(line)

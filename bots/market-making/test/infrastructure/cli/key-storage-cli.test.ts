@@ -1,4 +1,7 @@
-import { describe, expect, test } from 'bun:test'
+import { execa } from 'execa'
+import { dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { describe, expect, test } from 'vitest'
 
 import { VersionService } from '../../../src/application/version.service'
 import { Cli } from '../../../src/infrastructure/cli/cli'
@@ -113,23 +116,15 @@ describe('maker key storage CLI options', () => {
 
   test('entrypoint --help emits both argv warnings without exposing an ambient secret', async () => {
     const secret = 'must-not-appear-in-help-output'
-    const process = Bun.spawn(
-      [Bun.which('bun') ?? 'bun', 'bots/market-making/src/index.ts', '--help'],
-      {
-        cwd: `${import.meta.dir}/../../../../..`,
-        env: { PATH: Bun.env.PATH, MAKER_PRIVATE_KEY: secret, KEYSTORE_PASSWORD: secret },
-        stdout: 'pipe',
-        stderr: 'pipe'
-      }
-    )
-    const [exitCode, stdout, stderr] = await Promise.all([
-      process.exited,
-      new Response(process.stdout).text(),
-      new Response(process.stderr).text()
-    ])
-    const output = stdout + stderr
+    const repoRoot = dirname(fileURLToPath(new URL('../../../../../package.json', import.meta.url)))
+    const process = await execa('tsx', ['bots/market-making/src/index.ts', '--help'], {
+      cwd: repoRoot,
+      env: { MAKER_PRIVATE_KEY: secret, KEYSTORE_PASSWORD: secret },
+      reject: false
+    })
+    const output = process.stdout + process.stderr
 
-    expect(exitCode).toBe(0)
+    expect(process.exitCode).toBe(0)
     expect(output).toContain('--private-key <key>')
     expect(output).toContain('MAKER_PRIVATE_KEY')
     expect(output).toContain('--password <password>')

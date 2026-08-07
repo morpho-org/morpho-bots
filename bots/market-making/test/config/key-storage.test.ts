@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, mock, test } from 'bun:test'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { inspect } from 'node:util'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import { ConfigValidationError } from '../../src/config/config-validation.error'
 import { ConfigService } from '../../src/config/config.service'
@@ -28,7 +29,7 @@ const configurationYaml = (identity: string) =>
   `chain:\n  id: 8453\n  rpcUrl: https://yaml-rpc.example\n  archiveRpcUrl: https://archive.example\nidentity:\n${identity}\ncontracts:\n  midnightAddress: 0x2222222222222222222222222222222222222222\n  loanAssetAddress: 0x3333333333333333333333333333333333333333\n  ratifierAddress: 0x4444444444444444444444444444444444444444\napis:\n  morphoBaseUrl: https://api.example\n  routerBaseUrl: https://router.example\nmarkets:\n  allowlist: [0x${'55'.repeat(32)}]\n  referenceMarketId: 0x${'77'.repeat(32)}\nsetup:\n  nativeReserveWei: 10\n  maximumLendExposureAssets: 100\n`
 
 afterEach(async () => {
-  mock.restore()
+  vi.restoreAllMocks()
   await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true })))
 })
 
@@ -38,7 +39,7 @@ describe('maker key storage configuration', () => {
     expect(config.keyStorageMethod).toBe('private-key')
     expect(config.identity).toMatchObject({ method: 'private-key', privateKey })
     expect(JSON.stringify(config.identity)).not.toContain(privateKey)
-    expect(Bun.inspect(config.identity)).not.toContain(privateKey)
+    expect(inspect(config.identity)).not.toContain(privateKey)
   })
 
   test('loads a keystore with a direct password without exposing the password through serialization', () => {
@@ -56,9 +57,9 @@ describe('maker key storage configuration', () => {
       password
     })
     expect(JSON.stringify(config)).not.toContain(password)
-    expect(Bun.inspect(config)).not.toContain(password)
+    expect(inspect(config)).not.toContain(password)
     expect(JSON.stringify(config.identity)).not.toContain(password)
-    expect(Bun.inspect(config.identity)).not.toContain(password)
+    expect(inspect(config.identity)).not.toContain(password)
   })
 
   test('rejects only a truly empty keystore password while preserving whitespace byte-for-byte', () => {
@@ -82,7 +83,7 @@ describe('maker key storage configuration', () => {
   })
 
   test('loads a keystore password from the interactive reader', async () => {
-    const readPassword = mock(async () => '  prompted-秘密🔐  ')
+    const readPassword = vi.fn(async () => '  prompted-秘密🔐  ')
     const config = await ConfigService.load(
       {
         ...baseEnvironment,
@@ -97,7 +98,7 @@ describe('maker key storage configuration', () => {
   })
 
   test('normalizes keystore selectors before resolving an empty interactive password', async () => {
-    const readPassword = mock(async () => 'prompted-password')
+    const readPassword = vi.fn(async () => 'prompted-password')
     const config = await ConfigService.load(
       {
         ...baseEnvironment,
