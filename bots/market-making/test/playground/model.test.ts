@@ -31,6 +31,36 @@ describe('bootstrap + ladder only playground follow-up', () => {
     expect(state.ladder.map(item => item.marketId)).toEqual([createDefaultLadder().marketId])
   })
 
+  test('does not expose key-storage configuration in the collection-only playground', async () => {
+    const [model, application, document] = await Promise.all([
+      Bun.file(new URL('../../playground/model.ts', import.meta.url)).text(),
+      Bun.file(new URL('../../playground/app.tsx', import.meta.url)).text(),
+      Bun.file(new URL('../../playground/index.html', import.meta.url)).text()
+    ])
+    const exposedPlaygroundSurface = `${JSON.stringify(createDefaultPlaygroundState())}\n${model}\n${application}\n${document}`
+
+    for (const key of [
+      'KEY_STORAGE_METHOD',
+      'MAKER_PRIVATE_KEY',
+      'KEYSTORE_PASSWORD',
+      'AWS_KMS_KEY_ID'
+    ]) {
+      expect(exposedPlaygroundSurface).not.toContain(key)
+    }
+  })
+
+  test('documents argv secret exposure without literal private keys or passwords', async () => {
+    const readme = await Bun.file('bots/market-making/README.md').text()
+
+    expect(readme).toContain('`--private-key <key>`')
+    expect(readme).toContain('`MAKER_PRIVATE_KEY`')
+    expect(readme).toContain('`--password <password>`')
+    expect(readme).toContain('`KEYSTORE_PASSWORD`')
+    expect(readme).toContain('process listings and shell history')
+    expect(readme).not.toMatch(/--private-key\s+0x[0-9a-fA-F]{64}/)
+    expect(readme).not.toMatch(/--password\s+(?!<password>)["'][^"']+["']/)
+  })
+
   test('derives a bounded bootstrap reference and surfaces invalid derived semantics', () => {
     const state = createDefaultPlaygroundState()
     state.bootstrap[0]!.minimumRateBps = '200'

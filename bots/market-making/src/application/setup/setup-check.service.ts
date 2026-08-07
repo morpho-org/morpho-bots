@@ -6,6 +6,7 @@ import { operatorErrorName } from '../operator-error-name.utils'
 import {
   booksCheck,
   capture,
+  captureSigner,
   chainCheck,
   providerFailure,
   readOnlyMakerCheck,
@@ -273,7 +274,7 @@ export class SetupCheckService {
     }))
     const derivedMakerRead = this.readOnly
       ? Promise.resolve(undefined)
-      : capture(() => this.state.getDerivedMaker())
+      : captureSigner(() => this.state.getDerivedMaker())
     const referenceRead = this.referenceRequired
       ? capture(() => this.state.checkReference(), 'archive-rpc')
       : Promise.resolve(undefined)
@@ -314,7 +315,14 @@ export class SetupCheckService {
       derivedMaker === undefined
         ? readOnlyMakerCheck()
         : !derivedMaker.ok
-          ? providerFailure('maker', derivedMaker.error, makerRequirement)
+          ? 'operation' in derivedMaker.error
+            ? {
+                name: 'maker' as const,
+                status: 'failed' as const,
+                observed: derivedMaker.error,
+                required: makerRequirement
+              }
+            : providerFailure('maker', derivedMaker.error, makerRequirement)
           : setupResult(
               'maker',
               makerMatches,

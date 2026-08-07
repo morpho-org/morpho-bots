@@ -143,7 +143,7 @@ describe('createProductionBootstrapAdapters', () => {
       { readOnly: true }
     )
 
-    const adapters = createProductionBootstrapAdapters(config)
+    const adapters = await createProductionBootstrapAdapters(config)
 
     expect(adapters.make).toBeInstanceOf(ReadOnlyBootstrapMakeService)
     expect(await adapters.rates.readRate(marketId)).toEqual({
@@ -153,7 +153,7 @@ describe('createProductionBootstrapAdapters', () => {
     })
   })
 
-  test('rejects a write configuration whose private key does not match the maker', () => {
+  test('rejects a write configuration whose private key does not match the maker', async () => {
     const config = ConfigService.from({
       CHAIN_ID: '8453',
       RPC_URL: 'https://rpc.example',
@@ -173,7 +173,7 @@ describe('createProductionBootstrapAdapters', () => {
 
     let error: unknown
     try {
-      createProductionBootstrapAdapters(config)
+      await createProductionBootstrapAdapters(config)
     } catch (value) {
       error = value
     }

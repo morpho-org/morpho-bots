@@ -37,7 +37,7 @@ import {
   BlueBootstrapReferenceRateService,
   StrategyBootstrapReferenceRateService
 } from '../bootstrap/bootstrap-reference-rate.service'
-import { createManagedMakerAccount } from '../make/managed-maker-account.utils'
+import { createMakerAccount } from '../make/maker-account.utils'
 import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
 import {
   activeOwnedLadderGroupIds,
@@ -127,6 +127,7 @@ const ownedGroups = (publications: readonly OwnedLadderPublication[]) =>
 /**
  * Composes live chain, archive reference, Mempool, signing, and ownership ladder adapters.
  * @param config - Fully validated runtime configuration.
+ * @param configuredAccount - Optional preconstructed account for write-mode adapter reuse.
  * @returns Production position, reference-rate, and make ports.
  * @throws `LadderAdapterError` when write-mode signer identity differs from the maker; later reads,
  * validation, signing, publication, storage, or receipt confirmation may also fail.
@@ -136,7 +137,10 @@ const ownedGroups = (publications: readonly OwnedLadderPublication[]) =>
  * publication transaction; its durable reservation remains owned after approval if publication is
  * not confirmed.
  */
-export const createProductionLadderAdapters = (config: ConfigService): ProductionLadderAdapters => {
+export const createProductionLadderAdapters = (
+  config: ConfigService,
+  configuredAccount?: Awaited<ReturnType<typeof createMakerAccount>>
+): ProductionLadderAdapters | Promise<ProductionLadderAdapters> => {
   const maker = config.identity.maker
   const client = createPublicClient({
     chain: base,
@@ -380,7 +384,15 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
     return { positions, rates, make: readOnlyMake, validateReconcile }
   }
 
-  const account = createManagedMakerAccount(config.identity.privateKey)
+  const account = configuredAccount ?? createMakerAccount(config.identity)
+  if (account instanceof Promise) {
+    return account.then(
+      value => createProductionLadderAdapters(config, value),
+      () => {
+        throw new LadderAdapterError('maker-private-key-mismatch')
+      }
+    )
+  }
   if (!isAddressEqual(account.address, maker)) {
     throw new LadderAdapterError('maker-private-key-mismatch')
   }

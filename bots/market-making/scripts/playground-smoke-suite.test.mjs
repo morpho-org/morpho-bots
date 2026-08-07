@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
-import { readFile, readdir } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -84,4 +86,116 @@ test('browser lifecycle uses separate bounded build, startup, body, UI, CDP, and
   assert.match(browserSource, /timeout: browserTestTimeout/g)
   assert.match(browserSource, /signalSmokeEntrypoint\(run, 'SIGTERM'\)/)
   assert.doesNotMatch(browserSource, /smoke\.kill\('SIGKILL'\)/)
+  assert.match(smokeSource, /const expectedPersistencePhases = Object\.freeze\(\[/)
+  for (const phase of [
+    'initial baseline',
+    'collection edits',
+    'invalid and valid edits',
+    'preview edit',
+    'share copy',
+    'clipboard fallback',
+    'runtime preview edits',
+    'import',
+    'export and before share navigation',
+    'share document before reload',
+    'share reload before malformed navigation',
+    'malformed document before reload',
+    'malformed reload before oversized navigation',
+    'oversized document before reload',
+    'final oversized reload'
+  ]) {
+    assert.equal(smokeSource.match(new RegExp(`'${phase}'`, 'g'))?.length, 2, phase)
+  }
+  assert.match(smokeSource, /const expectedPersistenceDocumentOrdinals = Object\.freeze\(\[/)
+  assert.match(smokeSource, /assertPersistencePhaseContract\(documentSnapshots\)/)
+  assert.match(smokeSource, /assertPersistencePhaseContract\(mutationProofs\)/)
+  assert.match(smokeSource, /uiReadiness\('End-key tab selection'\)/)
+  assert.match(smokeSource, /active: 'tab-ladder-string'/)
+  assert.match(smokeSource, /selected: 'tab-ladder-string'/)
+  assert.match(smokeSource, /panel: 'panel-ladder-string'/)
+})
+
+test('the declared root lint path effectively checks only the playground smoke mjs files', async () => {
+  const [rootPackage, workflow] = await Promise.all([
+    readJson(join(root, 'package.json')),
+    readFile(join(root, '.github/workflows/checks.yml'), 'utf8')
+  ])
+
+  assert.equal(
+    rootPackage.scripts['lint:playground-smoke'],
+    'oxlint --config bots/market-making/scripts/playground-smoke.oxlintrc.json bots/market-making/scripts/playground-smoke*.mjs'
+  )
+  assert.match(rootPackage.scripts.lint, /bun run lint:playground-smoke/)
+  assert.match(workflow, /- name: Run lint\n        run: bun lint/)
+})
+
+test('the scoped playground smoke lint config accepts clean source and rejects an injected unused import', async () => {
+  const temporaryRoot = await mkdtemp(join(tmpdir(), 'playground-smoke-lint-'))
+  const mutation = join(temporaryRoot, 'playground-smoke-unused-import.mjs')
+  const cleanSource = await readFile(
+    join(scriptsDirectory, 'playground-smoke-persistence.error.mjs')
+  )
+  await writeFile(mutation, cleanSource)
+  try {
+    const lintMutation = () =>
+      new Promise((resolve, reject) => {
+        const lint = spawn(
+          join(root, 'node_modules/.bin/oxlint'),
+          ['--config', join(scriptsDirectory, 'playground-smoke.oxlintrc.json'), mutation],
+          { cwd: root, shell: false, stdio: ['ignore', 'pipe', 'pipe'] }
+        )
+        let output = ''
+        lint.stdout.setEncoding('utf8')
+        lint.stderr.setEncoding('utf8')
+        lint.stdout.on('data', chunk => {
+          output += chunk
+        })
+        lint.stderr.on('data', chunk => {
+          output += chunk
+        })
+        lint.once('error', reject)
+        lint.once('close', (code, signal) => resolve({ code, output, signal }))
+      })
+    const cleanResult = await lintMutation()
+    assert.deepEqual(
+      { code: cleanResult.code, signal: cleanResult.signal },
+      { code: 0, signal: null },
+      cleanResult.output
+    )
+
+    await writeFile(
+      mutation,
+      `import { readFile as deliberatelyUnusedReadFile } from 'node:fs/promises'\n${cleanSource}`
+    )
+    const result = await lintMutation()
+    assert.deepEqual({ code: result.code, signal: result.signal }, { code: 1, signal: null })
+    assert.match(result.output, /no-unused-vars[\s\S]*deliberatelyUnusedReadFile/)
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true })
+  }
+})
+
+test('transition guards are live and cross-document diagnostics use the detecting phase', async () => {
+  const smokeSource = await readFile(join(scriptsDirectory, 'playground-smoke.mjs'), 'utf8')
+
+  assert.match(smokeSource, /history\.replaceState = \(\.\.\.args\) =>/)
+  assert.match(smokeSource, /assertCleanBeforeTransition\('history\.replaceState'\)/)
+  assert.doesNotMatch(smokeSource, /__assertPersistenceCleanBeforeTransition/)
+  assert.doesNotMatch(smokeSource, /activityPhase/)
+})
+
+test('expected persistence failures use one isolated typed tooling error', async () => {
+  const [smokeSource, errorSource] = await Promise.all([
+    readFile(join(scriptsDirectory, 'playground-smoke.mjs'), 'utf8'),
+    readFile(join(scriptsDirectory, 'playground-smoke-persistence.error.mjs'), 'utf8').catch(
+      () => ''
+    )
+  ])
+
+  assert.match(
+    errorSource,
+    /export class PlaygroundSmokePersistenceError extends Error[\s\S]*this\.name = 'PlaygroundSmokePersistenceError'/
+  )
+  assert.match(smokeSource, /import \{ PlaygroundSmokePersistenceError \}/)
+  assert.match(smokeSource, /throw new PlaygroundSmokePersistenceError/g)
 })

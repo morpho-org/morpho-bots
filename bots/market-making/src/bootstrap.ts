@@ -29,9 +29,11 @@ import { requiresVariableRateReference } from './domain/target-rate'
 import { createBootstrapGroupOwnership } from './infrastructure/bootstrap/bootstrap-group-ownership.utils'
 import { createProductionBootstrapAdapters } from './infrastructure/bootstrap/production-bootstrap'
 import { Cli } from './infrastructure/cli/cli'
+import { readPasswordInteractively } from './infrastructure/cli/password-prompt.utils'
 import { createProductionOfferInvalidationPort } from './infrastructure/invalidation/production-offer-invalidation'
 import { createLadderGroupOwnership } from './infrastructure/ladder/ladder-group-ownership.utils'
 import { createProductionLadderAdapters } from './infrastructure/ladder/production-ladder'
+import { createMakerAccount } from './infrastructure/make/maker-account.utils'
 import { ReadOnlyBootstrapMakeService } from './infrastructure/make/read-only-bootstrap-make.service'
 import { ReadOnlyLadderMakeService } from './infrastructure/make/read-only-ladder-make.service'
 import { createChainReader } from './infrastructure/setup-state/chain-reader.utils'
@@ -73,6 +75,10 @@ const assertReferenceConfigured = (
   }
 }
 
+const makerAccountAddress = async (
+  identity: Exclude<ConfigService['identity'], { readOnly: true }>
+) => (await createMakerAccount(identity)).address
+
 type Dependencies = {
   createState?: (config: ConfigService) => SetupStateService
   /** Replaces provider ports while retaining default application-service composition. */
@@ -92,12 +98,18 @@ type Dependencies = {
   createInvalidationPort?: (config: ConfigService) => OfferInvalidationPort
   /** Overrides the process working directory used for default configuration discovery. */
   cwd?: string
+  /** Overrides hidden terminal password input in tests. */
+  readPassword?: () => Promise<string>
 }
 
-const defaultState = (config: ConfigService) => {
-  const identityOptions = config.identity.readOnly
+const defaultState = async (config: ConfigService) => {
+  const identity = config.identity
+  const identityOptions = identity.readOnly
     ? { readOnly: true as const }
-    : { readOnly: false as const, privateKey: config.identity.privateKey }
+    : {
+        readOnly: false as const,
+        deriveSignerAddress: () => makerAccountAddress(identity)
+      }
   const ownership = createBootstrapGroupOwnership({
     maker: config.setup.maker,
     marketIds: config.setup.marketIds,
@@ -153,18 +165,50 @@ export const createApplication = (
    */
   run(argv: readonly string[], runtime?: CliRuntimeOptions): Promise<unknown>
 } => {
-  const loadConfig = (options: { configPath?: string; readOnly: boolean }) =>
-    RuntimeConfigService.load(environment, {
+  const loadConfig = (options: {
+    configPath?: string
+    readOnly: boolean
+    signerEnvironment?: Record<string, string>
+    signal: AbortSignal
+  }) => {
+    const effectiveEnvironment = { ...environment }
+    const method = options.signerEnvironment?.KEY_STORAGE_METHOD
+    if (method === 'private-key') {
+      for (const key of [
+        'KEYSTORE_PATH',
+        'KEYSTORE_PASSWORD',
+        'KEYSTORE_INTERACTIVE',
+        'AWS_KMS_KEY_ID',
+        'AWS_REGION'
+      ])
+        delete effectiveEnvironment[key]
+    } else if (method === 'keystore') {
+      for (const key of ['MAKER_PRIVATE_KEY', 'AWS_KMS_KEY_ID', 'AWS_REGION'])
+        delete effectiveEnvironment[key]
+    } else if (method === 'aws') {
+      for (const key of [
+        'MAKER_PRIVATE_KEY',
+        'KEYSTORE_PATH',
+        'KEYSTORE_PASSWORD',
+        'KEYSTORE_INTERACTIVE'
+      ])
+        delete effectiveEnvironment[key]
+    }
+    Object.assign(effectiveEnvironment, options.signerEnvironment)
+    return RuntimeConfigService.load(effectiveEnvironment, {
       configPath: options.configPath,
       cwd: dependencies.cwd,
-      readOnly: options.readOnly
+      readOnly: options.readOnly,
+      readPassword:
+        dependencies.readPassword ?? (() => readPasswordInteractively({ signal: options.signal }))
     })
+  }
   const cli = new Cli(
     new VersionService(),
     async options => {
       const config = await loadConfig(options)
       assertReferenceConfigured(config, [...config.bootstrap, ...config.ladder])
-      const state = dependencies.createState?.(config) ?? defaultState(config)
+      const state = dependencies.createState?.(config) ?? (await defaultState(config))
       return new SetupCheckService(
         state,
         config.setup,
@@ -175,7 +219,7 @@ export const createApplication = (
     async options => {
       const config = await loadConfig(options)
       assertReferenceConfigured(config, config.bootstrap)
-      const state = dependencies.createState?.(config) ?? defaultState(config)
+      const state = dependencies.createState?.(config) ?? (await defaultState(config))
       await new SetupCheckService(
         state,
         config.setup,
@@ -185,7 +229,7 @@ export const createApplication = (
       const injectedAdapters = dependencies.createBootstrapAdapters?.(config)
       const writeReadOnlyEvent = parseEventWriter(options.writeEvent)
       const adapters =
-        injectedAdapters ?? createProductionBootstrapAdapters(config, writeReadOnlyEvent)
+        injectedAdapters ?? (await createProductionBootstrapAdapters(config, writeReadOnlyEvent))
       const make =
         config.readOnly && injectedAdapters
           ? new ReadOnlyBootstrapMakeService(writeReadOnlyEvent)
@@ -200,15 +244,15 @@ export const createApplication = (
     async options => {
       const config = await loadConfig(options)
       assertReferenceConfigured(config, config.ladder)
-      const state = dependencies.createState?.(config) ?? defaultState(config)
+      const state = dependencies.createState?.(config) ?? (await defaultState(config))
       await new SetupCheckService(
         state,
         config.setup,
         config.readOnly,
         requiresVariableRateReference(config.ladder)
       ).assertReady()
-      const adapters =
-        dependencies.createLadderAdapters?.(config) ?? createProductionLadderAdapters(config)
+      const adapters = await (dependencies.createLadderAdapters?.(config) ??
+        createProductionLadderAdapters(config))
       const writeReadOnlyEvent = parseEventWriter(options.writeEvent)
       const make = config.readOnly
         ? new ReadOnlyLadderMakeService(
@@ -221,9 +265,8 @@ export const createApplication = (
     },
     async options => {
       const config = await loadConfig(options)
-      const port =
-        dependencies.createInvalidationPort?.(config) ??
-        createProductionOfferInvalidationPort(config)
+      const port = await (dependencies.createInvalidationPort?.(config) ??
+        createProductionOfferInvalidationPort(config))
       return new OfferInvalidationService(port)
     },
     async options => {
@@ -242,7 +285,7 @@ export const createApplication = (
       }
 
       assertReferenceConfigured(config, [...config.bootstrap, ...config.ladder])
-      const state = dependencies.createState?.(config) ?? defaultState(config)
+      const state = dependencies.createState?.(config) ?? (await defaultState(config))
       const setup = new SetupCheckService(
         state,
         config.setup,
@@ -252,16 +295,15 @@ export const createApplication = (
       await setup.assertReady()
 
       const injectedBootstrapAdapters = dependencies.createBootstrapAdapters?.(config)
-      const bootstrapAdapters =
-        injectedBootstrapAdapters ??
-        createProductionBootstrapAdapters(config, readOnlyWriter(options.writeEvent))
+      const bootstrapAdapters = await (injectedBootstrapAdapters ??
+        createProductionBootstrapAdapters(config, readOnlyWriter(options.writeEvent)))
       const bootstrapMake =
         config.readOnly && injectedBootstrapAdapters
           ? new ReadOnlyBootstrapMakeService(readOnlyWriter(options.writeEvent))
           : bootstrapAdapters.make
 
-      const ladderAdapters =
-        dependencies.createLadderAdapters?.(config) ?? createProductionLadderAdapters(config)
+      const ladderAdapters = await (dependencies.createLadderAdapters?.(config) ??
+        createProductionLadderAdapters(config))
       const ladderMake = config.readOnly
         ? new ReadOnlyLadderMakeService(
             ladderAdapters.make,

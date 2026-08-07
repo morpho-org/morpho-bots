@@ -42,6 +42,25 @@ bun run --filter @morpho-org/market-making-bot start -- setup-check
 # Address-only setup inspection: MAKER_PRIVATE_KEY may be omitted.
 bun run --filter @morpho-org/market-making-bot start -- --readonly setup-check
 
+# Explicit signer sources (root options precede the command).
+bun run --filter @morpho-org/market-making-bot start -- --private-key '<key>' setup-check
+bun run --filter @morpho-org/market-making-bot start -- --keystore ./maker.json --interactive setup-check
+bun run --filter @morpho-org/market-making-bot start -- --aws setup-check
+```
+
+For unattended keystore operation, provision `KEYSTORE_PASSWORD` separately through the deployment
+secret manager or process environment, then run the keystore command without an inline value:
+
+```sh
+bun run --filter @morpho-org/market-making-bot start -- --keystore ./maker.json setup-check
+```
+
+`--private-key <key>` and `--password <password>` remain available for explicit automation, but they
+place secrets in argv, where process listings and shell history may expose them. Prefer
+`MAKER_PRIVATE_KEY` and `KEYSTORE_PASSWORD` respectively for unattended operation, or hidden
+`--interactive` password input for attended keystore operation.
+
+```sh
 # Repeat read-only readiness checks every minute until SIGINT/SIGTERM.
 bun run --filter @morpho-org/market-making-bot start -- setup-check --monitor
 
@@ -248,6 +267,14 @@ bun run --filter @morpho-org/market-making-bot deploy:railway
 ```
 
 Provide the required values from [`.env.example`](./.env.example) in the invoking environment.
+A full provisioning run supports only `private-key`, because the script cannot safely seed a local
+keystore file or an AWS credential source into a newly created service. For `keystore`, first
+provision the encrypted file at `KEYSTORE_PATH` in the existing service. For `aws`, first provision
+an AWS SDK credential source with KMS access in the existing service. Then set the corresponding
+signer variables out of band and use `DEPLOY_ONLY=true`; deploy-only does not inspect or mutate those
+credentials or files. Full provisioning fails closed for both modes instead of launching a service
+that cannot resolve its signer.
+
 `BOOTSTRAP_MARKETS` and `LADDER_MARKETS` must each be populated JSON arrays so a full run cannot
 replace a working strategy with an empty list. Every remaining optional value is synchronized:
 omitted timeouts return to their documented defaults, and omitted group IDs and BetterStack settings
@@ -278,8 +305,10 @@ Configuration can come from environment variables, a YAML file, or both. YAML fi
 2. Without `--config`, the CLI searches the process working directory from which `mm` was invoked.
    It checks `market-making.yaml` first, then `market-making.yml`. If both exist, `.yaml` wins.
 3. If neither default file exists, environment-only startup remains supported.
-4. Every supplied environment variable overrides the corresponding YAML value. A duplicate value is
-   never an error.
+4. Every supplied environment variable overrides the corresponding YAML value. CLI signer flags
+   override environment and YAML signer selection. A higher-precedence signer selection discards
+   competing lower-precedence signer fields while retaining same-method companion fields. Within one
+   effective layer, configuring more than one source is an error.
 
 Scalar fields override independently. `MARKET_IDS` and `V0_OFFER_GROUP_IDS` each replace their
 complete YAML list. `BOOTSTRAP_MARKETS` and `LADDER_MARKETS` replace the complete YAML `bootstrap` and
@@ -313,8 +342,14 @@ unit; for six-decimal USDC, `101000000` is 101 USDC. No value is inferred from a
 | `CHAIN_ID`                       | `chain.id`                          | Required. Must be `8453`; all protocol, token, market, and transaction operations run on Base.                                                                                                            |
 | `RPC_URL`                        | `chain.rpcUrl`                      | Required. Current-state Base JSON-RPC endpoint used for blocks, balances, allowances, positions, contract reads, simulation, transaction submission, and receipts.                                        |
 | `REFERENCE_RPC_URL`              | `chain.archiveRpcUrl`               | Required when the selected command has an active `variable_rate_avg` target. Archive-capable Base JSON-RPC endpoint used to read the reference Morpho Blue market at historical blocks.                   |
-| `MAKER_ADDRESS`                  | `identity.makerAddress`             | Required. EVM address whose balance, allowance, credit, offers, and exposure the bot manages. In write mode it must be derived by `MAKER_PRIVATE_KEY`.                                                    |
-| `MAKER_PRIVATE_KEY`              | `identity.makerPrivateKey`          | Required in write mode; omitted and never loaded with `--readonly`. Must be a 0x-prefixed 32-byte secp256k1 key. Never include it in committed configuration or logs.                                     |
+| `MAKER_ADDRESS`                  | `identity.makerAddress`             | Required. EVM address whose balance, allowance, credit, offers, and exposure the bot manages. In write mode it must match the selected signer.                                                            |
+| `KEY_STORAGE_METHOD`             | `identity.keyStorageMethod`         | Optional only for backward-compatible `MAKER_PRIVATE_KEY` use; otherwise `private-key`, `keystore`, or `aws`. Exactly one effective source is required in write mode.                                     |
+| `MAKER_PRIVATE_KEY`              | `identity.makerPrivateKey`          | Local private-key source. Must be a 0x-prefixed 32-byte secp256k1 key. `--private-key` overrides config. Never include it in committed configuration or logs.                                             |
+| `KEYSTORE_PATH`                  | `identity.keystorePath`             | Encrypted Web3 Secret Storage file used by the `keystore` method. CLI equivalent: `--keystore <path>`.                                                                                                    |
+| `KEYSTORE_PASSWORD`              | `identity.keystorePassword`         | Keystore password. Exactly one direct or interactive mode is required; see the argv exposure warning above. Never logged or included in diagnostics.                                                      |
+| `KEYSTORE_INTERACTIVE`           | `identity.keystoreInteractive`      | `true` prompts without echoing for the keystore password; CLI equivalent: `--interactive`. Not suitable for unattended deployment.                                                                        |
+| `AWS_KMS_KEY_ID`                 | `identity.awsKmsKeyId`              | KMS key ID/ARN/alias for an asymmetric `ECC_SECG_P256K1` signing key. `--aws` selects this backend.                                                                                                       |
+| `AWS_REGION`                     | `identity.awsRegion`                | AWS region containing the KMS key. AWS credentials use the standard AWS SDK credential chain.                                                                                                             |
 | `MIDNIGHT_ADDRESS`               | `contracts.midnightAddress`         | Required. Expected deployed Midnight singleton. Setup verifies its bytecode before a writer starts.                                                                                                       |
 | `LOAN_ASSET_ADDRESS`             | `contracts.loanAssetAddress`        | Required. Loan token used by every configured Midnight market. Balances, allowances, budgets, offer sizes, and exposure values use this token's raw units.                                                |
 | `RATIFIER_ADDRESS`               | `contracts.ratifierAddress`         | Required. Router-listed Ecrecover or Setter ratifier authorized by the maker. The bot signs Ecrecover trees or approves Setter roots onchain, then verifies the selected deployment and Midnight binding. |
@@ -374,7 +409,8 @@ and `ladder`; unknown keys at any level are rejected. Every supported key appear
 [`market-making.example.yaml`](./market-making.example.yaml).
 
 - `chain`: `id`, `rpcUrl`, `archiveRpcUrl`.
-- `identity`: `makerAddress`, `makerPrivateKey`.
+- `identity`: `makerAddress`, `keyStorageMethod`, `makerPrivateKey`, `keystorePath`,
+  `keystorePassword`, `keystoreInteractive`, `awsKmsKeyId`, `awsRegion`.
 - `contracts`: `midnightAddress`, `loanAssetAddress`, `ratifierAddress`.
 - `apis`: `morphoBaseUrl`, `routerBaseUrl`.
 - `markets`: `allowlist`, `referenceMarketId`, `v0OfferGroupIds`.
