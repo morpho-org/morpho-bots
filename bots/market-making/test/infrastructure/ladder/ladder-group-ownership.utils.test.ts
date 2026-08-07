@@ -102,7 +102,7 @@ describe('createLadderGroupOwnership', () => {
     }
   })
 
-  test('discovers legacy ownership when an unpublished configured market changes', async () => {
+  test('leaves ambiguous legacy ownership untouched when an unpublished market changes', async () => {
     const stateDirectory = await mkdtemp(join(tmpdir(), 'ladder-ownership-unpublished-migration-'))
     const unpublishedMarketId: Hex = `0x${'66'.repeat(32)}`
     const replacementMarketId: Hex = `0x${'77'.repeat(32)}`
@@ -140,7 +140,7 @@ describe('createLadderGroupOwnership', () => {
         { maker, strategyMarketIds: [marketId, replacementMarketId] },
         { stateDirectory }
       )
-      expect(await changedOwnership.readGroupIds()).toEqual([lowerGroup])
+      expect(await changedOwnership.readGroupIds()).toEqual([])
       await changedOwnership.migrate()
       expect(Array.from(new Bun.Glob('*.json').scanSync(stateDirectory))).toHaveLength(1)
     } finally {
@@ -180,6 +180,35 @@ describe('createLadderGroupOwnership', () => {
       ])
       await ownership.migrate()
       expect(Array.from(new Bun.Glob('*.json').scanSync(stateDirectory))).toEqual([stableName])
+    } finally {
+      await rm(stateDirectory, { recursive: true })
+    }
+  })
+
+  test("does not adopt another maker's overlapping stable ownership", async () => {
+    const stateDirectory = await mkdtemp(join(tmpdir(), 'ladder-ownership-foreign-maker-'))
+    const foreignMaker: Address = '0x9999999999999999999999999999999999999999'
+    try {
+      const foreignOwnership = createLadderGroupOwnership(
+        { maker: foreignMaker, strategyMarketIds: [marketId] },
+        { stateDirectory }
+      )
+      await foreignOwnership.reserve({
+        marketId,
+        quote,
+        groups: [{ groupId: lowerGroup, side: 'lower', rungIndexes: [0] }]
+      })
+      const [foreignName] = Array.from(new Bun.Glob('*.json').scanSync(stateDirectory))
+      if (!foreignName) throw new TypeError('Expected foreign ownership state')
+
+      const ownership = createLadderGroupOwnership(
+        { maker, strategyMarketIds: [marketId] },
+        { stateDirectory }
+      )
+
+      expect(await ownership.read()).toEqual([])
+      await ownership.migrate()
+      expect(Array.from(new Bun.Glob('*.json').scanSync(stateDirectory))).toEqual([foreignName])
     } finally {
       await rm(stateDirectory, { recursive: true })
     }

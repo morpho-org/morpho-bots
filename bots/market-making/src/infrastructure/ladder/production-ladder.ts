@@ -75,7 +75,15 @@ type ProductionLadderCapacityParameters = {
   reservations: readonly { id: Hex; marketIds: readonly Hex[]; assets: bigint }[]
 }
 
-/** Derives production capacities with all current credit available to reduce-only sell rungs. */
+/**
+ * Derives production ladder capacities while reserving current market credit for reduce-only sells.
+ * @param parameters - Market balance, current and cross-market credit, exposure limits, and durable
+ * reservations. Reservations spanning this market reduce available balance exactly once, while all
+ * current market credit remains available to size higher-side reduce-only rungs.
+ * @returns Capacity limits for the lower and higher sides of the requested market.
+ * @throws When the shared capacity calculator rejects inconsistent or invalid sizing inputs.
+ * @remarks This pure calculation does not read, write, publish, or mutate reservation state.
+ */
 export const calculateProductionLadderCapacities = (
   parameters: ProductionLadderCapacityParameters
 ) =>
@@ -88,6 +96,9 @@ export const calculateProductionLadderCapacities = (
  * Deduplicates concurrent async work while allowing a fresh attempt after the active call settles.
  * @param operation - Async operation to execute at most once concurrently.
  * @returns A callable that shares the active promise and reruns the operation after settlement.
+ * @throws Forwards the rejection from the active operation to every caller sharing that attempt.
+ * @remarks The returned function retains only the currently active promise. Concurrent calls are
+ * deduplicated, while every call made after settlement starts a new operation.
  */
 export const createRepeatableSingleFlight = (operation: () => Promise<void>) => {
   let active: Promise<void> | undefined

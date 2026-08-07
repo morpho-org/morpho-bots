@@ -292,11 +292,9 @@ export const createLadderGroupOwnership = (
       const publications = await readPath(candidatePath, candidateStrategy, true)
       if (publications === undefined) continue
       const marketIds = [...new Set(publications.map(publication => publication.marketId))]
-      if (
-        candidatePath !== legacyPath &&
-        (marketIds.length === 0 ||
-          !marketIds.every(marketId => config.strategyMarketIds.includes(marketId)))
-      ) {
+      const attributableLegacyStrategy =
+        marketIds.length > 0 ? legacyStrategyId(config.maker, marketIds) : undefined
+      if (candidatePath !== legacyPath && candidateStrategy !== attributableLegacyStrategy) {
         continue
       }
       states.push({ path: candidatePath, publications })

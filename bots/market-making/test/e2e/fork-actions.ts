@@ -5,6 +5,7 @@ import {
   encodeAbiParameters,
   erc20Abi,
   http,
+  isAddressEqual,
   keccak256,
   maxUint256,
   pad,
@@ -239,7 +240,7 @@ const seedExternalMakerCredit = async (anvil: AnvilHandle, router: RouterApiHand
 
   const item = (await router.activeOffers()).find(candidate => {
     const offer = OfferUtils.toStruct({ offer: candidate.offer })
-    return offer.buy && offer.maker === ANVIL_TAKER_ACCOUNT.address
+    return offer.buy && isAddressEqual(offer.maker, ANVIL_TAKER_ACCOUNT.address)
   })
   if (!item) throw new TypeError('Expected external maker seed offer')
   await anvil.client.setStorageAt({
