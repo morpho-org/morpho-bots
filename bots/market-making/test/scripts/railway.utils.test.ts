@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'bun:test'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 
 import {
+  assertFreshRailwayReferenceProvisioning,
   assertFullRailwaySignerProvisioning,
   isNonEmptyJsonArray,
   isTerminalRailwayDeploymentStatus,
@@ -70,9 +73,61 @@ describe('Railway CLI output parsing', () => {
     expect(parseRailwayVolumes('not-json')).toEqual([])
   })
 
+  test('requires Blue references when provisioning a fresh variable-rate service', () => {
+    const environment = {
+      BOOTSTRAP_MARKETS: JSON.stringify([
+        { marketId: 'configured', targetRate: { strategy: 'variable_rate_avg' } }
+      ]),
+      LADDER_MARKETS: JSON.stringify([
+        {
+          marketId: 'configured',
+          targetRate: { strategy: 'hardcoded', hardcodedRateBps: '400' }
+        }
+      ])
+    }
+
+    expect(() => assertFreshRailwayReferenceProvisioning(environment, true)).toThrow(
+      'Missing required environment variable: REFERENCE_RPC_URL'
+    )
+    expect(() => assertFreshRailwayReferenceProvisioning(environment, false)).not.toThrow()
+    expect(() =>
+      assertFreshRailwayReferenceProvisioning(
+        {
+          ...environment,
+          REFERENCE_RPC_URL: 'https://archive.example',
+          REFERENCE_MARKET_ID: '0xreference'
+        },
+        true
+      )
+    ).not.toThrow()
+  })
+
+  test('checks fresh-service references before Railway can create the service', () => {
+    const deploy = readFileSync(resolve(import.meta.dir, '../../scripts/deploy-railway.ts'), 'utf8')
+
+    expect(
+      deploy.indexOf('assertFreshRailwayReferenceProvisioning(Bun.env, true)')
+    ).toBeGreaterThan(-1)
+    expect(deploy.indexOf('assertFreshRailwayReferenceProvisioning(Bun.env, true)')).toBeLessThan(
+      deploy.indexOf('railway add --service')
+    )
+  })
+
   test('synchronizes every optional variable with explicit safe defaults', () => {
     const variables = Object.fromEntries(
       synchronizedOptionalRailwayVariables({
+        BOOTSTRAP_MARKETS: JSON.stringify([
+          {
+            marketId: 'configured',
+            targetRate: { strategy: 'hardcoded', hardcodedRateBps: '400' }
+          }
+        ]),
+        LADDER_MARKETS: JSON.stringify([
+          {
+            marketId: 'configured',
+            targetRate: { strategy: 'hardcoded', hardcodedRateBps: '400' }
+          }
+        ]),
         REQUEST_TIMEOUT_MS: '25000'
       })
     )
@@ -81,10 +136,50 @@ describe('Railway CLI output parsing', () => {
       BETTERSTACK_HEARTBEAT_URL: ' ',
       BETTERSTACK_INGESTING_HOST: ' ',
       BETTERSTACK_SOURCE_TOKEN: ' ',
+      REFERENCE_MARKET_ID: ' ',
+      REFERENCE_RPC_URL: ' ',
       REQUEST_TIMEOUT_MS: '25000',
       TRANSACTION_RECEIPT_TIMEOUT_MS: '180000',
       V0_OFFER_GROUP_IDS: ' '
     })
+  })
+
+  test('trims optional reference configuration before uploading it to Railway', () => {
+    const variables = Object.fromEntries(
+      synchronizedOptionalRailwayVariables({
+        REFERENCE_RPC_URL: ' https://archive.example/ ',
+        REFERENCE_MARKET_ID: ' 0xreference '
+      })
+    )
+
+    expect(variables.REFERENCE_RPC_URL).toBe('https://archive.example/')
+    expect(variables.REFERENCE_MARKET_ID).toBe('0xreference')
+  })
+
+  test('preserves Railway reference variables when a workflow uses a variable rate', () => {
+    for (const targetRate of [undefined, { strategy: 'variable_rate_avg' }]) {
+      const variables = Object.fromEntries(
+        synchronizedOptionalRailwayVariables({
+          BOOTSTRAP_MARKETS: JSON.stringify([{ marketId: 'configured', targetRate }]),
+          LADDER_MARKETS: JSON.stringify([
+            {
+              marketId: 'configured',
+              targetRate: { strategy: 'hardcoded', hardcodedRateBps: '400' }
+            }
+          ])
+        })
+      )
+
+      expect(variables).not.toHaveProperty('REFERENCE_RPC_URL')
+      expect(variables).not.toHaveProperty('REFERENCE_MARKET_ID')
+    }
+  })
+
+  test('allows Compose deployments to omit inactive reference configuration', () => {
+    const compose = readFileSync(resolve(import.meta.dir, '../../docker-compose.yml'), 'utf8')
+
+    expect(compose).toContain('REFERENCE_RPC_URL: ${REFERENCE_RPC_URL:-}')
+    expect(compose).toContain('REFERENCE_MARKET_ID: ${REFERENCE_MARKET_ID:-}')
   })
 
   test('reads the newest complete deployment and rejects incomplete output', () => {

@@ -186,14 +186,15 @@ export const transactionReceiptTimeoutValue = (environment: Environment) =>
   })
 
 /**
- * Reads one required bytes32 value.
+ * Parses an optional bytes32 variable when present.
  * @param environment - Environment map to inspect.
- * @param name - Required bytes32 variable name.
- * @returns The validated 32-byte hex value.
- * @throws When missing or rejected by strict viem hex/size validation.
+ * @param name - Optional bytes32 variable name.
+ * @returns The validated 32-byte hex value, or `undefined` when absent.
  */
-export const bytes32Value = (environment: Environment, name: string) =>
-  parseBytes32(requiredValue(environment, name), name)
+export const optionalBytes32Value = (environment: Environment, name: string) => {
+  const value = environment[name]?.trim()
+  return value ? parseBytes32(value, name) : undefined
+}
 
 /**
  * Reads one provider URL and removes a single trailing slash.
@@ -208,4 +209,19 @@ export const urlValue = (environment: Environment, name: string) => {
     throw new ConfigValidationError(name, 'invalid-url', `${name} must be a valid URL`)
   }
   return raw.endsWith('/') ? raw.slice(0, -1) : raw
+}
+
+/**
+ * Parses and normalizes an optional provider URL when present.
+ * @param environment - Environment map to inspect.
+ * @param name - Optional URL variable name.
+ * @returns A normalized URL, or `undefined` when absent.
+ */
+export const optionalUrlValue = (environment: Environment, name: string) => {
+  const value = environment[name]?.trim()
+  if (!value) return undefined
+  if (!URL.canParse(value)) {
+    throw new ConfigValidationError(name, 'invalid-url', `${name} must be a valid URL`)
+  }
+  return value.endsWith('/') ? value.slice(0, -1) : value
 }

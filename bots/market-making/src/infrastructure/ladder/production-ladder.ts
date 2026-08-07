@@ -33,7 +33,10 @@ import {
   recoverLegacyBootstrapOfferTick
 } from '../bootstrap/bootstrap-offer.utils'
 import { readLivePendingBootstrapOffers } from '../bootstrap/bootstrap-pending-offer.utils'
-import { BlueBootstrapReferenceRateService } from '../bootstrap/bootstrap-reference-rate.service'
+import {
+  BlueBootstrapReferenceRateService,
+  StrategyBootstrapReferenceRateService
+} from '../bootstrap/bootstrap-reference-rate.service'
 import { createMakerAccount } from '../make/maker-account.utils'
 import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
 import {
@@ -145,7 +148,7 @@ export const createProductionLadderAdapters = (
   }).extend(morphoViemExtension({ supportSignature: true, supportDeployless: true }))
   const referenceClient = createPublicClient({
     chain: base,
-    transport: http(config.referenceRpcUrl, { timeout: config.requestTimeoutMs })
+    transport: http(config.referenceRpcUrl ?? config.rpcUrl, { timeout: config.requestTimeoutMs })
   })
   const midnight = client.morpho.midnight(base.id)
   const bootstrapOwnership = createBootstrapGroupOwnership({
@@ -266,12 +269,20 @@ export const createProductionLadderAdapters = (
 
   const blueRates = new BlueBootstrapReferenceRateService(
     createBlueReferenceReader(
-      config.setup.referenceMarketId,
+      config.setup.referenceMarketId ?? config.setup.marketIds[0]!,
       referenceClient as HistoricalBlockReader
     )
   )
+  const strategyRates = new StrategyBootstrapReferenceRateService(
+    new Map(config.ladder.map(item => [item.marketId, item.targetRate] as const)),
+    blueRates
+  )
   const rates: LadderReferenceRateService = {
-    readRate: async marketId => (await blueRates.readRate(marketId)).rateBps
+    readRate: async marketId => (await strategyRates.readRate(marketId)).rateBps,
+    readObservation: async marketId => {
+      const observation = await strategyRates.readRate(marketId)
+      return { rateBps: observation.rateBps, observationId: observation.observationId }
+    }
   }
 
   const completeBookOffers = async () => {

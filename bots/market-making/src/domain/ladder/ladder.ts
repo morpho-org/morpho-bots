@@ -59,6 +59,7 @@ export type LadderRung = {
 export type LadderQuoteSet = {
   marketId: Hex
   centerRateBps: bigint
+  referenceObservationId?: string
   groupMode: LadderConfig['groupMode']
   lower: readonly LadderRung[]
   higher: readonly LadderRung[]

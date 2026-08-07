@@ -24,6 +24,7 @@ import type {
 } from '../../application/bootstrap/position-bootstrap.service'
 import type { ConfigService } from '../../config/config.service'
 import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
+import type { HistoricalBlockReader } from '../reference/blue-reference-reader.utils'
 import type { BootstrapActiveGroup, BootstrapInventoryReader } from './bootstrap-position.service'
 
 import { pendingLadderQuoteSets } from '../ladder/ladder-active-publication.utils'
@@ -32,10 +33,7 @@ import { createLadderGroupOwnership } from '../ladder/ladder-group-ownership.uti
 import { buildLadderTree } from '../ladder/ladder-offer.utils'
 import { createMakerAccount } from '../make/maker-account.utils'
 import { ReadOnlyBootstrapMakeService } from '../make/read-only-bootstrap-make.service'
-import {
-  createBlueReferenceReader,
-  type HistoricalBlockReader
-} from '../reference/blue-reference-reader.utils'
+import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 import { bootstrapExposureMarketIds } from './bootstrap-exposure.utils'
 import { createBootstrapGroupOwnership } from './bootstrap-group-ownership.utils'
@@ -53,7 +51,10 @@ import {
 import { bootstrapContinuousFeeCap, createBootstrapOffer } from './bootstrap-offer.utils'
 import { readLivePendingBootstrapOffers } from './bootstrap-pending-offer.utils'
 import { MidnightBootstrapPositionService } from './bootstrap-position.service'
-import { BlueBootstrapReferenceRateService } from './bootstrap-reference-rate.service'
+import {
+  BlueBootstrapReferenceRateService,
+  StrategyBootstrapReferenceRateService
+} from './bootstrap-reference-rate.service'
 import { createBootstrapRequirementClient } from './bootstrap-requirement-client.utils'
 import { prepareBootstrapRequirements } from './bootstrap-requirements.utils'
 import { assertBootstrapProspectiveSpread, bootstrapMarketGroupIds } from './bootstrap-spread.utils'
@@ -156,7 +157,7 @@ export const createProductionBootstrapAdapters = (
   }).extend(morphoViemExtension({ supportSignature: true, supportDeployless: true }))
   const referenceClient = createPublicClient({
     chain: base,
-    transport: http(config.referenceRpcUrl, { timeout: config.requestTimeoutMs })
+    transport: http(config.referenceRpcUrl ?? config.rpcUrl, { timeout: config.requestTimeoutMs })
   })
   const midnight = client.morpho.midnight(base.id)
   const ownership = createBootstrapGroupOwnership({
@@ -358,11 +359,15 @@ export const createProductionBootstrapAdapters = (
   }
 
   const positions = new MidnightBootstrapPositionService(inventory, maker)
-  const rates = new BlueBootstrapReferenceRateService(
+  const blueRates = new BlueBootstrapReferenceRateService(
     createBlueReferenceReader(
-      config.setup.referenceMarketId,
+      config.setup.referenceMarketId ?? config.setup.marketIds[0]!,
       referenceClient as HistoricalBlockReader
     )
+  )
+  const rates = new StrategyBootstrapReferenceRateService(
+    new Map(config.bootstrap.map(item => [item.marketId, item.targetRate] as const)),
+    blueRates
   )
   const completeBookOffers = async () => {
     const [groups, ladderPublications] = await Promise.all([readGroups(), ladderOwnership.read()])

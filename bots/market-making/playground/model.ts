@@ -1,5 +1,6 @@
 import type { BootstrapConfig } from '../src/domain/bootstrap/position-bootstrap'
 import type { LadderConfig } from '../src/domain/ladder/ladder'
+import type { TargetRateConfigured } from '../src/domain/target-rate'
 
 import {
   BOOTSTRAP_MARKET_FIELDS,
@@ -15,11 +16,17 @@ import { FragmentCodecError } from './fragment-codec.error'
 import { PreviewGenerationError } from './preview-generation.error'
 import { StrictJsonError } from './strict-json.error'
 
+export type TargetRateInput =
+  | { strategy: 'variable_rate_avg' }
+  | { strategy: 'hardcoded'; hardcodedRateBps: string }
 export type BootstrapInput = Record<
-  Exclude<(typeof BOOTSTRAP_MARKET_FIELDS)[number], 'autoRefill'>,
+  Exclude<(typeof BOOTSTRAP_MARKET_FIELDS)[number], 'autoRefill' | 'targetRate'>,
   string
-> & { autoRefill: boolean }
-export type LadderInput = Record<(typeof LADDER_MARKET_FIELDS)[number], string>
+> & { autoRefill: boolean; targetRate: TargetRateInput }
+export type LadderInput = Record<
+  Exclude<(typeof LADDER_MARKET_FIELDS)[number], 'targetRate'>,
+  string
+> & { targetRate: TargetRateInput }
 
 export type PlaygroundState = {
   bootstrap: BootstrapInput[]
@@ -28,6 +35,13 @@ export type PlaygroundState = {
 
 export const BOOTSTRAP_FIELDS = [
   ['marketId', 'Market ID', '0x-prefixed bytes32 market', 'text'],
+  ['targetRate.strategy', 'Target rate', 'Reference-rate strategy', 'target-rate-select'],
+  [
+    'targetRate.hardcodedRateBps',
+    'Hardcoded target rate (BPS)',
+    'Positive reference rate used by the hardcoded strategy',
+    'target-rate-number'
+  ],
   ['creditTarget', 'Credit target', 'Positive raw credit units', 'number'],
   ['acceptanceAssets', 'Completion threshold', 'Allowed target shortfall', 'number'],
   ['offerSize', 'Pending-offer cap', 'Maximum desired offer assets', 'number'],
@@ -40,6 +54,13 @@ export const BOOTSTRAP_FIELDS = [
 ] as const
 export const LADDER_FIELDS = [
   ['marketId', 'Market ID', '0x-prefixed bytes32 market', 'text'],
+  ['targetRate.strategy', 'Target rate', 'Reference-rate strategy', 'target-rate-select'],
+  [
+    'targetRate.hardcodedRateBps',
+    'Hardcoded target rate (BPS)',
+    'Positive reference rate used by the hardcoded strategy',
+    'target-rate-number'
+  ],
   ['quotePremiumBps', 'Quote premium (BPS)', 'Signed center offset', 'number'],
   ['spreadBps', 'Full spread (BPS)', 'Positive even nearest-rung distance', 'number'],
   ['stepBps', 'Step (BPS)', 'Positive same-side rung distance', 'number'],
@@ -61,6 +82,7 @@ const DEFAULT_MARKET_ID = `0x${'5'.repeat(64)}`
 
 export const createDefaultBootstrap = (marketId = DEFAULT_MARKET_ID): BootstrapInput => ({
   marketId,
+  targetRate: { strategy: 'variable_rate_avg' },
   creditTarget: '10000000000',
   acceptanceAssets: '100000000',
   offerSize: '500000000',
@@ -74,6 +96,7 @@ export const createDefaultBootstrap = (marketId = DEFAULT_MARKET_ID): BootstrapI
 
 export const createDefaultLadder = (marketId = DEFAULT_MARKET_ID): LadderInput => ({
   marketId,
+  targetRate: { strategy: 'variable_rate_avg' },
   quotePremiumBps: '0',
   spreadBps: '200',
   stepBps: '100',
@@ -96,8 +119,14 @@ export const createDefaultPlaygroundState = (): PlaygroundState => ({
   ladder: [createDefaultLadder()]
 })
 
-const bootstrapInput = (config: BootstrapConfig): BootstrapInput => ({
+const targetRateInput = (config: TargetRateConfigured<unknown>['targetRate']): TargetRateInput =>
+  config.strategy === 'hardcoded'
+    ? { strategy: 'hardcoded', hardcodedRateBps: String(config.hardcodedRateBps) }
+    : { strategy: 'variable_rate_avg' }
+
+const bootstrapInput = (config: TargetRateConfigured<BootstrapConfig>): BootstrapInput => ({
   marketId: config.marketId,
+  targetRate: targetRateInput(config.targetRate),
   creditTarget: String(config.creditTarget),
   acceptanceAssets: String(config.acceptanceAssets),
   offerSize: String(config.offerSize),
@@ -109,8 +138,9 @@ const bootstrapInput = (config: BootstrapConfig): BootstrapInput => ({
   autoRefill: config.autoRefill
 })
 
-const ladderInput = (config: LadderConfig): LadderInput => ({
+const ladderInput = (config: TargetRateConfigured<LadderConfig>): LadderInput => ({
   marketId: config.marketId,
+  targetRate: targetRateInput(config.targetRate),
   quotePremiumBps: String(config.quotePremiumBps),
   spreadBps: String(config.spreadBps),
   stepBps: String(config.stepBps),
@@ -173,14 +203,17 @@ export const deriveBootstrapGraphicModels = (items: BootstrapInput[]): Bootstrap
   parseBootstrap(items).map(item => {
     const minimum = BigInt(item.minimumRateBps)
     const maximum = BigInt(item.maximumRateBps)
-    const quoted = (minimum + maximum) / 2n
-    const reference = quoted - BigInt(item.premiumBps)
+    const premium = BigInt(item.premiumBps)
+    const reference =
+      item.targetRate.strategy === 'hardcoded'
+        ? BigInt(item.targetRate.hardcodedRateBps)
+        : (minimum + maximum) / 2n - premium
+    const quoted = reference + premium
     if (
       reference <= 0n ||
-      reference < minimum ||
-      reference > maximum ||
-      reference + BigInt(item.premiumBps) < minimum ||
-      reference + BigInt(item.premiumBps) > maximum
+      (item.targetRate.strategy !== 'hardcoded' && (reference < minimum || reference > maximum)) ||
+      quoted < minimum ||
+      quoted > maximum
     ) {
       throw new PreviewGenerationError(
         'Bootstrap derived reference and quoted rates must be positive and remain inside configured bounds'
@@ -266,9 +299,14 @@ export const generateLadderGraphicModels = (
     )[0]!
     const minimum = config.minimumRateBps
     const maximum = config.maximumRateBps
-    const center = (minimum + maximum) / 2n
-    const reference = center - config.quotePremiumBps
-    if (reference <= 0n || reference < minimum || reference > maximum) {
+    const reference =
+      input.targetRate.strategy === 'hardcoded'
+        ? BigInt(input.targetRate.hardcodedRateBps)
+        : (minimum + maximum) / 2n - config.quotePremiumBps
+    if (
+      reference <= 0n ||
+      (input.targetRate.strategy !== 'hardcoded' && (reference < minimum || reference > maximum))
+    ) {
       throw new PreviewGenerationError(
         'Ladder derived reference and center rates must remain inside configured bounds'
       )

@@ -12,6 +12,7 @@ import { resolve } from 'node:path'
 
 import { RailwayDeploymentError } from './railway-deployment.error'
 import {
+  assertFreshRailwayReferenceProvisioning,
   assertFullRailwaySignerProvisioning,
   isNonEmptyJsonArray,
   isTerminalRailwayDeploymentStatus,
@@ -36,7 +37,6 @@ if (!PROJECT_ID) {
 const requiredRuntimeVariableNames = [
   'CHAIN_ID',
   'RPC_URL',
-  'REFERENCE_RPC_URL',
   'MAKER_ADDRESS',
   'MIDNIGHT_ADDRESS',
   'LOAN_ASSET_ADDRESS',
@@ -44,7 +44,6 @@ const requiredRuntimeVariableNames = [
   'MORPHO_API_BASE_URL',
   'ROUTER_API_BASE_URL',
   'MARKET_IDS',
-  'REFERENCE_MARKET_ID',
   'NATIVE_RESERVE_WEI',
   'MAXIMUM_LEND_EXPOSURE_ASSETS',
   'BOOTSTRAP_MARKETS',
@@ -132,8 +131,9 @@ const listServices = async () => {
 const ensureService = async () => {
   const services = await listServices()
   const existingService = services.find(service => service.name === SERVICE)
-  if (existingService) return existingService
+  if (existingService) return { service: existingService, isFreshService: false }
 
+  assertFreshRailwayReferenceProvisioning(Bun.env, true)
   const { data, error } = await tryCatch(
     Promise.resolve($`railway add --service ${SERVICE} --json`.quiet().text())
   )
@@ -146,7 +146,7 @@ const ensureService = async () => {
     throw new RailwayDeploymentError('Railway service creation returned incomplete identity')
   }
 
-  return createdService
+  return { service: createdService, isFreshService: true }
 }
 
 const listVolumes = async () => {
@@ -272,7 +272,7 @@ await assertCli()
 await ensureContext()
 
 if (!DEPLOY_ONLY) {
-  const service = await ensureService()
+  const { service } = await ensureService()
 
   await setRuntimeVariable(['RAILWAY_DOCKERFILE_PATH', DOCKERFILE_PATH])
   await setRuntimeVariable(['XDG_STATE_HOME', STATE_MOUNT_PATH])
