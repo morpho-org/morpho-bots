@@ -126,7 +126,7 @@ test('the declared root lint path effectively checks only the playground smoke m
     'oxlint --config bots/market-making/scripts/playground-smoke.oxlintrc.json bots/market-making/scripts/playground-smoke*.mjs'
   )
   assert.match(rootPackage.scripts.lint, /bun run lint:playground-smoke/)
-  assert.match(workflow, /- name: Run lint\n        run: bun lint/)
+  assert.match(workflow, /- name: Run lint\n        run: pnpm lint/)
 })
 
 test('the scoped playground smoke lint config accepts clean source and rejects an injected unused import', async () => {
