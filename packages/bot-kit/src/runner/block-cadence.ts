@@ -13,6 +13,8 @@ export type BlockSampler = {
    * and a sustained condition settles to one report per `everyBlocks`.
    */
   claim: (block: bigint) => boolean
+  /** Clears the cadence after a quiet observation so the next active observation is reported. */
+  reset: () => void
 }
 
 /**
@@ -29,6 +31,9 @@ export const createBlockSampler = (everyBlocks: bigint): BlockSampler => {
       if (lastAt !== null && block - lastAt < everyBlocks) return false
       lastAt = block
       return true
+    },
+    reset() {
+      lastAt = null
     }
   }
 }

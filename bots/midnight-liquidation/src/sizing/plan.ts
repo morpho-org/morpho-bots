@@ -220,6 +220,13 @@ const normalModeOutcome = ({
     lif,
     lltv: input.bestCollateralLltv
   })
+  const base: TraceBase = {
+    postMaturityMode: false,
+    lif,
+    effectiveDebt,
+    ...(input.bestCollateralLltv >= WAD ? { rcfDisabled: true } : { maxRepaid })
+  }
+  if (maxRepaid <= 0n) return capBoundOutcome({ input, cap: maxRepaid, marginBps, base })
   const exempt = isRcfExempt({
     collateralAmt: input.bestCollateralAmt,
     price: input.bestCollateralPrice,
@@ -227,18 +234,15 @@ const normalModeOutcome = ({
     maxRepaid,
     rcfThreshold: input.rcfThreshold
   })
-  const base: TraceBase = {
-    postMaturityMode: false,
-    lif,
-    effectiveDebt,
-    rcfExempt: exempt,
+  const exemptBase: TraceBase = {
+    ...base,
+    rcfExempt: exempt
     // `lltv >= WAD` waives the cap and returns maxUint256; flag that instead of logging a 78-digit
     // number that reads like a real bound.
-    ...(input.bestCollateralLltv >= WAD ? { rcfDisabled: true } : { maxRepaid })
   }
   const repayCap = exempt ? effectiveDebt : min(maxRepaid, effectiveDebt)
   if (wholeSlotRepaid <= repayCap) return seizeWholeSlot(input, false)
-  return capBoundOutcome({ input, cap: repayCap, marginBps, base })
+  return capBoundOutcome({ input, cap: repayCap, marginBps, base: exemptBase })
 }
 
 /**

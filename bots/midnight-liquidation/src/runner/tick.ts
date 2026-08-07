@@ -338,6 +338,7 @@ export async function runTick(deps: {
   // throws by design) — without `complete`, partial counters look exactly like an idle tick.
   // `tryCatch` preserves the error instance, so the rethrow keeps `TxSendError` intact downstream.
   const { error } = await tryCatch(processPairs())
+  if (counters.planSkipped === 0) planSkipSampler.reset()
   logger.info('tick.end', { ...counters, complete: !error })
   if (error) throw error
   return counters
