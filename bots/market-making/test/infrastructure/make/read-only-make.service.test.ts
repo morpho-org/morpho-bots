@@ -90,6 +90,36 @@ describe('read-only make adapters', () => {
     expect(lines).toEqual([])
   })
 
+  test('logs the same adjusted bootstrap offer returned by read-only validation', async () => {
+    const lines: string[] = []
+    const service = new ReadOnlyBootstrapMakeService(
+      line => {
+        lines.push(line)
+      },
+      async parameters => ({
+        ...parameters,
+        desiredOffer: parameters.desiredOffer
+          ? { ...parameters.desiredOffer, assets: 60n, rateBps: 450n }
+          : undefined
+      })
+    )
+
+    await service.reconcile({
+      marketId,
+      desiredOffer: {
+        marketId,
+        assets: 100n,
+        rateBps: 500n,
+        referenceObservationId: 'block:100'
+      },
+      reason: 'publish'
+    })
+
+    expect(JSON.parse(lines[0]!)).toMatchObject({
+      request: { desiredOffer: { assets: '60', rateBps: '450' } }
+    })
+  })
+
   test('reads active ladder roots but logs every requested mutation', async () => {
     const lines: string[] = []
     const reads: Hex[] = []

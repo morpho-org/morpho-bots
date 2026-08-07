@@ -7,32 +7,30 @@ import type {
 } from '../../application/bootstrap/position-bootstrap-verbose'
 import type { BootstrapMakeService } from '../../application/bootstrap/position-bootstrap.service'
 import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
+import type { BootstrapOverlapBookOffer } from './bootstrap-overlap.utils'
 import type { BootstrapActiveGroup } from './bootstrap-position.service'
 
 import { BootstrapOwnershipCleanupError } from '../../application/bootstrap/bootstrap-ownership-cleanup.error'
 import { operatorErrorName } from '../../application/operator-error-name.utils'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 import { BootstrapHardHaltError } from './bootstrap-hard-halt.error'
-import { assertBootstrapProspectiveSpread, bootstrapMarketGroupIds } from './bootstrap-spread.utils'
+import { resolveBootstrapProspectiveOffer } from './bootstrap-overlap.utils'
+import { bootstrapMarketGroupIds } from './bootstrap-spread.utils'
 
-type BootstrapBookOffer = {
-  groupId?: Hex
-  marketId: Hex
-  buy: boolean
-  tick: bigint
-  continuousFeeCap?: bigint
-}
+type BootstrapBookOffer = BootstrapOverlapBookOffer & { continuousFeeCap?: bigint }
 
 /** Protocol transport for confirmed Midnight publication and group invalidation. */
 interface BootstrapOfferTransport {
+  /** Reads configured bootstrap rate bounds. @param marketId - Selected market. @returns Inclusive hard rate bounds. */
+  rateBounds?(marketId: Hex): { minimumRateBps: bigint; maximumRateBps: bigint } | undefined
   /** Lists active strategy groups from Mempool truth. @returns Current active group projections. */
   listActiveGroups(): Promise<readonly BootstrapActiveGroup[]>
   /** Lists every explicitly owned group, including fully consumed groups. @returns Owned group IDs for exhaustive cleanup. */
   listOwnedGroupIds?(): Promise<readonly Hex[]>
   /** Lists the maker's complete current book. @returns Every active offer needed for spread safety. */
   listBookOffers(): Promise<readonly BootstrapBookOffer[]>
-  /** Projects a domain offer into its exact protocol tick. @param offer - Desired offer. @returns Prospective book offer. */
-  toProspectiveBookOffer(offer: BootstrapOffer): Promise<BootstrapBookOffer>
+  /** Projects a domain offer into its exact protocol tick. @param offer - Desired offer. @param exactTick - Existing owned sell tick required for an intentional overlap. @returns Prospective book offer. */
+  toProspectiveBookOffer(offer: BootstrapOffer, exactTick?: bigint): Promise<BootstrapBookOffer>
   /** Prepares one policy-checked publication without broadcasting it. @param offer - Desired offer. @returns Reserved group ID and a one-shot confirmed ratifier/publisher. */
   preparePublication(offer: BootstrapOffer): Promise<{
     groupId: Hex
@@ -79,6 +77,8 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
   reconcile(parameters: {
     marketId: Hex
     desiredOffer?: BootstrapOffer
+    minimumRateBps?: bigint
+    maximumRateBps?: bigint
     reason:
       | 'publish'
       | 'replace'
@@ -92,40 +92,60 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
       const submittedTransactions: BootstrapSubmittedTransaction[] = []
       const groups = await this.strategyGroups()
       const activeMarketGroupIds = new Set(bootstrapMarketGroupIds(groups, parameters.marketId))
-      const spreadReplacedGroupIds = new Set([
-        ...activeMarketGroupIds,
-        ...this.confirmedCanceledGroups
-      ])
       let publication:
         | Awaited<ReturnType<BootstrapOfferTransport['preparePublication']>>
         | undefined
       let retainedGroup: BootstrapActiveGroup | undefined
+      let resolvedOffer: BootstrapOffer | undefined
       if (parameters.desiredOffer) {
-        const prospective = await this.transport.toProspectiveBookOffer(parameters.desiredOffer)
-        assertBootstrapProspectiveSpread({
-          marketId: parameters.marketId,
+        const [book, durableOwnedGroupIds, prospective] = await Promise.all([
+          this.transport.listBookOffers(),
+          this.transport.listOwnedGroupIds?.() ?? Promise.resolve([]),
+          this.transport.toProspectiveBookOffer(parameters.desiredOffer)
+        ])
+        const spreadReplacedGroupIds = new Set([
+          ...activeMarketGroupIds,
+          ...durableOwnedGroupIds,
+          ...this.confirmedCanceledGroups
+        ])
+        const configuredBounds = this.transport.rateBounds?.(parameters.marketId)
+        const resolved = await resolveBootstrapProspectiveOffer({
+          desiredOffer: parameters.desiredOffer,
+          prospective,
           replacedGroupIds: spreadReplacedGroupIds,
-          book: await this.transport.listBookOffers(),
-          prospective
+          book,
+          minimumRateBps:
+            parameters.minimumRateBps ??
+            configuredBounds?.minimumRateBps ??
+            parameters.desiredOffer.rateBps,
+          maximumRateBps:
+            parameters.maximumRateBps ??
+            configuredBounds?.maximumRateBps ??
+            parameters.desiredOffer.rateBps,
+          toProspectiveBookOffer: (offer, exactTick) =>
+            this.transport.toProspectiveBookOffer(offer, exactTick)
         })
-        retainedGroup = groups.find(
-          group =>
-            group.marketId === parameters.marketId &&
-            group.assets === parameters.desiredOffer?.assets &&
-            group.tick === prospective.tick &&
-            group.offerCount === 1 &&
-            group.continuousFeeCap !== undefined &&
-            group.continuousFeeCap === prospective.continuousFeeCap &&
-            !this.confirmedCanceledGroups.has(group.id)
-        )
-        if (!retainedGroup) {
-          publication = await this.transport.preparePublication(parameters.desiredOffer)
+        resolvedOffer = resolved?.offer
+        if (resolved) {
+          retainedGroup = groups.find(
+            group =>
+              group.marketId === parameters.marketId &&
+              group.assets === resolved.offer.assets &&
+              group.tick === resolved.prospective.tick &&
+              group.offerCount === 1 &&
+              group.continuousFeeCap !== undefined &&
+              group.continuousFeeCap === resolved.prospective.continuousFeeCap &&
+              !this.confirmedCanceledGroups.has(group.id)
+          )
+        }
+        if (resolved && !retainedGroup) {
+          publication = await this.transport.preparePublication(resolved.offer)
           await this.transport.reserveGroup(publication.groupId, {
-            ...parameters.desiredOffer,
+            ...resolved.offer,
             ...(publication.tick === undefined ? {} : { tick: publication.tick }),
-            ...(prospective.continuousFeeCap === undefined
+            ...(resolved.prospective.continuousFeeCap === undefined
               ? {}
-              : { continuousFeeCap: prospective.continuousFeeCap })
+              : { continuousFeeCap: resolved.prospective.continuousFeeCap })
           })
         }
       }
@@ -165,10 +185,10 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
         }
         throw error
       }
-      if (retainedGroup && parameters.desiredOffer) {
+      if (retainedGroup && resolvedOffer) {
         try {
           await this.transport.reserveGroup(retainedGroup.id, {
-            ...parameters.desiredOffer,
+            ...resolvedOffer,
             assets: retainedGroup.maximumAssets ?? retainedGroup.assets,
             ...(retainedGroup.tick === undefined ? {} : { tick: retainedGroup.tick }),
             ...(retainedGroup.continuousFeeCap === undefined
@@ -215,6 +235,40 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
       }
       return { submittedTransactions } satisfies BootstrapMakeResult
     })
+  }
+
+  /**
+   * Resolves the exact offer used by cross-market reservation planning without mutating protocol state.
+   * @param parameters - Desired offer and configured inclusive rate bounds.
+   * @returns Adjusted offer, or `undefined` when the owned ladder sell covers it completely.
+   * @throws `BootstrapAdapterError` when current book or ownership evidence cannot prove safety.
+   * @remarks Independent book, ownership, and projection reads run concurrently after active groups
+   * are loaded; no reservation, cancellation, publication, or durable ownership write occurs.
+   */
+  async preview(parameters: Parameters<NonNullable<BootstrapMakeService['preview']>>[0]) {
+    const groups = await this.strategyGroups()
+    const [book, durableOwnedGroupIds, prospective] = await Promise.all([
+      this.transport.listBookOffers(),
+      this.transport.listOwnedGroupIds?.() ?? Promise.resolve([]),
+      this.transport.toProspectiveBookOffer(parameters.desiredOffer)
+    ])
+    const replacedGroupIds = new Set([
+      ...bootstrapMarketGroupIds(groups, parameters.marketId),
+      ...durableOwnedGroupIds,
+      ...this.confirmedCanceledGroups
+    ])
+    return (
+      await resolveBootstrapProspectiveOffer({
+        desiredOffer: parameters.desiredOffer,
+        prospective,
+        replacedGroupIds,
+        book,
+        minimumRateBps: parameters.minimumRateBps,
+        maximumRateBps: parameters.maximumRateBps,
+        toProspectiveBookOffer: (offer, exactTick) =>
+          this.transport.toProspectiveBookOffer(offer, exactTick)
+      })
+    )?.offer
   }
 
   /**

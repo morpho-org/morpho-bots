@@ -1,8 +1,8 @@
-import type { BookOffer } from '@repo/offers'
 import type { Hex } from 'viem'
 
-import { batchProspectiveBook, hasNegativeSpread } from '@repo/offers'
+import type { OwnedOverlapBookOffer } from '../intentional-overlap.utils'
 
+import { hasInvalidOwnedBootstrapLadderSpread } from '../intentional-overlap.utils'
 import { LadderAdapterError } from './ladder-adapter.error'
 
 /**
@@ -14,10 +14,16 @@ import { LadderAdapterError } from './ladder-adapter.error'
 export const assertLadderProspectiveSpread = (parameters: {
   marketId: Hex
   replacedGroupIds: ReadonlySet<Hex>
-  book: readonly BookOffer[]
-  prospective: readonly BookOffer[]
+  book: readonly OwnedOverlapBookOffer[]
+  prospective: readonly OwnedOverlapBookOffer[]
 }) => {
-  if (hasNegativeSpread(batchProspectiveBook(parameters))) {
+  const retained = parameters.book.filter(
+    offer =>
+      offer.marketId === parameters.marketId &&
+      (offer.groupId === undefined || !parameters.replacedGroupIds.has(offer.groupId))
+  )
+  const prospective = parameters.prospective.filter(offer => offer.marketId === parameters.marketId)
+  if (hasInvalidOwnedBootstrapLadderSpread([...retained, ...prospective])) {
     throw new LadderAdapterError('negative-spread')
   }
 }

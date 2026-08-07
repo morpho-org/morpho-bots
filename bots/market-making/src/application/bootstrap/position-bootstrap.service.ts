@@ -76,6 +76,19 @@ export interface BootstrapReferenceRateService {
 /** Port for reconciling market offers and invalidating the complete bootstrap strategy. */
 export interface BootstrapMakeService {
   /**
+   * Resolves the exact safe offer used for cross-market reservation planning.
+   * @param parameters - Desired offer and configured inclusive rate bounds.
+   * @returns The adjusted offer, or `undefined` when owned ladder liquidity covers it completely.
+   * @throws When current book evidence cannot prove a safe publication.
+   * @remarks Read-only and live adapters must use the same overlap rules; no mutation occurs.
+   */
+  preview?(parameters: {
+    marketId: Hex
+    desiredOffer: BootstrapOffer
+    minimumRateBps: bigint
+    maximumRateBps: bigint
+  }): Promise<BootstrapOffer | undefined>
+  /**
    * Reconciles one market's desired bootstrap offer or invalidates that market group.
    * @param parameters - Canonical market, optional desired offer, and stable action reason.
    * @returns `logged` for a dry-run, `unchanged` when requested terms retain the same canonical
@@ -87,6 +100,8 @@ export interface BootstrapMakeService {
   reconcile(parameters: {
     marketId: Hex
     desiredOffer?: BootstrapOffer
+    minimumRateBps?: bigint
+    maximumRateBps?: bigint
     reason:
       | 'publish'
       | 'replace'
@@ -191,6 +206,7 @@ type BootstrapRunPlan =
   | {
       config: BootstrapConfig
       decision: PositionBootstrapDecision
+      plannedOfferAssets?: bigint
       verbose?: BootstrapVerbosePlan
     }
   | { result: BootstrapRunResult }
@@ -564,9 +580,38 @@ export class PositionBootstrapService {
         }
       }
 
+      let plannedOfferAssets: bigint | undefined
+      if (decision.kind === 'publish' || decision.kind === 'replace') {
+        try {
+          plannedOfferAssets = this.make.preview
+            ? ((
+                await this.make.preview({
+                  marketId: config.marketId,
+                  desiredOffer: decision.offer,
+                  minimumRateBps: config.minimumRateBps,
+                  maximumRateBps: config.maximumRateBps
+                })
+              )?.assets ?? 0n)
+            : decision.offer.assets
+        } catch (error) {
+          const halt = await this.haltStrategy(
+            config.marketId,
+            'decision',
+            error,
+            'bootstrap-decision-failed',
+            this.transactionObserver(parameters, verbose)
+          )
+          return [
+            ...preflightResults(),
+            await this.withVerboseDetails(halt.result, verbose, undefined, true, halt.makeResult)
+          ]
+        }
+      }
+
       plans.push({
         config,
         decision,
+        ...(plannedOfferAssets === undefined ? {} : { plannedOfferAssets }),
         ...(verbose
           ? {
               verbose: {
@@ -588,7 +633,7 @@ export class PositionBootstrapService {
       if (decision.kind === 'publish' || decision.kind === 'replace') {
         const replacedAssets =
           decision.kind === 'replace' ? (position.activeOffer?.assets ?? 0n) : 0n
-        const exposureDelta = decision.offer.assets - replacedAssets
+        const exposureDelta = (plannedOfferAssets ?? decision.offer.assets) - replacedAssets
         reservedAssetsDelta += exposureDelta
         reservedAssetsDeltaByMarket.set(config.marketId, marketReservationDelta + exposureDelta)
       } else if (decision.kind === 'invalidate' && position.activeOffer) {

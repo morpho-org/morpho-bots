@@ -48,8 +48,9 @@ export const bootstrapContinuousFeeCap = (market: { continuousFee: unknown }) =>
 
 /**
  * Recreates the exact protocol offer for a persisted or prospective bootstrap intent.
- * @param parameters - Offer intent, fresh market state, maker policy, and current block time.
- * @returns A Midnight buy offer with the live maturity-adjusted tick and fee cap.
+ * @param parameters - Offer intent, fresh market state, maker policy, current block time, and an
+ * optional exact owned ladder-sell tick for intentional overlap.
+ * @returns A Midnight buy offer with the exact overlap tick or live maturity-adjusted tick and fee cap.
  * @throws `BootstrapAdapterError` when a required live market fee is malformed; SDK validation failures propagate.
  * @remarks The fresh block timestamp prevents a later publication from reusing a consumed
  * content-addressed group while preserving the market maturity as the offer expiry.
@@ -60,13 +61,16 @@ export const createBootstrapOffer = (parameters: {
   maker: Address
   ratifier: Address
   now: bigint
+  exactTick?: bigint
 }) => {
   return Offer.create({
     market: parameters.market.params,
     buy: true,
     maker: parameters.maker,
     start: parameters.now,
-    tick: bootstrapOfferTick(parameters.offer.rateBps, parameters.market, parameters.now),
+    tick:
+      parameters.exactTick ??
+      bootstrapOfferTick(parameters.offer.rateBps, parameters.market, parameters.now),
     expiry: parameters.market.params.maturity,
     ratifier: parameters.ratifier,
     maxAssets: parameters.offer.assets,
