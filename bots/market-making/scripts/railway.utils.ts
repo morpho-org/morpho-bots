@@ -18,6 +18,8 @@ type RailwayVolume = {
 }
 
 const optionalRuntimeVariableDefaults = [
+  ['REFERENCE_RPC_URL', ' '],
+  ['REFERENCE_MARKET_ID', ' '],
   ['V0_OFFER_GROUP_IDS', ' '],
   ['REQUEST_TIMEOUT_MS', '10000'],
   ['TRANSACTION_RECEIPT_TIMEOUT_MS', '180000'],

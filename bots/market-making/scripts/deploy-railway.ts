@@ -35,7 +35,6 @@ if (!PROJECT_ID) {
 const requiredRuntimeVariableNames = [
   'CHAIN_ID',
   'RPC_URL',
-  'REFERENCE_RPC_URL',
   'MAKER_PRIVATE_KEY',
   'MAKER_ADDRESS',
   'MIDNIGHT_ADDRESS',
@@ -44,7 +43,6 @@ const requiredRuntimeVariableNames = [
   'MORPHO_API_BASE_URL',
   'ROUTER_API_BASE_URL',
   'MARKET_IDS',
-  'REFERENCE_MARKET_ID',
   'NATIVE_RESERVE_WEI',
   'MAXIMUM_LEND_EXPOSURE_ASSETS',
   'BOOTSTRAP_MARKETS',

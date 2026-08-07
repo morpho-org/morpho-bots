@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'bun:test'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 
 import {
   isNonEmptyJsonArray,
@@ -70,10 +72,31 @@ describe('Railway CLI output parsing', () => {
       BETTERSTACK_HEARTBEAT_URL: ' ',
       BETTERSTACK_INGESTING_HOST: ' ',
       BETTERSTACK_SOURCE_TOKEN: ' ',
+      REFERENCE_MARKET_ID: ' ',
+      REFERENCE_RPC_URL: ' ',
       REQUEST_TIMEOUT_MS: '25000',
       TRANSACTION_RECEIPT_TIMEOUT_MS: '180000',
       V0_OFFER_GROUP_IDS: ' '
     })
+  })
+
+  test('trims optional reference configuration before uploading it to Railway', () => {
+    const variables = Object.fromEntries(
+      synchronizedOptionalRailwayVariables({
+        REFERENCE_RPC_URL: ' https://archive.example/ ',
+        REFERENCE_MARKET_ID: ' 0xreference '
+      })
+    )
+
+    expect(variables.REFERENCE_RPC_URL).toBe('https://archive.example/')
+    expect(variables.REFERENCE_MARKET_ID).toBe('0xreference')
+  })
+
+  test('allows Compose deployments to omit inactive reference configuration', () => {
+    const compose = readFileSync(resolve(import.meta.dir, '../../docker-compose.yml'), 'utf8')
+
+    expect(compose).toContain('REFERENCE_RPC_URL: ${REFERENCE_RPC_URL:-}')
+    expect(compose).toContain('REFERENCE_MARKET_ID: ${REFERENCE_MARKET_ID:-}')
   })
 
   test('reads the newest complete deployment and rejects incomplete output', () => {
