@@ -12,9 +12,10 @@ minimumReleaseAge: 4320
 minimumReleaseAgeExclude:
   - '@morpho-org/*'
 
-# No dependency lifecycle script runs unless opted in here — add entries deliberately. Empty today:
-# nothing in the tree declares preinstall/install/postinstall.
-allowBuilds: {}
+# No dependency lifecycle script runs unless opted in here — add entries deliberately. esbuild's
+# platform binary is required by the root build dependency introduced on main.
+allowBuilds:
+  esbuild: true
 # Make an un-opted-in build script a hard install failure, not a warning. Without this the
 # default-deny above is advisory, which defeats the point of the migration.
 strictDepBuilds: true
