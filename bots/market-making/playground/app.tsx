@@ -15,7 +15,8 @@ import type {
   BootstrapInput,
   LadderGraphicModel,
   LadderInput,
-  PlaygroundState
+  PlaygroundState,
+  TargetRateInput
 } from './model'
 
 import { CollectionImportError } from './collection-import.error'
@@ -46,6 +47,10 @@ type CollectionKind = keyof PlaygroundState
 type FieldDefinition = readonly [string, string, string, string]
 type ExportFormat = 'bootstrap-json' | 'bootstrap-string' | 'ladder-json' | 'ladder-string'
 type Status = { message: string; status?: 'ok' | 'error' }
+const visibleFields = (fields: readonly FieldDefinition[], targetRate: TargetRateInput) =>
+  fields.filter(
+    ([key]) => key !== 'targetRate.hardcodedRateBps' || targetRate.strategy === 'hardcoded'
+  )
 const EXPORT_FORMATS: ExportFormat[] = [
   'bootstrap-json',
   'bootstrap-string',
@@ -480,7 +485,7 @@ const Playground = () => {
                   </button>
                 </div>
                 <div className="field-grid">
-                  {fields.map(([key, label, help, type]) => (
+                  {visibleFields(fields, item.targetRate).map(([key, label, help, type]) => (
                     <form.Field
                       key={`${uiIds[kind][index]}-${key}`}
                       name={`${kind}.${index}.${key}` as never}
