@@ -37,55 +37,74 @@ its `github-pages` environment for deployment status.
 ## Run
 
 ```sh
-bun run --filter @morpho-org/market-making-bot start -- setup-check
+pnpm --filter @morpho-org/market-making-bot run start -- setup-check
 
 # Address-only setup inspection: MAKER_PRIVATE_KEY may be omitted.
-bun run --filter @morpho-org/market-making-bot start -- --readonly setup-check
+pnpm --filter @morpho-org/market-making-bot run start -- --readonly setup-check
 
+# Explicit signer sources (root options precede the command).
+bun run --filter @morpho-org/market-making-bot start -- --private-key '<key>' setup-check
+bun run --filter @morpho-org/market-making-bot start -- --keystore ./maker.json --interactive setup-check
+bun run --filter @morpho-org/market-making-bot start -- --aws setup-check
+```
+
+For unattended keystore operation, provision `KEYSTORE_PASSWORD` separately through the deployment
+secret manager or process environment, then run the keystore command without an inline value:
+
+```sh
+bun run --filter @morpho-org/market-making-bot start -- --keystore ./maker.json setup-check
+```
+
+`--private-key <key>` and `--password <password>` remain available for explicit automation, but they
+place secrets in argv, where process listings and shell history may expose them. Prefer
+`MAKER_PRIVATE_KEY` and `KEYSTORE_PASSWORD` respectively for unattended operation, or hidden
+`--interactive` password input for attended keystore operation.
+
+```sh
 # Repeat read-only readiness checks every minute until SIGINT/SIGTERM.
-bun run --filter @morpho-org/market-making-bot start -- setup-check --monitor
+pnpm --filter @morpho-org/market-making-bot run start -- setup-check --monitor
 
 # Emit compact JSON Lines for automation instead of the default human-readable output.
-bun run --filter @morpho-org/market-making-bot start -- --json setup-check
+pnpm --filter @morpho-org/market-making-bot run start -- --json setup-check
 
 # One live position-bootstrap cycle.
-bun run --filter @morpho-org/market-making-bot start -- bootstrap
+pnpm --filter @morpho-org/market-making-bot run start -- bootstrap
 
 # One address-only cycle that logs desired make operations without submitting them.
-bun run --filter @morpho-org/market-making-bot start -- --readonly bootstrap
+pnpm --filter @morpho-org/market-making-bot run start -- --readonly bootstrap
 
 # Repeat bootstrap every minute; SIGINT/SIGTERM drains the current cycle and removes owned offers.
-bun run --filter @morpho-org/market-making-bot start -- bootstrap --monitor
+pnpm --filter @morpho-org/market-making-bot run start -- bootstrap --monitor
 
 # Stream full safe diagnostics and emit publication/cancellation hashes as soon as submitted.
-bun run --filter @morpho-org/market-making-bot start -- bootstrap --monitor --verbose
+pnpm --filter @morpho-org/market-making-bot run start -- bootstrap --monitor --verbose
 
 # Exercise the complete monitor and cleanup lifecycle without signing or submitting.
-bun run --filter @morpho-org/market-making-bot start -- --readonly bootstrap --monitor
+pnpm --filter @morpho-org/market-making-bot run start -- --readonly bootstrap --monitor
 
 # Validate and continuously render ladder decisions without loading a private key or submitting.
-bun run --filter @morpho-org/market-making-bot start -- ladder --monitor --verbose --readonly
+pnpm --filter @morpho-org/market-making-bot run start -- ladder --monitor --verbose --readonly
 
 # Sign, broadcast, and confirm one ladder reconciliation cycle.
-bun run --filter @morpho-org/market-making-bot start -- ladder
+pnpm --filter @morpho-org/market-making-bot run start -- ladder
 
 # Continuously reconcile the live ladder and remove owned offers on SIGINT/SIGTERM.
-bun run --filter @morpho-org/market-making-bot start -- ladder --monitor --verbose
+pnpm --filter @morpho-org/market-making-bot run start -- ladder --monitor --verbose
 
 # Run setup checks, bootstrap, and ladder monitoring together until SIGINT/SIGTERM.
-bun run --filter @morpho-org/market-making-bot start -- start --verbose
+pnpm --filter @morpho-org/market-making-bot run start -- start --verbose
 
 # Exercise the same combined lifecycle without signing or submitting transactions.
-bun run --filter @morpho-org/market-making-bot start -- --readonly start --verbose
+pnpm --filter @morpho-org/market-making-bot run start -- --readonly start --verbose
 
 # Cancel every active offer group for the configured maker.
-bun run --filter @morpho-org/market-making-bot start -- invalidate
+pnpm --filter @morpho-org/market-making-bot run start -- invalidate
 
 # Cancel one explicit offer group, even when it has not been indexed by the API.
-bun run --filter @morpho-org/market-making-bot start -- invalidate 0x<64-hex-characters>
+pnpm --filter @morpho-org/market-making-bot run start -- invalidate 0x<64-hex-characters>
 
 # Preview the active groups that maker-wide invalidation would cancel.
-bun run --filter @morpho-org/market-making-bot start -- invalidate --readonly
+pnpm --filter @morpho-org/market-making-bot run start -- invalidate --readonly
 ```
 
 Success exits zero and writes human-readable output to standard output. Add the root `--json` flag for
@@ -114,16 +133,19 @@ its exact tick, comparing the prospective offer with the complete current maker 
 the SDK's live Mempool-policy validation without signing or broadcasting.
 The corresponding final cycle outcome uses `status: "logged"` rather than `"applied"`.
 
-`bootstrap --monitor` requires at least one explicit `bootstrap` / `BOOTSTRAP_MARKETS` entry. It
-serially runs a cycle every minute and streams each result. `SIGINT` or `SIGTERM` lets an in-flight
-cycle finish, then invalidates every explicitly owned bootstrap group through the same mutation
-queue and waits for bounded transaction receipts. The final record reports the number of cycles and
-whether cleanup was applied, logged, or failed. Read-only monitoring logs the cleanup request and
-never loads a private key. In live mode, Ecrecover bootstrap signs and publishes the validated payload
-in one transaction. Setter bootstrap durably reserves the future group, confirms any replacement
-cancellations, submits and confirms `setIsRootRatified`, revalidates the exact final proof payload with
-the Mempool API, then publishes it in a second transaction and confirms ownership. A post-approval
-validation failure does not publish and retains the reservation for safe cleanup.
+`bootstrap --monitor` requires at least one explicit `bootstrap` / `BOOTSTRAP_MARKETS` entry. Each
+market independently selects `targetRate.strategy: variable_rate_avg` (the existing Morpho Blue
+variable-rate average) or `hardcoded` with `hardcodedRateBps`; `premiumBps` is then added to derive
+the published offer rate. It serially runs a cycle every minute
+and streams each result. `SIGINT` or `SIGTERM` lets an in-flight cycle finish, then invalidates every
+explicitly owned bootstrap group through the same mutation queue and waits for bounded transaction
+receipts. The final record reports the number of cycles and whether cleanup was applied, logged, or
+failed. Read-only monitoring logs the cleanup request and never loads a private key. In live mode,
+Ecrecover bootstrap signs and publishes the validated payload in one transaction. Setter bootstrap
+durably reserves the future group, confirms any replacement cancellations, submits and confirms
+`setIsRootRatified`, revalidates the exact final proof payload with the Mempool API, then publishes it
+in a second transaction and confirms ownership. A post-approval validation failure does not publish
+and retains the reservation for safe cleanup.
 
 Add `--verbose` to either one-shot or monitored bootstrap mode to include the complete market
 configuration, fresh credit, debt, cash balance, per-market and total exposure, active offer,
@@ -138,7 +160,8 @@ unchanged.
 
 `ladder` requires at least one `ladder` / `LADDER_MARKETS` entry. It runs readiness first, derives
 fresh wallet, allowance, credit, position, active-group, and strategy-wide exposure capacities, and
-then builds one deterministic quote set from the current Blue reference rate. Lower-rate rungs are
+then builds one deterministic quote set from that market's independently selected target-rate
+strategy. Lower-rate rungs are
 reduce-only borrow-side sells; higher-rate rungs are lend-side buys. The complete mixed-side tree is
 Mempool-validated before and after ratification. Ecrecover trees are signed and published in one
 transaction; Setter trees first submit and confirm `setIsRootRatified`, then publish the proof-only
@@ -206,7 +229,8 @@ limited to the explicit maker-wide recovery command.
 For a maker with at least 101 USDC of both available balance and accrued credit, this
 one-rung-per-side preset caps each side at 150 USDC. USDC uses six decimals, so `150000000` is 150
 USDC and `101000000` is the Router-compatible 101 USDC offer floor. Duplicate the exact market ID
-already present in `MARKET_IDS`:
+already present in `MARKET_IDS`. This legacy preset intentionally omits `targetRate`, so it uses the
+backward-compatible `variable_rate_avg` default:
 
 ```dotenv
 LADDER_MARKETS=[{"marketId":"0x05959752fdeff325962b9d263edb421efc6e2186a49360dba6c32e86ebf6c84c","quotePremiumBps":"0","spreadBps":"200","stepBps":"100","rungCount":"1","sizeSkewBps":"0","lowerRateBudgetAssets":"150000000","higherRateBudgetAssets":"150000000","targetMarketExposureAssets":"300000000","maximumTotalExposureAssets":"300000000","minimumOfferAssets":"101000000","groupMode":"shared-rung","loopIntervalSeconds":"60","movementToleranceBps":"10","minimumRateBps":"200","maximumRateBps":"800"}]
@@ -216,13 +240,13 @@ Run the exact read-only monitor command first to inspect whether current cash/cr
 produces a lower side, a higher side, or both:
 
 ```sh
-bun run --filter @morpho-org/market-making-bot start -- ladder --monitor --verbose --readonly
+pnpm --filter @morpho-org/market-making-bot run start -- ladder --monitor --verbose --readonly
 ```
 
 Version output remains available:
 
 ```sh
-bun run --filter @morpho-org/market-making-bot start -- --version
+pnpm --filter @morpho-org/market-making-bot run start -- --version
 ```
 
 ## Docker
@@ -409,6 +433,14 @@ bun run --filter @morpho-org/market-making-bot deploy:railway
 ```
 
 Provide the required values from [`.env.example`](./.env.example) in the invoking environment.
+A full provisioning run supports only `private-key`, because the script cannot safely seed a local
+keystore file or an AWS credential source into a newly created service. For `keystore`, first
+provision the encrypted file at `KEYSTORE_PATH` in the existing service. For `aws`, first provision
+an AWS SDK credential source with KMS access in the existing service. Then set the corresponding
+signer variables out of band and use `DEPLOY_ONLY=true`; deploy-only does not inspect or mutate those
+credentials or files. Full provisioning fails closed for both modes instead of launching a service
+that cannot resolve its signer.
+
 `BOOTSTRAP_MARKETS` and `LADDER_MARKETS` must each be populated JSON arrays so a full run cannot
 replace a working strategy with an empty list. Every remaining optional value is synchronized:
 omitted timeouts return to their documented defaults, and omitted group IDs and BetterStack settings
@@ -438,8 +470,10 @@ Configuration can come from environment variables, a YAML file, or both. YAML fi
 2. Without `--config`, the CLI searches the process working directory from which `mm` was invoked.
    It checks `market-making.yaml` first, then `market-making.yml`. If both exist, `.yaml` wins.
 3. If neither default file exists, environment-only startup remains supported.
-4. Every supplied environment variable overrides the corresponding YAML value. A duplicate value is
-   never an error.
+4. Every supplied environment variable overrides the corresponding YAML value. CLI signer flags
+   override environment and YAML signer selection. A higher-precedence signer selection discards
+   competing lower-precedence signer fields while retaining same-method companion fields. Within one
+   effective layer, configuring more than one source is an error.
 
 Scalar fields override independently. `MARKET_IDS` and `V0_OFFER_GROUP_IDS` each replace their
 complete YAML list. `BOOTSTRAP_MARKETS` and `LADDER_MARKETS` replace the complete YAML `bootstrap` and
@@ -454,13 +488,13 @@ example filename.
 
 ```sh
 # Explicit file; relative paths resolve from the invocation working directory.
-bun run --filter @morpho-org/market-making-bot start -- --config ./market-making.yml setup-check
+pnpm --filter @morpho-org/market-making-bot run start -- --config ./market-making.yml setup-check
 
 # Default discovery in the current working directory.
-bun run --filter @morpho-org/market-making-bot start -- setup-check
+pnpm --filter @morpho-org/market-making-bot run start -- setup-check
 
 # Address-only mode works with either configuration source.
-bun run --filter @morpho-org/market-making-bot start -- --readonly setup-check
+pnpm --filter @morpho-org/market-making-bot run start -- --readonly setup-check
 ```
 
 ### Environment variables
@@ -472,16 +506,22 @@ unit; for six-decimal USDC, `101000000` is 101 USDC. No value is inferred from a
 | -------------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `CHAIN_ID`                       | `chain.id`                          | Required. Must be `8453`; all protocol, token, market, and transaction operations run on Base.                                                                                                            |
 | `RPC_URL`                        | `chain.rpcUrl`                      | Required. Current-state Base JSON-RPC endpoint used for blocks, balances, allowances, positions, contract reads, simulation, transaction submission, and receipts.                                        |
-| `REFERENCE_RPC_URL`              | `chain.archiveRpcUrl`               | Required. Archive-capable Base JSON-RPC endpoint used to read the reference Morpho Blue market at historical blocks.                                                                                      |
-| `MAKER_ADDRESS`                  | `identity.makerAddress`             | Required. EVM address whose balance, allowance, credit, offers, and exposure the bot manages. In write mode it must be derived by `MAKER_PRIVATE_KEY`.                                                    |
-| `MAKER_PRIVATE_KEY`              | `identity.makerPrivateKey`          | Required in write mode; omitted and never loaded with `--readonly`. Must be a 0x-prefixed 32-byte secp256k1 key. Never include it in committed configuration or logs.                                     |
+| `REFERENCE_RPC_URL`              | `chain.archiveRpcUrl`               | Required when the selected command has an active `variable_rate_avg` target. Archive-capable Base JSON-RPC endpoint used to read the reference Morpho Blue market at historical blocks.                   |
+| `MAKER_ADDRESS`                  | `identity.makerAddress`             | Required. EVM address whose balance, allowance, credit, offers, and exposure the bot manages. In write mode it must match the selected signer.                                                            |
+| `KEY_STORAGE_METHOD`             | `identity.keyStorageMethod`         | Optional only for backward-compatible `MAKER_PRIVATE_KEY` use; otherwise `private-key`, `keystore`, or `aws`. Exactly one effective source is required in write mode.                                     |
+| `MAKER_PRIVATE_KEY`              | `identity.makerPrivateKey`          | Local private-key source. Must be a 0x-prefixed 32-byte secp256k1 key. `--private-key` overrides config. Never include it in committed configuration or logs.                                             |
+| `KEYSTORE_PATH`                  | `identity.keystorePath`             | Encrypted Web3 Secret Storage file used by the `keystore` method. CLI equivalent: `--keystore <path>`.                                                                                                    |
+| `KEYSTORE_PASSWORD`              | `identity.keystorePassword`         | Keystore password. Exactly one direct or interactive mode is required; see the argv exposure warning above. Never logged or included in diagnostics.                                                      |
+| `KEYSTORE_INTERACTIVE`           | `identity.keystoreInteractive`      | `true` prompts without echoing for the keystore password; CLI equivalent: `--interactive`. Not suitable for unattended deployment.                                                                        |
+| `AWS_KMS_KEY_ID`                 | `identity.awsKmsKeyId`              | KMS key ID/ARN/alias for an asymmetric `ECC_SECG_P256K1` signing key. `--aws` selects this backend.                                                                                                       |
+| `AWS_REGION`                     | `identity.awsRegion`                | AWS region containing the KMS key. AWS credentials use the standard AWS SDK credential chain.                                                                                                             |
 | `MIDNIGHT_ADDRESS`               | `contracts.midnightAddress`         | Required. Expected deployed Midnight singleton. Setup verifies its bytecode before a writer starts.                                                                                                       |
 | `LOAN_ASSET_ADDRESS`             | `contracts.loanAssetAddress`        | Required. Loan token used by every configured Midnight market. Balances, allowances, budgets, offer sizes, and exposure values use this token's raw units.                                                |
 | `RATIFIER_ADDRESS`               | `contracts.ratifierAddress`         | Required. Router-listed Ecrecover or Setter ratifier authorized by the maker. The bot signs Ecrecover trees or approves Setter roots onchain, then verifies the selected deployment and Midnight binding. |
 | `MORPHO_API_BASE_URL`            | `apis.morphoBaseUrl`                | Required. Morpho API origin used for Midnight books, market metadata, prospective-offer validation, and cursor-paginated maker offer groups. No API-key header is supported.                              |
 | `ROUTER_API_BASE_URL`            | `apis.routerBaseUrl`                | Required. Router API origin used only to verify the configured ratifier against `/v0/config/contracts`. No API-key header is supported.                                                                   |
 | `MARKET_IDS`                     | `markets.allowlist`                 | Required comma-separated list of unique 0x-prefixed bytes32 Midnight market IDs. Every bootstrap or ladder `marketId` must appear here.                                                                   |
-| `REFERENCE_MARKET_ID`            | `markets.referenceMarketId`         | Required 0x-prefixed bytes32 Morpho Blue market ID whose historical variable borrow rate supplies the reference rate for all configured strategies.                                                       |
+| `REFERENCE_MARKET_ID`            | `markets.referenceMarketId`         | Required when the selected command has an active `variable_rate_avg` target. Must be a 0x-prefixed bytes32 Morpho Blue market ID.                                                                         |
 | `V0_OFFER_GROUP_IDS`             | `markets.v0OfferGroupIds`           | Optional comma-separated list of unique, explicitly strategy-owned bytes32 offer-group IDs; defaults to empty. Use it to adopt known pre-existing groups safely.                                          |
 | `NATIVE_RESERVE_WEI`             | `setup.nativeReserveWei`            | Required unsigned integer. Minimum maker native-token balance, in wei, required by readiness for transaction fees.                                                                                        |
 | `MAXIMUM_LEND_EXPOSURE_ASSETS`   | `setup.maximumLendExposureAssets`   | Required unsigned integer in raw loan-token units. Minimum maker allowance to Midnight required by readiness; it is not a strategy position cap.                                                          |
@@ -534,7 +574,8 @@ and `ladder`; unknown keys at any level are rejected. Every supported key appear
 [`market-making.example.yaml`](./market-making.example.yaml).
 
 - `chain`: `id`, `rpcUrl`, `archiveRpcUrl`.
-- `identity`: `makerAddress`, `makerPrivateKey`.
+- `identity`: `makerAddress`, `keyStorageMethod`, `makerPrivateKey`, `keystorePath`,
+  `keystorePassword`, `keystoreInteractive`, `awsKmsKeyId`, `awsRegion`.
 - `contracts`: `midnightAddress`, `loanAssetAddress`, `ratifierAddress`.
 - `apis`: `morphoBaseUrl`, `routerBaseUrl`.
 - `markets`: `allowlist`, `referenceMarketId`, `v0OfferGroupIds`.
@@ -585,20 +626,22 @@ reference hard-fails when its latest checkpoint is more than five minutes behind
 ### Position-bootstrap fields
 
 Each `bootstrap` entry must use a unique `marketId` present in `markets.allowlist`.
-There are no per-field defaults: every field in each entry is required.
+`targetRate` defaults to `{ strategy: "variable_rate_avg" }` when omitted for backward compatibility;
+every other field in each entry is required.
 
-| Field                   | Unit / behavior                                                 | Validation                                                |
-| ----------------------- | --------------------------------------------------------------- | --------------------------------------------------------- |
-| `marketId`              | 0x-prefixed 32-byte Midnight market ID                          | Required, unique, and allowlisted                         |
-| `creditTarget`          | Raw credit units; complete at `creditTarget - acceptanceAssets` | Positive unsigned integer                                 |
-| `acceptanceAssets`      | Raw acceptable shortfall                                        | Non-negative and no greater than `creditTarget`           |
-| `offerSize`             | Raw desired offer size before capacity caps                     | Positive unsigned integer                                 |
-| `premiumBps`            | Integer BPS added to the reference rate                         | Zero or negative                                          |
-| `maximumMarketExposure` | Raw per-market exposure cap                                     | Positive and no greater than `maximumTotalExposure`       |
-| `maximumTotalExposure`  | Raw strategy-wide exposure cap                                  | Positive                                                  |
-| `minimumRateBps`        | Inclusive final-rate minimum                                    | Non-negative and no greater than `maximumRateBps`         |
-| `maximumRateBps`        | Inclusive final-rate maximum                                    | Non-negative                                              |
-| `autoRefill`            | Resume after first observed completion if credit later falls    | Boolean; completion memory lasts for one service instance |
+| Field                   | Unit / behavior                                                 | Validation                                                                                            |
+| ----------------------- | --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `marketId`              | 0x-prefixed 32-byte Midnight market ID                          | Required, unique, and allowlisted                                                                     |
+| `targetRate`            | Target-rate method selection                                    | `variable_rate_avg`, or `hardcoded` with positive `hardcodedRateBps`; defaults to `variable_rate_avg` |
+| `creditTarget`          | Raw credit units; complete at `creditTarget - acceptanceAssets` | Positive unsigned integer                                                                             |
+| `acceptanceAssets`      | Raw acceptable shortfall                                        | Non-negative and no greater than `creditTarget`                                                       |
+| `offerSize`             | Raw desired offer size before capacity caps                     | Positive unsigned integer                                                                             |
+| `premiumBps`            | Integer BPS added to the reference rate                         | Zero or negative                                                                                      |
+| `maximumMarketExposure` | Raw per-market exposure cap                                     | Positive and no greater than `maximumTotalExposure`                                                   |
+| `maximumTotalExposure`  | Raw strategy-wide exposure cap                                  | Positive                                                                                              |
+| `minimumRateBps`        | Inclusive final-rate minimum                                    | Non-negative and no greater than `maximumRateBps`                                                     |
+| `maximumRateBps`        | Inclusive final-rate maximum                                    | Non-negative                                                                                          |
+| `autoRefill`            | Resume after first observed completion if credit later falls    | Boolean; completion memory lasts for one service instance                                             |
 
 For a market below its accepted target, desired assets are the minimum of `offerSize`, remaining
 credit target, cash balance, remaining per-market exposure, and remaining total exposure. Replacement
@@ -618,6 +661,27 @@ rates, and `premiumBps`—must be a quoted decimal-integer string. JSON number t
 when integral; `marketId` remains a string and `autoRefill` remains a JSON boolean. Supplying it replaces
 every YAML bootstrap entry, which avoids ambiguous partial-array merge behavior. See
 [`.env.example`](./.env.example) for exact syntax.
+
+Bootstrap and ladder select their methods independently. These two valid YAML combinations show both
+directions:
+
+```yaml
+# Bootstrap fixed at 4%; ladder follows the Blue variable-rate average.
+bootstrap:
+  - marketId: '0x...'
+    targetRate: { strategy: 'hardcoded', hardcodedRateBps: '400' }
+ladder:
+  - marketId: '0x...'
+    targetRate: { strategy: 'variable_rate_avg' }
+
+# Bootstrap follows Blue; ladder is fixed at 4%.
+bootstrap:
+  - marketId: '0x...'
+    targetRate: { strategy: 'variable_rate_avg' }
+ladder:
+  - marketId: '0x...'
+    targetRate: { strategy: 'hardcoded', hardcodedRateBps: '400' }
+```
 
 `mm setup-check --monitor` repeats non-overlapping read-only readiness observations every minute
 until its shutdown signal or the first failed report. `mm bootstrap` first runs the same one-shot
@@ -641,12 +705,13 @@ mutation and graceful-cleanup operation instead.
 
 Each `ladder` entry has a unique allowlisted `marketId`. Rates are integer BPS and asset/exposure
 amounts are exact raw loan-asset units. `quotePremiumBps` and `sizeSkewBps` are signed; all other
-integer fields are nonnegative or positive as shown below. There are no per-field defaults: every
-field in each entry is required.
+integer fields are nonnegative or positive as shown below. `targetRate` defaults to
+`{ strategy: "variable_rate_avg" }`; every other field in each entry is required.
 
 | Field                        | Unit / behavior                                                                                                                                                      | Validation                                                                                                |
 | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | `marketId`                   | 0x-prefixed 32-byte Midnight market ID quoted by this entry.                                                                                                         | Required, unique across the array, and present in `MARKET_IDS`.                                           |
+| `targetRate`                 | Target-rate method used as reference `R`.                                                                                                                            | `variable_rate_avg`, or `hardcoded` with positive `hardcodedRateBps`; defaults to `variable_rate_avg`.    |
 | `quotePremiumBps`            | Signed BPS added to the fresh reference rate before the ladder spread is applied. Positive moves both sides higher; negative moves both lower.                       | Signed decimal integer; the resulting funded rungs must remain inside the configured rate range.          |
 | `spreadBps`                  | Full distance in BPS between the nearest lower and higher rates. Each nearest rung is half this value from the center.                                               | Positive and even, so each half-spread is an exact integer BPS value.                                     |
 | `stepBps`                    | Additional BPS between successive rungs on the same side, moving farther from the center.                                                                            | Positive.                                                                                                 |
@@ -700,7 +765,8 @@ The ladder is state reconciliation, not a collection of independently refilled o
 one-shot `ladder` invocation and every non-overlapping `ladder --monitor` cycle:
 
 1. Reads fresh market credit, wallet balance, allowance, market and strategy exposure, active owned
-   groups, group consumption, and the Blue reference rate.
+   groups, group consumption, and the configured target rate (including Blue history only for
+   `variable_rate_avg`).
 2. Reconstructs the remaining active quote. A partially consumed group contributes only its
    remaining assets, and a fully consumed indexed group contributes no rung. A persisted group that
    has not appeared in the eventually consistent API remains pending-active so the bot cannot
@@ -832,15 +898,24 @@ the supplied path. Runtime setup reports identify providers by stable IDs only.
 
 ## Parameter playground
 
-The stateless local playground exposes the complete current YAML/environment configuration surface,
-including bootstrap, ladder, and environment-only Better Stack settings. It renders a synthetic
-offer ladder immediately as inputs change and exports matching YAML, clearly labeled POSIX-shell-safe ENV,
-and JSON formats. Use only the shell-safe output with `source`. The ladder JSON importer accepts only
-an exact `LADDER_MARKETS` array, one exact ladder object, or a JSON string literal containing either;
-wrappers and full playground exports are not import shapes. Invalid configurations remain visible with
-accessible errors and cannot be copied as valid exports. It does not
-read current offers or a live market book, persist edits, or connect to a backend. Live offers and
-order-book simulation are future scope only.
+The stateless local playground exposes exactly the ordered `BOOTSTRAP_MARKETS` and `LADDER_MARKETS`
+collections. It renders accessible bootstrap and ladder graphics from deterministic per-market derived
+rates, validates them with the same browser-safe pure parsers used by runtime configuration, and never
+imports secret, provider, logging, or observability modules. It does not read current offers, balances,
+positions, or a live market book; use storage, cookies, a backend, or network requests; or model runtime
+capacity.
+
+The URL fragment is a strict, bounded, versioned JSON payload containing only `version`, `bootstrap`,
+and `ladder`. Valid edits synchronize with `history.replaceState`; invalid edits leave the last valid
+URL untouched. The copied URL reproduces collection order, configuration, and graphics on a fresh page,
+including under the GitHub Pages subpath.
+
+Import is paste-only. It accepts a strict bootstrap object/array, ladder object/array, documented
+`{"bootstrap": [...], "ladder": [...]}` envelope, or one JSON-string layer containing an unambiguous
+supported shape. Unknown or duplicate keys, mixed arrays, malformed/oversized input, and invalid
+collections are rejected atomically. The four outputs are Bootstrap JSON, the compact exact
+`BOOTSTRAP_MARKETS` value, Ladder JSON, and the compact exact `LADDER_MARKETS` value; each collection
+validates independently.
 
 From the repository root, one command runs `bun install --frozen-lockfile` (also on already-installed
 workspaces, where it is fast), creates a fresh isolated build, and serves it on loopback. It does not
@@ -860,7 +935,3 @@ The interactive launcher owns install and build process trees portably: Linux an
 process groups, while Windows uses non-shell task-tree termination. Press Ctrl-C to stop; `SIGINT` and
 `SIGTERM` perform bounded server shutdown, terminate owned process trees, and remove the temporary
 fresh build. Cleanup failures are reported and produce a nonzero exit.
-
-Sensitive values are redacted in YAML, ENV, and JSON exports by default. Exporting private
-credentials requires checking the explicit sensitive-values opt-in in the playground; keep real
-values in the deployment secret store even when using that opt-in.

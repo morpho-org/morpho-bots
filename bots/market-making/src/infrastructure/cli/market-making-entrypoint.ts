@@ -16,6 +16,7 @@ import { ConfigFileError } from '../../config/config-file.error'
 import { ConfigValidationError } from '../../config/config-validation.error'
 import { BootstrapConfigurationError } from '../../domain/bootstrap/bootstrap-configuration.error'
 import { LadderConfigurationError } from '../../domain/ladder/ladder-configuration.error'
+import { MakerAccountError } from '../make/maker-account.error'
 import { CliUsageError } from './cli-usage.error'
 
 type MarketMakingApplication = {
@@ -53,6 +54,7 @@ const failureMessage = (error: unknown) => {
     error instanceof CliUsageError ||
     error instanceof ConfigFileError ||
     error instanceof ConfigValidationError ||
+    error instanceof MakerAccountError ||
     error instanceof SafeProviderError ||
     error instanceof BootstrapConfigurationError ||
     error instanceof LadderConfigurationError
@@ -100,8 +102,9 @@ export const runMarketMakingEntrypoint = async (
     return 0
   } catch (error) {
     const details = failureDetails(error)
-    if (details === undefined) observability?.unexpected(error, 'entrypoint')
-    else observability?.record(details)
+    if (details === undefined && !(error instanceof MakerAccountError)) {
+      observability?.unexpected(error, 'entrypoint')
+    } else if (details !== undefined) observability?.record(details)
     logger.error(failureMessage(error), details)
     return 1
   }

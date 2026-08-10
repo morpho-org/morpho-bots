@@ -7,7 +7,7 @@
  *
  * Run once per chain:
  *
- *   RPC_URL=… DEPLOYER_PRIVATE_KEY=… bun run --filter @repo/contracts deploy:executor
+ *   RPC_URL=… DEPLOYER_PRIVATE_KEY=… pnpm --filter @repo/contracts run deploy:executor
  *
  * Idempotent: a no-op (exit 0) if the deterministic address already holds code.
  */

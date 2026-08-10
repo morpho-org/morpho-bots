@@ -71,7 +71,7 @@ Execute the implementation plan for Linear issue {{issue_id}}:
    - **Post-implementation agents:** After implementing, review the agent team (`.claude/agents/`)
      and invoke any agents whose trigger conditions match the changes (e.g., `documentor` for
      architectural changes).
-   - Run `bun lint` and `bun run --filter <affected-package> typecheck` to ensure code quality
+   - Run `pnpm lint` and `pnpm --filter <affected-package> run typecheck` to ensure code quality
    - **Pre-push review:** After lint and typecheck pass, invoke the `reviewer` agent to validate
      all changes against `docs/CONVENTIONS.md`. If the reviewer reports must-fix issues, address
      them before pushing. If only suggestions are reported, note them but proceed with the push.

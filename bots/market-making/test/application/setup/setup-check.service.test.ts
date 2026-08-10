@@ -10,6 +10,7 @@ import {
 } from '../../../src/application/setup/setup-check.service'
 import { SetupFailedError } from '../../../src/application/setup/setup-failed.error'
 import { SetupMonitorConfigurationError } from '../../../src/application/setup/setup-monitor-configuration.error'
+import { MakerAccountError } from '../../../src/infrastructure/make/maker-account.error'
 import { ProviderReadError } from '../../../src/infrastructure/setup-state/provider-read.error'
 import { ProviderResponseError } from '../../../src/infrastructure/setup-state/provider-response.error'
 
@@ -204,6 +205,23 @@ describe('SetupCheckService', () => {
       name: 'maker',
       status: 'failed',
       observed: { derived: false, matches: false },
+      required: 'private key derives configured maker'
+    })
+  })
+
+  test('preserves a sanitized signer operation in the maker readiness check', async () => {
+    const state = readyState()
+    state.getDerivedMaker = async () => {
+      throw new MakerAccountError('kms-public-key')
+    }
+
+    const report = await new SetupCheckService(state, config).check()
+
+    expect(report.ready).toBe(false)
+    expect(report.checks.find(check => check.name === 'maker')).toEqual({
+      name: 'maker',
+      status: 'failed',
+      observed: { kind: 'signer-error', operation: 'kms-public-key' },
       required: 'private key derives configured maker'
     })
   })

@@ -3,12 +3,22 @@
 chain:
   id: 8453
   rpcUrl: 'https://base-rpc.example'
+  # Required by commands whose active targetRate strategy is variable_rate_avg.
   archiveRpcUrl: 'https://base-archive-rpc.example'
 
 identity:
   makerAddress: '0x1111111111111111111111111111111111111111'
-  # Placeholder only. Prefer MAKER_PRIVATE_KEY in the environment, or omit in --readonly mode.
+  # Configure exactly one signer. This legacy private-key example remains backward compatible.
+  keyStorageMethod: 'private-key'
   makerPrivateKey: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  # Keystore alternatives remain blank while private-key is selected. Prefer KEYSTORE_PASSWORD or
+  # --interactive over storing a real password here.
+  keystorePath: ''
+  keystorePassword: ''
+  keystoreInteractive: false
+  # AWS KMS alternatives remain blank while private-key is selected. KMS signing is remote.
+  awsKmsKeyId: ''
+  awsRegion: ''
 
 contracts:
   midnightAddress: '0x2222222222222222222222222222222222222222'
@@ -23,6 +33,7 @@ markets:
   allowlist:
     - '0x5555555555555555555555555555555555555555555555555555555555555555'
     - '0x6666666666666666666666666666666666666666666666666666666666666666'
+  # Required by commands whose active targetRate strategy is variable_rate_avg.
   referenceMarketId: '0x7777777777777777777777777777777777777777777777777777777777777777'
   v0OfferGroupIds:
     - '0x8888888888888888888888888888888888888888888888888888888888888888'
@@ -37,6 +48,9 @@ setup:
 # Asset/credit/exposure amounts are exact raw loan-asset units. Rates are integer BPS.
 bootstrap:
   - marketId: '0x5555555555555555555555555555555555555555555555555555555555555555'
+    targetRate:
+      strategy: 'hardcoded'
+      hardcodedRateBps: '400'
     creditTarget: '10000000000'
     acceptanceAssets: '100000000'
     offerSize: '500000000'
@@ -47,6 +61,8 @@ bootstrap:
     maximumRateBps: 800
     autoRefill: false
   - marketId: '0x6666666666666666666666666666666666666666666666666666666666666666'
+    targetRate:
+      strategy: 'variable_rate_avg'
     creditTarget: '5000000000'
     acceptanceAssets: '50000000'
     offerSize: '250000000'
@@ -63,6 +79,8 @@ bootstrap:
 # 10000+k*sizeSkewBps; the outermost funded rung receives division remainder.
 ladder:
   - marketId: '0x5555555555555555555555555555555555555555555555555555555555555555'
+    targetRate:
+      strategy: 'variable_rate_avg'
     quotePremiumBps: '0'
     spreadBps: '200'
     stepBps: '100'

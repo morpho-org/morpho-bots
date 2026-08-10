@@ -27,12 +27,12 @@ Agent conventions:
 - **Test verification**: After writing or modifying tests, run them, then temporarily break one
   assertion to confirm the test actually fails. Revert after confirming. This guards against tests
   that pass vacuously.
-- **Format**: Run `bun format` directly in the validation suite (see Self-Verification) — do not
-  run `bun format:check` first, just auto-format.
+- **Format**: Run `pnpm format` directly in the validation suite (see Self-Verification) — do not
+  run `pnpm format:check` first, just auto-format.
 - **JSDoc public surface**: Every externally facing function and public method changed in TypeScript
   requires substantive JSDoc covering its applicable parameters, return value, failures, and side
   effects. Before completion, follow `.agents/skills/build-jsdoc/SKILL.md` and run
-  `bun run --filter @morpho-org/market-making-bot jsdoc:build`; `.claude/skills` must be the real
+  `pnpm --filter @morpho-org/market-making-bot run jsdoc:build`; `.claude/skills` must be the real
   symlink `../.agents/skills`, and independent checks must continue to run concurrently through
   `Promise.all` where possible.
 - **Utility isolation**: Utility functions must live in a different file from every file containing
@@ -76,7 +76,7 @@ your expectation, THEN claim success.
 ### During development
 
 Running lint or typecheck mid-implementation is fine — use your judgment. For tricky changes, a
-quick `bun run --filter <pkg> typecheck` or `bun lint` can help you course-correct early. But
+quick `pnpm --filter <pkg> run typecheck` or `pnpm lint` can help you course-correct early. But
 **do not force the full validation suite after every change**. Focus on writing code.
 
 ### Before committing or when the user says "validate"
@@ -84,10 +84,10 @@ quick `bun run --filter <pkg> typecheck` or `bun lint` can help you course-corre
 Run the full suite once the user confirms they're happy with the code (or when preparing to
 commit/push):
 
-1. **Type safety**: Run `bun run --filter <affected-package> typecheck` — zero errors required.
-2. **Lint**: Run `bun lint` from the repo root — zero warnings policy. Lint is a workspace-level
+1. **Type safety**: Run `pnpm --filter <affected-package> run typecheck` — zero errors required.
+2. **Lint**: Run `pnpm lint` from the repo root — zero warnings policy. Lint is a workspace-level
    concern; oxlint walks the whole tree and per-package `lint` scripts are deliberately omitted.
-3. **Format**: Run `bun format` — auto-fixes formatting in place.
+3. **Format**: Run `pnpm format` — auto-fixes formatting in place.
 4. **Existing tests**: Run `bun test` — all must pass.
 
 **Escalation rule**: After 3 failed fix attempts for the same issue, STOP. Tell the user what you
@@ -147,7 +147,7 @@ These files provide important background information about dependencies and rela
 
 ## Architecture Overview
 
-This is a **bun workspaces monorepo** housing off-chain Morpho curator bots:
+This is a **pnpm workspaces monorepo** housing off-chain Morpho curator bots:
 
 - `/bots/` — individual bot apps, one per bot. Each is a **standalone long-running TypeScript
   program**: `main()` in `src/index.ts` loads config from the environment (fail-loud). The
@@ -187,9 +187,10 @@ transparent JSON-Lines wire contract) was tried for ~a week and reverted — see
 which supersedes the now-historical
 [TIB-2026-07-13-bot-architecture](./docs/decisions/TIB-2026-07-13-bot-architecture.md).
 
-**Key technologies**: bun 1.3.12 (runtime + package manager + workspace task runner), Node.js
-24.14.1, TypeScript 6.0, viem for Web3, oxlint + oxfmt for lint/format, knip for dead-code
-detection, bun's built-in test runner.
+**Key technologies**: pnpm 11.1.1 (package manager + workspace resolution + version catalog + task
+runner; lifecycle scripts are default-denied via `allowBuilds` in `pnpm-workspace.yaml`), bun 1.3.12
+(runtime + test runner), Node.js 24.14.1, TypeScript 6.0, viem for Web3, oxlint + oxfmt for
+lint/format, knip for dead-code detection.
 
 **Node.js requirement**: `24.14.1` (see `.nvmrc`).
 

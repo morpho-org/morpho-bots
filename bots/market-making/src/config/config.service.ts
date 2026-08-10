@@ -1,30 +1,31 @@
-import type { Address, Hex } from 'viem'
+import type { Hex } from 'viem'
+
+import { inspect } from 'node:util'
 
 import type { SetupCheckConfig } from '../application/setup/setup-check.service'
 import type { BootstrapConfig } from '../domain/bootstrap/position-bootstrap'
 import type { LadderConfig } from '../domain/ladder/ladder'
+import type { TargetRateConfigured } from '../domain/target-rate'
 import type { ConfigurationLoadOptions, ConfigurationSource } from './config-source.utils'
 import type { Environment } from './config.utils'
+import type { MakerIdentity } from './signer-identity.utils'
 
 import { configurationFromEnvironment, loadConfigurationSources } from './config-source.utils'
+import { ConfigValidationError } from './config-validation.error'
 import {
   addressValue,
-  bootstrapConfigsValue,
-  bytes32Value,
   chainIdValue,
-  hexListValue,
-  ladderConfigsValue,
-  privateKeyValue,
+  optionalBytes32Value,
+  optionalUrlValue,
   requestTimeoutValue,
   transactionReceiptTimeoutValue,
   unsignedBigIntValue,
   urlValue
 } from './config.utils'
+import { bootstrapConfigsValue, hexListValue, ladderConfigsValue } from './market-collections'
+import { signerIdentity } from './signer-identity.utils'
 
-/** Validated maker identity selected by the CLI runtime mode. */
-export type MakerIdentity =
-  | { readOnly: true; maker: Address }
-  | { readOnly: false; maker: Address; privateKey: Hex }
+export type { MakerIdentity } from './signer-identity.utils'
 
 /** Immutable, validated market-making runtime configuration loaded from YAML and environment values. */
 export class ConfigService {
@@ -58,10 +59,27 @@ export class ConfigService {
    * omits YAML and environment private-key values before typed validation.
    */
   static async load(environment: Environment = Bun.env, options: ConfigurationLoadOptions = {}) {
-    return ConfigService.fromSource(
-      await loadConfigurationSources(environment, options),
-      options.readOnly
-    )
+    const source = await loadConfigurationSources(environment, options)
+    const declaredMethod = source.values.KEY_STORAGE_METHOD?.toString().trim()
+    const keystorePath = source.values.KEYSTORE_PATH?.toString().trim()
+    const interactive = source.values.KEYSTORE_INTERACTIVE?.toString().trim()
+    if (
+      !options.readOnly &&
+      (declaredMethod === 'keystore' || (!declaredMethod && keystorePath)) &&
+      interactive === 'true' &&
+      (source.values.KEYSTORE_PASSWORD === undefined || source.values.KEYSTORE_PASSWORD === '')
+    ) {
+      if (!options.readPassword) {
+        throw new ConfigValidationError(
+          'KEYSTORE_PASSWORD',
+          'interactive-unavailable',
+          'Interactive keystore password input is unavailable'
+        )
+      }
+      source.values.KEYSTORE_PASSWORD = await options.readPassword()
+      source.values.KEYSTORE_INTERACTIVE = 'false'
+    }
+    return ConfigService.fromSource(source, options.readOnly)
   }
 
   private static fromSource(source: ConfigurationSource, readOnly = false) {
@@ -71,7 +89,10 @@ export class ConfigService {
     const maker = addressValue(environment, 'MAKER_ADDRESS')
     const identity: MakerIdentity = readOnly
       ? { readOnly: true, maker }
-      : { readOnly: false, maker, privateKey: privateKeyValue(environment) }
+      : signerIdentity(environment, maker)
+    const marketIds = hexListValue(environment, 'MARKET_IDS', false)
+    const bootstrap = bootstrapConfigsValue(source.bootstrap, marketIds)
+    const ladder = ladderConfigsValue(source.ladder, marketIds)
 
     return new ConfigService({
       identity,
@@ -83,21 +104,18 @@ export class ConfigService {
         loanAsset: addressValue(environment, 'LOAN_ASSET_ADDRESS'),
         maximumLendExposure: unsignedBigIntValue(environment, 'MAXIMUM_LEND_EXPOSURE_ASSETS'),
         ratifier: addressValue(environment, 'RATIFIER_ADDRESS'),
-        marketIds: hexListValue(environment, 'MARKET_IDS', false),
-        referenceMarketId: bytes32Value(environment, 'REFERENCE_MARKET_ID')
+        marketIds,
+        referenceMarketId: optionalBytes32Value(environment, 'REFERENCE_MARKET_ID')
       },
       rpcUrl: urlValue(environment, 'RPC_URL'),
-      referenceRpcUrl: urlValue(environment, 'REFERENCE_RPC_URL'),
+      referenceRpcUrl: optionalUrlValue(environment, 'REFERENCE_RPC_URL'),
       morphoApiBaseUrl: urlValue(environment, 'MORPHO_API_BASE_URL'),
       routerApiBaseUrl: urlValue(environment, 'ROUTER_API_BASE_URL'),
       v0OfferGroupIds: hexListValue(environment, 'V0_OFFER_GROUP_IDS', false),
       requestTimeoutMs: requestTimeoutValue(environment),
       transactionReceiptTimeoutMs: transactionReceiptTimeoutValue(environment),
-      bootstrap: bootstrapConfigsValue(
-        source.bootstrap,
-        hexListValue(environment, 'MARKET_IDS', false)
-      ),
-      ladder: ladderConfigsValue(source.ladder, hexListValue(environment, 'MARKET_IDS', false))
+      bootstrap,
+      ladder
     })
   }
 
@@ -106,14 +124,14 @@ export class ConfigService {
       identity: MakerIdentity
       setup: SetupCheckConfig
       rpcUrl: string
-      referenceRpcUrl: string
+      referenceRpcUrl?: string
       morphoApiBaseUrl: string
       routerApiBaseUrl: string
       v0OfferGroupIds: readonly Hex[]
       requestTimeoutMs: number
       transactionReceiptTimeoutMs: number
-      bootstrap: readonly BootstrapConfig[]
-      ladder: readonly LadderConfig[]
+      bootstrap: readonly TargetRateConfigured<BootstrapConfig>[]
+      ladder: readonly TargetRateConfigured<LadderConfig>[]
     }
   ) {}
 
@@ -144,7 +162,24 @@ export class ConfigService {
 
   /** Exposes the maker secret only to write-enabled composition code. @returns Maker private key, or `undefined` in read-only mode; callers must never log it. */
   get privateKey() {
-    return this.values.identity.readOnly ? undefined : this.values.identity.privateKey
+    return !this.values.identity.readOnly && this.values.identity.method === 'private-key'
+      ? this.values.identity.privateKey
+      : undefined
+  }
+
+  /** Exposes the effective validated signing backend without exposing credentials. @returns Selected signing method, or `undefined` in read-only mode. */
+  get keyStorageMethod() {
+    return this.values.identity.readOnly ? undefined : this.values.identity.method
+  }
+
+  /** Prevents private keys and keystore passwords from entering JSON logs. @returns Redacted signing method and read-only state. */
+  toJSON() {
+    return { keyStorageMethod: this.keyStorageMethod, readOnly: this.readOnly }
+  }
+
+  /** Prevents private keys and keystore passwords from entering diagnostic inspection. @returns Redacted diagnostic representation. */
+  [inspect.custom]() {
+    return `ConfigService ${inspect(this.toJSON())}`
   }
 
   /** Exposes the validated Morpho API origin. @returns Validated Morpho API origin; reports identify it only as `morpho-api`. */

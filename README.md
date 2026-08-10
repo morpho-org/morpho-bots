@@ -3,7 +3,7 @@
 Off-chain Morpho curator bots — reallocators, liquidation monitors, and similar —
 and the shared packages they consume.
 
-This is a [bun workspaces](https://bun.com/docs/install/workspaces) monorepo:
+This is a [pnpm workspaces](https://pnpm.io/workspaces) monorepo:
 
 - `bots/` — individual bot apps (one per bot); each keeps its own `docs/`
 - `packages/` — shared libraries (`@repo/bot-kit`, `@repo/swaps`, `@repo/contracts`,
@@ -12,18 +12,22 @@ This is a [bun workspaces](https://bun.com/docs/install/workspaces) monorepo:
 ## Getting started
 
 ```sh
-nvm use         # Node 24.14.1 (see .nvmrc)
-bun install
+nvm use            # Node 24.14.1 (see .nvmrc)
+corepack enable pnpm  # pnpm 11.1.1, pinned by package.json#packageManager
+pnpm install
 ```
+
+`pnpm` denies dependency lifecycle scripts by default — see `allowBuilds` in
+`pnpm-workspace.yaml`. An install that needs a new one fails loudly rather than running it.
 
 ## Daily commands
 
 ```sh
-bun run lint        # oxlint, repo-wide
-bun run lint:fix    # oxlint with --fix
-bun format          # oxfmt, repo-wide
-bun run knip        # dead-code detection
-bun test            # bun's built-in test runner
+pnpm run lint        # oxlint, repo-wide
+pnpm run lint:fix    # oxlint with --fix
+pnpm format          # oxfmt, repo-wide
+pnpm run knip        # dead-code detection
+bun test             # bun's built-in test runner
 ```
 
 ## Pointers

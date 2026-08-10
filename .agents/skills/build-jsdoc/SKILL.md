@@ -49,12 +49,13 @@ the canonical tree, and `AGENTS.md` resolves to `CLAUDE.md`.
 
 ## Install and Build
 
-Use the repository-pinned Bun version from `packageManager` (`bun@1.3.12`):
+Use the repository-pinned pnpm version from `packageManager` (`pnpm@11.1.1`), activated through
+corepack:
 
 ```sh
-bun install --frozen-lockfile
-bun run --filter @morpho-org/market-making-bot jsdoc:check
-bun run --filter @morpho-org/market-making-bot jsdoc:build
+pnpm install --frozen-lockfile
+pnpm --filter @morpho-org/market-making-bot run jsdoc:check
+pnpm --filter @morpho-org/market-making-bot run jsdoc:build
 ```
 
 - Coverage command: `jsdoc:check`
@@ -134,13 +135,13 @@ URL, default runtime environment, raw provider response, or generated source-map
    explicit documented return type. Do not disable warnings-as-errors.
 3. If TypeDoc warns about a private implementation alias, keep the alias private and avoid exposing it
    through an inferred public signature; prefer an explicit exported boundary type.
-4. If installation changes unrelated lockfile entries, restore them and reinstall with Bun 1.3.12.
+4. If installation changes unrelated lockfile entries, restore them and reinstall with pnpm 11.1.1.
 5. If generated HTML is staged, unstage and delete it; only source, config, script, dependency, and
    lockfile changes belong in the PR.
 
 ## Verification Checklist
 
-- [ ] Pinned Bun install succeeds with the lockfile frozen.
+- [ ] Pinned pnpm install succeeds with the lockfile frozen.
 - [ ] AST coverage prints the exhaustive public declaration inventory and exits zero.
 - [ ] TypeDoc exits zero with warnings-as-errors enabled.
 - [ ] `bots/market-making/build/jsdoc/index.html` exists and is non-empty.

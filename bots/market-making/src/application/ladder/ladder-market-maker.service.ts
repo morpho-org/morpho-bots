@@ -40,6 +40,14 @@ export interface LadderReferenceRateService {
    * @throws When the rate provider cannot return a fresh valid reference.
    */
   readRate(marketId: Hex): Promise<bigint>
+  /**
+   * Optionally reads the rate together with a freshness identity used to refresh timestamp-sensitive
+   * protocol offers even when the configured APR is unchanged.
+   * @param marketId - Canonical market identifier whose reference is required.
+   * @returns Current rate and stable freshness observation identity.
+   * @throws When the rate provider cannot return a fresh valid reference.
+   */
+  readObservation?(marketId: Hex): Promise<{ rateBps: bigint; observationId: string }>
 }
 
 /** Consumer-owned blocking make boundary for ladder reconciliation and safety invalidation. */
@@ -381,8 +389,15 @@ export class LadderMarketMakerService {
       }
 
       let referenceRateBps: bigint
+      let referenceObservationId: string | undefined
       try {
-        referenceRateBps = await this.rates.readRate(config.marketId)
+        if (this.rates.readObservation) {
+          const observation = await this.rates.readObservation(config.marketId)
+          referenceRateBps = observation.rateBps
+          referenceObservationId = observation.observationId
+        } else {
+          referenceRateBps = await this.rates.readRate(config.marketId)
+        }
       } catch (error) {
         const result = await this.halt(
           config.marketId,
@@ -404,7 +419,7 @@ export class LadderMarketMakerService {
         const recenter = active
           ? shouldRecenter(active.centerRateBps, targetRateBps, config.movementToleranceBps)
           : true
-        desired =
+        const generated =
           active && !recenter
             ? generateLadder({
                 config,
@@ -413,6 +428,7 @@ export class LadderMarketMakerService {
                 retainedCenterRateBps: active.centerRateBps
               })
             : generateLadder({ config, referenceRateBps, capacities: market })
+        desired = referenceObservationId ? { ...generated, referenceObservationId } : generated
         if (!active) decision = 'publish'
         else if (sameLadderQuoteSet(active, desired)) decision = 'rest'
         else decision = recenter ? 'recenter' : 'resize'

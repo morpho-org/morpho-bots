@@ -7,7 +7,7 @@
   "scripts": {
     "deploy:railway": "bun run scripts/deploy-railway.ts",
     "seed:positions": "bun run scripts/seed-liquidatable-positions.ts",
-    "prestart": "bun run --parallel --workspaces --if-present build",
+    "prestart": "pnpm -r --parallel --if-present run build",
     "start": "bun src/index.ts",
     "typecheck": "soltag && tsc --noEmit"
   },

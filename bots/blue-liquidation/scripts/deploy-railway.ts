@@ -19,7 +19,7 @@
  *     fails loud at startup otherwise. Remove it (rerun with venues) once the chain should route.
  *
  *   RAILWAY_PROJECT_ID=… RPC_URL_8453=… RPC_URL_4663=… LIQUIDATOR_PRIVATE_KEY=0x… \
- *     ALLOW_DETECTION_ONLY_4663=true bun run --filter @morpho-org/blue-liquidation deploy:railway
+ *     ALLOW_DETECTION_ONLY_4663=true pnpm --filter @morpho-org/blue-liquidation run deploy:railway
  *
  * The build context MUST be the repo root so the bun workspace (packages/*) resolves — the script
  * runs `railway up` with cwd set to the repo root (mirrors the Dockerfile header + compose context).
@@ -433,7 +433,7 @@ console.log('     ENABLE_LIFI=true keyless). A detection-only chain (ALLOW_DETEC
 console.log('     discovers + logs liquidatable positions but skips every liquidation — rerun this')
 console.log('     script with venue inputs once it should route.')
 console.log('  2. Each bot needs a funded key + a real RPC before it can broadcast; Robinhood also')
-console.log('     needs the Executor deployed (bun run --filter @repo/contracts deploy:executor).')
+console.log('     needs the Executor deployed (pnpm --filter @repo/contracts run deploy:executor).')
 console.log(
   '  3. One-time after this migration: delete the legacy Postgres + rindexer services (and'
 )

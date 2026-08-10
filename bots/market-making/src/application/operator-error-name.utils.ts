@@ -8,6 +8,7 @@ const KNOWN_NAMES = [
   'LadderAdapterError',
   'LadderHardHaltError',
   'LadderOwnershipCleanupError',
+  'MakerAccountError',
   'OfferInvalidationAdapterError',
   'OfferInvalidationFailedError',
   'ReferenceAdapterError',

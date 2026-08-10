@@ -1,6 +1,6 @@
 # Runs the per-chain blue-liquidation bots. Borrower candidates come from the Morpho GraphQL API
 # (MORPHO_API_URL, public by default), so there is no indexer or database to run. The bots' build
-# context is the repo root so the bun workspace (packages/*) resolves — see Dockerfile. Set the
+# context is the repo root so the pnpm workspace (packages/*) resolves — see Dockerfile. Set the
 # chainId-suffixed RPCs (RPC_URL_8453, RPC_URL_4663) and a LIQUIDATOR_PRIVATE_KEY.
 services:
   bot-base:
