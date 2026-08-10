@@ -81,10 +81,10 @@ describe('market-making playground Pages workflow', () => {
     expect(
       build.steps.find(step => step.name === 'Test playground at the GitHub Pages subpath')?.run
     ).toBe(
-      'PLAYGROUND_SMOKE_BASE_PATH=/morpho-bots/ bun run --filter @morpho-org/market-making-bot playground:smoke:test'
+      'PLAYGROUND_SMOKE_BASE_PATH=/morpho-bots/ pnpm --filter @morpho-org/market-making-bot run playground:smoke:test'
     )
     expect(build.steps.find(step => step.name === 'Build playground')?.run).toBe(
-      'bun run --filter @morpho-org/market-making-bot playground:build'
+      'pnpm --filter @morpho-org/market-making-bot run playground:build'
     )
     expect(build.steps.find(step => step.name === 'Upload GitHub Pages artifact')).toMatchObject({
       uses: 'actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9',
