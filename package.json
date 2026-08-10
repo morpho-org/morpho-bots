@@ -12,7 +12,7 @@
     "market-making:playground": "node bots/market-making/scripts/playground-serve.mjs",
     "prepare": "husky",
     "test": "bun test",
-    "test:browser": "bun run --filter @morpho-org/market-making-bot playground:smoke:test"
+    "test:browser": "pnpm --filter @morpho-org/market-making-bot run playground:smoke:test"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",

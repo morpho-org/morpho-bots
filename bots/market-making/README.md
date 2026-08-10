@@ -23,7 +23,7 @@ server URL after building the browser artifact. For a production-equivalent
 build without starting a server, run:
 
 ```sh
-bun run --filter @morpho-org/market-making-bot playground:build
+pnpm --filter @morpho-org/market-making-bot run playground:build
 ```
 
 After this pull request is merged to `main`, relevant playground, browser-safe bot-kit, package, lock,
@@ -43,16 +43,16 @@ pnpm --filter @morpho-org/market-making-bot run start -- setup-check
 pnpm --filter @morpho-org/market-making-bot run start -- --readonly setup-check
 
 # Explicit signer sources (root options precede the command).
-bun run --filter @morpho-org/market-making-bot start -- --private-key '<key>' setup-check
-bun run --filter @morpho-org/market-making-bot start -- --keystore ./maker.json --interactive setup-check
-bun run --filter @morpho-org/market-making-bot start -- --aws setup-check
+pnpm --filter @morpho-org/market-making-bot run start -- --private-key '<key>' setup-check
+pnpm --filter @morpho-org/market-making-bot run start -- --keystore ./maker.json --interactive setup-check
+pnpm --filter @morpho-org/market-making-bot run start -- --aws setup-check
 ```
 
 For unattended keystore operation, provision `KEYSTORE_PASSWORD` separately through the deployment
 secret manager or process environment, then run the keystore command without an inline value:
 
 ```sh
-bun run --filter @morpho-org/market-making-bot start -- --keystore ./maker.json setup-check
+pnpm --filter @morpho-org/market-making-bot run start -- --keystore ./maker.json setup-check
 ```
 
 `--private-key <key>` and `--password <password>` remain available for explicit automation, but they
@@ -434,7 +434,7 @@ through stdin so values never appear in process arguments or logs:
 
 ```sh
 RAILWAY_PROJECT_ID=... \
-bun run --filter @morpho-org/market-making-bot deploy:railway
+pnpm --filter @morpho-org/market-making-bot run deploy:railway
 ```
 
 Provide the required values from [`.env.example`](./.env.example) in the invoking environment.

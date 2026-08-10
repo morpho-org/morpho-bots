@@ -22,7 +22,7 @@ test('CI keeps real-browser tests out of Bun discovery and runs them explicitly 
   assert.equal(rootPackage.scripts.test, 'bun test')
   assert.equal(
     rootPackage.scripts['test:browser'],
-    'bun run --filter @morpho-org/market-making-bot playground:smoke:test'
+    'pnpm --filter @morpho-org/market-making-bot run playground:smoke:test'
   )
   assert.equal(
     marketMakingPackage.scripts['playground:smoke:test'],
