@@ -46,6 +46,20 @@ runs:
       run: |
         pnpm install ${{ inputs.frozen-lockfile == 'true' && '--frozen-lockfile' || '' }}
 
+    # TEMPORARY diagnostics for the post-migration bun-resolution CI failures — remove once green.
+    - name: Debug dependency layout (temporary)
+      if: ${{ inputs.install == 'true' }}
+      shell: bash
+      run: |
+        echo "pnpm $(pnpm --version) node $(node --version)"
+        grep -A3 -i publicHoist node_modules/.modules.yaml || echo "NO publicHoist in .modules.yaml"
+        ls -d node_modules/abitype >/dev/null 2>&1 && echo "root abitype: present" || echo "root abitype: MISSING"
+        if [ -e bots/market-making/node_modules/viem ]; then
+          readlink bots/market-making/node_modules/viem || echo "nested viem: real directory"
+        else
+          echo "nested viem: absent"
+        fi
+
     - name: Build @repo/contracts
       if: ${{ inputs.build-contracts == 'true' }}
       shell: bash
