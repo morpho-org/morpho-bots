@@ -343,7 +343,10 @@ docker compose logs --follow
   container only when the invoking shell sets it, so unset variables never mask YAML values. Export
   overrides before starting, e.g. `export MAKER_PRIVATE_KEY=0x…`.
 - For an encrypted keystore, set `KEYSTORE_HOST_PATH` to the host file and set `KEYSTORE_PATH` to
-  `/run/secrets/market-making-keystore.json`; Compose bind-mounts that file read-only at the latter
+  `/run/secrets/market-making-keystore.json`; keep that host file outside the repository tree, or
+  name it `maker.json` / with `keystore` in a `.json` filename — the only keystore patterns
+  `.gitignore` and `.dockerignore` exclude from commits and image builds ("`COPY bots`" would bake
+  any other in-tree name into published images). Compose bind-mounts that file read-only at the latter
   container path. `KEYSTORE_HOST_PATH` is a Compose-only interpolation variable and is not passed to
   the bot.
 - `stop_grace_period` defaults to `15m` so shutdown cleanup — drain the in-flight cycle, then

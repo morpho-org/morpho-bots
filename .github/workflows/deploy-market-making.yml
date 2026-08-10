@@ -92,6 +92,14 @@ jobs:
           echo "$REPOSITORY" | grep -Eq '^[a-z0-9]+((_|__|-+)[a-z0-9]+)*/[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*$' \
             || { echo "DOCKERHUB_REPOSITORY must be a lowercase Docker Hub <namespace>/<name> repository" >&2; exit 1; }
           if [ "$EVENT" = "release" ]; then
+            # The release tag must equal market-making-<package version> of the tagged commit:
+            # a mistyped or version-skewed release would otherwise publish an image (and move
+            # `latest`) whose tag disagrees with `mm --version` inside it.
+            expected="market-making-$(node -p "require('./bots/market-making/package.json').version")"
+            if [ "$RELEASE_TAG" != "$expected" ]; then
+              echo "release tag $RELEASE_TAG does not match the tagged commit's package version ($expected) — delete the release and cut it from a matching version bump" >&2
+              exit 1
+            fi
             tags=("$RELEASE_TAG")
             # A prerelease publishes its own tag only; `latest` keeps tracking full releases.
             [ "$PRERELEASE" = "true" ] || tags+=("latest")

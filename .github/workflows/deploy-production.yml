@@ -125,6 +125,13 @@ jobs:
             echo "release market-making-$version already exists — bump the package version in the release PR" >&2
             exit 1
           fi
+          # A bare git tag with no release also blocks: `gh release create --target` is ignored for
+          # a pre-existing tag, so the release would attach to that old commit and the image would
+          # be built from it instead of this merge.
+          if git ls-remote --exit-code origin "refs/tags/market-making-$version" >/dev/null 2>&1; then
+            echo "git tag market-making-$version already exists without a release — delete the stale tag or bump the package version" >&2
+            exit 1
+          fi
       # Proving the App credentials mint BEFORE deploying: Release-market-making refuses the
       # default-token fallback (its releases cannot trigger the image publish), so missing
       # credentials must stop the flow while production is still untouched.

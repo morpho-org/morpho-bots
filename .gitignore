@@ -9,6 +9,11 @@ node_modules
 *.env
 !.env.example
 
+# Encrypted keystore files hold the maker key material; the documented maker.json example and any
+# keystore-named JSON must never be committed. Keep keystores outside the repository tree.
+**/maker.json
+**/*keystore*.json
+
 # Local market-making configuration under any market-making-named variant (`--config` accepts
 # arbitrary filenames and the file may hold the maker key). Workflow files and the committed
 # examples remain trackable. Name custom configs with "market-making" in the filename, or keep

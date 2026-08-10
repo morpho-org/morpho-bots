@@ -39,13 +39,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      # The shared action sets up pnpm (which owns installs and the --filter task routing below),
+      # Node, and Bun, then runs the frozen pnpm install. A bare `bun install` would corrupt the
+      # pnpm-managed tree and there is no bun lockfile to freeze against anymore.
+      - name: Setup
+        uses: ./.github/actions/setup
         with:
-          bun-version: 1.3.12
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
+          build-contracts: 'false'
 
       - name: Test playground at the GitHub Pages subpath
         run: PLAYGROUND_SMOKE_BASE_PATH=/morpho-bots/ pnpm --filter @morpho-org/market-making-bot run playground:smoke:test

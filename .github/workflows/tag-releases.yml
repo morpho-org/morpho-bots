@@ -168,6 +168,12 @@ jobs:
 
             if gh release view "$tag_name" &>/dev/null; then
               echo "Release already exists: $tag_name (skipping)"
+            elif git ls-remote --exit-code origin "refs/tags/$tag_name" >/dev/null 2>&1; then
+              # `gh release create --target` is ignored for a pre-existing tag: the release would
+              # attach to the stale tag's commit and publish an image built from it, leaving this
+              # push's bump unreleased. Ambiguous leftover state needs an operator decision.
+              echo "ERROR: git tag $tag_name exists without a release — delete the stale tag or bump the version" >&2
+              exit 1
             else
               # `|| true` guards against SIGPIPE aborting the job under `set -o pipefail`
               # (git is killed when head closes the pipe early once there are many tags).

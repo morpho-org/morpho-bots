@@ -75,9 +75,10 @@ describe('market-making playground Pages workflow', () => {
       uses: 'actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5',
       with: { 'persist-credentials': false }
     })
-    expect(build.steps.find(step => step.name === 'Install dependencies')?.run).toBe(
-      'bun install --frozen-lockfile'
-    )
+    expect(build.steps.find(step => step.name === 'Setup')).toMatchObject({
+      uses: './.github/actions/setup',
+      with: { 'build-contracts': 'false' }
+    })
     expect(
       build.steps.find(step => step.name === 'Test playground at the GitHub Pages subpath')?.run
     ).toBe(
@@ -113,6 +114,11 @@ describe('market-making playground Pages workflow', () => {
       .map(step => step.uses)
       .filter((uses): uses is string => uses !== undefined)
     expect(actions).toHaveLength(5)
-    expect(actions.every(uses => immutableAction.test(uses))).toBe(true)
+    // Repo-local composite actions ride the workflow's own commit, so they are immutable without
+    // a SHA pin; every remote action must stay pinned.
+    const repoLocalAction = /^\.\/\.github\/actions\//
+    expect(actions.every(uses => repoLocalAction.test(uses) || immutableAction.test(uses))).toBe(
+      true
+    )
   })
 })
