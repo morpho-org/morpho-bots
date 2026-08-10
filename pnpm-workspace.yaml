@@ -10,6 +10,14 @@ preferOffline: true
 # TypeScript imports. Hoisting preserves the pnpm lockfile and lifecycle policy while supporting the
 # intermediate migration state where Bun remains the test runner.
 nodeLinker: hoisted
+# The hoisted linker still nests one copy of every peer-variation instance (viem and friends) inside
+# each workspace package WITHOUT its own dependencies adjacent, and leaves some transitive deps
+# (abitype, @noble/*, @scure/*, @esbuild/*) with no root copy at all — `bun test` then fails module
+# resolution from those nested paths (the post-migration CI Test failures on main). Publicly
+# hoisting every name gives bun's upward walk a root candidate for everything; versions stay single
+# and exact via saveExact + catalogs, so the flattened copies cannot diverge.
+publicHoistPattern:
+  - '*'
 
 # 3 days — carried over from bunfig.toml's `minimumReleaseAge = 259200` (seconds; this is minutes).
 minimumReleaseAge: 4320
