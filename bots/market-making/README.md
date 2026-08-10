@@ -342,6 +342,10 @@ docker compose logs --follow
 - Every supported environment variable is declared as a null passthrough entry: it reaches the
   container only when the invoking shell sets it, so unset variables never mask YAML values. Export
   overrides before starting, e.g. `export MAKER_PRIVATE_KEY=0x…`.
+- For an encrypted keystore, set `KEYSTORE_HOST_PATH` to the host file and set `KEYSTORE_PATH` to
+  `/run/secrets/market-making-keystore.json`; Compose bind-mounts that file read-only at the latter
+  container path. `KEYSTORE_HOST_PATH` is a Compose-only interpolation variable and is not passed to
+  the bot.
 - `stop_grace_period` defaults to `15m` so shutdown cleanup — drain the in-flight cycle, then
   cancel owned offers serially with each receipt bounded by `TRANSACTION_RECEIPT_TIMEOUT_MS`
   (default 3 minutes, max 15) — can finish before compose escalates to SIGKILL. Export
@@ -375,7 +379,7 @@ publishes an image.
 Creating the release directly also works and publishes identically:
 
 ```sh
-gh release create "market-making-$(date -u +%Y.%m.%d)-1" --generate-notes
+gh release create "market-making-$(node -p "require('./package.json').version")" --generate-notes
 ```
 
 Manual dispatch remains available as the escape hatch and for re-publishing; it builds the
@@ -409,6 +413,7 @@ named volume keeps offer-group ownership across re-pulls and recreations:
 
 ```sh
 docker run --pull always --detach --restart unless-stopped \
+  --stop-timeout 900 \
   --env-file /etc/market-making.env \
   -v market-making-state:/state \
   <namespace>/<name>:latest start
