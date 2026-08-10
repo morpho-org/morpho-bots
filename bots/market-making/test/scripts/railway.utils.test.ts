@@ -178,8 +178,10 @@ describe('Railway CLI output parsing', () => {
   test('allows Compose deployments to omit inactive reference configuration', () => {
     const compose = readFileSync(resolve(import.meta.dir, '../../docker-compose.yml'), 'utf8')
 
-    expect(compose).toContain('REFERENCE_RPC_URL: ${REFERENCE_RPC_URL:-}')
-    expect(compose).toContain('REFERENCE_MARKET_ID: ${REFERENCE_MARKET_ID:-}')
+    expect(compose).toContain('      REFERENCE_RPC_URL:\n')
+    expect(compose).toContain('      REFERENCE_MARKET_ID:\n')
+    expect(compose).not.toContain('REFERENCE_RPC_URL: ${REFERENCE_RPC_URL:-}')
+    expect(compose).not.toContain('REFERENCE_MARKET_ID: ${REFERENCE_MARKET_ID:-}')
   })
 
   test('reads the newest complete deployment and rejects incomplete output', () => {
