@@ -1,5 +1,7 @@
 import { tryCatch } from '@repo/utils'
 
+import { RailwayDeploymentError } from './railway-deployment.error'
+
 type RailwayDeployment = {
   id: string
   status: string
@@ -18,6 +20,8 @@ type RailwayVolume = {
 }
 
 const optionalRuntimeVariableDefaults = [
+  ['REFERENCE_RPC_URL', ' '],
+  ['REFERENCE_MARKET_ID', ' '],
   ['V0_OFFER_GROUP_IDS', ' '],
   ['REQUEST_TIMEOUT_MS', '10000'],
   ['TRANSACTION_RECEIPT_TIMEOUT_MS', '180000'],
@@ -25,6 +29,8 @@ const optionalRuntimeVariableDefaults = [
   ['BETTERSTACK_INGESTING_HOST', ' '],
   ['BETTERSTACK_HEARTBEAT_URL', ' ']
 ] as const
+
+const referenceVariableNames = new Set(['REFERENCE_RPC_URL', 'REFERENCE_MARKET_ID'])
 
 type OptionalRuntimeVariableName = (typeof optionalRuntimeVariableDefaults)[number][0]
 type OptionalRuntimeVariable = readonly [name: OptionalRuntimeVariableName, value: string]
@@ -44,6 +50,26 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null
 
 const stringField = (value: unknown) => (typeof value === 'string' ? value : '')
+
+/**
+ * Rejects full Railway provisioning for signer modes whose credentials or files cannot be seeded.
+ * @param method - Validated signer method selected by the invoking environment.
+ * @throws `RailwayDeploymentError` for keystore or AWS KMS full provisioning.
+ * @remarks Existing services may use those modes only after out-of-band provisioning followed by
+ * `DEPLOY_ONLY=true`; this guard performs no Railway or filesystem side effects.
+ */
+export const assertFullRailwaySignerProvisioning = (method: 'private-key' | 'keystore' | 'aws') => {
+  if (method === 'keystore') {
+    throw new RailwayDeploymentError(
+      'Keystore Railway deployment requires a pre-provisioned file; use DEPLOY_ONLY=true'
+    )
+  }
+  if (method === 'aws') {
+    throw new RailwayDeploymentError(
+      'AWS KMS Railway deployment requires pre-provisioned credentials; use DEPLOY_ONLY=true'
+    )
+  }
+}
 
 const rowsFrom = (value: unknown, key: 'deployments' | 'services' | 'volumes') => {
   if (Array.isArray(value)) return value
@@ -65,22 +91,67 @@ export const isNonEmptyJsonArray = (raw: string) => {
   return Array.isArray(data) && data.length > 0
 }
 
+const everyConfiguredWorkflowUsesHardcodedRate = (
+  environment: Readonly<Record<string, string | undefined>>
+) =>
+  ['BOOTSTRAP_MARKETS', 'LADDER_MARKETS'].every(name => {
+    const { data } = tryCatch(() => JSON.parse(environment[name] ?? '') as unknown)
+    return (
+      Array.isArray(data) &&
+      data.length > 0 &&
+      data.every(
+        item =>
+          isRecord(item) && isRecord(item.targetRate) && item.targetRate.strategy === 'hardcoded'
+      )
+    )
+  })
+
 /**
- * Produces the complete optional Railway configuration for a full operator deployment.
+ * Rejects fresh Railway services that would start a variable-rate workflow without Blue references.
+ * @param environment - Invoking environment containing strategy and optional reference variables.
+ * @param isFreshService - Whether this provisioning run created the Railway service.
+ * @throws `RailwayDeploymentError` when a fresh variable-rate service lacks either Blue reference.
+ * @remarks Existing services preserve omitted Railway reference variables; hardcoded-only services do
+ * not require Blue configuration.
+ */
+export const assertFreshRailwayReferenceProvisioning = (
+  environment: Readonly<Record<string, string | undefined>>,
+  isFreshService: boolean
+) => {
+  if (!isFreshService || everyConfiguredWorkflowUsesHardcodedRate(environment)) return
+
+  for (const name of ['REFERENCE_RPC_URL', 'REFERENCE_MARKET_ID'] as const) {
+    if (!environment[name]?.trim()) {
+      throw new RailwayDeploymentError(`Missing required environment variable: ${name}`)
+    }
+  }
+}
+
+/**
+ * Produces optional Railway configuration for a full operator deployment.
  * @param environment - Invoking environment whose non-blank values override safe defaults.
- * @returns Every optional variable exactly once, with timeouts reset to runtime defaults and
- * trimmed string options represented by a whitespace sentinel when absent.
- * @remarks Railway CLI 5.30.4 rejects empty stdin values. The bot trims the sentinel to an unset
- * value, allowing full runs to clear stale optional configuration without triggering intermediate
- * deployments.
+ * @returns Optional variables with timeouts reset to runtime defaults. Missing reference variables
+ * are cleared only when every configured workflow uses a hardcoded target rate; otherwise they are
+ * omitted so a full deployment preserves any existing Railway Blue configuration.
+ * @remarks Railway CLI 5.30.4 rejects empty stdin values. The bot trims whitespace sentinels to an
+ * unset value, allowing full runs to clear stale inactive configuration without triggering
+ * intermediate deployments.
  */
 export const synchronizedOptionalRailwayVariables = (
   environment: Readonly<Record<string, string | undefined>>
 ): OptionalRuntimeVariable[] =>
-  optionalRuntimeVariableDefaults.map(([name, defaultValue]) => [
-    name,
-    environment[name]?.trim() || defaultValue
-  ])
+  optionalRuntimeVariableDefaults.flatMap(([name, defaultValue]) => {
+    const configuredValue = environment[name]?.trim()
+    if (
+      referenceVariableNames.has(name) &&
+      !configuredValue &&
+      !everyConfiguredWorkflowUsesHardcodedRate(environment)
+    ) {
+      return []
+    }
+
+    return [[name, configuredValue || defaultValue]]
+  })
 
 /**
  * Parses Railway service JSON without exposing unknown response fields.

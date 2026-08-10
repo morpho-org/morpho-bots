@@ -191,7 +191,7 @@ Use reference-style markdown links for all PR and TIB references (at the bottom 
 3. Run formatting:
 
    ```bash
-   bun format
+   pnpm format
    ```
 
 4. Verify the document:

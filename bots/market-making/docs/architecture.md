@@ -150,9 +150,9 @@ Run package-focused checks with:
 
 ```sh
 bun test bots/market-making/test
-bun run --filter @morpho-org/market-making-bot test:e2e
-bun run --filter @morpho-org/market-making-bot typecheck
-bun run --filter @morpho-org/market-making-bot jsdoc:build
+pnpm --filter @morpho-org/market-making-bot run test:e2e
+pnpm --filter @morpho-org/market-making-bot run typecheck
+pnpm --filter @morpho-org/market-making-bot run jsdoc:build
 ```
 
 Before committing or when performing full validation, follow the repository-level validation suite

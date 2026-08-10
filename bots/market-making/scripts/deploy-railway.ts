@@ -12,6 +12,8 @@ import { resolve } from 'node:path'
 
 import { RailwayDeploymentError } from './railway-deployment.error'
 import {
+  assertFreshRailwayReferenceProvisioning,
+  assertFullRailwaySignerProvisioning,
   isNonEmptyJsonArray,
   isTerminalRailwayDeploymentStatus,
   parseLatestRailwayDeployment,
@@ -35,8 +37,6 @@ if (!PROJECT_ID) {
 const requiredRuntimeVariableNames = [
   'CHAIN_ID',
   'RPC_URL',
-  'REFERENCE_RPC_URL',
-  'MAKER_PRIVATE_KEY',
   'MAKER_ADDRESS',
   'MIDNIGHT_ADDRESS',
   'LOAN_ASSET_ADDRESS',
@@ -44,7 +44,6 @@ const requiredRuntimeVariableNames = [
   'MORPHO_API_BASE_URL',
   'ROUTER_API_BASE_URL',
   'MARKET_IDS',
-  'REFERENCE_MARKET_ID',
   'NATIVE_RESERVE_WEI',
   'MAXIMUM_LEND_EXPOSURE_ASSETS',
   'BOOTSTRAP_MARKETS',
@@ -69,8 +68,35 @@ const runtimeVariables = (): RuntimeVariable[] => {
     name => [name, required(name)] as const
   )
   const optionalVariables = synchronizedOptionalRailwayVariables(Bun.env)
+  const method =
+    Bun.env.KEY_STORAGE_METHOD?.trim() || (Bun.env.MAKER_PRIVATE_KEY?.trim() ? 'private-key' : '')
+  if (!['private-key', 'keystore', 'aws'].includes(method)) {
+    throw new RailwayDeploymentError('KEY_STORAGE_METHOD must select exactly one signer')
+  }
+  assertFullRailwaySignerProvisioning(method as 'private-key' | 'keystore' | 'aws')
+  const signerValues: Record<string, string> = {
+    KEY_STORAGE_METHOD: method,
+    MAKER_PRIVATE_KEY: ' ',
+    KEYSTORE_PATH: ' ',
+    KEYSTORE_PASSWORD: ' ',
+    KEYSTORE_INTERACTIVE: 'false',
+    AWS_KMS_KEY_ID: ' ',
+    AWS_REGION: ' '
+  }
+  const signerRequired =
+    method === 'private-key'
+      ? ['MAKER_PRIVATE_KEY']
+      : method === 'keystore'
+        ? ['KEYSTORE_PATH', 'KEYSTORE_PASSWORD']
+        : ['AWS_KMS_KEY_ID', 'AWS_REGION']
+  for (const name of signerRequired) {
+    const value = Bun.env[name]?.trim()
+    if (!value) throw new RailwayDeploymentError(`Missing required environment variable: ${name}`)
+    signerValues[name] = value
+  }
+  const signerVariables = Object.entries(signerValues) as RuntimeVariable[]
 
-  return [...requiredVariables, ...optionalVariables]
+  return [...requiredVariables, ...signerVariables, ...optionalVariables]
 }
 
 const assertCli = async () => {
@@ -105,8 +131,9 @@ const listServices = async () => {
 const ensureService = async () => {
   const services = await listServices()
   const existingService = services.find(service => service.name === SERVICE)
-  if (existingService) return existingService
+  if (existingService) return { service: existingService, isFreshService: false }
 
+  assertFreshRailwayReferenceProvisioning(Bun.env, true)
   const { data, error } = await tryCatch(
     Promise.resolve($`railway add --service ${SERVICE} --json`.quiet().text())
   )
@@ -119,7 +146,7 @@ const ensureService = async () => {
     throw new RailwayDeploymentError('Railway service creation returned incomplete identity')
   }
 
-  return createdService
+  return { service: createdService, isFreshService: true }
 }
 
 const listVolumes = async () => {
@@ -245,7 +272,7 @@ await assertCli()
 await ensureContext()
 
 if (!DEPLOY_ONLY) {
-  const service = await ensureService()
+  const { service } = await ensureService()
 
   await setRuntimeVariable(['RAILWAY_DOCKERFILE_PATH', DOCKERFILE_PATH])
   await setRuntimeVariable(['XDG_STATE_HOME', STATE_MOUNT_PATH])

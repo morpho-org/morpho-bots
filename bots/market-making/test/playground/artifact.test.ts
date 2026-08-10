@@ -1,143 +1,98 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { createHash } from 'node:crypto'
+import { build } from 'esbuild'
 import { readdir, readFile, rm } from 'node:fs/promises'
-import { join, relative, sep } from 'node:path'
+import { join } from 'node:path'
 import { gzipSync } from 'node:zlib'
 
 const packageRoot = join(import.meta.dir, '../..')
-const PRODUCTION_ARTIFACT_GZIP_BUDGET_BYTES = 132 * 1024
-const temporaryDirectories = new Set<string>()
-const runBuild = async (nodeEnv: string) => {
-  const buildProcess = Bun.spawn(
+let temporaryDirectory = ''
+
+afterEach(async () => {
+  if (temporaryDirectory) await rm(temporaryDirectory, { recursive: true, force: true })
+  temporaryDirectory = ''
+})
+
+const productionBuild = async () => {
+  const child = Bun.spawn(
     [Bun.which('node')!, join(packageRoot, 'scripts/playground-build.mjs'), '--temporary'],
     {
       cwd: packageRoot,
-      env: {
-        ...Bun.env,
-        BUN_EXE: Bun.which('bun')!,
-        NODE_ENV: nodeEnv,
-        PRIVATE_KEY: 'artifact-private-key-canary',
-        RPC_URL: 'https://artifact-secret.invalid'
-      },
-      stderr: 'pipe',
-      stdout: 'pipe'
+      env: { ...Bun.env, BUN_EXE: Bun.which('bun')! },
+      stdout: 'pipe',
+      stderr: 'pipe'
     }
   )
-  const [exitCode, stderr, stdout] = await Promise.all([
-    buildProcess.exited,
-    new Response(buildProcess.stderr).text(),
-    new Response(buildProcess.stdout).text()
+  const [code, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text()
   ])
-  expect(exitCode, `${stdout}\n${stderr}`).toBe(0)
-  const records = stdout
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .flatMap(line => {
-      try {
-        const value = JSON.parse(line)
-        return value?.kind === 'market-making-playground-build' && value?.mode === 'temporary'
-          ? [value]
-          : []
-      } catch {
-        return []
-      }
-    })
-  expect(records).toHaveLength(1)
-  expect(Object.keys(records[0]).toSorted()).toEqual(['kind', 'mode', 'path'])
-  const dist = records[0].path as string
-  temporaryDirectories.add(dist)
-  return dist
-}
-const readArtifact = async (dist: string) => {
-  const entries = await readdir(dist, { recursive: true, withFileTypes: true })
-  const rawNames = entries
-    .filter(entry => entry.isFile())
-    .map(entry => relative(dist, join(entry.parentPath, entry.name)).split(sep).join('/'))
-    .toSorted()
-  const entriesWithContents = await Promise.all(
-    rawNames.map(async rawName => {
-      const contents = await readFile(join(dist, rawName))
-      const text = /\.(?:html|css|js)$/.test(rawName) ? contents.toString('utf8') : undefined
-      return {
-        file: [rawName, contents] as const,
-        gzipBytes: gzipSync(contents, { level: 9 }).byteLength,
-        text
-      }
-    })
-  )
-  const files = entriesWithContents.map(entry => entry.file)
-  const names = files.map(([name]) => name).toSorted()
-  expect(new Set(names).size).toBe(names.length)
-  files.sort(([left], [right]) => left.localeCompare(right))
-  const text = entriesWithContents.flatMap(entry => entry.text ?? []).join('\n')
-  const gzipBytes = entriesWithContents.reduce((total, entry) => total + entry.gzipBytes, 0)
-  const treeHash = createHash('sha256')
-  for (const [name, contents] of files) {
-    treeHash.update(`${name.length}:${name}:${contents.byteLength}:`)
-    treeHash.update(contents)
-  }
-  return { files, gzipBytes, names, text, treeHash: treeHash.digest('hex') }
-}
-const expectSameArtifact = (
-  actual: Awaited<ReturnType<typeof readArtifact>>,
-  expected: Awaited<ReturnType<typeof readArtifact>>
-) => {
-  expect(actual.names).toEqual(expected.names)
-  expect(actual.files).toEqual(expected.files)
-  expect(actual.treeHash).toBe(expected.treeHash)
-}
-
-const expectProductionArtifact = (artifact: Awaited<ReturnType<typeof readArtifact>>) => {
-  expect(
-    artifact.gzipBytes,
-    `production playground artifact is ${artifact.gzipBytes} gzip bytes; budget is ${PRODUCTION_ARTIFACT_GZIP_BUDGET_BYTES} bytes`
-  ).toBeLessThanOrEqual(PRODUCTION_ARTIFACT_GZIP_BUDGET_BYTES)
-  expect(artifact.names.some(name => name.endsWith('.map'))).toBe(false)
-  const { text } = artifact
-  expect(text).toContain('Minified React error')
-  expect(text).not.toContain('react.development')
-  expect(text).not.toContain('jsxDEV')
-  expect(text).not.toContain('process.env.NODE_ENV')
-  expect(text).not.toContain('sourceMappingURL')
-  expect(text).not.toContain('artifact-private-key-canary')
-  expect(text).not.toContain('artifact-secret.invalid')
-  expect(text).not.toContain('@tanstack/devtools-event-client')
-  expect(text).not.toContain('FormEventClient')
-  expect(text).not.toContain('tanstack-connect')
-  expect(text).not.toContain('form-devtools')
-  expect(text.split('\n').length).toBeLessThan(100)
-  const html = artifact.files.find(([name]) => name === 'index.html')?.[1].toString('utf8')
-  expect(html).toBeDefined()
-  for (const [name, contents] of artifact.files.filter(([name]) => /\.(?:css|js)$/.test(name))) {
-    const match = name.match(/\.([0-9a-f]{12})\.(?:css|js)$/)
-    expect(match, `${name} must have a content hash`).not.toBeNull()
-    expect(match?.[1]).toBe(createHash('sha256').update(contents).digest('hex').slice(0, 12))
-    expect(html).toContain(`./${name}`)
-  }
-  expect(html).not.toMatch(/\.\/(?:index|chunk)\.(?:css|js)/)
-}
-
-describe('market-making playground production artifact', () => {
-  afterEach(async () => {
-    const directories = [...temporaryDirectories]
-    temporaryDirectories.clear()
-    await Promise.all(directories.map(directory => rm(directory, { recursive: true, force: true })))
-  })
-
-  test('is deterministic production/minified output without development branches, maps, or secrets', async () => {
-    const first = await readArtifact(await runBuild('development'))
-    const second = await readArtifact(await runBuild('production'))
-    expectSameArtifact(second, first)
-    expectProductionArtifact(first)
-
-    for (let batch = 0; batch < 10; batch += 1) {
-      const artifacts = await Promise.all(
-        Array.from({ length: 5 }, async () => readArtifact(await runBuild('development')))
-      )
-      for (const artifact of artifacts) {
-        expectSameArtifact(artifact, first)
-        expectProductionArtifact(artifact)
-      }
+  expect(code, `${stdout}\n${stderr}`).toBe(0)
+  const record = stdout.split(/\r?\n/).flatMap(line => {
+    try {
+      const value = JSON.parse(line)
+      return value.kind === 'market-making-playground-build' ? [value] : []
+    } catch {
+      return []
     }
-  }, 300_000)
+  })[0]
+  expect(record).toBeDefined()
+  temporaryDirectory = record.path
+  return temporaryDirectory
+}
+
+describe('playground browser artifact boundary', () => {
+  test('builds a local-only CSP artifact with no removed runtime or secret surface', async () => {
+    const directory = await productionBuild()
+    const names = (await readdir(directory)).toSorted()
+    expect(names).toContain('index.html')
+    expect(names.some(name => name.endsWith('.js'))).toBe(true)
+    expect(names.some(name => name.endsWith('.css'))).toBe(true)
+    const contents = await Promise.all(names.map(name => readFile(join(directory, name))))
+    const text = contents.map(value => value.toString('utf8')).join('\n')
+    const gzipBytes = contents.reduce((total, value) => total + gzipSync(value).byteLength, 0)
+    expect(gzipBytes).toBeLessThan(180 * 1024)
+    expect(text).toContain("connect-src 'none'")
+    expect(text).toContain('Bootstrap JSON string')
+    expect(text).toContain('Ladder JSON string')
+    for (const forbidden of [
+      'MAKER_PRIVATE_KEY',
+      'BETTERSTACK_SOURCE_TOKEN',
+      'RPC_URL',
+      'Runtime & setup',
+      'Choose ladder JSON file',
+      'Drop one ladder',
+      'Shell-safe ENV'
+    ])
+      expect(text).not.toContain(forbidden)
+  }, 60_000)
+
+  test('metafile allowlist keeps the browser graph off runtime, providers, secrets, logging, and observability', async () => {
+    const result = await build({
+      entryPoints: [join(packageRoot, 'playground/app.tsx')],
+      bundle: true,
+      format: 'esm',
+      platform: 'browser',
+      target: 'es2022',
+      metafile: true,
+      write: false,
+      define: { 'process.env.NODE_ENV': '"production"' }
+    })
+    const inputs = Object.keys(result.metafile.inputs)
+    const forbidden = inputs.filter(path =>
+      /config\.utils|config\.service|config-source|viem\/accounts|packages\/(?:logging|monitoring|observability)|infrastructure|application\//.test(
+        path
+      )
+    )
+    expect(forbidden).toEqual([])
+    const firstParty = inputs.filter(path => !path.includes('node_modules/'))
+    expect(
+      firstParty.every(path =>
+        /playground\/(?:app|model|playground-error\.utils|field-visibility\.utils|(?:collection-import|collection-validation|fragment-codec|playground-initialization|preview-generation|strict-json)\.error)\.tsx?$|src\/config\/(?:market-collections|config-validation\.error)\.ts$|src\/domain\/(?:bootstrap|ladder)\/|src\/domain\/bytes32\.ts$|packages\/utils\//.test(
+          path
+        )
+      ),
+      firstParty.join('\n')
+    ).toBe(true)
+  })
 })

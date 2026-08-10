@@ -73,7 +73,7 @@ jobs:
           : "${DOCKERHUB_TOKEN:?set secret DOCKERHUB_TOKEN on the market-making-dockerhub environment}"
           printf '%s' "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
 
-      # The build context is the repo root so the bun workspace (packages/*) resolves — see
+      # The build context is the repo root so the pnpm workspace (packages/*) resolves — see
       # bots/market-making/Dockerfile. The docker release tag is the git tag verbatim, so the
       # image, git tag, and GitHub release cross-reference with zero transformation.
       - name: Build and push

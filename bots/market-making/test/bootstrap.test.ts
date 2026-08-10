@@ -5,10 +5,14 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import type { SetupStateService } from '../src/application/setup/setup-check.service'
+import type {
+  SetupCheckReport,
+  SetupStateService
+} from '../src/application/setup/setup-check.service'
 
 import { SetupFailedError } from '../src/application/setup/setup-failed.error'
 import { createApplication } from '../src/bootstrap'
+import { ConfigValidationError } from '../src/config/config-validation.error'
 
 const maker: Address = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
 const midnight: Address = '0x2222222222222222222222222222222222222222'
@@ -110,6 +114,142 @@ describe('createApplication', () => {
     expect((output as { checks: unknown[] }).checks).toHaveLength(9)
   })
 
+  test('applies CLI signer selection over environment configuration', async () => {
+    let method: string | undefined
+    const application = createApplication(
+      { ...environment, AWS_KMS_KEY_ID: 'alias/cli-selected', AWS_REGION: 'eu-west-1' },
+      {
+        createState: config => {
+          method = config.keyStorageMethod
+          return readyState()
+        }
+      }
+    )
+
+    await application.run(['--aws', 'setup-check'])
+
+    expect(method).toBe('aws')
+  })
+
+  test('CLI --interactive clears an environment keystore password', async () => {
+    let password: string | undefined
+    const application = createApplication(
+      {
+        ...environment,
+        MAKER_PRIVATE_KEY: undefined,
+        KEY_STORAGE_METHOD: 'keystore',
+        KEYSTORE_PATH: '/environment/maker.json',
+        KEYSTORE_PASSWORD: 'environment-password'
+      },
+      {
+        readPassword: async () => ' interactive-password ',
+        createState: config => {
+          password =
+            !config.identity.readOnly && config.identity.method === 'keystore'
+              ? config.identity.password
+              : undefined
+          return readyState()
+        }
+      }
+    )
+
+    await application.run(['--keystore', '/cli/maker.json', '--interactive', 'setup-check'])
+
+    expect(password).toBe(' interactive-password ')
+  })
+
+  test('CLI --password clears environment interactive mode', async () => {
+    let password: string | undefined
+    const application = createApplication(
+      {
+        ...environment,
+        MAKER_PRIVATE_KEY: undefined,
+        KEY_STORAGE_METHOD: 'keystore',
+        KEYSTORE_PATH: '/environment/maker.json',
+        KEYSTORE_INTERACTIVE: 'true'
+      },
+      {
+        readPassword: async () => {
+          throw new Error('interactive reader must not be called')
+        },
+        createState: config => {
+          password =
+            !config.identity.readOnly && config.identity.method === 'keystore'
+              ? config.identity.password
+              : undefined
+          return readyState()
+        }
+      }
+    )
+
+    await application.run([
+      '--keystore',
+      '/cli/maker.json',
+      '--password',
+      ' cli-password ',
+      'setup-check'
+    ])
+
+    expect(password).toBe(' cli-password ')
+  })
+
+  test.each([
+    ['interactive', 'keystorePassword: yaml-password', ['--interactive'], ' prompted-password '],
+    ['password', 'keystoreInteractive: true', ['--password', ' cli-password '], ' cli-password ']
+  ])(
+    'CLI --%s clears the opposite YAML keystore password mode',
+    async (_mode, yamlPasswordMode, cliPasswordMode, expectedPassword) => {
+      const directory = await mkdtemp(join(tmpdir(), 'market-making-cli-precedence-'))
+      const configPath = join(directory, 'operator.yaml')
+      await writeFile(
+        configPath,
+        `chain:\n  id: 8453\n  rpcUrl: https://rpc.example\n  archiveRpcUrl: https://archive.example\nidentity:\n  makerAddress: ${maker}\n  keyStorageMethod: keystore\n  keystorePath: /yaml/maker.json\n  ${yamlPasswordMode}\ncontracts:\n  midnightAddress: ${midnight}\n  loanAssetAddress: ${loanAsset}\n  ratifierAddress: ${ratifier}\napis:\n  morphoBaseUrl: https://api.example\n  routerBaseUrl: https://router.example\nmarkets:\n  allowlist: [${marketId}]\n  referenceMarketId: ${referenceMarketId}\nsetup:\n  nativeReserveWei: 10\n  maximumLendExposureAssets: 100\n`
+      )
+      let password: string | undefined
+      try {
+        const application = createApplication(
+          {},
+          {
+            readPassword: async () => ' prompted-password ',
+            createState: config => {
+              password =
+                !config.identity.readOnly && config.identity.method === 'keystore'
+                  ? config.identity.password
+                  : undefined
+              return readyState()
+            }
+          }
+        )
+        await application.run([
+          '--config',
+          configPath,
+          '--keystore',
+          '/cli/maker.json',
+          ...cliPasswordMode,
+          'setup-check'
+        ])
+        expect(password).toBe(expectedPassword)
+      } finally {
+        await rm(directory, { recursive: true })
+      }
+    }
+  )
+
+  test('rejects conflicting CLI signer selections', async () => {
+    const application = createApplication(environment, { createState: readyState })
+    await expect(
+      application.run(['--private-key', `0x${'11'.repeat(32)}`, '--aws', 'setup-check'])
+    ).rejects.toMatchObject({ field: 'KEY_STORAGE_METHOD', reason: 'conflicting-sources' })
+  })
+
+  test('rejects a CLI password without an explicit keystore path', async () => {
+    const application = createApplication(environment, { createState: readyState })
+
+    await expect(application.run(['--password', 'secret', 'setup-check'])).rejects.toMatchObject({
+      code: 'INVALID_USAGE'
+    })
+  })
+
   test('composes explicit invalidation without the offer-readiness gate', async () => {
     const groupId: Hex = `0x${'12'.repeat(32)}`
     const txHash: Hex = `0x${'ab'.repeat(32)}`
@@ -189,6 +329,216 @@ describe('createApplication', () => {
 
     expect(await application.run(['bootstrap'])).toEqual([])
     expect(events).toEqual(['readiness', 'bootstrap'])
+  })
+
+  test('starts a hardcoded-only bootstrap workflow without Blue reference readiness', async () => {
+    const state = readyState()
+    const checkReference = mock(async () => {
+      throw new Error('Blue archive unavailable')
+    })
+    state.checkReference = checkReference
+    const application = createApplication(
+      {
+        ...environment,
+        REFERENCE_RPC_URL: undefined,
+        REFERENCE_MARKET_ID: undefined,
+        BOOTSTRAP_MARKETS: JSON.stringify([
+          {
+            ...bootstrapConfiguration,
+            targetRate: { strategy: 'hardcoded', hardcodedRateBps: '400' }
+          }
+        ]),
+        LADDER_MARKETS: JSON.stringify([
+          {
+            ...ladderConfiguration,
+            targetRate: { strategy: 'variable_rate_avg' }
+          }
+        ])
+      },
+      {
+        createState: () => state,
+        createBootstrapAdapters: () => ({
+          positions: {
+            readPosition: async () => ({
+              credit: 100n,
+              debt: 0n,
+              cashBalance: 0n,
+              marketExposure: 100n,
+              totalExposure: 100n
+            })
+          },
+          rates: {
+            readRate: async () => ({ mode: 'static', rateBps: 400n, observationId: 'static:400' })
+          },
+          make: {
+            reconcile: async () => {},
+            hardHalt: async () => {},
+            cleanup: async () => {}
+          }
+        })
+      }
+    )
+
+    await expect(application.run(['bootstrap'])).resolves.toBeDefined()
+    expect(checkReference).not.toHaveBeenCalled()
+    await expect(application.run(['ladder'])).rejects.toBeInstanceOf(ConfigValidationError)
+  })
+
+  test('keeps Blue reference readiness fail-closed for variable-rate bootstrap workflows', async () => {
+    const state = readyState()
+    const checkReference = mock(async () => {
+      throw new Error('Blue archive unavailable')
+    })
+    state.checkReference = checkReference
+    const application = createApplication(
+      {
+        ...environment,
+        BOOTSTRAP_MARKETS: JSON.stringify([
+          {
+            ...bootstrapConfiguration,
+            targetRate: { strategy: 'variable_rate_avg' }
+          }
+        ])
+      },
+      { createState: () => state }
+    )
+
+    await expect(application.run(['bootstrap'])).rejects.toBeInstanceOf(SetupFailedError)
+    expect(checkReference).toHaveBeenCalledTimes(1)
+  })
+
+  test('keeps Blue reference readiness fail-closed for variable-rate ladder workflows', async () => {
+    const state = readyState()
+    const checkReference = mock(async () => {
+      throw new Error('Blue archive unavailable')
+    })
+    const createLadderAdapters = mock(() => {
+      throw new Error('ladder adapters must not start')
+    })
+    state.checkReference = checkReference
+    const application = createApplication(
+      {
+        ...environment,
+        BOOTSTRAP_MARKETS: '[]',
+        LADDER_MARKETS: JSON.stringify([
+          {
+            ...ladderConfiguration,
+            targetRate: { strategy: 'variable_rate_avg' }
+          }
+        ])
+      },
+      { createState: () => state, createLadderAdapters }
+    )
+
+    await expect(application.run(['ladder'])).rejects.toBeInstanceOf(SetupFailedError)
+    expect(checkReference).toHaveBeenCalledTimes(1)
+    expect(createLadderAdapters).not.toHaveBeenCalled()
+  })
+
+  test('starts a hardcoded-only ladder workflow without Blue reference readiness', async () => {
+    const state = readyState()
+    const checkReference = mock(async () => {
+      throw new Error('Blue archive unavailable')
+    })
+    state.checkReference = checkReference
+    const application = createApplication(
+      {
+        ...environment,
+        REFERENCE_RPC_URL: undefined,
+        REFERENCE_MARKET_ID: undefined,
+        BOOTSTRAP_MARKETS: JSON.stringify([
+          {
+            ...bootstrapConfiguration,
+            targetRate: { strategy: 'variable_rate_avg' }
+          }
+        ]),
+        LADDER_MARKETS: JSON.stringify([
+          {
+            ...ladderConfiguration,
+            targetRate: { strategy: 'hardcoded', hardcodedRateBps: '475' }
+          }
+        ])
+      },
+      {
+        createState: () => state,
+        createLadderAdapters: () => ({
+          positions: { readMarket: async () => ({}) },
+          rates: { readRate: async () => 475n },
+          make: {
+            readActive: async () => undefined,
+            reconcile: async () => {},
+            hardHalt: async () => {},
+            cleanup: async () => {}
+          }
+        })
+      }
+    )
+
+    await expect(application.run(['ladder'])).resolves.toBeDefined()
+    expect(checkReference).not.toHaveBeenCalled()
+    await expect(application.run(['bootstrap'])).rejects.toBeInstanceOf(ConfigValidationError)
+  })
+
+  test('setup-check composes hardcoded bootstrap and ladder strategies without Blue reference readiness', async () => {
+    const state = readyState()
+    const checkReference = mock(async () => {
+      throw new Error('Blue archive unavailable')
+    })
+    state.checkReference = checkReference
+    const application = createApplication(
+      {
+        ...environment,
+        REFERENCE_RPC_URL: undefined,
+        REFERENCE_MARKET_ID: undefined,
+        BOOTSTRAP_MARKETS: JSON.stringify([
+          {
+            ...bootstrapConfiguration,
+            targetRate: { strategy: 'hardcoded', hardcodedRateBps: '400' }
+          }
+        ]),
+        LADDER_MARKETS: JSON.stringify([
+          {
+            ...ladderConfiguration,
+            targetRate: { strategy: 'hardcoded', hardcodedRateBps: '475' }
+          }
+        ])
+      },
+      { createState: () => state }
+    )
+
+    const report = (await application.run(['setup-check'])) as SetupCheckReport
+
+    expect(report.ready).toBe(true)
+    expect(report.checks.find(check => check.name === 'reference')).toMatchObject({
+      status: 'not-required',
+      observed: { reason: 'no variable_rate_avg target-rate strategy is active' }
+    })
+    expect(checkReference).not.toHaveBeenCalled()
+  })
+
+  test('setup-check fails closed when the bootstrap and ladder strategy union requires Blue', async () => {
+    const application = createApplication(
+      {
+        ...environment,
+        REFERENCE_RPC_URL: undefined,
+        REFERENCE_MARKET_ID: undefined,
+        BOOTSTRAP_MARKETS: JSON.stringify([
+          {
+            ...bootstrapConfiguration,
+            targetRate: { strategy: 'variable_rate_avg' }
+          }
+        ]),
+        LADDER_MARKETS: JSON.stringify([
+          {
+            ...ladderConfiguration,
+            targetRate: { strategy: 'hardcoded', hardcodedRateBps: '475' }
+          }
+        ])
+      },
+      { createState: readyState }
+    )
+
+    await expect(application.run(['setup-check'])).rejects.toBeInstanceOf(ConfigValidationError)
   })
 
   test('mm ladder passes readiness before running one ladder cycle', async () => {
@@ -617,6 +967,127 @@ describe('createApplication', () => {
     })
     expect(bootstrapCleanup).toHaveBeenCalledTimes(1)
     expect(ladderCleanup).toHaveBeenCalledTimes(1)
+  })
+
+  test('combined start composes hardcoded bootstrap and ladder workflows without Blue reference readiness', async () => {
+    const checkReference = mock(async () => {
+      throw new Error('Blue archive unavailable')
+    })
+    const state = readyState()
+    state.checkReference = checkReference
+    const started: string[] = []
+    const controller = new AbortController()
+    controller.abort()
+    const application = createApplication(
+      {
+        ...environment,
+        REFERENCE_RPC_URL: undefined,
+        REFERENCE_MARKET_ID: undefined,
+        BOOTSTRAP_MARKETS: JSON.stringify([
+          {
+            ...bootstrapConfiguration,
+            targetRate: { strategy: 'hardcoded', hardcodedRateBps: '400' }
+          }
+        ]),
+        LADDER_MARKETS: JSON.stringify([
+          {
+            ...ladderConfiguration,
+            targetRate: { strategy: 'hardcoded', hardcodedRateBps: '475' }
+          }
+        ])
+      },
+      {
+        createState: () => state,
+        createBootstrapAdapters: () => {
+          started.push('bootstrap')
+          return {
+            positions: {
+              readPosition: async () => ({
+                credit: 0n,
+                debt: 0n,
+                cashBalance: 100n,
+                marketExposure: 0n,
+                totalExposure: 0n
+              })
+            },
+            rates: {
+              readRate: async () => ({
+                mode: 'static',
+                rateBps: 400n,
+                observationId: 'static:400'
+              })
+            },
+            make: {
+              reconcile: async () => {},
+              hardHalt: async () => {},
+              cleanup: async () => {}
+            }
+          }
+        },
+        createLadderAdapters: () => {
+          started.push('ladder')
+          return {
+            positions: { readMarket: async () => ({}) },
+            rates: { readRate: async () => 475n },
+            make: {
+              readActive: async () => undefined,
+              reconcile: async () => {},
+              hardHalt: async () => {},
+              cleanup: async () => {}
+            }
+          }
+        }
+      }
+    )
+
+    const report = await application.run(['start'], { signal: controller.signal })
+
+    expect(report).toMatchObject({
+      status: 'stopped',
+      workflows: {
+        bootstrap: { status: 'fulfilled' },
+        ladder: { status: 'fulfilled' }
+      }
+    })
+    expect(started).toEqual(['bootstrap', 'ladder'])
+    expect(checkReference).not.toHaveBeenCalled()
+  })
+
+  test('combined start fails closed when the bootstrap and ladder strategy union requires Blue', async () => {
+    const started: string[] = []
+    const application = createApplication(
+      {
+        ...environment,
+        REFERENCE_RPC_URL: undefined,
+        REFERENCE_MARKET_ID: undefined,
+        BOOTSTRAP_MARKETS: JSON.stringify([
+          {
+            ...bootstrapConfiguration,
+            targetRate: { strategy: 'hardcoded', hardcodedRateBps: '400' }
+          }
+        ]),
+        LADDER_MARKETS: JSON.stringify([
+          {
+            ...ladderConfiguration,
+            targetRate: { strategy: 'variable_rate_avg' }
+          }
+        ])
+      },
+      {
+        createState: readyState,
+        createBootstrapAdapters: () => {
+          started.push('bootstrap')
+          throw new Error('bootstrap must not start')
+        },
+        createLadderAdapters: () => {
+          started.push('ladder')
+          throw new Error('ladder must not start')
+        }
+      }
+    )
+
+    await expect(application.run(['start'])).rejects.toBeInstanceOf(ConfigValidationError)
+    expect(started).toEqual([])
   })
 
   test('wires explicit --config and default working-directory discovery into startup', async () => {

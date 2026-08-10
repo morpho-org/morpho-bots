@@ -1,7 +1,7 @@
 # Runs the market-making combined monitor (`mm start --verbose`). Copy market-making.example.yaml
 # to market-making.yaml next to this file (gitignored, chmod 600) and edit it; every environment
 # variable exported in the invoking shell overrides its YAML counterpart. The build context is the
-# repo root so the bun workspace (packages/*) resolves — see Dockerfile.
+# repo root so the pnpm workspace (packages/*) resolves — see Dockerfile.
 services:
   bot:
     build:
@@ -30,6 +30,13 @@ services:
       RPC_URL:
       REFERENCE_RPC_URL:
       MAKER_PRIVATE_KEY:
+      # Signer sources beyond the raw key: encrypted keystore or AWS KMS (see README Run section).
+      KEY_STORAGE_METHOD:
+      KEYSTORE_PATH:
+      KEYSTORE_PASSWORD:
+      KEYSTORE_INTERACTIVE:
+      AWS_KMS_KEY_ID:
+      AWS_REGION:
       MAKER_ADDRESS:
       MIDNIGHT_ADDRESS:
       LOAN_ASSET_ADDRESS:

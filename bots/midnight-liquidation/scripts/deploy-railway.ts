@@ -12,7 +12,7 @@
  *   - Local: an interactive `railway login` session; the script links the project by id.
  *
  *   RAILWAY_PROJECT_ID=… RPC_URL=… LIQUIDATOR_PRIVATE_KEY=0x… \
- *     bun run --filter @morpho-org/midnight-liquidation deploy:railway
+ *     pnpm --filter @morpho-org/midnight-liquidation run deploy:railway
  *
  * The build context MUST be the repo root so the bun workspace (packages/*) resolves — the script
  * runs `railway up` with cwd set to the repo root (mirrors the Dockerfile header + compose context),

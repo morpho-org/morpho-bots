@@ -80,7 +80,7 @@ describe('market-making setup check on a pinned Base fork', () => {
       ['loan-allowance', 'passed'],
       ['ratifier', 'passed'],
       ['books', 'passed'],
-      ['reference', 'passed'],
+      ['reference', 'not-required'],
       ['offers', 'passed'],
       ['position-health', 'not-required']
     ])

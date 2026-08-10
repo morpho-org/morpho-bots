@@ -1,11 +1,11 @@
 import type { Hex } from 'viem'
 
-import { bigintAbs, bigintMin } from '@repo/utils'
-import { isHex, size } from 'viem'
-
+import { isBytes32 } from '../bytes32'
 import { LadderConfigurationError } from './ladder-configuration.error'
 
 const WEIGHT_SCALE_BPS = 10_000n
+const bigintAbs = (value: bigint) => (value < 0n ? -value : value)
+const bigintMin = (left: bigint, right: bigint) => (left < right ? left : right)
 
 /**
  * Highest supported rung count per ladder side.
@@ -59,6 +59,7 @@ export type LadderRung = {
 export type LadderQuoteSet = {
   marketId: Hex
   centerRateBps: bigint
+  referenceObservationId?: string
   groupMode: LadderConfig['groupMode']
   lower: readonly LadderRung[]
   higher: readonly LadderRung[]
@@ -165,7 +166,7 @@ const assertRungBounds = (rate: bigint, side: 'lower' | 'higher', config: Ladder
  * @remarks Pure validation; it performs no environment, provider, logging, or publication access.
  */
 export const validateLadderConfig = (config: LadderConfig): void => {
-  if (!isHex(config.marketId, { strict: true }) || size(config.marketId) !== 32) {
+  if (!isBytes32(config.marketId)) {
     throw new LadderConfigurationError('marketId', 'must be a 0x-prefixed bytes32 hex value')
   }
   positive(config.spreadBps, 'spreadBps')

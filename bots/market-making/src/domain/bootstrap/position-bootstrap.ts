@@ -1,9 +1,9 @@
 import type { Hex } from 'viem'
 
-import { bigintMin } from '@repo/utils'
-import { isHex, size } from 'viem'
-
+import { isBytes32 } from '../bytes32'
 import { BootstrapConfigurationError } from './bootstrap-configuration.error'
+
+const bigintMin = (left: bigint, right: bigint) => (left < right ? left : right)
 
 /** Static safety bounds and behavior for bootstrapping one canonical market. */
 export type BootstrapConfig = {
@@ -83,7 +83,7 @@ const sameOffer = (left: BootstrapOffer, right: BootstrapOffer) =>
  * @remarks This pure validation has no publication, persistence, or provider side effects.
  */
 export const validateBootstrapConfig = (config: BootstrapConfig): void => {
-  if (!isHex(config.marketId, { strict: true }) || size(config.marketId) !== 32) {
+  if (!isBytes32(config.marketId)) {
     throw new BootstrapConfigurationError('marketId', 'must be a 0x-prefixed bytes32 hex value')
   }
   if (config.creditTarget <= 0n) {
@@ -229,8 +229,7 @@ export const decidePositionBootstrap = ({
     referenceObservationId: rate.observationId
   }
 
-  const observationMatches =
-    rate.mode === 'static' || activeOffer?.referenceObservationId === offer.referenceObservationId
+  const observationMatches = activeOffer?.referenceObservationId === offer.referenceObservationId
   if (
     activeOffer &&
     !requiresReconciliation &&

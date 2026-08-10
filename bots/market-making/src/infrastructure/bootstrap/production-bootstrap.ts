@@ -24,18 +24,16 @@ import type {
 } from '../../application/bootstrap/position-bootstrap.service'
 import type { ConfigService } from '../../config/config.service'
 import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
+import type { HistoricalBlockReader } from '../reference/blue-reference-reader.utils'
 import type { BootstrapActiveGroup, BootstrapInventoryReader } from './bootstrap-position.service'
 
 import { pendingLadderQuoteSets } from '../ladder/ladder-active-publication.utils'
 import { pendingLadderBuyReservations } from '../ladder/ladder-cash-reservation.utils'
 import { createLadderGroupOwnership } from '../ladder/ladder-group-ownership.utils'
 import { buildLadderTree } from '../ladder/ladder-offer.utils'
-import { createManagedMakerAccount } from '../make/managed-maker-account.utils'
+import { createMakerAccount } from '../make/maker-account.utils'
 import { ReadOnlyBootstrapMakeService } from '../make/read-only-bootstrap-make.service'
-import {
-  createBlueReferenceReader,
-  type HistoricalBlockReader
-} from '../reference/blue-reference-reader.utils'
+import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 import { bootstrapExposureMarketIds } from './bootstrap-exposure.utils'
 import { createBootstrapGroupOwnership } from './bootstrap-group-ownership.utils'
@@ -53,7 +51,10 @@ import {
 import { bootstrapContinuousFeeCap, createBootstrapOffer } from './bootstrap-offer.utils'
 import { readLivePendingBootstrapOffers } from './bootstrap-pending-offer.utils'
 import { MidnightBootstrapPositionService } from './bootstrap-position.service'
-import { BlueBootstrapReferenceRateService } from './bootstrap-reference-rate.service'
+import {
+  BlueBootstrapReferenceRateService,
+  StrategyBootstrapReferenceRateService
+} from './bootstrap-reference-rate.service'
 import { createBootstrapRequirementClient } from './bootstrap-requirement-client.utils'
 import { prepareBootstrapRequirements } from './bootstrap-requirements.utils'
 import { assertBootstrapProspectiveSpread, bootstrapMarketGroupIds } from './bootstrap-spread.utils'
@@ -136,6 +137,7 @@ type ProductionBootstrapAdapters = {
  * Composes concrete viem, Morpho SDK, Midnight SDK, and Mempool adapters.
  * @param config - Fully validated runtime configuration.
  * @param writeReadOnlyEvent - Optional terminal writer for read-only make records.
+ * @param configuredAccount - Optional preconstructed account for write-mode adapter reuse.
  * @returns Production read ports and either a live mutation queue or terminal-only make adapter.
  * @throws `BootstrapAdapterError` when write-mode signer identity differs from the configured maker;
  * later provider reads, signing, publication, or invalidation may also fail.
@@ -145,8 +147,9 @@ type ProductionBootstrapAdapters = {
  */
 export const createProductionBootstrapAdapters = (
   config: ConfigService,
-  writeReadOnlyEvent?: (line: string) => void | Promise<void>
-): ProductionBootstrapAdapters => {
+  writeReadOnlyEvent?: (line: string) => void | Promise<void>,
+  configuredAccount?: Awaited<ReturnType<typeof createMakerAccount>>
+): ProductionBootstrapAdapters | Promise<ProductionBootstrapAdapters> => {
   const maker = config.identity.maker
   const client = createPublicClient({
     chain: base,
@@ -154,7 +157,7 @@ export const createProductionBootstrapAdapters = (
   }).extend(morphoViemExtension({ supportSignature: true, supportDeployless: true }))
   const referenceClient = createPublicClient({
     chain: base,
-    transport: http(config.referenceRpcUrl, { timeout: config.requestTimeoutMs })
+    transport: http(config.referenceRpcUrl ?? config.rpcUrl, { timeout: config.requestTimeoutMs })
   })
   const midnight = client.morpho.midnight(base.id)
   const ownership = createBootstrapGroupOwnership({
@@ -356,11 +359,15 @@ export const createProductionBootstrapAdapters = (
   }
 
   const positions = new MidnightBootstrapPositionService(inventory, maker)
-  const rates = new BlueBootstrapReferenceRateService(
+  const blueRates = new BlueBootstrapReferenceRateService(
     createBlueReferenceReader(
-      config.setup.referenceMarketId,
+      config.setup.referenceMarketId ?? config.setup.marketIds[0]!,
       referenceClient as HistoricalBlockReader
     )
+  )
+  const rates = new StrategyBootstrapReferenceRateService(
+    new Map(config.bootstrap.map(item => [item.marketId, item.targetRate] as const)),
+    blueRates
   )
   const completeBookOffers = async () => {
     const [groups, ladderPublications] = await Promise.all([readGroups(), ladderOwnership.read()])
@@ -448,7 +455,15 @@ export const createProductionBootstrapAdapters = (
     }
   }
 
-  const account = createManagedMakerAccount(config.identity.privateKey)
+  const account = configuredAccount ?? createMakerAccount(config.identity)
+  if (account instanceof Promise) {
+    return account.then(
+      value => createProductionBootstrapAdapters(config, writeReadOnlyEvent, value),
+      () => {
+        throw new BootstrapAdapterError('maker-private-key-mismatch')
+      }
+    )
+  }
   if (!isAddressEqual(account.address, maker)) {
     throw new BootstrapAdapterError('maker-private-key-mismatch')
   }

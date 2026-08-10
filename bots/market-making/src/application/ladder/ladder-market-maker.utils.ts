@@ -9,6 +9,7 @@ import type { LadderQuoteSet } from '../../domain/ladder/ladder'
 export const sameLadderQuoteSet = (left: LadderQuoteSet, right: LadderQuoteSet) =>
   left.marketId === right.marketId &&
   left.centerRateBps === right.centerRateBps &&
+  left.referenceObservationId === right.referenceObservationId &&
   left.groupMode === right.groupMode &&
   left.lower.length === right.lower.length &&
   left.higher.length === right.higher.length &&

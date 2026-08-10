@@ -33,8 +33,11 @@ import {
   recoverLegacyBootstrapOfferTick
 } from '../bootstrap/bootstrap-offer.utils'
 import { readLivePendingBootstrapOffers } from '../bootstrap/bootstrap-pending-offer.utils'
-import { BlueBootstrapReferenceRateService } from '../bootstrap/bootstrap-reference-rate.service'
-import { createManagedMakerAccount } from '../make/managed-maker-account.utils'
+import {
+  BlueBootstrapReferenceRateService,
+  StrategyBootstrapReferenceRateService
+} from '../bootstrap/bootstrap-reference-rate.service'
+import { createMakerAccount } from '../make/maker-account.utils'
 import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
 import {
   activeOwnedLadderGroupIds,
@@ -124,6 +127,7 @@ const ownedGroups = (publications: readonly OwnedLadderPublication[]) =>
 /**
  * Composes live chain, archive reference, Mempool, signing, and ownership ladder adapters.
  * @param config - Fully validated runtime configuration.
+ * @param configuredAccount - Optional preconstructed account for write-mode adapter reuse.
  * @returns Production position, reference-rate, and make ports.
  * @throws `LadderAdapterError` when write-mode signer identity differs from the maker; later reads,
  * validation, signing, publication, storage, or receipt confirmation may also fail.
@@ -133,7 +137,10 @@ const ownedGroups = (publications: readonly OwnedLadderPublication[]) =>
  * publication transaction; its durable reservation remains owned after approval if publication is
  * not confirmed.
  */
-export const createProductionLadderAdapters = (config: ConfigService): ProductionLadderAdapters => {
+export const createProductionLadderAdapters = (
+  config: ConfigService,
+  configuredAccount?: Awaited<ReturnType<typeof createMakerAccount>>
+): ProductionLadderAdapters | Promise<ProductionLadderAdapters> => {
   const maker = config.identity.maker
   const client = createPublicClient({
     chain: base,
@@ -141,7 +148,7 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
   }).extend(morphoViemExtension({ supportSignature: true, supportDeployless: true }))
   const referenceClient = createPublicClient({
     chain: base,
-    transport: http(config.referenceRpcUrl, { timeout: config.requestTimeoutMs })
+    transport: http(config.referenceRpcUrl ?? config.rpcUrl, { timeout: config.requestTimeoutMs })
   })
   const midnight = client.morpho.midnight(base.id)
   const bootstrapOwnership = createBootstrapGroupOwnership({
@@ -262,12 +269,20 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
 
   const blueRates = new BlueBootstrapReferenceRateService(
     createBlueReferenceReader(
-      config.setup.referenceMarketId,
+      config.setup.referenceMarketId ?? config.setup.marketIds[0]!,
       referenceClient as HistoricalBlockReader
     )
   )
+  const strategyRates = new StrategyBootstrapReferenceRateService(
+    new Map(config.ladder.map(item => [item.marketId, item.targetRate] as const)),
+    blueRates
+  )
   const rates: LadderReferenceRateService = {
-    readRate: async marketId => (await blueRates.readRate(marketId)).rateBps
+    readRate: async marketId => (await strategyRates.readRate(marketId)).rateBps,
+    readObservation: async marketId => {
+      const observation = await strategyRates.readRate(marketId)
+      return { rateBps: observation.rateBps, observationId: observation.observationId }
+    }
   }
 
   const completeBookOffers = async () => {
@@ -369,7 +384,15 @@ export const createProductionLadderAdapters = (config: ConfigService): Productio
     return { positions, rates, make: readOnlyMake, validateReconcile }
   }
 
-  const account = createManagedMakerAccount(config.identity.privateKey)
+  const account = configuredAccount ?? createMakerAccount(config.identity)
+  if (account instanceof Promise) {
+    return account.then(
+      value => createProductionLadderAdapters(config, value),
+      () => {
+        throw new LadderAdapterError('maker-private-key-mismatch')
+      }
+    )
+  }
   if (!isAddressEqual(account.address, maker)) {
     throw new LadderAdapterError('maker-private-key-mismatch')
   }

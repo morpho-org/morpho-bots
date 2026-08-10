@@ -48,6 +48,21 @@ describe('pendingBootstrapOffers', () => {
 })
 
 describe('readLivePendingBootstrapOffers', () => {
+  test('resolves an indexed owned group without persisted intent when offers are empty', async () => {
+    const readGroupConsumed = mock(async () => 0n)
+
+    const resolution = readLivePendingBootstrapOffers({
+      groups: [indexedGroup(0n)],
+      ownedGroupIds: [groupId],
+      offers: [],
+      readGroupConsumed
+    })
+
+    // Indexed groups are provider-projected, so they are absent from pending reconstruction output.
+    await expect(resolution).resolves.toEqual([])
+    expect(readGroupConsumed).not.toHaveBeenCalled()
+  })
+
   test('accepts a provider-indexed owned group without persisted intent while resolving pending offers', async () => {
     const readGroupConsumed = mock(async () => 40n)
     const pendingOffer = { ...offer, groupId: pendingGroupId }

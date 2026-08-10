@@ -4,12 +4,20 @@ import { basename, extname, join, relative } from 'node:path'
 import ts from 'typescript'
 
 const packageRoot = join(import.meta.dir, '..')
-const roots = [join(packageRoot, 'src'), join(packageRoot, 'scripts')]
+const roots = [
+  join(packageRoot, 'src'),
+  join(packageRoot, 'scripts'),
+  join(packageRoot, 'playground')
+]
 const sourceFiles = roots.flatMap(root => {
   const walk = (directory: string): string[] =>
     readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
       const path = join(directory, entry.name)
-      return entry.isDirectory() ? walk(path) : extname(path) === '.ts' ? [path] : []
+      return entry.isDirectory()
+        ? walk(path)
+        : ['.ts', '.tsx'].includes(extname(path))
+          ? [path]
+          : []
     })
   return walk(root)
 })

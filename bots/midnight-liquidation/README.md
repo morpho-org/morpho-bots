@@ -131,7 +131,7 @@ Install dependencies from the repo root:
 
 ```sh
 nvm use
-bun install
+pnpm install
 ```
 
 Discovery hits the public liquidation-candidates API by default, so no local indexer or database is
@@ -141,13 +141,13 @@ needed. Start the bot:
 set -a
 source bots/midnight-liquidation/.env
 set +a
-bun run --filter @morpho-org/midnight-liquidation start
+pnpm --filter @morpho-org/midnight-liquidation run start
 ```
 
 Useful validation commands while developing:
 
 ```sh
-bun run --filter @morpho-org/midnight-liquidation typecheck
+pnpm --filter @morpho-org/midnight-liquidation run typecheck
 bun test bots/midnight-liquidation/test
 ```
 
@@ -187,7 +187,7 @@ Run from `bots/midnight-liquidation`:
 RPC_URL=https://base-mainnet.example \
 PRIVATE_KEY_LENDER=0x... \
 PRIVATE_KEY_BORROWER=0x... \
-bun run seed:positions \
+pnpm run seed:positions \
   --config ./swap.config.json \
   --pair WETH/USDC \
   --count 10 \
@@ -251,8 +251,9 @@ it runs the same locally or in CI.
 Railway service names are project-wide: production uses `bot`, while non-production environments use
 an environment prefix (for example, `staging-bot`).
 
-The [Dockerfile](./Dockerfile) is a single-stage bun image; `RAILWAY_DOCKERFILE_PATH` points Railway at
-it and `railway up` runs from the repo root so the bun workspace resolves.
+The [Dockerfile](./Dockerfile) is a single-stage Node image carrying both pnpm and bun;
+`RAILWAY_DOCKERFILE_PATH` points Railway at it and `railway up` runs from the repo root so the pnpm
+workspace resolves.
 
 Authenticate the CLI first — set `RAILWAY_TOKEN` (a project token scoped to the target project /
 environment, recommended for CI) or run `railway login`. The script bakes in no project identifier, so
@@ -264,7 +265,7 @@ export RAILWAY_PROJECT_ID=...   # required: the Railway project to deploy to
 export RPC_URL=https://base-mainnet.example
 export LIQUIDATOR_PRIVATE_KEY=0x...
 # Optional: RAILWAY_ENVIRONMENT (defaults to production).
-bun run --filter @morpho-org/midnight-liquidation deploy:railway
+pnpm --filter @morpho-org/midnight-liquidation run deploy:railway
 ```
 
 Secrets are read from the script's environment, piped to Railway via stdin (never argv), and never

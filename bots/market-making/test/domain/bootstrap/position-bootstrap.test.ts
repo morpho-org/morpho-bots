@@ -307,22 +307,23 @@ describe('decidePositionBootstrap', () => {
     ).toEqual({ kind: 'replace', activeOffer, offer })
   })
 
-  test('leaves a static offer resting when only observation metadata changes', () => {
+  test('refreshes a static offer when its time-bucket observation changes', () => {
     const activeOffer = {
       marketId,
       assets: 500n,
       rateBps: 450n,
-      referenceObservationId: 'static:old-observation'
+      referenceObservationId: 'static:500:hour:1'
     }
+    const offer = { ...activeOffer, referenceObservationId: 'static:500:hour:2' }
 
     expect(
       decidePositionBootstrap({
         ...parameters,
         position: { ...parameters.position, credit: 0n },
-        rate: { mode: 'static', rateBps: 500n, observationId: 'static:new-observation' },
+        rate: { mode: 'static', rateBps: 500n, observationId: 'static:500:hour:2' },
         activeOffer
       })
-    ).toEqual({ kind: 'rest', offer: activeOffer })
+    ).toEqual({ kind: 'replace', activeOffer, offer })
   })
 
   test('refreshes a rehydrated variable offer for a new observation', () => {

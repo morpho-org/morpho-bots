@@ -7,83 +7,83 @@ import {
   getCoreRowModel,
   useReactTable
 } from '@tanstack/react-table'
-import React, { Component, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import React, { Component, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 
-import type { BootstrapInput, LadderGraphicModel, LadderInput, PlaygroundState } from './model'
+import type { FieldDefinition } from './field-visibility.utils'
+import type {
+  BootstrapGraphicModel,
+  BootstrapInput,
+  LadderGraphicModel,
+  LadderInput,
+  PlaygroundState
+} from './model'
 
+import { CollectionImportError } from './collection-import.error'
+import { visibleFields } from './field-visibility.utils'
 import {
   BOOTSTRAP_FIELDS,
   LADDER_FIELDS,
-  OBSERVABILITY_FIELDS,
-  SCALAR_FIELDS,
-  SENSITIVE_UI_KEYS,
   createDefaultBootstrap,
   createDefaultLadder,
   createDefaultPlaygroundState,
-  exportJson,
+  createPlaygroundShareUrl,
+  decodePlaygroundFragment,
+  deriveBootstrapGraphicModels,
+  encodePlaygroundFragment,
+  exportBootstrapJson,
+  exportBootstrapMarketsEnvValue,
+  exportLadderJson,
   exportLadderMarketsEnvValue,
-  exportShell,
-  exportYaml,
   generateLadderGraphicModels,
-  getObservabilityStatuses,
-  parseLadderMarketsImport,
-  validateQuickLadderState,
-  validatePreviewState,
-  validateProductionState
+  parseCollectionsImport,
+  validateBootstrapCollection,
+  validateLadderCollection,
+  validatePlaygroundState
 } from './model'
+import { playgroundErrorMessage } from './playground-error.utils'
+import { PlaygroundInitializationError } from './playground-initialization.error'
 
-const MAXIMUM_LADDER_IMPORT_BYTES = 128 * 1024
-const textByteLength = (value: string) => new TextEncoder().encode(value).byteLength
-const sensitiveUiKeys = new Set<string>(SENSITIVE_UI_KEYS)
-type FieldDefinition = readonly [string, string, string, string]
-type ExportFormat = 'yaml' | 'shell' | 'json' | 'ladder-env'
-type QuickFieldKey = keyof LadderInput | 'referenceRateBps'
-
-const exporters = {
-  yaml: exportYaml,
-  shell: exportShell,
-  json: exportJson,
-  'ladder-env': (state: PlaygroundState) => exportLadderMarketsEnvValue(state)
+type CollectionKind = keyof PlaygroundState
+type ExportFormat = 'bootstrap-json' | 'bootstrap-string' | 'ladder-json' | 'ladder-string'
+type Status = { message: string; status?: 'ok' | 'error' }
+const EXPORT_FORMATS: ExportFormat[] = [
+  'bootstrap-json',
+  'bootstrap-string',
+  'ladder-json',
+  'ladder-string'
+]
+const EXPORT_LABELS: Record<ExportFormat, string> = {
+  'bootstrap-json': 'Bootstrap JSON',
+  'bootstrap-string': 'Bootstrap JSON string',
+  'ladder-json': 'Ladder JSON',
+  'ladder-string': 'Ladder JSON string'
 }
-
-const quickGroups = [
-  ['Market', ['marketId']],
-  ['Center', ['referenceRateBps', 'quotePremiumBps']],
-  ['Spacing & Gap', ['spreadBps', 'stepBps', 'rungCount']],
-  ['Sizing & Skew', ['sizeSkewBps', 'minimumOfferAssets']],
-  [
-    'Budgets & Exposure',
-    [
-      'lowerRateBudgetAssets',
-      'higherRateBudgetAssets',
-      'targetMarketExposureAssets',
-      'maximumTotalExposureAssets'
-    ]
-  ],
-  [
-    'Runtime & Bounds',
-    ['groupMode', 'loopIntervalSeconds', 'movementToleranceBps', 'minimumRateBps', 'maximumRateBps']
-  ]
-] as const
-
-const ladderFieldsByKey = new Map<string, FieldDefinition>(
-  LADDER_FIELDS.map(field => [field[0], field])
-)
-const quickFieldDefinition = (key: QuickFieldKey): FieldDefinition =>
-  key === 'referenceRateBps'
-    ? [
-        'referenceRateBps',
-        'Reference rate (BPS)',
-        'Preview-only market input · not exported',
-        'number'
-      ]
-    : (ladderFieldsByKey.get(key) as FieldDefinition)
-const firstAllowlistedMarket = (state: PlaygroundState) =>
-  state.scalar.MARKET_IDS.split(',')
-    .map(value => value.trim())
-    .find(Boolean)
-const formatAssets = (value: string) => Intl.NumberFormat('en-US').format(BigInt(value))
+const newId = (() => {
+  let sequence = 0
+  return (kind: CollectionKind) => `${kind}-${++sequence}`
+})()
+const idsFor = (state: PlaygroundState) => ({
+  bootstrap: state.bootstrap.map(() => newId('bootstrap')),
+  ladder: state.ladder.map(() => newId('ladder'))
+})
+const nextMarketId = (items: readonly { marketId: string }[]) => {
+  const existing = new Set(items.map(item => item.marketId.toLowerCase()))
+  for (let value = 1n; ; value++) {
+    const candidate = `0x${value.toString(16).padStart(64, '0')}`
+    if (!existing.has(candidate)) return candidate
+  }
+}
+const initial = () => {
+  try {
+    return { state: decodePlaygroundFragment(window.location.hash), error: '' }
+  } catch (error) {
+    return {
+      state: createDefaultPlaygroundState(),
+      error: `Share URL ignored: ${playgroundErrorMessage(error)}`
+    }
+  }
+}
 
 const columnHelper = createColumnHelper<LadderGraphicModel['rungs'][number]>()
 const rungColumns = [
@@ -99,285 +99,204 @@ const rungColumns = [
   })
 ]
 
-const RungTable = ({
-  graphic,
-  previewIndex
-}: {
-  graphic: LadderGraphicModel
-  previewIndex: number
-}) => {
+const RungTable = ({ graphic, index }: { graphic: LadderGraphicModel; index: number }) => {
   const table = useReactTable({
     data: graphic.rungs,
     columns: rungColumns,
     getCoreRowModel: getCoreRowModel()
   })
   return (
-    <div className="visually-hidden">
-      <table
-        className="rung-table"
-        aria-labelledby={`ladder-heading-${previewIndex}`}
-        aria-describedby={`ladder-description-${previewIndex}`}
-      >
-        <caption>
-          Exact allocation and offer maxAssets rungs for ladder market {previewIndex + 1}
-        </caption>
-        <thead>
-          {table.getHeaderGroups().map(group => (
-            <tr key={group.id}>
-              {group.headers.map(header => (
-                <th key={header.id} scope="col">
-                  {flexRender(header.column.columnDef.header, header.getContext())}
-                </th>
-              ))}
-            </tr>
-          ))}
-        </thead>
-        <tbody>
-          {table.getRowModel().rows.map(row => (
-            <tr key={row.id}>
-              {row.getVisibleCells().map((cell, index) =>
-                index === 0 ? (
-                  <th key={cell.id} scope="row">
-                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                  </th>
-                ) : (
-                  <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>
-                )
-              )}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <table className="semantic-table" aria-labelledby={`ladder-title-${index}`}>
+      <caption>Exact ladder rate, allocation, and offer cap correspondence</caption>
+      <thead>
+        {table.getHeaderGroups().map(group => (
+          <tr key={group.id}>
+            {group.headers.map(header => (
+              <th key={header.id} scope="col">
+                {flexRender(header.column.columnDef.header, header.getContext())}
+              </th>
+            ))}
+          </tr>
+        ))}
+      </thead>
+      <tbody>
+        {table.getRowModel().rows.map(row => (
+          <tr key={row.id}>
+            {row.getVisibleCells().map(cell => (
+              <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
   )
 }
 
-const LadderGraphic = ({
+const BootstrapGraphic = ({
   graphic,
-  previewIndex
+  index
 }: {
-  graphic: LadderGraphicModel
-  previewIndex: number
+  graphic: BootstrapGraphicModel
+  index: number
 }) => {
-  const titleId = `ladder-heading-${previewIndex}`
-  const descriptionId = `ladder-description-${previewIndex}`
-  const scrollHintId = `ladder-scroll-hint-${previewIndex}`
-  const chartWidth = 1120
-  const chartHeight = graphic.plotHeight + 64
-  const axisX = 180
-  const rightX = 1096
-  const referenceY = graphic.rateToY(graphic.axis.referenceRateBps)
-  const centerY = graphic.rateToY(graphic.axis.centerRateBps)
-  const nearestHigher = graphic.rungs.findLast(rung => rung.side === 'higher')
-  const nearestLower = graphic.rungs.find(rung => rung.side === 'lower')
-  const gapTop = nearestHigher ? nearestHigher.y + 11 : 0
-  const gapBottom = nearestLower ? nearestLower.y - 11 : 0
-  const description = `Allocation is the configured asset amount assigned to one rung. Offer maxAssets is the protocol maximum asset amount for that rung’s offer. In shared-rung mode, allocation and offer maxAssets are equal and their rectangles share identical geometry. In per-book mode, each rung allocation is nested inside its side-wide offer maxAssets cap. This stateless graphic does not model live capacities, current offers, or the current book. The vertical rate axis runs from ${graphic.axis.minimumRateBps} to ${graphic.axis.maximumRateBps} BPS, with reference ${graphic.axis.referenceRateBps} BPS and quote center ${graphic.axis.centerRateBps} BPS.`
+  const title = `Bootstrap market ${index + 1}`
+  const minimum = BigInt(graphic.minimumRateBps)
+  const maximum = BigInt(graphic.maximumRateBps)
+  const range = maximum - minimum || 1n
+  const position = (value: string) => Number(((BigInt(value) - minimum) * 10_000n) / range) / 100
+  const description = `${title}, market ${graphic.marketId}. Configured range ${graphic.minimumRateBps} to ${graphic.maximumRateBps} BPS. Deterministic reference ${graphic.referenceRateBps} BPS produces quote ${graphic.quotedRateBps} BPS. Credit target ${graphic.creditTarget}, completion threshold ${graphic.acceptedCredit}, pending-offer cap ${graphic.offerSize}. ${graphic.callouts.map(item => `${item.label}: ${item.value}.`).join(' ')} Explicitly no live offers or balances.`
   return (
-    <section className="ladder-market">
-      <div className="ladder-heading">
-        <h3 id={titleId}>Ladder market {previewIndex + 1}: allocation and offer maxAssets</h3>
-        <code data-parameter="marketId">MARKET ID · {graphic.marketId}</code>
-      </div>
-      <figure className="ladder-graphic" aria-labelledby={titleId} aria-describedby={descriptionId}>
-        <p id={descriptionId} className="visually-hidden">
-          {description}
-        </p>
-        <p id={scrollHintId} className="ladder-scroll-hint">
-          Scroll the plot horizontally or vertically to reach every exact rung.
-        </p>
-        <div
-          className="ladder-scroll"
-          tabIndex={0}
-          role="region"
-          aria-labelledby={titleId}
-          aria-describedby={`${descriptionId} ${scrollHintId}`}
-        >
-          <svg
-            viewBox={`0 0 ${chartWidth} ${chartHeight}`}
-            width={chartWidth}
-            height={chartHeight}
-            role="img"
-            aria-labelledby={`ladder-title-${previewIndex}`}
-            aria-describedby={descriptionId}
-            preserveAspectRatio="xMidYMid meet"
-          >
-            <title id={`ladder-title-${previewIndex}`}>
-              Ladder market {previewIndex + 1}: allocation and offer maxAssets graphic
-            </title>
-            <line
-              x1={axisX}
-              y1={24}
-              x2={axisX}
-              y2={graphic.plotHeight + 40}
-              className="ladder-axis"
-              data-parameter="minimumRateBps maximumRateBps"
-            />
-            <line x1={172} y1={24} x2={188} y2={24} className="axis-tick" />
-            <text x={164} y={28} className="axis-label" textAnchor="end">
-              MAX {graphic.axis.maximumRateBps} BPS
-            </text>
-            <line
-              x1={172}
-              y1={graphic.plotHeight + 40}
-              x2={188}
-              y2={graphic.plotHeight + 40}
-              className="axis-tick"
-            />
-            <text x={164} y={graphic.plotHeight + 44} className="axis-label" textAnchor="end">
-              MIN {graphic.axis.minimumRateBps} BPS
-            </text>
-            {nearestHigher && nearestLower ? (
-              <>
-                <rect
-                  x={axisX}
-                  y={gapTop}
-                  width={rightX - axisX}
-                  height={Math.max(0, gapBottom - gapTop)}
-                  className="spread-gap"
-                  data-parameter="spreadBps"
-                />
-                <text x={axisX + 16} y={(gapTop + gapBottom) / 2 + 4} className="spread-gap-label">
-                  SPREAD GAP · {graphic.gapBps} BPS
-                </text>
-              </>
-            ) : null}
-            <line
-              x1={axisX}
-              y1={referenceY}
-              x2={rightX}
-              y2={referenceY}
-              className="reference-line"
-              data-parameter="referenceRateBps"
-            />
-            <text x={rightX - 8} y={referenceY - 7} className="reference-label" textAnchor="end">
-              REFERENCE {graphic.axis.referenceRateBps}
-            </text>
-            <line
-              x1={axisX}
-              y1={centerY}
-              x2={rightX}
-              y2={centerY}
-              className="center-line"
-              data-parameter="quotePremiumBps"
-            />
-            <text x={rightX - 8} y={centerY + 15} className="center-label" textAnchor="end">
-              CENTER {graphic.axis.centerRateBps}
-            </text>
-            {graphic.rungs.map((rung, index) => {
-              const equal = rung.allocationAssets === rung.offerMaxAssets
-              const equalWidth = Math.max(28, Math.round(470 * rung.allocationBarRatio))
-              const offerWidth = equal
-                ? equalWidth
-                : Math.max(28, Math.round(470 * rung.offerMaxBarRatio))
-              const allocationWidth = equal
-                ? equalWidth
-                : Math.min(offerWidth, Math.max(12, Math.round(470 * rung.allocationBarRatio)))
-              return (
-                <g
-                  key={`${rung.side}-${rung.index}-${index}`}
-                  className={`rung-group rung-group--${rung.side}`}
-                >
-                  <title>
-                    {rung.sideLabel}; {rung.rateBps} BPS; allocation{' '}
-                    {formatAssets(rung.allocationAssets)} assets; offer maxAssets{' '}
-                    {formatAssets(rung.offerMaxAssets)} assets
-                  </title>
-                  <line x1={190} y1={rung.y} x2={rightX - 12} y2={rung.y} className="rung-guide" />
-                  <rect
-                    x={206}
-                    y={rung.y - 10}
-                    width={offerWidth}
-                    height={20}
-                    rx={3}
-                    className={`ladder-rung offer-cap-bar offer-cap-bar--${rung.side}`}
-                    data-rate-bps={rung.rateBps}
-                    data-allocation-assets={rung.allocationAssets}
-                    data-offer-max-assets={rung.offerMaxAssets}
-                    data-side={rung.side}
-                    data-parameter="sizeSkewBps lowerRateBudgetAssets higherRateBudgetAssets targetMarketExposureAssets maximumTotalExposureAssets minimumOfferAssets"
-                  />
-                  <rect
-                    x={206}
-                    y={rung.y - 4}
-                    width={allocationWidth}
-                    height={8}
-                    rx={2}
-                    className={`allocation-bar allocation-bar--${rung.side}`}
-                    data-allocation-assets={rung.allocationAssets}
-                    data-offer-max-assets={rung.offerMaxAssets}
-                    data-side={rung.side}
-                  />
-                  {rung.side === 'higher' ? (
-                    <path
-                      d={`M 172 ${rung.y} l -8 -6 v 12 z`}
-                      className="rung-marker rung-marker--higher"
-                    />
-                  ) : (
-                    <circle cx={166} cy={rung.y} r={6} className="rung-marker rung-marker--lower" />
-                  )}
-                  <text x={216} y={rung.y + 4} className="rung-rate">
-                    {rung.rateBps} BPS
-                  </text>
-                  <text x={rightX - 8} y={rung.y + 4} className="rung-details" textAnchor="end">
-                    {rung.sideLabel.toUpperCase()} · allocation{' '}
-                    {formatAssets(rung.allocationAssets)} · offer maxAssets{' '}
-                    {formatAssets(rung.offerMaxAssets)}
-                  </text>
-                </g>
-              )
-            })}
-          </svg>
+    <article className="preview-card bootstrap-preview" data-preview="bootstrap">
+      <h3 id={`bootstrap-title-${index}`}>{title}</h3>
+      <code>{graphic.marketId}</code>
+      <figure role="img" aria-labelledby={`bootstrap-title-${index}`} aria-label={description}>
+        <div className="rate-track" aria-hidden="true">
+          <span className="range-label range-label--min">{graphic.minimumRateBps} BPS min</span>
+          <span className="range-label range-label--max">{graphic.maximumRateBps} BPS max</span>
+          <i
+            className="reference-marker"
+            style={{ left: `${position(graphic.referenceRateBps)}%` }}
+          />
+          <i className="quote-marker" style={{ left: `${position(graphic.quotedRateBps)}%` }} />
         </div>
-        <RungTable graphic={graphic} previewIndex={previewIndex} />
-        <div className="ladder-legend">
-          <span>
-            <i className="legend-marker legend-marker--triangle" />
-            Higher rate · LEND
-          </span>
-          <span>
-            <i className="legend-marker legend-marker--circle" />
-            Lower rate · REDUCE-ONLY
-          </span>
-          <span>
-            <i className="legend-marker legend-marker--offer-cap" />
-            Outlined bar = offer maxAssets
-          </span>
-          <span>
-            <i className="legend-marker legend-marker--allocation" />
-            Nested fill = allocation
-          </span>
-          <strong>
-            Stateless configured output · live capacities and current offers remain excluded
-          </strong>
-        </div>
+        <figcaption>
+          Reference {graphic.referenceRateBps} BPS ◆ Quote {graphic.quotedRateBps} BPS ●
+        </figcaption>
       </figure>
-      <dl className="ladder-callouts">
-        {graphic.callouts.map(callout => (
-          <div
-            key={callout.label}
-            className="ladder-callout"
-            data-parameter={callout.parameters.join(' ')}
-          >
-            <dt>{callout.label}</dt>
-            <dd>{callout.value}</dd>
+      <dl className="callouts">
+        {graphic.callouts.map(item => (
+          <div key={item.label}>
+            <dt>{item.label}</dt>
+            <dd>{item.value}</dd>
           </div>
         ))}
       </dl>
-    </section>
+    </article>
   )
 }
 
-const InvalidGraphic = ({ errors }: { errors: readonly string[] }) => (
-  <div
-    className="ladder-invalid"
-    role="img"
-    aria-label={`Invalid ladder graphic. No offers shown. ${errors.join('. ')}`}
-  >
-    <strong>Invalid ladder graphic</strong>
-    <span>No synthetic offers are shown until the configuration is valid.</span>
+const LadderGraphic = ({ graphic, index }: { graphic: LadderGraphicModel; index: number }) => {
+  const description = `Ladder market ${index + 1}, ${graphic.marketId}. Range ${graphic.minimumRateBps} to ${graphic.maximumRateBps} BPS. Deterministic reference ${graphic.referenceRateBps} BPS and center ${graphic.centerRateBps} BPS. Triangle markers are lend rungs and circle markers are reduce-only rungs. Exact allocations and caps are in the semantic table. No live offers, balances, positions, or book.`
+  return (
+    <article className="preview-card ladder-preview" data-preview="ladder">
+      <h3 id={`ladder-title-${index}`}>Ladder market {index + 1}</h3>
+      <code>{graphic.marketId}</code>
+      <figure role="img" aria-labelledby={`ladder-title-${index}`} aria-label={description}>
+        <div className="ladder-plot" aria-hidden="true">
+          <span className="range-label range-label--min">{graphic.minimumRateBps} BPS min</span>
+          <span className="range-label range-label--max">{graphic.maximumRateBps} BPS max</span>
+          {graphic.rungs.map((rung, rungIndex) => (
+            <i
+              key={`${rung.side}-${rung.index}-${rungIndex}`}
+              className={`rung rung--${rung.side}`}
+              style={{ top: `${rung.y}%` }}
+              title={`${rung.sideLabel}: ${rung.rateBps} BPS, allocation ${rung.allocationAssets}, cap ${rung.offerMaxAssets}`}
+            >
+              {rung.side === 'higher' ? '▲' : '●'} {rung.rateBps}
+            </i>
+          ))}
+          <b
+            className="ladder-marker ladder-reference-marker"
+            style={{ top: `${graphic.rateToY(graphic.referenceRateBps)}%` }}
+          >
+            Reference {graphic.referenceRateBps} BPS
+          </b>
+          <b
+            className="ladder-marker ladder-center-marker"
+            style={{ top: `${graphic.rateToY(graphic.centerRateBps)}%` }}
+          >
+            Center {graphic.centerRateBps} BPS
+          </b>
+        </div>
+        <figcaption>▲ Lend · ● Reduce-only · values are also available in the table</figcaption>
+      </figure>
+      <RungTable graphic={graphic} index={index} />
+      <dl className="callouts">
+        {graphic.callouts.map(item => (
+          <div key={item.label}>
+            <dt>{item.label}</dt>
+            <dd>{item.value}</dd>
+          </div>
+        ))}
+      </dl>
+    </article>
+  )
+}
+
+const InvalidPreview = ({ kind, errors }: { kind: CollectionKind; errors: string[] }) => (
+  <div className="invalid-preview" role="alert" data-preview-error={kind}>
+    <strong>{kind === 'bootstrap' ? 'Bootstrap' : 'Ladder'} preview unavailable</strong>
+    <ul>
+      {errors.map(error => (
+        <li key={error}>{error}</li>
+      ))}
+    </ul>
+    <span>No misleading graphic was generated.</span>
   </div>
 )
+
+const FragmentSync = ({
+  state,
+  onStatus,
+  onUnexpected,
+  suspendInitial
+}: {
+  state: PlaygroundState
+  onStatus: (status: Status) => void
+  onUnexpected: (error: unknown) => void
+  suspendInitial: boolean
+}) => {
+  const lastFragment = useRef(window.location.hash)
+  const lastMessage = useRef('')
+  const initialErrorState = useRef(suspendInitial ? JSON.stringify(state) : undefined)
+  useEffect(() => {
+    const preserveInitialError =
+      initialErrorState.current !== undefined && JSON.stringify(state) === initialErrorState.current
+    if (initialErrorState.current !== undefined && !preserveInitialError) {
+      initialErrorState.current = undefined
+    }
+    const validation = validatePlaygroundState(state)
+    if (!validation.valid) {
+      const message = 'Share URL remains at the last valid configuration while edits are invalid.'
+      if (!preserveInitialError && lastMessage.current !== message) {
+        lastMessage.current = message
+        onStatus({ message, status: 'error' })
+      }
+      return
+    }
+    try {
+      const fragment = encodePlaygroundFragment(state)
+      const message = 'Share URL synchronized.'
+      if (fragment === lastFragment.current) {
+        if (!preserveInitialError && lastMessage.current !== message) {
+          lastMessage.current = message
+          onStatus({ message, status: 'ok' })
+        }
+        return
+      }
+      const nextUrl = `${window.location.pathname}${window.location.search}${fragment}`
+      history.replaceState(null, '', nextUrl)
+      lastFragment.current = fragment
+      if (!preserveInitialError && lastMessage.current !== message) {
+        lastMessage.current = message
+        onStatus({ message, status: 'ok' })
+      }
+    } catch (error) {
+      let message: string
+      try {
+        message = playgroundErrorMessage(error)
+      } catch (unexpected) {
+        onUnexpected(unexpected)
+        return
+      }
+      if (!preserveInitialError && lastMessage.current !== message) {
+        lastMessage.current = message
+        onStatus({ message, status: 'error' })
+      }
+    }
+  }, [state, onStatus, onUnexpected])
+  return null
+}
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error?: Error }> {
   state: { error?: Error } = {}
@@ -390,901 +309,485 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error?: Error }
   render() {
     if (this.state.error)
       return (
-        <main id="playground-failure" role="alert" aria-live="assertive" tabIndex={-1}>
-          <h1>Market maker playground unavailable</h1>
-          <p>The local interface could not render. Reload the page or report this failure.</p>
+        <main role="alert">
+          <h1>Playground unavailable</h1>
+          <p>Reload or report this failure.</p>
         </main>
       )
     return this.props.children
   }
 }
 
-const Playground = ({ rootElement }: { rootElement: HTMLElement }) => {
-  const initialState = useRef<PlaygroundState | null>(null)
-  if (initialState.current === null) initialState.current = createDefaultPlaygroundState()
-  const uiIdSequence = useRef(0)
-  const createUiId = (kind: 'bootstrap' | 'ladder') => `${kind}-ui-${++uiIdSequence.current}`
-  const initialUiIds = useRef<{ bootstrap: string[]; ladder: string[] } | null>(null)
-  if (initialUiIds.current === null) {
-    initialUiIds.current = {
-      bootstrap: initialState.current.bootstrap.map(() => createUiId('bootstrap')),
-      ladder: initialState.current.ladder.map(() => createUiId('ladder'))
-    }
-  }
-  const form = useForm({ defaultValues: initialState.current })
-  const [bootstrapUiIds, setBootstrapUiIds] = useState(initialUiIds.current.bootstrap)
-  const [ladderUiIds, setLadderUiIds] = useState(initialUiIds.current.ladder)
-  const [selectedLadderId, setSelectedLadderId] = useState(initialUiIds.current.ladder[0])
-  const [activeExport, setActiveExport] = useState<ExportFormat>('yaml')
-  const [includeSensitiveValues, setIncludeSensitiveValues] = useState(false)
-  const [copyStatus, setCopyStatus] = useState<{ message: string; status?: 'ok' | 'error' }>({
-    message: ''
-  })
+const Playground = () => {
+  const initialValue = useRef(initial()).current
+  const form = useForm({ defaultValues: initialValue.state })
+  const [uiIds, setUiIds] = useState(() => idsFor(initialValue.state))
   const [importText, setImportText] = useState('')
-  const [importStatus, setImportStatus] = useState<{ message: string; status?: 'ok' | 'error' }>({
-    message: ''
+  const [importStatus, setImportStatus] = useState<Status>({ message: '' })
+  const [urlStatus, setUrlStatus] = useState<Status>({
+    message: initialValue.error,
+    status: initialValue.error ? 'error' : undefined
   })
-  const [dragging, setDragging] = useState(false)
-  const importGeneration = useRef(0)
-  const mounted = useRef(true)
-  const pendingFocus = useRef<{
-    uiId: string
-    focusKey: string
-    selection?: readonly [number, number, 'backward' | 'forward' | 'none']
-  } | null>(null)
-  const importTextArea = useRef<HTMLTextAreaElement | null>(null)
+  const [copyStatus, setCopyStatus] = useState<Status>({ message: '' })
+  const [unexpectedFailure, setUnexpectedFailure] = useState<{ error: unknown }>()
+  const [activeExport, setActiveExport] = useState<ExportFormat>('bootstrap-json')
   const outputRefs = useRef<Record<ExportFormat, HTMLTextAreaElement | null>>({
-    yaml: null,
-    shell: null,
-    json: null,
-    'ladder-env': null
+    'bootstrap-json': null,
+    'bootstrap-string': null,
+    'ladder-json': null,
+    'ladder-string': null
   })
+  const shareUrlRef = useRef<HTMLInputElement | null>(null)
+  const onUrlStatus = React.useCallback((status: Status) => setUrlStatus(status), [])
+  const onUnexpected = React.useCallback((error: unknown) => setUnexpectedFailure({ error }), [])
 
   useEffect(() => {
-    mounted.current = true
-    rootElement.dataset.reactMounted = 'true'
     document.documentElement.dataset.playgroundReady = 'true'
     return () => {
-      mounted.current = false
-      importGeneration.current += 1
-      delete rootElement.dataset.reactMounted
       delete document.documentElement.dataset.playgroundReady
     }
-  }, [rootElement])
+  }, [])
 
-  useLayoutEffect(() => {
-    const pending = pendingFocus.current
-    if (!pending) return undefined
-    const restore = () => {
-      const card = [...rootElement.querySelectorAll<HTMLElement>('[data-ui-id]')].find(
-        element => element.dataset.uiId === pending.uiId
-      )
-      const target = [...(card?.querySelectorAll<HTMLElement>('[data-focus-key]') ?? [])].find(
-        element => element.dataset.focusKey === pending.focusKey
-      )
-      target?.focus()
-      if (target instanceof HTMLInputElement && pending.selection) {
-        target.setSelectionRange(...pending.selection)
-      }
-    }
-    restore()
-    const frame = requestAnimationFrame(() => {
-      if (pendingFocus.current !== pending) return
-      restore()
-      pendingFocus.current = null
-    })
-    return () => cancelAnimationFrame(frame)
-  }, [bootstrapUiIds, ladderUiIds, rootElement])
+  if (unexpectedFailure) throw unexpectedFailure.error
 
-  const sectionHeading = (title: string, eyebrow: string, action?: ReactNode) => (
-    <div className="section-heading">
-      <span>{eyebrow}</span>
-      <h2>{title}</h2>
-      {action}
-    </div>
-  )
-  const fieldInput = (
-    path: string,
-    field: FieldDefinition,
-    quick = false,
-    errors: readonly string[] = [],
-    identity = path
+  const copy = async (
+    value: string,
+    fallback: HTMLInputElement | HTMLTextAreaElement | null,
+    label: string
   ) => {
-    const [key, label, help, type] = field
-    const sensitive = sensitiveUiKeys.has(key)
-    const hintId = quick ? `quick-hint-${key}` : undefined
-    const errorId = quick ? `quick-error-${key}` : undefined
-    const id = quick
-      ? key === 'referenceRateBps'
-        ? 'preview-reference'
-        : `quick-${key}`
-      : `field-${path.replaceAll('.', '-').replaceAll('[', '-').replaceAll(']', '')}`
-    return (
-      <form.Field
-        key={`${quick ? 'quick' : 'full'}-${identity}-${quick ? path : ''}-${key}`}
-        name={path as never}
-      >
-        {fieldApi => {
-          const value = fieldApi.state.value as string | boolean
-          const common = {
-            id,
-            'data-focus-key': `field-${key}`,
-            'data-field': quick ? undefined : key,
-            'data-quick-field': quick ? key : undefined,
-            'aria-describedby': quick ? `${hintId} ${errorId}` : undefined,
-            'aria-invalid': quick ? errors.length > 0 : undefined,
-            onBlur: fieldApi.handleBlur
-          }
-          const control =
-            type === 'select' ? (
-              <select
-                {...common}
-                value={String(value)}
-                onInput={event => fieldApi.handleChange(event.currentTarget.value as never)}
-              >
-                <option value="shared-rung">shared-rung</option>
-                <option value="per-book">per-book</option>
-              </select>
-            ) : (
-              <input
-                {...common}
-                type={
-                  type === 'checkbox'
-                    ? 'checkbox'
-                    : sensitive
-                      ? includeSensitiveValues
-                        ? 'text'
-                        : 'password'
-                      : 'text'
-                }
-                inputMode={type === 'number' ? 'numeric' : undefined}
-                pattern={type === 'number' ? '-?[0-9]*' : undefined}
-                autoComplete={sensitive ? 'off' : undefined}
-                data-sensitive={sensitive ? 'true' : undefined}
-                checked={type === 'checkbox' ? Boolean(value) : undefined}
-                value={type === 'checkbox' ? undefined : String(value)}
-                onInput={event =>
-                  fieldApi.handleChange(
-                    (type === 'checkbox'
-                      ? event.currentTarget.checked
-                      : event.currentTarget.value) as never
-                  )
-                }
-              />
-            )
-          return quick ? (
-            <label className="quick-field" htmlFor={id}>
-              <span className="quick-field__label">{label}</span>
-              <span className="quick-field__hint" id={hintId}>
-                {key} · {help}
-              </span>
-              {control}
-              <span className="quick-field__error" id={errorId} role="status">
-                {errors[0] ?? ''}
-              </span>
-            </label>
-          ) : (
-            <label className="field" htmlFor={id}>
-              <span className="field__heading">{label}</span>
-              <span className="field__hint">
-                {key} · {help}
-              </span>
-              {control}
-            </label>
-          )
-        }}
-      </form.Field>
-    )
-  }
-
-  const beginImport = () => ++importGeneration.current
-  const applyImport = (text: string, values: PlaygroundState, generation = beginImport()) => {
-    if (!mounted.current || generation !== importGeneration.current) return false
-    if (textByteLength(text) > MAXIMUM_LADDER_IMPORT_BYTES) {
-      setImportStatus({ message: 'Import exceeds the 128 KiB size limit.', status: 'error' })
-      return false
-    }
     try {
-      const imported = parseLadderMarketsImport(text, values.scalar.MARKET_IDS)
-      if (!mounted.current || generation !== importGeneration.current) return false
-      const importedUiIds = imported.map(() => createUiId('ladder'))
-      form.setFieldValue('ladder', imported)
-      setLadderUiIds(importedUiIds)
-      setSelectedLadderId(importedUiIds[0])
-      setImportText(text)
-      setImportStatus({
-        message: `Applied ${imported.length} ladder market${imported.length === 1 ? '' : 's'}.`,
-        status: 'ok'
-      })
-      return true
-    } catch (error) {
-      setImportStatus({
-        message: error instanceof Error ? error.message : 'Invalid ladder JSON.',
-        status: 'error'
-      })
-      return false
-    }
-  }
-  const applyFile = async (files: FileList | readonly File[]) => {
-    const generation = beginImport()
-    if (files.length !== 1) {
-      setImportStatus({ message: 'Choose or drop exactly one JSON file.', status: 'error' })
-      return
-    }
-    const file = files[0]
-    if (!file) return
-    const supportedMime =
-      file.type === '' || file.type === 'application/json' || file.type === 'text/json'
-    if (!file.name.toLowerCase().endsWith('.json') || !supportedMime) {
-      setImportStatus({
-        message: 'Choose a .json JSON file with a supported JSON MIME type.',
-        status: 'error'
-      })
-      return
-    }
-    if (file.size > MAXIMUM_LADDER_IMPORT_BYTES) {
-      setImportStatus({ message: 'Import exceeds the 128 KiB size limit.', status: 'error' })
-      return
-    }
-    try {
-      const text = await file.text()
-      if (!mounted.current || generation !== importGeneration.current) return
-      const currentValues = form.state.values
-      if (
-        applyImport(text, currentValues, generation) &&
-        mounted.current &&
-        generation === importGeneration.current
-      )
-        setImportText(text)
+      await navigator.clipboard.writeText(value)
+      setCopyStatus({ message: `${label} copied.`, status: 'ok' })
     } catch {
-      if (mounted.current && generation === importGeneration.current)
-        setImportStatus({ message: 'The JSON file could not be read.', status: 'error' })
-    }
-  }
-
-  const activateTab = (format: ExportFormat, focus = false) => {
-    setActiveExport(format)
-    if (focus) globalThis.document.getElementById(`tab-${format}`)?.focus()
-  }
-  const tabKeyDown = (event: React.KeyboardEvent, index: number) => {
-    const formats: ExportFormat[] = ['yaml', 'shell', 'json', 'ladder-env']
-    let next = index
-    if (event.key === 'ArrowRight') next = (index + 1) % formats.length
-    else if (event.key === 'ArrowLeft') next = (index - 1 + formats.length) % formats.length
-    else if (event.key === 'Home') next = 0
-    else if (event.key === 'End') next = formats.length - 1
-    else return
-    event.preventDefault()
-    const format = formats[next]
-    if (format === undefined) return
-    activateTab(format, true)
-  }
-  const copyExport = async (value: string) => {
-    const output = outputRefs.current[activeExport]
-    try {
-      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(value)
-      else {
-        output?.focus()
-        output?.select()
-        if (!document.execCommand('copy')) throw new Error('Clipboard API unavailable')
-      }
-      if (mounted.current) setCopyStatus({ message: 'Copied to clipboard.', status: 'ok' })
-    } catch {
-      output?.focus()
-      output?.select()
-      if (mounted.current)
+      if (fallback) {
+        fallback.focus()
+        fallback.select()
         setCopyStatus({
-          message: 'Copy was blocked. The full export is selected; press Ctrl/Cmd+C.',
+          message: `Copy blocked; ${label} selected. Press Ctrl/Cmd+C.`,
           status: 'error'
         })
+        return
+      }
+      setCopyStatus({
+        message: `Copy blocked; ${label} could not be selected.`,
+        status: 'error'
+      })
     }
   }
 
   return (
-    <form.Subscribe selector={formState => formState.values}>
-      {values => {
-        const state = values
-        const selectedIndex = Math.max(0, ladderUiIds.indexOf(selectedLadderId ?? ''))
-        const selected = state.ladder[selectedIndex]
-        const quickValidation = validateQuickLadderState(state, selectedIndex)
-        const productionValidation = validateProductionState(state)
-        const previewValidation = validatePreviewState(state)
-        let graphics: LadderGraphicModel[] = []
-        let graphicErrors: string[] = []
-        if (previewValidation.valid) {
+    <form.Subscribe selector={state => state.values}>
+      {state => {
+        const bootstrapValidation = validateBootstrapCollection(state.bootstrap)
+        const ladderValidation = validateLadderCollection(state.ladder)
+        let bootstrapGraphics: BootstrapGraphicModel[] = []
+        let ladderGraphics: LadderGraphicModel[] = []
+        let bootstrapErrors = [...bootstrapValidation.errors]
+        let ladderErrors = [...ladderValidation.errors]
+        if (bootstrapValidation.valid) {
           try {
-            graphics = generateLadderGraphicModels(state)
+            bootstrapGraphics = deriveBootstrapGraphicModels(state.bootstrap)
           } catch (error) {
-            graphicErrors = [
-              error instanceof Error ? error.message : 'Invalid preview configuration'
-            ]
+            bootstrapErrors = [playgroundErrorMessage(error)]
           }
         }
-        const graphicValid = previewValidation.valid && graphicErrors.length === 0
-
-        const outputs = Object.fromEntries(
-          Object.entries(exporters).map(([format, exporter]) => {
-            try {
-              return [
-                format,
-                { value: exporter(state, { includeSensitiveValues }), invalid: false }
-              ]
-            } catch (error) {
-              return [
-                format,
-                {
-                  value: error instanceof Error ? error.message : 'Configuration is invalid',
-                  invalid: true
-                }
-              ]
-            }
-          })
-        ) as Record<ExportFormat, { value: string; invalid: boolean }>
-        const observability = getObservabilityStatuses(state)
-        const observabilityWarnings = observability.some(status => status.level === 'warning')
-        const move = (kind: 'bootstrap' | 'ladder', from: number, to: number) => {
+        if (ladderValidation.valid) {
+          try {
+            ladderGraphics = generateLadderGraphicModels(state.ladder)
+          } catch (error) {
+            ladderErrors = [playgroundErrorMessage(error)]
+          }
+        }
+        const outputs: Record<ExportFormat, { value: string; invalid: boolean }> = {
+          'bootstrap-json': exportResult(() => exportBootstrapJson(state.bootstrap)),
+          'bootstrap-string': exportResult(() => exportBootstrapMarketsEnvValue(state.bootstrap)),
+          'ladder-json': exportResult(() => exportLadderJson(state.ladder)),
+          'ladder-string': exportResult(() => exportLadderMarketsEnvValue(state.ladder))
+        }
+        const shareUrl = exportResult(() => createPlaygroundShareUrl(state, window.location))
+        const move = (kind: CollectionKind, from: number, to: number) => {
           if (to < 0 || to >= state[kind].length) return
-          const active = document.activeElement
-          const card =
-            active instanceof Element ? active.closest<HTMLElement>('[data-ui-id]') : null
-          const focusTarget =
-            active instanceof HTMLElement ? active.closest<HTMLElement>('[data-focus-key]') : null
-          if (card?.dataset.uiId && focusTarget?.dataset.focusKey) {
-            const selection =
-              active instanceof HTMLInputElement &&
-              active.selectionStart !== null &&
-              active.selectionEnd !== null
-                ? ([
-                    active.selectionStart,
-                    active.selectionEnd,
-                    active.selectionDirection ?? 'none'
-                  ] as const)
-                : undefined
-            pendingFocus.current = {
-              uiId: card.dataset.uiId,
-              focusKey: focusTarget.dataset.focusKey,
-              selection
-            }
-          }
           form.moveFieldValues(kind, from, to)
-          const update = (ids: string[]) => {
-            const reordered = [...ids]
-            const [moved] = reordered.splice(from, 1)
-            if (moved !== undefined) reordered.splice(to, 0, moved)
-            return reordered
-          }
-          if (kind === 'ladder') setLadderUiIds(update)
-          else setBootstrapUiIds(update)
+          setUiIds(previous => {
+            const next = { ...previous, [kind]: [...previous[kind]] }
+            const [id] = next[kind].splice(from, 1)
+            if (id) next[kind].splice(to, 0, id)
+            return next
+          })
+          requestAnimationFrame(() => document.getElementById(`${kind}-${to}-marketId`)?.focus())
         }
-        const remove = (kind: 'bootstrap' | 'ladder', index: number) => {
+        const remove = (kind: CollectionKind, index: number) => {
           void form.removeFieldValue(kind, index)
-          if (kind === 'ladder') {
-            const remaining = ladderUiIds.filter((_, itemIndex) => itemIndex !== index)
-            setLadderUiIds(remaining)
-            if (ladderUiIds[index] === selectedLadderId) {
-              setSelectedLadderId(remaining[Math.min(index, remaining.length - 1)])
-            }
-          } else {
-            setBootstrapUiIds(ids => ids.filter((_, itemIndex) => itemIndex !== index))
-          }
+          setUiIds(previous => ({
+            ...previous,
+            [kind]: previous[kind].filter((_, i) => i !== index)
+          }))
+          requestAnimationFrame(() => document.getElementById(`add-${kind}`)?.focus())
         }
-        const collection = <Item extends BootstrapInput | LadderInput>(
-          kind: 'bootstrap' | 'ladder',
-          title: string,
-          fields: readonly FieldDefinition[],
+        const add = (kind: CollectionKind) => {
+          const marketId = nextMarketId(state[kind])
+          const item =
+            kind === 'bootstrap' ? createDefaultBootstrap(marketId) : createDefaultLadder(marketId)
+          form.pushFieldValue(kind, item as never)
+          setUiIds(previous => ({ ...previous, [kind]: [...previous[kind], newId(kind)] }))
+          requestAnimationFrame(() =>
+            document.getElementById(`${kind}-${state[kind].length}-marketId`)?.focus()
+          )
+        }
+        const editor = <Item extends BootstrapInput | LadderInput>(
+          kind: CollectionKind,
           items: Item[],
-          uiIds: string[]
+          fields: readonly FieldDefinition[]
         ) => (
-          <section className="control-section">
-            {sectionHeading(
-              title,
-              `${kind === 'bootstrap' ? 'BOOTSTRAP_MARKETS' : 'LADDER_MARKETS'} · ordered list`,
-              <button
-                type="button"
-                className="button"
-                onClick={() => {
-                  const item =
-                    kind === 'bootstrap'
-                      ? createDefaultBootstrap(firstAllowlistedMarket(state))
-                      : createDefaultLadder(firstAllowlistedMarket(state))
-                  form.pushFieldValue(kind, item as never)
-                  const uiId = createUiId(kind)
-                  if (kind === 'ladder') {
-                    setLadderUiIds(ids => [...ids, uiId])
-                    setSelectedLadderId(uiId)
-                  } else {
-                    setBootstrapUiIds(ids => [...ids, uiId])
-                  }
-                }}
-              >
+          <section className="editor-section" aria-labelledby={`${kind}-editor-title`}>
+            <div className="section-heading">
+              <div>
+                <span>{kind === 'bootstrap' ? 'BOOTSTRAP_MARKETS' : 'LADDER_MARKETS'}</span>
+                <h2 id={`${kind}-editor-title`}>
+                  {kind === 'bootstrap' ? 'Bootstrap markets' : 'Ladder markets'}
+                </h2>
+              </div>
+              <button id={`add-${kind}`} type="button" onClick={() => add(kind)}>
                 Add {kind} market
               </button>
-            )}
+            </div>
             {items.length === 0 ? (
-              <p className="empty-state">No {kind} markets configured.</p>
+              <p className="empty-state">Zero {kind} markets configured.</p>
             ) : null}
             {items.map((item, index) => (
-              <fieldset className="market-card" key={uiIds[index]} data-ui-id={uiIds[index]}>
+              <fieldset className="market-card" key={uiIds[kind][index]} data-market-kind={kind}>
                 <legend>
-                  {title} {index + 1}
+                  {kind === 'bootstrap' ? 'Bootstrap' : 'Ladder'} market {index + 1}
                 </legend>
                 <div className="item-actions">
                   <button
+                    id={`${kind}-${index}-move-up`}
                     type="button"
                     disabled={index === 0}
-                    data-focus-key="move-up"
                     onClick={() => move(kind, index, index - 1)}
                   >
                     Move up
                   </button>
                   <button
+                    id={`${kind}-${index}-move-down`}
                     type="button"
                     disabled={index === items.length - 1}
-                    data-focus-key="move-down"
                     onClick={() => move(kind, index, index + 1)}
                   >
                     Move down
                   </button>
-                  <button type="button" data-focus-key="remove" onClick={() => remove(kind, index)}>
+                  <button type="button" onClick={() => remove(kind, index)}>
                     Remove {kind}
                   </button>
                 </div>
                 <div className="field-grid">
-                  {fields.map(field =>
-                    fieldInput(`${kind}.${index}.${field[0]}`, field, false, [], uiIds[index])
-                  )}
+                  {visibleFields(fields, item.targetRate).map(([key, label, help, type]) => (
+                    <form.Field
+                      key={`${uiIds[kind][index]}-${key}`}
+                      name={`${kind}.${index}.${key}` as never}
+                    >
+                      {field => (
+                        <label className="field" htmlFor={`${kind}-${index}-${key}`}>
+                          <span>{label}</span>
+                          <small>
+                            {key} · {help}
+                          </small>
+                          {type === 'target-rate-select' ? (
+                            <select
+                              id={`${kind}-${index}-${key}`}
+                              value={item.targetRate.strategy}
+                              onBlur={field.handleBlur}
+                              onChange={event =>
+                                form.setFieldValue(
+                                  `${kind}.${index}.targetRate` as never,
+                                  (event.target.value === 'hardcoded'
+                                    ? {
+                                        strategy: 'hardcoded',
+                                        hardcodedRateBps:
+                                          item.targetRate.strategy === 'hardcoded'
+                                            ? item.targetRate.hardcodedRateBps
+                                            : '500'
+                                      }
+                                    : { strategy: 'variable_rate_avg' }) as never
+                                )
+                              }
+                            >
+                              <option value="variable_rate_avg">variable_rate_avg</option>
+                              <option value="hardcoded">hardcoded</option>
+                            </select>
+                          ) : type === 'select' ? (
+                            <select
+                              id={`${kind}-${index}-${key}`}
+                              value={String(field.state.value)}
+                              onBlur={field.handleBlur}
+                              onChange={event => field.handleChange(event.target.value as never)}
+                            >
+                              <option value="shared-rung">shared-rung</option>
+                              <option value="per-book">per-book</option>
+                            </select>
+                          ) : (
+                            <input
+                              id={`${kind}-${index}-${key}`}
+                              type={type === 'checkbox' ? 'checkbox' : 'text'}
+                              inputMode={
+                                type === 'number' || type === 'target-rate-number'
+                                  ? 'numeric'
+                                  : undefined
+                              }
+                              checked={type === 'checkbox' ? Boolean(field.state.value) : undefined}
+                              value={
+                                type === 'checkbox'
+                                  ? undefined
+                                  : field.state.value === undefined
+                                    ? ''
+                                    : String(field.state.value)
+                              }
+                              disabled={
+                                type === 'target-rate-number' &&
+                                item.targetRate.strategy !== 'hardcoded'
+                              }
+                              onBlur={field.handleBlur}
+                              onChange={event =>
+                                field.handleChange(
+                                  (type === 'checkbox'
+                                    ? event.target.checked
+                                    : event.target.value) as never
+                                )
+                              }
+                            />
+                          )}
+                        </label>
+                      )}
+                    </form.Field>
+                  ))}
                 </div>
               </fieldset>
             ))}
           </section>
         )
-        const ladderStatus = !previewValidation.valid
-          ? 'Preview unavailable while configuration is invalid.'
-          : graphicErrors.length > 0
-            ? graphicErrors[0]
-            : graphics.length === 0
-              ? 'No ladder markets configured.'
-              : `${graphics.length} production-equivalent synthetic ladder graphic${graphics.length === 1 ? '' : 's'} · quick editing market ${selectedIndex + 1}.`
+        const activateTab = (format: ExportFormat, focus = false) => {
+          setActiveExport(format)
+          if (focus) requestAnimationFrame(() => document.getElementById(`tab-${format}`)?.focus())
+        }
+        const tabKey = (event: React.KeyboardEvent, index: number) => {
+          let next = index
+          if (event.key === 'ArrowRight') next = (index + 1) % EXPORT_FORMATS.length
+          else if (event.key === 'ArrowLeft')
+            next = (index - 1 + EXPORT_FORMATS.length) % EXPORT_FORMATS.length
+          else if (event.key === 'Home') next = 0
+          else if (event.key === 'End') next = EXPORT_FORMATS.length - 1
+          else return
+          event.preventDefault()
+          activateTab(EXPORT_FORMATS[next]!, true)
+        }
         return (
           <>
+            <FragmentSync
+              state={state}
+              onStatus={onUrlStatus}
+              onUnexpected={onUnexpected}
+              suspendInitial={Boolean(initialValue.error)}
+            />
             <header className="topbar">
               <div>
-                <p className="eyebrow">Morpho · Midnight · Monitor / Configure</p>
-                <h1>Market maker parameter playground</h1>
+                <p className="eyebrow">Morpho · stateless local planner</p>
+                <h1>Bootstrap & ladder playground</h1>
               </div>
-              <p className="scope-note">
-                <span>Stateless preview</span> · Complete current config surface; no live offers,
-                market book, persistence, backend, or runtime network requests.
+              <p>
+                Only ordered BOOTSTRAP_MARKETS and LADDER_MARKETS. No secrets, scalar runtime setup,
+                live offers, balances, backend, persistence, or network.
               </p>
             </header>
             <main>
-              <section className="configure-surface" aria-labelledby="configure-heading">
-                <div className="configure-heading">
-                  <p className="eyebrow">Configure · validated handoff</p>
-                  <h2 id="configure-heading">Runtime parameters and export</h2>
-                </div>
-                <div className="workbench">
-                  <section className="monitor-surface" aria-labelledby="monitor-heading">
-                    <div className="monitor-header">
-                      <div className="section-heading">
-                        <span>Monitor · instant simulation</span>
-                        <h2 id="monitor-heading">Offer ladder monitor</h2>
-                      </div>
-                    </div>
-                    <div className="monitor-body">
-                      <p
-                        id="ladder-status"
-                        className="status"
-                        role="status"
-                        aria-live="polite"
-                        data-status={graphicValid ? 'ok' : 'error'}
-                      >
-                        {ladderStatus}
-                      </p>
-                      <div id="ladders" className="ladders" aria-live="polite">
-                        {graphicValid ? (
-                          graphics.map((graphic, index) => (
-                            <LadderGraphic
-                              key={ladderUiIds[index]}
-                              graphic={graphic}
-                              previewIndex={index}
-                            />
-                          ))
-                        ) : (
-                          <InvalidGraphic
-                            errors={
-                              graphicErrors.length > 0 ? graphicErrors : previewValidation.errors
-                            }
-                          />
-                        )}
-                      </div>
-                      <section
-                        id="quick-edit"
-                        className="quick-edit"
-                        aria-labelledby="quick-edit-heading"
-                      >
-                        <div className="quick-edit__header">
-                          <h3 id="quick-edit-heading">Quick edit</h3>
-                          <a href="#generated-controls">Open full configuration</a>
-                        </div>
-                        {!selected ? (
-                          <p className="empty-state">
-                            Add a ladder market in the full configuration to enable quick edit.
-                          </p>
-                        ) : (
-                          <>
-                            <label className="quick-market-switcher">
-                              <span>Selected ladder market</span>
-                              <select
-                                id="quick-market-select"
-                                aria-label="Selected ladder market"
-                                value={selectedLadderId}
-                                onChange={event => setSelectedLadderId(event.target.value)}
-                              >
-                                {state.ladder.map((ladder, index) => (
-                                  <option key={ladderUiIds[index]} value={ladderUiIds[index]}>
-                                    Market {index + 1} · {ladder.marketId.slice(0, 10)}…
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            <p
-                              id="quick-validation-status"
-                              className="status"
-                              role="status"
-                              aria-live="polite"
-                              data-status={quickValidation.valid ? 'ok' : 'error'}
-                            >
-                              {quickValidation.errors
-                                .filter(
-                                  error =>
-                                    error.path === 'ladder' ||
-                                    error.path === 'MARKET_IDS' ||
-                                    error.path === `ladder[${selectedIndex}]`
-                                )
-                                .map(error => error.message)
-                                .join('; ')}
-                            </p>
-                            {quickGroups.map(([groupName, keys], groupIndex) => (
-                              <details
-                                className="quick-group"
-                                open={groupIndex < 2}
-                                key={groupName}
-                              >
-                                <summary>{groupName}</summary>
-                                <fieldset>
-                                  <legend>{groupName}</legend>
-                                  <div className="quick-grid">
-                                    {keys.map(key => {
-                                      const exactPath =
-                                        key === 'referenceRateBps'
-                                          ? 'referenceRateBps'
-                                          : `ladder[${selectedIndex}].${key}`
-                                      const errors = quickValidation.errors
-                                        .filter(error => error.path === exactPath)
-                                        .map(error => error.message)
-                                      const path =
-                                        key === 'referenceRateBps'
-                                          ? 'referenceRateBps'
-                                          : `ladder.${selectedIndex}.${key}`
-                                      return fieldInput(
-                                        path,
-                                        quickFieldDefinition(key),
-                                        true,
-                                        errors,
-                                        selectedLadderId
-                                      )
-                                    })}
-                                  </div>
-                                </fieldset>
-                              </details>
-                            ))}
-                          </>
-                        )}
-                      </section>
-                      <p className="future-scope">
-                        Production generator and validators are reused locally. Dynamic balances,
-                        credit, and live order books remain outside this stateless preview.
-                      </p>
-                    </div>
-                  </section>
-                  <div id="controls" className="controls">
-                    <section
-                      id="ladder-import"
-                      className="control-section ladder-import"
-                      aria-labelledby="ladder-import-heading"
-                    >
-                      {sectionHeading('Import ladder JSON', 'LADDER_MARKETS · local only')}
-                      <p id="ladder-import-help" className="format-note">
-                        Drop or choose one .json file, or paste JSON below. Accepts only the exact
-                        LADDER_MARKETS array, one exact ladder object, or a JSON string literal
-                        containing either. The production parser rejects unknown keys; applying
-                        replaces every ladder only after the complete input validates. Maximum 128
-                        KiB.
-                      </p>
-                      <div className="ladder-import__file-picker">
-                        <label className="button" htmlFor="ladder-import-file">
-                          Choose ladder JSON file
-                        </label>
-                        <input
-                          id="ladder-import-file"
-                          type="file"
-                          accept=".json,application/json"
-                          aria-describedby="ladder-import-help"
-                          onChange={event => {
-                            void applyFile(event.target.files ?? [])
-                            event.target.value = ''
-                          }}
-                        />
-                      </div>
-                      <div
-                        id="ladder-import-drop"
-                        className={`ladder-import__drop${dragging ? ' is-dragging' : ''}`}
-                        role="group"
-                        aria-label="JSON file drop region"
-                        aria-describedby="ladder-import-help"
-                        onDragEnter={event => {
-                          event.preventDefault()
-                          setDragging(true)
-                        }}
-                        onDragOver={event => {
-                          event.preventDefault()
-                          setDragging(true)
-                        }}
-                        onDragLeave={() => setDragging(false)}
-                        onDragEnd={() => setDragging(false)}
-                        onDrop={event => {
-                          event.preventDefault()
-                          setDragging(false)
-                          void applyFile(event.dataTransfer.files)
-                        }}
-                      >
-                        <strong>Drop one ladder .json file here</strong>
-                        <span>or use the file chooser above</span>
-                      </div>
-                      <label className="field" htmlFor="ladder-import-text">
-                        <span className="field__heading">Paste ladder JSON</span>
-                        <span className="field__hint">
-                          Exact JSON only; no shell assignment or persistence.
-                        </span>
-                        <textarea
-                          id="ladder-import-text"
-                          rows={6}
-                          spellCheck={false}
-                          aria-describedby="ladder-import-help"
-                          value={importText}
-                          ref={importTextArea}
-                          onChange={event => {
-                            beginImport()
-                            setImportText(event.target.value)
-                          }}
-                        />
-                      </label>
-                      <button
-                        id="apply-ladder-import"
-                        type="button"
-                        className="button"
-                        onClick={() =>
-                          applyImport(importTextArea.current?.value ?? importText, state)
-                        }
-                      >
-                        Apply ladder JSON
-                      </button>
-                      <p
-                        id="ladder-import-status"
-                        className="status"
-                        role="status"
-                        aria-live="polite"
-                        data-status={importStatus.status}
-                      >
-                        {importStatus.message}
-                      </p>
-                    </section>
-                    <div id="generated-controls" className="controls">
-                      <section className="control-section">
-                        {sectionHeading('Runtime & setup', 'Core configuration')}
-                        <div className="field-grid">
-                          {SCALAR_FIELDS.map(field => fieldInput(`scalar.${field[0]}`, field))}
-                        </div>
-                      </section>
-                      {collection(
-                        'bootstrap',
-                        'Position bootstrap',
-                        BOOTSTRAP_FIELDS,
-                        state.bootstrap,
-                        bootstrapUiIds
-                      )}
-                      {collection(
-                        'ladder',
-                        'Live ladder',
-                        LADDER_FIELDS,
-                        state.ladder,
-                        ladderUiIds
-                      )}
-                      <section className="control-section">
-                        {sectionHeading('Observability', 'Environment-only variables')}
-                        <div className="field-grid">
-                          {OBSERVABILITY_FIELDS.map(field =>
-                            fieldInput(`observability.${field[0]}`, field)
-                          )}
-                        </div>
-                      </section>
-                    </div>
+              <section className="monitor" aria-labelledby="monitor-title">
+                <div className="section-heading">
+                  <div>
+                    <span>Sticky responsive monitor</span>
+                    <h2 id="monitor-title">Every configured market</h2>
                   </div>
                 </div>
-                <section className="export-card">
-                  {sectionHeading('Configuration export', 'Validated handoff')}
-                  <div
-                    id="validation-errors"
-                    className="validation-errors"
-                    role="alert"
-                    aria-live="assertive"
-                    hidden={productionValidation.valid}
-                  >
-                    {productionValidation.valid ? null : (
-                      <>
-                        <strong>
-                          Configuration is invalid. Fix these errors before exporting:
-                        </strong>
-                        <ul>
-                          {productionValidation.errors.map(error => (
-                            <li key={error}>{error}</li>
-                          ))}
-                        </ul>
-                      </>
-                    )}
-                  </div>
-                  <div
-                    id="observability-status"
-                    className="observability-status"
+                <div className="preview-group" aria-label="Bootstrap previews">
+                  {bootstrapErrors.length ? (
+                    <InvalidPreview kind="bootstrap" errors={bootstrapErrors} />
+                  ) : bootstrapGraphics.length ? (
+                    bootstrapGraphics.map((graphic, index) => (
+                      <BootstrapGraphic
+                        key={`${graphic.marketId}-${index}`}
+                        graphic={graphic}
+                        index={index}
+                      />
+                    ))
+                  ) : (
+                    <p>No bootstrap graphics: collection is empty.</p>
+                  )}
+                </div>
+                <div className="preview-group" aria-label="Ladder previews">
+                  {ladderErrors.length ? (
+                    <InvalidPreview kind="ladder" errors={ladderErrors} />
+                  ) : ladderGraphics.length ? (
+                    ladderGraphics.map((graphic, index) => (
+                      <LadderGraphic
+                        key={`${graphic.marketId}-${index}`}
+                        graphic={graphic}
+                        index={index}
+                      />
+                    ))
+                  ) : (
+                    <p>No ladder graphics: collection is empty.</p>
+                  )}
+                </div>
+              </section>
+              <section className="workspace" aria-label="Configuration workspace">
+                <section className="share-card" aria-labelledby="share-title">
+                  <h2 id="share-title">Share URL</h2>
+                  <p
+                    id="url-status"
                     role="status"
                     aria-live="polite"
-                    data-status={observabilityWarnings ? 'warning' : 'status'}
+                    data-status={urlStatus.status}
                   >
-                    <strong>
-                      {observabilityWarnings
-                        ? 'Core configuration remains exportable; observability has nonfatal warnings:'
-                        : 'Best-effort observability status:'}
-                    </strong>
-                    <ul>
-                      {observability.map(status => (
-                        <li key={status.integration} data-level={status.level}>
-                          {status.message}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                  <label className="sensitive-export-control" htmlFor="include-sensitive-values">
-                    <input
-                      id="include-sensitive-values"
-                      type="checkbox"
-                      aria-describedby="include-sensitive-warning"
-                      checked={includeSensitiveValues}
-                      onChange={event => {
-                        const checked = event.target.checked
-                        setIncludeSensitiveValues(checked)
-                        setCopyStatus({
-                          message: checked
-                            ? 'Sensitive values are visible and will be copied.'
-                            : 'Sensitive values are redacted.',
-                          status: checked ? 'error' : 'ok'
-                        })
-                      }}
-                    />
-                    <span>
-                      <strong>Reveal and include sensitive values</strong>
-                      <small id="include-sensitive-warning">
-                        Warning: reveals private keys, tokens, and complete RPC URLs in controls,
-                        export text, and clipboard output; heartbeat URLs may contain credentials.
-                      </small>
-                    </span>
+                    {urlStatus.message}
+                  </p>
+                  <label htmlFor="share-url-output">
+                    Canonical URL for the current configuration
                   </label>
-                  <div className="tabs" role="tablist" aria-label="Export format">
-                    {(['yaml', 'shell', 'json', 'ladder-env'] as ExportFormat[]).map(
-                      (format, index) => (
-                        <button
-                          id={`tab-${format}`}
-                          key={format}
-                          type="button"
-                          role="tab"
-                          aria-controls={`panel-${format}`}
-                          aria-selected={activeExport === format}
-                          tabIndex={activeExport === format ? 0 : -1}
-                          data-export={format}
-                          className={activeExport === format ? 'is-active' : undefined}
-                          onClick={() => activateTab(format)}
-                          onKeyDown={event => tabKeyDown(event, index)}
-                        >
-                          {format === 'yaml'
-                            ? 'YAML'
-                            : format === 'shell'
-                              ? 'Shell-safe ENV'
-                              : format === 'json'
-                                ? 'JSON'
-                                : 'LADDER_MARKETS env value'}
-                        </button>
-                      )
-                    )}
+                  <input
+                    id="share-url-output"
+                    readOnly
+                    value={shareUrl.value}
+                    aria-invalid={shareUrl.invalid}
+                    ref={shareUrlRef}
+                  />
+                  <button
+                    id="copy-share-url"
+                    type="button"
+                    disabled={shareUrl.invalid}
+                    onClick={() => {
+                      const value = createPlaygroundShareUrl(form.state.values, window.location)
+                      if (shareUrlRef.current) shareUrlRef.current.value = value
+                      void copy(value, shareUrlRef.current, 'Share URL')
+                    }}
+                  >
+                    Copy share URL
+                  </button>
+                </section>
+                <section className="import-card" aria-labelledby="import-title">
+                  <h2 id="import-title">Paste JSON import</h2>
+                  <p>
+                    Paste bootstrap, ladder, or combined JSON. Applying is strict, bounded, and
+                    atomic.
+                  </p>
+                  <label htmlFor="collection-import">
+                    Paste bootstrap, ladder, or combined JSON
+                  </label>
+                  <textarea
+                    id="collection-import"
+                    rows={8}
+                    value={importText}
+                    onChange={event => setImportText(event.target.value)}
+                  />
+                  <button
+                    id="apply-import"
+                    type="button"
+                    onClick={() => {
+                      try {
+                        const imported = parseCollectionsImport(importText)
+                        const next = {
+                          bootstrap: imported.bootstrap ?? state.bootstrap,
+                          ladder: imported.ladder ?? state.ladder
+                        }
+                        if (!validatePlaygroundState(next).valid)
+                          throw new CollectionImportError('Imported state is invalid')
+                        form.setFieldValue('bootstrap', next.bootstrap)
+                        form.setFieldValue('ladder', next.ladder)
+                        setUiIds(idsFor(next))
+                        setImportStatus({
+                          message: 'Applied pasted JSON atomically.',
+                          status: 'ok'
+                        })
+                      } catch (error) {
+                        try {
+                          setImportStatus({
+                            message: playgroundErrorMessage(error),
+                            status: 'error'
+                          })
+                        } catch (unexpected) {
+                          setUnexpectedFailure({ error: unexpected })
+                        }
+                      }
+                    }}
+                  >
+                    Apply pasted JSON
+                  </button>
+                  <p
+                    id="import-status"
+                    role="status"
+                    aria-live="polite"
+                    data-status={importStatus.status}
+                  >
+                    {importStatus.message}
+                  </p>
+                </section>
+                {editor('bootstrap', state.bootstrap, BOOTSTRAP_FIELDS)}
+                {editor('ladder', state.ladder, LADDER_FIELDS)}
+                <section className="exports" aria-labelledby="exports-title">
+                  <h2 id="exports-title">Four collection outputs</h2>
+                  <div className="tabs" role="tablist" aria-label="Collection output">
+                    {EXPORT_FORMATS.map((format, index) => (
+                      <button
+                        id={`tab-${format}`}
+                        key={format}
+                        type="button"
+                        role="tab"
+                        aria-selected={activeExport === format}
+                        aria-controls={`panel-${format}`}
+                        tabIndex={activeExport === format ? 0 : -1}
+                        onClick={() => activateTab(format)}
+                        onKeyDown={event => tabKey(event, index)}
+                      >
+                        {EXPORT_LABELS[format]}
+                      </button>
+                    ))}
                   </div>
-                  {(['yaml', 'shell', 'json', 'ladder-env'] as ExportFormat[]).map(format => (
+                  {EXPORT_FORMATS.map(format => (
                     <section
                       id={`panel-${format}`}
                       key={format}
                       role="tabpanel"
                       aria-labelledby={`tab-${format}`}
-                      data-panel={format}
                       hidden={activeExport !== format}
                     >
-                      {format === 'shell' ? (
-                        <p className="format-note">
-                          POSIX-shell-safe ENV export statements with literal values.
-                        </p>
-                      ) : null}
-                      {format === 'ladder-env' ? (
-                        <p className="format-note">
-                          Compact single-line JSON value for LADDER_MARKETS. This is the environment
-                          value only, without a shell assignment or extra JSON string-literal
-                          encoding.
-                        </p>
-                      ) : null}
                       <textarea
-                        id={`export-${format}`}
                         readOnly
-                        spellCheck={false}
-                        aria-label={
-                          format === 'yaml'
-                            ? 'YAML configuration export'
-                            : format === 'shell'
-                              ? 'Shell-safe configuration export'
-                              : format === 'json'
-                                ? 'JSON configuration export'
-                                : 'LADDER_MARKETS env value'
-                        }
+                        aria-label={`${EXPORT_LABELS[format]} output`}
                         value={outputs[format].value}
                         data-invalid={String(outputs[format].invalid)}
                         ref={element => {
                           outputRefs.current[format] = element
                         }}
                       />
+                      <button
+                        type="button"
+                        disabled={outputs[format].invalid}
+                        onClick={() =>
+                          void copy(
+                            outputs[format].value,
+                            outputRefs.current[format],
+                            EXPORT_LABELS[format]
+                          )
+                        }
+                      >
+                        Copy {EXPORT_LABELS[format]}
+                      </button>
                     </section>
                   ))}
-                  <div className="copy-actions">
-                    <button
-                      id="copy-export"
-                      type="button"
-                      className="button button--primary"
-                      disabled={!productionValidation.valid}
-                      onClick={() => void copyExport(outputs[activeExport].value)}
-                    >
-                      Copy export
-                    </button>
-                    <button
-                      id="select-export"
-                      type="button"
-                      className="button"
-                      onClick={() => {
-                        outputRefs.current[activeExport]?.focus()
-                        outputRefs.current[activeExport]?.select()
-                        setCopyStatus({ message: 'Export selected. Press Ctrl/Cmd+C to copy.' })
-                      }}
-                    >
-                      Select all
-                    </button>
-                  </div>
                   <p
                     id="copy-status"
-                    className="status"
                     role="status"
                     aria-live="polite"
                     data-status={copyStatus.status}
                   >
                     {copyStatus.message}
-                  </p>
-                  <p className="secret-note">
-                    Sensitive values are redacted by default. Deliberate opt-in affects displayed
-                    exports and clipboard output only; this playground never stores or sends them. A
-                    nonfatal observability warning means the runtime will disable that integration,
-                    not that its observability settings are valid.
                   </p>
                 </section>
               </section>
@@ -1296,19 +799,21 @@ const Playground = ({ rootElement }: { rootElement: HTMLElement }) => {
   )
 }
 
-const rootElement = document.getElementById('root')
-if (!rootElement) throw new Error('Missing playground root')
-const reactRoot = createRoot(rootElement)
-if (Reflect.get(globalThis, '__playgroundSmoke') === true) {
-  Object.defineProperty(globalThis, '__unmountPlaygroundForSmoke', {
-    configurable: false,
-    enumerable: false,
-    value: () => reactRoot.unmount(),
-    writable: false
-  })
+const exportResult = (operation: () => string) => {
+  try {
+    return { value: operation(), invalid: false }
+  } catch (error) {
+    return {
+      value: playgroundErrorMessage(error),
+      invalid: true
+    }
+  }
 }
-reactRoot.render(
+
+const rootElement = document.getElementById('root')
+if (!rootElement) throw new PlaygroundInitializationError('Missing playground root')
+createRoot(rootElement).render(
   <ErrorBoundary>
-    <Playground rootElement={rootElement} />
+    <Playground />
   </ErrorBoundary>
 )

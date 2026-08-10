@@ -263,10 +263,12 @@ export const createCdpClient = (
   socket.addEventListener('error', onSocketError)
 
   return {
-    command(method, params = {}, { deadline } = {}) {
+    command(method, params = {}, { deadline, usePhaseDeadline = false } = {}) {
       if (disposed) return Promise.reject(new Error('DevTools client is disposed'))
       const phaseRemaining = deadline === undefined ? commandTimeoutMs : deadline - now()
-      const timeoutMs = Math.min(commandTimeoutMs, phaseRemaining)
+      const timeoutMs = usePhaseDeadline
+        ? phaseRemaining
+        : Math.min(commandTimeoutMs, phaseRemaining)
       if (timeoutMs <= 0) {
         return Promise.reject(new Error(`CDP command ${method} exceeded its phase deadline`))
       }
