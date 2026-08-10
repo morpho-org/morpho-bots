@@ -174,7 +174,10 @@ const unresolvedDependencies = packageRoot => {
 export const ensureFrozenDependencies = async ({
   repoRoot,
   packageRoot,
-  executable = 'bun',
+  // pnpm owns installs since the migration: a `bun install` here rewrites the root manifest with a
+  // bun-style workspaces/catalog block and lays broken partial package copies into bots/*/
+  // node_modules, poisoning module resolution for the rest of the test run.
+  executable = 'pnpm',
   env = process.env,
   chmodFile = chmod,
   platform = process.platform,
@@ -185,7 +188,7 @@ export const ensureFrozenDependencies = async ({
   const snapshots = await snapshotWorkspaceBinModes(repoRoot, { packageRoot, platform })
   let installError
   try {
-    console.log('Checking workspace dependencies with bun install --frozen-lockfile...')
+    console.log(`Checking workspace dependencies with ${executable} install --frozen-lockfile...`)
     const result = await processRunner({
       executable,
       args: ['install', '--frozen-lockfile'],
