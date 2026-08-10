@@ -87,11 +87,56 @@ describe('bootstrap + ladder only playground follow-up', () => {
     expect(() => deriveBootstrapGraphicModels(state.bootstrap)).toThrow('configured bounds')
   })
 
+  test('renders a hardcoded bootstrap reference outside bounds when its premium-adjusted quote is valid', () => {
+    const state = createDefaultPlaygroundState()
+    state.bootstrap[0]!.minimumRateBps = '200'
+    state.bootstrap[0]!.maximumRateBps = '800'
+    state.bootstrap[0]!.targetRate = { strategy: 'hardcoded', hardcodedRateBps: '900' }
+    state.bootstrap[0]!.premiumBps = '-200'
+
+    expect(deriveBootstrapGraphicModels(state.bootstrap)[0]).toMatchObject({
+      referenceRateBps: '900',
+      quotedRateBps: '700'
+    })
+  })
+
+  test('renders hardcoded target rates as the preview reference', () => {
+    const state = createDefaultPlaygroundState()
+    state.bootstrap[0]!.targetRate = { strategy: 'hardcoded', hardcodedRateBps: '400' }
+    state.bootstrap[0]!.premiumBps = '-50'
+    state.ladder[0]!.targetRate = { strategy: 'hardcoded', hardcodedRateBps: '500' }
+    state.ladder[0]!.quotePremiumBps = '50'
+    state.ladder[0]!.rungCount = '2'
+
+    expect(deriveBootstrapGraphicModels(state.bootstrap)[0]).toMatchObject({
+      referenceRateBps: '400',
+      quotedRateBps: '350'
+    })
+    expect(generateLadderGraphicModels(state.ladder)[0]).toMatchObject({
+      referenceRateBps: '500',
+      centerRateBps: '550'
+    })
+  })
+
   test('rejects a deterministic ladder reference outside its own configured bounds', () => {
     const state = createDefaultPlaygroundState()
     state.ladder[0]!.quotePremiumBps = '-1000'
     expect(() => generateLadderGraphicModels(state.ladder)).toThrow('configured bounds')
     expect(validateLadderCollection(state.ladder).valid).toBe(true)
+  })
+
+  test('previews hardcoded ladder references outside bounds when generated rungs remain bounded', () => {
+    const state = createDefaultPlaygroundState()
+    const ladder = state.ladder[0]!
+    ladder.targetRate = { strategy: 'hardcoded', hardcodedRateBps: '900' }
+    ladder.quotePremiumBps = '-200'
+    ladder.rungCount = '1'
+
+    expect(generateLadderGraphicModels(state.ladder)[0]).toMatchObject({
+      referenceRateBps: '900',
+      centerRateBps: '700'
+    })
+    expect(validateLadderCollection(state.ladder)).toEqual({ valid: true, errors: [] })
   })
 
   test('keeps higher rung rate, allocation, and cap correspondence under display reversal', () => {
@@ -173,6 +218,22 @@ describe('bootstrap + ladder only playground follow-up', () => {
     expect(
       parseCollectionsImport(JSON.stringify(exportLadderMarketsEnvValue(state.ladder)))
     ).toEqual({ ladder: state.ladder })
+  })
+
+  test('round-trips hardcoded target rates through unlabelled imports and exports', () => {
+    const bootstrap = {
+      ...createDefaultBootstrap(),
+      targetRate: { strategy: 'hardcoded' as const, hardcodedRateBps: '450' }
+    }
+    const ladder = {
+      ...createDefaultLadder(),
+      targetRate: { strategy: 'hardcoded' as const, hardcodedRateBps: '500' }
+    }
+
+    expect(parseCollectionsImport(JSON.stringify([bootstrap]))).toEqual({ bootstrap: [bootstrap] })
+    expect(parseCollectionsImport(JSON.stringify([ladder]))).toEqual({ ladder: [ladder] })
+    expect(exportBootstrapMarketsEnvValue([bootstrap])).toBe(JSON.stringify([bootstrap]))
+    expect(exportLadderMarketsEnvValue([ladder])).toBe(JSON.stringify([ladder]))
   })
 
   test('rejects escaped prototype-pollution member names before collection validation', () => {

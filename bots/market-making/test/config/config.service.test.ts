@@ -100,13 +100,35 @@ describe('ConfigService', () => {
     expect(ConfigService.from({ ...environment, MARKET_IDS: ' , ' }).setup.marketIds).toEqual([])
   })
 
-  test('requires one exact Blue reference market id', () => {
-    expect(() => ConfigService.from({ ...environment, REFERENCE_MARKET_ID: undefined })).toThrow(
-      'Missing required env var: REFERENCE_MARKET_ID'
-    )
+  test('loads optional Blue configuration and validates it when provided', () => {
+    expect(
+      ConfigService.from({
+        ...environment,
+        REFERENCE_MARKET_ID: undefined,
+        REFERENCE_RPC_URL: undefined
+      }).setup.referenceMarketId
+    ).toBeUndefined()
     expect(() => ConfigService.from({ ...environment, REFERENCE_MARKET_ID: '0x1234' })).toThrow(
       'REFERENCE_MARKET_ID must be a 0x-prefixed 32-byte hex value'
     )
+  })
+
+  test('trims optional Blue configuration and treats blank values as absent', () => {
+    const normalized = ConfigService.from({
+      ...environment,
+      REFERENCE_MARKET_ID: `  ${referenceMarketId}  `,
+      REFERENCE_RPC_URL: '  https://archive.example/path/  '
+    })
+    const absent = ConfigService.from({
+      ...environment,
+      REFERENCE_MARKET_ID: '  ',
+      REFERENCE_RPC_URL: ''
+    })
+
+    expect(normalized.setup.referenceMarketId).toBe(referenceMarketId)
+    expect(normalized.referenceRpcUrl).toBe('https://archive.example/path')
+    expect(absent.setup.referenceMarketId).toBeUndefined()
+    expect(absent.referenceRpcUrl).toBeUndefined()
   })
 
   test('loads a bounded provider timeout and rejects unsafe values', () => {

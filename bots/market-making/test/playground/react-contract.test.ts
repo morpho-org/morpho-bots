@@ -37,6 +37,20 @@ describe('bootstrap + ladder only browser contract', () => {
     }
   })
 
+  test('lets operators author variable and hardcoded target-rate strategies', async () => {
+    const [app, model] = await Promise.all([
+      read('playground/app.tsx'),
+      read('playground/model.ts')
+    ])
+
+    for (const field of ['targetRate.strategy', 'targetRate.hardcodedRateBps']) {
+      expect(model).toContain(field)
+      expect(app).toContain(field)
+    }
+    expect(app).toContain('<option value="variable_rate_avg">variable_rate_avg</option>')
+    expect(app).toContain('<option value="hardcoded">hardcoded</option>')
+  })
+
   test('uses stable atomic fragment synchronization and paste-only import', async () => {
     const app = await read('playground/app.tsx')
     expect(app).toContain('decodePlaygroundFragment(window.location.hash)')

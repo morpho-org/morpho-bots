@@ -131,6 +131,7 @@ describe('ConfigService YAML and environment loading', () => {
     expect(config.bootstrap).toEqual([
       {
         marketId,
+        targetRate: { strategy: 'variable_rate_avg' },
         creditTarget: 10_000_000_000_000_000_001n,
         acceptanceAssets: 1n,
         offerSize: 2n,
@@ -142,6 +143,86 @@ describe('ConfigService YAML and environment loading', () => {
         autoRefill: false
       }
     ])
+  })
+
+  test('loads independent explicit bootstrap and ladder target-rate strategies from YAML', async () => {
+    const directory = await temporaryDirectory()
+    const path = join(directory, 'operator.yaml')
+    const contents = yaml(`ladder:
+  - marketId: "${marketId}"
+    targetRate:
+      strategy: variable_rate_avg
+    quotePremiumBps: "0"
+    spreadBps: "200"
+    stepBps: "100"
+    rungCount: "1"
+    sizeSkewBps: "0"
+    lowerRateBudgetAssets: "10"
+    higherRateBudgetAssets: "10"
+    targetMarketExposureAssets: "20"
+    maximumTotalExposureAssets: "20"
+    minimumOfferAssets: "1"
+    groupMode: shared-rung
+    loopIntervalSeconds: "60"
+    movementToleranceBps: "10"
+    minimumRateBps: "200"
+    maximumRateBps: "800"
+  - marketId: "${secondMarketId}"
+    targetRate:
+      strategy: hardcoded
+      hardcodedRateBps: "400"
+    quotePremiumBps: "0"
+    spreadBps: "200"
+    stepBps: "100"
+    rungCount: "1"
+    sizeSkewBps: "0"
+    lowerRateBudgetAssets: "10"
+    higherRateBudgetAssets: "10"
+    targetMarketExposureAssets: "20"
+    maximumTotalExposureAssets: "20"
+    minimumOfferAssets: "1"
+    groupMode: shared-rung
+    loopIntervalSeconds: "60"
+    movementToleranceBps: "10"
+    minimumRateBps: "200"
+    maximumRateBps: "800"
+`)
+      .replace(`    - "${marketId}"`, `    - "${marketId}"\n    - "${secondMarketId}"`)
+      .replace(
+        '    premiumBps: -50',
+        '    targetRate:\n      strategy: hardcoded\n      hardcodedRateBps: "400"\n    premiumBps: -50'
+      )
+    await writeFile(path, contents)
+
+    const config = await ConfigService.load({}, { configPath: path })
+
+    expect(config.bootstrap[0]?.targetRate).toEqual({
+      strategy: 'hardcoded',
+      hardcodedRateBps: 400n
+    })
+    expect(config.ladder.map(item => item.targetRate)).toEqual([
+      { strategy: 'variable_rate_avg' },
+      { strategy: 'hardcoded', hardcodedRateBps: 400n }
+    ])
+  })
+
+  test('rejects an invalid nested YAML target-rate with an exact validation failure', async () => {
+    const directory = await temporaryDirectory()
+    const path = join(directory, 'operator.yaml')
+    await writeFile(
+      path,
+      yaml().replace(
+        '    premiumBps: -50',
+        '    targetRate:\n      strategy: hardcoded\n    premiumBps: -50'
+      )
+    )
+
+    const error = await ConfigService.load({}, { configPath: path }).catch(error => error)
+
+    expect(error).toBeInstanceOf(ConfigValidationError)
+    expect(error.field).toBe('bootstrap[0].targetRate.hardcodedRateBps')
+    expect(error.reason).toBe('missing')
+    expect(error.message).toBe('bootstrap[0].targetRate.hardcodedRateBps is required')
   })
 
   test('loads env-only configuration when no default file exists', async () => {

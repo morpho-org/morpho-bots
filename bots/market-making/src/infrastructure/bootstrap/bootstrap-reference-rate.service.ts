@@ -1,6 +1,7 @@
 import type { Hex } from 'viem'
 
 import type { BootstrapReferenceRateService } from '../../application/bootstrap/position-bootstrap.service'
+import type { TargetRateStrategyConfig } from '../../domain/target-rate'
 
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 
@@ -23,6 +24,36 @@ export interface BlueReferenceReader {
   readLatest(): Promise<BlueSupplyCheckpoint>
   /** Reads a historical accrued checkpoint. @param timestamp - Target unix timestamp. @returns Checkpoint at or before the target. */
   readAtOrBefore(timestamp: bigint): Promise<BlueSupplyCheckpoint>
+}
+
+/** Selects a configured target-rate method independently for each workflow market. */
+export class StrategyBootstrapReferenceRateService implements BootstrapReferenceRateService {
+  /**
+   * Creates a per-market strategy selector around the established Blue variable-rate adapter.
+   * @param strategies - Validated strategy configuration indexed by workflow market.
+   * @param variableRates - Existing Blue market variable-rate average implementation.
+   */
+  constructor(
+    private readonly strategies: ReadonlyMap<Hex, TargetRateStrategyConfig>,
+    private readonly variableRates: BootstrapReferenceRateService
+  ) {}
+
+  /**
+   * Resolves the configured hardcoded value or delegates to the Blue variable-rate average.
+   * @param marketId - Workflow market requesting its independently configured target rate.
+   * @returns A static observation or the existing Blue variable-rate observation.
+   * @throws `BootstrapAdapterError` when no strategy exists for the requested market.
+   */
+  async readRate(marketId: Hex) {
+    const strategy = this.strategies.get(marketId)
+    if (!strategy) throw new BootstrapAdapterError('target-rate-strategy-missing')
+    if (strategy.strategy === 'variable_rate_avg') return this.variableRates.readRate(marketId)
+    return {
+      mode: 'static' as const,
+      rateBps: strategy.hardcodedRateBps,
+      observationId: `static:${strategy.hardcodedRateBps}:hour:${BigInt(Math.floor(Date.now() / 1_000)) / REFERENCE_REFRESH_SECONDS}`
+    }
+  }
 }
 
 /** Default six-hour, RPC-derived Morpho Blue supply-share reference adapter. */

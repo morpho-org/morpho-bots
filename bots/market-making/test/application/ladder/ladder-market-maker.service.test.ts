@@ -4,8 +4,7 @@ import { describe, expect, mock, test } from 'bun:test'
 
 import type {
   LadderMakeService,
-  LadderPositionService,
-  LadderReferenceRateService
+  LadderPositionService
 } from '../../../src/application/ladder/ladder-market-maker.service'
 import type {
   LadderConfig,
@@ -47,6 +46,7 @@ const state = (capacity = 20n): LadderMarketState => ({
 
 const harness = (configs: readonly LadderConfig[] = [config()]) => {
   let rate = 500n
+  let observationId = 'static:500:hour:1'
   let marketState = state()
   let readFailure: Hex | undefined
   let reconcileFailure: Hex | undefined
@@ -65,10 +65,14 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
       return marketState
     }
   }
-  const rates: LadderReferenceRateService = {
-    async readRate(id) {
+  const rates = {
+    async readRate(id: Hex) {
       reads.push(`rate:${id}`)
       return rate
+    },
+    async readObservation(id: Hex) {
+      reads.push(`observation:${id}`)
+      return { rateBps: rate, observationId }
     }
   }
   const cleanup = mock(async () => {
@@ -105,6 +109,7 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
     cleanup,
     make,
     setRate: (value: bigint) => (rate = value),
+    setObservation: (value: string) => (observationId = value),
     setCapacity: (value: bigint) => (marketState = state(value)),
     failMarket: (id: Hex) => (readFailure = id),
     failReconcile: (id: Hex) => (reconcileFailure = id),
@@ -309,6 +314,14 @@ describe('LadderMarketMakerService', () => {
     subject.setCapacity(5n)
     expect(await subject.service.runOnce()).toMatchObject([{ action: 'replace', reason: 'resize' }])
     expect(subject.reconciliations).toHaveLength(4)
+  })
+
+  test('refreshes unchanged hardcoded ladder quotes when the time-bucket observation advances', async () => {
+    const subject = harness()
+    expect(await subject.service.runOnce()).toMatchObject([{ action: 'publish' }])
+    subject.setObservation('static:500:hour:2')
+
+    expect(await subject.service.runOnce()).toMatchObject([{ action: 'replace', reason: 'resize' }])
   })
 
   test('invalidates an active ladder when both sides fall below the offer floor', async () => {
