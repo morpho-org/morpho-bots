@@ -16,6 +16,15 @@ services:
         bind:
           # Fail loud when market-making.yaml is missing instead of mounting an empty directory.
           create_host_path: false
+      # Optional encrypted keystore. Set KEYSTORE_HOST_PATH to the host file and set the bot's
+      # KEYSTORE_PATH to /run/secrets/market-making-keystore.json. /dev/null keeps non-keystore
+      # deployments source-compatible without exposing another host path inside the container.
+      - type: bind
+        source: ${KEYSTORE_HOST_PATH:-/dev/null}
+        target: /run/secrets/market-making-keystore.json
+        read_only: true
+        bind:
+          create_host_path: false
       # Durable offer-group ownership state (XDG_STATE_HOME=/state, set by the Dockerfile). It must
       # outlive the container: recreating without it makes the bot forget which live on-chain offer
       # groups it owns, so it treats its own offers as foreign and cannot clean them up.
