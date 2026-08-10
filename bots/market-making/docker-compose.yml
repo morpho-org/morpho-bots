@@ -1,61 +1,36 @@
-# Runs the market-making combined monitor (`mm start --verbose`). Copy market-making.example.yaml
-# to market-making.yaml next to this file (gitignored, chmod 600) and edit it; every environment
-# variable exported in the invoking shell overrides its YAML counterpart. The build context is the
-# repo root so the bun workspace (packages/*) resolves — see Dockerfile.
+# Runs the combined setup, bootstrap, and ladder monitor from the package-owned production image.
 services:
   bot:
     build:
       context: ../..
       dockerfile: bots/market-making/Dockerfile
-    command: ['--config', '/config/market-making.yaml', 'start', '--verbose']
-    volumes:
-      - type: bind
-        source: ./market-making.yaml
-        target: /config/market-making.yaml
-        read_only: true
-        bind:
-          # Fail loud when market-making.yaml is missing instead of mounting an empty directory.
-          create_host_path: false
-      # Durable offer-group ownership state (XDG_STATE_HOME=/state, set by the Dockerfile). It must
-      # outlive the container: recreating without it makes the bot forget which live on-chain offer
-      # groups it owns, so it treats its own offers as foreign and cannot clean them up.
-      - type: volume
-        source: market-making-state
-        target: /state
-    # Null-valued entries pass a variable through ONLY when the invoking shell sets it. Never use
-    # `${VAR:-}` defaults here: they set empty strings, and any SET variable — even empty — replaces
-    # the YAML value and fails validation with "Missing required env var".
     environment:
-      CHAIN_ID:
-      RPC_URL:
-      REFERENCE_RPC_URL:
-      MAKER_PRIVATE_KEY:
-      MAKER_ADDRESS:
-      MIDNIGHT_ADDRESS:
-      LOAN_ASSET_ADDRESS:
-      RATIFIER_ADDRESS:
-      MARKET_IDS:
-      REFERENCE_MARKET_ID:
-      NATIVE_RESERVE_WEI:
-      MAXIMUM_LEND_EXPOSURE_ASSETS:
-      MORPHO_API_BASE_URL:
-      ROUTER_API_BASE_URL:
-      V0_OFFER_GROUP_IDS:
-      REQUEST_TIMEOUT_MS:
-      TRANSACTION_RECEIPT_TIMEOUT_MS:
-      BOOTSTRAP_MARKETS:
-      LADDER_MARKETS:
-      # Optional Better Stack shipping/heartbeat; both shipping values must be set together.
-      BETTERSTACK_SOURCE_TOKEN:
-      BETTERSTACK_INGESTING_HOST:
-      BETTERSTACK_HEARTBEAT_URL:
-    # SIGTERM triggers graceful shutdown: the monitors drain the in-flight cycle, then cancel owned
-    # offers on-chain serially and wait for each receipt, bounded per transaction by
-    # TRANSACTION_RECEIPT_TIMEOUT_MS (default 3m, max 15m). Compose escalates to SIGKILL when the
-    # grace period lapses, cutting cleanup off — raise STOP_GRACE_PERIOD beyond the default when
-    # configuring long receipt timeouts or many owned groups.
-    stop_grace_period: ${STOP_GRACE_PERIOD:-15m}
+      CHAIN_ID: ${CHAIN_ID:-8453}
+      RPC_URL: ${RPC_URL:?set RPC_URL}
+      REFERENCE_RPC_URL: ${REFERENCE_RPC_URL:-}
+      MAKER_PRIVATE_KEY: ${MAKER_PRIVATE_KEY:?set MAKER_PRIVATE_KEY}
+      MAKER_ADDRESS: ${MAKER_ADDRESS:?set MAKER_ADDRESS}
+      MIDNIGHT_ADDRESS: ${MIDNIGHT_ADDRESS:?set MIDNIGHT_ADDRESS}
+      LOAN_ASSET_ADDRESS: ${LOAN_ASSET_ADDRESS:?set LOAN_ASSET_ADDRESS}
+      RATIFIER_ADDRESS: ${RATIFIER_ADDRESS:?set RATIFIER_ADDRESS}
+      MORPHO_API_BASE_URL: ${MORPHO_API_BASE_URL:?set MORPHO_API_BASE_URL}
+      ROUTER_API_BASE_URL: ${ROUTER_API_BASE_URL:?set ROUTER_API_BASE_URL}
+      MARKET_IDS: ${MARKET_IDS:?set MARKET_IDS}
+      REFERENCE_MARKET_ID: ${REFERENCE_MARKET_ID:-}
+      V0_OFFER_GROUP_IDS: ${V0_OFFER_GROUP_IDS:-}
+      NATIVE_RESERVE_WEI: ${NATIVE_RESERVE_WEI:?set NATIVE_RESERVE_WEI}
+      MAXIMUM_LEND_EXPOSURE_ASSETS: ${MAXIMUM_LEND_EXPOSURE_ASSETS:?set MAXIMUM_LEND_EXPOSURE_ASSETS}
+      REQUEST_TIMEOUT_MS: ${REQUEST_TIMEOUT_MS:-10000}
+      TRANSACTION_RECEIPT_TIMEOUT_MS: ${TRANSACTION_RECEIPT_TIMEOUT_MS:-180000}
+      BOOTSTRAP_MARKETS: ${BOOTSTRAP_MARKETS:?set BOOTSTRAP_MARKETS}
+      LADDER_MARKETS: ${LADDER_MARKETS:?set LADDER_MARKETS}
+      BETTERSTACK_SOURCE_TOKEN: ${BETTERSTACK_SOURCE_TOKEN:-}
+      BETTERSTACK_INGESTING_HOST: ${BETTERSTACK_INGESTING_HOST:-}
+      BETTERSTACK_HEARTBEAT_URL: ${BETTERSTACK_HEARTBEAT_URL:-}
+      XDG_STATE_HOME: /state
     restart: unless-stopped
+    volumes:
+      - market-making-state:/state
 
 volumes:
   market-making-state:
