@@ -72,13 +72,17 @@ const waitFor = async operation => {
   throw lastError
 }
 
-const assertProcessNotLive = async pid => {
-  let state = 'missing'
+const readProcessState = async (pid, readProcessStat = readFile) => {
   try {
-    state = (await readFile(`/proc/${pid}/stat`, 'utf8')).split(' ')[2]
+    return (await readProcessStat(`/proc/${pid}/stat`, 'utf8')).split(' ')[2]
   } catch (error) {
-    if (error.code !== 'ENOENT') throw error
+    if (error.code === 'ENOENT' || error.code === 'ESRCH') return 'missing'
+    throw error
   }
+}
+
+const assertProcessNotLive = async pid => {
+  const state = await readProcessState(pid)
   assert.ok(state === 'missing' || state === 'Z', `process ${pid} remains live in state ${state}`)
 }
 
@@ -417,6 +421,11 @@ test('signal during frozen install kills its descendant tree', { timeout: 10_000
   controller.abort(new Error('install interrupted'))
   await assert.rejects(pending, /install interrupted/)
   await assertProcessNotLive(descendantPid)
+})
+
+test('process liveness treats an already-reaped child as missing', async () => {
+  const error = Object.assign(new Error('no such process'), { code: 'ESRCH' })
+  assert.equal(await readProcessState(42, async () => Promise.reject(error)), 'missing')
 })
 
 test('fresh build preserves canonical dist, uses only temporary output, and validates index', async () => {
