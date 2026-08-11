@@ -90,6 +90,30 @@ describe('read-only make adapters', () => {
     expect(lines).toEqual([])
   })
 
+  test('keeps an already matching bootstrap offer observed without logging a replacement', async () => {
+    const lines: string[] = []
+    const service = new ReadOnlyBootstrapMakeService(
+      line => {
+        lines.push(line)
+      },
+      async () => 'unchanged'
+    )
+
+    expect(
+      await service.reconcile({
+        marketId,
+        desiredOffer: {
+          marketId,
+          assets: 50n,
+          rateBps: 450n,
+          referenceObservationId: 'block:100'
+        },
+        reason: 'rest'
+      })
+    ).toBe('unchanged')
+    expect(lines).toEqual([])
+  })
+
   test('reads active ladder roots but logs every requested mutation', async () => {
     const lines: string[] = []
     const reads: Hex[] = []

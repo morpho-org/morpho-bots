@@ -90,6 +90,7 @@ export interface BootstrapMakeService {
     reason:
       | 'publish'
       | 'replace'
+      | 'rest'
       | 'target-reached'
       | 'no-capacity'
       | 'auto-refill-disabled'
@@ -637,20 +638,6 @@ export class PositionBootstrapService {
         )
         continue
       }
-      if (decision.kind === 'rest') {
-        results.push(
-          await this.withVerboseDetails(
-            {
-              marketId: config.marketId,
-              status: 'observed' as const,
-              action: 'rest' as const
-            },
-            verbose,
-            plan.verbose
-          )
-        )
-        continue
-      }
       if (decision.kind === 'invalidate') {
         let reconciliation: BootstrapMakeResult
         try {
@@ -752,7 +739,7 @@ export class PositionBootstrapService {
           : ({
               marketId: config.marketId,
               status: reconciliation === 'logged' ? ('logged' as const) : ('applied' as const),
-              action: decision.kind
+              action: decision.kind === 'rest' ? ('replace' as const) : decision.kind
             } satisfies BootstrapRunOutcome)
       results.push(
         await this.withVerboseDetails(outcome, verbose, plan.verbose, false, reconciliation)

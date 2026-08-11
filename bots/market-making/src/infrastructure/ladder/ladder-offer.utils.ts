@@ -1,16 +1,14 @@
 import type { IMarket, TreeInput } from '@morpho-org/midnight-sdk'
 import type { Address, Hex } from 'viem'
 
-import { Group, Offer, TickLib, Tree } from '@morpho-org/midnight-sdk'
+import { Group, Offer, Tree } from '@morpho-org/midnight-sdk'
 
 import type { LadderQuoteSet, LadderRung } from '../../domain/ladder/ladder'
 import type { LadderGroupReference } from './ladder-group-ownership.utils'
 
 import { offerMaxAssetsByRung } from '../../domain/ladder/ladder'
+import { annualRateBpsToTick } from '../make/midnight-tick.utils'
 import { LadderAdapterError } from './ladder-adapter.error'
-
-const WAD = 10n ** 18n
-const YEAR_SECONDS = 31_536_000n
 
 type BuildLadderTreeParameters = {
   quote: LadderQuoteSet
@@ -30,8 +28,11 @@ type PreparedLadderTree = {
 const rateToTick = (rateBps: bigint, market: IMarket, now: bigint) => {
   const timeToMaturity = BigInt(market.params.maturity) - now
   if (timeToMaturity <= 0n) throw new LadderAdapterError('market-matured')
-  const periodRateWad = (rateBps * (WAD / 10_000n) * timeToMaturity) / YEAR_SECONDS
-  return TickLib.priceToTick(TickLib.rateToPrice(periodRateWad), BigInt(market.tickSpacing))
+  return annualRateBpsToTick({
+    rateBps,
+    timeToMaturity,
+    tickSpacing: BigInt(market.tickSpacing)
+  })
 }
 
 const sideOffers = (

@@ -21,6 +21,7 @@ type BootstrapBookOffer = {
   buy: boolean
   tick: bigint
   continuousFeeCap?: bigint
+  strategy?: 'ladder'
 }
 
 /** Protocol transport for confirmed Midnight publication and group invalidation. */
@@ -31,8 +32,11 @@ interface BootstrapOfferTransport {
   listOwnedGroupIds?(): Promise<readonly Hex[]>
   /** Lists the maker's complete current book. @returns Every active offer needed for spread safety. */
   listBookOffers(): Promise<readonly BootstrapBookOffer[]>
-  /** Projects a domain offer into its exact protocol tick. @param offer - Desired offer. @returns Prospective book offer. */
-  toProspectiveBookOffer(offer: BootstrapOffer): Promise<BootstrapBookOffer>
+  /** Projects a domain offer into its exact protocol tick. @param offer - Desired offer. @param book - Fresh complete maker book with owned ladder evidence. @returns Prospective book offer. */
+  toProspectiveBookOffer(
+    offer: BootstrapOffer,
+    book: readonly BootstrapBookOffer[]
+  ): Promise<BootstrapBookOffer>
   /** Prepares one policy-checked publication without broadcasting it. @param offer - Desired offer. @returns Reserved group ID and a one-shot confirmed ratifier/publisher. */
   preparePublication(offer: BootstrapOffer): Promise<{
     groupId: Hex
@@ -82,6 +86,7 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
     reason:
       | 'publish'
       | 'replace'
+      | 'rest'
       | 'target-reached'
       | 'no-capacity'
       | 'auto-refill-disabled'
@@ -101,11 +106,15 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
         | undefined
       let retainedGroup: BootstrapActiveGroup | undefined
       if (parameters.desiredOffer) {
-        const prospective = await this.transport.toProspectiveBookOffer(parameters.desiredOffer)
+        const book = await this.transport.listBookOffers()
+        const prospective = await this.transport.toProspectiveBookOffer(
+          parameters.desiredOffer,
+          book
+        )
         assertBootstrapProspectiveSpread({
           marketId: parameters.marketId,
           replacedGroupIds: spreadReplacedGroupIds,
-          book: await this.transport.listBookOffers(),
+          book,
           prospective
         })
         retainedGroup = groups.find(

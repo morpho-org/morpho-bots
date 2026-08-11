@@ -218,13 +218,18 @@ export const createApplication = (
     },
     async options => {
       const config = await loadConfig(options)
-      assertReferenceConfigured(config, config.bootstrap)
+      const bootstrapMarketIds = new Set(config.bootstrap.map(item => item.marketId))
+      const bootstrapDependencies = [
+        ...config.bootstrap,
+        ...config.ladder.filter(item => bootstrapMarketIds.has(item.marketId))
+      ]
+      assertReferenceConfigured(config, bootstrapDependencies)
       const state = dependencies.createState?.(config) ?? (await defaultState(config))
       await new SetupCheckService(
         state,
         config.setup,
         config.readOnly,
-        requiresVariableRateReference(config.bootstrap)
+        requiresVariableRateReference(bootstrapDependencies)
       ).assertReady()
       const injectedAdapters = dependencies.createBootstrapAdapters?.(config)
       const writeReadOnlyEvent = parseEventWriter(options.writeEvent)

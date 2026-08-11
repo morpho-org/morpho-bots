@@ -332,7 +332,7 @@ describe('createApplication', () => {
     expect(events).toEqual(['readiness', 'bootstrap'])
   })
 
-  test('starts a hardcoded-only bootstrap workflow without Blue reference readiness', async () => {
+  test('gates a hardcoded bootstrap workflow on its same-market variable-rate ladder reference', async () => {
     const state = readyState()
     const checkReference = vi.fn(async () => {
       throw new Error('Blue archive unavailable')
@@ -341,8 +341,6 @@ describe('createApplication', () => {
     const application = createApplication(
       {
         ...environment,
-        REFERENCE_RPC_URL: undefined,
-        REFERENCE_MARKET_ID: undefined,
         BOOTSTRAP_MARKETS: JSON.stringify([
           {
             ...bootstrapConfiguration,
@@ -358,31 +356,14 @@ describe('createApplication', () => {
       },
       {
         createState: () => state,
-        createBootstrapAdapters: () => ({
-          positions: {
-            readPosition: async () => ({
-              credit: 100n,
-              debt: 0n,
-              cashBalance: 0n,
-              marketExposure: 100n,
-              totalExposure: 100n
-            })
-          },
-          rates: {
-            readRate: async () => ({ mode: 'static', rateBps: 400n, observationId: 'static:400' })
-          },
-          make: {
-            reconcile: async () => {},
-            hardHalt: async () => {},
-            cleanup: async () => {}
-          }
-        })
+        createBootstrapAdapters: () => {
+          throw new Error('bootstrap adapters must not start')
+        }
       }
     )
 
-    await expect(application.run(['bootstrap'])).resolves.toBeDefined()
-    expect(checkReference).not.toHaveBeenCalled()
-    await expect(application.run(['ladder'])).rejects.toBeInstanceOf(ConfigValidationError)
+    await expect(application.run(['bootstrap'])).rejects.toBeInstanceOf(SetupFailedError)
+    expect(checkReference).toHaveBeenCalledTimes(1)
   })
 
   test('keeps Blue reference readiness fail-closed for variable-rate bootstrap workflows', async () => {

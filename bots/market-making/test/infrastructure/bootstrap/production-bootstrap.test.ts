@@ -29,6 +29,7 @@ import {
 import { MidnightBootstrapMakeService } from '../../../src/infrastructure/bootstrap/bootstrap-make.service'
 import {
   bootstrapContinuousFeeCap,
+  configuredLadderSellTick,
   createBootstrapOffer,
   legacyBootstrapOfferTickUpperBound,
   recoverLegacyBootstrapOfferTick
@@ -37,9 +38,11 @@ import { prepareBootstrapRequirements } from '../../../src/infrastructure/bootst
 import { assertBootstrapTransaction } from '../../../src/infrastructure/bootstrap/bootstrap-transaction.utils'
 import {
   bootstrapMakeLendArguments,
+  configuredLadderSellTicks,
   createProductionBootstrapAdapters,
   publishBootstrapPublication
 } from '../../../src/infrastructure/bootstrap/production-bootstrap'
+import { annualRateBpsToTick } from '../../../src/infrastructure/make/midnight-tick.utils'
 import { ReadOnlyBootstrapMakeService } from '../../../src/infrastructure/make/read-only-bootstrap-make.service'
 
 const maker: Address = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
@@ -563,6 +566,206 @@ describe('createBootstrapOffer', () => {
     expect(first.start).toBe(1_000n)
     expect(second.start).toBe(1_001n)
     expect(first.group).not.toBe(second.group)
+  })
+
+  test('keeps one protocol tick between the bootstrap buy and configured ladder sell', () => {
+    const now = 1_786_016_400n
+    const market = {
+      params: { ...publicationMarket, maturity: 1_787_929_200n },
+      tickSpacing: 4,
+      continuousFee: 0
+    }
+    const offer = {
+      marketId,
+      assets: 100n,
+      rateBps: 366n,
+      referenceObservationId: 'hour:496115'
+    }
+    const ladderConfig = {
+      marketId,
+      quotePremiumBps: -50n,
+      spreadBps: 100n,
+      stepBps: 10n,
+      rungCount: 1,
+      sizeSkewBps: 0n,
+      lowerRateBudgetAssets: 1n,
+      higherRateBudgetAssets: 1n,
+      targetMarketExposureAssets: 1n,
+      maximumTotalExposureAssets: 1n,
+      minimumOfferAssets: 1n,
+      groupMode: 'shared-rung' as const,
+      loopIntervalSeconds: 60,
+      movementToleranceBps: 10n,
+      minimumRateBps: 0n,
+      maximumRateBps: 1_000n
+    }
+    const ladderSellTick = configuredLadderSellTick({
+      ladderConfig,
+      ladderReferenceRateBps: 461n,
+      market,
+      now
+    })
+    const unseparated = createBootstrapOffer({ offer, market, maker, ratifier, now })
+    const separated = createBootstrapOffer({
+      offer,
+      market,
+      maker,
+      ratifier,
+      now,
+      ladderSellTicks: ladderSellTick === undefined ? [] : [ladderSellTick]
+    })
+
+    expect(ladderSellTick).toBe(4_600n)
+    expect(unseparated.tick).toBe(4_600n)
+    expect(separated.tick).toBe(4_596n)
+  })
+
+  test('uses the ladder reference observation instead of deriving it from the bootstrap offer', () => {
+    const now = 1_786_016_400n
+    const market = {
+      params: { ...publicationMarket, maturity: 1_787_929_200n },
+      tickSpacing: 4,
+      continuousFee: 0
+    }
+    const ladderConfig = {
+      marketId,
+      quotePremiumBps: -50n,
+      spreadBps: 100n,
+      stepBps: 10n,
+      rungCount: 1,
+      sizeSkewBps: 0n,
+      lowerRateBudgetAssets: 1n,
+      higherRateBudgetAssets: 1n,
+      targetMarketExposureAssets: 1n,
+      maximumTotalExposureAssets: 1n,
+      minimumOfferAssets: 1n,
+      groupMode: 'shared-rung' as const,
+      loopIntervalSeconds: 60,
+      movementToleranceBps: 10n,
+      minimumRateBps: 0n,
+      maximumRateBps: 1_000n
+    }
+
+    const tick = configuredLadderSellTick({
+      ladderConfig,
+      ladderReferenceRateBps: 700n,
+      market,
+      now
+    })
+
+    expect(tick).toBe(
+      annualRateBpsToTick({
+        rateBps: 600n,
+        timeToMaturity: market.params.maturity - now,
+        tickSpacing: 4n
+      })
+    )
+  })
+
+  test('treats retained ladder centers as premium-adjusted when guarding bootstrap spread', () => {
+    const now = 1_786_016_400n
+    const market = {
+      params: { ...publicationMarket, maturity: 1_787_929_200n },
+      tickSpacing: 4
+    }
+    const ladderConfig = {
+      marketId,
+      quotePremiumBps: 50n,
+      spreadBps: 100n,
+      stepBps: 10n,
+      rungCount: 1,
+      sizeSkewBps: 0n,
+      lowerRateBudgetAssets: 1n,
+      higherRateBudgetAssets: 1n,
+      targetMarketExposureAssets: 1n,
+      maximumTotalExposureAssets: 1n,
+      minimumOfferAssets: 1n,
+      groupMode: 'shared-rung' as const,
+      loopIntervalSeconds: 60,
+      movementToleranceBps: 10n,
+      minimumRateBps: 0n,
+      maximumRateBps: 1_000n
+    }
+
+    expect(
+      configuredLadderSellTicks({
+        ladderConfig,
+        ladderReferenceRateBps: 700n,
+        retainedCenterRateBps: [700n],
+        market,
+        now
+      })
+    ).toEqual([
+      configuredLadderSellTick({ ladderConfig, ladderReferenceRateBps: 700n, market, now })!,
+      annualRateBpsToTick({
+        rateBps: 650n,
+        timeToMaturity: market.params.maturity - now,
+        tickSpacing: 4n
+      })
+    ])
+  })
+
+  test('omits configured ladder sells when the lower side cannot fund one offer', () => {
+    const now = 1_786_016_400n
+    const market = {
+      params: { ...publicationMarket, maturity: 1_787_929_200n },
+      tickSpacing: 4
+    }
+    const ladderConfig = {
+      marketId,
+      quotePremiumBps: 50n,
+      spreadBps: 100n,
+      stepBps: 10n,
+      rungCount: 1,
+      sizeSkewBps: 0n,
+      lowerRateBudgetAssets: 100n,
+      higherRateBudgetAssets: 100n,
+      targetMarketExposureAssets: 100n,
+      maximumTotalExposureAssets: 100n,
+      minimumOfferAssets: 10n,
+      groupMode: 'shared-rung' as const,
+      loopIntervalSeconds: 60,
+      movementToleranceBps: 10n,
+      minimumRateBps: 0n,
+      maximumRateBps: 1_000n
+    }
+
+    expect(
+      configuredLadderSellTicks({
+        ladderConfig,
+        ladderReferenceRateBps: 700n,
+        retainedCenterRateBps: [700n],
+        lowerRateCapacityAssets: 9n,
+        market,
+        now
+      })
+    ).toEqual([])
+  })
+
+  test('rejects a genuine bootstrap cross instead of concealing it', () => {
+    const market = {
+      params: publicationMarket,
+      tickSpacing: 4,
+      continuousFee: 0
+    }
+    const offer = {
+      marketId,
+      assets: 100n,
+      rateBps: 500n,
+      referenceObservationId: 'hour:1'
+    }
+    const unseparated = createBootstrapOffer({ offer, market, maker, ratifier, now: 1_000n })
+
+    expect(() =>
+      createBootstrapOffer({
+        offer,
+        market,
+        maker,
+        ratifier,
+        now: 1_000n,
+        ladderSellTicks: [unseparated.tick - 4n]
+      })
+    ).toThrow(expect.objectContaining({ operation: 'negative-spread' }))
   })
 })
 

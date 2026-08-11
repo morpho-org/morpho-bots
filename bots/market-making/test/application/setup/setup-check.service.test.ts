@@ -2,6 +2,7 @@ import type { Hex } from 'viem'
 
 import { describe, expect, test } from 'vitest'
 
+import { SafeProviderError } from '../../../src/application/setup/safe-provider.error'
 import {
   SetupCheckService,
   type SetupCheckConfig,
@@ -71,6 +72,15 @@ const readyState = (): SetupStateService => {
   }
 }
 
+const requestTimeout = () =>
+  new SafeProviderError({
+    kind: 'provider-error',
+    provider: 'router-api',
+    name: 'TimeoutError',
+    code: 'REQUEST_TIMEOUT',
+    context: 'request'
+  })
+
 describe('SetupCheckService', () => {
   test('halts monitoring after emitting the first failed readiness report', async () => {
     const controller = new AbortController()
@@ -97,6 +107,238 @@ describe('SetupCheckService', () => {
       expect(terminal.lastReport.ready).toBe(false)
       if (lastEmittedReport) expect(terminal.lastReport).toBe(lastEmittedReport.report)
     }
+  })
+
+  test('halts monitoring after three consecutive provider request timeouts', async () => {
+    const state = readyState()
+    state.getNativeBalance = async () => {
+      throw requestTimeout()
+    }
+    const reports: SetupCheckReport[] = []
+    const service = new SetupCheckService(state, config)
+
+    const terminal = await service.runContinuously({
+      signal: new AbortController().signal,
+      intervalMs: 1,
+      onCycle: report => {
+        reports.push(report)
+      }
+    })
+
+    expect(reports.map(report => report.ready)).toEqual([false, false, false])
+    expect(terminal).toMatchObject({ status: 'halted', reason: 'setup-failed', cycles: 3 })
+  })
+
+  test('retries timeout-only ratifier reports for three consecutive cycles', async () => {
+    const state = readyState()
+    state.getRatifier = async () => ({
+      type: 'setter',
+      listed: true,
+      deployed: true,
+      midnightMatches: true,
+      surfaceMatches: true,
+      authorized: true,
+      errors: [requestTimeout().failure]
+    })
+    const reports: SetupCheckReport[] = []
+    const service = new SetupCheckService(state, config)
+
+    const terminal = await service.runContinuously({
+      signal: new AbortController().signal,
+      intervalMs: 1,
+      onCycle: report => {
+        reports.push(report)
+      }
+    })
+
+    expect(reports).toHaveLength(3)
+    expect(terminal).toMatchObject({ status: 'halted', reason: 'setup-failed', cycles: 3 })
+  })
+
+  test('halts immediately when ratifier timeout evidence has no recognized type', async () => {
+    const state = readyState()
+    state.getRatifier = async () => ({
+      type: undefined,
+      errors: [requestTimeout().failure]
+    })
+    const reports: SetupCheckReport[] = []
+    const service = new SetupCheckService(state, config)
+
+    const terminal = await service.runContinuously({
+      signal: new AbortController().signal,
+      intervalMs: 1,
+      onCycle: report => {
+        reports.push(report)
+      }
+    })
+
+    expect(reports).toHaveLength(1)
+    expect(terminal).toMatchObject({ status: 'halted', reason: 'setup-failed', cycles: 1 })
+  })
+
+  test('halts immediately when ratifier timeout evidence has an unsafe authorization sibling', async () => {
+    const state = readyState()
+    state.getRatifier = async () => ({
+      listed: true,
+      deployed: true,
+      midnightMatches: true,
+      surfaceMatches: true,
+      authorized: false,
+      errors: [requestTimeout().failure]
+    })
+    const reports: SetupCheckReport[] = []
+    const service = new SetupCheckService(state, config)
+
+    const terminal = await service.runContinuously({
+      signal: new AbortController().signal,
+      intervalMs: 1,
+      onCycle: report => {
+        reports.push(report)
+      }
+    })
+
+    expect(reports).toHaveLength(1)
+    expect(terminal).toMatchObject({ status: 'halted', reason: 'setup-failed', cycles: 1 })
+  })
+
+  test('halts immediately when a lossy aggregate chain check reports a request timeout', async () => {
+    const state = readyState()
+    state.getChainId = async () => {
+      throw requestTimeout()
+    }
+    state.getCode = async () => undefined
+    const reports: SetupCheckReport[] = []
+    const service = new SetupCheckService(state, config)
+
+    const terminal = await service.runContinuously({
+      signal: new AbortController().signal,
+      intervalMs: 1,
+      onCycle: report => {
+        reports.push(report)
+      }
+    })
+
+    expect(reports).toHaveLength(1)
+    expect(terminal).toMatchObject({ status: 'halted', reason: 'setup-failed', cycles: 1 })
+  })
+
+  test('halts immediately when a lossy aggregate books check reports a request timeout', async () => {
+    const state = readyState()
+    state.getLatestTimestamp = async () => {
+      throw requestTimeout()
+    }
+    state.getBook = async id => ({
+      id,
+      allowlisted: false,
+      active: true,
+      loanAsset,
+      tickSpacing: 1,
+      maturity: 2_000n
+    })
+    const reports: SetupCheckReport[] = []
+    const service = new SetupCheckService(state, config)
+
+    const terminal = await service.runContinuously({
+      signal: new AbortController().signal,
+      intervalMs: 1,
+      onCycle: report => {
+        reports.push(report)
+      }
+    })
+
+    expect(reports).toHaveLength(1)
+    expect(terminal).toMatchObject({ status: 'halted', reason: 'setup-failed', cycles: 1 })
+  })
+
+  test('retries timeout-only offer reports for three consecutive cycles', async () => {
+    const state = readyState()
+    state.inspectOffers = async () => ({
+      unknownNamespaces: [],
+      unknownMarketIds: [],
+      invertedMarketIds: [],
+      errors: [requestTimeout().failure]
+    })
+    const reports: SetupCheckReport[] = []
+    const service = new SetupCheckService(state, config)
+
+    const terminal = await service.runContinuously({
+      signal: new AbortController().signal,
+      intervalMs: 1,
+      onCycle: report => {
+        reports.push(report)
+      }
+    })
+
+    expect(reports).toHaveLength(3)
+    expect(terminal).toMatchObject({ status: 'halted', reason: 'setup-failed', cycles: 3 })
+  })
+
+  test('halts immediately when offer timeout evidence has an unsafe crossed-market sibling', async () => {
+    const state = readyState()
+    state.inspectOffers = async () => ({
+      unknownNamespaces: [],
+      unknownMarketIds: [],
+      invertedMarketIds: [marketId],
+      errors: [requestTimeout().failure]
+    })
+    const reports: SetupCheckReport[] = []
+    const service = new SetupCheckService(state, config)
+
+    const terminal = await service.runContinuously({
+      signal: new AbortController().signal,
+      intervalMs: 1,
+      onCycle: report => {
+        reports.push(report)
+      }
+    })
+
+    expect(reports).toHaveLength(1)
+    expect(terminal).toMatchObject({ status: 'halted', reason: 'setup-failed', cycles: 1 })
+  })
+
+  test('halts immediately when the lossy aggregate reference check reports a request timeout', async () => {
+    const state = readyState()
+    state.checkReference = async () => {
+      throw requestTimeout()
+    }
+    const reports: SetupCheckReport[] = []
+    const service = new SetupCheckService(state, config)
+
+    const terminal = await service.runContinuously({
+      signal: new AbortController().signal,
+      intervalMs: 1,
+      onCycle: report => {
+        reports.push(report)
+      }
+    })
+
+    expect(reports).toHaveLength(1)
+    expect(terminal).toMatchObject({ status: 'halted', reason: 'setup-failed', cycles: 1 })
+  })
+
+  test('resets consecutive provider timeout failures after a ready report', async () => {
+    const timeoutReads = new Set([1, 2, 4, 5, 6])
+    const state = readyState()
+    const readyNativeBalance = state.getNativeBalance.bind(state)
+    let nativeBalanceReads = 0
+    state.getNativeBalance = async (...parameters) => {
+      nativeBalanceReads += 1
+      if (timeoutReads.has(nativeBalanceReads)) throw requestTimeout()
+      return readyNativeBalance(...parameters)
+    }
+    const reports: SetupCheckReport[] = []
+    const service = new SetupCheckService(state, config)
+
+    const terminal = await service.runContinuously({
+      signal: new AbortController().signal,
+      intervalMs: 1,
+      onCycle: report => {
+        reports.push(report)
+      }
+    })
+
+    expect(reports.map(report => report.ready)).toEqual([false, false, true, false, false, false])
+    expect(terminal).toMatchObject({ status: 'halted', reason: 'setup-failed', cycles: 6 })
   })
 
   test('rejects an invalid setup-monitor interval before any readiness read', async () => {

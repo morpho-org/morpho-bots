@@ -6,6 +6,7 @@ import type {
   MarketMakingLadderMonitor,
   MarketMakingSetupMonitor
 } from '../../../src/application/market-making/market-making.service'
+import type { SetupCheckReport } from '../../../src/application/setup/setup-check.service'
 
 import { MarketMakingService } from '../../../src/application/market-making/market-making.service'
 
@@ -57,6 +58,93 @@ const waitingLadderMonitor = (drained: string[]): MarketMakingLadderMonitor => (
 })
 
 describe('MarketMakingService', () => {
+  test('keeps writers running while setup retries a request timeout', async () => {
+    const timeoutReport: SetupCheckReport = {
+      ready: false,
+      checks: [
+        {
+          name: 'native-balance',
+          status: 'failed',
+          observed: {
+            error: {
+              kind: 'provider-error',
+              provider: 'rpc',
+              name: 'TimeoutError',
+              code: 'REQUEST_TIMEOUT',
+              context: 'read'
+            }
+          },
+          required: { authorized: true }
+        }
+      ]
+    }
+    let abortedAfterRetryableReport = true
+    const setup: MarketMakingSetupMonitor = {
+      runContinuously: async ({ signal, onCycle }) => {
+        await onCycle?.(timeoutReport)
+        abortedAfterRetryableReport = signal.aborted
+        return { status: 'halted', reason: 'setup-failed', cycles: 3, lastReport: timeoutReport }
+      }
+    }
+
+    await new MarketMakingService(
+      setup,
+      waitingBootstrapMonitor([]),
+      waitingLadderMonitor([])
+    ).runContinuously({ signal: new AbortController().signal })
+
+    expect(abortedAfterRetryableReport).toBe(false)
+  })
+
+  test('aborts writers before delivering the third consecutive setup timeout', async () => {
+    const timeoutReport: SetupCheckReport = {
+      ready: false,
+      checks: [
+        {
+          name: 'native-balance',
+          status: 'failed',
+          observed: {
+            error: {
+              kind: 'provider-error',
+              provider: 'rpc',
+              name: 'TimeoutError',
+              code: 'REQUEST_TIMEOUT',
+              context: 'read'
+            }
+          },
+          required: { authorized: true }
+        }
+      ]
+    }
+    let deliveredCycles = 0
+    let abortedDuringTerminalDelivery = false
+    let setupSignal: AbortSignal | undefined
+    const setup: MarketMakingSetupMonitor = {
+      runContinuously: async ({ signal, onCycle }) => {
+        setupSignal = signal
+        for (let cycle = 0; cycle < 3; cycle += 1) {
+          await onCycle?.(timeoutReport)
+        }
+        return { status: 'halted', reason: 'setup-failed', cycles: 3, lastReport: timeoutReport }
+      }
+    }
+
+    await new MarketMakingService(
+      setup,
+      waitingBootstrapMonitor([]),
+      waitingLadderMonitor([])
+    ).runContinuously({
+      signal: new AbortController().signal,
+      onEvent: event => {
+        if (event.event !== 'market-making.cycle' || event.workflow !== 'setup-check') return
+        deliveredCycles += 1
+        if (deliveredCycles === 3) abortedDuringTerminalDelivery = setupSignal?.aborted === true
+      }
+    })
+
+    expect(abortedDuringTerminalDelivery).toBe(true)
+  })
+
   test('aborts peer workflows and waits for writer cleanup after one workflow halts', async () => {
     const failedReport = { ready: false, checks: [] }
     const setup: MarketMakingSetupMonitor = {

@@ -37,8 +37,7 @@ runs:
     - name: Install dependencies
       if: ${{ inputs.install == 'true' }}
       shell: bash
-      run: |
-        pnpm install ${{ inputs.frozen-lockfile == 'true' && '--frozen-lockfile' || '' }}
+      run: pnpm install ${{ inputs.frozen-lockfile == 'true' && '--frozen-lockfile' || '' }}
 
     - name: Build @repo/contracts
       if: ${{ inputs.build-contracts == 'true' }}

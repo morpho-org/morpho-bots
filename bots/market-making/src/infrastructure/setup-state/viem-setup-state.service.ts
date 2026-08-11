@@ -8,13 +8,14 @@ import { getChainAddress } from '@morpho-org/morpho-ts'
 import { erc20Abi, isAddress, isAddressEqual, keccak256, zeroAddress, zeroHash } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
+import type { SafeProviderFailure } from '../../application/setup/safe-provider.error'
 import type { BookSetup, SetupStateService } from '../../application/setup/setup-check.service'
 import type { JsonRequest } from './http-json.utils'
 
 import { BASE_CHAIN_ID } from '../../config/config.utils'
 import { booksJsonRequestFetch } from './http-json.utils'
 import { ProviderPaginationError } from './provider-pagination.error'
-import { executeProviderRead } from './provider-read.utils'
+import { captureRequestTimeout, executeProviderRead } from './provider-read.utils'
 import { ProviderResponseError } from './provider-response.error'
 import {
   addressValue,
@@ -213,23 +214,29 @@ export class ViemSetupStateService implements SetupStateService {
    */
   async getRatifier(maker: Address, ratifier: Address) {
     const [routerContracts, code, authorized] = await Promise.all([
-      executeProviderRead('router-api', 'ratifier-registry', () =>
-        this.request(
-          `${this.options.routerApiBaseUrl}/v0/config/contracts?chains=${BASE_CHAIN_ID}&limit=100`,
-          'router-api'
+      captureRequestTimeout(() =>
+        executeProviderRead('router-api', 'ratifier-registry', () =>
+          this.request(
+            `${this.options.routerApiBaseUrl}/v0/config/contracts?chains=${BASE_CHAIN_ID}&limit=100`,
+            'router-api'
+          )
         )
       ),
-      executeProviderRead('rpc', 'ratifier-code', () => this.chain.getCode({ address: ratifier })),
-      executeProviderRead('rpc', 'ratifier-authorization', () =>
-        this.chain.readContract({
-          address: this.options.midnight,
-          abi: midnightAbi,
-          functionName: 'isAuthorized',
-          args: [maker, ratifier]
-        })
+      captureRequestTimeout(() =>
+        executeProviderRead('rpc', 'ratifier-code', () => this.chain.getCode({ address: ratifier }))
+      ),
+      captureRequestTimeout(() =>
+        executeProviderRead('rpc', 'ratifier-authorization', () =>
+          this.chain.readContract({
+            address: this.options.midnight,
+            abi: midnightAbi,
+            functionName: 'isAuthorized',
+            args: [maker, ratifier]
+          })
+        )
       )
     ])
-    if (typeof authorized !== 'boolean') {
+    if (authorized.ok && typeof authorized.value !== 'boolean') {
       throw new ProviderResponseError(
         'rpc',
         'ratifier-authorization',
@@ -241,68 +248,84 @@ export class ViemSetupStateService implements SetupStateService {
       : isAddressEqual(ratifier, getChainAddress(BASE_CHAIN_ID, 'ecrecoverRatifier'))
         ? ('ecrecover' as const)
         : undefined
-    const registered = routerRatifiers(routerContracts).find(
-      item => item.type === type && isAddressEqual(ratifier, item.address)
-    )
-    const deployed = code !== undefined && code !== '0x'
+    const listed = routerContracts.ok
+      ? routerRatifiers(routerContracts.value).some(
+          item => item.type === type && isAddressEqual(ratifier, item.address)
+        )
+      : undefined
+    const deployed = code.ok ? code.value !== undefined && code.value !== '0x' : undefined
     const expectedRuntimeHash =
       type === 'setter'
         ? BASE_SETTER_RATIFIER_RUNTIME_HASH
         : type === 'ecrecover'
           ? BASE_ECRECOVER_RATIFIER_RUNTIME_HASH
           : undefined
-    const surfaceMatches =
-      deployed && expectedRuntimeHash !== undefined && keccak256(code) === expectedRuntimeHash
-    if (!surfaceMatches || type === undefined) {
-      return {
-        type,
-        listed: registered !== undefined,
-        deployed,
-        midnightMatches: false,
-        surfaceMatches: false,
-        authorized
-      }
+    const surfaceMatches = code.ok
+      ? deployed === true &&
+        expectedRuntimeHash !== undefined &&
+        keccak256(code.value as Hex) === expectedRuntimeHash
+      : undefined
+    const errors = [routerContracts, code, authorized].flatMap(result =>
+      result.ok ? [] : [result.error]
+    )
+    const partial = {
+      type,
+      listed,
+      deployed,
+      midnightMatches: undefined as boolean | undefined,
+      surfaceMatches,
+      authorized: authorized.ok ? (authorized.value as boolean) : undefined
     }
+    if (errors.length > 0) return { ...partial, errors }
+    if (!surfaceMatches || type === undefined) {
+      return { ...partial, midnightMatches: false, surfaceMatches: false }
+    }
+
     const abi = type === 'setter' ? setterRatifierAbi : ecrecoverRatifierAbi
     const rootFunction = type === 'setter' ? 'isRootRatified' : 'isRootCanceled'
     const [ratifierMidnight, rootState] = await Promise.all([
-      executeProviderRead('rpc', 'ratifier-midnight', () =>
-        this.chain.readContract({
-          address: ratifier,
-          abi,
-          functionName: 'MIDNIGHT'
-        })
+      captureRequestTimeout(() =>
+        executeProviderRead('rpc', 'ratifier-midnight', () =>
+          this.chain.readContract({ address: ratifier, abi, functionName: 'MIDNIGHT' })
+        )
       ),
-      executeProviderRead('rpc', 'ratifier-root', () =>
-        this.chain.readContract({
-          address: ratifier,
-          abi,
-          functionName: rootFunction,
-          args: [maker, zeroHash]
-        })
+      captureRequestTimeout(() =>
+        executeProviderRead('rpc', 'ratifier-root', () =>
+          this.chain.readContract({
+            address: ratifier,
+            abi,
+            functionName: rootFunction,
+            args: [maker, zeroHash]
+          })
+        )
       )
     ])
-    if (typeof ratifierMidnight !== 'string' || !isAddress(ratifierMidnight)) {
+    if (
+      ratifierMidnight.ok &&
+      (typeof ratifierMidnight.value !== 'string' || !isAddress(ratifierMidnight.value))
+    ) {
       throw new ProviderResponseError(
         'rpc',
         'ratifier-midnight',
         `${type === 'setter' ? 'SetterRatifier' : 'EcrecoverRatifier'} MIDNIGHT response must be an address`
       )
     }
-    if (typeof rootState !== 'boolean') {
+    if (rootState.ok && typeof rootState.value !== 'boolean') {
       throw new ProviderResponseError(
         'rpc',
         'ratifier-root',
         `${type === 'setter' ? 'SetterRatifier isRootRatified' : 'EcrecoverRatifier isRootCanceled'} response must be boolean`
       )
     }
+    const surfaceErrors = [ratifierMidnight, rootState].flatMap(result =>
+      result.ok ? [] : [result.error]
+    )
     return {
-      type,
-      listed: registered !== undefined,
-      deployed,
-      midnightMatches: isAddressEqual(ratifierMidnight, this.options.midnight),
-      surfaceMatches,
-      authorized
+      ...partial,
+      midnightMatches: ratifierMidnight.ok
+        ? isAddressEqual(ratifierMidnight.value as Address, this.options.midnight)
+        : undefined,
+      ...(surfaceErrors.length > 0 ? { errors: surfaceErrors } : {})
     }
   }
 
@@ -572,80 +595,87 @@ export class ViemSetupStateService implements SetupStateService {
     const deadline = now() + requestTimeoutMs
     let pageCount = 0
     let cursor: string | null = null
-    do {
-      if (pageCount >= MAX_OFFER_PAGES) {
-        throw new ProviderPaginationError(
-          'morpho-api',
-          'page-limit',
-          'Morpho API offer page limit exceeded'
-        )
-      }
-      const remainingMs = Math.floor(deadline - now())
-      if (remainingMs <= 0) throw morphoApiTimeout()
-      pageCount += 1
-      const query = new URLSearchParams({
-        chain_ids: String(BASE_CHAIN_ID),
-        limit: String(PAGE_SIZE)
-      })
-      if (cursor !== null) query.set('cursor', cursor)
-      const response = objectValue(
-        await executeProviderRead('morpho-api', 'offer-groups', () =>
-          this.request(
-            `${this.options.morphoApiBaseUrl}/v0/midnight/users/${encodeURIComponent(maker)}/offer-groups?${query.toString()}`,
+    let timeoutError: SafeProviderFailure | undefined
+    try {
+      do {
+        if (pageCount >= MAX_OFFER_PAGES) {
+          throw new ProviderPaginationError(
             'morpho-api',
-            Math.min(requestTimeoutMs, remainingMs)
+            'page-limit',
+            'Morpho API offer page limit exceeded'
           )
-        ),
-        'Morpho API response'
-      )
-      const groups = response.data
-      if (!Array.isArray(groups)) {
-        throw new ProviderResponseError(
-          'morpho-api',
-          'offer-groups',
-          'Morpho API data must be an array'
+        }
+        const remainingMs = Math.floor(deadline - now())
+        if (remainingMs <= 0) throw morphoApiTimeout()
+        pageCount += 1
+        const query = new URLSearchParams({
+          chain_ids: String(BASE_CHAIN_ID),
+          limit: String(PAGE_SIZE)
+        })
+        if (cursor !== null) query.set('cursor', cursor)
+        const response = objectValue(
+          await executeProviderRead('morpho-api', 'offer-groups', () =>
+            this.request(
+              `${this.options.morphoApiBaseUrl}/v0/midnight/users/${encodeURIComponent(maker)}/offer-groups?${query.toString()}`,
+              'morpho-api',
+              Math.min(requestTimeoutMs, remainingMs)
+            )
+          ),
+          'Morpho API response'
         )
-      }
-      if (groups.length > PAGE_SIZE) {
-        throw new ProviderPaginationError(
-          'morpho-api',
-          'page-size',
-          'Morpho API offer-group page size exceeded'
-        )
-      }
-      const pageOffers = offersFromGroups(groups)
-      if (offers.length + pageOffers.length > MAX_OFFER_ITEMS) {
-        throw new ProviderPaginationError(
-          'morpho-api',
-          'item-limit',
-          'Morpho API offer item limit exceeded'
-        )
-      }
-      offers.push(...pageOffers)
-      if (response.cursor !== null && typeof response.cursor !== 'string') {
-        throw new ProviderResponseError(
-          'morpho-api',
-          'cursor',
-          'Morpho API cursor must be a string or null'
-        )
-      }
-      if (typeof response.cursor === 'string' && response.cursor.trim().length === 0) {
-        throw new ProviderResponseError(
-          'morpho-api',
-          'cursor',
-          'Morpho API cursor must be a non-empty opaque string or null'
-        )
-      }
-      cursor = typeof response.cursor === 'string' ? response.cursor : null
-      if (cursor !== null && seenCursors.has(cursor)) {
-        throw new ProviderPaginationError(
-          'morpho-api',
-          'repeated-cursor',
-          'Morpho API cursor repeated'
-        )
-      }
-      if (cursor !== null) seenCursors.add(cursor)
-    } while (cursor !== null)
+        const groups = response.data
+        if (!Array.isArray(groups)) {
+          throw new ProviderResponseError(
+            'morpho-api',
+            'offer-groups',
+            'Morpho API data must be an array'
+          )
+        }
+        if (groups.length > PAGE_SIZE) {
+          throw new ProviderPaginationError(
+            'morpho-api',
+            'page-size',
+            'Morpho API offer-group page size exceeded'
+          )
+        }
+        const pageOffers = offersFromGroups(groups)
+        if (offers.length + pageOffers.length > MAX_OFFER_ITEMS) {
+          throw new ProviderPaginationError(
+            'morpho-api',
+            'item-limit',
+            'Morpho API offer item limit exceeded'
+          )
+        }
+        offers.push(...pageOffers)
+        if (response.cursor !== null && typeof response.cursor !== 'string') {
+          throw new ProviderResponseError(
+            'morpho-api',
+            'cursor',
+            'Morpho API cursor must be a string or null'
+          )
+        }
+        if (typeof response.cursor === 'string' && response.cursor.trim().length === 0) {
+          throw new ProviderResponseError(
+            'morpho-api',
+            'cursor',
+            'Morpho API cursor must be a non-empty opaque string or null'
+          )
+        }
+        cursor = typeof response.cursor === 'string' ? response.cursor : null
+        if (cursor !== null && seenCursors.has(cursor)) {
+          throw new ProviderPaginationError(
+            'morpho-api',
+            'repeated-cursor',
+            'Morpho API cursor repeated'
+          )
+        }
+        if (cursor !== null) seenCursors.add(cursor)
+      } while (cursor !== null)
+    } catch (error) {
+      const captured = await captureRequestTimeout(() => Promise.reject(error))
+      if (captured.ok) throw error
+      timeoutError = captured.error
+    }
 
     if (offers.some(offer => !isAddressEqual(offer.maker, maker))) {
       throw new ProviderResponseError(
@@ -668,7 +698,8 @@ export class ViemSetupStateService implements SetupStateService {
           offers.map(offer => offer.marketId).filter(marketId => !configuredMarkets.has(marketId))
         )
       ],
-      invertedMarketIds: invertedMarketIds(offers)
+      invertedMarketIds: invertedMarketIds(offers),
+      ...(timeoutError ? { errors: [timeoutError] } : {})
     }
   }
 

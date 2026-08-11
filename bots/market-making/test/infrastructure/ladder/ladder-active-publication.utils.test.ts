@@ -6,6 +6,7 @@ import type { BootstrapRawGroup } from '../../../src/infrastructure/bootstrap/bo
 import type { OwnedLadderPublication } from '../../../src/infrastructure/ladder/ladder-group-ownership.utils'
 
 import {
+  activeLadderCenterRateBps,
   activeOwnedLadderGroupIds,
   pendingLadderQuoteSets,
   reconstructOwnedLadderPublication
@@ -58,6 +59,16 @@ describe('ladder active publication indexing', () => {
     })
     expect(activeOwnedLadderGroupIds([publication], groups, marketId)).toEqual([lowerGroupId])
     expect(pendingLadderQuoteSets([publication], groups)).toEqual([])
+  })
+
+  test('excludes fully consumed publication centers from retained spread projection', () => {
+    const consumedGroups = [
+      indexedGroup(lowerGroupId, 100n, 100n),
+      indexedGroup(higherGroupId, 80n, 80n)
+    ]
+
+    expect(activeLadderCenterRateBps([publication], consumedGroups, marketId)).toEqual([])
+    expect(activeLadderCenterRateBps([publication], [], marketId)).toEqual([500n])
   })
 
   test('projects only API-missing ladder groups into pending spread offers', () => {

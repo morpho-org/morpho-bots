@@ -5,7 +5,13 @@ import type { Result } from '../types/index'
 
 import { ensureError } from './errors'
 
-// Main wrapper function
+/**
+ * Executes a synchronous callback or settles an asynchronous thenable without throwing to the caller.
+ * @param fn - Synchronous callback or Promise-compatible value to evaluate.
+ * @returns A result containing either the produced data or the normalized `Error` rejection.
+ * @remarks Thenables are assimilated with `Promise.resolve`, so Promise subclasses such as execa
+ * subprocesses retain their asynchronous semantics instead of being mistaken for callables.
+ */
 export function tryCatch<T, E extends Error = Error>(fn: () => T): Result<T, E>
 export function tryCatch<T, E extends Error = Error>(fn: Promise<T>): Promise<Result<T, E>>
 export function tryCatch<T, E extends Error = Error>(fn: Promise<T> | (() => T)) {

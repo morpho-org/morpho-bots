@@ -9,6 +9,10 @@ import type { LadderTransactionSubmittedEvent } from '../ladder/ladder-verbose'
 import type { SetupCheckMonitorReport, SetupCheckReport } from '../setup/setup-check.service'
 
 import { operatorErrorName } from '../operator-error-name.utils'
+import {
+  CONSECUTIVE_REQUEST_TIMEOUT_LIMIT,
+  hasOnlyRequestTimeoutFailures
+} from '../setup/setup-check-retry.utils'
 
 /** Readiness monitor required by the combined market-making lifecycle. */
 export interface MarketMakingSetupMonitor {
@@ -134,6 +138,7 @@ export class MarketMakingService {
       controller.abort()
     }
     const operationQueue = createOperationQueue()
+    let consecutiveSetupRequestTimeouts = 0
     const runOperation: MonitorOperationQueue = operation =>
       operationQueue(async () => {
         try {
@@ -152,7 +157,16 @@ export class MarketMakingService {
         this.setup.runContinuously({
           signal: controller.signal,
           onCycle: async report => {
-            if (!report.ready) stopFromWorkflow()
+            if (report.ready) {
+              consecutiveSetupRequestTimeouts = 0
+            } else if (hasOnlyRequestTimeoutFailures(report)) {
+              consecutiveSetupRequestTimeouts += 1
+              if (consecutiveSetupRequestTimeouts >= CONSECUTIVE_REQUEST_TIMEOUT_LIMIT) {
+                stopFromWorkflow()
+              }
+            } else {
+              stopFromWorkflow()
+            }
             await parameters.onEvent?.({
               event: 'market-making.cycle',
               workflow: 'setup-check',

@@ -267,7 +267,7 @@ cross-cutting, use `bots`, `packages`, or `repo` as appropriate.
 
 Examples:
 
-- `chore(agents): port CLAUDE.md, editor configs, and .mcp.json for bun-first bots repo`
+- `chore(agents): align CLAUDE.md, editor configs, and .mcp.json for the bots repo`
 - `feat(tooling): ship @repo/typescript-config`
 - `ci(checks): port setup action, checks.yml, husky pre-commit and commit-msg hooks`
 

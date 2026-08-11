@@ -2,7 +2,13 @@ import type { Address, Hex } from 'viem'
 
 import { waitForMonitorInterval } from '@repo/monitoring'
 
+import type { SafeProviderFailure } from './safe-provider.error'
+
 import { operatorErrorName } from '../operator-error-name.utils'
+import {
+  CONSECUTIVE_REQUEST_TIMEOUT_LIMIT,
+  hasOnlyRequestTimeoutFailures
+} from './setup-check-retry.utils'
 import {
   booksCheck,
   capture,
@@ -80,7 +86,7 @@ export type SetupCheckMonitorReport =
       cycleErrorName: string
     }
   | {
-      /** Monitoring halted because the latest complete readiness report failed. */
+      /** Monitoring halted because readiness failed immediately or exhausted timeout retries. */
       status: 'halted'
       /** Stable readiness-failure terminal reason. */
       reason: 'setup-failed'
@@ -164,11 +170,12 @@ export interface SetupStateService {
     ratifier: Address
   ): Promise<{
     type?: 'ecrecover' | 'setter'
-    listed: boolean
-    deployed: boolean
-    midnightMatches: boolean
-    surfaceMatches: boolean
-    authorized: boolean
+    listed?: boolean
+    deployed?: boolean
+    midnightMatches?: boolean
+    surfaceMatches?: boolean
+    authorized?: boolean
+    errors?: readonly SafeProviderFailure[]
   }>
   /** Cross-checks one Midnight market. @param id - Midnight market identifier. @returns Cross-checked API and on-chain market facts. */
   getBook(id: Hex): Promise<BookSetup>
@@ -186,6 +193,7 @@ export interface SetupStateService {
     unknownNamespaces: readonly string[]
     unknownMarketIds: readonly Hex[]
     invertedMarketIds: readonly Hex[]
+    errors?: readonly SafeProviderFailure[]
   }>
   /** Reports the intentionally excluded V0 health surface. @returns The explicit V0 not-required result; performs no writes. */
   checkPositionHealth(): Promise<{ status: 'not-required'; reason: string }>
@@ -224,8 +232,9 @@ export class SetupCheckService {
    * @param parameters - Shutdown signal, optional report writer, and testable positive interval.
    * @returns A terminal report containing the number of emitted setup observations.
    * @throws `SetupMonitorConfigurationError` when the requested interval is not a positive safe integer.
-   * @remarks Cycles never overlap. Failed readiness is emitted once and halts monitoring so the CLI
-   * exits nonzero; no remediation, signing, transaction submission, or cleanup write is performed.
+   * @remarks Cycles never overlap. Unsafe state failures halt immediately; provider request timeouts
+   * must occur in three consecutive reports before monitoring halts. A successful report resets that
+   * counter. This service performs no remediation, signing, transaction submission, or cleanup write.
    */
   async runContinuously(parameters: {
     signal: AbortSignal
@@ -239,14 +248,23 @@ export class SetupCheckService {
 
     let cycles = 0
     let cycleErrorName: string | undefined
+    let consecutiveRequestTimeouts = 0
 
     while (!parameters.signal.aborted) {
       try {
         const report = await this.check()
         await parameters.onCycle?.(report)
         cycles += 1
-        if (!report.ready) {
+
+        if (report.ready) {
+          consecutiveRequestTimeouts = 0
+        } else if (!hasOnlyRequestTimeoutFailures(report)) {
           return { status: 'halted', reason: 'setup-failed', cycles, lastReport: report }
+        } else {
+          consecutiveRequestTimeouts += 1
+          if (consecutiveRequestTimeouts >= CONSECUTIVE_REQUEST_TIMEOUT_LIMIT) {
+            return { status: 'halted', reason: 'setup-failed', cycles, lastReport: report }
+          }
         }
       } catch (error) {
         cycleErrorName = operatorErrorName(error)
@@ -367,11 +385,12 @@ export class SetupCheckService {
       ? providerFailure('ratifier', ratifier.error, ratifierRequired)
       : setupResult(
           'ratifier',
-          ratifier.value.listed &&
-            ratifier.value.deployed &&
-            ratifier.value.midnightMatches &&
-            ratifier.value.surfaceMatches &&
-            ratifier.value.authorized,
+          ratifier.value.listed === true &&
+            ratifier.value.deployed === true &&
+            ratifier.value.midnightMatches === true &&
+            ratifier.value.surfaceMatches === true &&
+            ratifier.value.authorized === true &&
+            (ratifier.value.errors?.length ?? 0) === 0,
           ratifier.value,
           ratifierRequired,
           ratifier.value.listed &&
@@ -412,7 +431,8 @@ export class SetupCheckService {
           'offers',
           offers.value.unknownNamespaces.length === 0 &&
             offers.value.unknownMarketIds.length === 0 &&
-            offers.value.invertedMarketIds.length === 0,
+            offers.value.invertedMarketIds.length === 0 &&
+            (offers.value.errors?.length ?? 0) === 0,
           offers.value,
           offersRequired
         )

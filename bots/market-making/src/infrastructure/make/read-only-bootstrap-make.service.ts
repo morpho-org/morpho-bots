@@ -7,15 +7,16 @@ export class ReadOnlyBootstrapMakeService implements BootstrapMakeService {
   /**
    * Creates a bootstrap dry-run adapter.
    * @param write - JSON Lines terminal writer; defaults to standard output.
-   * @param validate - Optional fresh whole-book validation performed before a reconcile is logged.
+   * @param validate - Optional fresh whole-book validation that can identify an unchanged reconcile.
    * @remarks Construction performs no signing, provider calls, or offer mutations. Each later make
-   * request is validated and emitted as one independently parseable JSON record.
+   * request is validated; mutations are emitted as independently parseable JSON records while
+   * already-matching resting offers remain observed.
    */
   constructor(
     private readonly write: (line: string) => void | Promise<void> = console.log,
     private readonly validate: (
       parameters: Parameters<BootstrapMakeService['reconcile']>[0]
-    ) => Promise<void> = async () => {}
+    ) => Promise<'unchanged' | void> = async () => {}
   ) {}
 
   /**
@@ -28,7 +29,8 @@ export class ReadOnlyBootstrapMakeService implements BootstrapMakeService {
    * signing, publication, replacement, or invalidation occurs.
    */
   async reconcile(parameters: Parameters<BootstrapMakeService['reconcile']>[0]) {
-    await this.validate(parameters)
+    const validation = await this.validate(parameters)
+    if (validation === 'unchanged') return validation
     await this.write(formatReadOnlyMakeEvent('bootstrap', 'reconcile', parameters))
     return 'logged' as const
   }

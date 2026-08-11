@@ -489,6 +489,34 @@ describe('PositionBootstrapService', () => {
     expect(result).toEqual([{ marketId, status: 'observed', action: 'rest' }])
   })
 
+  test('reconciles a resting domain offer against its current protocol tick', async () => {
+    const activeOffer = {
+      marketId,
+      assets: 500n,
+      rateBps: 450n,
+      referenceObservationId: 'static:500'
+    }
+    const { service, positions, make } = setup()
+    positions.readPosition = vi.fn(async () => ({
+      credit: 0n,
+      debt: 0n,
+      cashBalance: 2_000n,
+      marketExposure: 0n,
+      totalExposure: 0n,
+      activeOffer
+    }))
+    const reconcile = vi.fn(async () => 'unchanged' as const)
+    make.reconcile = reconcile
+
+    expect(await service.runOnce()).toEqual([{ marketId, status: 'observed', action: 'rest' }])
+    expect(reconcile).toHaveBeenCalledWith({
+      marketId,
+      desiredOffer: activeOffer,
+      reason: 'rest',
+      onTransactionSubmitted: undefined
+    })
+  })
+
   test('keeps an applied result when only its verbose after-state read fails', async () => {
     const { service, positions } = setup()
     let read = 0

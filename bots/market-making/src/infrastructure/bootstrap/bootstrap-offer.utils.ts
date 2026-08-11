@@ -1,13 +1,13 @@
 import type { Address, Hex } from 'viem'
 
-import { MAX_TICK, Offer, TickLib, type IMarketParams } from '@morpho-org/midnight-sdk'
+import { MAX_TICK, Offer, type IMarketParams } from '@morpho-org/midnight-sdk'
 
 import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
+import type { LadderConfig } from '../../domain/ladder/ladder'
 
+import { annualRateBpsToTick, separateBootstrapBuyTick } from '../make/midnight-tick.utils'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 
-const WAD = 10n ** 18n
-const YEAR_SECONDS = 31_536_000n
 const REFERENCE_OBSERVATION_SECONDS = 3_600n
 const REFERENCE_STALENESS_SECONDS = 300n
 
@@ -22,9 +22,39 @@ const bootstrapOfferTick = (
   market: Pick<BootstrapOfferMarket, 'params' | 'tickSpacing'>,
   now: bigint
 ) => {
-  const periodRateWad =
-    (rateBps * (WAD / 10_000n) * (BigInt(market.params.maturity) - now)) / YEAR_SECONDS
-  return TickLib.priceToTick(TickLib.rateToPrice(periodRateWad), BigInt(market.tickSpacing))
+  return annualRateBpsToTick({
+    rateBps,
+    timeToMaturity: BigInt(market.params.maturity) - now,
+    tickSpacing: BigInt(market.tickSpacing)
+  })
+}
+
+/**
+ * Projects the nearest configured ladder sell from the ladder's own reference observation.
+ * @param parameters - Ladder policy and reference rate, live market, and the block timestamp used
+ * for the tick projection.
+ * @returns The aligned nearest lower-rate ladder sell tick, or `undefined` when that rung would be
+ * outside the ladder's hard rate range.
+ * @remarks Bootstrap and ladder may intentionally use different target-rate strategies, so the
+ * ladder observation must be supplied explicitly rather than inferred from the bootstrap offer.
+ */
+export const configuredLadderSellTick = (parameters: {
+  ladderConfig: LadderConfig
+  ladderReferenceRateBps: bigint
+  market: Pick<BootstrapOfferMarket, 'params' | 'tickSpacing'>
+  now: bigint
+}) => {
+  const nearestSellRateBps =
+    parameters.ladderReferenceRateBps +
+    parameters.ladderConfig.quotePremiumBps -
+    parameters.ladderConfig.spreadBps / 2n
+  if (
+    nearestSellRateBps < parameters.ladderConfig.minimumRateBps ||
+    nearestSellRateBps > parameters.ladderConfig.maximumRateBps
+  ) {
+    return undefined
+  }
+  return bootstrapOfferTick(nearestSellRateBps, parameters.market, parameters.now)
 }
 
 /**
@@ -48,11 +78,14 @@ export const bootstrapContinuousFeeCap = (market: { continuousFee: unknown }) =>
 
 /**
  * Recreates the exact protocol offer for a persisted or prospective bootstrap intent.
- * @param parameters - Offer intent, fresh market state, maker policy, and current block time.
+ * @param parameters - Offer intent, fresh market state, maker policy, current block time, and
+ * relevant ladder sell ticks.
  * @returns A Midnight buy offer with the live maturity-adjusted tick and fee cap.
- * @throws `BootstrapAdapterError` when a required live market fee is malformed; SDK validation failures propagate.
+ * @throws `BootstrapAdapterError` when a required live market fee is malformed or the bootstrap
+ * intent genuinely crosses a ladder sell; SDK validation failures propagate.
  * @remarks The fresh block timestamp prevents a later publication from reusing a consumed
- * content-addressed group while preserving the market maturity as the offer expiry.
+ * content-addressed group while preserving the market maturity as the offer expiry. When BPS rates
+ * align to the same protocol tick, the bootstrap buy moves one tick lower to retain strict spread.
  */
 export const createBootstrapOffer = (parameters: {
   offer: BootstrapOffer
@@ -60,13 +93,22 @@ export const createBootstrapOffer = (parameters: {
   maker: Address
   ratifier: Address
   now: bigint
+  ladderSellTicks?: readonly bigint[]
 }) => {
+  const tickSpacing = BigInt(parameters.market.tickSpacing)
+  const tick = separateBootstrapBuyTick({
+    buyTick: bootstrapOfferTick(parameters.offer.rateBps, parameters.market, parameters.now),
+    ladderSellTicks: parameters.ladderSellTicks ?? [],
+    tickSpacing
+  })
+  if (tick === undefined) throw new BootstrapAdapterError('negative-spread')
+
   return Offer.create({
     market: parameters.market.params,
     buy: true,
     maker: parameters.maker,
     start: parameters.now,
-    tick: bootstrapOfferTick(parameters.offer.rateBps, parameters.market, parameters.now),
+    tick,
     expiry: parameters.market.params.maturity,
     ratifier: parameters.ratifier,
     maxAssets: parameters.offer.assets,

@@ -7,7 +7,7 @@ ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 # Runtime configuration may include a funded maker key, so the process must not run as root.
 # Corepack writes its pnpm shim to /usr/local/bin; enable it before dropping privileges.
 RUN corepack enable pnpm
-RUN mkdir -p /repo && chown node:node /repo
+RUN mkdir -p /repo /state && chown node:node /repo /state
 WORKDIR /repo
 USER node
 

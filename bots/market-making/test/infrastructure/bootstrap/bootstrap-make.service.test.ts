@@ -52,13 +52,18 @@ describe('MidnightBootstrapMakeService', () => {
 
   test('reloads the whole book immediately before publishing a safe offer', async () => {
     const events: string[] = []
+    const book = [{ marketId, buy: false, tick: 101n, strategy: 'ladder' as const }]
     const service = new MidnightBootstrapMakeService({
       listActiveGroups: async () => [],
       listBookOffers: async () => {
         events.push('book')
-        return [{ marketId, buy: false, tick: 101n }]
+        return book
       },
-      toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
+      toProspectiveBookOffer: async (_offer, currentBook) => {
+        events.push('project')
+        expect(currentBook).toBe(book)
+        return { marketId, buy: true, tick: 100n }
+      },
       preparePublication: async () => ({
         groupId: publishedGroupId,
         publish: async () => {
@@ -73,7 +78,7 @@ describe('MidnightBootstrapMakeService', () => {
 
     await service.reconcile({ marketId, desiredOffer, reason: 'publish' })
 
-    expect(events).toEqual(['book', 'publish'])
+    expect(events).toEqual(['book', 'project', 'publish'])
   })
 
   test('returns confirmed cancellation and publication hashes in submission order', async () => {

@@ -879,16 +879,18 @@ describe('ViemSetupStateService', () => {
       }
     )
 
-    const error = await state.inspectOffers(maker).catch(value => value)
+    const report = await state.inspectOffers(maker)
 
-    expect(error).toMatchObject({
-      failure: {
-        kind: 'provider-error',
-        provider: 'morpho-api',
-        name: 'TimeoutError',
-        code: 'REQUEST_TIMEOUT',
-        context: 'request'
-      }
+    expect(report).toMatchObject({
+      errors: [
+        {
+          kind: 'provider-error',
+          provider: 'morpho-api',
+          name: 'TimeoutError',
+          code: 'REQUEST_TIMEOUT',
+          context: 'request'
+        }
+      ]
     })
     expect(page).toBe(3)
     expect(requestBudgets).toEqual([10, 6, 2])
@@ -910,7 +912,9 @@ describe('ViemSetupStateService', () => {
       }
     )
 
-    await expect(state.inspectOffers(maker)).rejects.toThrow('TimeoutError')
+    await expect(state.inspectOffers(maker)).resolves.toMatchObject({
+      errors: [{ name: 'TimeoutError', code: 'REQUEST_TIMEOUT' }]
+    })
     expect(page).toBe(1)
     expect(requestBudgets).toEqual([10])
   })

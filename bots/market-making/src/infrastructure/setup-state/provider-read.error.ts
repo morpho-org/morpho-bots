@@ -25,7 +25,7 @@ export type ProviderOperation =
 
 /** Signals a sanitized failure at a public read-only provider boundary. */
 export class ProviderReadError extends Error {
-  readonly code = 'PROVIDER_READ_FAILED' as const
+  readonly code: 'PROVIDER_READ_FAILED' | 'REQUEST_TIMEOUT'
   readonly failure: Record<string, unknown>
   readonly provider: ProviderId
   readonly operation: ProviderOperation
@@ -34,18 +34,24 @@ export class ProviderReadError extends Error {
    * Creates a deterministic provider-read failure from allowlisted identifiers only.
    * @param provider - Fixed provider identifier; never a URL, host, or transport message.
    * @param operation - Stable code for the attempted read; never request or response content.
+   * @param code - Generic read failure or sanitized request-timeout classification.
    * @remarks The rejected value is deliberately discarded, including its message, stack, and cause.
    */
-  constructor(provider: ProviderId, operation: ProviderOperation) {
+  constructor(
+    provider: ProviderId,
+    operation: ProviderOperation,
+    code: 'PROVIDER_READ_FAILED' | 'REQUEST_TIMEOUT' = 'PROVIDER_READ_FAILED'
+  ) {
     super('Provider read failed')
     this.name = 'ProviderReadError'
+    this.code = code
     this.provider = provider
     this.operation = operation
     this.failure = {
       kind: 'provider-error',
       provider,
-      name: 'ProviderError',
-      code: this.code,
+      name: code === 'REQUEST_TIMEOUT' ? 'TimeoutError' : 'ProviderError',
+      code,
       context: 'read'
     }
   }

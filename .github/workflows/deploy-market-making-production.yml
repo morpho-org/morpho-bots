@@ -33,8 +33,15 @@ jobs:
         with:
           build-contracts: 'false'
 
-      - name: Install Railway CLI
-        run: npm install -g @railway/cli@5.30.4
+      - name: Configure Railway CLI
+        run: |
+          mkdir -p "$RUNNER_TEMP/railway-bin"
+          cat > "$RUNNER_TEMP/railway-bin/railway" <<'EOF'
+          #!/usr/bin/env sh
+          exec pnpm --silent dlx @railway/cli@5.30.4 "$@"
+          EOF
+          chmod +x "$RUNNER_TEMP/railway-bin/railway"
+          echo "$RUNNER_TEMP/railway-bin" >> "$GITHUB_PATH"
 
       - name: Deploy
         env:

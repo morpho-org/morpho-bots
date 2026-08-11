@@ -63,6 +63,7 @@ describe('StrategyBootstrapReferenceRateService', () => {
   })
 
   test('changes a hardcoded observation when its hourly refresh bucket advances', async () => {
+    vi.useFakeTimers()
     const service = new StrategyBootstrapReferenceRateService(
       new Map([[marketId, { strategy: 'hardcoded', hardcodedRateBps: 400n }]]),
       { readRate: async () => ({ mode: 'variable', rateBps: 500n, observationId: 'hour:1' }) }

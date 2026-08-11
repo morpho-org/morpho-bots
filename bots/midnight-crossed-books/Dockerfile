@@ -7,7 +7,7 @@ FROM node:24.14.1-slim
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
 # The container's environment holds a funded EOA key, so nothing here may run as root — the previous
-# oven/bun base ended with `USER bun`, and the node images define `node` (uid 1000) but do not switch
+# the previous image base ended with an unprivileged user, and the node images define `node` (uid 1000) but do not switch
 # to it. Corepack's pnpm shim lands in /usr/local/bin, which only root may write, so enable it before
 # dropping privileges; every layer after `USER node` is unprivileged.
 RUN corepack enable pnpm

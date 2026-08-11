@@ -54,6 +54,26 @@ export const reconstructOwnedLadderPublication = (
 }
 
 /**
+ * Selects retained centers only from ladder publications that still reconstruct as active.
+ * @param publications - Durable ladder publication intents.
+ * @param groups - Current maker groups returned by the eventually consistent API.
+ * @param marketId - Strategy market whose retained centers are required.
+ * @returns Center rates for active or not-yet-indexed publications in persistence order.
+ */
+export const activeLadderCenterRateBps = (
+  publications: readonly OwnedLadderPublication[],
+  groups: readonly BootstrapRawGroup[],
+  marketId: Hex
+) =>
+  publications
+    .filter(publication => publication.marketId === marketId)
+    .flatMap(publication =>
+      reconstructOwnedLadderPublication(publication, groups)
+        ? [publication.quote.centerRateBps]
+        : []
+    )
+
+/**
  * Selects owned ladder groups that remain live or have not appeared in the API yet.
  * @param publications - Durable reserved and confirmed ladder publication intents.
  * @param groups - Current maker groups returned by the Morpho API.
