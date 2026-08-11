@@ -3,6 +3,7 @@
 # packages resolve. Node only: pnpm installs, esbuild bundles, node runs.
 FROM node:24.14.1-slim
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+ENV HUSKY=0
 
 # Runtime configuration may include a funded maker key, so the process must not run as root.
 # Corepack writes its pnpm shim to /usr/local/bin; enable it before dropping privileges.
