@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
 import { base } from 'viem/chains'
+import { describe, expect, it } from 'vitest'
 
 import type { ChainConfig, Config, QuotingConfig } from '../src/config'
 

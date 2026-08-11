@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from 'bun:test'
+import { describe, expect, test, vi } from 'vitest'
 
 import type {
   ListedMarketsService,
@@ -39,27 +39,27 @@ function setup(
     maxMatches?: number
   } = {}
 ) {
-  const listListedActiveMarkets = mock(async () => overrides.markets ?? [MARKET])
-  const getTakeableBook = mock(async () => {
+  const listListedActiveMarkets = vi.fn(async () => overrides.markets ?? [MARKET])
+  const getTakeableBook = vi.fn(async () => {
     if (overrides.booksError) throw overrides.booksError
     return { asks: [MATCH.ask], bids: [MATCH.bid] }
   })
-  const match = mock(() => overrides.matches ?? [MATCH, SECOND_MATCH])
-  const simulate = mock(
+  const match = vi.fn(() => overrides.matches ?? [MATCH, SECOND_MATCH])
+  const simulate = vi.fn(
     async (): Promise<SimulationResult> =>
       overrides.simulation ?? {
         status: 'ok',
         prepared: { marketId: MARKET_ID, data: '0x1234', profit: 1n }
       }
   )
-  const submit = mock(async () => undefined)
+  const submit = vi.fn(async () => undefined)
   const markets: ListedMarketsService = { listListedActiveMarkets }
   const books: OrderBookService = { getTakeableBook }
   const matching: MatchingServicePort = { match }
   const resolver: ResolverService = { simulate, submit }
   const logger = {
-    info: mock(() => undefined),
-    warn: mock(() => undefined)
+    info: vi.fn(() => undefined),
+    warn: vi.fn(() => undefined)
   }
   const service = new CrossedBooksBotService(
     markets,
@@ -164,7 +164,7 @@ describe('CrossedBooksBotService', () => {
   test('isolates a book failure and continues to the next market', async () => {
     let calls = 0
     const { service, books, submit } = setup({ markets: [MARKET, OTHER_MARKET] })
-    books.getTakeableBook = mock(async marketId => {
+    books.getTakeableBook = vi.fn(async marketId => {
       calls += 1
       if (marketId === MARKET_ID) throw new Error('router unavailable')
       return {

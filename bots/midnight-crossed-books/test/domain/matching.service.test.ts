@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 
 import { MatchingService } from '../../src/domain/matching.service'
 import { MARKET_ID, OTHER_MARKET_ID, makeOffer } from '../fixtures/offers'

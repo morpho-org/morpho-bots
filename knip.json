@@ -2,9 +2,11 @@
   "$schema": "https://unpkg.com/knip@5/schema.json",
   "exclude": ["enumMembers", "classMembers"],
   "ignore": [".claude/**"],
-  "ignoreBinaries": ["forge", "railway"],
+  "ignoreBinaries": ["forge", "mkfifo", "railway"],
   "workspaces": {
-    ".": {},
+    ".": {
+      "ignoreDependencies": ["tsx"]
+    },
     "packages/typescript-config": {},
     "packages/utils": {},
     "packages/contracts": {},
@@ -15,15 +17,17 @@
     "packages/offers": {},
     "packages/swaps": {},
     "bots/midnight-liquidation": {
-      "ignore": ["src/generated/**"]
+      "ignore": ["src/generated/**"],
+      "entry": ["src/index.ts", "scripts/seed-liquidatable-positions.ts"]
     },
-    "bots/blue-liquidation": {},
+    "bots/blue-liquidation": {
+      "entry": ["src/index.ts", "scripts/probe-live-lens.ts"]
+    },
     "bots/midnight-crossed-books": {
       "ignore": ["src/infrastructure/*/generated/**"]
     },
     "bots/market-making": {
-      "entry": ["playground/app.tsx"],
-      "ignore": ["scripts/playground-smoke-support.mjs"],
+      "entry": ["src/index.ts", "playground/app.tsx"],
       "ignoreDependencies": ["@repo/bot-kit"]
     }
   }

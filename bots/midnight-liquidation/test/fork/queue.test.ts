@@ -1,7 +1,7 @@
 import { createLogger, createPendingQueue, createSigner, initialFees } from '@repo/bot-kit'
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
 import { parseGwei } from 'viem'
 import { base } from 'viem/chains'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import {
   type ForkHandle,
@@ -24,7 +24,7 @@ describe('fork: pending-queue bump + replacement against a real node', () => {
   let rpcUrl: string
 
   beforeAll(async () => {
-    const fork = await startFork(8546) // distinct port from the liquidation suite
+    const fork = await startFork(8548) // see the port registry in harness.ts
     anvil = fork.anvil
     rpcUrl = fork.rpcUrl
     test = testClient(rpcUrl)

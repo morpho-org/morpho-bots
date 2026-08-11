@@ -4,23 +4,25 @@
   "private": true,
   "license": "Apache-2.0",
   "bin": {
-    "mm": "./src/index.ts"
+    "mm": "./dist/src/index.js"
   },
   "type": "module",
   "scripts": {
-    "deploy:railway": "bun run scripts/deploy-railway.ts",
-    "start": "bun src/index.ts",
+    "build": "tsx scripts/build.ts",
+    "deploy:railway": "tsx scripts/deploy-railway.ts",
+    "jsdoc:build": "pnpm run jsdoc:check && typedoc --options typedoc.json",
+    "jsdoc:check": "tsx scripts/check-jsdoc.ts",
+    "prestart": "pnpm --filter \"{.}...\" --if-present run build",
     "playground:build": "node scripts/playground-build.mjs",
-    "playground:build:dev": "bun build playground/index.html --outdir playground/dist --target browser --watch",
     "playground:serve": "node scripts/playground-serve.mjs",
     "playground:serve:test": "node --test scripts/playground-atomic-publish.test.mjs scripts/playground-build.test.mjs scripts/playground-process.test.mjs scripts/playground-serve.test.mjs",
     "playground:smoke": "node scripts/playground-smoke.mjs",
-    "playground:smoke:test": "node --test scripts/playground-smoke.browser.mjs",
     "playground:smoke:output-probe": "node scripts/playground-smoke-output-probe.mjs",
-    "test:e2e": "bun test test/e2e",
-    "typecheck": "tsc --noEmit",
-    "jsdoc:check": "bun scripts/check-jsdoc.ts",
-    "jsdoc:build": "pnpm run jsdoc:check && typedoc --options typedoc.json"
+    "playground:smoke:test": "node --test scripts/playground-smoke.browser.mjs",
+    "playground:test": "node --test scripts/playground-atomic-publish.test.mjs scripts/playground-build.test.mjs scripts/playground-process.test.mjs scripts/playground-serve.test.mjs scripts/playground-smoke-suite.test.mjs scripts/playground-smoke.test.mjs",
+    "start": "node --env-file-if-exists=.env dist/src/index.js",
+    "test:e2e": "vitest run test/e2e",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@aws-sdk/client-kms": "3.1101.0",
@@ -46,10 +48,15 @@
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
-    "@types/bun": "catalog:",
+    "@types/node": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
+    "esbuild": "catalog:",
+    "execa": "catalog:",
+    "tsx": "catalog:",
     "typedoc": "0.28.20",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:"
   }
 }

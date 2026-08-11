@@ -1,10 +1,10 @@
 import type { Address } from 'viem'
 
 import { Offer, SetterRatifierUtils, Tree, setterRatifierAbi } from '@morpho-org/midnight-sdk'
-import { describe, expect, test } from 'bun:test'
 import { createWalletClient, custom, decodeFunctionData, zeroAddress } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
+import { describe, expect, test } from 'vitest'
 
 import {
   configuredRatifierType,

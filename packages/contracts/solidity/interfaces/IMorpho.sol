@@ -12,7 +12,7 @@
 // Structs are file-level so the generated ABI carries internalType "struct Market" (not
 // "struct IMorpho.Market"). All fields are static, so the auto-generated public-mapping getters
 // (`market`, `position`) — which return flat tuples on-chain — ABI-decode byte-identically to these
-// memory-struct returns. Regenerate the ABI with `bun run --filter @repo/contracts build`.
+// memory-struct returns. Regenerate the ABI with `pnpm --filter @repo/contracts run build`.
 pragma solidity >=0.5.0;
 
 /// @dev Immutable market definition. `id = keccak256(abi.encode(marketParams))`; field ORDER is

@@ -1,6 +1,6 @@
 import type { Hex } from 'viem'
 
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 
 import type { LadderQuoteSet } from '../../../src/domain/ladder/ladder'
 
@@ -69,8 +69,8 @@ describe('read-only make adapters', () => {
       throw writeError
     })
 
-    expect(service.hardHalt({ reason: 'bootstrap-decision-failed' })).rejects.toBe(writeError)
-    expect(service.cleanup()).rejects.toBe(writeError)
+    await expect(service.hardHalt({ reason: 'bootstrap-decision-failed' })).rejects.toBe(writeError)
+    await expect(service.cleanup()).rejects.toBe(writeError)
   })
 
   test('validates a read-only bootstrap reconcile before logging it', async () => {
@@ -154,8 +154,8 @@ describe('read-only make adapters', () => {
       }
     )
 
-    expect(service.hardHalt({ reason: 'ladder-decision-failed' })).rejects.toBe(writeError)
-    expect(service.cleanup()).rejects.toBe(writeError)
+    await expect(service.hardHalt({ reason: 'ladder-decision-failed' })).rejects.toBe(writeError)
+    await expect(service.cleanup()).rejects.toBe(writeError)
   })
 
   test('validates a read-only ladder reconcile before logging it', async () => {

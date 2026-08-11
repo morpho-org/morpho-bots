@@ -30,6 +30,10 @@ import {
 } from './playground-serve-support.mjs'
 import { prepareFreshDist, startStaticServer } from './playground-smoke-support.mjs'
 
+test.beforeEach(t => {
+  if (process.platform !== 'linux') t.skip('requires Linux process and socket semantics')
+})
+
 const root = fileURLToPath(new URL('..', import.meta.url))
 const launcher = fileURLToPath(new URL('./playground-serve.mjs', import.meta.url))
 const temporaryDirectories = []
@@ -68,13 +72,17 @@ const waitFor = async operation => {
   throw lastError
 }
 
-const assertProcessNotLive = async pid => {
-  let state = 'missing'
+const readProcessState = async (pid, readProcessStat = readFile) => {
   try {
-    state = (await readFile(`/proc/${pid}/stat`, 'utf8')).split(' ')[2]
+    return (await readProcessStat(`/proc/${pid}/stat`, 'utf8')).split(' ')[2]
   } catch (error) {
-    if (error.code !== 'ENOENT') throw error
+    if (error.code === 'ENOENT' || error.code === 'ESRCH') return 'missing'
+    throw error
   }
+}
+
+const assertProcessNotLive = async pid => {
+  const state = await readProcessState(pid)
   assert.ok(state === 'missing' || state === 'Z', `process ${pid} remains live in state ${state}`)
 }
 
@@ -93,8 +101,8 @@ const rawHttpRequest = (server, method, path = '/malformed%') =>
     })
   })
 
-const writeBlockingBun = async root => {
-  const executable = join(root, 'blocking-bun')
+const writeBlockingPnpm = async root => {
+  const executable = join(root, 'blocking-pnpm')
   await writeFile(
     executable,
     `#!/bin/sh\ntrap '' TERM\nsh -c 'trap "" TERM; echo $$ > "$PID_FILE"; while :; do sleep 1; done' &\nwait\n`,
@@ -132,7 +140,7 @@ test('a frozen install runs unconditionally and resolves partial workspace depen
   await writeResolvableDependencies(packageRoot, ['viem'])
   await mkdir(bin)
   await writeFile(
-    join(bin, 'bun'),
+    join(bin, 'pnpm'),
     `#!/usr/bin/env node\nconst { mkdirSync, writeFileSync } = require('node:fs')\nconst { join } = require('node:path')\nwriteFileSync(process.env.INSTALL_LOG, JSON.stringify(process.argv.slice(2)))\nfor (const name of ['viem', '@repo/bot-kit']) { const root = join(process.env.PACKAGE_ROOT, 'node_modules', name); mkdirSync(root, { recursive: true }); writeFileSync(join(root, 'package.json'), JSON.stringify({ name, main: 'index.js' })); writeFileSync(join(root, 'index.js'), '') }\n`,
     { mode: 0o755 }
   )
@@ -140,7 +148,7 @@ test('a frozen install runs unconditionally and resolves partial workspace depen
   await ensureFrozenDependencies({
     repoRoot,
     packageRoot,
-    executable: join(bin, 'bun'),
+    executable: join(bin, 'pnpm'),
     env: { ...process.env, INSTALL_LOG: log, PACKAGE_ROOT: packageRoot }
   })
 
@@ -162,8 +170,8 @@ test('installed package dependencies still run the fast frozen lockfile check', 
     }
   })
   assert.deepEqual(
-    calls.map(call => call.args),
-    [['install', '--frozen-lockfile']]
+    calls.map(call => [call.executable, call.args]),
+    [['pnpm', ['install', '--frozen-lockfile']]]
   )
 })
 
@@ -182,7 +190,7 @@ for (const [platform, originalMode] of [
     const repoRoot = await temporaryDirectory(`playground-clean-install-${platform}-`)
     const packageRoot = join(repoRoot, 'bots/market-making')
     const entrypoint = join(packageRoot, 'src/index.ts')
-    const executable = join(repoRoot, 'fake-bun')
+    const executable = join(repoRoot, 'fake-pnpm')
     const source = 'console.log("package bin content must stay unchanged")\n'
     await writeResolvableDependencies(packageRoot)
     await mkdir(join(packageRoot, 'src'), { recursive: true })
@@ -348,12 +356,12 @@ test('workspace bin discovery skips escaping and symlink targets', async () => {
 test('frozen install failures report the exact command and exit code', async () => {
   const repoRoot = await temporaryDirectory('playground-install-failure-')
   const packageRoot = join(repoRoot, 'bots/market-making')
-  const executable = join(repoRoot, 'bun-failure')
+  const executable = join(repoRoot, 'pnpm-failure')
   await writeResolvableDependencies(packageRoot, [])
   await writeFile(executable, '#!/usr/bin/env node\nprocess.exit(23)\n', { mode: 0o755 })
 
   await assert.rejects(ensureFrozenDependencies({ repoRoot, packageRoot, executable }), error => {
-    assert.match(error.message, /bun-failure install --frozen-lockfile failed with exit code 23/)
+    assert.match(error.message, /pnpm-failure install --frozen-lockfile failed with exit code 23/)
     return true
   })
 })
@@ -361,7 +369,7 @@ test('frozen install failures report the exact command and exit code', async () 
 test('successful install clearly lists dependencies that remain unresolved', async () => {
   const repoRoot = await temporaryDirectory('playground-unresolved-')
   const packageRoot = join(repoRoot, 'bots/market-making')
-  const executable = join(repoRoot, 'bun-noop')
+  const executable = join(repoRoot, 'pnpm-noop')
   await writeResolvableDependencies(packageRoot, [])
   await writeFile(executable, '#!/usr/bin/env node\n', { mode: 0o755 })
 
@@ -399,7 +407,7 @@ test('signal during frozen install kills its descendant tree', { timeout: 10_000
   const packageRoot = join(repoRoot, 'bots/market-making')
   const pidFile = join(repoRoot, 'descendant.pid')
   await writeResolvableDependencies(packageRoot)
-  const executable = await writeBlockingBun(repoRoot)
+  const executable = await writeBlockingPnpm(repoRoot)
   const controller = new AbortController()
   const pending = ensureFrozenDependencies({
     repoRoot,
@@ -413,6 +421,11 @@ test('signal during frozen install kills its descendant tree', { timeout: 10_000
   controller.abort(new Error('install interrupted'))
   await assert.rejects(pending, /install interrupted/)
   await assertProcessNotLive(descendantPid)
+})
+
+test('process liveness treats an already-reaped child as missing', async () => {
+  const error = Object.assign(new Error('no such process'), { code: 'ESRCH' })
+  assert.equal(await readProcessState(42, async () => Promise.reject(error)), 'missing')
 })
 
 test('fresh build preserves canonical dist, uses only temporary output, and validates index', async () => {
@@ -455,7 +468,7 @@ test(
   async () => {
     const packageRoot = await temporaryDirectory('playground-build-signal-')
     const pidFile = join(packageRoot, 'descendant.pid')
-    const executable = await writeBlockingBun(packageRoot)
+    const executable = await writeBlockingPnpm(packageRoot)
     const controller = new AbortController()
     let reported = false
     const runner = createPortableProcessRunner({ terminationGraceMs: 25, forceKillGraceMs: 250 })

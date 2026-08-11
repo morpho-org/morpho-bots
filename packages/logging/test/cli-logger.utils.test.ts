@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 
 import { createCliLogger } from '../src/cli-logger.utils'
 
@@ -34,7 +34,7 @@ describe('createCliLogger', () => {
     logger.result({ status: 'published', assets: 7n })
 
     expect(out).toHaveLength(1)
-    expect(out[0]).not.toInclude('\n')
+    expect(out[0]).not.toContain('\n')
     expect(JSON.parse(out[0]!)).toEqual({ status: 'published', assets: '7' })
   })
 

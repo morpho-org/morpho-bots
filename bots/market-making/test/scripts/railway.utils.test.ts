@@ -1,6 +1,5 @@
-import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { describe, expect, test } from 'vitest'
 
 import {
   assertFreshRailwayReferenceProvisioning,
@@ -103,14 +102,14 @@ describe('Railway CLI output parsing', () => {
   })
 
   test('checks fresh-service references before Railway can create the service', () => {
-    const deploy = readFileSync(resolve(import.meta.dir, '../../scripts/deploy-railway.ts'), 'utf8')
+    const deploy = readFileSync(new URL('../../scripts/deploy-railway.ts', import.meta.url), 'utf8')
 
     expect(
-      deploy.indexOf('assertFreshRailwayReferenceProvisioning(Bun.env, true)')
+      deploy.indexOf('assertFreshRailwayReferenceProvisioning(process.env, true)')
     ).toBeGreaterThan(-1)
-    expect(deploy.indexOf('assertFreshRailwayReferenceProvisioning(Bun.env, true)')).toBeLessThan(
-      deploy.indexOf('railway add --service')
-    )
+    expect(
+      deploy.indexOf('assertFreshRailwayReferenceProvisioning(process.env, true)')
+    ).toBeLessThan(deploy.indexOf('railway add --service'))
   })
 
   test('synchronizes every optional variable with explicit safe defaults', () => {
@@ -176,7 +175,7 @@ describe('Railway CLI output parsing', () => {
   })
 
   test('allows Compose deployments to omit inactive reference configuration', () => {
-    const compose = readFileSync(resolve(import.meta.dir, '../../docker-compose.yml'), 'utf8')
+    const compose = readFileSync(new URL('../../docker-compose.yml', import.meta.url), 'utf8')
 
     expect(compose).toContain('REFERENCE_RPC_URL: ${REFERENCE_RPC_URL:-}')
     expect(compose).toContain('REFERENCE_MARKET_ID: ${REFERENCE_MARKET_ID:-}')

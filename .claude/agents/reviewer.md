@@ -43,7 +43,7 @@ hunks.
 Apply each focus area to the diff:
 
 1. **Conventions compliance** — does the code follow `docs/CONVENTIONS.md`? Check type colocation,
-   naming, comment discipline, error handling via `tryCatch`, env-var access via `Bun.env.*`,
+   naming, comment discipline, error handling via `tryCatch`, env-var access via `process.env.*`,
    function organization, and code complexity.
 2. **TypeScript correctness** — strict flags are on (`noImplicitReturns`,
    `noUncheckedIndexedAccess`). Flag `any`, unsafe casts, missing return types on exported
@@ -57,9 +57,10 @@ Apply each focus area to the diff:
    `suggestion` if a close match could be adapted. If the new code is general-purpose and not
    tied to a specific bot's domain, suggest hoisting it into the appropriate shared package
    (`@repo/utils` for pure utilities, `@repo/abis` for ABI-adjacent helpers).
-5. **Testing quality** — new behavior has a `{module}.test.ts` under the workspace's `test/` tree mirroring `src/`. Tests use `bun test`.
-   Tests are non-vacuous (they actually fail if the implementation breaks). No mocking of
-   on-chain behavior where a viem test client / anvil would give real evidence.
+5. **Testing quality** — new TypeScript behavior has a `{module}.test.ts` under the workspace's
+   `test/` tree mirroring `src/` and uses Vitest. The playground's JavaScript harness uses Node
+   `*.test.mjs` suites. Tests are non-vacuous (they actually fail if the implementation breaks). No
+   mocking of on-chain behavior where a viem test client / anvil would give real evidence.
 6. **Agent infrastructure** — if the diff touches `CLAUDE.md`, `.claude/`, `.mcp.json`, editor
    configs, or agent definitions, mirror the change across any documented counterpart
    (`AGENTS.md`, `.cursorrules`) and flag inconsistencies.

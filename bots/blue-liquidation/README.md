@@ -19,7 +19,7 @@ position (none exist while the market is healthy), `RPC_URL_8453`, and
 
 ## Prerequisites
 
-- **pnpm** `11.1.1` (via corepack), **bun** `1.3.12`, **Node** `24.14.1` (`.nvmrc`).
+- **pnpm** `11.1.1` (via corepack) and **Node** `24.14.1` (`.nvmrc`).
 - A chain RPC that both reads and _relays_ transactions — **not** `rpc.morpho.dev/realtime`, which
   acknowledges sends but never broadcasts them.
 - A **funded EOA** (native gas) — the liquidator and the recipient of the end-of-exec token sweeps.
@@ -89,8 +89,9 @@ export ZEROX_API_KEY=…            # or ENABLE_LIFI=true, or ALLOW_DETECTION_ON
 pnpm --filter @morpho-org/blue-liquidation run start
 ```
 
-`prestart` builds the workspace packages (soltag-compiles `@repo/contracts` and materializes the ABI).
-Discovery hits the public Morpho GraphQL API — no indexer or database to run.
+`prestart` builds this bot and its workspace dependencies (soltag-compiles `@repo/contracts` and
+materializes the ABI, then esbuild-bundles `dist/`), so `start` runs a plain `node` against a
+freshly built bundle. Discovery hits the public Morpho GraphQL API — no indexer or database to run.
 
 ## Running With Docker Compose
 
@@ -255,7 +256,7 @@ the nonce from `getTransactionCount('pending')`.
 
 ## Testing
 
-- `bun test` — unit tests for the math, LIF, seize-exact planner (incl. the underflow-safety sweep),
+- `pnpm test` — unit tests for the math, LIF, seize-exact planner (incl. the underflow-safety sweep),
   the id derivation, GraphQL discovery (parsing, pagination, retry semantics), config (incl. venue
   inference and the zero-venue gate), eligibility, quoting, venues, the queue, and the exec encoder.
 - **Live read-path probe** — `pnpm --filter @morpho-org/blue-liquidation run probe:lens` (needs

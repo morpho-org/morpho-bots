@@ -27,7 +27,7 @@ pnpm run lint        # oxlint, repo-wide
 pnpm run lint:fix    # oxlint with --fix
 pnpm format          # oxfmt, repo-wide
 pnpm run knip        # dead-code detection
-bun test             # bun's built-in test runner
+pnpm test            # vitest projects plus Node playground suites
 ```
 
 ## Pointers

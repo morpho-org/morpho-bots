@@ -1,4 +1,6 @@
-import { relative, resolve } from 'node:path'
+import { readFile } from 'node:fs/promises'
+import { dirname, relative, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
 
 import { JSDocValidationError } from './js-doc-validation.error'
@@ -295,7 +297,7 @@ export const inspectJSDocSource = (file: string, source: string): JSDocInspectio
   return { declarations, failures }
 }
 
-const packageRoot = resolve(import.meta.dir, '..')
+const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 /**
  * Discovers the TypeScript files that define the documented market-making surface.
@@ -303,23 +305,21 @@ const packageRoot = resolve(import.meta.dir, '..')
  * @returns Relevant source and checker files in deterministic package-relative order.
  * @remarks The scan is read-only and excludes the executable entrypoint and test files.
  */
-export const discoverJSDocSourceFiles = async (root: string) => {
-  const glob = new Bun.Glob('{src,scripts}/**/*.ts')
-  const files: string[] = []
-  for await (const file of glob.scan({ cwd: root, absolute: true, onlyFiles: true })) {
-    const packagePath = relative(root, file)
-    if (packagePath === 'src/index.ts' || packagePath.endsWith('.test.ts')) continue
-    files.push(file)
-  }
-  return files.toSorted()
-}
+export const discoverJSDocSourceFiles = async (root: string) =>
+  ts.sys
+    .readDirectory(root, ['.ts'], ['node_modules'], ['src', 'scripts'])
+    .filter(file => {
+      const packagePath = relative(root, file)
+      return packagePath !== 'src/index.ts' && !packagePath.endsWith('.test.ts')
+    })
+    .toSorted()
 
 const run = async () => {
   const sourceFiles = await discoverJSDocSourceFiles(packageRoot)
   const failures: JSDocFailure[] = []
   const declarations: string[] = []
   for (const file of sourceFiles) {
-    const source = await Bun.file(file).text()
+    const source = await readFile(file, 'utf8')
     const inspection = inspectJSDocSource(relative(packageRoot, file), source)
     declarations.push(
       ...inspection.declarations.map(item => `${relative(packageRoot, file)} ${item}`)
@@ -340,4 +340,6 @@ const run = async () => {
   }
 }
 
-if (import.meta.main) await run()
+// bun's `import.meta.main`; under Node (and under an esbuild bundle, where it is unreliable) compare
+// the resolved entry path instead.
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await run()

@@ -1,17 +1,16 @@
 export const productionPlaygroundBuildArguments = outdir => [
   'build',
-  'playground/index.html',
-  '--outdir',
+  'playground',
+  '--outDir',
   outdir,
   '--target',
-  'browser',
-  '--production',
-  '--entry-naming',
-  '[name].[ext]',
-  '--asset-naming',
-  '[name].[ext]',
-  '--define',
-  'process.env.NODE_ENV="production"',
-  '--sourcemap=none',
-  '--env=disable'
+  'es2022',
+  '--minify',
+  'esbuild',
+  '--assetsDir',
+  '.',
+  '--base',
+  './',
+  '--sourcemap',
+  'false'
 ]

@@ -1,7 +1,7 @@
 import type { IMarket } from '@morpho-org/midnight-sdk'
 import type { Address, Hex } from 'viem'
 
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 
 import type { LadderQuoteSet } from '../../../src/domain/ladder/ladder'
 

@@ -98,9 +98,9 @@ async function main() {
   // no-key → bad-debt-only opt-in). Keys are read HERE, at the point of use, and live only in this
   // closure — never on the (logged) Config object.
   const apiKeys: Partial<Record<Venue, string>> = {}
-  if (Bun.env.ZEROX_API_KEY) apiKeys['0x'] = Bun.env.ZEROX_API_KEY
-  if (Bun.env.ONEINCH_API_KEY) apiKeys['1inch'] = Bun.env.ONEINCH_API_KEY
-  if (Bun.env.LIFI_API_KEY) apiKeys.lifi = Bun.env.LIFI_API_KEY
+  if (process.env.ZEROX_API_KEY) apiKeys['0x'] = process.env.ZEROX_API_KEY
+  if (process.env.ONEINCH_API_KEY) apiKeys['1inch'] = process.env.ONEINCH_API_KEY
+  if (process.env.LIFI_API_KEY) apiKeys.lifi = process.env.LIFI_API_KEY
   const venues = config.venues.enabled
   if (venues.length === 0) {
     logger.warn('quoting.no_routes', {
@@ -293,7 +293,7 @@ async function main() {
     logger
   })
   const heartbeatMonitor = createHeartbeatMonitor({
-    url: Bun.env.BETTERSTACK_HEARTBEAT_URL,
+    url: process.env.BETTERSTACK_HEARTBEAT_URL,
     logger
   })
   void heartbeatMonitor.start()

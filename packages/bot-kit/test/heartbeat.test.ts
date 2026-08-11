@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Logger, LogLevel } from '../src/logger'
 
@@ -20,7 +20,7 @@ function captureLogger() {
 }
 
 describe('createHeartbeatMonitor', () => {
-  afterEach(() => mock.restore())
+  afterEach(() => vi.restoreAllMocks())
 
   it('is inert when the URL is unset', async () => {
     const { logger } = captureLogger()
@@ -39,7 +39,7 @@ describe('createHeartbeatMonitor', () => {
 
   it('is inert without warning or scheduling when the URL contains only whitespace', async () => {
     const { logger, events } = captureLogger()
-    const setIntervalSpy = spyOn(globalThis, 'setInterval')
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval')
     let pings = 0
     const monitor = createHeartbeatMonitor({
       url: ' \t\r\n ',
@@ -62,7 +62,7 @@ describe('createHeartbeatMonitor', () => {
     const { logger } = captureLogger()
     const urls: string[] = []
     let callback: (() => void) | undefined
-    const setIntervalSpy = spyOn(globalThis, 'setInterval').mockImplementation(((
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval').mockImplementation(((
       ...args: Parameters<typeof setInterval>
     ) => {
       const [handler, delay] = args
@@ -119,9 +119,11 @@ describe('createHeartbeatMonitor', () => {
     ['http://example.test:8080/heartbeat', 'http://example.test:8080/heartbeat']
   ])('uses the exact trimmed HTTP(S) URL %s', async (url, expectedUrl) => {
     const { logger } = captureLogger()
-    const setIntervalSpy = spyOn(globalThis, 'setInterval').mockImplementation(
-      (() => 1 as unknown as ReturnType<typeof setInterval>) as typeof setInterval
-    )
+    const setIntervalSpy = vi
+      .spyOn(globalThis, 'setInterval')
+      .mockImplementation(
+        (() => 1 as unknown as ReturnType<typeof setInterval>) as typeof setInterval
+      )
     const urls: string[] = []
     const monitor = createHeartbeatMonitor({
       url,
@@ -149,7 +151,7 @@ describe('createHeartbeatMonitor', () => {
     'https://example.test:bad-port/heartbeat'
   ])('warns once and stays inert for invalid URL %s', async url => {
     const { logger, events } = captureLogger()
-    const setIntervalSpy = spyOn(globalThis, 'setInterval')
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval')
     let pings = 0
     const monitor = createHeartbeatMonitor({
       url,

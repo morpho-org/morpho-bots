@@ -5,17 +5,18 @@
  * re-ship the already-provisioned service without copying any bot secrets into GitHub.
  */
 import { delay, tryCatch } from '@repo/utils'
-import { $ } from 'bun'
-import { resolve } from 'node:path'
+import { $ } from 'execa'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { parseLatestStatus, parseServices } from './railway'
 
-const PROJECT_ID = required(Bun.env, 'RAILWAY_PROJECT_ID')
-const ENVIRONMENT = Bun.env.RAILWAY_ENVIRONMENT?.trim() || 'production'
+const PROJECT_ID = required(process.env, 'RAILWAY_PROJECT_ID')
+const ENVIRONMENT = process.env.RAILWAY_ENVIRONMENT?.trim() || 'production'
 const SERVICE = ENVIRONMENT === 'production' ? 'bot' : `${ENVIRONMENT}-bot`
 const DOCKERFILE_PATH = 'bots/midnight-crossed-books/Dockerfile'
-const REPO_ROOT = resolve(import.meta.dir, '..', '..', '..')
-const DEPLOY_ONLY = /^(1|true)$/i.test(Bun.env.DEPLOY_ONLY?.trim() || '')
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
+const DEPLOY_ONLY = /^(1|true)$/i.test(process.env.DEPLOY_ONLY?.trim() || '')
 const TERMINAL_STATUSES = new Set([
   'SUCCESS',
   'FAILED',
@@ -58,21 +59,19 @@ function assertPrivateKey(key: string) {
 }
 
 async function assertCli() {
-  const { error } = await tryCatch(Promise.resolve($`railway --version`.quiet()))
+  const { error } = await tryCatch($`railway --version`)
   if (error) {
     throw new Error('Railway CLI not found. Install it: https://docs.railway.com/guides/cli')
   }
 }
 
 async function ensureContext() {
-  if (Bun.env.RAILWAY_TOKEN) {
+  if (process.env.RAILWAY_TOKEN) {
     console.log('Using RAILWAY_TOKEN for project context.')
     return
   }
 
-  const { error } = await tryCatch(
-    Promise.resolve($`railway link -p ${PROJECT_ID} -e ${ENVIRONMENT}`.quiet())
-  )
+  const { error } = await tryCatch($`railway link -p ${PROJECT_ID} -e ${ENVIRONMENT}`)
   if (error) {
     throw new Error(
       `Failed to link ${PROJECT_ID} (${ENVIRONMENT}). Set RAILWAY_TOKEN or run \`railway login\`.`
@@ -82,9 +81,7 @@ async function ensureContext() {
 }
 
 async function listServices() {
-  const { data, error } = await tryCatch(
-    Promise.resolve($`railway service list --json`.quiet().text())
-  )
+  const { data, error } = await tryCatch($`railway service list --json`.then(r => r.stdout))
   return error || typeof data !== 'string' ? [] : parseServices(data)
 }
 
@@ -94,27 +91,21 @@ async function ensureService() {
     return
   }
 
-  const { error } = await tryCatch(
-    Promise.resolve($`railway add --service ${SERVICE} --json`.quiet())
-  )
+  const { error } = await tryCatch($`railway add --service ${SERVICE} --json`)
   if (error) throw new Error(`Failed to create service ${SERVICE}: ${errorDetails(error)}`)
   console.log(`Created service ${SERVICE}.`)
 }
 
 async function setVariable(value: string) {
   const key = value.split('=')[0]
-  const { error } = await tryCatch(
-    Promise.resolve($`railway variable set ${value} -s ${SERVICE} --skip-deploys`.quiet())
-  )
+  const { error } = await tryCatch($`railway variable set ${value} -s ${SERVICE} --skip-deploys`)
   if (error) throw new Error(`Failed to set ${key} on ${SERVICE}: ${errorDetails(error)}`)
   console.log(`Set ${key} on ${SERVICE}.`)
 }
 
 async function setSecret(name: string, value: string) {
   const { error } = await tryCatch(
-    Promise.resolve(
-      $`railway variable set ${name} --stdin -s ${SERVICE} --skip-deploys < ${Buffer.from(value, 'utf8')}`.quiet()
-    )
+    $({ input: value })`railway variable set ${name} --stdin -s ${SERVICE} --skip-deploys`
   )
   if (error) throw new Error(`Failed to set ${name} on ${SERVICE}`)
   console.log(`Set ${name} on ${SERVICE} (secret).`)
@@ -123,11 +114,9 @@ async function setSecret(name: string, value: string) {
 async function deployService() {
   const message = `deploy midnight crossed-books ${ENVIRONMENT}`
   const { error } = await tryCatch(
-    Promise.resolve(
-      $`railway up -s ${SERVICE} -p ${PROJECT_ID} -e ${ENVIRONMENT} -d -m ${message}`
-        .cwd(REPO_ROOT)
-        .quiet()
-    )
+    $({
+      cwd: REPO_ROOT
+    })`railway up -s ${SERVICE} -p ${PROJECT_ID} -e ${ENVIRONMENT} -d -m ${message}`
   )
   if (error) throw new Error(`Failed to start deploy for ${SERVICE}: ${errorDetails(error)}`)
 }
@@ -147,7 +136,7 @@ async function latestStatus() {
     '1',
     '--json'
   ]
-  const { data, error } = await tryCatch(Promise.resolve($`${args}`.quiet().text()))
+  const { data, error } = await tryCatch($(args[0] ?? 'railway', args.slice(1)).then(r => r.stdout))
   return error || typeof data !== 'string' ? 'UNKNOWN' : parseLatestStatus(data)
 }
 
@@ -175,8 +164,8 @@ if (DEPLOY_ONLY) {
   await deployService()
   reportStatus(await waitForDeploy())
 } else {
-  const rpcUrl = required(Bun.env, 'RPC_URL')
-  const resolverPrivateKey = required(Bun.env, 'RESOLVER_PRIVATE_KEY')
+  const rpcUrl = required(process.env, 'RPC_URL')
+  const resolverPrivateKey = required(process.env, 'RESOLVER_PRIVATE_KEY')
   assertPrivateKey(resolverPrivateKey)
 
   await ensureContext()

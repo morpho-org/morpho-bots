@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from 'bun:test'
+import { describe, expect, test, vi } from 'vitest'
 
 import { MorphoApiService } from '../../../src/infrastructure/morpho-api/service'
 import { MorphoApiError } from '../../../src/infrastructure/openapi/error'
@@ -13,7 +13,7 @@ function response(body: unknown, status = 200) {
 
 describe('MorphoApiService', () => {
   test('requests only listed active markets on the configured chain', async () => {
-    const GET = mock(async () => ({
+    const GET = vi.fn(async () => ({
       data: { cursor: null, data: [{ market_id: MARKET_ID }] },
       response: response({})
     }))
@@ -35,18 +35,20 @@ describe('MorphoApiService', () => {
   })
 
   test('drains cursor pagination in order', async () => {
-    const GET = mock(async (_path: string, request: { params: { query: { cursor?: string } } }) => {
-      if (!request.params.query.cursor) {
+    const GET = vi.fn(
+      async (_path: string, request: { params: { query: { cursor?: string } } }) => {
+        if (!request.params.query.cursor) {
+          return {
+            data: { cursor: 'next', data: [{ market_id: MARKET_ID }] },
+            response: response({})
+          }
+        }
         return {
-          data: { cursor: 'next', data: [{ market_id: MARKET_ID }] },
+          data: { cursor: null, data: [{ market_id: OTHER_MARKET_ID }] },
           response: response({})
         }
       }
-      return {
-        data: { cursor: null, data: [{ market_id: OTHER_MARKET_ID }] },
-        response: response({})
-      }
-    })
+    )
     const service = new MorphoApiService({ GET } as never, 8453)
 
     const markets = await service.listListedActiveMarkets()
@@ -56,7 +58,7 @@ describe('MorphoApiService', () => {
   })
 
   test('wraps a non-success response in MorphoApiError', async () => {
-    const GET = mock(async () => ({
+    const GET = vi.fn(async () => ({
       error: { code: 'SERVICE_UNAVAILABLE' },
       response: response({}, 503)
     }))
@@ -66,7 +68,7 @@ describe('MorphoApiService', () => {
   })
 
   test('wraps a rejected fetch in MorphoApiError', async () => {
-    const GET = mock(async () => {
+    const GET = vi.fn(async () => {
       throw new Error('network down')
     })
     const service = new MorphoApiService({ GET } as never, 8453)

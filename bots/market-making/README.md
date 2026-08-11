@@ -15,7 +15,7 @@ structure.
 Run the stateless parameter playground locally from the repository root:
 
 ```sh
-bun run market-making:playground
+pnpm run market-making:playground
 ```
 
 The launcher performs a frozen-lockfile dependency check before every build, then prints the local
@@ -23,7 +23,7 @@ server URL after building the browser artifact. For a production-equivalent
 build without starting a server, run:
 
 ```sh
-bun run --filter @morpho-org/market-making-bot playground:build
+pnpm --filter @morpho-org/market-making-bot run playground:build
 ```
 
 After this pull request is merged to `main`, relevant playground, browser-safe bot-kit, package, lock,
@@ -43,16 +43,16 @@ pnpm --filter @morpho-org/market-making-bot run start -- setup-check
 pnpm --filter @morpho-org/market-making-bot run start -- --readonly setup-check
 
 # Explicit signer sources (root options precede the command).
-bun run --filter @morpho-org/market-making-bot start -- --private-key '<key>' setup-check
-bun run --filter @morpho-org/market-making-bot start -- --keystore ./maker.json --interactive setup-check
-bun run --filter @morpho-org/market-making-bot start -- --aws setup-check
+pnpm --filter @morpho-org/market-making-bot run start -- --private-key '<key>' setup-check
+pnpm --filter @morpho-org/market-making-bot run start -- --keystore ./maker.json --interactive setup-check
+pnpm --filter @morpho-org/market-making-bot run start -- --aws setup-check
 ```
 
 For unattended keystore operation, provision `KEYSTORE_PASSWORD` separately through the deployment
 secret manager or process environment, then run the keystore command without an inline value:
 
 ```sh
-bun run --filter @morpho-org/market-making-bot start -- --keystore ./maker.json setup-check
+pnpm --filter @morpho-org/market-making-bot run start -- --keystore ./maker.json setup-check
 ```
 
 `--private-key <key>` and `--password <password>` remain available for explicit automation, but they
@@ -254,8 +254,8 @@ pnpm --filter @morpho-org/market-making-bot run start -- --version
 The package owns its production [Dockerfile](./Dockerfile), local
 [docker-compose.yml](./docker-compose.yml), and idempotent
 [`scripts/deploy-railway.ts`](./scripts/deploy-railway.ts) entrypoint. The Docker build context is the
-repository root so Bun can resolve every workspace dependency; the image starts the combined setup,
-bootstrap, and ladder monitor.
+repository root so pnpm can resolve every workspace dependency; the image builds the workspace and
+starts the combined setup, bootstrap, and ladder monitor as an unprivileged Node process.
 
 A full deployment creates the `market-making` Railway service, selects the package Dockerfile,
 provisions a persistent volume at `/state`, and writes the effective environment configuration
@@ -263,7 +263,7 @@ through stdin so values never appear in process arguments or logs:
 
 ```sh
 RAILWAY_PROJECT_ID=... \
-bun run --filter @morpho-org/market-making-bot deploy:railway
+pnpm --filter @morpho-org/market-making-bot run deploy:railway
 ```
 
 Provide the required values from [`.env.example`](./.env.example) in the invoking environment.
@@ -752,12 +752,12 @@ collections are rejected atomically. The four outputs are Bootstrap JSON, the co
 `BOOTSTRAP_MARKETS` value, Ladder JSON, and the compact exact `LADDER_MARKETS` value; each collection
 validates independently.
 
-From the repository root, one command runs `bun install --frozen-lockfile` (also on already-installed
+From the repository root, one command runs `pnpm install --frozen-lockfile` (also on already-installed
 workspaces, where it is fast), creates a fresh isolated build, and serves it on loopback. It does not
 run test assertions or require Chromium:
 
 ```sh
-bun run market-making:playground
+pnpm run market-making:playground
 ```
 
 Open the exact URL printed by the command (default `http://127.0.0.1:4173`). Override the listener

@@ -1,9 +1,10 @@
 import type { Hex } from 'viem'
 
-import { afterEach, describe, expect, test } from 'bun:test'
+import { $ } from 'execa'
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { afterEach, describe, expect, test } from 'vitest'
 
 import { ConfigFileError } from '../../src/config/config-file.error'
 import {
@@ -41,9 +42,8 @@ const temporaryDirectory = async () => {
 }
 
 const createFifo = async (path: string) => {
-  const process = Bun.spawn(['mkfifo', path], { stderr: 'pipe' })
-  const exitCode = await process.exited
-  if (exitCode !== 0) throw new Error('Unable to create FIFO test fixture')
+  const { failed } = await $({ reject: false })`mkfifo ${path}`
+  if (failed) throw new Error('Unable to create FIFO test fixture')
 }
 
 const loadInBoundedSubprocess = async (options: { configPath?: string; cwd: string }) => {
@@ -57,21 +57,21 @@ const loadInBoundedSubprocess = async (options: { configPath?: string; cwd: stri
       console.log(JSON.stringify({ reason: error?.reason ?? 'unexpected' }))
     }
   `
-  const process = Bun.spawn([Bun.which('bun') ?? 'bun', '-e', script], {
-    stdout: 'pipe',
-    stderr: 'pipe'
-  })
-  let timedOut = false
-  const timeout = setTimeout(() => {
-    timedOut = true
-    process.kill()
-  }, 1_000)
-  const exitCode = await process.exited
-  clearTimeout(timeout)
+  // `node -e` cannot import TypeScript, so tsx is registered as a loader for the inline module. That
+  // specifier resolves from the workspace root, which is why `tsx` stays a root devDependency (knip
+  // cannot see a usage inside `--import`, so the root workspace ignores it explicitly). execa's own
+  // timeout enforces the bound instead of a manual kill. The bound is what this suite is
+  // really asserting: reading a FIFO would block forever, so any finite completion proves the loader
+  // fails closed. It is 10s rather than the 1s bun used because a tsx cold start alone costs ~1.3s —
+  // well under the bound, but not under one sized for bun's interpreter startup.
+  const result = await $({
+    reject: false,
+    timeout: 10_000
+  })`node --import tsx --input-type=module -e ${script}`
   return {
-    exitCode,
-    timedOut,
-    stdout: await new Response(process.stdout).text()
+    exitCode: result.exitCode ?? null,
+    timedOut: result.timedOut,
+    stdout: result.stdout
   }
 }
 

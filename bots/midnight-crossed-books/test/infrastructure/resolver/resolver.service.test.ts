@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from 'bun:test'
+import { describe, expect, test, vi } from 'vitest'
 
 import type { PreparedResolution } from '../../../src/domain/order-book'
 import type { ResolverTransport } from '../../../src/infrastructure/resolver/resolver.transport'
@@ -14,12 +14,12 @@ const MATCH = {
 const MATCHES = [MATCH]
 
 function setup(result: Awaited<ReturnType<ResolverTransport['simulate']>>) {
-  const simulate = mock(async () => result)
-  const submit = mock(async () => undefined)
+  const simulate = vi.fn(async () => result)
+  const submit = vi.fn(async () => undefined)
   const transport: ResolverTransport = { simulate, submit }
   const encoder = {
-    encode: mock(() => '0x1234' as const),
-    decodeProfit: mock(() => 42n)
+    encode: vi.fn(() => '0x1234' as const),
+    decodeProfit: vi.fn(() => 42n)
   }
   const service = new ResolverExecutionService(transport, encoder, 10n)
 

@@ -85,7 +85,7 @@ bot runtime secrets remain on Railway.
 ## Test
 
 ```sh
-bun test bots/midnight-crossed-books/test
+pnpm --filter @morpho-org/midnight-crossed-books exec vitest run
 forge test --root packages/contracts -vv
 ```
 
