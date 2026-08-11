@@ -167,7 +167,13 @@ jobs:
             echo "Processing release: $tag_name"
 
             if gh release view "$tag_name" &>/dev/null; then
-              echo "Release already exists: $tag_name (skipping)"
+              existing_target="$(gh release view "$tag_name" --json targetCommitish --jq .targetCommitish)"
+              if [ "$existing_target" = "$GITHUB_SHA" ]; then
+                echo "Release already exists at this commit: $tag_name (skipping)"
+              else
+                echo "ERROR: release $tag_name already targets $existing_target, not this commit ($GITHUB_SHA) — bump the version" >&2
+                exit 1
+              fi
             elif git ls-remote --exit-code origin "refs/tags/$tag_name" >/dev/null 2>&1; then
               # `gh release create --target` is ignored for a pre-existing tag: the release would
               # attach to the stale tag's commit and publish an image built from it, leaving this

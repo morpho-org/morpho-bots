@@ -810,7 +810,7 @@ publishes an image.
 Creating the release directly also works and publishes identically:
 
 ```sh
-gh release create "market-making-$(node -p "require('./package.json').version")" --generate-notes
+gh release create "market-making-$(node -p "require('./package.json').version")" --target "$(git rev-parse HEAD)" --generate-notes
 ```
 
 Manual dispatch remains available as the escape hatch and for re-publishing; it builds the

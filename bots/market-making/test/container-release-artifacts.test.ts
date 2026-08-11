@@ -20,12 +20,49 @@ describe('market-making container release artifacts', () => {
     expect(marketMakingRelease).not.toContain('date="$(date -u +%Y.%m.%d)"')
   })
 
-  test('documents manual releases from the same package version', () => {
+  test('documents manual releases from the same package version and commit', () => {
     const readme = readFileSync(resolve(packageRoot, 'README.md'), 'utf8')
 
     expect(readme).toContain(
-      `gh release create "market-making-$(node -p "require('./package.json').version")" --generate-notes`
+      `gh release create "market-making-$(node -p "require('./package.json').version")" --target "$(git rev-parse HEAD)" --generate-notes`
     )
+  })
+
+  test('disables Husky in every workspace Docker install', () => {
+    for (const dockerfilePath of [
+      'bots/blue-liquidation/Dockerfile',
+      'bots/market-making/Dockerfile',
+      'bots/market-making/Dockerfile.release',
+      'bots/midnight-crossed-books/Dockerfile',
+      'bots/midnight-liquidation/Dockerfile'
+    ]) {
+      const dockerfile = readFileSync(resolve(repositoryRoot, dockerfilePath), 'utf8')
+
+      expect(dockerfile).toContain('ENV HUSKY=0')
+      expect(dockerfile).toContain('RUN pnpm install --frozen-lockfile')
+    }
+  })
+
+  test('validates release CalVer before publishing the operator image', () => {
+    const workflow = readFileSync(
+      resolve(repositoryRoot, '.github/workflows/deploy-market-making.yml'),
+      'utf8'
+    )
+
+    expect(workflow).toContain(`CALVER_PATTERN="^[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}-[1-9][0-9]*$"`)
+    expect(workflow).toContain('[[ "$package_version" =~ $CALVER_PATTERN ]]')
+  })
+
+  test('accepts an existing release only when it targets the current commit', () => {
+    const workflow = readFileSync(
+      resolve(repositoryRoot, '.github/workflows/tag-releases.yml'),
+      'utf8'
+    )
+
+    expect(workflow).toContain(
+      `existing_target="$(gh release view "$tag_name" --json targetCommitish --jq .targetCommitish)"`
+    )
+    expect(workflow).toContain('[ "$existing_target" = "$GITHUB_SHA" ]')
   })
 
   test('exposes the built Node CLI while persisting writer state', () => {
