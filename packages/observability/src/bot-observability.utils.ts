@@ -131,7 +131,7 @@ type ProcessObserverTarget = {
 }
 
 /**
- * Installs fatal exception and Bun unhandled-rejection observers.
+ * Installs fatal exception and Node unhandled-rejection observers.
  * @param observability - Sanitized unexpected-error sink.
  * @param target - Process-like event target; injectable for isolated verification.
  * @returns A cleanup callback that removes every installed listener.

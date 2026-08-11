@@ -42,4 +42,4 @@ jobs:
           RAILWAY_ENVIRONMENT: production
           RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-        run: bun run --filter @morpho-org/market-making-bot deploy:railway
+        run: pnpm --filter @morpho-org/market-making-bot run deploy:railway

@@ -17,9 +17,9 @@
  * offer/ratifier path before the other N-1 are touched). `--dry-run` runs discovery + all
  * cryptographic self-checks + prints the capital plan, and sends nothing.
  *
- * Run from the bot directory (so the bunfig soltag preload compiles the lens). `--config` is this
- * tool's OWN swap-route file (it needs a WETH route to fund the seed swaps); it is unrelated to the
- * bot's runtime, which no longer uses a swap-config file:
+ * The package script builds the Node bundle with the soltag transform before running it. `--config`
+ * is this tool's OWN swap-route file (it needs a WETH route to fund the seed swaps); it is unrelated
+ * to the bot's runtime, which no longer uses a swap-config file:
  *   RPC_URL=... PRIVATE_KEY_LENDER=0x... PRIVATE_KEY_BORROWER=0x... \
  *     pnpm --filter @morpho-org/midnight-liquidation run seed:positions -- \
  *       --config ./swap.config.json --pair WETH/USDC --count 100 --drawdown-bps 0 --dry-run

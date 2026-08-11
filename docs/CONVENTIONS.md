@@ -99,9 +99,9 @@
 - **Assertion Precision**: Use exact matchers (`toBe`, `toEqual`, `toStrictEqual`); only use
   approximate matchers (e.g., floating-point arithmetic, time-dependent values) with a comment
   explaining why exact matching is not feasible.
-- **Vitest test runner**: Tests run under `vitest` (`pnpm test` at the root, which drives every
-  workspace project listed in the root `vitest.config.ts`). Mocks and spies come from `vi`
-  (`vi.fn`, `vi.spyOn`, `vi.restoreAllMocks`).
+- **Test runners**: `pnpm test` drives every workspace project listed in the root
+  `vitest.config.ts` plus the market-making playground's Node `*.test.mjs` suites. TypeScript tests
+  use Vitest; mocks and spies come from `vi` (`vi.fn`, `vi.spyOn`, `vi.restoreAllMocks`).
 
 ### Testing Anti-Patterns
 

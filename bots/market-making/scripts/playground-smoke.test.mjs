@@ -280,12 +280,10 @@ test('static server abort closes a held connection and lets bounded close settle
       ]),
       /Timed out after 20ms during held static server close/
     )
-    if (!process.versions.bun) {
-      await waitFor(() => {
-        assert.equal(request.socket?.destroyed, true)
-        assert.equal(heldStream.destroyed, true)
-      }, 25)
-    }
+    await waitFor(() => {
+      assert.equal(request.socket?.destroyed, true)
+      assert.equal(heldStream.destroyed, true)
+    }, 25)
   } finally {
     request.destroy()
     await staticServer.close().catch(() => {})

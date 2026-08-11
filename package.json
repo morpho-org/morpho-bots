@@ -9,6 +9,7 @@
     "lint": "oxlint --no-error-on-unmatched-pattern && pnpm run lint:playground-smoke",
     "lint:fix": "oxlint --fix --no-error-on-unmatched-pattern",
     "lint:playground-smoke": "oxlint --config bots/market-making/scripts/playground-smoke.oxlintrc.json bots/market-making/scripts/playground-smoke*.mjs",
+    "market-making:playground": "pnpm --filter @morpho-org/market-making-bot run playground:serve",
     "prepare": "husky",
     "test": "vitest run && pnpm --filter @morpho-org/market-making-bot run playground:test"
   },

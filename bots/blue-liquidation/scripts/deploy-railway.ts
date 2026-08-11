@@ -21,7 +21,7 @@
  *   RAILWAY_PROJECT_ID=… RPC_URL_8453=… RPC_URL_4663=… LIQUIDATOR_PRIVATE_KEY=0x… \
  *     ALLOW_DETECTION_ONLY_4663=true pnpm --filter @morpho-org/blue-liquidation run deploy:railway
  *
- * The build context MUST be the repo root so the bun workspace (packages/*) resolves — the script
+ * The build context MUST be the repo root so the pnpm workspace (packages/*) resolves — the script
  * runs `railway up` with cwd set to the repo root (mirrors the Dockerfile header + compose context).
  *
  * Idempotent: existing services / variables are reused; each run redeploys every bot. The venue

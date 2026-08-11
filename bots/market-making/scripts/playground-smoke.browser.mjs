@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict'
+import { execFile } from 'node:child_process'
 import { chmod, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 
+import { productionPlaygroundBuildArguments } from './playground-build-arguments.mjs'
 import {
   closeOwnedProcessTreeGracefully,
   discoverChromium,
@@ -19,6 +22,7 @@ import {
 
 const temporaryDirectories = []
 const harnessRuns = new Set()
+const execFileAsync = promisify(execFile)
 const smokeScript = fileURLToPath(new URL('./playground-smoke.mjs', import.meta.url))
 const chromiumPath = await discoverChromium()
 const { cleanupTimeout, outerReadinessTimeout, browserTestTimeout } = smokeBudgets(process.env)
@@ -27,12 +31,36 @@ const temporaryDirectory = async prefix => {
   temporaryDirectories.push(directory)
   return directory
 }
+const writeFakeVite = async (path, html) => {
+  await writeFile(
+    path,
+    `#!/usr/bin/env node
+const { mkdirSync, writeFileSync } = require('node:fs')
+const outdir = process.argv[process.argv.indexOf('--outDir') + 1]
+if (!outdir) throw new Error('missing --outDir')
+mkdirSync(outdir, { recursive: true })
+writeFileSync(outdir + '/index.html', ${JSON.stringify(html)})
+`
+  )
+  await chmod(path, 0o755)
+}
 
 test.after(async () => {
   await Promise.allSettled([...harnessRuns].map(run => cleanupHarnessRun(run)))
   await Promise.all(
     temporaryDirectories.map(directory => rm(directory, { recursive: true, force: true }))
   )
+})
+
+test('fake Vite lifecycle builder follows the production --outDir contract', async () => {
+  const directory = await temporaryDirectory('playground-fake-vite-contract-')
+  const executable = join(directory, 'vite')
+  const outdir = join(directory, 'dist')
+  await writeFakeVite(executable, '<title>contract</title>')
+
+  await execFileAsync(executable, productionPlaygroundBuildArguments(outdir))
+
+  assert.equal(await readFile(join(outdir, 'index.html'), 'utf8'), '<title>contract</title>')
 })
 
 const processIdentity = async pid => {
@@ -196,17 +224,7 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
       /<div id="root" data-react-mounted="true"><div>[^<]+<\/div><\/div><script>document\.documentElement\.dataset\.playgroundReady = 'true'<\/script>/,
       'fake build must mount a non-empty React root before declaring playground readiness'
     )
-    await writeFile(
-      fakeVite,
-      `#!/usr/bin/env node
-const { mkdirSync, writeFileSync } = require('node:fs')
-const outdir = process.argv[process.argv.indexOf('--outdir') + 1]
-if (!outdir) throw new Error('missing --outdir')
-mkdirSync(outdir, { recursive: true })
-writeFileSync(outdir + '/index.html', ${JSON.stringify(fakeBuiltHtml)})
-`
-    )
-    await chmod(fakeVite, 0o755)
+    await writeFakeVite(fakeVite, fakeBuiltHtml)
     await writeFile(
       wrapper,
       `#!/usr/bin/env python3
@@ -290,16 +308,7 @@ test(
     const wrapper = join(isolatedTmp, 'chromium-no-devtools')
     const chromePidFile = join(isolatedTmp, 'chrome-pid')
     await mkdir(bin)
-    await writeFile(
-      fakeVite,
-      `#!/usr/bin/env node
-const { mkdirSync, writeFileSync } = require('node:fs')
-const outdir = process.argv[process.argv.indexOf('--outdir') + 1]
-mkdirSync(outdir, { recursive: true })
-writeFileSync(outdir + '/index.html', '<!doctype html><title>timeout cleanup</title>')
-`
-    )
-    await chmod(fakeVite, 0o755)
+    await writeFakeVite(fakeVite, '<!doctype html><title>timeout cleanup</title>')
     await writeFile(
       wrapper,
       `#!/usr/bin/env node

@@ -48,9 +48,11 @@ describe('market-making playground Pages workflow', () => {
         'packages/utils/**',
         'packages/typescript-config/**',
         'package.json',
-        'bun.lock',
-        'bunfig.toml',
+        'pnpm-lock.yaml',
+        'pnpm-workspace.yaml',
         '.npmrc',
+        '.nvmrc',
+        '.github/actions/setup/action.yml',
         '.github/workflows/deploy-market-making-playground.yml'
       ])
     )
@@ -75,16 +77,17 @@ describe('market-making playground Pages workflow', () => {
       uses: 'actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5',
       with: { 'persist-credentials': false }
     })
-    expect(build.steps.find(step => step.name === 'Install dependencies')?.run).toBe(
-      'bun install --frozen-lockfile'
-    )
+    expect(build.steps.find(step => step.name === 'Setup')).toMatchObject({
+      uses: './.github/actions/setup',
+      with: { 'build-contracts': 'false' }
+    })
     expect(
       build.steps.find(step => step.name === 'Test playground at the GitHub Pages subpath')?.run
     ).toBe(
-      'PLAYGROUND_SMOKE_BASE_PATH=/morpho-bots/ bun run --filter @morpho-org/market-making-bot playground:smoke:test'
+      'PLAYGROUND_SMOKE_BASE_PATH=/morpho-bots/ pnpm --filter @morpho-org/market-making-bot run playground:smoke:test'
     )
     expect(build.steps.find(step => step.name === 'Build playground')?.run).toBe(
-      'bun run --filter @morpho-org/market-making-bot playground:build'
+      'pnpm --filter @morpho-org/market-making-bot run playground:build'
     )
     expect(build.steps.find(step => step.name === 'Upload GitHub Pages artifact')).toMatchObject({
       uses: 'actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9',
@@ -113,6 +116,8 @@ describe('market-making playground Pages workflow', () => {
       .map(step => step.uses)
       .filter((uses): uses is string => uses !== undefined)
     expect(actions).toHaveLength(5)
-    expect(actions.every(uses => immutableAction.test(uses))).toBe(true)
+    expect(
+      actions.filter(uses => !uses.startsWith('./')).every(uses => immutableAction.test(uses))
+    ).toBe(true)
   })
 })

@@ -26,7 +26,7 @@ test('pre-aborted commands never spawn', async () => {
     }
   })
   await assert.rejects(
-    run({ executable: 'bun', args: [], signal: controller.signal }),
+    run({ executable: 'tool', args: [], signal: controller.signal }),
     /already stopped/
   )
   assert.equal(spawns, 0)
@@ -49,7 +49,7 @@ test('an abort raised synchronously inside spawn is caught by the registered lis
     }
   })
   await assert.rejects(
-    run({ executable: 'bun', args: [], signal: controller.signal }),
+    run({ executable: 'tool', args: [], signal: controller.signal }),
     /spawn-window abort/
   )
   assert.deepEqual(kills, [
@@ -77,7 +77,7 @@ for (const platform of ['linux', 'darwin']) {
       }
     })
     const controller = new AbortController()
-    const result = run({ executable: 'bun', args: ['install'], signal: controller.signal })
+    const result = run({ executable: 'tool', args: ['install'], signal: controller.signal })
     controller.abort(new Error('cancelled'))
     await assert.rejects(result, /cancelled/)
     assert.equal(spawnOptions.detached, true)
@@ -97,7 +97,7 @@ test('Windows runner terminates a task tree with argument arrays and no shell', 
     terminationGraceMs: 1,
     forceKillGraceMs: 10,
     spawnProcess(executable, args, options) {
-      if (executable === 'bun.exe') return child
+      if (executable === 'tool.exe') return child
       commands.push({ executable, args, options })
       const taskkill = fakeChild(999)
       queueMicrotask(() => taskkill.emit('close', 0, null))
@@ -106,7 +106,7 @@ test('Windows runner terminates a task tree with argument arrays and no shell', 
     }
   })
   const controller = new AbortController()
-  const result = run({ executable: 'bun.exe', args: ['build'], signal: controller.signal })
+  const result = run({ executable: 'tool.exe', args: ['build'], signal: controller.signal })
   controller.abort(new Error('cancelled'))
   await assert.rejects(result, /cancelled/)
   assert.deepEqual(

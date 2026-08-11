@@ -6,10 +6,6 @@ engineStrict: true
 saveExact: true
 verifyStoreIntegrity: true
 preferOffline: true
-# Bun's resolver does not reliably follow pnpm's isolated workspace dependency links for soltag's
-# TypeScript imports. Hoisting preserves the pnpm lockfile and lifecycle policy while supporting the
-# intermediate migration state where Bun remains the test runner.
-nodeLinker: hoisted
 
 # 3 days — carried over from bunfig.toml's `minimumReleaseAge = 259200` (seconds; this is minutes).
 minimumReleaseAge: 4320
