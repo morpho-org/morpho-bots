@@ -184,7 +184,7 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
   test(testName, { timeout: browserTestTimeout }, async () => {
     const isolatedTmp = await temporaryDirectory(`playground-browser-${signal.toLowerCase()}-`)
     const bin = join(isolatedTmp, 'bin')
-    const fakeBun = join(bin, 'bun')
+    const fakeVite = join(bin, 'vite')
     const chromiumLink = join(bin, 'chromium')
     const wrapper = join(isolatedTmp, 'chromium-wrapper')
     const wrapperPidFile = join(isolatedTmp, 'chromium-wrapper-pid')
@@ -197,7 +197,7 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
       'fake build must mount a non-empty React root before declaring playground readiness'
     )
     await writeFile(
-      fakeBun,
+      fakeVite,
       `#!/usr/bin/env node
 const { mkdirSync, writeFileSync } = require('node:fs')
 const outdir = process.argv[process.argv.indexOf('--outdir') + 1]
@@ -206,7 +206,7 @@ mkdirSync(outdir, { recursive: true })
 writeFileSync(outdir + '/index.html', ${JSON.stringify(fakeBuiltHtml)})
 `
     )
-    await chmod(fakeBun, 0o755)
+    await chmod(fakeVite, 0o755)
     await writeFile(
       wrapper,
       `#!/usr/bin/env python3
@@ -286,12 +286,12 @@ test(
   async () => {
     const isolatedTmp = await temporaryDirectory('playground-browser-timeout-before-marker-')
     const bin = join(isolatedTmp, 'bin')
-    const fakeBun = join(bin, 'bun')
+    const fakeVite = join(bin, 'vite')
     const wrapper = join(isolatedTmp, 'chromium-no-devtools')
     const chromePidFile = join(isolatedTmp, 'chrome-pid')
     await mkdir(bin)
     await writeFile(
-      fakeBun,
+      fakeVite,
       `#!/usr/bin/env node
 const { mkdirSync, writeFileSync } = require('node:fs')
 const outdir = process.argv[process.argv.indexOf('--outdir') + 1]
@@ -299,7 +299,7 @@ mkdirSync(outdir, { recursive: true })
 writeFileSync(outdir + '/index.html', '<!doctype html><title>timeout cleanup</title>')
 `
     )
-    await chmod(fakeBun, 0o755)
+    await chmod(fakeVite, 0o755)
     await writeFile(
       wrapper,
       `#!/usr/bin/env node
@@ -413,14 +413,14 @@ test(
 const runBuildTimeoutCase = async ({ publishFixture, timeoutMs, waitForFixture }) => {
   const isolatedTmp = await temporaryDirectory('playground-browser-build-timeout-')
   const bin = join(isolatedTmp, 'bin')
-  const fakeBun = join(bin, 'bun')
+  const fakeVite = join(bin, 'vite')
   const buildPidFile = join(isolatedTmp, 'build-pid')
   const descendantPidFile = join(isolatedTmp, 'build-descendant-pid')
   const captureBarrierFile = join(isolatedTmp, 'build-capture-ready')
   const captureFile = join(isolatedTmp, 'build-capture.json')
   await mkdir(bin)
   await writeFile(
-    fakeBun,
+    fakeVite,
     `#!/usr/bin/env node
 const { spawn } = require('node:child_process')
 const { writeFileSync } = require('node:fs')
@@ -438,13 +438,13 @@ child.on('close', () => process.exit(0))
 setInterval(() => {}, 1000)
 `
   )
-  await chmod(fakeBun, 0o755)
+  await chmod(fakeVite, 0o755)
   const run = spawnSmoke({
     env: {
       ...process.env,
       CHROMIUM_PATH: chromiumPath,
       PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
-      VITE_EXE: fakeBun,
+      VITE_EXE: fakeVite,
       NODE_DISABLE_COMPILE_CACHE: '1',
       PLAYGROUND_SMOKE_BUILD_CAPTURE_BARRIER_FILE: captureBarrierFile,
       PLAYGROUND_SMOKE_BUILD_CAPTURE_FILE: captureFile,
@@ -479,7 +479,7 @@ setInterval(() => {}, 1000)
   assert.equal(recordedBuildTree.rootPid, recordedBuildTree.processes[0]?.pid)
   assert.ok(
     recordedBuildTree.processes.length >= 4,
-    `expected the build subreaper, build runner, fake Bun, and descendant; got ${JSON.stringify(recordedBuildTree)}`
+    `expected the build subreaper, build runner, fake Vite, and descendant; got ${JSON.stringify(recordedBuildTree)}`
   )
   captured = [
     ...captured,

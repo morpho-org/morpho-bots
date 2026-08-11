@@ -941,9 +941,9 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
     const forwardingFile = join(isolatedTmp, 'build-forwarding')
     const prematureSignalFile = join(isolatedTmp, 'build-descendant-signalled-before-parent')
     await mkdir(bin)
-    const fakeBun = join(bin, 'bun')
+    const fakeVite = join(bin, 'vite')
     await writeFile(
-      fakeBun,
+      fakeVite,
       `#!/usr/bin/env node
 const { spawn } = require('node:child_process')
 const { writeFileSync } = require('node:fs')
@@ -967,7 +967,7 @@ process.on('SIGTERM', () => {
 child.on('close', () => process.exit(0))
 `
     )
-    await chmod(fakeBun, 0o755)
+    await chmod(fakeVite, 0o755)
 
     const smoke = spawn(process.execPath, [smokeScript], {
       env: {
