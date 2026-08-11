@@ -1,8 +1,10 @@
-import type { Subprocess } from 'bun'
+import type { ChildProcess } from 'node:child_process'
 import type { Address } from 'viem'
 
 import { Executor } from '@repo/contracts'
 import { ensureError } from '@repo/utils'
+import { spawn } from 'node:child_process'
+import { setTimeout as sleep } from 'node:timers/promises'
 import {
   createTestClient,
   createWalletClient,
@@ -119,7 +121,22 @@ const DEPLOYER_KEY = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b
 export const LIQUIDATOR = privateKeyToAccount(LIQUIDATOR_KEY).address
 
 export type TestClient = ReturnType<typeof testClient>
-export type ForkHandle = Subprocess
+export type ForkHandle = {
+  kill: (signal: NodeJS.Signals) => void
+  /** Resolves with the exit code once the child has actually gone (Node has no `.exited`). */
+  exited: Promise<number | null>
+}
+
+// Wraps a ChildProcess in the tiny surface the teardown needs. The `exited` promise is built here,
+// at spawn time, so its `exit` listener is attached before the child can possibly exit.
+const toForkHandle = (child: ChildProcess): ForkHandle => ({
+  kill: signal => {
+    child.kill(signal)
+  },
+  exited: new Promise(resolve => {
+    child.once('exit', code => resolve(code))
+  })
+})
 
 /** Polls the JSON-RPC endpoint until it answers `eth_blockNumber`, so callers see a ready node. */
 async function waitForRpc(url: string, timeoutMs = 30_000): Promise<void> {
@@ -139,15 +156,21 @@ async function waitForRpc(url: string, timeoutMs = 30_000): Promise<void> {
     } catch (error) {
       lastError = ensureError(error)
     }
-    await Bun.sleep(100)
+    await sleep(100)
   }
   const detail = lastError ? `: ${lastError.message}` : ''
   throw new Error(`anvil RPC at ${url} not ready within ${timeoutMs}ms${detail}`)
 }
 
+// Anvil port registry — vitest runs test FILES IN PARALLEL (bun's runner was serial, so fixed ports
+// used to be safe within a bot only). Every fork suite in the repo must claim a distinct port:
+//   8545 bots/blue-liquidation      fork/liquidation
+//   8546 bots/market-making         e2e/setup-check
+//   8547 bots/midnight-liquidation  fork/liquidation
+//   8548 bots/midnight-liquidation  fork/queue
 /**
  * Boots an anvil instance forking Base at `forkBlock` (chain id pinned to Base so signatures match).
- * `port` is explicit so multiple fork test files can run in one `bun test` process without colliding.
+ * `port` is explicit so parallel fork test files never collide — see the registry above.
  * Requires the `anvil` binary on PATH (Foundry locally; foundry-toolchain in CI) and `FORK_URL`.
  */
 export async function startFork(
@@ -155,19 +178,21 @@ export async function startFork(
   port = 8545
 ): Promise<{ anvil: ForkHandle; rpcUrl: string }> {
   if (!FORK_URL) throw new Error('RPC_URL_8453 is required to start the fork')
-  const anvil = Bun.spawn(
-    [
+  const anvil = toForkHandle(
+    spawn(
       'anvil',
-      '--fork-url',
-      FORK_URL,
-      '--fork-block-number',
-      String(forkBlock),
-      '--chain-id',
-      String(base.id),
-      '--port',
-      String(port)
-    ],
-    { stdout: 'ignore', stderr: 'ignore' }
+      [
+        '--fork-url',
+        FORK_URL,
+        '--fork-block-number',
+        String(forkBlock),
+        '--chain-id',
+        String(base.id),
+        '--port',
+        String(port)
+      ],
+      { stdio: 'ignore' }
+    )
   )
   const rpcUrl = `http://127.0.0.1:${port}`
   await waitForRpc(rpcUrl)

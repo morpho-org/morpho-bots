@@ -35,6 +35,10 @@ import {
   waitForReadiness
 } from './playground-smoke-support.mjs'
 
+test.beforeEach(t => {
+  if (process.platform !== 'linux') t.skip('requires Linux /proc process inspection')
+})
+
 const temporaryDirectories = []
 const smokeScript = fileURLToPath(new URL('./playground-smoke.mjs', import.meta.url))
 const temporaryDirectory = async prefix => {
@@ -276,12 +280,10 @@ test('static server abort closes a held connection and lets bounded close settle
       ]),
       /Timed out after 20ms during held static server close/
     )
-    if (!process.versions.bun) {
-      await waitFor(() => {
-        assert.equal(request.socket?.destroyed, true)
-        assert.equal(heldStream.destroyed, true)
-      }, 25)
-    }
+    await waitFor(() => {
+      assert.equal(request.socket?.destroyed, true)
+      assert.equal(heldStream.destroyed, true)
+    }, 25)
   } finally {
     request.destroy()
     await staticServer.close().catch(() => {})
@@ -937,9 +939,9 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
     const forwardingFile = join(isolatedTmp, 'build-forwarding')
     const prematureSignalFile = join(isolatedTmp, 'build-descendant-signalled-before-parent')
     await mkdir(bin)
-    const fakeBun = join(bin, 'bun')
+    const fakeVite = join(bin, 'vite')
     await writeFile(
-      fakeBun,
+      fakeVite,
       `#!/usr/bin/env node
 const { spawn } = require('node:child_process')
 const { writeFileSync } = require('node:fs')
@@ -963,7 +965,7 @@ process.on('SIGTERM', () => {
 child.on('close', () => process.exit(0))
 `
     )
-    await chmod(fakeBun, 0o755)
+    await chmod(fakeVite, 0o755)
 
     const smoke = spawn(process.execPath, [smokeScript], {
       env: {

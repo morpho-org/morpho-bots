@@ -1,6 +1,6 @@
 import type { Hex } from 'viem'
 
-import { describe, expect, mock, test } from 'bun:test'
+import { describe, expect, test, vi } from 'vitest'
 
 import type {
   LadderMakeService,
@@ -75,7 +75,7 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
       return { rateBps: rate, observationId }
     }
   }
-  const cleanup = mock(async () => {
+  const cleanup = vi.fn(async () => {
     liveDesired.clear()
   })
   const make: LadderMakeService = {
@@ -197,7 +197,7 @@ describe('LadderMarketMakerService', () => {
     const cancellationHash: Hex = `0x${'bb'.repeat(32)}`
     const desired = new Map<Hex, LadderQuoteSet>()
     const controller = new AbortController()
-    const readMarket = mock(async () => state())
+    const readMarket = vi.fn(async () => state())
     const make: LadderMakeService = {
       readActive: async id => desired.get(id),
       reconcile: async parameters => {
@@ -371,7 +371,7 @@ describe('LadderMarketMakerService', () => {
 
   test('retains a confirmed ratification hash when publication later fails', async () => {
     const subject = harness()
-    subject.make.reconcile = mock(async () => {
+    subject.make.reconcile = vi.fn(async () => {
       throw new LadderAdapterError(
         'publication-transaction-reverted-after-ratification'
       ).recordConfirmedTransactions([{ operation: 'ratify', txHash: ratificationHash }])

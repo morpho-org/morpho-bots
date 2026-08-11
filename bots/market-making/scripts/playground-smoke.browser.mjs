@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict'
+import { execFile } from 'node:child_process'
 import { chmod, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 
+import { productionPlaygroundBuildArguments } from './playground-build-arguments.mjs'
 import {
   closeOwnedProcessTreeGracefully,
   discoverChromium,
@@ -19,6 +22,7 @@ import {
 
 const temporaryDirectories = []
 const harnessRuns = new Set()
+const execFileAsync = promisify(execFile)
 const smokeScript = fileURLToPath(new URL('./playground-smoke.mjs', import.meta.url))
 const chromiumPath = await discoverChromium()
 const { cleanupTimeout, outerReadinessTimeout, browserTestTimeout } = smokeBudgets(process.env)
@@ -27,12 +31,36 @@ const temporaryDirectory = async prefix => {
   temporaryDirectories.push(directory)
   return directory
 }
+const writeFakeVite = async (path, html) => {
+  await writeFile(
+    path,
+    `#!/usr/bin/env node
+const { mkdirSync, writeFileSync } = require('node:fs')
+const outdir = process.argv[process.argv.indexOf('--outDir') + 1]
+if (!outdir) throw new Error('missing --outDir')
+mkdirSync(outdir, { recursive: true })
+writeFileSync(outdir + '/index.html', ${JSON.stringify(html)})
+`
+  )
+  await chmod(path, 0o755)
+}
 
 test.after(async () => {
   await Promise.allSettled([...harnessRuns].map(run => cleanupHarnessRun(run)))
   await Promise.all(
     temporaryDirectories.map(directory => rm(directory, { recursive: true, force: true }))
   )
+})
+
+test('fake Vite lifecycle builder follows the production --outDir contract', async () => {
+  const directory = await temporaryDirectory('playground-fake-vite-contract-')
+  const executable = join(directory, 'vite')
+  const outdir = join(directory, 'dist')
+  await writeFakeVite(executable, '<title>contract</title>')
+
+  await execFileAsync(executable, productionPlaygroundBuildArguments(outdir))
+
+  assert.equal(await readFile(join(outdir, 'index.html'), 'utf8'), '<title>contract</title>')
 })
 
 const processIdentity = async pid => {
@@ -95,7 +123,7 @@ const assertPortClosed = port =>
 
 const spawnSmoke = ({ env = process.env } = {}) => {
   const child = spawnOwnedProcess(process.execPath, [smokeScript], {
-    env,
+    env: { ...env, NODE_DISABLE_COMPILE_CACHE: '1' },
     stdio: ['ignore', 'pipe', 'pipe']
   })
   child.stdout.setEncoding('utf8')
@@ -184,7 +212,7 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
   test(testName, { timeout: browserTestTimeout }, async () => {
     const isolatedTmp = await temporaryDirectory(`playground-browser-${signal.toLowerCase()}-`)
     const bin = join(isolatedTmp, 'bin')
-    const fakeBun = join(bin, 'bun')
+    const fakeVite = join(bin, 'vite')
     const chromiumLink = join(bin, 'chromium')
     const wrapper = join(isolatedTmp, 'chromium-wrapper')
     const wrapperPidFile = join(isolatedTmp, 'chromium-wrapper-pid')
@@ -196,17 +224,7 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
       /<div id="root" data-react-mounted="true"><div>[^<]+<\/div><\/div><script>document\.documentElement\.dataset\.playgroundReady = 'true'<\/script>/,
       'fake build must mount a non-empty React root before declaring playground readiness'
     )
-    await writeFile(
-      fakeBun,
-      `#!/usr/bin/env node
-const { mkdirSync, writeFileSync } = require('node:fs')
-const outdir = process.argv[process.argv.indexOf('--outdir') + 1]
-if (!outdir) throw new Error('missing --outdir')
-mkdirSync(outdir, { recursive: true })
-writeFileSync(outdir + '/index.html', ${JSON.stringify(fakeBuiltHtml)})
-`
-    )
-    await chmod(fakeBun, 0o755)
+    await writeFakeVite(fakeVite, fakeBuiltHtml)
     await writeFile(
       wrapper,
       `#!/usr/bin/env python3
@@ -286,20 +304,11 @@ test(
   async () => {
     const isolatedTmp = await temporaryDirectory('playground-browser-timeout-before-marker-')
     const bin = join(isolatedTmp, 'bin')
-    const fakeBun = join(bin, 'bun')
+    const fakeVite = join(bin, 'vite')
     const wrapper = join(isolatedTmp, 'chromium-no-devtools')
     const chromePidFile = join(isolatedTmp, 'chrome-pid')
     await mkdir(bin)
-    await writeFile(
-      fakeBun,
-      `#!/usr/bin/env node
-const { mkdirSync, writeFileSync } = require('node:fs')
-const outdir = process.argv[process.argv.indexOf('--outdir') + 1]
-mkdirSync(outdir, { recursive: true })
-writeFileSync(outdir + '/index.html', '<!doctype html><title>timeout cleanup</title>')
-`
-    )
-    await chmod(fakeBun, 0o755)
+    await writeFakeVite(fakeVite, '<!doctype html><title>timeout cleanup</title>')
     await writeFile(
       wrapper,
       `#!/usr/bin/env node
@@ -413,14 +422,14 @@ test(
 const runBuildTimeoutCase = async ({ publishFixture, timeoutMs, waitForFixture }) => {
   const isolatedTmp = await temporaryDirectory('playground-browser-build-timeout-')
   const bin = join(isolatedTmp, 'bin')
-  const fakeBun = join(bin, 'bun')
+  const fakeVite = join(bin, 'vite')
   const buildPidFile = join(isolatedTmp, 'build-pid')
   const descendantPidFile = join(isolatedTmp, 'build-descendant-pid')
   const captureBarrierFile = join(isolatedTmp, 'build-capture-ready')
   const captureFile = join(isolatedTmp, 'build-capture.json')
   await mkdir(bin)
   await writeFile(
-    fakeBun,
+    fakeVite,
     `#!/usr/bin/env node
 const { spawn } = require('node:child_process')
 const { writeFileSync } = require('node:fs')
@@ -438,12 +447,14 @@ child.on('close', () => process.exit(0))
 setInterval(() => {}, 1000)
 `
   )
-  await chmod(fakeBun, 0o755)
+  await chmod(fakeVite, 0o755)
   const run = spawnSmoke({
     env: {
       ...process.env,
       CHROMIUM_PATH: chromiumPath,
       PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
+      VITE_EXE: fakeVite,
+      NODE_DISABLE_COMPILE_CACHE: '1',
       PLAYGROUND_SMOKE_BUILD_CAPTURE_BARRIER_FILE: captureBarrierFile,
       PLAYGROUND_SMOKE_BUILD_CAPTURE_FILE: captureFile,
       PLAYGROUND_SMOKE_BUILD_TIMEOUT_MS: String(timeoutMs),
@@ -477,7 +488,7 @@ setInterval(() => {}, 1000)
   assert.equal(recordedBuildTree.rootPid, recordedBuildTree.processes[0]?.pid)
   assert.ok(
     recordedBuildTree.processes.length >= 4,
-    `expected the build subreaper, build runner, fake Bun, and descendant; got ${JSON.stringify(recordedBuildTree)}`
+    `expected the build subreaper, build runner, fake Vite, and descendant; got ${JSON.stringify(recordedBuildTree)}`
   )
   captured = [
     ...captured,

@@ -9,7 +9,7 @@
  *      `ForkFixture` you can paste into `test/fork/liquidation.test.ts` to run the end-to-end suite.
  *
  * Usage (needs a Base RPC; no anvil required):
- *   RPC_URL=https://… bun run bots/blue-liquidation/scripts/probe-live-lens.ts
+ *   RPC_URL=https://… pnpm --filter @morpho-org/blue-liquidation run probe:lens
  */
 import type { Address, Hex } from 'viem'
 
@@ -34,7 +34,7 @@ const LOGS_MAX_CHUNKS = 12
 const TARGET_PAIRS = 256
 
 function required(name: string): string {
-  const value = Bun.env[name]
+  const value = process.env[name]
   if (!value?.trim()) throw new Error(`Missing required env var: ${name}`)
   return value.trim()
 }

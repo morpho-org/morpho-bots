@@ -1,6 +1,6 @@
 import type { Hex } from 'viem'
 
-import { describe, expect, mock, test } from 'bun:test'
+import { describe, expect, test, vi } from 'vitest'
 
 import type { OfferInvalidationPort } from '../../../src/application/invalidation/offer-invalidation.service'
 
@@ -49,8 +49,8 @@ const subject = (
 
 describe('OfferInvalidationService', () => {
   test('uses the mandatory batch capability once for maker-wide read-only rendering', async () => {
-    const invalidateBatch = mock(async () => undefined)
-    const invalidate = mock(async () => txB)
+    const invalidateBatch = vi.fn(async () => undefined)
+    const invalidate = vi.fn(async () => txB)
     const { service } = subject({ invalidateBatch, invalidate }, 'readonly')
 
     const report = await service.run()
@@ -67,15 +67,15 @@ describe('OfferInvalidationService', () => {
   })
 
   test('reports one confirmed batch hash for every selected group and forgets them together', async () => {
-    const invalidateBatch = mock(
+    const invalidateBatch = vi.fn(
       async (groupIds: readonly Hex[], observer?: (hash: Hex) => unknown) => {
         expect(groupIds).toEqual([groupA, groupB])
         await observer?.(txA)
         return txA
       }
     )
-    const invalidate = mock(async () => txB)
-    const forgetGroups = mock(async () => undefined)
+    const invalidate = vi.fn(async () => txB)
+    const forgetGroups = vi.fn(async () => undefined)
     const { service } = subject({ invalidateBatch, invalidate, forgetGroups })
     const submitted: unknown[] = []
 
@@ -98,7 +98,7 @@ describe('OfferInvalidationService', () => {
   })
 
   test('does not fall back after a submitted batch transaction fails', async () => {
-    const invalidate = mock(async () => txB)
+    const invalidate = vi.fn(async () => txB)
     const { service } = subject({
       invalidateBatch: async (_groupIds, observer) => {
         await observer?.(txA)
@@ -122,7 +122,7 @@ describe('OfferInvalidationService', () => {
   })
 
   test('retains the shared batch hash for every group when ownership cleanup fails', async () => {
-    const forgetGroups = mock(async () => {
+    const forgetGroups = vi.fn(async () => {
       throw new OfferInvalidationAdapterError('ownership-cleanup')
     })
     const { service } = subject({
@@ -165,8 +165,8 @@ describe('OfferInvalidationService', () => {
   })
 
   test('directly invalidates an explicit group without consulting the active-group API', async () => {
-    const listActiveGroupIds = mock(async () => [groupB])
-    const invalidateBatch = mock(async () => txB)
+    const listActiveGroupIds = vi.fn(async () => [groupB])
+    const invalidateBatch = vi.fn(async () => txB)
     const { service } = subject({ listActiveGroupIds, invalidateBatch })
 
     const report = await service.run({ groupId: groupA })
@@ -256,8 +256,8 @@ describe('OfferInvalidationService', () => {
   })
 
   test('reports preflight failure without enumerating or invalidating groups', async () => {
-    const listActiveGroupIds = mock(async () => [groupA])
-    const invalidate = mock(async () => txA)
+    const listActiveGroupIds = vi.fn(async () => [groupA])
+    const invalidate = vi.fn(async () => txA)
     const { service } = subject({
       preflight: async () => {
         throw new OfferInvalidationAdapterError('preflight')

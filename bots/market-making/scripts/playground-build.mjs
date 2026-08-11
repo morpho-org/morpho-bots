@@ -103,8 +103,8 @@ const buildIdentity = { dev: Number(created.dev), ino: Number(created.ino) }
 let keepTemporary = false
 
 try {
-  const bun = process.env.BUN_EXE || 'bun'
-  const child = spawn(bun, productionPlaygroundBuildArguments(buildOutdir), {
+  const vite = process.env.VITE_EXE || 'vite'
+  const child = spawn(vite, productionPlaygroundBuildArguments(buildOutdir), {
     cwd: packageRoot,
     env: { ...process.env, NODE_ENV: 'production' },
     shell: false,

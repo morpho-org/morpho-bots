@@ -1,11 +1,15 @@
-import type { Subprocess } from 'bun'
+import type { ChildProcess } from 'node:child_process'
 
+import { spawn } from 'node:child_process'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { createTestClient, http, publicActions } from 'viem'
 import { base } from 'viem/chains'
 
 import { AnvilStartupError } from './anvil-startup.error'
 
 const BASE_FORK_BLOCK = 48_900_000n
+// 8546 is this suite's slot in the repo-wide anvil port registry (see the liquidation bots'
+// fork harnesses); vitest runs test files in parallel, so the ports must not overlap.
 const DEFAULT_ANVIL_PORT = 8546
 const STARTUP_POLL_INTERVAL_MS = 100
 const STARTUP_TIMEOUT_MS = 10_000
@@ -29,8 +33,10 @@ const requireForkUrl = () => {
 
 export type AnvilHandle = {
   client: ReturnType<typeof createAnvilClient>
-  process: Subprocess
+  process: ChildProcess
   rpcUrl: string
+  /** Resolves once the child has actually exited. Node has no `.exited`, so it is built at spawn. */
+  exited: Promise<void>
 }
 
 const waitForAnvil = async (handle: AnvilHandle) => {
@@ -51,7 +57,7 @@ const waitForAnvil = async (handle: AnvilHandle) => {
       cause = error
     }
 
-    await Bun.sleep(STARTUP_POLL_INTERVAL_MS)
+    await sleep(STARTUP_POLL_INTERVAL_MS)
   }
 
   throw new AnvilStartupError(`Anvil was not ready within ${STARTUP_TIMEOUT_MS}ms`, { cause })
@@ -68,7 +74,7 @@ export const stopAnvil = async (handle: AnvilHandle | undefined) => {
   if (!handle) return
 
   if (handle.process.exitCode === null) handle.process.kill('SIGKILL')
-  await handle.process.exited
+  await handle.exited
 }
 
 /**
@@ -83,9 +89,9 @@ export const stopAnvil = async (handle: AnvilHandle | undefined) => {
  */
 export const startAnvil = async (port = DEFAULT_ANVIL_PORT): Promise<AnvilHandle> => {
   const forkUrl = requireForkUrl()
-  const process = Bun.spawn(
+  const child = spawn(
+    'anvil',
     [
-      Bun.which('anvil') ?? 'anvil',
       '--fork-url',
       forkUrl,
       '--fork-block-number',
@@ -99,10 +105,14 @@ export const startAnvil = async (port = DEFAULT_ANVIL_PORT): Promise<AnvilHandle
       '--hardfork',
       'osaka'
     ],
-    { stdout: 'ignore', stderr: 'ignore' }
+    { stdio: 'ignore' }
   )
   const rpcUrl = `http://127.0.0.1:${port}`
-  const handle = { client: createAnvilClient(rpcUrl), process, rpcUrl }
+  // Attach the exit listener before anything can await it, so a fast failure is never missed.
+  const exited = new Promise<void>(resolve => {
+    child.once('exit', () => resolve())
+  })
+  const handle = { client: createAnvilClient(rpcUrl), process: child, rpcUrl, exited }
 
   try {
     await waitForAnvil(handle)

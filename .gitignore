@@ -2,6 +2,7 @@
 
 # Dependencies
 node_modules
+.pnpm-store
 
 # Local env files (any name usable with `docker run --env-file` may hold the maker key)
 .env

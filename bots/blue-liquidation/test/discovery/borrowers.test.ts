@@ -1,8 +1,8 @@
 import type { Logger } from '@repo/bot-kit'
 import type { Address, Hex } from 'viem'
 
-import { describe, expect, it } from 'bun:test'
 import { getAddress } from 'viem'
+import { describe, expect, it } from 'vitest'
 
 import type { FetchPositionPage } from '../../src/discovery/borrowers'
 import type { MarketParams } from '../../src/market'

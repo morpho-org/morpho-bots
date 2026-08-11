@@ -1,5 +1,5 @@
 import { enhanceVerboseArgv } from '@repo/observability'
-import { describe, expect, mock, test } from 'bun:test'
+import { describe, expect, test, vi } from 'vitest'
 
 import { ConfigFileError } from '../../../src/config/config-file.error'
 import {
@@ -12,7 +12,7 @@ describe('runMarketMakingEntrypoint observability', () => {
   test('mirrors streamed actions and terminal results while preserving stdout', async () => {
     const stdout: string[] = []
     const stderr: string[] = []
-    const record = mock((_value: unknown) => undefined)
+    const record = vi.fn((_value: unknown) => undefined)
     const cycle = { event: 'ladder.cycle', status: 'resting', activeOffers: [{ assets: 9n }] }
     const result = { status: 'stopped', cycles: 1 }
 
@@ -26,7 +26,7 @@ describe('runMarketMakingEntrypoint observability', () => {
       ['ladder', '--monitor'],
       { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) },
       {},
-      { record, unexpected: mock(() => undefined) }
+      { record, unexpected: vi.fn(() => undefined) }
     )
 
     expect(exitCode).toBe(0)
@@ -41,7 +41,7 @@ describe('runMarketMakingEntrypoint observability', () => {
   test('observes unknown failures by name without leaking their message', async () => {
     const stdout: string[] = []
     const stderr: string[] = []
-    const unexpected = mock((_error: unknown, _origin: 'entrypoint') => undefined)
+    const unexpected = vi.fn((_error: unknown, _origin: 'entrypoint') => undefined)
     const error = new Error('raw provider payload with api credential')
     error.name = 'ProviderFailureError'
 
@@ -50,7 +50,7 @@ describe('runMarketMakingEntrypoint observability', () => {
       ['start'],
       { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) },
       {},
-      { record: mock(() => undefined), unexpected }
+      { record: vi.fn(() => undefined), unexpected }
     )
 
     expect(exitCode).toBe(1)
@@ -63,7 +63,7 @@ describe('runMarketMakingEntrypoint observability', () => {
 
   test('surfaces sanitized maker-account failures without reporting them as unexpected', async () => {
     const stderr: string[] = []
-    const unexpected = mock((_error: unknown, _origin: 'entrypoint') => undefined)
+    const unexpected = vi.fn((_error: unknown, _origin: 'entrypoint') => undefined)
     const error = new MakerAccountError('keystore-decrypt')
 
     const exitCode = await runMarketMakingEntrypoint(
@@ -71,7 +71,7 @@ describe('runMarketMakingEntrypoint observability', () => {
       ['setup-check'],
       { writeOut: () => undefined, writeError: value => stderr.push(value) },
       {},
-      { record: mock(() => undefined), unexpected }
+      { record: vi.fn(() => undefined), unexpected }
     )
 
     expect(exitCode).toBe(1)
@@ -82,7 +82,7 @@ describe('runMarketMakingEntrypoint observability', () => {
   test('suppresses report payloads from errors outside the audited allowlist', async () => {
     const stdout: string[] = []
     const stderr: string[] = []
-    const unexpected = mock((_error: unknown, _origin: 'entrypoint') => undefined)
+    const unexpected = vi.fn((_error: unknown, _origin: 'entrypoint') => undefined)
     const error = Object.assign(new Error('raw provider payload'), {
       report: { secret: 'hostile provider response body' }
     })
@@ -93,7 +93,7 @@ describe('runMarketMakingEntrypoint observability', () => {
       ['start'],
       { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) },
       {},
-      { record: mock(() => undefined), unexpected }
+      { record: vi.fn(() => undefined), unexpected }
     )
 
     expect(exitCode).toBe(1)
@@ -122,14 +122,14 @@ describe('runMarketMakingEntrypoint observability', () => {
 
   test('preserves audited configuration diagnostics while still classifying the failure', async () => {
     const stderr: string[] = []
-    const unexpected = mock((_error: unknown, _origin: 'entrypoint') => undefined)
+    const unexpected = vi.fn((_error: unknown, _origin: 'entrypoint') => undefined)
 
     const exitCode = await runMarketMakingEntrypoint(
       { run: async () => Promise.reject(new ConfigFileError('malformed')) },
       ['start'],
       { writeOut: () => undefined, writeError: value => stderr.push(value) },
       {},
-      { record: mock(() => undefined), unexpected }
+      { record: vi.fn(() => undefined), unexpected }
     )
 
     expect(exitCode).toBe(1)

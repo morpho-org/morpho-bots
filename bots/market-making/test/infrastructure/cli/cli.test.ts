@@ -1,4 +1,7 @@
-import { describe, expect, mock, test } from 'bun:test'
+import { $ } from 'execa'
+import { dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { describe, expect, test, vi } from 'vitest'
 
 import type { LadderTransactionSubmittedEvent } from '../../../src/application/ladder/ladder-verbose'
 
@@ -38,21 +41,26 @@ const cli = (assertReady = async () => readyReport) => {
   )
 }
 
+const REPO_ROOT = `${dirname(fileURLToPath(import.meta.url))}/../../../../..`
+
+// The entrypoint is TypeScript, so the subprocess runs it through tsx rather than a bare node. `reject:
+// false` keeps a non-zero exit as a value (these tests assert on exit codes), and the env is passed
+// explicitly so no ambient config leaks in — only PATH plus whatever the case sets.
+const runEntrypointWith = async (
+  argv: readonly string[],
+  env: Record<string, string | undefined> = {}
+) => {
+  const { exitCode, stdout, stderr } = await $({
+    cwd: REPO_ROOT,
+    env: { PATH: process.env.PATH, ...env },
+    extendEnv: false,
+    reject: false
+  })`tsx bots/market-making/src/index.ts ${argv}`
+  return { exitCode: exitCode ?? 0, stdout, stderr }
+}
+
 const runEntrypoint = async (argv: readonly string[]) => {
-  const process = Bun.spawn(
-    [Bun.which('bun') ?? 'bun', 'bots/market-making/src/index.ts', ...argv],
-    {
-      cwd: `${import.meta.dir}/../../../../..`,
-      env: { PATH: Bun.env.PATH },
-      stdout: 'pipe',
-      stderr: 'pipe'
-    }
-  )
-  const [exitCode, stdout, stderr] = await Promise.all([
-    process.exited,
-    new Response(process.stdout).text(),
-    new Response(process.stderr).text()
-  ])
+  const { exitCode, stdout, stderr } = await runEntrypointWith(argv)
   return { exitCode, output: stdout + stderr }
 }
 
@@ -69,20 +77,7 @@ describe('Cli', () => {
   })
 
   test('entrypoint --version succeeds without loading runtime setup environment', async () => {
-    const process = Bun.spawn(
-      [Bun.which('bun') ?? 'bun', 'bots/market-making/src/index.ts', '--version'],
-      {
-        cwd: `${import.meta.dir}/../../../../..`,
-        env: { PATH: Bun.env.PATH },
-        stdout: 'pipe',
-        stderr: 'pipe'
-      }
-    )
-    const [exitCode, stdout, stderr] = await Promise.all([
-      process.exited,
-      new Response(process.stdout).text(),
-      new Response(process.stderr).text()
-    ])
+    const { exitCode, stdout, stderr } = await runEntrypointWith(['--version'])
 
     expect(exitCode).toBe(0)
     expect(stdout.trim()).toBe(packageJson.version)
@@ -90,20 +85,7 @@ describe('Cli', () => {
   })
 
   test('entrypoint --json --version emits a valid JSON string', async () => {
-    const process = Bun.spawn(
-      [Bun.which('bun') ?? 'bun', 'bots/market-making/src/index.ts', '--json', '--version'],
-      {
-        cwd: `${import.meta.dir}/../../../../..`,
-        env: { PATH: Bun.env.PATH },
-        stdout: 'pipe',
-        stderr: 'pipe'
-      }
-    )
-    const [exitCode, stdout, stderr] = await Promise.all([
-      process.exited,
-      new Response(process.stdout).text(),
-      new Response(process.stderr).text()
-    ])
+    const { exitCode, stdout, stderr } = await runEntrypointWith(['--json', '--version'])
 
     expect(exitCode).toBe(0)
     expect(JSON.parse(stdout)).toBe(packageJson.version)
@@ -128,37 +110,23 @@ describe('Cli', () => {
       'fragment',
       '"origin"'
     ]
-    const process = Bun.spawn(
-      [Bun.which('bun') ?? 'bun', 'bots/market-making/src/index.ts', 'setup-check'],
-      {
-        cwd: `${import.meta.dir}/../../../../..`,
-        env: {
-          PATH: Bun.env.PATH,
-          CHAIN_ID: '8453',
-          RPC_URL: `https://${markers[0]}:${markers[1]}@127.0.0.1:1/rpc?key=${markers[2]}#fragment`,
-          REFERENCE_RPC_URL: `http://127.0.0.1:1/archive?token=${markers[3]}`,
-          MAKER_PRIVATE_KEY: `0x${'11'.repeat(32)}`,
-          MAKER_ADDRESS: '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A',
-          MIDNIGHT_ADDRESS: '0x2222222222222222222222222222222222222222',
-          LOAN_ASSET_ADDRESS: '0x3333333333333333333333333333333333333333',
-          RATIFIER_ADDRESS: '0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E',
-          MARKET_IDS: `0x${'55'.repeat(32)}`,
-          REFERENCE_MARKET_ID: `0x${'77'.repeat(32)}`,
-          NATIVE_RESERVE_WEI: '10',
-          MAXIMUM_LEND_EXPOSURE_ASSETS: '100',
-          MORPHO_API_BASE_URL: `http://127.0.0.1:1/morpho?key=${markers[4]}`,
-          ROUTER_API_BASE_URL: `http://127.0.0.1:1/router?key=${markers[5]}`,
-          REQUEST_TIMEOUT_MS: '50'
-        },
-        stdout: 'pipe',
-        stderr: 'pipe'
-      }
-    )
-    const [exitCode, stdout, stderr] = await Promise.all([
-      process.exited,
-      new Response(process.stdout).text(),
-      new Response(process.stderr).text()
-    ])
+    const { exitCode, stdout, stderr } = await runEntrypointWith(['setup-check'], {
+      CHAIN_ID: '8453',
+      RPC_URL: `https://${markers[0]}:${markers[1]}@127.0.0.1:1/rpc?key=${markers[2]}#fragment`,
+      REFERENCE_RPC_URL: `http://127.0.0.1:1/archive?token=${markers[3]}`,
+      MAKER_PRIVATE_KEY: `0x${'11'.repeat(32)}`,
+      MAKER_ADDRESS: '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A',
+      MIDNIGHT_ADDRESS: '0x2222222222222222222222222222222222222222',
+      LOAN_ASSET_ADDRESS: '0x3333333333333333333333333333333333333333',
+      RATIFIER_ADDRESS: '0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E',
+      MARKET_IDS: `0x${'55'.repeat(32)}`,
+      REFERENCE_MARKET_ID: `0x${'77'.repeat(32)}`,
+      NATIVE_RESERVE_WEI: '10',
+      MAXIMUM_LEND_EXPOSURE_ASSETS: '100',
+      MORPHO_API_BASE_URL: `http://127.0.0.1:1/morpho?key=${markers[4]}`,
+      ROUTER_API_BASE_URL: `http://127.0.0.1:1/router?key=${markers[5]}`,
+      REQUEST_TIMEOUT_MS: '50'
+    })
     const output = stdout + stderr
 
     expect(exitCode).toBe(1)
@@ -273,8 +241,8 @@ describe('Cli', () => {
       reason: 'signal' as const,
       cycles: 1
     }
-    const assertReady = mock(async () => readyReport)
-    const runContinuously = mock(
+    const assertReady = vi.fn(async () => readyReport)
+    const runContinuously = vi.fn(
       async (parameters: {
         signal: AbortSignal
         onCycle?: (result: typeof readyReport) => void | Promise<void>
@@ -329,7 +297,7 @@ describe('Cli', () => {
   })
 
   test('mm bootstrap triggers one explicit position-bootstrap run', async () => {
-    const runOnce = mock(async () => [
+    const runOnce = vi.fn(async () => [
       { marketId: `0x${'11'.repeat(32)}`, status: 'applied', action: 'publish', assets: 10n }
     ])
     const application = new Cli(
@@ -348,7 +316,7 @@ describe('Cli', () => {
 
   test('mm bootstrap --verbose requests expanded bootstrap diagnostics', async () => {
     const txHash = `0x${'aa'.repeat(32)}` as const
-    const runOnce = mock(
+    const runOnce = vi.fn(
       async (parameters?: {
         verbose?: boolean
         onTransactionSubmitted?: (event: {
@@ -398,8 +366,8 @@ describe('Cli', () => {
       cycles: 1,
       cleanup: { status: 'applied' as const }
     }
-    const runOnce = mock(async () => [])
-    const runContinuously = mock(
+    const runOnce = vi.fn(async () => [])
+    const runContinuously = vi.fn(
       async (parameters: {
         signal: AbortSignal
         onCycle?: (result: readonly { status: string; [key: string]: unknown }[]) => void
@@ -433,7 +401,7 @@ describe('Cli', () => {
 
   test('mm bootstrap --monitor --verbose forwards verbose monitoring', async () => {
     const controller = new AbortController()
-    const runContinuously = mock(
+    const runContinuously = vi.fn(
       async (_parameters: { signal: AbortSignal; verbose?: boolean }) => ({
         status: 'stopped' as const,
         reason: 'signal' as const,
@@ -491,9 +459,9 @@ describe('Cli', () => {
   })
 
   test('mm ladder is exposed alongside setup-check and bootstrap', async () => {
-    const assertReady = mock(async () => readyReport)
-    const bootstrap = mock(async () => [])
-    const runOnce = mock(async () => [
+    const assertReady = vi.fn(async () => readyReport)
+    const bootstrap = vi.fn(async () => [])
+    const runOnce = vi.fn(async () => [
       { marketId: `0x${'11'.repeat(32)}`, status: 'observed', action: 'rest' }
     ])
     const application = new Cli(
@@ -520,7 +488,7 @@ describe('Cli', () => {
       matchedGroups: 1,
       invalidatedGroups: [{ groupId, txHash }]
     }
-    const run = mock(
+    const run = vi.fn(
       async (parameters?: {
         groupId?: `0x${string}`
         onTransactionSubmitted?: (event: {
@@ -562,7 +530,7 @@ describe('Cli', () => {
   test('mm invalidate canonicalizes one explicit group and forwards read-only mode', async () => {
     const groupId = `0x${'ab'.repeat(32)}` as const
     let readOnly: boolean | undefined
-    const run = mock(async (_parameters?: { groupId?: `0x${string}` }) => ({
+    const run = vi.fn(async (_parameters?: { groupId?: `0x${string}` }) => ({
       status: 'logged' as const,
       scope: 'group' as const,
       matchedGroups: 1,
@@ -586,7 +554,7 @@ describe('Cli', () => {
   })
 
   test('mm invalidate rejects a malformed group before constructing the writer', async () => {
-    const invalidation = mock(() => ({ run: async () => undefined as never }))
+    const invalidation = vi.fn(() => ({ run: async () => undefined as never }))
     const application = new Cli(
       new VersionService(),
       () => ({ assertReady: async () => readyReport }),
@@ -612,7 +580,7 @@ describe('Cli', () => {
       cleanup: { status: 'logged' as const }
     }
     let readOnly: boolean | undefined
-    const runContinuously = mock(
+    const runContinuously = vi.fn(
       async (parameters: {
         signal: AbortSignal
         verbose?: boolean
@@ -731,7 +699,7 @@ describe('Cli', () => {
     }
     let readOnly: boolean | undefined
     let factoryWriteEvent: ((value: unknown) => void | Promise<void>) | undefined
-    const runContinuously = mock(
+    const runContinuously = vi.fn(
       async (parameters: {
         signal: AbortSignal
         verbose?: boolean
@@ -1220,6 +1188,8 @@ describe('Cli', () => {
   test('propagates a readiness failure for a deterministic non-zero entrypoint exit', async () => {
     const failure = new Error('Setup check failed: chain')
 
-    expect(cli(async () => Promise.reject(failure)).run(['setup-check'])).rejects.toBe(failure)
+    await expect(cli(async () => Promise.reject(failure)).run(['setup-check'])).rejects.toBe(
+      failure
+    )
   })
 })
