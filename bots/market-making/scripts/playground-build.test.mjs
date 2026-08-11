@@ -14,7 +14,7 @@ import {
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
-import { afterEach, test } from 'node:test'
+import { afterEach, beforeEach, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import { CANONICAL_PUBLISH_TEMP_MARKER } from './playground-atomic-publish.mjs'
@@ -28,6 +28,11 @@ const buildScript = join(packageRoot, 'scripts/playground-build.mjs')
 const canonical = join(packageRoot, 'playground', 'dist')
 const staleCanonicalAsset = join(canonical, 'offline-clean-only.stale')
 const owned = new Set()
+
+beforeEach(t => {
+  if (process.platform !== 'linux') t.skip('requires Linux canonical-path semantics')
+})
+
 const makeCanonicalChain = async () => {
   const container = await mkdtemp(join(tmpdir(), 'playground-path-chain-'))
   owned.add(container)
@@ -113,7 +118,7 @@ if (!basename(outdir).startsWith('market-making-playground-dist-')) throw new Er
 writeFileSync(outdir + '/index.html', '<script src="./index.js"></script>')
 writeFileSync(outdir + '/index.js', 'globalThis.temporary = true')
 `)
-  const result = await runBuild(['--temporary'], { BUN_EXE: fakeBun })
+  const result = await runBuild(['--temporary'], { VITE_EXE: fakeBun })
   assert.equal(result.code, 0, result.stderr)
   const record = outputRecord(result.stdout)
   assert.deepEqual(Object.keys(record).sort(), ['kind', 'mode', 'path'])
@@ -137,7 +142,7 @@ const outdir = process.argv[process.argv.indexOf('--outDir') + 1]
 writeFileSync(outdir + '/partial.bin', 'partial')
 process.exit(23)
 `)
-  const result = await runBuild(['--temporary'], { BUN_EXE: fakeBun })
+  const result = await runBuild(['--temporary'], { VITE_EXE: fakeBun })
   assert.notEqual(result.code, 0)
   assert.match(result.stderr, /Production playground build failed with exit code 23/)
   const after = (await readdir(tmpdir())).filter(
@@ -160,7 +165,7 @@ writeFileSync(outdir + '/index.html', '<link rel="stylesheet" href="./index.css"
 writeFileSync(outdir + '/index.css', 'body { color: red }')
 writeFileSync(outdir + '/index.js', 'globalThis.built = true')
 `)
-  const result = await runBuild([], { BUN_EXE: fakeBun })
+  const result = await runBuild([], { VITE_EXE: fakeBun })
   assert.equal(result.code, 0, result.stderr)
   assert.equal(result.stdout, '')
   const html = await readFile(join(canonical, 'index.html'), 'utf8')
@@ -186,7 +191,7 @@ const outdir = process.argv[process.argv.indexOf('--outDir') + 1]
 writeFileSync(outdir + '/partial', 'never publish me')
 process.exit(29)
 `)
-  const result = await runBuild([], { BUN_EXE: fakeBun })
+  const result = await runBuild([], { VITE_EXE: fakeBun })
   assert.notEqual(result.code, 0)
   assert.match(result.stderr, /exit code 29/)
   assert.deepEqual(await readFile(join(canonical, 'index.html')), beforeIndex)

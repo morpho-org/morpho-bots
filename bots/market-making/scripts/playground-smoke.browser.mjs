@@ -444,7 +444,7 @@ setInterval(() => {}, 1000)
       ...process.env,
       CHROMIUM_PATH: chromiumPath,
       PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
-      BUN_EXE: fakeBun,
+      VITE_EXE: fakeBun,
       NODE_DISABLE_COMPILE_CACHE: '1',
       PLAYGROUND_SMOKE_BUILD_CAPTURE_BARRIER_FILE: captureBarrierFile,
       PLAYGROUND_SMOKE_BUILD_CAPTURE_FILE: captureFile,

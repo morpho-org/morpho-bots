@@ -8,7 +8,7 @@
     "build": "tsx scripts/build.ts",
     "deploy:railway": "tsx scripts/deploy-railway.ts",
     "prestart": "pnpm --filter \"{.}...\" --if-present run build",
-    "seed:positions": "node --env-file-if-exists=.env dist/scripts/seed-liquidatable-positions.js",
+    "seed:positions": "pnpm --filter \"{.}...\" --if-present run build && node --env-file-if-exists=.env dist/scripts/seed-liquidatable-positions.js",
     "start": "node --env-file-if-exists=.env dist/src/index.js",
     "typecheck": "soltag && tsc --noEmit"
   },

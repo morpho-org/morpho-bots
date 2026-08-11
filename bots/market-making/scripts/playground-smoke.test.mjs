@@ -35,6 +35,10 @@ import {
   waitForReadiness
 } from './playground-smoke-support.mjs'
 
+test.beforeEach(t => {
+  if (process.platform !== 'linux') t.skip('requires Linux /proc process inspection')
+})
+
 const temporaryDirectories = []
 const smokeScript = fileURLToPath(new URL('./playground-smoke.mjs', import.meta.url))
 const temporaryDirectory = async prefix => {

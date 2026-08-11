@@ -30,6 +30,10 @@ import {
 } from './playground-serve-support.mjs'
 import { prepareFreshDist, startStaticServer } from './playground-smoke-support.mjs'
 
+test.beforeEach(t => {
+  if (process.platform !== 'linux') t.skip('requires Linux process and socket semantics')
+})
+
 const root = fileURLToPath(new URL('..', import.meta.url))
 const launcher = fileURLToPath(new URL('./playground-serve.mjs', import.meta.url))
 const temporaryDirectories = []
@@ -162,8 +166,8 @@ test('installed package dependencies still run the fast frozen lockfile check', 
     }
   })
   assert.deepEqual(
-    calls.map(call => call.args),
-    [['install', '--frozen-lockfile']]
+    calls.map(call => [call.executable, call.args]),
+    [['pnpm', ['install', '--frozen-lockfile']]]
   )
 })
 
