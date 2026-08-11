@@ -120,6 +120,56 @@ describe('market-making container release artifacts', () => {
     expect(compose).toContain('read_only: true')
   })
 
+  test('passes standard AWS credentials through Compose for KMS signers', () => {
+    const compose = readFileSync(resolve(packageRoot, 'docker-compose.yml'), 'utf8')
+
+    expect(compose).toContain('AWS_ACCESS_KEY_ID:')
+    expect(compose).toContain('AWS_SECRET_ACCESS_KEY:')
+    expect(compose).toContain('AWS_SESSION_TOKEN:')
+  })
+
+  test('moves latest only for the highest stable market-making CalVer release', () => {
+    const workflow = readFileSync(
+      resolve(repositoryRoot, '.github/workflows/deploy-market-making.yml'),
+      'utf8'
+    )
+
+    expect(workflow).toContain('highest_stable_tag=')
+    expect(workflow).toContain('[ "$RELEASE_TAG" = "$highest_stable_tag" ]')
+    expect(workflow).not.toContain('[ "$PRERELEASE" = "true" ] || tags+=("latest")')
+  })
+
+  test('fails closed on deploy-label lookup errors', () => {
+    const workflow = readFileSync(
+      resolve(repositoryRoot, '.github/workflows/tag-releases.yml'),
+      'utf8'
+    )
+    const labelLookup = workflow.slice(
+      workflow.indexOf('- name: Check deploy label'),
+      workflow.indexOf('- name: Mint app installation token')
+    )
+
+    expect(labelLookup).toContain('gh api "repos/$REPO/commits/$SHA/pulls"')
+    expect(labelLookup).not.toContain('|| true')
+  })
+
+  test('mints an app token only after detecting a pending version bump', () => {
+    const workflow = readFileSync(
+      resolve(repositoryRoot, '.github/workflows/tag-releases.yml'),
+      'utf8'
+    )
+    const detectIndex = workflow.indexOf('- name: Detect market-making version bump')
+    const mintIndex = workflow.indexOf('- name: Mint app installation token')
+
+    expect(detectIndex).toBeGreaterThan(-1)
+    expect(mintIndex).toBeGreaterThan(detectIndex)
+    expect(
+      workflow.slice(mintIndex, workflow.indexOf('- name: Check and create releases'))
+    ).toContain(
+      "if: steps.version.outputs.bumped == 'true' && steps.label.outputs.deploy_labeled != 'true'"
+    )
+  })
+
   test('gives detached docker runs the full graceful shutdown window', () => {
     const readme = readFileSync(resolve(packageRoot, 'README.md'), 'utf8')
     const detachedRun = readme.slice(

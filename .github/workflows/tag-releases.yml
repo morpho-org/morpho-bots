@@ -60,12 +60,36 @@ jobs:
       - name: Fetch all tags
         run: git fetch --tags --prune --force
 
+      # Avoid requiring the release GitHub App credentials for package metadata changes that do not
+      # bump the version. The full create step repeats this comparison before any side effect.
+      - name: Detect market-making version bump
+        id: version
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ] \
+            && git cat-file -e "$BEFORE_SHA" 2>/dev/null; then
+            prev_commit="$BEFORE_SHA"
+          else
+            prev_commit="$(git rev-parse HEAD~1)"
+          fi
+          current_version="$(jq -r .version bots/market-making/package.json)"
+          previous_version="$(git show "$prev_commit:bots/market-making/package.json" 2>/dev/null | jq -r .version || echo '')"
+          if [ -n "$current_version" ] && [ "$current_version" != "null" ] \
+            && [ "$current_version" != "$previous_version" ]; then
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # A merge that carries the `release-market-making` label is owned by deploy-production.yml:
       # it cuts the release only AFTER the Railway deploy succeeds, and that release publishes the
       # image identically. Running here too would race it — a release/image before the deploy
       # settles, or two same-day tags for one commit — so this flow yields to the label flow.
       - name: Check deploy label
         id: label
+        if: steps.version.outputs.bumped == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -73,7 +97,7 @@ jobs:
         run: |
           set -euo pipefail
           # Labels of the PR whose merge produced this commit.
-          labels="$(gh api "repos/$REPO/commits/$SHA/pulls" --jq '.[].labels[].name' 2>/dev/null || true)"
+          labels="$(gh api "repos/$REPO/commits/$SHA/pulls" --jq '.[].labels[].name')"
           if echo "$labels" | grep -qx 'release-market-making'; then
             echo "deploy_labeled=true" >> "$GITHUB_OUTPUT"
           else
@@ -84,6 +108,7 @@ jobs:
       # (image publish, Slack notify). See the header for why the default GITHUB_TOKEN cannot.
       - name: Mint app installation token
         id: app-token
+        if: steps.version.outputs.bumped == 'true' && steps.label.outputs.deploy_labeled != 'true'
         uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2.1.4
         with:
           app-id: ${{ secrets.GIT_BOT_CLIENT_ID }}
@@ -91,6 +116,7 @@ jobs:
 
       - name: Check and create releases
         id: create
+        if: steps.version.outputs.bumped == 'true' && steps.label.outputs.deploy_labeled != 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           DEPLOY_LABELED: ${{ steps.label.outputs.deploy_labeled }}

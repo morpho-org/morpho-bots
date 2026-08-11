@@ -16,9 +16,10 @@ name: Deploy market-making
 # UI) triggers identically. workflow_dispatch stays as the escape hatch for re-publishing, e.g.
 # `gh workflow run deploy-market-making.yml -f tag=latest`.
 #
-# A release publish builds the tagged commit and pushes `<release tag>` plus `git-<shortsha>`, and
-# moves `latest` unless the release is marked a prerelease. A dispatch builds the dispatched ref
-# and pushes the `tag` input (default `latest`) plus `git-<shortsha>`.
+# A release publish builds the tagged commit and pushes `<release tag>` plus `git-<shortsha>`. The
+# highest non-prerelease CalVer release also moves `latest`; backfilled older releases and
+# prereleases never do. A dispatch builds the dispatched ref and pushes the `tag` input (default
+# `latest`) plus `git-<shortsha>`.
 #
 # Credentials live in the `market-making-dockerhub` GitHub Environment (distinct from
 # `market-making-production`, which holds the Railway deploy credentials): secrets
@@ -84,6 +85,7 @@ jobs:
           PRERELEASE: ${{ github.event.release.prerelease }}
           DISPATCH_TAG: ${{ inputs.tag || 'latest' }}
           SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           : "${REPOSITORY:?set variable DOCKERHUB_REPOSITORY on the market-making-dockerhub environment}"
@@ -107,8 +109,22 @@ jobs:
               exit 1
             fi
             tags=("$RELEASE_TAG")
-            # A prerelease publishes its own tag only; `latest` keeps tracking full releases.
-            [ "$PRERELEASE" = "true" ] || tags+=("latest")
+            # `latest` tracks the highest stable CalVer release, not the most recently published
+            # release. This prevents a later backfill of an older release from downgrading it.
+            if [ "$PRERELEASE" != "true" ]; then
+              highest_stable_tag="$(
+                gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+                  --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
+                  | grep -E '^market-making-[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[1-9][0-9]*$' \
+                  | sort -V \
+                  | tail -n 1
+              )"
+              if [ "$RELEASE_TAG" = "$highest_stable_tag" ]; then
+                tags+=("latest")
+              else
+                echo "Not moving latest: $highest_stable_tag is newer than backfilled release $RELEASE_TAG"
+              fi
+            fi
           else
             if [[ "$DISPATCH_TAG" == market-making-* ]]; then
               echo "refusing to overwrite immutable release tag $DISPATCH_TAG from a manual dispatch; publish a GitHub release for versioned tags" >&2

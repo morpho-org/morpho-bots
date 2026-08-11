@@ -46,6 +46,11 @@ services:
       KEYSTORE_INTERACTIVE:
       AWS_KMS_KEY_ID:
       AWS_REGION:
+      # Standard AWS SDK environment credentials for KMS. Session tokens are optional, but must be
+      # forwarded when temporary STS credentials are used.
+      AWS_ACCESS_KEY_ID:
+      AWS_SECRET_ACCESS_KEY:
+      AWS_SESSION_TOKEN:
       MAKER_ADDRESS:
       MIDNIGHT_ADDRESS:
       LOAN_ASSET_ADDRESS:
