@@ -7,8 +7,8 @@ import {
   Tree,
   setterRatifierAbi
 } from '@morpho-org/midnight-sdk'
-import { describe, expect, test } from 'bun:test'
 import { encodeFunctionData } from 'viem'
+import { describe, expect, test } from 'vitest'
 
 import {
   assertLadderPublicationTransaction,

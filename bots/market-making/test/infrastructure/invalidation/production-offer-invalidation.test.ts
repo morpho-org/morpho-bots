@@ -1,6 +1,6 @@
 import type { Address, Hex } from 'viem'
 
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 
 import { ConfigService } from '../../../src/config/config.service'
 import { createProductionOfferInvalidationPort } from '../../../src/infrastructure/invalidation/production-offer-invalidation'

@@ -32,7 +32,9 @@ function resolverSelector() {
   return toFunctionSelector(resolveAbi)
 }
 
-export async function createApplication(environment: Record<string, string | undefined> = Bun.env) {
+export async function createApplication(
+  environment: Record<string, string | undefined> = process.env
+) {
   const config = ConfigService.from(environment)
   const logger = createLogger('info', {
     context: {

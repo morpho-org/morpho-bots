@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'bun:test'
 import { readFile } from 'node:fs/promises'
+import { describe, expect, test } from 'vitest'
 
 const read = (path: string) => readFile(new URL(`../../${path}`, import.meta.url), 'utf8')
 

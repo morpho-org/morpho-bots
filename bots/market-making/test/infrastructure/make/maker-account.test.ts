@@ -2,7 +2,6 @@ import type { TransactionSerializedLegacy } from 'viem'
 
 import { Wallet } from '@ethereumjs/wallet'
 import { secp256k1 } from '@noble/curves/secp256k1'
-import { describe, expect, mock, test } from 'bun:test'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -14,6 +13,7 @@ import {
   recoverTransactionAddress
 } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
+import { describe, expect, test, vi } from 'vitest'
 
 import { createMakerAccount } from '../../../src/infrastructure/make/maker-account.utils'
 
@@ -23,7 +23,7 @@ const maker = privateKeyToAccount(privateKey).address
 describe('maker signer selection', () => {
   test('reuses one AWS KMS client per region across public-key and signing calls', async () => {
     const source = await readFile(
-      `${import.meta.dir}/../../../src/infrastructure/make/maker-account.utils.ts`,
+      new URL('../../../src/infrastructure/make/maker-account.utils.ts', import.meta.url),
       'utf8'
     )
 
@@ -62,8 +62,8 @@ describe('maker signer selection', () => {
 
   test('decrypts a keystore only at the signer boundary', async () => {
     const password = '  keystore-秘密🔐  '
-    const readFile = mock(async () => '{"encrypted":true}')
-    const decryptKeystore = mock(async (json: string, suppliedPassword: string) => {
+    const readFile = vi.fn(async () => '{"encrypted":true}')
+    const decryptKeystore = vi.fn(async (json: string, suppliedPassword: string) => {
       expect(json).toContain('encrypted')
       expect(suppliedPassword).toBe(password)
       return privateKey
@@ -122,8 +122,8 @@ describe('maker signer selection', () => {
       ...Buffer.from('3056301006072a8648ce3d020106052b8104000a034200', 'hex'),
       ...publicKey
     ])
-    const getPublicKey = mock(async () => spki)
-    const signDigest = mock(async (_keyId: string, _region: string, digest: Uint8Array) =>
+    const getPublicKey = vi.fn(async () => spki)
+    const signDigest = vi.fn(async (_keyId: string, _region: string, digest: Uint8Array) =>
       secp256k1.sign(digest, secret, { lowS: false }).toDERRawBytes()
     )
     const account = await createMakerAccount(

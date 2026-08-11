@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'bun:test'
 import { keccak256, parseEther, stringToBytes } from 'viem'
+import { describe, expect, it } from 'vitest'
 
 import {
   CALLBACK_SUCCESS,

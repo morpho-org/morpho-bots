@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'bun:test'
 import { decodeFunctionResult, encodeFunctionResult, getAddress } from 'viem'
+import { describe, expect, it } from 'vitest'
 
 import type { Market } from '../../src/execution/encode-call'
 import type { LensOut } from '../../src/state/lens.sol'
@@ -31,7 +31,7 @@ const MARKET: Market = {
 
 describe('MidnightLiquidationLens', () => {
   it('compiles via soltag and binds the Midnight address into the factory call', () => {
-    // Proves the soltag bun preload compiled the inline Solidity (sol``` would otherwise throw)
+    // Proves the soltag/vite transform compiled the inline Solidity (sol``` would otherwise throw)
     // and that constructor binding produced a deployless factory call.
     const compiled = MidnightLiquidationLens.with(MIDNIGHT)
     expect(compiled.factoryData.length).toBeGreaterThan(2)

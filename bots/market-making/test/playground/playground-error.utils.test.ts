@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 
 import { CollectionImportError } from '../../playground/collection-import.error'
 import { CollectionValidationError } from '../../playground/collection-validation.error'

@@ -1,6 +1,6 @@
-import { describe, expect, test } from 'bun:test'
 import { createPublicClient, custom } from 'viem'
 import { base } from 'viem/chains'
+import { describe, expect, test } from 'vitest'
 
 import { createManagedMakerAccount } from '../../../src/infrastructure/make/managed-maker-account.utils'
 

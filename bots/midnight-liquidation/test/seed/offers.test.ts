@@ -6,8 +6,8 @@
 
 import type { Address, Hex } from 'viem'
 
-import { describe, expect, it } from 'bun:test'
 import { keccak256, toHex, zeroAddress } from 'viem'
+import { describe, expect, it } from 'vitest'
 
 import type { Offer } from '../../scripts/seed/offers'
 import type { CollateralParams, Market } from '../../src/execution/encode-call'

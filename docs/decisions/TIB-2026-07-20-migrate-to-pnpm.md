@@ -181,6 +181,14 @@ pre/post scripts by default. `prestart` is load-bearing: it builds `@repo/contra
 `dist/` for the liquidators and runs `generate:api` for `midnight-crossed-books`. Without this
 setting the bots cannot resolve their own workspace dependency at container start.
 
+**`prestart` survives PR 2, but only for the local path.** PR 2 moves the build to image-build time
+(`RUN pnpm -r --if-present run build`) and its `CMD` is a bare `node dist/src/index.js`, which never
+fires a pre-script — so the container builds exactly once and does not rebuild at start. An operator
+running the documented `pnpm --filter <bot> run start` from a clean checkout has no `dist/` at all,
+though, so each bot keeps `prestart: pnpm --filter "{.}..." --if-present run build` — the `{.}...`
+selector scopes it to that bot plus its workspace dependencies, so one bot's start does not build the
+other three.
+
 **PR 1's Docker intermediate state uses a Node base with a copied bun binary.** Keeping
 `FROM oven/bun` was not viable: pnpm is activated through corepack, which those images do not
 provide, and `bun install --frozen-lockfile` is not a fallback once `bun.lock` is deleted. Both pnpm
