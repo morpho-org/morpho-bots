@@ -1,8 +1,8 @@
 import type { Hex } from 'viem'
 
-import { describe, expect, it } from 'bun:test'
 import { createPublicClient, custom, getAddress } from 'viem'
 import { base } from 'viem/chains'
+import { describe, expect, it } from 'vitest'
 
 import { simulateLiquidationExec } from '../src/simulate'
 

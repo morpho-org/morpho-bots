@@ -1,7 +1,7 @@
 import type { Address } from 'viem'
 
-import { describe, expect, it } from 'bun:test'
 import { getAddress, isAddressEqual } from 'viem'
+import { describe, expect, it } from 'vitest'
 
 import type { HttpVenue, RateLimitedClient } from '../src/http-client'
 import type { QuoteLogger, QuoteRequest } from '../src/quoting'

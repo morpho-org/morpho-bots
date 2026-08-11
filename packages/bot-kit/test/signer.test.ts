@@ -1,8 +1,8 @@
 import type { Hex } from 'viem'
 
-import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test'
 import { parseTransaction } from 'viem'
 import { base } from 'viem/chains'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Policy } from '../src/policy'
 
@@ -44,11 +44,11 @@ function mockRpc(results: Record<string, RpcResult>) {
     const result = typeof value === 'function' ? await value(body) : value
     return Response.json({ jsonrpc: '2.0', id: body.id, result })
   }
-  spyOn(globalThis, 'fetch').mockImplementation(handler as unknown as typeof fetch)
+  vi.spyOn(globalThis, 'fetch').mockImplementation(handler as unknown as typeof fetch)
 }
 
 describe('createSigner', () => {
-  afterEach(() => mock.restore())
+  afterEach(() => vi.restoreAllMocks())
 
   it('send returns the signer-assigned nonce and the tx hash', async () => {
     mockRpc({
@@ -141,7 +141,7 @@ describe('createSigner', () => {
 
   it('getBaseFee throws when the chain reports no base fee', async () => {
     mockRpc({ eth_getBlockByNumber: {} })
-    expect(createSigner(CONFIG).getBaseFee()).rejects.toThrow(/baseFeePerGas/)
+    await expect(createSigner(CONFIG).getBaseFee()).rejects.toThrow(/baseFeePerGas/)
   })
 
   it('consumedNonce reads the latest (mined) transaction count', async () => {
