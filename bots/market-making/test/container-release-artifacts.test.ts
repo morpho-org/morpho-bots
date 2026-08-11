@@ -20,12 +20,40 @@ describe('market-making container release artifacts', () => {
     expect(marketMakingRelease).not.toContain('date="$(date -u +%Y.%m.%d)"')
   })
 
-  test('documents manual releases from the same package version and commit', () => {
+  test('documents repo-root manual releases from the bot package version and commit', () => {
     const readme = readFileSync(resolve(packageRoot, 'README.md'), 'utf8')
 
     expect(readme).toContain(
-      `gh release create "market-making-$(node -p "require('./package.json').version")" --target "$(git rev-parse HEAD)" --generate-notes`
+      `gh release create "market-making-$(node -p "require('./bots/market-making/package.json').version")" --target "$(git rev-parse HEAD)" --generate-notes`
     )
+  })
+
+  test('keeps the complete operator configuration reference', () => {
+    const readme = readFileSync(resolve(packageRoot, 'README.md'), 'utf8')
+
+    expect(readme).not.toContain('[OUTPUT TRUNCATED')
+    expect(readme).toContain('### Environment variables')
+    expect(readme).toContain('### Better Stack observability')
+    expect(readme).toContain('### YAML schema')
+  })
+
+  test('allows the GitHub Actions bot to rewrite release notes', () => {
+    const workflow = readFileSync(
+      resolve(repositoryRoot, '.github/workflows/claude-write-release-notes.yml'),
+      'utf8'
+    )
+
+    expect(workflow).toContain("allowed_bots: 'github-actions[bot]'")
+  })
+
+  test('prevents manual dispatches from moving immutable release tags', () => {
+    const workflow = readFileSync(
+      resolve(repositoryRoot, '.github/workflows/deploy-market-making.yml'),
+      'utf8'
+    )
+
+    expect(workflow).toContain('if [[ "$DISPATCH_TAG" == market-making-* ]]')
+    expect(workflow).toContain('refusing to overwrite immutable release tag')
   })
 
   test('disables Husky in every workspace Docker install', () => {

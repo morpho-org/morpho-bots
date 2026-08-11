@@ -110,6 +110,10 @@ jobs:
             # A prerelease publishes its own tag only; `latest` keeps tracking full releases.
             [ "$PRERELEASE" = "true" ] || tags+=("latest")
           else
+            if [[ "$DISPATCH_TAG" == market-making-* ]]; then
+              echo "refusing to overwrite immutable release tag $DISPATCH_TAG from a manual dispatch; publish a GitHub release for versioned tags" >&2
+              exit 1
+            fi
             tags=("$DISPATCH_TAG")
           fi
           tags+=("git-${SHA:0:7}")

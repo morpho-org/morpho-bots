@@ -60,7 +60,7 @@ jobs:
           # and a write token while allowing Bash — a full transcript could retain
           # credential-bearing tool output in the Actions logs.
           prompt: /ci-write-release-notes
-          allowed_bots: 'github-actions'
+          allowed_bots: 'github-actions[bot]'
           claude_args: |
             --allowedTools Bash,Read,Glob,Grep
         env:
