@@ -164,7 +164,8 @@ export async function runTick(deps: {
   // `returned` always equals `pairs` (the batch lens maps every input row); `invalid` is the
   // informative one — a row the lens zeroed (unknown market, reverting oracle) would otherwise be
   // indistinguishable from a healthy position inside `pairs - liquidatable`.
-  const invalid = [...lensOut.values()].filter(out => !out.valid).length
+  let invalid = 0
+  for (const out of lensOut.values()) if (!out.valid) invalid += 1
   logger.info('lens.read', { pairs: pairs.length, returned: lensOut.size, invalid })
 
   const counters: TickCounters = {
@@ -186,10 +187,14 @@ export async function runTick(deps: {
   // 3. Compose liquidatability off-chain → plan → quote → simulate → submit. `inflight` is captured
   //    once; discovery yields distinct (market, borrower) pairs, so no label repeats within a tick.
   const inflight = inflightLabels()
-  // Resolved on the first skip and reused, so a tick emits the whole blocker set or none of it.
-  let explainSkips: boolean | null = null
+  // Claimed once per tick, so a tick emits the whole blocker set or none of it, all sharing one
+  // `chainHead`. A claim on a skip-free tick is undone by the `reset` in the epilogue below.
+  const explainSkips = planSkipSampler.claim(chainHead)
 
-  const processPairs = async () => {
+  // Emit counters even when a position aborts the tick (a hashless send after the nonce was claimed
+  // throws by design) — without `complete`, partial counters look exactly like an idle tick.
+  let complete = false
+  try {
     for (const pair of pairs) {
       const id = marketId(pair.params)
       const label = lensKey(id, pair.borrower)
@@ -208,7 +213,6 @@ export async function runTick(deps: {
       const planOutcome = planWithReason(planInput)
       if (planOutcome.kind === 'skip') {
         counters.planSkipped += 1
-        explainSkips ??= planSkipSampler.claim(chainHead)
         if (explainSkips) {
           // Inputs AND derived trace, so sizing replays from this one line. `marketId`/`borrower`
           // last, so a future `PlanInput` field can never shadow them.
@@ -302,22 +306,20 @@ export async function runTick(deps: {
         continue
       }
       counters.notSent += 1
-      // Only a per-position send failure earns a backoff. The other reasons are queue-WIDE refusals
-      // that reject every send this tick, so backing off here would suppress positions that did
-      // nothing wrong, for 2, 4, 8… blocks after the latch itself cleared.
-      if (sendOutcome.reason === 'submit_failed') {
+      // Only a failure scoped to THIS position earns a backoff. A queue-scoped refusal rejects every
+      // send this tick, so backing off here would suppress positions that did nothing wrong, for 2,
+      // 4, 8… blocks after the latch itself cleared.
+      if (sendOutcome.scope === 'position') {
         backoff.record(label, chainHead)
         cooldown.mark(label)
       }
     }
+    complete = true
+  } finally {
+    // Undo the eager claim when nothing was skipped, so the first skip after any quiet stretch is
+    // always explained (edge-triggering).
+    if (counters.planSkipped === 0) planSkipSampler.reset()
+    logger.info('tick.end', { ...counters, complete })
   }
-
-  // Emit counters even when a position aborts the tick (a hashless send after the nonce was claimed
-  // throws by design) — without `complete`, partial counters look exactly like an idle tick.
-  // `tryCatch` preserves the error instance, so the rethrow keeps `TxSendError` intact downstream.
-  const { error } = await tryCatch(processPairs())
-  if (counters.planSkipped === 0) planSkipSampler.reset()
-  logger.info('tick.end', { ...counters, complete: !error })
-  if (error) throw error
   return counters
 }

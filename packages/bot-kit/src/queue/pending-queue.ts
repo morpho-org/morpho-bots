@@ -56,25 +56,25 @@ type Pending = {
  * may clear a per-position backoff. `failed` means no transaction left this process, and its `reason`
  * pairs with the warn line the queue already logged:
  *
- * | `reason`            | logged event        | scope                |
- * | ------------------- | ------------------- | -------------------- |
- * | `submit_failed`     | `tx.submit_failed`  | THIS position's send |
- * | `send_aborted`      | `tx.send_aborted`   | queue-wide refusal   |
- * | `nonce_sync_failed` | `nonce.sync_failed` | queue-wide refusal   |
- * | `nonce_hole`        | `queue.nonce_hole`  | queue-wide refusal   |
+ * | `reason`            | logged event        | `scope`      |
+ * | ------------------- | ------------------- | ------------ |
+ * | `submit_failed`     | `tx.submit_failed`  | `'position'` |
+ * | `send_aborted`      | `tx.send_aborted`   | `'queue'`    |
+ * | `nonce_sync_failed` | `nonce.sync_failed` | `'queue'`    |
+ * | `nonce_hole`        | `queue.nonce_hole`  | `'queue'`    |
  *
- * Scope matters: a queue-wide reason refuses EVERY send this tick, so a caller must not back off the
- * position it happened to be holding. Only `submit_failed` is that position's own failure.
+ * `scope` is the field callers should branch on: a `'queue'` refusal rejects EVERY send this tick,
+ * so a caller must not back off the position it happened to be holding — only a `'position'` failure
+ * is that position's own. Keeping the classification here means a new reason cannot be added without
+ * the type forcing a scope decision.
  *
  * A hashless send that already claimed a nonce is not a `failed` outcome — it throws `TxSendError` so
  * the caller aborts the tick instead of racing the signer's cursor rollback.
  */
 export type SubmitOutcome =
-  | { kind: 'sent'; nonce: number; txHash: Hex }
-  | {
-      kind: 'failed'
-      reason: 'send_aborted' | 'nonce_sync_failed' | 'nonce_hole' | 'submit_failed'
-    }
+  | { kind: 'sent' }
+  | { kind: 'failed'; scope: 'position'; reason: 'submit_failed' }
+  | { kind: 'failed'; scope: 'queue'; reason: 'send_aborted' | 'nonce_sync_failed' | 'nonce_hole' }
 
 export type PendingQueue = {
   submit(args: {
@@ -219,7 +219,7 @@ export function createPendingQueue({
     // rolled its cursor back, so broadcasting again now would race that rollback.
     if (sendAborted) {
       logger.warn('tx.send_aborted', { label: args.label })
-      return { kind: 'failed', reason: 'send_aborted' }
+      return { kind: 'failed', scope: 'queue', reason: 'send_aborted' }
     }
     // Nothing in flight → reconcile the cursor with chain before claiming a nonce. A failed sync
     // would leave a stale (possibly runaway) cursor, so skip the send this tick rather than risk a
@@ -231,7 +231,7 @@ export function createPendingQueue({
       const synced = await tryCatch(syncNonce())
       if (synced.error) {
         logger.warn('nonce.sync_failed', { label: args.label, reason: revertReason(synced.error) })
-        return { kind: 'failed', reason: 'nonce_sync_failed' }
+        return { kind: 'failed', scope: 'queue', reason: 'nonce_sync_failed' }
       }
       if (nonceHoleLow !== null) clearNonceHole('sync')
     }
@@ -241,7 +241,7 @@ export function createPendingQueue({
     // sweep clears it once the chain consumes past the hole.
     if (nonceHoleLow !== null) {
       logger.warn('queue.nonce_hole', { label: args.label, nonce: nonceHoleLow })
-      return { kind: 'failed', reason: 'nonce_hole' }
+      return { kind: 'failed', scope: 'queue', reason: 'nonce_hole' }
     }
     const sent = await tryCatch(
       send({
@@ -265,7 +265,7 @@ export function createPendingQueue({
         sendAborted = true
         throw sent.error
       }
-      return { kind: 'failed', reason: 'submit_failed' }
+      return { kind: 'failed', scope: 'position', reason: 'submit_failed' }
     }
     const { nonce, txHash } = sent.data
     pending.set(nonce, {
@@ -285,7 +285,7 @@ export function createPendingQueue({
       maxFee: args.maxFeePerGas,
       priority: args.maxPriorityFeePerGas
     })
-    return { kind: 'sent', nonce, txHash }
+    return { kind: 'sent' }
   }
 
   async function replaceStuck(entry: Pending, blockNumber: bigint, baseFee: bigint): Promise<void> {

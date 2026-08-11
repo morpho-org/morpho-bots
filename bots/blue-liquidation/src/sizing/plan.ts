@@ -108,9 +108,12 @@ export const planWithReason = (input: PlanInput): PlanOutcome => {
     input.collateralPrice
   )
   const seizedAssets = min(input.collateral, seizeForFullDebt)
-  const trace: SizingTrace = { lif, repaidAssetsFull, seizeForFullDebt, seizedAssets }
-  // Rounds to nothing (dust position, or price ≫ debt): can't pass 0 to `liquidate`, so skip it.
-  if (seizedAssets === 0n) return { kind: 'skip', reason: 'seize_rounds_to_zero', trace }
+  // Rounds to nothing (dust position, or price ≫ debt): can't pass 0 to `liquidate`, so skip it. The
+  // trace is built only here, so the plan-success path allocates nothing extra.
+  if (seizedAssets === 0n) {
+    const trace: SizingTrace = { lif, repaidAssetsFull, seizeForFullDebt, seizedAssets }
+    return { kind: 'skip', reason: 'seize_rounds_to_zero', trace }
+  }
   return { kind: 'plan', plan: { seizedAssets } }
 }
 

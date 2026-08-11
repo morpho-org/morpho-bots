@@ -117,7 +117,7 @@ describe('createPendingQueue', () => {
     expect(sends[0]?.nonce).toBeUndefined() // first send leaves nonce assignment to the signer
     expect(queue.snapshot()[0]).toEqual({ nonce: 7, txHash: hashOf(1), attempt: 0 })
     // The caller's broadcast signal — only this outcome may clear a per-position backoff.
-    expect(outcome).toEqual({ kind: 'sent', nonce: 7, txHash: hashOf(1) })
+    expect(outcome).toEqual({ kind: 'sent' })
   })
 
   it('removes a tx once its receipt confirms', async () => {
@@ -174,7 +174,7 @@ describe('createPendingQueue', () => {
     expect(queue.size).toBe(0)
     expect(events.find(e => e.event === 'tx.submit_failed')?.level).toBe('warn')
     // Per-position: this is the one reason a caller may attribute to the position it was holding.
-    expect(outcome).toEqual({ kind: 'failed', reason: 'submit_failed' })
+    expect(outcome).toEqual({ kind: 'failed', scope: 'position', reason: 'submit_failed' })
   })
 
   it('rethrows a first-send failure after a nonce was claimed but no hash was returned', async () => {
@@ -309,7 +309,7 @@ describe('createPendingQueue', () => {
     })
     const outcome = await submitOne(ctx.queue) // must not throw
     expect(ctx.queue.size).toBe(0) // nothing broadcast on a stale cursor
-    expect(outcome).toEqual({ kind: 'failed', reason: 'nonce_sync_failed' })
+    expect(outcome).toEqual({ kind: 'failed', scope: 'queue', reason: 'nonce_sync_failed' })
     expect(ctx.sends).toHaveLength(0)
     expect(events.find(e => e.event === 'nonce.sync_failed')?.level).toBe('warn')
   })
@@ -495,7 +495,7 @@ describe('send-aborted latch', () => {
     const outcome = await submitOne(queue, 0n) // latched → skipped
     expect(events.find(e => e.event === 'tx.send_aborted')?.level).toBe('warn')
     // Queue-WIDE: refuses every send this tick, so a caller must not back the position off for it.
-    expect(outcome).toEqual({ kind: 'failed', reason: 'send_aborted' })
+    expect(outcome).toEqual({ kind: 'failed', scope: 'queue', reason: 'send_aborted' })
   })
 })
 
@@ -565,7 +565,7 @@ describe('nonce-hole latch', () => {
     // so the empty-queue sync can't clear it).
     const refused = await ctx.submit('c', 6n)
     expect(ctx.sends.length).toBe(sendsAfterDrop) // no new broadcast
-    expect(refused).toEqual({ kind: 'failed', reason: 'nonce_hole' })
+    expect(refused).toEqual({ kind: 'failed', scope: 'queue', reason: 'nonce_hole' })
     expect(ctx.queue.size).toBe(1)
     expect(ctx.events.some(e => e.event === 'queue.nonce_hole' && e.fields?.label === 'c')).toBe(
       true

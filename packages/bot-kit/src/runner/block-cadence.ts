@@ -10,7 +10,9 @@ export type BlockSampler = {
    *
    * A caller that asks ONLY when it has something to say therefore gets edge-triggering for free: a
    * quiet stretch never consumes the window, so the first occurrence after any gap is always reported
-   * and a sustained condition settles to one report per `everyBlocks`.
+   * and a sustained condition settles to one report per `everyBlocks`. A caller that claims eagerly
+   * (once per tick regardless) gets the same guarantee by calling {@link BlockSampler.reset} after a
+   * quiet tick.
    */
   claim: (block: bigint) => boolean
   /** Clears the cadence after a quiet observation so the next active observation is reported. */

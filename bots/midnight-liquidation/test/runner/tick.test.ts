@@ -13,7 +13,7 @@ import type { LensInput, LensOut } from '../../src/state/lens.sol'
 
 import { runTick } from '../../src/runner/tick'
 
-function spyLogger() {
+const spyLogger = () => {
   const events: { level: string; event: string; fields?: Record<string, unknown> }[] = []
   const make = (level: string) => (event: string, fields?: Record<string, unknown>) =>
     events.push({ level, event, fields })
@@ -34,8 +34,7 @@ const ROUTER: Address = getAddress('0x5555555555555555555555555555555555555555')
 const ZERO = '0x0000000000000000000000000000000000000000' as const
 const MARKET: Hex = `0x${'a'.repeat(64)}`
 const LABEL = lensKey(MARKET, BORROWER)
-const TX_HASH: Hex = `0x${'b'.repeat(64)}`
-const SENT: SubmitOutcome = { kind: 'sent', nonce: 7, txHash: TX_HASH }
+const SENT: SubmitOutcome = { kind: 'sent' }
 
 type TickCounters = Awaited<ReturnType<typeof runTick>>
 
@@ -43,7 +42,7 @@ type TickCounters = Awaited<ReturnType<typeof runTick>>
  * Asserted for EVERY case built by `runWith`, so a stage added without a counter breaks a sum rather
  * than silently dropping a position — the exact class of bug these counters exist to catch.
  */
-function expectCountersConsistent(c: TickCounters) {
+const expectCountersConsistent = (c: TickCounters) => {
   expect(c.pairs).toBeGreaterThanOrEqual(c.liquidatable)
   expect(c.liquidatable).toBe(c.inflightSkipped + c.planSkipped + c.planned)
   expect(c.planned).toBe(
@@ -69,7 +68,7 @@ const SWAP_PLAN: SwapPlan = {
 }
 
 // A liquidatable reading: valid, gate open, has debt, unlocked, unhealthy, pre-maturity.
-function lensOut(overrides: Partial<LensOut> = {}): LensOut {
+const lensOut = (overrides: Partial<LensOut> = {}): LensOut => {
   return {
     valid: true,
     hasDebt: true,
@@ -110,7 +109,7 @@ function lensOut(overrides: Partial<LensOut> = {}): LensOut {
 const candidates = (...borrowers: Address[]): BorrowerCandidate[] =>
   borrowers.map(borrower => ({ marketId: MARKET, borrower }))
 
-function stubReadLens(out: LensOut | null) {
+const stubReadLens = (out: LensOut | null) => {
   return async (pairs: LensInput[]) => {
     const map = new Map<string, LensOut>()
     if (out) for (const pair of pairs) map.set(lensKey(pair.id, pair.borrower), out)
@@ -140,7 +139,7 @@ type RunOpts = {
 }
 
 // Shared dep construction so the throwing case exercises exactly the same wiring as `runWith`.
-function buildDeps(opts: RunOpts) {
+const buildDeps = (opts: RunOpts) => {
   const { logger, events } = spyLogger()
   let simulateCalls = 0
   let submitCalls = 0
@@ -168,9 +167,9 @@ function buildDeps(opts: RunOpts) {
       quoteCalls += 1
       return opts.quoteOutcome ?? defaultOutcome
     },
-    simulate: async () => {
+    simulate: async (): Promise<SimulateResult> => {
       simulateCalls += 1
-      return opts.simulateResult ?? ({ status: 'ok' } as SimulateResult)
+      return opts.simulateResult ?? { status: 'ok' }
     },
     submit: async () => {
       submitCalls += 1
@@ -197,7 +196,7 @@ function buildDeps(opts: RunOpts) {
   }
 }
 
-function runWith(opts: RunOpts) {
+const runWith = (opts: RunOpts) => {
   const { deps, probes } = buildDeps(opts)
   return runTick(deps).then(counters => {
     expectCountersConsistent(counters)
@@ -206,7 +205,7 @@ function runWith(opts: RunOpts) {
 }
 
 /** For the abort path: `runTick` rejects, so counters come from the emitted `tick.end` instead. */
-async function runExpectingThrow(opts: RunOpts) {
+const runExpectingThrow = async (opts: RunOpts) => {
   const { deps, probes } = buildDeps(opts)
   await expect(runTick(deps)).rejects.toThrow()
   return probes
@@ -474,7 +473,7 @@ describe('runTick', () => {
     it('counts a broadcast as submitted and clears the backoff', async () => {
       const { counters, backoff } = await runWith({
         seedBackoffAt: 1n,
-        submitOutcome: { kind: 'sent', nonce: 7, txHash: TX_HASH }
+        submitOutcome: { kind: 'sent' }
       })
       expect(counters).toMatchObject({ ok: 1, submitted: 1, notSent: 0 })
       expect(backoff.shouldSkip(LABEL, 1n)).toBe(false)
@@ -484,7 +483,7 @@ describe('runTick', () => {
       const cooldown = createCooldownStore({ cooldownMs: 60_000 })
       const { counters, backoff } = await runWith({
         cooldown,
-        submitOutcome: { kind: 'failed', reason: 'submit_failed' }
+        submitOutcome: { kind: 'failed', scope: 'position', reason: 'submit_failed' }
       })
       expect(counters).toMatchObject({ ok: 1, submitted: 0, notSent: 1 })
       expect(backoff.shouldSkip(LABEL, 100n)).toBe(true)
@@ -497,7 +496,7 @@ describe('runTick', () => {
       // attempts=2 → a 4-block wait (until 104), not the 2-block wait a reset would give.
       const { backoff } = await runWith({
         seedBackoffAt: 1n,
-        submitOutcome: { kind: 'failed', reason: 'submit_failed' }
+        submitOutcome: { kind: 'failed', scope: 'position', reason: 'submit_failed' }
       })
       expect(backoff.shouldSkip(LABEL, 103n)).toBe(true)
       expect(backoff.shouldSkip(LABEL, 104n)).toBe(false)
@@ -511,7 +510,7 @@ describe('runTick', () => {
         const cooldown = createCooldownStore({ cooldownMs: 60_000 })
         const { counters, backoff } = await runWith({
           cooldown,
-          submitOutcome: { kind: 'failed', reason }
+          submitOutcome: { kind: 'failed', scope: 'queue', reason }
         })
         expect(counters).toMatchObject({ ok: 1, submitted: 0, notSent: 1 })
         expect(backoff.shouldSkip(LABEL, 100n)).toBe(false)

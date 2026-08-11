@@ -142,25 +142,27 @@ const capBoundOutcome = ({
 }): PlanOutcome => {
   const capEff = mulDivDown(cap, BPS - BigInt(marginBps), BPS)
   const seizedAssets = maxSeizeForCap(capEff, input.bestCollateralPrice, base.lif)
-  const trace: SizingTrace = { ...base, cap, capEff, seizedAssets }
-  // Guard the RAW cap, not `capEff`: a legitimate 1-wei cap with any margin floors capEff to 0, which
-  // is ordinary dust. A non-positive RAW cap means the RCF numerator went negative
-  // (`debt - maxDebt < badDebt < debt`), which also yields a NEGATIVE seize that would slip past an
-  // `=== 0n` check and revert opaquely once abi-encoded as uint256.
-  if (cap <= 0n) return { kind: 'skip', reason: 'cap_not_positive', trace }
-  // Rounds to nothing. Never emit a `(0, 0)` plan, which `isBadDebtRealization` would misread as a
-  // write-off against a solvent position. (`<= 0n` is belt-and-braces: a positive cap cannot floor to
-  // a negative seize, so the guard above already covers that.)
-  if (seizedAssets <= 0n) return { kind: 'skip', reason: 'seize_rounds_to_zero', trace }
-  return {
-    kind: 'plan',
-    plan: {
-      collateralIndex: input.bestCollateralIndex,
-      seizedAssets,
-      repaidUnits: 0n,
-      postMaturityMode: base.postMaturityMode
+  if (cap > 0n && seizedAssets > 0n) {
+    return {
+      kind: 'plan',
+      plan: {
+        collateralIndex: input.bestCollateralIndex,
+        seizedAssets,
+        repaidUnits: 0n,
+        postMaturityMode: base.postMaturityMode
+      }
     }
   }
+  // The trace is built only on the refusal paths, so the plan-success path allocates nothing extra.
+  const trace: SizingTrace = { ...base, cap, capEff, seizedAssets }
+  // Discriminate on the RAW cap, not `capEff`: a legitimate 1-wei cap with any margin floors capEff
+  // to 0, which is ordinary dust. A non-positive RAW cap means the RCF numerator went negative
+  // (`debt - maxDebt < badDebt < debt`), which also yields a NEGATIVE seize that would slip past an
+  // `=== 0n` check and revert opaquely once abi-encoded as uint256 — hence the `> 0n` gate above.
+  if (cap <= 0n) return { kind: 'skip', reason: 'cap_not_positive', trace }
+  // Rounds to nothing. Never emit a `(0, 0)` plan, which `isBadDebtRealization` would misread as a
+  // write-off against a solvent position.
+  return { kind: 'skip', reason: 'seize_rounds_to_zero', trace }
 }
 
 const seizeWholeSlot = (input: PlanInput, postMaturityMode: boolean): PlanOutcome => ({
@@ -224,6 +226,8 @@ const normalModeOutcome = ({
     postMaturityMode: false,
     lif,
     effectiveDebt,
+    // `lltv >= WAD` waives the cap and `maxRepaidPreMaturity` returns maxUint256; flag that instead
+    // of logging a 78-digit number that reads like a real bound.
     ...(input.bestCollateralLltv >= WAD ? { rcfDisabled: true } : { maxRepaid })
   }
   if (maxRepaid <= 0n) return capBoundOutcome({ input, cap: maxRepaid, marginBps, base })
@@ -234,15 +238,9 @@ const normalModeOutcome = ({
     maxRepaid,
     rcfThreshold: input.rcfThreshold
   })
-  const exemptBase: TraceBase = {
-    ...base,
-    rcfExempt: exempt
-    // `lltv >= WAD` waives the cap and returns maxUint256; flag that instead of logging a 78-digit
-    // number that reads like a real bound.
-  }
   const repayCap = exempt ? effectiveDebt : min(maxRepaid, effectiveDebt)
   if (wholeSlotRepaid <= repayCap) return seizeWholeSlot(input, false)
-  return capBoundOutcome({ input, cap: repayCap, marginBps, base: exemptBase })
+  return capBoundOutcome({ input, cap: repayCap, marginBps, base: { ...base, rcfExempt: exempt } })
 }
 
 /**

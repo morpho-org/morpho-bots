@@ -1,7 +1,7 @@
 import type { Logger, SimulateResult, SubmitOutcome } from '@repo/bot-kit'
 import type { Backoff, BlockSampler, CooldownStore } from '@repo/bot-kit'
 import type { QuoteOutcome, SwapPlan } from '@repo/swaps'
-import type { Address, Hex } from 'viem'
+import type { Address } from 'viem'
 
 import { createBackoff, createBlockSampler, createCooldownStore } from '@repo/bot-kit'
 import { lensKey } from '@repo/utils'
@@ -45,8 +45,7 @@ const PARAMS: MarketParams = {
 }
 const MARKET_ID = marketId(PARAMS)
 const LABEL = lensKey(MARKET_ID, BORROWER)
-const TX_HASH: Hex = `0x${'b'.repeat(64)}`
-const SENT: SubmitOutcome = { kind: 'sent', nonce: 7, txHash: TX_HASH }
+const SENT: SubmitOutcome = { kind: 'sent' }
 
 type TickCounters = Awaited<ReturnType<typeof runTick>>
 
@@ -155,9 +154,9 @@ const buildDeps = (opts: RunOpts) => {
       quoteCalls += 1
       return opts.quoteOutcome ?? defaultOutcome
     },
-    simulate: async () => {
+    simulate: async (): Promise<SimulateResult> => {
       simulateCalls += 1
-      return opts.simulateResult ?? ({ status: 'ok' } as SimulateResult)
+      return opts.simulateResult ?? { status: 'ok' }
     },
     submit: async () => {
       submitCalls += 1
@@ -406,7 +405,7 @@ describe('runTick', () => {
     it('counts a broadcast as submitted and clears the backoff', async () => {
       const { counters, backoff } = await runWith({
         seedBackoffAt: 1n,
-        submitOutcome: { kind: 'sent', nonce: 7, txHash: TX_HASH }
+        submitOutcome: { kind: 'sent' }
       })
       expect(counters).toMatchObject({ ok: 1, submitted: 1, notSent: 0 })
       expect(backoff.shouldSkip(LABEL, 1n)).toBe(false)
@@ -416,7 +415,7 @@ describe('runTick', () => {
       const cooldown = createCooldownStore({ cooldownMs: 60_000 })
       const { counters, backoff } = await runWith({
         cooldown,
-        submitOutcome: { kind: 'failed', reason: 'submit_failed' }
+        submitOutcome: { kind: 'failed', scope: 'position', reason: 'submit_failed' }
       })
       expect(counters).toMatchObject({ ok: 1, submitted: 0, notSent: 1 })
       expect(backoff.shouldSkip(LABEL, 100n)).toBe(true)
@@ -429,7 +428,7 @@ describe('runTick', () => {
       // attempts=2 → a 4-block wait (until 104), not the 2-block wait a reset would give.
       const { backoff } = await runWith({
         seedBackoffAt: 1n,
-        submitOutcome: { kind: 'failed', reason: 'submit_failed' }
+        submitOutcome: { kind: 'failed', scope: 'position', reason: 'submit_failed' }
       })
       expect(backoff.shouldSkip(LABEL, 103n)).toBe(true)
       expect(backoff.shouldSkip(LABEL, 104n)).toBe(false)
@@ -441,7 +440,7 @@ describe('runTick', () => {
         const cooldown = createCooldownStore({ cooldownMs: 60_000 })
         const { counters, backoff } = await runWith({
           cooldown,
-          submitOutcome: { kind: 'failed', reason }
+          submitOutcome: { kind: 'failed', scope: 'queue', reason }
         })
         expect(counters).toMatchObject({ ok: 1, submitted: 0, notSent: 1 })
         expect(backoff.shouldSkip(LABEL, 100n)).toBe(false)
