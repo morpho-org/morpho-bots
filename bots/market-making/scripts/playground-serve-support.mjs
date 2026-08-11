@@ -174,9 +174,6 @@ const unresolvedDependencies = packageRoot => {
 export const ensureFrozenDependencies = async ({
   repoRoot,
   packageRoot,
-  // pnpm owns installs since the migration: a `bun install` here rewrites the root manifest with a
-  // bun-style workspaces/catalog block and lays broken partial package copies into bots/*/
-  // node_modules, poisoning module resolution for the rest of the test run.
   executable = 'pnpm',
   env = process.env,
   chmodFile = chmod,

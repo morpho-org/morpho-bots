@@ -13,9 +13,11 @@ on:
       - packages/utils/**
       - packages/typescript-config/**
       - package.json
-      - bun.lock
-      - bunfig.toml
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
       - .npmrc
+      - .nvmrc
+      - .github/actions/setup/action.yml
       - .github/workflows/deploy-market-making-playground.yml
   workflow_dispatch:
 
@@ -39,9 +41,6 @@ jobs:
         with:
           persist-credentials: false
 
-      # The shared action sets up pnpm (which owns installs and the --filter task routing below),
-      # Node, and Bun, then runs the frozen pnpm install. A bare `bun install` would corrupt the
-      # pnpm-managed tree and there is no bun lockfile to freeze against anymore.
       - name: Setup
         uses: ./.github/actions/setup
         with:

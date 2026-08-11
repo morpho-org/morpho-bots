@@ -6,35 +6,23 @@ engineStrict: true
 saveExact: true
 verifyStoreIntegrity: true
 preferOffline: true
-# Bun's resolver does not reliably follow pnpm's isolated workspace dependency links for soltag's
-# TypeScript imports. Hoisting preserves the pnpm lockfile and lifecycle policy while supporting the
-# intermediate migration state where Bun remains the test runner.
-nodeLinker: hoisted
-# The hoisted linker still nests one copy of every peer-variation instance (viem and friends) inside
-# each workspace package WITHOUT its own dependencies adjacent, and leaves some transitive deps
-# (abitype, @noble/*, @scure/*, @esbuild/*) with no root copy at all — `bun test` then fails module
-# resolution from those nested paths (the post-migration CI Test failures on main). Publicly
-# hoisting every name gives bun's upward walk a root candidate for everything; versions stay single
-# and exact via saveExact + catalogs, so the flattened copies cannot diverge.
-publicHoistPattern:
-  - '*'
 
 # 3 days — carried over from bunfig.toml's `minimumReleaseAge = 259200` (seconds; this is minutes).
 minimumReleaseAge: 4320
 minimumReleaseAgeExclude:
   - '@morpho-org/*'
 
-# No dependency lifecycle script runs unless opted in here — add entries deliberately. esbuild's
-# platform binary is required by the root build dependency introduced on main.
+# No dependency lifecycle script runs unless opted in here — add entries deliberately. esbuild is
+# the only dependency in the tree that needs one; any future addition is a reviewable change.
 allowBuilds:
   esbuild: true
 # Make an un-opted-in build script a hard install failure, not a warning. Without this the
 # default-deny above is advisory, which defeats the point of the migration.
 strictDepBuilds: true
 
-# pnpm does not run npm-style pre/post scripts by default. `prestart` is load-bearing here: it
-# builds @repo/contracts' gitignored dist/ (and runs generate:api for midnight-crossed-books), so
-# the bots cannot resolve their own dependency without it.
+# pnpm does not run npm-style pre/post scripts by default. Nothing depends on them today (the bots
+# build explicitly, at image-build time), but keep npm-compatible behavior so a future `pre*`/`post*`
+# script does not silently never run.
 enablePrePostScripts: true
 
 # Migrating the lockfile re-resolves every caret range, so entries that bun.lock had already
@@ -48,11 +36,13 @@ catalog:
   '@morpho-org/midnight-sdk': 1.3.0
   '@morpho-org/morpho-ts': 2.8.0
   '@morpho-org/viem-dlc': 0.0.11
-  '@types/bun': 1.3.13
   '@types/lodash-es': ^4.17.12
+  '@types/node': 24.7.0
   '@types/react': 19.2.18
   '@types/react-dom': 19.2.4
   date-fns: 4.1.0
+  esbuild: 0.28.1
+  execa: 9.6.0
   executooor-viem: ^1.3.3
   husky: ^9.1.5
   knip: ^5.86.0
@@ -73,6 +63,9 @@ catalog:
   # settings (0.8.35, optimizer runs=200).
   solc: 0.8.35
   soltag: ^0.0.17
+  tsx: 4.21.0
   typescript: 6.0.2
   viem: 2.47.17
+  vite: 7.3.6
+  vitest: 4.1.2
   zod: 3.25.76

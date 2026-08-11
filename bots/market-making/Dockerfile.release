@@ -1,13 +1,14 @@
 # syntax=docker/dockerfile:1
-# Image for the market-making bot. The build context MUST be the repository root so workspace
-# packages resolve. Node only: pnpm installs, esbuild bundles, node runs.
+# Operator/distribution image for the market-making bot. The build context MUST be the repository
+# root so workspace packages resolve. pnpm installs, esbuild bundles, and Node runs the published CLI.
 FROM node:24.14.1-slim
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
 # Runtime configuration may include a funded maker key, so the process must not run as root.
-# Corepack writes its pnpm shim to /usr/local/bin; enable it before dropping privileges.
+# Corepack writes its pnpm shim to /usr/local/bin; enable it before dropping privileges. The /state
+# mount persists offer-group ownership across container recreations.
 RUN corepack enable pnpm
-RUN mkdir -p /repo && chown node:node /repo
+RUN mkdir -p /repo /state && chown node:node /repo /state
 WORKDIR /repo
 USER node
 
@@ -22,5 +23,8 @@ COPY --chown=node:node bots ./bots
 RUN pnpm install --frozen-lockfile
 RUN pnpm -r --if-present run build
 
+# Expose the `mm` CLI so Compose and docker run can supply any documented subcommand.
+ENV XDG_STATE_HOME=/state
 WORKDIR /repo/bots/market-making
-CMD ["node", "dist/src/index.js", "start", "--verbose"]
+ENTRYPOINT ["node", "dist/src/index.js"]
+CMD ["start", "--verbose"]

@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'bun:test'
 import { readFile } from 'node:fs/promises'
+import { describe, expect, test } from 'vitest'
 import { parse } from 'yaml'
 
 const workflowPath = new URL(
@@ -48,9 +48,11 @@ describe('market-making playground Pages workflow', () => {
         'packages/utils/**',
         'packages/typescript-config/**',
         'package.json',
-        'bun.lock',
-        'bunfig.toml',
+        'pnpm-lock.yaml',
+        'pnpm-workspace.yaml',
         '.npmrc',
+        '.nvmrc',
+        '.github/actions/setup/action.yml',
         '.github/workflows/deploy-market-making-playground.yml'
       ])
     )
@@ -114,11 +116,8 @@ describe('market-making playground Pages workflow', () => {
       .map(step => step.uses)
       .filter((uses): uses is string => uses !== undefined)
     expect(actions).toHaveLength(5)
-    // Repo-local composite actions ride the workflow's own commit, so they are immutable without
-    // a SHA pin; every remote action must stay pinned.
-    const repoLocalAction = /^\.\/\.github\/actions\//
-    expect(actions.every(uses => repoLocalAction.test(uses) || immutableAction.test(uses))).toBe(
-      true
-    )
+    expect(
+      actions.filter(uses => !uses.startsWith('./')).every(uses => immutableAction.test(uses))
+    ).toBe(true)
   })
 })

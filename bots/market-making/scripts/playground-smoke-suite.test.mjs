@@ -11,7 +11,7 @@ const scriptsDirectory = fileURLToPath(new URL('.', import.meta.url))
 
 const readJson = async path => JSON.parse(await readFile(path, 'utf8'))
 
-test('CI keeps real-browser tests out of Bun discovery and runs them explicitly after Bun', async () => {
+test('CI runs every Node playground suite after the Vitest unit suite', async () => {
   const [rootPackage, marketMakingPackage, workflow, scriptNames] = await Promise.all([
     readJson(join(root, 'package.json')),
     readJson(join(root, 'bots/market-making/package.json')),
@@ -19,30 +19,35 @@ test('CI keeps real-browser tests out of Bun discovery and runs them explicitly 
     readdir(scriptsDirectory)
   ])
 
-  assert.equal(rootPackage.scripts.test, 'bun test')
   assert.equal(
-    rootPackage.scripts['test:browser'],
-    'pnpm --filter @morpho-org/market-making-bot run playground:smoke:test'
+    rootPackage.scripts.test,
+    'vitest run && pnpm --filter @morpho-org/market-making-bot run playground:test'
+  )
+  assert.equal(
+    marketMakingPackage.scripts['playground:test'],
+    'node --test scripts/playground-atomic-publish.test.mjs scripts/playground-build.test.mjs scripts/playground-process.test.mjs scripts/playground-serve.test.mjs scripts/playground-smoke-suite.test.mjs scripts/playground-smoke.test.mjs'
   )
   assert.equal(
     marketMakingPackage.scripts['playground:smoke:test'],
     'node --test scripts/playground-smoke.browser.mjs'
   )
 
-  const unitStep = workflow.indexOf('- name: Run unit tests\n        run: bun test')
+  const unitStep = workflow.indexOf('- name: Run unit tests\n        run: pnpm test')
   const browserStep = workflow.indexOf(
-    '- name: Run browser smoke tests\n        run: bun test:browser'
+    '- name: Run browser smoke tests\n        run: pnpm --filter @morpho-org/market-making-bot run playground:smoke:test'
   )
-  assert.notEqual(unitStep, -1)
-  assert.ok(browserStep > unitStep, 'browser smoke command must run after the Bun suite')
+  assert.ok(unitStep >= 0)
+  assert.ok(browserStep > unitStep, 'browser smoke command must run after the unit suite')
 
-  const bunDiscoveredTests = scriptNames.filter(
-    name => /\.test\.[cm]?[jt]s$/.test(name) && name !== 'playground-smoke-suite.test.mjs'
+  const nodeTests = scriptNames.filter(
+    name => /\.test\.mjs$/.test(name) && name !== 'playground-smoke-suite.test.mjs'
   )
-  const bunSources = await Promise.all(
-    bunDiscoveredTests.map(name => readFile(join(scriptsDirectory, name), 'utf8'))
+  for (const name of nodeTests)
+    assert.ok(marketMakingPackage.scripts['playground:test'].includes(name))
+  const nodeSources = await Promise.all(
+    nodeTests.map(name => readFile(join(scriptsDirectory, name), 'utf8'))
   )
-  for (const source of bunSources) {
+  for (const source of nodeSources) {
     assert.doesNotMatch(source, /after Chromium readiness/)
     assert.doesNotMatch(source, /two complete smoke runs/)
     assert.doesNotMatch(source, /test\.skip/)
@@ -115,7 +120,7 @@ test('browser lifecycle uses separate bounded build, startup, body, UI, CDP, and
   assert.match(smokeSource, /panel: 'panel-ladder-string'/)
 })
 
-test('the declared root lint path effectively checks only the playground smoke mjs files', async () => {
+test('the root lint command explicitly checks the playground smoke mjs files', async () => {
   const [rootPackage, workflow] = await Promise.all([
     readJson(join(root, 'package.json')),
     readFile(join(root, '.github/workflows/checks.yml'), 'utf8')
@@ -125,7 +130,7 @@ test('the declared root lint path effectively checks only the playground smoke m
     rootPackage.scripts['lint:playground-smoke'],
     'oxlint --config bots/market-making/scripts/playground-smoke.oxlintrc.json bots/market-making/scripts/playground-smoke*.mjs'
   )
-  assert.match(rootPackage.scripts.lint, /bun run lint:playground-smoke/)
+  assert.match(rootPackage.scripts.lint, /pnpm run lint:playground-smoke/)
   assert.match(workflow, /- name: Run lint\n        run: pnpm lint/)
 })
 

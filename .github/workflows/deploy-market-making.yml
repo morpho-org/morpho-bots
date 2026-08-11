@@ -114,7 +114,7 @@ jobs:
             build_args+=(--tag "$REPOSITORY:$tag")
           done
           echo "Building ${tags[*]} from $SHA…"
-          docker build --file bots/market-making/Dockerfile "${build_args[@]}" .
+          docker build --file bots/market-making/Dockerfile.release "${build_args[@]}" .
           for tag in "${tags[@]}"; do
             docker push "$REPOSITORY:$tag"
             echo "Published docker.io/$REPOSITORY:$tag"

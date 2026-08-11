@@ -6,7 +6,7 @@ services:
   bot:
     build:
       context: ../..
-      dockerfile: bots/market-making/Dockerfile
+      dockerfile: bots/market-making/Dockerfile.release
     command: ['--config', '/config/market-making.yaml', 'start', '--verbose']
     volumes:
       - type: bind

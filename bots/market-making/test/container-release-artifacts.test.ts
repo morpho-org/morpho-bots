@@ -1,8 +1,8 @@
-import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { describe, expect, test } from 'vitest'
 
-const packageRoot = resolve(import.meta.dir, '..')
+const packageRoot = resolve(import.meta.dirname, '..')
 const repositoryRoot = resolve(packageRoot, '../..')
 
 describe('market-making container release artifacts', () => {
@@ -26,6 +26,23 @@ describe('market-making container release artifacts', () => {
     expect(readme).toContain(
       `gh release create "market-making-$(node -p "require('./package.json').version")" --generate-notes`
     )
+  })
+
+  test('exposes the built Node CLI while persisting writer state', () => {
+    const dockerfile = readFileSync(resolve(packageRoot, 'Dockerfile.release'), 'utf8')
+    const compose = readFileSync(resolve(packageRoot, 'docker-compose.yml'), 'utf8')
+    const publishWorkflow = readFileSync(
+      resolve(repositoryRoot, '.github/workflows/deploy-market-making.yml'),
+      'utf8'
+    )
+
+    expect(dockerfile).toContain('RUN mkdir -p /repo /state')
+    expect(dockerfile).toContain('ENV XDG_STATE_HOME=/state')
+    expect(dockerfile).toContain('ENTRYPOINT ["node", "dist/src/index.js"]')
+    expect(dockerfile).toContain('CMD ["start", "--verbose"]')
+    expect(dockerfile).not.toContain('oven/bun')
+    expect(compose).toContain('dockerfile: bots/market-making/Dockerfile.release')
+    expect(publishWorkflow).toContain('--file bots/market-making/Dockerfile.release')
   })
 
   test('mounts an optional host keystore at the documented container path', () => {
