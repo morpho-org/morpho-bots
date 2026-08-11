@@ -37,6 +37,8 @@ describe('market-making container release artifacts', () => {
     )
 
     expect(dockerfile).toContain('RUN mkdir -p /repo /state')
+    expect(dockerfile).toContain('RUN pnpm --filter @morpho-org/market-making-bot run build')
+    expect(dockerfile).not.toContain('pnpm -r --if-present run build')
     expect(dockerfile).toContain('ENV XDG_STATE_HOME=/state')
     expect(dockerfile).toContain('ENTRYPOINT ["node", "dist/src/index.js"]')
     expect(dockerfile).toContain('CMD ["start", "--verbose"]')

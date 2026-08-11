@@ -21,7 +21,7 @@ RUN corepack install
 COPY --chown=node:node packages ./packages
 COPY --chown=node:node bots ./bots
 RUN pnpm install --frozen-lockfile
-RUN pnpm -r --if-present run build
+RUN pnpm --filter @morpho-org/market-making-bot run build
 
 # Expose the `mm` CLI so Compose and docker run can supply any documented subcommand.
 ENV XDG_STATE_HOME=/state
