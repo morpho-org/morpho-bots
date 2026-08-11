@@ -23,8 +23,11 @@ For each release tag:
 1. **Find the previous release tag** for that bot:
 
    ```bash
-   git tag -l "{bot}-*" --sort=-version:refname | head -5
+   git tag -l "{bot}-*" --sort=-version:refname | grep -Fxv -- "$RELEASE_TAG" | head -5
    ```
+
+   Exclude the release currently being rewritten (`$RELEASE_TAG`): it already exists locally when
+   this command runs and must not be selected as its own comparison baseline.
 
 2. **Compare the diff** between the newly-published tag and the previous one. Bots assemble their
    behavior from the shared `packages/*` workspace, so include it alongside the bot's own tree:

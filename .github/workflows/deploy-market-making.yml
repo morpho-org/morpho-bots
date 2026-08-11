@@ -126,8 +126,8 @@ jobs:
               fi
             fi
           else
-            if [[ "$DISPATCH_TAG" == market-making-* ]]; then
-              echo "refusing to overwrite immutable release tag $DISPATCH_TAG from a manual dispatch; publish a GitHub release for versioned tags" >&2
+            if [[ "$DISPATCH_TAG" == market-making-* || "$DISPATCH_TAG" == git-* ]]; then
+              echo "refusing to overwrite immutable release or commit tag $DISPATCH_TAG from a manual dispatch" >&2
               exit 1
             fi
             tags=("$DISPATCH_TAG")

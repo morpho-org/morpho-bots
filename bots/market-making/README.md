@@ -788,7 +788,10 @@ The image pins `XDG_STATE_HOME=/state`, where the bot persists its durable offer
 records. Writer deployments (`start`, `bootstrap`, `ladder`) must mount a volume at `/state` so
 that state outlives the container — the compose file below does this automatically. A recreated
 container without it forgets which live on-chain offer groups the bot owns, treats its own offers
-as foreign, and cannot clean them up. Read-only commands need no state volume.
+as foreign, and cannot clean them up. Read-only inspections of an existing deployment should mount
+the same `/state` volume so readiness and ladder/bootstrap reconstruction observe the writer's
+persisted ownership records; standalone read-only checks that are not inspecting an existing writer
+can run without it.
 
 ### Build
 
@@ -883,9 +886,9 @@ Publishing is release-driven. A GitHub release whose tag starts with `market-mak
 convention: `market-making-YYYY.MM.DD-N`) triggers the `Deploy market-making` workflow
 ([`.github/workflows/deploy-market-making.yml`](../../.github/workflows/deploy-market-making.yml)),
 which builds the **tagged commit** from the repo root on an `ubuntu-latest` (`linux/amd64`) runner
-and pushes three tags to Docker Hub: the release tag verbatim (immutable), `latest` (moved unless
-the release is marked a prerelease), and `git-<shortsha>` for the built commit. The Slack
-announcement is sent by the publish workflow only after every image tag is pushed — the repo-wide
+and pushes the release tag verbatim (immutable), `git-<shortsha>` for the built commit, and `latest`
+(moved only when the release is the highest stable CalVer version). Backfilled older releases and
+prereleases leave `latest` unchanged. The Slack announcement is sent by the publish workflow only after every image tag is pushed — the repo-wide
 release notifier deliberately skips market-making release events — so an announced release always
 has its image.
 

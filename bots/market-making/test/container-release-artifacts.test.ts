@@ -28,6 +28,35 @@ describe('market-making container release artifacts', () => {
     )
   })
 
+  test('excludes the release being rewritten from release-note baselines', () => {
+    const instructions = readFileSync(
+      resolve(repositoryRoot, '.claude/commands/ci-write-release-notes.md'),
+      'utf8'
+    )
+
+    expect(instructions).toContain(
+      'git tag -l "{bot}-*" --sort=-version:refname | grep -Fxv -- "$RELEASE_TAG" | head -5'
+    )
+  })
+
+  test('documents that only the highest stable release moves latest', () => {
+    const readme = readFileSync(resolve(packageRoot, 'README.md'), 'utf8').replace(/\s+/g, ' ')
+
+    expect(readme).toContain(
+      '`latest` (moved only when the release is the highest stable CalVer version)'
+    )
+    expect(readme).not.toContain('`latest` (moved unless the release is marked a prerelease)')
+  })
+
+  test('documents shared state for read-only deployment inspections', () => {
+    const readme = readFileSync(resolve(packageRoot, 'README.md'), 'utf8').replace(/\s+/g, ' ')
+
+    expect(readme).toContain(
+      'Read-only inspections of an existing deployment should mount the same `/state` volume'
+    )
+    expect(readme).not.toContain('Read-only commands need no state volume.')
+  })
+
   test('keeps the complete operator configuration reference', () => {
     const readme = readFileSync(resolve(packageRoot, 'README.md'), 'utf8')
 
@@ -46,14 +75,16 @@ describe('market-making container release artifacts', () => {
     expect(workflow).toContain("allowed_bots: 'github-actions[bot]'")
   })
 
-  test('prevents manual dispatches from moving immutable release tags', () => {
+  test('prevents manual dispatches from moving immutable release and commit tags', () => {
     const workflow = readFileSync(
       resolve(repositoryRoot, '.github/workflows/deploy-market-making.yml'),
       'utf8'
     )
 
-    expect(workflow).toContain('if [[ "$DISPATCH_TAG" == market-making-* ]]')
-    expect(workflow).toContain('refusing to overwrite immutable release tag')
+    expect(workflow).toContain(
+      'if [[ "$DISPATCH_TAG" == market-making-* || "$DISPATCH_TAG" == git-* ]]'
+    )
+    expect(workflow).toContain('refusing to overwrite immutable release or commit tag')
   })
 
   test('disables Husky in every workspace Docker install', () => {
