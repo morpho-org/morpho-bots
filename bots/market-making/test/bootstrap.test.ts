@@ -334,7 +334,7 @@ describe('createApplication', () => {
 
   test('starts a hardcoded-only bootstrap workflow without Blue reference readiness', async () => {
     const state = readyState()
-    const checkReference = mock(async () => {
+    const checkReference = vi.fn(async () => {
       throw new Error('Blue archive unavailable')
     })
     state.checkReference = checkReference
@@ -387,7 +387,7 @@ describe('createApplication', () => {
 
   test('keeps Blue reference readiness fail-closed for variable-rate bootstrap workflows', async () => {
     const state = readyState()
-    const checkReference = mock(async () => {
+    const checkReference = vi.fn(async () => {
       throw new Error('Blue archive unavailable')
     })
     state.checkReference = checkReference
@@ -410,10 +410,10 @@ describe('createApplication', () => {
 
   test('keeps Blue reference readiness fail-closed for variable-rate ladder workflows', async () => {
     const state = readyState()
-    const checkReference = mock(async () => {
+    const checkReference = vi.fn(async () => {
       throw new Error('Blue archive unavailable')
     })
-    const createLadderAdapters = mock(() => {
+    const createLadderAdapters = vi.fn(() => {
       throw new Error('ladder adapters must not start')
     })
     state.checkReference = checkReference
@@ -438,7 +438,7 @@ describe('createApplication', () => {
 
   test('starts a hardcoded-only ladder workflow without Blue reference readiness', async () => {
     const state = readyState()
-    const checkReference = mock(async () => {
+    const checkReference = vi.fn(async () => {
       throw new Error('Blue archive unavailable')
     })
     state.checkReference = checkReference
@@ -482,7 +482,7 @@ describe('createApplication', () => {
 
   test('setup-check composes hardcoded bootstrap and ladder strategies without Blue reference readiness', async () => {
     const state = readyState()
-    const checkReference = mock(async () => {
+    const checkReference = vi.fn(async () => {
       throw new Error('Blue archive unavailable')
     })
     state.checkReference = checkReference
@@ -971,7 +971,7 @@ describe('createApplication', () => {
   })
 
   test('combined start composes hardcoded bootstrap and ladder workflows without Blue reference readiness', async () => {
-    const checkReference = mock(async () => {
+    const checkReference = vi.fn(async () => {
       throw new Error('Blue archive unavailable')
     })
     const state = readyState()

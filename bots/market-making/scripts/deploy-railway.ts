@@ -133,7 +133,7 @@ const ensureService = async () => {
   const existingService = services.find(service => service.name === SERVICE)
   if (existingService) return { service: existingService, isFreshService: false }
 
-  assertFreshRailwayReferenceProvisioning(Bun.env, true)
+  assertFreshRailwayReferenceProvisioning(process.env, true)
   const { data, error } = await tryCatch(
     $`railway add --service ${SERVICE} --json`.then(result => result.stdout)
   )

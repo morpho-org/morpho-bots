@@ -1,6 +1,6 @@
 import type { Hex } from 'viem'
 
-import { afterEach, describe, expect, setSystemTime, test } from 'vitest'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/bootstrap-adapter.error'
 import {
@@ -11,7 +11,7 @@ import {
 const marketId = `0x${'11'.repeat(32)}` as const
 const secondMarketId = `0x${'22'.repeat(32)}` as const
 
-afterEach(() => setSystemTime())
+afterEach(() => vi.useRealTimers())
 
 describe('StrategyBootstrapReferenceRateService', () => {
   test('uses a configured hardcoded target without reading the Blue variable-rate average', async () => {
@@ -68,9 +68,9 @@ describe('StrategyBootstrapReferenceRateService', () => {
       { readRate: async () => ({ mode: 'variable', rateBps: 500n, observationId: 'hour:1' }) }
     )
 
-    setSystemTime(new Date(3_599_000))
+    vi.setSystemTime(new Date(3_599_000))
     const first = await service.readRate(marketId)
-    setSystemTime(new Date(3_600_000))
+    vi.setSystemTime(new Date(3_600_000))
     const second = await service.readRate(marketId)
 
     expect(first.observationId).toBe('static:400:hour:0')

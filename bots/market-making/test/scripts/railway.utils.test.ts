@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'vitest'
 import { readFileSync } from 'node:fs'
+import { describe, expect, test } from 'vitest'
 
 import {
   assertFreshRailwayReferenceProvisioning,
@@ -107,9 +107,9 @@ describe('Railway CLI output parsing', () => {
     expect(
       deploy.indexOf('assertFreshRailwayReferenceProvisioning(process.env, true)')
     ).toBeGreaterThan(-1)
-    expect(deploy.indexOf('assertFreshRailwayReferenceProvisioning(process.env, true)')).toBeLessThan(
-      deploy.indexOf('railway add --service')
-    )
+    expect(
+      deploy.indexOf('assertFreshRailwayReferenceProvisioning(process.env, true)')
+    ).toBeLessThan(deploy.indexOf('railway add --service'))
   })
 
   test('synchronizes every optional variable with explicit safe defaults', () => {
@@ -175,7 +175,7 @@ describe('Railway CLI output parsing', () => {
   })
 
   test('allows Compose deployments to omit inactive reference configuration', () => {
-    const compose = readFileSync(resolve(import.meta.dir, '../../docker-compose.yml'), 'utf8')
+    const compose = readFileSync(new URL('../../docker-compose.yml', import.meta.url), 'utf8')
 
     expect(compose).toContain('REFERENCE_RPC_URL: ${REFERENCE_RPC_URL:-}')
     expect(compose).toContain('REFERENCE_MARKET_ID: ${REFERENCE_MARKET_ID:-}')
