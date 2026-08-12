@@ -112,6 +112,26 @@ describe('Railway CLI output parsing', () => {
     ).toBeLessThan(deploy.indexOf('railway add --service'))
   })
 
+  test('drops root privileges after preparing the Railway state volume', () => {
+    const dockerfile = readFileSync(new URL('../../Dockerfile', import.meta.url), 'utf8')
+    const entrypoint = readFileSync(
+      new URL('../../scripts/railway-entrypoint.mjs', import.meta.url),
+      'utf8'
+    )
+
+    expect(dockerfile).toContain(
+      'CMD ["node", "scripts/railway-entrypoint.mjs", "start", "--verbose"]'
+    )
+    expect(entrypoint.indexOf("spawnSync('chown'")).toBeGreaterThan(-1)
+    expect(entrypoint.indexOf("spawnSync('chown'")).toBeLessThan(
+      entrypoint.indexOf('process.setgid')
+    )
+    expect(entrypoint.indexOf('process.setgid')).toBeLessThan(entrypoint.indexOf('process.setuid'))
+    expect(entrypoint.indexOf('process.setuid')).toBeLessThan(
+      entrypoint.indexOf("import('../dist/src/index.js')")
+    )
+  })
+
   test('synchronizes every optional variable with explicit safe defaults', () => {
     const variables = Object.fromEntries(
       synchronizedOptionalRailwayVariables({
