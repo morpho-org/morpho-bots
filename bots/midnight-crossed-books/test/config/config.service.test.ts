@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 
 import { ConfigService } from '../../src/config/config.service'
+import { ResolverPrivateKeyRequiredError } from '../../src/config/resolver-private-key-required.error'
 
 const KEY = `0x${'11'.repeat(32)}`
 const REQUIRED = {
@@ -38,7 +39,7 @@ describe('ConfigService', () => {
 
   test('requires a resolver private key in normal mode', () => {
     expect(() => ConfigService.from({ CHAIN_ID: '8453', RPC_URL: 'http://rpc.example' })).toThrow(
-      'RESOLVER_PRIVATE_KEY'
+      ResolverPrivateKeyRequiredError
     )
   })
 
@@ -71,6 +72,7 @@ describe('ConfigService', () => {
   test.each([
     [{ ...REQUIRED, CHAIN_ID: '1' }, 'Unsupported CHAIN_ID'],
     [{ ...REQUIRED, CHAIN_ID: '0x2105' }, 'CHAIN_ID'],
+    [{ ...REQUIRED, READONLY: 'treu' }, 'READONLY'],
     [{ ...REQUIRED, RESOLVER_PRIVATE_KEY: '0x12' }, 'RESOLVER_PRIVATE_KEY'],
     [{ ...REQUIRED, RESOLVER_ADDRESS: 'not-an-address' }, 'RESOLVER_ADDRESS'],
     [{ ...REQUIRED, API_BASE_URL: 'not-a-url' }, 'API_BASE_URL'],

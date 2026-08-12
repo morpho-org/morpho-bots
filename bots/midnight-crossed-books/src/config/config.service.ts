@@ -5,6 +5,7 @@ import { getAddress, isAddress, isHex, parseGwei } from 'viem'
 import { base } from 'viem/chains'
 
 import { DEFAULT_MAX_MATCHES } from '../domain/matching.service'
+import { ResolverPrivateKeyRequiredError } from './resolver-private-key-required.error'
 
 const MIDNIGHT = getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A')
 const PRIVATE_KEY_HEX_LENGTH = 66
@@ -23,6 +24,14 @@ function unsignedDecimal(environment: Environment, name: string, fallback?: stri
   return value
 }
 
+function boolean(environment: Environment, name: string, fallback = false) {
+  const value = environment[name]?.trim().toLowerCase()
+  if (!value) return fallback
+  if (value === '1' || value === 'true') return true
+  if (value === '0' || value === 'false') return false
+  throw new Error(`${name} must be one of: true, false, 1, 0`)
+}
+
 export class ConfigService {
   /**
    * Loads and validates resolver configuration from environment values.
@@ -38,8 +47,9 @@ export class ConfigService {
       throw new Error(`Unsupported CHAIN_ID ${chainId}; supported: ${base.id}`)
     }
 
-    const readOnly = /^(1|true)$/i.test(environment.READONLY?.trim() || '')
-    const privateKey = readOnly ? undefined : required(environment, 'RESOLVER_PRIVATE_KEY')
+    const readOnly = boolean(environment, 'READONLY')
+    const privateKey = readOnly ? undefined : environment.RESOLVER_PRIVATE_KEY?.trim()
+    if (!readOnly && !privateKey) throw new ResolverPrivateKeyRequiredError()
     if (
       privateKey !== undefined &&
       (!isHex(privateKey, { strict: true }) || privateKey.length !== PRIVATE_KEY_HEX_LENGTH)

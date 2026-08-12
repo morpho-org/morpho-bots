@@ -9,7 +9,7 @@ import { $ } from 'execa'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { parseLatestStatus, parseServices } from './railway'
+import { parseLatestStatus, parseServices, resolveProvisioningConfiguration } from './railway'
 
 const PROJECT_ID = required(process.env, 'RAILWAY_PROJECT_ID')
 const ENVIRONMENT = process.env.RAILWAY_ENVIRONMENT?.trim() || 'production'
@@ -50,12 +50,6 @@ function errorDetails(error: unknown) {
     }
   }
   return error instanceof Error ? error.message : String(error)
-}
-
-function assertPrivateKey(key: string) {
-  if (!/^0x[0-9a-fA-F]{64}$/.test(key)) {
-    throw new Error('RESOLVER_PRIVATE_KEY must be a 0x-prefixed 32-byte hex string')
-  }
 }
 
 async function assertCli() {
@@ -165,15 +159,15 @@ if (DEPLOY_ONLY) {
   reportStatus(await waitForDeploy())
 } else {
   const rpcUrl = required(process.env, 'RPC_URL')
-  const resolverPrivateKey = required(process.env, 'RESOLVER_PRIVATE_KEY')
-  assertPrivateKey(resolverPrivateKey)
+  const { readOnly, resolverPrivateKey } = resolveProvisioningConfiguration(process.env)
 
   await ensureContext()
   await ensureService()
   await setVariable('CHAIN_ID=8453')
+  await setVariable(`READONLY=${readOnly}`)
   await setVariable(`RAILWAY_DOCKERFILE_PATH=${DOCKERFILE_PATH}`)
   await setSecret('RPC_URL', rpcUrl)
-  await setSecret('RESOLVER_PRIVATE_KEY', resolverPrivateKey)
+  if (resolverPrivateKey) await setSecret('RESOLVER_PRIVATE_KEY', resolverPrivateKey)
   await deployService()
   reportStatus(await waitForDeploy())
 }

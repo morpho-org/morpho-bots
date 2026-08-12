@@ -1,6 +1,28 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, test } from 'vitest'
 
-import { parseLatestStatus, parseServices } from '../../scripts/railway'
+import {
+  parseLatestStatus,
+  parseServices,
+  resolveProvisioningConfiguration
+} from '../../scripts/railway'
+
+describe('Railway provisioning configuration', () => {
+  test('supports readonly provisioning without a resolver private key', () => {
+    expect(resolveProvisioningConfiguration({ READONLY: 'true' })).toEqual({
+      readOnly: true,
+      resolverPrivateKey: undefined
+    })
+  })
+
+  test('wires readonly mode into first-time Railway provisioning', () => {
+    const deploy = readFileSync(new URL('../../scripts/deploy-railway.ts', import.meta.url), 'utf8')
+
+    expect(deploy).toContain('resolveProvisioningConfiguration(process.env)')
+    expect(deploy).toContain('await setVariable(`READONLY=${readOnly}`)')
+    expect(deploy).toContain("if (resolverPrivateKey) await setSecret('RESOLVER_PRIVATE_KEY'")
+  })
+})
 
 describe('Railway CLI output parsing', () => {
   test('parses service arrays and ignores nameless entries', () => {

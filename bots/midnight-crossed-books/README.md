@@ -86,6 +86,17 @@ RPC_URL=https://… RESOLVER_PRIVATE_KEY=0x… \
 pnpm --filter @morpho-org/midnight-crossed-books run deploy:railway
 ```
 
+For a readonly service, set `READONLY=true` and omit `RESOLVER_PRIVATE_KEY`:
+
+```sh
+RAILWAY_PROJECT_ID=… RAILWAY_ENVIRONMENT=staging \
+RPC_URL=https://… READONLY=true \
+pnpm --filter @morpho-org/midnight-crossed-books run deploy:railway
+```
+
+The provisioning command writes the selected `READONLY` mode to Railway. A write-mode deployment
+still requires a valid resolver private key.
+
 CI subsequently runs the same command with `DEPLOY_ONLY=true`, so GitHub holds only a
 project/environment-scoped Railway token. Pushes to `main` deploy staging through the
 `crossed-books-staging` GitHub Environment. Production deploys use the `release-crossed-books`
