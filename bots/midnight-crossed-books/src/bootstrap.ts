@@ -17,6 +17,7 @@ import { getBlockNumber } from 'viem/actions'
 
 import { CrossedBooksBotService } from './application/crossed-books-bot.service'
 import { ConfigService } from './config/config.service'
+import { ResolverPrivateKeyRequiredError } from './config/resolver-private-key-required.error'
 import { MatchingService } from './domain/matching.service'
 import { createMorphoApiClient } from './infrastructure/morpho-api/client'
 import { MorphoApiService } from './infrastructure/morpho-api/service'
@@ -58,7 +59,7 @@ export async function createApplication(
 
   if (!config.readOnly) {
     const privateKey = config.privateKey
-    if (!privateKey) throw new Error('Write mode requires a resolver private key')
+    if (!privateKey) throw new ResolverPrivateKeyRequiredError()
     signer = createSigner({
       chain: config.chain,
       rpcUrl: config.rpcUrl,

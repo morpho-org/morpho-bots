@@ -186,6 +186,29 @@ describe('CrossedBooksBotService', () => {
     expect(result).toEqual({ submitted: false, markets: 1 })
   })
 
+  test('logs every computed result without submitting in readonly mode', async () => {
+    const { service, getTakeableBook, simulate, submit, logger } = setup({
+      readOnly: true,
+      markets: [MARKET, OTHER_MARKET]
+    })
+
+    const result = await service.run({ blockNumber: 10n })
+
+    expect(getTakeableBook).toHaveBeenCalledTimes(2)
+    expect(simulate).toHaveBeenCalledTimes(2)
+    expect(submit).not.toHaveBeenCalled()
+    expect(logger.info).toHaveBeenCalledWith(
+      'match.computed',
+      expect.objectContaining({ marketId: MARKET_ID })
+    )
+    expect(logger.info).toHaveBeenCalledWith(
+      'match.computed',
+      expect.objectContaining({ marketId: OTHER_MARKET_ID })
+    )
+    expect(logger.info).not.toHaveBeenCalledWith('tick.no_match', expect.anything())
+    expect(result).toEqual({ submitted: false, markets: 2 })
+  })
+
   test('isolates a book failure and continues to the next market', async () => {
     let calls = 0
     const { service, books, submit } = setup({ markets: [MARKET, OTHER_MARKET] })

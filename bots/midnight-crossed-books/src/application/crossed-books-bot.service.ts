@@ -60,6 +60,7 @@ export class CrossedBooksBotService {
   async run({ blockNumber }: { blockNumber: bigint }) {
     const markets = await this.markets.listListedActiveMarkets()
     const inflight = this.inflightMarketIds()
+    let computed = false
 
     for (const { marketId } of markets) {
       if (inflight.has(marketId)) continue
@@ -90,7 +91,8 @@ export class CrossedBooksBotService {
       }
       if (this.readOnly) {
         this.logger.info('match.computed', fields)
-        return { submitted: false, markets: markets.length }
+        computed = true
+        continue
       }
 
       await this.resolver.submit(simulation.prepared, blockNumber)
@@ -99,6 +101,7 @@ export class CrossedBooksBotService {
       return { submitted: true, markets: markets.length }
     }
 
+    if (computed) return { submitted: false, markets: markets.length }
     this.logger.info('tick.no_match', { markets: markets.length })
     return { submitted: false, markets: markets.length }
   }
