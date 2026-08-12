@@ -57,7 +57,10 @@ describe('quoter-bot playground Pages workflow', () => {
       ])
     )
     expect(workflow.permissions).toEqual({})
-    expect(workflow.concurrency).toEqual({ group: 'pages', 'cancel-in-progress': false })
+    expect(workflow.concurrency).toEqual({
+      group: 'quoter-bot-pages',
+      'cancel-in-progress': false
+    })
 
     expect(Object.keys(workflow.jobs).toSorted()).toEqual(['build', 'deploy'])
     expect(build.if).toBe("github.ref == 'refs/heads/main'")
@@ -92,7 +95,7 @@ describe('quoter-bot playground Pages workflow', () => {
     expect(build.steps.find(step => step.name === 'Upload GitHub Pages artifact')).toMatchObject({
       uses: 'actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9',
       with: {
-        name: 'github-pages',
+        name: 'quoter-bot-github-pages',
         path: 'bots/quoter-bot/playground/dist',
         'retention-days': 1
       }
@@ -109,7 +112,7 @@ describe('quoter-bot playground Pages workflow', () => {
       name: 'Deploy GitHub Pages',
       id: 'deployment',
       uses: 'actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128',
-      with: { artifact_name: 'github-pages' }
+      with: { artifact_name: 'quoter-bot-github-pages' }
     })
 
     const actions = [...build.steps, ...deploy.steps]

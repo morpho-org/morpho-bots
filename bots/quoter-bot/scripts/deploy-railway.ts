@@ -224,7 +224,7 @@ const latestDeploymentJson = async () => {
 }
 
 const startDeployment = async () => {
-  const message = `deploy quoter-bot ${ENVIRONMENT}`
+  const message = `quoter-bot-${ENVIRONMENT}`
   const { error } = await tryCatch(
     $({
       cwd: REPO_ROOT
