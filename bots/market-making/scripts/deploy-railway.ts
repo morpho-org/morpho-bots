@@ -3,8 +3,8 @@
  *
  * A full run creates the service, configures its package-owned Dockerfile, and uploads runtime
  * variables through stdin. CI sets DEPLOY_ONLY=true to re-ship the already-provisioned service using
- * project-token permissions. Both modes set Railway's volume-compatible runtime UID, wait for the
- * newly created deployment to reach a terminal state, and succeed only on Railway `SUCCESS`.
+ * only project-token deployment permissions. Both modes wait for the newly created deployment to
+ * reach a terminal state and succeed only on Railway `SUCCESS`.
  */
 import { delay, tryCatch } from '@repo/utils'
 import { $ } from 'execa'
@@ -262,10 +262,6 @@ const assertDeploymentSucceeded = (status: string) => {
 
 await assertCli()
 await ensureContext()
-
-// Railway mounts volumes as root. Apply its documented UID override even during deploy-only runs so
-// the Node image can write durable state after the image switched to an unprivileged default user.
-await setRuntimeVariable(['RAILWAY_RUN_UID', '0'])
 
 if (!DEPLOY_ONLY) {
   const { service } = await ensureService()
