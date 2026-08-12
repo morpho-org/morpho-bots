@@ -112,7 +112,7 @@ describe('Railway CLI output parsing', () => {
     ).toBeLessThan(deploy.indexOf('railway add --service'))
   })
 
-  test('starts as root only after the Railway service exists, then execs the bot without privileges', () => {
+  test('starts as root only for trusted setup, then installs, builds, and runs without privileges', () => {
     const deploy = readFileSync(new URL('../../scripts/deploy-railway.ts', import.meta.url), 'utf8')
     const dockerfile = readFileSync(new URL('../../Dockerfile', import.meta.url), 'utf8')
     const entrypoint = readFileSync(
@@ -130,6 +130,22 @@ describe('Railway CLI output parsing', () => {
       "await setRuntimeVariable(['RAILWAY_RUN_UID', '0'])",
       fullProvisioningBranch
     )
+    const userNode = dockerfile.indexOf('\nUSER node\n')
+    const corepackInstall = dockerfile.indexOf('RUN corepack install')
+    const dependencyInstall = dockerfile.indexOf('RUN pnpm install --frozen-lockfile')
+    const workspaceBuild = dockerfile.indexOf('RUN pnpm -r --if-present run build')
+    const userRoot = dockerfile.indexOf('\nUSER root\n')
+    const command = dockerfile.indexOf(
+      'CMD ["/bin/sh", "scripts/railway-entrypoint.sh", "start", "--verbose"]'
+    )
+    const repairState = entrypoint.indexOf('/usr/bin/chown -R node:node "$STATE_MOUNT_PATH"')
+    const dropPrivileges = entrypoint.indexOf('exec /usr/bin/setpriv')
+    const clearGroups = entrypoint.indexOf('--clear-groups', dropPrivileges)
+    const clearCapabilities = entrypoint.indexOf('--bounding-set=-all', dropPrivileges)
+    const noNewPrivileges = entrypoint.indexOf('--no-new-privs', dropPrivileges)
+    const nodeUid = entrypoint.indexOf('--reuid=node', dropPrivileges)
+    const nodeGid = entrypoint.indexOf('--regid=node', dropPrivileges)
+    const absoluteNode = entrypoint.indexOf('/usr/local/bin/node dist/src/index.js "$@"')
 
     expect(deployOnlyBranch).toBeGreaterThan(-1)
     expect(deployOnlyRuntimeUid).toBeGreaterThan(deployOnlyBranch)
@@ -137,20 +153,23 @@ describe('Railway CLI output parsing', () => {
     expect(fullProvisioningRuntimeUid).toBeGreaterThan(ensureService)
     expect(fullProvisioningRuntimeUid).toBeLessThan(deploy.indexOf('await startDeployment()'))
     expect(dockerfile).toContain('apt-get install -y --no-install-recommends util-linux')
-    expect(dockerfile).toContain(
-      'CMD ["sh", "scripts/railway-entrypoint.sh", "start", "--verbose"]'
-    )
+    expect(dockerfile).toContain('ENV HOME=/home/node')
+    expect(userNode).toBeGreaterThan(-1)
+    expect(corepackInstall).toBeGreaterThan(userNode)
+    expect(dependencyInstall).toBeGreaterThan(userNode)
+    expect(workspaceBuild).toBeGreaterThan(userNode)
+    expect(userRoot).toBeGreaterThan(workspaceBuild)
+    expect(dockerfile.match(/^USER root$/gm)).toHaveLength(1)
+    expect(command).toBeGreaterThan(userRoot)
     expect(entrypoint).toContain('set -eu')
-    expect(entrypoint.indexOf('chown -R node:node "$STATE_MOUNT_PATH"')).toBeGreaterThan(-1)
-    expect(entrypoint.indexOf('chown -R node:node "$STATE_MOUNT_PATH"')).toBeLessThan(
-      entrypoint.indexOf('exec setpriv')
-    )
-    expect(entrypoint).toContain('--reuid=node')
-    expect(entrypoint).toContain('--regid=node')
-    expect(entrypoint).toContain('--clear-groups')
-    expect(entrypoint).toContain('--bounding-set=-all')
-    expect(entrypoint).toContain('--no-new-privs')
-    expect(entrypoint).toContain('node dist/src/index.js "$@"')
+    expect(repairState).toBeGreaterThan(-1)
+    expect(repairState).toBeLessThan(dropPrivileges)
+    expect(entrypoint).not.toMatch(/^(?:chown|setpriv)\b/m)
+    for (const control of [clearGroups, clearCapabilities, noNewPrivileges, nodeUid, nodeGid]) {
+      expect(control).toBeGreaterThan(dropPrivileges)
+      expect(control).toBeLessThan(absoluteNode)
+    }
+    expect(absoluteNode).toBeGreaterThan(dropPrivileges)
   })
 
   test('synchronizes every optional variable with explicit safe defaults', () => {
