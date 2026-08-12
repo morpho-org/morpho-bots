@@ -112,6 +112,15 @@ describe('Railway CLI output parsing', () => {
     ).toBeLessThan(deploy.indexOf('railway add --service'))
   })
 
+  test('runs the volume-backed service as root before starting every deployment', () => {
+    const deploy = readFileSync(new URL('../../scripts/deploy-railway.ts', import.meta.url), 'utf8')
+    const configureRunUid = "setRuntimeVariable(['RAILWAY_RUN_UID', '0'])"
+
+    expect(deploy).toContain(configureRunUid)
+    expect(deploy.indexOf(configureRunUid)).toBeLessThan(deploy.indexOf('if (!DEPLOY_ONLY)'))
+    expect(deploy.indexOf(configureRunUid)).toBeLessThan(deploy.indexOf('await startDeployment()'))
+  })
+
   test('synchronizes every optional variable with explicit safe defaults', () => {
     const variables = Object.fromEntries(
       synchronizedOptionalRailwayVariables({
