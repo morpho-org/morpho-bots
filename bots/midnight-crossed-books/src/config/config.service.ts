@@ -58,13 +58,12 @@ export class ConfigService {
       throw new Error('RESOLVER_ADDRESS must be an EVM address')
     }
 
-    const simulationCaller = environment.SIMULATION_CALLER_ADDRESS?.trim()
+    const simulationCaller = readOnly ? environment.SIMULATION_CALLER_ADDRESS?.trim() : undefined
     if (
-      (readOnly && !simulationCaller) ||
-      (simulationCaller
-        ? !isAddress(simulationCaller, { strict: false }) ||
-          isAddressEqual(getAddress(simulationCaller), zeroAddress)
-        : false)
+      readOnly &&
+      (!simulationCaller ||
+        !isAddress(simulationCaller, { strict: false }) ||
+        isAddressEqual(getAddress(simulationCaller), zeroAddress))
     ) {
       throw new InvalidSimulationCallerAddressError()
     }

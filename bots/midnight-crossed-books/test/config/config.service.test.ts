@@ -56,6 +56,21 @@ describe('ConfigService', () => {
     expect(ConfigService.from({ ...REQUIRED, READONLY: value }).readOnly).toBe(false)
   })
 
+  test.each([
+    'not-an-address',
+    '0x0000000000000000000000000000000000000000',
+    `0x${'33'.repeat(20)}`
+  ])('ignores stale SIMULATION_CALLER_ADDRESS=%s in write mode', simulationCaller => {
+    const config = ConfigService.from({
+      ...REQUIRED,
+      SIMULATION_CALLER_ADDRESS: simulationCaller
+    })
+
+    expect(config.readOnly).toBe(false)
+    expect(config.privateKey).toBe(KEY)
+    expect(config.simulationCaller).toBeUndefined()
+  })
+
   test.each(['yes', '2', 'truthy'])('rejects malformed READONLY=%s fail-closed', value => {
     expect(() => ConfigService.from({ ...REQUIRED, READONLY: value })).toThrow(
       InvalidConfigurationError
