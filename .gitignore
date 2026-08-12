@@ -15,6 +15,12 @@ node_modules
 !**/quoter-bot.example.yaml
 !**/quoter-bot.example.yml
 
+# Legacy local configuration can still contain private keys after upgrading.
+**/market-making.yaml
+**/market-making.yml
+!**/market-making.example.yaml
+!**/market-making.example.yml
+
 
 # Testing
 coverage

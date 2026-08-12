@@ -101,7 +101,7 @@ jobs:
       github_environment: crossed-books-prod
       ref: ${{ github.sha }}
 
-  Quoter bot:
+  Quoter-bot:
     needs: Select
     if: ${{ needs.Select.outputs.quoter_bot == 'true' }}
     uses: ./.github/workflows/deploy-quoter-bot-production.yml
@@ -195,7 +195,7 @@ jobs:
             ${prev:+--notes-start-tag "$prev"}
 
   Release-quoter-bot:
-    needs: Quoter bot
+    needs: Quoter-bot
     runs-on: ubuntu-latest
     permissions:
       contents: write
