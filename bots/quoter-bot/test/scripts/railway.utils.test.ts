@@ -13,6 +13,51 @@ import {
   synchronizedOptionalRailwayVariables
 } from '../../scripts/railway.utils'
 
+type DockerInstruction = { keyword: string; value: string }
+
+function parseDockerfile(source: string): DockerInstruction[] {
+  const instructions: DockerInstruction[] = []
+  let logicalLine = ''
+
+  for (const physicalLine of source.split(/\r?\n/)) {
+    const trimmed = physicalLine.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+
+    logicalLine += `${logicalLine ? ' ' : ''}${trimmed.replace(/\\$/, '').trimEnd()}`
+    if (trimmed.endsWith('\\')) continue
+
+    const match = logicalLine.match(/^(\S+)\s+(.+)$/)
+    if (!match) throw new Error(`Invalid Dockerfile instruction: ${logicalLine}`)
+    instructions.push({ keyword: match[1]!.toUpperCase(), value: match[2]!.trim() })
+    logicalLine = ''
+  }
+
+  if (logicalLine) throw new Error(`Unterminated Dockerfile instruction: ${logicalLine}`)
+  return instructions
+}
+
+function parseShellStatements(source: string): string[] {
+  const statements: string[] = []
+  let logicalLine = ''
+
+  for (const physicalLine of source.split(/\r?\n/)) {
+    const trimmed = physicalLine.trim()
+    if (!logicalLine && (!trimmed || (trimmed.startsWith('#') && trimmed !== '#!/bin/sh'))) continue
+    if (!logicalLine && /^\s/.test(physicalLine)) {
+      throw new Error(`Indented shell statement: ${physicalLine}`)
+    }
+
+    logicalLine += `${logicalLine ? ' ' : ''}${trimmed.replace(/\\$/, '').trimEnd()}`
+    if (trimmed.endsWith('\\')) continue
+
+    statements.push(logicalLine)
+    logicalLine = ''
+  }
+
+  if (logicalLine) throw new Error(`Unterminated shell statement: ${logicalLine}`)
+  return statements
+}
+
 describe('Railway CLI output parsing', () => {
   test('fails closed for signer modes that require out-of-band Railway provisioning', () => {
     expect(() => assertFullRailwaySignerProvisioning('private-key')).not.toThrow()
@@ -112,7 +157,7 @@ describe('Railway CLI output parsing', () => {
     ).toBeLessThan(deploy.indexOf('railway add --service'))
   })
 
-  test('starts as root only for trusted setup, then installs, builds, and runs without privileges', () => {
+  test('keeps the root entrypoint immutable and strictly limits privileged startup', () => {
     const deploy = readFileSync(new URL('../../scripts/deploy-railway.ts', import.meta.url), 'utf8')
     const dockerfile = readFileSync(new URL('../../Dockerfile', import.meta.url), 'utf8')
     const entrypoint = readFileSync(
@@ -130,22 +175,17 @@ describe('Railway CLI output parsing', () => {
       "await setRuntimeVariable(['RAILWAY_RUN_UID', '0'])",
       fullProvisioningBranch
     )
-    const userNode = dockerfile.indexOf('\nUSER node\n')
-    const corepackInstall = dockerfile.indexOf('RUN corepack install')
-    const dependencyInstall = dockerfile.indexOf('RUN pnpm install --frozen-lockfile')
-    const workspaceBuild = dockerfile.indexOf('RUN pnpm -r --if-present run build')
-    const userRoot = dockerfile.indexOf('\nUSER root\n')
-    const command = dockerfile.indexOf(
-      'CMD ["/bin/sh", "scripts/railway-entrypoint.sh", "start", "--verbose"]'
-    )
-    const repairState = entrypoint.indexOf('/usr/bin/chown -R node:node "$STATE_MOUNT_PATH"')
-    const dropPrivileges = entrypoint.indexOf('exec /usr/bin/setpriv')
-    const clearGroups = entrypoint.indexOf('--clear-groups', dropPrivileges)
-    const clearCapabilities = entrypoint.indexOf('--bounding-set=-all', dropPrivileges)
-    const noNewPrivileges = entrypoint.indexOf('--no-new-privs', dropPrivileges)
-    const nodeUid = entrypoint.indexOf('--reuid=node', dropPrivileges)
-    const nodeGid = entrypoint.indexOf('--regid=node', dropPrivileges)
-    const absoluteNode = entrypoint.indexOf('/usr/local/bin/node dist/src/index.js "$@"')
+    const instructions = parseDockerfile(dockerfile)
+    const users = instructions
+      .map((instruction, index) => ({ ...instruction, index }))
+      .filter(({ keyword }) => keyword === 'USER')
+    const userNode = users[0]!.index
+    const userRoot = users[1]!.index
+    const requiredNodeRuns = [
+      'corepack install',
+      'pnpm install --frozen-lockfile',
+      'pnpm -r --if-present run build'
+    ]
 
     expect(deployOnlyBranch).toBeGreaterThan(-1)
     expect(deployOnlyRuntimeUid).toBeGreaterThan(deployOnlyBranch)
@@ -154,22 +194,34 @@ describe('Railway CLI output parsing', () => {
     expect(fullProvisioningRuntimeUid).toBeLessThan(deploy.indexOf('await startDeployment()'))
     expect(dockerfile).toContain('apt-get install -y --no-install-recommends util-linux')
     expect(dockerfile).toContain('ENV HOME=/home/node')
-    expect(userNode).toBeGreaterThan(-1)
-    expect(corepackInstall).toBeGreaterThan(userNode)
-    expect(dependencyInstall).toBeGreaterThan(userNode)
-    expect(workspaceBuild).toBeGreaterThan(userNode)
-    expect(userRoot).toBeGreaterThan(workspaceBuild)
-    expect(dockerfile.match(/^USER root$/gm)).toHaveLength(1)
-    expect(command).toBeGreaterThan(userRoot)
-    expect(entrypoint).toContain('set -eu')
-    expect(repairState).toBeGreaterThan(-1)
-    expect(repairState).toBeLessThan(dropPrivileges)
-    expect(entrypoint).not.toMatch(/^(?:chown|setpriv)\b/m)
-    for (const control of [clearGroups, clearCapabilities, noNewPrivileges, nodeUid, nodeGid]) {
-      expect(control).toBeGreaterThan(dropPrivileges)
-      expect(control).toBeLessThan(absoluteNode)
+    expect(users.map(({ value }) => value)).toEqual(['node', 'root'])
+    for (const command of requiredNodeRuns) {
+      const runIndex = instructions.findIndex(
+        ({ keyword, value }) => keyword === 'RUN' && value === command
+      )
+      expect(runIndex).toBeGreaterThan(userNode)
+      expect(runIndex).toBeLessThan(userRoot)
     }
-    expect(absoluteNode).toBeGreaterThan(dropPrivileges)
+    expect(instructions.slice(userRoot + 1)).toEqual([
+      {
+        keyword: 'COPY',
+        value:
+          '--chown=0:0 --chmod=0555 bots/quoter-bot/scripts/railway-entrypoint.sh /usr/local/sbin/railway-entrypoint.sh'
+      },
+      { keyword: 'WORKDIR', value: '/repo/bots/quoter-bot' },
+      {
+        keyword: 'CMD',
+        value: '["/usr/local/sbin/railway-entrypoint.sh", "start", "--verbose"]'
+      }
+    ])
+    expect(entrypoint.startsWith('#!/bin/sh\n')).toBe(true)
+    expect(parseShellStatements(entrypoint)).toEqual([
+      '#!/bin/sh',
+      'set -eu',
+      'STATE_MOUNT_PATH=/state',
+      '/usr/bin/chown -R node:node "$STATE_MOUNT_PATH"',
+      'exec /usr/bin/setpriv --reuid=node --regid=node --clear-groups --bounding-set=-all --no-new-privs /usr/local/bin/node dist/src/index.js "$@"'
+    ])
   })
 
   test('synchronizes every optional variable with explicit safe defaults', () => {

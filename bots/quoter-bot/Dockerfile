@@ -31,8 +31,10 @@ COPY --chown=node:node bots ./bots
 RUN pnpm install --frozen-lockfile
 RUN pnpm -r --if-present run build
 
-# Railway must start the container as root so the entrypoint can repair its root-owned mount. The
-# entrypoint immediately drops to node with setpriv before executing application code.
+# Railway must start the container as root so the entrypoint can repair its root-owned mount. Install
+# a fresh root-owned, non-writable copy only after all node-controlled install and build steps, then
+# immediately drop to node with setpriv before executing application code.
 USER root
+COPY --chown=0:0 --chmod=0555 bots/quoter-bot/scripts/railway-entrypoint.sh /usr/local/sbin/railway-entrypoint.sh
 WORKDIR /repo/bots/quoter-bot
-CMD ["/bin/sh", "scripts/railway-entrypoint.sh", "start", "--verbose"]
+CMD ["/usr/local/sbin/railway-entrypoint.sh", "start", "--verbose"]
