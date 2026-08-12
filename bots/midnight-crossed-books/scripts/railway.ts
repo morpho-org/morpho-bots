@@ -1,27 +1,46 @@
 import { tryCatch } from '@repo/utils'
+import { getAddress, isAddress, isHex } from 'viem'
+
+import { InvalidConfigurationError } from '../src/config/invalid-configuration.error'
+import { parseReadonly } from '../src/config/readonly.utils'
+import { ResolverPrivateKeyRequiredError } from '../src/config/resolver-private-key-required.error'
 
 type RailwayService = { name: string }
 type Env = Record<string, string | undefined>
 
-function required(env: Env, name: string) {
-  const value = env[name]?.trim()
-  if (!value) throw new Error(`Missing required env var: ${name}`)
-  return value
-}
-
-export function resolveProvisioningConfiguration(env: Env) {
-  const value = env.READONLY?.trim().toLowerCase()
-  if (value && !['true', 'false', '1', '0'].includes(value)) {
-    throw new Error('READONLY must be one of: true, false, 1, 0')
+/**
+ * Validates mode-specific Railway provisioning values without retaining unused signing material.
+ * @param env - Local deploy environment containing mode, caller, and optional signing key.
+ * @returns Canonical readonly, simulation-caller, and write-key values for Railway installation.
+ * @throws `InvalidConfigurationError` when mode, caller, or key syntax is invalid.
+ * @throws `ResolverPrivateKeyRequiredError` when write mode has no signing key.
+ * @remarks Readonly mode never reads or returns `RESOLVER_PRIVATE_KEY`.
+ */
+export const resolveProvisioningConfiguration = (env: Env) => {
+  const readOnly = parseReadonly(env.READONLY)
+  if (readOnly) {
+    const caller = env.SIMULATION_CALLER_ADDRESS?.trim()
+    if (!caller || !isAddress(caller, { strict: false })) {
+      throw new InvalidConfigurationError(
+        'Readonly mode requires a valid SIMULATION_CALLER_ADDRESS'
+      )
+    }
+    return {
+      readOnly,
+      resolverPrivateKey: undefined,
+      simulationCaller: getAddress(caller)
+    }
   }
 
-  const readOnly = value === 'true' || value === '1'
-  const resolverPrivateKey = readOnly ? undefined : required(env, 'RESOLVER_PRIVATE_KEY')
-  if (resolverPrivateKey && !/^0x[0-9a-fA-F]{64}$/.test(resolverPrivateKey)) {
-    throw new Error('RESOLVER_PRIVATE_KEY must be a 0x-prefixed 32-byte hex string')
+  const resolverPrivateKey = env.RESOLVER_PRIVATE_KEY?.trim()
+  if (!resolverPrivateKey) throw new ResolverPrivateKeyRequiredError()
+  if (!isHex(resolverPrivateKey, { strict: true }) || resolverPrivateKey.length !== 66) {
+    throw new InvalidConfigurationError(
+      'RESOLVER_PRIVATE_KEY must be a 0x-prefixed 32-byte hex string'
+    )
   }
 
-  return { readOnly, resolverPrivateKey }
+  return { readOnly, resolverPrivateKey, simulationCaller: undefined }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

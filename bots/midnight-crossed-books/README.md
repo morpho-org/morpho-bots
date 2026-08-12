@@ -38,7 +38,8 @@ The generated files live under each infrastructure adapter's `generated/` direct
 
 - `CHAIN_ID` — required, currently `8453`.
 - `RPC_URL` — required. `RPC_URL_FALLBACK` is optional.
-- `READONLY` — optional; set to `true` (or `1`) to simulate and log profitable matches without submitting transactions.
+- `READONLY` — optional; `true`/`1` enables simulation-only mode, while absent/`false`/`0` selects write mode. Other values are rejected.
+- `SIMULATION_CALLER_ADDRESS` — required in readonly mode. Set it to the public EOA that would execute resolutions in write mode so `msg.sender`, profit transfers, and reverts match execution without loading its private key.
 - `RESOLVER_PRIVATE_KEY` — required `0x`-prefixed 32-byte bot key unless `READONLY` is enabled.
 - `RESOLVER_ADDRESS` — optional deterministic deployment override.
 - `API_BASE_URL` — Morpho API origin, default `https://api.morpho.org`.
@@ -60,11 +61,13 @@ pnpm --filter @repo/contracts run deploy:crossed-books-resolver
 
 ```sh
 CHAIN_ID=8453 RPC_URL=https://… READONLY=true \
+SIMULATION_CALLER_ADDRESS=0x… \
 pnpm --filter @morpho-org/midnight-crossed-books run start
 ```
 
-Readonly mode uses the resolver address as the simulation caller, logs each profitable result as
-`match.computed`, and never creates a signer, transaction queue, or submission.
+Readonly mode uses `SIMULATION_CALLER_ADDRESS` as the execution-equivalent simulation caller, logs
+each profitable result as `match.computed`, and never creates a signer, transaction queue, or
+submission. Only the public EOA address is required; do not provide or derive its private key.
 
 To execute profitable resolutions instead, provide the signer key:
 
@@ -86,16 +89,16 @@ RPC_URL=https://… RESOLVER_PRIVATE_KEY=0x… \
 pnpm --filter @morpho-org/midnight-crossed-books run deploy:railway
 ```
 
-For a readonly service, set `READONLY=true` and omit `RESOLVER_PRIVATE_KEY`:
+For keyless readonly Railway provisioning, replace the private key with the public caller address:
 
 ```sh
 RAILWAY_PROJECT_ID=… RAILWAY_ENVIRONMENT=staging \
-RPC_URL=https://… READONLY=true \
+RPC_URL=https://… READONLY=true SIMULATION_CALLER_ADDRESS=0x… \
 pnpm --filter @morpho-org/midnight-crossed-books run deploy:railway
 ```
 
-The provisioning command writes the selected `READONLY` mode to Railway. A write-mode deployment
-still requires a valid resolver private key.
+The deploy script validates and propagates `READONLY` and `SIMULATION_CALLER_ADDRESS`; it does not
+require or install `RESOLVER_PRIVATE_KEY` in readonly mode. Write mode still requires a valid key.
 
 CI subsequently runs the same command with `DEPLOY_ONLY=true`, so GitHub holds only a
 project/environment-scoped Railway token. Pushes to `main` deploy staging through the

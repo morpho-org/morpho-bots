@@ -159,12 +159,15 @@ if (DEPLOY_ONLY) {
   reportStatus(await waitForDeploy())
 } else {
   const rpcUrl = required(process.env, 'RPC_URL')
-  const { readOnly, resolverPrivateKey } = resolveProvisioningConfiguration(process.env)
+  const { readOnly, resolverPrivateKey, simulationCaller } = resolveProvisioningConfiguration(
+    process.env
+  )
 
   await ensureContext()
   await ensureService()
   await setVariable('CHAIN_ID=8453')
   await setVariable(`READONLY=${readOnly}`)
+  if (simulationCaller) await setVariable(`SIMULATION_CALLER_ADDRESS=${simulationCaller}`)
   await setVariable(`RAILWAY_DOCKERFILE_PATH=${DOCKERFILE_PATH}`)
   await setSecret('RPC_URL', rpcUrl)
   if (resolverPrivateKey) await setSecret('RESOLVER_PRIVATE_KEY', resolverPrivateKey)

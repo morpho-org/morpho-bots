@@ -6,20 +6,52 @@ import {
   parseServices,
   resolveProvisioningConfiguration
 } from '../../scripts/railway'
+import { InvalidConfigurationError } from '../../src/config/invalid-configuration.error'
+import { ResolverPrivateKeyRequiredError } from '../../src/config/resolver-private-key-required.error'
+
+const KEY = `0x${'11'.repeat(32)}`
+const CALLER = `0x${'22'.repeat(20)}`
 
 describe('Railway provisioning configuration', () => {
-  test('supports readonly provisioning without a resolver private key', () => {
-    expect(resolveProvisioningConfiguration({ READONLY: 'true' })).toEqual({
+  test('supports keyless readonly provisioning with an execution-equivalent caller', () => {
+    expect(
+      resolveProvisioningConfiguration({
+        READONLY: 'TRUE',
+        SIMULATION_CALLER_ADDRESS: CALLER,
+        RESOLVER_PRIVATE_KEY: 'ignored-in-readonly-mode'
+      })
+    ).toEqual({
       readOnly: true,
-      resolverPrivateKey: undefined
+      resolverPrivateKey: undefined,
+      simulationCaller: CALLER
     })
   })
 
-  test('wires readonly mode into first-time Railway provisioning', () => {
+  test('preserves write-mode key requirements and provisioning', () => {
+    expect(resolveProvisioningConfiguration({ RESOLVER_PRIVATE_KEY: KEY })).toEqual({
+      readOnly: false,
+      resolverPrivateKey: KEY,
+      simulationCaller: undefined
+    })
+    expect(() => resolveProvisioningConfiguration({})).toThrow(ResolverPrivateKeyRequiredError)
+  })
+
+  test.each([
+    [{ READONLY: 'yes', RESOLVER_PRIVATE_KEY: KEY }, 'READONLY'],
+    [{ READONLY: 'true' }, 'SIMULATION_CALLER_ADDRESS'],
+    [{ READONLY: 'true', SIMULATION_CALLER_ADDRESS: 'invalid' }, 'SIMULATION_CALLER_ADDRESS'],
+    [{ RESOLVER_PRIVATE_KEY: '0x12' }, 'RESOLVER_PRIVATE_KEY']
+  ])('rejects invalid provisioning configuration %#', (environment, message) => {
+    expect(() => resolveProvisioningConfiguration(environment)).toThrow(InvalidConfigurationError)
+    expect(() => resolveProvisioningConfiguration(environment)).toThrow(message)
+  })
+
+  test('wires readonly mode and caller into first-time Railway provisioning', () => {
     const deploy = readFileSync(new URL('../../scripts/deploy-railway.ts', import.meta.url), 'utf8')
 
-    expect(deploy).toContain('resolveProvisioningConfiguration(process.env)')
+    expect(deploy).toMatch(/resolveProvisioningConfiguration\(\s*process\.env\s*\)/)
     expect(deploy).toContain('await setVariable(`READONLY=${readOnly}`)')
+    expect(deploy).toContain('await setVariable(`SIMULATION_CALLER_ADDRESS=${simulationCaller}`)')
     expect(deploy).toContain("if (resolverPrivateKey) await setSecret('RESOLVER_PRIVATE_KEY'")
   })
 })

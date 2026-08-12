@@ -17,6 +17,7 @@ import { getBlockNumber } from 'viem/actions'
 
 import { CrossedBooksBotService } from './application/crossed-books-bot.service'
 import { ConfigService } from './config/config.service'
+import { InvalidConfigurationError } from './config/invalid-configuration.error'
 import { ResolverPrivateKeyRequiredError } from './config/resolver-private-key-required.error'
 import { MatchingService } from './domain/matching.service'
 import { createMorphoApiClient } from './infrastructure/morpho-api/client'
@@ -37,7 +38,8 @@ function resolverSelector() {
  * Composes the crossed-books resolver runtime for the selected environment mode.
  * @param environment - Runtime configuration and optional observability values.
  * @returns A lifecycle handle that polls immediately and then follows new blocks when started.
- * @throws `Error` when configuration is invalid or required contracts are not deployed.
+ * @throws `InvalidConfigurationError` when readonly mode or its caller is invalid.
+ * @throws `Error` when other configuration is invalid or required contracts are not deployed.
  * @remarks Readonly composition creates no signer, pending transaction queue, or balance monitor;
  * both modes perform RPC deployment checks during composition.
  */
@@ -57,7 +59,12 @@ export async function createApplication(
   let signer: ReturnType<typeof createSigner> | undefined
   let queue: ReturnType<typeof createPendingQueue> | undefined
 
-  if (!config.readOnly) {
+  if (config.readOnly) {
+    if (!config.simulationCaller) {
+      throw new InvalidConfigurationError('Readonly mode requires SIMULATION_CALLER_ADDRESS')
+    }
+    sender = config.simulationCaller
+  } else {
     const privateKey = config.privateKey
     if (!privateKey) throw new ResolverPrivateKeyRequiredError()
     signer = createSigner({
@@ -150,7 +157,7 @@ export async function createApplication(
     async start() {
       logger.info('startup', {
         readOnly: config.readOnly,
-        sender: config.readOnly ? undefined : sender,
+        sender,
         midnight: config.midnight,
         resolver: config.resolver,
         minimumProfit: config.minimumProfit,

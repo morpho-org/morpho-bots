@@ -5,6 +5,8 @@ import { getAddress, isAddress, isHex, parseGwei } from 'viem'
 import { base } from 'viem/chains'
 
 import { DEFAULT_MAX_MATCHES } from '../domain/matching.service'
+import { InvalidConfigurationError } from './invalid-configuration.error'
+import { parseReadonly } from './readonly.utils'
 import { ResolverPrivateKeyRequiredError } from './resolver-private-key-required.error'
 
 const MIDNIGHT = getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A')
@@ -24,20 +26,14 @@ function unsignedDecimal(environment: Environment, name: string, fallback?: stri
   return value
 }
 
-function boolean(environment: Environment, name: string, fallback = false) {
-  const value = environment[name]?.trim().toLowerCase()
-  if (!value) return fallback
-  if (value === '1' || value === 'true') return true
-  if (value === '0' || value === 'false') return false
-  throw new Error(`${name} must be one of: true, false, 1, 0`)
-}
-
 export class ConfigService {
   /**
    * Loads and validates resolver configuration from environment values.
    * @param environment - Runtime environment; defaults to `process.env`.
    * @returns Immutable configuration with signer material omitted in readonly mode.
-   * @throws `Error` when a required write-mode value or another runtime value is invalid.
+   * @throws `InvalidConfigurationError` when readonly mode or its caller is invalid.
+   * @throws `ResolverPrivateKeyRequiredError` when write mode has no signing key.
+   * @throws `Error` when another required runtime value is invalid.
    * @remarks This method performs no network access and does not retain `RESOLVER_PRIVATE_KEY` when
    * readonly mode is enabled.
    */
@@ -47,7 +43,7 @@ export class ConfigService {
       throw new Error(`Unsupported CHAIN_ID ${chainId}; supported: ${base.id}`)
     }
 
-    const readOnly = boolean(environment, 'READONLY')
+    const readOnly = parseReadonly(environment.READONLY)
     const privateKey = readOnly ? undefined : environment.RESOLVER_PRIVATE_KEY?.trim()
     if (!readOnly && !privateKey) throw new ResolverPrivateKeyRequiredError()
     if (
@@ -60,6 +56,16 @@ export class ConfigService {
     const resolverAddress = environment.RESOLVER_ADDRESS?.trim()
     if (resolverAddress && !isAddress(resolverAddress, { strict: false })) {
       throw new Error('RESOLVER_ADDRESS must be an EVM address')
+    }
+
+    const simulationCaller = environment.SIMULATION_CALLER_ADDRESS?.trim()
+    if (readOnly && !simulationCaller) {
+      throw new InvalidConfigurationError(
+        'Readonly mode requires SIMULATION_CALLER_ADDRESS to preserve execution caller semantics'
+      )
+    }
+    if (simulationCaller && !isAddress(simulationCaller, { strict: false })) {
+      throw new InvalidConfigurationError('SIMULATION_CALLER_ADDRESS must be an EVM address')
     }
 
     const apiBaseUrl = (environment.API_BASE_URL?.trim() || 'https://api.morpho.org').replace(
@@ -98,6 +104,7 @@ export class ConfigService {
       rpcUrlFallback: environment.RPC_URL_FALLBACK?.trim() || undefined,
       readOnly,
       privateKey,
+      simulationCaller: simulationCaller ? getAddress(simulationCaller) : undefined,
       apiBaseUrl,
       routerApiBaseUrl,
       scanIntervalMs,
@@ -118,6 +125,7 @@ export class ConfigService {
       rpcUrlFallback: string | undefined
       readOnly: boolean
       privateKey: Hex | undefined
+      simulationCaller: Address | undefined
       apiBaseUrl: string
       routerApiBaseUrl: string
       scanIntervalMs: number
@@ -157,6 +165,11 @@ export class ConfigService {
   /** Returns whether transaction signing and submission are disabled. */
   get readOnly() {
     return this.values.readOnly
+  }
+
+  /** Returns the validated execution-equivalent caller used only for keyless simulation. */
+  get simulationCaller() {
+    return this.values.simulationCaller
   }
 
   get apiBaseUrl() {

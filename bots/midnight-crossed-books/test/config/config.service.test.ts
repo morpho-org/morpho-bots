@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 
 import { ConfigService } from '../../src/config/config.service'
+import { InvalidConfigurationError } from '../../src/config/invalid-configuration.error'
 import { ResolverPrivateKeyRequiredError } from '../../src/config/resolver-private-key-required.error'
 
 const KEY = `0x${'11'.repeat(32)}`
@@ -30,14 +31,51 @@ describe('ConfigService', () => {
       CHAIN_ID: '8453',
       RPC_URL: 'http://rpc.example',
       READONLY: 'true',
+      SIMULATION_CALLER_ADDRESS: `0x${'33'.repeat(20)}`,
       RESOLVER_PRIVATE_KEY: 'ignored-in-readonly-mode'
     })
 
     expect(config.readOnly).toBe(true)
     expect(config.privateKey).toBeUndefined()
+    expect(config.simulationCaller).toBe(`0x${'33'.repeat(20)}`)
   })
 
-  test('requires a resolver private key in normal mode', () => {
+  test.each(['true', 'TRUE', '1'])('accepts READONLY=%s as readonly mode', value => {
+    const config = ConfigService.from({
+      CHAIN_ID: '8453',
+      RPC_URL: 'http://rpc.example',
+      READONLY: value,
+      SIMULATION_CALLER_ADDRESS: `0x${'33'.repeat(20)}`
+    })
+
+    expect(config.readOnly).toBe(true)
+  })
+
+  test.each([undefined, '', 'false', 'FALSE', '0'])('accepts READONLY=%s as write mode', value => {
+    expect(ConfigService.from({ ...REQUIRED, READONLY: value }).readOnly).toBe(false)
+  })
+
+  test.each(['yes', '2', 'truthy'])('rejects malformed READONLY=%s fail-closed', value => {
+    expect(() => ConfigService.from({ ...REQUIRED, READONLY: value })).toThrow(
+      InvalidConfigurationError
+    )
+  })
+
+  test('requires a validated keyless simulation caller in readonly mode', () => {
+    expect(() =>
+      ConfigService.from({ CHAIN_ID: '8453', RPC_URL: 'http://rpc.example', READONLY: 'true' })
+    ).toThrow(InvalidConfigurationError)
+    expect(() =>
+      ConfigService.from({
+        CHAIN_ID: '8453',
+        RPC_URL: 'http://rpc.example',
+        READONLY: 'true',
+        SIMULATION_CALLER_ADDRESS: 'not-an-address'
+      })
+    ).toThrow(InvalidConfigurationError)
+  })
+
+  test('requires a resolver private key in normal mode with a named error', () => {
     expect(() => ConfigService.from({ CHAIN_ID: '8453', RPC_URL: 'http://rpc.example' })).toThrow(
       ResolverPrivateKeyRequiredError
     )
