@@ -1,4 +1,6 @@
-import { readFileSync } from 'node:fs'
+import { lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, test } from 'vitest'
 
 import {
@@ -15,6 +17,25 @@ import {
 
 type DockerInstruction = { keyword: string; value: string }
 
+const assertRegularFileSource = (path: URL): void => {
+  const stats = lstatSync(path)
+  if (stats.isSymbolicLink() || !stats.isFile()) {
+    throw new Error('Railway entrypoint source must be a regular non-symlink file')
+  }
+}
+
+const parseDockerParserDirectives = (source: string): string[] => {
+  const directives: string[] = []
+
+  for (const rawLine of source.split('\n')) {
+    const physicalLine = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine
+    if (!/^#\s*[A-Za-z][A-Za-z0-9-]*\s*=/.test(physicalLine)) break
+    directives.push(physicalLine)
+  }
+
+  return directives
+}
+
 const parseDockerfile = (source: string): DockerInstruction[] => {
   const instructions: DockerInstruction[] = []
   let logicalLine = ''
@@ -22,7 +43,11 @@ const parseDockerfile = (source: string): DockerInstruction[] => {
   for (const rawLine of source.split('\n')) {
     const physicalLine = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine
     const trimmed = physicalLine.trim()
-    if (!trimmed || trimmed.startsWith('#')) continue
+    if (!trimmed) {
+      if (logicalLine) throw new Error('Empty Dockerfile continuation line')
+      continue
+    }
+    if (trimmed.startsWith('#')) continue
 
     const continued = physicalLine.endsWith('\\')
     const fragment = (continued ? physicalLine.slice(0, -1) : physicalLine).trim()
@@ -121,6 +146,11 @@ const assertExactSequence = <T>(actual: T[], expected: T[], subject: string): vo
 }
 
 const assertSecureRailwayDockerfile = (source: string): void => {
+  assertExactSequence(
+    parseDockerParserDirectives(source),
+    ['# syntax=docker/dockerfile:1'],
+    'Docker parser directives'
+  )
   assertExactSequence(parseDockerfile(source), expectedDockerInstructions, 'Dockerfile')
 }
 
@@ -136,10 +166,9 @@ const assertSecureRailwayEntrypoint = (source: string): void => {
 }
 
 const railwayDockerfile = readFileSync(new URL('../../Dockerfile', import.meta.url), 'utf8')
-const railwayEntrypoint = readFileSync(
-  new URL('../../scripts/railway-entrypoint.sh', import.meta.url),
-  'utf8'
-)
+const railwayEntrypointPath = new URL('../../scripts/railway-entrypoint.sh', import.meta.url)
+assertRegularFileSource(railwayEntrypointPath)
+const railwayEntrypoint = readFileSync(railwayEntrypointPath, 'utf8')
 
 describe('Railway security guard hardening', () => {
   test('accepts the committed secure Dockerfile and entrypoint', () => {
@@ -185,6 +214,40 @@ describe('Railway security guard hardening', () => {
   })
 
   test.each([
+    [
+      'an alternate escape parser directive',
+      railwayDockerfile.replace('# syntax=docker/dockerfile:1', '# escape=`')
+    ],
+    [
+      'an extra parser directive',
+      railwayDockerfile.replace(
+        '# syntax=docker/dockerfile:1',
+        '# syntax=docker/dockerfile:1\n# check=skip=JSONArgsRecommended'
+      )
+    ],
+    [
+      'duplicate syntax parser directives',
+      railwayDockerfile.replace(
+        '# syntax=docker/dockerfile:1',
+        '# syntax=docker/dockerfile:1\n# syntax=docker/dockerfile:1'
+      )
+    ],
+    [
+      'reordered parser directives',
+      railwayDockerfile.replace(
+        '# syntax=docker/dockerfile:1',
+        '# check=skip=JSONArgsRecommended\n# syntax=docker/dockerfile:1'
+      )
+    ],
+    [
+      'altered syntax parser directive',
+      railwayDockerfile.replace('# syntax=docker/dockerfile:1', '# syntax = docker/dockerfile:1')
+    ]
+  ])('rejects %s', (_description, source) => {
+    expect(() => assertSecureRailwayDockerfile(source)).toThrow()
+  })
+
+  test.each([
     ['a blank byte before the shebang', `\n${railwayEntrypoint}`],
     ['a comment before the shebang', `# prelude\n${railwayEntrypoint}`],
     [
@@ -214,13 +277,36 @@ describe('Railway security guard hardening', () => {
     expect(() => assertSecureRailwayEntrypoint(source)).toThrow()
   })
 
-  test('allows standalone comments and blanks inside a valid Docker continuation', () => {
+  test('allows standalone comments inside a valid Docker continuation', () => {
     const source = railwayDockerfile.replace(
       '/usr/bin/apt-get update \\\n',
-      '/usr/bin/apt-get update \\\n  # package setup\n\n'
+      '/usr/bin/apt-get update \\\n  # package setup\n'
     )
 
     expect(() => assertSecureRailwayDockerfile(source)).not.toThrow()
+  })
+
+  test('rejects a blank line inside a Docker continuation', () => {
+    const source = railwayDockerfile.replace(
+      '/usr/bin/apt-get update \\\n',
+      '/usr/bin/apt-get update \\\n\n'
+    )
+
+    expect(() => assertSecureRailwayDockerfile(source)).toThrow()
+  })
+
+  test('requires the committed entrypoint source path to be a regular non-symlink file', () => {
+    const fixture = mkdtempSync(join(tmpdir(), 'railway-entrypoint-source-'))
+    const target = join(fixture, 'entrypoint-target.sh')
+    const link = join(fixture, 'railway-entrypoint.sh')
+
+    try {
+      writeFileSync(target, '#!/bin/sh\n')
+      symlinkSync(target, link)
+      expect(() => assertRegularFileSource(new URL(`file://${link}`))).toThrow()
+    } finally {
+      rmSync(fixture, { force: true, recursive: true })
+    }
   })
 
   test('rejects standalone comments and blanks that terminate a shell continuation', () => {
