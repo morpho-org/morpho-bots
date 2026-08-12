@@ -1,18 +1,12 @@
 import type { Address, Client } from 'viem'
 
-import {
-  BaseError,
-  ContractFunctionRevertedError,
-  ContractFunctionZeroDataError,
-  encodeFunctionData,
-  ExecutionRevertedError,
-  isAddressEqual,
-  zeroAddress
-} from 'viem'
+import { encodeFunctionData, isAddressEqual, zeroAddress } from 'viem'
 import { readContract } from 'viem/actions'
 
 import type { QuoteLogger } from '../quoting'
 import type { Unwrapper } from './resolve'
+
+import { isContractLevelFailure } from './contract-failure.utils'
 
 const erc4626Abi = [
   {
@@ -47,27 +41,6 @@ const erc4626Abi = [
 // exactly what arrived — required for midnight's cap-binding branch (seizedAssets is derived
 // on-chain) and it absorbs donations to the shared singleton.
 export const ERC4626_SHARES_OFFSET = 4n
-
-/**
- * `true` only for a failure the CONTRACT produced (revert, no code / empty return): the one kind
- * of `readContract` error that proves "this token is not an ERC4626 vault" and is safe to memoize.
- * Transport-layer failures (HTTP, timeout, RPC) must NOT be classified here — memoizing one would
- * mislabel a real vault for the process lifetime, so the caller rethrows them instead (→ the
- * existing `failed` outcome + backoff, which recovers).
- */
-function isContractLevelFailure(error: unknown): boolean {
-  if (!(error instanceof BaseError)) return false
-  return (
-    error.walk(
-      e =>
-        // Revert with decodable data / revert without data (how viem surfaces "plain ERC20 has no
-        // asset()") / a successful call that returned no data (address without code).
-        e instanceof ContractFunctionRevertedError ||
-        e instanceof ExecutionRevertedError ||
-        e instanceof ContractFunctionZeroDataError
-    ) !== null
-  )
-}
 
 /**
  * Detects ERC4626 vault shares and converts them into a balance-spliced
