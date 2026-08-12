@@ -279,7 +279,7 @@ that cannot resolve its signer.
 replace a working strategy with an empty list. Every remaining optional value is synchronized:
 omitted timeouts return to their documented defaults, and omitted group IDs and BetterStack settings
 are disabled. `RAILWAY_ENVIRONMENT` defaults to `production`. CI uses `DEPLOY_ONLY=true` with the
-`market-making-production` GitHub Environment, so it reads only `RAILWAY_PROJECT_ID` and
+`quoter-bot-production` GitHub Environment, so it reads only `RAILWAY_PROJECT_ID` and
 `RAILWAY_TOKEN` and uses project-token deployment permissions to re-ship the service. Deploy-only
 runs rely on the Dockerfile path, runtime variables, and persistent volume established by a full run;
 they neither read nor mutate that provisioned configuration.
