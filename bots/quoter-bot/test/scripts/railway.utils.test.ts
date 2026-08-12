@@ -165,13 +165,9 @@ describe('Railway CLI output parsing', () => {
       'utf8'
     )
     const contextSetup = deploy.indexOf('await ensureContext()')
+    const runtimeUid = deploy.indexOf("await setRuntimeVariable(['RAILWAY_RUN_UID', '0'])")
     const fullProvisioningBranch = deploy.indexOf('if (!DEPLOY_ONLY)')
     const ensureService = deploy.indexOf('await ensureService()', fullProvisioningBranch)
-    const deployOnlySource = deploy.slice(contextSetup, fullProvisioningBranch)
-    const fullProvisioningRuntimeUid = deploy.indexOf(
-      "await setRuntimeVariable(['RAILWAY_RUN_UID', '0'])",
-      fullProvisioningBranch
-    )
     const instructions = parseDockerfile(dockerfile)
     const users = instructions
       .map((instruction, index) => ({ ...instruction, index }))
@@ -185,9 +181,10 @@ describe('Railway CLI output parsing', () => {
     ]
 
     expect(contextSetup).toBeGreaterThan(-1)
-    expect(deployOnlySource).not.toContain('setRuntimeVariable(')
-    expect(fullProvisioningRuntimeUid).toBeGreaterThan(ensureService)
-    expect(fullProvisioningRuntimeUid).toBeLessThan(deploy.indexOf('await startDeployment()'))
+    expect(runtimeUid).toBeGreaterThan(contextSetup)
+    expect(runtimeUid).toBeLessThan(fullProvisioningBranch)
+    expect(ensureService).toBeGreaterThan(fullProvisioningBranch)
+    expect(runtimeUid).toBeLessThan(deploy.indexOf('await startDeployment()'))
     expect(dockerfile).toContain('apt-get install -y --no-install-recommends util-linux')
     expect(dockerfile).toContain('ENV HOME=/home/node')
     expect(users.map(({ value }) => value)).toEqual(['node', 'root'])
