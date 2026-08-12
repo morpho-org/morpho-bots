@@ -280,11 +280,12 @@ replace a working strategy with an empty list. Every remaining optional value is
 omitted timeouts return to their documented defaults, and omitted group IDs and BetterStack settings
 are disabled. `RAILWAY_ENVIRONMENT` defaults to `production`. CI uses `DEPLOY_ONLY=true` with the
 `quoter-bot-production` GitHub Environment, so it reads only `RAILWAY_PROJECT_ID` and
-`RAILWAY_TOKEN` and uses project-token deployment permissions to re-ship the service. Deploy-only
-runs rely on the Dockerfile path, secrets, application variables, and persistent volume established
-by a full run. They synchronize only the non-secret `RAILWAY_RUN_UID=0` runtime control so the
-entrypoint can repair the root-owned `/state` mount, then immediately drop to the `node` user before
-loading bot code; they neither read nor mutate signer credentials or application configuration.
+`RAILWAY_TOKEN` and uses project-token deployment permissions to re-ship the pre-provisioned
+service. Deploy-only does not inspect or mutate Railway variables or secrets. Before deploy-only, an
+authorized operator or full provisioning run must have configured `RAILWAY_RUN_UID=0`, the current
+`RAILWAY_DOCKERFILE_PATH=bots/quoter-bot/Dockerfile`, `XDG_STATE_HOME`, signer and application
+variables, and the state volume. A project token (`RAILWAY_TOKEN`) cannot manage variables; use
+authorized account or workspace credentials only for provisioning, not routine deploy-only CI.
 
 The local Compose service uses the same `/state` ownership path through a named volume, requires both
 strategy arrays, and supplies the runtime timeout defaults when the corresponding host variables are
