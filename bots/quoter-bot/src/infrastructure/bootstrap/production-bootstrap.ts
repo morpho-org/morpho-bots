@@ -51,7 +51,7 @@ import {
 import { bootstrapContinuousFeeCap, createBootstrapOffer } from './bootstrap-offer.utils'
 import {
   readLivePendingBootstrapOffers,
-  readUncanceledGroupIds
+  readOwnedGroupIdsForCleanup
 } from './bootstrap-pending-offer.utils'
 import { MidnightBootstrapPositionService } from './bootstrap-position.service'
 import {
@@ -331,16 +331,12 @@ export const createProductionBootstrapAdapters = (
     }
   }
 
-  const uncanceledOwnedGroupIds = async () => {
-    const [block, groupIds] = await Promise.all([
-      client.getBlock({ blockTag: 'latest' }),
-      ownership.read()
-    ])
-    return readUncanceledGroupIds({
-      groupIds,
-      readGroupConsumed: groupId => readGroupConsumed(groupId, block.number)
+  const uncanceledOwnedGroupIds = () =>
+    readOwnedGroupIdsForCleanup({
+      readOwnedGroupIds: ownership.read,
+      readBlockNumber: async () => (await client.getBlock({ blockTag: 'latest' })).number,
+      readGroupConsumed
     })
-  }
 
   const inventory: BootstrapInventoryReader = {
     readPositions: async () => {

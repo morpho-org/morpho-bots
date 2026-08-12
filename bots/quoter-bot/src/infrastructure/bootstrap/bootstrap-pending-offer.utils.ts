@@ -45,6 +45,46 @@ export const readUncanceledGroupIds = async (
 }
 
 /**
+ * Filters cleanup candidates without letting a failed consumption read suppress cancellation.
+ * @param parameters - Owned group IDs and their authoritative consumption reader.
+ * @returns Groups not confirmed canceled; unreadable groups remain eligible for cancellation.
+ */
+export const readUncanceledGroupIdsForCleanup = async (
+  parameters: ReadUncanceledGroupIdsParameters
+): Promise<Hex[]> => {
+  const consumedGroups = await Promise.all(
+    parameters.groupIds.map(async groupId => {
+      const { data: consumed, error } = await tryCatch(parameters.readGroupConsumed(groupId))
+      return { groupId, consumed, error }
+    })
+  )
+
+  return consumedGroups
+    .filter(({ consumed, error }) => error || consumed !== MAX_OFFER_CAP)
+    .map(({ groupId }) => groupId)
+}
+
+/**
+ * Reads cleanup candidates while failing open when the shared block lookup is unavailable.
+ * @param parameters - Durable ownership and block-pinned consumption readers.
+ * @returns Groups not confirmed canceled; all owned groups when the block lookup fails.
+ */
+export const readOwnedGroupIdsForCleanup = async (parameters: {
+  readOwnedGroupIds: () => Promise<readonly Hex[]>
+  readBlockNumber: () => Promise<bigint>
+  readGroupConsumed: (groupId: Hex, blockNumber: bigint) => Promise<bigint>
+}): Promise<Hex[]> => {
+  const groupIds = await parameters.readOwnedGroupIds()
+  const { data: blockNumber, error } = await tryCatch(parameters.readBlockNumber())
+  if (error) return [...groupIds]
+
+  return readUncanceledGroupIdsForCleanup({
+    groupIds,
+    readGroupConsumed: groupId => parameters.readGroupConsumed(groupId, blockNumber)
+  })
+}
+
+/**
  * Selects persisted bootstrap intents whose groups are still absent from the provider book.
  * @param groups - Current maker groups returned by the eventually consistent API.
  * @param ownedOffers - Reserved or confirmed offer intents persisted before publication.

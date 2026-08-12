@@ -9,7 +9,9 @@ import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/boo
 import {
   pendingBootstrapOffers,
   readLivePendingBootstrapOffers,
-  readUncanceledGroupIds
+  readOwnedGroupIdsForCleanup,
+  readUncanceledGroupIds,
+  readUncanceledGroupIdsForCleanup
 } from '../../../src/infrastructure/bootstrap/bootstrap-pending-offer.utils'
 
 const marketId: Hex = `0x${'11'.repeat(32)}`
@@ -73,6 +75,38 @@ describe('readUncanceledGroupIds', () => {
 
     expect(error).toBeInstanceOf(BootstrapAdapterError)
     expect(error).toMatchObject({ operation: 'group-consumption-read' })
+  })
+})
+
+describe('readUncanceledGroupIdsForCleanup', () => {
+  test('keeps unreadable groups eligible for cancellation while excluding confirmed cancellations', async () => {
+    const unreadableGroupId: Hex = `0x${'44'.repeat(32)}`
+
+    const result = await readUncanceledGroupIdsForCleanup({
+      groupIds: [groupId, unreadableGroupId],
+      readGroupConsumed: async id => {
+        if (id === unreadableGroupId) throw new Error('transient provider failure')
+        return MAX_OFFER_CAP
+      }
+    })
+
+    expect(result).toEqual([unreadableGroupId])
+  })
+})
+
+describe('readOwnedGroupIdsForCleanup', () => {
+  test('keeps every owned group eligible for cancellation when the block read fails', async () => {
+    const secondGroupId: Hex = `0x${'55'.repeat(32)}`
+
+    const result = await readOwnedGroupIdsForCleanup({
+      readOwnedGroupIds: async () => [groupId, secondGroupId],
+      readBlockNumber: async () => {
+        throw new Error('transient block read failure')
+      },
+      readGroupConsumed: async () => MAX_OFFER_CAP
+    })
+
+    expect(result).toEqual([groupId, secondGroupId])
   })
 })
 
