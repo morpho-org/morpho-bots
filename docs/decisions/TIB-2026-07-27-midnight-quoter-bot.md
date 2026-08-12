@@ -68,7 +68,8 @@ boundaries.
   maintaining the ordinary bid and ask ladders from the first quote cycle.
 - Serialize every bootstrap and ladder invalidation/sign/publication through one blocking
   `MakeService`, including a prospective-book check that rejects inverted spreads with a typed
-  `NEGATIVE_SPREAD` error.
+  `NEGATIVE_SPREAD` error except for the explicitly evidenced bootstrap/ladder overlap described
+  below.
 - Support explicit startup cleanup of every maker offer or one group, plus opt-in cleanup of both
   strategy namespaces through on-chain invalidation transactions during graceful shutdown, followed
   by a terminal report.
@@ -146,7 +147,8 @@ one job at a time:
 1. reload the active maker offers immediately before mutation;
 2. merge the proposed change with the still-live offer set;
 3. reject with the typed `NEGATIVE_SPREAD` error if any proposed or live V0 offer would create an
-   inverted spread;
+   inverted spread, unless a bootstrap buy overlaps the unique highest-rate owned ladder sell and
+   all current rate and remaining-size evidence is complete;
 4. invalidate the prior root/group when the job is a replacement;
 5. sign and publish the exact validated replacement; and
 6. settle the caller's promise only after the resulting active set is observable.
@@ -352,6 +354,17 @@ For each allowlisted market:
 6. invalidate the active bootstrap group as soon as the observed credit enters the accepted target
    range.
 
+When the premium-adjusted bootstrap buy reaches or crosses the unique highest-rate existing ladder
+sell, `MakeService` treats that overlap as intentional only when the complete current book proves the
+sell is ladder-owned and provides its group cap, consumption, tick, and maturity. It derives the
+sell's current effective rate from that exact tick and remaining time to maturity, reprices the new
+bootstrap offer to that rate, and publishes only `expected bootstrap assets - sell remaining
+assets`. A zero or negative remainder produces no publication. Unknown ownership, ties at the
+highest rate, pending offers without indexed size, malformed size/rate evidence, pre-existing
+crossings, or a crossing against any other offer still fail closed with `NEGATIVE_SPREAD`. Live and
+`--readonly` use the same resolver; read-only output records the adjusted request without mutating
+the book.
+
 The temporary offer lends at a worse rate for a limited period, making it attractive for a taker
 and paying the bootstrap cost through reduced yield. It is the only discounted offer. Normal
 ladder roots remain present and continue to use their configured quote premium.
@@ -372,9 +385,9 @@ When `AUTO_REFILL=true`, the workflow resumes this behavior whenever credit fall
 false, bootstrap runs until the initial target transition and then remains observational until
 restarted with an explicit operator decision.
 
-Bootstrap does not proactively take standing offers. That avoids a separate taker transaction,
-and supersedes the original 10,000 USDC active-take sketch. A later iteration may opportunistically
-take when a standing offer is available at a strictly better rate than the expected bootstrap rate.
+Bootstrap does not proactively take standing offers. That avoids a separate taker transaction and
+supersedes the original 10,000 USDC active-take sketch. The overlap handling above instead accounts
+for the maker's own already-resting ladder sell while keeping both offers passive.
 
 ### 6. Process 3 — ladder quoter
 
@@ -453,8 +466,9 @@ No offer is published unless all invariants hold for the exact encoded offer:
 - exactly one of `maxUnits` and `maxAssets` is non-zero;
 - shared groups contain only compatible direction, loan asset, and cap semantics;
 - the prospective set, evaluated together with every already-published maker offer, does not cross
-  or create an inverted/negative spread on any market; `MakeService` rejects the whole job with
-  `NEGATIVE_SPREAD` before invalidating or publishing anything;
+  or create an inverted/negative spread on any market, except for the single evidenced
+  bootstrap/ladder overlap above; unresolved crossings are rejected with `NEGATIVE_SPREAD` before
+  invalidating or publishing anything;
 - offer start, expiry, maturity, tick spacing, settlement-fee assumptions, continuous-fee cap,
   callback, receiver, maker, and ratifier match policy;
 - the generated root contains only the expected allowlisted offers; and

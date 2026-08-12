@@ -85,6 +85,8 @@ type SetupStateOptions = {
   marketIds: readonly Hex[]
   v0OfferGroupIds: readonly Hex[]
   readOwnedGroupIds: () => Promise<readonly Hex[]>
+  readBootstrapGroupIds?: () => Promise<readonly Hex[]>
+  readLadderSellGroupIds?: () => Promise<readonly Hex[]>
   referenceMarketId: Hex
   referenceLookbackBlocks?: bigint
   requestTimeoutMs?: number
@@ -654,10 +656,12 @@ export class ViemSetupStateService implements SetupStateService {
         'Morpho API active offer maker does not match requested maker'
       )
     }
-    const knownGroups = new Set([
-      ...this.options.v0OfferGroupIds,
-      ...(await this.options.readOwnedGroupIds())
+    const [ownedGroupIds, bootstrapGroupIds, ladderSellGroupIds] = await Promise.all([
+      this.options.readOwnedGroupIds(),
+      this.options.readBootstrapGroupIds?.() ?? Promise.resolve([]),
+      this.options.readLadderSellGroupIds?.() ?? Promise.resolve([])
     ])
+    const knownGroups = new Set([...this.options.v0OfferGroupIds, ...ownedGroupIds])
     const configuredMarkets = new Set(this.options.marketIds)
     return {
       unknownNamespaces: [
@@ -668,7 +672,10 @@ export class ViemSetupStateService implements SetupStateService {
           offers.map(offer => offer.marketId).filter(marketId => !configuredMarkets.has(marketId))
         )
       ],
-      invertedMarketIds: invertedMarketIds(offers)
+      invertedMarketIds: invertedMarketIds(offers, {
+        bootstrapBuyGroupIds: new Set([...this.options.v0OfferGroupIds, ...bootstrapGroupIds]),
+        ladderSellGroupIds: new Set(ladderSellGroupIds)
+      })
     }
   }
 

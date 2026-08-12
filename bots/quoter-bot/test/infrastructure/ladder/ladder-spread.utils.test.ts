@@ -38,6 +38,39 @@ describe('assertLadderProspectiveSpread', () => {
     expect((caught as LadderAdapterError).operation).toBe('negative-spread')
   })
 
+  test('allows the exact owned bootstrap-buy and prospective ladder-sell equality', () => {
+    expect(() =>
+      assertLadderProspectiveSpread({
+        marketId,
+        replacedGroupIds: new Set(),
+        book: [
+          {
+            groupId: replacedGroupId,
+            marketId,
+            buy: true,
+            tick: 10n,
+            overlapOwner: 'bootstrap-buy'
+          }
+        ],
+        prospective: [{ marketId, buy: false, tick: 10n, overlapOwner: 'ladder-sell' }]
+      })
+    ).not.toThrow()
+  })
+
+  test('rejects ownership ties even at the intentional overlap tick', () => {
+    expect(() =>
+      assertLadderProspectiveSpread({
+        marketId,
+        replacedGroupIds: new Set(),
+        book: [
+          { marketId, buy: true, tick: 10n, overlapOwner: 'bootstrap-buy' },
+          { marketId, buy: true, tick: 10n, overlapOwner: 'bootstrap-buy' }
+        ],
+        prospective: [{ marketId, buy: false, tick: 10n, overlapOwner: 'ladder-sell' }]
+      })
+    ).toThrow(LadderAdapterError)
+  })
+
   test('rejects a self-crossing prospective ladder even with an empty book', () => {
     expect(() =>
       assertLadderProspectiveSpread({

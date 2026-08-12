@@ -66,6 +66,13 @@ type ProductionLadderAdapters = {
 
 const minimum = (left: bigint, right: bigint) => (left < right ? left : right)
 const remaining = (limit: bigint, used: bigint) => (limit > used ? limit - used : 0n)
+const ownedLadderProspectiveOffers = (
+  offers: readonly { marketId: Hex; buy: boolean; tick: bigint }[]
+) =>
+  offers.map(offer => ({
+    ...offer,
+    ...(!offer.buy ? { overlapOwner: 'ladder-sell' as const } : {})
+  }))
 
 const notifySubmitted = async (
   observer: LadderTransactionSubmittedObserver | undefined,
@@ -286,21 +293,27 @@ export const createProductionLadderAdapters = (
   }
 
   const completeBookOffers = async () => {
-    const [groups, bootstrapGroupIds, persistedBootstrapOffers] = await Promise.all([
+    const [groups, durableBootstrapIds, persistedBootstrapOffers] = await Promise.all([
       readGroups(),
       bootstrapOwnership.read(),
       bootstrapOwnership.readOffers()
     ])
     const pendingBootstrapOffers = await readLivePendingBootstrapOffers({
       groups,
-      ownedGroupIds: bootstrapGroupIds,
+      ownedGroupIds: durableBootstrapIds,
       offers: persistedBootstrapOffers,
       readGroupConsumed
     })
     const pendingOffers = await Promise.all(
       pendingBootstrapOffers.map(async offer => {
         if (offer.tick !== undefined) {
-          return { marketId: offer.marketId, buy: true, tick: offer.tick }
+          return {
+            groupId: offer.groupId,
+            marketId: offer.marketId,
+            buy: true,
+            tick: offer.tick,
+            overlapOwner: 'bootstrap-buy' as const
+          }
         }
         const market = await midnight.getMarketData(offer.marketId)
         const recoveredTick = recoverLegacyBootstrapOfferTick({
@@ -314,13 +327,26 @@ export const createProductionLadderAdapters = (
         const conservativeTick =
           recoveredTick ?? legacyBootstrapOfferTickUpperBound({ offer, market }) ?? MAX_TICK
         return {
+          groupId: offer.groupId,
           marketId: offer.marketId,
           buy: true,
-          tick: conservativeTick
+          tick: conservativeTick,
+          overlapOwner: 'bootstrap-buy' as const
         }
       })
     )
-    return { groups, book: [...bootstrapBookOffers(groups), ...pendingOffers] }
+    const durableBootstrapGroupIds = new Set([
+      ...config.v0OfferGroupIds,
+      ...durableBootstrapIds,
+      ...persistedBootstrapOffers.map(offer => offer.groupId)
+    ])
+    const indexedOffers = bootstrapBookOffers(groups).map(offer => ({
+      ...offer,
+      ...(offer.buy && durableBootstrapGroupIds.has(offer.groupId)
+        ? { overlapOwner: 'bootstrap-buy' as const }
+        : {})
+    }))
+    return { groups, book: [...indexedOffers, ...pendingOffers] }
   }
 
   const readActive = async (marketId: Hex) => {
@@ -364,7 +390,7 @@ export const createProductionLadderAdapters = (
         activeOwnedLadderGroupIds(publications, bookState.groups, parameters.marketId)
       ),
       book: bookState.book,
-      prospective: prepared.bookOffers
+      prospective: ownedLadderProspectiveOffers(prepared.bookOffers)
     })
   }
 
@@ -443,7 +469,7 @@ export const createProductionLadderAdapters = (
       return {
         groupIds,
         groups: prepared.groups,
-        prospective: prepared.bookOffers,
+        prospective: ownedLadderProspectiveOffers(prepared.bookOffers),
         publish: onTransactionSubmitted =>
           publishLadderPublication({
             approve: async () => {

@@ -24,7 +24,13 @@ type BuildLadderTreeParameters = {
 type PreparedLadderTree = {
   tree: Tree
   groups: readonly LadderGroupReference[]
-  bookOffers: readonly { marketId: Hex; buy: boolean; tick: bigint }[]
+  bookOffers: readonly {
+    marketId: Hex
+    buy: boolean
+    tick: bigint
+    remainingAssets: bigint
+    effectiveRateBps: bigint
+  }[]
 }
 
 const rateToTick = (rateBps: bigint, market: IMarket, now: bigint) => {
@@ -127,10 +133,12 @@ export const buildLadderTree = (parameters: BuildLadderTreeParameters): Prepared
   return {
     tree,
     groups,
-    bookOffers: tree.offers.map(offer => ({
+    bookOffers: tree.offers.map((offer, index) => ({
       marketId: parameters.quote.marketId,
       buy: offer.buy,
-      tick: offer.tick
+      tick: offer.tick,
+      remainingAssets: offer.maxAssets,
+      effectiveRateBps: tagged[index]!.rung.rateBps
     }))
   }
 }
