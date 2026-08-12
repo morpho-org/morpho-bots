@@ -42,6 +42,21 @@ const metadataResponse = (names: string[]) => ({
   }
 })
 
+const paginatedMetadataResponse = (
+  endCursor: unknown,
+  hasNextPage = true,
+  names: string[] = []
+) => ({
+  data: {
+    environment: {
+      variables: {
+        edges: names.map(name => ({ node: { name, serviceId: 'service-id' } })),
+        pageInfo: { endCursor, hasNextPage }
+      }
+    }
+  }
+})
+
 const operations = () => ({
   deleteVariable: vi.fn().mockResolvedValue(undefined),
   setSecret: vi.fn().mockResolvedValue(undefined),
@@ -250,6 +265,90 @@ describe('Railway variable deletion API', () => {
       deleteRailwayVariable({ fetcher, name: 'RESOLVER_PRIVATE_KEY', target: TARGET, token: TOKEN })
     ).resolves.toBe(false)
     expect(fetcher).toHaveBeenCalledTimes(2)
+  })
+
+  test('preserves valid multi-page lookup and finds the target on the second page', async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(targetResponse))
+      .mockResolvedValueOnce(jsonResponse(paginatedMetadataResponse('next-page')))
+      .mockResolvedValueOnce(jsonResponse(metadataResponse(['RESOLVER_PRIVATE_KEY'])))
+      .mockResolvedValueOnce(jsonResponse({ data: { variableDelete: true } }))
+
+    await expect(
+      deleteRailwayVariable({ fetcher, name: 'RESOLVER_PRIVATE_KEY', target: TARGET, token: TOKEN })
+    ).resolves.toBe(true)
+    expect(fetcher).toHaveBeenCalledTimes(4)
+
+    const secondPageRequest = JSON.parse(
+      typeof fetcher.mock.calls[2]?.[1]?.body === 'string' ? fetcher.mock.calls[2][1].body : ''
+    )
+    expect(secondPageRequest.variables.after).toBe('next-page')
+  })
+
+  test.each([
+    { cursors: ['repeated-cursor', 'repeated-cursor'], requestCount: 3 },
+    { cursors: ['cursor-a', 'cursor-b', 'cursor-a'], requestCount: 4 }
+  ])(
+    'fails closed on repeated or cyclic metadata cursors %#',
+    async ({ cursors, requestCount }) => {
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(jsonResponse(targetResponse))
+      for (const cursor of cursors) {
+        fetcher.mockResolvedValueOnce(jsonResponse(paginatedMetadataResponse(cursor)))
+      }
+
+      const result = deleteRailwayVariable({
+        fetcher,
+        name: 'RESOLVER_PRIVATE_KEY',
+        target: TARGET,
+        token: TOKEN
+      })
+      await expect(result).rejects.toMatchObject({ name: 'RailwayVariableOperationError' })
+      await expect(result).rejects.toThrow('Failed to delete Railway variable RESOLVER_PRIVATE_KEY')
+      await expect(result).rejects.not.toThrow(/repeated-cursor|cursor-a|cursor-b|railway-token/)
+      expect(fetcher).toHaveBeenCalledTimes(requestCount)
+    }
+  )
+
+  test.each([null, undefined, '', '   '])(
+    'fails closed on a missing or empty next cursor without exposing metadata: %#',
+    async endCursor => {
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse(targetResponse))
+        .mockResolvedValueOnce(jsonResponse(paginatedMetadataResponse(endCursor)))
+
+      const result = deleteRailwayVariable({
+        fetcher,
+        name: 'RESOLVER_PRIVATE_KEY',
+        target: TARGET,
+        token: TOKEN
+      })
+      await expect(result).rejects.toMatchObject({ name: 'RailwayVariableOperationError' })
+      await expect(result).rejects.toThrow('Failed to delete Railway variable RESOLVER_PRIVATE_KEY')
+      await expect(result).rejects.not.toThrow(/railway-token|secret-bearing|cursor/)
+      expect(fetcher).toHaveBeenCalledTimes(2)
+    }
+  )
+
+  test('fails closed after at most 100 metadata pages with endlessly unique cursors', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(jsonResponse(targetResponse))
+    for (let page = 1; page <= 100; page += 1) {
+      fetcher.mockResolvedValueOnce(
+        jsonResponse(paginatedMetadataResponse(`secret-cursor-${page}`))
+      )
+    }
+
+    const result = deleteRailwayVariable({
+      fetcher,
+      name: 'RESOLVER_PRIVATE_KEY',
+      target: TARGET,
+      token: TOKEN
+    })
+    await expect(result).rejects.toMatchObject({ name: 'RailwayVariableOperationError' })
+    await expect(result).rejects.toThrow('Failed to delete Railway variable RESOLVER_PRIVATE_KEY')
+    await expect(result).rejects.not.toThrow(/secret-cursor|railway-token/)
+    expect(fetcher).toHaveBeenCalledTimes(101)
   })
 
   test('fails closed when key-only metadata is malformed', async () => {

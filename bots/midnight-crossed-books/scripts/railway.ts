@@ -51,6 +51,7 @@ export const resolveRailwayAccessToken = (env: Env): RailwayAccessToken => {
 }
 
 const RAILWAY_GRAPHQL_ENDPOINT = 'https://backboard.railway.com/graphql/v2'
+const RAILWAY_VARIABLE_METADATA_MAX_PAGES = 100
 const TARGET_QUERY = `query RailwayVariableTarget($projectId: String!) {
   project(id: $projectId) {
     environments { edges { node { id name } } }
@@ -160,7 +161,11 @@ const railwayVariableExists = async ({
   token: RailwayAccessToken
 }) => {
   let after: string | null = null
+  let pageCount = 0
+  const seenCursors = new Set<string>()
   do {
+    if (pageCount >= RAILWAY_VARIABLE_METADATA_MAX_PAGES) throw error
+    pageCount += 1
     const data = await postRailwayGraphql({
       body: {
         query: VARIABLE_METADATA_QUERY,
@@ -198,7 +203,14 @@ const railwayVariableExists = async ({
     if (found) return true
 
     if (!pageInfo.hasNextPage) return false
-    if (typeof pageInfo.endCursor !== 'string' || !pageInfo.endCursor) throw error
+    if (
+      typeof pageInfo.endCursor !== 'string' ||
+      !pageInfo.endCursor.trim() ||
+      seenCursors.has(pageInfo.endCursor)
+    ) {
+      throw error
+    }
+    seenCursors.add(pageInfo.endCursor)
     after = pageInfo.endCursor
   } while (after)
   return false
