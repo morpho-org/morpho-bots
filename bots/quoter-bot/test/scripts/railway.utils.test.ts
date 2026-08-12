@@ -112,24 +112,45 @@ describe('Railway CLI output parsing', () => {
     ).toBeLessThan(deploy.indexOf('railway add --service'))
   })
 
-  test('drops root privileges after preparing the Railway state volume', () => {
+  test('starts as root only after the Railway service exists, then execs the bot without privileges', () => {
+    const deploy = readFileSync(new URL('../../scripts/deploy-railway.ts', import.meta.url), 'utf8')
     const dockerfile = readFileSync(new URL('../../Dockerfile', import.meta.url), 'utf8')
     const entrypoint = readFileSync(
-      new URL('../../scripts/railway-entrypoint.mjs', import.meta.url),
+      new URL('../../scripts/railway-entrypoint.sh', import.meta.url),
       'utf8'
     )
+    const deployOnlyBranch = deploy.indexOf('if (DEPLOY_ONLY)')
+    const fullProvisioningBranch = deploy.indexOf('if (!DEPLOY_ONLY)')
+    const ensureService = deploy.indexOf('await ensureService()', fullProvisioningBranch)
+    const deployOnlyRuntimeUid = deploy.indexOf(
+      "await setRuntimeVariable(['RAILWAY_RUN_UID', '0'])",
+      deployOnlyBranch
+    )
+    const fullProvisioningRuntimeUid = deploy.indexOf(
+      "await setRuntimeVariable(['RAILWAY_RUN_UID', '0'])",
+      fullProvisioningBranch
+    )
 
+    expect(deployOnlyBranch).toBeGreaterThan(-1)
+    expect(deployOnlyRuntimeUid).toBeGreaterThan(deployOnlyBranch)
+    expect(deployOnlyRuntimeUid).toBeLessThan(fullProvisioningBranch)
+    expect(fullProvisioningRuntimeUid).toBeGreaterThan(ensureService)
+    expect(fullProvisioningRuntimeUid).toBeLessThan(deploy.indexOf('await startDeployment()'))
+    expect(dockerfile).toContain('apt-get install -y --no-install-recommends util-linux')
     expect(dockerfile).toContain(
-      'CMD ["node", "scripts/railway-entrypoint.mjs", "start", "--verbose"]'
+      'CMD ["sh", "scripts/railway-entrypoint.sh", "start", "--verbose"]'
     )
-    expect(entrypoint.indexOf("spawnSync('chown'")).toBeGreaterThan(-1)
-    expect(entrypoint.indexOf("spawnSync('chown'")).toBeLessThan(
-      entrypoint.indexOf('process.setgid')
+    expect(entrypoint).toContain('set -eu')
+    expect(entrypoint.indexOf('chown -R node:node "$STATE_MOUNT_PATH"')).toBeGreaterThan(-1)
+    expect(entrypoint.indexOf('chown -R node:node "$STATE_MOUNT_PATH"')).toBeLessThan(
+      entrypoint.indexOf('exec setpriv')
     )
-    expect(entrypoint.indexOf('process.setgid')).toBeLessThan(entrypoint.indexOf('process.setuid'))
-    expect(entrypoint.indexOf('process.setuid')).toBeLessThan(
-      entrypoint.indexOf("import('../dist/src/index.js')")
-    )
+    expect(entrypoint).toContain('--reuid=node')
+    expect(entrypoint).toContain('--regid=node')
+    expect(entrypoint).toContain('--clear-groups')
+    expect(entrypoint).toContain('--bounding-set=-all')
+    expect(entrypoint).toContain('--no-new-privs')
+    expect(entrypoint).toContain('node dist/src/index.js "$@"')
   })
 
   test('synchronizes every optional variable with explicit safe defaults', () => {

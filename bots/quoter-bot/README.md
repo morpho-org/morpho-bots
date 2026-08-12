@@ -281,8 +281,10 @@ omitted timeouts return to their documented defaults, and omitted group IDs and 
 are disabled. `RAILWAY_ENVIRONMENT` defaults to `production`. CI uses `DEPLOY_ONLY=true` with the
 `quoter-bot-production` GitHub Environment, so it reads only `RAILWAY_PROJECT_ID` and
 `RAILWAY_TOKEN` and uses project-token deployment permissions to re-ship the service. Deploy-only
-runs rely on the Dockerfile path, runtime variables, and persistent volume established by a full run;
-they neither read nor mutate that provisioned configuration.
+runs rely on the Dockerfile path, secrets, application variables, and persistent volume established
+by a full run. They synchronize only the non-secret `RAILWAY_RUN_UID=0` runtime control so the
+entrypoint can repair the root-owned `/state` mount, then immediately drop to the `node` user before
+loading bot code; they neither read nor mutate signer credentials or application configuration.
 
 The local Compose service uses the same `/state` ownership path through a named volume, requires both
 strategy arrays, and supplies the runtime timeout defaults when the corresponding host variables are

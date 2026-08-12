@@ -5,8 +5,12 @@ FROM node:24.14.1-slim
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
 # Runtime configuration may include a funded maker key. The entrypoint starts as root only long
-# enough to repair Railway's root-owned volume, then drops to the node user before loading the bot.
-# Corepack writes its pnpm shim to /usr/local/bin, so enable it while building as root.
+# enough to repair Railway's root-owned volume, then setpriv atomically execs the bot without root
+# identities or capabilities. Corepack writes its pnpm shim to /usr/local/bin, so enable it while
+# building as root. Install util-linux explicitly so the runtime always provides setpriv.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends util-linux \
+  && rm -rf /var/lib/apt/lists/*
 RUN corepack enable pnpm
 RUN mkdir -p /repo /state && chown node:node /repo
 WORKDIR /repo
@@ -23,4 +27,4 @@ RUN pnpm install --frozen-lockfile
 RUN pnpm -r --if-present run build
 
 WORKDIR /repo/bots/quoter-bot
-CMD ["node", "scripts/railway-entrypoint.mjs", "start", "--verbose"]
+CMD ["sh", "scripts/railway-entrypoint.sh", "start", "--verbose"]

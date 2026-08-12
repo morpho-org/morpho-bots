@@ -263,9 +263,14 @@ const assertDeploymentSucceeded = (status: string) => {
 await assertCli()
 await ensureContext()
 
+if (DEPLOY_ONLY) {
+  await setRuntimeVariable(['RAILWAY_RUN_UID', '0'])
+}
+
 if (!DEPLOY_ONLY) {
   const { service } = await ensureService()
 
+  await setRuntimeVariable(['RAILWAY_RUN_UID', '0'])
   await setRuntimeVariable(['RAILWAY_DOCKERFILE_PATH', DOCKERFILE_PATH])
   await setRuntimeVariable(['XDG_STATE_HOME', STATE_MOUNT_PATH])
   for (const variable of runtimeVariables()) await setRuntimeVariable(variable)
