@@ -1,0 +1,31 @@
+# syntax=docker/dockerfile:1
+# Operator/distribution image for the quoter-bot. The build context MUST be the repository
+# root so workspace packages resolve. pnpm installs, esbuild bundles, and Node runs the published CLI.
+FROM node:24.14.1-slim
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+ENV HUSKY=0
+
+# Runtime configuration may include a funded maker key, so the process must not run as root.
+# Corepack writes its pnpm shim to /usr/local/bin; enable it before dropping privileges. The /state
+# mount persists offer-group ownership across container recreations.
+RUN corepack enable pnpm
+RUN mkdir -p /repo /state && chown node:node /repo /state
+WORKDIR /repo
+USER node
+
+# Manifests first keep the install layer cacheable. `corepack install` fetches the pnpm version pinned
+# in package.json#packageManager.
+COPY --chown=node:node package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+RUN corepack install
+
+# All workspace manifests and sources are needed to resolve links and build the bot bundle.
+COPY --chown=node:node packages ./packages
+COPY --chown=node:node bots ./bots
+RUN pnpm install --frozen-lockfile
+RUN pnpm --filter @morpho-org/quoter-bot run build
+
+# Expose the `mm` CLI so Compose and docker run can supply any documented subcommand.
+ENV XDG_STATE_HOME=/state
+WORKDIR /repo/bots/quoter-bot
+ENTRYPOINT ["node", "dist/src/index.js"]
+CMD ["start", "--verbose"]

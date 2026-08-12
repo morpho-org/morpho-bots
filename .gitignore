@@ -15,16 +15,20 @@ node_modules
 **/maker.json
 **/*keystore*.json
 
-# Local market-making configuration under any market-making-named variant (`--config` accepts
-# arbitrary filenames and the file may hold the maker key). Workflow files and the committed
-# examples remain trackable. Name custom configs with "market-making" in the filename, or keep
-# them outside the repository tree entirely.
+# Local quoter-bot configuration under any quoter-bot-named variant (`--config` accepts arbitrary
+# filenames and the file may hold the maker key). Workflow files and the committed examples remain
+# trackable. Name custom configs with "quoter-bot" in the filename, or keep them outside the
+# repository tree entirely.
+**/*quoter-bot*.yaml
+**/*quoter-bot*.yml
+# Legacy pre-rename local configuration can still contain private keys after upgrading.
 **/*market-making*.yaml
 **/*market-making*.yml
 !.github/**
+!**/quoter-bot.example.yaml
+!**/quoter-bot.example.yml
 !**/market-making.example.yaml
 !**/market-making.example.yml
-
 
 # Testing
 coverage

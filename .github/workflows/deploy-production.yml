@@ -20,7 +20,7 @@ on:
           - blue-liq
           - midnight-liq
           - crossed-books
-          - market-making
+          - quoter-bot
 
 permissions:
   contents: read
@@ -41,7 +41,7 @@ jobs:
       blue_liq: ${{ steps.pick.outputs.blue_liq }}
       midnight_liq: ${{ steps.pick.outputs.midnight_liq }}
       crossed_books: ${{ steps.pick.outputs.crossed_books }}
-      market_making: ${{ steps.pick.outputs.market_making }}
+      quoter_bot: ${{ steps.pick.outputs.quoter_bot }}
     steps:
       - id: pick
         env:
@@ -63,7 +63,7 @@ jobs:
             echo "blue_liq=$(has blue-liq)"
             echo "midnight_liq=$(has midnight-liq)"
             echo "crossed_books=$(has crossed-books)"
-            echo "market_making=$(has market-making)"
+            echo "quoter_bot=$(has quoter-bot)"
           } >> "$GITHUB_OUTPUT"
 
   Blue:
@@ -101,13 +101,13 @@ jobs:
       github_environment: crossed-books-prod
       ref: ${{ github.sha }}
 
-  # Preflight BEFORE the Railway deploy: a labeled market-making merge must carry a new CalVer
+  # Preflight BEFORE the Railway deploy: a labeled quoter-bot merge must carry a new CalVer
   # package version and usable App credentials, or production would update while the GitHub
   # release, Docker Hub image, and Slack announcement never come to exist. Failing here leaves
   # production untouched and the operator fixes the version bump or credentials, then re-labels.
-  Market-making-preflight:
+  Quoter-bot-preflight:
     needs: Select
-    if: ${{ needs.Select.outputs.market_making == 'true' }}
+    if: ${{ needs.Select.outputs.quoter_bot == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -118,21 +118,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          version="$(node -p "require('./bots/market-making/package.json').version")"
+          version="$(node -p "require('./bots/quoter-bot/package.json').version")"
           echo "$version" | grep -Eq '^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[1-9][0-9]*$' \
-            || { echo "market-making package version must use CalVer YYYY.MM.DD-N (got: $version) — bump it in the release PR" >&2; exit 1; }
-          if gh release view "market-making-$version" >/dev/null 2>&1; then
-            echo "release market-making-$version already exists — bump the package version in the release PR" >&2
+            || { echo "quoter-bot package version must use CalVer YYYY.MM.DD-N (got: $version) — bump it in the release PR" >&2; exit 1; }
+          if gh release view "quoter-bot-$version" >/dev/null 2>&1; then
+            echo "release quoter-bot-$version already exists — bump the package version in the release PR" >&2
             exit 1
           fi
           # A bare git tag with no release also blocks: `gh release create --target` is ignored for
           # a pre-existing tag, so the release would attach to that old commit and the image would
           # be built from it instead of this merge.
-          if git ls-remote --exit-code origin "refs/tags/market-making-$version" >/dev/null 2>&1; then
-            echo "git tag market-making-$version already exists without a release — delete the stale tag or bump the package version" >&2
+          if git ls-remote --exit-code origin "refs/tags/quoter-bot-$version" >/dev/null 2>&1; then
+            echo "git tag quoter-bot-$version already exists without a release — delete the stale tag or bump the package version" >&2
             exit 1
           fi
-      # Proving the App credentials mint BEFORE deploying: Release-market-making refuses the
+      # Proving the App credentials mint BEFORE deploying: Release-quoter-bot refuses the
       # default-token fallback (its releases cannot trigger the image publish), so missing
       # credentials must stop the flow while production is still untouched.
       - name: Mint app installation token
@@ -141,9 +141,9 @@ jobs:
           app-id: ${{ secrets.GIT_BOT_CLIENT_ID }}
           private-key: ${{ secrets.GIT_BOT_PRIVATE_KEY }}
 
-  Market-making:
-    needs: Market-making-preflight
-    uses: ./.github/workflows/deploy-market-making-production.yml
+  Quoter-bot:
+    needs: Quoter-bot-preflight
+    uses: ./.github/workflows/deploy-quoter-bot-production.yml
     secrets: inherit
     with:
       ref: ${{ github.sha }}
@@ -233,8 +233,8 @@ jobs:
           gh release create "$tag" --target "$SHA" --title "$tag" --generate-notes \
             ${prev:+--notes-start-tag "$prev"}
 
-  Release-market-making:
-    needs: Market-making
+  Release-quoter-bot:
+    needs: Quoter-bot
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -243,8 +243,8 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-      # Unlike the Railway-only bots above, a market-making release must FIRE downstream `release`
-      # workflows: deploy-market-making.yml publishes the Docker Hub image and then announces on
+      # Unlike the Railway-only bots above, a quoter-bot release must FIRE downstream `release`
+      # workflows: deploy-quoter-bot.yml publishes the Docker Hub image and then announces on
       # Slack. Events created with the default GITHUB_TOKEN never trigger workflows, so mint the
       # same App installation token tag-releases.yml uses — and FAIL here rather than fall back to
       # the default token, which would mint a release that can never grow its operator image. The
@@ -259,13 +259,13 @@ jobs:
       - name: Create release
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          BOT: market-making
+          BOT: quoter-bot
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          version="$(node -p "require('./bots/market-making/package.json').version")"
+          version="$(node -p "require('./bots/quoter-bot/package.json').version")"
           echo "$version" | grep -Eq '^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[1-9][0-9]*$' \
-            || { echo "market-making package version must use CalVer YYYY.MM.DD-N" >&2; exit 1; }
+            || { echo "quoter-bot package version must use CalVer YYYY.MM.DD-N" >&2; exit 1; }
           tag="${BOT}-${version}"
           # `|| true` guards against SIGPIPE aborting the job under `set -o pipefail` (git is
           # killed when head closes the pipe early once there are many tags).

@@ -11,7 +11,7 @@ The release tags are provided in the `RELEASE_TAGS` environment variable as a sp
 
 Tag format: `{bot-name}-{version}` where version follows CalVer pattern `YYYY.MM.DD-N`
 
-Example: `market-making-2026.08.04-1`
+Example: `quoter-bot-2026.08.04-1`
 
 Loop through each tag and extract the bot name and version. Skip any tags that don't match the
 expected pattern.

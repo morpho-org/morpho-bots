@@ -16,7 +16,7 @@ export default defineConfig({
       'bots/blue-liquidation',
       'bots/midnight-liquidation',
       'bots/midnight-crossed-books',
-      'bots/market-making'
+      'bots/quoter-bot'
     ]
   }
 })

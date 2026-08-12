@@ -6,7 +6,7 @@ name: Claude write release notes
 # re-run for a tag:
 #   gh api repos/morpho-org/morpho-bots/dispatches --method POST \
 #     --field event_type=write-release-notes \
-#     --field 'client_payload[release_tags]=market-making-2026.08.04-1'
+#     --field 'client_payload[release_tags]=quoter-bot-2026.08.04-1'
 #
 # The Claude step is skipped — not failed — while ANTHROPIC_API_KEY is not configured, so releasing
 # keeps working before that secret exists; the GitHub-generated notes simply remain. Slack:

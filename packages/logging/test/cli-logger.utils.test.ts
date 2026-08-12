@@ -40,7 +40,7 @@ describe('createCliLogger', () => {
 
   test('writes JSON errors with the caller-owned event name and optional details', () => {
     const { out, err, output } = capture()
-    const logger = createCliLogger(output, { json: true, errorEvent: 'market-making.error' })
+    const logger = createCliLogger(output, { json: true, errorEvent: 'quoter-bot.error' })
 
     logger.error('setup failed', { checks: 9n })
     logger.error('usage')
@@ -48,13 +48,13 @@ describe('createCliLogger', () => {
     expect(out).toEqual([])
     expect(JSON.parse(err[0]!)).toEqual({
       level: 'error',
-      event: 'market-making.error',
+      event: 'quoter-bot.error',
       message: 'setup failed',
       details: { checks: '9' }
     })
     expect(JSON.parse(err[1]!)).toEqual({
       level: 'error',
-      event: 'market-making.error',
+      event: 'quoter-bot.error',
       message: 'usage'
     })
   })

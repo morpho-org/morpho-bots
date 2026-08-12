@@ -1,0 +1,157 @@
+name: Deploy quoter-bot
+
+# Publishes the quoter-bot bot image to Docker Hub when a `quoter-bot-*` GitHub release is
+# published (repo CalVer convention: `quoter-bot-YYYY.MM.DD-N`), or on manual dispatch. Unlike
+# the Railway bots (deploy-bot.yml), "deploy" here means publish only: operators pull and run the
+# image themselves (see bots/quoter-bot/README.md), so there is no service to restart. The Slack
+# announcement comes AFTER a successful publish: release-slack-notify.yml skips quoter-bot
+# release events and the final step here re-enters it through its manual `tag` input once every
+# image tag is pushed — so an announced release always has its image.
+#
+# Releases come from tag-releases.yml (a merged PR bumping the bot's package.json version to a new
+# CalVer value) or from deploy-production.yml's Release-quoter-bot job after a successful
+# `release-quoter-bot`-labeled Railway deploy. Both create the release with a GitHub App
+# installation token precisely so this workflow fires — GitHub never runs workflows for events
+# raised with the default GITHUB_TOKEN. A user-created release (`gh release create` or the releases
+# UI) triggers identically. workflow_dispatch stays as the escape hatch for re-publishing, e.g.
+# `gh workflow run deploy-quoter-bot.yml -f tag=latest`.
+#
+# A release publish builds the tagged commit and pushes `<release tag>` plus `git-<shortsha>`. The
+# highest non-prerelease CalVer release also moves `latest`; backfilled older releases and
+# prereleases never do. A dispatch builds the dispatched ref and pushes the `tag` input (default
+# `latest`) plus `git-<shortsha>`.
+#
+# Credentials live in the `quoter-bot-dockerhub` GitHub Environment (distinct from
+# `quoter-bot-production`, which holds the Railway deploy credentials): secrets
+# DOCKERHUB_USERNAME and DOCKERHUB_TOKEN (a Docker Hub access token, write scope) plus variable
+# DOCKERHUB_REPOSITORY (`<namespace>/<name>`, e.g. `morphoorg/quoter-bot-bot`). In the
+# environment's deployment branches/tags policy allow branch `main` AND tags matching
+# `quoter-bot-*` — release runs execute on the tag ref, so a branch-only policy rejects them.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Movable primary tag to publish alongside the immutable git-<sha> tag
+        required: false
+        type: string
+        default: latest
+
+permissions:
+  contents: read
+
+concurrency:
+  # Serialize publishes so two runs can't interleave their pushes of the movable tag.
+  group: deploy-quoter-bot
+  cancel-in-progress: false
+
+jobs:
+  Publish:
+    # Releases are repo-wide (the Railway bots cut `blue-liq-*` etc.); only quoter-bot tags
+    # concern this image. Other releases simply skip this job.
+    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'quoter-bot-') }}
+    runs-on: ubuntu-latest
+    environment: quoter-bot-dockerhub
+    permissions:
+      contents: read
+      # `gh workflow run` for the post-publish Slack announcement.
+      actions: write
+    steps:
+      # On a release event this checks out the tagged commit (github.sha is the tag's commit), so
+      # the image is built from exactly the released tree, not main HEAD.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # The token reaches docker via stdin only — never argv, never a workflow-file literal.
+      - name: Login to Docker Hub
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${DOCKERHUB_USERNAME:?set secret DOCKERHUB_USERNAME on the quoter-bot-dockerhub environment}"
+          : "${DOCKERHUB_TOKEN:?set secret DOCKERHUB_TOKEN on the quoter-bot-dockerhub environment}"
+          printf '%s' "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
+
+      # The build context is the repo root so the pnpm workspace (packages/*) resolves — see
+      # bots/quoter-bot/Dockerfile. The docker release tag is the git tag verbatim, so the
+      # image, git tag, and GitHub release cross-reference with zero transformation.
+      - name: Build and push
+        env:
+          REPOSITORY: ${{ vars.DOCKERHUB_REPOSITORY }}
+          EVENT: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+          DISPATCH_TAG: ${{ inputs.tag || 'latest' }}
+          SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          : "${REPOSITORY:?set variable DOCKERHUB_REPOSITORY on the quoter-bot-dockerhub environment}"
+          # Docker Hub `<namespace>/<name>` only. A dotted (or `localhost`) first component would be
+          # read by docker as a registry host and silently push somewhere other than Docker Hub.
+          echo "$REPOSITORY" | grep -Eq '^[a-z0-9]+((_|__|-+)[a-z0-9]+)*/[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*$' \
+            || { echo "DOCKERHUB_REPOSITORY must be a lowercase Docker Hub <namespace>/<name> repository" >&2; exit 1; }
+          if [ "$EVENT" = "release" ]; then
+            CALVER_PATTERN="^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[1-9][0-9]*$"
+            # The release tag must equal quoter-bot-<package version> of the tagged commit:
+            # a mistyped or version-skewed release would otherwise publish an image (and move
+            # `latest`) whose tag disagrees with `mm --version` inside it.
+            package_version="$(node -p "require('./bots/quoter-bot/package.json').version")"
+            if ! [[ "$package_version" =~ $CALVER_PATTERN ]]; then
+              echo "package version $package_version is not CalVer (expected YYYY.MM.DD-N) — refusing to publish release image tags" >&2
+              exit 1
+            fi
+            expected="quoter-bot-${package_version}"
+            if [ "$RELEASE_TAG" != "$expected" ]; then
+              echo "release tag $RELEASE_TAG does not match the tagged commit's package version ($expected) — delete the release and cut it from a matching version bump" >&2
+              exit 1
+            fi
+            tags=("$RELEASE_TAG")
+            # `latest` tracks the highest stable CalVer release, not the most recently published
+            # release. This prevents a later backfill of an older release from downgrading it.
+            if [ "$PRERELEASE" != "true" ]; then
+              highest_stable_tag="$(
+                gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+                  --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
+                  | grep -E '^quoter-bot-[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[1-9][0-9]*$' \
+                  | sort -V \
+                  | tail -n 1
+              )"
+              if [ "$RELEASE_TAG" = "$highest_stable_tag" ]; then
+                tags+=("latest")
+              else
+                echo "Not moving latest: $highest_stable_tag is newer than backfilled release $RELEASE_TAG"
+              fi
+            fi
+          else
+            if [[ "$DISPATCH_TAG" == quoter-bot-* || "$DISPATCH_TAG" == git-* ]]; then
+              echo "refusing to overwrite immutable release or commit tag $DISPATCH_TAG from a manual dispatch" >&2
+              exit 1
+            fi
+            tags=("$DISPATCH_TAG")
+          fi
+          tags+=("git-${SHA:0:7}")
+          build_args=()
+          for tag in "${tags[@]}"; do
+            echo "$tag" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$' \
+              || { echo "invalid docker tag: $tag" >&2; exit 1; }
+            build_args+=(--tag "$REPOSITORY:$tag")
+          done
+          echo "Building ${tags[*]} from $SHA…"
+          docker build --file bots/quoter-bot/Dockerfile.release "${build_args[@]}" .
+          for tag in "${tags[@]}"; do
+            docker push "$REPOSITORY:$tag"
+            echo "Published docker.io/$REPOSITORY:$tag"
+          done
+
+      # Announce only now that every image tag exists. release-slack-notify.yml deliberately skips
+      # quoter-bot release events; its manual `tag` input re-enters it here. workflow_dispatch
+      # fired with the default GITHUB_TOKEN does start workflows (unlike tag/release events).
+      - name: Announce release on Slack
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: gh workflow run release-slack-notify.yml -f tag="$RELEASE_TAG"

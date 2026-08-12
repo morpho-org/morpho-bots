@@ -32,7 +32,7 @@ Agent conventions:
 - **JSDoc public surface**: Every externally facing function and public method changed in TypeScript
   requires substantive JSDoc covering its applicable parameters, return value, failures, and side
   effects. Before completion, follow `.agents/skills/build-jsdoc/SKILL.md` and run
-  `pnpm --filter @morpho-org/market-making-bot run jsdoc:build`; `.claude/skills` must be the real
+  `pnpm --filter @morpho-org/quoter-bot run jsdoc:build`; `.claude/skills` must be the real
   symlink `../.agents/skills`, and independent checks must continue to run concurrently through
   `Promise.all` where possible.
 - **Utility isolation**: Utility functions must live in a different file from every file containing
@@ -156,10 +156,10 @@ This is a **pnpm workspaces monorepo** housing off-chain Morpho curator bots:
   simulation-ok transactions through an in-process pending-tx queue. No bot imports another bot.
   Each bot owns its own operator surface — `README.md`, `Dockerfile`, `docker-compose.yml`, and a
   deploy path (`scripts/deploy-railway.ts` per bot for the Railway instances; the
-  `deploy-market-making` GitHub Actions workflow additionally publishes market-making's image to
+  `deploy-quoter-bot` GitHub Actions workflow additionally publishes quoter-bot's image to
   Docker Hub for operator-run deployments) — so it ships as its own image and deploys
   independently. `bots/blue-liquidation` and `bots/midnight-liquidation` are the live
-  liquidators; `bots/market-making` is the Midnight maker bot (setup checks, position bootstrap,
+  liquidators; `bots/quoter-bot` is the Midnight maker bot (setup checks, position bootstrap,
   ladder quoting, combined monitoring); `bots/midnight-crossed-books` resolves crossed Midnight
   books; `bots/kill-switch` is a proposal bot (docs only).
 - `/packages/` — shared libraries: `@repo/bot-kit` (the shared bot runtime — viem
@@ -246,7 +246,7 @@ All commit messages, PR titles, and Linear ticket titles use the same format:
 | Bot                    | Scope                    |
 | ---------------------- | ------------------------ |
 | blue-liquidation       | `blue-liquidation`       |
-| market-making          | `market-making`          |
+| quoter-bot             | `quoter-bot`             |
 | midnight-crossed-books | `midnight-crossed-books` |
 | midnight-liquidation   | `midnight-liquidation`   |
 
