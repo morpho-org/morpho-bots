@@ -13,6 +13,9 @@ import {
   parseLatestStatus,
   parseServices,
   parseVariableKeys,
+  railwayVariableDeleteArgs,
+  railwayVariableListArgs,
+  railwayVariableSetArgs,
   resolveProvisioningConfiguration,
   synchronizeModeVariables
 } from './railway'
@@ -21,6 +24,7 @@ import { RailwayVariableOperationError } from './railway-variable-operation.erro
 const PROJECT_ID = required(process.env, 'RAILWAY_PROJECT_ID')
 const ENVIRONMENT = process.env.RAILWAY_ENVIRONMENT?.trim() || 'production'
 const SERVICE = ENVIRONMENT === 'production' ? 'bot' : `${ENVIRONMENT}-bot`
+const VARIABLE_TARGET = { environment: ENVIRONMENT, projectId: PROJECT_ID, service: SERVICE }
 const DOCKERFILE_PATH = 'bots/midnight-crossed-books/Dockerfile'
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 const DEPLOY_ONLY = /^(1|true)$/i.test(process.env.DEPLOY_ONLY?.trim() || '')
@@ -99,14 +103,14 @@ async function ensureService() {
 
 async function setVariable(value: string) {
   const key = value.split('=')[0]
-  const { error } = await tryCatch($`railway variable set ${value} -s ${SERVICE} --skip-deploys`)
+  const { error } = await tryCatch($('railway', railwayVariableSetArgs(value, VARIABLE_TARGET)))
   if (error) throw new Error(`Failed to set ${key} on ${SERVICE}: ${errorDetails(error)}`)
   console.log(`Set ${key} on ${SERVICE}.`)
 }
 
 async function setSecret(name: string, value: string) {
   const { error } = await tryCatch(
-    $({ input: value })`railway variable set ${name} --stdin -s ${SERVICE} --skip-deploys`
+    $({ input: value })('railway', railwayVariableSetArgs(name, VARIABLE_TARGET, { stdin: true }))
   )
   if (error) throw new Error(`Failed to set ${name} on ${SERVICE}`)
   console.log(`Set ${name} on ${SERVICE} (secret).`)
@@ -114,16 +118,14 @@ async function setSecret(name: string, value: string) {
 
 const listVariableKeys = async () => {
   const { data, error } = await tryCatch(
-    $`railway variable list -s ${SERVICE} -e ${ENVIRONMENT} -p ${PROJECT_ID} --json`.then(
-      result => result.stdout
-    )
+    $('railway', railwayVariableListArgs(VARIABLE_TARGET)).then(result => result.stdout)
   )
   if (error || typeof data !== 'string') throw new RailwayVariableOperationError('list')
   return parseVariableKeys(data)
 }
 
 const deleteVariable = async (name: string) => {
-  const { error } = await tryCatch($`railway variable delete ${name} -s ${SERVICE} --skip-deploys`)
+  const { error } = await tryCatch($('railway', railwayVariableDeleteArgs(name, VARIABLE_TARGET)))
   if (error) throw new RailwayVariableOperationError('delete', name)
   console.log(`Deleted ${name} on ${SERVICE} (stale).`)
 }

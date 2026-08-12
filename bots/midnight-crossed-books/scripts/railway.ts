@@ -9,6 +9,7 @@ import { InvalidRailwayVariableListError } from './invalid-railway-variable-list
 
 type RailwayService = { name: string }
 type Env = Record<string, string | undefined>
+type RailwayVariableTarget = { environment: string; projectId: string; service: string }
 type ProvisioningConfiguration =
   | { readOnly: true; resolverPrivateKey: undefined; simulationCaller: `0x${string}` }
   | { readOnly: false; resolverPrivateKey: string; simulationCaller: undefined }
@@ -17,6 +18,61 @@ type ModeVariableOperations = {
   setSecret: (name: string, value: string) => Promise<void>
   setVariable: (value: string) => Promise<void>
 }
+
+const railwayVariableTargetArgs = (target: RailwayVariableTarget) => [
+  '-s',
+  target.service,
+  '-e',
+  target.environment,
+  '-p',
+  target.projectId
+]
+
+/**
+ * Builds arguments for listing variables on one Railway deployment target.
+ * @param target - Project, environment, and service that must own the listed variables.
+ * @returns CLI arguments including explicit service, environment, project, and JSON-output flags.
+ */
+export const railwayVariableListArgs = (target: RailwayVariableTarget) => [
+  'variable',
+  'list',
+  ...railwayVariableTargetArgs(target),
+  '--json'
+]
+
+/**
+ * Builds arguments for deleting one variable from one Railway deployment target.
+ * @param name - Variable name to remove; a value is never accepted by this command builder.
+ * @param target - Project, environment, and service that must own the deleted variable.
+ * @returns CLI arguments including the name and explicit service, environment, and project flags.
+ */
+export const railwayVariableDeleteArgs = (name: string, target: RailwayVariableTarget) => [
+  'variable',
+  'delete',
+  name,
+  ...railwayVariableTargetArgs(target)
+]
+
+/**
+ * Builds arguments for setting one variable on one Railway deployment target.
+ * @param value - Public `KEY=VALUE` assignment, or only a variable name when stdin is enabled.
+ * @param target - Project, environment, and service that must receive the variable.
+ * @param options - Enables secret-safe stdin input without placing the value in command arguments.
+ * @returns CLI arguments including explicit service, environment, project, and no-deploy flags.
+ * @remarks Secret values remain on stdin when `stdin` is true; only the variable name enters args.
+ */
+export const railwayVariableSetArgs = (
+  value: string,
+  target: RailwayVariableTarget,
+  { stdin = false }: { stdin?: boolean } = {}
+) => [
+  'variable',
+  'set',
+  value,
+  ...(stdin ? ['--stdin'] : []),
+  ...railwayVariableTargetArgs(target),
+  '--skip-deploys'
+]
 
 /**
  * Validates mode-specific Railway provisioning values without retaining unused signing material.

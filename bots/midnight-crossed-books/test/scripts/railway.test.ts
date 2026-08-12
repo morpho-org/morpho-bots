@@ -5,6 +5,9 @@ import {
   parseLatestStatus,
   parseServices,
   parseVariableKeys,
+  railwayVariableDeleteArgs,
+  railwayVariableListArgs,
+  railwayVariableSetArgs,
   resolveProvisioningConfiguration,
   synchronizeModeVariables
 } from '../../scripts/railway'
@@ -14,6 +17,7 @@ import { ResolverPrivateKeyRequiredError } from '../../src/config/resolver-priva
 
 const KEY = `0x${'11'.repeat(32)}`
 const CALLER: `0x${string}` = `0x${'22'.repeat(20)}`
+const TARGET = { environment: 'production', projectId: 'project-id', service: 'bot' }
 
 const operations = () => ({
   deleteVariable: vi.fn().mockResolvedValue(undefined),
@@ -64,8 +68,12 @@ describe('Railway provisioning configuration', () => {
     ).toThrow(InvalidSimulationCallerAddressError)
   })
 
-  test('removes a stale private key before switching to readonly mode', async () => {
+  test('removes a stale private key from the exact target before readonly mode', async () => {
     const railway = operations()
+    const commands: string[][] = []
+    railway.deleteVariable.mockImplementation(async name => {
+      commands.push(railwayVariableDeleteArgs(name, TARGET))
+    })
 
     await synchronizeModeVariables(
       { readOnly: true, resolverPrivateKey: undefined, simulationCaller: CALLER },
@@ -74,6 +82,19 @@ describe('Railway provisioning configuration', () => {
     )
 
     expect(railway.deleteVariable).toHaveBeenCalledExactlyOnceWith('RESOLVER_PRIVATE_KEY')
+    expect(commands).toEqual([
+      [
+        'variable',
+        'delete',
+        'RESOLVER_PRIVATE_KEY',
+        '-s',
+        'bot',
+        '-e',
+        'production',
+        '-p',
+        'project-id'
+      ]
+    ])
     expect(railway.setSecret).not.toHaveBeenCalled()
     expect(railway.setVariable.mock.calls).toEqual([
       [`SIMULATION_CALLER_ADDRESS=${CALLER}`],
@@ -81,8 +102,12 @@ describe('Railway provisioning configuration', () => {
     ])
   })
 
-  test('removes a stale simulation caller before switching to write mode', async () => {
+  test('removes a stale caller from the exact target before write mode', async () => {
     const railway = operations()
+    const commands: string[][] = []
+    railway.deleteVariable.mockImplementation(async name => {
+      commands.push(railwayVariableDeleteArgs(name, TARGET))
+    })
 
     await synchronizeModeVariables(
       { readOnly: false, resolverPrivateKey: KEY, simulationCaller: undefined },
@@ -91,6 +116,19 @@ describe('Railway provisioning configuration', () => {
     )
 
     expect(railway.deleteVariable).toHaveBeenCalledExactlyOnceWith('SIMULATION_CALLER_ADDRESS')
+    expect(commands).toEqual([
+      [
+        'variable',
+        'delete',
+        'SIMULATION_CALLER_ADDRESS',
+        '-s',
+        'bot',
+        '-e',
+        'production',
+        '-p',
+        'project-id'
+      ]
+    ])
     expect(railway.setSecret).toHaveBeenCalledExactlyOnceWith('RESOLVER_PRIVATE_KEY', KEY)
     expect(railway.setVariable).toHaveBeenCalledExactlyOnceWith('READONLY=false')
   })
@@ -156,6 +194,45 @@ describe('Railway provisioning configuration', () => {
     expect(deploy).toContain('await listVariableKeys()')
     expect(deploy).toContain('await synchronizeModeVariables(')
     expect(deploy).toContain('deleteVariable')
+  })
+
+  test('explicitly scopes variable listing and setting to the target', () => {
+    expect(railwayVariableListArgs(TARGET)).toEqual([
+      'variable',
+      'list',
+      '-s',
+      'bot',
+      '-e',
+      'production',
+      '-p',
+      'project-id',
+      '--json'
+    ])
+    expect(railwayVariableSetArgs('READONLY=true', TARGET)).toEqual([
+      'variable',
+      'set',
+      'READONLY=true',
+      '-s',
+      'bot',
+      '-e',
+      'production',
+      '-p',
+      'project-id',
+      '--skip-deploys'
+    ])
+    expect(railwayVariableSetArgs('RPC_URL', TARGET, { stdin: true })).toEqual([
+      'variable',
+      'set',
+      'RPC_URL',
+      '--stdin',
+      '-s',
+      'bot',
+      '-e',
+      'production',
+      '-p',
+      'project-id',
+      '--skip-deploys'
+    ])
   })
 })
 
