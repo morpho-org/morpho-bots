@@ -49,7 +49,10 @@ import {
   validateBootstrapMempoolPublication
 } from './bootstrap-mempool-validation.utils'
 import { bootstrapContinuousFeeCap, createBootstrapOffer } from './bootstrap-offer.utils'
-import { readLivePendingBootstrapOffers } from './bootstrap-pending-offer.utils'
+import {
+  readLivePendingBootstrapOffers,
+  readUncanceledGroupIds
+} from './bootstrap-pending-offer.utils'
 import { MidnightBootstrapPositionService } from './bootstrap-position.service'
 import {
   BlueBootstrapReferenceRateService,
@@ -328,7 +331,16 @@ export const createProductionBootstrapAdapters = (
     }
   }
 
-  const ownedGroupIds = () => ownership.read()
+  const uncanceledOwnedGroupIds = async () => {
+    const [block, groupIds] = await Promise.all([
+      client.getBlock({ blockTag: 'latest' }),
+      ownership.read()
+    ])
+    return readUncanceledGroupIds({
+      groupIds,
+      readGroupConsumed: groupId => readGroupConsumed(groupId, block.number)
+    })
+  }
 
   const inventory: BootstrapInventoryReader = {
     readPositions: async () => {
@@ -496,7 +508,7 @@ export const createProductionBootstrapAdapters = (
   const preparedOffers = new Map<Hex, Offer>()
   const make = new MidnightBootstrapMakeService({
     listActiveGroups: activeGroups,
-    listOwnedGroupIds: ownedGroupIds,
+    listOwnedGroupIds: uncanceledOwnedGroupIds,
     listBookOffers: async () => (await completeBookOffers()).book,
     toProspectiveBookOffer: async offer => {
       const created = await prepareOffer(offer)

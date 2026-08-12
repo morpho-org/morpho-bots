@@ -27,7 +27,7 @@ type BootstrapBookOffer = {
 interface BootstrapOfferTransport {
   /** Lists active strategy groups from Mempool truth. @returns Current active group projections. */
   listActiveGroups(): Promise<readonly BootstrapActiveGroup[]>
-  /** Lists every explicitly owned group, including fully consumed groups. @returns Owned group IDs for exhaustive cleanup. */
+  /** Lists explicitly owned groups that are not conclusively canceled. @returns Group IDs requiring exhaustive cleanup. */
   listOwnedGroupIds?(): Promise<readonly Hex[]>
   /** Lists the maker's complete current book. @returns Every active offer needed for spread safety. */
   listBookOffers(): Promise<readonly BootstrapBookOffer[]>

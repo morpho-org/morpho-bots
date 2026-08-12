@@ -208,14 +208,14 @@ the inner calls with `delegatecall`, so the maker account that submits the outer
 `msg.sender` throughout. The local transaction policy rejects any wrong target, selector, call count,
 order, group, amount, on-behalf account, or extra calldata. A reverted or failed multicall is reported
 without serial retry. Explicit single-group invalidation keeps the simpler direct Midnight
-`setConsumed` transaction. Successfully canceled
-bot-owned groups are removed from durable ownership state; explicitly configured
-`V0_OFFER_GROUP_IDS` remain configuration-owned until the operator edits configuration. If the
-provider omits one of these configured groups, bootstrap and ladder reads deliberately fail closed
-because neither omission nor on-chain consumption reveals the group's original maximum capacity.
-After explicitly invalidating the group when necessary, remove its ID from `V0_OFFER_GROUP_IDS` to
-acknowledge that it is no longer owned; leaving the ID configured keeps the reservation active and
-prevents publication from assuming zero exposure.
+`setConsumed` transaction. Successfully canceled bot-owned groups are removed from durable
+ownership state; explicitly configured `V0_OFFER_GROUP_IDS` remain configuration-owned until the
+operator edits configuration. If the provider omits one of these configured groups, bootstrap and
+ladder reads deliberately fail closed because neither omission nor ordinary partial on-chain
+consumption reveals the group's original maximum capacity. A `consumed` value equal to the Midnight
+SDK's `MAX_OFFER_CAP` is the exception: it conclusively proves invalidation, so readers ignore that
+group and cleanup does not resubmit its cancellation after a restart. Remove stale IDs from
+`V0_OFFER_GROUP_IDS` after invalidation to keep the operator-owned set current.
 
 Maker-wide invalidation waits for the single multicall receipt, reports its hash against every group,
 then forgets all confirmed bot-owned groups together. Submitted hashes stream as
@@ -285,10 +285,10 @@ service. Deploy-only does not inspect or mutate Railway variables, volumes, or s
 deploy-only, an authorized operator or full provisioning run must configure `RAILWAY_RUN_UID=0`,
 the current `RAILWAY_DOCKERFILE_PATH=bots/quoter-bot/Dockerfile`, `XDG_STATE_HOME=/state`, signer
 and application variables, and the state volume. A full provisioning run preserves root-level
-ownership files in a detached pre-rename `market-making-volume` by mounting it at
-`/state/morpho-quoter-bot`; otherwise it accepts an attached volume at `/state` or creates one there.
-A project token (`RAILWAY_TOKEN`) cannot manage that configuration; use authorized account or
-workspace credentials only for provisioning, not routine deploy-only CI.
+ownership files in an attached volume at `/state`; when none is attached, it creates a fresh volume
+there and leaves any detached pre-rename volume untouched. A project token (`RAILWAY_TOKEN`) cannot
+manage that configuration; use authorized account or workspace credentials only for provisioning,
+not routine deploy-only CI.
 
 The local Compose service uses the same `/state` ownership path through a named volume, requires both
 strategy arrays, and supplies the runtime timeout defaults when the corresponding host variables are
