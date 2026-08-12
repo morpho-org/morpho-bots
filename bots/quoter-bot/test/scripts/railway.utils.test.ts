@@ -92,16 +92,23 @@ describe('Railway CLI output parsing', () => {
     expect(parseRailwayServices('not-json')).toEqual([])
   })
 
-  test('parses only complete attached Railway volumes', () => {
+  test('parses complete attached and detached Railway volumes', () => {
     const raw = JSON.stringify({
       volumes: [
         {
           id: 'volume-id',
           isPendingDeletion: false,
           mountPath: '/state',
+          name: 'quoter-bot-volume',
           serviceName: 'quoter-bot'
         },
-        { id: 'unattached', isPendingDeletion: false, mountPath: '/other', serviceName: null },
+        {
+          id: 'unattached',
+          isPendingDeletion: false,
+          mountPath: '/legacy',
+          name: 'market-making-volume',
+          serviceName: null
+        },
         { id: 'incomplete', mountPath: '/other', serviceName: 'quoter-bot' }
       ]
     })
@@ -111,7 +118,15 @@ describe('Railway CLI output parsing', () => {
         id: 'volume-id',
         isPendingDeletion: false,
         mountPath: '/state',
+        name: 'quoter-bot-volume',
         serviceName: 'quoter-bot'
+      },
+      {
+        id: 'unattached',
+        isPendingDeletion: false,
+        mountPath: '/legacy',
+        name: 'market-making-volume',
+        serviceName: undefined
       }
     ])
     expect(parseRailwayVolumes('not-json')).toEqual([])
@@ -218,6 +233,42 @@ describe('Railway CLI output parsing', () => {
       '/usr/bin/chown -R node:node "$STATE_MOUNT_PATH"',
       'exec /usr/bin/setpriv --reuid=node --regid=node --clear-groups --bounding-set=-all --no-new-privs /usr/local/bin/node dist/src/index.js "$@"'
     ])
+  })
+
+  test('migrates detached legacy state only during authorized provisioning', () => {
+    const deploy = readFileSync(new URL('../../scripts/deploy-railway.ts', import.meta.url), 'utf8')
+    const fullProvisioningBranch = deploy.indexOf('if (!DEPLOY_ONLY)')
+    const ensureService = deploy.indexOf('await ensureService()', fullProvisioningBranch)
+    const serviceLink = deploy.indexOf('await linkServiceContext(service.id)')
+    const runtimeUid = deploy.indexOf("await setRuntimeVariable(['RAILWAY_RUN_UID', '0'])")
+    const dockerfilePath = deploy.indexOf(
+      "await setRuntimeVariable(['RAILWAY_DOCKERFILE_PATH', DOCKERFILE_PATH])"
+    )
+    const stateHome = deploy.indexOf(
+      "await setRuntimeVariable(['XDG_STATE_HOME', STATE_MOUNT_PATH])"
+    )
+    const stateVolume = deploy.indexOf('await ensureStateVolume()')
+    const deploymentSnapshot = deploy.indexOf(
+      'const previousDeployment = parseLatestRailwayDeployment'
+    )
+
+    expect(deploy).toContain('if (process.env.RAILWAY_TOKEN) return')
+    expect(ensureService).toBeGreaterThan(fullProvisioningBranch)
+    expect(serviceLink).toBeGreaterThan(ensureService)
+    expect(runtimeUid).toBeGreaterThan(serviceLink)
+    expect(dockerfilePath).toBeGreaterThan(runtimeUid)
+    expect(stateHome).toBeGreaterThan(dockerfilePath)
+    expect(stateVolume).toBeGreaterThan(stateHome)
+    expect(stateVolume).toBeLessThan(deploymentSnapshot)
+    expect(deploy).toContain("const LEGACY_STATE_VOLUME_NAME = 'market-making-volume'")
+    expect(deploy).toContain("const LEGACY_STATE_VOLUME_MOUNT_PATH = '/state/morpho-quoter-bot'")
+    expect(deploy).toContain('railway volume list --json')
+    expect(deploy).not.toContain('railway volume list --service')
+    expect(deploy).toContain(
+      'railway volume update --volume ${volume.id} --mount-path ${LEGACY_STATE_VOLUME_MOUNT_PATH} --json'
+    )
+    expect(deploy).toContain('railway volume attach --volume ${volume.id} --yes --json')
+    expect(deploy).toContain('railway volume add --mount-path ${STATE_MOUNT_PATH} --json')
   })
 
   test('synchronizes every optional variable with explicit safe defaults', () => {
