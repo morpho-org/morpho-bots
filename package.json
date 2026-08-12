@@ -8,10 +8,10 @@
     "knip": "knip",
     "lint": "oxlint --no-error-on-unmatched-pattern && pnpm run lint:playground-smoke",
     "lint:fix": "oxlint --fix --no-error-on-unmatched-pattern",
-    "lint:playground-smoke": "oxlint --config bots/market-making/scripts/playground-smoke.oxlintrc.json bots/market-making/scripts/playground-smoke*.mjs",
-    "market-making:playground": "pnpm --filter @morpho-org/market-making-bot run playground:serve",
+    "lint:playground-smoke": "oxlint --config bots/quoter-bot/scripts/playground-smoke.oxlintrc.json bots/quoter-bot/scripts/playground-smoke*.mjs",
+    "quoter-bot:playground": "pnpm --filter @morpho-org/quoter-bot run playground:serve",
     "prepare": "husky",
-    "test": "vitest run && pnpm --filter @morpho-org/market-making-bot run playground:test"
+    "test": "vitest run && pnpm --filter @morpho-org/quoter-bot run playground:test"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",

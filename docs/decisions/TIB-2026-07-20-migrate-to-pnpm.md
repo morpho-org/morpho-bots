@@ -162,7 +162,7 @@ for two weeks and the repo moved ~190 commits underneath it.
 test runner, so it touches no test file and closes the install-time vector on its own. PR 2 removes
 bun. This mirrors the original branch's own commit split.
 
-**Four workspaces did not exist when this TIB was drafted**: `bots/market-making`,
+**Four workspaces did not exist when this TIB was drafted**: `bots/quoter-bot`,
 `bots/midnight-crossed-books`, `bots/kill-switch`, and `@repo/{offers,monitoring,logging,observability}`.
 Test files grew 79 -> 136 and `Bun.env` sites 42 -> 59. PR 2 must also port bun surfaces the original
 branch never encountered: `Bun.serve`, `Bun.which`, `Bun.file`, `Bun.argv`, `import.meta.main`, and

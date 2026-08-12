@@ -9,7 +9,13 @@ node_modules
 .env.*
 !.env.example
 
-# Local market-making configuration (examples remain trackable)
+# Local quoter-bot configuration (examples remain trackable)
+**/quoter-bot.yaml
+**/quoter-bot.yml
+!**/quoter-bot.example.yaml
+!**/quoter-bot.example.yml
+
+# Legacy local configuration can still contain private keys after upgrading.
 **/market-making.yaml
 **/market-making.yml
 !**/market-making.example.yaml
