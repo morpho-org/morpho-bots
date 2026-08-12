@@ -112,6 +112,20 @@ describe('Railway CLI output parsing', () => {
     ).toBeLessThan(deploy.indexOf('railway add --service'))
   })
 
+  test('synchronizes the Dockerfile path in deploy-only mode before uploading', () => {
+    const deploy = readFileSync(new URL('../../scripts/deploy-railway.ts', import.meta.url), 'utf8')
+    const dockerfileSynchronization = deploy.indexOf(
+      "await setRuntimeVariable(['RAILWAY_DOCKERFILE_PATH', DOCKERFILE_PATH])"
+    )
+    const fullProvisioningEnd = deploy.indexOf(
+      "\n}\n\nawait setRuntimeVariable(['RAILWAY_DOCKERFILE_PATH'"
+    )
+
+    expect(fullProvisioningEnd).toBeGreaterThan(deploy.indexOf('if (!DEPLOY_ONLY)'))
+    expect(dockerfileSynchronization).toBeGreaterThan(fullProvisioningEnd)
+    expect(dockerfileSynchronization).toBeLessThan(deploy.indexOf('await startDeployment()'))
+  })
+
   test('drops root privileges after preparing the Railway state volume', () => {
     const dockerfile = readFileSync(new URL('../../Dockerfile', import.meta.url), 'utf8')
     const entrypoint = readFileSync(
