@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest'
 
 import { ConfigService } from '../../src/config/config.service'
 import { InvalidConfigurationError } from '../../src/config/invalid-configuration.error'
+import { InvalidSimulationCallerAddressError } from '../../src/config/invalid-simulation-caller-address.error'
 import { ResolverPrivateKeyRequiredError } from '../../src/config/resolver-private-key-required.error'
 
 const KEY = `0x${'11'.repeat(32)}`
@@ -73,6 +74,17 @@ describe('ConfigService', () => {
         SIMULATION_CALLER_ADDRESS: 'not-an-address'
       })
     ).toThrow(InvalidConfigurationError)
+  })
+
+  test('rejects the zero simulation caller address with a named error', () => {
+    expect(() =>
+      ConfigService.from({
+        CHAIN_ID: '8453',
+        RPC_URL: 'http://rpc.example',
+        READONLY: 'true',
+        SIMULATION_CALLER_ADDRESS: '0x0000000000000000000000000000000000000000'
+      })
+    ).toThrow(InvalidSimulationCallerAddressError)
   })
 
   test('requires a resolver private key in normal mode with a named error', () => {

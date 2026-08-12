@@ -1,11 +1,11 @@
 import type { Address, Chain, Hex } from 'viem'
 
 import { CrossedBooksResolver } from '@repo/contracts'
-import { getAddress, isAddress, isHex, parseGwei } from 'viem'
+import { getAddress, isAddress, isAddressEqual, isHex, parseGwei, zeroAddress } from 'viem'
 import { base } from 'viem/chains'
 
 import { DEFAULT_MAX_MATCHES } from '../domain/matching.service'
-import { InvalidConfigurationError } from './invalid-configuration.error'
+import { InvalidSimulationCallerAddressError } from './invalid-simulation-caller-address.error'
 import { parseReadonly } from './readonly.utils'
 import { ResolverPrivateKeyRequiredError } from './resolver-private-key-required.error'
 
@@ -59,13 +59,14 @@ export class ConfigService {
     }
 
     const simulationCaller = environment.SIMULATION_CALLER_ADDRESS?.trim()
-    if (readOnly && !simulationCaller) {
-      throw new InvalidConfigurationError(
-        'Readonly mode requires SIMULATION_CALLER_ADDRESS to preserve execution caller semantics'
-      )
-    }
-    if (simulationCaller && !isAddress(simulationCaller, { strict: false })) {
-      throw new InvalidConfigurationError('SIMULATION_CALLER_ADDRESS must be an EVM address')
+    if (
+      (readOnly && !simulationCaller) ||
+      (simulationCaller
+        ? !isAddress(simulationCaller, { strict: false }) ||
+          isAddressEqual(getAddress(simulationCaller), zeroAddress)
+        : false)
+    ) {
+      throw new InvalidSimulationCallerAddressError()
     }
 
     const apiBaseUrl = (environment.API_BASE_URL?.trim() || 'https://api.morpho.org').replace(

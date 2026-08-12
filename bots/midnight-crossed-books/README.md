@@ -39,7 +39,7 @@ The generated files live under each infrastructure adapter's `generated/` direct
 - `CHAIN_ID` — required, currently `8453`.
 - `RPC_URL` — required. `RPC_URL_FALLBACK` is optional.
 - `READONLY` — optional; `true`/`1` enables simulation-only mode, while absent/`false`/`0` selects write mode. Other values are rejected.
-- `SIMULATION_CALLER_ADDRESS` — required in readonly mode. Set it to the public EOA that would execute resolutions in write mode so `msg.sender`, profit transfers, and reverts match execution without loading its private key.
+- `SIMULATION_CALLER_ADDRESS` — required in readonly mode. Set it to the non-zero public EOA that would execute resolutions in write mode so `msg.sender`, profit transfers, and reverts match execution without loading its private key. The operator is responsible for supplying this public caller address; the zero address is rejected.
 - `RESOLVER_PRIVATE_KEY` — required `0x`-prefixed 32-byte bot key unless `READONLY` is enabled.
 - `RESOLVER_ADDRESS` — optional deterministic deployment override.
 - `API_BASE_URL` — Morpho API origin, default `https://api.morpho.org`.
@@ -98,7 +98,9 @@ pnpm --filter @morpho-org/midnight-crossed-books run deploy:railway
 ```
 
 The deploy script validates and propagates `READONLY` and `SIMULATION_CALLER_ADDRESS`; it does not
-require or install `RESOLVER_PRIVATE_KEY` in readonly mode. Write mode still requires a valid key.
+require or install `RESOLVER_PRIVATE_KEY` in readonly mode. It also removes a stale private key when
+switching to readonly and removes a stale simulation caller when switching to write mode, aborting
+before the mode change if deletion fails. Write mode still requires a valid key.
 
 CI subsequently runs the same command with `DEPLOY_ONLY=true`, so GitHub holds only a
 project/environment-scoped Railway token. Pushes to `main` deploy staging through the

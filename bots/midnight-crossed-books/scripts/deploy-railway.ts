@@ -9,7 +9,14 @@ import { $ } from 'execa'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { parseLatestStatus, parseServices, resolveProvisioningConfiguration } from './railway'
+import {
+  parseLatestStatus,
+  parseServices,
+  parseVariableKeys,
+  resolveProvisioningConfiguration,
+  synchronizeModeVariables
+} from './railway'
+import { RailwayVariableOperationError } from './railway-variable-operation.error'
 
 const PROJECT_ID = required(process.env, 'RAILWAY_PROJECT_ID')
 const ENVIRONMENT = process.env.RAILWAY_ENVIRONMENT?.trim() || 'production'
@@ -105,6 +112,22 @@ async function setSecret(name: string, value: string) {
   console.log(`Set ${name} on ${SERVICE} (secret).`)
 }
 
+const listVariableKeys = async () => {
+  const { data, error } = await tryCatch(
+    $`railway variable list -s ${SERVICE} -e ${ENVIRONMENT} -p ${PROJECT_ID} --json`.then(
+      result => result.stdout
+    )
+  )
+  if (error || typeof data !== 'string') throw new RailwayVariableOperationError('list')
+  return parseVariableKeys(data)
+}
+
+const deleteVariable = async (name: string) => {
+  const { error } = await tryCatch($`railway variable delete ${name} -s ${SERVICE} --skip-deploys`)
+  if (error) throw new RailwayVariableOperationError('delete', name)
+  console.log(`Deleted ${name} on ${SERVICE} (stale).`)
+}
+
 async function deployService() {
   const message = `deploy midnight crossed-books ${ENVIRONMENT}`
   const { error } = await tryCatch(
@@ -159,18 +182,18 @@ if (DEPLOY_ONLY) {
   reportStatus(await waitForDeploy())
 } else {
   const rpcUrl = required(process.env, 'RPC_URL')
-  const { readOnly, resolverPrivateKey, simulationCaller } = resolveProvisioningConfiguration(
-    process.env
-  )
+  const config = resolveProvisioningConfiguration(process.env)
 
   await ensureContext()
   await ensureService()
   await setVariable('CHAIN_ID=8453')
-  await setVariable(`READONLY=${readOnly}`)
-  if (simulationCaller) await setVariable(`SIMULATION_CALLER_ADDRESS=${simulationCaller}`)
+  await synchronizeModeVariables(config, await listVariableKeys(), {
+    deleteVariable,
+    setSecret,
+    setVariable
+  })
   await setVariable(`RAILWAY_DOCKERFILE_PATH=${DOCKERFILE_PATH}`)
   await setSecret('RPC_URL', rpcUrl)
-  if (resolverPrivateKey) await setSecret('RESOLVER_PRIVATE_KEY', resolverPrivateKey)
   await deployService()
   reportStatus(await waitForDeploy())
 }
