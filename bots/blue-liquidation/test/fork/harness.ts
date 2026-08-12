@@ -165,7 +165,7 @@ async function waitForRpc(url: string, timeoutMs = 30_000): Promise<void> {
 // Anvil port registry — vitest runs test FILES IN PARALLEL (bun's runner was serial, so fixed ports
 // used to be safe within a bot only). Every fork suite in the repo must claim a distinct port:
 //   8545 bots/blue-liquidation      fork/liquidation
-//   8546 bots/market-making         e2e/setup-check
+//   8546 bots/quoter-bot         e2e/setup-check
 //   8547 bots/midnight-liquidation  fork/liquidation
 //   8548 bots/midnight-liquidation  fork/queue
 /**

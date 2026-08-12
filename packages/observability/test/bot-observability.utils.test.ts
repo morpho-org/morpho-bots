@@ -28,7 +28,7 @@ describe('createBotObservability', () => {
     const heartbeat = { start: vi.fn(async () => undefined), stop: vi.fn(() => undefined) }
     const observability = createBotObservability({ ...identity, logger, heartbeat })
     const cycle = {
-      event: 'market-making.cycle',
+      event: 'quoter-bot.cycle',
       workflow: 'ladder',
       status: 'published',
       activePosition: { suppliedAssets: 12n },
@@ -47,7 +47,7 @@ describe('createBotObservability', () => {
       { level: 'info', event: 'bot.started', fields: {} },
       {
         level: 'info',
-        event: 'market-making.cycle',
+        event: 'quoter-bot.cycle',
         fields: {
           workflow: 'ladder',
           status: 'published',
@@ -59,7 +59,7 @@ describe('createBotObservability', () => {
       },
       { level: 'info', event: 'bot.stopped', fields: { reason: 'completed' } }
     ])
-    expect(cycle.event).toBe('market-making.cycle')
+    expect(cycle.event).toBe('quoter-bot.cycle')
   })
 
   test('ships each array item as its own info-level record for every success status', () => {

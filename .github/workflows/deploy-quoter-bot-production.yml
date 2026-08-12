@@ -1,0 +1,45 @@
+name: Deploy quoter-bot production
+
+# Reusable deploy-only job for quoter-bot's single Railway environment. Production's release
+# selector calls this workflow after a `release-quoter-bot` label lands on main.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Git SHA/ref to deploy
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-quoter-bot-production
+  cancel-in-progress: false
+
+jobs:
+  Deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: market-making-production
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Setup
+        uses: ./.github/actions/setup
+        with:
+          build-contracts: 'false'
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli@5.30.4
+
+      - name: Deploy
+        env:
+          DEPLOY_ONLY: 'true'
+          RAILWAY_ENVIRONMENT: production
+          RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: pnpm --filter @morpho-org/quoter-bot run deploy:railway

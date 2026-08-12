@@ -100,7 +100,7 @@
   approximate matchers (e.g., floating-point arithmetic, time-dependent values) with a comment
   explaining why exact matching is not feasible.
 - **Test runners**: `pnpm test` drives every workspace project listed in the root
-  `vitest.config.ts` plus the market-making playground's Node `*.test.mjs` suites. TypeScript tests
+  `vitest.config.ts` plus the quoter-bot playground's Node `*.test.mjs` suites. TypeScript tests
   use Vitest; mocks and spies come from `vi` (`vi.fn`, `vi.spyOn`, `vi.restoreAllMocks`).
 
 ### Testing Anti-Patterns

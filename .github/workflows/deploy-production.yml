@@ -20,7 +20,7 @@ on:
           - blue-liq
           - midnight-liq
           - crossed-books
-          - market-making
+          - quoter-bot
 
 permissions:
   contents: read
@@ -41,7 +41,7 @@ jobs:
       blue_liq: ${{ steps.pick.outputs.blue_liq }}
       midnight_liq: ${{ steps.pick.outputs.midnight_liq }}
       crossed_books: ${{ steps.pick.outputs.crossed_books }}
-      market_making: ${{ steps.pick.outputs.market_making }}
+      quoter_bot: ${{ steps.pick.outputs.quoter_bot }}
     steps:
       - id: pick
         env:
@@ -63,7 +63,7 @@ jobs:
             echo "blue_liq=$(has blue-liq)"
             echo "midnight_liq=$(has midnight-liq)"
             echo "crossed_books=$(has crossed-books)"
-            echo "market_making=$(has market-making)"
+            echo "quoter_bot=$(has quoter-bot)"
           } >> "$GITHUB_OUTPUT"
 
   Blue:
@@ -101,10 +101,10 @@ jobs:
       github_environment: crossed-books-prod
       ref: ${{ github.sha }}
 
-  Market-making:
+  Quoter bot:
     needs: Select
-    if: ${{ needs.Select.outputs.market_making == 'true' }}
-    uses: ./.github/workflows/deploy-market-making-production.yml
+    if: ${{ needs.Select.outputs.quoter_bot == 'true' }}
+    uses: ./.github/workflows/deploy-quoter-bot-production.yml
     secrets: inherit
     with:
       ref: ${{ github.sha }}
@@ -194,8 +194,8 @@ jobs:
           gh release create "$tag" --target "$SHA" --title "$tag" --generate-notes \
             ${prev:+--notes-start-tag "$prev"}
 
-  Release-market-making:
-    needs: Market-making
+  Release-quoter-bot:
+    needs: Quoter bot
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -208,7 +208,7 @@ jobs:
           fetch-depth: 0
       - name: Create release
         env:
-          BOT: market-making
+          BOT: quoter-bot
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail

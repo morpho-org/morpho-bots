@@ -32,7 +32,7 @@ Agent conventions:
 - **JSDoc public surface**: Every externally facing function and public method changed in TypeScript
   requires substantive JSDoc covering its applicable parameters, return value, failures, and side
   effects. Before completion, follow `.agents/skills/build-jsdoc/SKILL.md` and run
-  `pnpm --filter @morpho-org/market-making-bot run jsdoc:build`; `.claude/skills` must be the real
+  `pnpm --filter @morpho-org/quoter-bot run jsdoc:build`; `.claude/skills` must be the real
   symlink `../.agents/skills`, and independent checks must continue to run concurrently through
   `Promise.all` where possible.
 - **Utility isolation**: Utility functions must live in a different file from every file containing
@@ -157,7 +157,7 @@ This is a **pnpm workspaces monorepo** housing off-chain Morpho curator bots:
   Each bot owns its own operator surface — `README.md`, `Dockerfile`, `docker-compose.yml`, and
   `scripts/deploy-railway.ts` — so it ships as its own image and
   deploys independently. `bots/blue-liquidation` and `bots/midnight-liquidation` are the live
-  liquidators; `bots/market-making` is the Midnight maker bot (setup checks, position bootstrap,
+  liquidators; `bots/quoter-bot` is the Midnight maker bot (setup checks, position bootstrap,
   ladder quoting, combined monitoring); `bots/midnight-crossed-books` resolves crossed Midnight
   books; `bots/kill-switch` is a proposal bot (docs only).
 - `/packages/` — shared libraries: `@repo/bot-kit` (the shared bot runtime — viem
@@ -244,7 +244,7 @@ All commit messages, PR titles, and Linear ticket titles use the same format:
 | Bot                    | Scope                    |
 | ---------------------- | ------------------------ |
 | blue-liquidation       | `blue-liquidation`       |
-| market-making          | `market-making`          |
+| quoter-bot             | `quoter-bot`             |
 | midnight-crossed-books | `midnight-crossed-books` |
 | midnight-liquidation   | `midnight-liquidation`   |
 
