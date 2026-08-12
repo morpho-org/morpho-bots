@@ -1,4 +1,4 @@
-type RailwayVariableOperation = 'delete' | 'list'
+type RailwayVariableOperation = 'delete' | 'set'
 
 /** Raised when a Railway variable operation fails without exposing variable values. */
 export class RailwayVariableOperationError extends Error {

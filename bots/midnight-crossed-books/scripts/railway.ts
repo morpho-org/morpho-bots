@@ -6,10 +6,17 @@ import { InvalidSimulationCallerAddressError } from '../src/config/invalid-simul
 import { parseReadonly } from '../src/config/readonly.utils'
 import { ResolverPrivateKeyRequiredError } from '../src/config/resolver-private-key-required.error'
 import { InvalidRailwayVariableListError } from './invalid-railway-variable-list.error'
+import { RailwayAccessTokenRequiredError } from './railway-access-token-required.error'
+import { RailwayVariableOperationError } from './railway-variable-operation.error'
 
 type RailwayService = { name: string }
 type Env = Record<string, string | undefined>
 type RailwayVariableTarget = { environment: string; projectId: string; service: string }
+type RailwayAccessToken = {
+  header: 'authorization' | 'project-access-token'
+  value: string
+}
+type RailwayVariableTargetIds = { environmentId: string; serviceId: string }
 type ProvisioningConfiguration =
   | { readOnly: true; resolverPrivateKey: undefined; simulationCaller: `0x${string}` }
   | { readOnly: false; resolverPrivateKey: string; simulationCaller: undefined }
@@ -29,29 +36,215 @@ const railwayVariableTargetArgs = (target: RailwayVariableTarget) => [
 ]
 
 /**
- * Builds arguments for listing variables on one Railway deployment target.
- * @param target - Project, environment, and service that must own the listed variables.
- * @returns CLI arguments including explicit service, environment, project, and JSON-output flags.
+ * Resolves an API credential without exposing it in command arguments or logs.
+ * @param env - Deploy environment containing a project or account Railway token.
+ * @returns The supported Railway API authentication header and value.
+ * @throws `RailwayAccessTokenRequiredError` when no API credential is available.
  */
-export const railwayVariableListArgs = (target: RailwayVariableTarget) => [
-  'variable',
-  'list',
-  ...railwayVariableTargetArgs(target),
-  '--json'
-]
+export const resolveRailwayAccessToken = (env: Env): RailwayAccessToken => {
+  const projectToken = env.RAILWAY_TOKEN?.trim()
+  if (projectToken) return { header: 'project-access-token', value: projectToken }
+
+  const apiToken = env.RAILWAY_API_TOKEN?.trim()
+  if (apiToken) return { header: 'authorization', value: `Bearer ${apiToken}` }
+  throw new RailwayAccessTokenRequiredError()
+}
+
+const RAILWAY_GRAPHQL_ENDPOINT = 'https://backboard.railway.com/graphql/v2'
+const TARGET_QUERY = `query RailwayVariableTarget($projectId: String!) {
+  project(id: $projectId) {
+    environments { edges { node { id name } } }
+    services { edges { node { id name } } }
+  }
+}`
+const VARIABLE_METADATA_QUERY = `query RailwayVariableMetadata(
+  $projectId: String!
+  $environmentId: String!
+  $after: String
+) {
+  environment(id: $environmentId, projectId: $projectId) {
+    variables(first: 100, after: $after) {
+      edges { node { name serviceId } }
+      pageInfo { endCursor hasNextPage }
+    }
+  }
+}`
+const VARIABLE_DELETE_MUTATION = `mutation RailwayVariableDelete(
+  $projectId: String!
+  $environmentId: String!
+  $serviceId: String!
+  $name: String!
+) {
+  variableDelete(input: {
+    projectId: $projectId
+    environmentId: $environmentId
+    serviceId: $serviceId
+    name: $name
+  })
+}`
+
+const recordField = (value: unknown, field: string) =>
+  isRecord(value) && isRecord(value[field]) ? value[field] : undefined
+
+const edgesOf = (value: unknown) => {
+  const edges = isRecord(value) ? value.edges : undefined
+  return Array.isArray(edges) ? edges : []
+}
+
+const postRailwayGraphql = async ({
+  body,
+  error,
+  fetcher,
+  token
+}: {
+  body: { query: string; variables: Record<string, unknown> }
+  error: RailwayVariableOperationError
+  fetcher: typeof fetch
+  token: RailwayAccessToken
+}) => {
+  const result = await tryCatch(
+    fetcher(RAILWAY_GRAPHQL_ENDPOINT, {
+      body: JSON.stringify(body),
+      headers: { 'content-type': 'application/json', [token.header]: token.value },
+      method: 'POST'
+    })
+  )
+  if (result.error || !result.data.ok) throw error
+
+  const json = await tryCatch(result.data.json())
+  if (json.error || !isRecord(json.data) || Array.isArray(json.data.errors)) throw error
+  return json.data.data
+}
+
+const resolveRailwayVariableTarget = async ({
+  error,
+  fetcher,
+  target,
+  token
+}: {
+  error: RailwayVariableOperationError
+  fetcher: typeof fetch
+  target: RailwayVariableTarget
+  token: RailwayAccessToken
+}): Promise<RailwayVariableTargetIds> => {
+  const data = await postRailwayGraphql({
+    body: { query: TARGET_QUERY, variables: { projectId: target.projectId } },
+    error,
+    fetcher,
+    token
+  })
+  const project = recordField(data, 'project')
+  const environment = edgesOf(recordField(project, 'environments'))
+    .map(edge => recordField(edge, 'node'))
+    .find(node => node?.name === target.environment)
+  const service = edgesOf(recordField(project, 'services'))
+    .map(edge => recordField(edge, 'node'))
+    .find(node => node?.name === target.service)
+  if (typeof environment?.id !== 'string' || typeof service?.id !== 'string') throw error
+  return { environmentId: environment.id, serviceId: service.id }
+}
+
+const railwayVariableExists = async ({
+  error,
+  fetcher,
+  ids,
+  name,
+  target,
+  token
+}: {
+  error: RailwayVariableOperationError
+  fetcher: typeof fetch
+  ids: RailwayVariableTargetIds
+  name: string
+  target: RailwayVariableTarget
+  token: RailwayAccessToken
+}) => {
+  let after: string | null = null
+  do {
+    const data = await postRailwayGraphql({
+      body: {
+        query: VARIABLE_METADATA_QUERY,
+        variables: {
+          after,
+          environmentId: ids.environmentId,
+          projectId: target.projectId
+        }
+      },
+      error,
+      fetcher,
+      token
+    })
+    const variables = recordField(recordField(data, 'environment'), 'variables')
+    const pageInfo = recordField(variables, 'pageInfo')
+    if (
+      !variables ||
+      !Array.isArray(variables.edges) ||
+      !pageInfo ||
+      typeof pageInfo.hasNextPage !== 'boolean'
+    ) {
+      throw new InvalidRailwayVariableListError()
+    }
+    const nodes = variables.edges.map(edge => recordField(edge, 'node'))
+    if (
+      nodes.some(
+        node =>
+          typeof node?.name !== 'string' ||
+          (node.serviceId !== null && typeof node.serviceId !== 'string')
+      )
+    ) {
+      throw new InvalidRailwayVariableListError()
+    }
+    const found = nodes.some(node => node?.name === name && node.serviceId === ids.serviceId)
+    if (found) return true
+
+    if (!pageInfo.hasNextPage) return false
+    if (typeof pageInfo.endCursor !== 'string' || !pageInfo.endCursor) throw error
+    after = pageInfo.endCursor
+  } while (after)
+  return false
+}
 
 /**
- * Builds arguments for deleting one variable from one Railway deployment target.
- * @param name - Variable name to remove; a value is never accepted by this command builder.
- * @param target - Project, environment, and service that must own the deleted variable.
- * @returns CLI arguments including the name and explicit service, environment, and project flags.
+ * Idempotently deletes one Railway variable without retrieving variable values.
+ * @param parameters - Fetch implementation, credential, exact target names, and variable name.
+ * @returns `true` when a variable was deleted, or `false` when key-only metadata proved it absent.
+ * @throws `RailwayVariableOperationError` when target lookup, metadata transport, or deletion fails.
+ * @throws `InvalidRailwayVariableListError` when key-only metadata has an unsafe shape.
+ * @remarks Requests only project/environment/service IDs and paginated key metadata before issuing
+ * an explicitly project-, environment-, service-, and name-scoped delete mutation.
  */
-export const railwayVariableDeleteArgs = (name: string, target: RailwayVariableTarget) => [
-  'variable',
-  'delete',
+export const deleteRailwayVariable = async ({
+  fetcher,
   name,
-  ...railwayVariableTargetArgs(target)
-]
+  target,
+  token
+}: {
+  fetcher: typeof fetch
+  name: string
+  target: RailwayVariableTarget
+  token: RailwayAccessToken
+}) => {
+  const error = new RailwayVariableOperationError('delete', name)
+  const ids = await resolveRailwayVariableTarget({ error, fetcher, target, token })
+  if (!(await railwayVariableExists({ error, fetcher, ids, name, target, token }))) return false
+
+  const data = await postRailwayGraphql({
+    body: {
+      query: VARIABLE_DELETE_MUTATION,
+      variables: {
+        environmentId: ids.environmentId,
+        name,
+        projectId: target.projectId,
+        serviceId: ids.serviceId
+      }
+    },
+    error,
+    fetcher,
+    token
+  })
+  if (!isRecord(data) || data.variableDelete !== true) throw error
+  return true
+}
 
 /**
  * Builds arguments for setting one variable on one Railway deployment target.
@@ -110,7 +303,6 @@ export const resolveProvisioningConfiguration = (env: Env): ProvisioningConfigur
 /**
  * Synchronizes Railway's mutually exclusive mode variables before changing the active mode.
  * @param config - Validated mode-specific provisioning values.
- * @param existingKeys - Variable names currently installed on the target service.
  * @param operations - Secret-safe Railway variable mutation operations.
  * @returns A promise that resolves after incompatible variables are removed and the mode is set.
  * @throws The underlying mutation error; mode is not changed when incompatible-variable deletion
@@ -119,35 +311,16 @@ export const resolveProvisioningConfiguration = (env: Env): ProvisioningConfigur
  */
 export const synchronizeModeVariables = async (
   config: ReturnType<typeof resolveProvisioningConfiguration>,
-  existingKeys: ReadonlySet<string>,
   operations: ModeVariableOperations
 ) => {
   if (config.readOnly) {
-    if (existingKeys.has('RESOLVER_PRIVATE_KEY')) {
-      await operations.deleteVariable('RESOLVER_PRIVATE_KEY')
-    }
+    await operations.deleteVariable('RESOLVER_PRIVATE_KEY')
     await operations.setVariable(`SIMULATION_CALLER_ADDRESS=${config.simulationCaller}`)
   } else {
-    if (existingKeys.has('SIMULATION_CALLER_ADDRESS')) {
-      await operations.deleteVariable('SIMULATION_CALLER_ADDRESS')
-    }
+    await operations.deleteVariable('SIMULATION_CALLER_ADDRESS')
     await operations.setSecret('RESOLVER_PRIVATE_KEY', config.resolverPrivateKey)
   }
   await operations.setVariable(`READONLY=${config.readOnly}`)
-}
-
-/**
- * Reads only variable names from Railway's JSON response.
- * @param raw - Raw JSON emitted by `railway variable list --json`.
- * @returns Installed variable names without retaining their values.
- * @throws `InvalidRailwayVariableListError` when Railway returns malformed or unexpected JSON.
- */
-export const parseVariableKeys = (raw: string) => {
-  const { data, error } = tryCatch(() => JSON.parse(raw) as unknown)
-  if (error || !isRecord(data) || Array.isArray(data)) {
-    throw new InvalidRailwayVariableListError()
-  }
-  return new Set(Object.keys(data))
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

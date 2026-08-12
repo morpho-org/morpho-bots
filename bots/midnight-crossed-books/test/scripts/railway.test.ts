@@ -2,12 +2,11 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, test, vi } from 'vitest'
 
 import {
+  deleteRailwayVariable,
   parseLatestStatus,
   parseServices,
-  parseVariableKeys,
-  railwayVariableDeleteArgs,
-  railwayVariableListArgs,
   railwayVariableSetArgs,
+  resolveRailwayAccessToken,
   resolveProvisioningConfiguration,
   synchronizeModeVariables
 } from '../../scripts/railway'
@@ -18,6 +17,30 @@ import { ResolverPrivateKeyRequiredError } from '../../src/config/resolver-priva
 const KEY = `0x${'11'.repeat(32)}`
 const CALLER: `0x${string}` = `0x${'22'.repeat(20)}`
 const TARGET = { environment: 'production', projectId: 'project-id', service: 'bot' }
+const TOKEN = { header: 'project-access-token' as const, value: 'railway-token' }
+
+const jsonResponse = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' }, status })
+
+const targetResponse = {
+  data: {
+    project: {
+      environments: { edges: [{ node: { id: 'environment-id', name: 'production' } }] },
+      services: { edges: [{ node: { id: 'service-id', name: 'bot' } }] }
+    }
+  }
+}
+
+const metadataResponse = (names: string[]) => ({
+  data: {
+    environment: {
+      variables: {
+        edges: names.map(name => ({ node: { name, serviceId: 'service-id' } })),
+        pageInfo: { endCursor: null, hasNextPage: false }
+      }
+    }
+  }
+})
 
 const operations = () => ({
   deleteVariable: vi.fn().mockResolvedValue(undefined),
@@ -40,8 +63,13 @@ describe('Railway provisioning configuration', () => {
     })
   })
 
-  test('preserves write-mode key requirements and provisioning', () => {
-    expect(resolveProvisioningConfiguration({ RESOLVER_PRIVATE_KEY: KEY })).toEqual({
+  test('preserves write-mode key requirements and ignores the readonly caller', () => {
+    expect(
+      resolveProvisioningConfiguration({
+        RESOLVER_PRIVATE_KEY: KEY,
+        SIMULATION_CALLER_ADDRESS: 'invalid-and-ignored-in-write-mode'
+      })
+    ).toEqual({
       readOnly: false,
       resolverPrivateKey: KEY,
       simulationCaller: undefined
@@ -68,33 +96,15 @@ describe('Railway provisioning configuration', () => {
     ).toThrow(InvalidSimulationCallerAddressError)
   })
 
-  test('removes a stale private key from the exact target before readonly mode', async () => {
+  test('removes a stale private key before readonly mode', async () => {
     const railway = operations()
-    const commands: string[][] = []
-    railway.deleteVariable.mockImplementation(async name => {
-      commands.push(railwayVariableDeleteArgs(name, TARGET))
-    })
 
     await synchronizeModeVariables(
       { readOnly: true, resolverPrivateKey: undefined, simulationCaller: CALLER },
-      new Set(['RESOLVER_PRIVATE_KEY']),
       railway
     )
 
     expect(railway.deleteVariable).toHaveBeenCalledExactlyOnceWith('RESOLVER_PRIVATE_KEY')
-    expect(commands).toEqual([
-      [
-        'variable',
-        'delete',
-        'RESOLVER_PRIVATE_KEY',
-        '-s',
-        'bot',
-        '-e',
-        'production',
-        '-p',
-        'project-id'
-      ]
-    ])
     expect(railway.setSecret).not.toHaveBeenCalled()
     expect(railway.setVariable.mock.calls).toEqual([
       [`SIMULATION_CALLER_ADDRESS=${CALLER}`],
@@ -102,33 +112,15 @@ describe('Railway provisioning configuration', () => {
     ])
   })
 
-  test('removes a stale caller from the exact target before write mode', async () => {
+  test('removes a stale caller before write mode', async () => {
     const railway = operations()
-    const commands: string[][] = []
-    railway.deleteVariable.mockImplementation(async name => {
-      commands.push(railwayVariableDeleteArgs(name, TARGET))
-    })
 
     await synchronizeModeVariables(
       { readOnly: false, resolverPrivateKey: KEY, simulationCaller: undefined },
-      new Set(['SIMULATION_CALLER_ADDRESS']),
       railway
     )
 
     expect(railway.deleteVariable).toHaveBeenCalledExactlyOnceWith('SIMULATION_CALLER_ADDRESS')
-    expect(commands).toEqual([
-      [
-        'variable',
-        'delete',
-        'SIMULATION_CALLER_ADDRESS',
-        '-s',
-        'bot',
-        '-e',
-        'production',
-        '-p',
-        'project-id'
-      ]
-    ])
     expect(railway.setSecret).toHaveBeenCalledExactlyOnceWith('RESOLVER_PRIVATE_KEY', KEY)
     expect(railway.setVariable).toHaveBeenCalledExactlyOnceWith('READONLY=false')
   })
@@ -141,9 +133,7 @@ describe('Railway provisioning configuration', () => {
       SIMULATION_CALLER_ADDRESS: CALLER
     })
 
-    await expect(
-      synchronizeModeVariables(config, new Set(['RESOLVER_PRIVATE_KEY']), railway)
-    ).rejects.toThrow('delete failed')
+    await expect(synchronizeModeVariables(config, railway)).rejects.toThrow('delete failed')
     expect(railway.setSecret).not.toHaveBeenCalled()
     expect(railway.setVariable).not.toHaveBeenCalled()
   })
@@ -153,61 +143,25 @@ describe('Railway provisioning configuration', () => {
     railway.deleteVariable.mockRejectedValue(new Error('delete failed'))
     const config = resolveProvisioningConfiguration({ RESOLVER_PRIVATE_KEY: KEY })
 
-    await expect(
-      synchronizeModeVariables(config, new Set(['SIMULATION_CALLER_ADDRESS']), railway)
-    ).rejects.toThrow('delete failed')
+    await expect(synchronizeModeVariables(config, railway)).rejects.toThrow('delete failed')
     expect(railway.setSecret).not.toHaveBeenCalled()
     expect(railway.setVariable).not.toHaveBeenCalled()
-  })
-
-  test('provisions a new readonly service without attempting an absent-key deletion', async () => {
-    const railway = operations()
-
-    await synchronizeModeVariables(
-      { readOnly: true, resolverPrivateKey: undefined, simulationCaller: CALLER },
-      new Set(),
-      railway
-    )
-
-    expect(railway.deleteVariable).not.toHaveBeenCalled()
-    expect(railway.setVariable).toHaveBeenCalledTimes(2)
-  })
-
-  test('provisions a new write service without attempting an absent-caller deletion', async () => {
-    const railway = operations()
-
-    await synchronizeModeVariables(
-      { readOnly: false, resolverPrivateKey: KEY, simulationCaller: undefined },
-      new Set(),
-      railway
-    )
-
-    expect(railway.deleteVariable).not.toHaveBeenCalled()
-    expect(railway.setSecret).toHaveBeenCalledExactlyOnceWith('RESOLVER_PRIVATE_KEY', KEY)
-    expect(railway.setVariable).toHaveBeenCalledExactlyOnceWith('READONLY=false')
   })
 
   test('wires fail-closed mode synchronization into Railway provisioning', () => {
     const deploy = readFileSync(new URL('../../scripts/deploy-railway.ts', import.meta.url), 'utf8')
 
     expect(deploy).toMatch(/resolveProvisioningConfiguration\(\s*process\.env\s*\)/)
-    expect(deploy).toContain('await listVariableKeys()')
     expect(deploy).toContain('await synchronizeModeVariables(')
     expect(deploy).toContain('deleteVariable')
+    expect(deploy).not.toContain('variable list')
+    expect(deploy).not.toContain('railwayVariableListArgs')
+    expect(deploy).toContain("throw new RailwayVariableOperationError('set', key)")
+    expect(deploy).toContain("throw new RailwayVariableOperationError('set', name)")
+    expect(deploy).not.toMatch(/Failed to set.*errorDetails/)
   })
 
-  test('explicitly scopes variable listing and setting to the target', () => {
-    expect(railwayVariableListArgs(TARGET)).toEqual([
-      'variable',
-      'list',
-      '-s',
-      'bot',
-      '-e',
-      'production',
-      '-p',
-      'project-id',
-      '--json'
-    ])
+  test('explicitly scopes variable setting to the target', () => {
     expect(railwayVariableSetArgs('READONLY=true', TARGET)).toEqual([
       'variable',
       'set',
@@ -236,17 +190,117 @@ describe('Railway provisioning configuration', () => {
   })
 })
 
-describe('Railway CLI output parsing', () => {
-  test('extracts variable names without exposing values', () => {
-    expect(parseVariableKeys('{"RESOLVER_PRIVATE_KEY":"secret","READONLY":"true"}')).toEqual(
-      new Set(['RESOLVER_PRIVATE_KEY', 'READONLY'])
+describe('Railway variable deletion API', () => {
+  test('resolves supported API authentication without logging or CLI arguments', () => {
+    expect(resolveRailwayAccessToken({ RAILWAY_TOKEN: 'project-token' })).toEqual({
+      header: 'project-access-token',
+      value: 'project-token'
+    })
+    expect(resolveRailwayAccessToken({ RAILWAY_API_TOKEN: 'account-token' })).toEqual({
+      header: 'authorization',
+      value: 'Bearer account-token'
+    })
+    expect(() => resolveRailwayAccessToken({})).toThrow('RAILWAY_TOKEN or RAILWAY_API_TOKEN')
+  })
+
+  test('deletes an existing variable through key-only metadata and an exact target', async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(targetResponse))
+      .mockResolvedValueOnce(jsonResponse(metadataResponse(['RESOLVER_PRIVATE_KEY'])))
+      .mockResolvedValueOnce(jsonResponse({ data: { variableDelete: true } }))
+
+    await expect(
+      deleteRailwayVariable({ fetcher, name: 'RESOLVER_PRIVATE_KEY', target: TARGET, token: TOKEN })
+    ).resolves.toBe(true)
+
+    expect(fetcher).toHaveBeenCalledTimes(3)
+    expect(fetcher.mock.calls[0]?.[0]).toBe('https://backboard.railway.com/graphql/v2')
+    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({
+      headers: { 'content-type': 'application/json', 'project-access-token': 'railway-token' },
+      method: 'POST'
+    })
+    const requests = fetcher.mock.calls.map(([, init]) =>
+      JSON.parse(typeof init?.body === 'string' ? init.body : '')
     )
+    expect(requests[0]).toMatchObject({ variables: { projectId: 'project-id' } })
+    expect(requests[1]).toMatchObject({
+      variables: { after: null, environmentId: 'environment-id', projectId: 'project-id' }
+    })
+    expect(requests[1]?.query).toContain('node { name serviceId }')
+    expect(requests[1]?.query).not.toContain('value')
+    expect(requests[2]).toMatchObject({
+      variables: {
+        environmentId: 'environment-id',
+        name: 'RESOLVER_PRIVATE_KEY',
+        projectId: 'project-id',
+        serviceId: 'service-id'
+      }
+    })
+    expect(fetcher.mock.calls.every(([, init]) => init?.headers)).toBe(true)
   })
 
-  test.each(['not-json', '[]', 'null'])('rejects an unsafe variable list response %#', raw => {
-    expect(() => parseVariableKeys(raw)).toThrow('Railway returned an invalid variable list')
+  test('treats an absent targeted variable as an idempotent success without mutation', async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(targetResponse))
+      .mockResolvedValueOnce(jsonResponse(metadataResponse([])))
+
+    await expect(
+      deleteRailwayVariable({ fetcher, name: 'RESOLVER_PRIVATE_KEY', target: TARGET, token: TOKEN })
+    ).resolves.toBe(false)
+    expect(fetcher).toHaveBeenCalledTimes(2)
   })
 
+  test('fails closed when key-only metadata is malformed', async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(targetResponse))
+      .mockResolvedValueOnce(jsonResponse({ data: { environment: {} } }))
+
+    const result = deleteRailwayVariable({
+      fetcher,
+      name: 'RESOLVER_PRIVATE_KEY',
+      target: TARGET,
+      token: TOKEN
+    })
+    await expect(result).rejects.toMatchObject({ name: 'InvalidRailwayVariableListError' })
+    await expect(result).rejects.not.toThrow('secret')
+    expect(fetcher).toHaveBeenCalledTimes(2)
+  })
+
+  test.each([
+    jsonResponse({ errors: [{ message: 'secret-bearing upstream failure' }] }),
+    jsonResponse({ data: { variableDelete: false } }),
+    jsonResponse({ data: { variableDelete: true } }, 503)
+  ])('fails closed with a named sanitized deletion error', async failure => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(targetResponse))
+      .mockResolvedValueOnce(jsonResponse(metadataResponse(['RESOLVER_PRIVATE_KEY'])))
+      .mockResolvedValueOnce(failure)
+
+    const result = deleteRailwayVariable({
+      fetcher,
+      name: 'RESOLVER_PRIVATE_KEY',
+      target: TARGET,
+      token: TOKEN
+    })
+    await expect(result).rejects.toMatchObject({ name: 'RailwayVariableOperationError' })
+    await expect(result).rejects.toThrow('Failed to delete Railway variable RESOLVER_PRIVATE_KEY')
+    await expect(result).rejects.not.toThrow('secret-bearing upstream failure')
+  })
+
+  test('uses no Railway variable list command or raw-value endpoint', () => {
+    const source = readFileSync(new URL('../../scripts/railway.ts', import.meta.url), 'utf8')
+
+    expect(source).not.toContain("'variable',\n  'list'")
+    expect(source).not.toContain('railway variable list')
+    expect(source).not.toContain('EnvironmentVariables')
+  })
+})
+
+describe('Railway CLI output parsing', () => {
   test('parses service arrays and ignores nameless entries', () => {
     const raw = JSON.stringify([{ name: 'bot' }, { id: 'missing-name' }])
 

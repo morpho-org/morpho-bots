@@ -100,7 +100,10 @@ pnpm --filter @morpho-org/midnight-crossed-books run deploy:railway
 The deploy script validates and propagates `READONLY` and `SIMULATION_CALLER_ADDRESS`; it does not
 require or install `RESOLVER_PRIVATE_KEY` in readonly mode. It also removes a stale private key when
 switching to readonly and removes a stale simulation caller when switching to write mode, aborting
-before the mode change if deletion fails. Write mode still requires a valid key.
+before the mode change if deletion fails. Deletion uses `RAILWAY_TOKEN` (or `RAILWAY_API_TOKEN`) with
+Railway's key-only variable metadata and an explicitly project/environment/service/name-scoped
+mutation; it never runs `railway variable list` or retrieves variable values. Write mode still
+requires a valid key.
 
 CI subsequently runs the same command with `DEPLOY_ONLY=true`, so GitHub holds only a
 project/environment-scoped Railway token. Pushes to `main` deploy staging through the

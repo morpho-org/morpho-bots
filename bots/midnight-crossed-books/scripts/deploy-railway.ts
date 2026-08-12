@@ -10,12 +10,11 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
+  deleteRailwayVariable,
   parseLatestStatus,
   parseServices,
-  parseVariableKeys,
-  railwayVariableDeleteArgs,
-  railwayVariableListArgs,
   railwayVariableSetArgs,
+  resolveRailwayAccessToken,
   resolveProvisioningConfiguration,
   synchronizeModeVariables
 } from './railway'
@@ -104,7 +103,7 @@ async function ensureService() {
 async function setVariable(value: string) {
   const key = value.split('=')[0]
   const { error } = await tryCatch($('railway', railwayVariableSetArgs(value, VARIABLE_TARGET)))
-  if (error) throw new Error(`Failed to set ${key} on ${SERVICE}: ${errorDetails(error)}`)
+  if (error) throw new RailwayVariableOperationError('set', key)
   console.log(`Set ${key} on ${SERVICE}.`)
 }
 
@@ -112,22 +111,20 @@ async function setSecret(name: string, value: string) {
   const { error } = await tryCatch(
     $({ input: value })('railway', railwayVariableSetArgs(name, VARIABLE_TARGET, { stdin: true }))
   )
-  if (error) throw new Error(`Failed to set ${name} on ${SERVICE}`)
+  if (error) throw new RailwayVariableOperationError('set', name)
   console.log(`Set ${name} on ${SERVICE} (secret).`)
 }
 
-const listVariableKeys = async () => {
-  const { data, error } = await tryCatch(
-    $('railway', railwayVariableListArgs(VARIABLE_TARGET)).then(result => result.stdout)
-  )
-  if (error || typeof data !== 'string') throw new RailwayVariableOperationError('list')
-  return parseVariableKeys(data)
-}
-
 const deleteVariable = async (name: string) => {
-  const { error } = await tryCatch($('railway', railwayVariableDeleteArgs(name, VARIABLE_TARGET)))
-  if (error) throw new RailwayVariableOperationError('delete', name)
-  console.log(`Deleted ${name} on ${SERVICE} (stale).`)
+  const deleted = await deleteRailwayVariable({
+    fetcher: fetch,
+    name,
+    target: VARIABLE_TARGET,
+    token: resolveRailwayAccessToken(process.env)
+  })
+  console.log(
+    deleted ? `Deleted ${name} on ${SERVICE} (stale).` : `${name} is already absent on ${SERVICE}.`
+  )
 }
 
 async function deployService() {
@@ -189,7 +186,7 @@ if (DEPLOY_ONLY) {
   await ensureContext()
   await ensureService()
   await setVariable('CHAIN_ID=8453')
-  await synchronizeModeVariables(config, await listVariableKeys(), {
+  await synchronizeModeVariables(config, {
     deleteVariable,
     setSecret,
     setVariable
