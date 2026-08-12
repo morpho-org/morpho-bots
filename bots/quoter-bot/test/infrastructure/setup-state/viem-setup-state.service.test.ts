@@ -85,6 +85,9 @@ const createState = (
     v0OfferGroupIds?: readonly Hex[]
     readOnly?: boolean
     persistedGroupIds?: readonly Hex[]
+    readOwnedGroupIds?: () => Promise<readonly Hex[]>
+    bootstrapGroupIds?: readonly Hex[]
+    ladderSellGroupIds?: readonly Hex[]
   } = {}
 ) => {
   const calls: string[] = []
@@ -209,7 +212,10 @@ const createState = (
       marketIds: overrides.marketIds ?? [marketId],
       referenceMarketId,
       v0OfferGroupIds: overrides.v0OfferGroupIds ?? [knownGroup],
-      readOwnedGroupIds: async () => overrides.persistedGroupIds ?? [],
+      readOwnedGroupIds:
+        overrides.readOwnedGroupIds ?? (async () => overrides.persistedGroupIds ?? []),
+      readBootstrapGroupIds: async () => overrides.bootstrapGroupIds ?? [],
+      readLadderSellGroupIds: async () => overrides.ladderSellGroupIds ?? [],
       referenceLookbackBlocks: 1n,
       requestTimeoutMs: overrides.requestTimeoutMs,
       now: overrides.now
@@ -743,6 +749,65 @@ describe('ViemSetupStateService', () => {
       unknownMarketIds: [],
       invertedMarketIds: [marketId]
     })
+  })
+
+  test('allows only the exact durably owned bootstrap-buy and ladder-sell overlap', async () => {
+    const { state } = createState(
+      {
+        '/v0/midnight/users/': {
+          cursor: null,
+          data: [
+            {
+              id: knownGroup,
+              chain_id: 8453,
+              offers: [{ market_id: marketId, maker, buy: true, tick: 20 }]
+            },
+            {
+              id: unknownGroup,
+              chain_id: 8453,
+              offers: [{ market_id: marketId, maker, buy: false, tick: 20 }]
+            }
+          ]
+        }
+      },
+      {
+        persistedGroupIds: [unknownGroup],
+        bootstrapGroupIds: [knownGroup],
+        ladderSellGroupIds: [unknownGroup]
+      }
+    )
+
+    expect(await state.inspectOffers(maker)).toEqual({
+      unknownNamespaces: [],
+      unknownMarketIds: [],
+      invertedMarketIds: []
+    })
+  })
+
+  test('reads ownership after pagination so newly published groups are recognized', async () => {
+    let providerReadCompleted = false
+    const { state } = createState(
+      {},
+      {
+        onRequest: async url => {
+          if (!url.includes('/v0/midnight/users/')) throw new Error('unexpected request')
+          providerReadCompleted = true
+          return {
+            cursor: null,
+            data: [
+              {
+                id: unknownGroup,
+                chain_id: 8453,
+                offers: [{ market_id: marketId, maker, buy: true, tick: 20 }]
+              }
+            ]
+          }
+        },
+        readOwnedGroupIds: async () => (providerReadCompleted ? [unknownGroup] : [])
+      }
+    )
+
+    expect((await state.inspectOffers(maker)).unknownNamespaces).toEqual([])
   })
 
   test('reads active offer groups from the Morpho API origin', async () => {

@@ -38,6 +38,45 @@ const createServices = (events: string[]) => {
 }
 
 describe('serializeQuoterBotWrites', () => {
+  test('serializes bootstrap previews with publication mutations', async () => {
+    const events: string[] = []
+    let releaseReconcile: (() => void) | undefined
+    const services = createServices(events)
+    const desiredOffer = {
+      marketId,
+      assets: 200n,
+      rateBps: 450n,
+      referenceObservationId: 'static:500'
+    }
+    services.bootstrap.reconcile = vi.fn(
+      () =>
+        new Promise<void>(resolve => {
+          events.push('bootstrap:reconcile:start')
+          releaseReconcile = resolve
+        })
+    )
+    services.bootstrap.preview = vi.fn(async () => {
+      events.push('bootstrap:preview')
+      return desiredOffer
+    })
+    const serialized = serializeQuoterBotWrites(services)
+
+    const reconcile = serialized.bootstrap.reconcile({ marketId, reason: 'publish' })
+    const preview = serialized.bootstrap.preview?.({
+      marketId,
+      desiredOffer,
+      minimumRateBps: 200n,
+      maximumRateBps: 800n
+    })
+    await Promise.resolve()
+
+    expect(events).toEqual(['bootstrap:reconcile:start'])
+    releaseReconcile?.()
+    await expect(preview).resolves.toEqual(desiredOffer)
+    await reconcile
+    expect(events).toEqual(['bootstrap:reconcile:start', 'bootstrap:preview'])
+  })
+
   test('serializes bootstrap and ladder mutations through one queue', async () => {
     const events: string[] = []
     let releaseBootstrap: (() => void) | undefined
