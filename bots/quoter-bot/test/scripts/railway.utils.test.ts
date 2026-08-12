@@ -19,12 +19,15 @@ const parseDockerfile = (source: string): DockerInstruction[] => {
   const instructions: DockerInstruction[] = []
   let logicalLine = ''
 
-  for (const physicalLine of source.split(/\r?\n/)) {
+  for (const rawLine of source.split('\n')) {
+    const physicalLine = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine
     const trimmed = physicalLine.trim()
     if (!trimmed || trimmed.startsWith('#')) continue
 
-    logicalLine += `${logicalLine ? ' ' : ''}${trimmed.replace(/\\$/, '').trimEnd()}`
-    if (trimmed.endsWith('\\')) continue
+    const continued = physicalLine.endsWith('\\')
+    const fragment = (continued ? physicalLine.slice(0, -1) : physicalLine).trim()
+    logicalLine += `${logicalLine ? ' ' : ''}${fragment}`
+    if (continued) continue
 
     const match = logicalLine.match(/^(\S+)\s+(.+)$/)
     if (!match) throw new Error(`Invalid Dockerfile instruction: ${logicalLine}`)
@@ -40,15 +43,25 @@ const parseShellStatements = (source: string): string[] => {
   const statements: string[] = []
   let logicalLine = ''
 
-  for (const physicalLine of source.split(/\r?\n/)) {
+  for (const rawLine of source.split('\n')) {
+    const physicalLine = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine
     const trimmed = physicalLine.trim()
-    if (!logicalLine && (!trimmed || (trimmed.startsWith('#') && trimmed !== '#!/bin/sh'))) continue
+    const standaloneComment = trimmed.startsWith('#') && trimmed !== '#!/bin/sh'
+    if (!trimmed || standaloneComment) {
+      if (logicalLine) {
+        statements.push(logicalLine)
+        logicalLine = ''
+      }
+      continue
+    }
     if (!logicalLine && /^\s/.test(physicalLine)) {
       throw new Error(`Indented shell statement: ${physicalLine}`)
     }
 
-    logicalLine += `${logicalLine ? ' ' : ''}${trimmed.replace(/\\$/, '').trimEnd()}`
-    if (trimmed.endsWith('\\')) continue
+    const continued = physicalLine.endsWith('\\')
+    const fragment = (continued ? physicalLine.slice(0, -1) : physicalLine).trim()
+    logicalLine += `${logicalLine ? ' ' : ''}${fragment}`
+    if (continued) continue
 
     statements.push(logicalLine)
     logicalLine = ''
@@ -57,6 +70,201 @@ const parseShellStatements = (source: string): string[] => {
   if (logicalLine) throw new Error(`Unterminated shell statement: ${logicalLine}`)
   return statements
 }
+
+const expectedDockerInstructions: DockerInstruction[] = [
+  { keyword: 'FROM', value: 'node:24.14.1-slim' },
+  { keyword: 'ENV', value: 'COREPACK_ENABLE_DOWNLOAD_PROMPT=0' },
+  { keyword: 'ENV', value: 'HOME=/home/node' },
+  {
+    keyword: 'RUN',
+    value:
+      '/usr/bin/apt-get update && /usr/bin/apt-get install -y --no-install-recommends util-linux && /usr/bin/rm -rf /var/lib/apt/lists/*'
+  },
+  { keyword: 'RUN', value: '/usr/local/bin/corepack enable pnpm' },
+  { keyword: 'RUN', value: '/usr/bin/mkdir -p /repo /state && /usr/bin/chown node:node /repo' },
+  { keyword: 'USER', value: 'node' },
+  { keyword: 'WORKDIR', value: '/repo' },
+  {
+    keyword: 'COPY',
+    value: '--chown=node:node package.json pnpm-workspace.yaml pnpm-lock.yaml ./'
+  },
+  { keyword: 'RUN', value: 'corepack install' },
+  { keyword: 'COPY', value: '--chown=node:node packages ./packages' },
+  { keyword: 'COPY', value: '--chown=node:node bots ./bots' },
+  { keyword: 'RUN', value: 'pnpm install --frozen-lockfile' },
+  { keyword: 'RUN', value: 'pnpm -r --if-present run build' },
+  { keyword: 'USER', value: 'root' },
+  {
+    keyword: 'COPY',
+    value:
+      '--chown=0:0 --chmod=0555 bots/quoter-bot/scripts/railway-entrypoint.sh /usr/local/sbin/railway-entrypoint.sh'
+  },
+  { keyword: 'WORKDIR', value: '/repo/bots/quoter-bot' },
+  {
+    keyword: 'CMD',
+    value: '["/usr/local/sbin/railway-entrypoint.sh", "start", "--verbose"]'
+  }
+]
+
+const expectedEntrypointStatements = [
+  '#!/bin/sh',
+  'set -eu',
+  'STATE_MOUNT_PATH=/state',
+  '/usr/bin/chown -R node:node "$STATE_MOUNT_PATH"',
+  'exec /usr/bin/setpriv --reuid=node --regid=node --clear-groups --bounding-set=-all --no-new-privs /usr/local/bin/node dist/src/index.js "$@"'
+]
+
+const assertExactSequence = <T>(actual: T[], expected: T[], subject: string): void => {
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(`${subject} does not match the security-reviewed instruction sequence`)
+  }
+}
+
+const assertSecureRailwayDockerfile = (source: string): void => {
+  assertExactSequence(parseDockerfile(source), expectedDockerInstructions, 'Dockerfile')
+}
+
+const assertSecureRailwayEntrypoint = (source: string): void => {
+  if (!source.startsWith('#!/bin/sh\n')) {
+    throw new Error('Railway entrypoint shebang must start at byte zero')
+  }
+  assertExactSequence(
+    parseShellStatements(source),
+    expectedEntrypointStatements,
+    'Railway entrypoint'
+  )
+}
+
+const railwayDockerfile = readFileSync(new URL('../../Dockerfile', import.meta.url), 'utf8')
+const railwayEntrypoint = readFileSync(
+  new URL('../../scripts/railway-entrypoint.sh', import.meta.url),
+  'utf8'
+)
+
+describe('Railway security guard hardening', () => {
+  test('accepts the committed secure Dockerfile and entrypoint', () => {
+    expect(() => assertSecureRailwayDockerfile(railwayDockerfile)).not.toThrow()
+    expect(() => assertSecureRailwayEntrypoint(railwayEntrypoint)).not.toThrow()
+  })
+
+  test.each([
+    [
+      'a second stage after USER node',
+      railwayDockerfile.replace('WORKDIR /repo', 'FROM node:24.14.1-slim\nWORKDIR /repo')
+    ],
+    [
+      'a root Node command before USER node',
+      railwayDockerfile.replace('USER node', 'RUN /usr/local/bin/node --version\nUSER node')
+    ],
+    [
+      'an extra USER instruction',
+      railwayDockerfile.replace('RUN corepack install', 'USER daemon\nRUN corepack install')
+    ],
+    [
+      'an extra RUN after returning to root',
+      railwayDockerfile.replace(
+        'USER root',
+        'USER root\nRUN /usr/local/bin/node -e "process.exit(0)"'
+      )
+    ],
+    [
+      'an extra COPY instruction',
+      railwayDockerfile.replace('USER root', 'COPY package.json /tmp/package.json\nUSER root')
+    ]
+  ])('rejects %s', (_description, source) => {
+    expect(() => assertSecureRailwayDockerfile(source)).toThrow()
+  })
+
+  test('rejects a Dockerfile pseudo-continuation with spaces after the backslash', () => {
+    const source = railwayDockerfile.replace(
+      '/usr/bin/apt-get update \\\n',
+      '/usr/bin/apt-get update \\  \n'
+    )
+
+    expect(() => assertSecureRailwayDockerfile(source)).toThrow()
+  })
+
+  test.each([
+    ['a blank byte before the shebang', `\n${railwayEntrypoint}`],
+    ['a comment before the shebang', `# prelude\n${railwayEntrypoint}`],
+    [
+      'an extra command before privilege drop',
+      railwayEntrypoint.replace(
+        '/usr/bin/chown -R node:node "$STATE_MOUNT_PATH"',
+        '/usr/bin/chown -R node:node "$STATE_MOUNT_PATH"\n/usr/bin/id'
+      )
+    ],
+    [
+      'an early Node command',
+      railwayEntrypoint.replace(
+        '/usr/bin/chown -R node:node "$STATE_MOUNT_PATH"',
+        '/usr/local/bin/node --version\n/usr/bin/chown -R node:node "$STATE_MOUNT_PATH"'
+      )
+    ]
+  ])('rejects %s', (_description, source) => {
+    expect(() => assertSecureRailwayEntrypoint(source)).toThrow()
+  })
+
+  test('rejects a shell pseudo-continuation with spaces after the backslash', () => {
+    const source = railwayEntrypoint.replace(
+      'exec /usr/bin/setpriv \\\n',
+      'exec /usr/bin/setpriv \\ \n'
+    )
+
+    expect(() => assertSecureRailwayEntrypoint(source)).toThrow()
+  })
+
+  test('allows standalone comments and blanks inside a valid Docker continuation', () => {
+    const source = railwayDockerfile.replace(
+      '/usr/bin/apt-get update \\\n',
+      '/usr/bin/apt-get update \\\n  # package setup\n\n'
+    )
+
+    expect(() => assertSecureRailwayDockerfile(source)).not.toThrow()
+  })
+
+  test('rejects standalone comments and blanks that terminate a shell continuation', () => {
+    const source = railwayEntrypoint.replace(
+      'exec /usr/bin/setpriv \\\n',
+      'exec /usr/bin/setpriv \\\n  # privilege arguments\n\n'
+    )
+
+    expect(() => assertSecureRailwayEntrypoint(source)).toThrow()
+  })
+
+  test('rejects a different initial image', () => {
+    const source = railwayDockerfile.replace('FROM node:24.14.1-slim', 'FROM node:latest')
+
+    expect(() => assertSecureRailwayDockerfile(source)).toThrow()
+  })
+
+  test('rejects changes to the trusted root prefix', () => {
+    const source = railwayDockerfile.replace(
+      'RUN /usr/local/bin/corepack enable pnpm',
+      'RUN /usr/local/bin/corepack enable pnpm && /usr/local/bin/node --version'
+    )
+
+    expect(() => assertSecureRailwayDockerfile(source)).toThrow()
+  })
+
+  test('rejects a non-absolute entrypoint command', () => {
+    const source = railwayDockerfile.replace(
+      '["/usr/local/sbin/railway-entrypoint.sh", "start", "--verbose"]',
+      '["railway-entrypoint.sh", "start", "--verbose"]'
+    )
+
+    expect(() => assertSecureRailwayDockerfile(source)).toThrow()
+  })
+
+  test('rejects reordered privilege-drop arguments', () => {
+    const source = railwayEntrypoint.replace(
+      '  --reuid=node \\\n  --regid=node \\\n',
+      '  --regid=node \\\n  --reuid=node \\\n'
+    )
+
+    expect(() => assertSecureRailwayEntrypoint(source)).toThrow()
+  })
+})
 
 describe('Railway CLI output parsing', () => {
   test('fails closed for signer modes that require out-of-band Railway provisioning', () => {
