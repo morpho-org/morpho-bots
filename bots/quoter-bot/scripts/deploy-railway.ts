@@ -2,9 +2,9 @@
  * Reproducible Railway provisioning and deployment for the quoter-bot bot.
  *
  * A full run creates the service, configures its package-owned Dockerfile, and uploads runtime
- * variables through stdin. CI sets DEPLOY_ONLY=true to re-ship the already-provisioned service and
- * reassert the root runtime UID required to initialize its volume. Both modes wait for the newly
- * created deployment to reach a terminal state and succeed only on Railway `SUCCESS`.
+ * variables through stdin. CI sets DEPLOY_ONLY=true to re-ship the already-provisioned service using
+ * only project-token deployment permissions. Both modes wait for the newly created deployment to
+ * reach a terminal state and succeed only on Railway `SUCCESS`.
  */
 import { delay, tryCatch } from '@repo/utils'
 import { $ } from 'execa'
@@ -262,11 +262,11 @@ const assertDeploymentSucceeded = (status: string) => {
 
 await assertCli()
 await ensureContext()
-await setRuntimeVariable(['RAILWAY_RUN_UID', '0'])
 
 if (!DEPLOY_ONLY) {
   const { service } = await ensureService()
 
+  await setRuntimeVariable(['RAILWAY_RUN_UID', '0'])
   await setRuntimeVariable(['RAILWAY_DOCKERFILE_PATH', DOCKERFILE_PATH])
   await setRuntimeVariable(['XDG_STATE_HOME', STATE_MOUNT_PATH])
   for (const variable of runtimeVariables()) await setRuntimeVariable(variable)
