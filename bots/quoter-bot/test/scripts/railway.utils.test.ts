@@ -24,13 +24,51 @@ const assertRegularFileSource = (path: URL): void => {
   }
 }
 
+type PhysicalLine = { content: string; terminator: '\n' | '\r\n' | null }
+
+const splitPhysicalLines = (source: string): PhysicalLine[] => {
+  const lines: PhysicalLine[] = []
+  let start = 0
+
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] !== '\n') continue
+
+    const hasCarriageReturn = index > start && source[index - 1] === '\r'
+    lines.push({
+      content: source.slice(start, hasCarriageReturn ? index - 1 : index),
+      terminator: hasCarriageReturn ? '\r\n' : '\n'
+    })
+    start = index + 1
+  }
+
+  if (start < source.length) lines.push({ content: source.slice(start), terminator: null })
+  return lines
+}
+
+const assertPortablePhysicalLine = (line: PhysicalLine): void => {
+  for (const character of line.content) {
+    const codePoint = character.codePointAt(0)!
+    const isControl =
+      codePoint <= 0x08 ||
+      (codePoint >= 0x0b && codePoint <= 0x1f) ||
+      (codePoint >= 0x7f && codePoint <= 0x9f)
+    if (isControl) throw new Error('Physical line contains a control character')
+    if (/\s/u.test(character) && character !== ' ' && character !== '\t') {
+      throw new Error('Physical line contains non-POSIX whitespace')
+    }
+  }
+}
+
+const isAsciiBlank = (value: string): boolean => /^[ \t]*$/.test(value)
+const isAsciiComment = (value: string): boolean => /^[ \t]*#/.test(value)
+
 const parseDockerParserDirectives = (source: string): string[] => {
   const directives: string[] = []
 
-  for (const rawLine of source.split('\n')) {
-    const physicalLine = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine
-    if (!/^#\s*[A-Za-z][A-Za-z0-9-]*\s*=/.test(physicalLine)) break
-    directives.push(physicalLine)
+  for (const line of splitPhysicalLines(source)) {
+    assertPortablePhysicalLine(line)
+    if (!/^#\s*[A-Za-z][A-Za-z0-9-]*\s*=/.test(line.content)) break
+    directives.push(line.content)
   }
 
   return directives
@@ -40,17 +78,19 @@ const parseDockerfile = (source: string): DockerInstruction[] => {
   const instructions: DockerInstruction[] = []
   let logicalLine = ''
 
-  for (const rawLine of source.split('\n')) {
-    const physicalLine = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine
-    const trimmed = physicalLine.trim()
-    if (!trimmed) {
+  for (const line of splitPhysicalLines(source)) {
+    assertPortablePhysicalLine(line)
+    if (isAsciiBlank(line.content)) {
       if (logicalLine) throw new Error('Empty Dockerfile continuation line')
       continue
     }
-    if (trimmed.startsWith('#')) continue
+    if (isAsciiComment(line.content)) continue
+    if (line.terminator === null && line.content.endsWith('\\')) {
+      throw new Error('Dockerfile backslash at EOF is not a continuation')
+    }
 
-    const continued = physicalLine.endsWith('\\')
-    const fragment = continued ? physicalLine.slice(0, -1) : physicalLine
+    const continued = line.terminator !== null && line.content.endsWith('\\')
+    const fragment = continued ? line.content.slice(0, -1) : line.content
     logicalLine += fragment
     if (continued) continue
 
@@ -68,23 +108,25 @@ const parseShellStatements = (source: string): string[] => {
   const statements: string[] = []
   let logicalLine = ''
 
-  for (const rawLine of source.split('\n')) {
-    const physicalLine = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine
-    const trimmed = physicalLine.trim()
-    const standaloneComment = trimmed.startsWith('#') && trimmed !== '#!/bin/sh'
-    if (!trimmed || standaloneComment) {
+  for (const line of splitPhysicalLines(source)) {
+    assertPortablePhysicalLine(line)
+    const standaloneComment = isAsciiComment(line.content) && line.content !== '#!/bin/sh'
+    if (isAsciiBlank(line.content) || standaloneComment) {
       if (logicalLine) {
         statements.push(logicalLine)
         logicalLine = ''
       }
       continue
     }
-    if (!logicalLine && /^\s/.test(physicalLine)) {
-      throw new Error(`Indented shell statement: ${physicalLine}`)
+    if (!logicalLine && /^[ \t]/.test(line.content)) {
+      throw new Error(`Indented shell statement: ${line.content}`)
+    }
+    if (line.terminator === null && line.content.endsWith('\\')) {
+      throw new Error('Shell backslash at EOF is not a continuation')
     }
 
-    const continued = physicalLine.endsWith('\\')
-    const fragment = continued ? physicalLine.slice(0, -1) : physicalLine
+    const continued = line.terminator !== null && line.content.endsWith('\\')
+    const fragment = continued ? line.content.slice(0, -1) : line.content
     logicalLine += fragment
     if (continued) continue
 
@@ -176,6 +218,15 @@ describe('Railway security guard hardening', () => {
     expect(() => assertSecureRailwayEntrypoint(railwayEntrypoint)).not.toThrow()
   })
 
+  test('treats CRLF as a real physical-line terminator without preserving its CR byte', () => {
+    const dockerfile = railwayDockerfile.replaceAll('\n', '\r\n')
+    const entrypoint = railwayEntrypoint.replaceAll('\n', '\r\n')
+
+    expect(parseDockerParserDirectives(dockerfile)).toEqual(['# syntax=docker/dockerfile:1'])
+    expect(parseDockerfile(dockerfile)).toEqual(expectedDockerInstructions)
+    expect(parseShellStatements(entrypoint)).toEqual(expectedEntrypointStatements)
+  })
+
   test.each([
     [
       'a second stage after USER node',
@@ -199,6 +250,13 @@ describe('Railway security guard hardening', () => {
     [
       'an extra COPY instruction',
       railwayDockerfile.replace('USER root', 'COPY package.json /tmp/package.json\nUSER root')
+    ],
+    [
+      'an extra ENTRYPOINT instruction',
+      railwayDockerfile.replace(
+        'CMD ["/usr/local/sbin/railway-entrypoint.sh", "start", "--verbose"]',
+        'ENTRYPOINT ["/usr/bin/env"]\nCMD ["/usr/local/sbin/railway-entrypoint.sh", "start", "--verbose"]'
+      )
     ]
   ])('rejects %s', (_description, source) => {
     expect(() => assertSecureRailwayDockerfile(source)).toThrow()
@@ -222,6 +280,22 @@ describe('Railway security guard hardening', () => {
     )
     expect(source).not.toBe(railwayDockerfile)
 
+    expect(() => assertSecureRailwayDockerfile(source)).toThrow()
+  })
+
+  test.each([
+    ['a bare carriage return at EOF', `${railwayDockerfile.slice(0, -1)}\r`],
+    ['a bare carriage return inside a line', railwayDockerfile.replace('USER node', 'USER\r node')],
+    ['an NBSP-only physical line', railwayDockerfile.replace('USER node', '\u00a0\nUSER node')]
+  ])('rejects Dockerfile raw bytes containing %s', (_description, source) => {
+    expect(source).not.toBe(railwayDockerfile)
+    expect(() => assertSecureRailwayDockerfile(source)).toThrow()
+  })
+
+  test('rejects a Dockerfile backslash at EOF rather than treating it as a continuation', () => {
+    const source = `${railwayDockerfile.trimEnd()}\\`
+
+    expect(source).not.toBe(railwayDockerfile)
     expect(() => assertSecureRailwayDockerfile(source)).toThrow()
   })
 
@@ -326,6 +400,22 @@ describe('Railway security guard hardening', () => {
     const source = railwayEntrypoint.replace(anchor, 'exec /usr/bin/setpriv\\\n--reuid=node')
     expect(source).not.toBe(railwayEntrypoint)
 
+    expect(() => assertSecureRailwayEntrypoint(source)).toThrow()
+  })
+
+  test.each([
+    ['a bare carriage return at EOF', `${railwayEntrypoint.slice(0, -1)}\r`],
+    ['a bare carriage return inside a line', railwayEntrypoint.replace('set -eu', 'set\r -eu')],
+    ['an NBSP-only physical line', railwayEntrypoint.replace('set -eu', 'set -eu\n\u00a0')]
+  ])('rejects entrypoint raw bytes containing %s', (_description, source) => {
+    expect(source).not.toBe(railwayEntrypoint)
+    expect(() => assertSecureRailwayEntrypoint(source)).toThrow()
+  })
+
+  test('rejects an entrypoint backslash at EOF rather than treating it as a continuation', () => {
+    const source = `${railwayEntrypoint.trimEnd()}\\`
+
+    expect(source).not.toBe(railwayEntrypoint)
     expect(() => assertSecureRailwayEntrypoint(source)).toThrow()
   })
 
