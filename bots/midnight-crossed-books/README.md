@@ -38,7 +38,8 @@ The generated files live under each infrastructure adapter's `generated/` direct
 
 - `CHAIN_ID` — required, currently `8453`.
 - `RPC_URL` — required. `RPC_URL_FALLBACK` is optional.
-- `RESOLVER_PRIVATE_KEY` — required `0x`-prefixed 32-byte bot key.
+- `READONLY` — optional; set to `true` (or `1`) to simulate and log profitable matches without submitting transactions.
+- `RESOLVER_PRIVATE_KEY` — required `0x`-prefixed 32-byte bot key unless `READONLY` is enabled.
 - `RESOLVER_ADDRESS` — optional deterministic deployment override.
 - `API_BASE_URL` — Morpho API origin, default `https://api.morpho.org`.
 - `ROUTER_API_BASE_URL` — Router API origin, defaults to `API_BASE_URL` for the public gateway.
@@ -56,6 +57,16 @@ pnpm --filter @repo/contracts run deploy:crossed-books-resolver
 ```
 
 ## Run
+
+```sh
+CHAIN_ID=8453 RPC_URL=https://… READONLY=true \
+pnpm --filter @morpho-org/midnight-crossed-books run start
+```
+
+Readonly mode uses the resolver address as the simulation caller, logs each profitable result as
+`match.computed`, and never creates a signer, transaction queue, or submission.
+
+To execute profitable resolutions instead, provide the signer key:
 
 ```sh
 CHAIN_ID=8453 RPC_URL=https://… RESOLVER_PRIVATE_KEY=0x… \

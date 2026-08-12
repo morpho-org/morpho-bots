@@ -29,6 +29,17 @@ interface BotLogger {
 }
 
 export class CrossedBooksBotService {
+  /**
+   * Creates one resolver workflow.
+   * @param markets - Listed-market discovery port.
+   * @param books - Takeable-book reader.
+   * @param matching - Pure crossed-offer matcher.
+   * @param resolver - Simulation and optional submission port.
+   * @param maxMatches - Maximum matches encoded into one resolution.
+   * @param inflightMarketIds - Current write-mode transaction labels.
+   * @param readOnly - Whether successful simulations are logged instead of submitted.
+   * @param logger - Structured operator logger.
+   */
   constructor(
     private readonly markets: ListedMarketsService,
     private readonly books: OrderBookService,
@@ -36,9 +47,16 @@ export class CrossedBooksBotService {
     private readonly resolver: ResolverService,
     private readonly maxMatches: number,
     private readonly inflightMarketIds: () => ReadonlySet<string>,
+    private readonly readOnly: boolean,
     private readonly logger: BotLogger
   ) {}
 
+  /**
+   * Computes the first profitable crossed resolution for one block.
+   * @param blockNumber - Block label used only when queueing a write-mode transaction.
+   * @returns Submission status and the number of listed markets inspected.
+   * @remarks Always simulates first. Readonly mode logs `match.computed` and performs no submission.
+   */
   async run({ blockNumber }: { blockNumber: bigint }) {
     const markets = await this.markets.listListedActiveMarkets()
     const inflight = this.inflightMarketIds()
@@ -65,12 +83,18 @@ export class CrossedBooksBotService {
         continue
       }
 
-      await this.resolver.submit(simulation.prepared, blockNumber)
-      this.logger.info('match.submitted', {
+      const fields = {
         marketId,
         units: matches.reduce((total, match) => total + match.units, 0n),
         profit: simulation.prepared.profit
-      })
+      }
+      if (this.readOnly) {
+        this.logger.info('match.computed', fields)
+        return { submitted: false, markets: markets.length }
+      }
+
+      await this.resolver.submit(simulation.prepared, blockNumber)
+      this.logger.info('match.submitted', fields)
 
       return { submitted: true, markets: markets.length }
     }

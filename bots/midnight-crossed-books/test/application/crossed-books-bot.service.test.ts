@@ -37,6 +37,7 @@ function setup(
     simulation?: SimulationResult
     booksError?: Error
     maxMatches?: number
+    readOnly?: boolean
   } = {}
 ) {
   const listListedActiveMarkets = vi.fn(async () => overrides.markets ?? [MARKET])
@@ -68,6 +69,7 @@ function setup(
     resolver,
     overrides.maxMatches ?? 10,
     () => overrides.inflight ?? new Set(),
+    overrides.readOnly ?? false,
     logger
   )
 
@@ -78,7 +80,8 @@ function setup(
     getTakeableBook,
     match,
     simulate,
-    submit
+    submit,
+    logger
   }
 }
 
@@ -159,6 +162,28 @@ describe('CrossedBooksBotService', () => {
 
     expect(submit).toHaveBeenCalledWith(prepared, 10n)
     expect(result).toEqual({ submitted: true, markets: 1 })
+  })
+
+  test('logs the computed result without submitting in readonly mode', async () => {
+    const prepared: PreparedResolution = {
+      marketId: MARKET_ID,
+      data: '0x1234',
+      profit: 42n
+    }
+    const { service, submit, logger } = setup({
+      readOnly: true,
+      simulation: { status: 'ok', prepared }
+    })
+
+    const result = await service.run({ blockNumber: 10n })
+
+    expect(submit).not.toHaveBeenCalled()
+    expect(logger.info).toHaveBeenCalledWith('match.computed', {
+      marketId: MARKET_ID,
+      units: 5n,
+      profit: 42n
+    })
+    expect(result).toEqual({ submitted: false, markets: 1 })
   })
 
   test('isolates a book failure and continues to the next market', async () => {

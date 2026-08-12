@@ -20,6 +20,26 @@ describe('ConfigService', () => {
     expect(config.minimumProfit).toBe(1n)
     expect(config.maxMatches).toBe(10)
     expect(config.resolver).toMatch(/^0x[0-9a-fA-F]{40}$/)
+    expect(config.readOnly).toBe(false)
+    expect(config.privateKey).toBe(KEY)
+  })
+
+  test('does not require a resolver private key in readonly mode', () => {
+    const config = ConfigService.from({
+      CHAIN_ID: '8453',
+      RPC_URL: 'http://rpc.example',
+      READONLY: 'true',
+      RESOLVER_PRIVATE_KEY: 'ignored-in-readonly-mode'
+    })
+
+    expect(config.readOnly).toBe(true)
+    expect(config.privateKey).toBeUndefined()
+  })
+
+  test('requires a resolver private key in normal mode', () => {
+    expect(() => ConfigService.from({ CHAIN_ID: '8453', RPC_URL: 'http://rpc.example' })).toThrow(
+      'RESOLVER_PRIVATE_KEY'
+    )
   })
 
   test('normalizes a trailing slash from the API URL', () => {

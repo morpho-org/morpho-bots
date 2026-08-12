@@ -24,14 +24,26 @@ function unsignedDecimal(environment: Environment, name: string, fallback?: stri
 }
 
 export class ConfigService {
+  /**
+   * Loads and validates resolver configuration from environment values.
+   * @param environment - Runtime environment; defaults to `process.env`.
+   * @returns Immutable configuration with signer material omitted in readonly mode.
+   * @throws `Error` when a required write-mode value or another runtime value is invalid.
+   * @remarks This method performs no network access and does not retain `RESOLVER_PRIVATE_KEY` when
+   * readonly mode is enabled.
+   */
   static from(environment: Environment = process.env) {
     const chainId = Number(unsignedDecimal(environment, 'CHAIN_ID'))
     if (chainId !== base.id) {
       throw new Error(`Unsupported CHAIN_ID ${chainId}; supported: ${base.id}`)
     }
 
-    const privateKey = required(environment, 'RESOLVER_PRIVATE_KEY')
-    if (!isHex(privateKey, { strict: true }) || privateKey.length !== PRIVATE_KEY_HEX_LENGTH) {
+    const readOnly = /^(1|true)$/i.test(environment.READONLY?.trim() || '')
+    const privateKey = readOnly ? undefined : required(environment, 'RESOLVER_PRIVATE_KEY')
+    if (
+      privateKey !== undefined &&
+      (!isHex(privateKey, { strict: true }) || privateKey.length !== PRIVATE_KEY_HEX_LENGTH)
+    ) {
       throw new Error('RESOLVER_PRIVATE_KEY must be a 0x-prefixed 32-byte hex string')
     }
 
@@ -74,6 +86,7 @@ export class ConfigService {
         : CrossedBooksResolver.with(MIDNIGHT).address,
       rpcUrl: required(environment, 'RPC_URL'),
       rpcUrlFallback: environment.RPC_URL_FALLBACK?.trim() || undefined,
+      readOnly,
       privateKey,
       apiBaseUrl,
       routerApiBaseUrl,
@@ -93,7 +106,8 @@ export class ConfigService {
       resolver: Address
       rpcUrl: string
       rpcUrlFallback: string | undefined
-      privateKey: Hex
+      readOnly: boolean
+      privateKey: Hex | undefined
       apiBaseUrl: string
       routerApiBaseUrl: string
       scanIntervalMs: number
@@ -125,8 +139,14 @@ export class ConfigService {
     return this.values.rpcUrlFallback
   }
 
+  /** Returns the validated signer key in write mode and `undefined` in readonly mode. */
   get privateKey() {
     return this.values.privateKey
+  }
+
+  /** Returns whether transaction signing and submission are disabled. */
+  get readOnly() {
+    return this.values.readOnly
   }
 
   get apiBaseUrl() {
