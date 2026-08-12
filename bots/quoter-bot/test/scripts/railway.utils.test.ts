@@ -15,7 +15,7 @@ import {
 
 type DockerInstruction = { keyword: string; value: string }
 
-function parseDockerfile(source: string): DockerInstruction[] {
+const parseDockerfile = (source: string): DockerInstruction[] => {
   const instructions: DockerInstruction[] = []
   let logicalLine = ''
 
@@ -36,7 +36,7 @@ function parseDockerfile(source: string): DockerInstruction[] {
   return instructions
 }
 
-function parseShellStatements(source: string): string[] {
+const parseShellStatements = (source: string): string[] => {
   const statements: string[] = []
   let logicalLine = ''
 
@@ -164,13 +164,10 @@ describe('Railway CLI output parsing', () => {
       new URL('../../scripts/railway-entrypoint.sh', import.meta.url),
       'utf8'
     )
-    const deployOnlyBranch = deploy.indexOf('if (DEPLOY_ONLY)')
+    const contextSetup = deploy.indexOf('await ensureContext()')
     const fullProvisioningBranch = deploy.indexOf('if (!DEPLOY_ONLY)')
     const ensureService = deploy.indexOf('await ensureService()', fullProvisioningBranch)
-    const deployOnlyRuntimeUid = deploy.indexOf(
-      "await setRuntimeVariable(['RAILWAY_RUN_UID', '0'])",
-      deployOnlyBranch
-    )
+    const deployOnlySource = deploy.slice(contextSetup, fullProvisioningBranch)
     const fullProvisioningRuntimeUid = deploy.indexOf(
       "await setRuntimeVariable(['RAILWAY_RUN_UID', '0'])",
       fullProvisioningBranch
@@ -187,9 +184,8 @@ describe('Railway CLI output parsing', () => {
       'pnpm -r --if-present run build'
     ]
 
-    expect(deployOnlyBranch).toBeGreaterThan(-1)
-    expect(deployOnlyRuntimeUid).toBeGreaterThan(deployOnlyBranch)
-    expect(deployOnlyRuntimeUid).toBeLessThan(fullProvisioningBranch)
+    expect(contextSetup).toBeGreaterThan(-1)
+    expect(deployOnlySource).not.toContain('setRuntimeVariable(')
     expect(fullProvisioningRuntimeUid).toBeGreaterThan(ensureService)
     expect(fullProvisioningRuntimeUid).toBeLessThan(deploy.indexOf('await startDeployment()'))
     expect(dockerfile).toContain('apt-get install -y --no-install-recommends util-linux')

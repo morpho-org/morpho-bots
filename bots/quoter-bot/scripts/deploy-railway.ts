@@ -263,10 +263,6 @@ const assertDeploymentSucceeded = (status: string) => {
 await assertCli()
 await ensureContext()
 
-if (DEPLOY_ONLY) {
-  await setRuntimeVariable(['RAILWAY_RUN_UID', '0'])
-}
-
 if (!DEPLOY_ONLY) {
   const { service } = await ensureService()
 
