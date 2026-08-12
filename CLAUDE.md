@@ -7,6 +7,9 @@ you think you should do yourself:
 
 - Never git commit or push directly to the `main` branch.
 - Never allow secrets in committed code.
+- Never invoke Bun as a runtime, package manager, task runner, or test runner. Use Node.js, pnpm,
+  and Vitest; only historical decision records and migration notes may reference the former Bun
+  toolchain.
 
 ## Agent Team
 
@@ -267,7 +270,7 @@ cross-cutting, use `bots`, `packages`, or `repo` as appropriate.
 
 Examples:
 
-- `chore(agents): port CLAUDE.md, editor configs, and .mcp.json for bun-first bots repo`
+- `chore(agents): align repository guidance and editor configuration`
 - `feat(tooling): ship @repo/typescript-config`
 - `ci(checks): port setup action, checks.yml, husky pre-commit and commit-msg hooks`
 
