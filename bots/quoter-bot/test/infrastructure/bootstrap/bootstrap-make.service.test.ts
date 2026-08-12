@@ -650,7 +650,7 @@ describe('MidnightBootstrapMakeService', () => {
     expect(attempted).toEqual([groupId])
   })
 
-  test('cancels an explicitly owned fully consumed group during a hard halt', async () => {
+  test('cancels an explicit cleanup candidate omitted from active groups', async () => {
     const attempted: Hex[] = []
     const service = new MidnightBootstrapMakeService({
       listActiveGroups: async () => [],
