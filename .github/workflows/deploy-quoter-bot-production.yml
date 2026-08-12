@@ -1,7 +1,9 @@
 name: Deploy quoter-bot production
 
 # Reusable deploy-only job for quoter-bot's single Railway environment. Production's release
-# selector calls this workflow after a `release-quoter-bot` label lands on main.
+# selector calls this workflow after a `release-quoter-bot` label lands on main. Deploy-only uses
+# environment-scoped project-token deployment permissions, performs no variable or volume mutation,
+# and relies on a pre-provisioned service configuration.
 
 on:
   workflow_call:

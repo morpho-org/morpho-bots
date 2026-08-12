@@ -13,6 +13,51 @@ import {
   synchronizedOptionalRailwayVariables
 } from '../../scripts/railway.utils'
 
+type DockerInstruction = { keyword: string; value: string }
+
+const parseDockerfile = (source: string): DockerInstruction[] => {
+  const instructions: DockerInstruction[] = []
+  let logicalLine = ''
+
+  for (const physicalLine of source.split(/\r?\n/)) {
+    const trimmed = physicalLine.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+
+    logicalLine += `${logicalLine ? ' ' : ''}${trimmed.replace(/\\$/, '').trimEnd()}`
+    if (trimmed.endsWith('\\')) continue
+
+    const match = logicalLine.match(/^(\S+)\s+(.+)$/)
+    if (!match) throw new Error(`Invalid Dockerfile instruction: ${logicalLine}`)
+    instructions.push({ keyword: match[1]!.toUpperCase(), value: match[2]!.trim() })
+    logicalLine = ''
+  }
+
+  if (logicalLine) throw new Error(`Unterminated Dockerfile instruction: ${logicalLine}`)
+  return instructions
+}
+
+const parseShellStatements = (source: string): string[] => {
+  const statements: string[] = []
+  let logicalLine = ''
+
+  for (const physicalLine of source.split(/\r?\n/)) {
+    const trimmed = physicalLine.trim()
+    if (!logicalLine && (!trimmed || (trimmed.startsWith('#') && trimmed !== '#!/bin/sh'))) continue
+    if (!logicalLine && /^\s/.test(physicalLine)) {
+      throw new Error(`Indented shell statement: ${physicalLine}`)
+    }
+
+    logicalLine += `${logicalLine ? ' ' : ''}${trimmed.replace(/\\$/, '').trimEnd()}`
+    if (trimmed.endsWith('\\')) continue
+
+    statements.push(logicalLine)
+    logicalLine = ''
+  }
+
+  if (logicalLine) throw new Error(`Unterminated shell statement: ${logicalLine}`)
+  return statements
+}
+
 describe('Railway CLI output parsing', () => {
   test('fails closed for signer modes that require out-of-band Railway provisioning', () => {
     expect(() => assertFullRailwaySignerProvisioning('private-key')).not.toThrow()
@@ -47,16 +92,23 @@ describe('Railway CLI output parsing', () => {
     expect(parseRailwayServices('not-json')).toEqual([])
   })
 
-  test('parses only complete attached Railway volumes', () => {
+  test('parses complete attached and detached Railway volumes', () => {
     const raw = JSON.stringify({
       volumes: [
         {
           id: 'volume-id',
           isPendingDeletion: false,
           mountPath: '/state',
+          name: 'quoter-bot-volume',
           serviceName: 'quoter-bot'
         },
-        { id: 'unattached', isPendingDeletion: false, mountPath: '/other', serviceName: null },
+        {
+          id: 'unattached',
+          isPendingDeletion: false,
+          mountPath: '/legacy',
+          name: 'market-making-volume',
+          serviceName: null
+        },
         { id: 'incomplete', mountPath: '/other', serviceName: 'quoter-bot' }
       ]
     })
@@ -66,7 +118,15 @@ describe('Railway CLI output parsing', () => {
         id: 'volume-id',
         isPendingDeletion: false,
         mountPath: '/state',
+        name: 'quoter-bot-volume',
         serviceName: 'quoter-bot'
+      },
+      {
+        id: 'unattached',
+        isPendingDeletion: false,
+        mountPath: '/legacy',
+        name: 'market-making-volume',
+        serviceName: undefined
       }
     ])
     expect(parseRailwayVolumes('not-json')).toEqual([])
@@ -112,24 +172,103 @@ describe('Railway CLI output parsing', () => {
     ).toBeLessThan(deploy.indexOf('railway add --service'))
   })
 
-  test('drops root privileges after preparing the Railway state volume', () => {
+  test('keeps the root entrypoint immutable and strictly limits privileged startup', () => {
+    const deploy = readFileSync(new URL('../../scripts/deploy-railway.ts', import.meta.url), 'utf8')
     const dockerfile = readFileSync(new URL('../../Dockerfile', import.meta.url), 'utf8')
     const entrypoint = readFileSync(
-      new URL('../../scripts/railway-entrypoint.mjs', import.meta.url),
+      new URL('../../scripts/railway-entrypoint.sh', import.meta.url),
       'utf8'
     )
+    const contextSetup = deploy.indexOf('await ensureContext()')
+    const fullProvisioningBranch = deploy.indexOf('if (!DEPLOY_ONLY)')
+    const ensureService = deploy.indexOf('await ensureService()', fullProvisioningBranch)
+    const deployOnlySource = deploy.slice(contextSetup, fullProvisioningBranch)
+    const fullProvisioningRuntimeUid = deploy.indexOf(
+      "await setRuntimeVariable(['RAILWAY_RUN_UID', '0'])",
+      fullProvisioningBranch
+    )
+    const instructions = parseDockerfile(dockerfile)
+    const users = instructions
+      .map((instruction, index) => ({ ...instruction, index }))
+      .filter(({ keyword }) => keyword === 'USER')
+    const userNode = users[0]!.index
+    const userRoot = users[1]!.index
+    const requiredNodeRuns = [
+      'corepack install',
+      'pnpm install --frozen-lockfile',
+      'pnpm -r --if-present run build'
+    ]
 
-    expect(dockerfile).toContain(
-      'CMD ["node", "scripts/railway-entrypoint.mjs", "start", "--verbose"]'
+    expect(contextSetup).toBeGreaterThan(-1)
+    expect(deployOnlySource).not.toContain('setRuntimeVariable(')
+    expect(fullProvisioningRuntimeUid).toBeGreaterThan(ensureService)
+    expect(fullProvisioningRuntimeUid).toBeLessThan(deploy.indexOf('await startDeployment()'))
+    expect(dockerfile).toContain('apt-get install -y --no-install-recommends util-linux')
+    expect(dockerfile).toContain('ENV HOME=/home/node')
+    expect(users.map(({ value }) => value)).toEqual(['node', 'root'])
+    for (const command of requiredNodeRuns) {
+      const runIndex = instructions.findIndex(
+        ({ keyword, value }) => keyword === 'RUN' && value === command
+      )
+      expect(runIndex).toBeGreaterThan(userNode)
+      expect(runIndex).toBeLessThan(userRoot)
+    }
+    expect(instructions.slice(userRoot + 1)).toEqual([
+      {
+        keyword: 'COPY',
+        value:
+          '--chown=0:0 --chmod=0555 bots/quoter-bot/scripts/railway-entrypoint.sh /usr/local/sbin/railway-entrypoint.sh'
+      },
+      { keyword: 'WORKDIR', value: '/repo/bots/quoter-bot' },
+      {
+        keyword: 'CMD',
+        value: '["/usr/local/sbin/railway-entrypoint.sh", "start", "--verbose"]'
+      }
+    ])
+    expect(entrypoint.startsWith('#!/bin/sh\n')).toBe(true)
+    expect(parseShellStatements(entrypoint)).toEqual([
+      '#!/bin/sh',
+      'set -eu',
+      'STATE_MOUNT_PATH=/state',
+      '/usr/bin/chown -R node:node "$STATE_MOUNT_PATH"',
+      'exec /usr/bin/setpriv --reuid=node --regid=node --clear-groups --bounding-set=-all --no-new-privs /usr/local/bin/node dist/src/index.js "$@"'
+    ])
+  })
+
+  test('migrates detached legacy state only during authorized provisioning', () => {
+    const deploy = readFileSync(new URL('../../scripts/deploy-railway.ts', import.meta.url), 'utf8')
+    const fullProvisioningBranch = deploy.indexOf('if (!DEPLOY_ONLY)')
+    const ensureService = deploy.indexOf('await ensureService()', fullProvisioningBranch)
+    const serviceLink = deploy.indexOf('await linkServiceContext(service.id)')
+    const runtimeUid = deploy.indexOf("await setRuntimeVariable(['RAILWAY_RUN_UID', '0'])")
+    const dockerfilePath = deploy.indexOf(
+      "await setRuntimeVariable(['RAILWAY_DOCKERFILE_PATH', DOCKERFILE_PATH])"
     )
-    expect(entrypoint.indexOf("spawnSync('chown'")).toBeGreaterThan(-1)
-    expect(entrypoint.indexOf("spawnSync('chown'")).toBeLessThan(
-      entrypoint.indexOf('process.setgid')
+    const stateHome = deploy.indexOf(
+      "await setRuntimeVariable(['XDG_STATE_HOME', STATE_MOUNT_PATH])"
     )
-    expect(entrypoint.indexOf('process.setgid')).toBeLessThan(entrypoint.indexOf('process.setuid'))
-    expect(entrypoint.indexOf('process.setuid')).toBeLessThan(
-      entrypoint.indexOf("import('../dist/src/index.js')")
+    const stateVolume = deploy.indexOf('await ensureStateVolume()')
+    const deploymentSnapshot = deploy.indexOf(
+      'const previousDeployment = parseLatestRailwayDeployment'
     )
+
+    expect(deploy).toContain('if (process.env.RAILWAY_TOKEN) return')
+    expect(ensureService).toBeGreaterThan(fullProvisioningBranch)
+    expect(serviceLink).toBeGreaterThan(ensureService)
+    expect(runtimeUid).toBeGreaterThan(serviceLink)
+    expect(dockerfilePath).toBeGreaterThan(runtimeUid)
+    expect(stateHome).toBeGreaterThan(dockerfilePath)
+    expect(stateVolume).toBeGreaterThan(stateHome)
+    expect(stateVolume).toBeLessThan(deploymentSnapshot)
+    expect(deploy).toContain("const LEGACY_STATE_VOLUME_NAME = 'market-making-volume'")
+    expect(deploy).toContain("const LEGACY_STATE_VOLUME_MOUNT_PATH = '/state/morpho-quoter-bot'")
+    expect(deploy).toContain('railway volume list --json')
+    expect(deploy).not.toContain('railway volume list --service')
+    expect(deploy).toContain(
+      'railway volume update --volume ${volume.id} --mount-path ${LEGACY_STATE_VOLUME_MOUNT_PATH} --json'
+    )
+    expect(deploy).toContain('railway volume attach --volume ${volume.id} --yes --json')
+    expect(deploy).toContain('railway volume add --mount-path ${STATE_MOUNT_PATH} --json')
   })
 
   test('synchronizes every optional variable with explicit safe defaults', () => {
