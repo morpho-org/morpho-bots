@@ -50,13 +50,13 @@ const parseDockerfile = (source: string): DockerInstruction[] => {
     if (trimmed.startsWith('#')) continue
 
     const continued = physicalLine.endsWith('\\')
-    const fragment = (continued ? physicalLine.slice(0, -1) : physicalLine).trim()
-    logicalLine += `${logicalLine ? ' ' : ''}${fragment}`
+    const fragment = continued ? physicalLine.slice(0, -1) : physicalLine
+    logicalLine += fragment
     if (continued) continue
 
-    const match = logicalLine.match(/^(\S+)\s+(.+)$/)
+    const match = logicalLine.match(/^(\S+) (.+)$/)
     if (!match) throw new Error(`Invalid Dockerfile instruction: ${logicalLine}`)
-    instructions.push({ keyword: match[1]!.toUpperCase(), value: match[2]!.trim() })
+    instructions.push({ keyword: match[1]!.toUpperCase(), value: match[2]! })
     logicalLine = ''
   }
 
@@ -84,8 +84,8 @@ const parseShellStatements = (source: string): string[] => {
     }
 
     const continued = physicalLine.endsWith('\\')
-    const fragment = (continued ? physicalLine.slice(0, -1) : physicalLine).trim()
-    logicalLine += `${logicalLine ? ' ' : ''}${fragment}`
+    const fragment = continued ? physicalLine.slice(0, -1) : physicalLine
+    logicalLine += fragment
     if (continued) continue
 
     statements.push(logicalLine)
@@ -103,7 +103,7 @@ const expectedDockerInstructions: DockerInstruction[] = [
   {
     keyword: 'RUN',
     value:
-      '/usr/bin/apt-get update && /usr/bin/apt-get install -y --no-install-recommends util-linux && /usr/bin/rm -rf /var/lib/apt/lists/*'
+      '/usr/bin/apt-get update   && /usr/bin/apt-get install -y --no-install-recommends util-linux   && /usr/bin/rm -rf /var/lib/apt/lists/*'
   },
   { keyword: 'RUN', value: '/usr/local/bin/corepack enable pnpm' },
   { keyword: 'RUN', value: '/usr/bin/mkdir -p /repo /state && /usr/bin/chown node:node /repo' },
@@ -136,7 +136,7 @@ const expectedEntrypointStatements = [
   'set -eu',
   'STATE_MOUNT_PATH=/state',
   '/usr/bin/chown -R node:node "$STATE_MOUNT_PATH"',
-  'exec /usr/bin/setpriv --reuid=node --regid=node --clear-groups --bounding-set=-all --no-new-privs /usr/local/bin/node dist/src/index.js "$@"'
+  'exec /usr/bin/setpriv   --reuid=node   --regid=node   --clear-groups   --bounding-set=-all   --no-new-privs   /usr/local/bin/node dist/src/index.js "$@"'
 ]
 
 const assertExactSequence = <T>(actual: T[], expected: T[], subject: string): void => {
@@ -213,6 +213,18 @@ describe('Railway security guard hardening', () => {
     expect(() => assertSecureRailwayDockerfile(source)).toThrow()
   })
 
+  test('rejects a Docker continuation that concatenates tokens without physical whitespace', () => {
+    const anchor = '/usr/bin/apt-get update \\\n  && /usr/bin/apt-get install'
+    expect(railwayDockerfile).toContain(anchor)
+    const source = railwayDockerfile.replace(
+      anchor,
+      '/usr/bin/apt-get update\\\n&& /usr/bin/apt-get install'
+    )
+    expect(source).not.toBe(railwayDockerfile)
+
+    expect(() => assertSecureRailwayDockerfile(source)).toThrow()
+  })
+
   test.each([
     [
       'an alternate escape parser directive',
@@ -268,11 +280,51 @@ describe('Railway security guard hardening', () => {
     expect(() => assertSecureRailwayEntrypoint(source)).toThrow()
   })
 
+  test.each([
+    ['a byte-order mark', `\uFEFF${railwayEntrypoint}`],
+    ['leading space', ` ${railwayEntrypoint}`]
+  ])('rejects %s before the shebang', (_description, source) => {
+    expect(source).not.toBe(railwayEntrypoint)
+    expect(() => assertSecureRailwayEntrypoint(source)).toThrow()
+  })
+
+  test.each([
+    ['COPY ownership', '--chown=0:0', '--chown=node:node'],
+    ['COPY mode', '--chmod=0555', '--chmod=0755'],
+    ['final WORKDIR', 'WORKDIR /repo/bots/quoter-bot', 'WORKDIR /repo']
+  ])('rejects altered %s', (_description, anchor, replacement) => {
+    expect(railwayDockerfile).toContain(anchor)
+    const source = railwayDockerfile.replace(anchor, replacement)
+    expect(source).not.toBe(railwayDockerfile)
+
+    expect(() => assertSecureRailwayDockerfile(source)).toThrow()
+  })
+
+  test.each([
+    ['removed setpriv flag', '  --bounding-set=-all \\\n', ''],
+    ['altered setpriv flag', '--no-new-privs', '--no-new-privs=no']
+  ])('rejects a %s', (_description, anchor, replacement) => {
+    expect(railwayEntrypoint).toContain(anchor)
+    const source = railwayEntrypoint.replace(anchor, replacement)
+    expect(source).not.toBe(railwayEntrypoint)
+
+    expect(() => assertSecureRailwayEntrypoint(source)).toThrow()
+  })
+
   test('rejects a shell pseudo-continuation with spaces after the backslash', () => {
     const source = railwayEntrypoint.replace(
       'exec /usr/bin/setpriv \\\n',
       'exec /usr/bin/setpriv \\ \n'
     )
+
+    expect(() => assertSecureRailwayEntrypoint(source)).toThrow()
+  })
+
+  test('rejects a shell continuation that concatenates tokens without physical whitespace', () => {
+    const anchor = 'exec /usr/bin/setpriv \\\n  --reuid=node'
+    expect(railwayEntrypoint).toContain(anchor)
+    const source = railwayEntrypoint.replace(anchor, 'exec /usr/bin/setpriv\\\n--reuid=node')
+    expect(source).not.toBe(railwayEntrypoint)
 
     expect(() => assertSecureRailwayEntrypoint(source)).toThrow()
   })
@@ -525,7 +577,7 @@ describe('Railway CLI output parsing', () => {
       'set -eu',
       'STATE_MOUNT_PATH=/state',
       '/usr/bin/chown -R node:node "$STATE_MOUNT_PATH"',
-      'exec /usr/bin/setpriv --reuid=node --regid=node --clear-groups --bounding-set=-all --no-new-privs /usr/local/bin/node dist/src/index.js "$@"'
+      'exec /usr/bin/setpriv   --reuid=node   --regid=node   --clear-groups   --bounding-set=-all   --no-new-privs   /usr/local/bin/node dist/src/index.js "$@"'
     ])
   })
 
