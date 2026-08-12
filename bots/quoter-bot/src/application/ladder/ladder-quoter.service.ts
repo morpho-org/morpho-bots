@@ -53,6 +53,14 @@ export interface LadderReferenceRateService {
 /** Consumer-owned blocking make boundary for ladder reconciliation and safety invalidation. */
 export interface LadderMakeService {
   /**
+   * Invalidates durable strategy groups whose markets are no longer configured.
+   * @returns Indexed canceled group IDs that readiness must ignore until indexer tombstones disappear.
+   * @throws When ownership cannot be read or complete cancellation cannot be confirmed.
+   * @remarks Implementations must be idempotent; composition may invoke this before readiness and
+   * again when a cycle starts. Read-only implementations may omit the operation.
+   */
+  cleanupRemovedMarkets?(): Promise<readonly Hex[] | void>
+  /**
    * Reads the currently active strategy-owned quote set from live book truth.
    * @param marketId - Canonical market identifier whose active roots must be reconstructed.
    * @returns Exact active quote set, or `undefined` when no strategy roots remain live.
@@ -209,6 +217,9 @@ export class LadderQuoterService {
         'requires at least one configured market for monitoring'
       )
     }
+    const runRemovedMarketCleanup = async () => this.make.cleanupRemovedMarkets?.()
+    if (parameters.runOperation) await parameters.runOperation(runRemovedMarketCleanup)
+    else await runRemovedMarketCleanup()
 
     const intervalMs = parameters.intervalMs ?? this.monitorIntervalMs()
     if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) {
@@ -320,6 +331,7 @@ export class LadderQuoterService {
     if (this.configs.length === 0) {
       throw new LadderConfigurationError('ladder', 'requires at least one configured market')
     }
+    await this.make.cleanupRemovedMarkets?.()
     for (const config of this.configs) {
       try {
         validateLadderConfig(config)
@@ -342,26 +354,6 @@ export class LadderQuoterService {
 
     const results: LadderRunResult[] = []
     for (const config of this.configs) {
-      let market: LadderMarketState
-      try {
-        market = await this.positions.readMarket(config.marketId)
-      } catch (error) {
-        const { result, invalidation } = await this.failedMarketRead(config, error, parameters)
-        const submittedTransactions =
-          invalidation === undefined || invalidation === 'logged'
-            ? undefined
-            : invalidation.submittedTransactions
-        results.push(
-          await this.completeResult(config, result, parameters, {
-            config,
-            currentState: { status: 'failed', errorName: operatorErrorName(error) },
-            ...(submittedTransactions ? { submittedTransactions } : {})
-          })
-        )
-        if (result.status === 'halted') return results
-        continue
-      }
-
       let active: LadderQuoteSet | undefined
       try {
         active = await this.make.readActive(config.marketId)
@@ -380,6 +372,26 @@ export class LadderQuoterService {
           })
         )
         return results
+      }
+
+      let market: LadderMarketState
+      try {
+        market = await this.positions.readMarket(config.marketId)
+      } catch (error) {
+        const { result, invalidation } = await this.failedMarketRead(config, error, parameters)
+        const submittedTransactions =
+          invalidation === undefined || invalidation === 'logged'
+            ? undefined
+            : invalidation.submittedTransactions
+        results.push(
+          await this.completeResult(config, result, parameters, {
+            config,
+            currentState: { status: 'failed', errorName: operatorErrorName(error) },
+            ...(submittedTransactions ? { submittedTransactions } : {})
+          })
+        )
+        if (result.status === 'halted') return results
+        continue
       }
 
       const currentState: LadderVerboseState = {

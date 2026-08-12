@@ -85,6 +85,7 @@ const createState = (
     v0OfferGroupIds?: readonly Hex[]
     readOnly?: boolean
     persistedGroupIds?: readonly Hex[]
+    ignoredGroupIds?: readonly Hex[]
     readOwnedGroupIds?: () => Promise<readonly Hex[]>
     bootstrapGroupIds?: readonly Hex[]
     ladderSellGroupIds?: readonly Hex[]
@@ -212,6 +213,7 @@ const createState = (
       marketIds: overrides.marketIds ?? [marketId],
       referenceMarketId,
       v0OfferGroupIds: overrides.v0OfferGroupIds ?? [knownGroup],
+      ignoredOfferGroupIds: overrides.ignoredGroupIds,
       readOwnedGroupIds:
         overrides.readOwnedGroupIds ?? (async () => overrides.persistedGroupIds ?? []),
       readBootstrapGroupIds: async () => overrides.bootstrapGroupIds ?? [],
@@ -873,6 +875,30 @@ describe('ViemSetupStateService', () => {
     expect(await state.inspectOffers(maker)).toEqual({
       unknownNamespaces: [],
       unknownMarketIds: [removedMarketId],
+      invertedMarketIds: []
+    })
+  })
+
+  test('ignores a canceled removed-market group while the indexer still returns its tombstone', async () => {
+    const { state } = createState(
+      {
+        '/v0/midnight/users/': {
+          cursor: null,
+          data: [
+            {
+              id: knownGroup,
+              chain_id: 8453,
+              offers: [{ market_id: removedMarketId, maker, buy: true, tick: 20 }]
+            }
+          ]
+        }
+      },
+      { ignoredGroupIds: [knownGroup] }
+    )
+
+    expect(await state.inspectOffers(maker)).toEqual({
+      unknownNamespaces: [],
+      unknownMarketIds: [],
       invertedMarketIds: []
     })
   })

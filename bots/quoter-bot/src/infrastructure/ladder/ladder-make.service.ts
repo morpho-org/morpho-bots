@@ -29,8 +29,8 @@ export interface LadderOfferTransport {
   readGroupConsumed(groupId: Hex): Promise<bigint>
   /** Lists active owned group IDs, optionally for one market. @param marketId - Optional market filter. @returns Distinct group IDs. */
   listActiveGroupIds(marketId?: Hex): Promise<readonly Hex[]>
-  /** Lists the maker's complete live offer book. @returns Every offer needed for spread safety. */
-  listBookOffers(): Promise<readonly LadderBookOffer[]>
+  /** Lists the maker's live offers for one market. @param marketId - Market being reconciled. @returns Every offer needed for spread safety. */
+  listBookOffers(marketId: Hex): Promise<readonly LadderBookOffer[]>
   /** Prepares a policy-checked desired tree without broadcasting it. @param quote - Exact desired quote set. @returns Publication metadata and one-shot ratifier/publisher. */
   preparePublication(quote: LadderQuoteSet): Promise<{
     groupIds: readonly Hex[]
@@ -103,7 +103,7 @@ export class MidnightLadderMakeService implements LadderMakeService {
         assertLadderProspectiveSpread({
           marketId: parameters.marketId,
           replacedGroupIds: spreadReplacedGroupIds,
-          book: await this.transport.listBookOffers(),
+          book: await this.transport.listBookOffers(parameters.marketId),
           prospective: publication.prospective
         })
         await this.transport.reservePublication({

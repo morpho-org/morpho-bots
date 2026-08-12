@@ -75,11 +75,14 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
       return { rateBps: rate, observationId }
     }
   }
+  const cleanupRemovedMarkets = vi.fn(async () => {})
   const cleanup = vi.fn(async () => {
     liveDesired.clear()
   })
   const make: LadderMakeService = {
+    cleanupRemovedMarkets,
     async readActive(id) {
+      reads.push(`active:${id}`)
       return liveDesired.get(id)
     },
     async reconcile(parameters) {
@@ -106,6 +109,7 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
     reconciliations,
     liveDesired,
     halts,
+    cleanupRemovedMarkets,
     cleanup,
     make,
     setRate: (value: bigint) => (rate = value),
@@ -119,6 +123,48 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
 }
 
 describe('LadderQuoterService', () => {
+  test('rejects an empty strategy before cleaning removed markets', async () => {
+    const subject = harness([])
+
+    await expect(subject.service.runOnce()).rejects.toMatchObject({
+      name: 'LadderConfigurationError',
+      field: 'ladder'
+    })
+
+    expect(subject.cleanupRemovedMarkets).not.toHaveBeenCalled()
+  })
+
+  test('reads active ownership before position capacity', async () => {
+    const subject = harness()
+
+    await subject.service.runOnce()
+
+    expect(subject.reads.slice(0, 2)).toEqual([`active:${marketId}`, `market:${marketId}`])
+  })
+
+  test('runs removed-market cleanup inside the monitor operation queue', async () => {
+    const subject = harness()
+    const controller = new AbortController()
+    let insideQueue = false
+    subject.make.cleanupRemovedMarkets = vi.fn(async () => {
+      expect(insideQueue).toBe(true)
+    })
+
+    await subject.service.runContinuously({
+      signal: controller.signal,
+      intervalMs: 1,
+      runOperation: async operation => {
+        insideQueue = true
+        try {
+          return await operation()
+        } finally {
+          insideQueue = false
+        }
+      },
+      onCycle: () => controller.abort()
+    })
+  })
+
   test('monitors sequential cycles and cleans owned groups after shutdown', async () => {
     const subject = harness([{ ...config(), loopIntervalSeconds: 1 }])
     const controller = new AbortController()
@@ -147,7 +193,7 @@ describe('LadderQuoterService', () => {
       cleanup: { status: 'applied' }
     })
     expect(cycles).toHaveLength(2)
-    expect(operations).toEqual(['start', 'end', 'start', 'end', 'start', 'end'])
+    expect(operations).toEqual(['start', 'end', 'start', 'end', 'start', 'end', 'start', 'end'])
     expect(subject.cleanup).toHaveBeenCalledTimes(1)
     expect(subject.liveDesired.size).toBe(0)
   })
