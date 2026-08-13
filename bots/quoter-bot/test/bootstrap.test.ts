@@ -355,6 +355,59 @@ describe('createApplication', () => {
     expect(events).toEqual(['cleanup', 'readiness', 'bootstrap'])
   })
 
+  test('does not run a bootstrap cycle when shutdown arrives during bootstrap adapter composition', async () => {
+    const controller = new AbortController()
+    const reconcile = vi.fn(async () => {})
+    const application = createApplication(
+      {
+        ...environment,
+        BOOTSTRAP_MARKETS: JSON.stringify([bootstrapConfiguration]),
+        LADDER_MARKETS: JSON.stringify([ladderConfiguration])
+      },
+      {
+        createState: readyState,
+        createLadderAdapters: () => ({
+          positions: { readMarket: async () => ({}) },
+          rates: { readRate: async () => 500n },
+          make: {
+            cleanupRemovedMarkets: async () => [],
+            readActive: async () => undefined,
+            reconcile: async () => {},
+            hardHalt: async () => {},
+            cleanup: async () => {}
+          }
+        }),
+        createBootstrapAdapters: () => {
+          controller.abort()
+          return {
+            positions: {
+              readPosition: async () => ({
+                credit: 0n,
+                debt: 0n,
+                cashBalance: 0n,
+                marketExposure: 0n,
+                totalExposure: 0n
+              })
+            },
+            rates: {
+              readRate: async () => ({
+                mode: 'static',
+                rateBps: 500n,
+                observationId: 'static:500'
+              })
+            },
+            make: { reconcile, hardHalt: async () => {}, cleanup: async () => {} }
+          }
+        }
+      }
+    )
+
+    await expect(
+      application.run(['bootstrap'], { signal: controller.signal })
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    expect(reconcile).not.toHaveBeenCalled()
+  })
+
   test('does not clean ladder publications when no bootstrap market is configured', async () => {
     const cleanupRemovedMarkets = vi.fn(async () => [marketId])
     const application = createApplication(
