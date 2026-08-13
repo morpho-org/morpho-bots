@@ -151,15 +151,23 @@ Because a signed transaction commits to an account nonce, transaction-signing in
 **caller-supplied fee fields** as liveness parameters, but nonce ordering is policy-relevant. In
 routine operation the middleware reads the maker's current pending nonce independently and signs
 only that nonce; it never signs a stockpile of future-nonce transactions. The bot's serialized
-make/pending queue remains the single routine writer. A break-glass revocation deliberately takes
-over the account's transaction stream during an incident — concurrent same-nonce signatures
-resolve on-chain as fee-bump replacements, and the safety revocation is the one that must win.
-That priority is enforced, not assumed: routine transaction signing has lower maximum-fee and
-priority-fee ceilings, while break-glass revokes reserve replacement ceilings above every routine
-ceiling by at least the policy's 12.5% replacement bump plus one wei for both EIP-1559 fee fields.
-If an operator cannot provision that headroom, break-glass must first take an ordered nonce
-handoff; the middleware must never sign a routine transaction whose fee bid can strand an
-otherwise valid emergency replacement.
+make/pending queue remains the single routine writer, and the middleware records every returned
+routine transaction's nonce, hash, intent kind, and fee fields before releasing it.
+
+A break-glass revocation deliberately takes over the account's transaction stream during an
+incident. It does **not** sign the node's `pending` nonce, which is the next unused nonce. It first
+selects the lowest occupied nonce from the middleware's recorded, still-pending routine
+transactions and signs the cleanup transaction at that **same nonce**, thereby replacing the
+unsafe publication or ratification rather than queueing behind it. The replacement fee bid is
+computed from that exact recorded transaction and exceeds both of its EIP-1559 fee fields by at
+least the policy's 12.5% replacement bump plus one wei, subject to the protected break-glass
+ceilings. The runbook repeats this replacement-or-confirmation step in nonce order before signing
+later cleanup transactions. If the middleware cannot reconcile its record with the node's pending
+transaction set, the occupied transaction was not recorded, or the protected ceilings cannot
+replace it, break-glass must use an ordered drain/handoff and must not claim that a next-unused-nonce
+revocation can preempt the pending transaction. Routine transaction ceilings remain below the
+protected replacement ceilings so a middleware-produced routine bid cannot strand an otherwise
+valid emergency replacement.
 
 Per-transaction fee/gas ceilings alone cannot stop a leaked invoker from bleeding the maker's
 native balance one valid cancellation at a time. Transaction-signing intents therefore also draw
@@ -222,12 +230,18 @@ The set is approved only when **three properties** all hold:
    are open questions; the property itself is a decided policy requirement.
 
 Beneath these three headline properties, **field-level validation** on every offer: market
-allowlist; per-market and total exposure caps, enforced against the maker's **current filled positions**
-plus **aggregate signed exposure** — the proposed set, the maker's already-live offers from the
-middleware's own reads, and every still-outstanding signed-but-unpublished reservation (see
-Statefulness), never per-intent amounts alone. Position and offer state come from the same pinned,
-independent snapshot, and cap headroom is the configured budget minus filled position exposure,
-live offers, and reservations; a fill therefore consumes rather than restores signing room. Expiry
+allowlist; per-market and total lend-exposure caps for **exposure-increasing buy offers**, enforced
+against the maker's current filled lend position plus aggregate signed buy exposure — the proposed
+buys, the maker's already-live buys from the middleware's own reads, and every still-outstanding
+signed-but-unpublished buy reservation (see Statefulness), never per-intent amounts alone. Position
+and offer state come from the same pinned, independent snapshot, and buy headroom is the configured
+budget minus filled lend exposure, live buys, and buy reservations; a buy fill consumes rather than
+restores signing room. Lower-rate `reduceOnly` sell offers do **not** consume those lend-exposure
+budgets: they can only unwind existing maker credit. They instead draw from a separate per-market
+unwind-inventory reservation capped by independently read accrued credit minus live and
+signed-but-unpublished reduce-only sell capacity, deduplicated by the same group/cap consumption
+domain used by the protocol. This permits safe unwind quotes when lend headroom is zero without
+allowing aggregate sell capacity to exceed the credit that can be reduced. Expiry
 ≤ market maturity and inside a **freshness ceiling** — a policy parameter
 capping offer lifetime from signing time, so a stockpiled signature dies quickly; offer start
 not meaningfully before the first validation/reservation time (with the Setter reuse rule below);
@@ -264,8 +278,9 @@ exposure. The returned publication payload may be broadcast by any sender withou
 decision; no security claim depends on that sender returning for a paired publication intent.
 
 Ratify and publication still share one ledgered identity: the approved `(maker, root, offer set)`
-conditionally creates one per-offer exposure reservation, and later observation of that exact
-publication reuses rather than double-charges it. A mismatched set or root is a distinct request and
+conditionally creates one per-offer capacity reservation (lend exposure for buys, unwind inventory
+for reduce-only sells), and later observation of that exact publication reuses rather than
+double-charges it. A mismatched set or root is a distinct request and
 is evaluated against the existing reservation. After ratification, the only bounds are those encoded
 in the authorized artifacts and chain state: the offer freshness expiry, the fixed fee cap, group
 consumption, or root cancellation. A refreshed PnL/market-fee check or a middleware-only
@@ -298,6 +313,17 @@ middleware-invoking adapters, selected as a new identity method alongside
 [`signer-identity.utils.ts`](../../bots/quoter-bot/src/config/signer-identity.utils.ts). Any
 residual generic digest-signing path fails closed.
 
+Middleware mode also adds an authenticated **signer-identity setup port**. The middleware execution
+role, not the bot role, may call `kms:GetPublicKey`; at cold start and before serving signing intents
+it derives the secp256k1 address from that public key and fails closed unless it equals the configured
+maker. The setup port returns only the validated maker, chain id, middleware policy/configuration
+digest, and key fingerprint through the IAM-authenticated invocation response — no public key,
+signature, digest-signing primitive, or caller-selected challenge. `SetupStateService` obtains its
+derived-maker observation from this port in middleware mode, and `SetupCheckService` keeps the same
+configured-maker equality gate it applies to local and direct-KMS identities. Health/readiness is
+therefore red when the endpoint, KMS key, chain, or configured maker is mismatched; the check is not
+skipped merely because the bot no longer has direct KMS access.
+
 The ports serve **every maker workflow, not only the ladder**: position bootstrap (including
 auto-refill) signs the same transaction kinds through
 [`production-bootstrap.ts`](../../bots/quoter-bot/src/infrastructure/bootstrap/production-bootstrap.ts),
@@ -325,8 +351,10 @@ logic, and any alternative host must preserve the trust split: the middleware al
   invoke surfaces even though they enforce the same structured revoke intent.
 - **IAM chain**: the bot's AWS credentials attach to a role whose only permissions are
   `lambda:InvokeFunction` on this function's intent surfaces — the bot loses `kms:Sign` entirely.
-  The Lambda's execution role is the only principal with `kms:Sign` on the maker key, plus the
-  outbound reads its checks need. Creating that execution role, the invoke-only credentials, and
+  The Lambda's execution role is the only principal with `kms:Sign` and `kms:GetPublicKey` on the
+  maker key, plus the outbound reads its checks need. `kms:GetPublicKey` exists only for the
+  fail-closed signer-identity setup proof; it is never granted to the bot. Creating that execution
+  role, the invoke-only credentials, and
   the CloudTrail data-event selectors for all four functions (see Observability) are part of the
   deliverable.
 - **Caller-to-surface scoping**: principals are authorized per function ARN. The three structured
@@ -393,15 +421,18 @@ published, and the freshness ceiling bounds duration, not amount — without a l
 sign-and-withhold requests could multiply exposure far beyond the caps inside one window. Every
 intent that makes exposure publishable — an approved **quote or ratify** — therefore records
 per-offer reservations keyed by maker, derived root, and canonical offer identity (market, group,
-side, cap, price, and expiry), while cap accounting records **one exposure amount per protocol
-consumption domain** `(maker, market, group, side, cap kind/value)`. In `shared-rung` mode each rung
+side, cap, price, and expiry). Capacity accounting records **one amount per protocol consumption
+domain** `(maker, market, group, side, cap kind/value)`: buy domains charge per-market and
+maker-wide lend-exposure counters, while reduce-only sell domains charge separate per-market
+accrued-credit unwind counters and never the lend-exposure counters. In `shared-rung` mode each rung
 has its own group and cap; in `per-book` mode every leaf on one side repeats the same side-wide cap
 and shared group, so that cap is counted once rather than multiplied by the rung count. Leaves
 remain distinct for crossed-book, PnL, publication, and expiry tracking; only repeated shared-cap
-exposure is deduplicated. Aggregate caps, crossed-book checks, and PnL checks are enforced over current filled positions,
-live offers, and **every outstanding reserved offer** with those semantics. Reservation creation
-transactionally updates **atomic aggregate counters** for every affected `(maker, market)` cap, the
-maker-wide cap, and the applicable signed-gas budget. Each counter update conditionally requires
+capacity is deduplicated. Aggregate lend caps, unwind inventory, crossed-book checks, and PnL checks
+are enforced over current filled positions, live offers, and **every outstanding reserved offer**
+with those side-specific semantics. Reservation creation transactionally updates **atomic aggregate
+counters** for every affected `(maker, market)` lend or unwind cap, the maker-wide lend cap when a
+buy is present, and the applicable signed-gas budget. Each counter update conditionally requires
 enough remaining headroom, and the counter updates, per-offer records, deny-generation fence, and
 idempotency marker commit as one transaction. Concurrent intents for different roots therefore
 serialize on shared counter versions instead of both spending the same observed headroom; a failed
@@ -434,7 +465,7 @@ account's nonce cursor; the routine single writer and break-glass runbook coordi
 | Cold start latency                        | Tolerated; the hourly-ish cadence absorbs it                            |
 | Quote intent denied                       | Typed rejection, nothing signed; alert if persistent                    |
 | Revoke intent denied                      | Near-impossible by design; treat as misconfig, alert                    |
-| Concurrent tx signers (bot + break-glass) | Same-nonce fee-bump replacement resolves on-chain                       |
+| Concurrent tx signers (bot + break-glass) | Replace the lowest recorded occupied nonce; otherwise ordered handoff   |
 | Read fails or snapshot is incoherent      | Fail closed: typed retryable denial, no signature                       |
 | Reservation ledger unavailable            | Quote/ratify/routine revoke closed; break-glass uses independent budget |
 | Independent revoke budget unavailable     | Revoke fails closed and pages operator                                  |
@@ -650,7 +681,8 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   leaves while siblings stay reserved, a crossing replacement denied until its retired groups
   are observed invalidated and approved after, a ratify root that does not match its offer set,
   `setConsumed` with a foreign `onBehalf` or non-`MAX_OFFER_CAP` amount denied, a credit-reducing
-  offer without `reduceOnly` denied, a caller-supplied
+  offer without `reduceOnly` denied, reduce-only sells accepted at zero lend headroom and denied
+  only when their separate accrued-credit unwind inventory is exhausted, a caller-supplied
   `continuousFeeCap` above the snapshot fee denied, a root revocation targeting Midnight instead
   of the ratifier denied, mixed-snapshot reads denied as incoherent,
   missing or inconsistent API indexed-block metadata denied, ladder and bootstrap offers on a
@@ -667,7 +699,10 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   SDK/bot-side hashing for identical structured input; transaction serialization matches viem's
   for identical fields.
 - **Signature correctness:** recovered signer equals the configured maker across both recovery
-  parities, reusing the existing strict DER/low-s/recovery-check discipline.
+  parities, reusing the existing strict DER/low-s/recovery-check discipline. The authenticated
+  signer-identity setup port reports the KMS-derived maker and passes readiness only when endpoint,
+  chain, key fingerprint, and configured maker agree; each mismatch fails closed without exposing a
+  generic challenge-signing surface.
 - **Fail-closed negatives:** generic digest-signing requests are rejected; unknown intent
   versions are rejected; an independent-read failure produces a typed denial and no KMS call; a
   missing or invalid policy configuration refuses to serve.
@@ -676,7 +711,8 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   invoked by a second IAM principal, an attempted bot invocation of `break-glass-revoke` denied by
   IAM, a routine-revoke payload that claims break-glass identity still charged only to the routine
   budget, and the funding-ceiling alert when the maker's native balance exceeds its configured
-  maximum.
+  maximum. Queue a routine publication, then prove break-glass replaces that exact occupied nonce
+  rather than signing the next unused nonce; missing transaction inventory forces ordered handoff.
 - **IAM cutover proof:** demonstrate the bot's principal receives `AccessDenied` on `kms:Sign`
   after the grant moves, that each role can invoke only its granted intent surfaces, and that a
   break-glass principal is denied on the quote and ratify surfaces. A denied call is part of
