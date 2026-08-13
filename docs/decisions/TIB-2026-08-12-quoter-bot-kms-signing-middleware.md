@@ -163,13 +163,17 @@ otherwise valid emergency replacement.
 
 Per-transaction fee/gas ceilings alone cannot stop a leaked invoker from bleeding the maker's
 native balance one valid cancellation at a time. Transaction-signing intents therefore also draw
-on **rolling signed-gas budgets** tracked in the reservation ledger (see Statefulness), and the
-budgets are **keyed by caller principal and intent**: publication, ratification, and bot-originated
-routine revokes draw on the routine budget, while break-glass revokes alone draw on a **protected
-reserve** — sized for several full-book cleanups — that the bot principal can never draw down, so
-a compromised bot cannot starve the kill switch with otherwise valid cancellations. When the
-ledger is unavailable, quote/ratify and bot-originated routine revokes fail closed while the
-break-glass principal draws from a small **ledger-independent emergency-revoke budget**: a durable,
+on **rolling signed-gas budgets** tracked in the reservation ledger (see Statefulness). The budget
+class comes from the authenticated Lambda invoke surface, never from a caller-supplied principal,
+intent field, or `ClientContext`: publication, ratification, and the bot-only `routine-revoke`
+function draw on the routine budget, while the operator-only `break-glass-revoke` function alone
+draws on a **protected reserve** — sized for several full-book cleanups — that the bot role has no
+IAM permission to invoke or draw down. Both revoke functions use the same strict revoke validator
+from the shared image, but their function ARNs, IAM grants, reserved concurrency, and server-side
+budget classes are distinct. A compromised bot therefore cannot impersonate break-glass in its
+payload or starve the kill switch with otherwise valid cancellations. When the ledger is
+unavailable, quote/ratify and bot-originated routine revokes fail closed while the break-glass
+surface draws from a small **ledger-independent emergency-revoke budget**: a durable,
 atomically consumed token/gas/nonce allowance on an independently operated high-availability
 store, sized only for the configured full-book cleanup. The same independent control plane keeps a
 **ledger-independent revocation inventory**: an append-only, read-replicated catalog of every root
@@ -315,29 +319,33 @@ an HTTP API, a Cloudflare Worker — replaces the handler and the bot-side adapt
 logic, and any alternative host must preserve the trust split: the middleware alone holds
 `kms:Sign`, and callers hold nothing but the right to invoke it.
 
-- The middleware is a set of **AWS Lambda functions — one per intent surface, built from one
-  shared container image** — invoked by the bot through the AWS SDK (`lambda:InvokeFunction`).
+- The middleware is a set of **four AWS Lambda functions — quote, ratify, routine revoke, and
+  break-glass revoke — built from one shared container image** and invoked through the AWS SDK
+  (`lambda:InvokeFunction`). Routine and break-glass revoke deliberately have separate authenticated
+  invoke surfaces even though they enforce the same structured revoke intent.
 - **IAM chain**: the bot's AWS credentials attach to a role whose only permissions are
   `lambda:InvokeFunction` on this function's intent surfaces — the bot loses `kms:Sign` entirely.
   The Lambda's execution role is the only principal with `kms:Sign` on the maker key, plus the
   outbound reads its checks need. Creating that execution role, the invoke-only credentials, and
-  the CloudTrail data-event selectors for all three intent functions (see Observability) are part of the
+  the CloudTrail data-event selectors for all four functions (see Observability) are part of the
   deliverable.
-- **Caller-to-intent scoping**: principals are authorized per intent type, not merely per
-  function. Each of the three intents is its **own Lambda function** — one shared container
-  image, three deployments. Aliases are not enough: reserved concurrency is function-scoped, so
-  only separate functions give the revoke surface its own concurrency pool that a quote/ratify
-  flood cannot exhaust. IAM grants scope each principal to the functions it may invoke, and each
-  handler independently enforces the intent type it serves. Ratify is quote-enabling and is
-  granted like quote. Break-glass principals receive the revoke function only: leaked
-  break-glass credentials must yield revocations, never signed quotes or ratifications.
+- **Caller-to-surface scoping**: principals are authorized per function ARN. The three structured
+  intent types map to **four Lambda functions** — one shared container image, four deployments —
+  because routine and break-glass revoke must be distinguishable by an authenticated AWS boundary,
+  not by untrusted payload data. Aliases are not enough: reserved concurrency is function-scoped,
+  and distinct functions also let IAM deny the bot access to the protected reserve. IAM grants the
+  bot quote, ratify, and routine-revoke only; break-glass principals receive break-glass-revoke
+  only. Each handler pins its intent type and budget class in deployment configuration before
+  calling the shared validator. It never reads a claimed principal or budget class from the intent
+  payload or `ClientContext`. Leaked break-glass credentials must yield revocations, never signed
+  quotes or ratifications, while leaked bot credentials can never consume emergency capacity.
 - Authentication is therefore **IAM/SigV4** — no self-managed ingress, tokens, or mTLS. The
   in-policy guarantee still does not depend on caller identity — any invoker only ever obtains
-  in-policy signatures — while the caller-to-intent scoping above decides _which_ in-policy
+  in-policy signatures — while the caller-to-surface scoping above decides _which_ in-policy
   intents a given principal may submit, and invoke scoping keeps revoke-griefing/DoS hard and the
   audit trail attributable.
 - The middleware's **code lives in this monorepo** and deploys as one **Docker container image**
-  (ECR-hosted) instantiated as the three intent functions, with its own Dockerfile, like the
+  (ECR-hosted) instantiated as the four functions, with its own Dockerfile, like the
   bots. It is not a bot —
   not a long-running program — so it does not live under `/bots/`; the proposed workspace home is
   a new top-level `services/` directory, e.g. `services/quoter-signer`. Final naming and location
@@ -354,9 +362,10 @@ logic, and any alternative host must preserve the trust split: the middleware al
   fails; the bot halts publication and retries rather than degrading to any local signing path.
 - The **revoke path must be the most available operation** — it is the safety action under
   incident conditions.
-- **Break-glass revoke is just another IAM principal** granted the revoke invoke surface: an
+- **Break-glass revoke uses its own IAM-authorized function**: an
   operator can invoke the revoke intent directly with their own credentials, with no bot in the
-  path — and that surface cannot produce quote signatures.
+  path — and that surface cannot produce quote signatures. The bot cannot invoke this function;
+  its separate routine-revoke function cannot select the protected budget in request data.
 - Entering break-glass mode first atomically increments a durable **deny generation** in middleware
   policy and disables the routine quote and ratify invoke grants before cleanup starts. Every
   quote/ratify handler captures that generation on admission and acquires a generation-scoped
@@ -499,9 +508,10 @@ host itself; it strengthens rather than changes this design.
 ## Assumptions & Constraints
 
 - IAM can express the intended split: the bot's role holds `lambda:InvokeFunction` on exactly
-  the intent surfaces it needs and nothing else; the Lambda's execution role is the sole
-  `kms:Sign` principal on the maker key; break-glass operators hold revoke-surface invoke grants
-  only.
+  quote, ratify, and routine-revoke and nothing else; the Lambda execution roles are the sole
+  `kms:Sign` principals on the maker key; break-glass operators hold only the separate
+  break-glass-revoke invoke grant. Policy selects the budget from that fixed function deployment,
+  never from caller-controlled request data.
 - Every signed payload class is fully describable as structured intents and canonically
   encodable inside the Lambda (SDK EIP-712 offer-tree hashing and Mempool payload encoding; viem
   transaction serialization).
@@ -513,7 +523,7 @@ host itself; it strengthens rather than changes this design.
   remaining way to get a bad set past those two checks (open question 7). Reads for one intent
   are pinned to a single deterministic snapshot; a mixed-block view is a denial, not an input.
 - A small managed store with conditional writes (e.g. DynamoDB) is available to the Lambda for
-  the reservation ledger and the principal-and-intent-keyed signed-gas budgets. It holds no
+  the reservation ledger and invoke-surface-and-intent-keyed signed-gas budgets. It holds no
   secrets; its unavailability fails quote/ratify and bot-originated routine revokes closed, while
   break-glass revocation must atomically consume the independently stored emergency budget or fail
   closed and page the operator.
@@ -569,7 +579,7 @@ host itself; it strengthens rather than changes this design.
   side is an incident signal.
   Lambda `Invoke` is a CloudTrail **data event and is not logged by default**
   ([Lambda CloudTrail docs](https://docs.aws.amazon.com/lambda/latest/dg/logging-using-cloudtrail.html));
-  enabling data-event selectors for all three intent function ARNs is an explicit v0 deliverable —
+  enabling data-event selectors for all four function ARNs is an explicit v0 deliverable —
   without complete coverage, the invoke side of this audit trail silently omits intent surfaces.
 - Alerting on denials, invocation errors/throttles, KMS errors, and independent-read failures.
   Bot-side `make.rejected` events extend with middleware-denial reasons; invocation-failure halts
@@ -663,8 +673,10 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   missing or invalid policy configuration refuses to serve.
 - **Integration:** bot plus deployed Lambda against a KMS test key — quote publish, revoke,
   denial propagation into `make.rejected`, the invocation-failure halt, a break-glass revoke
-  invoked by a second IAM principal, and the funding-ceiling alert when the maker's native
-  balance exceeds its configured maximum.
+  invoked by a second IAM principal, an attempted bot invocation of `break-glass-revoke` denied by
+  IAM, a routine-revoke payload that claims break-glass identity still charged only to the routine
+  budget, and the funding-ceiling alert when the maker's native balance exceeds its configured
+  maximum.
 - **IAM cutover proof:** demonstrate the bot's principal receives `AccessDenied` on `kms:Sign`
   after the grant moves, that each role can invoke only its granted intent surfaces, and that a
   break-glass principal is denied on the quote and ratify surfaces. A denied call is part of
