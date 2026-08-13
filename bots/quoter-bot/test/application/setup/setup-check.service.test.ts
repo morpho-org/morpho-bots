@@ -209,6 +209,26 @@ describe('SetupCheckService', () => {
     expect(terminal).toMatchObject({ status: 'halted', reason: 'setup-failed', cycles: 1 })
   })
 
+  test('does not retry a transient compound ratifier check that can mask invariant drift', async () => {
+    const state = readyState()
+    let ratifierReads = 0
+    state.getRatifier = async () => {
+      ratifierReads += 1
+      throw new SafeProviderError({
+        kind: 'provider-error',
+        provider: 'rpc',
+        name: 'TimeoutError',
+        code: 'REQUEST_TIMEOUT',
+        context: 'request'
+      })
+    }
+
+    const error = await new SetupCheckService(state, config).assertReady().catch(value => value)
+
+    expect(ratifierReads).toBe(1)
+    expect(error).toBeInstanceOf(SetupFailedError)
+  })
+
   test('does not retry a timestamp timeout that accompanies a book invariant failure', async () => {
     const state = readyState()
     let bookReads = 0

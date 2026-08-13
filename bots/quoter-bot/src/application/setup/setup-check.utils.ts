@@ -270,6 +270,10 @@ const isTransientBookFailure = (value: unknown) => {
 const isTransientFailedCheck = (check: SetupCheck) => {
   if (check.status !== 'failed') return true
 
+  // A ratifier check combines code, authorization, and ABI observations. A rejected provider read can
+  // mask a successful invariant read that already proved drift, so compound ratifier failures fail closed.
+  if (check.name === 'ratifier') return false
+
   if (check.name === 'books') {
     return (
       Array.isArray(check.observed) &&
