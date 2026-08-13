@@ -128,10 +128,12 @@ was validated.
 
 **Revoke intents** invalidate offer groups/roots. They are **near-unconditionally approved** —
 revocation only reduces exposure and is the always-available kill switch — constrained to: pinned
-chain id, a **per-operation target/selector allowlist** (group consumption via `setConsumed` on
-the Midnight singleton; Ecrecover root cancellation via `cancelRoot(maker, root)` on the
+chain id, a **per-operation target/selector and calldata allowlist** (group consumption is exactly
+`setConsumed(group, MAX_OFFER_CAP, maker)` on the Midnight singleton, with the configured maker
+pinned as `onBehalf`; Ecrecover root cancellation is exactly `cancelRoot(maker, root)` on the
 configured ratifier), zero native value, and fee/gas ceilings. This mirrors the constraint set
-the quoter's in-process transaction assertions already pin, now enforced outside the bot.
+the quoter's in-process transaction assertions already pin, now enforced outside the bot; a
+compromised revoke invoker cannot spend gas mutating another maker's groups.
 
 Because a signed transaction commits to an account nonce, transaction-signing intents carry
 **caller-supplied nonce and fee fields** — liveness parameters, not policy: no nonce value can
@@ -170,13 +172,15 @@ the EIP-712 tree signature (Ecrecover) and the signed zero-value publication tra
 Midnight Mempool contract, whose calldata the middleware itself encoded from the validated set.
 The set is approved only when **three properties** all hold:
 
-1. **No crossed books.** The prospective offer set — observed live offers plus the proposed
-   set, with no exclusions — must not create a negative spread across books: the same whole-book
-   invariant `MakeService` enforces in-process today, now enforced independently at the signing
-   boundary. Critically, the middleware does **not** trust bot-supplied book state for this check
-   — a compromised bot would lie. It reads live offers and chain state itself, through its own
-   RPC and Morpho API/Mempool reads, and every policy read for one intent is pinned to **one
-   deterministic snapshot** — a single block tag, with API responses carrying consistent
+1. **No crossed books.** The prospective offer set — observed live offers, every still-outstanding
+   signed-but-unpublished reserved offer, and the proposed set, with no exclusions — must not
+   create a negative spread across books: the same whole-book invariant `MakeService` enforces
+   in-process today, now enforced independently at the signing boundary. Reserved offers are
+   keyed and deduplicated by maker, root, and offer identity, so revalidating the exact same set
+   does not count it twice. Critically, the middleware does **not** trust bot-supplied book state
+   for this check — a compromised bot would lie. It reads live offers and chain state itself,
+   through its own RPC and Morpho API/Mempool reads, and every policy read for one intent is pinned
+   to **one deterministic snapshot** — a single block tag, with API responses carrying consistent
    indexed-block metadata. If a coherent snapshot cannot be assembled, the intent fails closed.
 2. **Price bounds.** Every offer's price/rate must remain inside boundaries encoded as parameters
    of the middleware's own deployment configuration — never supplied per-request.
@@ -206,9 +210,12 @@ derived root — under the same chain/value/fee pins as revocations, targeting t
 ratifier. The middleware never needs to remember which roots it produced: it recomputes them.
 Because a ratified root is publishable by **any funded sender** — the Mempool log contract
 accepts the encoded payload from any account — a signed ratification is publishable exposure in
-itself, so a ratify approval **charges the same exposure reservation as a quote approval**.
-Ratify is a **quote-enabling intent**, authorized like quote and never granted to break-glass
-principals. Ecrecover deployments never use this intent.
+itself. Ratify and publication are therefore one ledgered flow: the first approved intent for an
+exact `(maker, root, offer set)` conditionally creates one per-offer exposure reservation, and the
+paired quote/publication intent must find and reuse that same reservation rather than charging a
+second copy. A mismatched set or root is a distinct request and is evaluated against the existing
+reservation. Ratify is a **quote-enabling intent**, authorized like quote and never granted to
+break-glass principals. Ecrecover deployments never use this intent.
 
 Policy parameters live in the middleware's deployment, never in the request; the state feeding
 its checks comes from its own reads, never from the caller. A compromised bot can neither relax
@@ -305,14 +312,18 @@ them — but aggregate enforcement requires one small piece of **required state:
 reservation ledger**. Chain-truth reads cannot see a signature that was returned but never
 published, and the freshness ceiling bounds duration, not amount — without a ledger, repeated
 sign-and-withhold requests could multiply exposure far beyond the caps inside one window. Every
-intent that makes exposure publishable — an approved **quote or ratify** — therefore records a
-reservation (markets, exposure, root, expiry) at signing time; aggregate caps are enforced over
-live offers **plus outstanding reservations**; a
-reservation is released when its root is observed live (it then counts as live) or when its
-freshness ceiling passes unpublished. The ceiling keeps the ledger tiny and self-expiring;
-conditional writes serialize concurrent intents; the same ledger tracks the per-surface
-signed-gas budgets, including the protected revoke reserve. The ledger is what makes the
-bounded-loss claim hold. Transaction nonces stay
+intent that makes exposure publishable — an approved **quote or ratify** — therefore records
+per-offer reservations keyed by maker, derived root, and canonical offer identity (market, group,
+side, cap, price, and expiry). Aggregate caps, crossed-book checks, and PnL checks are enforced
+over live offers **plus every outstanding reserved offer**. Conditional creation makes a Setter
+ratify followed by publication of the exact same root idempotent: the second intent reuses the
+existing entries and cannot double-count or double-reserve them. Publication is tracked per leaf,
+not merely per root: each reservation is released only when that exact offer is observed live (it
+then counts as live) or its own freshness ceiling passes unpublished. Observing one leaf never
+releases sibling leaves from the same root. The ceiling keeps the ledger tiny and self-expiring;
+conditional writes serialize concurrent intents; the same ledger tracks the per-surface signed-gas
+budgets, including the protected revoke reserve. The ledger is what makes the bounded-loss claim
+hold. Transaction nonces stay
 caller-owned (see the intent contract), so the middleware never coordinates the account's
 transaction stream.
 
@@ -526,9 +537,13 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   all three intent types, including boundary values — price exactly at a bound, expiry exactly at
   maturity or the freshness ceiling, aggregate exposure that overflows only in combination with
   live offers or outstanding reservations, sign-and-withhold sequences denied once reservations
-  exhaust the caps — through quote or ratify approvals alike, a crossing replacement denied
-  until its retired groups are observed invalidated and approved after, a ratify root that does
-  not match its offer set, a credit-reducing offer without `reduceOnly` denied, a caller-supplied
+  exhaust the caps — through quote or ratify approvals alike, two individually valid withheld
+  sets whose combination crosses denied on the second request, a Setter ratify followed by the
+  matching publication reusing one reservation, a partial publication releasing only observed
+  leaves while siblings stay reserved, a crossing replacement denied until its retired groups
+  are observed invalidated and approved after, a ratify root that does not match its offer set,
+  `setConsumed` with a foreign `onBehalf` or non-`MAX_OFFER_CAP` amount denied, a credit-reducing
+  offer without `reduceOnly` denied, a caller-supplied
   `continuousFeeCap` above the snapshot fee denied, a root revocation targeting Midnight instead
   of the ratifier denied, mixed-snapshot reads denied as incoherent,
   a routine signed-gas budget refusing the next publication while the revoke reserve still
