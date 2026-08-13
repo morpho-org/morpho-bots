@@ -68,6 +68,18 @@ const harness = () => {
 }
 
 describe('MidnightLadderMakeService', () => {
+  test('reads only the reconciled market book for spread validation', async () => {
+    const subject = harness()
+    let selectedMarket: Hex | undefined
+    subject.transport.listBookOffers = async (market: Hex) => {
+      selectedMarket = market
+      return []
+    }
+
+    await subject.service.reconcile({ marketId, desired: quote, reason: 'publish' })
+
+    expect(selectedMarket).toBe(marketId)
+  })
   test('reserves, cancels, publishes, and confirms one replacement in order', async () => {
     const subject = harness()
 

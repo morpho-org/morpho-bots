@@ -3,9 +3,11 @@ import type { AddressInfo } from 'node:net'
 
 import { createServer } from 'node:http'
 
-import { ECRECOVER_RATIFIER, MARKET, MARKET_ID } from './constants'
+import { ANVIL_DEFAULT_ACCOUNT, ECRECOVER_RATIFIER, MARKET, MARKET_ID } from './constants'
 
 const json = (body: unknown, status = 200) => Response.json(body, { status })
+type SetupApiMode = 'ready' | 'books-failed' | 'offers-failed'
+let mode: SetupApiMode = 'ready'
 
 const route = (request: Request) => {
   const { pathname } = new URL(request.url)
@@ -35,12 +37,34 @@ const route = (request: Request) => {
   if (pathname === '/v0/midnight/markets') {
     return json({
       cursor: null,
-      data: [{ chain_id: MARKET.chainId, market_id: MARKET_ID, listed: true }]
+      data: [{ chain_id: MARKET.chainId, market_id: MARKET_ID, listed: mode !== 'books-failed' }]
     })
   }
 
   if (pathname.startsWith('/v0/midnight/users/') && pathname.endsWith('/offer-groups')) {
-    return json({ cursor: null, data: [] })
+    return json({
+      cursor: null,
+      data:
+        mode === 'offers-failed'
+          ? [
+              {
+                id: `0x${'ab'.repeat(32)}`,
+                chain_id: MARKET.chainId,
+                consumed: '0',
+                max_assets: '1',
+                offers: [
+                  {
+                    market_id: MARKET_ID,
+                    maker: ANVIL_DEFAULT_ACCOUNT.address,
+                    buy: true,
+                    tick: 100,
+                    market: { maturity: MARKET.maturity }
+                  }
+                ]
+              }
+            ]
+          : []
+    })
   }
 
   if (pathname === '/v0/config/contracts') {
@@ -62,6 +86,7 @@ const route = (request: Request) => {
 export type SetupApiHandle = {
   baseUrl: string
   server: Server
+  setMode(mode: SetupApiMode): void
 }
 
 // bun's `Bun.serve` took a Web-standard `(Request) => Response` handler directly. Node's http server
@@ -114,10 +139,15 @@ const toNodeHandler =
  * {@link stopSetupApi}.
  */
 export const startSetupApi = async (): Promise<SetupApiHandle> => {
+  mode = 'ready'
   const server = createServer(toNodeListener(toNodeHandler(route)))
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
   const { port } = server.address() as AddressInfo
-  return { baseUrl: `http://127.0.0.1:${port}`, server }
+  return {
+    baseUrl: `http://127.0.0.1:${port}`,
+    server,
+    setMode: value => void (mode = value)
+  }
 }
 
 /**

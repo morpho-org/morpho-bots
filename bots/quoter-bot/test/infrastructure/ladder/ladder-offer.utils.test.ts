@@ -1,6 +1,7 @@
 import type { IMarket } from '@morpho-org/midnight-sdk'
 import type { Address, Hex } from 'viem'
 
+import { TickLib } from '@morpho-org/midnight-sdk'
 import { describe, expect, test } from 'vitest'
 
 import type { LadderQuoteSet } from '../../../src/domain/ladder/ladder'
@@ -70,7 +71,9 @@ describe('buildLadderTree', () => {
       market,
       maker,
       ratifier,
-      now
+      now,
+      minimumRateBps: 1n,
+      maximumRateBps: 10_000n
     })
 
     expect(result.tree.offers.map(offer => offer.buy)).toEqual([false, false, true, true])
@@ -94,14 +97,18 @@ describe('buildLadderTree', () => {
       market,
       maker,
       ratifier,
-      now
+      now,
+      minimumRateBps: 1n,
+      maximumRateBps: 10_000n
     })
     const later = buildLadderTree({
       quote: quote('shared-rung'),
       market,
       maker,
       ratifier,
-      now: now + 1n
+      now: now + 1n,
+      minimumRateBps: 1n,
+      maximumRateBps: 10_000n
     })
 
     const firstGroups = new Set(first.groups.map(group => group.groupId))
@@ -114,7 +121,9 @@ describe('buildLadderTree', () => {
       market,
       maker,
       ratifier,
-      now
+      now,
+      minimumRateBps: 1n,
+      maximumRateBps: 10_000n
     })
 
     expect(result.tree.offers.map(offer => offer.maxAssets)).toEqual([30n, 30n, 70n, 70n])
@@ -124,5 +133,61 @@ describe('buildLadderTree', () => {
       [0, 1],
       [0, 1]
     ])
+  })
+
+  test('reconstructs persisted pending offers without applying current strategy bounds', () => {
+    expect(() =>
+      buildLadderTree({
+        quote: quote('shared-rung'),
+        market,
+        maker,
+        ratifier,
+        now
+      })
+    ).not.toThrow()
+  })
+
+  test('rejects an encoded APR fraction above the integer-bps maximum', () => {
+    const permissive = buildLadderTree({
+      quote: quote('shared-rung'),
+      market,
+      maker,
+      ratifier,
+      now,
+      minimumRateBps: 1n,
+      maximumRateBps: 10_000n
+    })
+    const encodedRateWad = TickLib.tickToApr(
+      permissive.tree.offers.at(-1)!.tick,
+      BigInt(market.params.maturity) - now
+    )
+    const basisPointWad = 10n ** 14n
+    expect(encodedRateWad % basisPointWad).not.toBe(0n)
+
+    expect(() =>
+      buildLadderTree({
+        quote: quote('shared-rung'),
+        market,
+        maker,
+        ratifier,
+        now,
+        minimumRateBps: 1n,
+        maximumRateBps: encodedRateWad / basisPointWad
+      })
+    ).toThrow('Ladder adapter failed')
+  })
+
+  test('rejects a rounded protocol tick outside the configured hard rate range', () => {
+    expect(() =>
+      buildLadderTree({
+        quote: quote('shared-rung'),
+        market,
+        maker,
+        ratifier,
+        now,
+        minimumRateBps: 450n,
+        maximumRateBps: 600n
+      })
+    ).toThrow('Ladder adapter failed')
   })
 })
