@@ -180,11 +180,16 @@ derives
 `newMaxFee = max(floor(previousMaxFee * 1125 / 1000), previousMaxFee + 1 wei, currentBaseFee * 2 + newPriorityFee)`.
 This is the repository fee policy, including its base-fee floor rather than only the replacement
 bump. The middleware applies the routine ceilings and rolling signed-gas budget to both derived
-fields and atomically replaces the recorded fee fields, signed bytes, and hash before returning the
-new artifact. Repeated bumps therefore restore a path for an underpriced transaction without
-creating a menu of economically different same-nonce signatures. A replacement that cannot read
-the current base fee, be recorded, budgeted, or be reconciled with the pending transaction fails
-closed.
+fields. Before returning, it appends the new fee fields, signed bytes, and hash to the nonce's
+durable artifact history and atomically marks that entry as the latest active artifact. Same-nonce
+replacement history is append-only: no bump or self-cancel overwrites an older artifact, because
+every previously returned byte string remains broadcastable until the nonce is confirmed or
+replaced/cancelled on chain. Routine retries and later bumps use the latest active artifact, while
+budgeting and break-glass cleanup retain every artifact and use the maximum fee fields across the
+complete history at that nonce. Repeated bumps therefore restore a path for an underpriced
+transaction without losing earlier signed exposure. A replacement that cannot read the current
+base fee, append and activate its record atomically, be budgeted, or be reconciled with the pending
+transaction fails closed.
 
 A break-glass revocation deliberately takes over the account's transaction stream during an
 incident. It does **not** sign the node's `pending` nonce, which is the next unused nonce. It
@@ -291,9 +296,14 @@ first. A replacement therefore sequences exactly as the in-process `MakeService`
 request the revoke signature, broadcast it, wait until the middleware's snapshot shows the old
 groups gone, then request the quote signature against the now-clean book. A replacement whose
 transitional old-plus-new book stays fully in-policy may skip the wait and revoke after
-publication. An approved quote intent returns both signed artifacts the publication flow needs:
-the EIP-712 tree signature (Ecrecover) and the signed zero-value publication transaction to the
-Midnight Mempool contract, whose calldata the middleware itself encoded from the validated set.
+publication. For Ecrecover, the quote intent returns the tree signature and encoded publication
+payload; the same constrained non-maker publication-broadcaster used by Setter submits that exact
+zero-value payload to the Midnight Mempool contract. The maker KMS does not sign a second EOA
+publication transaction. For Setter, the ratify intent returns the maker-signed ratification
+transaction plus the independently encoded publication payload described below. In both modes the
+middleware encodes the payload from the validated set, and the minimally funded non-maker sender
+adds no authorization or policy decision.
+
 The set is approved only when **three properties** all hold:
 
 1. **No crossed books.** The prospective offer set — observed live offers, every still-outstanding
@@ -476,22 +486,25 @@ logic, and any alternative host must preserve the trust split: the middleware al
   function is the authenticated signer-identity setup port used by readiness; it can return only the
   validated setup fields described above and has no signing-intent handler.
 - **IAM chain**: the bot's AWS credentials attach to a role whose only permissions are
-  `lambda:InvokeFunction` on setup/health and its routine intent surfaces — the bot loses `kms:Sign`
-  and `kms:GetPublicKey` entirely. The four signing functions' execution roles are the only
+  `lambda:InvokeFunction` on the exact production-alias ARNs for setup/health and its routine intent
+  surfaces — never an unqualified function ARN, a version ARN, `$LATEST`, or another alias. The bot
+  loses `kms:Sign` and `kms:GetPublicKey` entirely. Operator grants are likewise restricted to the
+  exact break-glass production-alias ARN. The four signing functions' execution roles are the only
   principals with `kms:Sign`; all five execution roles have narrowly scoped `kms:GetPublicKey` on
   that same maker key solely for their startup attestation, while setup/health has no `kms:Sign`.
   Creating those execution roles, the invoke-only credentials, and
   the CloudTrail data-event selectors for all five functions (see Observability) are part of the
   deliverable.
-- **Caller-to-surface scoping**: principals are authorized per function ARN. The three structured
+- **Caller-to-surface scoping**: principals are authorized per exact production-alias ARN. The three structured
   intent types map to **four signing Lambda functions**, while setup/readiness maps to the fifth
   setup/health function — one shared container image, five deployments —
   because routine and break-glass revoke must be distinguishable by an authenticated AWS boundary,
   not by untrusted payload data. Aliases are not enough: reserved concurrency is function-scoped,
   and distinct functions also let IAM deny the bot access to the protected reserve. IAM grants the
-  bot setup/health, quote, ratify, and routine-revoke only; break-glass principals receive
-  break-glass-revoke only. Each signing handler pins its intent type and budget class in deployment
-  configuration before
+  bot setup/health, quote, ratify, and routine-revoke production aliases only; break-glass principals
+  receive only the break-glass-revoke production alias. Explicit denies and acceptance tests cover
+  unqualified and `$LATEST` invokes, every non-production alias, and cross-surface aliases. Each
+  signing handler pins its intent type and budget class in deployment configuration before
   calling the shared validator. It never reads a claimed principal or budget class from the intent
   payload or `ClientContext`. Leaked break-glass credentials must yield revocations, never signed
   quotes or ratifications, while leaked bot credentials can never consume emergency capacity.
@@ -508,8 +521,9 @@ logic, and any alternative host must preserve the trust split: the middleware al
   are settled at implementation (open question 1).
 - Flow: the bot builds the desired offer array → invokes the Lambda with the structured intent →
   the Lambda validates the three properties plus field checks, canonically encodes, derives the
-  digest, calls KMS → returns the signatures and encoded payloads (tree plus publication
-  transaction for quotes). Sign-what-you-encode is unchanged by the deployment shape.
+  digest, calls KMS → returns the required maker authorization and encoded publication payload
+  (an Ecrecover tree signature or a Setter ratification transaction, never a maker-signed Ecrecover
+  publication transaction). Sign-what-you-encode is unchanged by the deployment shape.
 
 ### 5. Availability posture
 
@@ -939,13 +953,19 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   exactly one acquires the pre-sign nonce lease and reaches KMS. Withhold a signed transaction beyond
   its offer freshness expiry and prove its transaction
   record, nonce fence, and signed-gas reservation remain until that nonce is confirmed or replaced/
-  cancelled on chain.
+  cancelled on chain. Sign an economic transaction, then create a same-nonce bump and a self-cancel;
+  prove the independent inventory retains every hash, byte string, and fee pair append-only, marks
+  only the newest entry active for routine replacement, and derives break-glass fees from the maximum
+  across all three artifacts.
 - **IAM cutover proof:** demonstrate the bot's principal receives `AccessDenied` on `kms:Sign`
   and `kms:GetPublicKey` after the grant moves, that readiness can invoke setup/health and obtain only
   its constrained response, that each function role can call `kms:GetPublicKey` only on the pinned
   maker key, that the setup/health role cannot call `kms:Sign`, that each role can
-  invoke only its granted surfaces, and that a break-glass principal is denied on setup/health,
-  quote, and ratify. Prove setup/health can call `lambda:GetAlias` on each of the five exact production
+  invoke only its granted production-alias surfaces, and that a break-glass principal is denied on
+  setup/health, quote, and ratify. For every bot and operator surface, prove the exact production alias
+  succeeds while the unqualified function ARN, `$LATEST`, every other version/alias, and every
+  cross-surface production alias receive `AccessDenied`. Prove setup/health can call
+  `lambda:GetAlias` on each of the five exact production
   aliases, cannot call it on any other function or alias, rejects an attestation whose published
   version differs from the resolved alias target, and fails readiness when
   `RoutingConfig.AdditionalVersionWeights` is non-empty. Prove deployment automation refuses a
