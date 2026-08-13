@@ -2,6 +2,7 @@ import type { Hex } from 'viem'
 
 import { describe, expect, test } from 'vitest'
 
+import { SafeProviderError } from '../../../src/application/setup/safe-provider.error'
 import {
   SetupCheckService,
   type SetupCheckConfig,
@@ -97,6 +98,168 @@ describe('SetupCheckService', () => {
       expect(terminal.lastReport.ready).toBe(false)
       if (lastEmittedReport) expect(terminal.lastReport).toBe(lastEmittedReport.report)
     }
+  })
+
+  test('retries a transient provider-only report before emitting a recovered monitor cycle', async () => {
+    const controller = new AbortController()
+    const state = readyState()
+    let bookReads = 0
+    state.getBook = async id => {
+      bookReads += 1
+      if (bookReads === 1) {
+        throw new SafeProviderError({
+          kind: 'provider-error',
+          provider: 'morpho-api',
+          name: 'TimeoutError',
+          code: 'REQUEST_TIMEOUT',
+          context: 'request'
+        })
+      }
+      return {
+        id,
+        allowlisted: true,
+        active: true,
+        loanAsset,
+        tickSpacing: 1,
+        maturity: 2_000n
+      }
+    }
+    const reports: SetupCheckReport[] = []
+
+    const terminal = await new SetupCheckService(state, config).runContinuously({
+      signal: controller.signal,
+      intervalMs: 1,
+      onCycle: report => {
+        reports.push(report)
+        controller.abort()
+      }
+    })
+
+    expect(bookReads).toBe(2)
+    expect(reports.map(report => report.ready)).toEqual([true])
+    expect(terminal).toEqual({ status: 'stopped', reason: 'signal', cycles: 1 })
+  })
+
+  test('halts after three consecutive transient provider-only readiness attempts', async () => {
+    const state = readyState()
+    let bookReads = 0
+    state.getBook = async () => {
+      bookReads += 1
+      throw new SafeProviderError({
+        kind: 'provider-error',
+        provider: 'morpho-api',
+        name: 'TimeoutError',
+        code: 'REQUEST_TIMEOUT',
+        context: 'request'
+      })
+    }
+    const reports: SetupCheckReport[] = []
+
+    const terminal = await new SetupCheckService(state, config).runContinuously({
+      signal: new AbortController().signal,
+      intervalMs: 1,
+      onCycle: report => {
+        reports.push(report)
+      }
+    })
+
+    expect(bookReads).toBe(3)
+    expect(reports.map(report => report.ready)).toEqual([false])
+    expect(terminal).toMatchObject({ status: 'halted', reason: 'setup-failed', cycles: 1 })
+  })
+
+  test('retries sanitized provider-read failures without treating response failures as transient', async () => {
+    const controller = new AbortController()
+    const state = readyState()
+    let bookReads = 0
+    state.getBook = async id => {
+      bookReads += 1
+      if (bookReads === 1) throw new ProviderReadError('morpho-api', 'book-api')
+      return {
+        id,
+        allowlisted: true,
+        active: true,
+        loanAsset,
+        tickSpacing: 1,
+        maturity: 2_000n
+      }
+    }
+
+    const terminal = await new SetupCheckService(state, config).runContinuously({
+      signal: controller.signal,
+      intervalMs: 1,
+      onCycle: () => controller.abort()
+    })
+
+    expect(bookReads).toBe(2)
+    expect(terminal).toEqual({ status: 'stopped', reason: 'signal', cycles: 1 })
+  })
+
+  test('does not retry mixed transient and invariant readiness failures', async () => {
+    const state = readyState()
+    let bookReads = 0
+    state.getBook = async () => {
+      bookReads += 1
+      throw new SafeProviderError({
+        kind: 'provider-error',
+        provider: 'morpho-api',
+        name: 'TimeoutError',
+        code: 'REQUEST_TIMEOUT',
+        context: 'request'
+      })
+    }
+    state.getNativeBalance = async () => 9n
+
+    const terminal = await new SetupCheckService(state, config).runContinuously({
+      signal: new AbortController().signal,
+      intervalMs: 1
+    })
+
+    expect(bookReads).toBe(1)
+    expect(terminal).toMatchObject({ status: 'halted', reason: 'setup-failed', cycles: 1 })
+  })
+
+  test('retries transient provider-only startup readiness before allowing writers', async () => {
+    const state = readyState()
+    let offerReads = 0
+    state.inspectOffers = async () => {
+      offerReads += 1
+      if (offerReads < 3) {
+        throw new SafeProviderError({
+          kind: 'provider-error',
+          provider: 'morpho-api',
+          name: 'HttpError',
+          status: 503,
+          context: 'request'
+        })
+      }
+      return { unknownNamespaces: [], unknownMarketIds: [], invertedMarketIds: [] }
+    }
+
+    const report = await new SetupCheckService(state, config).assertReady()
+
+    expect(offerReads).toBe(3)
+    expect(report.ready).toBe(true)
+  })
+
+  test('does not retry a non-transient provider response at startup', async () => {
+    const state = readyState()
+    let offerReads = 0
+    state.inspectOffers = async () => {
+      offerReads += 1
+      throw new SafeProviderError({
+        kind: 'provider-error',
+        provider: 'morpho-api',
+        name: 'HttpError',
+        status: 400,
+        context: 'request'
+      })
+    }
+
+    const error = await new SetupCheckService(state, config).assertReady().catch(value => value)
+
+    expect(offerReads).toBe(1)
+    expect(error).toBeInstanceOf(SetupFailedError)
   })
 
   test('rejects an invalid setup-monitor interval before any readiness read', async () => {

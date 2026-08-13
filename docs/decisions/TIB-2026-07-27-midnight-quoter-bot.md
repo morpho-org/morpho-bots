@@ -279,11 +279,12 @@ authorize a ratifier, move funds, or invalidate offers. Setup remains an explici
 Position-health checking is represented by a port and a `not-required` V0 result. It becomes
 mandatory before any strategy revision can increase collateralized debt.
 
-Any failed startup check rejects readiness, kills the runtime with a non-zero exit, and leaves
-bootstrap and ladder unstarted. The deployment supervisor then places the service in its expected
-crash loop until the operator repairs setup. A periodic post-readiness failure closes the make queue,
-attempts the configured safety cleanup, logs the precise failed check, and exits non-zero; the bot
-does not remain alive in a degraded readiness state.
+A failed startup check rejects readiness after bounded transient-provider retries, kills the runtime
+with a non-zero exit, and leaves bootstrap and ladder unstarted. The deployment supervisor then
+places the service in its expected crash loop until the operator repairs setup. A periodic
+post-readiness failure receives the same bounded tolerance, then closes the make queue, attempts the
+configured safety cleanup, logs the precise failed check, and exits non-zero; the bot does not remain
+alive in a degraded readiness state.
 
 ### 4. Target-rate strategies
 
@@ -508,23 +509,23 @@ the pending nonce and on-chain invalidation state before accepting another job f
 
 ### 9. Failure posture
 
-| Failure                                     | Required behavior                                                                 |
-| ------------------------------------------- | --------------------------------------------------------------------------------- |
-| Startup setup check fails                   | Reject readiness, start no writers, exit non-zero, enter supervisor crash loop    |
-| Setup drifts after readiness                | Close make queue, attempt configured cleanup, exit non-zero, enter crash loop     |
-| Stale/unavailable reference                 | Invalidate all V0 roots through `MakeService`, exit non-zero                      |
-| Target or any rung outside bounds           | Invalidate all V0 roots and exit; never clamp                                     |
-| Prospective or existing inverted spread     | Reject make with `NEGATIVE_SPREAD`; mutate nothing; existing inversion also exits |
-| One market read fails                       | Invalidate/halt that market; other allowlisted markets may continue               |
-| Mempool publication fails                   | Reject queued promise; reload fresh state; never assume publication               |
-| Invalidation simulation/revert              | Publish nothing new; retry invalidation with the exact reason logged              |
-| Cost basis unavailable                      | Do not publish the credit-reducing side                                           |
-| Credit inside acceptance threshold          | Invalidate bootstrap group; ladder continues                                      |
-| Credit below target, auto-refill off        | Log the deficit; do not publish a temporary top-up                                |
-| Credit below target, auto-refill on         | Bootstrap resumes capped top-up publication                                       |
-| Maker key or ratifier authorization changes | Treat as setup drift and crash-loop                                               |
-| Runtime restart                             | Rebuild from chain/Mempool and reconcile; no local-state recovery                 |
-| `SHUTDOWN_CLEANUP=true`                     | Drain make, submit on-chain group invalidation(s), await receipts, print report   |
+| Failure                                     | Required behavior                                                                                       |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Startup setup check fails                   | Retry transient provider-only failures; otherwise reject readiness, start no writers, and exit non-zero |
+| Setup drifts after readiness                | Retry transient provider-only failures; otherwise close make queue, clean up, and exit non-zero         |
+| Stale/unavailable reference                 | Invalidate all V0 roots through `MakeService`, exit non-zero                                            |
+| Target or any rung outside bounds           | Invalidate all V0 roots and exit; never clamp                                                           |
+| Prospective or existing inverted spread     | Reject make with `NEGATIVE_SPREAD`; mutate nothing; existing inversion also exits                       |
+| One market read fails                       | Invalidate/halt that market; other allowlisted markets may continue                                     |
+| Mempool publication fails                   | Reject queued promise; reload fresh state; never assume publication                                     |
+| Invalidation simulation/revert              | Publish nothing new; retry invalidation with the exact reason logged                                    |
+| Cost basis unavailable                      | Do not publish the credit-reducing side                                                                 |
+| Credit inside acceptance threshold          | Invalidate bootstrap group; ladder continues                                                            |
+| Credit below target, auto-refill off        | Log the deficit; do not publish a temporary top-up                                                      |
+| Credit below target, auto-refill on         | Bootstrap resumes capped top-up publication                                                             |
+| Maker key or ratifier authorization changes | Treat as setup drift and crash-loop                                                                     |
+| Runtime restart                             | Rebuild from chain/Mempool and reconcile; no local-state recovery                                       |
+| `SHUTDOWN_CLEANUP=true`                     | Drain make, submit on-chain group invalidation(s), await receipts, print report                         |
 
 ### 10. Configuration contract
 

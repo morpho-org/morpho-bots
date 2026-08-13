@@ -8,6 +8,7 @@ import {
   capture,
   captureSigner,
   chainCheck,
+  hasOnlyTransientProviderFailures,
   providerFailure,
   readOnlyMakerCheck,
   sameAddress,
@@ -17,6 +18,7 @@ import { SetupFailedError } from './setup-failed.error'
 import { SetupMonitorConfigurationError } from './setup-monitor-configuration.error'
 
 const SETUP_CHECK_MONITOR_INTERVAL_MS = 60_000
+const SETUP_CHECK_TRANSIENT_ATTEMPTS = 3
 type SetupCheckStatus = 'passed' | 'failed' | 'not-required'
 
 /** Read-only operator instruction or exact transaction description; never executed by the checker. */
@@ -210,11 +212,13 @@ export class SetupCheckService {
   /**
    * Evaluates the complete report and enforces readiness for downstream writers.
    * @returns The complete ready report.
-   * @throws `SetupFailedError` when any check fails; the error retains every check result.
-   * @remarks Read-only. Independent provider checks run concurrently through `Promise.all`.
+   * @throws `SetupFailedError` when an invariant fails or transient providers remain unavailable
+   * after three total attempts; the error retains every check result from the final attempt.
+   * @remarks Read-only. Independent provider checks run concurrently through `Promise.all` on each
+   * attempt. Only reports caused exclusively by explicitly transient provider failures are retried.
    */
   async assertReady() {
-    const report = await this.check()
+    const report = await this.checkWithTransientRetries()
     if (!report.ready) throw new SetupFailedError(report)
     return report
   }
@@ -224,8 +228,10 @@ export class SetupCheckService {
    * @param parameters - Shutdown signal, optional report writer, and testable positive interval.
    * @returns A terminal report containing the number of emitted setup observations.
    * @throws `SetupMonitorConfigurationError` when the requested interval is not a positive safe integer.
-   * @remarks Cycles never overlap. Failed readiness is emitted once and halts monitoring so the CLI
-   * exits nonzero; no remediation, signing, transaction submission, or cleanup write is performed.
+   * @remarks Cycles never overlap. Explicitly transient provider-only failures receive three total
+   * read attempts before failed readiness is emitted and monitoring halts. Invariant and mixed
+   * failures halt immediately. No remediation, signing, transaction submission, or cleanup write
+   * is performed.
    */
   async runContinuously(parameters: {
     signal: AbortSignal
@@ -242,7 +248,7 @@ export class SetupCheckService {
 
     while (!parameters.signal.aborted) {
       try {
-        const report = await this.check()
+        const report = await this.checkWithTransientRetries(parameters.signal)
         await parameters.onCycle?.(report)
         cycles += 1
         if (!report.ready) {
@@ -259,6 +265,17 @@ export class SetupCheckService {
     return cycleErrorName
       ? { status: 'halted', reason: 'cycle-error', cycles, cycleErrorName }
       : { status: 'stopped', reason: 'signal', cycles }
+  }
+
+  private async checkWithTransientRetries(signal?: AbortSignal) {
+    let report = await this.check()
+
+    for (let attempt = 1; attempt < SETUP_CHECK_TRANSIENT_ATTEMPTS; attempt += 1) {
+      if (signal?.aborted === true || !hasOnlyTransientProviderFailures(report)) break
+      report = await this.check()
+    }
+
+    return report
   }
 
   /**

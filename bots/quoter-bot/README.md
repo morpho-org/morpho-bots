@@ -120,7 +120,9 @@ ratifier, chain, market, reference, and active-offer observations still run agai
 maker address.
 
 `setup-check --monitor` runs the same complete read-only observation every minute and streams each
-report. The first report with `ready: false` halts monitoring, includes that report in the terminal
+report. A report containing only explicitly transient provider failures is retried up to two times;
+recovery emits only the successful report. An invariant failure, a mixed failure, or three transient
+attempts with no recovery emits `ready: false`, halts monitoring, includes that report in the terminal
 `setup-failed` record, and exits with code `1`. `SIGINT` or `SIGTERM` after successful checks lets an
 in-flight check finish and emits a final `{"status":"stopped","reason":"signal","cycles":N}` record
 with exit code `0`. Monitoring never signs, submits remediation, or performs shutdown cleanup. Add
@@ -525,8 +527,9 @@ ladder:
 ```
 
 `quoter-bot setup-check --monitor` repeats non-overlapping read-only readiness observations every minute
-until its shutdown signal or the first failed report. `quoter-bot bootstrap` first runs the same one-shot
-readiness gate as `setup-check`, then executes exactly one position-bootstrap cycle and prints its
+until its shutdown signal or the first failed report after transient-provider retry tolerance.
+`quoter-bot bootstrap` first runs the same one-shot readiness gate as `setup-check`, then executes exactly
+one position-bootstrap cycle and prints its
 bigint-safe JSON result. `quoter-bot bootstrap --monitor` uses the same gate, repeats non-overlapping cycles
 every minute, and performs owned-group cleanup after its shutdown signal. `quoter-bot bootstrap --verbose`
 adds safe rate, offer, transaction-hash, configuration, and before/after position diagnostics to

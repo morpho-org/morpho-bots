@@ -5,6 +5,7 @@ import type {
   BookSetup,
   SetupCheck,
   SetupCheckConfig,
+  SetupCheckReport,
   SetupRemediation
 } from './setup-check.service'
 
@@ -28,9 +29,25 @@ const SAFE_ERROR_CODES = new Set([
   'ETIMEDOUT',
   'ABORT_ERR',
   'UND_ERR_CONNECT_TIMEOUT',
-  'UND_ERR_HEADERS_TIMEOUT'
+  'UND_ERR_HEADERS_TIMEOUT',
+  'PROVIDER_READ_FAILED'
 ])
 const SAFE_PROVIDER_IDS = new Set(['provider', 'rpc', 'archive-rpc', 'morpho-api', 'router-api'])
+const TRANSIENT_PROVIDER_CODES = new Set([
+  'REQUEST_TIMEOUT',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ENETUNREACH',
+  'ETIMEDOUT',
+  'ABORT_ERR',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'PROVIDER_READ_FAILED'
+])
+const TRANSIENT_PROVIDER_NAMES = new Set(['AbortError', 'TimeoutError', 'NetworkError'])
+const TRANSIENT_PROVIDER_STATUSES = new Set([408, 425, 429])
+const SERVER_ERROR_STATUS_MINIMUM = 500
+const SERVER_ERROR_STATUS_MAXIMUM = 599
 
 /** Fulfilled provider value or sanitized provider failure captured without short-circuiting peers. */
 type Captured<T> = { ok: true; value: T } | { ok: false; error: SafeProviderFailure }
@@ -221,6 +238,59 @@ export const readOnlyMakerCheck = (): SetupCheck => ({
   observed: 'configured',
   required: 'maker address retained outside operator output'
 })
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const isTransientProviderFailure = (value: unknown) => {
+  if (!isRecord(value) || value.kind !== 'provider-error') return false
+
+  const transientCode = typeof value.code === 'string' && TRANSIENT_PROVIDER_CODES.has(value.code)
+  const transientName = typeof value.name === 'string' && TRANSIENT_PROVIDER_NAMES.has(value.name)
+  const transientStatus =
+    typeof value.status === 'number' &&
+    (TRANSIENT_PROVIDER_STATUSES.has(value.status) ||
+      (value.status >= SERVER_ERROR_STATUS_MINIMUM && value.status <= SERVER_ERROR_STATUS_MAXIMUM))
+
+  return transientCode || transientName || transientStatus
+}
+
+const isTransientBookFailure = (value: unknown) => {
+  if (!isRecord(value) || !Array.isArray(value.reasons) || value.reasons.length === 0) return false
+
+  return value.reasons.every(reason => {
+    if (!isRecord(reason)) return false
+
+    const keys = Object.keys(reason)
+    if (keys.length !== 1) return false
+
+    const providerFailure = reason.providerError ?? reason.timestampProviderError
+    return isTransientProviderFailure(providerFailure)
+  })
+}
+
+const isTransientFailedCheck = (check: SetupCheck) => {
+  if (check.status !== 'failed') return true
+
+  if (check.name === 'books') {
+    return (
+      Array.isArray(check.observed) &&
+      check.observed.length > 0 &&
+      check.observed.every(isTransientBookFailure)
+    )
+  }
+
+  return isRecord(check.observed) && isTransientProviderFailure(check.observed.error)
+}
+
+/**
+ * Identifies a failed readiness report caused exclusively by explicitly transient provider errors.
+ * @param report - Complete sanitized setup-check report.
+ * @returns Whether every failed check is a timeout, network failure, rate limit, or server error.
+ * @remarks Unknown provider failures and mixed provider/invariant failures remain fail-closed.
+ */
+export const hasOnlyTransientProviderFailures = (report: SetupCheckReport) =>
+  !report.ready && report.checks.every(isTransientFailedCheck)
 
 const bookProblems = (
   requestedId: `0x${string}`,
