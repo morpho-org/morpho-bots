@@ -56,6 +56,17 @@ const TARGET_QUERY = `query RailwayVariableTarget($projectId: String!) {
     services { edges { node { id name } } }
   }
 }`
+const VARIABLES_QUERY = `query VariablesForServiceDeployment(
+  $projectId: String!
+  $environmentId: String!
+  $serviceId: String!
+) {
+  variablesForServiceDeployment(
+    projectId: $projectId
+    environmentId: $environmentId
+    serviceId: $serviceId
+  )
+}`
 const VARIABLE_DELETE_MUTATION = `mutation RailwayVariableDelete(
   $projectId: String!
   $environmentId: String!
@@ -132,12 +143,12 @@ const resolveRailwayVariableTarget = async ({
 }
 
 /**
- * Deletes one Railway variable without retrieving variable values.
+ * Idempotently deletes one Railway variable from an explicitly scoped deployment target.
  * @param parameters - Fetch implementation, credential, exact target names, and variable name.
- * @returns `true` when Railway accepts the deletion.
+ * @returns `true` when Railway accepts the deletion, or `false` when the variable is already absent.
  * @throws `RailwayVariableOperationError` when target lookup, transport, or deletion fails.
- * @remarks Resolves only project/environment/service IDs before issuing an explicitly scoped
- * deletion; it never requests variable names or values.
+ * @remarks Railway's API exposes key existence through a value-bearing map. This function only
+ * checks the requested own key, never logs or returns the map, and skips deletion when absent.
  */
 export const deleteRailwayVariable = async ({
   fetcher,
@@ -152,6 +163,23 @@ export const deleteRailwayVariable = async ({
 }) => {
   const error = new RailwayVariableOperationError('delete', name)
   const ids = await resolveRailwayVariableTarget({ error, fetcher, target, token })
+  const listed = await postRailwayGraphql({
+    body: {
+      query: VARIABLES_QUERY,
+      variables: {
+        environmentId: ids.environmentId,
+        projectId: target.projectId,
+        serviceId: ids.serviceId
+      }
+    },
+    error,
+    fetcher,
+    token
+  })
+  const variables = recordField(listed, 'variablesForServiceDeployment')
+  if (!variables) throw error
+  if (!Object.prototype.hasOwnProperty.call(variables, name)) return false
+
   const data = await postRailwayGraphql({
     body: {
       query: VARIABLE_DELETE_MUTATION,
@@ -255,9 +283,10 @@ export const resolveProvisioningConfiguration = (env: Env): ProvisioningConfigur
  * Synchronizes Railway's mutually exclusive mode variables before changing the active mode.
  * @param config - Validated mode-specific provisioning values.
  * @param operations - Secret-safe Railway variable mutation operations.
- * @returns A promise that resolves after incompatible variables are removed and the mode is set.
- * @throws The underlying mutation error; mode is not changed when incompatible-variable deletion
- * fails.
+ * @returns A promise that resolves after the replacement variable and mode are set, then the
+ * incompatible variable is removed.
+ * @throws The underlying mutation error. A failed replacement or mode update leaves the old
+ * mode-specific variable in place.
  * @remarks Secret values are passed only to `setSecret` and are never logged by this helper.
  */
 export const synchronizeModeVariables = async (
@@ -265,13 +294,14 @@ export const synchronizeModeVariables = async (
   operations: ModeVariableOperations
 ) => {
   if (config.readOnly) {
-    await operations.deleteVariable('RESOLVER_PRIVATE_KEY')
     await operations.setVariable(`SIMULATION_CALLER_ADDRESS=${config.simulationCaller}`)
+    await operations.setVariable('READONLY=true')
+    await operations.deleteVariable('RESOLVER_PRIVATE_KEY')
   } else {
-    await operations.deleteVariable('SIMULATION_CALLER_ADDRESS')
     await operations.setSecret('RESOLVER_PRIVATE_KEY', config.resolverPrivateKey)
+    await operations.setVariable('READONLY=false')
+    await operations.deleteVariable('SIMULATION_CALLER_ADDRESS')
   }
-  await operations.setVariable(`READONLY=${config.readOnly}`)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

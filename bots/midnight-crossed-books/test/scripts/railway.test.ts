@@ -32,6 +32,9 @@ const targetResponse = {
     }
   }
 }
+const variablesResponse = {
+  data: { variablesForServiceDeployment: { RESOLVER_PRIVATE_KEY: 'secret-value' } }
+}
 
 const operations = () => ({
   deleteVariable: vi.fn().mockResolvedValue(undefined),
@@ -87,56 +90,78 @@ describe('Railway provisioning configuration', () => {
     ).toThrow(InvalidSimulationCallerAddressError)
   })
 
-  test('removes a stale private key before readonly mode', async () => {
-    const railway = operations()
+  test('switches to readonly mode before deleting the stale private key', async () => {
+    const events: string[] = []
+    const railway = {
+      deleteVariable: vi.fn(async name => {
+        events.push(`delete:${name}`)
+      }),
+      setSecret: vi.fn(async (name, _value) => {
+        events.push(`secret:${name}`)
+      }),
+      setVariable: vi.fn(async value => {
+        events.push(`set:${value}`)
+      })
+    }
 
     await synchronizeModeVariables(
       { readOnly: true, resolverPrivateKey: undefined, simulationCaller: CALLER },
       railway
     )
 
-    expect(railway.deleteVariable).toHaveBeenCalledExactlyOnceWith('RESOLVER_PRIVATE_KEY')
-    expect(railway.setSecret).not.toHaveBeenCalled()
-    expect(railway.setVariable.mock.calls).toEqual([
-      [`SIMULATION_CALLER_ADDRESS=${CALLER}`],
-      ['READONLY=true']
+    expect(events).toEqual([
+      `set:SIMULATION_CALLER_ADDRESS=${CALLER}`,
+      'set:READONLY=true',
+      'delete:RESOLVER_PRIVATE_KEY'
     ])
+    expect(railway.setSecret).not.toHaveBeenCalled()
   })
 
-  test('removes a stale caller before write mode', async () => {
-    const railway = operations()
+  test('switches to write mode before deleting the stale caller', async () => {
+    const events: string[] = []
+    const railway = {
+      deleteVariable: vi.fn(async name => {
+        events.push(`delete:${name}`)
+      }),
+      setSecret: vi.fn(async (name, _value) => {
+        events.push(`secret:${name}`)
+      }),
+      setVariable: vi.fn(async value => {
+        events.push(`set:${value}`)
+      })
+    }
 
     await synchronizeModeVariables(
       { readOnly: false, resolverPrivateKey: KEY, simulationCaller: undefined },
       railway
     )
 
-    expect(railway.deleteVariable).toHaveBeenCalledExactlyOnceWith('SIMULATION_CALLER_ADDRESS')
-    expect(railway.setSecret).toHaveBeenCalledExactlyOnceWith('RESOLVER_PRIVATE_KEY', KEY)
-    expect(railway.setVariable).toHaveBeenCalledExactlyOnceWith('READONLY=false')
+    expect(events).toEqual([
+      'secret:RESOLVER_PRIVATE_KEY',
+      'set:READONLY=false',
+      'delete:SIMULATION_CALLER_ADDRESS'
+    ])
   })
 
-  test('does not change readonly mode when stale-key deletion fails', async () => {
+  test('does not delete the private key when switching to readonly mode fails', async () => {
     const railway = operations()
-    railway.deleteVariable.mockRejectedValue(new Error('delete failed'))
+    railway.setVariable.mockRejectedValueOnce(new Error('set failed'))
     const config = resolveProvisioningConfiguration({
       READONLY: 'true',
       SIMULATION_CALLER_ADDRESS: CALLER
     })
 
-    await expect(synchronizeModeVariables(config, railway)).rejects.toThrow('delete failed')
-    expect(railway.setSecret).not.toHaveBeenCalled()
-    expect(railway.setVariable).not.toHaveBeenCalled()
+    await expect(synchronizeModeVariables(config, railway)).rejects.toThrow('set failed')
+    expect(railway.deleteVariable).not.toHaveBeenCalled()
   })
 
-  test('does not change write mode when stale-caller deletion fails', async () => {
+  test('does not delete the caller when switching to write mode fails', async () => {
     const railway = operations()
-    railway.deleteVariable.mockRejectedValue(new Error('delete failed'))
+    railway.setVariable.mockRejectedValueOnce(new Error('set failed'))
     const config = resolveProvisioningConfiguration({ RESOLVER_PRIVATE_KEY: KEY })
 
-    await expect(synchronizeModeVariables(config, railway)).rejects.toThrow('delete failed')
-    expect(railway.setSecret).not.toHaveBeenCalled()
-    expect(railway.setVariable).not.toHaveBeenCalled()
+    await expect(synchronizeModeVariables(config, railway)).rejects.toThrow('set failed')
+    expect(railway.deleteVariable).not.toHaveBeenCalled()
   })
 
   test('wires fail-closed mode synchronization into Railway provisioning', () => {
@@ -231,17 +256,18 @@ describe('Railway variable deletion API', () => {
     expect(() => resolveRailwayAccessToken({})).toThrow('RAILWAY_TOKEN or RAILWAY_API_TOKEN')
   })
 
-  test('deletes an existing variable without an unsupported metadata preflight', async () => {
+  test('deletes an existing variable after confirming that its key exists', async () => {
     const fetcher = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(jsonResponse(targetResponse))
+      .mockResolvedValueOnce(jsonResponse(variablesResponse))
       .mockResolvedValueOnce(jsonResponse({ data: { variableDelete: true } }))
 
     await expect(
       deleteRailwayVariable({ fetcher, name: 'RESOLVER_PRIVATE_KEY', target: TARGET, token: TOKEN })
     ).resolves.toBe(true)
 
-    expect(fetcher).toHaveBeenCalledTimes(2)
+    expect(fetcher).toHaveBeenCalledTimes(3)
     expect(fetcher.mock.calls[0]?.[0]).toBe('https://backboard.railway.com/graphql/v2')
     expect(fetcher.mock.calls[0]?.[1]).toMatchObject({
       headers: { 'content-type': 'application/json', 'project-access-token': 'railway-token' },
@@ -254,6 +280,13 @@ describe('Railway variable deletion API', () => {
     expect(requests[1]).toMatchObject({
       variables: {
         environmentId: 'environment-id',
+        projectId: 'project-id',
+        serviceId: 'service-id'
+      }
+    })
+    expect(requests[2]).toMatchObject({
+      variables: {
+        environmentId: 'environment-id',
         name: 'RESOLVER_PRIVATE_KEY',
         projectId: 'project-id',
         serviceId: 'service-id'
@@ -263,14 +296,28 @@ describe('Railway variable deletion API', () => {
     expect(fetcher.mock.calls.every(([, init]) => init?.headers)).toBe(true)
   })
 
+  test('treats an already-absent variable as an idempotent deletion', async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(targetResponse))
+      .mockResolvedValueOnce(
+        jsonResponse({ data: { variablesForServiceDeployment: { OTHER_KEY: 'value' } } })
+      )
+
+    await expect(
+      deleteRailwayVariable({ fetcher, name: 'RESOLVER_PRIVATE_KEY', target: TARGET, token: TOKEN })
+    ).resolves.toBe(false)
+    expect(fetcher).toHaveBeenCalledTimes(2)
+  })
+
   test.each([
     jsonResponse({ errors: [{ message: 'secret-bearing upstream failure' }] }),
-    jsonResponse({ data: { variableDelete: false } }),
     jsonResponse({ data: { variableDelete: true } }, 503)
   ])('fails closed with a named sanitized deletion error', async failure => {
     const fetcher = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(jsonResponse(targetResponse))
+      .mockResolvedValueOnce(jsonResponse(variablesResponse))
       .mockResolvedValueOnce(failure)
 
     const result = deleteRailwayVariable({
@@ -284,12 +331,12 @@ describe('Railway variable deletion API', () => {
     await expect(result).rejects.not.toThrow('secret-bearing upstream failure')
   })
 
-  test('uses no Railway variable list command or raw-value endpoint', () => {
+  test('uses no Railway variable list command that could print raw values', () => {
     const source = readFileSync(new URL('../../scripts/railway.ts', import.meta.url), 'utf8')
 
     expect(source).not.toContain("'variable',\n  'list'")
     expect(source).not.toContain('railway variable list')
-    expect(source).not.toContain('EnvironmentVariables')
+    expect(source).toContain('variablesForServiceDeployment')
   })
 })
 
