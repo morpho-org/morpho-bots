@@ -165,10 +165,13 @@ chain. This same-nonce fence prevents a caller from withholding several alternat
 the one least favorable to break-glass cleanup.
 
 The fence has one routine liveness exception: the same authenticated surface may request a
-**replacement** of its recorded, still-pending transaction. The middleware accepts only the exact
-canonical intent and economic payload already recorded at that nonce, or an exact zero-value
-self-cancel; the request cannot change offers, roots, groups, targets, calldata, value, or intent
-kind. It reads the current pending-block base fee independently, derives
+**replacement** of its recorded, still-pending transaction. The middleware accepts either the exact
+canonical intent and economic payload already recorded at that nonce—with offers, roots, groups,
+target, calldata, value, and intent kind unchanged—or an exact zero-value self-cancel at the same
+nonce. The self-cancel is explicitly exempt from those unchanged-payload constraints and must instead
+use the signer EOA as both sender and target, empty calldata, zero value, and the dedicated cancel
+intent kind; it cannot carry offers, roots, groups, or any other economic action. It reads the current
+pending-block base fee independently, derives
 `newPriorityFee = max(floor(previousPriorityFee * 1125 / 1000), previousPriorityFee + 1 wei)`, and
 derives
 `newMaxFee = max(floor(previousMaxFee * 1125 / 1000), previousMaxFee + 1 wei, currentBaseFee * 2 + newPriorityFee)`.
