@@ -39,11 +39,14 @@ import {
 } from '../bootstrap/bootstrap-reference-rate.service'
 import { createMakerAccount } from '../make/maker-account.utils'
 import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
+import { mapSelectedMarketItems } from '../selected-market-items.utils'
 import {
   activeOwnedLadderGroupIds,
   reconstructOwnedLadderPublication
 } from './ladder-active-publication.utils'
 import { LadderAdapterError } from './ladder-adapter.error'
+import { readLadderBookOffers } from './ladder-book.utils'
+import { calculateLadderCapacities } from './ladder-capacity.utils'
 import { ladderCashReservations } from './ladder-cash-reservation.utils'
 import { createLadderGroupOwnership } from './ladder-group-ownership.utils'
 import { MidnightLadderMakeService, type LadderOfferTransport } from './ladder-make.service'
@@ -65,7 +68,91 @@ type ProductionLadderAdapters = {
 }
 
 const minimum = (left: bigint, right: bigint) => (left < right ? left : right)
-const remaining = (limit: bigint, used: bigint) => (limit > used ? limit - used : 0n)
+
+type ProductionLadderCapacityParameters = {
+  marketId: Hex
+  balance: bigint
+  currentCredit: bigint
+  otherMarketCredit: bigint
+  targetMarketExposureAssets: bigint
+  maximumTotalExposureAssets: bigint
+  reservations: readonly { id: Hex; marketIds: readonly Hex[]; assets: bigint }[]
+}
+
+/**
+ * Derives production ladder capacities while failing closed on credit-reducing sells.
+ * @param parameters - Market balance, current and cross-market credit, exposure limits, and durable
+ * reservations. Reservations spanning this market reduce available balance exactly once. Until a
+ * conservative held-credit cost basis is reconstructed, current credit is excluded from sell-side
+ * capacity so the bot cannot quote a potentially loss-making credit reduction.
+ * @returns Capacity limits for the lower and higher sides of the requested market.
+ * @throws When the shared capacity calculator rejects inconsistent or invalid sizing inputs.
+ * @remarks This pure calculation does not read, write, publish, or mutate reservation state.
+ */
+export const calculateProductionLadderCapacities = (
+  parameters: ProductionLadderCapacityParameters
+) =>
+  calculateLadderCapacities({
+    ...parameters,
+    creditSaleCapacityAssets: 0n
+  })
+
+/**
+ * Deduplicates concurrent async work while allowing a fresh attempt after the active call settles.
+ * @param operation - Async operation to execute at most once concurrently.
+ * @returns A callable that shares the active promise and reruns the operation after settlement.
+ * @throws Forwards the rejection from the active operation to every caller sharing that attempt.
+ * @remarks The returned function retains only the currently active promise. Concurrent calls are
+ * deduplicated, while every call made after settlement starts a new operation.
+ */
+export const createRepeatableSingleFlight = <T>(operation: () => Promise<T>) => {
+  let active: Promise<T> | undefined
+  return () => {
+    active ??= operation().finally(() => {
+      active = undefined
+    })
+    return active
+  }
+}
+
+type RemovedLadderGroupCleanup = {
+  removed: ReadonlyMap<Hex, bigint>
+  indexedGroupIds: ReadonlySet<Hex>
+  readGroupConsumed: (groupId: Hex) => Promise<bigint>
+  invalidate: (groupId: Hex) => Promise<unknown>
+  forgetGroups: (groupIds: readonly Hex[]) => Promise<void>
+}
+
+/**
+ * Cancels removed ladder groups and tolerates a concurrent fill that exhausts the group.
+ * @param cleanup - Removed groups and the protocol/indexer operations needed to clean them.
+ * @returns Indexed canceled group IDs that remain visible as readiness tombstones.
+ * @throws `LadderAdapterError` when any group still requires cleanup after its attempt.
+ */
+export const cleanupRemovedLadderGroups = async (cleanup: RemovedLadderGroupCleanup) => {
+  const failures: unknown[] = []
+  const tombstones: Hex[] = []
+  for (const [groupId, maxAssets] of cleanup.removed) {
+    try {
+      if ((await cleanup.readGroupConsumed(groupId)) < maxAssets) {
+        try {
+          await cleanup.invalidate(groupId)
+        } catch (error) {
+          if ((await cleanup.readGroupConsumed(groupId)) < maxAssets) throw error
+        }
+        tombstones.push(groupId)
+        continue
+      }
+      if (!cleanup.indexedGroupIds.has(groupId)) await cleanup.forgetGroups([groupId])
+      else tombstones.push(groupId)
+    } catch (error) {
+      failures.push(error)
+    }
+  }
+  if (failures.length > 0) throw new LadderAdapterError('removed-market-cleanup')
+  return tombstones
+}
+
 const ownedLadderProspectiveOffers = (
   offers: readonly { marketId: Hex; buy: boolean; tick: bigint }[]
 ) =>
@@ -183,6 +270,9 @@ export const createProductionLadderAdapters = (
       ...(blockNumber === undefined ? {} : { blockNumber })
     })
 
+  let cleanupRemovedMarkets: () => Promise<readonly Hex[] | void> = async () => []
+  let removedGroupTombstones: ReadonlySet<Hex> = new Set()
+
   const positions: LadderPositionService = {
     readMarket: async marketId => {
       const selectedConfig = configByMarket.get(marketId)
@@ -248,29 +338,22 @@ export const createProductionLadderAdapters = (
         publications,
         bootstrapGroupIds,
         bootstrapOffers: pendingBootstrapOffers,
-        replacedGroupIds
+        replacedGroupIds,
+        ignoredGroupIds: removedGroupTombstones
       })
-      const reservedCash = reservations.reduce((sum, reservation) => sum + reservation.assets, 0n)
-      const availableCash = remaining(minimum(cashBalance, allowance), reservedCash)
-      const marketReserved = reservations
-        .filter(reservation => reservation.marketIds.includes(marketId))
-        .reduce((sum, reservation) => sum + reservation.assets, 0n)
-      const marketExposure = selectedPosition.credit + marketReserved
-      const totalCredit = positionSnapshots.reduce((sum, position) => sum + position.credit, 0n)
-      const totalExposure = totalCredit + reservedCash
+      const otherMarketCredit = positionSnapshots
+        .filter(position => position.marketId !== marketId)
+        .reduce((sum, position) => sum + position.credit, 0n)
 
-      return {
-        lowerRateCapacityAssets: selectedPosition.credit,
-        higherRateCapacityAssets: availableCash,
-        targetMarketCapacityAssets: remaining(
-          selectedConfig.targetMarketExposureAssets,
-          marketExposure
-        ),
-        maximumTotalCapacityAssets: remaining(
-          selectedConfig.maximumTotalExposureAssets,
-          totalExposure
-        )
-      }
+      return calculateProductionLadderCapacities({
+        marketId,
+        balance: minimum(cashBalance, allowance),
+        currentCredit: selectedPosition.credit,
+        otherMarketCredit,
+        targetMarketExposureAssets: selectedConfig.targetMarketExposureAssets,
+        maximumTotalExposureAssets: selectedConfig.maximumTotalExposureAssets,
+        reservations
+      })
     }
   }
 
@@ -292,11 +375,16 @@ export const createProductionLadderAdapters = (
     }
   }
 
-  const completeBookOffers = async () => {
-    const [groups, durableBootstrapIds, persistedBootstrapOffers] = await Promise.all([
+  const completeBookOffers = async (marketId: Hex) => {
+    const [groups, durableBootstrapIds, persistedBootstrapOffers, wholeBook] = await Promise.all([
       readGroups(),
       bootstrapOwnership.read(),
-      bootstrapOwnership.readOffers()
+      bootstrapOwnership.readOffers(),
+      readLadderBookOffers({
+        baseUrl: config.morphoApiBaseUrl,
+        marketIds: [marketId],
+        timeoutMs: config.requestTimeoutMs
+      })
     ])
     const pendingBootstrapOffers = await readLivePendingBootstrapOffers({
       groups,
@@ -304,8 +392,10 @@ export const createProductionLadderAdapters = (
       offers: persistedBootstrapOffers,
       readGroupConsumed
     })
-    const pendingOffers = await Promise.all(
-      pendingBootstrapOffers.map(async offer => {
+    const pendingOffers = await mapSelectedMarketItems(
+      marketId,
+      pendingBootstrapOffers,
+      async offer => {
         if (offer.tick !== undefined) {
           return {
             groupId: offer.groupId,
@@ -333,7 +423,7 @@ export const createProductionLadderAdapters = (
           tick: conservativeTick,
           overlapOwner: 'bootstrap-buy' as const
         }
-      })
+      }
     )
     const durableBootstrapGroupIds = new Set([
       ...config.v0OfferGroupIds,
@@ -346,10 +436,22 @@ export const createProductionLadderAdapters = (
         ? { overlapOwner: 'bootstrap-buy' as const }
         : {})
     }))
-    return { groups, book: [...indexedOffers, ...pendingOffers] }
+    const key = (offer: { groupId?: Hex; marketId: Hex; buy: boolean; tick: bigint }) =>
+      `${offer.groupId ?? ''}:${offer.marketId}:${offer.buy ? 'buy' : 'sell'}:${offer.tick}`
+    const indexedByKey = new Map(indexedOffers.map(offer => [key(offer), offer] as const))
+    const wholeBookKeys = new Set(wholeBook.map(key))
+    return {
+      groups,
+      book: [
+        ...wholeBook.map(offer => ({ ...offer, ...indexedByKey.get(key(offer)) })),
+        ...indexedOffers.filter(offer => !wholeBookKeys.has(key(offer))),
+        ...pendingOffers
+      ]
+    }
   }
 
   const readActive = async (marketId: Hex) => {
+    await cleanupRemovedMarkets()
     const [groups, publications] = await Promise.all([readGroups(), ladderOwnership.read()])
     return publications
       .filter(item => item.marketId === marketId)
@@ -359,6 +461,8 @@ export const createProductionLadderAdapters = (
   }
 
   const prepareUnsignedPublication = async (quote: LadderQuoteSet) => {
+    const selectedConfig = config.ladder.find(item => item.marketId === quote.marketId)
+    if (!selectedConfig) throw new LadderAdapterError('market-not-configured')
     const [market, block] = await Promise.all([
       midnight.getMarketData(quote.marketId),
       client.getBlock({ blockTag: 'latest' })
@@ -368,7 +472,9 @@ export const createProductionLadderAdapters = (
       market,
       maker,
       ratifier: config.setup.ratifier,
-      now: block.timestamp
+      now: block.timestamp,
+      minimumRateBps: selectedConfig.minimumRateBps,
+      maximumRateBps: selectedConfig.maximumRateBps
     })
     await prepared.tree.mempoolValidate({
       chainId: base.id,
@@ -381,7 +487,7 @@ export const createProductionLadderAdapters = (
     if (parameters.reason === 'rest' || !parameters.desired) return
     const prepared = await prepareUnsignedPublication(parameters.desired)
     const [bookState, publications] = await Promise.all([
-      completeBookOffers(),
+      completeBookOffers(parameters.marketId),
       ladderOwnership.read()
     ])
     assertLadderProspectiveSpread({
@@ -439,7 +545,7 @@ export const createProductionLadderAdapters = (
       const [publications, groups] = await Promise.all([ladderOwnership.read(), readGroups()])
       return activeOwnedLadderGroupIds(publications, groups, marketId)
     },
-    listBookOffers: async () => (await completeBookOffers()).book,
+    listBookOffers: async marketId => (await completeBookOffers(marketId)).book,
     preparePublication: async quote => {
       const prepared = await prepareUnsignedPublication(quote)
       const ratifierType = configuredRatifierType(config.setup.ratifier)
@@ -545,10 +651,42 @@ export const createProductionLadderAdapters = (
     forgetGroups: ladderOwnership.forget
   }
 
+  cleanupRemovedMarkets = createRepeatableSingleFlight(async () => {
+    let indexedGroupIds: Set<Hex> | undefined
+    const readIndexedGroupIds = async () => {
+      indexedGroupIds ??= new Set((await readGroups()).map(group => group.id))
+      return [...indexedGroupIds]
+    }
+    await ladderOwnership.migrate(readIndexedGroupIds)
+    const publications = await ladderOwnership.read()
+    const configuredMarkets = new Set(config.ladder.map(item => item.marketId))
+    const retainedGroupIds = new Set(
+      publications
+        .filter(publication => configuredMarkets.has(publication.marketId))
+        .flatMap(publication => publication.groups.map(group => group.groupId))
+    )
+    const removed = new Map(
+      ownedGroups(publications)
+        .filter(group => !retainedGroupIds.has(group.groupId))
+        .map(group => [group.groupId, group.maxAssets] as const)
+    )
+    if (removed.size === 0) return []
+    const indexed = indexedGroupIds ?? new Set(await readIndexedGroupIds())
+    const tombstones = await cleanupRemovedLadderGroups({
+      removed,
+      indexedGroupIds: indexed,
+      readGroupConsumed,
+      invalidate: groupId => transport.invalidate(groupId),
+      forgetGroups: ladderOwnership.forget
+    })
+    removedGroupTombstones = new Set(tombstones)
+    return tombstones
+  })
+
   return {
     positions,
     rates,
-    make: new MidnightLadderMakeService(transport),
+    make: Object.assign(new MidnightLadderMakeService(transport), { cleanupRemovedMarkets }),
     validateReconcile
   }
 }

@@ -9,11 +9,23 @@ import { $ } from 'execa'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { parseLatestStatus, parseServices } from './railway'
+import {
+  deleteRailwayVariable,
+  isRailwayVariableMissingError,
+  parseLatestStatus,
+  parseServices,
+  railwayVariableDeleteArgs,
+  railwayVariableSetArgs,
+  resolveRailwayAccessToken,
+  resolveProvisioningConfiguration,
+  synchronizeModeVariables
+} from './railway'
+import { RailwayVariableOperationError } from './railway-variable-operation.error'
 
 const PROJECT_ID = required(process.env, 'RAILWAY_PROJECT_ID')
 const ENVIRONMENT = process.env.RAILWAY_ENVIRONMENT?.trim() || 'production'
 const SERVICE = ENVIRONMENT === 'production' ? 'bot' : `${ENVIRONMENT}-bot`
+const VARIABLE_TARGET = { environment: ENVIRONMENT, projectId: PROJECT_ID, service: SERVICE }
 const DOCKERFILE_PATH = 'bots/midnight-crossed-books/Dockerfile'
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 const DEPLOY_ONLY = /^(1|true)$/i.test(process.env.DEPLOY_ONLY?.trim() || '')
@@ -52,12 +64,6 @@ function errorDetails(error: unknown) {
   return error instanceof Error ? error.message : String(error)
 }
 
-function assertPrivateKey(key: string) {
-  if (!/^0x[0-9a-fA-F]{64}$/.test(key)) {
-    throw new Error('RESOLVER_PRIVATE_KEY must be a 0x-prefixed 32-byte hex string')
-  }
-}
-
 async function assertCli() {
   const { error } = await tryCatch($`railway --version`)
   if (error) {
@@ -88,27 +94,57 @@ async function listServices() {
 async function ensureService() {
   if ((await listServices()).some(service => service.name === SERVICE)) {
     console.log(`Service ${SERVICE} already exists.`)
-    return
+    return false
   }
 
   const { error } = await tryCatch($`railway add --service ${SERVICE} --json`)
   if (error) throw new Error(`Failed to create service ${SERVICE}: ${errorDetails(error)}`)
   console.log(`Created service ${SERVICE}.`)
+  return true
 }
 
 async function setVariable(value: string) {
   const key = value.split('=')[0]
-  const { error } = await tryCatch($`railway variable set ${value} -s ${SERVICE} --skip-deploys`)
-  if (error) throw new Error(`Failed to set ${key} on ${SERVICE}: ${errorDetails(error)}`)
+  const { error } = await tryCatch($('railway', railwayVariableSetArgs(value, VARIABLE_TARGET)))
+  if (error) throw new RailwayVariableOperationError('set', key)
   console.log(`Set ${key} on ${SERVICE}.`)
 }
 
 async function setSecret(name: string, value: string) {
   const { error } = await tryCatch(
-    $({ input: value })`railway variable set ${name} --stdin -s ${SERVICE} --skip-deploys`
+    $({ input: value })('railway', railwayVariableSetArgs(name, VARIABLE_TARGET, { stdin: true }))
   )
-  if (error) throw new Error(`Failed to set ${name} on ${SERVICE}`)
+  if (error) throw new RailwayVariableOperationError('set', name)
   console.log(`Set ${name} on ${SERVICE} (secret).`)
+}
+
+const deleteVariable = async (name: string) => {
+  if (!process.env.RAILWAY_TOKEN?.trim() && !process.env.RAILWAY_API_TOKEN?.trim()) {
+    const { error } = await tryCatch($('railway', railwayVariableDeleteArgs(name, VARIABLE_TARGET)))
+    if (error && !isRailwayVariableMissingError(name, errorDetails(error))) {
+      throw new RailwayVariableOperationError('delete', name)
+    }
+    if (error) {
+      console.log(`${name} is already absent on ${SERVICE}.`)
+      return
+    }
+    console.log(`Deleted ${name} on ${SERVICE} (stale).`)
+    return
+  }
+
+  const deleted = await deleteRailwayVariable({
+    fetcher: fetch,
+    name,
+    target: VARIABLE_TARGET,
+    token: resolveRailwayAccessToken(process.env)
+  })
+  console.log(
+    deleted ? `Deleted ${name} on ${SERVICE} (stale).` : `${name} is already absent on ${SERVICE}.`
+  )
+}
+
+const skipVariableDeletion = async (name: string) => {
+  console.log(`${name} is already absent on newly created service ${SERVICE}.`)
 }
 
 async function deployService() {
@@ -165,15 +201,18 @@ if (DEPLOY_ONLY) {
   reportStatus(await waitForDeploy())
 } else {
   const rpcUrl = required(process.env, 'RPC_URL')
-  const resolverPrivateKey = required(process.env, 'RESOLVER_PRIVATE_KEY')
-  assertPrivateKey(resolverPrivateKey)
+  const config = resolveProvisioningConfiguration(process.env)
 
   await ensureContext()
-  await ensureService()
+  const serviceCreated = await ensureService()
   await setVariable('CHAIN_ID=8453')
+  await synchronizeModeVariables(config, {
+    deleteVariable: serviceCreated ? skipVariableDeletion : deleteVariable,
+    setSecret,
+    setVariable
+  })
   await setVariable(`RAILWAY_DOCKERFILE_PATH=${DOCKERFILE_PATH}`)
   await setSecret('RPC_URL', rpcUrl)
-  await setSecret('RESOLVER_PRIVATE_KEY', resolverPrivateKey)
   await deployService()
   reportStatus(await waitForDeploy())
 }

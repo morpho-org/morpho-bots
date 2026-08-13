@@ -869,6 +869,23 @@ describe('readBootstrapGroups', () => {
     expect(bootstrapBookOffers(groups)).toHaveLength(1_000)
   })
 
+  test('filters cleanup tombstones from the spread-book projection', async () => {
+    const ignoredGroupId: Hex = `0x${'ef'.repeat(32)}`
+    const groups = await readBootstrapGroups(
+      { maker, requestTimeoutMs: 1_000 },
+      {
+        request: async () => ({
+          data: [group(), group({ id: ignoredGroupId })],
+          cursor: null
+        })
+      }
+    )
+
+    expect(bootstrapBookOffers(groups, [ignoredGroupId]).map(offer => offer.groupId)).toEqual([
+      groupId
+    ])
+  })
+
   test('requests only Base offer groups', async () => {
     let requestedUrl = ''
     await readBootstrapGroups(

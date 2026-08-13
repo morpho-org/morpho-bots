@@ -17,6 +17,8 @@ import { getBlockNumber } from 'viem/actions'
 
 import { CrossedBooksBotService } from './application/crossed-books-bot.service'
 import { ConfigService } from './config/config.service'
+import { InvalidConfigurationError } from './config/invalid-configuration.error'
+import { ResolverPrivateKeyRequiredError } from './config/resolver-private-key-required.error'
 import { MatchingService } from './domain/matching.service'
 import { createMorphoApiClient } from './infrastructure/morpho-api/client'
 import { MorphoApiService } from './infrastructure/morpho-api/service'
@@ -32,6 +34,15 @@ function resolverSelector() {
   return toFunctionSelector(resolveAbi)
 }
 
+/**
+ * Composes the crossed-books resolver runtime for the selected environment mode.
+ * @param environment - Runtime configuration and optional observability values.
+ * @returns A lifecycle handle that polls immediately and then follows new blocks when started.
+ * @throws `InvalidConfigurationError` when readonly mode or its caller is invalid.
+ * @throws `Error` when other configuration is invalid or required contracts are not deployed.
+ * @remarks Readonly composition creates no signer, pending transaction queue, or balance monitor;
+ * both modes perform RPC deployment checks during composition.
+ */
 export async function createApplication(
   environment: Record<string, string | undefined> = process.env
 ) {
@@ -43,23 +54,45 @@ export async function createApplication(
       ...railwayContext()
     }
   })
-  const signer = createSigner({
-    chain: config.chain,
-    rpcUrl: config.rpcUrl,
-    rpcUrlFallback: config.rpcUrlFallback,
-    privateKey: config.privateKey,
-    policy: {
-      chainId: config.chainId,
-      executor: config.resolver,
-      selector: resolverSelector(),
-      maxFeePerGasWei: config.maxFeeWei,
-      maxGasLimit: DEFAULT_MAX_GAS_LIMIT,
-      maxDataBytes: DEFAULT_MAX_DATA_BYTES
-    },
-    logger
-  })
-  const sender = signer.account.address
   const chainClient = createDeploylessClient(config)
+  let sender = config.resolver
+  let signer: ReturnType<typeof createSigner> | undefined
+  let queue: ReturnType<typeof createPendingQueue> | undefined
+
+  if (config.readOnly) {
+    if (!config.simulationCaller) {
+      throw new InvalidConfigurationError('Readonly mode requires SIMULATION_CALLER_ADDRESS')
+    }
+    sender = config.simulationCaller
+  } else {
+    const privateKey = config.privateKey
+    if (!privateKey) throw new ResolverPrivateKeyRequiredError()
+    signer = createSigner({
+      chain: config.chain,
+      rpcUrl: config.rpcUrl,
+      rpcUrlFallback: config.rpcUrlFallback,
+      privateKey,
+      policy: {
+        chainId: config.chainId,
+        executor: config.resolver,
+        selector: resolverSelector(),
+        maxFeePerGasWei: config.maxFeeWei,
+        maxGasLimit: DEFAULT_MAX_GAS_LIMIT,
+        maxDataBytes: DEFAULT_MAX_DATA_BYTES
+      },
+      logger
+    })
+    sender = signer.account.address
+    queue = createPendingQueue({
+      send: signer.send,
+      getReceipt: signer.getReceipt,
+      getBaseFee: signer.getBaseFee,
+      syncNonce: signer.syncNonce,
+      getConsumedNonce: signer.consumedNonce,
+      maxFeeWei: config.maxFeeWei,
+      logger
+    })
+  }
 
   await assertContractDeployed(chainClient, config.midnight, 'Midnight singleton')
   await assertContractDeployed(
@@ -69,28 +102,18 @@ export async function createApplication(
     'deploy it with `pnpm --filter @repo/contracts run deploy:crossed-books-resolver`'
   )
 
-  const queue = createPendingQueue({
-    send: signer.send,
-    getReceipt: signer.getReceipt,
-    getBaseFee: signer.getBaseFee,
-    syncNonce: signer.syncNonce,
-    getConsumedNonce: signer.consumedNonce,
-    maxFeeWei: config.maxFeeWei,
-    logger
-  })
   const markets = new MorphoApiService(
     createMorphoApiClient(config.apiBaseUrl),
     config.chainId as 8453
   )
   const books = new RouterApiService(createRouterApiClient(config.routerApiBaseUrl))
   const matching = new MatchingService()
+  const submission = queue && signer ? { queue, signer, maxFeeWei: config.maxFeeWei } : undefined
   const resolverTransport = new ViemResolverTransport(
     chainClient,
     sender,
     config.resolver,
-    queue,
-    signer,
-    config.maxFeeWei
+    submission
   )
   const resolver = new ResolverExecutionService(
     resolverTransport,
@@ -103,10 +126,13 @@ export async function createApplication(
     matching,
     resolver,
     config.maxMatches,
-    () => queue.inflightLabels(),
+    () => queue?.inflightLabels() ?? new Set(),
+    config.readOnly,
     logger
   )
-  const balance = createBalanceMonitor({ address: sender, read: signer.balance, logger })
+  const balance = signer
+    ? createBalanceMonitor({ address: sender, read: signer.balance, logger })
+    : undefined
   const heartbeat = createHeartbeatMonitor({
     url: environment.BETTERSTACK_HEARTBEAT_URL,
     logger
@@ -116,13 +142,13 @@ export async function createApplication(
   const runner = createRunner({
     getBlockNumber: () => getBlockNumber(chainClient),
     tick: async blockNumber => {
-      if (Date.now() < nextScanAt || queue.size > 0) return
+      if (Date.now() < nextScanAt || (queue?.size ?? 0) > 0) return
       nextScanAt = Date.now() + config.scanIntervalMs
       await bot.run({ blockNumber })
     },
     maintain: async blockNumber => {
-      await queue.onBlock(blockNumber)
-      await balance.maybeLog(blockNumber)
+      await queue?.onBlock(blockNumber)
+      await balance?.maybeLog(blockNumber)
     },
     logger
   })
@@ -130,6 +156,7 @@ export async function createApplication(
   return {
     async start() {
       logger.info('startup', {
+        readOnly: config.readOnly,
         sender,
         midnight: config.midnight,
         resolver: config.resolver,

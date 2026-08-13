@@ -168,6 +168,7 @@ async function waitForRpc(url: string, timeoutMs = 30_000): Promise<void> {
 //   8546 bots/quoter-bot         e2e/setup-check
 //   8547 bots/midnight-liquidation  fork/liquidation
 //   8548 bots/midnight-liquidation  fork/queue
+//   8549 bots/quoter-bot            e2e/quoter-bot
 /**
  * Boots an anvil instance forking Base at `forkBlock` (chain id pinned to Base so signatures match).
  * `port` is explicit so parallel fork test files never collide — see the registry above.

@@ -27,8 +27,8 @@ interface BootstrapOfferTransport {
   listActiveGroups(): Promise<readonly BootstrapActiveGroup[]>
   /** Lists explicitly owned groups that are not conclusively canceled. @returns Group IDs requiring exhaustive cleanup. */
   listOwnedGroupIds?(): Promise<readonly Hex[]>
-  /** Lists the maker's complete current book. @returns Every active offer needed for spread safety. */
-  listBookOffers(): Promise<readonly BootstrapBookOffer[]>
+  /** Lists the maker's current book for one market. @param marketId - Market being reconciled. @returns Every active offer needed for spread safety. */
+  listBookOffers(marketId: Hex): Promise<readonly BootstrapBookOffer[]>
   /** Projects a domain offer into its exact protocol tick. @param offer - Desired offer. @param exactTick - Existing owned sell tick required for an intentional overlap. @returns Prospective book offer. */
   toProspectiveBookOffer(offer: BootstrapOffer, exactTick?: bigint): Promise<BootstrapBookOffer>
   /** Prepares one policy-checked publication without broadcasting it. @param offer - Desired offer. @returns Reserved group ID and a one-shot confirmed ratifier/publisher. */
@@ -100,7 +100,7 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
       let resolvedOffer: BootstrapOffer | undefined
       if (parameters.desiredOffer) {
         const [book, durableOwnedGroupIds, prospective] = await Promise.all([
-          this.transport.listBookOffers(),
+          this.transport.listBookOffers(parameters.marketId),
           this.transport.listOwnedGroupIds?.() ?? Promise.resolve([]),
           this.transport.toProspectiveBookOffer(parameters.desiredOffer)
         ])
@@ -264,7 +264,7 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
   async preview(parameters: Parameters<NonNullable<BootstrapMakeService['preview']>>[0]) {
     const groups = await this.strategyGroups()
     const [book, durableOwnedGroupIds, prospective] = await Promise.all([
-      this.transport.listBookOffers(),
+      this.transport.listBookOffers(parameters.marketId),
       this.transport.listOwnedGroupIds?.() ?? Promise.resolve([]),
       this.transport.toProspectiveBookOffer(parameters.desiredOffer)
     ])

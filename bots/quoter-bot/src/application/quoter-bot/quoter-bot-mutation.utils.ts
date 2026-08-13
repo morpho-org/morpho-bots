@@ -34,7 +34,10 @@ export const serializeQuoterBotWrites = (
       readActive: marketId => services.ladder.readActive(marketId),
       reconcile: parameters => enqueue(() => services.ladder.reconcile(parameters)),
       hardHalt: parameters => enqueue(() => services.ladder.hardHalt(parameters)),
-      cleanup: parameters => enqueue(() => services.ladder.cleanup(parameters))
+      cleanup: parameters => enqueue(() => services.ladder.cleanup(parameters)),
+      cleanupRemovedMarkets: services.ladder.cleanupRemovedMarkets
+        ? () => enqueue(() => services.ladder.cleanupRemovedMarkets!())
+        : undefined
     }
   }
 }

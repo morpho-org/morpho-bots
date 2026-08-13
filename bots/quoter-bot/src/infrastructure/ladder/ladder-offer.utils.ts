@@ -18,6 +18,8 @@ type BuildLadderTreeParameters = {
   maker: Address
   ratifier: Address
   now: bigint
+  minimumRateBps?: bigint
+  maximumRateBps?: bigint
 }
 
 /** Complete locally built ladder tree plus group/rung ownership metadata. */
@@ -38,6 +40,22 @@ const rateToTick = (rateBps: bigint, market: IMarket, now: bigint) => {
   if (timeToMaturity <= 0n) throw new LadderAdapterError('market-matured')
   const periodRateWad = (rateBps * (WAD / 10_000n) * timeToMaturity) / YEAR_SECONDS
   return TickLib.priceToTick(TickLib.rateToPrice(periodRateWad), BigInt(market.tickSpacing))
+}
+
+const boundedTick = (rateBps: bigint, parameters: BuildLadderTreeParameters) => {
+  const tick = rateToTick(rateBps, parameters.market, parameters.now)
+  const timeToMaturity = BigInt(parameters.market.params.maturity) - parameters.now
+  const encodedRateWad = TickLib.tickToApr(tick, timeToMaturity)
+  const basisPointWad = WAD / 10_000n
+  if (
+    (parameters.minimumRateBps !== undefined &&
+      encodedRateWad < parameters.minimumRateBps * basisPointWad) ||
+    (parameters.maximumRateBps !== undefined &&
+      encodedRateWad > parameters.maximumRateBps * basisPointWad)
+  ) {
+    throw new LadderAdapterError('encoded-rate-out-of-bounds')
+  }
+  return tick
 }
 
 const sideOffers = (
@@ -67,7 +85,7 @@ const sideOffers = (
     rung,
     offer: Offer.create({
       ...common,
-      tick: rateToTick(rung.rateBps, parameters.market, parameters.now),
+      tick: boundedTick(rung.rateBps, parameters),
       maxAssets: maxAssetsByRung[index]!
     })
   }))
@@ -75,14 +93,17 @@ const sideOffers = (
 
 /**
  * Converts one domain quote set into the exact mixed-side Midnight offer tree.
- * @param parameters - Quote, fresh market, maker, ratifier, and block timestamp.
+ * @param parameters - Quote, fresh market, maker, ratifier, block timestamp, and optional minimum
+ * and maximum APR bounds in basis points enforced against the exact encoded rate after tick rounding.
  * @returns Tree, protocol-group-to-rung mapping, and prospective book ticks.
- * @throws `LadderAdapterError` when the market has matured; SDK validation errors pass through.
+ * @throws `LadderAdapterError` when the market has matured, the ladder is empty, or a rounded tick's
+ * exact encoded APR is outside a supplied bound; SDK validation errors pass through.
  * @remarks Midnight prices are inverse to rates, so lower rates map to reduce-only sells and higher
  * rates map to lend buys. This keeps every buy tick strictly below every sell tick. Each offer uses
  * the fresh block timestamp as its start so a later publication cannot reuse a previously consumed
  * content-addressed group. `shared-rung` gives each rung an independent cap; `per-book` shares one
- * cap across each side.
+ * cap across each side. This function constructs local values only and does not publish or mutate
+ * persisted ownership.
  */
 export const buildLadderTree = (parameters: BuildLadderTreeParameters): PreparedLadderTree => {
   const caps = offerMaxAssetsByRung(parameters.quote)

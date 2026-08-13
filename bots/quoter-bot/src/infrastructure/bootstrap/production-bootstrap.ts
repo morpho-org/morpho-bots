@@ -28,12 +28,14 @@ import type { HistoricalBlockReader } from '../reference/blue-reference-reader.u
 import type { BootstrapActiveGroup, BootstrapInventoryReader } from './bootstrap-position.service'
 
 import { pendingLadderQuoteSets } from '../ladder/ladder-active-publication.utils'
+import { readLadderBookOffers } from '../ladder/ladder-book.utils'
 import { pendingLadderBuyReservations } from '../ladder/ladder-cash-reservation.utils'
 import { createLadderGroupOwnership } from '../ladder/ladder-group-ownership.utils'
 import { buildLadderTree } from '../ladder/ladder-offer.utils'
 import { createMakerAccount } from '../make/maker-account.utils'
 import { ReadOnlyBootstrapMakeService } from '../make/read-only-bootstrap-make.service'
 import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
+import { mapSelectedMarketItems } from '../selected-market-items.utils'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 import { bootstrapExposureMarketIds } from './bootstrap-exposure.utils'
 import { createBootstrapGroupOwnership } from './bootstrap-group-ownership.utils'
@@ -184,6 +186,7 @@ type ProductionBootstrapAdapters = {
  * @param config - Fully validated runtime configuration.
  * @param writeReadOnlyEvent - Optional terminal writer for read-only make records.
  * @param configuredAccount - Optional preconstructed account for write-mode adapter reuse.
+ * @param ignoredOfferGroupIds - Recently canceled ladder groups still visible in the API index.
  * @returns Production read ports and either a live mutation queue or terminal-only make adapter.
  * @throws `BootstrapAdapterError` when write-mode signer identity differs from the configured maker;
  * later provider reads, signing, publication, or invalidation may also fail.
@@ -194,7 +197,8 @@ type ProductionBootstrapAdapters = {
 export const createProductionBootstrapAdapters = (
   config: ConfigService,
   writeReadOnlyEvent?: (line: string) => void | Promise<void>,
-  configuredAccount?: Awaited<ReturnType<typeof createMakerAccount>>
+  configuredAccount?: Awaited<ReturnType<typeof createMakerAccount>>,
+  ignoredOfferGroupIds: readonly Hex[] = []
 ): ProductionBootstrapAdapters | Promise<ProductionBootstrapAdapters> => {
   const maker = config.identity.maker
   const client = createPublicClient({
@@ -215,6 +219,16 @@ export const createProductionBootstrapAdapters = (
     maker,
     strategyMarketIds: config.ladder.map(item => item.marketId)
   })
+  const ignoredGroupIds = new Set(ignoredOfferGroupIds)
+  const readLadderPublications = async () =>
+    (await ladderOwnership.read())
+      .map(publication => ({
+        ...publication,
+        groups: publication.groups.filter(group => !ignoredGroupIds.has(group.groupId))
+      }))
+      .filter(publication => publication.groups.length > 0)
+  const readLadderGroupIds = async () =>
+    (await ladderOwnership.readGroupIds()).filter((groupId: Hex) => !ignoredGroupIds.has(groupId))
   const readGroups = () =>
     readBootstrapGroups({
       maker,
@@ -311,7 +325,7 @@ export const createProductionBootstrapAdapters = (
       readGroups(),
       ownership.read(),
       ownership.readOffers(),
-      ladderOwnership.read()
+      readLadderPublications()
     ])
     const intended = new Map(
       ownedOffers.map(offer => [`${offer.groupId}:${offer.marketId}`, offer] as const)
@@ -422,15 +436,23 @@ export const createProductionBootstrapAdapters = (
     new Map(config.bootstrap.map(item => [item.marketId, item.targetRate] as const)),
     blueRates
   )
-  const completeBookOffers = async () => {
-    const [block, groups, ladderPublications] = await Promise.all([
+  const completeBookOffers = async (marketId: Hex) => {
+    const [block, groups, ladderPublications, wholeBook] = await Promise.all([
       client.getBlock({ blockTag: 'latest' }),
       readGroups(),
-      ladderOwnership.read()
+      readLadderPublications(),
+      readLadderBookOffers({
+        baseUrl: config.morphoApiBaseUrl,
+        marketIds: [marketId],
+        timeoutMs: config.requestTimeoutMs,
+        ignoredOfferGroupIds
+      })
     ])
     const pendingLadderOffers = (
-      await Promise.all(
-        pendingLadderQuoteSets(ladderPublications, groups).map(async quote => {
+      await mapSelectedMarketItems(
+        marketId,
+        pendingLadderQuoteSets(ladderPublications, groups),
+        async quote => {
           const [market, block] = await Promise.all([
             midnight.getMarketData(quote.marketId),
             client.getBlock({ blockTag: 'latest' })
@@ -442,23 +464,29 @@ export const createProductionBootstrapAdapters = (
             ratifier: config.setup.ratifier,
             now: block.timestamp
           }).bookOffers
-        })
+        }
       )
     ).flat()
+    const enrichedBook = bootstrapLadderSellOverlapBookOffers({
+      groups,
+      eligibleSellGroupIds: new Set(
+        ladderPublications.flatMap(publication =>
+          publication.groups.filter(group => group.side === 'lower').map(group => group.groupId)
+        )
+      ),
+      currentTimestamp: block.timestamp,
+      pendingLadderOffers
+    })
+    const key = (offer: { groupId?: Hex; marketId: Hex; buy: boolean; tick: bigint }) =>
+      `${offer.groupId ?? ''}:${offer.marketId}:${offer.buy ? 'buy' : 'sell'}:${offer.tick}`
+    const enrichedByKey = new Map(enrichedBook.map(offer => [key(offer), offer] as const))
+    const wholeBookKeys = new Set(wholeBook.map(key))
     return {
       groups,
       ladderPublications,
       book: [
-        ...bootstrapLadderSellOverlapBookOffers({
-          groups,
-          eligibleSellGroupIds: new Set(
-            ladderPublications.flatMap(publication =>
-              publication.groups.filter(group => group.side === 'lower').map(group => group.groupId)
-            )
-          ),
-          currentTimestamp: block.timestamp,
-          pendingLadderOffers
-        })
+        ...wholeBook.map(offer => ({ ...offer, ...enrichedByKey.get(key(offer)) })),
+        ...enrichedBook.filter(offer => !wholeBookKeys.has(key(offer)))
       ]
     }
   }
@@ -487,7 +515,7 @@ export const createProductionBootstrapAdapters = (
       if (!parameters.desiredOffer) return parameters
 
       const [bookState, ownedIds, activeStrategyGroups, initialPrepared] = await Promise.all([
-        completeBookOffers(),
+        completeBookOffers(parameters.marketId),
         ownership.read(),
         activeGroups(),
         prepareOfferAtLatest(parameters.desiredOffer)
@@ -581,7 +609,8 @@ export const createProductionBootstrapAdapters = (
   const account = configuredAccount ?? createMakerAccount(config.identity)
   if (account instanceof Promise) {
     return account.then(
-      value => createProductionBootstrapAdapters(config, writeReadOnlyEvent, value),
+      value =>
+        createProductionBootstrapAdapters(config, writeReadOnlyEvent, value, ignoredOfferGroupIds),
       () => {
         throw new BootstrapAdapterError('maker-private-key-mismatch')
       }
@@ -621,7 +650,7 @@ export const createProductionBootstrapAdapters = (
     rateBounds: marketId => config.bootstrap.find(item => item.marketId === marketId),
     listActiveGroups: activeGroups,
     listOwnedGroupIds: uncanceledOwnedGroupIds,
-    listBookOffers: async () => (await completeBookOffers()).book,
+    listBookOffers: async marketId => (await completeBookOffers(marketId)).book,
     toProspectiveBookOffer: async (offer, exactTick) => {
       const prepared = await prepareOfferAtLatest(offer, exactTick)
       const created = prepared.created
@@ -664,7 +693,7 @@ export const createProductionBootstrapAdapters = (
       const [groups, ownedIds, ladderOwnedIds, activeStrategyGroups] = await Promise.all([
         readGroups(),
         ownership.read(),
-        ladderOwnership.readGroupIds(),
+        readLadderGroupIds(),
         activeGroups()
       ])
       const replacedGroupIds = bootstrapMarketGroupIds(activeStrategyGroups, offer.marketId)

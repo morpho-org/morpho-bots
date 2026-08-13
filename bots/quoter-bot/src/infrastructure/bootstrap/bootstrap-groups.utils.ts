@@ -271,9 +271,14 @@ export const bootstrapReservedLoanAssets = (
 /**
  * Flattens the provider book without re-expanding each multi-market group projection.
  * @param groups - Canonical groups, potentially repeated once per buy-offer market.
- * @returns Distinct offers annotated with their owning group ID in linear space and time.
+ * @param ignoredGroupIds - Recently canceled groups that may remain visible during indexer lag.
+ * @returns Distinct non-ignored offers annotated with their owning group ID in linear space and time.
  */
-export const bootstrapBookOffers = (groups: readonly BootstrapRawGroup[]) => {
+export const bootstrapBookOffers = (
+  groups: readonly BootstrapRawGroup[],
+  ignoredGroupIds: readonly Hex[] = []
+) => {
+  const ignoredGroups = new Set(ignoredGroupIds)
   const visitedGroups = new Set<Hex>()
   const offers = new Map<
     string,
@@ -283,7 +288,7 @@ export const bootstrapBookOffers = (groups: readonly BootstrapRawGroup[]) => {
     }
   >()
   for (const group of groups) {
-    if (visitedGroups.has(group.id)) continue
+    if (ignoredGroups.has(group.id) || visitedGroups.has(group.id)) continue
     visitedGroups.add(group.id)
     for (const offer of group.offers) {
       const key = `${group.id}:${offer.marketId}:${offer.buy ? 'buy' : 'sell'}:${offer.tick}`

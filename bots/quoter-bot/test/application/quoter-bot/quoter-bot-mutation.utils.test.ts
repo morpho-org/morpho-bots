@@ -138,4 +138,30 @@ describe('serializeQuoterBotWrites', () => {
     releaseBootstrap?.()
     await mutation
   })
+
+  test('forwards removed-market cleanup through the shared mutation queue', async () => {
+    const events: string[] = []
+    let releaseBootstrap: (() => void) | undefined
+    const services = createServices(events)
+    services.bootstrap.reconcile = vi.fn(
+      () =>
+        new Promise<void>(resolve => {
+          events.push('bootstrap:start')
+          releaseBootstrap = resolve
+        })
+    )
+    services.ladder.cleanupRemovedMarkets = vi.fn(async () => {
+      events.push('ladder:cleanup-removed')
+    })
+    const serialized = serializeQuoterBotWrites(services)
+
+    const mutation = serialized.bootstrap.reconcile({ marketId, reason: 'publish' })
+    const cleanup = serialized.ladder.cleanupRemovedMarkets?.()
+    await Promise.resolve()
+
+    expect(events).toEqual(['bootstrap:start'])
+    releaseBootstrap?.()
+    await Promise.all([mutation, cleanup])
+    expect(events).toEqual(['bootstrap:start', 'ladder:cleanup-removed'])
+  })
 })

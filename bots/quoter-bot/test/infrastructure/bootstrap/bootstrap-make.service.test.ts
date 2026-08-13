@@ -23,6 +23,27 @@ const desiredOffer = {
 }
 
 describe('MidnightBootstrapMakeService', () => {
+  test('reads only the reconciled market book for spread validation', async () => {
+    let selectedMarket: Hex | undefined
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [],
+      listBookOffers: async (market: Hex) => {
+        selectedMarket = market
+        return []
+      },
+      toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 99n }),
+      preparePublication: async () => ({ groupId: publishedGroupId, publish: async () => {} }),
+      reserveGroup: async () => {},
+      confirmPublishedGroup: async () => {},
+      releaseGroupReservation: async () => {},
+      invalidate: async () => {}
+    })
+
+    await service.reconcile({ marketId, desiredOffer, reason: 'publish' })
+
+    expect(selectedMarket).toBe(marketId)
+  })
+
   test('uses the highest-rate ladder sell to resize and reprice a crossing bootstrap offer', async () => {
     const prepared: (typeof desiredOffer)[] = []
     const reserved: (typeof desiredOffer)[] = []
