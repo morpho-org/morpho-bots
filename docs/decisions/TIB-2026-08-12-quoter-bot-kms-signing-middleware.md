@@ -168,12 +168,17 @@ The fence has one routine liveness exception: the same authenticated surface may
 **replacement** of its recorded, still-pending transaction. The middleware accepts only the exact
 canonical intent and economic payload already recorded at that nonce, or an exact zero-value
 self-cancel; the request cannot change offers, roots, groups, targets, calldata, value, or intent
-kind. It independently derives both fee fields using the repository replacement rule
-`max(floor(previous * 1125 / 1000), previous + 1 wei)`, applies the routine ceilings and rolling
-signed-gas budget, and atomically replaces the recorded fee fields, signed bytes, and hash before
-returning the new artifact. Repeated bumps therefore restore a path for an underpriced transaction
-without creating a menu of economically different same-nonce signatures. A replacement that
-cannot be recorded, budgeted, or reconciled with the pending transaction fails closed.
+kind. It reads the current pending-block base fee independently, derives
+`newPriorityFee = max(floor(previousPriorityFee * 1125 / 1000), previousPriorityFee + 1 wei)`, and
+derives
+`newMaxFee = max(floor(previousMaxFee * 1125 / 1000), previousMaxFee + 1 wei, currentBaseFee * 2 + newPriorityFee)`.
+This is the repository fee policy, including its base-fee floor rather than only the replacement
+bump. The middleware applies the routine ceilings and rolling signed-gas budget to both derived
+fields and atomically replaces the recorded fee fields, signed bytes, and hash before returning the
+new artifact. Repeated bumps therefore restore a path for an underpriced transaction without
+creating a menu of economically different same-nonce signatures. A replacement that cannot read
+the current base fee, be recorded, budgeted, or be reconciled with the pending transaction fails
+closed.
 
 A break-glass revocation deliberately takes over the account's transaction stream during an
 incident. It does **not** sign the node's `pending` nonce, which is the next unused nonce. It
@@ -214,7 +219,11 @@ payload or starve the kill switch with otherwise valid cancellations. When the l
 unavailable, quote/ratify and bot-originated routine revokes fail closed while the break-glass
 surface draws from a small **ledger-independent emergency-revoke budget**: a durable,
 atomically consumed token/gas/nonce allowance on an independently operated high-availability
-store, sized only for the configured full-book cleanup. The same independent control plane keeps a
+store. Deployment validation sizes this allowance for replacements at the **maximum configured
+occupied-nonce set** (each at the protected fee and gas ceilings) plus one configured full-book
+cleanup, with no overlap assumed between those costs. If the live occupied set exceeds that
+configured maximum, outage cleanup fails closed into ordered drain/handoff rather than claiming the
+ledger-outage guarantee. The same independent control plane keeps a
 **ledger-independent revocation inventory**: an append-only, read-replicated catalog of every root
 and group whose signature could make exposure publishable. Catalog persistence is a write-before-
 sign condition for quote and ratify: **both** the primary reservation and the independent catalog
@@ -461,27 +470,36 @@ logic, and any alternative host must preserve the trust split: the middleware al
   operator can invoke the revoke intent directly with their own credentials, with no bot in the
   path — and that surface cannot produce quote signatures. The bot cannot invoke this function;
   its separate routine-revoke function cannot select the protected budget in request data.
-- Entering break-glass mode first atomically increments a durable **deny generation** in middleware
-  policy before cleanup starts. The operator-authorized `break-glass-revoke` function is the control
-  surface: on its first cleanup request it conditionally acquires a single active cleanup epoch and
-  increments the deny generation in the same ledger transaction, then refuses to sign any cleanup
-  transaction until older-generation routine leases have drained. Operators need only
-  `lambda:InvokeFunction` on that function; its execution role alone has the narrowly scoped ledger
-  permission to perform this transition. Routine invoke grants may remain present so IAM changes
-  are not a containment prerequisite — every routine handler denies new leases from the new
-  generation — while incident automation can disable those grants as defense in depth. Every
-  routine signing handler captures the generation on admission and acquires a
-  generation-scoped
-  signing lease in the same transaction that reserves aggregate capacity. The handler checks the
-  lease immediately before KMS signing and releases it only after the result is durably cataloged.
-  Break-glass transition denies new leases and waits for every older-generation lease to drain (or
-  be conclusively failed and its reservation released) before cleanup starts. An invocation admitted
-  before emergency deny can therefore either finish as known revocation inventory before cleanup or
-  produce no signature; it cannot return an untracked fresh signature during cleanup. If lease state
-  cannot be checked or drained, cleanup does not claim containment and pages the operator. Routine
-  principals cannot obtain fresh quote, ratify, or routine-revoke signatures until an independently
-  authorized operator clears the deny after verifying cleanup; only operator-authorized
-  break-glass revocation remains available throughout.
+- Entering break-glass mode first atomically increments a durable **independent deny generation**
+  before cleanup starts. The generation, active cleanup epoch, and a mirror of every active routine
+  signing lease live in the same independently operated high-availability control plane as the
+  emergency budget, not only in the primary reservation ledger. Every routine handler must read the
+  independent generation, acquire both its primary reservation and an independent
+  generation-scoped lease before KMS signing, recheck that independent lease immediately before the
+  KMS call, and release it only after the result is durably cataloged. Failure of either control
+  plane fails routine signing closed.
+- The operator-authorized `break-glass-revoke` function is the control surface: on its first cleanup
+  request it conditionally acquires the single active cleanup epoch and increments the independent
+  deny generation atomically, then refuses to sign cleanup transactions until every older-generation
+  lease in the independent control plane has drained. It mirrors the deny into the primary ledger
+  when available, but primary-ledger availability is not required to arm containment. Operators need
+  only `lambda:InvokeFunction` on that function; its execution role alone has conditional-write
+  permission for the independent epoch/generation records. Routine invoke grants may remain present
+  so IAM changes are not a containment prerequisite, while incident automation can disable those
+  grants as defense in depth. An invocation admitted before emergency deny can therefore either
+  finish as known revocation inventory before cleanup or produce no signature; it cannot return an
+  untracked fresh signature during cleanup. If independent lease state cannot be checked or drained,
+  cleanup does not claim containment and pages the operator.
+- Clearing containment is an explicit `close-cleanup-epoch` operation on the same
+  operator-authorized `break-glass-revoke` function; routine principals cannot invoke it, and it
+  performs no KMS signing. The handler closes only the caller-specified active epoch after independent
+  reads prove all replacement/cleanup transactions confirmed, the occupied-nonce inventory empty,
+  and no older-generation leases remain. Its execution role may conditionally close that exact epoch
+  and advance the routine-admission generation, but cannot rewrite inventory or budget history. The
+  operation emits `middleware.cleanup_epoch_closed` with operator principal, epoch, old/new
+  generation, evidence snapshot, and request ID to the immutable audit stream. Until that
+  authenticated close succeeds, routine quote, ratify, and routine-revoke remain denied and only
+  operator-authorized break-glass revocation remains available.
 - Setter cleanup treats irreversible group cancellations as authoritative. The runbook drains or
   replaces every already-signed ratification transaction and consumes every affected offer group;
   `setIsRootRatified(..., false)` is defense in depth, not the sole kill switch, because an older
@@ -716,8 +734,11 @@ host itself; it strengthens rather than changes this design.
 - This log is an **authorization audit trail that survives bot-host compromise** — the bot cannot
   erase or forge it.
 - CloudTrail covers the full chain: `lambda:InvokeFunction` attributes every caller (bot vs
-  break-glass principals), and `kms:Sign` has exactly one allowed principal, so the KMS call
-  stream must reconcile against the logged per-artifact signing records. CloudTrail `Sign`
+  break-glass principals), and `kms:Sign` allows exactly the configured **quote, ratify,
+  routine-revoke, and break-glass-revoke execution-role ARNs**. The reconciler maintains that
+  four-role allowlist and maps each role ARN to its one expected intent surface; a call from an
+  unknown role or a known role signing for another surface is an incident. The KMS call stream for
+  each role/surface pair must reconcile against the logged per-artifact signing records. CloudTrail `Sign`
   events do not carry the message or digest, so the join key is the **KMS request ID** each
   signing record captures: every CloudTrail `Sign` event must match one middleware record and
   vice versa, at artifact rather than intent granularity. An unmatched or surplus call on either
