@@ -191,7 +191,9 @@ still-outstanding signed-but-unpublished reservation (see Statefulness), never p
 amounts alone; expiry ≤ market maturity and inside a **freshness ceiling** — a policy parameter
 capping offer lifetime from signing time, so a stockpiled signature dies quickly; offer start
 not meaningfully before signing time; exact maker/receiver/callback/ratifier fields; owned
-group namespace; and cap semantics (exactly one of `maxUnits`/`maxAssets` non-zero).
+group namespace; the per-side `reduceOnly` flag pinned by policy — the credit-reducing side must
+carry `reduceOnly: true`, so a signed sell fill can never turn inventory reduction into new
+debt; and cap semantics (exactly one of `maxUnits`/`maxAssets` non-zero).
 
 **Ratify intents** exist for Setter-ratifier deployments, whose ladder flow must send
 `setIsRootRatified` before a quote tree becomes takeable. A ratify intent carries the same
@@ -226,6 +228,12 @@ middleware-invoking adapters, selected as a new identity method alongside
 `private-key`/`keystore`/`aws` in
 [`signer-identity.utils.ts`](../../bots/quoter-bot/src/config/signer-identity.utils.ts). Any
 residual generic digest-signing path fails closed.
+
+The ports serve **every maker workflow, not only the ladder**: position bootstrap (including
+auto-refill) signs the same transaction kinds through
+[`production-bootstrap.ts`](../../bots/quoter-bot/src/infrastructure/bootstrap/production-bootstrap.ts),
+and in middleware mode a bootstrap top-up is simply a quote intent in its bootstrap group
+namespace — same three properties, same field checks. No workflow retains a generic signer.
 
 The ports are **transport-agnostic**: they express intents, not hosts. The Lambda invoker is one
 adapter behind them; plugging in a different middleware host tomorrow — an HTTP API, a Cloudflare
@@ -427,14 +435,18 @@ host itself; it strengthens rather than changes this design.
 
 - The Lambda emits the same JSON-lines structured logging the bots use (to CloudWatch Logs).
   Every intent produces a decision event with intent type, evaluated properties and constraints,
-  the violated check on denial, derived digest, and KMS outcome: `middleware.intent_received`,
+  the violated check on denial, and the **expected KMS call set per signed artifact** — an
+  approved Ecrecover quote legitimately produces two `kms:Sign` calls (tree and publication
+  transaction), each logged with its derived digest and outcome: `middleware.intent_received`,
   `middleware.intent_approved`, `middleware.intent_denied`, `middleware.kms_error`,
   `middleware.read_failed`.
 - This log is an **authorization audit trail that survives bot-host compromise** — the bot cannot
   erase or forge it.
 - CloudTrail covers the full chain: `lambda:InvokeFunction` attributes every caller (bot vs
   break-glass principals), and `kms:Sign` has exactly one allowed principal, so the KMS call
-  stream must match the Lambda's approval log one-to-one. Divergence is an incident signal.
+  stream must reconcile against the logged per-artifact digest sets — every `kms:Sign` matches
+  one expected digest, at artifact rather than intent granularity. An unmatched or surplus call
+  is an incident signal.
   Lambda `Invoke` is a CloudTrail **data event and is not logged by default**
   ([Lambda CloudTrail docs](https://docs.aws.amazon.com/lambda/latest/dg/logging-using-cloudtrail.html));
   enabling the data-event selector for this function is an explicit v0 deliverable — without it,
@@ -503,9 +515,10 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   maturity or the freshness ceiling, aggregate exposure that overflows only in combination with
   live offers or outstanding reservations, sign-and-withhold sequences denied once reservations
   exhaust the caps, a crossing replacement denied until its retired groups are observed
-  invalidated and approved after, a ratify root that does not match its offer set,
-  mixed-snapshot reads denied as incoherent, a routine signed-gas budget refusing the next
-  publication while the revoke reserve still signs, both/neither of `maxUnits`/`maxAssets` set,
+  invalidated and approved after, a ratify root that does not match its offer set, a
+  credit-reducing offer without `reduceOnly` denied, mixed-snapshot reads denied as incoherent,
+  a routine signed-gas budget refusing the next publication while the revoke reserve still
+  signs, both/neither of `maxUnits`/`maxAssets` set,
   off-by-one exposure caps, a prospective set that crosses only in combination with live offers.
 - **Adversarial state:** intents accompanied by caller-supplied book or position state that
   contradicts chain truth — the Lambda must ignore the caller's view entirely and decide from its
