@@ -128,9 +128,10 @@ was validated.
 
 **Revoke intents** invalidate offer groups/roots. They are **near-unconditionally approved** —
 revocation only reduces exposure and is the always-available kill switch — constrained to: pinned
-chain id, `to` = the Midnight singleton, an invalidation-selector allowlist, zero native value,
-and fee/gas ceilings. This mirrors the constraint set the quoter's in-process transaction
-assertions already pin, now enforced outside the bot.
+chain id, a **per-operation target/selector allowlist** (group consumption via `setConsumed` on
+the Midnight singleton; Ecrecover root cancellation via `cancelRoot(maker, root)` on the
+configured ratifier), zero native value, and fee/gas ceilings. This mirrors the constraint set
+the quoter's in-process transaction assertions already pin, now enforced outside the bot.
 
 Because a signed transaction commits to an account nonce, transaction-signing intents carry
 **caller-supplied nonce and fee fields** — liveness parameters, not policy: no nonce value can
@@ -193,16 +194,21 @@ capping offer lifetime from signing time, so a stockpiled signature dies quickly
 not meaningfully before signing time; exact maker/receiver/callback/ratifier fields; owned
 group namespace; the per-side `reduceOnly` flag pinned by policy — the credit-reducing side must
 carry `reduceOnly: true`, so a signed sell fill can never turn inventory reduction into new
-debt; and cap semantics (exactly one of `maxUnits`/`maxAssets` non-zero).
+debt; a `continuousFeeCap` the middleware derives from its own snapshot's current market fee —
+never unbounded or caller-chosen, so a later fee raise cannot make a fill accept a worse fee
+than the PnL check priced; and cap semantics (exactly one of `maxUnits`/`maxAssets` non-zero).
 
 **Ratify intents** exist for Setter-ratifier deployments, whose ladder flow must send
 `setIsRootRatified` before a quote tree becomes takeable. A ratify intent carries the same
 structured offer set as a quote intent; the middleware re-validates it in full, re-derives the
 root itself, and signs only the `setIsRootRatified(maker, root, true)` transaction for that
-derived root — under the same chain/target/value/fee pins as revocations. The middleware never
-needs to remember which roots it produced: it recomputes them. Because a ratification enables
-publication, ratify is a **quote-enabling intent** and is authorized like quote, never granted
-to break-glass principals. Ecrecover deployments never use this intent.
+derived root — under the same chain/value/fee pins as revocations, targeting the configured
+ratifier. The middleware never needs to remember which roots it produced: it recomputes them.
+Because a ratified root is publishable by **any funded sender** — the Mempool log contract
+accepts the encoded payload from any account — a signed ratification is publishable exposure in
+itself, so a ratify approval **charges the same exposure reservation as a quote approval**.
+Ratify is a **quote-enabling intent**, authorized like quote and never granted to break-glass
+principals. Ecrecover deployments never use this intent.
 
 Policy parameters live in the middleware's deployment, never in the request; the state feeding
 its checks comes from its own reads, never from the caller. A compromised bot can neither relax
@@ -248,8 +254,8 @@ an HTTP API, a Cloudflare Worker — replaces the handler and the bot-side adapt
 logic, and any alternative host must preserve the trust split: the middleware alone holds
 `kms:Sign`, and callers hold nothing but the right to invoke it.
 
-- The middleware is an **AWS Lambda function**, invoked by the bot through the AWS SDK
-  (`lambda:InvokeFunction`).
+- The middleware is a set of **AWS Lambda functions — one per intent surface, built from one
+  shared container image** — invoked by the bot through the AWS SDK (`lambda:InvokeFunction`).
 - **IAM chain**: the bot's AWS credentials attach to a role whose only permissions are
   `lambda:InvokeFunction` on this function's intent surfaces — the bot loses `kms:Sign` entirely.
   The Lambda's execution role is the only principal with `kms:Sign` on the maker key, plus the
@@ -257,19 +263,21 @@ logic, and any alternative host must preserve the trust split: the middleware al
   the CloudTrail data-event selector for the function (see Observability) is part of the
   deliverable.
 - **Caller-to-intent scoping**: principals are authorized per intent type, not merely per
-  function. Each of the three intents is its **own invoke surface** — separate qualified ARNs
-  (per-alias or per-function) for quote, ratify, and revoke — so IAM grants scope each principal
-  to the intent types it may submit, and the handler independently enforces the scope it was
-  invoked under. Ratify is quote-enabling and is granted like quote. Break-glass principals
-  receive the revoke surface only: leaked break-glass credentials must yield revocations, never
-  signed quotes or ratifications.
+  function. Each of the three intents is its **own Lambda function** — one shared container
+  image, three deployments. Aliases are not enough: reserved concurrency is function-scoped, so
+  only separate functions give the revoke surface its own concurrency pool that a quote/ratify
+  flood cannot exhaust. IAM grants scope each principal to the functions it may invoke, and each
+  handler independently enforces the intent type it serves. Ratify is quote-enabling and is
+  granted like quote. Break-glass principals receive the revoke function only: leaked
+  break-glass credentials must yield revocations, never signed quotes or ratifications.
 - Authentication is therefore **IAM/SigV4** — no self-managed ingress, tokens, or mTLS. The
   in-policy guarantee still does not depend on caller identity — any invoker only ever obtains
   in-policy signatures — while the caller-to-intent scoping above decides _which_ in-policy
   intents a given principal may submit, and invoke scoping keeps revoke-griefing/DoS hard and the
   audit trail attributable.
-- The Lambda's **code lives in this monorepo** and deploys as a **Docker container image**
-  (ECR-hosted Lambda container image) with its own Dockerfile, like the bots. It is not a bot —
+- The middleware's **code lives in this monorepo** and deploys as one **Docker container image**
+  (ECR-hosted) instantiated as the three intent functions, with its own Dockerfile, like the
+  bots. It is not a bot —
   not a long-running program — so it does not live under `/bots/`; the proposed workspace home is
   a new top-level `services/` directory, e.g. `services/quoter-signer`. Final naming and location
   are settled at implementation (open question 1).
@@ -297,8 +305,9 @@ them — but aggregate enforcement requires one small piece of **required state:
 reservation ledger**. Chain-truth reads cannot see a signature that was returned but never
 published, and the freshness ceiling bounds duration, not amount — without a ledger, repeated
 sign-and-withhold requests could multiply exposure far beyond the caps inside one window. Every
-approved quote intent therefore records a reservation (markets, exposure, root, expiry) at
-signing time; aggregate caps are enforced over live offers **plus outstanding reservations**; a
+intent that makes exposure publishable — an approved **quote or ratify** — therefore records a
+reservation (markets, exposure, root, expiry) at signing time; aggregate caps are enforced over
+live offers **plus outstanding reservations**; a
 reservation is released when its root is observed live (it then counts as live) or when its
 freshness ceiling passes unpublished. The ceiling keeps the ledger tiny and self-expiring;
 conditional writes serialize concurrent intents; the same ledger tracks the per-surface
@@ -437,16 +446,19 @@ host itself; it strengthens rather than changes this design.
   Every intent produces a decision event with intent type, evaluated properties and constraints,
   the violated check on denial, and the **expected KMS call set per signed artifact** — an
   approved Ecrecover quote legitimately produces two `kms:Sign` calls (tree and publication
-  transaction), each logged with its derived digest and outcome: `middleware.intent_received`,
+  transaction), each logged with its derived digest, the **KMS request ID** returned with the
+  signature, and outcome: `middleware.intent_received`,
   `middleware.intent_approved`, `middleware.intent_denied`, `middleware.kms_error`,
   `middleware.read_failed`.
 - This log is an **authorization audit trail that survives bot-host compromise** — the bot cannot
   erase or forge it.
 - CloudTrail covers the full chain: `lambda:InvokeFunction` attributes every caller (bot vs
   break-glass principals), and `kms:Sign` has exactly one allowed principal, so the KMS call
-  stream must reconcile against the logged per-artifact digest sets — every `kms:Sign` matches
-  one expected digest, at artifact rather than intent granularity. An unmatched or surplus call
-  is an incident signal.
+  stream must reconcile against the logged per-artifact signing records. CloudTrail `Sign`
+  events do not carry the message or digest, so the join key is the **KMS request ID** each
+  signing record captures: every CloudTrail `Sign` event must match one middleware record and
+  vice versa, at artifact rather than intent granularity. An unmatched or surplus call on either
+  side is an incident signal.
   Lambda `Invoke` is a CloudTrail **data event and is not logged by default**
   ([Lambda CloudTrail docs](https://docs.aws.amazon.com/lambda/latest/dg/logging-using-cloudtrail.html));
   enabling the data-event selector for this function is an explicit v0 deliverable — without it,
@@ -514,9 +526,11 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   all three intent types, including boundary values — price exactly at a bound, expiry exactly at
   maturity or the freshness ceiling, aggregate exposure that overflows only in combination with
   live offers or outstanding reservations, sign-and-withhold sequences denied once reservations
-  exhaust the caps, a crossing replacement denied until its retired groups are observed
-  invalidated and approved after, a ratify root that does not match its offer set, a
-  credit-reducing offer without `reduceOnly` denied, mixed-snapshot reads denied as incoherent,
+  exhaust the caps — through quote or ratify approvals alike, a crossing replacement denied
+  until its retired groups are observed invalidated and approved after, a ratify root that does
+  not match its offer set, a credit-reducing offer without `reduceOnly` denied, a caller-supplied
+  `continuousFeeCap` above the snapshot fee denied, a root revocation targeting Midnight instead
+  of the ratifier denied, mixed-snapshot reads denied as incoherent,
   a routine signed-gas budget refusing the next publication while the revoke reserve still
   signs, both/neither of `maxUnits`/`maxAssets` set,
   off-by-one exposure caps, a prospective set that crosses only in combination with live offers.
