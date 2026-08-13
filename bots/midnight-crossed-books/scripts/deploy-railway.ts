@@ -135,7 +135,6 @@ const deleteVariable = async (name: string) => {
   const deleted = await deleteRailwayVariable({
     fetcher: fetch,
     name,
-    readValuesBeforeDelete: name !== 'RESOLVER_PRIVATE_KEY',
     target: VARIABLE_TARGET,
     token: resolveRailwayAccessToken(process.env)
   })

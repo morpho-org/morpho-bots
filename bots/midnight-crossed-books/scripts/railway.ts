@@ -56,17 +56,6 @@ const TARGET_QUERY = `query RailwayVariableTarget($projectId: String!) {
     services { edges { node { id name } } }
   }
 }`
-const VARIABLES_QUERY = `query Variables(
-  $projectId: String!
-  $environmentId: String!
-  $serviceId: String!
-) {
-  variables(
-    projectId: $projectId
-    environmentId: $environmentId
-    serviceId: $serviceId
-  )
-}`
 const VARIABLE_DELETE_MUTATION = `mutation RailwayVariableDelete(
   $projectId: String!
   $environmentId: String!
@@ -144,47 +133,24 @@ const resolveRailwayVariableTarget = async ({
 
 /**
  * Deletes one Railway variable from an explicitly scoped deployment target.
- * @param parameters - Fetch implementation, credential, exact target names, variable name, and
- * whether a value-bearing existence check is safe before deletion.
- * @returns `true` when Railway accepts the deletion, or `false` when a preflight proves the
- * variable is already absent.
+ * @param parameters - Fetch implementation, credential, exact target names, and variable name.
+ * @returns `true` when Railway deletes the variable, or `false` when it is already absent.
  * @throws `RailwayVariableOperationError` when target lookup, transport, or deletion fails.
- * @remarks Set `readValuesBeforeDelete` to `false` for secrets that must not enter this process.
+ * @remarks Calls the key-only deletion mutation directly so no service variable values enter this process.
  */
 export const deleteRailwayVariable = async ({
   fetcher,
   name,
-  readValuesBeforeDelete = true,
   target,
   token
 }: {
   fetcher: typeof fetch
   name: string
-  readValuesBeforeDelete?: boolean
   target: RailwayVariableTarget
   token: RailwayAccessToken
 }) => {
   const error = new RailwayVariableOperationError('delete', name)
   const ids = await resolveRailwayVariableTarget({ error, fetcher, target, token })
-  if (readValuesBeforeDelete) {
-    const listed = await postRailwayGraphql({
-      body: {
-        query: VARIABLES_QUERY,
-        variables: {
-          environmentId: ids.environmentId,
-          projectId: target.projectId,
-          serviceId: ids.serviceId
-        }
-      },
-      error,
-      fetcher,
-      token
-    })
-    const variables = recordField(listed, 'variables')
-    if (!variables) throw error
-    if (!Object.prototype.hasOwnProperty.call(variables, name)) return false
-  }
-
   const data = await postRailwayGraphql({
     body: {
       query: VARIABLE_DELETE_MUTATION,
@@ -199,8 +165,8 @@ export const deleteRailwayVariable = async ({
     fetcher,
     token
   })
-  if (!isRecord(data) || data.variableDelete !== true) throw error
-  return true
+  if (!isRecord(data) || typeof data.variableDelete !== 'boolean') throw error
+  return data.variableDelete
 }
 
 /**
