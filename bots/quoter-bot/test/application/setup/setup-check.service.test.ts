@@ -168,31 +168,21 @@ describe('SetupCheckService', () => {
     expect(terminal).toMatchObject({ status: 'halted', reason: 'setup-failed', cycles: 1 })
   })
 
-  test('retries sanitized provider-read failures without treating response failures as transient', async () => {
-    const controller = new AbortController()
+  test('does not retry a generic sanitized provider-read failure', async () => {
     const state = readyState()
     let bookReads = 0
-    state.getBook = async id => {
+    state.getBook = async () => {
       bookReads += 1
-      if (bookReads === 1) throw new ProviderReadError('morpho-api', 'book-api')
-      return {
-        id,
-        allowlisted: true,
-        active: true,
-        loanAsset,
-        tickSpacing: 1,
-        maturity: 2_000n
-      }
+      throw new ProviderReadError('morpho-api', 'book-api')
     }
 
     const terminal = await new SetupCheckService(state, config).runContinuously({
-      signal: controller.signal,
-      intervalMs: 1,
-      onCycle: () => controller.abort()
+      signal: new AbortController().signal,
+      intervalMs: 1
     })
 
-    expect(bookReads).toBe(2)
-    expect(terminal).toEqual({ status: 'stopped', reason: 'signal', cycles: 1 })
+    expect(bookReads).toBe(1)
+    expect(terminal).toMatchObject({ status: 'halted', reason: 'setup-failed', cycles: 1 })
   })
 
   test('does not retry mixed transient and invariant readiness failures', async () => {
@@ -217,6 +207,91 @@ describe('SetupCheckService', () => {
 
     expect(bookReads).toBe(1)
     expect(terminal).toMatchObject({ status: 'halted', reason: 'setup-failed', cycles: 1 })
+  })
+
+  test('does not retry a timestamp timeout that accompanies a book invariant failure', async () => {
+    const state = readyState()
+    let bookReads = 0
+    let timestampReads = 0
+    state.getBook = async id => {
+      bookReads += 1
+      return {
+        id,
+        allowlisted: true,
+        active: false,
+        loanAsset,
+        tickSpacing: 1,
+        maturity: 2_000n
+      }
+    }
+    state.getLatestTimestamp = async () => {
+      timestampReads += 1
+      throw new SafeProviderError({
+        kind: 'provider-error',
+        provider: 'rpc',
+        name: 'TimeoutError',
+        code: 'REQUEST_TIMEOUT',
+        context: 'request'
+      })
+    }
+
+    const terminal = await new SetupCheckService(state, config).runContinuously({
+      signal: new AbortController().signal,
+      intervalMs: 1
+    })
+
+    expect(bookReads).toBe(1)
+    expect(timestampReads).toBe(1)
+    expect(terminal).toMatchObject({ status: 'halted', reason: 'setup-failed', cycles: 1 })
+    if (terminal.reason === 'setup-failed') {
+      expect(terminal.lastReport.checks.find(check => check.name === 'books')?.observed).toEqual([
+        {
+          id: marketId,
+          reasons: [
+            'inactive',
+            {
+              timestampProviderError: {
+                kind: 'provider-error',
+                provider: 'rpc',
+                name: 'TimeoutError',
+                code: 'REQUEST_TIMEOUT',
+                context: 'request'
+              }
+            }
+          ]
+        }
+      ])
+    }
+  })
+
+  test('stops without emitting setup failure when shutdown interrupts a transient retry', async () => {
+    const controller = new AbortController()
+    const state = readyState()
+    let bookReads = 0
+    state.getBook = async () => {
+      bookReads += 1
+      controller.abort()
+      throw new SafeProviderError({
+        kind: 'provider-error',
+        provider: 'morpho-api',
+        name: 'TimeoutError',
+        code: 'REQUEST_TIMEOUT',
+        context: 'request'
+      })
+    }
+    const reports: SetupCheckReport[] = []
+
+    const terminal = await new SetupCheckService(state, config).runContinuously({
+      signal: controller.signal,
+      intervalMs: 1,
+      onCycle: report => {
+        reports.push(report)
+      }
+    })
+
+    expect(bookReads).toBe(1)
+    expect(reports).toEqual([])
+    expect(terminal).toEqual({ status: 'stopped', reason: 'signal', cycles: 0 })
   })
 
   test('retries transient provider-only startup readiness before allowing writers', async () => {

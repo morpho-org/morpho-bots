@@ -29,8 +29,7 @@ const SAFE_ERROR_CODES = new Set([
   'ETIMEDOUT',
   'ABORT_ERR',
   'UND_ERR_CONNECT_TIMEOUT',
-  'UND_ERR_HEADERS_TIMEOUT',
-  'PROVIDER_READ_FAILED'
+  'UND_ERR_HEADERS_TIMEOUT'
 ])
 const SAFE_PROVIDER_IDS = new Set(['provider', 'rpc', 'archive-rpc', 'morpho-api', 'router-api'])
 const TRANSIENT_PROVIDER_CODES = new Set([
@@ -41,8 +40,7 @@ const TRANSIENT_PROVIDER_CODES = new Set([
   'ETIMEDOUT',
   'ABORT_ERR',
   'UND_ERR_CONNECT_TIMEOUT',
-  'UND_ERR_HEADERS_TIMEOUT',
-  'PROVIDER_READ_FAILED'
+  'UND_ERR_HEADERS_TIMEOUT'
 ])
 const TRANSIENT_PROVIDER_NAMES = new Set(['AbortError', 'TimeoutError', 'NetworkError'])
 const TRANSIENT_PROVIDER_STATUSES = new Set([408, 425, 429])
@@ -296,7 +294,7 @@ const bookProblems = (
   requestedId: `0x${string}`,
   book: BookSetup,
   config: SetupCheckConfig,
-  latestTimestamp: bigint
+  latestTimestamp?: bigint
 ) => {
   const reasons: unknown[] = []
   if (book.id !== requestedId) reasons.push(`provider returned ${book.id}`)
@@ -306,7 +304,9 @@ const bookProblems = (
     reasons.push(`unexpected loan asset ${book.loanAsset}`)
   }
   if (book.tickSpacing <= 0) reasons.push('tick spacing is inaccessible')
-  if (book.maturity <= latestTimestamp) reasons.push(`matured at ${book.maturity}`)
+  if (latestTimestamp !== undefined && book.maturity <= latestTimestamp) {
+    reasons.push(`matured at ${book.maturity}`)
+  }
   return { id: requestedId, reasons }
 }
 
@@ -358,10 +358,15 @@ export const booksCheck = (
   }
   const invalidBooks = books.flatMap(({ requestedId, response }) => {
     if (!response.ok) return [{ id: requestedId, reasons: [{ providerError: response.error }] }]
-    if (!timestamp.ok) {
-      return [{ id: requestedId, reasons: [{ timestampProviderError: timestamp.error }] }]
-    }
-    const problem = bookProblems(requestedId, response.value, config, timestamp.value)
+
+    const problem = bookProblems(
+      requestedId,
+      response.value,
+      config,
+      timestamp.ok ? timestamp.value : undefined
+    )
+    if (!timestamp.ok) problem.reasons.push({ timestampProviderError: timestamp.error })
+
     return problem.reasons.length === 0 ? [] : [problem]
   })
   return setupResult('books', invalidBooks.length === 0, invalidBooks, required)

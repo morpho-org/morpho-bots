@@ -249,6 +249,8 @@ export class SetupCheckService {
     while (!parameters.signal.aborted) {
       try {
         const report = await this.checkWithTransientRetries(parameters.signal)
+        if (parameters.signal.aborted) break
+
         await parameters.onCycle?.(report)
         cycles += 1
         if (!report.ready) {
