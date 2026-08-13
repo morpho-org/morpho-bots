@@ -502,11 +502,12 @@ cold start and before serving, each deployment in the manifest's mode-aware acti
 the secp256k1 address and key fingerprint,
 computes its surface-specific policy/configuration digest, and fails closed unless the shared
 identity fields and that surface's digest equal their separate expected values in the deployment
-manifest. It also calls `lambda:GetFunction` for its own exact function name and executing published
-version, reads the AWS-observed `Code.ResolvedImageUri`, requires the digest-qualified URI to equal
+manifest. It also calls `lambda:GetFunction` for its own manifest-pinned exact qualified published-version ARN,
+reads the AWS-observed `Code.ResolvedImageUri`, requires the digest-qualified URI to equal
 the manifest-pinned ECR digest, and records that observed digest. Its role can perform this read only
-for its own exact function resource; setup/health receives the same bounded read on the enumerated
-active functions. A handler-provided environment value or request field is never accepted as image
+for that qualified version ARN; setup/health receives the same bounded read on every manifest-pinned
+qualified version in the mode-aware active surface set. An unqualified function ARN does not satisfy
+this grant. A handler-provided environment value or request field is never accepted as image
 evidence. Setup/health aggregates those per-surface attestations and is ready only when every active
 surface reports the same maker,
 chain, key fingerprint, image digest, and deployment-manifest digest, and each reports its own
@@ -536,11 +537,12 @@ v0, so an unattested additional version cannot receive signing traffic and an at
 retired deployment cannot satisfy the check. Deployment automation and readiness both fail closed
 when any production alias has additional version weights. IAM grants only those per-key
 `dynamodb:PutItem` operations, each signing role's `GetItem` on only its own exact key, each signing
-role's `lambda:GetAlias` and `lambda:GetFunction` on its own function ARN, the setup role's bounded
-`GetItem`/`BatchGetItem`, and the setup role's `lambda:GetAlias`/`lambda:GetFunction` on every exact
-active function ARN
-(or an equivalently authenticated deployment manifest containing their exact published-version
-targets); it grants no wildcard Lambda reads. Because `GetAlias` authorizes the function resource
+role's `lambda:GetAlias` on its own unqualified function ARN and `lambda:GetFunction` on its own
+manifest-pinned exact qualified published-version ARN, the setup role's bounded
+`GetItem`/`BatchGetItem`, the setup role's `lambda:GetAlias` on every exact active unqualified function
+ARN, `lambda:GetFunction` on every corresponding manifest-pinned exact qualified published-version
+ARN, and `events:ListTargetsByRule` only on every manifest-pinned exact rule ARN. It grants no wildcard
+Lambda or EventBridge reads. Because `GetAlias` authorizes the function resource
 rather than an alias resource, every caller supplies only the exact configured alias name and the
 handler/manifest validation rejects any other alias before accepting the returned target. The setup
 role resolves and records
@@ -551,8 +553,11 @@ executing published version, and rejects any mismatch before signing. It then pe
 consistent read of its own exact function-version-and-manifest record and requires its
 maker, chain, key fingerprint, image digest, policy digest, manifest digest, and timestamp to match
 and remain inside the freshness window. A missing, stale, or mismatched record rejects the request
-before reservation or KMS; callers cannot bypass the gate, and setup/readiness cannot satisfy it on
-No attestation path exposes a signing operation. The shared production handler routes a dedicated
+before reservation or KMS; callers cannot bypass the gate, and setup/readiness cannot satisfy it on a
+signing surface's behalf. No attestation path exposes a signing operation. Every signing intent first requires
+`context.invokedFunctionArn` to equal its exact configured production-alias ARN and rejects a version
+ARN, unqualified ARN, `$LATEST`, attestation alias, or any other alias before reservation or KMS. The
+shared production handler routes a dedicated
 **non-signing attestation operation** before any signing dispatch, but accepts that operation only
 when `context.invokedFunctionArn` is the manifest-pinned exact published version during deployment or
 the function's dedicated attestation alias after rollout. It rejects the operation on every signing
@@ -609,9 +614,12 @@ logic, and any alternative host must preserve the trust split: the middleware al
 `kms:Sign`, and callers hold nothing but the right to invoke it.
 
 - The middleware is a mode-aware set of AWS Lambda functions built from one shared container image:
-  setup/health, quote, routine revoke, break-glass revoke, and setup remediation are always active;
-  Setter additionally activates ratify, while Ecrecover omits ratify function deployment entirely:
-  there is no ratify production alias, invoke grant, or `kms:Sign` principal. The deployment manifest
+  setup/health, routine revoke, break-glass revoke, and setup remediation are always active.
+  Ecrecover additionally activates quote and omits ratify; Setter additionally activates ratify and
+  omits quote. Setter omits the quote function, production and attestation aliases, invoke grants,
+  readiness entry, EventBridge target, and `kms:Sign` principal because its ratify intent already
+  returns the validated publication payload. Ecrecover likewise has no ratify function, aliases,
+  invoke grant, readiness entry, EventBridge target, or `kms:Sign` principal. The deployment manifest
   is the authoritative active surface set, and readiness, refresh, IAM, and audit coverage enumerate
   exactly that set. The functions are
   invoked through the AWS SDK
@@ -633,11 +641,12 @@ logic, and any alternative host must preserve the trust split: the middleware al
   deliverable.
 - **Caller-to-surface scoping**: principals are authorized per exact production-alias ARN. The
   structured intent types map to separate active signing Lambda functions, while setup/readiness maps
-  to setup/health — one shared container image, five Ecrecover or six Setter deployments —
+  to setup/health — one shared container image and five deployments in either mode —
   because routine and break-glass revoke must be distinguishable by an authenticated AWS boundary,
   not by untrusted payload data. Aliases are not enough: reserved concurrency is function-scoped,
   and distinct functions also let IAM deny the bot access to the protected reserve. IAM grants the
-  bot setup/health, quote, and routine-revoke production aliases, plus ratify only in Setter mode;
+  bot setup/health and routine-revoke production aliases, plus quote only in Ecrecover mode or ratify
+  only in Setter mode;
   break-glass principals
   receive only the break-glass-revoke production alias; remediation operators receive only the
   setup-remediation production alias. Each active function's dedicated attestation alias grants the
@@ -1175,28 +1184,36 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   signatures. Demonstrate the bot's principal receives `AccessDenied` on `kms:Sign`
   and `kms:GetPublicKey` after the grant moves, that readiness can invoke setup/health and obtain only
   its constrained response, that each function role can call `kms:GetPublicKey` only on the pinned
-  maker key, that the setup/health role cannot call `kms:Sign`, that each role can
-  invoke only its granted production-alias surfaces, that Ecrecover omits the ratify function, alias,
-  invoke grant, and KMS principal while Setter includes and attests it, that a break-glass principal
-  is denied on setup/health, quote, ratify, and setup-remediation, and that the remediation principal
-  is denied on every non-remediation surface. Prove a permitted setup approval is canonically encoded
+  maker key, that the setup/health role cannot call `kms:Sign`, and that each role can invoke only its
+  granted production-alias surfaces. Ecrecover includes and attests quote while omitting the ratify
+  function, aliases, invoke grants, EventBridge target, readiness entry, and KMS principal; Setter
+  makes the symmetric choice by including and attesting ratify while omitting all quote resources and
+  permissions. Prove a break-glass principal is denied on setup/health, quote, ratify, and
+  setup-remediation, and that the remediation principal is denied on every non-remediation surface.
+  Prove a permitted setup approval is canonically encoded
   and signed only during a distinct remediation epoch, while foreign targets/spenders, excessive
   allowance, transfers, permits, non-zero value, and attempts outside the epoch produce no KMS call.
   Prove remediation is denied during a reservation-ledger outage and that opening/closing its epoch
   advances the independent deny generation, drains older leases, and never overlaps a cleanup epoch.
   For every bot and operator surface, prove the exact production alias succeeds while the unqualified
   function ARN, `$LATEST`, every other version/alias, and every cross-surface production alias receive
-  `AccessDenied`. Prove each signing role can call `lambda:GetAlias` and `lambda:GetFunction` only on
-  its own function ARN, while setup/health can call them on each exact active function ARN; prove all of those roles are denied
-  on every other function. Because IAM cannot scope `GetAlias` to an alias ARN, prove handler/manifest
-  validation accepts only the exact configured alias name and rejects every other alias name before
-  trusting the resolved target. Setup/health rejects an attestation whose published version differs
-  from the resolved alias target, and fails readiness when `RoutingConfig.AdditionalVersionWeights`
-  is non-empty. Add weights after readiness while the registry record is still fresh and prove every
-  signing handler's per-request alias preflight rejects before reservation or KMS. Prove deployment
-  automation refuses a weighted production-alias rollout. Replace a function version with a different
-  image while preserving all manifest-provided fields and prove the AWS-observed
-  `Code.ResolvedImageUri` mismatch fails attestation before its registry write. Prove each exact
+  `AccessDenied`. Prove each signing role can call `lambda:GetAlias` only on its own unqualified
+  function ARN and `lambda:GetFunction` only on its manifest-pinned exact qualified published-version
+  ARN. Prove setup/health can make those same reads for every active surface and that all roles are
+  denied on every other unqualified or qualified function resource. Because IAM cannot scope
+  `GetAlias` to an alias ARN, prove handler/manifest validation accepts only the exact configured alias
+  name and rejects every other alias name before trusting the resolved target. Setup/health rejects an
+  attestation whose published version differs from the resolved alias target, and fails readiness when
+  `RoutingConfig.AdditionalVersionWeights` is non-empty. Add weights after readiness while the registry
+  record is still fresh and prove every signing handler's per-request alias preflight rejects before
+  reservation or KMS. Prove a deployment-role invoke of an exact version succeeds for the non-signing
+  attestation operation but that quote, ratify, revoke, and remediation signing payloads on that same
+  version ARN are rejected by `invokedFunctionArn` validation before reservation or KMS. Prove
+  deployment automation refuses a weighted production-alias rollout. Replace a function version with
+  a different image while preserving all manifest-provided fields and prove the AWS-observed
+  `Code.ResolvedImageUri` mismatch fails attestation before its registry write. Prove setup/health can
+  call `events:ListTargetsByRule` on each manifest-pinned exact rule ARN, but not on an unlisted rule,
+  and prove bot, scheduler, signing, operator, and remediation roles cannot call it. Prove each exact
   EventBridge rule ARN can invoke only its dedicated attestation alias with the immutable non-signing
   payload; prove the bot cannot refresh through a production alias and that the attestation alias rejects
   every signing intent before reservation or KMS. Prove `events:PutTargets`, `events:RemoveTargets`, and
