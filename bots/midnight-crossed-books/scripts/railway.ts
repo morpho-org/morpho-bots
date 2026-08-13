@@ -258,6 +258,16 @@ export const deleteRailwayVariable = async ({
   return true
 }
 
+export const railwayVariableDeleteArgs = (name: string, target: RailwayVariableTarget) => [
+  'variable',
+  'delete',
+  name,
+  '-s',
+  target.service,
+  '-e',
+  target.environment
+]
+
 /**
  * Builds arguments for setting one variable on one Railway deployment target.
  * @param value - Public `KEY=VALUE` assignment, or only a variable name when stdin is enabled.

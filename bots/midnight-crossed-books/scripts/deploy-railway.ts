@@ -13,6 +13,7 @@ import {
   deleteRailwayVariable,
   parseLatestStatus,
   parseServices,
+  railwayVariableDeleteArgs,
   railwayVariableSetArgs,
   resolveRailwayAccessToken,
   resolveProvisioningConfiguration,
@@ -92,12 +93,13 @@ async function listServices() {
 async function ensureService() {
   if ((await listServices()).some(service => service.name === SERVICE)) {
     console.log(`Service ${SERVICE} already exists.`)
-    return
+    return false
   }
 
   const { error } = await tryCatch($`railway add --service ${SERVICE} --json`)
   if (error) throw new Error(`Failed to create service ${SERVICE}: ${errorDetails(error)}`)
   console.log(`Created service ${SERVICE}.`)
+  return true
 }
 
 async function setVariable(value: string) {
@@ -116,6 +118,13 @@ async function setSecret(name: string, value: string) {
 }
 
 const deleteVariable = async (name: string) => {
+  if (!process.env.RAILWAY_TOKEN?.trim() && !process.env.RAILWAY_API_TOKEN?.trim()) {
+    const { error } = await tryCatch($('railway', railwayVariableDeleteArgs(name, VARIABLE_TARGET)))
+    if (error) throw new RailwayVariableOperationError('delete', name)
+    console.log(`Deleted ${name} on ${SERVICE} (stale).`)
+    return
+  }
+
   const deleted = await deleteRailwayVariable({
     fetcher: fetch,
     name,
@@ -125,6 +134,10 @@ const deleteVariable = async (name: string) => {
   console.log(
     deleted ? `Deleted ${name} on ${SERVICE} (stale).` : `${name} is already absent on ${SERVICE}.`
   )
+}
+
+const skipVariableDeletion = async (name: string) => {
+  console.log(`${name} is already absent on newly created service ${SERVICE}.`)
 }
 
 async function deployService() {
@@ -184,10 +197,10 @@ if (DEPLOY_ONLY) {
   const config = resolveProvisioningConfiguration(process.env)
 
   await ensureContext()
-  await ensureService()
+  const serviceCreated = await ensureService()
   await setVariable('CHAIN_ID=8453')
   await synchronizeModeVariables(config, {
-    deleteVariable,
+    deleteVariable: serviceCreated ? skipVariableDeletion : deleteVariable,
     setSecret,
     setVariable
   })

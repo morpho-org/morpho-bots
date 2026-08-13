@@ -5,6 +5,7 @@ import {
   deleteRailwayVariable,
   parseLatestStatus,
   parseServices,
+  railwayVariableDeleteArgs,
   railwayVariableSetArgs,
   resolveRailwayAccessToken,
   resolveProvisioningConfiguration,
@@ -176,6 +177,16 @@ describe('Railway provisioning configuration', () => {
     expect(deploy).not.toMatch(/Failed to set.*errorDetails/)
   })
 
+  test('preserves fresh-service and CLI-login provisioning without an API token', () => {
+    const deploy = readFileSync(new URL('../../scripts/deploy-railway.ts', import.meta.url), 'utf8')
+
+    expect(deploy).toContain('const serviceCreated = await ensureService()')
+    expect(deploy).toContain(
+      'deleteVariable: serviceCreated ? skipVariableDeletion : deleteVariable'
+    )
+    expect(deploy).toContain("$('railway', railwayVariableDeleteArgs(name, VARIABLE_TARGET))")
+  })
+
   test('explicitly scopes variable setting to the target', () => {
     expect(railwayVariableSetArgs('READONLY=true', TARGET)).toEqual([
       'variable',
@@ -201,6 +212,18 @@ describe('Railway provisioning configuration', () => {
       '-p',
       'project-id',
       '--skip-deploys'
+    ])
+  })
+
+  test('builds a linked-context CLI deletion without requiring an API token', () => {
+    expect(railwayVariableDeleteArgs('RESOLVER_PRIVATE_KEY', TARGET)).toEqual([
+      'variable',
+      'delete',
+      'RESOLVER_PRIVATE_KEY',
+      '-s',
+      'bot',
+      '-e',
+      'production'
     ])
   })
 })
