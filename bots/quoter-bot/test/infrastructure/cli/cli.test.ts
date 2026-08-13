@@ -927,6 +927,26 @@ describe('Cli', () => {
     expect(stderr).toEqual([])
   })
 
+  test('entrypoint treats an aborted startup as a clean signal stop', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const stdout: string[] = []
+    const stderr: string[] = []
+    const error = new Error('Setup check aborted')
+    error.name = 'AbortError'
+
+    const exitCode = await runQuoterBotEntrypoint(
+      { run: async () => Promise.reject(error) },
+      ['start'],
+      { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) },
+      { signal: controller.signal }
+    )
+
+    expect(exitCode).toBe(0)
+    expect(stdout).toEqual([])
+    expect(stderr).toEqual([])
+  })
+
   test('entrypoint emits an explicit human-readable error when the bot fails', async () => {
     const stdout: string[] = []
     const stderr: string[] = []

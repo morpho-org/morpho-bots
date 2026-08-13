@@ -209,6 +209,67 @@ describe('SetupCheckService', () => {
     expect(terminal).toMatchObject({ status: 'halted', reason: 'setup-failed', cycles: 1 })
   })
 
+  test('does not retry a transient chain read that accompanies missing deployment code', async () => {
+    const state = readyState()
+    let chainReads = 0
+    state.getChainId = async () => {
+      chainReads += 1
+      throw new SafeProviderError({
+        kind: 'provider-error',
+        provider: 'rpc',
+        name: 'TimeoutError',
+        code: 'REQUEST_TIMEOUT',
+        context: 'request'
+      })
+    }
+    state.getCode = async () => '0x'
+
+    const error = await new SetupCheckService(state, config).assertReady().catch(value => value)
+
+    expect(chainReads).toBe(1)
+    expect(error).toBeInstanceOf(SetupFailedError)
+  })
+
+  test('does not retry a transient compound reference read', async () => {
+    const state = readyState()
+    let referenceReads = 0
+    state.checkReference = async () => {
+      referenceReads += 1
+      throw new SafeProviderError({
+        kind: 'provider-error',
+        provider: 'archive-rpc',
+        name: 'TimeoutError',
+        code: 'REQUEST_TIMEOUT',
+        context: 'request'
+      })
+    }
+
+    const error = await new SetupCheckService(state, config).assertReady().catch(value => value)
+
+    expect(referenceReads).toBe(1)
+    expect(error).toBeInstanceOf(SetupFailedError)
+  })
+
+  test('does not retry a transient compound offer traversal', async () => {
+    const state = readyState()
+    let offerReads = 0
+    state.inspectOffers = async () => {
+      offerReads += 1
+      throw new SafeProviderError({
+        kind: 'provider-error',
+        provider: 'morpho-api',
+        name: 'TimeoutError',
+        code: 'REQUEST_TIMEOUT',
+        context: 'request'
+      })
+    }
+
+    const error = await new SetupCheckService(state, config).assertReady().catch(value => value)
+
+    expect(offerReads).toBe(1)
+    expect(error).toBeInstanceOf(SetupFailedError)
+  })
+
   test('does not retry a transient compound ratifier check that can mask invariant drift', async () => {
     const state = readyState()
     let ratifierReads = 0
@@ -366,24 +427,24 @@ describe('SetupCheckService', () => {
 
   test('retries transient provider-only startup readiness before allowing writers', async () => {
     const state = readyState()
-    let offerReads = 0
-    state.inspectOffers = async () => {
-      offerReads += 1
-      if (offerReads < 3) {
+    let balanceReads = 0
+    state.getNativeBalance = async () => {
+      balanceReads += 1
+      if (balanceReads < 3) {
         throw new SafeProviderError({
           kind: 'provider-error',
-          provider: 'morpho-api',
+          provider: 'rpc',
           name: 'HttpError',
           status: 503,
           context: 'request'
         })
       }
-      return { unknownNamespaces: [], unknownMarketIds: [], invertedMarketIds: [] }
+      return 10n
     }
 
     const report = await new SetupCheckService(state, config).assertReady()
 
-    expect(offerReads).toBe(3)
+    expect(balanceReads).toBe(3)
     expect(report.ready).toBe(true)
   })
 
@@ -408,7 +469,8 @@ describe('SetupCheckService', () => {
       .catch(value => value)
 
     expect(bookReads).toBe(1)
-    expect(error).toBeInstanceOf(SetupFailedError)
+    expect(error).toBeInstanceOf(Error)
+    expect(error).toMatchObject({ name: 'AbortError' })
   })
 
   test('does not retry a non-transient provider response at startup', async () => {

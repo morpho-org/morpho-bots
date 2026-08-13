@@ -270,9 +270,27 @@ const isTransientBookFailure = (value: unknown) => {
 const isTransientFailedCheck = (check: SetupCheck) => {
   if (check.status !== 'failed') return true
 
-  // A ratifier check combines code, authorization, and ABI observations. A rejected provider read can
-  // mask a successful invariant read that already proved drift, so compound ratifier failures fail closed.
-  if (check.name === 'ratifier') return false
+  if (check.name === 'chain') {
+    if (!isRecord(check.observed) || !Array.isArray(check.observed.errors)) return false
+    const configuredMatches = check.observed.configured === BASE_CHAIN_ID
+    const connectedMatches =
+      check.observed.connected === undefined || check.observed.connected === BASE_CHAIN_ID
+    const deploymentMatches =
+      check.observed.midnightCode === undefined || check.observed.midnightCode === 'deployed'
+    return (
+      configuredMatches &&
+      connectedMatches &&
+      deploymentMatches &&
+      check.observed.errors.length > 0 &&
+      check.observed.errors.every(isTransientProviderFailure)
+    )
+  }
+
+  // Compound checks can mask a successful peer read that already proved invariant drift, so they
+  // fail closed instead of retrying based only on their provider error.
+  if (check.name === 'ratifier' || check.name === 'reference' || check.name === 'offers') {
+    return false
+  }
 
   if (check.name === 'books') {
     return (
@@ -327,15 +345,25 @@ export const chainCheck = (
   midnightCode: Captured<`0x${string}` | undefined>
 ) => {
   const required = { chainId: BASE_CHAIN_ID, midnightCode: 'deployed' }
-  if (!chainId.ok) return providerFailure('chain', chainId.error, required)
-  if (!midnightCode.ok) return providerFailure('chain', midnightCode.error, required)
-  const deployed = midnightCode.value !== undefined && midnightCode.value !== '0x'
+  const deployed = midnightCode.ok
+    ? midnightCode.value !== undefined && midnightCode.value !== '0x'
+    : undefined
+  const errors = [
+    ...(!chainId.ok ? [chainId.error] : []),
+    ...(!midnightCode.ok ? [midnightCode.error] : [])
+  ]
   const observed = {
     configured: config.chainId,
-    connected: chainId.value,
-    midnightCode: deployed ? 'deployed' : 'missing'
+    ...(chainId.ok ? { connected: chainId.value } : {}),
+    ...(deployed === undefined ? {} : { midnightCode: deployed ? 'deployed' : 'missing' }),
+    ...(errors.length === 0 ? {} : { errors })
   }
-  const ready = config.chainId === BASE_CHAIN_ID && chainId.value === BASE_CHAIN_ID && deployed
+  const ready =
+    errors.length === 0 &&
+    config.chainId === BASE_CHAIN_ID &&
+    chainId.ok &&
+    chainId.value === BASE_CHAIN_ID &&
+    deployed === true
   return setupResult('chain', ready, observed, required)
 }
 

@@ -23,6 +23,19 @@ export type ProviderOperation =
   | 'reference-market-state'
   | 'offer-groups'
 
+export type SafeProviderReadMetadata = {
+  name?: 'AbortError' | 'TimeoutError' | 'NetworkError' | 'HttpError'
+  code?:
+    | 'ECONNREFUSED'
+    | 'ECONNRESET'
+    | 'ENETUNREACH'
+    | 'ETIMEDOUT'
+    | 'ABORT_ERR'
+    | 'UND_ERR_CONNECT_TIMEOUT'
+    | 'UND_ERR_HEADERS_TIMEOUT'
+  status?: number
+}
+
 /** Signals a sanitized failure at a public read-only provider boundary. */
 export class ProviderReadError extends Error {
   readonly code = 'PROVIDER_READ_FAILED' as const
@@ -36,7 +49,11 @@ export class ProviderReadError extends Error {
    * @param operation - Stable code for the attempted read; never request or response content.
    * @remarks The rejected value is deliberately discarded, including its message, stack, and cause.
    */
-  constructor(provider: ProviderId, operation: ProviderOperation) {
+  constructor(
+    provider: ProviderId,
+    operation: ProviderOperation,
+    metadata: SafeProviderReadMetadata = {}
+  ) {
     super('Provider read failed')
     this.name = 'ProviderReadError'
     this.provider = provider
@@ -44,8 +61,9 @@ export class ProviderReadError extends Error {
     this.failure = {
       kind: 'provider-error',
       provider,
-      name: 'ProviderError',
-      code: this.code,
+      name: metadata.name ?? 'ProviderError',
+      code: metadata.code ?? this.code,
+      ...(metadata.status === undefined ? {} : { status: metadata.status }),
       context: 'read'
     }
   }

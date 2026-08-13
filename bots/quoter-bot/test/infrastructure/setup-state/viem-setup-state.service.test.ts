@@ -13,6 +13,7 @@ import { SafeProviderError } from '../../../src/application/setup/safe-provider.
 import { requestJson } from '../../../src/infrastructure/setup-state/http-json.utils'
 import { ProviderPaginationError } from '../../../src/infrastructure/setup-state/provider-pagination.error'
 import { ProviderReadError } from '../../../src/infrastructure/setup-state/provider-read.error'
+import { executeProviderRead } from '../../../src/infrastructure/setup-state/provider-read.utils'
 import { ProviderResponseError } from '../../../src/infrastructure/setup-state/provider-response.error'
 import { ViemSetupStateService } from '../../../src/infrastructure/setup-state/viem-setup-state.service'
 
@@ -362,6 +363,29 @@ describe('ViemSetupStateService', () => {
       }
     }
   )
+
+  test('preserves safe timeout metadata from a viem provider rejection', async () => {
+    const raw = Object.assign(new Error('https://rpc.example/?key=private'), {
+      name: 'TimeoutError',
+      code: 'ETIMEDOUT'
+    })
+    const error = await executeProviderRead('rpc', 'chain-id', async () => {
+      throw raw
+    }).catch((value: unknown) => value)
+
+    expect(error).toBeInstanceOf(ProviderReadError)
+    expect(error).toMatchObject({
+      failure: {
+        kind: 'provider-error',
+        provider: 'rpc',
+        name: 'TimeoutError',
+        code: 'ETIMEDOUT',
+        context: 'read'
+      }
+    })
+    expect(JSON.stringify(error)).not.toContain('rpc.example')
+    expect(error).not.toHaveProperty('cause')
+  })
 
   test('reports HTTP failures with a fixed provider id and no URL fields', async () => {
     const server = await startFixtureServer(() => new Response('private body', { status: 503 }))
