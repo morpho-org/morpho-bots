@@ -151,14 +151,18 @@ Because a signed transaction commits to an account nonce, transaction-signing in
 **caller-supplied fee fields** as liveness parameters, but nonce ordering is policy-relevant. In
 routine operation the middleware reads the maker's current pending nonce independently and signs
 only that nonce; it never signs a stockpile of future-nonce transactions. The bot's serialized
-make/pending queue remains the single routine writer, and the middleware records every returned
-routine transaction's nonce, hash, intent kind, and fee fields before releasing it. Once one
-routine transaction has been returned for the current pending nonce, the middleware refuses another
-routine signature at that nonce until the recorded transaction is terminal (confirmed, replaced,
-or cancelled on chain). Offer freshness expiry is not terminal for an EOA transaction: the signed
-bytes remain broadcastable, so the transaction record and its signed-gas/nonce reservations remain
-fenced until the nonce is confirmed or replaced/cancelled on chain. This same-nonce fence prevents a caller from
-withholding several alternatives and choosing the one least favorable to break-glass cleanup.
+make/pending queue remains the single routine writer, but the middleware does not rely on that
+process-local serialization. The reservation transaction conditionally acquires a nonce-specific
+lease before any routine KMS call and fails if that nonce is already occupied by a live lease or
+transaction record. The lease records the intent kind and fee fields and is atomically converted to
+the returned transaction's nonce/hash record before release; concurrent quote, ratify, and routine-
+revoke invocations therefore cannot obtain alternative signatures at the same nonce. The
+middleware refuses another routine signature at that nonce until the recorded transaction is
+terminal (confirmed, replaced, or cancelled on chain). Offer freshness expiry is not terminal for
+an EOA transaction: the signed bytes remain broadcastable, so the transaction record and its
+signed-gas/nonce reservations remain fenced until the nonce is confirmed or replaced/cancelled on
+chain. This same-nonce fence prevents a caller from withholding several alternatives and choosing
+the one least favorable to break-glass cleanup.
 
 A break-glass revocation deliberately takes over the account's transaction stream during an
 incident. It does **not** sign the node's `pending` nonce, which is the next unused nonce. It
@@ -196,8 +200,10 @@ atomically consumed token/gas/nonce allowance on an independently operated high-
 store, sized only for the configured full-book cleanup. The same independent control plane keeps a
 **ledger-independent revocation inventory**: an append-only, read-replicated catalog of every root
 and group whose signature could make exposure publishable. Catalog persistence is a write-before-
-sign condition for quote and ratify; if both the primary ledger and catalog cannot durably record
-an entry, signing fails closed. Break-glass therefore retains the targets needed to cancel hidden,
+sign condition for quote and ratify: **both** the primary reservation and the independent catalog
+entry must commit durably before any KMS call. Failure of either write fails signing closed; the
+middleware never signs with uncharged aggregate capacity or an incomplete revocation inventory.
+Break-glass therefore retains the targets needed to cancel hidden,
 signed-but-unpublished exposure even when the primary reservation ledger cannot be read. It also
 keeps a **ledger-independent transaction inventory** of every returned routine transaction's exact
 signed bytes, nonce, hash, intent kind, and fee fields. Persisting that record is a write-before-
@@ -335,16 +341,20 @@ selected as a new identity method alongside
 [`signer-identity.utils.ts`](../../bots/quoter-bot/src/config/signer-identity.utils.ts). Any
 residual generic digest-signing path fails closed.
 
-Middleware mode also adds an authenticated **signer-identity setup port**. The middleware execution
-role, not the bot role, may call `kms:GetPublicKey`; at cold start and before serving signing intents
-it derives the secp256k1 address from that public key and fails closed unless it equals the configured
-maker. The setup port returns only the validated maker, chain id, middleware policy/configuration
-digest, and key fingerprint through the IAM-authenticated invocation response — no public key,
-signature, digest-signing primitive, or caller-selected challenge. `SetupStateService` obtains its
-derived-maker observation from this port in middleware mode, and `SetupCheckService` keeps the same
-configured-maker equality gate it applies to local and direct-KMS identities. Health/readiness is
-therefore red when the endpoint, KMS key, chain, or configured maker is mismatched; the check is not
-skipped merely because the bot no longer has direct KMS access.
+Middleware mode also adds an authenticated **signer-identity setup port**. Every function execution
+role, not the bot role, may call `kms:GetPublicKey` only on the configured maker key. At cold start
+and before serving, each of the five deployments derives the secp256k1 address and key fingerprint,
+computes its effective policy/configuration digest, and fails closed unless all three equal the
+expected deployment manifest. Setup/health aggregates those per-surface attestations and is ready
+only when setup, quote, ratify, routine-revoke, and break-glass-revoke report the same maker, chain,
+key fingerprint, image digest, and policy/configuration digest. A correct setup function therefore
+cannot mask a stale key or policy on a signing surface. The setup port returns only those validated
+fields through the IAM-authenticated invocation response — no public key, signature, digest-signing
+primitive, or caller-selected challenge. `SetupStateService` obtains its derived-maker observation
+from this port in middleware mode, and `SetupCheckService` keeps the same configured-maker equality
+gate it applies to local and direct-KMS identities. Health/readiness is red when any endpoint, KMS
+key, chain, image, policy, or configured maker is mismatched; the check is not skipped merely because
+the bot no longer has direct KMS access.
 
 The ports serve **every maker workflow, not only the ladder**: position bootstrap (including
 auto-refill) signs the same transaction kinds through
@@ -378,9 +388,9 @@ logic, and any alternative host must preserve the trust split: the middleware al
 - **IAM chain**: the bot's AWS credentials attach to a role whose only permissions are
   `lambda:InvokeFunction` on setup/health and its routine intent surfaces — the bot loses `kms:Sign`
   and `kms:GetPublicKey` entirely. The four signing functions' execution roles are the only
-  principals with `kms:Sign`; the setup/health execution role alone has `kms:GetPublicKey` on the
-  maker key plus the outbound reads its check needs, and has no `kms:Sign`. Creating those execution
-  roles, the invoke-only credentials, and
+  principals with `kms:Sign`; all five execution roles have narrowly scoped `kms:GetPublicKey` on
+  that same maker key solely for their startup attestation, while setup/health has no `kms:Sign`.
+  Creating those execution roles, the invoke-only credentials, and
   the CloudTrail data-event selectors for all five functions (see Observability) are part of the
   deliverable.
 - **Caller-to-surface scoping**: principals are authorized per function ARN. The three structured
@@ -464,7 +474,10 @@ with those side-specific semantics. Reservation creation transactionally updates
 counters** for every affected `(maker, market)` lend or unwind cap, the maker-wide lend cap when a
 buy is present, and the applicable signed-gas budget. Each counter update conditionally requires
 enough remaining headroom, and the counter updates, per-offer records, deny-generation fence, and
-idempotency marker commit as one transaction. Concurrent intents for different roots therefore
+idempotency marker commit as one transaction. The marker stores a hash of the canonical versioned
+intent, including its invoke surface; reuse of an idempotency key with any different canonical hash
+is a typed conflict and returns no stored artifact or new signature. Concurrent intents for
+different roots therefore
 serialize on shared counter versions instead of both spending the same observed headroom; a failed
 condition causes a fresh snapshot and full re-evaluation, never a partial reservation. Conditional
 creation makes an exact Setter ratify/publication observation idempotent and cannot double-count or
@@ -474,8 +487,9 @@ The same transaction creates a unique signing-attempt record in `reserved` state
 a signature, the handler conditionally moves that attempt to `signed` and durably records the
 **complete signed response artifacts** — canonical encoded payloads, every signature, and any exact
 signed transaction bytes plus nonce/hash/fee fields — before constructing the response. A retry with
-the same idempotency key returns those exact stored artifacts and cannot invoke KMS again. No signed
-response is returned before that durable transition. If KMS or validation/encoding fails first, an idempotent compensation
+the same idempotency key returns those exact stored artifacts without another KMS call only after
+the canonical intent hash matches the marker; a mismatch is rejected. No signed response is returned
+before that durable transition. If KMS or validation/encoding fails first, an idempotent compensation
 transaction releases its exposure and signed-gas reservations, writes a terminal `failed` marker,
 and returns the typed failure. A retry with the same idempotency key observes that marker rather
 than releasing twice. A crash while the attempt is still `reserved` is reconciled by the same
@@ -510,8 +524,9 @@ ledger tracks the
 routine signed-gas budget and the break-glass-principal-only protected revoke reserve; the separate
 ledger-independent emergency allowance is consumed only by that break-glass principal during a
 ledger outage. Together those budgets make the bounded-loss claim hold. The middleware validates
-routine transaction nonces against the current pending nonce but does not allocate or advance the
-account's nonce cursor; the routine single writer and break-glass runbook coordinate the stream.
+routine transaction nonces against the current pending nonce and conditionally leases that nonce
+before KMS signing, but does not allocate or advance the account's nonce cursor; the durable lease,
+routine single writer, and break-glass runbook coordinate the stream.
 
 ### 7. Failure posture
 
@@ -596,10 +611,10 @@ host itself; it strengthens rather than changes this design.
 
 - IAM can express the intended split: the bot's role holds `lambda:InvokeFunction` on exactly
   setup/health, quote, ratify, and routine-revoke and nothing else; the four signing Lambda
-  execution roles are the sole `kms:Sign` principals on the maker key, while the non-signing
-  setup/health role alone holds `kms:GetPublicKey`; break-glass operators hold only the separate
-  break-glass-revoke invoke grant. Policy selects the budget from that fixed function deployment,
-  never from caller-controlled request data.
+  execution roles are the sole `kms:Sign` principals on the maker key, while all five function
+  roles hold narrowly scoped `kms:GetPublicKey` solely for per-surface startup attestation;
+  break-glass operators hold only the separate break-glass-revoke invoke grant. Policy selects the
+  budget from that fixed function deployment, never from caller-controlled request data.
 - Every signed payload class is fully describable as structured intents and canonically
   encodable inside the Lambda (SDK EIP-712 offer-tree hashing and Mempool payload encoding; viem
   transaction serialization).
@@ -613,8 +628,12 @@ host itself; it strengthens rather than changes this design.
 - DynamoDB is available to the Lambda for the reservation ledger and
   invoke-surface-and-intent-keyed signed-gas budgets. Middleware mode enforces the 40-rung-per-side
   cap so every reservation plan fits one 100-action transaction; configuration and runtime guards
-  reject larger plans before signing. The store holds no
-  secrets; its unavailability fails quote/ratify and bot-originated routine revokes closed, while
+  reject larger plans before signing. The primary ledger and independent transaction/revocation
+  inventories hold **sensitive bearer capabilities** whenever they persist signatures, signed
+  transactions, or publishable payloads. They require encryption at rest and in transit,
+  least-privilege read access, no ordinary diagnostic/read-replica access, audited access, and
+  retention/deletion controls aligned with terminal reservation state. Their unavailability fails
+  quote/ratify and bot-originated routine revokes closed, while
   break-glass revocation must atomically consume the independently stored emergency budget or fail
   closed and page the operator.
 - The maker EOA's native balance is operationally bounded: funded above the `NATIVE_RESERVE_WEI`
@@ -759,9 +778,10 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   for identical fields.
 - **Signature correctness:** recovered signer equals the configured maker across both recovery
   parities, reusing the existing strict DER/low-s/recovery-check discipline. The authenticated
-  signer-identity setup port reports the KMS-derived maker and passes readiness only when endpoint,
-  chain, key fingerprint, and configured maker agree; each mismatch fails closed without exposing a
-  generic challenge-signing surface.
+  signer-identity setup port reports the KMS-derived maker and passes readiness only when every
+  deployed surface attests the same endpoint, chain, key fingerprint, image digest, policy digest,
+  and configured maker; drift on any one signing function fails closed without exposing a generic
+  challenge-signing surface.
 - **Fail-closed negatives:** generic digest-signing requests are rejected; unknown intent
   versions are rejected; an independent-read failure produces a typed denial and no KMS call; a
   missing or invalid policy configuration refuses to serve.
@@ -778,12 +798,16 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   drains before cleanup and no new routine revoke can be signed until emergency deny is cleared.
 - **Retry and delayed-broadcast safety:** drop the first Lambda response after the durable `signed`
   transition and prove an idempotent retry returns byte-identical stored artifacts without a second
-  KMS call. Withhold a signed transaction beyond its offer freshness expiry and prove its transaction
+  KMS call. Reuse that key with a different canonical intent and prove it returns a typed conflict,
+  no artifacts, and no KMS call. Race two routine signing intents at the same pending nonce and prove
+  exactly one acquires the pre-sign nonce lease and reaches KMS. Withhold a signed transaction beyond
+  its offer freshness expiry and prove its transaction
   record, nonce fence, and signed-gas reservation remain until that nonce is confirmed or replaced/
   cancelled on chain.
 - **IAM cutover proof:** demonstrate the bot's principal receives `AccessDenied` on `kms:Sign`
   and `kms:GetPublicKey` after the grant moves, that readiness can invoke setup/health and obtain only
-  its constrained response, that the setup/health role cannot call `kms:Sign`, that each role can
+  its constrained response, that each function role can call `kms:GetPublicKey` only on the pinned
+  maker key, that the setup/health role cannot call `kms:Sign`, that each role can
   invoke only its granted surfaces, and that a break-glass principal is denied on setup/health,
   quote, and ratify. Verify CloudTrail data events cover all five function ARNs. A denied call is part
   of acceptance, not an incident.
