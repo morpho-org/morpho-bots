@@ -138,6 +138,15 @@ than forcing Setter deployments to cancel every group individually. This mirrors
 set the quoter's in-process transaction assertions already pin, now enforced outside the bot; a
 compromised revoke invoker cannot spend gas mutating another maker's groups or roots.
 
+Maker-wide cleanup and startup cleanup keep the existing batch behavior exposed by
+`OfferInvalidationPort.invalidateBatch`: the revoke surface may encode one Midnight `multicall`,
+but only from a structured list of group-consumption intents. The middleware recursively validates
+every inner call as an exact zero-value `setConsumed(group, MAX_OFFER_CAP, maker)` against the
+configured Midnight singleton and maker, rejects nested multicalls and every other selector or
+target, and then encodes the outer multicall itself. An empty batch is rejected. This gives the
+current all-groups cleanup path one policy-checked transaction without turning `multicall` into an
+arbitrary-call escape hatch.
+
 Because a signed transaction commits to an account nonce, transaction-signing intents carry
 **caller-supplied fee fields** as liveness parameters, but nonce ordering is policy-relevant. In
 routine operation the middleware reads the maker's current pending nonce independently and signs
@@ -218,6 +227,14 @@ never unbounded or caller-chosen, so a later fee raise cannot make a fill accept
 than the PnL check priced; and asset-denominated cap semantics: v0 accepts only `maxAssets`, which
 must be non-zero, and requires `maxUnits` to be zero. This matches the current builders and makes
 every reservation directly comparable to the per-market and total asset exposure budgets.
+
+Middleware mode also changes offer construction: the ladder and bootstrap/auto-refill builders
+persist `expiry = min(market maturity, signedAt + freshness ceiling)` in the structured intent and
+in the exact offer payload returned for broadcast. The middleware derives that bound from its own
+clock and deployment policy and rejects caller-supplied expiries outside it; it never silently
+signs a different offer than the one returned. This builder change is part of the bot-side seam,
+so long-dated markets continue to quote instead of having their maturity-dated offers denied by
+the middleware.
 
 **Ratify intents** exist for Setter-ratifier deployments, whose ladder flow must send
 `setIsRootRatified` before a quote tree becomes takeable. A ratify intent carries the same
@@ -488,6 +505,11 @@ host itself; it strengthens rather than changes this design.
   ([Lambda container images](https://docs.aws.amazon.com/lambda/latest/dg/images-create.html)).
 - The Lambda's independent read surfaces: resilient RPC access (fallback and/or quorum across
   providers) and the Morpho API/Mempool for live offers, positions, and chain state.
+- A versioned Morpho API/Mempool response that exposes authoritative indexed-block number/hash
+  metadata for every live-offer and position read used by policy. The current generated
+  `ListTakeableOfferResponse` exposes only `cursor` and `data`, so adding and consuming this
+  metadata is a blocking v0 deliverable; middleware quote/ratify signing must remain disabled
+  until an integration test proves all policy reads can be pinned to one indexed block.
 - A small managed state store for the reservation ledger and signed-gas budget (e.g. DynamoDB
   with conditional writes).
 - `@morpho-org/midnight-sdk` offer-tree EIP-712 hashing for canonical encoding inside the Lambda.
@@ -590,6 +612,10 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   offer without `reduceOnly` denied, a caller-supplied
   `continuousFeeCap` above the snapshot fee denied, a root revocation targeting Midnight instead
   of the ratifier denied, mixed-snapshot reads denied as incoherent,
+  missing or inconsistent API indexed-block metadata denied, ladder and bootstrap offers on a
+  long-dated market persisted with `min(maturity, signedAt + freshness)` expiry,
+  maker-wide cleanup encoded as one policy-checked multicall whose inner `setConsumed` calls all
+  pass the same target/maker/cap checks, with nested/empty/foreign-selector batches denied,
   a routine signed-gas budget refusing the next publication while the revoke reserve still
   signs, both/neither of `maxUnits`/`maxAssets` set,
   off-by-one exposure caps, a prospective set that crosses only in combination with live offers.
