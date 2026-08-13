@@ -164,6 +164,17 @@ signed-gas/nonce reservations remain fenced until the nonce is confirmed or repl
 chain. This same-nonce fence prevents a caller from withholding several alternatives and choosing
 the one least favorable to break-glass cleanup.
 
+The fence has one routine liveness exception: the same authenticated surface may request a
+**replacement** of its recorded, still-pending transaction. The middleware accepts only the exact
+canonical intent and economic payload already recorded at that nonce, or an exact zero-value
+self-cancel; the request cannot change offers, roots, groups, targets, calldata, value, or intent
+kind. It independently derives both fee fields using the repository replacement rule
+`max(floor(previous * 1125 / 1000), previous + 1 wei)`, applies the routine ceilings and rolling
+signed-gas budget, and atomically replaces the recorded fee fields, signed bytes, and hash before
+returning the new artifact. Repeated bumps therefore restore a path for an underpriced transaction
+without creating a menu of economically different same-nonce signatures. A replacement that
+cannot be recorded, budgeted, or reconciled with the pending transaction fails closed.
+
 A break-glass revocation deliberately takes over the account's transaction stream during an
 incident. It does **not** sign the node's `pending` nonce, which is the next unused nonce. It
 enumerates every occupied nonce from the middleware's recorded, still-pending routine transactions
@@ -180,8 +191,14 @@ later, previously unused nonces. If the middleware cannot reconcile its record w
 pending transaction set, an occupied transaction was not recorded, or the protected ceilings
 cannot replace every occupied nonce, break-glass must use an ordered drain/handoff and must not
 claim that a next-unused-nonce revocation can preempt the pending stream. Routine transaction
-ceilings remain below the protected replacement ceilings so a middleware-produced routine bid
-cannot strand an otherwise valid emergency replacement.
+ceilings must reserve one complete emergency bump for **both** fee fields: for each routine ceiling
+`r`, the corresponding protected ceiling is at least
+`max(floor(r * 1125 / 1000), r + 1 wei)`. Deployment validation rejects any weaker configuration,
+and before returning every routine transaction (including a routine replacement) the middleware
+reapplies the same formula to its actual recorded `maxFeePerGas` and `maxPriorityFeePerGas` and
+requires both results to fit the protected ceilings. A middleware-produced routine bid therefore
+cannot strand an otherwise valid emergency replacement merely because the ceilings were only one
+wei apart.
 
 Per-transaction fee/gas ceilings alone cannot stop a leaked invoker from bleeding the maker's
 native balance one valid cancellation at a time. Transaction-signing intents therefore also draw
@@ -356,6 +373,18 @@ gate it applies to local and direct-KMS identities. Health/readiness is red when
 key, chain, image, policy, or configured maker is mismatched; the check is not skipped merely because
 the bot no longer has direct KMS access.
 
+The aggregation path is an internal attestation registry, not an assertion synthesized by
+setup/health. After validating itself, each execution role may conditionally write only its own
+function-and-published-version key in a dedicated DynamoDB table; the value contains the validated
+fields above, the deployment-manifest digest, and a startup timestamp. It cannot write another
+surface's key or read the table. The setup/health execution role may write its own key and read all
+five exact keys, but may not alter the four signing-surface records; the bot role has no table
+access. Readiness resolves every production alias to its current published version and requires a
+fresh matching record for that exact version and manifest, so an attestation from a retired
+deployment cannot satisfy the check. IAM grants only those per-key `dynamodb:PutItem` operations and
+the setup role's bounded `GetItem`/`BatchGetItem`; no attestation path invokes a signing handler or
+exposes a signing operation.
+
 The ports serve **every maker workflow, not only the ladder**: position bootstrap (including
 auto-refill) signs the same transaction kinds through
 [`production-bootstrap.ts`](../../bots/quoter-bot/src/infrastructure/bootstrap/production-bootstrap.ts).
@@ -433,8 +462,15 @@ logic, and any alternative host must preserve the trust split: the middleware al
   path — and that surface cannot produce quote signatures. The bot cannot invoke this function;
   its separate routine-revoke function cannot select the protected budget in request data.
 - Entering break-glass mode first atomically increments a durable **deny generation** in middleware
-  policy and disables the routine quote, ratify, and routine-revoke invoke grants before cleanup
-  starts. Every routine signing handler captures that generation on admission and acquires a
+  policy before cleanup starts. The operator-authorized `break-glass-revoke` function is the control
+  surface: on its first cleanup request it conditionally acquires a single active cleanup epoch and
+  increments the deny generation in the same ledger transaction, then refuses to sign any cleanup
+  transaction until older-generation routine leases have drained. Operators need only
+  `lambda:InvokeFunction` on that function; its execution role alone has the narrowly scoped ledger
+  permission to perform this transition. Routine invoke grants may remain present so IAM changes
+  are not a containment prerequisite — every routine handler denies new leases from the new
+  generation — while incident automation can disable those grants as defense in depth. Every
+  routine signing handler captures the generation on admission and acquires a
   generation-scoped
   signing lease in the same transaction that reserves aggregate capacity. The handler checks the
   lease immediately before KMS signing and releases it only after the result is durably cataloged.
