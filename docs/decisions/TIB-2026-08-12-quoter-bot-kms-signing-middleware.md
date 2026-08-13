@@ -136,23 +136,33 @@ safety revocation is the one that must win.
 
 Per-transaction fee/gas ceilings alone cannot stop a leaked invoker from bleeding the maker's
 native balance one valid cancellation at a time. Transaction-signing intents therefore also draw
-on a **rolling signed-gas budget** — a policy parameter tracked in the reservation ledger (see
-Statefulness) across publication, ratification, and revocation signatures — sized comfortably
-above a full-book cleanup so the kill switch never starves, and alerting well before exhaustion.
-Native-gas grief is thereby capped and enters the bounded-loss arithmetic.
+on **rolling signed-gas budgets** tracked in the reservation ledger (see Statefulness), and the
+budgets are **partitioned by invoke surface**: publication and ratification draw on a routine
+budget, while the revoke surface holds its **own protected reserve** — sized for several
+full-book cleanups — that routine signing can never draw down, so a compromised bot exhausting
+the routine budget cannot starve the kill switch. When the ledger is unavailable, quote/ratify
+fail closed while revoke signing continues **uncharged but bounded**: per-transaction ceilings
+still apply and the revoke surface is infrastructure-throttled (reserved concurrency), so
+worst-case outage spend is rate-limited and the outage itself alerts. The final backstop is that
+the maker EOA deliberately holds only a small operational native balance (the existing
+`NATIVE_RESERVE_WEI` posture): gas grief can never exceed what is funded. Native-gas spend is
+thereby capped and enters the bounded-loss arithmetic.
 
-**Quote intents** carry an array of structured offers plus the **owned group/root IDs the new
-set replaces** — normal ladder reconciliation is a replacement, so the prospective book is
-evaluated net of the groups the caller commits to invalidate, and ordinary resize/reprice
-intents are not denied for crossing the very offers they retire. Declared replaced groups must
-decode to the maker's own strategy namespace, and their exposure stays reserved until the
-invalidation is observed. An approved quote intent returns both signed artifacts the publication
-flow needs: the EIP-712 tree signature (Ecrecover) and the signed zero-value publication
-transaction to the Midnight Mempool contract, whose calldata the middleware itself encoded from
-the validated set. The set is approved only when **three properties** all hold:
+**Quote intents** carry an array of structured offers. There are **no caller-declared
+exclusions**: the prospective book is always the observed live book plus the proposed set,
+because a promised-but-unobserved invalidation is worth nothing at the signing boundary — a
+signed publication is broadcastable regardless of what the caller claimed it would revoke
+first. A replacement therefore sequences exactly as the in-process `MakeService` already does:
+request the revoke signature, broadcast it, wait until the middleware's snapshot shows the old
+groups gone, then request the quote signature against the now-clean book. A replacement whose
+transitional old-plus-new book stays fully in-policy may skip the wait and revoke after
+publication. An approved quote intent returns both signed artifacts the publication flow needs:
+the EIP-712 tree signature (Ecrecover) and the signed zero-value publication transaction to the
+Midnight Mempool contract, whose calldata the middleware itself encoded from the validated set.
+The set is approved only when **three properties** all hold:
 
-1. **No crossed books.** The prospective offer set — live offers minus declared replaced groups
-   plus the proposed set — must not create a negative spread across books: the same whole-book
+1. **No crossed books.** The prospective offer set — observed live offers plus the proposed
+   set, with no exclusions — must not create a negative spread across books: the same whole-book
    invariant `MakeService` enforces in-process today, now enforced independently at the signing
    boundary. Critically, the middleware does **not** trust bot-supplied book state for this check
    — a compromised bot would lie. It reads live offers and chain state itself, through its own
@@ -274,10 +284,10 @@ sign-and-withhold requests could multiply exposure far beyond the caps inside on
 approved quote intent therefore records a reservation (markets, exposure, root, expiry) at
 signing time; aggregate caps are enforced over live offers **plus outstanding reservations**; a
 reservation is released when its root is observed live (it then counts as live) or when its
-freshness ceiling passes unpublished, and exposure of declared replaced groups stays reserved
-until their invalidation is observed. The ceiling keeps the ledger tiny and self-expiring;
-conditional writes serialize concurrent intents; the same ledger tracks the rolling signed-gas
-budget. The ledger is what makes the bounded-loss claim hold. Transaction nonces stay
+freshness ceiling passes unpublished. The ceiling keeps the ledger tiny and self-expiring;
+conditional writes serialize concurrent intents; the same ledger tracks the per-surface
+signed-gas budgets, including the protected revoke reserve. The ledger is what makes the
+bounded-loss claim hold. Transaction nonces stay
 caller-owned (see the intent contract), so the middleware never coordinates the account's
 transaction stream.
 
@@ -291,7 +301,7 @@ transaction stream.
 | Revoke intent denied                      | Near-impossible by design; treat as misconfig, alert |
 | Concurrent tx signers (bot + break-glass) | Same-nonce fee-bump replacement resolves on-chain    |
 | Read fails or snapshot is incoherent      | Fail closed: typed retryable denial, no signature    |
-| Reservation ledger unavailable            | Quote/ratify fail closed; revoke stays served, alert |
+| Reservation ledger unavailable            | Quote/ratify closed; revoke uncharged + throttled    |
 | KMS error                                 | Typed failure; never assume a signature was produced |
 | Policy parameters missing/invalid at init | Refuse to serve; never run a partial or empty policy |
 | Unknown intent type/version               | Reject; no best-effort interpretation of payloads    |
@@ -376,8 +386,9 @@ host itself; it strengthens rather than changes this design.
   remaining way to get a bad set past those two checks (open question 7). Reads for one intent
   are pinned to a single deterministic snapshot; a mixed-block view is a denial, not an input.
 - A small managed store with conditional writes (e.g. DynamoDB) is available to the Lambda for
-  the reservation ledger and signed-gas budget. It holds no secrets; its unavailability fails
-  quoting closed while revocation stays served.
+  the reservation ledger and the per-surface signed-gas budgets. It holds no secrets; its
+  unavailability fails quoting closed while revocation stays served uncharged under
+  infrastructure throttling.
 - One invocation round trip per make/revoke job — including cold starts — is compatible with the
   hourly-ish quote cadence and the one-minute bootstrap monitor.
 - The Lambda is meaningfully harder to compromise than the bot host — minimal code and
@@ -459,8 +470,10 @@ host itself; it strengthens rather than changes this design.
   stand until expiry or revocation through a break-glass invoker.
 
 Attacker-obtainable revocations are downtime/griefing plus bounded native-gas spend, not
-loan-asset loss — per-intent invoke scoping and the signed-gas budget exist precisely to keep
-that griefing hard and capped.
+loan-asset loss — per-intent invoke scoping and the per-surface gas budgets keep that griefing
+hard and capped, the protected revoke reserve keeps a compromised routine invoker from starving
+break-glass capacity, and the deliberately small funded native balance is the hard ceiling even
+during a ledger outage.
 
 **Bounded-loss framing.** Today, bot-host compromise means unbounded loss of everything the maker
 EOA holds or has approved. With the middleware, it means a bounded, pre-computable number derived
@@ -478,9 +491,10 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   all three intent types, including boundary values — price exactly at a bound, expiry exactly at
   maturity or the freshness ceiling, aggregate exposure that overflows only in combination with
   live offers or outstanding reservations, sign-and-withhold sequences denied once reservations
-  exhaust the caps, a replacement approved only because it retires the groups it crosses, a
-  ratify root that does not match its offer set, mixed-snapshot reads denied as incoherent, a
-  signed-gas budget refusing the next transaction, both/neither of `maxUnits`/`maxAssets` set,
+  exhaust the caps, a crossing replacement denied until its retired groups are observed
+  invalidated and approved after, a ratify root that does not match its offer set,
+  mixed-snapshot reads denied as incoherent, a routine signed-gas budget refusing the next
+  publication while the revoke reserve still signs, both/neither of `maxUnits`/`maxAssets` set,
   off-by-one exposure caps, a prospective set that crosses only in combination with live offers.
 - **Adversarial state:** intents accompanied by caller-supplied book or position state that
   contradicts chain truth — the Lambda must ignore the caller's view entirely and decide from its
@@ -532,8 +546,8 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
    audited.
 6. The reservation ledger's concrete store and consistency design — DynamoDB conditional writes
    are the default candidate — including release on observed publication/invalidation, expiry
-   eviction, and exactly how ledger unavailability keeps revocation served while quoting fails
-   closed.
+   eviction, per-surface budget partitioning details, and the reserved-concurrency throttle that
+   bounds uncharged revoke signing during an outage.
 7. Lambda networking/egress design for its independent RPC and Morpho API/Mempool reads — and the
    decision posture when those providers disagree with the bot's view of the book.
 
