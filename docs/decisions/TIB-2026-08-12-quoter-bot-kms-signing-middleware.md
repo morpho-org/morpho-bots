@@ -197,8 +197,15 @@ incident. It does **not** sign the node's `pending` nonce, which is the next unu
 enumerates every occupied nonce from the middleware's recorded, still-pending routine and
 setup-remediation transactions and signs a cleanup transaction at each **same nonce**, thereby
 replacing every unsafe publication, ratification, or remediation rather than queueing behind it.
-Each replacement fee bid uses the repository replacement formula against the maximum recorded fee
-fields across every signature at that nonce: the priority fee is bumped by 12.5% plus the one-wei
+When a nonce has no root/group revocation target — including a maintenance approval or authorization
+nonce, or when there are fewer revocation targets than occupied nonces — the protected handler signs
+an explicit break-glass self-cancel replacement: sender and target are the maker EOA, value is zero,
+calldata is empty, and the dedicated break-glass-cancel intent rejects every offer, root, group,
+approval, authorization, and arbitrary target field. Empty revocation batches remain invalid; this
+self-cancel is a distinct replacement intent, so every occupied nonce always has a policy-valid
+preemption payload. Each replacement fee bid uses the repository replacement formula against the
+maximum recorded fee fields across every signature at that nonce: the priority fee is bumped by
+12.5% plus the one-wei
 floor, and `maxFeePerGas` is the maximum
 of its corresponding bump and
 `currentBaseFee * 2 + newPriorityFee`. The current pending-block base fee comes from an independent
@@ -289,12 +296,18 @@ preemption. Reserved concurrency isolates revoke capacity from quote floods but 
 **not** a rate limit; it cannot bound
 sequential signatures. If that independent budget cannot be checked atomically, revoke signing
 fails closed and pages the operator rather than becoming unmetered. The final backstop is a
-**native-balance funding ceiling** — a new operational control this TIB requires, distinct from
-the existing `NATIVE_RESERVE_WEI` **minimum** readiness threshold: the operator funds the maker
-EOA between that minimum and a configured maximum, and monitoring alerts when the balance
-exceeds the maximum. Gas grief can never exceed the remaining routine budget plus the protected
-emergency allowance, and never exceed what is funded. Native-gas spend is thereby capped and
-enters the bounded-loss arithmetic.
+**native-balance admission ceiling** — a new operational control this TIB requires, distinct from
+the existing `NATIVE_RESERVE_WEI` **minimum** readiness threshold. Setup/readiness and every routine
+quote, ratify, revoke, replacement, and setup-remediation signing request independently read the
+maker's native balance and fail closed before KMS when it exceeds the configured maximum. Monitoring
+alerts before and at that limit; an unsolicited transfer can make the balance exceed the target but
+cannot turn the excess into routine signing capacity. The operator-only break-glass path remains
+available to replace unsafe pending transactions and move excess native balance during containment,
+subject to its protected budget and exact allowlist. Routine gas grief is therefore bounded by the
+remaining routine budget and by the enforced admission ceiling, while break-glass spend is separately
+bounded by the protected emergency allowance. Native-gas spend enters the bounded-loss arithmetic
+under those separate authenticated budget classes; the configured maximum is never described as a
+physical balance cap that external senders cannot exceed.
 
 **Setup-remediation intents** replace the maker's direct KMS path for token approvals and other
 setup transactions. They are accepted only by a dedicated operator-authorized function while a
@@ -308,13 +321,19 @@ accounting, replacement rules, and break-glass preemption guarantees as every ot
 transaction. Its invoke role is separate from both the bot and break-glass roles, and neither role
 can invoke it. Direct bot or operator access to `kms:Sign` may not be removed until this surface is
 deployed and its positive and deny-path acceptance tests pass; after cutover, no manual remediation
-procedure may restore direct KMS signing. Before that cutover, migration must also backfill the
-independent catalog and transaction inventory with every non-terminal offer group, ratified root,
+procedure may restore direct KMS signing. Cutover must use a newly generated maker key/address that the
+old direct-signing path never held. The old maker remains quarantined: operators revoke every live
+offer/root authorization, replace or confirm every pending transaction, remove its token approvals,
+and wait for every permit, authorization, and other time-bounded signature class to expire before
+moving assets or policy caps to the new maker. The independent catalog backfill below is still required
+for cleanup, but it is not accepted as proof that arbitrary historical blind signatures are exhausted,
+because CloudTrail cannot recover their signed digest. Before cutover, migration backfills the
+independent catalog and transaction inventory with every known non-terminal offer group, ratified root,
 pending routine transaction, and pending setup-remediation transaction signed by the existing `aws`
-path, including complete artifact and occupied-nonce histories. Alternatively, deployment must prove
-that every pre-middleware offer, root, and transaction is terminal on chain. Direct KMS access cannot
-be removed until the backfill or terminal-state proof passes the same strongly consistent inventory,
-pending-set reconciliation, and break-glass preflight used after cutover.
+path, including complete artifact and occupied-nonce histories. Direct KMS access cannot be removed
+and higher caps cannot be enabled until the new maker is active, the old maker's known artifacts pass
+the same strongly consistent inventory, pending-set reconciliation, and break-glass preflight used
+after cutover, and the old maker has completed the quarantine conditions above.
 
 **Quote intents** carry an array of structured offers. There are **no caller-declared
 exclusions**: the prospective book is always the observed live book plus the proposed set,
@@ -488,8 +507,16 @@ version and before moving its production alias, deployment automation invokes th
 handler with the attestation operation under the function execution role; the operation performs
 only the key/config/image validation above and the conditional registry write. The
 deployment verifies the exact version-and-manifest record, retries transient failures, and refuses
-the alias rollout if the record is absent or mismatched. Readiness can therefore require fresh
-records without waiting for quote, ratify, or revoke traffic, while setup/health still never invokes
+the alias rollout if the record is absent or mismatched. After rollout, an external EventBridge
+schedule invokes the same non-signing attestation operation on each exact production alias at an
+interval shorter than half the registry freshness window. The operation re-resolves the alias to one
+published version, rejects weighted routing, revalidates key/config/image/manifest state, and
+conditionally refreshes only that version-and-manifest record. A deployment-owned watchdog alarms
+before a record can expire and retries transient refresh failures; setup/health never refreshes a
+signing surface on its behalf. If scheduled refresh stops or drift prevents a refresh, readiness turns
+red at the freshness deadline and signing fails closed, without requiring a redeploy or signing
+traffic. Readiness can therefore require fresh records without waiting for quote, ratify, or revoke
+traffic, while setup/health still never invokes
 a signing handler.
 
 The ports serve **every maker workflow, not only the ladder**: position bootstrap (including
@@ -583,8 +610,20 @@ logic, and any alternative host must preserve the trust split: the middleware al
   emergency budget, not only in the primary reservation ledger. Every routine handler must read the
   independent generation, acquire both its primary reservation and an independent
   generation-scoped lease before KMS signing, recheck that independent lease immediately before the
-  KMS call, and release it only after the result is durably cataloged. Failure of either control
-  plane fails routine signing closed.
+  KMS call, and release it only after the result is durably cataloged. Leases have a short manifest-pinned
+  TTL, a bounded heartbeat, and explicit `reserved`, `kms-in-flight`, and `cataloged` phases. A handler
+  may renew only while its Lambda invocation is live; the maximum invocation duration plus a fixed grace
+  period is shorter than containment's lease-reconciliation deadline. An independent reconciler treats
+  an expired `cataloged` lease as drainable only after it finds the complete signed artifact in the
+  independent catalog. It treats an expired `reserved` lease as drainable only after the invocation is
+  terminal and a conditional request record proves no KMS call began. For an expired `kms-in-flight`
+  lease, missing or incomplete artifact evidence is never interpreted as no signature: the reconciler
+  waits for the bounded invocation to terminate and requires either the complete catalog artifact or an
+  attested terminal invocation record proving no KMS result was returned to the handler and no response
+  was delivered. Otherwise containment fails closed into ordered drain/handoff and pages the operator.
+  The handler cannot return a signature before the artifact and `cataloged` phase commit, so a crashed
+  or hung invocation cannot leave a deliverable signature behind an expired clean lease. Failure of
+  either control plane fails routine signing closed.
 - The operator-authorized `break-glass-revoke` function is the control surface: on its first cleanup
   request it conditionally acquires the single active cleanup epoch and increments the independent
   deny generation atomically, then refuses to sign cleanup transactions until every older-generation
@@ -920,8 +959,9 @@ host itself; it strengthens rather than changes this design.
 Attacker-obtainable revocations are downtime/griefing plus bounded native-gas spend, not
 loan-asset loss — per-intent invoke scoping and the per-surface gas budgets keep that griefing
 hard and capped, the protected revoke reserve keeps a compromised routine invoker from starving
-break-glass capacity, and the native-balance funding ceiling — an explicit operational control,
-distinct from the `NATIVE_RESERVE_WEI` minimum — is the hard cap even during a ledger outage.
+break-glass capacity, and the native-balance admission ceiling — an explicit fail-closed signing
+control distinct from the `NATIVE_RESERVE_WEI` minimum — prevents unsolicited excess balance from
+becoming routine attack capacity. The protected break-glass allowance is accounted separately.
 
 **Bounded-loss framing.** Today, bot-host compromise means unbounded loss of everything the maker
 EOA holds or has approved. With the middleware, it means a bounded, pre-computable number derived
@@ -935,8 +975,9 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
 
 ## Testing and Verification
 
-- **Policy:** exhaustive accept/reject vectors for the three properties and every field check on
-  all three intent types, including boundary values — price exactly at a bound, expiry exactly at
+- **Policy:** exhaustive accept/reject vectors for the three properties and every applicable field check
+  across all four structured intent types — quote, ratify, revoke, and setup remediation — including
+  boundary values — price exactly at a bound, expiry exactly at
   maturity or the freshness ceiling, aggregate exposure that overflows only in combination with
   live offers or outstanding reservations, sign-and-withhold sequences denied once reservations
   exhaust the caps — through quote or ratify approvals alike, two individually valid withheld
@@ -957,8 +998,12 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   signs, both/neither of `maxUnits`/`maxAssets` set,
   off-by-one exposure caps, a prospective set that crosses only in combination with live offers,
   PnL vectors for profitable, exact-boundary, and loss-making fills using only the specified
-  independent cost-basis inputs, and provider disagreement or insufficient quorum denied with no
-  KMS call.
+  independent cost-basis inputs; setup-remediation vectors cover every manifest-pinned target,
+  selector, chain, asset, spender/operator, allowance/authorization ceiling, zero-value rule,
+  nonce lease, rolling gas budget, idempotency key, same-nonce replacement, artifact/catalog
+  persistence, and break-glass preemption path, with off-by-one ceilings, foreign fields, arbitrary
+  calldata, and missing persistence denied; and provider disagreement or insufficient quorum denied
+  with no KMS call.
 - **Adversarial state:** intents accompanied by caller-supplied book or position state that
   contradicts chain truth — the Lambda must ignore the caller's view entirely and decide from its
   own reads.
@@ -979,10 +1024,13 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   denial propagation into `make.rejected`, the invocation-failure halt, a break-glass revoke
   invoked by a second IAM principal, an attempted bot invocation of `break-glass-revoke` denied by
   IAM, a routine-revoke payload that claims break-glass identity still charged only to the routine
-  budget, and the funding-ceiling alert when the maker's native balance exceeds its configured
-  maximum. Queue routine publications at consecutive occupied nonces, then prove break-glass
-  pre-signs and broadcasts replacements for every occupied nonce before waiting rather than signing
-  only the lowest or the next unused nonce. Raise the base fee above the routine max-fee bump and
+  budget. Prove the admission-ceiling alert and readiness failure when the maker's native balance
+  exceeds its configured maximum, and prove every routine/remediation signing surface rejects before
+  KMS while operator-only break-glass remains available. Queue routine publications at consecutive
+  occupied nonces plus a setup-remediation approval at a nonce with no revocation target, then prove
+  break-glass pre-signs and broadcasts replacements for every occupied nonce before waiting, using
+  the exact break-glass self-cancel for the remediation-only nonce rather than signing only the lowest
+  or the next unused nonce. Raise the base fee above the routine max-fee bump and
   prove break-glass uses `baseFee * 2 + newPriorityFee`, then fails closed when that live result
   exceeds the protected ceiling. Fill the configured occupied-nonce limit and prove a new-nonce
   request is denied while a same-nonce replacement remains allowed; race requests for the final slot
@@ -990,7 +1038,11 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   inventory's exact nonce and fee records; a missing, incoherent, stale-replica, or lagging-watermark
   inventory forces ordered handoff. Enter break-glass while routine-revoke is in flight and prove its
   generation lease drains before cleanup and no new routine revoke can be signed until emergency deny
-  is cleared.
+  is cleared. Crash handlers separately in `reserved`, `kms-in-flight`, and `cataloged`, advance past
+  the lease TTL and invocation timeout, and prove reconciliation drains only a terminal pre-KMS
+  request or a complete catalog artifact; an ambiguous KMS result keeps containment fail-closed.
+  Stop the scheduled attestation refresh, prove records age red without signing traffic, then restore
+  refresh and prove each exact alias/version record becomes fresh without a redeploy.
 - **Retry and delayed-broadcast safety:** drop the first Lambda response after the durable `signed`
   transition and prove the transaction inventory already contains the exact artifact before an
   idempotent retry returns byte-identical stored artifacts without a second KMS call. Inject an
@@ -1004,7 +1056,11 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   prove the independent inventory retains every hash, byte string, and fee pair append-only, marks
   only the newest entry active for routine replacement, and derives break-glass fees from the maximum
   across all three artifacts.
-- **IAM cutover proof:** demonstrate the bot's principal receives `AccessDenied` on `kms:Sign`
+- **IAM cutover proof:** demonstrate the middleware uses a newly generated maker key/address never
+  exposed to the direct `aws` signer, while the old maker remains quarantined until known artifacts
+  are revoked/reconciled, approvals are removed, and every permit/authorization signature class has
+  expired; inventory backfill alone is not accepted as proof against unknown historical blind
+  signatures. Demonstrate the bot's principal receives `AccessDenied` on `kms:Sign`
   and `kms:GetPublicKey` after the grant moves, that readiness can invoke setup/health and obtain only
   its constrained response, that each function role can call `kms:GetPublicKey` only on the pinned
   maker key, that the setup/health role cannot call `kms:Sign`, that each role can
