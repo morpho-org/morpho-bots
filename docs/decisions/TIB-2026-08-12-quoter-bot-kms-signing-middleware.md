@@ -45,8 +45,9 @@ AWS KMS or equivalent key custody. KMS custody has since shipped. This TIB addre
 - **Sign-what-you-encode**: the middleware canonically encodes each validated intent and derives
   the digest internally. The bot never supplies bytes or hashes to be signed.
 - Bound the blast radius of full bot-host compromise to a **quantifiable worst-case loss**:
-  signatures over in-policy offers (≈ worst in-policy rate × capped **aggregate** live exposure)
-  plus revocations (downtime/griefing, no fund loss). No EOA drain, no arbitrary permit.
+  signatures over in-policy offers (≈ worst in-policy rate × capped **aggregate signed**
+  exposure, published or withheld) plus revocations (downtime/griefing) and a capped
+  signed-gas budget for native-token spend. No loan-asset drain, no arbitrary permit.
 - Keep revocation the **always-available kill switch**: near-unconditionally approved and the most
   available operation the middleware offers.
 - Fail closed: quoting halts when middleware invocation fails or an intent is denied.
@@ -78,8 +79,11 @@ AWS KMS or equivalent key custody. KMS custody has since shipped. This TIB addre
   exactly one `MakerIdentity`: `private-key`, `keystore`, `aws` (keyId + region), or read-only.
 - Two payload classes are signed by the maker key today
   ([quoter-bot README](../../bots/quoter-bot/README.md)): **EIP-712 Ecrecover ratifier offer
-  trees** published off-chain to the Mempool, and **on-chain transactions** — offer group/root
-  invalidation, plus `setIsRootRatified` root approval where the Setter ratifier is used.
+  trees**, and **on-chain transactions** — publication itself is one:
+  [`production-ladder.ts`](../../bots/quoter-bot/src/infrastructure/ladder/production-ladder.ts)
+  sends the SDK-encoded offer payload as a zero-value transaction to the Midnight Mempool
+  contract, alongside offer group/root invalidation and `setIsRootRatified` root approval where
+  the Setter ratifier is used.
 - In-process guards: [`packages/bot-kit/src/signer.ts`](../../packages/bot-kit/src/signer.ts) runs
   `evaluatePolicy` (default-deny: chain, target, selector, value, gas/fee ceilings) between
   prepare and broadcast and logs `signer.policy_violation`; the offer invariants and serialized
@@ -112,8 +116,8 @@ bot host (role: invoke-only)         signing Lambda (role: kms:Sign + reads)    
 ### 1. Structured intents replace digests
 
 The wire contract is a **versioned JSON intent** carried as the payload of an AWS SDK
-`lambda:InvokeFunction` call. The bot submits one of three intent types; the middleware returns the
-signature together with the derived root/tx payload it encoded, so the bot publishes exactly what
+`lambda:InvokeFunction` call. The bot submits one of three intent types; the middleware returns
+the signatures together with the exact payloads it encoded, so the bot broadcasts exactly what
 was validated.
 
 **Revoke intents** invalidate offer groups/roots. They are **near-unconditionally approved** —
@@ -130,15 +134,31 @@ break-glass revocation deliberately takes over the account's transaction stream 
 incident — concurrent same-nonce signatures resolve on-chain as fee-bump replacements, and the
 safety revocation is the one that must win.
 
-**Quote intents** carry an array of structured offers. The set is approved only when **three
-properties** all hold:
+Per-transaction fee/gas ceilings alone cannot stop a leaked invoker from bleeding the maker's
+native balance one valid cancellation at a time. Transaction-signing intents therefore also draw
+on a **rolling signed-gas budget** — a policy parameter tracked in the reservation ledger (see
+Statefulness) across publication, ratification, and revocation signatures — sized comfortably
+above a full-book cleanup so the kill switch never starves, and alerting well before exhaustion.
+Native-gas grief is thereby capped and enters the bounded-loss arithmetic.
 
-1. **No crossed books.** The prospective offer set, evaluated together with the maker's
-   already-live offers, must not create a negative spread across books — the same whole-book
+**Quote intents** carry an array of structured offers plus the **owned group/root IDs the new
+set replaces** — normal ladder reconciliation is a replacement, so the prospective book is
+evaluated net of the groups the caller commits to invalidate, and ordinary resize/reprice
+intents are not denied for crossing the very offers they retire. Declared replaced groups must
+decode to the maker's own strategy namespace, and their exposure stays reserved until the
+invalidation is observed. An approved quote intent returns both signed artifacts the publication
+flow needs: the EIP-712 tree signature (Ecrecover) and the signed zero-value publication
+transaction to the Midnight Mempool contract, whose calldata the middleware itself encoded from
+the validated set. The set is approved only when **three properties** all hold:
+
+1. **No crossed books.** The prospective offer set — live offers minus declared replaced groups
+   plus the proposed set — must not create a negative spread across books: the same whole-book
    invariant `MakeService` enforces in-process today, now enforced independently at the signing
    boundary. Critically, the middleware does **not** trust bot-supplied book state for this check
    — a compromised bot would lie. It reads live offers and chain state itself, through its own
-   RPC and Morpho API/Mempool reads.
+   RPC and Morpho API/Mempool reads, and every policy read for one intent is pinned to **one
+   deterministic snapshot** — a single block tag, with API responses carrying consistent
+   indexed-block metadata. If a coherent snapshot cannot be assembled, the intent fails closed.
 2. **Price bounds.** Every offer's price/rate must remain inside boundaries encoded as parameters
    of the middleware's own deployment configuration — never supplied per-request.
 3. **No PnL drop.** Publishing the offers must not degrade the maker address's PnL: offer prices
@@ -147,21 +167,22 @@ properties** all hold:
    are open questions; the property itself is a decided policy requirement.
 
 Beneath these three headline properties, **field-level validation** on every offer: market
-allowlist; per-market and total exposure caps, enforced against **aggregate live signed
-exposure** — the proposed set plus the maker's already-live offers from the middleware's own
-reads, never per-intent amounts alone; expiry ≤ market maturity and inside a **freshness
-ceiling** — a policy parameter capping offer lifetime from signing time, so a compromised host
-cannot stockpile a signature and publish it usefully after the checked state has moved; offer
-start not meaningfully before signing time; exact maker/receiver/callback/ratifier fields; owned
+allowlist; per-market and total exposure caps, enforced against **aggregate signed exposure** —
+the proposed set, the maker's already-live offers from the middleware's own reads, and every
+still-outstanding signed-but-unpublished reservation (see Statefulness), never per-intent
+amounts alone; expiry ≤ market maturity and inside a **freshness ceiling** — a policy parameter
+capping offer lifetime from signing time, so a stockpiled signature dies quickly; offer start
+not meaningfully before signing time; exact maker/receiver/callback/ratifier fields; owned
 group namespace; and cap semantics (exactly one of `maxUnits`/`maxAssets` non-zero).
 
 **Ratify intents** exist for Setter-ratifier deployments, whose ladder flow must send
 `setIsRootRatified` before a quote tree becomes takeable. A ratify intent carries the same
 structured offer set as a quote intent; the middleware re-validates it in full, re-derives the
 root itself, and signs only the `setIsRootRatified(maker, root, true)` transaction for that
-derived root — under the same chain/target/value/fee pins as revocations. Statelessness is
-preserved because the middleware never needs to remember which roots it produced: it recomputes
-them. Ecrecover deployments never use this intent.
+derived root — under the same chain/target/value/fee pins as revocations. The middleware never
+needs to remember which roots it produced: it recomputes them. Because a ratification enables
+publication, ratify is a **quote-enabling intent** and is authorized like quote, never granted
+to break-glass principals. Ecrecover deployments never use this intent.
 
 Policy parameters live in the middleware's deployment, never in the request; the state feeding
 its checks comes from its own reads, never from the caller. A compromised bot can neither relax
@@ -170,7 +191,8 @@ the policy nor lie to it.
 ### 2. Sign-what-you-encode
 
 The middleware itself canonically encodes each validated intent — EIP-712 offer-tree hashing for
-Ecrecover ratifier offers, transaction serialization for invalidations — and derives the digest
+Ecrecover ratifier offers, SDK payload encoding for Mempool publication calldata, and
+transaction serialization for every transaction kind — and derives the digest
 internally. The bot never supplies bytes or hashes to be signed, so **there is no
 decode/re-encode ambiguity to attack**: nothing needs to parse an attacker-supplied encoding and
 hope the parse matches what the chain or the ratifier will see. What was validated is what is
@@ -180,9 +202,9 @@ signed, by construction.
 
 The viem `LocalAccount.sign(hash)` blind-digest surface is exactly what is being removed, so the
 middleware is deliberately **not** a drop-in `LocalAccount` replacement. The bot-side seam is
-intent-level ports — an offer-signing port, an invalidation-signing port, and a root-ratification
-port for Setter deployments — backed by middleware-invoking adapters, selected as a new identity
-method alongside
+intent-level ports — a quote-publication port (signed tree plus signed publication transaction),
+an invalidation-signing port, and a root-ratification port for Setter deployments — backed by
+middleware-invoking adapters, selected as a new identity method alongside
 `private-key`/`keystore`/`aws` in
 [`signer-identity.utils.ts`](../../bots/quoter-bot/src/config/signer-identity.utils.ts). Any
 residual generic digest-signing path fails closed.
@@ -209,11 +231,12 @@ logic, and any alternative host must preserve the trust split: the middleware al
   the CloudTrail data-event selector for the function (see Observability) is part of the
   deliverable.
 - **Caller-to-intent scoping**: principals are authorized per intent type, not merely per
-  function. The invoke surface is split by intent class — separate qualified ARNs (per-alias or
-  per-function) for quote signing and for transaction signing (revoke/ratify) — so IAM grants
-  scope each principal to the intent types it may submit, and the handler independently enforces
-  the scope it was invoked under. Break-glass principals receive the revoke surface only: leaked
-  break-glass credentials must yield revocations, never signed quotes.
+  function. Each of the three intents is its **own invoke surface** — separate qualified ARNs
+  (per-alias or per-function) for quote, ratify, and revoke — so IAM grants scope each principal
+  to the intent types it may submit, and the handler independently enforces the scope it was
+  invoked under. Ratify is quote-enabling and is granted like quote. Break-glass principals
+  receive the revoke surface only: leaked break-glass credentials must yield revocations, never
+  signed quotes or ratifications.
 - Authentication is therefore **IAM/SigV4** — no self-managed ingress, tokens, or mTLS. The
   in-policy guarantee still does not depend on caller identity — any invoker only ever obtains
   in-policy signatures — while the caller-to-intent scoping above decides _which_ in-policy
@@ -226,8 +249,8 @@ logic, and any alternative host must preserve the trust split: the middleware al
   are settled at implementation (open question 1).
 - Flow: the bot builds the desired offer array → invokes the Lambda with the structured intent →
   the Lambda validates the three properties plus field checks, canonically encodes, derives the
-  digest, calls KMS → returns the signature and encoded payload. Sign-what-you-encode is
-  unchanged by the deployment shape.
+  digest, calls KMS → returns the signatures and encoded payloads (tree plus publication
+  transaction for quotes). Sign-what-you-encode is unchanged by the deployment shape.
 
 ### 5. Availability posture
 
@@ -242,16 +265,21 @@ logic, and any alternative host must preserve the trust split: the middleware al
 
 ### 6. Statefulness
 
-The Lambda is **stateless per invocation**. Its per-invocation checks are computations over chain
-truth read at invocation time — the crossed-book and PnL properties already require those
-independent reads, and ratify intents recompute roots rather than remembering them. **Aggregate
-live-exposure enforcement is required, not optional**: every quote intent is evaluated against
-the maker's live offer set from the middleware's own reads, so successive individually-in-policy
-intents cannot compound past the aggregate caps, and the freshness ceiling bounds the
-signed-but-unpublished exposure those reads cannot yet see. Whether v0 implements that accounting
-purely through per-invocation chain-truth reads or adds external state is open question 6.
-Transaction nonces stay caller-owned (see the intent contract), so statelessness never requires
-the middleware to coordinate an account's transaction stream.
+The Lambda's compute is **stateless per invocation** — every check is a computation over pinned
+chain truth read at invocation time, and ratify intents recompute roots rather than remembering
+them — but aggregate enforcement requires one small piece of **required state: a persistent
+reservation ledger**. Chain-truth reads cannot see a signature that was returned but never
+published, and the freshness ceiling bounds duration, not amount — without a ledger, repeated
+sign-and-withhold requests could multiply exposure far beyond the caps inside one window. Every
+approved quote intent therefore records a reservation (markets, exposure, root, expiry) at
+signing time; aggregate caps are enforced over live offers **plus outstanding reservations**; a
+reservation is released when its root is observed live (it then counts as live) or when its
+freshness ceiling passes unpublished, and exposure of declared replaced groups stays reserved
+until their invalidation is observed. The ceiling keeps the ledger tiny and self-expiring;
+conditional writes serialize concurrent intents; the same ledger tracks the rolling signed-gas
+budget. The ledger is what makes the bounded-loss claim hold. Transaction nonces stay
+caller-owned (see the intent contract), so the middleware never coordinates the account's
+transaction stream.
 
 ### 7. Failure posture
 
@@ -262,7 +290,8 @@ the middleware to coordinate an account's transaction stream.
 | Quote intent denied                       | Typed rejection, nothing signed; alert if persistent |
 | Revoke intent denied                      | Near-impossible by design; treat as misconfig, alert |
 | Concurrent tx signers (bot + break-glass) | Same-nonce fee-bump replacement resolves on-chain    |
-| Independent state read fails (RPC/API)    | Fail closed: typed retryable denial, no signature    |
+| Read fails or snapshot is incoherent      | Fail closed: typed retryable denial, no signature    |
+| Reservation ledger unavailable            | Quote/ratify fail closed; revoke stays served, alert |
 | KMS error                                 | Typed failure; never assume a signature was produced |
 | Policy parameters missing/invalid at init | Refuse to serve; never run a partial or empty policy |
 | Unknown intent type/version               | Reject; no best-effort interpretation of payloads    |
@@ -292,7 +321,7 @@ Ship the custom ratifier from the V1 track that enforces price/spread bounds on-
 
 **Why rejected:** Strongest enforcement for offers, but it is a contract build plus audit, and it
 cannot constrain the **EOA transaction surface** — preventing fund transfers on-chain needs the
-delegated funding contract. The middleware ships sooner, covers both signed payload classes, and
+delegated funding contract. The middleware ships sooner, covers every signed payload class, and
 complements rather than replaces the on-chain track.
 
 ### Alternative 4: Self-hosted proxy service
@@ -336,14 +365,19 @@ host itself; it strengthens rather than changes this design.
   the intent surfaces it needs and nothing else; the Lambda's execution role is the sole
   `kms:Sign` principal on the maker key; break-glass operators hold revoke-surface invoke grants
   only.
-- Both signed payload classes are fully describable as structured intents and canonically
-  encodable inside the Lambda (SDK EIP-712 offer-tree hashing; viem transaction serialization).
+- Every signed payload class is fully describable as structured intents and canonically
+  encodable inside the Lambda (SDK EIP-712 offer-tree hashing and Mempool payload encoding; viem
+  transaction serialization).
 - The policy surface splits cleanly: price bounds and field pins are **deployment parameters**;
   the crossed-book and no-PnL-drop properties are evaluated against the Lambda's **own
   independent reads** (RPC and Morpho API/Mempool). The Lambda has network egress to those
   sources, and a failed read fails closed. The RPC reads need **strong resilience — fallback
   providers and/or quorum agreement** — because a single lying or censoring provider is the
-  remaining way to get a bad set past those two checks (open question 7).
+  remaining way to get a bad set past those two checks (open question 7). Reads for one intent
+  are pinned to a single deterministic snapshot; a mixed-block view is a denial, not an input.
+- A small managed store with conditional writes (e.g. DynamoDB) is available to the Lambda for
+  the reservation ledger and signed-gas budget. It holds no secrets; its unavailability fails
+  quoting closed while revocation stays served.
 - One invocation round trip per make/revoke job — including cold starts — is compatible with the
   hourly-ish quote cadence and the one-minute bootstrap monitor.
 - The Lambda is meaningfully harder to compromise than the bot host — minimal code and
@@ -360,6 +394,8 @@ host itself; it strengthens rather than changes this design.
   ([Lambda container images](https://docs.aws.amazon.com/lambda/latest/dg/images-create.html)).
 - The Lambda's independent read surfaces: resilient RPC access (fallback and/or quorum across
   providers) and the Morpho API/Mempool for live offers, positions, and chain state.
+- A small managed state store for the reservation ledger and signed-gas budget (e.g. DynamoDB
+  with conditional writes).
 - `@morpho-org/midnight-sdk` offer-tree EIP-712 hashing for canonical encoding inside the Lambda.
 - viem for transaction serialization and signature parsing/verification in the Lambda.
 - [TIB-2026-07-27](./TIB-2026-07-27-midnight-quoter-bot.md) for the V1 security gate this TIB
@@ -395,7 +431,8 @@ host itself; it strengthens rather than changes this design.
 - Arbitrary EIP-712 signatures — in particular ERC-2612/Permit2-style permits, which move funds
   without any maker transaction.
 - Off-policy offers — crossed books, out-of-bounds prices, PnL-degrading quotes, wrong market,
-  per-intent or aggregate over-exposure, expiry beyond the freshness ceiling, foreign
+  per-intent or aggregate over-exposure (including sign-and-withhold multiplication, blocked by
+  the reservation ledger), expiry beyond the freshness ceiling, foreign
   receiver/callback/ratifier, foreign group namespace, malformed cap semantics.
 - Lying about book state — the crossed-book and PnL properties are evaluated against the Lambda's
   own reads, so a compromised bot cannot feed it a fabricated view.
@@ -408,11 +445,12 @@ host itself; it strengthens rather than changes this design.
 - **Policy bugs** — a wrong parameter or check approves what it should not. The policy is small
   and exhaustively testable, but it is code.
 - **Economically bad but in-policy quoting** — the residual, deliberately accepted exposure:
-  worst case ≈ worst in-policy rate × capped aggregate exposure. Bounded and quantifiable. This
-  includes delayed publication: a stockpiled signature stays publishable until its expiry, so the
-  freshness ceiling is what keeps "in-policy at signing time" close to "in-policy at publication
-  time"; middleware-direct publication and ratifier/Mempool-enforced freshness are recorded
-  hardenings.
+  worst case ≈ worst in-policy rate × capped aggregate signed exposure. Bounded and
+  quantifiable. This includes delayed publication — a stockpiled signature stays publishable
+  until its expiry, with the reservation ledger capping how much can be outstanding and the
+  freshness ceiling capping for how long — and native-gas spend through valid transaction
+  signatures, capped by the rolling signed-gas budget. Middleware-direct publication and
+  ratifier/Mempool-enforced freshness are recorded hardenings.
 - **Misbehavior of the providers behind the Lambda's own reads** — a lying or censoring RPC/API
   could wave through a crossed or unsustainable set, or block valid ones. This extends the
   provider-trust posture of [TIB-2026-07-27](./TIB-2026-07-27-midnight-quoter-bot.md) to the
@@ -420,8 +458,9 @@ host itself; it strengthens rather than changes this design.
 - **DoS via invocation throttling or concurrency exhaustion** — quoting downtime; resting offers
   stand until expiry or revocation through a break-glass invoker.
 
-Attacker-obtainable revocations are downtime/griefing, not fund loss — and invoke-only IAM
-scoping exists precisely to make that griefing hard.
+Attacker-obtainable revocations are downtime/griefing plus bounded native-gas spend, not
+loan-asset loss — per-intent invoke scoping and the signed-gas budget exist precisely to keep
+that griefing hard and capped.
 
 **Bounded-loss framing.** Today, bot-host compromise means unbounded loss of everything the maker
 EOA holds or has approved. With the middleware, it means a bounded, pre-computable number derived
@@ -438,9 +477,11 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
 - **Policy:** exhaustive accept/reject vectors for the three properties and every field check on
   all three intent types, including boundary values — price exactly at a bound, expiry exactly at
   maturity or the freshness ceiling, aggregate exposure that overflows only in combination with
-  live offers, a ratify root that does not match its offer set, both/neither of
-  `maxUnits`/`maxAssets` set, off-by-one exposure caps, a prospective set that crosses only in
-  combination with live offers.
+  live offers or outstanding reservations, sign-and-withhold sequences denied once reservations
+  exhaust the caps, a replacement approved only because it retires the groups it crosses, a
+  ratify root that does not match its offer set, mixed-snapshot reads denied as incoherent, a
+  signed-gas budget refusing the next transaction, both/neither of `maxUnits`/`maxAssets` set,
+  off-by-one exposure caps, a prospective set that crosses only in combination with live offers.
 - **Adversarial state:** intents accompanied by caller-supplied book or position state that
   contradicts chain truth — the Lambda must ignore the caller's view entirely and decide from its
   own reads.
@@ -457,8 +498,8 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   invoked by a second IAM principal.
 - **IAM cutover proof:** demonstrate the bot's principal receives `AccessDenied` on `kms:Sign`
   after the grant moves, that each role can invoke only its granted intent surfaces, and that a
-  break-glass principal is denied on the quote surface. A denied call is part of acceptance, not
-  an incident.
+  break-glass principal is denied on the quote and ratify surfaces. A denied call is part of
+  acceptance, not an incident.
 - Tests follow the repository verification rule: run each new test, break one assertion to
   confirm it fails, restore it.
 
@@ -472,9 +513,8 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
 - When the on-chain bounded ratifier lands, its bounds and the middleware's price policy should
   agree; the middleware remains necessary for the transaction surface.
 - Middleware-direct publication to the Mempool, or ratifier/Mempool-enforced signature freshness,
-  to shrink the delayed-publication residual below the freshness ceiling.
-- External state for aggregate exposure accounting if per-invocation chain-truth reads prove
-  insufficient (open question 6).
+  to shrink the delayed-publication residual below the freshness ceiling and retire the
+  reservation ledger's unpublished-exposure role.
 
 ## Open Questions
 
@@ -490,9 +530,10 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
    intent.
 5. Policy parameter change/approval workflow — who reviews, how it deploys, how changes are
    audited.
-6. The mechanism for the required aggregate live-exposure accounting: per-invocation chain-truth
-   reads over the same surface as the crossed-book check (with the freshness ceiling bounding
-   signed-but-unpublished exposure), or external state tracking signed exposure directly.
+6. The reservation ledger's concrete store and consistency design — DynamoDB conditional writes
+   are the default candidate — including release on observed publication/invalidation, expiry
+   eviction, and exactly how ledger unavailability keeps revocation served while quoting fails
+   closed.
 7. Lambda networking/egress design for its independent RPC and Morpho API/Mempool reads — and the
    decision posture when those providers disagree with the bot's view of the book.
 
@@ -505,6 +546,8 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   signer identity selection
 - [`packages/bot-kit/src/signer.ts`](../../packages/bot-kit/src/signer.ts) — in-process
   default-deny signer policy
+- [`production-ladder.ts`](../../bots/quoter-bot/src/infrastructure/ladder/production-ladder.ts)
+  — on-chain Mempool publication, ratification, and invalidation transactions
 - [quoter-bot README](../../bots/quoter-bot/README.md) — signed payload classes and `aws`-mode
   deployment
 - [Documentation guidance](../GUIDANCE.md)
