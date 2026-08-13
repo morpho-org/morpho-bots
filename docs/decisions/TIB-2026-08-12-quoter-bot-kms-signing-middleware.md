@@ -133,10 +133,13 @@ chain id, a **per-operation target/selector and calldata allowlist** (group cons
 pinned as `onBehalf`; Ecrecover root cancellation is exactly `cancelRoot(maker, root)` on the
 configured ratifier; and Setter root cancellation is exactly
 `setIsRootRatified(maker, root, false)` on the configured `SetterRatifier`), zero native value,
-and fee/gas ceilings. Root cancellation is therefore available for both ratifier families rather
-than forcing Setter deployments to cancel every group individually. This mirrors the constraint
-set the quoter's in-process transaction assertions already pin, now enforced outside the bot; a
-compromised revoke invoker cannot spend gas mutating another maker's groups or roots.
+and fee/gas ceilings. For Setter deployments, `false` is defense in depth only: routine and
+break-glass cleanup must drain or replace every already-signed `true` ratification transaction and
+irreversibly consume every affected offer group before reporting success. A withheld older `true`
+can otherwise restore the mutable root flag. Ecrecover root cancellation remains authoritative on
+its own. This mirrors the constraint set the quoter's in-process transaction assertions already
+pin, now enforced outside the bot; a compromised revoke invoker cannot spend gas mutating another
+maker's groups or roots.
 
 Maker-wide cleanup and startup cleanup keep the existing batch behavior exposed by
 `OfferInvalidationPort.invalidateBatch`: the revoke surface may encode one Midnight `multicall`,
@@ -307,8 +310,11 @@ The set is approved only when **three properties** all hold:
    of the middleware's own deployment configuration — never supplied per-request.
 3. **No PnL drop.** Publishing the offers must not degrade the maker address's PnL: offer prices
    must remain sustainable, i.e. a fill at the offered price must not realize a loss against the
-   maker's position/cost basis. The exact PnL/cost-basis model and the independent data it needs
-   are open questions; the property itself is a decided policy requirement.
+   maker's position/cost basis. The exact PnL/cost-basis model and its independent data sources are
+   a blocking v0 design deliverable, not an implementation choice: quote and ratify signing remain
+   disabled until that model is specified, reviewed, encoded in deployment policy, and covered by
+   acceptance tests that prove profitable, boundary, and loss-making fills are classified as
+   specified from independently read inputs.
 
 Beneath these three headline properties, **field-level validation** on every offer: market
 allowlist; per-market and total lend-exposure caps for **exposure-increasing buy offers**, enforced
@@ -420,9 +426,13 @@ function-and-published-version key in a dedicated DynamoDB table; the value cont
 fields above, the deployment-manifest digest, and a startup timestamp. It cannot write another
 surface's key or read the table. The setup/health execution role may write its own key and read all
 five exact keys, but may not alter the four signing-surface records; the bot role has no table
-access. Readiness resolves every production alias to its current published version and requires a
-fresh matching record for that exact version and manifest, so an attestation from a retired
-deployment cannot satisfy the check. IAM grants only those per-key `dynamodb:PutItem` operations,
+access. Readiness resolves every production alias to its current published version, requires
+`RoutingConfig.AdditionalVersionWeights` to be empty, and requires a fresh matching record for that
+exact version and manifest. Weighted/canary routing is forbidden for the five production aliases in
+v0, so an unattested additional version cannot receive signing traffic and an attestation from a
+retired deployment cannot satisfy the check. Deployment automation and readiness both fail closed
+when any production alias has additional version weights. IAM grants only those per-key
+`dynamodb:PutItem` operations,
 the setup role's bounded `GetItem`/`BatchGetItem`, and `lambda:GetAlias` on the five exact
 production-alias ARNs (or an equivalently authenticated deployment manifest containing their exact
 published-version targets); it grants no wildcard Lambda reads. The setup role resolves and records
@@ -725,11 +735,12 @@ host itself; it strengthens rather than changes this design.
   transaction serialization).
 - The policy surface splits cleanly: price bounds and field pins are **deployment parameters**;
   the crossed-book and no-PnL-drop properties are evaluated against the Lambda's **own
-  independent reads** (RPC and Morpho API/Mempool). The Lambda has network egress to those
-  sources, and a failed read fails closed. The RPC reads need **strong resilience — fallback
-  providers and/or quorum agreement** — because a single lying or censoring provider is the
-  remaining way to get a bad set past those two checks (open question 7). Reads for one intent
-  are pinned to a single deterministic snapshot; a mixed-block view is a denial, not an input.
+  independent reads** (RPC and Morpho API/Mempool). The Lambda has network egress to a reviewed,
+  deployment-pinned provider set. v0 must specify that exact set, its quorum threshold, and
+  normalization rules; every required policy value must reach quorum for the same deterministic
+  snapshot. A failed read, insufficient quorum, provider disagreement, or mixed-block view is a
+  typed denial with no KMS call. Quote and ratify signing remain disabled until this provider and
+  fail-closed disagreement policy is configured and covered by acceptance tests.
 - DynamoDB is available to the Lambda for the reservation ledger and
   invoke-surface-and-intent-keyed signed-gas budgets. Middleware mode enforces the 40-rung-per-side
   cap so every reservation plan fits one 100-action transaction; configuration and runtime guards
@@ -765,6 +776,13 @@ host itself; it strengthens rather than changes this design.
   `ListTakeableOfferResponse` exposes only `cursor` and `data`, so adding and consuming this
   metadata is a blocking v0 deliverable; middleware quote/ratify signing must remain disabled
   until an integration test proves all policy reads can be pinned to one indexed block.
+- A reviewed PnL/cost-basis specification and independent input contract, implemented as deployment
+  policy with acceptance vectors for profitable, exact-boundary, and loss-making fills. This is a
+  blocking v0 deliverable; quote/ratify signing remains disabled until those tests pass.
+- A deployment-pinned independent-read provider set with an explicit quorum threshold and
+  fail-closed disagreement/normalization policy. This is a blocking v0 deliverable; quote/ratify
+  signing remains disabled until integration tests prove disagreement, insufficient quorum, and
+  mixed-snapshot responses produce no KMS call.
 - DynamoDB for the reservation ledger and signed-gas budget, with conditional writes and the
   middleware-only rung cap that keeps each reservation within one transaction.
 - `@morpho-org/midnight-sdk` offer-tree EIP-712 hashing for canonical encoding inside the Lambda.
@@ -877,7 +895,10 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   pass the same target/maker/cap checks, with nested/empty/foreign-selector batches denied,
   a routine signed-gas budget refusing the next publication while the revoke reserve still
   signs, both/neither of `maxUnits`/`maxAssets` set,
-  off-by-one exposure caps, a prospective set that crosses only in combination with live offers.
+  off-by-one exposure caps, a prospective set that crosses only in combination with live offers,
+  PnL vectors for profitable, exact-boundary, and loss-making fills using only the specified
+  independent cost-basis inputs, and provider disagreement or insufficient quorum denied with no
+  KMS call.
 - **Adversarial state:** intents accompanied by caller-supplied book or position state that
   contradicts chain truth — the Lambda must ignore the caller's view entirely and decide from its
   own reads.
@@ -925,9 +946,11 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   maker key, that the setup/health role cannot call `kms:Sign`, that each role can
   invoke only its granted surfaces, and that a break-glass principal is denied on setup/health,
   quote, and ratify. Prove setup/health can call `lambda:GetAlias` on each of the five exact production
-  aliases, cannot call it on any other function or alias, and rejects an attestation whose published
-  version differs from the resolved alias target. Verify CloudTrail data events cover all five
-  function ARNs. A denied call is part of acceptance, not an incident.
+  aliases, cannot call it on any other function or alias, rejects an attestation whose published
+  version differs from the resolved alias target, and fails readiness when
+  `RoutingConfig.AdditionalVersionWeights` is non-empty. Prove deployment automation refuses a
+  weighted production-alias rollout. Verify CloudTrail data events cover all five function ARNs. A
+  denied call is part of acceptance, not an incident.
 - Tests follow the repository verification rule: run each new test, break one assertion to
   confirm it fails, restore it.
 
@@ -951,8 +974,9 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
 2. Whether validation logic is shared with bot domain code (one bug affects both — `@repo/offers`
    is the natural shared home for the crossed-book model) or independently implemented (drift
    risk) — likely a shared schema, independently pinned middleware deployments.
-3. The exact PnL/cost-basis model the Lambda evaluates for the no-PnL-drop property, and the
-   independent data sources it needs.
+3. The exact PnL/cost-basis model and independent input contract. This must be specified, reviewed,
+   and acceptance-tested before v0 quote/ratify signing can be enabled; it is not left to the
+   implementer.
 4. Whether setup-remediation transactions (token approvals) are also gated through the middleware
    or stay manual operator actions. Setter root approvals are decided: they are the ratify
    intent.
@@ -964,8 +988,10 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
    high-availability independent emergency-budget store used during a ledger outage. Every outage
    revoke must atomically consume that durable allowance or fail closed; reserved concurrency is
    only availability isolation and never substitutes for budget accounting.
-7. Lambda networking/egress design for its independent RPC and Morpho API/Mempool reads — and the
-   decision posture when those providers disagree with the bot's view of the book.
+7. The exact deployment-pinned provider members and quorum threshold for independent RPC and Morpho
+   API/Mempool reads. The decision posture is settled: disagreement, insufficient quorum, or an
+   incoherent snapshot fails closed with no KMS call, and quote/ratify remains disabled until this
+   configuration and its integration tests are complete.
 
 ## References
 
