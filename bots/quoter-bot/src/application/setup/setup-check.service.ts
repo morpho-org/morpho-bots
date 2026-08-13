@@ -106,7 +106,7 @@ export type SetupCheckConfig = {
   loanAsset: Address
   /** Minimum allowance granted to Midnight. */
   maximumLendExposure: bigint
-  /** Router-listed Ecrecover or Setter ratifier expected to authorize the maker. */
+  /** Canonical SDK Ecrecover or Setter ratifier expected to authorize the maker. */
   ratifier: Address
   /** Non-empty set of Midnight market identifiers to validate concurrently. */
   marketIds: readonly Hex[]
@@ -155,8 +155,8 @@ export interface SetupStateService {
     loanAsset: Address
   ): Promise<{ spender: Address; amount: bigint }>
   /**
-   * Reads Router registry, runtime-code, immutable-target, callable-surface, and authorization facts.
-   * Independent provider and contract reads should run concurrently with `Promise.all`.
+   * Reads SDK identity, runtime-code, immutable-target, callable-surface, and authorization facts.
+   * Independent contract reads should run concurrently with `Promise.all`.
    * @param maker - Maker whose authorization is checked.
    * @param ratifier - Candidate Ecrecover or Setter ratifier.
    * @returns Sanitized ratifier readiness facts.
@@ -397,7 +397,7 @@ export class SetupCheckService {
             ratifier.value.surfaceMatches &&
             !ratifier.value.authorized
             ? 'authorize the configured maker with the selected ratifier'
-            : 'select a Router-listed ratifier with the expected deployed surface'
+            : 'select a canonical SDK ratifier with the expected deployed surface'
         )
     const referenceRequired = {
       marketId: this.config.referenceMarketId,

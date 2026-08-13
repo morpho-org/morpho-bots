@@ -27,7 +27,6 @@ contracts:
 
 apis:
   morphoBaseUrl: 'https://api.example'
-  routerBaseUrl: 'https://router.example'
 
 markets:
   allowlist:

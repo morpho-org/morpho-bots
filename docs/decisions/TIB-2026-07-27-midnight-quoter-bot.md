@@ -263,8 +263,9 @@ V0 checks:
 3. the maker has enough native token for the configured invalidation reserve;
 4. the loan-asset allowance to Midnight covers the maximum configured lend exposure and is not
    pointed at an unexpected spender;
-5. the selected Ecrecover ratifier is listed by the official Morpho Router, its deployed bytecode
-   matches the expected ratifier surface, and `Midnight.isAuthorized(maker, ratifier)` is true;
+5. the selected Ecrecover or Setter ratifier matches the canonical Base address in the pinned
+   Morpho SDK, its deployed bytecode matches the expected ratifier surface, and
+   `Midnight.isAuthorized(maker, ratifier)` is true;
 6. every configured book is on the explicit allowlist, is active, uses the expected loan asset, has
    accessible tick spacing, and has not matured;
 7. the reference-market configuration and archive RPC are readable; and
@@ -545,8 +546,8 @@ header. The groups below describe the full V0 destination; settings not present 
 schema remain explicitly planned until their workflows are implemented:
 
 - **Chain and identity:** `CHAIN_ID`, `RPC_URL`, optional fallback RPC, `MAKER_PRIVATE_KEY`,
-  Midnight address, Router origin, and ratifier selection. The ratifier address is accepted only
-  when it is listed by the Router.
+  Midnight address, and ratifier selection. The ratifier address is accepted only when it matches
+  the canonical Base catalog in the pinned Morpho SDK.
 - **Markets:** explicit allowlisted market IDs, per-market exposure, and group mode. Immutable market
   configuration—including loan asset, maturity, and protocol parameters—is retrieved on-chain from
   each ID and is not duplicated in operator config.
@@ -559,8 +560,8 @@ schema remain explicitly planned until their workflows are implemented:
   fixed top-up size, bootstrap premium, auto-refill.
 - **Ladder:** quote premium, spread, step, rungs, size skew, side budgets, loop interval, movement
   tolerance.
-- **Transport:** official API/Router origins, request timeout/retry limits, maximum fee and gas bounds
-  for invalidation.
+- **Transport:** official Morpho API origin, request timeout/retry limits, maximum fee and gas bounds
+  for invalidation. The retired Router config-contracts endpoint is not a readiness dependency.
 - **Lifecycle:** startup `--cleanup` / `--cleanup-group` CLI options, `SHUTDOWN_CLEANUP`, and cleanup
   timeout.
 - **Observability:** log level and optional BetterStack fields; logging works to stdout without a
@@ -579,9 +580,9 @@ separate, explicitly scaled contract rather than reinterpreting these fields.
 - **Phase 1 — architecture and public-release gate (July 27):** accept the TIB direction, settle
   public dependency/legal questions, define env/YAML configuration, and establish the three
   workflows plus shared `MakeService`.
-- **Phase 2 — setup and rate sources (July 28):** implement readiness/crash-loop behavior, Router
-  ratifier validation, the six-hour Blue reference adapter, static adapter, fixed-point bounds, and
-  domain tests.
+- **Phase 2 — setup and rate sources (July 28):** implement readiness/crash-loop behavior, canonical
+  SDK ratifier validation, the six-hour Blue reference adapter, static adapter, fixed-point bounds,
+  and domain tests.
 - **Phase 3 — bootstrap and ladder (July 29):** implement the serialized signing queue,
   negative-spread guard, startup/shutdown cleanup, offer construction, namespace ownership,
   acceptance threshold, one-minute inventory monitoring, ladder generation, and reconciliation.

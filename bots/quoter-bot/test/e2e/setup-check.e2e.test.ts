@@ -65,7 +65,6 @@ describe('quoter-bot setup check on a pinned Base fork', () => {
       NATIVE_RESERVE_WEI: String(NATIVE_RESERVE),
       MAXIMUM_LEND_EXPOSURE_ASSETS: String(MAXIMUM_LEND_EXPOSURE),
       MORPHO_API_BASE_URL: api.baseUrl,
-      ROUTER_API_BASE_URL: api.baseUrl,
       REQUEST_TIMEOUT_MS: '30000'
     }).run(['setup-check'])
     expect(isSetupCheckReport(output)).toBe(true)

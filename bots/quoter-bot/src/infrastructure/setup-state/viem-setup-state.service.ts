@@ -32,7 +32,6 @@ import {
   offersFromGroups,
   PAGE_SIZE,
   bigintValue,
-  routerRatifiers,
   morphoApiTimeout
 } from './viem-setup-state.utils'
 
@@ -81,7 +80,6 @@ type SetupStateOptions = {
   midnight: Address
   loanAsset: Address
   morphoApiBaseUrl: string
-  routerApiBaseUrl: string
   marketIds: readonly Hex[]
   v0OfferGroupIds: readonly Hex[]
   readOwnedGroupIds: () => Promise<readonly Hex[]>
@@ -203,24 +201,18 @@ export class ViemSetupStateService implements SetupStateService {
   }
 
   /**
-   * Cross-checks a ratifier against Router registry, exact runtime hash, immutable target, callable
+   * Cross-checks a ratifier against the SDK catalog, exact runtime hash, immutable target, callable
    * Ecrecover or Setter surface, and Midnight authorization.
    * @param maker - Maker whose authorization/root surface is read.
    * @param ratifier - Candidate ratifier address.
    * @returns Sanitized ratifier type and five readiness facts without exposing provider URLs or bytecode.
-   * @throws `ProviderReadError` on a sanitized Router/RPC rejection, or `ProviderResponseError` for
-   * malformed provider or contract responses.
-   * @remarks Registry, bytecode, and authorization reads start concurrently. Ratifier ABI reads then
-   * run concurrently only after the exact selected runtime is proven; this is read-only.
+   * @throws `ProviderReadError` on a sanitized RPC rejection, or `ProviderResponseError` for malformed
+   * contract responses.
+   * @remarks Bytecode and authorization reads start concurrently. Ratifier ABI reads then run
+   * concurrently only after the exact selected runtime is proven; this is read-only.
    */
   async getRatifier(maker: Address, ratifier: Address) {
-    const [routerContracts, code, authorized] = await Promise.all([
-      executeProviderRead('router-api', 'ratifier-registry', () =>
-        this.request(
-          `${this.options.routerApiBaseUrl}/v0/config/contracts?chains=${BASE_CHAIN_ID}&limit=100`,
-          'router-api'
-        )
-      ),
+    const [code, authorized] = await Promise.all([
       executeProviderRead('rpc', 'ratifier-code', () => this.chain.getCode({ address: ratifier })),
       executeProviderRead('rpc', 'ratifier-authorization', () =>
         this.chain.readContract({
@@ -243,9 +235,7 @@ export class ViemSetupStateService implements SetupStateService {
       : isAddressEqual(ratifier, getChainAddress(BASE_CHAIN_ID, 'ecrecoverRatifier'))
         ? ('ecrecover' as const)
         : undefined
-    const registered = routerRatifiers(routerContracts).find(
-      item => item.type === type && isAddressEqual(ratifier, item.address)
-    )
+    const listed = type !== undefined
     const deployed = code !== undefined && code !== '0x'
     const expectedRuntimeHash =
       type === 'setter'
@@ -258,7 +248,7 @@ export class ViemSetupStateService implements SetupStateService {
     if (!surfaceMatches || type === undefined) {
       return {
         type,
-        listed: registered !== undefined,
+        listed,
         deployed,
         midnightMatches: false,
         surfaceMatches: false,
@@ -300,7 +290,7 @@ export class ViemSetupStateService implements SetupStateService {
     }
     return {
       type,
-      listed: registered !== undefined,
+      listed,
       deployed,
       midnightMatches: isAddressEqual(ratifierMidnight, this.options.midnight),
       surfaceMatches,

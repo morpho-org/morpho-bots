@@ -75,8 +75,6 @@ const createState = (
     rejectRatifierReads?: boolean
     missingReferenceMarket?: boolean
     referenceLoanAsset?: Address
-    routerRatifier?: Address
-    routerRatifierName?: 'ecrecoverRatifier' | 'setterRatifier'
     requestLimit?: number
     requestTimeoutMs?: number
     now?: () => number
@@ -174,18 +172,6 @@ const createState = (
       throw new Error('test request limit reached')
     }
     if (overrides.onRequest) return overrides.onRequest(url, timeoutMs)
-    if (url.includes('/v0/config/contracts')) {
-      return {
-        data: [
-          {
-            chain_id: 8453,
-            name: overrides.routerRatifierName ?? 'ecrecoverRatifier',
-            address: overrides.routerRatifier ?? ratifier
-          }
-        ],
-        cursor: null
-      }
-    }
     const match = Object.entries(responses).find(([path]) => url.includes(path))
     if (match) return match[1]
     if (url.includes('/v0/midnight/markets')) {
@@ -208,7 +194,6 @@ const createState = (
       midnight,
       loanAsset,
       morphoApiBaseUrl: 'https://api.example',
-      routerApiBaseUrl: 'https://router.example',
       marketIds: overrides.marketIds ?? [marketId],
       referenceMarketId,
       v0OfferGroupIds: overrides.v0OfferGroupIds ?? [knownGroup],
@@ -268,9 +253,9 @@ describe('ViemSetupStateService', () => {
     ],
     [
       'getRatifier compound reads',
-      'request',
-      'router-api',
-      'ratifier-registry',
+      'other-contract',
+      'rpc',
+      'ratifier-authorization',
       (state: ViemSetupStateService) => state.getRatifier(maker, ratifier)
     ],
     [
@@ -339,7 +324,6 @@ describe('ViemSetupStateService', () => {
         midnight,
         loanAsset,
         morphoApiBaseUrl: 'https://api.example',
-        routerApiBaseUrl: 'https://router.example',
         marketIds: [marketId],
         v0OfferGroupIds: [knownGroup],
         readOwnedGroupIds: async () => [],
@@ -564,8 +548,8 @@ describe('ViemSetupStateService', () => {
     await expect(state.getBook(marketId)).resolves.toMatchObject({ allowlisted: false })
   })
 
-  test('accepts only the registry-listed Ecrecover ratifier with its exact deployed interface', async () => {
-    const { state } = createState({})
+  test('accepts only the SDK-canonical Ecrecover ratifier without calling a registry endpoint', async () => {
+    const { state, calls } = createState({})
 
     expect(await state.getRatifier(maker, ratifier)).toEqual({
       type: 'ecrecover',
@@ -575,10 +559,7 @@ describe('ViemSetupStateService', () => {
       surfaceMatches: true,
       authorized: true
     })
-
-    expect(
-      (await createState({}, { routerRatifier: maker }).state.getRatifier(maker, ratifier)).listed
-    ).toBe(false)
+    expect(calls).toEqual([])
     expect(
       await state.getRatifier(maker, '0x4444444444444444444444444444444444444444')
     ).toMatchObject({ listed: false })
@@ -591,15 +572,8 @@ describe('ViemSetupStateService', () => {
     ).toBe(false)
   })
 
-  test('accepts the Router-listed Setter ratifier with its exact deployed interface', async () => {
-    const { state } = createState(
-      {},
-      {
-        code: authoritativeSetterRatifierRuntime,
-        routerRatifier: setterRatifier,
-        routerRatifierName: 'setterRatifier'
-      }
-    )
+  test('accepts the SDK-canonical Setter ratifier with its exact deployed interface', async () => {
+    const { state } = createState({}, { code: authoritativeSetterRatifierRuntime })
 
     expect(await state.getRatifier(maker, setterRatifier)).toEqual({
       type: 'setter',
@@ -618,8 +592,6 @@ describe('ViemSetupStateService', () => {
         {},
         {
           code: authoritativeSetterRatifierRuntime,
-          routerRatifier: setterRatifier,
-          routerRatifierName: 'setterRatifier',
           rootRatified
         }
       )
@@ -641,8 +613,6 @@ describe('ViemSetupStateService', () => {
       {},
       {
         code: authoritativeSetterRatifierRuntime,
-        routerRatifier: setterRatifier,
-        routerRatifierName: 'setterRatifier',
         rootRatified: 'false'
       }
     )
@@ -654,12 +624,9 @@ describe('ViemSetupStateService', () => {
     expect(error.message).toBe('SetterRatifier isRootRatified response must be boolean')
   })
 
-  test('rejects a non-canonical ratifier even when Router labels compatible runtime bytecode', async () => {
+  test('rejects a non-canonical ratifier even when it has compatible runtime bytecode', async () => {
     const unknownRatifier: Address = '0x1111111111111111111111111111111111111111'
-    const { state } = createState(
-      {},
-      { code: authoritativeRatifierRuntime, routerRatifier: unknownRatifier }
-    )
+    const { state } = createState({}, { code: authoritativeRatifierRuntime })
 
     expect(await state.getRatifier(maker, unknownRatifier)).toMatchObject({
       listed: false,

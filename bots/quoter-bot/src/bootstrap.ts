@@ -130,7 +130,6 @@ const defaultState = async (config: ConfigService) => {
       midnight: config.setup.midnight,
       loanAsset: config.setup.loanAsset,
       morphoApiBaseUrl: config.morphoApiBaseUrl,
-      routerApiBaseUrl: config.routerApiBaseUrl,
       marketIds: config.setup.marketIds,
       referenceMarketId: config.setup.referenceMarketId ?? config.setup.marketIds[0]!,
       v0OfferGroupIds: config.v0OfferGroupIds,
