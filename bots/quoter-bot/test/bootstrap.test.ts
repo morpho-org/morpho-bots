@@ -1133,6 +1133,41 @@ describe('createApplication', () => {
     expect(ladderCleanup).not.toHaveBeenCalled()
   })
 
+  test.each(['bootstrap', 'ladder', 'start'])(
+    'does not run removed-market cleanup when %s starts with an aborted signal',
+    async command => {
+      const cleanupRemovedMarkets = vi.fn(async () => [marketId])
+      const createLadderAdapters = vi.fn(() => ({
+        positions: { readMarket: async () => ({}) },
+        rates: { readRate: async () => 500n },
+        make: {
+          cleanupRemovedMarkets,
+          readActive: async () => undefined,
+          reconcile: async () => {},
+          hardHalt: async () => {},
+          cleanup: async () => {}
+        }
+      }))
+      const controller = new AbortController()
+      controller.abort()
+      const application = createApplication(
+        {
+          ...environment,
+          BOOTSTRAP_MARKETS: JSON.stringify([bootstrapConfiguration]),
+          LADDER_MARKETS: JSON.stringify([ladderConfiguration])
+        },
+        { createState: readyState, createLadderAdapters }
+      )
+
+      await expect(application.run([command], { signal: controller.signal })).rejects.toMatchObject(
+        {
+          name: 'AbortError'
+        }
+      )
+      expect(cleanupRemovedMarkets).not.toHaveBeenCalled()
+    }
+  )
+
   test('rejects an empty ladder before cleaning persisted ladder publications', async () => {
     const cleanupRemovedMarkets = vi.fn(async () => [marketId])
     const application = createApplication(
@@ -1236,7 +1271,7 @@ describe('createApplication', () => {
     await expect(application.run(['start'], { signal: controller.signal })).rejects.toMatchObject({
       name: 'AbortError'
     })
-    expect(started).toEqual(['ladder'])
+    expect(started).toEqual([])
     expect(checkReference).not.toHaveBeenCalled()
   })
 

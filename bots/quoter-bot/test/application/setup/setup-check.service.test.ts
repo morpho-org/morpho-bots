@@ -133,6 +133,42 @@ describe('SetupCheckService', () => {
     expect(terminal).toEqual({ status: 'stopped', reason: 'signal', cycles: 1 })
   })
 
+  test('retries a transient latest-timestamp failure when every book invariant passes', async () => {
+    const state = readyState()
+    let bookReads = 0
+    let timestampReads = 0
+    state.getBook = async id => {
+      bookReads += 1
+      return {
+        id,
+        allowlisted: true,
+        active: true,
+        loanAsset,
+        tickSpacing: 4,
+        maturity: 2_000n
+      }
+    }
+    state.getLatestTimestamp = async () => {
+      timestampReads += 1
+      if (timestampReads === 1) {
+        throw new SafeProviderError({
+          kind: 'provider-error',
+          provider: 'rpc',
+          name: 'TimeoutError',
+          code: 'REQUEST_TIMEOUT',
+          context: 'request'
+        })
+      }
+      return 1_000n
+    }
+
+    await expect(new SetupCheckService(state, config).assertReady()).resolves.toMatchObject({
+      ready: true
+    })
+    expect(timestampReads).toBe(2)
+    expect(bookReads).toBe(2)
+  })
+
   test('fails closed without retrying a transient compound book read', async () => {
     const state = readyState()
     let bookReads = 0

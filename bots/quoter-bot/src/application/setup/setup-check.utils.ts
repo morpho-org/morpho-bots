@@ -284,14 +284,28 @@ const isTransientFailedCheck = (check: SetupCheck) => {
     )
   }
 
+  if (check.name === 'books') {
+    return (
+      Array.isArray(check.observed) &&
+      check.observed.length > 0 &&
+      check.observed.every(
+        book =>
+          isRecord(book) &&
+          Array.isArray(book.reasons) &&
+          book.reasons.length > 0 &&
+          book.reasons.every(
+            reason =>
+              isRecord(reason) &&
+              Object.keys(reason).length === 1 &&
+              isTransientProviderFailure(reason.timestampProviderError)
+          )
+      )
+    )
+  }
+
   // Compound checks can mask a successful peer read that already proved invariant drift, so they
   // fail closed instead of retrying based only on their provider error.
-  if (
-    check.name === 'ratifier' ||
-    check.name === 'books' ||
-    check.name === 'reference' ||
-    check.name === 'offers'
-  ) {
+  if (check.name === 'ratifier' || check.name === 'reference' || check.name === 'offers') {
     return false
   }
 

@@ -21,6 +21,7 @@ import { OfferInvalidationService } from './application/invalidation/offer-inval
 import { LadderQuoterService } from './application/ladder/ladder-quoter.service'
 import { serializeQuoterBotWrites } from './application/quoter-bot/quoter-bot-mutation.utils'
 import { QuoterBotService } from './application/quoter-bot/quoter-bot.service'
+import { SetupCheckAbortedError } from './application/setup/setup-check-aborted.error'
 import { SetupCheckService } from './application/setup/setup-check.service'
 import { VersionService } from './application/version.service'
 import { ConfigValidationError } from './config/config-validation.error'
@@ -239,6 +240,7 @@ export const createApplication = (
     async options => {
       const config = await loadConfig(options)
       assertReferenceConfigured(config, config.bootstrap)
+      if (options.signal.aborted) throw new SetupCheckAbortedError()
       const ladderAdapters = await (dependencies.createLadderAdapters?.(config) ??
         createProductionLadderAdapters(config))
       const ignoredOfferGroupIds =
@@ -277,6 +279,7 @@ export const createApplication = (
     async options => {
       const config = await loadConfig(options)
       assertReferenceConfigured(config, config.ladder)
+      if (options.signal.aborted) throw new SetupCheckAbortedError()
       const adapters = await (dependencies.createLadderAdapters?.(config) ??
         createProductionLadderAdapters(config))
       const ignoredOfferGroupIds =
@@ -322,6 +325,7 @@ export const createApplication = (
         )
       }
       assertReferenceConfigured(config, [...config.bootstrap, ...config.ladder])
+      if (options.signal.aborted) throw new SetupCheckAbortedError()
       const ladderAdapters = await (dependencies.createLadderAdapters?.(config) ??
         createProductionLadderAdapters(config))
       const ignoredOfferGroupIds = config.readOnly
