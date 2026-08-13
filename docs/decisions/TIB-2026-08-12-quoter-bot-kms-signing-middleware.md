@@ -22,10 +22,10 @@ can therefore obtain a valid maker signature over _anything_: a `transfer`/`appr
 draining the EOA, or an arbitrary EIP-712 payload such as an ERC-2612/Permit2 permit that moves
 funds without any maker transaction at all.
 
-Every existing guard is **in-process** and dies with a compromised process: the bot-kit signer's
-default-deny policy check, the offer invariants, and the serialized `MakeService` with its
-`NEGATIVE_SPREAD` prospective-book guard
-([TIB-2026-07-27](./TIB-2026-07-27-midnight-quoter-bot.md), §7 and §Security).
+Every existing guard is **in-process** and dies with a compromised process: the offer
+invariants, the serialized `MakeService` with its `NEGATIVE_SPREAD` prospective-book guard
+([TIB-2026-07-27](./TIB-2026-07-27-midnight-quoter-bot.md), §7 and §Security), and the quoter's
+own transaction assertions applied immediately before each `wallet.sendTransaction`.
 
 [TIB-2026-07-27](./TIB-2026-07-27-midnight-quoter-bot.md) gates any material capital increase on a
 V1 security phase: treasury multisig; delegated funding contract; custom on-chain quoter ratifier;
@@ -57,7 +57,7 @@ AWS KMS or equivalent key custody. KMS custody has since shipped. This TIB addre
 
 **Non-Goals**
 
-- Replacing the in-bot invariants (offer policy, `NEGATIVE_SPREAD`, signer policy guard). They
+- Replacing the in-bot invariants (offer policy, `NEGATIVE_SPREAD`, transaction assertions). They
   remain as fast-feedback defense in depth; the middleware is the first control that survives full
   bot-host compromise.
 - Treasury custody or the delegated funding contract with fund/cap/block controls. Separate V1
@@ -84,10 +84,16 @@ AWS KMS or equivalent key custody. KMS custody has since shipped. This TIB addre
   sends the SDK-encoded offer payload as a zero-value transaction to the Midnight Mempool
   contract, alongside offer group/root invalidation and `setIsRootRatified` root approval where
   the Setter ratifier is used.
-- In-process guards: [`packages/bot-kit/src/signer.ts`](../../packages/bot-kit/src/signer.ts) runs
-  `evaluatePolicy` (default-deny: chain, target, selector, value, gas/fee ceilings) between
-  prepare and broadcast and logs `signer.policy_violation`; the offer invariants and serialized
-  `MakeService` are documented in [TIB-2026-07-27](./TIB-2026-07-27-midnight-quoter-bot.md).
+- In-process guards: the quoter's signing path builds a wallet directly from
+  `createMakerAccount` and applies the quoter-specific `assertLadderPublicationTransaction`,
+  `assertLadderRatificationTransaction`, and `assertLadderCancellationTransaction` checks
+  ([`ladder-transaction.utils.ts`](../../bots/quoter-bot/src/infrastructure/ladder/ladder-transaction.utils.ts),
+  [`production-ladder.ts`](../../bots/quoter-bot/src/infrastructure/ladder/production-ladder.ts))
+  before each `wallet.sendTransaction`; the offer invariants and serialized `MakeService` are
+  documented in [TIB-2026-07-27](./TIB-2026-07-27-midnight-quoter-bot.md). The shared
+  [`packages/bot-kit/src/signer.ts`](../../packages/bot-kit/src/signer.ts) default-deny
+  `evaluatePolicy` guard serves the liquidation bots and is **not** on the quoter's signing path
+  today.
 - Deployment: the bot runs as a Railway service with its own Dockerfile
   ([`deploy-railway.ts`](../../bots/quoter-bot/scripts/deploy-railway.ts)). The README instructs
   `aws`-mode operators to provision an AWS SDK credential source with KMS access into the service
@@ -123,8 +129,8 @@ was validated.
 **Revoke intents** invalidate offer groups/roots. They are **near-unconditionally approved** —
 revocation only reduces exposure and is the always-available kill switch — constrained to: pinned
 chain id, `to` = the Midnight singleton, an invalidation-selector allowlist, zero native value,
-and fee/gas ceilings. This mirrors the constraint set the in-process signer guard already pins,
-now enforced outside the bot.
+and fee/gas ceilings. This mirrors the constraint set the quoter's in-process transaction
+assertions already pin, now enforced outside the bot.
 
 Because a signed transaction commits to an account nonce, transaction-signing intents carry
 **caller-supplied nonce and fee fields** — liveness parameters, not policy: no nonce value can
@@ -143,10 +149,12 @@ full-book cleanups — that routine signing can never draw down, so a compromise
 the routine budget cannot starve the kill switch. When the ledger is unavailable, quote/ratify
 fail closed while revoke signing continues **uncharged but bounded**: per-transaction ceilings
 still apply and the revoke surface is infrastructure-throttled (reserved concurrency), so
-worst-case outage spend is rate-limited and the outage itself alerts. The final backstop is that
-the maker EOA deliberately holds only a small operational native balance (the existing
-`NATIVE_RESERVE_WEI` posture): gas grief can never exceed what is funded. Native-gas spend is
-thereby capped and enters the bounded-loss arithmetic.
+worst-case outage spend is rate-limited and the outage itself alerts. The final backstop is a
+**native-balance funding ceiling** — a new operational control this TIB requires, distinct from
+the existing `NATIVE_RESERVE_WEI` **minimum** readiness threshold: the operator funds the maker
+EOA between that minimum and a configured maximum, and monitoring alerts when the balance
+exceeds the maximum. Gas grief can never exceed what is funded. Native-gas spend is thereby
+capped and enters the bounded-loss arithmetic.
 
 **Quote intents** carry an array of structured offers. There are **no caller-declared
 exclusions**: the prospective book is always the observed live book plus the proposed set,
@@ -310,8 +318,8 @@ transaction stream.
 
 ### Alternative 1: Status quo — in-process policy plus direct KMS
 
-Keep the bot-kit signer policy, offer invariants, and `MakeService` guards, with the bot calling
-KMS directly.
+Keep the in-process guards — offer invariants, `MakeService`, and the quoter's transaction
+assertions — with the bot calling KMS directly.
 
 **Why rejected:** The policy and the attacker share a process. A compromised bot host bypasses
 every in-process check and still holds `kms:Sign`, and KMS blind-signs digests. The in-process
@@ -389,6 +397,9 @@ host itself; it strengthens rather than changes this design.
   the reservation ledger and the per-surface signed-gas budgets. It holds no secrets; its
   unavailability fails quoting closed while revocation stays served uncharged under
   infrastructure throttling.
+- The maker EOA's native balance is operationally bounded: funded above the `NATIVE_RESERVE_WEI`
+  minimum and below the new configured funding ceiling, with an alert on breach. The gas-grief
+  hard cap is this operational control, not a protocol guarantee.
 - One invocation round trip per make/revoke job — including cold starts — is compatible with the
   hourly-ish quote cadence and the one-minute bootstrap monitor.
 - The Lambda is meaningfully harder to compromise than the bot host — minimal code and
@@ -472,8 +483,8 @@ host itself; it strengthens rather than changes this design.
 Attacker-obtainable revocations are downtime/griefing plus bounded native-gas spend, not
 loan-asset loss — per-intent invoke scoping and the per-surface gas budgets keep that griefing
 hard and capped, the protected revoke reserve keeps a compromised routine invoker from starving
-break-glass capacity, and the deliberately small funded native balance is the hard ceiling even
-during a ledger outage.
+break-glass capacity, and the native-balance funding ceiling — an explicit operational control,
+distinct from the `NATIVE_RESERVE_WEI` minimum — is the hard cap even during a ledger outage.
 
 **Bounded-loss framing.** Today, bot-host compromise means unbounded loss of everything the maker
 EOA holds or has approved. With the middleware, it means a bounded, pre-computable number derived
@@ -508,8 +519,9 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   versions are rejected; an independent-read failure produces a typed denial and no KMS call; a
   missing or invalid policy configuration refuses to serve.
 - **Integration:** bot plus deployed Lambda against a KMS test key — quote publish, revoke,
-  denial propagation into `make.rejected`, the invocation-failure halt, and a break-glass revoke
-  invoked by a second IAM principal.
+  denial propagation into `make.rejected`, the invocation-failure halt, a break-glass revoke
+  invoked by a second IAM principal, and the funding-ceiling alert when the maker's native
+  balance exceeds its configured maximum.
 - **IAM cutover proof:** demonstrate the bot's principal receives `AccessDenied` on `kms:Sign`
   after the grant moves, that each role can invoke only its granted intent surfaces, and that a
   break-glass principal is denied on the quote and ratify surfaces. A denied call is part of
@@ -558,10 +570,12 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   — KMS-backed viem `LocalAccount`
 - [`signer-identity.utils.ts`](../../bots/quoter-bot/src/config/signer-identity.utils.ts) —
   signer identity selection
-- [`packages/bot-kit/src/signer.ts`](../../packages/bot-kit/src/signer.ts) — in-process
-  default-deny signer policy
+- [`packages/bot-kit/src/signer.ts`](../../packages/bot-kit/src/signer.ts) — shared default-deny
+  signer used by the liquidation bots; not on the quoter's signing path today
 - [`production-ladder.ts`](../../bots/quoter-bot/src/infrastructure/ladder/production-ladder.ts)
   — on-chain Mempool publication, ratification, and invalidation transactions
+- [`ladder-transaction.utils.ts`](../../bots/quoter-bot/src/infrastructure/ladder/ladder-transaction.utils.ts)
+  — the quoter's in-process transaction assertions
 - [quoter-bot README](../../bots/quoter-bot/README.md) — signed payload classes and `aws`-mode
   deployment
 - [Documentation guidance](../GUIDANCE.md)
