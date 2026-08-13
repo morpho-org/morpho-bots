@@ -1,8 +1,5 @@
 # Quoter bot
 
-> [!WARNING]
-> The quoter-bot bot is a work in progress, must not be used yet, and is expected to be ready for use around August 12, 2026.
-
 The bot validates its Base and Midnight setup, bootstraps target lending positions, maintains
 two-sided rate ladders, and provides explicit recovery commands. Start with read-only mode to inspect
 every intended action before enabling signing.
