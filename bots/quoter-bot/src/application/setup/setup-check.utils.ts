@@ -357,14 +357,14 @@ export const booksCheck = (
     )
   }
   const invalidBooks = books.flatMap(({ requestedId, response }) => {
-    if (!response.ok) return [{ id: requestedId, reasons: [{ providerError: response.error }] }]
-
-    const problem = bookProblems(
-      requestedId,
-      response.value,
-      config,
-      timestamp.ok ? timestamp.value : undefined
-    )
+    const problem = !response.ok
+      ? { id: requestedId, reasons: [{ providerError: response.error }] as unknown[] }
+      : bookProblems(
+          requestedId,
+          response.value,
+          config,
+          timestamp.ok ? timestamp.value : undefined
+        )
     if (!timestamp.ok) problem.reasons.push({ timestampProviderError: timestamp.error })
 
     return problem.reasons.length === 0 ? [] : [problem]

@@ -234,6 +234,15 @@ describe('Cli', () => {
     expect(await cli().run(['setup-check'])).toEqual(readyReport)
   })
 
+  test('forwards the runtime shutdown signal to startup readiness', async () => {
+    const controller = new AbortController()
+    const assertReady = vi.fn(async (_signal?: AbortSignal) => readyReport)
+
+    await cli(assertReady).run(['setup-check'], { signal: controller.signal })
+
+    expect(assertReady).toHaveBeenCalledWith(controller.signal)
+  })
+
   test('quoter-bot setup-check --monitor streams readiness reports until shutdown', async () => {
     const report = {
       status: 'stopped' as const,

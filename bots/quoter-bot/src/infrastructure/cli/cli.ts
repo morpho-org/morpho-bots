@@ -31,7 +31,7 @@ import { CliUsageError } from './cli-usage.error'
 import { offerInvalidationGroup } from './offer-invalidation-argument.utils'
 
 interface SetupReadinessService {
-  assertReady(): Promise<SetupCheckReport>
+  assertReady(signal?: AbortSignal): Promise<SetupCheckReport>
   runContinuously?(parameters: {
     signal: AbortSignal
     onCycle?: (report: SetupCheckReport) => void | Promise<void>
@@ -193,7 +193,7 @@ export class Cli {
         return
       }
 
-      this.capture(await setupService.assertReady())
+      this.capture(await setupService.assertReady(this.signal))
     })
 
     const bootstrapCommand = this.program

@@ -252,7 +252,7 @@ export const createApplication = (
         config.setup,
         config.readOnly,
         requiresVariableRateReference(config.bootstrap)
-      ).assertReady()
+      ).assertReady(options.signal)
       const injectedAdapters = dependencies.createBootstrapAdapters?.(config, ignoredOfferGroupIds)
       const writeReadOnlyEvent = parseEventWriter(options.writeEvent)
       const adapters =
@@ -290,7 +290,7 @@ export const createApplication = (
         config.setup,
         config.readOnly,
         requiresVariableRateReference(config.ladder)
-      ).assertReady()
+      ).assertReady(options.signal)
       const writeReadOnlyEvent = parseEventWriter(options.writeEvent)
       const make = config.readOnly
         ? new ReadOnlyLadderMakeService(
@@ -336,7 +336,7 @@ export const createApplication = (
         config.readOnly,
         requiresVariableRateReference([...config.bootstrap, ...config.ladder])
       )
-      await setup.assertReady()
+      await setup.assertReady(options.signal)
 
       const injectedBootstrapAdapters = dependencies.createBootstrapAdapters?.(
         config,

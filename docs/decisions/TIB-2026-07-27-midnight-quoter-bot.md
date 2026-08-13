@@ -540,10 +540,11 @@ validation path and produce the same validated runtime configuration.
 The public README, `.env.example`, and `quoter-bot.example.yaml` document every currently implemented
 setting, unit, default, precedence rule, and safety interaction. The current YAML schema is limited to
 `chain`, `identity`, `contracts`, `apis`, `markets`, `setup`, and `bootstrap`. In that schema,
-`MORPHO_API_BASE_URL` serves book and cursor-paginated offer-group reads, while
-`ROUTER_API_BASE_URL` serves the contract registry; neither current client has a configurable API-key
-header. The groups below describe the full V0 destination; settings not present in the current README
-schema remain explicitly planned until their workflows are implemented:
+`MORPHO_API_BASE_URL` serves book and cursor-paginated offer-group reads. Ratifier identity comes from
+the pinned Morpho SDK catalog; `ROUTER_API_BASE_URL` is accepted and ignored only as a deprecated
+compatibility key. The current Morpho API client has no configurable API-key header. The groups below
+describe the full V0 destination; settings not present in the current README schema remain explicitly
+planned until their workflows are implemented:
 
 - **Chain and identity:** `CHAIN_ID`, `RPC_URL`, optional fallback RPC, `MAKER_PRIVATE_KEY`,
   Midnight address, and ratifier selection. The ratifier address is accepted only when it matches

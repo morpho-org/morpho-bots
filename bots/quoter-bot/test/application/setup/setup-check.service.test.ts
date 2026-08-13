@@ -264,6 +264,56 @@ describe('SetupCheckService', () => {
     }
   })
 
+  test('does not retry transient book outages when the timestamp failure is unknown', async () => {
+    const state = readyState()
+    let bookReads = 0
+    let timestampReads = 0
+    state.getBook = async () => {
+      bookReads += 1
+      throw new SafeProviderError({
+        kind: 'provider-error',
+        provider: 'morpho-api',
+        name: 'TimeoutError',
+        code: 'REQUEST_TIMEOUT',
+        context: 'request'
+      })
+    }
+    state.getLatestTimestamp = async () => {
+      timestampReads += 1
+      throw new ProviderReadError('rpc', 'latest-timestamp')
+    }
+
+    const terminal = await new SetupCheckService(state, config).runContinuously({
+      signal: new AbortController().signal,
+      intervalMs: 1
+    })
+
+    expect(bookReads).toBe(1)
+    expect(timestampReads).toBe(1)
+    expect(terminal).toMatchObject({ status: 'halted', reason: 'setup-failed', cycles: 1 })
+    if (terminal.reason === 'setup-failed') {
+      expect(terminal.lastReport.checks.find(check => check.name === 'books')?.observed).toEqual([
+        {
+          id: marketId,
+          reasons: [
+            {
+              providerError: expect.objectContaining({
+                provider: 'morpho-api',
+                name: 'TimeoutError'
+              })
+            },
+            {
+              timestampProviderError: expect.objectContaining({
+                provider: 'rpc',
+                name: 'ProviderError'
+              })
+            }
+          ]
+        }
+      ])
+    }
+  })
+
   test('stops without emitting setup failure when shutdown interrupts a transient retry', async () => {
     const controller = new AbortController()
     const state = readyState()
@@ -315,6 +365,30 @@ describe('SetupCheckService', () => {
 
     expect(offerReads).toBe(3)
     expect(report.ready).toBe(true)
+  })
+
+  test('stops startup retries after the shutdown signal is aborted', async () => {
+    const controller = new AbortController()
+    const state = readyState()
+    let bookReads = 0
+    state.getBook = async () => {
+      bookReads += 1
+      controller.abort()
+      throw new SafeProviderError({
+        kind: 'provider-error',
+        provider: 'morpho-api',
+        name: 'TimeoutError',
+        code: 'REQUEST_TIMEOUT',
+        context: 'request'
+      })
+    }
+
+    const error = await new SetupCheckService(state, config)
+      .assertReady(controller.signal)
+      .catch(value => value)
+
+    expect(bookReads).toBe(1)
+    expect(error).toBeInstanceOf(SetupFailedError)
   })
 
   test('does not retry a non-transient provider response at startup', async () => {

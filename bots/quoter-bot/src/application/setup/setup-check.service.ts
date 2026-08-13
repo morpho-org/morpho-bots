@@ -211,14 +211,15 @@ export class SetupCheckService {
 
   /**
    * Evaluates the complete report and enforces readiness for downstream writers.
+   * @param signal - Optional shutdown signal that stops transient startup retries after the current read.
    * @returns The complete ready report.
    * @throws `SetupFailedError` when an invariant fails or transient providers remain unavailable
    * after three total attempts; the error retains every check result from the final attempt.
    * @remarks Read-only. Independent provider checks run concurrently through `Promise.all` on each
    * attempt. Only reports caused exclusively by explicitly transient provider failures are retried.
    */
-  async assertReady() {
-    const report = await this.checkWithTransientRetries()
+  async assertReady(signal?: AbortSignal) {
+    const report = await this.checkWithTransientRetries(signal)
     if (!report.ready) throw new SetupFailedError(report)
     return report
   }
