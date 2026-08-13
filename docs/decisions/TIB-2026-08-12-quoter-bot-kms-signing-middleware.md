@@ -184,11 +184,15 @@ A break-glass revocation deliberately takes over the account's transaction strea
 incident. It does **not** sign the node's `pending` nonce, which is the next unused nonce. It
 enumerates every occupied nonce from the middleware's recorded, still-pending routine transactions
 and signs a cleanup transaction at each **same nonce**, thereby replacing every unsafe publication
-or ratification rather than queueing behind it. Each replacement fee bid exceeds the maximum
-recorded fee fields across every routine signature at that nonce by at least the policy's 12.5%
-replacement bump plus one wei, subject to the protected break-glass ceilings; the maximum rule is
-defense in depth if the same-nonce routine fence was bypassed or older records predate it. The
-runbook signs and broadcasts replacements for every occupied nonce in ascending order before
+or ratification rather than queueing behind it. Each replacement fee bid uses the repository
+replacement formula against the maximum recorded fee fields across every routine signature at that
+nonce: the priority fee is bumped by 12.5% plus the one-wei floor, and `maxFeePerGas` is the maximum
+of its corresponding bump and
+`currentBaseFee * 2 + newPriorityFee`. The current pending-block base fee comes from an independent
+RPC read immediately before signing, never from the caller. The result remains subject to the
+protected break-glass ceilings; the maximum-recorded rule is defense in depth if the same-nonce
+routine fence was bypassed or older records predate it. The runbook signs and broadcasts
+replacements for every occupied nonce in ascending order before
 waiting for any replacement to confirm. This prevents a pending transaction at nonce N+1 from
 mining in the same block immediately after cleanup at nonce N. Only after the entire occupied
 prefix has a replacement in the network may the operator wait for confirmations and proceed with
@@ -196,14 +200,18 @@ later, previously unused nonces. If the middleware cannot reconcile its record w
 pending transaction set, an occupied transaction was not recorded, or the protected ceilings
 cannot replace every occupied nonce, break-glass must use an ordered drain/handoff and must not
 claim that a next-unused-nonce revocation can preempt the pending stream. Routine transaction
-ceilings must reserve one complete emergency bump for **both** fee fields: for each routine ceiling
-`r`, the corresponding protected ceiling is at least
-`max(floor(r * 1125 / 1000), r + 1 wei)`. Deployment validation rejects any weaker configuration,
-and before returning every routine transaction (including a routine replacement) the middleware
-reapplies the same formula to its actual recorded `maxFeePerGas` and `maxPriorityFeePerGas` and
-requires both results to fit the protected ceilings. A middleware-produced routine bid therefore
-cannot strand an otherwise valid emergency replacement merely because the ceilings were only one
-wei apart.
+ceilings must reserve one complete emergency bump for **both** fee fields. Deployment validation
+requires the protected priority ceiling to cover
+`max(floor(routinePriorityCeiling * 1125 / 1000), routinePriorityCeiling + 1 wei)` and the protected
+max-fee ceiling to cover at least the corresponding bump of the routine max-fee ceiling. Because no
+static ceiling can promise capacity across an unbounded future base-fee rise, readiness and the
+break-glass preflight also read the current base fee and derive the exact emergency pair with the
+same `currentBaseFee * 2 + newPriorityFee` floor. They fail closed before claiming replacement
+capacity unless every derived fee fits the protected ceilings and the protected reserve can fund
+every occupied nonce. Before returning every routine transaction (including a routine replacement),
+the middleware performs that same live-base-fee preflight against its actual recorded fee fields. A
+middleware-produced routine bid therefore cannot strand an otherwise valid emergency replacement
+merely because the ceilings were only one wei apart or because the base-fee floor was omitted.
 
 Per-transaction fee/gas ceilings alone cannot stop a leaked invoker from bleeding the maker's
 native balance one valid cancellation at a time. Transaction-signing intents therefore also draw
@@ -211,12 +219,16 @@ on **rolling signed-gas budgets** tracked in the reservation ledger (see Statefu
 class comes from the authenticated Lambda invoke surface, never from a caller-supplied principal,
 intent field, or `ClientContext`: publication, ratification, and the bot-only `routine-revoke`
 function draw on the routine budget, while the operator-only `break-glass-revoke` function alone
-function draw on a **protected reserve** that the bot role has no IAM permission to invoke or draw
+draws on a **protected reserve** that the bot role has no IAM permission to invoke or draw
 down. The primary protected reserve is sized for replacements at the **maximum configured
 occupied-nonce set** (each at the protected fee and gas ceilings) plus several full-book cleanups,
 with no overlap assumed between those costs. Deployment validation computes that bound from the
-configured maximum and rejects a primary reserve below it. Both revoke functions use the same strict revoke
-validator from the shared image, but their function ARNs, IAM grants, reserved concurrency, and server-side
+configured maximum and rejects a primary reserve below it. The reservation transaction also counts
+the maker's distinct non-terminal routine nonces and rejects any new-nonce signature that would
+exceed that configured maximum; same-nonce replacements do not increase the count. This hard cap is
+checked and updated atomically with nonce lease acquisition, so concurrent invocations cannot each
+admit themselves against the last slot. Both revoke functions use the same strict revoke validator
+from the shared image, but their function ARNs, IAM grants, reserved concurrency, and server-side
 budget classes are distinct. A compromised bot therefore cannot impersonate break-glass in its
 payload or starve the kill switch with otherwise valid cancellations. When the ledger is
 unavailable, quote/ratify and bot-originated routine revokes fail closed while the break-glass
@@ -227,13 +239,16 @@ occupied-nonce set** (each at the protected fee and gas ceilings) plus one confi
 cleanup, with no overlap assumed between those costs. If the live occupied set exceeds that
 configured maximum, outage cleanup fails closed into ordered drain/handoff rather than claiming the
 ledger-outage guarantee. The same independent control plane keeps a
-**ledger-independent revocation inventory**: an append-only, read-replicated catalog of every root
-and group whose signature could make exposure publishable. Catalog persistence is a write-before-
+**ledger-independent revocation inventory**: an append-only, strongly consistent catalog of every
+root and group whose signature could make exposure publishable. Catalog persistence is a write-before-
 sign condition for quote and ratify: **both** the primary reservation and the independent catalog
 entry must commit durably in a `pending-signature` state before any KMS call. Failure of either write
 fails signing closed; the middleware never signs with uncharged aggregate capacity or an incomplete
 revocation inventory. After all signed response artifacts are durable, the finalization transaction
-conditionally promotes the catalog entry to `signed`. The same idempotent compensation path that
+atomically writes the ledger-independent transaction-inventory record and conditionally promotes the
+catalog entry to `signed`; a `signed` entry can therefore never exist without the exact signed bytes,
+nonce, hash, intent kind, and fee fields needed for cleanup. Stored-artifact retries become
+deliverable only after that transaction commits. The same idempotent compensation path that
 releases a failed primary reservation also writes a terminal `failed` tombstone for its catalog
 entry. Break-glass enumerates only `signed` catalog entries; `pending-signature` entries past their
 short lease are reconciled to `signed` only from complete durable artifacts, otherwise they are
@@ -241,14 +256,18 @@ tombstoned. If the catalog cannot prove an entry's terminal state, cleanup fails
 drain/handoff instead of charging emergency capacity for speculative targets. Break-glass therefore
 retains the targets needed to cancel hidden,
 signed-but-unpublished exposure even when the primary reservation ledger cannot be read. It also
-keeps a **ledger-independent transaction inventory** of every returned routine transaction's exact
-signed bytes, nonce, hash, intent kind, and fee fields. Persisting that record is a write-before-
-return condition for every routine transaction; if the independent inventory cannot durably record
-it, the routine signing request fails closed. During a primary-ledger outage, break-glass uses this
-inventory to replace every occupied nonce with a fee bid derived from the recorded maximum. If the
-inventory is unavailable or cannot account for the node's pending set, cleanup fails closed into the
-ordered drain/handoff posture instead of claiming ledger-outage preemption. Reserved concurrency
-isolates revoke capacity from quote floods but is explicitly **not** a rate limit; it cannot bound
+keeps that **ledger-independent transaction inventory** for every signed routine transaction,
+including one whose original Lambda response was not delivered. Persisting that record is a
+write-before-`signed` and therefore write-before-return condition; if the independent inventory
+cannot durably record it, finalization and every stored-artifact retry fail closed. During a
+primary-ledger outage, break-glass uses this inventory to replace every occupied nonce with a fee
+bid derived from the recorded maximum. The emergency reader uses strongly consistent or
+quorum reads and verifies a writer-region high-watermark replicated after routine admission was
+frozen; a stale or unverifiable watermark fails closed rather than treating a partial catalog as
+complete. If the inventory is unavailable, stale, or cannot account for the node's pending set,
+cleanup fails closed into the ordered drain/handoff posture instead of claiming ledger-outage
+preemption. Reserved concurrency isolates revoke capacity from quote floods but is explicitly
+**not** a rate limit; it cannot bound
 sequential signatures. If that independent budget cannot be checked atomically, revoke signing
 fails closed and pages the operator rather than becoming unmetered. The final backstop is a
 **native-balance funding ceiling** — a new operational control this TIB requires, distinct from
@@ -400,10 +419,13 @@ surface's key or read the table. The setup/health execution role may write its o
 five exact keys, but may not alter the four signing-surface records; the bot role has no table
 access. Readiness resolves every production alias to its current published version and requires a
 fresh matching record for that exact version and manifest, so an attestation from a retired
-deployment cannot satisfy the check. IAM grants only those per-key `dynamodb:PutItem` operations and
-the setup role's bounded `GetItem`/`BatchGetItem`; no attestation path invokes a signing handler or
-exposes a signing operation. Each published function version also exposes a dedicated **non-signing
-attestation entrypoint** in the same image. After publishing a version and before moving its
+deployment cannot satisfy the check. IAM grants only those per-key `dynamodb:PutItem` operations,
+the setup role's bounded `GetItem`/`BatchGetItem`, and `lambda:GetAlias` on the five exact
+production-alias ARNs (or an equivalently authenticated deployment manifest containing their exact
+published-version targets); it grants no wildcard Lambda reads. The setup role resolves and records
+those alias targets before accepting registry attestations. No attestation path invokes a signing
+handler or exposes a signing operation. Each published function version also exposes a dedicated
+**non-signing attestation entrypoint** in the same image. After publishing a version and before moving its
 production alias, deployment automation invokes that entrypoint under the function execution role;
 it performs only the key/config/image validation above and the conditional registry write. The
 deployment verifies the exact version-and-manifest record, retries transient failures, and refuses
@@ -875,13 +897,20 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   budget, and the funding-ceiling alert when the maker's native balance exceeds its configured
   maximum. Queue routine publications at consecutive occupied nonces, then prove break-glass
   pre-signs and broadcasts replacements for every occupied nonce before waiting rather than signing
-  only the lowest or the next unused nonce. Prove primary-ledger outage cleanup uses the independent
-  transaction inventory's exact nonce and fee records; a missing or incoherent inventory forces
-  ordered handoff. Enter break-glass while routine-revoke is in flight and prove its generation lease
-  drains before cleanup and no new routine revoke can be signed until emergency deny is cleared.
+  only the lowest or the next unused nonce. Raise the base fee above the routine max-fee bump and
+  prove break-glass uses `baseFee * 2 + newPriorityFee`, then fails closed when that live result
+  exceeds the protected ceiling. Fill the configured occupied-nonce limit and prove a new-nonce
+  request is denied while a same-nonce replacement remains allowed; race requests for the final slot
+  and prove only one commits. Prove primary-ledger outage cleanup uses the independent transaction
+  inventory's exact nonce and fee records; a missing, incoherent, stale-replica, or lagging-watermark
+  inventory forces ordered handoff. Enter break-glass while routine-revoke is in flight and prove its
+  generation lease drains before cleanup and no new routine revoke can be signed until emergency deny
+  is cleared.
 - **Retry and delayed-broadcast safety:** drop the first Lambda response after the durable `signed`
-  transition and prove an idempotent retry returns byte-identical stored artifacts without a second
-  KMS call. Reuse that key with a different canonical intent and prove it returns a typed conflict,
+  transition and prove the transaction inventory already contains the exact artifact before an
+  idempotent retry returns byte-identical stored artifacts without a second KMS call. Inject an
+  inventory-write failure and prove neither the `signed` transition nor stored-artifact delivery is
+  possible. Reuse that key with a different canonical intent and prove it returns a typed conflict,
   no artifacts, and no KMS call. Race two routine signing intents at the same pending nonce and prove
   exactly one acquires the pre-sign nonce lease and reaches KMS. Withhold a signed transaction beyond
   its offer freshness expiry and prove its transaction
@@ -892,8 +921,10 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   its constrained response, that each function role can call `kms:GetPublicKey` only on the pinned
   maker key, that the setup/health role cannot call `kms:Sign`, that each role can
   invoke only its granted surfaces, and that a break-glass principal is denied on setup/health,
-  quote, and ratify. Verify CloudTrail data events cover all five function ARNs. A denied call is part
-  of acceptance, not an incident.
+  quote, and ratify. Prove setup/health can call `lambda:GetAlias` on each of the five exact production
+  aliases, cannot call it on any other function or alias, and rejects an attestation whose published
+  version differs from the resolved alias target. Verify CloudTrail data events cover all five
+  function ARNs. A denied call is part of acceptance, not an incident.
 - Tests follow the repository verification rule: run each new test, break one assertion to
   confirm it fails, restore it.
 
