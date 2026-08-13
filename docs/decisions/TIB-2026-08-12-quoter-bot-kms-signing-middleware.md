@@ -155,7 +155,9 @@ make/pending queue remains the single routine writer, and the middleware records
 routine transaction's nonce, hash, intent kind, and fee fields before releasing it. Once one
 routine transaction has been returned for the current pending nonce, the middleware refuses another
 routine signature at that nonce until the recorded transaction is terminal (confirmed, replaced,
-cancelled, or expired under the release rules). This same-nonce fence prevents a caller from
+or cancelled on chain). Offer freshness expiry is not terminal for an EOA transaction: the signed
+bytes remain broadcastable, so the transaction record and its signed-gas/nonce reservations remain
+fenced until the nonce is confirmed or replaced/cancelled on chain. This same-nonce fence prevents a caller from
 withholding several alternatives and choosing the one least favorable to break-glass cleanup.
 
 A break-glass revocation deliberately takes over the account's transaction stream during an
@@ -196,7 +198,14 @@ store, sized only for the configured full-book cleanup. The same independent con
 and group whose signature could make exposure publishable. Catalog persistence is a write-before-
 sign condition for quote and ratify; if both the primary ledger and catalog cannot durably record
 an entry, signing fails closed. Break-glass therefore retains the targets needed to cancel hidden,
-signed-but-unpublished exposure even when the primary reservation ledger cannot be read. Reserved concurrency
+signed-but-unpublished exposure even when the primary reservation ledger cannot be read. It also
+keeps a **ledger-independent transaction inventory** of every returned routine transaction's exact
+signed bytes, nonce, hash, intent kind, and fee fields. Persisting that record is a write-before-
+return condition for every routine transaction; if the independent inventory cannot durably record
+it, the routine signing request fails closed. During a primary-ledger outage, break-glass uses this
+inventory to replace every occupied nonce with a fee bid derived from the recorded maximum. If the
+inventory is unavailable or cannot account for the node's pending set, cleanup fails closed into the
+ordered drain/handoff posture instead of claiming ledger-outage preemption. Reserved concurrency
 isolates revoke capacity from quote floods but is explicitly **not** a rate limit; it cannot bound
 sequential signatures. If that independent budget cannot be checked atomically, revoke signing
 fails closed and pages the operator rather than becoming unmetered. The final backstop is a
@@ -360,25 +369,29 @@ an HTTP API, a Cloudflare Worker — replaces the handler and the bot-side adapt
 logic, and any alternative host must preserve the trust split: the middleware alone holds
 `kms:Sign`, and callers hold nothing but the right to invoke it.
 
-- The middleware is a set of **four AWS Lambda functions — quote, ratify, routine revoke, and
-  break-glass revoke — built from one shared container image** and invoked through the AWS SDK
+- The middleware is a set of **five AWS Lambda functions — setup/health, quote, ratify, routine
+  revoke, and break-glass revoke — built from one shared container image** and invoked through the AWS SDK
   (`lambda:InvokeFunction`). Routine and break-glass revoke deliberately have separate authenticated
-  invoke surfaces even though they enforce the same structured revoke intent.
+  invoke surfaces even though they enforce the same structured revoke intent. The setup/health
+  function is the authenticated signer-identity setup port used by readiness; it can return only the
+  validated setup fields described above and has no signing-intent handler.
 - **IAM chain**: the bot's AWS credentials attach to a role whose only permissions are
-  `lambda:InvokeFunction` on this function's intent surfaces — the bot loses `kms:Sign` entirely.
-  The Lambda's execution role is the only principal with `kms:Sign` and `kms:GetPublicKey` on the
-  maker key, plus the outbound reads its checks need. `kms:GetPublicKey` exists only for the
-  fail-closed signer-identity setup proof; it is never granted to the bot. Creating that execution
-  role, the invoke-only credentials, and
-  the CloudTrail data-event selectors for all four functions (see Observability) are part of the
+  `lambda:InvokeFunction` on setup/health and its routine intent surfaces — the bot loses `kms:Sign`
+  and `kms:GetPublicKey` entirely. The four signing functions' execution roles are the only
+  principals with `kms:Sign`; the setup/health execution role alone has `kms:GetPublicKey` on the
+  maker key plus the outbound reads its check needs, and has no `kms:Sign`. Creating those execution
+  roles, the invoke-only credentials, and
+  the CloudTrail data-event selectors for all five functions (see Observability) are part of the
   deliverable.
 - **Caller-to-surface scoping**: principals are authorized per function ARN. The three structured
-  intent types map to **four Lambda functions** — one shared container image, four deployments —
+  intent types map to **four signing Lambda functions**, while setup/readiness maps to the fifth
+  setup/health function — one shared container image, five deployments —
   because routine and break-glass revoke must be distinguishable by an authenticated AWS boundary,
   not by untrusted payload data. Aliases are not enough: reserved concurrency is function-scoped,
   and distinct functions also let IAM deny the bot access to the protected reserve. IAM grants the
-  bot quote, ratify, and routine-revoke only; break-glass principals receive break-glass-revoke
-  only. Each handler pins its intent type and budget class in deployment configuration before
+  bot setup/health, quote, ratify, and routine-revoke only; break-glass principals receive
+  break-glass-revoke only. Each signing handler pins its intent type and budget class in deployment
+  configuration before
   calling the shared validator. It never reads a claimed principal or budget class from the intent
   payload or `ClientContext`. Leaked break-glass credentials must yield revocations, never signed
   quotes or ratifications, while leaked bot credentials can never consume emergency capacity.
@@ -388,7 +401,7 @@ logic, and any alternative host must preserve the trust split: the middleware al
   intents a given principal may submit, and invoke scoping keeps revoke-griefing/DoS hard and the
   audit trail attributable.
 - The middleware's **code lives in this monorepo** and deploys as one **Docker container image**
-  (ECR-hosted) instantiated as the four functions, with its own Dockerfile, like the
+  (ECR-hosted) instantiated as the five functions, with its own Dockerfile, like the
   bots. It is not a bot —
   not a long-running program — so it does not live under `/bots/`; the proposed workspace home is
   a new top-level `services/` directory, e.g. `services/quoter-signer`. Final naming and location
@@ -410,8 +423,9 @@ logic, and any alternative host must preserve the trust split: the middleware al
   path — and that surface cannot produce quote signatures. The bot cannot invoke this function;
   its separate routine-revoke function cannot select the protected budget in request data.
 - Entering break-glass mode first atomically increments a durable **deny generation** in middleware
-  policy and disables the routine quote and ratify invoke grants before cleanup starts. Every
-  quote/ratify handler captures that generation on admission and acquires a generation-scoped
+  policy and disables the routine quote, ratify, and routine-revoke invoke grants before cleanup
+  starts. Every routine signing handler captures that generation on admission and acquires a
+  generation-scoped
   signing lease in the same transaction that reserves aggregate capacity. The handler checks the
   lease immediately before KMS signing and releases it only after the result is durably cataloged.
   Break-glass transition denies new leases and waits for every older-generation lease to drain (or
@@ -419,8 +433,9 @@ logic, and any alternative host must preserve the trust split: the middleware al
   before emergency deny can therefore either finish as known revocation inventory before cleanup or
   produce no signature; it cannot return an untracked fresh signature during cleanup. If lease state
   cannot be checked or drained, cleanup does not claim containment and pages the operator. Routine
-  principals cannot obtain fresh quote-enabling signatures until an independently authorized
-  operator clears the deny after verifying cleanup; revocation remains available throughout.
+  principals cannot obtain fresh quote, ratify, or routine-revoke signatures until an independently
+  authorized operator clears the deny after verifying cleanup; only operator-authorized
+  break-glass revocation remains available throughout.
 - Setter cleanup treats irreversible group cancellations as authoritative. The runbook drains or
   replaces every already-signed ratification transaction and consumes every affected offer group;
   `setIsRootRatified(..., false)` is defense in depth, not the sole kill switch, because an older
@@ -457,14 +472,18 @@ double-reserve it.
 
 The same transaction creates a unique signing-attempt record in `reserved` state. After KMS returns
 a signature, the handler conditionally moves that attempt to `signed` and durably records the
-artifact metadata before constructing the response. No signed response is returned before that
-durable transition. If KMS or validation/encoding fails first, an idempotent compensation
+**complete signed response artifacts** — canonical encoded payloads, every signature, and any exact
+signed transaction bytes plus nonce/hash/fee fields — before constructing the response. A retry with
+the same idempotency key returns those exact stored artifacts and cannot invoke KMS again. No signed
+response is returned before that durable transition. If KMS or validation/encoding fails first, an idempotent compensation
 transaction releases its exposure and signed-gas reservations, writes a terminal `failed` marker,
 and returns the typed failure. A retry with the same idempotency key observes that marker rather
 than releasing twice. A crash while the attempt is still `reserved` is reconciled by the same
 conditional compensation after its short attempt lease: handler ordering guarantees that a
 signature was not returned before `signed`, while an attempt already marked `signed` remains
-reserved and follows the normal observation, cancellation, or freshness-expiry release rules.
+reserved. Offer exposure follows the normal observation, cancellation, or freshness-expiry release
+rules, but EOA transaction records and their signed-gas/nonce reservations never release on offer
+freshness expiry; they remain until the nonce is confirmed or replaced/cancelled on chain.
 
 v0 uses DynamoDB and sets a **middleware-mode rung cap of 40 per side** (80 offers), lower than the
 general quoter limit. The reservation planner has a fixed, tested write-action budget covering the
@@ -496,19 +515,19 @@ account's nonce cursor; the routine single writer and break-glass runbook coordi
 
 ### 7. Failure posture
 
-| Failure                                   | Required behavior                                                       |
-| ----------------------------------------- | ----------------------------------------------------------------------- |
-| Invocation fails (throttle, error, limit) | Halt quoting (fail closed) and retry; offers stand                      |
-| Cold start latency                        | Tolerated; the hourly-ish cadence absorbs it                            |
-| Quote intent denied                       | Typed rejection, nothing signed; alert if persistent                    |
-| Revoke intent denied                      | Near-impossible by design; treat as misconfig, alert                    |
-| Concurrent tx signers (bot + break-glass) | Replace the lowest recorded occupied nonce; otherwise ordered handoff   |
-| Read fails or snapshot is incoherent      | Fail closed: typed retryable denial, no signature                       |
-| Reservation ledger unavailable            | Quote/ratify/routine revoke closed; break-glass uses independent budget |
-| Independent revoke budget unavailable     | Revoke fails closed and pages operator                                  |
-| KMS error                                 | Typed failure; never assume a signature was produced                    |
-| Policy parameters missing/invalid at init | Refuse to serve; never run a partial or empty policy                    |
-| Unknown intent type/version               | Reject; no best-effort interpretation of payloads                       |
+| Failure                                   | Required behavior                                                               |
+| ----------------------------------------- | ------------------------------------------------------------------------------- |
+| Invocation fails (throttle, error, limit) | Halt quoting (fail closed) and retry; offers stand                              |
+| Cold start latency                        | Tolerated; the hourly-ish cadence absorbs it                                    |
+| Quote intent denied                       | Typed rejection, nothing signed; alert if persistent                            |
+| Revoke intent denied                      | Near-impossible by design; treat as misconfig, alert                            |
+| Concurrent tx signers (bot + break-glass) | Replace every recorded occupied nonce before waiting; otherwise ordered handoff |
+| Read fails or snapshot is incoherent      | Fail closed: typed retryable denial, no signature                               |
+| Reservation ledger unavailable            | Quote/ratify/routine revoke closed; break-glass uses independent budget         |
+| Independent revoke budget unavailable     | Revoke fails closed and pages operator                                          |
+| KMS error                                 | Typed failure; never assume a signature was produced                            |
+| Policy parameters missing/invalid at init | Refuse to serve; never run a partial or empty policy                            |
+| Unknown intent type/version               | Reject; no best-effort interpretation of payloads                               |
 
 ## Considered Alternatives
 
@@ -576,8 +595,9 @@ host itself; it strengthens rather than changes this design.
 ## Assumptions & Constraints
 
 - IAM can express the intended split: the bot's role holds `lambda:InvokeFunction` on exactly
-  quote, ratify, and routine-revoke and nothing else; the Lambda execution roles are the sole
-  `kms:Sign` principals on the maker key; break-glass operators hold only the separate
+  setup/health, quote, ratify, and routine-revoke and nothing else; the four signing Lambda
+  execution roles are the sole `kms:Sign` principals on the maker key, while the non-signing
+  setup/health role alone holds `kms:GetPublicKey`; break-glass operators hold only the separate
   break-glass-revoke invoke grant. Policy selects the budget from that fixed function deployment,
   never from caller-controlled request data.
 - Every signed payload class is fully describable as structured intents and canonically
@@ -649,7 +669,7 @@ host itself; it strengthens rather than changes this design.
   side is an incident signal.
   Lambda `Invoke` is a CloudTrail **data event and is not logged by default**
   ([Lambda CloudTrail docs](https://docs.aws.amazon.com/lambda/latest/dg/logging-using-cloudtrail.html));
-  enabling data-event selectors for all four function ARNs is an explicit v0 deliverable —
+  enabling data-event selectors for all five function ARNs is an explicit v0 deliverable —
   without complete coverage, the invoke side of this audit trail silently omits intent surfaces.
 - Alerting on denials, invocation errors/throttles, KMS errors, and independent-read failures.
   Bot-side `make.rejected` events extend with middleware-denial reasons; invocation-failure halts
@@ -750,12 +770,23 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   invoked by a second IAM principal, an attempted bot invocation of `break-glass-revoke` denied by
   IAM, a routine-revoke payload that claims break-glass identity still charged only to the routine
   budget, and the funding-ceiling alert when the maker's native balance exceeds its configured
-  maximum. Queue a routine publication, then prove break-glass replaces that exact occupied nonce
-  rather than signing the next unused nonce; missing transaction inventory forces ordered handoff.
+  maximum. Queue routine publications at consecutive occupied nonces, then prove break-glass
+  pre-signs and broadcasts replacements for every occupied nonce before waiting rather than signing
+  only the lowest or the next unused nonce. Prove primary-ledger outage cleanup uses the independent
+  transaction inventory's exact nonce and fee records; a missing or incoherent inventory forces
+  ordered handoff. Enter break-glass while routine-revoke is in flight and prove its generation lease
+  drains before cleanup and no new routine revoke can be signed until emergency deny is cleared.
+- **Retry and delayed-broadcast safety:** drop the first Lambda response after the durable `signed`
+  transition and prove an idempotent retry returns byte-identical stored artifacts without a second
+  KMS call. Withhold a signed transaction beyond its offer freshness expiry and prove its transaction
+  record, nonce fence, and signed-gas reservation remain until that nonce is confirmed or replaced/
+  cancelled on chain.
 - **IAM cutover proof:** demonstrate the bot's principal receives `AccessDenied` on `kms:Sign`
-  after the grant moves, that each role can invoke only its granted intent surfaces, and that a
-  break-glass principal is denied on the quote and ratify surfaces. A denied call is part of
-  acceptance, not an incident.
+  and `kms:GetPublicKey` after the grant moves, that readiness can invoke setup/health and obtain only
+  its constrained response, that the setup/health role cannot call `kms:Sign`, that each role can
+  invoke only its granted surfaces, and that a break-glass principal is denied on setup/health,
+  quote, and ratify. Verify CloudTrail data events cover all five function ARNs. A denied call is part
+  of acceptance, not an incident.
 - Tests follow the repository verification rule: run each new test, break one assertion to
   confirm it fails, restore it.
 
