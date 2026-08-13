@@ -3,6 +3,7 @@ import type { Address, Hex } from 'viem'
 import { waitForMonitorInterval } from '@repo/monitoring'
 
 import { operatorErrorName } from '../operator-error-name.utils'
+import { SetupCheckAbortedError } from './setup-check-aborted.error'
 import {
   booksCheck,
   capture,
@@ -14,7 +15,6 @@ import {
   sameAddress,
   setupResult
 } from './setup-check.utils'
-import { SetupCheckAbortedError } from './setup-check-aborted.error'
 import { SetupFailedError } from './setup-failed.error'
 import { SetupMonitorConfigurationError } from './setup-monitor-configuration.error'
 
@@ -221,11 +221,7 @@ export class SetupCheckService {
    */
   async assertReady(signal?: AbortSignal) {
     const report = await this.checkWithTransientRetries(signal)
-    if (
-      signal?.aborted === true &&
-      !report.ready &&
-      hasOnlyTransientProviderFailures(report)
-    ) {
+    if (signal?.aborted === true && !report.ready && hasOnlyTransientProviderFailures(report)) {
       throw new SetupCheckAbortedError()
     }
     if (!report.ready) throw new SetupFailedError(report)
