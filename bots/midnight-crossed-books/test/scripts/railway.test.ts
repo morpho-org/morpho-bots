@@ -187,7 +187,7 @@ describe('Railway provisioning configuration', () => {
     expect(deploy).toContain("$('railway', railwayVariableDeleteArgs(name, VARIABLE_TARGET))")
   })
 
-  test('explicitly scopes variable setting to the target', () => {
+  test('uses only supported target flags when setting variables', () => {
     expect(railwayVariableSetArgs('READONLY=true', TARGET)).toEqual([
       'variable',
       'set',
@@ -196,8 +196,6 @@ describe('Railway provisioning configuration', () => {
       'bot',
       '-e',
       'production',
-      '-p',
-      'project-id',
       '--skip-deploys'
     ])
     expect(railwayVariableSetArgs('RPC_URL', TARGET, { stdin: true })).toEqual([
@@ -209,8 +207,6 @@ describe('Railway provisioning configuration', () => {
       'bot',
       '-e',
       'production',
-      '-p',
-      'project-id',
       '--skip-deploys'
     ])
   })

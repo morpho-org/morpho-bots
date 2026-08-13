@@ -30,9 +30,7 @@ const railwayVariableTargetArgs = (target: RailwayVariableTarget) => [
   '-s',
   target.service,
   '-e',
-  target.environment,
-  '-p',
-  target.projectId
+  target.environment
 ]
 
 /**
@@ -273,7 +271,7 @@ export const railwayVariableDeleteArgs = (name: string, target: RailwayVariableT
  * @param value - Public `KEY=VALUE` assignment, or only a variable name when stdin is enabled.
  * @param target - Project, environment, and service that must receive the variable.
  * @param options - Enables secret-safe stdin input without placing the value in command arguments.
- * @returns CLI arguments including explicit service, environment, project, and no-deploy flags.
+ * @returns CLI arguments including supported service, environment, and no-deploy flags.
  * @remarks Secret values remain on stdin when `stdin` is true; only the variable name enters args.
  */
 export const railwayVariableSetArgs = (
