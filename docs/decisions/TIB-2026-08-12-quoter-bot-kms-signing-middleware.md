@@ -152,22 +152,30 @@ Because a signed transaction commits to an account nonce, transaction-signing in
 routine operation the middleware reads the maker's current pending nonce independently and signs
 only that nonce; it never signs a stockpile of future-nonce transactions. The bot's serialized
 make/pending queue remains the single routine writer, and the middleware records every returned
-routine transaction's nonce, hash, intent kind, and fee fields before releasing it.
+routine transaction's nonce, hash, intent kind, and fee fields before releasing it. Once one
+routine transaction has been returned for the current pending nonce, the middleware refuses another
+routine signature at that nonce until the recorded transaction is terminal (confirmed, replaced,
+cancelled, or expired under the release rules). This same-nonce fence prevents a caller from
+withholding several alternatives and choosing the one least favorable to break-glass cleanup.
 
 A break-glass revocation deliberately takes over the account's transaction stream during an
-incident. It does **not** sign the node's `pending` nonce, which is the next unused nonce. It first
-selects the lowest occupied nonce from the middleware's recorded, still-pending routine
-transactions and signs the cleanup transaction at that **same nonce**, thereby replacing the
-unsafe publication or ratification rather than queueing behind it. The replacement fee bid is
-computed from that exact recorded transaction and exceeds both of its EIP-1559 fee fields by at
-least the policy's 12.5% replacement bump plus one wei, subject to the protected break-glass
-ceilings. The runbook repeats this replacement-or-confirmation step in nonce order before signing
-later cleanup transactions. If the middleware cannot reconcile its record with the node's pending
-transaction set, the occupied transaction was not recorded, or the protected ceilings cannot
-replace it, break-glass must use an ordered drain/handoff and must not claim that a next-unused-nonce
-revocation can preempt the pending transaction. Routine transaction ceilings remain below the
-protected replacement ceilings so a middleware-produced routine bid cannot strand an otherwise
-valid emergency replacement.
+incident. It does **not** sign the node's `pending` nonce, which is the next unused nonce. It
+enumerates every occupied nonce from the middleware's recorded, still-pending routine transactions
+and signs a cleanup transaction at each **same nonce**, thereby replacing every unsafe publication
+or ratification rather than queueing behind it. Each replacement fee bid exceeds the maximum
+recorded fee fields across every routine signature at that nonce by at least the policy's 12.5%
+replacement bump plus one wei, subject to the protected break-glass ceilings; the maximum rule is
+defense in depth if the same-nonce routine fence was bypassed or older records predate it. The
+runbook signs and broadcasts replacements for every occupied nonce in ascending order before
+waiting for any replacement to confirm. This prevents a pending transaction at nonce N+1 from
+mining in the same block immediately after cleanup at nonce N. Only after the entire occupied
+prefix has a replacement in the network may the operator wait for confirmations and proceed with
+later, previously unused nonces. If the middleware cannot reconcile its record with the node's
+pending transaction set, an occupied transaction was not recorded, or the protected ceilings
+cannot replace every occupied nonce, break-glass must use an ordered drain/handoff and must not
+claim that a next-unused-nonce revocation can preempt the pending stream. Routine transaction
+ceilings remain below the protected replacement ceilings so a middleware-produced routine bid
+cannot strand an otherwise valid emergency replacement.
 
 Per-transaction fee/gas ceilings alone cannot stop a leaked invoker from bleeding the maker's
 native balance one valid cancellation at a time. Transaction-signing intents therefore also draw
@@ -446,6 +454,17 @@ serialize on shared counter versions instead of both spending the same observed 
 condition causes a fresh snapshot and full re-evaluation, never a partial reservation. Conditional
 creation makes an exact Setter ratify/publication observation idempotent and cannot double-count or
 double-reserve it.
+
+The same transaction creates a unique signing-attempt record in `reserved` state. After KMS returns
+a signature, the handler conditionally moves that attempt to `signed` and durably records the
+artifact metadata before constructing the response. No signed response is returned before that
+durable transition. If KMS or validation/encoding fails first, an idempotent compensation
+transaction releases its exposure and signed-gas reservations, writes a terminal `failed` marker,
+and returns the typed failure. A retry with the same idempotency key observes that marker rather
+than releasing twice. A crash while the attempt is still `reserved` is reconciled by the same
+conditional compensation after its short attempt lease: handler ordering guarantees that a
+signature was not returned before `signed`, while an attempt already marked `signed` remains
+reserved and follows the normal observation, cancellation, or freshness-expiry release rules.
 
 v0 uses DynamoDB and sets a **middleware-mode rung cap of 40 per side** (80 offers), lower than the
 general quoter limit. The reservation planner has a fixed, tested write-action budget covering the
