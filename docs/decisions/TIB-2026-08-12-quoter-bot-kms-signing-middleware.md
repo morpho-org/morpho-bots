@@ -39,14 +39,14 @@ AWS KMS or equivalent key custody. KMS custody has since shipped. This TIB addre
 
 - Make the signing middleware the **only principal** allowed to call `kms:Sign` on the maker key.
   The bot loses direct KMS access entirely; its AWS role is reduced to invoking the middleware.
-- Replace blind digest signing with **structured intents** (revoke, quote) that the middleware
+- Replace blind digest signing with **structured intents** (revoke, quote, ratify) that the middleware
   validates against policy it owns — bounds and pins from its own deployment parameters, book and
   position state from its own independent reads. Nothing policy-relevant comes from the request.
 - **Sign-what-you-encode**: the middleware canonically encodes each validated intent and derives
   the digest internally. The bot never supplies bytes or hashes to be signed.
 - Bound the blast radius of full bot-host compromise to a **quantifiable worst-case loss**:
-  signatures over in-policy offers (≈ worst in-policy rate × capped exposure) plus revocations
-  (downtime/griefing, no fund loss). No EOA drain, no arbitrary permit.
+  signatures over in-policy offers (≈ worst in-policy rate × capped **aggregate** live exposure)
+  plus revocations (downtime/griefing, no fund loss). No EOA drain, no arbitrary permit.
 - Keep revocation the **always-available kill switch**: near-unconditionally approved and the most
   available operation the middleware offers.
 - Fail closed: quoting halts when middleware invocation fails or an intent is denied.
@@ -99,8 +99,8 @@ it and nothing else.
 bot host (role: invoke-only)         signing Lambda (role: kms:Sign + reads)          AWS KMS
 ┌──────────────────────────┐         ┌───────────────────────────────────────┐      ┌───────────┐
 │ quoter-bot               │ intent  │ 1. validate: crossed books, price     │      │ maker key │
-│  · revoke intents        │ ──────► │    bounds, PnL, field-level checks    │ dgst │ ECC_SECG_ │
-│  · quote intents         │ (SigV4) │ 2. canonically encode (EIP-712 / tx)  │ ───► │ P256K1    │
+│  · quote intents         │ ──────► │    bounds, PnL, field-level checks    │ dgst │ ECC_SECG_ │
+│  · revoke/ratify intents │ (SigV4) │ 2. canonically encode (EIP-712 / tx)  │ ───► │ P256K1    │
 │                          │ ◄────── │ 3. derive digest, call kms:Sign       │ ◄─── │ sign-only │
 │ no kms:Sign — only       │  sig +  │ 4. return signature + encoded payload │  sig │           │
 │ lambda:InvokeFunction    │ payload └──────────────────┬────────────────────┘      └───────────┘
@@ -112,7 +112,7 @@ bot host (role: invoke-only)         signing Lambda (role: kms:Sign + reads)    
 ### 1. Structured intents replace digests
 
 The wire contract is a **versioned JSON intent** carried as the payload of an AWS SDK
-`lambda:InvokeFunction` call. The bot submits one of two intent types; the middleware returns the
+`lambda:InvokeFunction` call. The bot submits one of three intent types; the middleware returns the
 signature together with the derived root/tx payload it encoded, so the bot publishes exactly what
 was validated.
 
@@ -121,6 +121,14 @@ revocation only reduces exposure and is the always-available kill switch — con
 chain id, `to` = the Midnight singleton, an invalidation-selector allowlist, zero native value,
 and fee/gas ceilings. This mirrors the constraint set the in-process signer guard already pins,
 now enforced outside the bot.
+
+Because a signed transaction commits to an account nonce, transaction-signing intents carry
+**caller-supplied nonce and fee fields** — liveness parameters, not policy: no nonce value can
+move funds, only strand or replace a transaction. The single-writer rule is unchanged from today:
+the bot's serialized make/pending queue owns the nonce cursor in routine operation, and a
+break-glass revocation deliberately takes over the account's transaction stream during an
+incident — concurrent same-nonce signatures resolve on-chain as fee-bump replacements, and the
+safety revocation is the one that must win.
 
 **Quote intents** carry an array of structured offers. The set is approved only when **three
 properties** all hold:
@@ -139,9 +147,21 @@ properties** all hold:
    are open questions; the property itself is a decided policy requirement.
 
 Beneath these three headline properties, **field-level validation** on every offer: market
-allowlist; per-market and total exposure caps; expiry ≤ market maturity and bounded duration;
-exact maker/receiver/callback/ratifier fields; owned group namespace; and cap semantics (exactly
-one of `maxUnits`/`maxAssets` non-zero).
+allowlist; per-market and total exposure caps, enforced against **aggregate live signed
+exposure** — the proposed set plus the maker's already-live offers from the middleware's own
+reads, never per-intent amounts alone; expiry ≤ market maturity and inside a **freshness
+ceiling** — a policy parameter capping offer lifetime from signing time, so a compromised host
+cannot stockpile a signature and publish it usefully after the checked state has moved; offer
+start not meaningfully before signing time; exact maker/receiver/callback/ratifier fields; owned
+group namespace; and cap semantics (exactly one of `maxUnits`/`maxAssets` non-zero).
+
+**Ratify intents** exist for Setter-ratifier deployments, whose ladder flow must send
+`setIsRootRatified` before a quote tree becomes takeable. A ratify intent carries the same
+structured offer set as a quote intent; the middleware re-validates it in full, re-derives the
+root itself, and signs only the `setIsRootRatified(maker, root, true)` transaction for that
+derived root — under the same chain/target/value/fee pins as revocations. Statelessness is
+preserved because the middleware never needs to remember which roots it produced: it recomputes
+them. Ecrecover deployments never use this intent.
 
 Policy parameters live in the middleware's deployment, never in the request; the state feeding
 its checks comes from its own reads, never from the caller. A compromised bot can neither relax
@@ -160,8 +180,9 @@ signed, by construction.
 
 The viem `LocalAccount.sign(hash)` blind-digest surface is exactly what is being removed, so the
 middleware is deliberately **not** a drop-in `LocalAccount` replacement. The bot-side seam is
-intent-level ports — an offer-signing port and an invalidation-signing port — backed by
-middleware-invoking adapters, selected as a new identity method alongside
+intent-level ports — an offer-signing port, an invalidation-signing port, and a root-ratification
+port for Setter deployments — backed by middleware-invoking adapters, selected as a new identity
+method alongside
 `private-key`/`keystore`/`aws` in
 [`signer-identity.utils.ts`](../../bots/quoter-bot/src/config/signer-identity.utils.ts). Any
 residual generic digest-signing path fails closed.
@@ -181,15 +202,23 @@ logic, and any alternative host must preserve the trust split: the middleware al
 
 - The middleware is an **AWS Lambda function**, invoked by the bot through the AWS SDK
   (`lambda:InvokeFunction`).
-- **IAM chain**: the bot's AWS credentials attach to a role whose only permission is
-  `lambda:InvokeFunction` on this one function ARN — the bot loses `kms:Sign` entirely. The
-  Lambda's execution role is the only principal with `kms:Sign` on the maker key, plus the
-  outbound reads its checks need. Creating that execution role and the invoke-only credentials is
-  part of the deliverable.
-- Authentication is therefore **IAM/SigV4** — no self-managed ingress, tokens, or mTLS.
-  Correctness still does not depend on caller identity: any invoker only obtains in-policy
-  signatures. Invoke-only scoping exists to prevent revoke-griefing/DoS and to keep the audit
-  trail attributable — CloudTrail records both the `Invoke` and the `Sign`.
+- **IAM chain**: the bot's AWS credentials attach to a role whose only permissions are
+  `lambda:InvokeFunction` on this function's intent surfaces — the bot loses `kms:Sign` entirely.
+  The Lambda's execution role is the only principal with `kms:Sign` on the maker key, plus the
+  outbound reads its checks need. Creating that execution role, the invoke-only credentials, and
+  the CloudTrail data-event selector for the function (see Observability) is part of the
+  deliverable.
+- **Caller-to-intent scoping**: principals are authorized per intent type, not merely per
+  function. The invoke surface is split by intent class — separate qualified ARNs (per-alias or
+  per-function) for quote signing and for transaction signing (revoke/ratify) — so IAM grants
+  scope each principal to the intent types it may submit, and the handler independently enforces
+  the scope it was invoked under. Break-glass principals receive the revoke surface only: leaked
+  break-glass credentials must yield revocations, never signed quotes.
+- Authentication is therefore **IAM/SigV4** — no self-managed ingress, tokens, or mTLS. The
+  in-policy guarantee still does not depend on caller identity — any invoker only ever obtains
+  in-policy signatures — while the caller-to-intent scoping above decides _which_ in-policy
+  intents a given principal may submit, and invoke scoping keeps revoke-griefing/DoS hard and the
+  audit trail attributable.
 - The Lambda's **code lives in this monorepo** and deploys as a **Docker container image**
   (ECR-hosted Lambda container image) with its own Dockerfile, like the bots. It is not a bot —
   not a long-running program — so it does not live under `/bots/`; the proposed workspace home is
@@ -207,17 +236,22 @@ logic, and any alternative host must preserve the trust split: the middleware al
   fails; the bot halts publication and retries rather than degrading to any local signing path.
 - The **revoke path must be the most available operation** — it is the safety action under
   incident conditions.
-- **Break-glass revoke is just another IAM principal** granted `lambda:InvokeFunction`: an
+- **Break-glass revoke is just another IAM principal** granted the revoke invoke surface: an
   operator can invoke the revoke intent directly with their own credentials, with no bot in the
-  path.
+  path — and that surface cannot produce quote signatures.
 
 ### 6. Statefulness
 
 The Lambda is **stateless per invocation**. Its per-invocation checks are computations over chain
 truth read at invocation time — the crossed-book and PnL properties already require those
-independent reads. Cross-invocation aggregates (e.g. total live signed exposure across successive
-quote intents) need either external state or per-invocation chain-truth reads; which of those v0
-adopts is open question 6.
+independent reads, and ratify intents recompute roots rather than remembering them. **Aggregate
+live-exposure enforcement is required, not optional**: every quote intent is evaluated against
+the maker's live offer set from the middleware's own reads, so successive individually-in-policy
+intents cannot compound past the aggregate caps, and the freshness ceiling bounds the
+signed-but-unpublished exposure those reads cannot yet see. Whether v0 implements that accounting
+purely through per-invocation chain-truth reads or adds external state is open question 6.
+Transaction nonces stay caller-owned (see the intent contract), so statelessness never requires
+the middleware to coordinate an account's transaction stream.
 
 ### 7. Failure posture
 
@@ -227,6 +261,7 @@ adopts is open question 6.
 | Cold start latency                        | Tolerated; the hourly-ish cadence absorbs it         |
 | Quote intent denied                       | Typed rejection, nothing signed; alert if persistent |
 | Revoke intent denied                      | Near-impossible by design; treat as misconfig, alert |
+| Concurrent tx signers (bot + break-glass) | Same-nonce fee-bump replacement resolves on-chain    |
 | Independent state read fails (RPC/API)    | Fail closed: typed retryable denial, no signature    |
 | KMS error                                 | Typed failure; never assume a signature was produced |
 | Policy parameters missing/invalid at init | Refuse to serve; never run a partial or empty policy |
@@ -297,9 +332,10 @@ host itself; it strengthens rather than changes this design.
 
 ## Assumptions & Constraints
 
-- IAM can express the intended split: the bot's role holds `lambda:InvokeFunction` on exactly one
-  function ARN and nothing else; the Lambda's execution role is the sole `kms:Sign` principal on
-  the maker key; break-glass operators hold their own invoke grants.
+- IAM can express the intended split: the bot's role holds `lambda:InvokeFunction` on exactly
+  the intent surfaces it needs and nothing else; the Lambda's execution role is the sole
+  `kms:Sign` principal on the maker key; break-glass operators hold revoke-surface invoke grants
+  only.
 - Both signed payload classes are fully describable as structured intents and canonically
   encodable inside the Lambda (SDK EIP-712 offer-tree hashing; viem transaction serialization).
 - The policy surface splits cleanly: price bounds and field pins are **deployment parameters**;
@@ -341,6 +377,10 @@ host itself; it strengthens rather than changes this design.
 - CloudTrail covers the full chain: `lambda:InvokeFunction` attributes every caller (bot vs
   break-glass principals), and `kms:Sign` has exactly one allowed principal, so the KMS call
   stream must match the Lambda's approval log one-to-one. Divergence is an incident signal.
+  Lambda `Invoke` is a CloudTrail **data event and is not logged by default**
+  ([Lambda CloudTrail docs](https://docs.aws.amazon.com/lambda/latest/dg/logging-using-cloudtrail.html));
+  enabling the data-event selector for this function is an explicit v0 deliverable — without it,
+  the invoke side of this audit trail silently does not exist.
 - Alerting on denials, invocation errors/throttles, KMS errors, and independent-read failures.
   Bot-side `make.rejected` events extend with middleware-denial reasons; invocation-failure halts
   surface through the existing failure events.
@@ -355,8 +395,8 @@ host itself; it strengthens rather than changes this design.
 - Arbitrary EIP-712 signatures — in particular ERC-2612/Permit2-style permits, which move funds
   without any maker transaction.
 - Off-policy offers — crossed books, out-of-bounds prices, PnL-degrading quotes, wrong market,
-  oversized exposure, over-long expiry, foreign receiver/callback/ratifier, foreign group
-  namespace, malformed cap semantics.
+  per-intent or aggregate over-exposure, expiry beyond the freshness ceiling, foreign
+  receiver/callback/ratifier, foreign group namespace, malformed cap semantics.
 - Lying about book state — the crossed-book and PnL properties are evaluated against the Lambda's
   own reads, so a compromised bot cannot feed it a fabricated view.
 
@@ -368,7 +408,11 @@ host itself; it strengthens rather than changes this design.
 - **Policy bugs** — a wrong parameter or check approves what it should not. The policy is small
   and exhaustively testable, but it is code.
 - **Economically bad but in-policy quoting** — the residual, deliberately accepted exposure:
-  worst case ≈ worst in-policy rate × capped exposure. Bounded and quantifiable.
+  worst case ≈ worst in-policy rate × capped aggregate exposure. Bounded and quantifiable. This
+  includes delayed publication: a stockpiled signature stays publishable until its expiry, so the
+  freshness ceiling is what keeps "in-policy at signing time" close to "in-policy at publication
+  time"; middleware-direct publication and ratifier/Mempool-enforced freshness are recorded
+  hardenings.
 - **Misbehavior of the providers behind the Lambda's own reads** — a lying or censoring RPC/API
   could wave through a crossed or unsustainable set, or block valid ones. This extends the
   provider-trust posture of [TIB-2026-07-27](./TIB-2026-07-27-midnight-quoter-bot.md) to the
@@ -392,9 +436,11 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
 ## Testing and Verification
 
 - **Policy:** exhaustive accept/reject vectors for the three properties and every field check on
-  both intent types, including boundary values — price exactly at a bound, expiry exactly at
-  maturity, both/neither of `maxUnits`/`maxAssets` set, off-by-one exposure caps, a prospective
-  set that crosses only in combination with live offers.
+  all three intent types, including boundary values — price exactly at a bound, expiry exactly at
+  maturity or the freshness ceiling, aggregate exposure that overflows only in combination with
+  live offers, a ratify root that does not match its offer set, both/neither of
+  `maxUnits`/`maxAssets` set, off-by-one exposure caps, a prospective set that crosses only in
+  combination with live offers.
 - **Adversarial state:** intents accompanied by caller-supplied book or position state that
   contradicts chain truth — the Lambda must ignore the caller's view entirely and decide from its
   own reads.
@@ -410,8 +456,9 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   denial propagation into `make.rejected`, the invocation-failure halt, and a break-glass revoke
   invoked by a second IAM principal.
 - **IAM cutover proof:** demonstrate the bot's principal receives `AccessDenied` on `kms:Sign`
-  after the grant moves, and that its role can invoke nothing but the one function ARN. A denied
-  call is part of acceptance, not an incident.
+  after the grant moves, that each role can invoke only its granted intent surfaces, and that a
+  break-glass principal is denied on the quote surface. A denied call is part of acceptance, not
+  an incident.
 - Tests follow the repository verification rule: run each new test, break one assertion to
   confirm it fails, restore it.
 
@@ -420,12 +467,14 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
 - Nitro-Enclave attestation binding the KMS key policy to attested signing code (Alternative 7)
   as host hardening.
 - Generalizing to other bots and keys — multi-tenant policy keyed by principal and key.
-- Gating Setter-ratifier root approvals and setup-remediation transactions if they move from
-  manual operator actions to automated flows (open question 4).
+- Gating setup-remediation transactions (token approvals) if they move from manual operator
+  actions to automated flows (open question 4).
 - When the on-chain bounded ratifier lands, its bounds and the middleware's price policy should
   agree; the middleware remains necessary for the transaction surface.
-- External state for aggregate exposure accounting if v0 ships with per-invocation chain-truth
-  checks alone (open question 6).
+- Middleware-direct publication to the Mempool, or ratifier/Mempool-enforced signature freshness,
+  to shrink the delayed-publication residual below the freshness ceiling.
+- External state for aggregate exposure accounting if per-invocation chain-truth reads prove
+  insufficient (open question 6).
 
 ## Open Questions
 
@@ -436,13 +485,14 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
    risk) — likely a shared schema, independently pinned middleware deployments.
 3. The exact PnL/cost-basis model the Lambda evaluates for the no-PnL-drop property, and the
    independent data sources it needs.
-4. Whether Setter-ratifier root approvals and setup-remediation transactions (approvals) are also
-   gated through the middleware or stay manual operator actions.
+4. Whether setup-remediation transactions (token approvals) are also gated through the middleware
+   or stay manual operator actions. Setter root approvals are decided: they are the ratify
+   intent.
 5. Policy parameter change/approval workflow — who reviews, how it deploys, how changes are
    audited.
-6. Exposure accounting across successive quote intents: stateless per-invocation checks over
-   chain truth with bounded offer lifetimes, or external state tracking aggregate live signed
-   exposure. The bounded-loss claim is strongest with aggregate enforcement.
+6. The mechanism for the required aggregate live-exposure accounting: per-invocation chain-truth
+   reads over the same surface as the crossed-book check (with the freshness ceiling bounding
+   signed-but-unpublished exposure), or external state tracking signed exposure directly.
 7. Lambda networking/egress design for its independent RPC and Morpho API/Mempool reads — and the
    decision posture when those providers disagree with the bot's view of the book.
 
