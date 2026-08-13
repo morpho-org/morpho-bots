@@ -46,14 +46,13 @@ const TRANSIENT_PROVIDER_NAMES = new Set(['AbortError', 'TimeoutError', 'Network
 const TRANSIENT_PROVIDER_STATUSES = new Set([408, 425, 429])
 const SERVER_ERROR_STATUS_MINIMUM = 500
 const SERVER_ERROR_STATUS_MAXIMUM = 599
-const JSON_RPC_SERVER_ERROR_MINIMUM = -32_099
-const JSON_RPC_SERVER_ERROR_MAXIMUM = -32_000
+const TRANSIENT_JSON_RPC_CODES = new Set([
+  -32_005, // Limit exceeded.
+  -32_002 // Resource unavailable.
+])
 
 const isTransientRpcCode = (value: unknown): value is number =>
-  typeof value === 'number' &&
-  Number.isSafeInteger(value) &&
-  value >= JSON_RPC_SERVER_ERROR_MINIMUM &&
-  value <= JSON_RPC_SERVER_ERROR_MAXIMUM
+  typeof value === 'number' && TRANSIENT_JSON_RPC_CODES.has(value)
 
 /** Fulfilled provider value or sanitized provider failure captured without short-circuiting peers. */
 type Captured<T> = { ok: true; value: T } | { ok: false; error: SafeProviderFailure }

@@ -494,6 +494,20 @@ describe('SetupCheckService', () => {
     expect(report.ready).toBe(true)
   })
 
+  test('does not retry a deterministic JSON-RPC invalid-input failure at startup', async () => {
+    const state = readyState()
+    let balanceReads = 0
+    state.getNativeBalance = async () => {
+      balanceReads += 1
+      throw new ProviderReadError('rpc', 'native-balance', { code: -32_000 })
+    }
+
+    const error = await new SetupCheckService(state, config).assertReady().catch(value => value)
+
+    expect(balanceReads).toBe(1)
+    expect(error).toBeInstanceOf(SetupFailedError)
+  })
+
   test('stops startup after shutdown even when a transient retry recovers', async () => {
     const controller = new AbortController()
     const state = readyState()

@@ -23,6 +23,7 @@ export type ProviderOperation =
   | 'reference-market-state'
   | 'offer-groups'
 
+/** Allowlisted provider-error fields safe to expose in setup reports and retry classification. */
 export type SafeProviderReadMetadata = {
   name?: 'AbortError' | 'TimeoutError' | 'NetworkError' | 'HttpError'
   code?:
@@ -48,6 +49,8 @@ export class ProviderReadError extends Error {
    * Creates a deterministic provider-read failure from allowlisted identifiers only.
    * @param provider - Fixed provider identifier; never a URL, host, or transport message.
    * @param operation - Stable code for the attempted read; never request or response content.
+   * @param metadata - Allowlisted error name, code, and status copied into sanitized failure
+   * metadata for operator reporting and transient-retry classification.
    * @remarks The rejected value is deliberately discarded, including its message, stack, and cause.
    */
   constructor(
