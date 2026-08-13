@@ -240,9 +240,15 @@ native balance one valid cancellation at a time. Transaction-signing intents the
 on **rolling signed-gas budgets** tracked in the reservation ledger (see Statefulness). The budget
 class comes from the authenticated Lambda invoke surface, never from a caller-supplied principal,
 intent field, or `ClientContext`: publication, ratification, and the bot-only `routine-revoke`
-function draw on the routine budget, while the operator-only `break-glass-revoke` function alone
-draws on a **protected reserve** that the bot role has no IAM permission to invoke or draw
-down. The primary protected reserve is sized for replacements at the **maximum configured
+function draw on the routine budget; the operator-only setup-remediation function draws on a
+**dedicated setup-remediation rolling budget**; and the operator-only `break-glass-revoke` function
+alone draws on a **protected reserve** that neither the bot nor remediation role has IAM permission
+to invoke or draw down. The remediation budget has its own ledger key, rolling window, signed-gas
+limit, transaction-count limit, and reserved native-gas accounting. Deployment validation derives
+its minimum size from the manifest's maximum remediation transactions per epoch at their configured
+gas and fee ceilings (including one replacement for each admitted nonce), rejects a zero or
+undersized limit, and forbids charging remediation to the routine or break-glass class. The primary
+protected reserve is sized for replacements at the **maximum configured
 occupied-nonce set** (each at the protected fee and gas ceilings) plus several full-book cleanups,
 with no overlap assumed between those costs. Deployment validation computes that bound from the
 configured maximum and rejects a primary reserve below it. The reservation transaction also counts
@@ -339,7 +345,7 @@ recovery target, its own worst-case transaction fees, and the required protected
 maker. It rejects a caller-supplied target or
 value, token calls, arbitrary calldata, and any result below the native reserve; it remains available
 above the routine admission ceiling but still requires a fresh signing-surface attestation, the
-remediation epoch, nonce lease, protected remediation gas budget, live protected-balance check, and
+remediation epoch, nonce lease, dedicated setup-remediation rolling budget, live protected-balance check, and
 exact manifest match.
 Arbitrary calldata, permit signatures, token asset transfers, wildcard spenders/operators, and
 caller-selected targets are rejected. Setup remediation uses the same nonce lease, append-only
@@ -496,7 +502,12 @@ cold start and before serving, each deployment in the manifest's mode-aware acti
 the secp256k1 address and key fingerprint,
 computes its surface-specific policy/configuration digest, and fails closed unless the shared
 identity fields and that surface's digest equal their separate expected values in the deployment
-manifest. Setup/health aggregates those per-surface attestations and is ready only when every active
+manifest. It also calls `lambda:GetFunction` for its own exact function name and executing published
+version, reads the AWS-observed `Code.ResolvedImageUri`, requires the digest-qualified URI to equal
+the manifest-pinned ECR digest, and records that observed digest. Its role can perform this read only
+for its own exact function resource; setup/health receives the same bounded read on the enumerated
+active functions. A handler-provided environment value or request field is never accepted as image
+evidence. Setup/health aggregates those per-surface attestations and is ready only when every active
 surface reports the same maker,
 chain, key fingerprint, image digest, and deployment-manifest digest, and each reports its own
 manifest-pinned surface-specific policy/configuration digest. Surface digests are intentionally not
@@ -525,8 +536,9 @@ v0, so an unattested additional version cannot receive signing traffic and an at
 retired deployment cannot satisfy the check. Deployment automation and readiness both fail closed
 when any production alias has additional version weights. IAM grants only those per-key
 `dynamodb:PutItem` operations, each signing role's `GetItem` on only its own exact key, each signing
-role's `lambda:GetAlias` on its own function ARN, the setup role's bounded
-`GetItem`/`BatchGetItem`, and the setup role's `lambda:GetAlias` on every exact active function ARN
+role's `lambda:GetAlias` and `lambda:GetFunction` on its own function ARN, the setup role's bounded
+`GetItem`/`BatchGetItem`, and the setup role's `lambda:GetAlias`/`lambda:GetFunction` on every exact
+active function ARN
 (or an equivalently authenticated deployment manifest containing their exact published-version
 targets); it grants no wildcard Lambda reads. Because `GetAlias` authorizes the function resource
 rather than an alias resource, every caller supplies only the exact configured alias name and the
@@ -540,16 +552,20 @@ consistent read of its own exact function-version-and-manifest record and requir
 maker, chain, key fingerprint, image digest, policy digest, manifest digest, and timestamp to match
 and remain inside the freshness window. A missing, stale, or mismatched record rejects the request
 before reservation or KMS; callers cannot bypass the gate, and setup/readiness cannot satisfy it on
-a signing handler's behalf. No attestation path exposes a signing operation. The production handler
-of each published function version routes a dedicated
-**non-signing attestation operation** before any signing dispatch; it is
-not a separate Lambda, alternate image command, or handler configuration. After publishing a
-version and before moving its production alias, deployment automation invokes that exact version and
-handler with the attestation operation under the function execution role; the operation performs
-only the key/config/image validation above and the conditional registry write. The
+No attestation path exposes a signing operation. The shared production handler routes a dedicated
+**non-signing attestation operation** before any signing dispatch, but accepts that operation only
+when `context.invokedFunctionArn` is the manifest-pinned exact published version during deployment or
+the function's dedicated attestation alias after rollout. It rejects the operation on every signing
+production alias, so a bot that may invoke quote or routine-revoke cannot refresh an attestation.
+Conversely, the dedicated attestation alias dispatches only this operation and rejects every signing
+intent before reservation or KMS; it is not a separate Lambda, image command, or handler
+configuration. After publishing a version and before moving its production and attestation aliases,
+deployment automation invokes that exact version and handler with the attestation operation using a
+deployment role that alone may invoke version ARNs; the operation performs only the
+key/config/AWS-observed-image validation above and the conditional registry write. The
 deployment verifies the exact version-and-manifest record, retries transient failures, and refuses
 the alias rollout if the record is absent or mismatched. After rollout, an external EventBridge
-schedule invokes the same non-signing attestation operation on each exact active production alias at an
+schedule invokes the same non-signing attestation operation on each exact dedicated attestation alias at an
 interval shorter than half the registry freshness window. The operation re-resolves the alias to one
 published version, rejects weighted routing, revalidates key/config/image/manifest state, and
 conditionally refreshes only that version-and-manifest record. A deployment-owned watchdog alarms
@@ -557,11 +573,17 @@ before a record can expire and retries transient refresh failures; setup/health 
 signing surface on its behalf. If scheduled refresh stops or drift prevents a refresh, readiness turns
 red at the freshness deadline and signing fails closed, without requiring a redeploy or signing
 traffic. Readiness can therefore require fresh records without waiting for quote, ratify, or revoke
-traffic, while setup/health still never invokes a signing handler. Each active alias has a
+traffic, while setup/health still never invokes a signing handler. Each attestation alias has a
 resource-based permission for the `events.amazonaws.com` service principal conditioned on one exact
-EventBridge rule ARN. That rule uses an immutable target payload selecting only the non-signing
-attestation operation; no scheduler role receives general `lambda:InvokeFunction` credentials or can
-supply a signing intent. CloudTrail records each scheduled invoke.
+EventBridge rule ARN; signing production aliases have no EventBridge invoke permission. The target is
+pinned by rule ARN, target ID, attestation-alias ARN, and canonical input hash in the deployment
+manifest. An organization policy/permission boundary explicitly denies `events:PutTargets`,
+`events:RemoveTargets`, and `events:DeleteRule` for that rule to every principal except the deployment
+role; that role verifies the live target against the manifest after every change. AWS Config plus
+CloudTrail alarms on any target mutation, and readiness fails closed when its live
+`events:ListTargetsByRule` preflight differs from the pinned target tuple. Even if target management is
+compromised before detection, the attestation alias cannot dispatch a signing intent. No scheduler
+role receives general `lambda:InvokeFunction` credentials. CloudTrail records each scheduled invoke.
 
 The ports serve **every maker workflow, not only the ladder**: position bootstrap (including
 auto-refill) signs the same transaction kinds through
@@ -618,9 +640,12 @@ logic, and any alternative host must preserve the trust split: the middleware al
   bot setup/health, quote, and routine-revoke production aliases, plus ratify only in Setter mode;
   break-glass principals
   receive only the break-glass-revoke production alias; remediation operators receive only the
-  setup-remediation production alias. Each exact active production alias grants the
+  setup-remediation production alias. Each active function's dedicated attestation alias grants the
   `events.amazonaws.com` service principal permission conditioned on its exact EventBridge rule ARN;
-  that rule supplies only the immutable non-signing attestation payload. No scheduler execution role
+  production signing aliases grant none. The handler accepts attestation only on that alias (or an
+  exact version invoked by the deployment role), and the rule supplies only the pinned non-signing
+  payload. Target-management APIs are denied except to the deployment role and live-target drift fails
+  readiness. No scheduler execution role
   receives a general invoke grant, KMS permission, budget class, or signing-intent path. Explicit
   denies and acceptance tests cover
   unqualified and `$LATEST` invokes, every non-production alias, and cross-surface aliases. Each
@@ -898,8 +923,9 @@ host itself; it strengthens rather than changes this design.
   role holds narrowly scoped `kms:GetPublicKey` solely for per-surface startup attestation;
   break-glass operators hold only the separate break-glass-revoke invoke grant, and remediation
   operators hold only the setup-remediation invoke grant. Exact EventBridge rule ARNs receive
-  resource-based permission to invoke active production aliases with an immutable non-signing
-  attestation payload; no scheduler role receives general invoke credentials. Policy selects the budget
+  resource-based permission to invoke dedicated attestation aliases with an immutable non-signing
+  attestation payload; signing production aliases receive no such permission, and only the deployment
+  role may mutate the pinned targets. No scheduler role receives general invoke credentials. Policy selects the budget
   from that fixed function deployment, never from caller-controlled request data.
 - Every signed payload class is fully describable as structured intents and canonically
   encodable inside the Lambda (SDK EIP-712 offer-tree hashing and Mempool payload encoding; viem
@@ -1109,7 +1135,10 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   surface rejects before KMS while operator-only break-glass remains available. Prove the
   manifest-pinned native-balance sweep remains available only above that ceiling and still enforces
   its independently derived value, treasury target, maintenance epoch, nonce lease, attestation, and
-  protected remediation budget. Queue routine publications at consecutive
+  dedicated setup-remediation rolling budget. Exhaust that budget by signed gas and independently by
+  transaction count; prove further remediation fails before KMS, cannot spill into the routine or
+  break-glass class, and becomes admissible only after the configured rolling window releases capacity.
+  Queue routine publications at consecutive
   occupied nonces plus a setup-remediation approval at a nonce with no revocation target, then prove
   break-glass pre-signs and broadcasts replacements for every occupied nonce before waiting, using
   the exact break-glass self-cancel for the remediation-only nonce rather than signing only the lowest
@@ -1157,18 +1186,24 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   advances the independent deny generation, drains older leases, and never overlaps a cleanup epoch.
   For every bot and operator surface, prove the exact production alias succeeds while the unqualified
   function ARN, `$LATEST`, every other version/alias, and every cross-surface production alias receive
-  `AccessDenied`. Prove each signing role can call `lambda:GetAlias` only on its own function ARN,
-  while setup/health can call it on each exact active function ARN; prove all of those roles are denied
+  `AccessDenied`. Prove each signing role can call `lambda:GetAlias` and `lambda:GetFunction` only on
+  its own function ARN, while setup/health can call them on each exact active function ARN; prove all of those roles are denied
   on every other function. Because IAM cannot scope `GetAlias` to an alias ARN, prove handler/manifest
   validation accepts only the exact configured alias name and rejects every other alias name before
   trusting the resolved target. Setup/health rejects an attestation whose published version differs
   from the resolved alias target, and fails readiness when `RoutingConfig.AdditionalVersionWeights`
   is non-empty. Add weights after readiness while the registry record is still fresh and prove every
   signing handler's per-request alias preflight rejects before reservation or KMS. Prove deployment
-  automation refuses a weighted production-alias rollout. Prove each exact EventBridge rule ARN can
-  invoke its active production alias with only the immutable non-signing attestation payload, while a
-  different rule/service source, inactive alias, cross-surface alias, or arbitrary signing payload is
-  denied or cannot be configured by the rule target. Verify those invokes and every active function ARN
+  automation refuses a weighted production-alias rollout. Replace a function version with a different
+  image while preserving all manifest-provided fields and prove the AWS-observed
+  `Code.ResolvedImageUri` mismatch fails attestation before its registry write. Prove each exact
+  EventBridge rule ARN can invoke only its dedicated attestation alias with the immutable non-signing
+  payload; prove the bot cannot refresh through a production alias and that the attestation alias rejects
+  every signing intent before reservation or KMS. Prove `events:PutTargets`, `events:RemoveTargets`, and
+  `events:DeleteRule` are denied to bot, scheduler, signing, and operator roles; mutate a target with the
+  deployment role and prove target-tuple drift fails readiness and alarms before freshness acceptance.
+  A different rule/service source, inactive alias, cross-surface alias, or arbitrary signing payload is
+  denied. Verify those invokes and every active function ARN
   appear in CloudTrail data events. A denied call is part of
   acceptance, not an incident.
 - **Protected native-balance proof:** admit routine and setup-remediation artifacts up to the
