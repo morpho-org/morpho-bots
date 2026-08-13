@@ -139,17 +139,18 @@ set the quoter's in-process transaction assertions already pin, now enforced out
 compromised revoke invoker cannot spend gas mutating another maker's groups or roots.
 
 Because a signed transaction commits to an account nonce, transaction-signing intents carry
-**caller-supplied nonce and fee fields** — liveness parameters, not policy: no nonce value can
-move funds, only strand or replace a transaction. The single-writer rule is unchanged from today:
-the bot's serialized make/pending queue owns the nonce cursor in routine operation, and a
-break-glass revocation deliberately takes over the account's transaction stream during an
-incident — concurrent same-nonce signatures resolve on-chain as fee-bump replacements, and the
-safety revocation is the one that must win. That priority is enforced, not assumed: routine
-transaction signing has lower maximum-fee and priority-fee ceilings, while break-glass revokes
-reserve replacement ceilings above every routine ceiling by at least the policy's 12.5%
-replacement bump plus one wei for both EIP-1559 fee fields. If an operator cannot provision that
-headroom, break-glass must first take an ordered nonce handoff; the middleware must never sign a
-routine transaction whose fee bid can strand an otherwise valid emergency replacement.
+**caller-supplied fee fields** as liveness parameters, but nonce ordering is policy-relevant. In
+routine operation the middleware reads the maker's current pending nonce independently and signs
+only that nonce; it never signs a stockpile of future-nonce transactions. The bot's serialized
+make/pending queue remains the single routine writer. A break-glass revocation deliberately takes
+over the account's transaction stream during an incident — concurrent same-nonce signatures
+resolve on-chain as fee-bump replacements, and the safety revocation is the one that must win.
+That priority is enforced, not assumed: routine transaction signing has lower maximum-fee and
+priority-fee ceilings, while break-glass revokes reserve replacement ceilings above every routine
+ceiling by at least the policy's 12.5% replacement bump plus one wei for both EIP-1559 fee fields.
+If an operator cannot provision that headroom, break-glass must first take an ordered nonce
+handoff; the middleware must never sign a routine transaction whose fee bid can strand an
+otherwise valid emergency replacement.
 
 Per-transaction fee/gas ceilings alone cannot stop a leaked invoker from bleeding the maker's
 native balance one valid cancellation at a time. Transaction-signing intents therefore also draw
@@ -214,7 +215,9 @@ group namespace; the per-side `reduceOnly` flag pinned by policy — the credit-
 carry `reduceOnly: true`, so a signed sell fill can never turn inventory reduction into new
 debt; a `continuousFeeCap` the middleware derives from its own snapshot's current market fee —
 never unbounded or caller-chosen, so a later fee raise cannot make a fill accept a worse fee
-than the PnL check priced; and cap semantics (exactly one of `maxUnits`/`maxAssets` non-zero).
+than the PnL check priced; and asset-denominated cap semantics: v0 accepts only `maxAssets`, which
+must be non-zero, and requires `maxUnits` to be zero. This matches the current builders and makes
+every reservation directly comparable to the per-market and total asset exposure budgets.
 
 **Ratify intents** exist for Setter-ratifier deployments, whose ladder flow must send
 `setIsRootRatified` before a quote tree becomes takeable. A ratify intent carries the same
@@ -228,13 +231,17 @@ itself. Ratify and publication are therefore one ledgered flow: the first approv
 exact `(maker, root, offer set)` conditionally creates one per-offer exposure reservation, and the
 paired quote/publication intent must find and reuse that same reservation rather than charging a
 second copy. A mismatched set or root is a distinct request and is evaluated against the existing
-reservation. The reservation persists its `validatedAt` snapshot time. For the paired Setter
-publication, the offer `start` check is evaluated against the original reservation's validation
-time, not the later publication-signing time after the ratification receipt; all other policy
-checks are refreshed, and a deployment-configured maximum ratify-to-publish age bounds how long
-that reuse remains valid. Once that age or the offer freshness ceiling expires, publication fails
-closed and requires a newly validated root. Ratify is a **quote-enabling intent**, authorized like
-quote and never granted to break-glass principals. Ecrecover deployments never use this intent.
+reservation. The reservation persists its `validatedAt` snapshot time, the exact validated offer
+fields, and persists the validated `continuousFeeCap` derived by the middleware. For the paired
+Setter publication, the offer `start` check is evaluated against the original reservation's
+validation time, not the later publication-signing time after the ratification receipt, and publication
+reuses the reserved fee cap rather than requiring it to equal a newly derived cap. The middleware
+refreshes the market-fee and PnL reads and verifies that the reserved cap remains safe under the
+later snapshot; it fails closed if it does not. Every other policy check is refreshed, and a
+deployment-configured maximum ratify-to-publish age bounds how long that reuse remains valid. Once
+that age or the offer freshness ceiling expires, publication fails closed and requires a newly
+validated root. Ratify is a **quote-enabling intent**, authorized like quote and never granted to
+break-glass principals. Ecrecover deployments never use this intent.
 
 Policy parameters live in the middleware's deployment, never in the request; the state feeding
 its checks comes from its own reads, never from the caller. A compromised bot can neither relax
@@ -324,6 +331,14 @@ logic, and any alternative host must preserve the trust split: the middleware al
 - **Break-glass revoke is just another IAM principal** granted the revoke invoke surface: an
   operator can invoke the revoke intent directly with their own credentials, with no bot in the
   path — and that surface cannot produce quote signatures.
+- Entering break-glass mode first atomically enables an emergency deny in middleware policy and
+  disables the routine quote and ratify invoke grants before cleanup starts. Routine principals
+  cannot obtain fresh quote-enabling signatures until an independently authorized operator clears
+  the deny after verifying cleanup; revocation remains available throughout.
+- Setter cleanup treats irreversible group cancellations as authoritative. The runbook drains or
+  replaces every already-signed ratification transaction and consumes every affected offer group;
+  `setIsRootRatified(..., false)` is defense in depth, not the sole kill switch, because an older
+  signed `true` transaction could otherwise execute later and restore the mutable root flag.
 
 ### 6. Statefulness
 
@@ -347,12 +362,12 @@ reuses the existing entries and cannot double-count or double-reserve them. Publ
 per leaf, not merely per root: each reservation is released only when that exact offer is observed
 live (it then counts as live) or its own freshness ceiling passes unpublished. Observing one leaf
 never releases sibling leaves from the same root. The ceiling keeps the ledger tiny and
-self-expiring; conditional writes serialize concurrent intents. The reservation ledger tracks the routine signed-gas budget and the break-glass-principal-only
-protected revoke reserve; the separate ledger-independent emergency allowance is consumed only
-by that break-glass principal during ledger outage. Together those
-budgets make the bounded-loss claim hold. Transaction nonces stay
-caller-owned (see the intent contract), so the middleware never coordinates the account's
-transaction stream.
+self-expiring; conditional writes serialize concurrent intents. The reservation ledger tracks the
+routine signed-gas budget and the break-glass-principal-only protected revoke reserve; the separate
+ledger-independent emergency allowance is consumed only by that break-glass principal during a
+ledger outage. Together those budgets make the bounded-loss claim hold. The middleware validates
+routine transaction nonces against the current pending nonce but does not allocate or advance the
+account's nonce cursor; the routine single writer and break-glass runbook coordinate the stream.
 
 ### 7. Failure posture
 
@@ -629,8 +644,10 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
    audited.
 6. The reservation ledger's concrete store and consistency design — DynamoDB conditional writes
    are the default candidate — including release on observed publication/invalidation, expiry
-   eviction, per-surface budget partitioning details, and the reserved-concurrency throttle that
-   bounds uncharged revoke signing during an outage.
+   eviction, per-surface budget partitioning details, and the independently operated,
+   high-availability independent emergency-budget store used during a ledger outage. Every outage
+   revoke must atomically consume that durable allowance or fail closed; reserved concurrency is
+   only availability isolation and never substitutes for budget accounting.
 7. Lambda networking/egress design for its independent RPC and Morpho API/Mempool reads — and the
    decision posture when those providers disagree with the bot's view of the book.
 
