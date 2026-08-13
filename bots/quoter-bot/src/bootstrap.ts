@@ -357,6 +357,7 @@ export const createApplication = (
           undefined,
           ignoredOfferGroupIds
         ))
+      if (options.signal.aborted) throw new SetupCheckAbortedError()
       const bootstrapMake =
         config.readOnly && injectedBootstrapAdapters
           ? new ReadOnlyBootstrapMakeService(readOnlyWriter(options.writeEvent))

@@ -1186,6 +1186,65 @@ describe('createApplication', () => {
     expect(ladderCleanup).not.toHaveBeenCalled()
   })
 
+  test('does not enter combined-service cleanup when shutdown arrives during bootstrap adapter composition', async () => {
+    const bootstrapCleanup = vi.fn(async () => {})
+    const ladderCleanup = vi.fn(async () => {})
+    const controller = new AbortController()
+    const application = createApplication(
+      {
+        ...environment,
+        BOOTSTRAP_MARKETS: JSON.stringify([bootstrapConfiguration]),
+        LADDER_MARKETS: JSON.stringify([ladderConfiguration])
+      },
+      {
+        createState: readyState,
+        createBootstrapAdapters: () => {
+          controller.abort()
+          return {
+            positions: {
+              readPosition: async () => ({
+                credit: 0n,
+                debt: 0n,
+                cashBalance: 100n,
+                marketExposure: 0n,
+                totalExposure: 0n
+              })
+            },
+            rates: {
+              readRate: async () => ({
+                mode: 'static',
+                rateBps: 500n,
+                observationId: 'static:500'
+              })
+            },
+            make: {
+              reconcile: async () => {},
+              hardHalt: async () => {},
+              cleanup: bootstrapCleanup
+            }
+          }
+        },
+        createLadderAdapters: () => ({
+          positions: { readMarket: async () => ({}) },
+          rates: { readRate: async () => 500n },
+          make: {
+            cleanupRemovedMarkets: async () => [],
+            readActive: async () => undefined,
+            reconcile: async () => {},
+            hardHalt: async () => {},
+            cleanup: ladderCleanup
+          }
+        })
+      }
+    )
+
+    await expect(application.run(['start'], { signal: controller.signal })).rejects.toMatchObject({
+      name: 'AbortError'
+    })
+    expect(bootstrapCleanup).not.toHaveBeenCalled()
+    expect(ladderCleanup).not.toHaveBeenCalled()
+  })
+
   test.each(['bootstrap', 'ladder', 'start'])(
     'does not run removed-market cleanup when %s starts with an aborted signal',
     async command => {
