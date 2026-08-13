@@ -39,7 +39,8 @@ AWS KMS or equivalent key custody. KMS custody has since shipped. This TIB addre
 
 - Make the signing middleware the **only principal** allowed to call `kms:Sign` on the maker key.
   The bot loses direct KMS access entirely; its AWS role is reduced to invoking the middleware.
-- Replace blind digest signing with **structured intents** (revoke, quote, ratify) that the middleware
+- Replace blind digest signing with **structured intents** (revoke, quote, ratify, and
+  setup-remediation) that the middleware
   validates against policy it owns — bounds and pins from its own deployment parameters, book and
   position state from its own independent reads. Nothing policy-relevant comes from the request.
 - **Sign-what-you-encode**: the middleware canonically encodes each validated intent and derives
@@ -288,6 +289,20 @@ exceeds the maximum. Gas grief can never exceed the remaining routine budget plu
 emergency allowance, and never exceed what is funded. Native-gas spend is thereby capped and
 enters the bounded-loss arithmetic.
 
+**Setup-remediation intents** replace the maker's direct KMS path for token approvals and other
+setup transactions. They are accepted only by a dedicated operator-authorized function while a
+maintenance cleanup epoch has stopped quote, ratify, and routine-revoke signing. The deployment
+manifest pins every permitted target, selector, asset, spender/operator, allowance or authorization
+ceiling, chain, zero native value, and gas/fee ceiling; the middleware independently reads current
+allowance/authorization state and canonically encodes the exact transaction. Arbitrary calldata,
+permit signatures, asset transfers, wildcard spenders/operators, and caller-selected targets are
+rejected. Setup remediation uses the same nonce lease, append-only artifact history, rolling gas
+accounting, replacement rules, and break-glass preemption guarantees as every other maker
+transaction. Its invoke role is separate from both the bot and break-glass roles, and neither role
+can invoke it. Direct bot or operator access to `kms:Sign` may not be removed until this surface is
+deployed and its positive and deny-path acceptance tests pass; after cutover, no manual remediation
+procedure may restore direct KMS signing.
+
 **Quote intents** carry an array of structured offers. There are **no caller-declared
 exclusions**: the prospective book is always the observed live book plus the proposed set,
 because a promised-but-unobserved invalidation is worth nothing at the signing boundary — a
@@ -407,9 +422,10 @@ signed, by construction.
 
 The viem `LocalAccount.sign(hash)` blind-digest surface is exactly what is being removed, so the
 middleware is deliberately **not** a drop-in `LocalAccount` replacement. The bot-side seam is
-intent-level ports — a quote-publication port (signed tree plus signed publication transaction),
-an invalidation-signing port, a root-ratification port for Setter deployments, and the constrained
-non-maker publication-broadcaster port described above — backed by middleware-invoking adapters,
+intent-level ports — a quote-publication port (Ecrecover tree signature plus encoded publication
+payload), an invalidation-signing port, a root-ratification port for Setter deployments, a
+setup-remediation port, and the constrained non-maker publication-broadcaster port described above
+— backed by middleware-invoking adapters,
 selected as a new identity method alongside
 `private-key`/`keystore`/`aws` in
 [`signer-identity.utils.ts`](../../bots/quoter-bot/src/config/signer-identity.utils.ts). Any
@@ -417,11 +433,15 @@ residual generic digest-signing path fails closed.
 
 Middleware mode also adds an authenticated **signer-identity setup port**. Every function execution
 role, not the bot role, may call `kms:GetPublicKey` only on the configured maker key. At cold start
-and before serving, each of the five deployments derives the secp256k1 address and key fingerprint,
-computes its effective policy/configuration digest, and fails closed unless all three equal the
-expected deployment manifest. Setup/health aggregates those per-surface attestations and is ready
-only when setup, quote, ratify, routine-revoke, and break-glass-revoke report the same maker, chain,
-key fingerprint, image digest, and policy/configuration digest. A correct setup function therefore
+and before serving, each of the six deployments derives the secp256k1 address and key fingerprint,
+computes its surface-specific policy/configuration digest, and fails closed unless the shared
+identity fields and that surface's digest equal their separate expected values in the deployment
+manifest. Setup/health aggregates those per-surface attestations and is ready only when setup,
+quote, ratify, routine-revoke, break-glass-revoke, and setup-remediation report the same maker,
+chain, key fingerprint, image digest, and deployment-manifest digest, and each reports its own
+manifest-pinned surface-specific policy/configuration digest. Surface digests are intentionally not
+required to equal one another: each signing handler pins a different intent type, invoke principal,
+and budget class. A correct setup function therefore
 cannot mask a stale key or policy on a signing surface. The setup port returns only those validated
 fields through the IAM-authenticated invocation response — no public key, signature, digest-signing
 primitive, or caller-selected challenge. `SetupStateService` obtains its derived-maker observation
@@ -433,17 +453,18 @@ the bot no longer has direct KMS access.
 The aggregation path is an internal attestation registry, not an assertion synthesized by
 setup/health. After validating itself, each execution role may conditionally write only its own
 function-and-published-version key in a dedicated DynamoDB table; the value contains the validated
-fields above, the deployment-manifest digest, and a startup timestamp. It cannot write another
-surface's key or read the table. The setup/health execution role may write its own key and read all
-five exact keys, but may not alter the four signing-surface records; the bot role has no table
+shared fields, that surface's policy/configuration digest, the deployment-manifest digest, and a
+startup timestamp. It cannot write another surface's key or read the table. The setup/health
+execution role may write its own key and read all six exact keys, but may not alter the five
+signing-surface records; the bot role has no table
 access. Readiness resolves every production alias to its current published version, requires
 `RoutingConfig.AdditionalVersionWeights` to be empty, and requires a fresh matching record for that
-exact version and manifest. Weighted/canary routing is forbidden for the five production aliases in
+exact version and manifest. Weighted/canary routing is forbidden for the six production aliases in
 v0, so an unattested additional version cannot receive signing traffic and an attestation from a
 retired deployment cannot satisfy the check. Deployment automation and readiness both fail closed
 when any production alias has additional version weights. IAM grants only those per-key
 `dynamodb:PutItem` operations,
-the setup role's bounded `GetItem`/`BatchGetItem`, and `lambda:GetAlias` on the five exact
+the setup role's bounded `GetItem`/`BatchGetItem`, and `lambda:GetAlias` on the six exact
 production-alias ARNs (or an equivalently authenticated deployment manifest containing their exact
 published-version targets); it grants no wildcard Lambda reads. The setup role resolves and records
 those alias targets before accepting registry attestations. No attestation path invokes a signing
@@ -479,42 +500,47 @@ an HTTP API, a Cloudflare Worker — replaces the handler and the bot-side adapt
 logic, and any alternative host must preserve the trust split: the middleware alone holds
 `kms:Sign`, and callers hold nothing but the right to invoke it.
 
-- The middleware is a set of **five AWS Lambda functions — setup/health, quote, ratify, routine
-  revoke, and break-glass revoke — built from one shared container image** and invoked through the AWS SDK
+- The middleware is a set of **six AWS Lambda functions — setup/health, quote, ratify, routine
+  revoke, break-glass revoke, and setup remediation — built from one shared container image** and
+  invoked through the AWS SDK
   (`lambda:InvokeFunction`). Routine and break-glass revoke deliberately have separate authenticated
-  invoke surfaces even though they enforce the same structured revoke intent. The setup/health
-  function is the authenticated signer-identity setup port used by readiness; it can return only the
+  invoke surfaces even though they enforce the same structured revoke intent. Setup remediation is
+  a separate operator-only surface whose strict transaction allowlist cannot be selected by bot or
+  break-glass payload data. The setup/health function is the authenticated signer-identity setup
+  port used by readiness; it can return only the
   validated setup fields described above and has no signing-intent handler.
 - **IAM chain**: the bot's AWS credentials attach to a role whose only permissions are
   `lambda:InvokeFunction` on the exact production-alias ARNs for setup/health and its routine intent
   surfaces — never an unqualified function ARN, a version ARN, `$LATEST`, or another alias. The bot
   loses `kms:Sign` and `kms:GetPublicKey` entirely. Operator grants are likewise restricted to the
-  exact break-glass production-alias ARN. The four signing functions' execution roles are the only
-  principals with `kms:Sign`; all five execution roles have narrowly scoped `kms:GetPublicKey` on
+  exact break-glass production-alias ARN. The five signing functions' execution roles are the only
+  principals with `kms:Sign`; all six execution roles have narrowly scoped `kms:GetPublicKey` on
   that same maker key solely for their startup attestation, while setup/health has no `kms:Sign`.
   Creating those execution roles, the invoke-only credentials, and
-  the CloudTrail data-event selectors for all five functions (see Observability) are part of the
+  the CloudTrail data-event selectors for all six functions (see Observability) are part of the
   deliverable.
-- **Caller-to-surface scoping**: principals are authorized per exact production-alias ARN. The three structured
-  intent types map to **four signing Lambda functions**, while setup/readiness maps to the fifth
-  setup/health function — one shared container image, five deployments —
+- **Caller-to-surface scoping**: principals are authorized per exact production-alias ARN. The four
+  structured intent types map to **five signing Lambda functions**, while setup/readiness maps to the
+  sixth setup/health function — one shared container image, six deployments —
   because routine and break-glass revoke must be distinguishable by an authenticated AWS boundary,
   not by untrusted payload data. Aliases are not enough: reserved concurrency is function-scoped,
   and distinct functions also let IAM deny the bot access to the protected reserve. IAM grants the
   bot setup/health, quote, ratify, and routine-revoke production aliases only; break-glass principals
-  receive only the break-glass-revoke production alias. Explicit denies and acceptance tests cover
+  receive only the break-glass-revoke production alias; remediation operators receive only the
+  setup-remediation production alias. Explicit denies and acceptance tests cover
   unqualified and `$LATEST` invokes, every non-production alias, and cross-surface aliases. Each
   signing handler pins its intent type and budget class in deployment configuration before
   calling the shared validator. It never reads a claimed principal or budget class from the intent
   payload or `ClientContext`. Leaked break-glass credentials must yield revocations, never signed
-  quotes or ratifications, while leaked bot credentials can never consume emergency capacity.
+  quotes, ratifications, or setup approvals, while leaked bot credentials can never consume
+  emergency or remediation capacity.
 - Authentication is therefore **IAM/SigV4** — no self-managed ingress, tokens, or mTLS. The
   in-policy guarantee still does not depend on caller identity — any invoker only ever obtains
   in-policy signatures — while the caller-to-surface scoping above decides _which_ in-policy
   intents a given principal may submit, and invoke scoping keeps revoke-griefing/DoS hard and the
   audit trail attributable.
 - The middleware's **code lives in this monorepo** and deploys as one **Docker container image**
-  (ECR-hosted) instantiated as the five functions, with its own Dockerfile, like the
+  (ECR-hosted) instantiated as the six functions, with its own Dockerfile, like the
   bots. It is not a bot —
   not a long-running program — so it does not live under `/bots/`; the proposed workspace home is
   a new top-level `services/` directory, e.g. `services/quoter-signer`. Final naming and location
@@ -739,11 +765,12 @@ host itself; it strengthens rather than changes this design.
 ## Assumptions & Constraints
 
 - IAM can express the intended split: the bot's role holds `lambda:InvokeFunction` on exactly
-  setup/health, quote, ratify, and routine-revoke and nothing else; the four signing Lambda
-  execution roles are the sole `kms:Sign` principals on the maker key, while all five function
+  setup/health, quote, ratify, and routine-revoke and nothing else; the five signing Lambda
+  execution roles are the sole `kms:Sign` principals on the maker key, while all six function
   roles hold narrowly scoped `kms:GetPublicKey` solely for per-surface startup attestation;
-  break-glass operators hold only the separate break-glass-revoke invoke grant. Policy selects the
-  budget from that fixed function deployment, never from caller-controlled request data.
+  break-glass operators hold only the separate break-glass-revoke invoke grant, and remediation
+  operators hold only the setup-remediation invoke grant. Policy selects the budget from that fixed
+  function deployment, never from caller-controlled request data.
 - Every signed payload class is fully describable as structured intents and canonically
   encodable inside the Lambda (SDK EIP-712 offer-tree hashing and Mempool payload encoding; viem
   transaction serialization).
@@ -808,19 +835,21 @@ host itself; it strengthens rather than changes this design.
 
 - The Lambda emits the same JSON-lines structured logging the bots use (to CloudWatch Logs).
   Every intent produces a decision event with intent type, evaluated properties and constraints,
-  the violated check on denial, and the **expected KMS call set per signed artifact** — an
-  approved Ecrecover quote legitimately produces two `kms:Sign` calls (tree and publication
-  transaction), each logged with its derived digest, the **KMS request ID** returned with the
+  the violated check on denial, and the **expected KMS call set per signed artifact**. An
+  approved Ecrecover quote produces exactly one `kms:Sign` call for the tree signature; its encoded
+  publication payload is sent by the constrained non-maker broadcaster and never creates a maker
+  KMS call. Setter ratification, revoke, and setup-remediation transactions each produce one call
+  per signed transaction artifact. Every call is logged with its derived digest, the **KMS request ID** returned with the
   signature, and outcome: `middleware.intent_received`,
   `middleware.intent_approved`, `middleware.intent_denied`, `middleware.kms_error`,
   `middleware.read_failed`.
 - This log is an **authorization audit trail that survives bot-host compromise** — the bot cannot
   erase or forge it.
-- CloudTrail covers the full chain: `lambda:InvokeFunction` attributes every caller (bot vs
-  break-glass principals), and `kms:Sign` allows exactly the configured **quote, ratify,
-  routine-revoke, and break-glass-revoke execution-role ARNs**. The reconciler maintains that
-  four-role allowlist and maps each role ARN to its one expected intent surface; a call from an
-  unknown role or a known role signing for another surface is an incident. The KMS call stream for
+- CloudTrail covers the full chain: `lambda:InvokeFunction` attributes every caller (bot,
+  break-glass, or remediation principal), and `kms:Sign` allows exactly the configured **quote,
+  ratify, routine-revoke, break-glass-revoke, and setup-remediation execution-role ARNs**. The
+  reconciler maintains that five-role allowlist and maps each role ARN to its one expected intent
+  surface; a call from an unknown role or a known role signing for another surface is an incident. The KMS call stream for
   each role/surface pair must reconcile against the logged per-artifact signing records. CloudTrail `Sign`
   events do not carry the message or digest, so the join key is the **KMS request ID** each
   signing record captures: every CloudTrail `Sign` event must match one middleware record and
@@ -828,7 +857,7 @@ host itself; it strengthens rather than changes this design.
   side is an incident signal.
   Lambda `Invoke` is a CloudTrail **data event and is not logged by default**
   ([Lambda CloudTrail docs](https://docs.aws.amazon.com/lambda/latest/dg/logging-using-cloudtrail.html));
-  enabling data-event selectors for all five function ARNs is an explicit v0 deliverable —
+  enabling data-event selectors for all six function ARNs is an explicit v0 deliverable —
   without complete coverage, the invoke side of this audit trail silently omits intent surfaces.
 - Alerting on denials, invocation errors/throttles, KMS errors, and independent-read failures.
   Bot-side `make.rejected` events extend with middleware-denial reasons; invocation-failure halts
@@ -922,8 +951,9 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
 - **Signature correctness:** recovered signer equals the configured maker across both recovery
   parities, reusing the existing strict DER/low-s/recovery-check discipline. The authenticated
   signer-identity setup port reports the KMS-derived maker and passes readiness only when every
-  deployed surface attests the same endpoint, chain, key fingerprint, image digest, policy digest,
-  and configured maker; drift on any one signing function fails closed without exposing a generic
+  deployed surface attests the same endpoint, chain, key fingerprint, image digest,
+  deployment-manifest digest, and configured maker, and each surface's distinct configuration
+  digest matches its own manifest entry; drift on any one signing function fails closed without exposing a generic
   challenge-signing surface.
 - **Fail-closed negatives:** generic digest-signing requests are rejected; unknown intent
   versions are rejected; an independent-read failure produces a typed denial and no KMS call; a
@@ -961,15 +991,19 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   and `kms:GetPublicKey` after the grant moves, that readiness can invoke setup/health and obtain only
   its constrained response, that each function role can call `kms:GetPublicKey` only on the pinned
   maker key, that the setup/health role cannot call `kms:Sign`, that each role can
-  invoke only its granted production-alias surfaces, and that a break-glass principal is denied on
-  setup/health, quote, and ratify. For every bot and operator surface, prove the exact production alias
+  invoke only its granted production-alias surfaces, that a break-glass principal is denied on
+  setup/health, quote, ratify, and setup-remediation, and that the remediation principal is denied on
+  every non-remediation surface. Prove a permitted setup approval is canonically encoded and signed
+  only during a maintenance cleanup epoch, while foreign targets/spenders, excessive allowance,
+  transfers, permits, non-zero value, and attempts outside the epoch produce no KMS call. For every
+  bot and operator surface, prove the exact production alias
   succeeds while the unqualified function ARN, `$LATEST`, every other version/alias, and every
   cross-surface production alias receive `AccessDenied`. Prove setup/health can call
-  `lambda:GetAlias` on each of the five exact production
+  `lambda:GetAlias` on each of the six exact production
   aliases, cannot call it on any other function or alias, rejects an attestation whose published
   version differs from the resolved alias target, and fails readiness when
   `RoutingConfig.AdditionalVersionWeights` is non-empty. Prove deployment automation refuses a
-  weighted production-alias rollout. Verify CloudTrail data events cover all five function ARNs. A
+  weighted production-alias rollout. Verify CloudTrail data events cover all six function ARNs. A
   denied call is part of acceptance, not an incident.
 - Tests follow the repository verification rule: run each new test, break one assertion to
   confirm it fails, restore it.
@@ -979,8 +1013,7 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
 - Nitro-Enclave attestation binding the KMS key policy to attested signing code (Alternative 7)
   as host hardening.
 - Generalizing to other bots and keys — multi-tenant policy keyed by principal and key.
-- Gating setup-remediation transactions (token approvals) if they move from manual operator
-  actions to automated flows (open question 4).
+
 - When the on-chain bounded ratifier lands, its bounds and the middleware's price policy should
   agree; the middleware remains necessary for the transaction surface.
 - Middleware-direct publication to the Mempool, or ratifier/Mempool-enforced signature freshness,
@@ -997,18 +1030,15 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
 3. The exact PnL/cost-basis model and independent input contract. This must be specified, reviewed,
    and acceptance-tested before v0 quote/ratify signing can be enabled; it is not left to the
    implementer.
-4. Whether setup-remediation transactions (token approvals) are also gated through the middleware
-   or stay manual operator actions. Setter root approvals are decided: they are the ratify
-   intent.
-5. Policy parameter change/approval workflow — who reviews, how it deploys, how changes are
+4. Policy parameter change/approval workflow — who reviews, how it deploys, how changes are
    audited.
-6. The reservation ledger's concrete store and consistency design — DynamoDB conditional writes
+5. The reservation ledger's concrete store and consistency design — DynamoDB conditional writes
    are the default candidate — including release on observed publication/invalidation, expiry
    eviction, per-surface budget partitioning details, and the independently operated,
    high-availability independent emergency-budget store used during a ledger outage. Every outage
    revoke must atomically consume that durable allowance or fail closed; reserved concurrency is
    only availability isolation and never substitutes for budget accounting.
-7. The exact deployment-pinned provider members and quorum threshold for independent RPC and Morpho
+6. The exact deployment-pinned provider members and quorum threshold for independent RPC and Morpho
    API/Mempool reads. The decision posture is settled: disagreement, insufficient quorum, or an
    incoherent snapshot fails closed with no KMS call, and quote/ratify remains disabled until this
    configuration and its integration tests are complete.
