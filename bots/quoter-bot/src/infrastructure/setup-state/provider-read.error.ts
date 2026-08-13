@@ -33,6 +33,7 @@ export type SafeProviderReadMetadata = {
     | 'ABORT_ERR'
     | 'UND_ERR_CONNECT_TIMEOUT'
     | 'UND_ERR_HEADERS_TIMEOUT'
+    | number
   status?: number
 }
 

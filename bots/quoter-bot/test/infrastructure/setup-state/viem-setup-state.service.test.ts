@@ -387,6 +387,29 @@ describe('ViemSetupStateService', () => {
     expect(error).not.toHaveProperty('cause')
   })
 
+  test('preserves safe numeric JSON-RPC server metadata from a viem provider rejection', async () => {
+    const raw = Object.assign(new Error('https://rpc.example/?key=private'), {
+      name: 'RpcRequestError',
+      code: -32_005
+    })
+    const error = await executeProviderRead('rpc', 'chain-id', async () => {
+      throw raw
+    }).catch((value: unknown) => value)
+
+    expect(error).toBeInstanceOf(ProviderReadError)
+    expect(error).toMatchObject({
+      failure: {
+        kind: 'provider-error',
+        provider: 'rpc',
+        name: 'ProviderError',
+        code: -32_005,
+        context: 'read'
+      }
+    })
+    expect(JSON.stringify(error)).not.toContain('rpc.example')
+    expect(error).not.toHaveProperty('cause')
+  })
+
   test('reports HTTP failures with a fixed provider id and no URL fields', async () => {
     const server = await startFixtureServer(() => new Response('private body', { status: 503 }))
     const secret = 'provider-api-key'

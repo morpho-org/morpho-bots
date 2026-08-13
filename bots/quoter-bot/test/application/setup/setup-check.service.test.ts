@@ -103,26 +103,19 @@ describe('SetupCheckService', () => {
   test('retries a transient provider-only report before emitting a recovered monitor cycle', async () => {
     const controller = new AbortController()
     const state = readyState()
-    let bookReads = 0
-    state.getBook = async id => {
-      bookReads += 1
-      if (bookReads === 1) {
+    let balanceReads = 0
+    state.getNativeBalance = async () => {
+      balanceReads += 1
+      if (balanceReads === 1) {
         throw new SafeProviderError({
           kind: 'provider-error',
-          provider: 'morpho-api',
+          provider: 'rpc',
           name: 'TimeoutError',
           code: 'REQUEST_TIMEOUT',
           context: 'request'
         })
       }
-      return {
-        id,
-        allowlisted: true,
-        active: true,
-        loanAsset,
-        tickSpacing: 1,
-        maturity: 2_000n
-      }
+      return 10n
     }
     const reports: SetupCheckReport[] = []
 
@@ -135,12 +128,12 @@ describe('SetupCheckService', () => {
       }
     })
 
-    expect(bookReads).toBe(2)
+    expect(balanceReads).toBe(2)
     expect(reports.map(report => report.ready)).toEqual([true])
     expect(terminal).toEqual({ status: 'stopped', reason: 'signal', cycles: 1 })
   })
 
-  test('halts after three consecutive transient provider-only readiness attempts', async () => {
+  test('fails closed without retrying a transient compound book read', async () => {
     const state = readyState()
     let bookReads = 0
     state.getBook = async () => {
@@ -163,7 +156,7 @@ describe('SetupCheckService', () => {
       }
     })
 
-    expect(bookReads).toBe(3)
+    expect(bookReads).toBe(1)
     expect(reports.map(report => report.ready)).toEqual([false])
     expect(terminal).toMatchObject({ status: 'halted', reason: 'setup-failed', cycles: 1 })
   })
@@ -446,6 +439,51 @@ describe('SetupCheckService', () => {
 
     expect(balanceReads).toBe(3)
     expect(report.ready).toBe(true)
+  })
+
+  test('retries a numeric JSON-RPC server failure before allowing writers', async () => {
+    const state = readyState()
+    let balanceReads = 0
+    state.getNativeBalance = async () => {
+      balanceReads += 1
+      if (balanceReads === 1) {
+        throw new ProviderReadError('rpc', 'native-balance', { code: -32_005 })
+      }
+      return 10n
+    }
+
+    const report = await new SetupCheckService(state, config).assertReady()
+
+    expect(balanceReads).toBe(2)
+    expect(report.ready).toBe(true)
+  })
+
+  test('stops startup after shutdown even when a transient retry recovers', async () => {
+    const controller = new AbortController()
+    const state = readyState()
+    let balanceReads = 0
+    state.getNativeBalance = async () => {
+      balanceReads += 1
+      if (balanceReads === 1) {
+        throw new SafeProviderError({
+          kind: 'provider-error',
+          provider: 'rpc',
+          name: 'TimeoutError',
+          code: 'REQUEST_TIMEOUT',
+          context: 'request'
+        })
+      }
+      controller.abort()
+      return 10n
+    }
+
+    const error = await new SetupCheckService(state, config)
+      .assertReady(controller.signal)
+      .catch(value => value)
+
+    expect(balanceReads).toBe(2)
+    expect(error).toBeInstanceOf(Error)
+    expect(error).toMatchObject({ name: 'AbortError' })
   })
 
   test('stops startup retries after the shutdown signal is aborted', async () => {

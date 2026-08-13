@@ -1034,7 +1034,7 @@ describe('createApplication', () => {
     })
   })
 
-  test('runs the exact read-only ladder monitor surface without loading or invoking a signer', async () => {
+  test('does not start the read-only ladder monitor after an aborted setup check', async () => {
     const reconcile = vi.fn(async () => {})
     const hardHalt = vi.fn(async () => {})
     const cleanup = vi.fn(async () => {})
@@ -1063,28 +1063,21 @@ describe('createApplication', () => {
     )
 
     try {
-      expect(
-        await application.run(['ladder', '--monitor', '--verbose', '--readonly'], {
+      await expect(
+        application.run(['ladder', '--monitor', '--verbose', '--readonly'], {
           signal: controller.signal
         })
-      ).toEqual({
-        status: 'stopped',
-        reason: 'signal',
-        cycles: 0,
-        cleanup: { status: 'logged' }
-      })
+      ).rejects.toMatchObject({ name: 'AbortError' })
       expect(reconcile).not.toHaveBeenCalled()
       expect(hardHalt).not.toHaveBeenCalled()
       expect(cleanup).not.toHaveBeenCalled()
-      expect(terminal).toHaveBeenCalledWith(
-        expect.stringContaining('"event":"readonly.make","workflow":"ladder","operation":"cleanup"')
-      )
+      expect(terminal).not.toHaveBeenCalled()
     } finally {
       terminal.mockRestore()
     }
   })
 
-  test('composes the combined start lifecycle and drains both writer cleanups', async () => {
+  test('does not compose combined writers or cleanups after an aborted setup check', async () => {
     const bootstrapCleanup = vi.fn(async () => {})
     const ladderCleanup = vi.fn(async () => {})
     const controller = new AbortController()
@@ -1133,36 +1126,11 @@ describe('createApplication', () => {
       }
     )
 
-    expect(await application.run(['start'], { signal: controller.signal })).toEqual({
-      status: 'stopped',
-      reason: 'signal',
-      workflows: {
-        setupCheck: {
-          status: 'fulfilled',
-          report: { status: 'stopped', reason: 'signal', cycles: 0 }
-        },
-        bootstrap: {
-          status: 'fulfilled',
-          report: {
-            status: 'stopped',
-            reason: 'signal',
-            cycles: 0,
-            cleanup: { status: 'applied' }
-          }
-        },
-        ladder: {
-          status: 'fulfilled',
-          report: {
-            status: 'stopped',
-            reason: 'signal',
-            cycles: 0,
-            cleanup: { status: 'applied' }
-          }
-        }
-      }
+    await expect(application.run(['start'], { signal: controller.signal })).rejects.toMatchObject({
+      name: 'AbortError'
     })
-    expect(bootstrapCleanup).toHaveBeenCalledTimes(1)
-    expect(ladderCleanup).toHaveBeenCalledTimes(1)
+    expect(bootstrapCleanup).not.toHaveBeenCalled()
+    expect(ladderCleanup).not.toHaveBeenCalled()
   })
 
   test('rejects an empty ladder before cleaning persisted ladder publications', async () => {
@@ -1194,7 +1162,7 @@ describe('createApplication', () => {
     expect(cleanupRemovedMarkets).not.toHaveBeenCalled()
   })
 
-  test('combined start composes hardcoded bootstrap and ladder workflows without Blue reference readiness', async () => {
+  test('aborted combined start skips Blue reference readiness and writer composition', async () => {
     const checkReference = vi.fn(async () => {
       throw new Error('Blue archive unavailable')
     })
@@ -1265,16 +1233,10 @@ describe('createApplication', () => {
       }
     )
 
-    const report = await application.run(['start'], { signal: controller.signal })
-
-    expect(report).toMatchObject({
-      status: 'stopped',
-      workflows: {
-        bootstrap: { status: 'fulfilled' },
-        ladder: { status: 'fulfilled' }
-      }
+    await expect(application.run(['start'], { signal: controller.signal })).rejects.toMatchObject({
+      name: 'AbortError'
     })
-    expect(started).toEqual(['ladder', 'bootstrap'])
+    expect(started).toEqual(['ladder'])
     expect(checkReference).not.toHaveBeenCalled()
   })
 

@@ -221,9 +221,7 @@ export class SetupCheckService {
    */
   async assertReady(signal?: AbortSignal) {
     const report = await this.checkWithTransientRetries(signal)
-    if (signal?.aborted === true && !report.ready && hasOnlyTransientProviderFailures(report)) {
-      throw new SetupCheckAbortedError()
-    }
+    if (signal?.aborted === true) throw new SetupCheckAbortedError()
     if (!report.ready) throw new SetupFailedError(report)
     return report
   }

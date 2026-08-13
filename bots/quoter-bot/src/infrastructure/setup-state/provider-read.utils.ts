@@ -19,6 +19,15 @@ const SAFE_CODES = new Set<NonNullable<SafeProviderReadMetadata['code']>>([
   'UND_ERR_CONNECT_TIMEOUT',
   'UND_ERR_HEADERS_TIMEOUT'
 ])
+const JSON_RPC_SERVER_ERROR_MINIMUM = -32_099
+const JSON_RPC_SERVER_ERROR_MAXIMUM = -32_000
+const JSON_RPC_INTERNAL_ERROR = -32_603
+
+const isSafeNumericRpcCode = (value: unknown): value is number =>
+  typeof value === 'number' &&
+  Number.isSafeInteger(value) &&
+  ((value >= JSON_RPC_SERVER_ERROR_MINIMUM && value <= JSON_RPC_SERVER_ERROR_MAXIMUM) ||
+    value === JSON_RPC_INTERNAL_ERROR)
 
 const safeReadMetadata = (error: unknown): SafeProviderReadMetadata => {
   let candidate = error
@@ -31,8 +40,9 @@ const safeReadMetadata = (error: unknown): SafeProviderReadMetadata => {
         ? (record.name as NonNullable<SafeProviderReadMetadata['name']>)
         : undefined
     const code =
-      typeof record.code === 'string' &&
-      SAFE_CODES.has(record.code as NonNullable<SafeProviderReadMetadata['code']>)
+      (typeof record.code === 'string' &&
+        SAFE_CODES.has(record.code as NonNullable<SafeProviderReadMetadata['code']>)) ||
+      isSafeNumericRpcCode(record.code)
         ? (record.code as NonNullable<SafeProviderReadMetadata['code']>)
         : undefined
     const status =

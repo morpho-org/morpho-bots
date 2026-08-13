@@ -46,6 +46,15 @@ const TRANSIENT_PROVIDER_NAMES = new Set(['AbortError', 'TimeoutError', 'Network
 const TRANSIENT_PROVIDER_STATUSES = new Set([408, 425, 429])
 const SERVER_ERROR_STATUS_MINIMUM = 500
 const SERVER_ERROR_STATUS_MAXIMUM = 599
+const JSON_RPC_SERVER_ERROR_MINIMUM = -32_099
+const JSON_RPC_SERVER_ERROR_MAXIMUM = -32_000
+const JSON_RPC_INTERNAL_ERROR = -32_603
+
+const isTransientRpcCode = (value: unknown): value is number =>
+  typeof value === 'number' &&
+  Number.isSafeInteger(value) &&
+  ((value >= JSON_RPC_SERVER_ERROR_MINIMUM && value <= JSON_RPC_SERVER_ERROR_MAXIMUM) ||
+    value === JSON_RPC_INTERNAL_ERROR)
 
 /** Fulfilled provider value or sanitized provider failure captured without short-circuiting peers. */
 type Captured<T> = { ok: true; value: T } | { ok: false; error: SafeProviderFailure }
@@ -86,7 +95,8 @@ const safeProviderFailure = (
         : 'ProviderError'
     const code =
       typedFailure.code === 'REQUEST_TIMEOUT' ||
-      (typeof typedFailure.code === 'string' && SAFE_ERROR_CODES.has(typedFailure.code))
+      (typeof typedFailure.code === 'string' && SAFE_ERROR_CODES.has(typedFailure.code)) ||
+      isTransientRpcCode(typedFailure.code)
         ? typedFailure.code
         : undefined
     const status = Number.isSafeInteger(typedFailure.status)
@@ -243,7 +253,9 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const isTransientProviderFailure = (value: unknown) => {
   if (!isRecord(value) || value.kind !== 'provider-error') return false
 
-  const transientCode = typeof value.code === 'string' && TRANSIENT_PROVIDER_CODES.has(value.code)
+  const transientCode =
+    (typeof value.code === 'string' && TRANSIENT_PROVIDER_CODES.has(value.code)) ||
+    isTransientRpcCode(value.code)
   const transientName = typeof value.name === 'string' && TRANSIENT_PROVIDER_NAMES.has(value.name)
   const transientStatus =
     typeof value.status === 'number' &&
@@ -251,20 +263,6 @@ const isTransientProviderFailure = (value: unknown) => {
       (value.status >= SERVER_ERROR_STATUS_MINIMUM && value.status <= SERVER_ERROR_STATUS_MAXIMUM))
 
   return transientCode || transientName || transientStatus
-}
-
-const isTransientBookFailure = (value: unknown) => {
-  if (!isRecord(value) || !Array.isArray(value.reasons) || value.reasons.length === 0) return false
-
-  return value.reasons.every(reason => {
-    if (!isRecord(reason)) return false
-
-    const keys = Object.keys(reason)
-    if (keys.length !== 1) return false
-
-    const providerFailure = reason.providerError ?? reason.timestampProviderError
-    return isTransientProviderFailure(providerFailure)
-  })
 }
 
 const isTransientFailedCheck = (check: SetupCheck) => {
@@ -288,16 +286,13 @@ const isTransientFailedCheck = (check: SetupCheck) => {
 
   // Compound checks can mask a successful peer read that already proved invariant drift, so they
   // fail closed instead of retrying based only on their provider error.
-  if (check.name === 'ratifier' || check.name === 'reference' || check.name === 'offers') {
+  if (
+    check.name === 'ratifier' ||
+    check.name === 'books' ||
+    check.name === 'reference' ||
+    check.name === 'offers'
+  ) {
     return false
-  }
-
-  if (check.name === 'books') {
-    return (
-      Array.isArray(check.observed) &&
-      check.observed.length > 0 &&
-      check.observed.every(isTransientBookFailure)
-    )
   }
 
   return isRecord(check.observed) && isTransientProviderFailure(check.observed.error)
