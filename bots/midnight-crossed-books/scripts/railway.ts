@@ -143,42 +143,47 @@ const resolveRailwayVariableTarget = async ({
 }
 
 /**
- * Idempotently deletes one Railway variable from an explicitly scoped deployment target.
- * @param parameters - Fetch implementation, credential, exact target names, and variable name.
- * @returns `true` when Railway accepts the deletion, or `false` when the variable is already absent.
+ * Deletes one Railway variable from an explicitly scoped deployment target.
+ * @param parameters - Fetch implementation, credential, exact target names, variable name, and
+ * whether a value-bearing existence check is safe before deletion.
+ * @returns `true` when Railway accepts the deletion, or `false` when a preflight proves the
+ * variable is already absent.
  * @throws `RailwayVariableOperationError` when target lookup, transport, or deletion fails.
- * @remarks Railway's API exposes key existence through a value-bearing map. This function only
- * checks the requested own key, never logs or returns the map, and skips deletion when absent.
+ * @remarks Set `readValuesBeforeDelete` to `false` for secrets that must not enter this process.
  */
 export const deleteRailwayVariable = async ({
   fetcher,
   name,
+  readValuesBeforeDelete = true,
   target,
   token
 }: {
   fetcher: typeof fetch
   name: string
+  readValuesBeforeDelete?: boolean
   target: RailwayVariableTarget
   token: RailwayAccessToken
 }) => {
   const error = new RailwayVariableOperationError('delete', name)
   const ids = await resolveRailwayVariableTarget({ error, fetcher, target, token })
-  const listed = await postRailwayGraphql({
-    body: {
-      query: VARIABLES_QUERY,
-      variables: {
-        environmentId: ids.environmentId,
-        projectId: target.projectId,
-        serviceId: ids.serviceId
-      }
-    },
-    error,
-    fetcher,
-    token
-  })
-  const variables = recordField(listed, 'variables')
-  if (!variables) throw error
-  if (!Object.prototype.hasOwnProperty.call(variables, name)) return false
+  if (readValuesBeforeDelete) {
+    const listed = await postRailwayGraphql({
+      body: {
+        query: VARIABLES_QUERY,
+        variables: {
+          environmentId: ids.environmentId,
+          projectId: target.projectId,
+          serviceId: ids.serviceId
+        }
+      },
+      error,
+      fetcher,
+      token
+    })
+    const variables = recordField(listed, 'variables')
+    if (!variables) throw error
+    if (!Object.prototype.hasOwnProperty.call(variables, name)) return false
+  }
 
   const data = await postRailwayGraphql({
     body: {

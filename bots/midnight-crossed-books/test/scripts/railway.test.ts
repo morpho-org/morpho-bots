@@ -177,6 +177,12 @@ describe('Railway provisioning configuration', () => {
     expect(deploy).not.toMatch(/Failed to set.*errorDetails/)
   })
 
+  test('keeps stale signing key values out of readonly provisioning', () => {
+    const deploy = readFileSync(new URL('../../scripts/deploy-railway.ts', import.meta.url), 'utf8')
+
+    expect(deploy).toContain("readValuesBeforeDelete: name !== 'RESOLVER_PRIVATE_KEY'")
+  })
+
   test('preserves fresh-service and CLI-login provisioning without an API token', () => {
     const deploy = readFileSync(new URL('../../scripts/deploy-railway.ts', import.meta.url), 'utf8')
 
@@ -254,6 +260,37 @@ describe('Railway variable deletion API', () => {
       value: 'Bearer account-token'
     })
     expect(() => resolveRailwayAccessToken({})).toThrow('RAILWAY_TOKEN or RAILWAY_API_TOKEN')
+  })
+
+  test('deletes a private key without reading Railway variable values', async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(targetResponse))
+      .mockResolvedValueOnce(jsonResponse({ data: { variableDelete: true } }))
+
+    await expect(
+      deleteRailwayVariable({
+        fetcher,
+        name: 'RESOLVER_PRIVATE_KEY',
+        readValuesBeforeDelete: false,
+        target: TARGET,
+        token: TOKEN
+      })
+    ).resolves.toBe(true)
+
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    const requests = fetcher.mock.calls.map(([, init]) =>
+      JSON.parse(typeof init?.body === 'string' ? init.body : '')
+    )
+    expect(requests.every(request => !request.query.includes('variables('))).toBe(true)
+    expect(requests[1]).toMatchObject({
+      variables: {
+        environmentId: 'environment-id',
+        name: 'RESOLVER_PRIVATE_KEY',
+        projectId: 'project-id',
+        serviceId: 'service-id'
+      }
+    })
   })
 
   test('checks service-scoped variables before deleting an existing variable', async () => {
