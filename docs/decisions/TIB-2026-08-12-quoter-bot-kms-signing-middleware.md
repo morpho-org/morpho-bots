@@ -351,11 +351,14 @@ Arbitrary calldata, permit signatures, token asset transfers, wildcard spenders/
 caller-selected targets are rejected. Setup remediation uses the same nonce lease, append-only
 artifact history, rolling gas accounting, replacement rules, and break-glass preemption guarantees
 as every other maker transaction. Its invoke role is separate from both the bot and break-glass
-roles, and neither role can invoke it. Direct bot or operator access to `kms:Sign` may not be removed
-until this surface is
-deployed and its positive and deny-path acceptance tests pass; after cutover, no manual remediation
-procedure may restore direct KMS signing. Cutover must use a newly generated maker key/address that the
-old direct-signing path never held. The old maker remains quarantined: operators revoke every live
+roles, and neither role can invoke it. Direct bot or operator access to `kms:Sign` remains only until
+this surface is deployed and its positive and deny-path acceptance tests pass. Cutover then removes
+direct KMS signing and verifies `AccessDenied` before the old-maker quarantine expiry window begins;
+no manual remediation procedure may restore it. Any retained access needed to finish old-maker cleanup
+must use a policy-checked cleanup-only path that cannot sign quotes, ratifications, setup transactions,
+or caller-selected payloads, and that path is removed after cleanup. Cutover must use a newly generated
+maker key/address that the old direct-signing path never held. The old maker remains quarantined:
+operators revoke every live
 offer/root authorization, replace or confirm every pending transaction, remove its token approvals,
 and wait for every permit, authorization, and other time-bounded signature class to expire before
 moving assets or policy caps to the new maker. The independent catalog backfill below is still required
@@ -363,10 +366,11 @@ for cleanup, but it is not accepted as proof that arbitrary historical blind sig
 because CloudTrail cannot recover their signed digest. Before cutover, migration backfills the
 independent catalog and transaction inventory with every known non-terminal offer group, ratified root,
 pending routine transaction, and pending setup-remediation transaction signed by the existing `aws`
-path, including complete artifact and occupied-nonce histories. Direct KMS access cannot be removed
-and higher caps cannot be enabled until the new maker is active, the old maker's known artifacts pass
-the same strongly consistent inventory, pending-set reconciliation, and break-glass preflight used
-after cutover, and the old maker has completed the quarantine conditions above.
+path, including complete artifact and occupied-nonce histories. After the old maker's known artifacts
+pass the same strongly consistent inventory, pending-set reconciliation, and break-glass preflight used
+after cutover and the new maker is active, direct KMS signing is removed and `AccessDenied` is verified
+before the old-maker quarantine expiry window begins. Higher caps remain disabled until the old maker
+has completed every quarantine condition above.
 
 **Quote intents** carry an array of structured offers. There are **no caller-declared
 exclusions**: the prospective book is always the observed live book plus the proposed set,
@@ -1178,10 +1182,13 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   only the newest entry active for routine replacement, and derives break-glass fees from the maximum
   across all three artifacts.
 - **IAM cutover proof:** demonstrate the middleware uses a newly generated maker key/address never
-  exposed to the direct `aws` signer, while the old maker remains quarantined until known artifacts
-  are revoked/reconciled, approvals are removed, and every permit/authorization signature class has
+  exposed to the direct `aws` signer, and prove direct bot and operator access to `kms:Sign` is denied
+  before the quarantine expiry clock starts. Keep the old maker quarantined until known artifacts are
+  revoked/reconciled, approvals are removed, and every permit/authorization signature class has
   expired; inventory backfill alone is not accepted as proof against unknown historical blind
-  signatures. Demonstrate the bot's principal receives `AccessDenied` on `kms:Sign`
+  signatures. If cleanup retains old-key access, prove the policy-checked cleanup-only path rejects
+  quotes, ratifications, setup transactions, and caller-selected payloads, then prove the path is
+  removed after cleanup. Demonstrate the bot's principal receives `AccessDenied` on `kms:Sign`
   and `kms:GetPublicKey` after the grant moves, that readiness can invoke setup/health and obtain only
   its constrained response, that each function role can call `kms:GetPublicKey` only on the pinned
   maker key, that the setup/health role cannot call `kms:Sign`, and that each role can invoke only its
