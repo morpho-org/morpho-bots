@@ -67,7 +67,9 @@ AWS KMS or equivalent key custody. KMS custody has since shipped. This TIB addre
   Alternative 3).
 - Generalizing to other bots or keys in v0. The design should not preclude it, but v0 serves one
   bot and one maker key.
-- Changing KMS/HSM procurement. The existing `ECC_SECG_P256K1` KMS key stays where it is.
+- Changing KMS/HSM provider procurement. v0 remains on AWS KMS with `ECC_SECG_P256K1`, but the
+  cutover uses a newly generated maker key/address that the old direct-signing path never held; the
+  existing maker key material is quarantined and is never reused by the middleware.
 
 ## Current Solution
 
@@ -123,9 +125,9 @@ bot host (role: invoke-only)         signing Lambda (role: kms:Sign + reads)    
 ### 1. Structured intents replace digests
 
 The wire contract is a **versioned JSON intent** carried as the payload of an AWS SDK
-`lambda:InvokeFunction` call. The bot submits one of three intent types; the middleware returns
-the signatures together with the exact payloads it encoded, so the bot broadcasts exactly what
-was validated.
+`lambda:InvokeFunction` call. Callers submit one of four intent types — revoke, quote, ratify, or
+setup-remediation — and the middleware returns the signatures together with the exact payloads it
+encoded, so the caller broadcasts exactly what was validated.
 
 **Revoke intents** invalidate offer groups/roots. They are **near-unconditionally approved** —
 revocation only reduces exposure and is the always-available kill switch — constrained to: pinned
@@ -298,28 +300,37 @@ sequential signatures. If that independent budget cannot be checked atomically, 
 fails closed and pages the operator rather than becoming unmetered. The final backstop is a
 **native-balance admission ceiling** — a new operational control this TIB requires, distinct from
 the existing `NATIVE_RESERVE_WEI` **minimum** readiness threshold. Setup/readiness and every routine
-quote, ratify, revoke, replacement, and setup-remediation signing request independently read the
-maker's native balance and fail closed before KMS when it exceeds the configured maximum. Monitoring
-alerts before and at that limit; an unsolicited transfer can make the balance exceed the target but
-cannot turn the excess into routine signing capacity. The operator-only break-glass path remains
-available to replace unsafe pending transactions and move excess native balance during containment,
-subject to its protected budget and exact allowlist. Routine gas grief is therefore bounded by the
-remaining routine budget and by the enforced admission ceiling, while break-glass spend is separately
-bounded by the protected emergency allowance. Native-gas spend enters the bounded-loss arithmetic
-under those separate authenticated budget classes; the configured maximum is never described as a
-physical balance cap that external senders cannot exceed.
+quote, ratify, revoke, replacement, and non-sweep setup-remediation signing request independently
+read the maker's native balance and fail closed before KMS when it exceeds the configured maximum.
+Monitoring alerts before and at that limit; an unsolicited transfer can make the balance exceed the
+target but cannot turn the excess into routine signing capacity. The operator-only break-glass path
+remains available to replace unsafe pending transactions, and the setup-remediation surface provides
+the sole native-balance recovery operation described below.
+Routine gas grief is therefore bounded by the remaining routine budget and by the enforced admission
+ceiling, while break-glass spend is separately bounded by the protected emergency allowance.
+Native-gas spend enters the bounded-loss arithmetic under those separate authenticated budget
+classes; the configured maximum is never described as a physical balance cap that external senders
+cannot exceed.
 
 **Setup-remediation intents** replace the maker's direct KMS path for token approvals and other
 setup transactions. They are accepted only by a dedicated operator-authorized function while a
 maintenance cleanup epoch has stopped quote, ratify, and routine-revoke signing. The deployment
 manifest pins every permitted target, selector, asset, spender/operator, allowance or authorization
-ceiling, chain, zero native value, and gas/fee ceiling; the middleware independently reads current
-allowance/authorization state and canonically encodes the exact transaction. Arbitrary calldata,
-permit signatures, asset transfers, wildcard spenders/operators, and caller-selected targets are
-rejected. Setup remediation uses the same nonce lease, append-only artifact history, rolling gas
-accounting, replacement rules, and break-glass preemption guarantees as every other maker
-transaction. Its invoke role is separate from both the bot and break-glass roles, and neither role
-can invoke it. Direct bot or operator access to `kms:Sign` may not be removed until this surface is
+ceiling, chain, native value, and gas/fee ceiling; the middleware independently reads current
+allowance/authorization state and canonically encodes the exact transaction. All variants require
+zero native value except one manifest-pinned `native-balance-sweep` variant. That variant is allowed
+only when the independently read balance exceeds the admission ceiling, sends only to one configured
+treasury address with empty calldata, and derives (never accepts) a value that leaves the configured
+recovery target plus worst-case transaction fees on the maker. It rejects a caller-supplied target or
+value, token calls, arbitrary calldata, and any result below the native reserve; it remains available
+above the routine admission ceiling but still requires a fresh signing-surface attestation, the
+maintenance epoch, nonce lease, protected remediation gas budget, and exact manifest match.
+Arbitrary calldata, permit signatures, token asset transfers, wildcard spenders/operators, and
+caller-selected targets are rejected. Setup remediation uses the same nonce lease, append-only
+artifact history, rolling gas accounting, replacement rules, and break-glass preemption guarantees
+as every other maker transaction. Its invoke role is separate from both the bot and break-glass
+roles, and neither role can invoke it. Direct bot or operator access to `kms:Sign` may not be removed
+until this surface is
 deployed and its positive and deny-path acceptance tests pass; after cutover, no manual remediation
 procedure may restore direct KMS signing. Cutover must use a newly generated maker key/address that the
 old direct-signing path never held. The old maker remains quarantined: operators revoke every live
@@ -486,8 +497,9 @@ The aggregation path is an internal attestation registry, not an assertion synth
 setup/health. After validating itself, each execution role may conditionally write only its own
 function-and-published-version key in a dedicated DynamoDB table; the value contains the validated
 shared fields, that surface's policy/configuration digest, the deployment-manifest digest, and a
-startup timestamp. It cannot write another surface's key or read the table. The setup/health
-execution role may write its own key and read all six exact keys, but may not alter the five
+startup timestamp. It cannot write another surface's key and may strongly consistently read only its
+own exact key. The setup/health execution role may write its own key and read all six exact keys, but
+may not alter the five
 signing-surface records; the bot role has no table
 access. Readiness resolves every production alias to its current published version, requires
 `RoutingConfig.AdditionalVersionWeights` to be empty, and requires a fresh matching record for that
@@ -495,12 +507,18 @@ exact version and manifest. Weighted/canary routing is forbidden for the six pro
 v0, so an unattested additional version cannot receive signing traffic and an attestation from a
 retired deployment cannot satisfy the check. Deployment automation and readiness both fail closed
 when any production alias has additional version weights. IAM grants only those per-key
-`dynamodb:PutItem` operations,
+`dynamodb:PutItem` operations, each signing role's `GetItem` on only its own exact key,
 the setup role's bounded `GetItem`/`BatchGetItem`, and `lambda:GetAlias` on the six exact
 production-alias ARNs (or an equivalently authenticated deployment manifest containing their exact
 published-version targets); it grants no wildcard Lambda reads. The setup role resolves and records
-those alias targets before accepting registry attestations. No attestation path exposes a signing
-operation. The production handler of each published function version routes a dedicated
+those alias targets before accepting registry attestations. Before dispatching any quote, ratify,
+routine-revoke, break-glass-revoke, or setup-remediation request to KMS, that signing handler performs
+a strongly consistent read of its own exact function-version-and-manifest record and requires its
+maker, chain, key fingerprint, image digest, policy digest, manifest digest, and timestamp to match
+and remain inside the freshness window. A missing, stale, or mismatched record rejects the request
+before reservation or KMS; callers cannot bypass the gate, and setup/readiness cannot satisfy it on
+a signing handler's behalf. No attestation path exposes a signing operation. The production handler
+of each published function version routes a dedicated
 **non-signing attestation operation** before any signing dispatch; it is
 not a separate Lambda, alternate image command, or handler configuration. After publishing a
 version and before moving its production alias, deployment automation invokes that exact version and
@@ -708,12 +726,21 @@ reserved. Offer exposure follows the normal observation, cancellation, or freshn
 rules, but EOA transaction records and their signed-gas/nonce reservations never release on offer
 freshness expiry; they remain until the nonce is confirmed or replaced/cancelled on chain.
 
-v0 uses DynamoDB and sets a **middleware-mode rung cap of 40 per side** (80 offers), lower than the
-general quoter limit. The reservation planner has a fixed, tested write-action budget covering the
-80 per-offer records plus every aggregate counter, generation condition, gas-budget update, and
-idempotency marker, and rejects any plan above DynamoDB's 100-action `TransactWriteItems` limit
-before validation or signing. No request is chunked across transactions: raising the cap requires a
-store or schema that can atomically commit the larger maximum tree, plus updated boundary tests.
+v0 uses DynamoDB and sets a **middleware-mode rung cap of 40 per side** (80 offers) and a
+**per-intent cap of seven distinct markets**. The reservation planner computes its exact primary
+transaction cost as `N + C + 6`: one action for each offer record (`N ≤ 80`), one action for each
+affected market-side lend or unwind counter domain (`C ≤ 2 × markets ≤ 14`), and six reserved fixed
+actions for the maker-wide counter, signed-gas budget, deny-generation fence, idempotency marker,
+signing-attempt record, and one catalog-manifest item containing the intent's complete root/group
+inventory. The fixed actions remain budgeted even when a particular intent does not use every
+counter. Consequently the largest valid plan is `80 + 14 + 6 = 100` actions and fits exactly inside
+DynamoDB's `TransactWriteItems` limit. The catalog manifest is size-checked before admission. Signed-
+artifact chunk writes occur only after KMS and are therefore outside the pre-sign action count; they
+must still complete, verify, and durably transition the attempt to `signed` before any response is
+returned, as specified above. Boundary tests cover 80 offers across seven markets with both counter
+domains and reject an eighth market or any computed plan above 100 actions before validation or
+signing. No request is chunked across reservation transactions: raising either cap requires a store
+or schema that can atomically commit the larger maximum tree, plus updated boundary tests.
 
 Publication is tracked per leaf, not merely per root. A reservation moves from reserved to live
 when that exact offer is observed and is released on its own freshness expiry. Partial group
