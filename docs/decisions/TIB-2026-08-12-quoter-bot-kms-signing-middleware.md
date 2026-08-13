@@ -211,9 +211,12 @@ on **rolling signed-gas budgets** tracked in the reservation ledger (see Statefu
 class comes from the authenticated Lambda invoke surface, never from a caller-supplied principal,
 intent field, or `ClientContext`: publication, ratification, and the bot-only `routine-revoke`
 function draw on the routine budget, while the operator-only `break-glass-revoke` function alone
-draws on a **protected reserve** — sized for several full-book cleanups — that the bot role has no
-IAM permission to invoke or draw down. Both revoke functions use the same strict revoke validator
-from the shared image, but their function ARNs, IAM grants, reserved concurrency, and server-side
+function draw on a **protected reserve** that the bot role has no IAM permission to invoke or draw
+down. The primary protected reserve is sized for replacements at the **maximum configured
+occupied-nonce set** (each at the protected fee and gas ceilings) plus several full-book cleanups,
+with no overlap assumed between those costs. Deployment validation computes that bound from the
+configured maximum and rejects a primary reserve below it. Both revoke functions use the same strict revoke
+validator from the shared image, but their function ARNs, IAM grants, reserved concurrency, and server-side
 budget classes are distinct. A compromised bot therefore cannot impersonate break-glass in its
 payload or starve the kill switch with otherwise valid cancellations. When the ledger is
 unavailable, quote/ratify and bot-originated routine revokes fail closed while the break-glass
@@ -227,9 +230,16 @@ ledger-outage guarantee. The same independent control plane keeps a
 **ledger-independent revocation inventory**: an append-only, read-replicated catalog of every root
 and group whose signature could make exposure publishable. Catalog persistence is a write-before-
 sign condition for quote and ratify: **both** the primary reservation and the independent catalog
-entry must commit durably before any KMS call. Failure of either write fails signing closed; the
-middleware never signs with uncharged aggregate capacity or an incomplete revocation inventory.
-Break-glass therefore retains the targets needed to cancel hidden,
+entry must commit durably in a `pending-signature` state before any KMS call. Failure of either write
+fails signing closed; the middleware never signs with uncharged aggregate capacity or an incomplete
+revocation inventory. After all signed response artifacts are durable, the finalization transaction
+conditionally promotes the catalog entry to `signed`. The same idempotent compensation path that
+releases a failed primary reservation also writes a terminal `failed` tombstone for its catalog
+entry. Break-glass enumerates only `signed` catalog entries; `pending-signature` entries past their
+short lease are reconciled to `signed` only from complete durable artifacts, otherwise they are
+tombstoned. If the catalog cannot prove an entry's terminal state, cleanup fails closed into ordered
+drain/handoff instead of charging emergency capacity for speculative targets. Break-glass therefore
+retains the targets needed to cancel hidden,
 signed-but-unpublished exposure even when the primary reservation ledger cannot be read. It also
 keeps a **ledger-independent transaction inventory** of every returned routine transaction's exact
 signed bytes, nonce, hash, intent kind, and fee fields. Persisting that record is a write-before-
@@ -392,7 +402,14 @@ access. Readiness resolves every production alias to its current published versi
 fresh matching record for that exact version and manifest, so an attestation from a retired
 deployment cannot satisfy the check. IAM grants only those per-key `dynamodb:PutItem` operations and
 the setup role's bounded `GetItem`/`BatchGetItem`; no attestation path invokes a signing handler or
-exposes a signing operation.
+exposes a signing operation. Each published function version also exposes a dedicated **non-signing
+attestation entrypoint** in the same image. After publishing a version and before moving its
+production alias, deployment automation invokes that entrypoint under the function execution role;
+it performs only the key/config/image validation above and the conditional registry write. The
+deployment verifies the exact version-and-manifest record, retries transient failures, and refuses
+the alias rollout if the record is absent or mismatched. Readiness can therefore require fresh
+records without waiting for quote, ratify, or revoke traffic, while setup/health still never invokes
+a signing handler.
 
 The ports serve **every maker workflow, not only the ladder**: position bootstrap (including
 auto-refill) signs the same transaction kinds through
@@ -538,12 +555,21 @@ creation makes an exact Setter ratify/publication observation idempotent and can
 double-reserve it.
 
 The same transaction creates a unique signing-attempt record in `reserved` state. After KMS returns
-a signature, the handler conditionally moves that attempt to `signed` and durably records the
-**complete signed response artifacts** — canonical encoded payloads, every signature, and any exact
-signed transaction bytes plus nonce/hash/fee fields — before constructing the response. A retry with
-the same idempotency key returns those exact stored artifacts without another KMS call only after
-the canonical intent hash matches the marker; a mismatch is rejected. No signed response is returned
-before that durable transition. If KMS or validation/encoding fails first, an idempotent compensation
+a signature, the handler durably writes the **complete signed response artifacts** — canonical
+encoded payloads, every signature, and any exact signed transaction bytes plus nonce/hash/fee fields
+— as immutable artifact chunks keyed by `(attempt, artifact, chunk-index)`. Each chunk contains at
+most **300 KiB** of binary content so item keys, checksums, and metadata remain below DynamoDB's
+400 KB item limit. A manifest on the attempt records every artifact's ordered chunk count, byte
+length, and whole-artifact checksum. Chunks are written and read back with checksum verification
+before one conditional update installs the manifest and moves the attempt from `reserved` to
+`signed`; incomplete unreferenced chunks are safe to garbage-collect after the attempt lease. A
+retry with the same idempotency key returns those exact stored artifacts without another KMS call
+only after the canonical intent hash matches the marker and every manifest chunk passes length and
+checksum verification; a mismatch or missing chunk fails closed. No signed response is returned
+before that durable transition. Boundary tests serialize the maximum 80-offer quote response,
+including both canonical Mempool payload and signed transaction bytes, assert every stored item is
+below 400 KB, then reassemble byte-for-byte identical artifacts from multiple chunks. If KMS or
+validation/encoding fails first, an idempotent compensation
 transaction releases its exposure and signed-gas reservations, writes a terminal `failed` marker,
 and returns the typed failure. A retry with the same idempotency key observes that marker rather
 than releasing twice. A crash while the attempt is still `reserved` is reconciled by the same
