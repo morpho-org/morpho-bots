@@ -1,10 +1,13 @@
 import type { Address, Chain, Hex } from 'viem'
 
 import { CrossedBooksResolver } from '@repo/contracts'
-import { getAddress, isAddress, isHex, parseGwei } from 'viem'
+import { getAddress, isAddress, isAddressEqual, isHex, parseGwei, zeroAddress } from 'viem'
 import { base } from 'viem/chains'
 
 import { DEFAULT_MAX_MATCHES } from '../domain/matching.service'
+import { InvalidSimulationCallerAddressError } from './invalid-simulation-caller-address.error'
+import { parseReadonly } from './readonly.utils'
+import { ResolverPrivateKeyRequiredError } from './resolver-private-key-required.error'
 
 const MIDNIGHT = getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A')
 const PRIVATE_KEY_HEX_LENGTH = 66
@@ -24,20 +27,45 @@ function unsignedDecimal(environment: Environment, name: string, fallback?: stri
 }
 
 export class ConfigService {
+  /**
+   * Loads and validates resolver configuration from environment values.
+   * @param environment - Runtime environment; defaults to `process.env`.
+   * @returns Immutable configuration with signer material omitted in readonly mode.
+   * @throws `InvalidConfigurationError` when readonly mode or its caller is invalid.
+   * @throws `ResolverPrivateKeyRequiredError` when write mode has no signing key.
+   * @throws `Error` when another required runtime value is invalid.
+   * @remarks This method performs no network access and does not retain `RESOLVER_PRIVATE_KEY` when
+   * readonly mode is enabled.
+   */
   static from(environment: Environment = process.env) {
     const chainId = Number(unsignedDecimal(environment, 'CHAIN_ID'))
     if (chainId !== base.id) {
       throw new Error(`Unsupported CHAIN_ID ${chainId}; supported: ${base.id}`)
     }
 
-    const privateKey = required(environment, 'RESOLVER_PRIVATE_KEY')
-    if (!isHex(privateKey, { strict: true }) || privateKey.length !== PRIVATE_KEY_HEX_LENGTH) {
+    const readOnly = parseReadonly(environment.READONLY)
+    const privateKey = readOnly ? undefined : environment.RESOLVER_PRIVATE_KEY?.trim()
+    if (!readOnly && !privateKey) throw new ResolverPrivateKeyRequiredError()
+    if (
+      privateKey !== undefined &&
+      (!isHex(privateKey, { strict: true }) || privateKey.length !== PRIVATE_KEY_HEX_LENGTH)
+    ) {
       throw new Error('RESOLVER_PRIVATE_KEY must be a 0x-prefixed 32-byte hex string')
     }
 
     const resolverAddress = environment.RESOLVER_ADDRESS?.trim()
     if (resolverAddress && !isAddress(resolverAddress, { strict: false })) {
       throw new Error('RESOLVER_ADDRESS must be an EVM address')
+    }
+
+    const simulationCaller = readOnly ? environment.SIMULATION_CALLER_ADDRESS?.trim() : undefined
+    if (
+      readOnly &&
+      (!simulationCaller ||
+        !isAddress(simulationCaller, { strict: false }) ||
+        isAddressEqual(getAddress(simulationCaller), zeroAddress))
+    ) {
+      throw new InvalidSimulationCallerAddressError()
     }
 
     const apiBaseUrl = (environment.API_BASE_URL?.trim() || 'https://api.morpho.org').replace(
@@ -74,7 +102,9 @@ export class ConfigService {
         : CrossedBooksResolver.with(MIDNIGHT).address,
       rpcUrl: required(environment, 'RPC_URL'),
       rpcUrlFallback: environment.RPC_URL_FALLBACK?.trim() || undefined,
+      readOnly,
       privateKey,
+      simulationCaller: simulationCaller ? getAddress(simulationCaller) : undefined,
       apiBaseUrl,
       routerApiBaseUrl,
       scanIntervalMs,
@@ -93,7 +123,9 @@ export class ConfigService {
       resolver: Address
       rpcUrl: string
       rpcUrlFallback: string | undefined
-      privateKey: Hex
+      readOnly: boolean
+      privateKey: Hex | undefined
+      simulationCaller: Address | undefined
       apiBaseUrl: string
       routerApiBaseUrl: string
       scanIntervalMs: number
@@ -125,8 +157,19 @@ export class ConfigService {
     return this.values.rpcUrlFallback
   }
 
+  /** Returns the validated signer key in write mode and `undefined` in readonly mode. */
   get privateKey() {
     return this.values.privateKey
+  }
+
+  /** Returns whether transaction signing and submission are disabled. */
+  get readOnly() {
+    return this.values.readOnly
+  }
+
+  /** Returns the validated execution-equivalent caller used only for keyless simulation. */
+  get simulationCaller() {
+    return this.values.simulationCaller
   }
 
   get apiBaseUrl() {

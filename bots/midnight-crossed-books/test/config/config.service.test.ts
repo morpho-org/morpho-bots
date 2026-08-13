@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'vitest'
 
 import { ConfigService } from '../../src/config/config.service'
+import { InvalidConfigurationError } from '../../src/config/invalid-configuration.error'
+import { InvalidSimulationCallerAddressError } from '../../src/config/invalid-simulation-caller-address.error'
+import { ResolverPrivateKeyRequiredError } from '../../src/config/resolver-private-key-required.error'
 
 const KEY = `0x${'11'.repeat(32)}`
 const REQUIRED = {
@@ -20,6 +23,89 @@ describe('ConfigService', () => {
     expect(config.minimumProfit).toBe(1n)
     expect(config.maxMatches).toBe(10)
     expect(config.resolver).toMatch(/^0x[0-9a-fA-F]{40}$/)
+    expect(config.readOnly).toBe(false)
+    expect(config.privateKey).toBe(KEY)
+  })
+
+  test('does not require a resolver private key in readonly mode', () => {
+    const config = ConfigService.from({
+      CHAIN_ID: '8453',
+      RPC_URL: 'http://rpc.example',
+      READONLY: 'true',
+      SIMULATION_CALLER_ADDRESS: `0x${'33'.repeat(20)}`,
+      RESOLVER_PRIVATE_KEY: 'ignored-in-readonly-mode'
+    })
+
+    expect(config.readOnly).toBe(true)
+    expect(config.privateKey).toBeUndefined()
+    expect(config.simulationCaller).toBe(`0x${'33'.repeat(20)}`)
+  })
+
+  test.each(['true', 'TRUE', '1'])('accepts READONLY=%s as readonly mode', value => {
+    const config = ConfigService.from({
+      CHAIN_ID: '8453',
+      RPC_URL: 'http://rpc.example',
+      READONLY: value,
+      SIMULATION_CALLER_ADDRESS: `0x${'33'.repeat(20)}`
+    })
+
+    expect(config.readOnly).toBe(true)
+  })
+
+  test.each([undefined, '', 'false', 'FALSE', '0'])('accepts READONLY=%s as write mode', value => {
+    expect(ConfigService.from({ ...REQUIRED, READONLY: value }).readOnly).toBe(false)
+  })
+
+  test.each([
+    'not-an-address',
+    '0x0000000000000000000000000000000000000000',
+    `0x${'33'.repeat(20)}`
+  ])('ignores stale SIMULATION_CALLER_ADDRESS=%s in write mode', simulationCaller => {
+    const config = ConfigService.from({
+      ...REQUIRED,
+      SIMULATION_CALLER_ADDRESS: simulationCaller
+    })
+
+    expect(config.readOnly).toBe(false)
+    expect(config.privateKey).toBe(KEY)
+    expect(config.simulationCaller).toBeUndefined()
+  })
+
+  test.each(['yes', '2', 'truthy'])('rejects malformed READONLY=%s fail-closed', value => {
+    expect(() => ConfigService.from({ ...REQUIRED, READONLY: value })).toThrow(
+      InvalidConfigurationError
+    )
+  })
+
+  test('requires a validated keyless simulation caller in readonly mode', () => {
+    expect(() =>
+      ConfigService.from({ CHAIN_ID: '8453', RPC_URL: 'http://rpc.example', READONLY: 'true' })
+    ).toThrow(InvalidConfigurationError)
+    expect(() =>
+      ConfigService.from({
+        CHAIN_ID: '8453',
+        RPC_URL: 'http://rpc.example',
+        READONLY: 'true',
+        SIMULATION_CALLER_ADDRESS: 'not-an-address'
+      })
+    ).toThrow(InvalidConfigurationError)
+  })
+
+  test('rejects the zero simulation caller address with a named error', () => {
+    expect(() =>
+      ConfigService.from({
+        CHAIN_ID: '8453',
+        RPC_URL: 'http://rpc.example',
+        READONLY: 'true',
+        SIMULATION_CALLER_ADDRESS: '0x0000000000000000000000000000000000000000'
+      })
+    ).toThrow(InvalidSimulationCallerAddressError)
+  })
+
+  test('requires a resolver private key in normal mode with a named error', () => {
+    expect(() => ConfigService.from({ CHAIN_ID: '8453', RPC_URL: 'http://rpc.example' })).toThrow(
+      ResolverPrivateKeyRequiredError
+    )
   })
 
   test('normalizes a trailing slash from the API URL', () => {
@@ -51,6 +137,7 @@ describe('ConfigService', () => {
   test.each([
     [{ ...REQUIRED, CHAIN_ID: '1' }, 'Unsupported CHAIN_ID'],
     [{ ...REQUIRED, CHAIN_ID: '0x2105' }, 'CHAIN_ID'],
+    [{ ...REQUIRED, READONLY: 'treu' }, 'READONLY'],
     [{ ...REQUIRED, RESOLVER_PRIVATE_KEY: '0x12' }, 'RESOLVER_PRIVATE_KEY'],
     [{ ...REQUIRED, RESOLVER_ADDRESS: 'not-an-address' }, 'RESOLVER_ADDRESS'],
     [{ ...REQUIRED, API_BASE_URL: 'not-a-url' }, 'API_BASE_URL'],

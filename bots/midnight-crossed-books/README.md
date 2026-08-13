@@ -38,7 +38,9 @@ The generated files live under each infrastructure adapter's `generated/` direct
 
 - `CHAIN_ID` — required, currently `8453`.
 - `RPC_URL` — required. `RPC_URL_FALLBACK` is optional.
-- `RESOLVER_PRIVATE_KEY` — required `0x`-prefixed 32-byte bot key.
+- `READONLY` — optional; `true`/`1` enables simulation-only mode, while absent/`false`/`0` selects write mode. Other values are rejected.
+- `SIMULATION_CALLER_ADDRESS` — required in readonly mode. Set it to the non-zero public EOA that would execute resolutions in write mode so `msg.sender`, profit transfers, and reverts match execution without loading its private key. The operator is responsible for supplying this public caller address; the zero address is rejected.
+- `RESOLVER_PRIVATE_KEY` — required `0x`-prefixed 32-byte bot key unless `READONLY` is enabled.
 - `RESOLVER_ADDRESS` — optional deterministic deployment override.
 - `API_BASE_URL` — Morpho API origin, default `https://api.morpho.org`.
 - `ROUTER_API_BASE_URL` — Router API origin, defaults to `API_BASE_URL` for the public gateway.
@@ -58,6 +60,18 @@ pnpm --filter @repo/contracts run deploy:crossed-books-resolver
 ## Run
 
 ```sh
+CHAIN_ID=8453 RPC_URL=https://… READONLY=true \
+SIMULATION_CALLER_ADDRESS=0x… \
+pnpm --filter @morpho-org/midnight-crossed-books run start
+```
+
+Readonly mode uses `SIMULATION_CALLER_ADDRESS` as the execution-equivalent simulation caller, logs
+each profitable result as `match.computed`, and never creates a signer, transaction queue, or
+submission. Only the public EOA address is required; do not provide or derive its private key.
+
+To execute profitable resolutions instead, provide the signer key:
+
+```sh
 CHAIN_ID=8453 RPC_URL=https://… RESOLVER_PRIVATE_KEY=0x… \
 pnpm --filter @morpho-org/midnight-crossed-books run start
 ```
@@ -74,6 +88,22 @@ RAILWAY_PROJECT_ID=… RAILWAY_ENVIRONMENT=staging \
 RPC_URL=https://… RESOLVER_PRIVATE_KEY=0x… \
 pnpm --filter @morpho-org/midnight-crossed-books run deploy:railway
 ```
+
+For keyless readonly Railway provisioning, replace the private key with the public caller address:
+
+```sh
+RAILWAY_PROJECT_ID=… RAILWAY_ENVIRONMENT=staging \
+RPC_URL=https://… READONLY=true SIMULATION_CALLER_ADDRESS=0x… \
+pnpm --filter @morpho-org/midnight-crossed-books run deploy:railway
+```
+
+The deploy script validates and propagates `READONLY` and `SIMULATION_CALLER_ADDRESS`; it does not
+require or install `RESOLVER_PRIVATE_KEY` in readonly mode. It also removes a stale private key when
+switching to readonly and removes a stale simulation caller when switching to write mode, aborting
+before the mode change if deletion fails. Deletion uses `RAILWAY_TOKEN` (or `RAILWAY_API_TOKEN`) with
+Railway's key-only variable metadata and an explicitly project/environment/service/name-scoped
+mutation; it never runs `railway variable list` or retrieves variable values. Write mode still
+requires a valid key.
 
 CI subsequently runs the same command with `DEPLOY_ONLY=true`, so GitHub holds only a
 project/environment-scoped Railway token. Pushes to `main` deploy staging through the
