@@ -278,6 +278,7 @@ async function main() {
     send: signer.send,
     getReceipt: signer.getReceipt,
     getBaseFee: signer.getBaseFee,
+    getBlockNumber: () => getBlockNumber(client),
     syncNonce: signer.syncNonce,
     getConsumedNonce: signer.consumedNonce,
     maxFeeWei: config.maxFeeWei,

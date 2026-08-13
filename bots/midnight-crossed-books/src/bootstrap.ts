@@ -73,6 +73,7 @@ export async function createApplication(
     send: signer.send,
     getReceipt: signer.getReceipt,
     getBaseFee: signer.getBaseFee,
+    getBlockNumber: () => getBlockNumber(chainClient),
     syncNonce: signer.syncNonce,
     getConsumedNonce: signer.consumedNonce,
     maxFeeWei: config.maxFeeWei,

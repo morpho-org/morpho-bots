@@ -34,6 +34,8 @@ export type SendTx = (
 export type TxReceiptLite = { status: 'success' | 'reverted'; blockNumber: bigint }
 export type GetReceipt = (txHash: Hex) => Promise<TxReceiptLite | null>
 export type GetBaseFee = () => Promise<bigint>
+/** Reads the latest chain head for stamping a broadcast transaction. */
+export type GetBlockNumber = () => Promise<bigint>
 /** Re-derives the signer's nonce cursor from chain truth; called when nothing is in flight. */
 export type SyncNonce = () => Promise<void>
 /** Reads the EOA's latest (mined) transaction count — the nonce-consumed reconciler's chain truth. */
@@ -43,8 +45,11 @@ export type GetConsumedNonce = () => Promise<number>
 type Pending = {
   nonce: number
   txHash: Hex
+  /** Every hash broadcast for this nonce, newest first, for receipt discovery after replacement. */
+  txHashes: Hex[]
   request: TxRequest
   label: string
+  /** Chain head at broadcast time, used to prevent slow ticks from triggering instant bumps. */
   submittedAtBlock: bigint
   maxFeePerGas: bigint
   maxPriorityFeePerGas: bigint
@@ -57,6 +62,7 @@ export type PendingQueue = {
     label: string
     maxFeePerGas: bigint
     maxPriorityFeePerGas: bigint
+    /** Caller-observed head fallback when the post-broadcast head read is unavailable. */
     blockNumber: bigint
   }): Promise<void>
   onBlock(blockNumber: bigint): Promise<void>
@@ -88,11 +94,15 @@ export type PendingQueue = {
  * (empty) tracked set against receipts and the consumed nonce. When `syncNonce` is provided and the
  * tracked set is empty, the next first-send re-syncs the cursor so a dropped (never-mined) tx can't
  * strand the cursor above chain truth and turn every later send into an unminable future nonce.
+ * Pending entries stamp `submittedAtBlock` with the broadcast-time chain head, because a slow tick can
+ * make its caller-supplied head many blocks stale and trigger stuck-detection immediately. Sampling
+ * after broadcast means a slightly late sample can only delay a legitimate bump by the send duration.
  */
 export function createPendingQueue({
   send,
   getReceipt,
   getBaseFee,
+  getBlockNumber,
   syncNonce,
   getConsumedNonce,
   maxFeeWei,
@@ -106,6 +116,12 @@ export function createPendingQueue({
   send: SendTx
   getReceipt: GetReceipt
   getBaseFee: GetBaseFee
+  /**
+   * Reads the chain head after broadcast so `submittedAtBlock` reflects the broadcast-time head.
+   * A slow tick can make its caller-supplied head many blocks stale and trigger stuck-detection
+   * immediately; read failures fall back to the caller's block without losing the sent entry.
+   */
+  getBlockNumber: GetBlockNumber
   /** When set, re-derives the signer's nonce cursor before a first send on an empty queue. */
   syncNonce?: SyncNonce
   /** When set, every `reconcileEveryBlocks` blocks the queue drops tracked-but-consumed nonces. */
@@ -183,6 +199,18 @@ export function createPendingQueue({
     }
   }
 
+  const sampleSubmittedAtBlock = async (label: string, fallbackBlock: bigint): Promise<bigint> => {
+    const observed = await tryCatch(getBlockNumber())
+    if (observed.error) {
+      logger.warn('head.read_failed', {
+        label,
+        reason: revertReason(observed.error)
+      })
+      return fallbackBlock
+    }
+    return observed.data > fallbackBlock ? observed.data : fallbackBlock
+  }
+
   async function submit(args: {
     request: TxRequest
     label: string
@@ -243,12 +271,14 @@ export function createPendingQueue({
       return
     }
     const { nonce, txHash } = sent.data
+    const submittedAtBlock = await sampleSubmittedAtBlock(args.label, args.blockNumber)
     pending.set(nonce, {
       nonce,
       txHash,
+      txHashes: [txHash],
       request: args.request,
       label: args.label,
-      submittedAtBlock: args.blockNumber,
+      submittedAtBlock,
       maxFeePerGas: args.maxFeePerGas,
       maxPriorityFeePerGas: args.maxPriorityFeePerGas,
       attempt: 0
@@ -319,10 +349,12 @@ export function createPendingQueue({
       return
     }
     const oldHash = entry.txHash
+    const submittedAtBlock = await sampleSubmittedAtBlock(entry.label, blockNumber)
     entry.txHash = replaced.data.txHash
+    entry.txHashes.unshift(replaced.data.txHash)
     entry.maxFeePerGas = result.fees.maxFeePerGas
     entry.maxPriorityFeePerGas = result.fees.maxPriorityFeePerGas
-    entry.submittedAtBlock = blockNumber
+    entry.submittedAtBlock = submittedAtBlock
     entry.attempt += 1
     logger.info('tx.bumped', {
       label: entry.label,
@@ -347,8 +379,20 @@ export function createPendingQueue({
     // Deleting the current key mid-iteration (via `drop`) is well-defined for a Map.
     for (const entry of pending.values()) {
       if (entry.nonce >= count.data) continue
-      const receipt = await tryCatch(getReceipt(entry.txHash))
-      if (!receipt.error && !receipt.data) drop(entry.nonce, 'nonce_consumed')
+      let foundReceipt = false
+      let receiptCheckFailed = false
+      for (const txHash of entry.txHashes) {
+        const receipt = await tryCatch(getReceipt(txHash))
+        if (receipt.error) {
+          receiptCheckFailed = true
+          break
+        }
+        if (receipt.data) {
+          foundReceipt = true
+          break
+        }
+      }
+      if (!foundReceipt && !receiptCheckFailed) drop(entry.nonce, 'nonce_consumed')
     }
   }
 
@@ -393,8 +437,16 @@ export function createPendingQueue({
       // Per-entry isolation: one entry's transient read failure (getReceipt/getBaseFee) must not
       // abort the sweep for the rest of the queue. replaceStuck owns its own send-error handling.
       try {
-        const receipt = await getReceipt(entry.txHash)
-        if (receipt) {
+        let receipt: TxReceiptLite | null = null
+        let receiptHash: Hex | undefined
+        for (const txHash of entry.txHashes) {
+          receipt = await getReceipt(txHash)
+          if (receipt) {
+            receiptHash = txHash
+            break
+          }
+        }
+        if (receipt && receiptHash) {
           // One-block receipt finality: a receipt is treated as terminal (confirm or revert) the
           // moment it appears — accepted for the L2s these bots target (Base, Robinhood /
           // Arbitrum-Orbit), which do not reorg confirmed transactions in practice. If a receipt
@@ -406,14 +458,14 @@ export function createPendingQueue({
             logger.info('tx.confirmed', {
               label: entry.label,
               nonce: entry.nonce,
-              txHash: entry.txHash,
+              txHash: receiptHash,
               blockNumber: receipt.blockNumber
             })
           } else {
             logger.warn('tx.reverted', {
               label: entry.label,
               nonce: entry.nonce,
-              txHash: entry.txHash,
+              txHash: receiptHash,
               blockNumber: receipt.blockNumber
             })
           }
