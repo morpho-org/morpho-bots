@@ -171,7 +171,12 @@ a compromised bot cannot starve the kill switch with otherwise valid cancellatio
 ledger is unavailable, quote/ratify and bot-originated routine revokes fail closed while the
 break-glass principal draws from a small **ledger-independent emergency-revoke budget**: a durable,
 atomically consumed token/gas/nonce allowance on an independently operated high-availability
-store, sized only for the configured full-book cleanup. Reserved concurrency
+store, sized only for the configured full-book cleanup. The same independent control plane keeps a
+**ledger-independent revocation inventory**: an append-only, read-replicated catalog of every root
+and group whose signature could make exposure publishable. Catalog persistence is a write-before-
+sign condition for quote and ratify; if both the primary ledger and catalog cannot durably record
+an entry, signing fails closed. Break-glass therefore retains the targets needed to cancel hidden,
+signed-but-unpublished exposure even when the primary reservation ledger cannot be read. Reserved concurrency
 isolates revoke capacity from quote floods but is explicitly **not** a rate limit; it cannot bound
 sequential signatures. If that independent budget cannot be checked atomically, revoke signing
 fails closed and pages the operator rather than becoming unmetered. The final backstop is a
@@ -213,10 +218,13 @@ The set is approved only when **three properties** all hold:
    are open questions; the property itself is a decided policy requirement.
 
 Beneath these three headline properties, **field-level validation** on every offer: market
-allowlist; per-market and total exposure caps, enforced against **aggregate signed exposure** —
-the proposed set, the maker's already-live offers from the middleware's own reads, and every
-still-outstanding signed-but-unpublished reservation (see Statefulness), never per-intent
-amounts alone; expiry ≤ market maturity and inside a **freshness ceiling** — a policy parameter
+allowlist; per-market and total exposure caps, enforced against the maker's **current filled positions**
+plus **aggregate signed exposure** — the proposed set, the maker's already-live offers from the
+middleware's own reads, and every still-outstanding signed-but-unpublished reservation (see
+Statefulness), never per-intent amounts alone. Position and offer state come from the same pinned,
+independent snapshot, and cap headroom is the configured budget minus filled position exposure,
+live offers, and reservations; a fill therefore consumes rather than restores signing room. Expiry
+≤ market maturity and inside a **freshness ceiling** — a policy parameter
 capping offer lifetime from signing time, so a stockpiled signature dies quickly; offer start
 not meaningfully before the first validation/reservation time (with the Setter reuse rule below);
 exact maker/receiver/callback/ratifier fields; owned
@@ -244,21 +252,22 @@ derived root — under the same chain/value/fee pins as revocations, targeting t
 ratifier. The middleware never needs to remember which roots it produced: it recomputes them.
 Because a ratified root is publishable by **any funded sender** — the Mempool log contract
 accepts the encoded payload from any account — a signed ratification is publishable exposure in
-itself. Ratify and publication are therefore one ledgered flow: the first approved intent for an
-exact `(maker, root, offer set)` conditionally creates one per-offer exposure reservation, and the
-paired quote/publication intent must find and reuse that same reservation rather than charging a
-second copy. A mismatched set or root is a distinct request and is evaluated against the existing
-reservation. The reservation persists its `validatedAt` snapshot time, the exact validated offer
-fields, and persists the validated `continuousFeeCap` derived by the middleware. For the paired
-Setter publication, the offer `start` check is evaluated against the original reservation's
-validation time, not the later publication-signing time after the ratification receipt, and publication
-reuses the reserved fee cap rather than requiring it to equal a newly derived cap. The middleware
-refreshes the market-fee and PnL reads and verifies that the reserved cap remains safe under the
-later snapshot; it fails closed if it does not. Every other policy check is refreshed, and a
-deployment-configured maximum ratify-to-publish age bounds how long that reuse remains valid. Once
-that age or the offer freshness ceiling expires, publication fails closed and requires a newly
-validated root. Ratify is a **quote-enabling intent**, authorized like quote and never granted to
-break-glass principals. Ecrecover deployments never use this intent.
+itself. Ratify approval is therefore the **final publication authorization**, not the first half of
+a safety decision that can be revoked by a later middleware check. Before signing the ratification,
+the middleware performs every quote check against one pinned snapshot, derives the exact root and
+publication payload, fixes the offer expiry and `continuousFeeCap`, and atomically reserves the
+exposure. The returned publication payload may be broadcast by any sender without another policy
+decision; no security claim depends on that sender returning for a paired publication intent.
+
+Ratify and publication still share one ledgered identity: the approved `(maker, root, offer set)`
+conditionally creates one per-offer exposure reservation, and later observation of that exact
+publication reuses rather than double-charges it. A mismatched set or root is a distinct request and
+is evaluated against the existing reservation. After ratification, the only bounds are those encoded
+in the authorized artifacts and chain state: the offer freshness expiry, the fixed fee cap, group
+consumption, or root cancellation. A refreshed PnL/market-fee check or a middleware-only
+ratify-to-publish timer cannot fail closed once a third party can publish, so neither is presented as
+a post-ratify control. Ratify is a **quote-enabling intent**, authorized like quote and never granted
+to break-glass principals. Ecrecover deployments never use this intent.
 
 Policy parameters live in the middleware's deployment, never in the request; the state feeding
 its checks comes from its own reads, never from the caller. A compromised bot can neither relax
@@ -348,10 +357,18 @@ logic, and any alternative host must preserve the trust split: the middleware al
 - **Break-glass revoke is just another IAM principal** granted the revoke invoke surface: an
   operator can invoke the revoke intent directly with their own credentials, with no bot in the
   path — and that surface cannot produce quote signatures.
-- Entering break-glass mode first atomically enables an emergency deny in middleware policy and
-  disables the routine quote and ratify invoke grants before cleanup starts. Routine principals
-  cannot obtain fresh quote-enabling signatures until an independently authorized operator clears
-  the deny after verifying cleanup; revocation remains available throughout.
+- Entering break-glass mode first atomically increments a durable **deny generation** in middleware
+  policy and disables the routine quote and ratify invoke grants before cleanup starts. Every
+  quote/ratify handler captures that generation on admission and acquires a generation-scoped
+  signing lease in the same transaction that reserves aggregate capacity. The handler checks the
+  lease immediately before KMS signing and releases it only after the result is durably cataloged.
+  Break-glass transition denies new leases and waits for every older-generation lease to drain (or
+  be conclusively failed and its reservation released) before cleanup starts. An invocation admitted
+  before emergency deny can therefore either finish as known revocation inventory before cleanup or
+  produce no signature; it cannot return an untracked fresh signature during cleanup. If lease state
+  cannot be checked or drained, cleanup does not claim containment and pages the operator. Routine
+  principals cannot obtain fresh quote-enabling signatures until an independently authorized
+  operator clears the deny after verifying cleanup; revocation remains available throughout.
 - Setter cleanup treats irreversible group cancellations as authoritative. The runbook drains or
   replaces every already-signed ratification transaction and consumes every affected offer group;
   `setIsRootRatified(..., false)` is defense in depth, not the sole kill switch, because an older
@@ -372,14 +389,28 @@ consumption domain** `(maker, market, group, side, cap kind/value)`. In `shared-
 has its own group and cap; in `per-book` mode every leaf on one side repeats the same side-wide cap
 and shared group, so that cap is counted once rather than multiplied by the rung count. Leaves
 remain distinct for crossed-book, PnL, publication, and expiry tracking; only repeated shared-cap
-exposure is deduplicated. Aggregate caps, crossed-book checks, and PnL checks are enforced over
-live offers **plus every outstanding reserved offer** with those semantics. Conditional creation
-makes a Setter ratify followed by publication of the exact same root idempotent: the second intent
-reuses the existing entries and cannot double-count or double-reserve them. Publication is tracked
-per leaf, not merely per root: each reservation is released only when that exact offer is observed
-live (it then counts as live) or its own freshness ceiling passes unpublished. Observing one leaf
-never releases sibling leaves from the same root. The ceiling keeps the ledger tiny and
-self-expiring; conditional writes serialize concurrent intents. The reservation ledger tracks the
+exposure is deduplicated. Aggregate caps, crossed-book checks, and PnL checks are enforced over current filled positions,
+live offers, and **every outstanding reserved offer** with those semantics. Reservation creation
+transactionally updates **atomic aggregate counters** for every affected `(maker, market)` cap, the
+maker-wide cap, and the applicable signed-gas budget. Each counter update conditionally requires
+enough remaining headroom, and the counter updates, per-offer records, deny-generation fence, and
+idempotency marker commit as one transaction. Concurrent intents for different roots therefore
+serialize on shared counter versions instead of both spending the same observed headroom; a failed
+condition causes a fresh snapshot and full re-evaluation, never a partial reservation. Conditional
+creation makes an exact Setter ratify/publication observation idempotent and cannot double-count or
+double-reserve it.
+
+Publication is tracked per leaf, not merely per root. A reservation moves from reserved to live
+when that exact offer is observed and is released on its own freshness expiry. Observed group
+consumption and Ecrecover root cancellation are also **root cancellation as release conditions** for
+every affected reserved leaf, including signed-but-unpublished leaves that can no longer become
+takeable. Setter `false` releases only after the older signed `true` transaction has been replaced or
+otherwise made unusable and that outcome is final; irreversible group consumption remains the
+authoritative immediate Setter release signal. Releases decrement the same aggregate counters
+transactionally and carry an idempotent terminal marker, so observation, cancellation, and expiry
+races cannot free capacity twice. Observing one live leaf never releases a still-publishable sibling
+merely because they share a root. The ceiling and terminal cleanup keep the ledger tiny and
+self-expiring. The reservation ledger tracks the
 routine signed-gas budget and the break-glass-principal-only protected revoke reserve; the separate
 ledger-independent emergency allowance is consumed only by that break-glass principal during a
 ledger outage. Together those budgets make the bounded-loss claim hold. The middleware validates
