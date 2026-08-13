@@ -154,13 +154,14 @@ routine transaction whose fee bid can strand an otherwise valid emergency replac
 Per-transaction fee/gas ceilings alone cannot stop a leaked invoker from bleeding the maker's
 native balance one valid cancellation at a time. Transaction-signing intents therefore also draw
 on **rolling signed-gas budgets** tracked in the reservation ledger (see Statefulness), and the
-budgets are **partitioned by invoke surface**: publication and ratification draw on a routine
-budget, while the revoke surface holds its **own protected reserve** — sized for several
-full-book cleanups — that routine signing can never draw down, so a compromised bot exhausting
-the routine budget cannot starve the kill switch. When the ledger is unavailable, quote/ratify
-fail closed while revoke signing draws from a small **ledger-independent emergency-revoke
-budget**: a durable, atomically consumed token/gas/nonce allowance on an independently operated
-high-availability store, sized only for the configured full-book cleanup. Reserved concurrency
+budgets are **keyed by caller principal and intent**: publication, ratification, and bot-originated
+routine revokes draw on the routine budget, while break-glass revokes alone draw on a **protected
+reserve** — sized for several full-book cleanups — that the bot principal can never draw down, so
+a compromised bot cannot starve the kill switch with otherwise valid cancellations. When the
+ledger is unavailable, quote/ratify and bot-originated routine revokes fail closed while the
+break-glass principal draws from a small **ledger-independent emergency-revoke budget**: a durable,
+atomically consumed token/gas/nonce allowance on an independently operated high-availability
+store, sized only for the configured full-book cleanup. Reserved concurrency
 isolates revoke capacity from quote floods but is explicitly **not** a rate limit; it cannot bound
 sequential signatures. If that independent budget cannot be checked atomically, revoke signing
 fails closed and pages the operator rather than becoming unmetered. The final backstop is a
@@ -264,7 +265,9 @@ The ports serve **every maker workflow, not only the ladder**: position bootstra
 auto-refill) signs the same transaction kinds through
 [`production-bootstrap.ts`](../../bots/quoter-bot/src/infrastructure/bootstrap/production-bootstrap.ts),
 and in middleware mode a bootstrap top-up is simply a quote intent in its bootstrap group
-namespace — same three properties, same field checks. No workflow retains a generic signer.
+namespace — same three properties, same field checks. Because the no-PnL-drop property is strict,
+middleware mode disables discounted bootstrap: bootstrap and auto-refill require a non-negative
+premium and cannot use the existing negative-premium path. No workflow retains a generic signer.
 
 The ports are **transport-agnostic**: they express intents, not hosts. The Lambda invoker is one
 adapter behind them; plugging in a different middleware host tomorrow — an HTTP API, a Cloudflare
@@ -285,7 +288,7 @@ logic, and any alternative host must preserve the trust split: the middleware al
   `lambda:InvokeFunction` on this function's intent surfaces — the bot loses `kms:Sign` entirely.
   The Lambda's execution role is the only principal with `kms:Sign` on the maker key, plus the
   outbound reads its checks need. Creating that execution role, the invoke-only credentials, and
-  the CloudTrail data-event selector for the function (see Observability) is part of the
+  the CloudTrail data-event selectors for all three intent functions (see Observability) are part of the
   deliverable.
 - **Caller-to-intent scoping**: principals are authorized per intent type, not merely per
   function. Each of the three intents is its **own Lambda function** — one shared container
@@ -344,28 +347,28 @@ reuses the existing entries and cannot double-count or double-reserve them. Publ
 per leaf, not merely per root: each reservation is released only when that exact offer is observed
 live (it then counts as live) or its own freshness ceiling passes unpublished. Observing one leaf
 never releases sibling leaves from the same root. The ceiling keeps the ledger tiny and
-self-expiring; conditional writes serialize concurrent intents. The reservation ledger tracks the
-routine signed-gas budget and protected normal-operation revoke reserve; the separate
-ledger-independent emergency allowance is consumed only during ledger outage. Together those
+self-expiring; conditional writes serialize concurrent intents. The reservation ledger tracks the routine signed-gas budget and the break-glass-principal-only
+protected revoke reserve; the separate ledger-independent emergency allowance is consumed only
+by that break-glass principal during ledger outage. Together those
 budgets make the bounded-loss claim hold. Transaction nonces stay
 caller-owned (see the intent contract), so the middleware never coordinates the account's
 transaction stream.
 
 ### 7. Failure posture
 
-| Failure                                   | Required behavior                                    |
-| ----------------------------------------- | ---------------------------------------------------- |
-| Invocation fails (throttle, error, limit) | Halt quoting (fail closed) and retry; offers stand   |
-| Cold start latency                        | Tolerated; the hourly-ish cadence absorbs it         |
-| Quote intent denied                       | Typed rejection, nothing signed; alert if persistent |
-| Revoke intent denied                      | Near-impossible by design; treat as misconfig, alert |
-| Concurrent tx signers (bot + break-glass) | Same-nonce fee-bump replacement resolves on-chain    |
-| Read fails or snapshot is incoherent      | Fail closed: typed retryable denial, no signature    |
-| Reservation ledger unavailable            | Quote/ratify closed; revoke uses independent budget  |
-| Independent revoke budget unavailable     | Revoke fails closed and pages operator               |
-| KMS error                                 | Typed failure; never assume a signature was produced |
-| Policy parameters missing/invalid at init | Refuse to serve; never run a partial or empty policy |
-| Unknown intent type/version               | Reject; no best-effort interpretation of payloads    |
+| Failure                                   | Required behavior                                                       |
+| ----------------------------------------- | ----------------------------------------------------------------------- |
+| Invocation fails (throttle, error, limit) | Halt quoting (fail closed) and retry; offers stand                      |
+| Cold start latency                        | Tolerated; the hourly-ish cadence absorbs it                            |
+| Quote intent denied                       | Typed rejection, nothing signed; alert if persistent                    |
+| Revoke intent denied                      | Near-impossible by design; treat as misconfig, alert                    |
+| Concurrent tx signers (bot + break-glass) | Same-nonce fee-bump replacement resolves on-chain                       |
+| Read fails or snapshot is incoherent      | Fail closed: typed retryable denial, no signature                       |
+| Reservation ledger unavailable            | Quote/ratify/routine revoke closed; break-glass uses independent budget |
+| Independent revoke budget unavailable     | Revoke fails closed and pages operator                                  |
+| KMS error                                 | Typed failure; never assume a signature was produced                    |
+| Policy parameters missing/invalid at init | Refuse to serve; never run a partial or empty policy                    |
+| Unknown intent type/version               | Reject; no best-effort interpretation of payloads                       |
 
 ## Considered Alternatives
 
@@ -447,9 +450,10 @@ host itself; it strengthens rather than changes this design.
   remaining way to get a bad set past those two checks (open question 7). Reads for one intent
   are pinned to a single deterministic snapshot; a mixed-block view is a denial, not an input.
 - A small managed store with conditional writes (e.g. DynamoDB) is available to the Lambda for
-  the reservation ledger and the per-surface signed-gas budgets. It holds no secrets; its
-  unavailability fails quoting closed while revocation stays served uncharged under
-  infrastructure throttling.
+  the reservation ledger and the principal-and-intent-keyed signed-gas budgets. It holds no
+  secrets; its unavailability fails quote/ratify and bot-originated routine revokes closed, while
+  break-glass revocation must atomically consume the independently stored emergency budget or fail
+  closed and page the operator.
 - The maker EOA's native balance is operationally bounded: funded above the `NATIVE_RESERVE_WEI`
   minimum and below the new configured funding ceiling, with an alert on breach. The gas-grief
   hard cap is this operational control, not a protocol guarantee.
@@ -497,8 +501,8 @@ host itself; it strengthens rather than changes this design.
   side is an incident signal.
   Lambda `Invoke` is a CloudTrail **data event and is not logged by default**
   ([Lambda CloudTrail docs](https://docs.aws.amazon.com/lambda/latest/dg/logging-using-cloudtrail.html));
-  enabling the data-event selector for this function is an explicit v0 deliverable — without it,
-  the invoke side of this audit trail silently does not exist.
+  enabling data-event selectors for all three intent function ARNs is an explicit v0 deliverable —
+  without complete coverage, the invoke side of this audit trail silently omits intent surfaces.
 - Alerting on denials, invocation errors/throttles, KMS errors, and independent-read failures.
   Bot-side `make.rejected` events extend with middleware-denial reasons; invocation-failure halts
   surface through the existing failure events.
