@@ -274,8 +274,12 @@ itself. Ratify approval is therefore the **final publication authorization**, no
 a safety decision that can be revoked by a later middleware check. Before signing the ratification,
 the middleware performs every quote check against one pinned snapshot, derives the exact root and
 publication payload, fixes the offer expiry and `continuousFeeCap`, and atomically reserves the
-exposure. The returned publication payload may be broadcast by any sender without another policy
-decision; no security claim depends on that sender returning for a paired publication intent.
+exposure. The returned publication payload is submitted through a publication-broadcaster port
+backed by a separate, minimally funded **non-maker** account. That adapter accepts only the exact
+zero-value Mempool target and calldata returned by the ratify intent; it has no maker key or
+loan-asset authority. The sender adds no policy decision — no security claim depends on it returning
+for a paired publication intent — but it gives Setter ladder, bootstrap, and auto-refill flows an
+explicit way to put the already-authorized payload onchain after generic maker signing is removed.
 
 Ratify and publication still share one ledgered identity: the approved `(maker, root, offer set)`
 conditionally creates one per-offer capacity reservation (lend exposure for buys, unwind inventory
@@ -307,8 +311,9 @@ signed, by construction.
 The viem `LocalAccount.sign(hash)` blind-digest surface is exactly what is being removed, so the
 middleware is deliberately **not** a drop-in `LocalAccount` replacement. The bot-side seam is
 intent-level ports — a quote-publication port (signed tree plus signed publication transaction),
-an invalidation-signing port, and a root-ratification port for Setter deployments — backed by
-middleware-invoking adapters, selected as a new identity method alongside
+an invalidation-signing port, a root-ratification port for Setter deployments, and the constrained
+non-maker publication-broadcaster port described above — backed by middleware-invoking adapters,
+selected as a new identity method alongside
 `private-key`/`keystore`/`aws` in
 [`signer-identity.utils.ts`](../../bots/quoter-bot/src/config/signer-identity.utils.ts). Any
 residual generic digest-signing path fails closed.
@@ -326,11 +331,13 @@ skipped merely because the bot no longer has direct KMS access.
 
 The ports serve **every maker workflow, not only the ladder**: position bootstrap (including
 auto-refill) signs the same transaction kinds through
-[`production-bootstrap.ts`](../../bots/quoter-bot/src/infrastructure/bootstrap/production-bootstrap.ts),
-and in middleware mode a bootstrap top-up is simply a quote intent in its bootstrap group
-namespace — same three properties, same field checks. Because the no-PnL-drop property is strict,
-middleware mode disables discounted bootstrap: bootstrap and auto-refill require a non-negative
-premium and cannot use the existing negative-premium path. No workflow retains a generic signer.
+[`production-bootstrap.ts`](../../bots/quoter-bot/src/infrastructure/bootstrap/production-bootstrap.ts).
+In middleware mode an Ecrecover bootstrap top-up uses a quote intent in its bootstrap group
+namespace; a Setter bootstrap or auto-refill uses the ratify intent and then the constrained
+publication-broadcaster port, exactly like the Setter ladder flow. Both paths enforce the same three
+properties and field checks. Because the no-PnL-drop property is strict, middleware mode disables
+discounted bootstrap: bootstrap and auto-refill require a non-negative premium and cannot use the
+existing negative-premium path. No workflow retains a generic maker signer.
 
 The ports are **transport-agnostic**: they express intents, not hosts. The Lambda invoker is one
 adapter behind them; plugging in a different middleware host tomorrow — an HTTP API, a Cloudflare
@@ -440,17 +447,28 @@ condition causes a fresh snapshot and full re-evaluation, never a partial reserv
 creation makes an exact Setter ratify/publication observation idempotent and cannot double-count or
 double-reserve it.
 
+v0 uses DynamoDB and sets a **middleware-mode rung cap of 40 per side** (80 offers), lower than the
+general quoter limit. The reservation planner has a fixed, tested write-action budget covering the
+80 per-offer records plus every aggregate counter, generation condition, gas-budget update, and
+idempotency marker, and rejects any plan above DynamoDB's 100-action `TransactWriteItems` limit
+before validation or signing. No request is chunked across transactions: raising the cap requires a
+store or schema that can atomically commit the larger maximum tree, plus updated boundary tests.
+
 Publication is tracked per leaf, not merely per root. A reservation moves from reserved to live
-when that exact offer is observed and is released on its own freshness expiry. Observed group
-consumption and Ecrecover root cancellation are also **root cancellation as release conditions** for
-every affected reserved leaf, including signed-but-unpublished leaves that can no longer become
-takeable. Setter `false` releases only after the older signed `true` transaction has been replaced or
-otherwise made unusable and that outcome is final; irreversible group consumption remains the
-authoritative immediate Setter release signal. Releases decrement the same aggregate counters
-transactionally and carry an idempotent terminal marker, so observation, cancellation, and expiry
-races cannot free capacity twice. Observing one live leaf never releases a still-publishable sibling
-merely because they share a root. The ceiling and terminal cleanup keep the ledger tiny and
-self-expiring. The reservation ledger tracks the
+when that exact offer is observed and is released on its own freshness expiry. Partial group
+consumption is not a terminal release condition: reconciliation keeps the group's remaining
+takeable capacity reserved and moves consumed buy capacity into the independently read filled
+position, so a buy fill does not reopen aggregate lend headroom. A group reservation is terminally
+released only when consumption reaches the affected cap, including `MAX_OFFER_CAP` cancellation.
+Ecrecover root cancellation is also a terminal release condition for every affected reserved leaf,
+including signed-but-unpublished leaves that can no longer become takeable. Setter `false` releases
+only after the older signed `true` transaction has been replaced or otherwise made unusable and that
+outcome is final; cap-reaching irreversible group consumption remains the authoritative immediate
+Setter release signal. Releases decrement the same aggregate counters transactionally and carry an
+idempotent terminal marker, so observation, cancellation, and expiry races cannot free capacity
+twice. Observing one live leaf never releases a still-publishable sibling merely because they share
+a root. The ceiling and terminal cleanup keep the ledger tiny and self-expiring. The reservation
+ledger tracks the
 routine signed-gas budget and the break-glass-principal-only protected revoke reserve; the separate
 ledger-independent emergency allowance is consumed only by that break-glass principal during a
 ledger outage. Together those budgets make the bounded-loss claim hold. The middleware validates
@@ -553,8 +571,10 @@ host itself; it strengthens rather than changes this design.
   providers and/or quorum agreement** — because a single lying or censoring provider is the
   remaining way to get a bad set past those two checks (open question 7). Reads for one intent
   are pinned to a single deterministic snapshot; a mixed-block view is a denial, not an input.
-- A small managed store with conditional writes (e.g. DynamoDB) is available to the Lambda for
-  the reservation ledger and invoke-surface-and-intent-keyed signed-gas budgets. It holds no
+- DynamoDB is available to the Lambda for the reservation ledger and
+  invoke-surface-and-intent-keyed signed-gas budgets. Middleware mode enforces the 40-rung-per-side
+  cap so every reservation plan fits one 100-action transaction; configuration and runtime guards
+  reject larger plans before signing. The store holds no
   secrets; its unavailability fails quote/ratify and bot-originated routine revokes closed, while
   break-glass revocation must atomically consume the independently stored emergency budget or fail
   closed and page the operator.
@@ -582,8 +602,8 @@ host itself; it strengthens rather than changes this design.
   `ListTakeableOfferResponse` exposes only `cursor` and `data`, so adding and consuming this
   metadata is a blocking v0 deliverable; middleware quote/ratify signing must remain disabled
   until an integration test proves all policy reads can be pinned to one indexed block.
-- A small managed state store for the reservation ledger and signed-gas budget (e.g. DynamoDB
-  with conditional writes).
+- DynamoDB for the reservation ledger and signed-gas budget, with conditional writes and the
+  middleware-only rung cap that keeps each reservation within one transaction.
 - `@morpho-org/midnight-sdk` offer-tree EIP-712 hashing for canonical encoding inside the Lambda.
 - viem for transaction serialization and signature parsing/verification in the Lambda.
 - [TIB-2026-07-27](./TIB-2026-07-27-midnight-quoter-bot.md) for the V1 security gate this TIB
