@@ -56,12 +56,12 @@ const TARGET_QUERY = `query RailwayVariableTarget($projectId: String!) {
     services { edges { node { id name } } }
   }
 }`
-const VARIABLES_QUERY = `query VariablesForServiceDeployment(
+const VARIABLES_QUERY = `query Variables(
   $projectId: String!
   $environmentId: String!
   $serviceId: String!
 ) {
-  variablesForServiceDeployment(
+  variables(
     projectId: $projectId
     environmentId: $environmentId
     serviceId: $serviceId
@@ -176,7 +176,7 @@ export const deleteRailwayVariable = async ({
     fetcher,
     token
   })
-  const variables = recordField(listed, 'variablesForServiceDeployment')
+  const variables = recordField(listed, 'variables')
   if (!variables) throw error
   if (!Object.prototype.hasOwnProperty.call(variables, name)) return false
 

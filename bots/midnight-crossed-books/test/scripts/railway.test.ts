@@ -33,7 +33,7 @@ const targetResponse = {
   }
 }
 const variablesResponse = {
-  data: { variablesForServiceDeployment: { RESOLVER_PRIVATE_KEY: 'secret-value' } }
+  data: { variables: { RESOLVER_PRIVATE_KEY: 'secret-value' } }
 }
 
 const operations = () => ({
@@ -256,6 +256,35 @@ describe('Railway variable deletion API', () => {
     expect(() => resolveRailwayAccessToken({})).toThrow('RAILWAY_TOKEN or RAILWAY_API_TOKEN')
   })
 
+  test('checks service-scoped variables before deleting an existing variable', async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(targetResponse))
+      .mockResolvedValueOnce(
+        jsonResponse({ data: { variables: { RESOLVER_PRIVATE_KEY: 'secret-value' } } })
+      )
+      .mockResolvedValueOnce(jsonResponse({ data: { variableDelete: true } }))
+
+    await expect(
+      deleteRailwayVariable({ fetcher, name: 'RESOLVER_PRIVATE_KEY', target: TARGET, token: TOKEN })
+    ).resolves.toBe(true)
+
+    const variableRequestBody = fetcher.mock.calls[1]?.[1]?.body
+    expect(typeof variableRequestBody).toBe('string')
+    if (typeof variableRequestBody !== 'string') throw new Error('Expected a JSON request body')
+    const variableRequest = JSON.parse(variableRequestBody) as {
+      query: string
+      variables: Record<string, string>
+    }
+    expect(variableRequest.query).toContain('variables(')
+    expect(variableRequest.query).not.toContain('variablesForServiceDeployment')
+    expect(variableRequest.variables).toEqual({
+      environmentId: 'environment-id',
+      projectId: 'project-id',
+      serviceId: 'service-id'
+    })
+  })
+
   test('deletes an existing variable after confirming that its key exists', async () => {
     const fetcher = vi
       .fn<typeof fetch>()
@@ -300,9 +329,7 @@ describe('Railway variable deletion API', () => {
     const fetcher = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(jsonResponse(targetResponse))
-      .mockResolvedValueOnce(
-        jsonResponse({ data: { variablesForServiceDeployment: { OTHER_KEY: 'value' } } })
-      )
+      .mockResolvedValueOnce(jsonResponse({ data: { variables: { OTHER_KEY: 'value' } } }))
 
     await expect(
       deleteRailwayVariable({ fetcher, name: 'RESOLVER_PRIVATE_KEY', target: TARGET, token: TOKEN })
@@ -336,7 +363,8 @@ describe('Railway variable deletion API', () => {
 
     expect(source).not.toContain("'variable',\n  'list'")
     expect(source).not.toContain('railway variable list')
-    expect(source).toContain('variablesForServiceDeployment')
+    expect(source).toContain('variables(')
+    expect(source).not.toContain('variablesForServiceDeployment')
   })
 })
 
