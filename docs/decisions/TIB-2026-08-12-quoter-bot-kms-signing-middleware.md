@@ -194,11 +194,12 @@ transaction fails closed.
 
 A break-glass revocation deliberately takes over the account's transaction stream during an
 incident. It does **not** sign the node's `pending` nonce, which is the next unused nonce. It
-enumerates every occupied nonce from the middleware's recorded, still-pending routine transactions
-and signs a cleanup transaction at each **same nonce**, thereby replacing every unsafe publication
-or ratification rather than queueing behind it. Each replacement fee bid uses the repository
-replacement formula against the maximum recorded fee fields across every routine signature at that
-nonce: the priority fee is bumped by 12.5% plus the one-wei floor, and `maxFeePerGas` is the maximum
+enumerates every occupied nonce from the middleware's recorded, still-pending routine and
+setup-remediation transactions and signs a cleanup transaction at each **same nonce**, thereby
+replacing every unsafe publication, ratification, or remediation rather than queueing behind it.
+Each replacement fee bid uses the repository replacement formula against the maximum recorded fee
+fields across every signature at that nonce: the priority fee is bumped by 12.5% plus the one-wei
+floor, and `maxFeePerGas` is the maximum
 of its corresponding bump and
 `currentBaseFee * 2 + newPriorityFee`. The current pending-block base fee comes from an independent
 RPC read immediately before signing, never from the caller. The result remains subject to the
@@ -257,10 +258,16 @@ sign condition for quote and ratify: **both** the primary reservation and the in
 entry must commit durably in a `pending-signature` state before any KMS call. Failure of either write
 fails signing closed; the middleware never signs with uncharged aggregate capacity or an incomplete
 revocation inventory. After all signed response artifacts are durable, the finalization transaction
-atomically writes the ledger-independent transaction-inventory record and conditionally promotes the
-catalog entry to `signed`; a `signed` entry can therefore never exist without the exact signed bytes,
-nonce, hash, intent kind, and fee fields needed for cleanup. Stored-artifact retries become
-deliverable only after that transaction commits. The same idempotent compensation path that
+conditionally promotes the catalog entry to `signed`. For an Ecrecover quote, the catalog entry stores the exact
+tree signature and non-maker publication payload; it has no maker nonce, transaction hash, signed
+transaction bytes, or fee fields and creates no transaction-inventory record. For every maker
+transaction, including setup remediation, finalization atomically writes the separate
+ledger-independent transaction-inventory record before promoting the catalog entry; the inventory
+contains the exact signed bytes, nonce, hash, intent kind, and fee fields needed for cleanup. A
+transaction-backed `signed` catalog entry can therefore never exist without its inventory record,
+while a signature-only `signed` entry is explicitly distinguishable and remains available for root
+or group revocation. Stored-artifact retries become deliverable only after the applicable
+finalization transaction commits. The same idempotent compensation path that
 releases a failed primary reservation also writes a terminal `failed` tombstone for its catalog
 entry. Break-glass enumerates only `signed` catalog entries; `pending-signature` entries past their
 short lease are reconciled to `signed` only from complete durable artifacts, otherwise they are
@@ -301,7 +308,13 @@ accounting, replacement rules, and break-glass preemption guarantees as every ot
 transaction. Its invoke role is separate from both the bot and break-glass roles, and neither role
 can invoke it. Direct bot or operator access to `kms:Sign` may not be removed until this surface is
 deployed and its positive and deny-path acceptance tests pass; after cutover, no manual remediation
-procedure may restore direct KMS signing.
+procedure may restore direct KMS signing. Before that cutover, migration must also backfill the
+independent catalog and transaction inventory with every non-terminal offer group, ratified root,
+pending routine transaction, and pending setup-remediation transaction signed by the existing `aws`
+path, including complete artifact and occupied-nonce histories. Alternatively, deployment must prove
+that every pre-middleware offer, root, and transaction is terminal on chain. Direct KMS access cannot
+be removed until the backfill or terminal-state proof passes the same strongly consistent inventory,
+pending-set reconciliation, and break-glass preflight used after cutover.
 
 **Quote intents** carry an array of structured offers. There are **no caller-declared
 exclusions**: the prospective book is always the observed live book plus the proposed set,
@@ -467,11 +480,13 @@ when any production alias has additional version weights. IAM grants only those 
 the setup role's bounded `GetItem`/`BatchGetItem`, and `lambda:GetAlias` on the six exact
 production-alias ARNs (or an equivalently authenticated deployment manifest containing their exact
 published-version targets); it grants no wildcard Lambda reads. The setup role resolves and records
-those alias targets before accepting registry attestations. No attestation path invokes a signing
-handler or exposes a signing operation. Each published function version also exposes a dedicated
-**non-signing attestation entrypoint** in the same image. After publishing a version and before moving its
-production alias, deployment automation invokes that entrypoint under the function execution role;
-it performs only the key/config/image validation above and the conditional registry write. The
+those alias targets before accepting registry attestations. No attestation path exposes a signing
+operation. The production handler of each published function version routes a dedicated
+**non-signing attestation operation** before any signing dispatch; it is
+not a separate Lambda, alternate image command, or handler configuration. After publishing a
+version and before moving its production alias, deployment automation invokes that exact version and
+handler with the attestation operation under the function execution role; the operation performs
+only the key/config/image validation above and the conditional registry write. The
 deployment verifies the exact version-and-manifest record, retries transient failures, and refuses
 the alias rollout if the record is absent or mismatched. Readiness can therefore require fresh
 records without waiting for quote, ratify, or revoke traffic, while setup/health still never invokes
@@ -896,7 +911,9 @@ host itself; it strengthens rather than changes this design.
 - **Misbehavior of the providers behind the Lambda's own reads** — a lying or censoring RPC/API
   could wave through a crossed or unsustainable set, or block valid ones. This extends the
   provider-trust posture of [TIB-2026-07-27](./TIB-2026-07-27-midnight-quoter-bot.md) to the
-  middleware; the disagreement posture is open question 7.
+  middleware. The v0 deliverable must pin provider members and a quorum threshold, then fail closed
+  with no KMS call on disagreement, insufficient quorum, or an incoherent snapshot; quote/ratify
+  stays disabled until that configuration and its integration tests are complete (Open Question 6).
 - **DoS via invocation throttling or concurrency exhaustion** — quoting downtime; resting offers
   stand until expiry or revocation through a break-glass invoker.
 
