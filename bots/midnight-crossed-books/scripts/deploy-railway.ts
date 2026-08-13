@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url'
 
 import {
   deleteRailwayVariable,
+  isRailwayVariableMissingError,
   parseLatestStatus,
   parseServices,
   railwayVariableDeleteArgs,
@@ -120,7 +121,13 @@ async function setSecret(name: string, value: string) {
 const deleteVariable = async (name: string) => {
   if (!process.env.RAILWAY_TOKEN?.trim() && !process.env.RAILWAY_API_TOKEN?.trim()) {
     const { error } = await tryCatch($('railway', railwayVariableDeleteArgs(name, VARIABLE_TARGET)))
-    if (error) throw new RailwayVariableOperationError('delete', name)
+    if (error && !isRailwayVariableMissingError(name, errorDetails(error))) {
+      throw new RailwayVariableOperationError('delete', name)
+    }
+    if (error) {
+      console.log(`${name} is already absent on ${SERVICE}.`)
+      return
+    }
     console.log(`Deleted ${name} on ${SERVICE} (stale).`)
     return
   }

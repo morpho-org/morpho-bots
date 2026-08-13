@@ -5,7 +5,6 @@ import { InvalidConfigurationError } from '../src/config/invalid-configuration.e
 import { InvalidSimulationCallerAddressError } from '../src/config/invalid-simulation-caller-address.error'
 import { parseReadonly } from '../src/config/readonly.utils'
 import { ResolverPrivateKeyRequiredError } from '../src/config/resolver-private-key-required.error'
-import { InvalidRailwayVariableListError } from './invalid-railway-variable-list.error'
 import { RailwayAccessTokenRequiredError } from './railway-access-token-required.error'
 import { RailwayVariableOperationError } from './railway-variable-operation.error'
 
@@ -30,7 +29,9 @@ const railwayVariableTargetArgs = (target: RailwayVariableTarget) => [
   '-s',
   target.service,
   '-e',
-  target.environment
+  target.environment,
+  '-p',
+  target.projectId
 ]
 
 /**
@@ -49,23 +50,10 @@ export const resolveRailwayAccessToken = (env: Env): RailwayAccessToken => {
 }
 
 const RAILWAY_GRAPHQL_ENDPOINT = 'https://backboard.railway.com/graphql/v2'
-const RAILWAY_VARIABLE_METADATA_MAX_PAGES = 100
 const TARGET_QUERY = `query RailwayVariableTarget($projectId: String!) {
   project(id: $projectId) {
     environments { edges { node { id name } } }
     services { edges { node { id name } } }
-  }
-}`
-const VARIABLE_METADATA_QUERY = `query RailwayVariableMetadata(
-  $projectId: String!
-  $environmentId: String!
-  $after: String
-) {
-  environment(id: $environmentId, projectId: $projectId) {
-    variables(first: 100, after: $after) {
-      edges { node { name serviceId } }
-      pageInfo { endCursor hasNextPage }
-    }
   }
 }`
 const VARIABLE_DELETE_MUTATION = `mutation RailwayVariableDelete(
@@ -143,85 +131,13 @@ const resolveRailwayVariableTarget = async ({
   return { environmentId: environment.id, serviceId: service.id }
 }
 
-const railwayVariableExists = async ({
-  error,
-  fetcher,
-  ids,
-  name,
-  target,
-  token
-}: {
-  error: RailwayVariableOperationError
-  fetcher: typeof fetch
-  ids: RailwayVariableTargetIds
-  name: string
-  target: RailwayVariableTarget
-  token: RailwayAccessToken
-}) => {
-  let after: string | null = null
-  let pageCount = 0
-  const seenCursors = new Set<string>()
-  do {
-    if (pageCount >= RAILWAY_VARIABLE_METADATA_MAX_PAGES) throw error
-    pageCount += 1
-    const data = await postRailwayGraphql({
-      body: {
-        query: VARIABLE_METADATA_QUERY,
-        variables: {
-          after,
-          environmentId: ids.environmentId,
-          projectId: target.projectId
-        }
-      },
-      error,
-      fetcher,
-      token
-    })
-    const variables = recordField(recordField(data, 'environment'), 'variables')
-    const pageInfo = recordField(variables, 'pageInfo')
-    if (
-      !variables ||
-      !Array.isArray(variables.edges) ||
-      !pageInfo ||
-      typeof pageInfo.hasNextPage !== 'boolean'
-    ) {
-      throw new InvalidRailwayVariableListError()
-    }
-    const nodes = variables.edges.map(edge => recordField(edge, 'node'))
-    if (
-      nodes.some(
-        node =>
-          typeof node?.name !== 'string' ||
-          (node.serviceId !== null && typeof node.serviceId !== 'string')
-      )
-    ) {
-      throw new InvalidRailwayVariableListError()
-    }
-    const found = nodes.some(node => node?.name === name && node.serviceId === ids.serviceId)
-    if (found) return true
-
-    if (!pageInfo.hasNextPage) return false
-    if (
-      typeof pageInfo.endCursor !== 'string' ||
-      !pageInfo.endCursor.trim() ||
-      seenCursors.has(pageInfo.endCursor)
-    ) {
-      throw error
-    }
-    seenCursors.add(pageInfo.endCursor)
-    after = pageInfo.endCursor
-  } while (after)
-  return false
-}
-
 /**
- * Idempotently deletes one Railway variable without retrieving variable values.
+ * Deletes one Railway variable without retrieving variable values.
  * @param parameters - Fetch implementation, credential, exact target names, and variable name.
- * @returns `true` when a variable was deleted, or `false` when key-only metadata proved it absent.
- * @throws `RailwayVariableOperationError` when target lookup, metadata transport, or deletion fails.
- * @throws `InvalidRailwayVariableListError` when key-only metadata has an unsafe shape.
- * @remarks Requests only project/environment/service IDs and paginated key metadata before issuing
- * an explicitly project-, environment-, service-, and name-scoped delete mutation.
+ * @returns `true` when Railway accepts the deletion.
+ * @throws `RailwayVariableOperationError` when target lookup, transport, or deletion fails.
+ * @remarks Resolves only project/environment/service IDs before issuing an explicitly scoped
+ * deletion; it never requests variable names or values.
  */
 export const deleteRailwayVariable = async ({
   fetcher,
@@ -236,8 +152,6 @@ export const deleteRailwayVariable = async ({
 }) => {
   const error = new RailwayVariableOperationError('delete', name)
   const ids = await resolveRailwayVariableTarget({ error, fetcher, target, token })
-  if (!(await railwayVariableExists({ error, fetcher, ids, name, target, token }))) return false
-
   const data = await postRailwayGraphql({
     body: {
       query: VARIABLE_DELETE_MUTATION,
@@ -256,14 +170,31 @@ export const deleteRailwayVariable = async ({
   return true
 }
 
+/**
+ * Recognizes Railway CLI's documented missing-variable deletion failure.
+ * @param name - Exact variable name passed to `railway variable delete`.
+ * @param details - Captured CLI stderr or error message.
+ * @returns Whether the failure says that exact variable is absent.
+ * @throws Nothing.
+ * @remarks Performs no logging or mutation and should only turn this one idempotent case into success.
+ */
+export const isRailwayVariableMissingError = (name: string, details: string) =>
+  details.includes(`Variable '${name}' not found`)
+
+/**
+ * Builds arguments for deleting one variable from an exact Railway deployment target.
+ * @param name - Name of the variable to delete; no variable value enters command arguments.
+ * @param target - Project, environment, and service from which the variable must be deleted.
+ * @returns CLI arguments with explicit project, environment, and service context.
+ * @throws Nothing; the caller handles Railway CLI failures, including a missing variable in a
+ * linked CLI session.
+ * @remarks Builds arguments only and performs no I/O or mutation itself.
+ */
 export const railwayVariableDeleteArgs = (name: string, target: RailwayVariableTarget) => [
   'variable',
   'delete',
   name,
-  '-s',
-  target.service,
-  '-e',
-  target.environment
+  ...railwayVariableTargetArgs(target)
 ]
 
 /**
