@@ -106,7 +106,7 @@ bot host (role: invoke-only)         signing Lambda (role: kms:Sign + reads)    
 │ lambda:InvokeFunction    │ payload └──────────────────┬────────────────────┘      └───────────┘
 └──────────────────────────┘                            │ independent live reads
                                                         ▼
-                                     RPC + Morpho API/Mempool (never bot-supplied state)
+               RPC, with strong resilience / quorum + Morpho API/Mempool (never bot-supplied state)
 ```
 
 ### 1. Structured intents replace digests
@@ -161,12 +161,23 @@ signed, by construction.
 The viem `LocalAccount.sign(hash)` blind-digest surface is exactly what is being removed, so the
 middleware is deliberately **not** a drop-in `LocalAccount` replacement. The bot-side seam is
 intent-level ports — an offer-signing port and an invalidation-signing port — backed by
-Lambda-invoking adapters, selected as a new identity method alongside
+middleware-invoking adapters, selected as a new identity method alongside
 `private-key`/`keystore`/`aws` in
 [`signer-identity.utils.ts`](../../bots/quoter-bot/src/config/signer-identity.utils.ts). Any
 residual generic digest-signing path fails closed.
 
-### 4. Deployment shape: an AWS Lambda behind IAM
+The ports are **transport-agnostic**: they express intents, not hosts. The Lambda invoker is one
+adapter behind them; plugging in a different middleware host tomorrow — an HTTP API, a Cloudflare
+Worker — is an adapter swap that touches no application code.
+
+### 4. v0 deployment shape: an AWS Lambda behind IAM
+
+The Lambda is the **v0 deployment target, not part of the contract**. The middleware's policy
+core is a host-agnostic validate → encode → sign module with a thin Lambda handler around it,
+mirroring how the bot reaches the middleware only through its intent ports. Re-hosting it later —
+an HTTP API, a Cloudflare Worker — replaces the handler and the bot-side adapter, not the policy
+logic, and any alternative host must preserve the trust split: the middleware alone holds
+`kms:Sign`, and callers hold nothing but the right to invoke it.
 
 - The middleware is an **AWS Lambda function**, invoked by the bot through the AWS SDK
   (`lambda:InvokeFunction`).
@@ -294,7 +305,9 @@ host itself; it strengthens rather than changes this design.
 - The policy surface splits cleanly: price bounds and field pins are **deployment parameters**;
   the crossed-book and no-PnL-drop properties are evaluated against the Lambda's **own
   independent reads** (RPC and Morpho API/Mempool). The Lambda has network egress to those
-  sources, and a failed read fails closed.
+  sources, and a failed read fails closed. The RPC reads need **strong resilience — fallback
+  providers and/or quorum agreement** — because a single lying or censoring provider is the
+  remaining way to get a bad set past those two checks (open question 7).
 - One invocation round trip per make/revoke job — including cold starts — is compatible with the
   hourly-ish quote cadence and the one-minute bootstrap monitor.
 - The Lambda is meaningfully harder to compromise than the bot host — minimal code and
@@ -309,8 +322,8 @@ host itself; it strengthens rather than changes this design.
 - AWS Lambda (container-image function) and ECR for the image, plus IAM for the invoke-only and
   execution role chain
   ([Lambda container images](https://docs.aws.amazon.com/lambda/latest/dg/images-create.html)).
-- The Lambda's independent read surfaces: an RPC endpoint and the Morpho API/Mempool for live
-  offers, positions, and chain state.
+- The Lambda's independent read surfaces: resilient RPC access (fallback and/or quorum across
+  providers) and the Morpho API/Mempool for live offers, positions, and chain state.
 - `@morpho-org/midnight-sdk` offer-tree EIP-712 hashing for canonical encoding inside the Lambda.
 - viem for transaction serialization and signature parsing/verification in the Lambda.
 - [TIB-2026-07-27](./TIB-2026-07-27-midnight-quoter-bot.md) for the V1 security gate this TIB
