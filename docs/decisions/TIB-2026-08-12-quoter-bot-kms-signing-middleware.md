@@ -246,8 +246,9 @@ down. The primary protected reserve is sized for replacements at the **maximum c
 occupied-nonce set** (each at the protected fee and gas ceilings) plus several full-book cleanups,
 with no overlap assumed between those costs. Deployment validation computes that bound from the
 configured maximum and rejects a primary reserve below it. The reservation transaction also counts
-the maker's distinct non-terminal routine nonces and rejects any new-nonce signature that would
-exceed that configured maximum; same-nonce replacements do not increase the count. This hard cap is
+the maker's distinct non-terminal routine and setup-remediation nonces and rejects any new-nonce
+signature that would exceed that configured maximum; same-nonce replacements do not increase the
+count. This hard cap is
 checked and updated atomically with nonce lease acquisition, so concurrent invocations cannot each
 admit themselves against the last slot. Both revoke functions use the same strict revoke validator
 from the shared image, but their function ARNs, IAM grants, reserved concurrency, and server-side
@@ -507,10 +508,11 @@ exact version and manifest. Weighted/canary routing is forbidden for the six pro
 v0, so an unattested additional version cannot receive signing traffic and an attestation from a
 retired deployment cannot satisfy the check. Deployment automation and readiness both fail closed
 when any production alias has additional version weights. IAM grants only those per-key
-`dynamodb:PutItem` operations, each signing role's `GetItem` on only its own exact key,
-the setup role's bounded `GetItem`/`BatchGetItem`, and `lambda:GetAlias` on the six exact
-production-alias ARNs (or an equivalently authenticated deployment manifest containing their exact
-published-version targets); it grants no wildcard Lambda reads. The setup role resolves and records
+`dynamodb:PutItem` operations, each signing role's `GetItem` on only its own exact key, each signing
+role's `lambda:GetAlias` on only its own exact production-alias ARN, the setup role's bounded
+`GetItem`/`BatchGetItem`, and the setup role's `lambda:GetAlias` on the six exact production-alias
+ARNs (or an equivalently authenticated deployment manifest containing their exact published-version
+targets); it grants no wildcard Lambda reads. The setup role resolves and records
 those alias targets before accepting registry attestations. Before dispatching any quote, ratify,
 routine-revoke, break-glass-revoke, or setup-remediation request to KMS, that signing handler performs
 a strongly consistent read of its own exact function-version-and-manifest record and requires its
@@ -886,8 +888,10 @@ host itself; it strengthens rather than changes this design.
 
 ## Dependencies
 
-- AWS KMS `Sign`/`GetPublicKey` on the existing `ECC_SECG_P256K1` maker key
-  ([AWS KMS Sign API](https://docs.aws.amazon.com/kms/latest/APIReference/API_Sign.html)).
+- AWS KMS `Sign`/`GetPublicKey` on a newly generated `ECC_SECG_P256K1` maker key
+  ([AWS KMS Sign API](https://docs.aws.amazon.com/kms/latest/APIReference/API_Sign.html)); the old
+  maker key is referenced only for quarantine and inventory backfill and is never provisioned to the
+  middleware.
 - AWS Lambda (container-image function) and ECR for the image, plus IAM for the invoke-only and
   execution role chain
   ([Lambda container images](https://docs.aws.amazon.com/lambda/latest/dg/images-create.html)).
@@ -1052,8 +1056,11 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   invoked by a second IAM principal, an attempted bot invocation of `break-glass-revoke` denied by
   IAM, a routine-revoke payload that claims break-glass identity still charged only to the routine
   budget. Prove the admission-ceiling alert and readiness failure when the maker's native balance
-  exceeds its configured maximum, and prove every routine/remediation signing surface rejects before
-  KMS while operator-only break-glass remains available. Queue routine publications at consecutive
+  exceeds its configured maximum, and prove every routine and non-sweep setup-remediation signing
+  surface rejects before KMS while operator-only break-glass remains available. Prove the
+  manifest-pinned native-balance sweep remains available only above that ceiling and still enforces
+  its independently derived value, treasury target, maintenance epoch, nonce lease, attestation, and
+  protected remediation budget. Queue routine publications at consecutive
   occupied nonces plus a setup-remediation approval at a nonce with no revocation target, then prove
   break-glass pre-signs and broadcasts replacements for every occupied nonce before waiting, using
   the exact break-glass self-cancel for the remediation-only nonce rather than signing only the lowest
@@ -1098,9 +1105,10 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   transfers, permits, non-zero value, and attempts outside the epoch produce no KMS call. For every
   bot and operator surface, prove the exact production alias
   succeeds while the unqualified function ARN, `$LATEST`, every other version/alias, and every
-  cross-surface production alias receive `AccessDenied`. Prove setup/health can call
-  `lambda:GetAlias` on each of the six exact production
-  aliases, cannot call it on any other function or alias, rejects an attestation whose published
+  cross-surface production alias receive `AccessDenied`. Prove each signing role can call
+  `lambda:GetAlias` only on its own exact production alias, while setup/health can call it on each of
+  the six exact production aliases; prove all of those roles are denied on every other function or
+  alias. Setup/health rejects an attestation whose published
   version differs from the resolved alias target, and fails readiness when
   `RoutingConfig.AdditionalVersionWeights` is non-empty. Prove deployment automation refuses a
   weighted production-alias rollout. Verify CloudTrail data events cover all six function ARNs. A
