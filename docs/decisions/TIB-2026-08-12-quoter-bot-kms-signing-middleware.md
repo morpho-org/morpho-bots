@@ -509,10 +509,13 @@ v0, so an unattested additional version cannot receive signing traffic and an at
 retired deployment cannot satisfy the check. Deployment automation and readiness both fail closed
 when any production alias has additional version weights. IAM grants only those per-key
 `dynamodb:PutItem` operations, each signing role's `GetItem` on only its own exact key, each signing
-role's `lambda:GetAlias` on only its own exact production-alias ARN, the setup role's bounded
-`GetItem`/`BatchGetItem`, and the setup role's `lambda:GetAlias` on the six exact production-alias
-ARNs (or an equivalently authenticated deployment manifest containing their exact published-version
-targets); it grants no wildcard Lambda reads. The setup role resolves and records
+role's `lambda:GetAlias` on its own function ARN, the setup role's bounded
+`GetItem`/`BatchGetItem`, and the setup role's `lambda:GetAlias` on the six exact function ARNs
+(or an equivalently authenticated deployment manifest containing their exact published-version
+targets); it grants no wildcard Lambda reads. Because `GetAlias` authorizes the function resource
+rather than an alias resource, every caller supplies only the exact configured alias name and the
+handler/manifest validation rejects any other alias before accepting the returned target. The setup
+role resolves and records
 those alias targets before accepting registry attestations. Before dispatching any quote, ratify,
 routine-revoke, break-glass-revoke, or setup-remediation request to KMS, that signing handler performs
 a strongly consistent read of its own exact function-version-and-manifest record and requires its
@@ -1106,9 +1109,11 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
   bot and operator surface, prove the exact production alias
   succeeds while the unqualified function ARN, `$LATEST`, every other version/alias, and every
   cross-surface production alias receive `AccessDenied`. Prove each signing role can call
-  `lambda:GetAlias` only on its own exact production alias, while setup/health can call it on each of
-  the six exact production aliases; prove all of those roles are denied on every other function or
-  alias. Setup/health rejects an attestation whose published
+  `lambda:GetAlias` only on its own function ARN, while setup/health can call it on each of the six
+  exact function ARNs; prove all of those roles are denied on every other function. Because IAM
+  cannot scope `GetAlias` to an alias ARN, prove handler/manifest validation accepts only the exact
+  configured alias name and rejects every other alias name before trusting the resolved target.
+  Setup/health rejects an attestation whose published
   version differs from the resolved alias target, and fails readiness when
   `RoutingConfig.AdditionalVersionWeights` is non-empty. Prove deployment automation refuses a
   weighted production-alias rollout. Verify CloudTrail data events cover all six function ARNs. A
