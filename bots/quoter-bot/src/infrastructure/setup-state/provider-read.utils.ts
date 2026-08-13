@@ -21,13 +21,12 @@ const SAFE_CODES = new Set<NonNullable<SafeProviderReadMetadata['code']>>([
 ])
 const JSON_RPC_SERVER_ERROR_MINIMUM = -32_099
 const JSON_RPC_SERVER_ERROR_MAXIMUM = -32_000
-const JSON_RPC_INTERNAL_ERROR = -32_603
 
 const isSafeNumericRpcCode = (value: unknown): value is number =>
   typeof value === 'number' &&
   Number.isSafeInteger(value) &&
-  ((value >= JSON_RPC_SERVER_ERROR_MINIMUM && value <= JSON_RPC_SERVER_ERROR_MAXIMUM) ||
-    value === JSON_RPC_INTERNAL_ERROR)
+  value >= JSON_RPC_SERVER_ERROR_MINIMUM &&
+  value <= JSON_RPC_SERVER_ERROR_MAXIMUM
 
 const safeReadMetadata = (error: unknown): SafeProviderReadMetadata => {
   let candidate = error

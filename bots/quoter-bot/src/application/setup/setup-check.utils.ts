@@ -48,13 +48,12 @@ const SERVER_ERROR_STATUS_MINIMUM = 500
 const SERVER_ERROR_STATUS_MAXIMUM = 599
 const JSON_RPC_SERVER_ERROR_MINIMUM = -32_099
 const JSON_RPC_SERVER_ERROR_MAXIMUM = -32_000
-const JSON_RPC_INTERNAL_ERROR = -32_603
 
 const isTransientRpcCode = (value: unknown): value is number =>
   typeof value === 'number' &&
   Number.isSafeInteger(value) &&
-  ((value >= JSON_RPC_SERVER_ERROR_MINIMUM && value <= JSON_RPC_SERVER_ERROR_MAXIMUM) ||
-    value === JSON_RPC_INTERNAL_ERROR)
+  value >= JSON_RPC_SERVER_ERROR_MINIMUM &&
+  value <= JSON_RPC_SERVER_ERROR_MAXIMUM
 
 /** Fulfilled provider value or sanitized provider failure captured without short-circuiting peers. */
 type Captured<T> = { ok: true; value: T } | { ok: false; error: SafeProviderFailure }

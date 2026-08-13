@@ -243,6 +243,7 @@ export const createApplication = (
       if (options.signal.aborted) throw new SetupCheckAbortedError()
       const ladderAdapters = await (dependencies.createLadderAdapters?.(config) ??
         createProductionLadderAdapters(config))
+      if (options.signal.aborted) throw new SetupCheckAbortedError()
       const ignoredOfferGroupIds =
         config.readOnly || config.bootstrap.length === 0 || config.ladder.length === 0
           ? []
@@ -282,6 +283,7 @@ export const createApplication = (
       if (options.signal.aborted) throw new SetupCheckAbortedError()
       const adapters = await (dependencies.createLadderAdapters?.(config) ??
         createProductionLadderAdapters(config))
+      if (options.signal.aborted) throw new SetupCheckAbortedError()
       const ignoredOfferGroupIds =
         config.readOnly || config.ladder.length === 0
           ? []
@@ -328,6 +330,7 @@ export const createApplication = (
       if (options.signal.aborted) throw new SetupCheckAbortedError()
       const ladderAdapters = await (dependencies.createLadderAdapters?.(config) ??
         createProductionLadderAdapters(config))
+      if (options.signal.aborted) throw new SetupCheckAbortedError()
       const ignoredOfferGroupIds = config.readOnly
         ? []
         : ((await ladderAdapters.make.cleanupRemovedMarkets?.()) ?? [])

@@ -1168,6 +1168,43 @@ describe('createApplication', () => {
     }
   )
 
+  test.each(['bootstrap', 'ladder', 'start'])(
+    'does not run removed-market cleanup when %s is aborted while creating ladder adapters',
+    async command => {
+      const cleanupRemovedMarkets = vi.fn(async () => [marketId])
+      const controller = new AbortController()
+      const createLadderAdapters = vi.fn(() => {
+        controller.abort()
+        return {
+          positions: { readMarket: async () => ({}) },
+          rates: { readRate: async () => 500n },
+          make: {
+            cleanupRemovedMarkets,
+            readActive: async () => undefined,
+            reconcile: async () => {},
+            hardHalt: async () => {},
+            cleanup: async () => {}
+          }
+        }
+      })
+      const application = createApplication(
+        {
+          ...environment,
+          BOOTSTRAP_MARKETS: JSON.stringify([bootstrapConfiguration]),
+          LADDER_MARKETS: JSON.stringify([ladderConfiguration])
+        },
+        { createState: readyState, createLadderAdapters }
+      )
+
+      await expect(application.run([command], { signal: controller.signal })).rejects.toMatchObject(
+        {
+          name: 'AbortError'
+        }
+      )
+      expect(cleanupRemovedMarkets).not.toHaveBeenCalled()
+    }
+  )
+
   test('rejects an empty ladder before cleaning persisted ladder publications', async () => {
     const cleanupRemovedMarkets = vi.fn(async () => [marketId])
     const application = createApplication(
