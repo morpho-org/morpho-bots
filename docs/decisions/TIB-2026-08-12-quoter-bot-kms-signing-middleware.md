@@ -131,9 +131,12 @@ revocation only reduces exposure and is the always-available kill switch — con
 chain id, a **per-operation target/selector and calldata allowlist** (group consumption is exactly
 `setConsumed(group, MAX_OFFER_CAP, maker)` on the Midnight singleton, with the configured maker
 pinned as `onBehalf`; Ecrecover root cancellation is exactly `cancelRoot(maker, root)` on the
-configured ratifier), zero native value, and fee/gas ceilings. This mirrors the constraint set
-the quoter's in-process transaction assertions already pin, now enforced outside the bot; a
-compromised revoke invoker cannot spend gas mutating another maker's groups.
+configured ratifier; and Setter root cancellation is exactly
+`setIsRootRatified(maker, root, false)` on the configured `SetterRatifier`), zero native value,
+and fee/gas ceilings. Root cancellation is therefore available for both ratifier families rather
+than forcing Setter deployments to cancel every group individually. This mirrors the constraint
+set the quoter's in-process transaction assertions already pin, now enforced outside the bot; a
+compromised revoke invoker cannot spend gas mutating another maker's groups or roots.
 
 Because a signed transaction commits to an account nonce, transaction-signing intents carry
 **caller-supplied nonce and fee fields** — liveness parameters, not policy: no nonce value can
@@ -141,7 +144,12 @@ move funds, only strand or replace a transaction. The single-writer rule is unch
 the bot's serialized make/pending queue owns the nonce cursor in routine operation, and a
 break-glass revocation deliberately takes over the account's transaction stream during an
 incident — concurrent same-nonce signatures resolve on-chain as fee-bump replacements, and the
-safety revocation is the one that must win.
+safety revocation is the one that must win. That priority is enforced, not assumed: routine
+transaction signing has lower maximum-fee and priority-fee ceilings, while break-glass revokes
+reserve replacement ceilings above every routine ceiling by at least the policy's 12.5%
+replacement bump plus one wei for both EIP-1559 fee fields. If an operator cannot provision that
+headroom, break-glass must first take an ordered nonce handoff; the middleware must never sign a
+routine transaction whose fee bid can strand an otherwise valid emergency replacement.
 
 Per-transaction fee/gas ceilings alone cannot stop a leaked invoker from bleeding the maker's
 native balance one valid cancellation at a time. Transaction-signing intents therefore also draw
@@ -150,14 +158,18 @@ budgets are **partitioned by invoke surface**: publication and ratification draw
 budget, while the revoke surface holds its **own protected reserve** — sized for several
 full-book cleanups — that routine signing can never draw down, so a compromised bot exhausting
 the routine budget cannot starve the kill switch. When the ledger is unavailable, quote/ratify
-fail closed while revoke signing continues **uncharged but bounded**: per-transaction ceilings
-still apply and the revoke surface is infrastructure-throttled (reserved concurrency), so
-worst-case outage spend is rate-limited and the outage itself alerts. The final backstop is a
+fail closed while revoke signing draws from a small **ledger-independent emergency-revoke
+budget**: a durable, atomically consumed token/gas/nonce allowance on an independently operated
+high-availability store, sized only for the configured full-book cleanup. Reserved concurrency
+isolates revoke capacity from quote floods but is explicitly **not** a rate limit; it cannot bound
+sequential signatures. If that independent budget cannot be checked atomically, revoke signing
+fails closed and pages the operator rather than becoming unmetered. The final backstop is a
 **native-balance funding ceiling** — a new operational control this TIB requires, distinct from
 the existing `NATIVE_RESERVE_WEI` **minimum** readiness threshold: the operator funds the maker
 EOA between that minimum and a configured maximum, and monitoring alerts when the balance
-exceeds the maximum. Gas grief can never exceed what is funded. Native-gas spend is thereby
-capped and enters the bounded-loss arithmetic.
+exceeds the maximum. Gas grief can never exceed the remaining routine budget plus the protected
+emergency allowance, and never exceed what is funded. Native-gas spend is thereby capped and
+enters the bounded-loss arithmetic.
 
 **Quote intents** carry an array of structured offers. There are **no caller-declared
 exclusions**: the prospective book is always the observed live book plus the proposed set,
@@ -195,7 +207,8 @@ the proposed set, the maker's already-live offers from the middleware's own read
 still-outstanding signed-but-unpublished reservation (see Statefulness), never per-intent
 amounts alone; expiry ≤ market maturity and inside a **freshness ceiling** — a policy parameter
 capping offer lifetime from signing time, so a stockpiled signature dies quickly; offer start
-not meaningfully before signing time; exact maker/receiver/callback/ratifier fields; owned
+not meaningfully before the first validation/reservation time (with the Setter reuse rule below);
+exact maker/receiver/callback/ratifier fields; owned
 group namespace; the per-side `reduceOnly` flag pinned by policy — the credit-reducing side must
 carry `reduceOnly: true`, so a signed sell fill can never turn inventory reduction into new
 debt; a `continuousFeeCap` the middleware derives from its own snapshot's current market fee —
@@ -214,8 +227,13 @@ itself. Ratify and publication are therefore one ledgered flow: the first approv
 exact `(maker, root, offer set)` conditionally creates one per-offer exposure reservation, and the
 paired quote/publication intent must find and reuse that same reservation rather than charging a
 second copy. A mismatched set or root is a distinct request and is evaluated against the existing
-reservation. Ratify is a **quote-enabling intent**, authorized like quote and never granted to
-break-glass principals. Ecrecover deployments never use this intent.
+reservation. The reservation persists its `validatedAt` snapshot time. For the paired Setter
+publication, the offer `start` check is evaluated against the original reservation's validation
+time, not the later publication-signing time after the ratification receipt; all other policy
+checks are refreshed, and a deployment-configured maximum ratify-to-publish age bounds how long
+that reuse remains valid. Once that age or the offer freshness ceiling expires, publication fails
+closed and requires a newly validated root. Ratify is a **quote-enabling intent**, authorized like
+quote and never granted to break-glass principals. Ecrecover deployments never use this intent.
 
 Policy parameters live in the middleware's deployment, never in the request; the state feeding
 its checks comes from its own reads, never from the caller. A compromised bot can neither relax
@@ -314,16 +332,22 @@ published, and the freshness ceiling bounds duration, not amount — without a l
 sign-and-withhold requests could multiply exposure far beyond the caps inside one window. Every
 intent that makes exposure publishable — an approved **quote or ratify** — therefore records
 per-offer reservations keyed by maker, derived root, and canonical offer identity (market, group,
-side, cap, price, and expiry). Aggregate caps, crossed-book checks, and PnL checks are enforced
-over live offers **plus every outstanding reserved offer**. Conditional creation makes a Setter
-ratify followed by publication of the exact same root idempotent: the second intent reuses the
-existing entries and cannot double-count or double-reserve them. Publication is tracked per leaf,
-not merely per root: each reservation is released only when that exact offer is observed live (it
-then counts as live) or its own freshness ceiling passes unpublished. Observing one leaf never
-releases sibling leaves from the same root. The ceiling keeps the ledger tiny and self-expiring;
-conditional writes serialize concurrent intents; the same ledger tracks the per-surface signed-gas
-budgets, including the protected revoke reserve. The ledger is what makes the bounded-loss claim
-hold. Transaction nonces stay
+side, cap, price, and expiry), while cap accounting records **one exposure amount per protocol
+consumption domain** `(maker, market, group, side, cap kind/value)`. In `shared-rung` mode each rung
+has its own group and cap; in `per-book` mode every leaf on one side repeats the same side-wide cap
+and shared group, so that cap is counted once rather than multiplied by the rung count. Leaves
+remain distinct for crossed-book, PnL, publication, and expiry tracking; only repeated shared-cap
+exposure is deduplicated. Aggregate caps, crossed-book checks, and PnL checks are enforced over
+live offers **plus every outstanding reserved offer** with those semantics. Conditional creation
+makes a Setter ratify followed by publication of the exact same root idempotent: the second intent
+reuses the existing entries and cannot double-count or double-reserve them. Publication is tracked
+per leaf, not merely per root: each reservation is released only when that exact offer is observed
+live (it then counts as live) or its own freshness ceiling passes unpublished. Observing one leaf
+never releases sibling leaves from the same root. The ceiling keeps the ledger tiny and
+self-expiring; conditional writes serialize concurrent intents. The reservation ledger tracks the
+routine signed-gas budget and protected normal-operation revoke reserve; the separate
+ledger-independent emergency allowance is consumed only during ledger outage. Together those
+budgets make the bounded-loss claim hold. Transaction nonces stay
 caller-owned (see the intent contract), so the middleware never coordinates the account's
 transaction stream.
 
@@ -337,7 +361,8 @@ transaction stream.
 | Revoke intent denied                      | Near-impossible by design; treat as misconfig, alert |
 | Concurrent tx signers (bot + break-glass) | Same-nonce fee-bump replacement resolves on-chain    |
 | Read fails or snapshot is incoherent      | Fail closed: typed retryable denial, no signature    |
-| Reservation ledger unavailable            | Quote/ratify closed; revoke uncharged + throttled    |
+| Reservation ledger unavailable            | Quote/ratify closed; revoke uses independent budget  |
+| Independent revoke budget unavailable     | Revoke fails closed and pages operator               |
 | KMS error                                 | Typed failure; never assume a signature was produced |
 | Policy parameters missing/invalid at init | Refuse to serve; never run a partial or empty policy |
 | Unknown intent type/version               | Reject; no best-effort interpretation of payloads    |
