@@ -27,6 +27,8 @@ import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
 import type { HistoricalBlockReader } from '../reference/blue-reference-reader.utils'
 import type { BootstrapActiveGroup, BootstrapInventoryReader } from './bootstrap-position.service'
 
+import { invalidateOffersBatch } from '../invalidation/batch-offer-invalidation.utils'
+import { OfferInvalidationAdapterError } from '../invalidation/offer-invalidation-adapter.error'
 import { pendingLadderQuoteSets } from '../ladder/ladder-active-publication.utils'
 import { readLadderBookOffers } from '../ladder/ladder-book.utils'
 import { pendingLadderBuyReservations } from '../ladder/ladder-cash-reservation.utils'
@@ -681,6 +683,24 @@ export const createProductionBootstrapAdapters = (
         'cancel',
         onTransactionSubmitted
       )
+    },
+    invalidateBatch: async (groups, onTransactionSubmitted) => {
+      try {
+        return await invalidateOffersBatch({
+          wallet,
+          midnight: config.setup.midnight,
+          maker,
+          groupIds: groups,
+          receiptTimeoutMs: config.transactionReceiptTimeoutMs,
+          onTransactionSubmitted: hash =>
+            onTransactionSubmitted?.({ operation: 'cancel', txHash: hash })
+        })
+      } catch (error) {
+        if (error instanceof OfferInvalidationAdapterError) {
+          throw new BootstrapAdapterError(error.operation)
+        }
+        throw error
+      }
     },
     reserveGroup: ownership.reserve,
     confirmPublishedGroup: ownership.confirm,

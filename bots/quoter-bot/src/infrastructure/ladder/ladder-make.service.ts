@@ -60,6 +60,17 @@ export interface LadderOfferTransport {
     groupId: Hex,
     onTransactionSubmitted?: LadderTransactionSubmittedObserver
   ): Promise<Hex | void>
+  /**
+   * Invalidates every listed group in one native Midnight multicall.
+   * @param groupIds - Ordered distinct group IDs cancelled together.
+   * @param onTransactionSubmitted - Optional safe observer notified once after wallet submission.
+   * @returns The shared canonical transaction hash after receipt confirmation.
+   * @throws An adapter error when policy validation, submission, or receipt confirmation fails.
+   */
+  invalidateBatch(
+    groupIds: readonly Hex[],
+    onTransactionSubmitted?: LadderTransactionSubmittedObserver
+  ): Promise<Hex | void>
   /** Removes canceled groups from durable ownership. @param groupIds - Successfully canceled IDs. @returns Completion after atomic storage. */
   forgetGroups(groupIds: readonly Hex[]): Promise<void>
 }
@@ -175,7 +186,8 @@ export class MidnightLadderMakeService implements LadderMakeService {
    * Invalidates every currently active strategy-owned ladder group.
    * @param parameters - Stable application halt reason.
    * @returns Completion after all groups are attempted.
-   * @throws `LadderHardHaltError` when one or more cancellations fail.
+   * @throws `LadderHardHaltError` when the batched cancellation fails.
+   * @remarks All groups still requiring cancellation share one native Midnight multicall.
    */
   hardHalt(parameters: Parameters<LadderMakeService['hardHalt']>[0]) {
     return this.enqueue(() => this.invalidateOwnedGroups(parameters.onTransactionSubmitted))
@@ -183,10 +195,11 @@ export class MidnightLadderMakeService implements LadderMakeService {
 
   /**
    * Invalidates every currently active strategy-owned ladder group during graceful shutdown.
-   * @param parameters - Optional observer notified after each cancellation receives its hash.
-   * @returns Confirmed cancellation hashes in submission order.
-   * @throws `LadderHardHaltError` after every group is attempted when any cancellation fails.
-   * @remarks Cleanup enters the same singleton mutation queue as normal ladder reconciliation.
+   * @param parameters - Optional observer notified when the batched cancellation receives its hash.
+   * @returns The confirmed cancellation hash shared by every cancelled group.
+   * @throws `LadderHardHaltError` when the batched cancellation or ownership cleanup fails.
+   * @remarks Cleanup enters the same singleton mutation queue as normal ladder reconciliation. All
+   * groups still requiring cancellation share one native Midnight multicall.
    */
   cleanup(
     parameters: {
@@ -206,6 +219,7 @@ export class MidnightLadderMakeService implements LadderMakeService {
         (await this.transport.listOwnedGroups()).map(group => [group.groupId, group])
       ).values()
     ]
+    const pendingGroups: LadderOwnedGroup[] = []
     for (const { groupId, maxAssets } of ownedGroups) {
       if (this.confirmedCanceledGroups.has(groupId)) continue
       try {
@@ -213,27 +227,46 @@ export class MidnightLadderMakeService implements LadderMakeService {
           await this.transport.forgetGroups([groupId])
           continue
         }
-        const txHash = await this.transport.invalidate(
-          groupId,
+        pendingGroups.push({ groupId, maxAssets })
+      } catch (error) {
+        failures.push({ groupId, errorName: operatorErrorName(error) })
+      }
+    }
+    if (pendingGroups.length > 0) {
+      const pendingGroupIds = pendingGroups.map(group => group.groupId)
+      try {
+        const txHash = await this.transport.invalidateBatch(
+          pendingGroupIds,
           this.safeObserver(onTransactionSubmitted)
         )
         if (txHash) submittedTransactions.push({ operation: 'cancel', txHash })
-        this.confirmedCanceledGroups.add(groupId)
-        await this.transport.forgetGroups([groupId])
+        for (const groupId of pendingGroupIds) this.confirmedCanceledGroups.add(groupId)
+        await this.transport.forgetGroups(pendingGroupIds)
       } catch (error) {
-        try {
-          if ((await this.transport.readGroupConsumed(groupId)) >= maxAssets) {
-            await this.transport.forgetGroups([groupId])
-            continue
-          }
-        } catch {
-          // Preserve the original cancellation failure classification.
-        }
-        failures.push({ groupId, errorName: operatorErrorName(error) })
+        failures.push(...(await this.batchCancellationFailures(pendingGroups, error)))
       }
     }
     if (failures.length > 0) throw new LadderHardHaltError(failures)
     return { submittedTransactions }
+  }
+
+  private async batchCancellationFailures(
+    pendingGroups: readonly LadderOwnedGroup[],
+    error: unknown
+  ): Promise<{ groupId: Hex; errorName: string }[]> {
+    const failures: { groupId: Hex; errorName: string }[] = []
+    for (const { groupId, maxAssets } of pendingGroups) {
+      try {
+        if ((await this.transport.readGroupConsumed(groupId)) >= maxAssets) {
+          await this.transport.forgetGroups([groupId])
+          continue
+        }
+      } catch {
+        // Preserve the original cancellation failure classification.
+      }
+      failures.push({ groupId, errorName: operatorErrorName(error) })
+    }
+    return failures
   }
 
   private safeObserver(

@@ -17,7 +17,6 @@ const secondGroup: Hex = `0x${'44'.repeat(32)}`
 const publicationHash: Hex = `0x${'aa'.repeat(32)}`
 const ratificationHash: Hex = `0x${'dd'.repeat(32)}`
 const cancellationHash: Hex = `0x${'bb'.repeat(32)}`
-const secondCancellationHash: Hex = `0x${'cc'.repeat(32)}`
 const quote: LadderQuoteSet = {
   marketId,
   centerRateBps: 500n,
@@ -59,6 +58,9 @@ const harness = () => {
     },
     invalidate: async groupId => {
       events.push(`cancel:${groupId}`)
+    },
+    invalidateBatch: async groupIds => {
+      events.push(`cancel-batch:${groupIds.join(',')}`)
     },
     forgetGroups: async groupIds => {
       events.push(`forget:${groupIds.join(',')}`)
@@ -242,6 +244,9 @@ describe('MidnightLadderMakeService', () => {
     subject.transport.invalidate = async groupId => {
       invalidated.push(groupId)
     }
+    subject.transport.invalidateBatch = async groupIds => {
+      invalidated.push(...groupIds)
+    }
     subject.transport.preparePublication = async () => ({
       groupIds: [newGroup],
       groups: [{ groupId: newGroup, side: 'lower', rungIndexes: [0] }],
@@ -295,32 +300,30 @@ describe('MidnightLadderMakeService', () => {
     ])
   })
 
-  test('cleanup attempts every active group and returns confirmed cancellation hashes', async () => {
+  test('cleanup cancels every active group in one batched transaction', async () => {
     const subject = harness()
-    subject.transport.invalidate = async (groupId, observer) => {
-      const txHash = groupId === oldGroup ? cancellationHash : secondCancellationHash
-      await observer?.({ operation: 'cancel', txHash })
-      subject.events.push(`cancel:${groupId}`)
-      return txHash
+    const batches: (readonly Hex[])[] = []
+    subject.transport.invalidateBatch = async (groupIds, observer) => {
+      batches.push(groupIds)
+      await observer?.({ operation: 'cancel', txHash: cancellationHash })
+      subject.events.push(`cancel-batch:${groupIds.join(',')}`)
+      return cancellationHash
     }
 
     const result = await subject.service.cleanup()
 
     expect(result).toEqual({
-      submittedTransactions: [
-        { operation: 'cancel', txHash: cancellationHash },
-        { operation: 'cancel', txHash: secondCancellationHash }
-      ]
+      submittedTransactions: [{ operation: 'cancel', txHash: cancellationHash }]
     })
-    expect(subject.events).toContain(`forget:${oldGroup}`)
-    expect(subject.events).toContain(`forget:${secondGroup}`)
+    expect(batches).toEqual([[oldGroup, secondGroup]])
+    expect(subject.events).toContain(`forget:${oldGroup},${secondGroup}`)
   })
 
-  test('cleanup forgets filled owned groups without submitting cancellation transactions', async () => {
+  test('cleanup forgets filled owned groups without including them in the batch', async () => {
     const subject = harness()
     subject.transport.readGroupConsumed = async groupId => (groupId === secondGroup ? 10n : 0n)
-    subject.transport.invalidate = async groupId => {
-      subject.events.push(`cancel:${groupId}`)
+    subject.transport.invalidateBatch = async groupIds => {
+      subject.events.push(`cancel-batch:${groupIds.join(',')}`)
       return cancellationHash
     }
 
@@ -330,9 +333,9 @@ describe('MidnightLadderMakeService', () => {
       submittedTransactions: [{ operation: 'cancel', txHash: cancellationHash }]
     })
     expect(subject.events).toEqual([
-      `cancel:${oldGroup}`,
-      `forget:${oldGroup}`,
-      `forget:${secondGroup}`
+      `forget:${secondGroup}`,
+      `cancel-batch:${oldGroup}`,
+      `forget:${oldGroup}`
     ])
   })
 
@@ -344,7 +347,7 @@ describe('MidnightLadderMakeService', () => {
       consumedReadCount += 1
       return consumedReadCount === 1 ? 0n : 10n
     }
-    subject.transport.invalidate = async () => {
+    subject.transport.invalidateBatch = async () => {
       throw new TypeError('provider detail')
     }
 
@@ -354,20 +357,25 @@ describe('MidnightLadderMakeService', () => {
     expect(subject.events).toEqual([`forget:${oldGroup}`])
   })
 
-  test('attempts every active group before reporting aggregate hard-halt failure', async () => {
+  test('reports every group of a failed batched hard-halt cancellation', async () => {
     const subject = harness()
-    const invalidate = vi.fn(async (groupId: Hex) => {
-      subject.events.push(`cancel:${groupId}`)
-      if (groupId === oldGroup) throw new TypeError('provider detail')
+    const invalidateBatch = vi.fn(async (groupIds: readonly Hex[]) => {
+      subject.events.push(`cancel-batch:${groupIds.join(',')}`)
+      throw new TypeError('provider detail')
     })
-    subject.transport.invalidate = invalidate
+    subject.transport.invalidateBatch = invalidateBatch
 
     const error = await subject.service
       .hardHalt({ reason: 'reference-read-failed' })
       .catch(value => value)
 
     expect(error).toBeInstanceOf(LadderHardHaltError)
-    expect(invalidate).toHaveBeenCalledTimes(2)
-    expect(subject.events).toContain(`cancel:${secondGroup}`)
+    expect(invalidateBatch).toHaveBeenCalledTimes(1)
+    expect(error).toMatchObject({
+      failures: [
+        { groupId: oldGroup, errorName: 'TypeError' },
+        { groupId: secondGroup, errorName: 'TypeError' }
+      ]
+    })
   })
 })

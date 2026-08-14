@@ -247,6 +247,7 @@ describe('publishLadderPublication', () => {
         for (const id of groupIds) retained.delete(id)
       },
       invalidate: async () => {},
+      invalidateBatch: async () => {},
       forgetGroups: async () => {}
     })
 
@@ -289,6 +290,7 @@ describe('publishLadderPublication', () => {
         for (const id of groupIds) retained.delete(id)
       },
       invalidate: async () => {},
+      invalidateBatch: async () => {},
       forgetGroups: async () => {}
     })
 
