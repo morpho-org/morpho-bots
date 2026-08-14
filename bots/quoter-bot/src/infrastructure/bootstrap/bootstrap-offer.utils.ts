@@ -1,13 +1,17 @@
 import type { Address, Hex } from 'viem'
 
-import { MAX_TICK, Offer, TickLib, type IMarketParams } from '@morpho-org/midnight-sdk'
+import { MAX_TICK, Offer, type IMarketParams } from '@morpho-org/midnight-sdk'
 
 import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
 
+import {
+  alignedRateTick,
+  clampTickToWindow,
+  isEmptyTickWindow,
+  rateTickWindow
+} from '../tick-window.utils'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 
-const WAD = 10n ** 18n
-const YEAR_SECONDS = 31_536_000n
 const REFERENCE_OBSERVATION_SECONDS = 3_600n
 const REFERENCE_STALENESS_SECONDS = 300n
 
@@ -20,11 +24,26 @@ type BootstrapOfferMarket = {
 const bootstrapOfferTick = (
   rateBps: bigint,
   market: Pick<BootstrapOfferMarket, 'params' | 'tickSpacing'>,
-  now: bigint
+  derivation: { now: bigint; minimumRateBps?: bigint; maximumRateBps?: bigint }
 ) => {
-  const periodRateWad =
-    (rateBps * (WAD / 10_000n) * (BigInt(market.params.maturity) - now)) / YEAR_SECONDS
-  return TickLib.priceToTick(TickLib.rateToPrice(periodRateWad), BigInt(market.tickSpacing))
+  const timeToMaturity = BigInt(market.params.maturity) - derivation.now
+  const tickSpacing = BigInt(market.tickSpacing)
+  const aligned = alignedRateTick(rateBps, timeToMaturity, tickSpacing)
+  if (derivation.minimumRateBps === undefined && derivation.maximumRateBps === undefined) {
+    return aligned
+  }
+  const window = rateTickWindow({
+    ...(derivation.minimumRateBps === undefined
+      ? {}
+      : { minimumRateBps: derivation.minimumRateBps }),
+    ...(derivation.maximumRateBps === undefined
+      ? {}
+      : { maximumRateBps: derivation.maximumRateBps }),
+    timeToMaturity,
+    tickSpacing
+  })
+  if (isEmptyTickWindow(window)) throw new BootstrapAdapterError('rate-window-empty')
+  return clampTickToWindow(aligned, window)
 }
 
 /**
@@ -48,12 +67,15 @@ export const bootstrapContinuousFeeCap = (market: { continuousFee: unknown }) =>
 
 /**
  * Recreates the exact protocol offer for a persisted or prospective bootstrap intent.
- * @param parameters - Offer intent, fresh market state, maker policy, current block time, and an
- * optional exact owned ladder-sell tick for intentional overlap.
- * @returns A Midnight buy offer with the exact overlap tick or live maturity-adjusted tick and fee cap.
- * @throws `BootstrapAdapterError` when a required live market fee is malformed; SDK validation failures propagate.
- * @remarks The fresh block timestamp prevents a later publication from reusing a consumed
- * content-addressed group while preserving the market maturity as the offer expiry.
+ * @param parameters - Offer intent, fresh market state, maker policy, current block time, optional
+ * inclusive hard rate bounds, and an optional exact tick that bypasses derivation entirely.
+ * @returns A Midnight buy offer with the exact requested tick or live maturity-adjusted tick and fee cap.
+ * @throws `BootstrapAdapterError` when a required live market fee is malformed or the hard rate
+ * range contains no aligned tick; SDK validation failures propagate.
+ * @remarks A derived tick whose encoded rate would leave the supplied hard range saturates at the
+ * nearest in-range tick instead of failing. The fresh block timestamp prevents a later publication
+ * from reusing a consumed content-addressed group while preserving the market maturity as the
+ * offer expiry.
  */
 export const createBootstrapOffer = (parameters: {
   offer: BootstrapOffer
@@ -62,6 +84,8 @@ export const createBootstrapOffer = (parameters: {
   ratifier: Address
   now: bigint
   exactTick?: bigint
+  minimumRateBps?: bigint
+  maximumRateBps?: bigint
 }) => {
   return Offer.create({
     market: parameters.market.params,
@@ -70,7 +94,15 @@ export const createBootstrapOffer = (parameters: {
     start: parameters.now,
     tick:
       parameters.exactTick ??
-      bootstrapOfferTick(parameters.offer.rateBps, parameters.market, parameters.now),
+      bootstrapOfferTick(parameters.offer.rateBps, parameters.market, {
+        now: parameters.now,
+        ...(parameters.minimumRateBps === undefined
+          ? {}
+          : { minimumRateBps: parameters.minimumRateBps }),
+        ...(parameters.maximumRateBps === undefined
+          ? {}
+          : { maximumRateBps: parameters.maximumRateBps })
+      }),
     expiry: parameters.market.params.maturity,
     ratifier: parameters.ratifier,
     maxAssets: parameters.offer.assets,
@@ -139,9 +171,11 @@ export const legacyBootstrapOfferTickUpperBound = (parameters: {
 
   const windowEnd = windowStart + REFERENCE_OBSERVATION_SECONDS + REFERENCE_STALENESS_SECONDS
   const lastPossibleStart = windowEnd < maturity ? windowEnd : maturity
-  let highestTick = bootstrapOfferTick(parameters.offer.rateBps, parameters.market, windowStart)
+  let highestTick = bootstrapOfferTick(parameters.offer.rateBps, parameters.market, {
+    now: windowStart
+  })
   for (let now = windowStart + 1n; now <= lastPossibleStart; now += 1n) {
-    const tick = bootstrapOfferTick(parameters.offer.rateBps, parameters.market, now)
+    const tick = bootstrapOfferTick(parameters.offer.rateBps, parameters.market, { now })
     if (tick > highestTick) highestTick = tick
   }
   return highestTick

@@ -7,17 +7,17 @@ import type {
 } from '../../application/bootstrap/position-bootstrap-verbose'
 import type { BootstrapMakeService } from '../../application/bootstrap/position-bootstrap.service'
 import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
-import type { BootstrapOverlapBookOffer } from './bootstrap-overlap.utils'
+import type { BootstrapCrossBookOffer } from './bootstrap-cross-book.utils'
 import type { BootstrapActiveGroup } from './bootstrap-position.service'
 
 import { BootstrapOwnershipCleanupError } from '../../application/bootstrap/bootstrap-ownership-cleanup.error'
 import { operatorErrorName } from '../../application/operator-error-name.utils'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
+import { resolveBootstrapProspectiveOffer } from './bootstrap-cross-book.utils'
 import { BootstrapHardHaltError } from './bootstrap-hard-halt.error'
-import { resolveBootstrapProspectiveOffer } from './bootstrap-overlap.utils'
 import { bootstrapMarketGroupIds } from './bootstrap-spread.utils'
 
-type BootstrapBookOffer = BootstrapOverlapBookOffer & { continuousFeeCap?: bigint }
+type BootstrapBookOffer = BootstrapCrossBookOffer
 
 /** Protocol transport for confirmed Midnight publication and group invalidation. */
 interface BootstrapOfferTransport {
@@ -29,7 +29,7 @@ interface BootstrapOfferTransport {
   listOwnedGroupIds?(): Promise<readonly Hex[]>
   /** Lists the maker's current book for one market. @param marketId - Market being reconciled. @returns Every active offer needed for spread safety. */
   listBookOffers(marketId: Hex): Promise<readonly BootstrapBookOffer[]>
-  /** Projects a domain offer into its exact protocol tick. @param offer - Desired offer. @param exactTick - Existing owned sell tick required for an intentional overlap. @returns Prospective book offer. */
+  /** Projects a domain offer into its exact protocol tick. @param offer - Desired offer. @param exactTick - Exact tick overriding rate derivation during cross-book repricing. @returns Prospective book offer. */
   toProspectiveBookOffer(offer: BootstrapOffer, exactTick?: bigint): Promise<BootstrapBookOffer>
   /** Prepares one policy-checked publication without broadcasting it. @param offer - Desired offer. @returns Reserved group ID and a one-shot confirmed ratifier/publisher. */
   preparePublication(offer: BootstrapOffer): Promise<{

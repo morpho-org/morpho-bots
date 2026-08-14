@@ -12,6 +12,7 @@ import {
   cleanupRemovedLadderGroups,
   createProductionLadderAdapters,
   createRepeatableSingleFlight,
+  ownBootstrapBuyTickCeiling,
   publishLadderPublication
 } from '../../../src/infrastructure/ladder/production-ladder'
 
@@ -67,6 +68,29 @@ describe('calculateProductionLadderCapacities', () => {
       targetMarketCapacityAssets: 10n,
       maximumTotalCapacityAssets: 910n
     })
+  })
+})
+
+describe('ownBootstrapBuyTickCeiling', () => {
+  test('selects the highest durably marked bootstrap-buy tick of the quoted market', () => {
+    expect(
+      ownBootstrapBuyTickCeiling(
+        [
+          { marketId, buy: true, tick: 90n, overlapOwner: 'bootstrap-buy' },
+          { marketId, buy: true, tick: 95n, overlapOwner: 'bootstrap-buy' },
+          { marketId, buy: true, tick: 120n },
+          { marketId: referenceMarketId, buy: true, tick: 130n, overlapOwner: 'bootstrap-buy' },
+          { marketId, buy: false, tick: 140n, overlapOwner: 'ladder-sell' }
+        ],
+        marketId
+      )
+    ).toBe(95n)
+  })
+
+  test('reports no ceiling without a marked own bootstrap buy', () => {
+    expect(
+      ownBootstrapBuyTickCeiling([{ marketId, buy: true, tick: 120n }], marketId)
+    ).toBeUndefined()
   })
 })
 

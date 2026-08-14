@@ -42,6 +42,7 @@ describe('playground browser module graph', () => {
       'src/domain/bootstrap/bootstrap-configuration.error.ts',
       'src/domain/bootstrap/position-bootstrap.ts',
       'src/domain/bytes32.ts',
+      'src/domain/cross-book.ts',
       'src/domain/ladder/ladder-configuration.error.ts',
       'src/domain/ladder/ladder.ts'
     ])
