@@ -24,7 +24,9 @@ jobs:
     timeout-minutes: 30
     # Holds secret DOCKERHUB_OIDC_CONNECTIONID plus vars DOCKER_USERNAME and DOCKER_REPOSITORY;
     # scope its deployment branches to `main` so the OIDC exchange is unreachable from arbitrary PR
-    # branches.
+    # branches. Referencing an environment also makes GitHub mint the OIDC token with an
+    # environment-based subject (`repo:morpho-org/morpho-bots:environment:quoter-bot-dockerhub`) —
+    # the Docker-side connection ruleset must match that subject, not a `ref:refs/heads/*` one.
     environment: quoter-bot-dockerhub
     permissions:
       contents: read

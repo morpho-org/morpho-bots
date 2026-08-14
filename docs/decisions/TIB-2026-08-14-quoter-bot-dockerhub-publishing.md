@@ -44,8 +44,7 @@ deploy-only CI with no long-lived credentials stored in GitHub.
   production releases publish.
 - Not switching Railway to deploy from the published image. Railway keeps building from uploaded
   source; the Docker Hub image is a parallel artifact of the same commit, not the deploy source.
-- Not changing the image itself — `bots/quoter-bot/Dockerfile` is built as-is (runner-native
-  `linux/amd64`, no multi-arch).
+- Not multi-arch — the push is runner-native `linux/amd64` only.
 
 ## Current Solution
 
@@ -75,9 +74,21 @@ tag is the built commit even if a branch/tag ref is passed — then builds
 context so pnpm workspace packages resolve, and the action's default Git context would rebuild the
 triggering ref instead of `inputs.ref`) and pushes:
 
-- `morphoorg/quoter:<release commit sha>` — an immutable, greppable mapping from image to source,
-  also stamped as OCI labels `org.opencontainers.image.revision` / `.source`;
+- `morphoorg/quoter:<release commit sha>` — a stable, greppable mapping from image to source, also
+  stamped as OCI labels `org.opencontainers.image.revision` / `.source`. The tag names the commit;
+  a manual rerun of the job rebuilds that same commit with current base layers and re-pushes the
+  tag, so enable Docker Hub's immutable-tags setting on the repository if byte-level freezing is
+  also wanted (a hard skip-if-exists guard was rejected: it would break the legitimate rerun path
+  after a transient push failure);
 - `morphoorg/quoter:latest` — tracks the newest release.
+
+**Only the bot ships.** Publishing publicly must not leak the rest of the private monorepo, so
+`bots/quoter-bot/Dockerfile` is split in two stages: a workspace `build` stage (pnpm install +
+workspace build, as before) and a runtime stage that starts from a fresh base and receives only the
+bot's self-contained esbuild bundle plus its manifest — no other bot's code, no workspace source,
+no node_modules, no package manager. Railway builds the same final stage, so the deployed image
+slims down identically without changing how the bot runs (`node dist/src/index.js` behind the
+setpriv entrypoint).
 
 Concurrency is declared **job-level, not workflow-level**, because GitHub ignores workflow-level
 `concurrency` in called workflows (same pattern as `deploy-bot.yml`); the
@@ -145,8 +156,12 @@ block tagging a deploy that already succeeded.
 
 ## Assumptions & Constraints
 
-- The Docker organization's OIDC connection exists and its rulesets accept only this repository
-  (and `main`); `DOCKERHUB_OIDC_CONNECTIONID` identifies it.
+- The Docker organization's OIDC connection exists and its ruleset matches the
+  **environment-based subject** `repo:morpho-org/morpho-bots:environment:quoter-bot-dockerhub`;
+  `DOCKERHUB_OIDC_CONNECTIONID` identifies it. Because the job references a GitHub Environment,
+  GitHub issues the OIDC token with an environment-based `sub` claim — a branch-style ruleset
+  (`...:ref:refs/heads/main`) would reject every exchange. Branch restriction is enforced on the
+  GitHub side by the environment's main-only deployment-branch policy.
 - `docker/login-action` ≥ v4.5 for the OIDC exchange (pinned at v4.6.0).
 - Same trust model as TIB-2026-07-15: private single-org repo, `push: main` trigger, main-only
   environment branch policy — revisit if fork PRs become possible.
@@ -166,8 +181,9 @@ block tagging a deploy that already succeeded.
   admin surface is now release-critical.
 - **`id-token: write` is job-scoped.** Only the `Quoter-bot-image` caller job (and the callee's
   `Publish` job) may mint OIDC tokens; the workflow default stays `contents: read`.
-- **The image is public.** The Dockerfile bakes in source and build outputs only; all runtime
-  configuration — including keys — is injected from the environment at deploy time and never
+- **The image is public.** The runtime stage ships only quoter-bot's self-contained bundle and
+  manifest — none of the other bots' code or the workspace source leaves the build stage — and all
+  runtime configuration, including keys, is injected from the environment at deploy time and never
   enters the image.
 
 ## Observability

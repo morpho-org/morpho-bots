@@ -253,8 +253,10 @@ pnpm --filter @morpho-org/quoter-bot run start -- --version
 The package owns its production [Dockerfile](./Dockerfile), local
 [docker-compose.yml](./docker-compose.yml), and idempotent
 [`scripts/deploy-railway.ts`](./scripts/deploy-railway.ts) entrypoint. The Docker build context is the
-repository root so pnpm can resolve every workspace dependency; the image builds the workspace and
-starts the combined setup, bootstrap, and ladder monitor as an unprivileged Node process.
+repository root so pnpm can resolve every workspace dependency; a build stage compiles the
+workspace, and the runtime stage ships only this bot's self-contained bundle — no other bot's code,
+workspace source, or package manager — and starts the combined setup, bootstrap, and ladder monitor
+as an unprivileged Node process.
 
 A full deployment creates the `quoter-bot` Railway service, selects the package Dockerfile,
 provisions a persistent volume at `/state`, and writes the effective environment configuration
