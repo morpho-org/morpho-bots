@@ -4,6 +4,7 @@ import { MAX_TICK, Offer, TickLib, type IMarketParams } from '@morpho-org/midnig
 
 import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
 
+import { findRepresentableRateTick } from '../rate-tick-reconstruction.utils'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 
 const WAD = 10n ** 18n
@@ -88,7 +89,8 @@ export const bootstrapContinuousFeeCap = (market: { continuousFee: unknown }) =>
  * Recreates the exact protocol offer for a persisted or prospective bootstrap intent.
  * @param parameters - Offer intent, fresh market state, maker policy, current block time, and an
  * optional exact owned ladder-sell tick for intentional overlap.
- * @returns A Midnight buy offer with the exact overlap tick or live maturity-adjusted tick and fee cap.
+ * @returns A Midnight buy offer with the exact overlap tick or live maturity-adjusted tick, the live
+ * market tick spacing, and fee cap.
  * @throws `BootstrapAdapterError` when a required live market fee is malformed; SDK validation failures propagate.
  * @remarks The fresh block timestamp prevents a later publication from reusing a consumed
  * content-addressed group while preserving the market maturity as the offer expiry.
@@ -109,6 +111,7 @@ export const createBootstrapOffer = (parameters: {
     tick:
       parameters.exactTick ??
       bootstrapOfferTick(parameters.offer.rateBps, parameters.market, parameters.now),
+    tickSpacing: parameters.market.tickSpacing,
     expiry: parameters.market.params.maturity,
     ratifier: parameters.ratifier,
     maxAssets: parameters.offer.assets,
@@ -120,9 +123,9 @@ export const createBootstrapOffer = (parameters: {
  * Creates a bootstrap buy on a spacing-aligned tick inside hard APR and cross-book limits.
  * @param parameters - Offer, fresh market and timestamp, maker policy, inclusive APR bounds, and the
  * crossing sell tick that the resulting buy must remain strictly below.
- * @returns The exact offer plus its WAD APR and reconstruction-safe ceiling integer-bps quote.
- * @throws `BootstrapAdapterError` when no spacing-aligned tick satisfies every bound and strict gap;
- * SDK validation failures propagate.
+ * @returns The exact offer plus its WAD APR and an integer-bps quote that reconstructs its tick.
+ * @throws `BootstrapAdapterError` when no integer-bps-representable, spacing-aligned tick satisfies
+ * every bound and strict gap; SDK validation failures propagate.
  * @remarks Higher APR maps to lower ticks. The selected tick stays as close as possible to the
  * nominal quote while preferring neither a hard-bound violation nor a zero cross-book spread.
  */
@@ -152,11 +155,12 @@ export const createBoundedBootstrapOffer = (parameters: {
   )
   const maximumSpreadTick = ((parameters.maximumExclusiveTick - 1n) / tickSpacing) * tickSpacing
   const maximumTick = maximumSpreadTick < maximumBoundTick ? maximumSpreadTick : maximumBoundTick
-  const requestedTick = bootstrapOfferTick(
-    parameters.offer.rateBps,
-    parameters.market,
-    parameters.now
-  )
+  const rateIsOutOfBounds =
+    parameters.offer.rateBps < parameters.minimumRateBps ||
+    parameters.offer.rateBps > parameters.maximumRateBps
+  const requestedTick = rateIsOutOfBounds
+    ? minimumTick
+    : bootstrapOfferTick(parameters.offer.rateBps, parameters.market, parameters.now)
   const tick = requestedTick < minimumTick ? minimumTick : requestedTick
   const boundedTick = tick > maximumTick ? maximumTick : tick
   if (maximumTick < minimumTick || boundedTick < 0n) {
@@ -169,10 +173,24 @@ export const createBoundedBootstrapOffer = (parameters: {
   ) {
     throw new BootstrapAdapterError('negative-spread')
   }
+  const representable = findRepresentableRateTick({
+    targetTick: boundedTick,
+    minimumTick,
+    maximumTick,
+    minimumRateBps: parameters.minimumRateBps,
+    maximumRateBps: parameters.maximumRateBps,
+    minimumAprWad: parameters.minimumRateBps * (WAD / 10_000n),
+    maximumAprWad: parameters.maximumRateBps * (WAD / 10_000n),
+    rateToTick: rateBps => bootstrapOfferTick(rateBps, parameters.market, parameters.now),
+    tickToAprWad: tick => bootstrapEffectiveAprWad(tick, parameters.market, parameters.now)
+  })
+  if (representable === undefined) {
+    throw new BootstrapAdapterError('integer-rate-not-representable')
+  }
   return {
-    created: createBootstrapOffer({ ...parameters, exactTick: boundedTick }),
-    effectiveAprWad,
-    effectiveRateBps: (effectiveAprWad + WAD / 10_000n - 1n) / (WAD / 10_000n)
+    created: createBootstrapOffer({ ...parameters, exactTick: representable.tick }),
+    effectiveAprWad: representable.aprWad,
+    effectiveRateBps: representable.rateBps
   }
 }
 

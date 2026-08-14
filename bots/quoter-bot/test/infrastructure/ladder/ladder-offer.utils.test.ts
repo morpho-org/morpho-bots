@@ -17,6 +17,16 @@ const collateral: Address = '0x5555555555555555555555555555555555555555'
 const oracle: Address = '0x6666666666666666666666666666666666666666'
 const marketId: Hex = `0x${'77'.repeat(32)}`
 const now = 1_000n
+const yearSeconds = 31_536_000n
+const basisPointWad = 10n ** 14n
+const rateToTick = (rateBps: bigint, candidateMarket: IMarket, timestamp: bigint) => {
+  const timeToMaturity = BigInt(candidateMarket.params.maturity) - timestamp
+  const periodRateWad = (rateBps * basisPointWad * timeToMaturity) / yearSeconds
+  return TickLib.priceToTick(
+    TickLib.rateToPrice(periodRateWad),
+    BigInt(candidateMarket.tickSpacing)
+  )
+}
 const market = {
   params: {
     chainId: 8453,
@@ -120,6 +130,36 @@ const expectOutOfRangeRateTargetsSideBoundary = (
 }
 
 describe('buildLadderTree', () => {
+  test('selects a reconstructable neighbor for unrepresentable crossing tick 4173', () => {
+    const result = buildLadderTree({
+      quote: {
+        ...quote('shared-rung'),
+        lower: [{ index: 0, rateBps: 185n, assets: 10n }],
+        higher: []
+      },
+      market,
+      maker,
+      ratifier,
+      now,
+      minimumRateBps: 100n,
+      maximumRateBps: 300n,
+      bootstrapBuyTick: 4_172n,
+      bootstrapBuyRateBps: 195n
+    })
+
+    const published = result.bookOffers[0]!
+    const persistedRateBps = result.quote.lower[0]!.rateBps
+    const reconstructedTick = TickLib.priceToTick(
+      TickLib.rateToPrice((persistedRateBps * basisPointWad * yearSeconds) / yearSeconds),
+      1n
+    )
+
+    expect(TickLib.tickToApr(4_173n, yearSeconds)).toBe(18_407_719_530_514_042n)
+    expect(published.tick).not.toBe(4_173n)
+    expect(published.tick).toBeGreaterThan(4_172n)
+    expect(reconstructedTick).toBe(published.tick)
+  })
+
   test('derives exact production offer maxAssets for the [10,20,30,40] fixture in both modes', () => {
     expect(offerMaxAssetsByRung(quote('shared-rung'))).toEqual({
       lower: [10n, 20n],
@@ -129,6 +169,46 @@ describe('buildLadderTree', () => {
       lower: [30n, 30n],
       higher: [70n, 70n]
     })
+  })
+
+  test('round-trips adjusted rates across sampled maturities, spacings, boundaries, and both sides', () => {
+    for (const timeToMaturity of [7n * 86_400n, 90n * 86_400n, yearSeconds]) {
+      for (const tickSpacing of [1, 2, 4]) {
+        const sampledMarket = {
+          ...market,
+          params: { ...market.params, maturity: now + timeToMaturity },
+          tickSpacing
+        } as IMarket
+        for (const [side, nominalRateBps] of [
+          ['lower', 99n],
+          ['lower', 301n],
+          ['higher', 99n],
+          ['higher', 301n]
+        ] as const) {
+          const result = buildLadderTree({
+            quote: {
+              ...quote('shared-rung'),
+              lower: side === 'lower' ? [{ index: 0, rateBps: nominalRateBps, assets: 10n }] : [],
+              higher: side === 'higher' ? [{ index: 0, rateBps: nominalRateBps, assets: 10n }] : []
+            },
+            market: sampledMarket,
+            maker,
+            ratifier,
+            now,
+            minimumRateBps: 100n,
+            maximumRateBps: 300n
+          })
+          const published = result.bookOffers[0]!
+          const persistedRateBps =
+            side === 'lower' ? result.quote.lower[0]!.rateBps : result.quote.higher[0]!.rateBps
+          const aprWad = TickLib.tickToApr(published.tick, timeToMaturity)
+
+          expect(rateToTick(persistedRateBps, sampledMarket, now)).toBe(published.tick)
+          expect(aprWad).toBeGreaterThanOrEqual(100n * basisPointWad)
+          expect(aprWad).toBeLessThanOrEqual(300n * basisPointWad)
+        }
+      }
+    }
   })
 
   test('maps lower sells and higher buys without crossing Midnight ticks', () => {

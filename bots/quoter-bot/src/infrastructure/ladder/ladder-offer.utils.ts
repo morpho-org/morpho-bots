@@ -7,6 +7,7 @@ import type { LadderQuoteSet, LadderRung } from '../../domain/ladder/ladder'
 import type { LadderGroupReference } from './ladder-group-ownership.utils'
 
 import { offerMaxAssetsByRung } from '../../domain/ladder/ladder'
+import { findRepresentableRateTick } from '../rate-tick-reconstruction.utils'
 import { LadderAdapterError } from './ladder-adapter.error'
 
 const WAD = 10n ** 18n
@@ -121,7 +122,23 @@ const boundedQuoteTick = (
   ) {
     throw new LadderAdapterError('encoded-rate-out-of-bounds')
   }
-  return { tick: boundedTick, effectiveRateBps: (aprWad + BPS_WAD - 1n) / BPS_WAD }
+  const representable = findRepresentableRateTick({
+    targetTick: boundedTick,
+    minimumTick,
+    maximumTick: highestTick,
+    minimumRateBps: parameters.minimumRateBps ?? rateBps,
+    maximumRateBps: parameters.maximumRateBps ?? rateBps,
+    minimumAprWad:
+      parameters.minimumRateBps === undefined ? undefined : parameters.minimumRateBps * BPS_WAD,
+    maximumAprWad:
+      parameters.maximumRateBps === undefined ? undefined : parameters.maximumRateBps * BPS_WAD,
+    rateToTick: candidateRateBps => quoteTick(candidateRateBps, parameters),
+    tickToAprWad: candidateTick => effectiveAprWad(candidateTick, parameters)
+  })
+  if (representable === undefined) {
+    throw new LadderAdapterError('integer-rate-not-representable')
+  }
+  return { tick: representable.tick, effectiveRateBps: representable.rateBps }
 }
 
 const sideOffers = (
