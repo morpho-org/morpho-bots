@@ -448,7 +448,7 @@ export const createProductionBootstrapAdapters = (
     blueRates
   )
   const completeBookOffers = async (marketId: Hex) => {
-    const [groups, ladderPublications, wholeBook, ownedBootstrapIds] = await Promise.all([
+    const [groups, ladderPublications, wholeBook] = await Promise.all([
       readGroups(),
       readLadderPublications(),
       readLadderBookOffers({
@@ -456,18 +456,8 @@ export const createProductionBootstrapAdapters = (
         marketIds: [marketId],
         timeoutMs: config.requestTimeoutMs,
         ignoredOfferGroupIds
-      }),
-      ownership.read()
+      })
     ])
-    const liveBootstrapTickCeiling = strategyBootstrapGroups(groups, ownedBootstrapIds)
-      .filter(group => group.marketId === marketId && group.maxAssets > group.consumed)
-      .reduce<bigint | undefined>(
-        (highest, group) =>
-          group.tick !== undefined && (highest === undefined || group.tick > highest)
-            ? group.tick
-            : highest,
-        undefined
-      )
     const pendingLadderOffers = (
       await mapSelectedMarketItems(
         marketId,
@@ -478,6 +468,9 @@ export const createProductionBootstrapAdapters = (
             midnight.getMarketData(quote.marketId),
             client.getBlock({ blockTag: 'latest' })
           ])
+          // Reconstruction must never place a pending sell above its published tick: the ladder
+          // floored these sells against the bootstrap tick live at publication, which may sit below
+          // today's, so reapplying the current ceiling here could hide a real self-crossing.
           return buildLadderTree({
             quote,
             market,
@@ -489,10 +482,7 @@ export const createProductionBootstrapAdapters = (
               : {
                   minimumRateBps: ladderBounds.minimumRateBps,
                   maximumRateBps: ladderBounds.maximumRateBps
-                }),
-            ...(liveBootstrapTickCeiling === undefined
-              ? {}
-              : { ownBootstrapBuyTickCeiling: liveBootstrapTickCeiling })
+                })
           }).bookOffers
         }
       )
