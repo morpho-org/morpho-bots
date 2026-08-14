@@ -47,6 +47,11 @@ dist
 
 # Claude settings (local overrides only)
 .claude/settings.local.json
-.claude/worktrees/
+# Anchored (leading slash — identical meaning for git, since slash-containing
+# patterns are already root-relative) so knip does not convert this line into the
+# unanchored glob **/.claude/worktrees/**, which also matches the ABSOLUTE path of
+# an agent worktree checked out under .claude/worktrees/ and silently drops its
+# package.json script entries when `pnpm knip` runs from inside one.
+/.claude/worktrees/
 .claude/scheduled_tasks.lock
 .claude/agent-memory/
