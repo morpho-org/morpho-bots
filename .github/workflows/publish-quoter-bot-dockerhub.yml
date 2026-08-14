@@ -62,8 +62,22 @@ jobs:
         id: commit
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      # Docker tags are mutable by default. Fail closed instead of rebuilding and overwriting an
-      # existing commit tag during a rerun; the serialized job removes same-workflow check/push races.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        env:
+          DOCKERHUB_OIDC_CONNECTIONID: ${{ secrets.DOCKERHUB_OIDC_CONNECTIONID }}
+          # The exchanged access token must outlive the image build that runs between login and
+          # push; the 300s default is shorter than this pnpm install + workspace build.
+          DOCKERHUB_OIDC_EXPIREIN: '1800'
+        with:
+          username: ${{ vars.DOCKER_USERNAME }}
+
+      # Docker tags are mutable by default. Check through the authenticated Docker session so a
+      # first publish can distinguish a missing repository from an existing private tag. Fail closed
+      # on an existing commit tag and on unexpected registry failures.
       - name: Check immutable SHA tag
         env:
           DOCKER_USERNAME: ${{ vars.DOCKER_USERNAME }}
@@ -71,23 +85,19 @@ jobs:
           COMMIT_SHA: ${{ steps.commit.outputs.sha }}
         run: |
           set -euo pipefail
-          token="$({
-            curl --fail-with-body --silent --show-error --get \
-              --data-urlencode 'service=registry.docker.io' \
-              --data-urlencode "scope=repository:${DOCKER_USERNAME}/${DOCKER_REPOSITORY}:pull" \
-              https://auth.docker.io/token
-          } | jq -er '.token')"
-          status="$({
-            curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
-              --oauth2-bearer "$token" \
-              --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
-              "https://registry-1.docker.io/v2/${DOCKER_USERNAME}/${DOCKER_REPOSITORY}/manifests/${COMMIT_SHA}"
-          })"
-          case "$status" in
-            200) echo 'commit SHA tag already exists'; exit 1 ;;
-            404) ;;
-            *) echo "unexpected Docker registry status: ${status}"; exit 1 ;;
-          esac
+          image="${DOCKER_USERNAME}/${DOCKER_REPOSITORY}:${COMMIT_SHA}"
+          inspect_error="$(mktemp)"
+          trap 'rm -f "$inspect_error"' EXIT
+          if docker buildx imagetools inspect "$image" >/dev/null 2>"$inspect_error"; then
+            echo 'commit SHA tag already exists'
+            exit 1
+          fi
+          if grep -Eqi 'manifest unknown|not found|pull access denied|repository does not exist' "$inspect_error"; then
+            echo 'commit SHA tag is not readable; proceeding with first publish'
+            exit 0
+          fi
+          echo 'unexpected Docker registry inspection failure'
+          exit 1
 
       # `latest` must only move forward. A rerun may legitimately backfill an older release's
       # commit tag, but when a quoter-bot release tag descends from the built commit a newer
@@ -118,19 +128,6 @@ jobs:
             tags="${tags},${DOCKER_USERNAME}/${DOCKER_REPOSITORY}:latest"
           fi
           echo "tags=${tags}" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        env:
-          DOCKERHUB_OIDC_CONNECTIONID: ${{ secrets.DOCKERHUB_OIDC_CONNECTIONID }}
-          # The exchanged access token must outlive the image build that runs between login and
-          # push; the 300s default is shorter than this pnpm install + workspace build.
-          DOCKERHUB_OIDC_EXPIREIN: '1800'
-        with:
-          username: ${{ vars.DOCKER_USERNAME }}
 
       - name: Build and push
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0

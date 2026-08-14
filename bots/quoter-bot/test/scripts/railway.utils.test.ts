@@ -230,11 +230,13 @@ describe('Railway CLI output parsing', () => {
       { keyword: 'RUN', value: '/usr/bin/mkdir -p /state' },
       {
         keyword: 'COPY',
-        value: '--from=build /repo/bots/quoter-bot/package.json /repo/bots/quoter-bot/package.json'
+        value:
+          '--from=build --chown=0:0 --chmod=0555 /repo/bots/quoter-bot/package.json /repo/bots/quoter-bot/package.json'
       },
       {
         keyword: 'COPY',
-        value: '--from=build /repo/bots/quoter-bot/dist /repo/bots/quoter-bot/dist'
+        value:
+          '--from=build --chown=0:0 --chmod=0555 /repo/bots/quoter-bot/dist /repo/bots/quoter-bot/dist'
       },
       {
         keyword: 'COPY',
@@ -262,12 +264,20 @@ describe('Railway CLI output parsing', () => {
       new URL('../../../../.github/workflows/publish-quoter-bot-dockerhub.yml', import.meta.url),
       'utf8'
     )
+    const setupBuildx = workflow.indexOf('- name: Set up Docker Buildx')
+    const login = workflow.indexOf('- name: Login to Docker Hub')
+    const immutableCheck = workflow.indexOf('- name: Check immutable SHA tag')
+    const push = workflow.indexOf('- name: Build and push')
 
-    expect(workflow).toContain('- name: Check immutable SHA tag')
-    expect(workflow).toContain('case "$status" in')
-    expect(workflow).toContain("200) echo 'commit SHA tag already exists'; exit 1 ;;")
-    expect(workflow).toContain('404) ;;')
-    expect(workflow).toContain('--oauth2-bearer "$token"')
+    expect(workflow).toContain('docker buildx imagetools inspect "$image"')
+    expect(workflow).toContain("echo 'commit SHA tag already exists'")
+    expect(workflow).toContain(
+      "echo 'commit SHA tag is not readable; proceeding with first publish'"
+    )
+    expect(workflow).not.toContain('https://auth.docker.io/token')
+    expect(setupBuildx).toBeLessThan(login)
+    expect(login).toBeLessThan(immutableCheck)
+    expect(immutableCheck).toBeLessThan(push)
   })
 
   test('moves the Docker Hub latest tag only forward', () => {

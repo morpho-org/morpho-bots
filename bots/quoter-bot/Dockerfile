@@ -42,8 +42,8 @@ RUN /usr/bin/apt-get update \
   && /usr/bin/rm -rf /var/lib/apt/lists/*
 RUN /usr/bin/mkdir -p /state
 
-COPY --from=build /repo/bots/quoter-bot/package.json /repo/bots/quoter-bot/package.json
-COPY --from=build /repo/bots/quoter-bot/dist /repo/bots/quoter-bot/dist
+COPY --from=build --chown=0:0 --chmod=0555 /repo/bots/quoter-bot/package.json /repo/bots/quoter-bot/package.json
+COPY --from=build --chown=0:0 --chmod=0555 /repo/bots/quoter-bot/dist /repo/bots/quoter-bot/dist
 
 # Railway must start the container as root so the entrypoint can repair its root-owned mount. The
 # entrypoint stays root only long enough to chown the volume, then setpriv atomically execs the bot
