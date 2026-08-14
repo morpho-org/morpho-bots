@@ -272,7 +272,9 @@ export const bootstrapReservedLoanAssets = (
  * Flattens the provider book without re-expanding each multi-market group projection.
  * @param groups - Canonical groups, potentially repeated once per buy-offer market.
  * @param ignoredGroupIds - Recently canceled groups that may remain visible during indexer lag.
- * @returns Distinct non-ignored offers annotated with their owning group ID in linear space and time.
+ * @returns Distinct active, non-ignored offers annotated with their owning group ID in linear space and time.
+ * @remarks Fully consumed groups remain visible in provider history but cannot contribute live book
+ * liquidity, so they are excluded before spread validation.
  */
 export const bootstrapBookOffers = (
   groups: readonly BootstrapRawGroup[],
@@ -288,7 +290,8 @@ export const bootstrapBookOffers = (
     }
   >()
   for (const group of groups) {
-    if (ignoredGroups.has(group.id) || visitedGroups.has(group.id)) continue
+    const isActive = group.maxAssets > group.consumed
+    if (!isActive || ignoredGroups.has(group.id) || visitedGroups.has(group.id)) continue
     visitedGroups.add(group.id)
     for (const offer of group.offers) {
       const key = `${group.id}:${offer.marketId}:${offer.buy ? 'buy' : 'sell'}:${offer.tick}`

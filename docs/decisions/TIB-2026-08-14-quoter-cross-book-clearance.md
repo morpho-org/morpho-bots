@@ -40,12 +40,12 @@ every other TIB-2026-07-27 decision remains in force.
   tick space — without exact-tick netting evidence.
 - Degrade quoting to the operator's hard rate bounds on a reference excursion instead of halting
   the strategy and cancelling all offers.
-- Preserve every fail-closed guard that does not involve the maker's own prospective offers.
+- Preserve every fail-closed guard needed to prove the maker's own prospective offers remain clear.
 
 **Non-Goals**
 
-- Change the third-party crossing posture: any crossing not caused by the own prospective buy
-  still throws.
+- Change matching or cancellation behavior for third-party offers; their buys remain outside the
+  maker's reconciliation scope.
 - Change reference-rate sources, staleness handling, ladder shape math, sizing, or exposure caps.
 - Relax static-target validation: a hardcoded target whose full shape cannot fit unclamped still
   fails loud at configuration load.
@@ -80,7 +80,9 @@ no ownership, size, or maturity evidence is required. If tick rounding rebounds 
 onto or past the sell tick, it steps to exactly **one tick spacing below** the sell and adopts that
 tick's encoded rate. If no in-range tick clears the sell (the stepped tick leaves the tick domain
 or its encoded rate leaves the hard range), the resolver returns `undefined` and the cycle
-publishes no bootstrap buy — the stale group is still invalidated — instead of throwing.
+publishes no bootstrap buy — the stale group is still invalidated — instead of throwing. Existing
+crossings among retained third-party offers do not implicate the prospective buy: only the lowest
+retained sell constrains whether that buy is safe to publish.
 
 ### 2. Ladder sells clear the own bootstrap buy
 
@@ -134,9 +136,8 @@ group simply owns several rung indexes.
 
 Everything that cannot be proven safe still throws:
 
-- a pre-existing crossed retained book, before the prospective buy is even considered;
-- a crossing not caused by the own prospective buy — including every third-party crossing — or a
-  crossing buy with no retained sell to reprice against;
+- a prospective projection that is not the selected-market buy;
+- a prospective or repriced buy that cannot be proven strictly below every retained sell;
 - missing effective-rate or tick-spacing evidence on an exact-tick projection;
 - a repriced projection that still crosses the retained book;
 - an empty tick window (`rate-window-empty`) when no aligned tick encodes an in-range rate; and
