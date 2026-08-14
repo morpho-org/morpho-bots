@@ -366,8 +366,8 @@ describe('decidePositionBootstrap', () => {
     ).toEqual({ kind: 'rest', offer: activeOffer })
   })
 
-  test('rejects a premium-adjusted requested rate below the configured minimum', () => {
-    expect(() =>
+  test('clamps a premium-adjusted requested rate onto the configured minimum', () => {
+    expect(
       decidePositionBootstrap({
         ...parameters,
         position: { ...parameters.position, credit: 0n },
@@ -378,34 +378,24 @@ describe('decidePositionBootstrap', () => {
           premiumBps: -350n
         }
       })
-    ).toThrow(
-      new BootstrapConfigurationError('requestedRateBps', 'must be at least minimumRateBps')
-    )
+    ).toMatchObject({ kind: 'publish', offer: { rateBps: 200n } })
   })
 
-  test('rejects a premium-adjusted requested rate above the configured maximum', () => {
-    expect(() =>
+  test('clamps a premium-adjusted requested rate onto the configured maximum', () => {
+    expect(
       decidePositionBootstrap({
         ...parameters,
         position: { ...parameters.position, credit: 0n },
         rate: { mode: 'static', rateBps: 850n, observationId: 'static:850' },
         config: { ...parameters.config, premiumBps: 0n }
       })
-    ).toThrow(new BootstrapConfigurationError('requestedRateBps', 'must be at most maximumRateBps'))
+    ).toMatchObject({ kind: 'publish', offer: { rateBps: 800n } })
   })
 
   test.each([
-    {
-      label: 'below minimum',
-      rateBps: 100n,
-      error: new BootstrapConfigurationError('requestedRateBps', 'must be at least minimumRateBps')
-    },
-    {
-      label: 'above maximum',
-      rateBps: 900n,
-      error: new BootstrapConfigurationError('requestedRateBps', 'must be at most maximumRateBps')
-    }
-  ])('rejects an out-of-bounds rate with zero capacity: $label', ({ rateBps, error }) => {
+    { label: 'below minimum', rateBps: 100n },
+    { label: 'above maximum', rateBps: 900n }
+  ])('keeps an out-of-bounds rate observational with zero capacity: $label', ({ rateBps }) => {
     const zeroCapacityPositions = [
       { label: 'cash', values: { cashBalance: 0n } },
       {
@@ -420,15 +410,14 @@ describe('decidePositionBootstrap', () => {
 
     for (const capacity of zeroCapacityPositions) {
       expect(
-        () =>
-          decidePositionBootstrap({
-            ...parameters,
-            position: { ...parameters.position, credit: 0n, ...capacity.values },
-            rate: { mode: 'static', rateBps, observationId: `static:${rateBps}` },
-            config: { ...parameters.config, premiumBps: 0n }
-          }),
+        decidePositionBootstrap({
+          ...parameters,
+          position: { ...parameters.position, credit: 0n, ...capacity.values },
+          rate: { mode: 'static', rateBps, observationId: `static:${rateBps}` },
+          config: { ...parameters.config, premiumBps: 0n }
+        }),
         capacity.label
-      ).toThrow(error)
+      ).toEqual({ kind: 'observe', reason: 'no-capacity', assets: 0n })
     }
   })
 
@@ -491,16 +480,14 @@ describe('decidePositionBootstrap', () => {
     })
   })
 
-  test('rejects a premium that would produce a requested rate below the minimum', () => {
-    expect(() =>
+  test('clamps a premium overshooting the reference rate onto the minimum', () => {
+    expect(
       decidePositionBootstrap({
         ...parameters,
         position: { ...parameters.position, credit: 0n },
         config: { ...parameters.config, premiumBps: -501n }
       })
-    ).toThrow(
-      new BootstrapConfigurationError('requestedRateBps', 'must be at least minimumRateBps')
-    )
+    ).toMatchObject({ kind: 'publish', offer: { rateBps: 200n } })
   })
 
   test('rejects a positive bootstrap premium', () => {

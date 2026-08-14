@@ -33,7 +33,6 @@ import {
   legacyBootstrapOfferTickUpperBound,
   recoverLegacyBootstrapOfferTick
 } from '../../../src/infrastructure/bootstrap/bootstrap-offer.utils'
-import { bootstrapLadderSellOverlapBookOffers } from '../../../src/infrastructure/bootstrap/bootstrap-overlap.utils'
 import { prepareBootstrapRequirements } from '../../../src/infrastructure/bootstrap/bootstrap-requirements.utils'
 import { assertBootstrapTransaction } from '../../../src/infrastructure/bootstrap/bootstrap-transaction.utils'
 import {
@@ -759,69 +758,6 @@ describe('readBootstrapGroups', () => {
 
     expect(strategyBootstrapGroups(groups, [groupId, secondGroupId])).toEqual([])
     expect(bootstrapReservedLoanAssets(groups, [groupId, secondGroupId])).toBe(0n)
-  })
-
-  test('keeps rebuilt pending ladder sells ineligible as exact overlap evidence', () => {
-    expect(
-      bootstrapLadderSellOverlapBookOffers({
-        groups: [],
-        eligibleSellGroupIds: new Set(),
-        currentTimestamp: 1_000n,
-        pendingLadderOffers: [
-          {
-            marketId,
-            buy: false,
-            tick: 200n,
-            remainingAssets: 40n,
-            effectiveRateBps: 450n
-          }
-        ]
-      })
-    ).toEqual([
-      {
-        marketId,
-        buy: false,
-        tick: 200n,
-        remainingAssets: 40n,
-        effectiveRateBps: 450n
-      }
-    ])
-  })
-
-  test('retains a sell missing maturity but keeps it ineligible for overlap', async () => {
-    const sellOnly = { ...group().offers[0], buy: false, market: undefined }
-    const groups = await readBootstrapGroups(
-      { maker, requestTimeoutMs: 1_000 },
-      {
-        request: async () => ({
-          data: [group({ max_assets: '75', consumed: '5', offers: [sellOnly] })],
-          cursor: null
-        })
-      }
-    )
-
-    expect(groups).toHaveLength(1)
-    expect(groups[0]!.offers[0]).not.toHaveProperty('maturity')
-    expect(
-      bootstrapLadderSellOverlapBookOffers({
-        groups,
-        eligibleSellGroupIds: new Set([groupId]),
-        currentTimestamp: 1_000n
-      })
-    ).toEqual([
-      expect.objectContaining({
-        groupId,
-        buy: false,
-        remainingAssets: 70n
-      })
-    ])
-    expect(
-      bootstrapLadderSellOverlapBookOffers({
-        groups,
-        eligibleSellGroupIds: new Set([groupId]),
-        currentTimestamp: 1_000n
-      })[0]
-    ).not.toHaveProperty('bootstrapOverlap')
   })
 
   test('passes the full distinct owned reserve in the actual makeLend argument shape', async () => {
