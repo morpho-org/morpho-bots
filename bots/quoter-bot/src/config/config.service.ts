@@ -113,7 +113,6 @@ export class ConfigService {
       rpcUrl: urlValue(environment, 'RPC_URL'),
       referenceRpcUrl: optionalUrlValue(environment, 'REFERENCE_RPC_URL'),
       morphoApiBaseUrl: urlValue(environment, 'MORPHO_API_BASE_URL'),
-      routerApiBaseUrl: urlValue(environment, 'ROUTER_API_BASE_URL'),
       v0OfferGroupIds: hexListValue(environment, 'V0_OFFER_GROUP_IDS', false),
       requestTimeoutMs: requestTimeoutValue(environment),
       transactionReceiptTimeoutMs: transactionReceiptTimeoutValue(environment),
@@ -129,7 +128,6 @@ export class ConfigService {
       rpcUrl: string
       referenceRpcUrl?: string
       morphoApiBaseUrl: string
-      routerApiBaseUrl: string
       v0OfferGroupIds: readonly Hex[]
       requestTimeoutMs: number
       transactionReceiptTimeoutMs: number
@@ -188,11 +186,6 @@ export class ConfigService {
   /** Exposes the validated Morpho API origin. @returns Validated Morpho API origin; reports identify it only as `morpho-api`. */
   get morphoApiBaseUrl() {
     return this.values.morphoApiBaseUrl
-  }
-
-  /** Exposes the validated Router API origin. @returns Validated Router API origin; reports identify it only as `router-api`. */
-  get routerApiBaseUrl() {
-    return this.values.routerApiBaseUrl
   }
 
   /** Exposes strategy-owned offer groups. @returns Strategy-owned V0 offer-group IDs used to reject unknown namespaces. */

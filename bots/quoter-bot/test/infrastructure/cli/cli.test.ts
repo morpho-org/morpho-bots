@@ -235,6 +235,15 @@ describe('Cli', () => {
     expect(await cli().run(['setup-check'])).toEqual(readyReport)
   })
 
+  test('forwards the runtime shutdown signal to startup readiness', async () => {
+    const controller = new AbortController()
+    const assertReady = vi.fn(async (_signal?: AbortSignal) => readyReport)
+
+    await cli(assertReady).run(['setup-check'], { signal: controller.signal })
+
+    expect(assertReady).toHaveBeenCalledWith(controller.signal)
+  })
+
   test('quoter-bot setup-check --monitor streams readiness reports until shutdown', async () => {
     const report = {
       status: 'stopped' as const,
@@ -916,6 +925,26 @@ describe('Cli', () => {
       { status: 'stopped', cycles: 1 }
     ])
     expect(stdout.every(line => !line.includes('\n'))).toBe(true)
+    expect(stderr).toEqual([])
+  })
+
+  test('entrypoint treats an aborted startup as a clean signal stop', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const stdout: string[] = []
+    const stderr: string[] = []
+    const error = new Error('Setup check aborted')
+    error.name = 'AbortError'
+
+    const exitCode = await runQuoterBotEntrypoint(
+      { run: async () => Promise.reject(error) },
+      ['start'],
+      { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) },
+      { signal: controller.signal }
+    )
+
+    expect(exitCode).toBe(0)
+    expect(stdout).toEqual([])
     expect(stderr).toEqual([])
   })
 

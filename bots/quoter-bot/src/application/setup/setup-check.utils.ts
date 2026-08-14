@@ -5,6 +5,7 @@ import type {
   BookSetup,
   SetupCheck,
   SetupCheckConfig,
+  SetupCheckReport,
   SetupRemediation
 } from './setup-check.service'
 
@@ -31,6 +32,27 @@ const SAFE_ERROR_CODES = new Set([
   'UND_ERR_HEADERS_TIMEOUT'
 ])
 const SAFE_PROVIDER_IDS = new Set(['provider', 'rpc', 'archive-rpc', 'morpho-api', 'router-api'])
+const TRANSIENT_PROVIDER_CODES = new Set([
+  'REQUEST_TIMEOUT',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ENETUNREACH',
+  'ETIMEDOUT',
+  'ABORT_ERR',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT'
+])
+const TRANSIENT_PROVIDER_NAMES = new Set(['AbortError', 'TimeoutError', 'NetworkError'])
+const TRANSIENT_PROVIDER_STATUSES = new Set([408, 425, 429])
+const SERVER_ERROR_STATUS_MINIMUM = 500
+const SERVER_ERROR_STATUS_MAXIMUM = 599
+const TRANSIENT_JSON_RPC_CODES = new Set([
+  -32_005, // Limit exceeded.
+  -32_002 // Resource unavailable.
+])
+
+const isTransientRpcCode = (value: unknown): value is number =>
+  typeof value === 'number' && TRANSIENT_JSON_RPC_CODES.has(value)
 
 /** Fulfilled provider value or sanitized provider failure captured without short-circuiting peers. */
 type Captured<T> = { ok: true; value: T } | { ok: false; error: SafeProviderFailure }
@@ -71,7 +93,8 @@ const safeProviderFailure = (
         : 'ProviderError'
     const code =
       typedFailure.code === 'REQUEST_TIMEOUT' ||
-      (typeof typedFailure.code === 'string' && SAFE_ERROR_CODES.has(typedFailure.code))
+      (typeof typedFailure.code === 'string' && SAFE_ERROR_CODES.has(typedFailure.code)) ||
+      isTransientRpcCode(typedFailure.code)
         ? typedFailure.code
         : undefined
     const status = Number.isSafeInteger(typedFailure.status)
@@ -222,11 +245,85 @@ export const readOnlyMakerCheck = (): SetupCheck => ({
   required: 'maker address retained outside operator output'
 })
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const isTransientProviderFailure = (value: unknown) => {
+  if (!isRecord(value) || value.kind !== 'provider-error') return false
+
+  const transientCode =
+    (typeof value.code === 'string' && TRANSIENT_PROVIDER_CODES.has(value.code)) ||
+    isTransientRpcCode(value.code)
+  const transientName = typeof value.name === 'string' && TRANSIENT_PROVIDER_NAMES.has(value.name)
+  const transientStatus =
+    typeof value.status === 'number' &&
+    (TRANSIENT_PROVIDER_STATUSES.has(value.status) ||
+      (value.status >= SERVER_ERROR_STATUS_MINIMUM && value.status <= SERVER_ERROR_STATUS_MAXIMUM))
+
+  return transientCode || transientName || transientStatus
+}
+
+const isTransientFailedCheck = (check: SetupCheck) => {
+  if (check.status !== 'failed') return true
+
+  if (check.name === 'chain') {
+    if (!isRecord(check.observed) || !Array.isArray(check.observed.errors)) return false
+    const configuredMatches = check.observed.configured === BASE_CHAIN_ID
+    const connectedMatches =
+      check.observed.connected === undefined || check.observed.connected === BASE_CHAIN_ID
+    const deploymentMatches =
+      check.observed.midnightCode === undefined || check.observed.midnightCode === 'deployed'
+    return (
+      configuredMatches &&
+      connectedMatches &&
+      deploymentMatches &&
+      check.observed.errors.length > 0 &&
+      check.observed.errors.every(isTransientProviderFailure)
+    )
+  }
+
+  if (check.name === 'books') {
+    return (
+      Array.isArray(check.observed) &&
+      check.observed.length > 0 &&
+      check.observed.every(
+        book =>
+          isRecord(book) &&
+          Array.isArray(book.reasons) &&
+          book.reasons.length > 0 &&
+          book.reasons.every(
+            reason =>
+              isRecord(reason) &&
+              Object.keys(reason).length === 1 &&
+              isTransientProviderFailure(reason.timestampProviderError)
+          )
+      )
+    )
+  }
+
+  // Compound checks can mask a successful peer read that already proved invariant drift, so they
+  // fail closed instead of retrying based only on their provider error.
+  if (check.name === 'ratifier' || check.name === 'reference' || check.name === 'offers') {
+    return false
+  }
+
+  return isRecord(check.observed) && isTransientProviderFailure(check.observed.error)
+}
+
+/**
+ * Identifies a failed readiness report caused exclusively by explicitly transient provider errors.
+ * @param report - Complete sanitized setup-check report.
+ * @returns Whether every failed check is a timeout, network failure, rate limit, or server error.
+ * @remarks Unknown provider failures and mixed provider/invariant failures remain fail-closed.
+ */
+export const hasOnlyTransientProviderFailures = (report: SetupCheckReport) =>
+  !report.ready && report.checks.every(isTransientFailedCheck)
+
 const bookProblems = (
   requestedId: `0x${string}`,
   book: BookSetup,
   config: SetupCheckConfig,
-  latestTimestamp: bigint
+  latestTimestamp?: bigint
 ) => {
   const reasons: unknown[] = []
   if (book.id !== requestedId) reasons.push(`provider returned ${book.id}`)
@@ -236,7 +333,9 @@ const bookProblems = (
     reasons.push(`unexpected loan asset ${book.loanAsset}`)
   }
   if (book.tickSpacing <= 0) reasons.push('tick spacing is inaccessible')
-  if (book.maturity <= latestTimestamp) reasons.push(`matured at ${book.maturity}`)
+  if (latestTimestamp !== undefined && book.maturity <= latestTimestamp) {
+    reasons.push(`matured at ${book.maturity}`)
+  }
   return { id: requestedId, reasons }
 }
 
@@ -253,15 +352,25 @@ export const chainCheck = (
   midnightCode: Captured<`0x${string}` | undefined>
 ) => {
   const required = { chainId: BASE_CHAIN_ID, midnightCode: 'deployed' }
-  if (!chainId.ok) return providerFailure('chain', chainId.error, required)
-  if (!midnightCode.ok) return providerFailure('chain', midnightCode.error, required)
-  const deployed = midnightCode.value !== undefined && midnightCode.value !== '0x'
+  const deployed = midnightCode.ok
+    ? midnightCode.value !== undefined && midnightCode.value !== '0x'
+    : undefined
+  const errors = [
+    ...(!chainId.ok ? [chainId.error] : []),
+    ...(!midnightCode.ok ? [midnightCode.error] : [])
+  ]
   const observed = {
     configured: config.chainId,
-    connected: chainId.value,
-    midnightCode: deployed ? 'deployed' : 'missing'
+    ...(chainId.ok ? { connected: chainId.value } : {}),
+    ...(deployed === undefined ? {} : { midnightCode: deployed ? 'deployed' : 'missing' }),
+    ...(errors.length === 0 ? {} : { errors })
   }
-  const ready = config.chainId === BASE_CHAIN_ID && chainId.value === BASE_CHAIN_ID && deployed
+  const ready =
+    errors.length === 0 &&
+    config.chainId === BASE_CHAIN_ID &&
+    chainId.ok &&
+    chainId.value === BASE_CHAIN_ID &&
+    deployed === true
   return setupResult('chain', ready, observed, required)
 }
 
@@ -287,11 +396,16 @@ export const booksCheck = (
     )
   }
   const invalidBooks = books.flatMap(({ requestedId, response }) => {
-    if (!response.ok) return [{ id: requestedId, reasons: [{ providerError: response.error }] }]
-    if (!timestamp.ok) {
-      return [{ id: requestedId, reasons: [{ timestampProviderError: timestamp.error }] }]
-    }
-    const problem = bookProblems(requestedId, response.value, config, timestamp.value)
+    const problem = !response.ok
+      ? { id: requestedId, reasons: [{ providerError: response.error }] as unknown[] }
+      : bookProblems(
+          requestedId,
+          response.value,
+          config,
+          timestamp.ok ? timestamp.value : undefined
+        )
+    if (!timestamp.ok) problem.reasons.push({ timestampProviderError: timestamp.error })
+
     return problem.reasons.length === 0 ? [] : [problem]
   })
   return setupResult('books', invalidBooks.length === 0, invalidBooks, required)

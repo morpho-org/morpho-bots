@@ -1,3 +1,5 @@
+import type { Hex } from 'viem'
+
 import type {
   BootstrapMakeService,
   BootstrapPositionService,
@@ -19,6 +21,7 @@ import { OfferInvalidationService } from './application/invalidation/offer-inval
 import { LadderQuoterService } from './application/ladder/ladder-quoter.service'
 import { serializeQuoterBotWrites } from './application/quoter-bot/quoter-bot-mutation.utils'
 import { QuoterBotService } from './application/quoter-bot/quoter-bot.service'
+import { SetupCheckAbortedError } from './application/setup/setup-check-aborted.error'
 import { SetupCheckService } from './application/setup/setup-check.service'
 import { VersionService } from './application/version.service'
 import { ConfigValidationError } from './config/config-validation.error'
@@ -82,7 +85,10 @@ const makerAccountAddress = async (
 type Dependencies = {
   createState?: (config: ConfigService) => SetupStateService
   /** Replaces provider ports while retaining default application-service composition. */
-  createBootstrapAdapters?: (config: ConfigService) => {
+  createBootstrapAdapters?: (
+    config: ConfigService,
+    ignoredOfferGroupIds?: readonly Hex[]
+  ) => {
     positions: BootstrapPositionService
     rates: BootstrapReferenceRateService
     make: BootstrapMakeService
@@ -102,7 +108,7 @@ type Dependencies = {
   readPassword?: () => Promise<string>
 }
 
-const defaultState = async (config: ConfigService) => {
+const defaultState = async (config: ConfigService, ignoredOfferGroupIds: readonly Hex[] = []) => {
   const identity = config.identity
   const identityOptions = identity.readOnly
     ? { readOnly: true as const }
@@ -130,13 +136,18 @@ const defaultState = async (config: ConfigService) => {
       midnight: config.setup.midnight,
       loanAsset: config.setup.loanAsset,
       morphoApiBaseUrl: config.morphoApiBaseUrl,
-      routerApiBaseUrl: config.routerApiBaseUrl,
       marketIds: config.setup.marketIds,
       referenceMarketId: config.setup.referenceMarketId ?? config.setup.marketIds[0]!,
       v0OfferGroupIds: config.v0OfferGroupIds,
       readOwnedGroupIds: async () => [
         ...new Set([...(await ownership.read()), ...(await ladderOwnership.readGroupIds())])
       ],
+      ignoredOfferGroupIds,
+      readBootstrapGroupIds: ownership.read,
+      readLadderSellGroupIds: async () =>
+        (await ladderOwnership.read()).flatMap(publication =>
+          publication.groups.filter(group => group.side === 'lower').map(group => group.groupId)
+        ),
       requestTimeoutMs: config.requestTimeoutMs
     }
   )
@@ -147,10 +158,20 @@ const defaultState = async (config: ConfigService) => {
  * @param environment - Environment map used for lazy validated configuration.
  * @param dependencies - Optional state and workflow-port factories used by isolated tests.
  * @returns An application exposing a single asynchronous CLI `run` boundary.
- * @remarks Composition is side-effect free: configuration and providers are built lazily per
- * command, writer commands gate on readiness first, and `--readonly` swaps every mutation port for
- * terminal output. `start` shares one cross-strategy mutation queue so separate writer adapters
- * cannot race signer nonces.
+ * @remarks Composition is side-effect free. Configuration and provider construction occur lazily
+ * for `setup-check`, `bootstrap`, `ladder`, `start`, or `invalidate`. Setup is read-only and preserves
+ * concurrent independent reads through `Promise.all`. `--readonly` selects address-only identity
+ * before any private-key validation and replaces every workflow mutation port with terminal output.
+ * Writer commands first clean up durable ladder groups for removed markets, then assert readiness
+ * before running their application service. Setup monitoring emits read-only readiness reports
+ * at a one-minute cadence and halts nonzero on the first failed report. Bootstrap monitoring uses
+ * the same cadence and invalidates strategy-owned groups after its shutdown signal. Ladder
+ * monitoring uses the shortest configured ladder cadence and invalidates active owned ladder groups
+ * after shutdown. `start` gates readiness once, launches all three monitors concurrently, and uses
+ * one cross-strategy mutation queue so separate writer adapters cannot race signer nonces. Explicit
+ * invalidation uses a narrower cancellation preflight so unknown maker
+ * groups can be removed without weakening normal readiness. One-shot writers run only for their
+ * respective explicit commands.
  */
 export const createApplication = (
   environment: Environment = process.env,
@@ -219,17 +240,33 @@ export const createApplication = (
     async options => {
       const config = await loadConfig(options)
       assertReferenceConfigured(config, config.bootstrap)
-      const state = dependencies.createState?.(config) ?? (await defaultState(config))
+      if (options.signal.aborted) throw new SetupCheckAbortedError()
+      const ladderAdapters = await (dependencies.createLadderAdapters?.(config) ??
+        createProductionLadderAdapters(config))
+      if (options.signal.aborted) throw new SetupCheckAbortedError()
+      const ignoredOfferGroupIds =
+        config.readOnly || config.bootstrap.length === 0 || config.ladder.length === 0
+          ? []
+          : ((await ladderAdapters.make.cleanupRemovedMarkets?.()) ?? [])
+      const state =
+        dependencies.createState?.(config) ?? (await defaultState(config, ignoredOfferGroupIds))
       await new SetupCheckService(
         state,
         config.setup,
         config.readOnly,
         requiresVariableRateReference(config.bootstrap)
-      ).assertReady()
-      const injectedAdapters = dependencies.createBootstrapAdapters?.(config)
+      ).assertReady(options.signal)
+      const injectedAdapters = dependencies.createBootstrapAdapters?.(config, ignoredOfferGroupIds)
       const writeReadOnlyEvent = parseEventWriter(options.writeEvent)
       const adapters =
-        injectedAdapters ?? (await createProductionBootstrapAdapters(config, writeReadOnlyEvent))
+        injectedAdapters ??
+        (await createProductionBootstrapAdapters(
+          config,
+          writeReadOnlyEvent,
+          undefined,
+          ignoredOfferGroupIds
+        ))
+      if (options.signal.aborted) throw new SetupCheckAbortedError()
       const make =
         config.readOnly && injectedAdapters
           ? new ReadOnlyBootstrapMakeService(writeReadOnlyEvent)
@@ -244,15 +281,22 @@ export const createApplication = (
     async options => {
       const config = await loadConfig(options)
       assertReferenceConfigured(config, config.ladder)
-      const state = dependencies.createState?.(config) ?? (await defaultState(config))
+      if (options.signal.aborted) throw new SetupCheckAbortedError()
+      const adapters = await (dependencies.createLadderAdapters?.(config) ??
+        createProductionLadderAdapters(config))
+      if (options.signal.aborted) throw new SetupCheckAbortedError()
+      const ignoredOfferGroupIds =
+        config.readOnly || config.ladder.length === 0
+          ? []
+          : ((await adapters.make.cleanupRemovedMarkets?.()) ?? [])
+      const state =
+        dependencies.createState?.(config) ?? (await defaultState(config, ignoredOfferGroupIds))
       await new SetupCheckService(
         state,
         config.setup,
         config.readOnly,
         requiresVariableRateReference(config.ladder)
-      ).assertReady()
-      const adapters = await (dependencies.createLadderAdapters?.(config) ??
-        createProductionLadderAdapters(config))
+      ).assertReady(options.signal)
       const writeReadOnlyEvent = parseEventWriter(options.writeEvent)
       const make = config.readOnly
         ? new ReadOnlyLadderMakeService(
@@ -283,27 +327,42 @@ export const createApplication = (
           'requires at least one configured market for monitoring'
         )
       }
-
       assertReferenceConfigured(config, [...config.bootstrap, ...config.ladder])
-      const state = dependencies.createState?.(config) ?? (await defaultState(config))
+      if (options.signal.aborted) throw new SetupCheckAbortedError()
+      const ladderAdapters = await (dependencies.createLadderAdapters?.(config) ??
+        createProductionLadderAdapters(config))
+      if (options.signal.aborted) throw new SetupCheckAbortedError()
+      const ignoredOfferGroupIds = config.readOnly
+        ? []
+        : ((await ladderAdapters.make.cleanupRemovedMarkets?.()) ?? [])
+
+      const state =
+        dependencies.createState?.(config) ?? (await defaultState(config, ignoredOfferGroupIds))
       const setup = new SetupCheckService(
         state,
         config.setup,
         config.readOnly,
         requiresVariableRateReference([...config.bootstrap, ...config.ladder])
       )
-      await setup.assertReady()
+      await setup.assertReady(options.signal)
 
-      const injectedBootstrapAdapters = dependencies.createBootstrapAdapters?.(config)
+      const injectedBootstrapAdapters = dependencies.createBootstrapAdapters?.(
+        config,
+        ignoredOfferGroupIds
+      )
       const bootstrapAdapters = await (injectedBootstrapAdapters ??
-        createProductionBootstrapAdapters(config, readOnlyWriter(options.writeEvent)))
+        createProductionBootstrapAdapters(
+          config,
+          readOnlyWriter(options.writeEvent),
+          undefined,
+          ignoredOfferGroupIds
+        ))
+      if (options.signal.aborted) throw new SetupCheckAbortedError()
       const bootstrapMake =
         config.readOnly && injectedBootstrapAdapters
           ? new ReadOnlyBootstrapMakeService(readOnlyWriter(options.writeEvent))
           : bootstrapAdapters.make
 
-      const ladderAdapters = await (dependencies.createLadderAdapters?.(config) ??
-        createProductionLadderAdapters(config))
       const ladderMake = config.readOnly
         ? new ReadOnlyLadderMakeService(
             ladderAdapters.make,

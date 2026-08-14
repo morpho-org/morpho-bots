@@ -7,6 +7,7 @@ import type {
   LadderTransactionSubmittedObserver
 } from '../../application/ladder/ladder-verbose'
 import type { LadderQuoteSet } from '../../domain/ladder/ladder'
+import type { OwnedOverlapBookOffer } from '../intentional-overlap.utils'
 import type { LadderGroupReference } from './ladder-group-ownership.utils'
 
 import { LadderOwnershipCleanupError } from '../../application/ladder/ladder-ownership-cleanup.error'
@@ -15,7 +16,7 @@ import { LadderAdapterError } from './ladder-adapter.error'
 import { LadderHardHaltError } from './ladder-hard-halt.error'
 import { assertLadderProspectiveSpread } from './ladder-spread.utils'
 
-type LadderBookOffer = { groupId?: Hex; marketId: Hex; buy: boolean; tick: bigint }
+type LadderBookOffer = OwnedOverlapBookOffer
 type LadderOwnedGroup = { groupId: Hex; maxAssets: bigint }
 
 /** Blocking transport used by the serialized ladder make adapter. */
@@ -28,8 +29,8 @@ export interface LadderOfferTransport {
   readGroupConsumed(groupId: Hex): Promise<bigint>
   /** Lists active owned group IDs, optionally for one market. @param marketId - Optional market filter. @returns Distinct group IDs. */
   listActiveGroupIds(marketId?: Hex): Promise<readonly Hex[]>
-  /** Lists the maker's complete live offer book. @returns Every offer needed for spread safety. */
-  listBookOffers(): Promise<readonly LadderBookOffer[]>
+  /** Lists the maker's live offers for one market. @param marketId - Market being reconciled. @returns Every offer needed for spread safety. */
+  listBookOffers(marketId: Hex): Promise<readonly LadderBookOffer[]>
   /** Prepares a policy-checked desired tree without broadcasting it. @param quote - Exact desired quote set. @returns Publication metadata and one-shot ratifier/publisher. */
   preparePublication(quote: LadderQuoteSet): Promise<{
     groupIds: readonly Hex[]
@@ -102,7 +103,7 @@ export class MidnightLadderMakeService implements LadderMakeService {
         assertLadderProspectiveSpread({
           marketId: parameters.marketId,
           replacedGroupIds: spreadReplacedGroupIds,
-          book: await this.transport.listBookOffers(),
+          book: await this.transport.listBookOffers(parameters.marketId),
           prospective: publication.prospective
         })
         await this.transport.reservePublication({

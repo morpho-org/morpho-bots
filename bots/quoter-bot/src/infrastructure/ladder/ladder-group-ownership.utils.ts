@@ -1,6 +1,6 @@
 import type { Address, Hex } from 'viem'
 
-import { mkdir, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { bytesToHex, hexToBytes, isHex, keccak256, size, stringToHex } from 'viem'
@@ -162,8 +162,18 @@ const strategyId = (config: LadderOwnershipConfig) =>
     stringToHex(
       JSON.stringify({
         strategy: 'ladder',
-        maker: config.maker,
-        marketIds: config.strategyMarketIds.map(canonicalId).toSorted()
+        maker: config.maker
+      })
+    )
+  )
+
+const legacyStrategyId = (maker: Address, marketIds: readonly Hex[]) =>
+  keccak256(
+    stringToHex(
+      JSON.stringify({
+        strategy: 'ladder',
+        maker,
+        marketIds: marketIds.map(canonicalId).toSorted()
       })
     )
   )
@@ -203,49 +213,23 @@ const serializePublication = (publication: OwnedLadderPublication): PersistedPub
  * @returns Atomic publication reservation, confirmation, removal, and read operations.
  * @throws `LadderAdapterError` when persisted state is malformed, foreign, or insecure.
  * @remarks State contains no key, signature, URL, transaction, or maker address and is mode `0600`.
+ * Legacy market-scoped state remains readable without mutation and is migrated only by writer paths.
  */
 export const createLadderGroupOwnership = (
   config: LadderOwnershipConfig,
   dependencies: LadderOwnershipDependencies = {}
 ) => {
   const strategy = strategyId(config)
+  const legacyStrategy = legacyStrategyId(config.maker, config.strategyMarketIds)
   const directory =
     dependencies.stateDirectory ??
     join(process.env.XDG_STATE_HOME ?? join(homedir(), '.local', 'state'), 'morpho-quoter-bot')
   const path = join(directory, `${strategy}.json`)
-
-  const read = async (): Promise<OwnedLadderPublication[]> => {
-    let metadata
-    try {
-      metadata = await lstat(path)
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
-      throw new LadderAdapterError('group-ownership-state')
-    }
-    if (!metadata.isFile() || metadata.isSymbolicLink() || (metadata.mode & 0o077) !== 0) {
-      throw new LadderAdapterError('group-ownership-state')
-    }
-    if (typeof process.getuid === 'function' && metadata.uid !== process.getuid()) {
-      throw new LadderAdapterError('group-ownership-state')
-    }
-    try {
-      const value = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>
-      if (
-        value.version !== 1 ||
-        value.strategy !== strategy ||
-        !Array.isArray(value.publications)
-      ) {
-        throw new LadderAdapterError('group-ownership-state')
-      }
-      return value.publications.map(canonicalPublication)
-    } catch (error) {
-      if (error instanceof LadderAdapterError) throw error
-      throw new LadderAdapterError('group-ownership-state')
-    }
-  }
+  const legacyPath = join(directory, `${legacyStrategy}.json`)
 
   const write = async (publications: readonly OwnedLadderPublication[]) => {
     await mkdir(directory, { recursive: true, mode: 0o700 })
+    const legacyStates = await discoverLegacyStates()
     const temporary = `${path}.${process.pid}.${crypto.randomUUID()}.tmp`
     try {
       await writeFile(
@@ -258,9 +242,114 @@ export const createLadderGroupOwnership = (
         { encoding: 'utf8', mode: 0o600, flag: 'wx' }
       )
       await rename(temporary, path)
+      await Promise.allSettled(legacyStates.map(state => rm(state.path, { force: true })))
     } finally {
       await rm(temporary, { force: true })
     }
+  }
+
+  const readPath = async (
+    statePath: string,
+    expectedStrategy: Hex,
+    ignoreNonLadderState = false
+  ): Promise<OwnedLadderPublication[] | undefined> => {
+    let metadata
+    try {
+      metadata = await lstat(statePath)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+      throw new LadderAdapterError('group-ownership-state')
+    }
+    if (!metadata.isFile() || metadata.isSymbolicLink() || (metadata.mode & 0o077) !== 0) {
+      throw new LadderAdapterError('group-ownership-state')
+    }
+    if (typeof process.getuid === 'function' && metadata.uid !== process.getuid()) {
+      throw new LadderAdapterError('group-ownership-state')
+    }
+    try {
+      const value = JSON.parse(await readFile(statePath, 'utf8')) as Record<string, unknown>
+      if (ignoreNonLadderState && !Array.isArray(value.publications)) return undefined
+      if (
+        value.version !== 1 ||
+        value.strategy !== expectedStrategy ||
+        !Array.isArray(value.publications)
+      ) {
+        throw new LadderAdapterError('group-ownership-state')
+      }
+      return value.publications.map(canonicalPublication)
+    } catch (error) {
+      if (error instanceof LadderAdapterError) throw error
+      throw new LadderAdapterError('group-ownership-state')
+    }
+  }
+
+  const discoverLegacyStates = async (verifiedGroupIds?: ReadonlySet<Hex>) => {
+    let names: string[]
+    try {
+      names = await readdir(directory)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+      throw new LadderAdapterError('group-ownership-state')
+    }
+
+    const states: { path: string; publications: OwnedLadderPublication[] }[] = []
+    for (const name of names.toSorted()) {
+      const match = /^(0x[0-9a-f]{64})\.json$/.exec(name)
+      if (!match) continue
+      const candidateStrategy = match[1] as Hex
+      const candidatePath = join(directory, name)
+      if (candidatePath === path) continue
+      const publications = await readPath(candidatePath, candidateStrategy, true)
+      if (publications === undefined) continue
+      const marketIds = [...new Set(publications.map(publication => publication.marketId))]
+      const attributableLegacyStrategy =
+        marketIds.length > 0 ? legacyStrategyId(config.maker, marketIds) : undefined
+      const verifiedLegacyState =
+        verifiedGroupIds !== undefined &&
+        publications.some(publication =>
+          publication.groups.some(group => verifiedGroupIds.has(group.groupId))
+        )
+      if (
+        candidatePath !== legacyPath &&
+        candidateStrategy !== attributableLegacyStrategy &&
+        !verifiedLegacyState
+      ) {
+        continue
+      }
+      states.push({ path: candidatePath, publications })
+    }
+    return states
+  }
+
+  const hasCandidateLegacyState = async () => {
+    try {
+      return (await readdir(directory)).some(
+        name => /^(0x[0-9a-f]{64})\.json$/.test(name) && join(directory, name) !== path
+      )
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+      throw new LadderAdapterError('group-ownership-state')
+    }
+  }
+
+  const legacyPublications = async (verifiedGroupIds?: ReadonlySet<Hex>) => {
+    const publications = new Map<string, OwnedLadderPublication>()
+    for (const state of await discoverLegacyStates(verifiedGroupIds)) {
+      for (const publication of state.publications) {
+        const key = publication.groups
+          .map(group => group.groupId)
+          .toSorted()
+          .join(':')
+        publications.set(key, publication)
+      }
+    }
+    return [...publications.values()]
+  }
+
+  const read = async (): Promise<OwnedLadderPublication[]> => {
+    const publications = await readPath(path, strategy)
+    if (publications !== undefined) return publications
+    return legacyPublications()
   }
 
   const publicationKey = (groups: readonly LadderGroupReference[]) =>
@@ -270,6 +359,26 @@ export const createLadderGroupOwnership = (
       .join(':')
 
   return {
+    /** Migrates valid legacy ownership into the stable namespace. @returns Completion after atomic durable migration. */
+    migrate: async (verifyGroupIds?: () => Promise<readonly Hex[]>): Promise<void> => {
+      const publications = await readPath(path, strategy)
+      if (publications !== undefined) {
+        for (const state of await discoverLegacyStates()) await rm(state.path, { force: true })
+        return
+      }
+      let legacy = await legacyPublications()
+      let verified: ReadonlySet<Hex> | undefined
+      if (legacy.length === 0 && verifyGroupIds !== undefined) {
+        if (!(await hasCandidateLegacyState())) return
+        verified = new Set(await verifyGroupIds())
+        legacy = await legacyPublications(verified)
+      }
+      if (legacy.length > 0) {
+        await write(legacy)
+        for (const state of await discoverLegacyStates(verified))
+          await rm(state.path, { force: true })
+      }
+    },
     /** Reads every reserved or confirmed publication. @returns Canonical durable publication intents. */
     read,
     /** Reads every explicitly owned group ID. @returns Distinct reserved and confirmed group IDs. */

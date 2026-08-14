@@ -1,8 +1,5 @@
 # Quoter bot
 
-> [!WARNING]
-> The quoter-bot bot is a work in progress, must not be used yet, and is expected to be ready for use around August 12, 2026.
-
 The bot validates its Base and Midnight setup, bootstraps target lending positions, maintains
 two-sided rate ladders, and provides explicit recovery commands. Start with read-only mode to inspect
 every intended action before enabling signing.
@@ -120,7 +117,9 @@ ratifier, chain, market, reference, and active-offer observations still run agai
 maker address.
 
 `setup-check --monitor` runs the same complete read-only observation every minute and streams each
-report. The first report with `ready: false` halts monitoring, includes that report in the terminal
+report. A report containing only explicitly transient provider failures is retried up to two times;
+recovery emits only the successful report. An invariant failure, a mixed failure, or three transient
+attempts with no recovery emits `ready: false`, halts monitoring, includes that report in the terminal
 `setup-failed` record, and exits with code `1`. `SIGINT` or `SIGTERM` after successful checks lets an
 in-flight check finish and emits a final `{"status":"stopped","reason":"signal","cycles":N}` record
 with exit code `0`. Monitoring never signs, submits remediation, or performs shutdown cleanup. Add
@@ -208,14 +207,14 @@ the inner calls with `delegatecall`, so the maker account that submits the outer
 `msg.sender` throughout. The local transaction policy rejects any wrong target, selector, call count,
 order, group, amount, on-behalf account, or extra calldata. A reverted or failed multicall is reported
 without serial retry. Explicit single-group invalidation keeps the simpler direct Midnight
-`setConsumed` transaction. Successfully canceled
-bot-owned groups are removed from durable ownership state; explicitly configured
-`V0_OFFER_GROUP_IDS` remain configuration-owned until the operator edits configuration. If the
-provider omits one of these configured groups, bootstrap and ladder reads deliberately fail closed
-because neither omission nor on-chain consumption reveals the group's original maximum capacity.
-After explicitly invalidating the group when necessary, remove its ID from `V0_OFFER_GROUP_IDS` to
-acknowledge that it is no longer owned; leaving the ID configured keeps the reservation active and
-prevents publication from assuming zero exposure.
+`setConsumed` transaction. Successfully canceled bot-owned groups are removed from durable
+ownership state; explicitly configured `V0_OFFER_GROUP_IDS` remain configuration-owned until the
+operator edits configuration. If the provider omits one of these configured groups, bootstrap and
+ladder reads deliberately fail closed because neither omission nor ordinary partial on-chain
+consumption reveals the group's original maximum capacity. A `consumed` value equal to the Midnight
+SDK's `MAX_OFFER_CAP` is the exception: it conclusively proves invalidation, so readers ignore that
+group and cleanup does not resubmit its cancellation after a restart. Remove stale IDs from
+`V0_OFFER_GROUP_IDS` after invalidation to keep the operator-owned set current.
 
 Maker-wide invalidation waits for the single multicall receipt, reports its hash against every group,
 then forgets all confirmed bot-owned groups together. Submitted hashes stream as
@@ -285,10 +284,10 @@ service. Deploy-only does not inspect or mutate Railway variables, volumes, or s
 deploy-only, an authorized operator or full provisioning run must configure `RAILWAY_RUN_UID=0`,
 the current `RAILWAY_DOCKERFILE_PATH=bots/quoter-bot/Dockerfile`, `XDG_STATE_HOME=/state`, signer
 and application variables, and the state volume. A full provisioning run preserves root-level
-ownership files in a detached pre-rename `market-making-volume` by mounting it at
-`/state/morpho-quoter-bot`; otherwise it accepts an attached volume at `/state` or creates one there.
-A project token (`RAILWAY_TOKEN`) cannot manage that configuration; use authorized account or
-workspace credentials only for provisioning, not routine deploy-only CI.
+ownership files in an attached volume at `/state`; when none is attached, it creates a fresh volume
+there and leaves any detached pre-rename volume untouched. A project token (`RAILWAY_TOKEN`) cannot
+manage that configuration; use authorized account or workspace credentials only for provisioning,
+not routine deploy-only CI.
 
 The local Compose service uses the same `/state` ownership path through a named volume, requires both
 strategy arrays, and supplies the runtime timeout defaults when the corresponding host variables are
@@ -358,9 +357,9 @@ unit; for six-decimal USDC, `101000000` is 101 USDC. No value is inferred from a
 | `AWS_REGION`                     | `identity.awsRegion`                | AWS region containing the KMS key. AWS credentials use the standard AWS SDK credential chain.                                                                                                             |
 | `MIDNIGHT_ADDRESS`               | `contracts.midnightAddress`         | Required. Expected deployed Midnight singleton. Setup verifies its bytecode before a writer starts.                                                                                                       |
 | `LOAN_ASSET_ADDRESS`             | `contracts.loanAssetAddress`        | Required. Loan token used by every configured Midnight market. Balances, allowances, budgets, offer sizes, and exposure values use this token's raw units.                                                |
-| `RATIFIER_ADDRESS`               | `contracts.ratifierAddress`         | Required. Router-listed Ecrecover or Setter ratifier authorized by the maker. The bot signs Ecrecover trees or approves Setter roots onchain, then verifies the selected deployment and Midnight binding. |
+| `RATIFIER_ADDRESS`               | `contracts.ratifierAddress`         | Required. Canonical SDK Ecrecover or Setter ratifier authorized by the maker. The bot signs Ecrecover trees or approves Setter roots onchain, then verifies the selected deployment and Midnight binding. |
 | `MORPHO_API_BASE_URL`            | `apis.morphoBaseUrl`                | Required. Morpho API origin used for Midnight books, market metadata, prospective-offer validation, and cursor-paginated maker offer groups. No API-key header is supported.                              |
-| `ROUTER_API_BASE_URL`            | `apis.routerBaseUrl`                | Required. Router API origin used only to verify the configured ratifier against `/v0/config/contracts`. No API-key header is supported.                                                                   |
+| `ROUTER_API_BASE_URL`            | `apis.routerBaseUrl`                | Deprecated compatibility key. Accepted and ignored; ratifier identity comes from the pinned Morpho SDK catalog.                                                                                           |
 | `MARKET_IDS`                     | `markets.allowlist`                 | Required comma-separated list of unique 0x-prefixed bytes32 Midnight market IDs. Every bootstrap or ladder `marketId` must appear here.                                                                   |
 | `REFERENCE_MARKET_ID`            | `markets.referenceMarketId`         | Required when the selected command has an active `variable_rate_avg` target. Must be a 0x-prefixed bytes32 Morpho Blue market ID.                                                                         |
 | `V0_OFFER_GROUP_IDS`             | `markets.v0OfferGroupIds`           | Optional comma-separated list of unique, explicitly strategy-owned bytes32 offer-group IDs; defaults to empty. Use it to adopt known pre-existing groups safely.                                          |
@@ -375,8 +374,9 @@ unit; for six-decimal USDC, `101000000` is 101 USDC. No value is inferred from a
 | `BETTERSTACK_HEARTBEAT_URL`      | —                                   | Optional HTTP(S) heartbeat URL pinged at startup and once per minute. Invalid URLs and ping failures are reported safely and never interrupt quoter-bot.                                                  |
 
 There is no separate Mempool endpoint or API-key field. Books and cursor-paginated maker offer groups
-are read through `MORPHO_API_BASE_URL`; `ROUTER_API_BASE_URL` is used only for the
-`/v0/config/contracts` ratifier registry. The bot does not accept configured API-key headers.
+are read through `MORPHO_API_BASE_URL`. Ratifier identity is validated from the pinned Morpho SDK
+catalog, so setup readiness does not depend on a Router API endpoint. `ROUTER_API_BASE_URL` and
+`apis.routerBaseUrl` remain accepted as ignored compatibility keys for existing deployments.
 
 ### Better Stack observability
 
@@ -525,8 +525,9 @@ ladder:
 ```
 
 `quoter-bot setup-check --monitor` repeats non-overlapping read-only readiness observations every minute
-until its shutdown signal or the first failed report. `quoter-bot bootstrap` first runs the same one-shot
-readiness gate as `setup-check`, then executes exactly one position-bootstrap cycle and prints its
+until its shutdown signal or the first failed report after transient-provider retry tolerance.
+`quoter-bot bootstrap` first runs the same one-shot readiness gate as `setup-check`, then executes exactly
+one position-bootstrap cycle and prints its
 bigint-safe JSON result. `quoter-bot bootstrap --monitor` uses the same gate, repeats non-overlapping cycles
 every minute, and performs owned-group cleanup after its shutdown signal. `quoter-bot bootstrap --verbose`
 adds safe rate, offer, transaction-hash, configuration, and before/after position diagnostics to

@@ -8,7 +8,10 @@ import { ConfigService } from '../../../src/config/config.service'
 import { LadderAdapterError } from '../../../src/infrastructure/ladder/ladder-adapter.error'
 import { MidnightLadderMakeService } from '../../../src/infrastructure/ladder/ladder-make.service'
 import {
+  calculateProductionLadderCapacities,
+  cleanupRemovedLadderGroups,
   createProductionLadderAdapters,
+  createRepeatableSingleFlight,
   publishLadderPublication
 } from '../../../src/infrastructure/ladder/production-ladder'
 
@@ -45,6 +48,107 @@ const environment = {
   MORPHO_API_BASE_URL: 'https://api.example',
   ROUTER_API_BASE_URL: 'https://router.example'
 }
+
+describe('calculateProductionLadderCapacities', () => {
+  test('suppresses lower-rate credit sales when no conservative cost basis is available', () => {
+    expect(
+      calculateProductionLadderCapacities({
+        marketId,
+        balance: 100n,
+        currentCredit: 90n,
+        otherMarketCredit: 0n,
+        targetMarketExposureAssets: 100n,
+        maximumTotalExposureAssets: 1_000n,
+        reservations: []
+      })
+    ).toEqual({
+      lowerRateCapacityAssets: 0n,
+      higherRateCapacityAssets: 10n,
+      targetMarketCapacityAssets: 10n,
+      maximumTotalCapacityAssets: 910n
+    })
+  })
+})
+
+describe('createRepeatableSingleFlight', () => {
+  test('deduplicates concurrent cleanup but reruns after each settled attempt', async () => {
+    let runs = 0
+    let release: (() => void) | undefined
+    const operation = createRepeatableSingleFlight(
+      () =>
+        new Promise<void>(resolve => {
+          runs++
+          release = resolve
+        })
+    )
+
+    const first = operation()
+    const concurrent = operation()
+    expect(runs).toBe(1)
+    release?.()
+    await Promise.all([first, concurrent])
+
+    const next = operation()
+    expect(runs).toBe(2)
+    release?.()
+    await next
+  })
+})
+
+describe('cleanupRemovedLadderGroups', () => {
+  test('returns indexed removed groups that readiness must treat as canceled tombstones', async () => {
+    const tombstones = await cleanupRemovedLadderGroups({
+      removed: new Map([[groupId, 10n]]),
+      indexedGroupIds: new Set([groupId]),
+      readGroupConsumed: async () => 0n,
+      invalidate: async () => {},
+      forgetGroups: async () => {}
+    })
+
+    expect(tombstones).toEqual([groupId])
+  })
+
+  test('keeps a successfully canceled unindexed group as a temporary tombstone', async () => {
+    const forgotten: Hex[] = []
+    const tombstones = await cleanupRemovedLadderGroups({
+      removed: new Map([[groupId, 10n]]),
+      indexedGroupIds: new Set(),
+      readGroupConsumed: async () => 0n,
+      invalidate: async () => {},
+      forgetGroups: async groupIds => {
+        forgotten.push(...groupIds)
+      }
+    })
+
+    expect(tombstones).toEqual([groupId])
+    expect(forgotten).toEqual([])
+  })
+
+  test('returns an indexed tombstone when a removed group fills while cancellation confirms', async () => {
+    const events: string[] = []
+    let consumedReads = 0
+
+    const tombstones = await cleanupRemovedLadderGroups({
+      removed: new Map([[groupId, 10n]]),
+      indexedGroupIds: new Set([groupId]),
+      readGroupConsumed: async () => {
+        consumedReads++
+        return consumedReads === 1 ? 9n : 10n
+      },
+      invalidate: async () => {
+        events.push('invalidate')
+        throw new LadderAdapterError('transaction-reverted')
+      },
+      forgetGroups: async groupIds => {
+        events.push(`forget:${groupIds.join(',')}`)
+      }
+    })
+
+    expect(events).toEqual(['invalidate'])
+    expect(tombstones).toEqual([groupId])
+    expect(consumedReads).toBe(2)
+  })
+})
 
 describe('createProductionLadderAdapters', () => {
   test('selects the configured hardcoded ladder target independently from bootstrap', async () => {

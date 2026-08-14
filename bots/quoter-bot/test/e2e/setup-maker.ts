@@ -4,6 +4,7 @@ import {
   erc20Abi,
   http,
   keccak256,
+  maxUint256,
   pad,
   parseAbiParameters,
   toHex,
@@ -17,7 +18,6 @@ import {
   ANVIL_DEFAULT_ACCOUNT,
   ECRECOVER_RATIFIER,
   MAKER_USDC_BALANCE,
-  MAXIMUM_LEND_EXPOSURE,
   MIDNIGHT,
   USDC
 } from './constants'
@@ -67,7 +67,7 @@ export const setupMaker = async (anvil: AnvilHandle) => {
     address: USDC,
     abi: erc20Abi,
     functionName: 'approve',
-    args: [MIDNIGHT, MAXIMUM_LEND_EXPOSURE]
+    args: [MIDNIGHT, maxUint256]
   })
   const approvalHash = await wallet.writeContract(approvalRequest)
   const approvalReceipt = await anvil.client.waitForTransactionReceipt({ hash: approvalHash })

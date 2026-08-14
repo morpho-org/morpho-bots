@@ -47,6 +47,7 @@ export const ladderCashReservations = (parameters: {
   bootstrapGroupIds: readonly Hex[]
   bootstrapOffers: readonly BootstrapOfferIntent[]
   replacedGroupIds: ReadonlySet<Hex>
+  ignoredGroupIds?: ReadonlySet<Hex>
 }): LadderCashReservation[] => {
   const ladderGroupIds = parameters.publications.flatMap(publication =>
     publication.groups.map(group => group.groupId)
@@ -59,6 +60,7 @@ export const ladderCashReservations = (parameters: {
     if (
       reservations.has(group.id) ||
       !owned.has(group.id) ||
+      parameters.ignoredGroupIds?.has(group.id) ||
       parameters.replacedGroupIds.has(group.id)
     ) {
       continue
@@ -79,12 +81,19 @@ export const ladderCashReservations = (parameters: {
     parameters.groups,
     parameters.publications
   )) {
-    if (!parameters.replacedGroupIds.has(reservation.id)) {
+    if (
+      !parameters.ignoredGroupIds?.has(reservation.id) &&
+      !parameters.replacedGroupIds.has(reservation.id)
+    ) {
       reservations.set(reservation.id, reservation)
     }
   }
   for (const offer of parameters.bootstrapOffers) {
-    if (!indexedIds.has(offer.groupId) && !reservations.has(offer.groupId)) {
+    if (
+      !parameters.ignoredGroupIds?.has(offer.groupId) &&
+      !indexedIds.has(offer.groupId) &&
+      !reservations.has(offer.groupId)
+    ) {
       reservations.set(offer.groupId, {
         id: offer.groupId,
         marketIds: [offer.marketId],

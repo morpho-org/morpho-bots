@@ -25,7 +25,7 @@ type PrepareLadderRatificationParameters = {
 
 /**
  * Classifies a configured canonical Base ratifier address.
- * @param ratifier - Router-listed ratifier configured on every generated offer.
+ * @param ratifier - Canonical SDK ratifier configured on every generated offer.
  * @returns The ratifier kind selected by the canonical Base deployment address.
  * @throws `LadderAdapterError` when the address is not a supported canonical Base ratifier.
  */

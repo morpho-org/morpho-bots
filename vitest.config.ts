@@ -6,6 +6,8 @@ import { defineConfig } from 'vitest/config'
 export default defineConfig({
   test: {
     projects: [
+      // Workspace-wide invariants that belong to no single member (dependency deduplication).
+      { test: { name: 'workspace', root: import.meta.dirname, include: ['test/**/*.test.ts'] } },
       'packages/utils',
       'packages/bot-kit',
       'packages/swaps',

@@ -16,8 +16,7 @@ type RailwayVolume = {
   id: string
   isPendingDeletion: boolean
   mountPath: string
-  name: string
-  serviceName: string | undefined
+  serviceName: string
 }
 
 const optionalRuntimeVariableDefaults = [
@@ -173,9 +172,9 @@ export const parseRailwayServices = (raw: string): RailwayService[] => {
 }
 
 /**
- * Parses Railway volume identity, attachment, and mount metadata from CLI JSON.
+ * Parses attached Railway volume identity and mount metadata from CLI JSON.
  * @param raw - Complete JSON emitted by `railway volume list --json`.
- * @returns Complete attached or detached volumes in response order; malformed rows are omitted.
+ * @returns Complete attached volumes in response order; malformed or detached rows are omitted.
  */
 export const parseRailwayVolumes = (raw: string): RailwayVolume[] => {
   const { data } = tryCatch(() => JSON.parse(raw) as unknown)
@@ -184,16 +183,14 @@ export const parseRailwayVolumes = (raw: string): RailwayVolume[] => {
   return rows.filter(isRecord).flatMap(row => {
     const id = stringField(row.id)
     const mountPath = stringField(row.mountPath)
-    const name = stringField(row.name)
-    const serviceName = stringField(row.serviceName) || undefined
-    if (!id || !mountPath || !name || typeof row.isPendingDeletion !== 'boolean') return []
+    const serviceName = stringField(row.serviceName)
+    if (!id || !mountPath || !serviceName || typeof row.isPendingDeletion !== 'boolean') return []
 
     return [
       {
         id,
         isPendingDeletion: row.isPendingDeletion,
         mountPath,
-        name,
         serviceName
       }
     ]

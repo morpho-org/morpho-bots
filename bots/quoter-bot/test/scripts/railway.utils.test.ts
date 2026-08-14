@@ -92,14 +92,13 @@ describe('Railway CLI output parsing', () => {
     expect(parseRailwayServices('not-json')).toEqual([])
   })
 
-  test('parses complete attached and detached Railway volumes', () => {
+  test('parses only complete attached Railway volumes', () => {
     const raw = JSON.stringify({
       volumes: [
         {
           id: 'volume-id',
           isPendingDeletion: false,
           mountPath: '/state',
-          name: 'quoter-bot-volume',
           serviceName: 'quoter-bot'
         },
         {
@@ -118,15 +117,7 @@ describe('Railway CLI output parsing', () => {
         id: 'volume-id',
         isPendingDeletion: false,
         mountPath: '/state',
-        name: 'quoter-bot-volume',
         serviceName: 'quoter-bot'
-      },
-      {
-        id: 'unattached',
-        isPendingDeletion: false,
-        mountPath: '/legacy',
-        name: 'market-making-volume',
-        serviceName: undefined
       }
     ])
     expect(parseRailwayVolumes('not-json')).toEqual([])
@@ -235,7 +226,7 @@ describe('Railway CLI output parsing', () => {
     ])
   })
 
-  test('migrates detached legacy state only during authorized provisioning', () => {
+  test('creates fresh state only during authorized provisioning', () => {
     const deploy = readFileSync(new URL('../../scripts/deploy-railway.ts', import.meta.url), 'utf8')
     const fullProvisioningBranch = deploy.indexOf('if (!DEPLOY_ONLY)')
     const ensureService = deploy.indexOf('await ensureService()', fullProvisioningBranch)
@@ -260,14 +251,10 @@ describe('Railway CLI output parsing', () => {
     expect(stateHome).toBeGreaterThan(dockerfilePath)
     expect(stateVolume).toBeGreaterThan(stateHome)
     expect(stateVolume).toBeLessThan(deploymentSnapshot)
-    expect(deploy).toContain("const LEGACY_STATE_VOLUME_NAME = 'market-making-volume'")
-    expect(deploy).toContain("const LEGACY_STATE_VOLUME_MOUNT_PATH = '/state/morpho-quoter-bot'")
     expect(deploy).toContain('railway volume list --json')
     expect(deploy).not.toContain('railway volume list --service')
-    expect(deploy).toContain(
-      'railway volume update --volume ${volume.id} --mount-path ${LEGACY_STATE_VOLUME_MOUNT_PATH} --json'
-    )
-    expect(deploy).toContain('railway volume attach --volume ${volume.id} --yes --json')
+    expect(deploy).not.toContain('railway volume update')
+    expect(deploy).not.toContain('railway volume attach')
     expect(deploy).toContain('railway volume add --mount-path ${STATE_MOUNT_PATH} --json')
   })
 

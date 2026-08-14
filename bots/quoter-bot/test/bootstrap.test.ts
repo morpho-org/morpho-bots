@@ -293,15 +293,36 @@ describe('createApplication', () => {
 
   test('quoter-bot bootstrap passes readiness before composing one bootstrap cycle', async () => {
     const events: string[] = []
+    const removedGroupId: Hex = `0x${'99'.repeat(32)}`
     const state = readyState()
     state.getChainId = async () => {
       events.push('readiness')
       return 8453
     }
-    const application = createApplication(environment, {
+    const environmentWithLadder = {
+      ...environment,
+      BOOTSTRAP_MARKETS: JSON.stringify([bootstrapConfiguration]),
+      LADDER_MARKETS: JSON.stringify([ladderConfiguration])
+    }
+    const application = createApplication(environmentWithLadder, {
       createState: () => state,
-      createBootstrapAdapters: () => {
+      createLadderAdapters: () => ({
+        positions: { readMarket: async () => ({}) },
+        rates: { readRate: async () => 500n },
+        make: {
+          cleanupRemovedMarkets: async () => {
+            events.push('cleanup')
+            return [removedGroupId]
+          },
+          readActive: async () => undefined,
+          reconcile: async () => {},
+          hardHalt: async () => {},
+          cleanup: async () => {}
+        }
+      }),
+      createBootstrapAdapters: (_config, ignoredOfferGroupIds) => {
         events.push('bootstrap')
+        expect(ignoredOfferGroupIds).toEqual([removedGroupId])
         return {
           positions: {
             readPosition: async () => ({
@@ -328,8 +349,157 @@ describe('createApplication', () => {
       }
     })
 
-    expect(await application.run(['bootstrap'])).toEqual([])
-    expect(events).toEqual(['readiness', 'bootstrap'])
+    expect(await application.run(['bootstrap'])).toEqual([
+      { status: 'observed', marketId, action: 'no-capacity' }
+    ])
+    expect(events).toEqual(['cleanup', 'readiness', 'bootstrap'])
+  })
+
+  test('does not run a bootstrap cycle when shutdown arrives during bootstrap adapter composition', async () => {
+    const controller = new AbortController()
+    const reconcile = vi.fn(async () => {})
+    const application = createApplication(
+      {
+        ...environment,
+        BOOTSTRAP_MARKETS: JSON.stringify([bootstrapConfiguration]),
+        LADDER_MARKETS: JSON.stringify([ladderConfiguration])
+      },
+      {
+        createState: readyState,
+        createLadderAdapters: () => ({
+          positions: { readMarket: async () => ({}) },
+          rates: { readRate: async () => 500n },
+          make: {
+            cleanupRemovedMarkets: async () => [],
+            readActive: async () => undefined,
+            reconcile: async () => {},
+            hardHalt: async () => {},
+            cleanup: async () => {}
+          }
+        }),
+        createBootstrapAdapters: () => {
+          controller.abort()
+          return {
+            positions: {
+              readPosition: async () => ({
+                credit: 0n,
+                debt: 0n,
+                cashBalance: 0n,
+                marketExposure: 0n,
+                totalExposure: 0n
+              })
+            },
+            rates: {
+              readRate: async () => ({
+                mode: 'static',
+                rateBps: 500n,
+                observationId: 'static:500'
+              })
+            },
+            make: { reconcile, hardHalt: async () => {}, cleanup: async () => {} }
+          }
+        }
+      }
+    )
+
+    await expect(
+      application.run(['bootstrap'], { signal: controller.signal })
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    expect(reconcile).not.toHaveBeenCalled()
+  })
+
+  test('does not clean ladder publications when no bootstrap market is configured', async () => {
+    const cleanupRemovedMarkets = vi.fn(async () => [marketId])
+    const application = createApplication(
+      {
+        ...environment,
+        BOOTSTRAP_MARKETS: '[]',
+        LADDER_MARKETS: JSON.stringify([ladderConfiguration])
+      },
+      {
+        createState: readyState,
+        createLadderAdapters: () => ({
+          positions: { readMarket: async () => ({}) },
+          rates: { readRate: async () => 500n },
+          make: {
+            cleanupRemovedMarkets,
+            readActive: async () => undefined,
+            reconcile: async () => {},
+            hardHalt: async () => {},
+            cleanup: async () => {}
+          }
+        }),
+        createBootstrapAdapters: () => ({
+          positions: {
+            readPosition: async () => ({
+              credit: 0n,
+              debt: 0n,
+              cashBalance: 0n,
+              marketExposure: 0n,
+              totalExposure: 0n
+            })
+          },
+          rates: {
+            readRate: async () => ({ mode: 'static', rateBps: 500n, observationId: 'static:500' })
+          },
+          make: {
+            reconcile: async () => {},
+            hardHalt: async () => {},
+            cleanup: async () => {}
+          }
+        })
+      }
+    )
+
+    await expect(application.run(['bootstrap'])).resolves.toEqual([])
+    expect(cleanupRemovedMarkets).not.toHaveBeenCalled()
+  })
+
+  test('does not clean persisted ladder publications for a bootstrap-only configuration', async () => {
+    const cleanupRemovedMarkets = vi.fn(async () => [marketId])
+    const application = createApplication(
+      {
+        ...environment,
+        BOOTSTRAP_MARKETS: JSON.stringify([bootstrapConfiguration]),
+        LADDER_MARKETS: '[]'
+      },
+      {
+        createState: readyState,
+        createLadderAdapters: () => ({
+          positions: { readMarket: async () => ({}) },
+          rates: { readRate: async () => 500n },
+          make: {
+            cleanupRemovedMarkets,
+            readActive: async () => undefined,
+            reconcile: async () => {},
+            hardHalt: async () => {},
+            cleanup: async () => {}
+          }
+        }),
+        createBootstrapAdapters: () => ({
+          positions: {
+            readPosition: async () => ({
+              credit: 100n,
+              debt: 0n,
+              cashBalance: 0n,
+              marketExposure: 100n,
+              totalExposure: 100n
+            })
+          },
+          rates: {
+            readRate: async () => ({ mode: 'static', rateBps: 500n, observationId: 'static:500' })
+          },
+          make: {
+            reconcile: async () => {},
+            hardHalt: async () => {},
+            cleanup: async () => {}
+          }
+        })
+      }
+    )
+
+    await expect(application.run(['bootstrap'])).resolves.toBeDefined()
+    expect(cleanupRemovedMarkets).not.toHaveBeenCalled()
   })
 
   test('starts a hardcoded-only bootstrap workflow without Blue reference readiness', async () => {
@@ -408,14 +578,23 @@ describe('createApplication', () => {
     expect(checkReference).toHaveBeenCalledTimes(1)
   })
 
-  test('keeps Blue reference readiness fail-closed for variable-rate ladder workflows', async () => {
+  test('cleans removed ladder markets before keeping Blue reference readiness fail-closed', async () => {
     const state = readyState()
     const checkReference = vi.fn(async () => {
       throw new Error('Blue archive unavailable')
     })
-    const createLadderAdapters = vi.fn(() => {
-      throw new Error('ladder adapters must not start')
-    })
+    const cleanupRemovedMarkets = vi.fn(async () => {})
+    const createLadderAdapters = vi.fn(() => ({
+      positions: { readMarket: async () => ({}) },
+      rates: { readRate: async () => 500n },
+      make: {
+        cleanupRemovedMarkets,
+        readActive: async () => undefined,
+        reconcile: async () => {},
+        hardHalt: async () => {},
+        cleanup: async () => {}
+      }
+    }))
     state.checkReference = checkReference
     const application = createApplication(
       {
@@ -433,7 +612,8 @@ describe('createApplication', () => {
 
     await expect(application.run(['ladder'])).rejects.toBeInstanceOf(SetupFailedError)
     expect(checkReference).toHaveBeenCalledTimes(1)
-    expect(createLadderAdapters).not.toHaveBeenCalled()
+    expect(createLadderAdapters).toHaveBeenCalledTimes(1)
+    expect(cleanupRemovedMarkets).toHaveBeenCalledTimes(1)
   })
 
   test('starts a hardcoded-only ladder workflow without Blue reference readiness', async () => {
@@ -542,7 +722,7 @@ describe('createApplication', () => {
     await expect(application.run(['setup-check'])).rejects.toBeInstanceOf(ConfigValidationError)
   })
 
-  test('quoter-bot ladder passes readiness before running one ladder cycle', async () => {
+  test('quoter-bot ladder cleans removed markets before readiness and runs one ladder cycle', async () => {
     const events: string[] = []
     const state = readyState()
     state.getChainId = async () => {
@@ -562,6 +742,9 @@ describe('createApplication', () => {
           },
           rates: { readRate: async () => 500n },
           make: {
+            cleanupRemovedMarkets: async () => {
+              events.push('cleanup')
+            },
             readActive: async () => undefined,
             reconcile: async () => {},
             hardHalt: async () => {},
@@ -574,17 +757,34 @@ describe('createApplication', () => {
     expect(await application.run(['ladder'])).toEqual([
       { marketId, status: 'applied', action: 'publish', reason: 'publish' }
     ])
-    expect(events).toEqual(['readiness', 'ladder'])
+    expect(events).toEqual(['cleanup', 'readiness', 'cleanup', 'ladder'])
   })
 
-  test('default-composes the ladder command and rejects an empty ladder config', async () => {
+  test('rejects an empty ladder config without cleaning persisted ladder publications', async () => {
+    const events: string[] = []
     let readinessReads = 0
     const state = readyState()
     state.getChainId = async () => {
+      events.push('readiness')
       readinessReads += 1
       return 8453
     }
-    const application = createApplication(environment, { createState: () => state })
+    const application = createApplication(environment, {
+      createState: () => state,
+      createLadderAdapters: () => ({
+        positions: { readMarket: async () => ({}) },
+        rates: { readRate: async () => 500n },
+        make: {
+          cleanupRemovedMarkets: async () => {
+            events.push('cleanup')
+          },
+          readActive: async () => undefined,
+          reconcile: async () => {},
+          hardHalt: async () => {},
+          cleanup: async () => {}
+        }
+      })
+    })
 
     const error = await application.run(['ladder']).catch(value => value)
 
@@ -593,6 +793,54 @@ describe('createApplication', () => {
       field: 'ladder'
     })
     expect(readinessReads).toBe(1)
+    expect(events).toEqual(['readiness'])
+  })
+
+  test('rejects empty ladder monitoring without cleaning persisted ladder publications', async () => {
+    const cleanupRemovedMarkets = vi.fn(async () => {})
+    const application = createApplication(environment, {
+      createState: readyState,
+      createLadderAdapters: () => ({
+        positions: { readMarket: async () => ({}) },
+        rates: { readRate: async () => 500n },
+        make: {
+          cleanupRemovedMarkets,
+          readActive: async () => undefined,
+          reconcile: async () => {},
+          hardHalt: async () => {},
+          cleanup: async () => {}
+        }
+      })
+    })
+
+    await expect(application.run(['ladder', '--monitor'])).rejects.toMatchObject({
+      name: 'LadderConfigurationError',
+      field: 'ladder'
+    })
+    expect(cleanupRemovedMarkets).not.toHaveBeenCalled()
+  })
+
+  test('rejects an empty bootstrap before removed-market cleanup', async () => {
+    const cleanupRemovedMarkets = vi.fn(async () => {})
+    const application = createApplication(environment, {
+      createLadderAdapters: () => ({
+        positions: { readMarket: async () => ({}) },
+        rates: { readRate: async () => 500n },
+        make: {
+          cleanupRemovedMarkets,
+          readActive: async () => undefined,
+          reconcile: async () => {},
+          hardHalt: async () => {},
+          cleanup: async () => {}
+        }
+      })
+    })
+
+    await expect(application.run(['start'])).rejects.toMatchObject({
+      name: 'BootstrapConfigurationError',
+      field: 'bootstrap'
+    })
+    expect(cleanupRemovedMarkets).not.toHaveBeenCalled()
   })
 
   test('default-composes PositionBootstrapService when only its production ports are replaced', async () => {
@@ -839,7 +1087,7 @@ describe('createApplication', () => {
     })
   })
 
-  test('runs the exact read-only ladder monitor surface without loading or invoking a signer', async () => {
+  test('does not start the read-only ladder monitor after an aborted setup check', async () => {
     const reconcile = vi.fn(async () => {})
     const hardHalt = vi.fn(async () => {})
     const cleanup = vi.fn(async () => {})
@@ -868,28 +1116,21 @@ describe('createApplication', () => {
     )
 
     try {
-      expect(
-        await application.run(['ladder', '--monitor', '--verbose', '--readonly'], {
+      await expect(
+        application.run(['ladder', '--monitor', '--verbose', '--readonly'], {
           signal: controller.signal
         })
-      ).toEqual({
-        status: 'stopped',
-        reason: 'signal',
-        cycles: 0,
-        cleanup: { status: 'logged' }
-      })
+      ).rejects.toMatchObject({ name: 'AbortError' })
       expect(reconcile).not.toHaveBeenCalled()
       expect(hardHalt).not.toHaveBeenCalled()
       expect(cleanup).not.toHaveBeenCalled()
-      expect(terminal).toHaveBeenCalledWith(
-        expect.stringContaining('"event":"readonly.make","workflow":"ladder","operation":"cleanup"')
-      )
+      expect(terminal).not.toHaveBeenCalled()
     } finally {
       terminal.mockRestore()
     }
   })
 
-  test('composes the combined start lifecycle and drains both writer cleanups', async () => {
+  test('does not compose combined writers or cleanups after an aborted setup check', async () => {
     const bootstrapCleanup = vi.fn(async () => {})
     const ladderCleanup = vi.fn(async () => {})
     const controller = new AbortController()
@@ -938,39 +1179,174 @@ describe('createApplication', () => {
       }
     )
 
-    expect(await application.run(['start'], { signal: controller.signal })).toEqual({
-      status: 'stopped',
-      reason: 'signal',
-      workflows: {
-        setupCheck: {
-          status: 'fulfilled',
-          report: { status: 'stopped', reason: 'signal', cycles: 0 }
-        },
-        bootstrap: {
-          status: 'fulfilled',
-          report: {
-            status: 'stopped',
-            reason: 'signal',
-            cycles: 0,
-            cleanup: { status: 'applied' }
-          }
-        },
-        ladder: {
-          status: 'fulfilled',
-          report: {
-            status: 'stopped',
-            reason: 'signal',
-            cycles: 0,
-            cleanup: { status: 'applied' }
-          }
-        }
-      }
+    await expect(application.run(['start'], { signal: controller.signal })).rejects.toMatchObject({
+      name: 'AbortError'
     })
-    expect(bootstrapCleanup).toHaveBeenCalledTimes(1)
-    expect(ladderCleanup).toHaveBeenCalledTimes(1)
+    expect(bootstrapCleanup).not.toHaveBeenCalled()
+    expect(ladderCleanup).not.toHaveBeenCalled()
   })
 
-  test('combined start composes hardcoded bootstrap and ladder workflows without Blue reference readiness', async () => {
+  test('does not enter combined-service cleanup when shutdown arrives during bootstrap adapter composition', async () => {
+    const bootstrapCleanup = vi.fn(async () => {})
+    const ladderCleanup = vi.fn(async () => {})
+    const controller = new AbortController()
+    const application = createApplication(
+      {
+        ...environment,
+        BOOTSTRAP_MARKETS: JSON.stringify([bootstrapConfiguration]),
+        LADDER_MARKETS: JSON.stringify([ladderConfiguration])
+      },
+      {
+        createState: readyState,
+        createBootstrapAdapters: () => {
+          controller.abort()
+          return {
+            positions: {
+              readPosition: async () => ({
+                credit: 0n,
+                debt: 0n,
+                cashBalance: 100n,
+                marketExposure: 0n,
+                totalExposure: 0n
+              })
+            },
+            rates: {
+              readRate: async () => ({
+                mode: 'static',
+                rateBps: 500n,
+                observationId: 'static:500'
+              })
+            },
+            make: {
+              reconcile: async () => {},
+              hardHalt: async () => {},
+              cleanup: bootstrapCleanup
+            }
+          }
+        },
+        createLadderAdapters: () => ({
+          positions: { readMarket: async () => ({}) },
+          rates: { readRate: async () => 500n },
+          make: {
+            cleanupRemovedMarkets: async () => [],
+            readActive: async () => undefined,
+            reconcile: async () => {},
+            hardHalt: async () => {},
+            cleanup: ladderCleanup
+          }
+        })
+      }
+    )
+
+    await expect(application.run(['start'], { signal: controller.signal })).rejects.toMatchObject({
+      name: 'AbortError'
+    })
+    expect(bootstrapCleanup).not.toHaveBeenCalled()
+    expect(ladderCleanup).not.toHaveBeenCalled()
+  })
+
+  test.each(['bootstrap', 'ladder', 'start'])(
+    'does not run removed-market cleanup when %s starts with an aborted signal',
+    async command => {
+      const cleanupRemovedMarkets = vi.fn(async () => [marketId])
+      const createLadderAdapters = vi.fn(() => ({
+        positions: { readMarket: async () => ({}) },
+        rates: { readRate: async () => 500n },
+        make: {
+          cleanupRemovedMarkets,
+          readActive: async () => undefined,
+          reconcile: async () => {},
+          hardHalt: async () => {},
+          cleanup: async () => {}
+        }
+      }))
+      const controller = new AbortController()
+      controller.abort()
+      const application = createApplication(
+        {
+          ...environment,
+          BOOTSTRAP_MARKETS: JSON.stringify([bootstrapConfiguration]),
+          LADDER_MARKETS: JSON.stringify([ladderConfiguration])
+        },
+        { createState: readyState, createLadderAdapters }
+      )
+
+      await expect(application.run([command], { signal: controller.signal })).rejects.toMatchObject(
+        {
+          name: 'AbortError'
+        }
+      )
+      expect(cleanupRemovedMarkets).not.toHaveBeenCalled()
+    }
+  )
+
+  test.each(['bootstrap', 'ladder', 'start'])(
+    'does not run removed-market cleanup when %s is aborted while creating ladder adapters',
+    async command => {
+      const cleanupRemovedMarkets = vi.fn(async () => [marketId])
+      const controller = new AbortController()
+      const createLadderAdapters = vi.fn(() => {
+        controller.abort()
+        return {
+          positions: { readMarket: async () => ({}) },
+          rates: { readRate: async () => 500n },
+          make: {
+            cleanupRemovedMarkets,
+            readActive: async () => undefined,
+            reconcile: async () => {},
+            hardHalt: async () => {},
+            cleanup: async () => {}
+          }
+        }
+      })
+      const application = createApplication(
+        {
+          ...environment,
+          BOOTSTRAP_MARKETS: JSON.stringify([bootstrapConfiguration]),
+          LADDER_MARKETS: JSON.stringify([ladderConfiguration])
+        },
+        { createState: readyState, createLadderAdapters }
+      )
+
+      await expect(application.run([command], { signal: controller.signal })).rejects.toMatchObject(
+        {
+          name: 'AbortError'
+        }
+      )
+      expect(cleanupRemovedMarkets).not.toHaveBeenCalled()
+    }
+  )
+
+  test('rejects an empty ladder before cleaning persisted ladder publications', async () => {
+    const cleanupRemovedMarkets = vi.fn(async () => [marketId])
+    const application = createApplication(
+      {
+        ...environment,
+        BOOTSTRAP_MARKETS: JSON.stringify([bootstrapConfiguration]),
+        LADDER_MARKETS: '[]'
+      },
+      {
+        createLadderAdapters: () => ({
+          positions: { readMarket: async () => ({}) },
+          rates: { readRate: async () => 500n },
+          make: {
+            cleanupRemovedMarkets,
+            readActive: async () => undefined,
+            reconcile: async () => {},
+            hardHalt: async () => {},
+            cleanup: async () => {}
+          }
+        })
+      }
+    )
+
+    await expect(application.run(['start'])).rejects.toMatchObject({
+      name: 'LadderConfigurationError'
+    })
+    expect(cleanupRemovedMarkets).not.toHaveBeenCalled()
+  })
+
+  test('aborted combined start skips Blue reference readiness and writer composition', async () => {
     const checkReference = vi.fn(async () => {
       throw new Error('Blue archive unavailable')
     })
@@ -1041,16 +1417,10 @@ describe('createApplication', () => {
       }
     )
 
-    const report = await application.run(['start'], { signal: controller.signal })
-
-    expect(report).toMatchObject({
-      status: 'stopped',
-      workflows: {
-        bootstrap: { status: 'fulfilled' },
-        ladder: { status: 'fulfilled' }
-      }
+    await expect(application.run(['start'], { signal: controller.signal })).rejects.toMatchObject({
+      name: 'AbortError'
     })
-    expect(started).toEqual(['bootstrap', 'ladder'])
+    expect(started).toEqual([])
     expect(checkReference).not.toHaveBeenCalled()
   })
 
