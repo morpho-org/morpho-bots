@@ -297,6 +297,14 @@ Both modes snapshot the previous deployment, start a detached upload, and poll t
 a terminal state. A GitHub release is created only after Railway reports `SUCCESS`; failed, crashed,
 approval-blocked, removed, skipped, sleeping, unknown, or timed-out deployments fail the workflow.
 
+A production release (a `release-quoter-bot` label on a merged PR, or a manual **Deploy production**
+dispatch) also publishes the image to Docker Hub as `morphoorg/quoter`, tagged with the release
+commit hash and `latest`. The push runs in parallel with the Railway deploy and gates neither the
+deploy nor the GitHub release. The **Publish quoter-bot Docker Hub** workflow authenticates through
+the Docker organization's OIDC connection scoped by the `quoter-bot-dockerhub` GitHub Environment
+(secret `DOCKERHUB_OIDC_CONNECTIONID`, vars `DOCKER_USERNAME` and `DOCKER_REPOSITORY`), so CI
+stores no static Docker Hub credential.
+
 ## Configuration
 
 ### Configuration sources and precedence

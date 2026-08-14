@@ -1,0 +1,87 @@
+name: Publish quoter-bot Docker Hub
+
+# Reusable publish-only job for quoter-bot's public Docker Hub image. Production's release selector
+# calls this workflow when a `release-quoter-bot` label lands on main, in parallel with the Railway
+# deploy: the repo-root build of bots/quoter-bot/Dockerfile is pushed tagged with the release
+# commit hash and `latest`. The push never gates the Railway deploy or the GitHub release.
+# Authentication exchanges the run's GitHub OIDC token through the Docker org's OIDC connection
+# (docker/login-action v4.5+), so CI stores no static Docker Hub credential.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Git SHA/ref to build and publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  Publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Holds secret DOCKERHUB_OIDC_CONNECTIONID plus vars DOCKER_USERNAME and DOCKER_REPOSITORY;
+    # scope its deployment branches to `main` so the OIDC exchange is unreachable from arbitrary PR
+    # branches.
+    environment: quoter-bot-dockerhub
+    permissions:
+      contents: read
+      # Mints the GitHub OIDC token docker/login-action exchanges for a Docker Hub access token.
+      id-token: write
+    concurrency:
+      # Serialize pushes so `latest` cannot land out of order across overlapping runs.
+      group: publish-quoter-bot-dockerhub
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.ref }}
+
+      # Fail loud up front on a misconfigured environment instead of failing late at push time with
+      # an opaque invalid-reference error.
+      - name: Check environment configuration
+        env:
+          DOCKER_USERNAME: ${{ vars.DOCKER_USERNAME }}
+          DOCKER_REPOSITORY: ${{ vars.DOCKER_REPOSITORY }}
+          DOCKERHUB_OIDC_CONNECTIONID: ${{ secrets.DOCKERHUB_OIDC_CONNECTIONID }}
+        run: |
+          set -euo pipefail
+          : "${DOCKER_USERNAME:?var unset in the quoter-bot-dockerhub environment}"
+          : "${DOCKER_REPOSITORY:?var unset in the quoter-bot-dockerhub environment}"
+          : "${DOCKERHUB_OIDC_CONNECTIONID:?secret unset in the quoter-bot-dockerhub environment}"
+
+      # Tag with the resolved hash so a branch/tag `ref` input still produces an immutable tag.
+      - name: Resolve commit
+        id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        env:
+          DOCKERHUB_OIDC_CONNECTIONID: ${{ secrets.DOCKERHUB_OIDC_CONNECTIONID }}
+          # The exchanged access token must outlive the image build that runs between login and
+          # push; the 300s default is shorter than this pnpm install + workspace build.
+          DOCKERHUB_OIDC_EXPIREIN: '1800'
+        with:
+          username: ${{ vars.DOCKER_USERNAME }}
+
+      - name: Build and push
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          # Path context (the checkout above, honoring inputs.ref) — the default Git context would
+          # rebuild from the triggering ref instead. The context must be the repository root so
+          # workspace packages resolve.
+          context: .
+          file: bots/quoter-bot/Dockerfile
+          push: true
+          tags: |
+            ${{ vars.DOCKER_USERNAME }}/${{ vars.DOCKER_REPOSITORY }}:${{ steps.commit.outputs.sha }}
+            ${{ vars.DOCKER_USERNAME }}/${{ vars.DOCKER_REPOSITORY }}:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ steps.commit.outputs.sha }}
