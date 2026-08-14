@@ -257,6 +257,19 @@ describe('Railway CLI output parsing', () => {
     ])
   })
 
+  test('fails closed when a Docker Hub commit tag already exists', () => {
+    const workflow = readFileSync(
+      new URL('../../../../.github/workflows/publish-quoter-bot-dockerhub.yml', import.meta.url),
+      'utf8'
+    )
+
+    expect(workflow).toContain('- name: Check immutable SHA tag')
+    expect(workflow).toContain('case "$status" in')
+    expect(workflow).toContain("200) echo 'commit SHA tag already exists'; exit 1 ;;")
+    expect(workflow).toContain('404) ;;')
+    expect(workflow).toContain('--oauth2-bearer "$token"')
+  })
+
   test('creates fresh state only during authorized provisioning', () => {
     const deploy = readFileSync(new URL('../../scripts/deploy-railway.ts', import.meta.url), 'utf8')
     const fullProvisioningBranch = deploy.indexOf('if (!DEPLOY_ONLY)')

@@ -74,12 +74,10 @@ tag is the built commit even if a branch/tag ref is passed — then builds
 context so pnpm workspace packages resolve, and the action's default Git context would rebuild the
 triggering ref instead of `inputs.ref`) and pushes:
 
-- `morphoorg/quoter:<release commit sha>` — a stable, greppable mapping from image to source, also
-  stamped as OCI labels `org.opencontainers.image.revision` / `.source`. The tag names the commit;
-  a manual rerun of the job rebuilds that same commit with current base layers and re-pushes the
-  tag, so enable Docker Hub's immutable-tags setting on the repository if byte-level freezing is
-  also wanted (a hard skip-if-exists guard was rejected: it would break the legitimate rerun path
-  after a transient push failure);
+- `morphoorg/quoter:<release commit sha>` — an immutable, greppable mapping from image to source,
+  also stamped as OCI labels `org.opencontainers.image.revision` / `.source`. Before building, the
+  workflow queries Docker's registry API and fails closed if this tag exists or the registry returns
+  anything other than `404`, so reruns cannot replace an already-published commit image;
 - `morphoorg/quoter:latest` — tracks the newest release.
 
 **Only the bot ships.** Publishing publicly must not leak the rest of the private monorepo, so
@@ -109,8 +107,9 @@ Railway jobs).
 GitHub OIDC token for a short-lived Docker Hub access token through the Docker organization's OIDC
 connection: `username` is the org (`DOCKER_USERNAME`), there is **no password input**, and the
 connection is selected by the `DOCKERHUB_OIDC_CONNECTIONID` env var. CI therefore stores no
-long-lived Docker Hub credential; Docker-side rulesets on the connection bind which
-repository/branch claims are accepted. The exchanged token's expiry is raised to 1800 s via
+long-lived Docker Hub credential. Because this job references a GitHub Environment, the Docker-side
+ruleset binds the environment-based subject documented below rather than a branch-style subject. The
+exchanged token's expiry is raised to 1800 s via
 `DOCKERHUB_OIDC_EXPIREIN` because the default 300 s is shorter than the pnpm install + workspace
 build that runs between login and push.
 

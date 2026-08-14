@@ -307,6 +307,10 @@ the Docker organization's OIDC connection scoped by the `quoter-bot-dockerhub` G
 (secret `DOCKERHUB_OIDC_CONNECTIONID`, vars `DOCKER_USERNAME` and `DOCKER_REPOSITORY`), so CI
 stores no static Docker Hub credential.
 
+Before each build, the workflow checks Docker's registry API and fails closed when the commit-SHA
+tag already exists or the registry returns an unexpected status. A rerun therefore cannot replace
+an image already associated with a release commit.
+
 ## Configuration
 
 ### Configuration sources and precedence
