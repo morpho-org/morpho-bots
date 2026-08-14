@@ -179,11 +179,16 @@ describe('Railway CLI output parsing', () => {
       fullProvisioningBranch
     )
     const instructions = parseDockerfile(dockerfile)
-    const users = instructions
+    const froms = instructions
+      .map((instruction, index) => ({ ...instruction, index }))
+      .filter(({ keyword }) => keyword === 'FROM')
+    const runtimeFrom = froms[1]!.index
+    const buildStage = instructions.slice(0, runtimeFrom)
+    const runtimeStage = instructions.slice(runtimeFrom + 1)
+    const buildUsers = buildStage
       .map((instruction, index) => ({ ...instruction, index }))
       .filter(({ keyword }) => keyword === 'USER')
-    const userNode = users[0]!.index
-    const userRoot = users[1]!.index
+    const userNode = buildUsers[0]!.index
     const requiredNodeRuns = [
       'corepack install',
       'pnpm install --frozen-lockfile',
@@ -194,17 +199,43 @@ describe('Railway CLI output parsing', () => {
     expect(deployOnlySource).not.toContain('setRuntimeVariable(')
     expect(fullProvisioningRuntimeUid).toBeGreaterThan(ensureService)
     expect(fullProvisioningRuntimeUid).toBeLessThan(deploy.indexOf('await startDeployment()'))
-    expect(dockerfile).toContain('apt-get install -y --no-install-recommends util-linux')
-    expect(dockerfile).toContain('ENV HOME=/home/node')
-    expect(users.map(({ value }) => value)).toEqual(['node', 'root'])
+
+    // Two stages: the workspace builds in `build`; the runtime stage ships only the bot's bundle.
+    expect(froms.map(({ value }) => value)).toEqual([
+      'node:24.14.1-slim AS build',
+      'node:24.14.1-slim'
+    ])
+
+    // Build stage: every workspace install and build step runs unprivileged after USER node.
+    expect(buildUsers.map(({ value }) => value)).toEqual(['node'])
     for (const command of requiredNodeRuns) {
-      const runIndex = instructions.findIndex(
+      const runIndex = buildStage.findIndex(
         ({ keyword, value }) => keyword === 'RUN' && value === command
       )
       expect(runIndex).toBeGreaterThan(userNode)
-      expect(runIndex).toBeLessThan(userRoot)
     }
-    expect(instructions.slice(userRoot + 1)).toEqual([
+
+    // Runtime stage, exactly: no USER switch (the container must start as root so the entrypoint
+    // can repair Railway's root-owned volume before setpriv drops privileges), setpriv and the
+    // state mount as the only RUNs, and no content beyond the bot's built output and the
+    // root-owned, non-writable entrypoint — the image publishes publicly, so no other bot's code,
+    // workspace source, or package manager may ship.
+    expect(runtimeStage).toEqual([
+      { keyword: 'ENV', value: 'HOME=/home/node' },
+      {
+        keyword: 'RUN',
+        value:
+          '/usr/bin/apt-get update && /usr/bin/apt-get install -y --no-install-recommends util-linux && /usr/bin/rm -rf /var/lib/apt/lists/*'
+      },
+      { keyword: 'RUN', value: '/usr/bin/mkdir -p /state' },
+      {
+        keyword: 'COPY',
+        value: '--from=build /repo/bots/quoter-bot/package.json /repo/bots/quoter-bot/package.json'
+      },
+      {
+        keyword: 'COPY',
+        value: '--from=build /repo/bots/quoter-bot/dist /repo/bots/quoter-bot/dist'
+      },
       {
         keyword: 'COPY',
         value:
