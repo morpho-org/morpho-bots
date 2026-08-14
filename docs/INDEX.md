@@ -57,6 +57,7 @@ _None yet — copy [`templates/DATA-FLOW.md`](./templates/DATA-FLOW.md) into a b
 
 - [TIB-2026-06-30: Blue liquidation bot — v0](./decisions/TIB-2026-06-30-blue-liquidation-bot.md) — Morpho Blue ecosystem-backstop liquidator (accrual-aware soltag lens, multi-venue swaps, generic Executor, Railway; the TIB's rindexer discovery has since been replaced by Morpho GraphQL API discovery) — implemented
 - [TIB-2026-07-09: Midnight market whitelist and venue selection](./decisions/TIB-2026-07-09-midnight-market-and-venue-selection.md) — API-sourced market whitelist + best-of-venues probe selection replacing the hand-maintained routing file; Uniswap dropped as a direct venue — implemented
+- [TIB-2026-08-12: Quoter-bot KMS signing policy middleware](./decisions/TIB-2026-08-12-quoter-bot-kms-signing-middleware.md) — an AWS Lambda behind invoke-only IAM becomes the sole `kms:Sign` principal on the maker key; the bot submits structured revoke/quote intents, the Lambda validates no-crossed-books/price-bounds/no-PnL-drop policy against its own independent chain reads and encodes/derives digests itself (sign-what-you-encode), bounding full bot-host compromise to in-policy quoting loss plus revoke griefing
 
 _Bot-scoped TIBs move under `packages/<bot>/docs/decisions/` once a bot lands; proposal TIBs for
 not-yet-built bots sit in `docs/decisions/` alongside their siblings._
