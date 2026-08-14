@@ -17,6 +17,7 @@ const CROSS_BOOK_RATE_GAP_BPS = 10n
 export type BootstrapOverlapBookOffer = BookOffer & {
   continuousFeeCap?: bigint
   effectiveRateBps?: bigint
+  effectiveAprWad?: bigint
   bootstrapOverlap?: {
     remainingAssets: bigint
     effectiveRateBps: bigint
@@ -85,7 +86,9 @@ export const bootstrapLadderSellOverlapBookOffers = (parameters: {
  * @throws `BootstrapAdapterError` when a crossing is pre-existing, ambiguous, not caused by the
  * prospective buy, or lacks positive ladder-owned size and current effective-rate evidence.
  * @remarks Only the unique lowest-tick (highest-rate) eligible ladder sell may overlap. The
- * adjusted buy is clamped to its maximum bound, re-projected, and must remain non-crossing.
+ * adjusted buy is clamped to its maximum bound, projected onto a spacing-aligned tick strictly below
+ * that sell when the transport supports bounded projection, and must remain non-crossing with exact
+ * tick-derived APR inside both hard bounds.
  */
 export const resolveBootstrapProspectiveOffer = async (parameters: {
   desiredOffer: BootstrapOffer
@@ -95,6 +98,12 @@ export const resolveBootstrapProspectiveOffer = async (parameters: {
   toProspectiveBookOffer: (
     offer: BootstrapOffer,
     exactTick?: bigint
+  ) => Promise<BootstrapOverlapBookOffer>
+  toBoundedProspectiveBookOffer?: (
+    offer: BootstrapOffer,
+    maximumExclusiveTick: bigint,
+    minimumRateBps: bigint,
+    maximumRateBps: bigint
   ) => Promise<BootstrapOverlapBookOffer>
   minimumRateBps: bigint
   maximumRateBps: bigint
@@ -140,17 +149,35 @@ export const resolveBootstrapProspectiveOffer = async (parameters: {
     requestedRateBps < parameters.minimumRateBps || requestedRateBps > parameters.maximumRateBps
       ? parameters.maximumRateBps
       : requestedRateBps
-  const offer = {
+  let offer = {
     ...parameters.desiredOffer,
     assets,
     rateBps
   }
-  const adjustedProspective = await parameters.toProspectiveBookOffer(offer)
+  let adjustedProspective = await parameters.toProspectiveBookOffer(offer)
+  if (parameters.toBoundedProspectiveBookOffer !== undefined) {
+    adjustedProspective = await parameters.toBoundedProspectiveBookOffer(
+      offer,
+      crossingSell.tick,
+      parameters.minimumRateBps,
+      parameters.maximumRateBps
+    )
+    if (
+      adjustedProspective.effectiveAprWad === undefined ||
+      adjustedProspective.effectiveRateBps === undefined ||
+      adjustedProspective.effectiveAprWad < parameters.minimumRateBps * BPS_WAD ||
+      adjustedProspective.effectiveAprWad > parameters.maximumRateBps * BPS_WAD
+    ) {
+      throw negativeSpread()
+    }
+    offer = { ...offer, rateBps: adjustedProspective.effectiveRateBps }
+  }
   if (hasNegativeSpread([...retained, adjustedProspective])) {
     throw negativeSpread()
   }
   return {
     offer,
-    prospective: adjustedProspective
+    prospective: adjustedProspective,
+    maximumExclusiveTick: crossingSell.tick
   }
 }

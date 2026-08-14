@@ -49,7 +49,11 @@ import {
   validateBootstrapMempoolPayload,
   validateBootstrapMempoolPublication
 } from './bootstrap-mempool-validation.utils'
-import { bootstrapContinuousFeeCap, createBootstrapOffer } from './bootstrap-offer.utils'
+import {
+  bootstrapContinuousFeeCap,
+  createBootstrapOffer,
+  createBoundedBootstrapOffer
+} from './bootstrap-offer.utils'
 import {
   bootstrapLadderSellOverlapBookOffers,
   resolveBootstrapProspectiveOffer
@@ -242,6 +246,28 @@ export const createProductionBootstrapAdapters = (
       exactTick
     })
     return { created, timestamp: block.timestamp, maturity: market.params.maturity }
+  }
+  const prepareBoundedOfferAtLatest = async (
+    offer: BootstrapOffer,
+    maximumExclusiveTick: bigint,
+    minimumRateBps: bigint,
+    maximumRateBps: bigint
+  ) => {
+    const [market, block] = await Promise.all([
+      midnight.getMarketData(offer.marketId),
+      client.getBlock({ blockTag: 'latest' })
+    ])
+    const bounded = createBoundedBootstrapOffer({
+      offer,
+      market,
+      maker,
+      ratifier: config.setup.ratifier,
+      now: block.timestamp,
+      minimumRateBps,
+      maximumRateBps,
+      maximumExclusiveTick
+    })
+    return { ...bounded, timestamp: block.timestamp, maturity: market.params.maturity }
   }
   const readGroupConsumed = (groupId: Hex, blockNumber: bigint) =>
     client.readContract({
@@ -549,35 +575,73 @@ export const createProductionBootstrapAdapters = (
                     (WAD / 10_000n)
                 })
           }
-        }
-      })
-      if (!resolved) return { ...parameters, desiredOffer: undefined }
-      const capped = await prepareCappedBootstrapOffer({
-        offer: resolved.offer,
-        maximumAssets: parameters.maximumAssets,
-        created,
-        exactTick: resolved.prospective.tick,
-        minimumRateBps: bounds.minimumRateBps,
-        maximumRateBps: bounds.maximumRateBps,
-        prepareOffer: async (offer, exactTick) => {
-          const prepared = await prepareOfferAtLatest(offer, exactTick)
+        },
+        toBoundedProspectiveBookOffer: async (
+          offer,
+          maximumExclusiveTick,
+          minimumRateBps,
+          maximumRateBps
+        ) => {
+          const prepared = await prepareBoundedOfferAtLatest(
+            offer,
+            maximumExclusiveTick,
+            minimumRateBps,
+            maximumRateBps
+          )
+          created = prepared.created
           return {
-            created: prepared.created,
-            ...(exactTick === undefined
-              ? {}
-              : {
-                  effectiveRateBps:
-                    TickLib.tickToApr(
-                      prepared.created.tick,
-                      prepared.maturity - prepared.timestamp
-                    ) /
-                    (WAD / 10_000n)
-                })
+            marketId: offer.marketId,
+            buy: true,
+            tick: created.tick,
+            continuousFeeCap: created.continuousFeeCap,
+            effectiveRateBps: prepared.effectiveRateBps,
+            effectiveAprWad: prepared.effectiveAprWad
           }
         }
       })
-      const resolvedOffer = capped.offer
-      created = capped.created
+      if (!resolved) return { ...parameters, desiredOffer: undefined }
+      let resolvedOffer: BootstrapOffer =
+        parameters.maximumAssets !== undefined && resolved.offer.assets > parameters.maximumAssets
+          ? { ...resolved.offer, assets: parameters.maximumAssets }
+          : resolved.offer
+      const mustCap = resolvedOffer !== resolved.offer
+      if (mustCap && resolved.maximumExclusiveTick !== undefined) {
+        const prepared = await prepareBoundedOfferAtLatest(
+          resolvedOffer,
+          resolved.maximumExclusiveTick,
+          bounds.minimumRateBps,
+          bounds.maximumRateBps
+        )
+        resolvedOffer = { ...resolvedOffer, rateBps: prepared.effectiveRateBps }
+        created = prepared.created
+      } else {
+        const capped = await prepareCappedBootstrapOffer({
+          offer: resolvedOffer,
+          maximumAssets: parameters.maximumAssets,
+          created,
+          exactTick: resolved.prospective.tick,
+          minimumRateBps: bounds.minimumRateBps,
+          maximumRateBps: bounds.maximumRateBps,
+          prepareOffer: async (offer, exactTick) => {
+            const prepared = await prepareOfferAtLatest(offer, exactTick)
+            return {
+              created: prepared.created,
+              ...(exactTick === undefined
+                ? {}
+                : {
+                    effectiveRateBps:
+                      TickLib.tickToApr(
+                        prepared.created.tick,
+                        prepared.maturity - prepared.timestamp
+                      ) /
+                      (WAD / 10_000n)
+                  })
+            }
+          }
+        })
+        resolvedOffer = capped.offer
+        created = capped.created
+      }
       await prepareMempoolPublication(
         resolvedOffer,
         created,
@@ -660,6 +724,28 @@ export const createProductionBootstrapAdapters = (
                 TickLib.tickToApr(created.tick, prepared.maturity - prepared.timestamp) /
                 (WAD / 10_000n)
             })
+      }
+    },
+    toBoundedProspectiveBookOffer: async (
+      offer,
+      maximumExclusiveTick,
+      minimumRateBps,
+      maximumRateBps
+    ) => {
+      const prepared = await prepareBoundedOfferAtLatest(
+        offer,
+        maximumExclusiveTick,
+        minimumRateBps,
+        maximumRateBps
+      )
+      preparedOffers.set(offer.marketId, prepared.created)
+      return {
+        marketId: offer.marketId,
+        buy: true,
+        tick: prepared.created.tick,
+        continuousFeeCap: prepared.created.continuousFeeCap,
+        effectiveRateBps: prepared.effectiveRateBps,
+        effectiveAprWad: prepared.effectiveAprWad
       }
     },
     invalidate: async (group, onTransactionSubmitted) => {

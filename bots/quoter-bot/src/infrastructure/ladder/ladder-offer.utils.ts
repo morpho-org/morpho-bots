@@ -1,7 +1,7 @@
 import type { IMarket, TreeInput } from '@morpho-org/midnight-sdk'
 import type { Address, Hex } from 'viem'
 
-import { Group, Offer, TickLib, Tree } from '@morpho-org/midnight-sdk'
+import { Group, MAX_TICK, Offer, TickLib, Tree } from '@morpho-org/midnight-sdk'
 
 import type { LadderQuoteSet, LadderRung } from '../../domain/ladder/ladder'
 import type { LadderGroupReference } from './ladder-group-ownership.utils'
@@ -10,6 +10,7 @@ import { offerMaxAssetsByRung } from '../../domain/ladder/ladder'
 import { LadderAdapterError } from './ladder-adapter.error'
 
 const WAD = 10n ** 18n
+const BPS_WAD = WAD / 10_000n
 const YEAR_SECONDS = 31_536_000n
 const CROSS_BOOK_RATE_GAP_BPS = 10n
 
@@ -48,6 +49,72 @@ const rateToTick = (rateBps: bigint, market: IMarket, now: bigint) => {
 
 const quoteTick = (rateBps: bigint, parameters: BuildLadderTreeParameters) =>
   rateToTick(rateBps, parameters.market, parameters.now)
+
+const effectiveAprWad = (tick: bigint, parameters: BuildLadderTreeParameters) =>
+  TickLib.tickToApr(tick, BigInt(parameters.market.params.maturity) - parameters.now)
+
+const firstAlignedTickAtOrBelowApr = (
+  maximumAprWad: bigint,
+  tickSpacing: bigint,
+  parameters: BuildLadderTreeParameters
+) => {
+  let low = 0n
+  let high = MAX_TICK / tickSpacing
+  while (low < high) {
+    const middle = (low + high) / 2n
+    if (effectiveAprWad(middle * tickSpacing, parameters) <= maximumAprWad) high = middle
+    else low = middle + 1n
+  }
+  return low * tickSpacing
+}
+
+const lastAlignedTickAtOrAboveApr = (
+  minimumAprWad: bigint,
+  tickSpacing: bigint,
+  parameters: BuildLadderTreeParameters
+) => {
+  let low = 0n
+  let high = MAX_TICK / tickSpacing
+  while (low < high) {
+    const middle = (low + high + 1n) / 2n
+    if (effectiveAprWad(middle * tickSpacing, parameters) >= minimumAprWad) low = middle
+    else high = middle - 1n
+  }
+  return low * tickSpacing
+}
+
+const boundedQuoteTick = (
+  rateBps: bigint,
+  parameters: BuildLadderTreeParameters,
+  minimumExclusiveTick?: bigint
+) => {
+  const tickSpacing = BigInt(parameters.market.tickSpacing)
+  const requestedTick = quoteTick(rateBps, parameters)
+  const lowestTick =
+    parameters.maximumRateBps === undefined
+      ? 0n
+      : firstAlignedTickAtOrBelowApr(parameters.maximumRateBps * BPS_WAD, tickSpacing, parameters)
+  const highestTick =
+    parameters.minimumRateBps === undefined
+      ? MAX_TICK
+      : lastAlignedTickAtOrAboveApr(parameters.minimumRateBps * BPS_WAD, tickSpacing, parameters)
+  const firstTickAfterCrossing =
+    minimumExclusiveTick === undefined
+      ? lowestTick
+      : (minimumExclusiveTick / tickSpacing + 1n) * tickSpacing
+  const minimumTick = firstTickAfterCrossing > lowestTick ? firstTickAfterCrossing : lowestTick
+  const tick = requestedTick < minimumTick ? minimumTick : requestedTick
+  const boundedTick = tick > highestTick ? highestTick : tick
+  const aprWad = effectiveAprWad(boundedTick, parameters)
+  if (
+    minimumTick > highestTick ||
+    (parameters.minimumRateBps !== undefined && aprWad < parameters.minimumRateBps * BPS_WAD) ||
+    (parameters.maximumRateBps !== undefined && aprWad > parameters.maximumRateBps * BPS_WAD)
+  ) {
+    throw new LadderAdapterError('encoded-rate-out-of-bounds')
+  }
+  return { tick: boundedTick, effectiveRateBps: (aprWad + BPS_WAD - 1n) / BPS_WAD }
+}
 
 const sideOffers = (
   side: 'lower' | 'higher',
@@ -90,8 +157,14 @@ const sideOffers = (
         (parameters.maximumRateBps !== undefined && crossingRateBps > parameters.maximumRateBps))
         ? (parameters.minimumRateBps ?? crossingRateBps)
         : crossingRateBps
-    const adjustedRung = rateBps === rung.rateBps ? rung : { ...rung, rateBps }
-    const tick = crossingBootstrap ? quoteTick(rateBps, parameters) : requestedTick
+    const bounded = boundedQuoteTick(
+      rateBps,
+      parameters,
+      crossingBootstrap ? parameters.bootstrapBuyTick : undefined
+    )
+    const adjusted = crossingBootstrap || bounded.tick !== requestedTick
+    const adjustedRung = adjusted ? { ...rung, rateBps: bounded.effectiveRateBps } : rung
+    const tick = bounded.tick
     const existing = merged.get(tick)
     if (existing) {
       existing.rungs.push(adjustedRung)
@@ -119,9 +192,11 @@ const sideOffers = (
  * rates map to lend buys. This keeps every buy tick strictly below every sell tick. Each offer uses
  * the fresh block timestamp as its start so a later publication cannot reuse a previously consumed
  * content-addressed group. `shared-rung` gives each rung an independent cap; `per-book` shares one
- * cap across each side. Crossing sells move ten basis points below an owned bootstrap buy, duplicate
- * ticks merge, and adjusted rungs are returned for persistence. This function constructs local values
- * only and does not publish or mutate persisted ownership.
+ * cap across each side. Crossing sells move at least ten nominal basis points below an owned bootstrap
+ * buy, then advance to the next safe sell tick when spacing would erase the strict spread. Supplied
+ * hard bounds are enforced against exact tick-derived APR, duplicate ticks merge, and every adjusted
+ * rung is returned with a reconstruction-safe effective integer-bps quote for persistence. This
+ * function constructs local values only and does not publish or mutate persisted ownership.
  */
 export const buildLadderTree = (parameters: BuildLadderTreeParameters): PreparedLadderTree => {
   const caps = offerMaxAssetsByRung(parameters.quote)

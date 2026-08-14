@@ -91,14 +91,15 @@ describe('buildLadderTree', () => {
     expect(result.groups.map(group => group.rungIndexes)).toEqual([[0], [1], [0], [1]])
   })
 
-  test('prices a crossing ladder sell ten basis points below the bootstrap offer', () => {
+  test('moves a crossing ladder sell to the next safe coarse tick when nominal adjustment rounds to equality', () => {
+    const coarseMarket = { ...market, tickSpacing: 4 } as IMarket
     const bootstrap = buildLadderTree({
       quote: {
         ...quote('shared-rung'),
         lower: [],
-        higher: [{ index: 0, rateBps: 440n, assets: 1n }]
+        higher: [{ index: 0, rateBps: 522n, assets: 1n }]
       },
-      market,
+      market: coarseMarket,
       maker,
       ratifier,
       now
@@ -108,21 +109,85 @@ describe('buildLadderTree', () => {
     const result = buildLadderTree({
       quote: {
         ...quote('shared-rung'),
-        lower: [{ index: 0, rateBps: 450n, assets: 10n }],
+        lower: [{ index: 0, rateBps: 530n, assets: 10n }],
         higher: []
       },
-      market,
+      market: coarseMarket,
       maker,
       ratifier,
       now,
       minimumRateBps: 200n,
       maximumRateBps: 800n,
       bootstrapBuyTick,
-      bootstrapBuyRateBps: 440n
+      bootstrapBuyRateBps: 522n
     })
 
-    expect(result.bookOffers).toMatchObject([{ buy: false, effectiveRateBps: 430n }])
-    expect(result.bookOffers[0]!.tick).toBeGreaterThan(bootstrapBuyTick)
+    const adjusted = result.bookOffers[0]!
+    const effectiveAprWad = TickLib.tickToApr(adjusted.tick, 31_536_000n)
+    const effectiveRateBps = (effectiveAprWad + 10n ** 14n - 1n) / 10n ** 14n
+    expect(adjusted.tick).toBeGreaterThan(bootstrapBuyTick)
+    expect(effectiveAprWad).toBeGreaterThanOrEqual(200n * 10n ** 14n)
+    expect(effectiveAprWad).toBeLessThanOrEqual(800n * 10n ** 14n)
+    expect(adjusted.effectiveRateBps).toBe(effectiveRateBps)
+    expect(result.quote.lower[0]?.rateBps).toBe(effectiveRateBps)
+
+    const reconstructed = buildLadderTree({
+      quote: result.quote,
+      market: coarseMarket,
+      maker,
+      ratifier,
+      now,
+      minimumRateBps: 200n,
+      maximumRateBps: 800n
+    })
+    expect(reconstructed.bookOffers[0]?.tick).toBe(adjusted.tick)
+  })
+
+  test('moves spacing-aligned ticks inside inclusive exact APR bounds', () => {
+    const result = buildLadderTree({
+      quote: {
+        ...quote('shared-rung'),
+        lower: [{ index: 0, rateBps: 450n, assets: 10n }],
+        higher: [{ index: 0, rateBps: 600n, assets: 10n }]
+      },
+      market,
+      maker,
+      ratifier,
+      now,
+      minimumRateBps: 450n,
+      maximumRateBps: 600n
+    })
+
+    const effectiveAprWads = result.bookOffers.map(offer =>
+      TickLib.tickToApr(offer.tick, 31_536_000n)
+    )
+    expect(effectiveAprWads.every(apr => apr >= 450n * 10n ** 14n)).toBe(true)
+    expect(effectiveAprWads.every(apr => apr <= 600n * 10n ** 14n)).toBe(true)
+    expect(result.quote.lower[0]?.rateBps).toBe(452n)
+    expect(result.bookOffers[0]?.effectiveRateBps).toBe(452n)
+  })
+
+  test('rejects a crossing sell when no bounded tick remains above the bootstrap buy', () => {
+    const coarseMarket = { ...market, tickSpacing: 4 } as IMarket
+    const bootstrapBuyTick = TickLib.priceToTick(TickLib.rateToPrice(522n * 10n ** 14n), 4n)
+
+    expect(() =>
+      buildLadderTree({
+        quote: {
+          ...quote('shared-rung'),
+          lower: [{ index: 0, rateBps: 530n, assets: 10n }],
+          higher: []
+        },
+        market: coarseMarket,
+        maker,
+        ratifier,
+        now,
+        minimumRateBps: 502n,
+        maximumRateBps: 800n,
+        bootstrapBuyTick,
+        bootstrapBuyRateBps: 522n
+      })
+    ).toThrow('Ladder adapter failed')
   })
 
   test('merges ladder rungs that encode to the same tick', () => {

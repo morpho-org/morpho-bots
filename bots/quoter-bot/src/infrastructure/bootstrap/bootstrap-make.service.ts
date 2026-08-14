@@ -17,6 +17,8 @@ import { BootstrapHardHaltError } from './bootstrap-hard-halt.error'
 import { resolveBootstrapProspectiveOffer } from './bootstrap-overlap.utils'
 import { bootstrapMarketGroupIds } from './bootstrap-spread.utils'
 
+const BPS_WAD = 100_000_000_000_000n
+
 type BootstrapBookOffer = BootstrapOverlapBookOffer & { continuousFeeCap?: bigint }
 
 /** Protocol transport for confirmed Midnight publication and group invalidation. */
@@ -31,6 +33,13 @@ interface BootstrapOfferTransport {
   listBookOffers(marketId: Hex): Promise<readonly BootstrapBookOffer[]>
   /** Projects a domain offer into its exact protocol tick. @param offer - Desired offer. @param exactTick - Existing owned sell tick required for an intentional overlap. @returns Prospective book offer. */
   toProspectiveBookOffer(offer: BootstrapOffer, exactTick?: bigint): Promise<BootstrapBookOffer>
+  /** Projects an adjusted buy onto a bounded tick strictly below a crossing sell. @param offer - Nominally adjusted buy. @param maximumExclusiveTick - Crossing sell tick. @param minimumRateBps - Inclusive minimum effective APR. @param maximumRateBps - Inclusive maximum effective APR. @returns Safe prospective book offer with effective rate evidence. */
+  toBoundedProspectiveBookOffer?(
+    offer: BootstrapOffer,
+    maximumExclusiveTick: bigint,
+    minimumRateBps: bigint,
+    maximumRateBps: bigint
+  ): Promise<BootstrapBookOffer>
   /** Prepares one policy-checked publication without broadcasting it. @param offer - Desired offer. @returns Reserved group ID and a one-shot confirmed ratifier/publisher. */
   preparePublication(offer: BootstrapOffer): Promise<{
     groupId: Hex
@@ -126,18 +135,61 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
           minimumRateBps,
           maximumRateBps,
           toProspectiveBookOffer: (offer, exactTick) =>
-            this.transport.toProspectiveBookOffer(offer, exactTick)
+            this.transport.toProspectiveBookOffer(offer, exactTick),
+          ...(this.transport.toBoundedProspectiveBookOffer === undefined
+            ? {}
+            : {
+                toBoundedProspectiveBookOffer: (
+                  offer: BootstrapOffer,
+                  maximumExclusiveTick: bigint,
+                  minimumRate: bigint,
+                  maximumRate: bigint
+                ) =>
+                  this.transport.toBoundedProspectiveBookOffer!(
+                    offer,
+                    maximumExclusiveTick,
+                    minimumRate,
+                    maximumRate
+                  )
+              })
         })
         if (resolved) {
-          const cappedOffer =
+          let cappedOffer =
             parameters.maximumAssets !== undefined &&
             resolved.offer.assets > parameters.maximumAssets
               ? { ...resolved.offer, assets: parameters.maximumAssets }
               : resolved.offer
-          const publicationProspective =
-            cappedOffer === resolved.offer
-              ? resolved.prospective
-              : await this.transport.toProspectiveBookOffer(cappedOffer, resolved.prospective.tick)
+          let publicationProspective = resolved.prospective
+          if (cappedOffer !== resolved.offer) {
+            if (
+              resolved.maximumExclusiveTick !== undefined &&
+              this.transport.toBoundedProspectiveBookOffer !== undefined
+            ) {
+              publicationProspective = await this.transport.toBoundedProspectiveBookOffer(
+                cappedOffer,
+                resolved.maximumExclusiveTick,
+                minimumRateBps,
+                maximumRateBps
+              )
+              if (
+                publicationProspective.effectiveAprWad === undefined ||
+                publicationProspective.effectiveRateBps === undefined ||
+                publicationProspective.effectiveAprWad < minimumRateBps * BPS_WAD ||
+                publicationProspective.effectiveAprWad > maximumRateBps * BPS_WAD
+              ) {
+                throw new BootstrapAdapterError('negative-spread')
+              }
+              cappedOffer = {
+                ...cappedOffer,
+                rateBps: publicationProspective.effectiveRateBps
+              }
+            } else {
+              publicationProspective = await this.transport.toProspectiveBookOffer(
+                cappedOffer,
+                resolved.prospective.tick
+              )
+            }
+          }
           resolvedOffer = cappedOffer
           retainedGroup = groups.find(
             group =>

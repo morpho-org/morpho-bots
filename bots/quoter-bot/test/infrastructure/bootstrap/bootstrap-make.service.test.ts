@@ -108,6 +108,56 @@ describe('MidnightBootstrapMakeService', () => {
     ])
   })
 
+  test('moves an adjusted bootstrap buy to the next safe tick when quantization erases its strict gap', async () => {
+    const prepared: (typeof desiredOffer)[] = []
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [],
+      listBookOffers: async () => [
+        {
+          groupId,
+          marketId,
+          buy: false,
+          tick: 100n,
+          bootstrapOverlap: { remainingAssets: 40n, effectiveRateBps: 450n }
+        }
+      ],
+      toProspectiveBookOffer: async offer => ({
+        marketId,
+        buy: true,
+        tick: offer.rateBps === desiredOffer.rateBps ? 105n : 100n
+      }),
+      toBoundedProspectiveBookOffer: async () => ({
+        marketId,
+        buy: true,
+        tick: 99n,
+        effectiveRateBps: 462n,
+        effectiveAprWad: 46_150_000_000_000_000n
+      }),
+      preparePublication: async offer => {
+        prepared.push(offer)
+        return { groupId: publishedGroupId, publish: async () => publicationHash }
+      },
+      reserveGroup: async () => {},
+      confirmPublishedGroup: async () => {},
+      releaseGroupReservation: async () => {},
+      invalidate: async () => {}
+    })
+
+    await expect(
+      service.reconcile({
+        marketId,
+        desiredOffer,
+        maximumAssets: 50n,
+        minimumRateBps: 400n,
+        maximumRateBps: 600n,
+        reason: 'publish'
+      })
+    ).resolves.toEqual({
+      submittedTransactions: [{ operation: 'publish', txHash: publicationHash }]
+    })
+    expect(prepared).toEqual([{ ...desiredOffer, assets: 50n, rateBps: 462n }])
+  })
+
   test('retains the same adjusted overlap offer on the next cycle', async () => {
     const preparePublication = vi.fn(async () => ({
       groupId: publishedGroupId,

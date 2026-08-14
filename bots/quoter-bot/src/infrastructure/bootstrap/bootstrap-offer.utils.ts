@@ -27,6 +27,44 @@ const bootstrapOfferTick = (
   return TickLib.priceToTick(TickLib.rateToPrice(periodRateWad), BigInt(market.tickSpacing))
 }
 
+const bootstrapEffectiveAprWad = (
+  tick: bigint,
+  market: Pick<BootstrapOfferMarket, 'params'>,
+  now: bigint
+) => TickLib.tickToApr(tick, BigInt(market.params.maturity) - now)
+
+const firstBootstrapTickAtOrBelowApr = (
+  maximumAprWad: bigint,
+  market: Pick<BootstrapOfferMarket, 'params' | 'tickSpacing'>,
+  now: bigint
+) => {
+  const tickSpacing = BigInt(market.tickSpacing)
+  let low = 0n
+  let high = MAX_TICK / tickSpacing
+  while (low < high) {
+    const middle = (low + high) / 2n
+    if (bootstrapEffectiveAprWad(middle * tickSpacing, market, now) <= maximumAprWad) high = middle
+    else low = middle + 1n
+  }
+  return low * tickSpacing
+}
+
+const lastBootstrapTickAtOrAboveApr = (
+  minimumAprWad: bigint,
+  market: Pick<BootstrapOfferMarket, 'params' | 'tickSpacing'>,
+  now: bigint
+) => {
+  const tickSpacing = BigInt(market.tickSpacing)
+  let low = 0n
+  let high = MAX_TICK / tickSpacing
+  while (low < high) {
+    const middle = (low + high + 1n) / 2n
+    if (bootstrapEffectiveAprWad(middle * tickSpacing, market, now) >= minimumAprWad) low = middle
+    else high = middle - 1n
+  }
+  return low * tickSpacing
+}
+
 /**
  * Converts the authoritative live Midnight market fee into an explicit offer cap.
  * @param market - Freshly fetched market state.
@@ -76,6 +114,66 @@ export const createBootstrapOffer = (parameters: {
     maxAssets: parameters.offer.assets,
     continuousFeeCap: bootstrapContinuousFeeCap(parameters.market)
   })
+}
+
+/**
+ * Creates a bootstrap buy on a spacing-aligned tick inside hard APR and cross-book limits.
+ * @param parameters - Offer, fresh market and timestamp, maker policy, inclusive APR bounds, and the
+ * crossing sell tick that the resulting buy must remain strictly below.
+ * @returns The exact offer plus its WAD APR and reconstruction-safe ceiling integer-bps quote.
+ * @throws `BootstrapAdapterError` when no spacing-aligned tick satisfies every bound and strict gap;
+ * SDK validation failures propagate.
+ * @remarks Higher APR maps to lower ticks. The selected tick stays as close as possible to the
+ * nominal quote while preferring neither a hard-bound violation nor a zero cross-book spread.
+ */
+export const createBoundedBootstrapOffer = (parameters: {
+  offer: BootstrapOffer
+  market: BootstrapOfferMarket
+  maker: Address
+  ratifier: Address
+  now: bigint
+  minimumRateBps: bigint
+  maximumRateBps: bigint
+  maximumExclusiveTick: bigint
+}) => {
+  const tickSpacing = BigInt(parameters.market.tickSpacing)
+  if (parameters.maximumExclusiveTick <= 0n) {
+    throw new BootstrapAdapterError('negative-spread')
+  }
+  const minimumTick = firstBootstrapTickAtOrBelowApr(
+    parameters.maximumRateBps * (WAD / 10_000n),
+    parameters.market,
+    parameters.now
+  )
+  const maximumBoundTick = lastBootstrapTickAtOrAboveApr(
+    parameters.minimumRateBps * (WAD / 10_000n),
+    parameters.market,
+    parameters.now
+  )
+  const maximumSpreadTick = ((parameters.maximumExclusiveTick - 1n) / tickSpacing) * tickSpacing
+  const maximumTick = maximumSpreadTick < maximumBoundTick ? maximumSpreadTick : maximumBoundTick
+  const requestedTick = bootstrapOfferTick(
+    parameters.offer.rateBps,
+    parameters.market,
+    parameters.now
+  )
+  const tick = requestedTick < minimumTick ? minimumTick : requestedTick
+  const boundedTick = tick > maximumTick ? maximumTick : tick
+  if (maximumTick < minimumTick || boundedTick < 0n) {
+    throw new BootstrapAdapterError('negative-spread')
+  }
+  const effectiveAprWad = bootstrapEffectiveAprWad(boundedTick, parameters.market, parameters.now)
+  if (
+    effectiveAprWad < parameters.minimumRateBps * (WAD / 10_000n) ||
+    effectiveAprWad > parameters.maximumRateBps * (WAD / 10_000n)
+  ) {
+    throw new BootstrapAdapterError('negative-spread')
+  }
+  return {
+    created: createBootstrapOffer({ ...parameters, exactTick: boundedTick }),
+    effectiveAprWad,
+    effectiveRateBps: (effectiveAprWad + WAD / 10_000n - 1n) / (WAD / 10_000n)
+  }
 }
 
 /**
