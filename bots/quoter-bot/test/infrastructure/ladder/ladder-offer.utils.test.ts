@@ -7,6 +7,7 @@ import { describe, expect, test } from 'vitest'
 import type { LadderQuoteSet } from '../../../src/domain/ladder/ladder'
 
 import { offerMaxAssetsByRung } from '../../../src/domain/ladder/ladder'
+import { reconstructPendingLadderBookOffers } from '../../../src/infrastructure/bootstrap/production-bootstrap'
 import { buildLadderTree } from '../../../src/infrastructure/ladder/ladder-offer.utils'
 
 const maker: Address = '0x1111111111111111111111111111111111111111'
@@ -145,6 +146,24 @@ describe('buildLadderTree', () => {
         now
       })
     ).not.toThrow()
+  })
+
+  test('reconstructs pending ladder offers at their originally quoted ticks', () => {
+    const parameters = {
+      quote: quote('shared-rung'),
+      market,
+      maker,
+      ratifier,
+      now
+    }
+
+    expect(reconstructPendingLadderBookOffers(parameters)).toEqual(
+      buildLadderTree(parameters).bookOffers
+    )
+    expect(reconstructPendingLadderBookOffers(parameters).filter(offer => !offer.buy)).toEqual([
+      { marketId, buy: false, tick: 3_994n },
+      { marketId, buy: false, tick: 4_018n }
+    ])
   })
 
   test('saturates out-of-range ticks at the hard range and merges rungs meeting there', () => {

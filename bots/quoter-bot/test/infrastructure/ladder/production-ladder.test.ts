@@ -13,7 +13,7 @@ import {
   cleanupRemovedLadderGroups,
   createProductionLadderAdapters,
   createRepeatableSingleFlight,
-  highestBootstrapBuyRateBps,
+  lowestBootstrapBuyRateBps,
   ownBootstrapBuyTickCeiling,
   publishLadderPublication
 } from '../../../src/infrastructure/ladder/production-ladder'
@@ -73,14 +73,14 @@ describe('calculateProductionLadderCapacities', () => {
   })
 })
 
-describe('highestBootstrapBuyRateBps', () => {
+describe('lowestBootstrapBuyRateBps', () => {
   test('derives the rate of a live configured bootstrap group without persisted intent', () => {
     const now = 1_000n
     const maturity = now + 31_536_000n
     const tick = 500n
 
     expect(
-      highestBootstrapBuyRateBps({
+      lowestBootstrapBuyRateBps({
         groups: [
           {
             id: groupId,
@@ -100,6 +100,38 @@ describe('highestBootstrapBuyRateBps', () => {
         now
       })
     ).toBe(TickLib.tickToApr(tick, maturity - now) / (10n ** 18n / 10_000n))
+  })
+
+  test('selects the lowest live buy rate across pending bootstrap offers', () => {
+    const lowerGroupId: Hex = `0x${'78'.repeat(32)}`
+    const middleGroupId: Hex = `0x${'79'.repeat(32)}`
+
+    expect(
+      lowestBootstrapBuyRateBps({
+        groups: [],
+        ownedGroupIds: [],
+        persistedOffers: [],
+        pendingOffers: [
+          { groupId, marketId, rateBps: 500n, assets: 10n, referenceObservationId: 'high' },
+          {
+            groupId: lowerGroupId,
+            marketId,
+            rateBps: 400n,
+            assets: 10n,
+            referenceObservationId: 'low'
+          },
+          {
+            groupId: middleGroupId,
+            marketId,
+            rateBps: 450n,
+            assets: 10n,
+            referenceObservationId: 'middle'
+          }
+        ],
+        marketId,
+        now: 1_000n
+      })
+    ).toBe(400n)
   })
 })
 

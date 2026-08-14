@@ -70,6 +70,16 @@ import { assertBootstrapTransaction } from './bootstrap-transaction.utils'
 
 const WAD = 10n ** 18n
 
+type PendingLadderReconstructionParameters = Omit<
+  Parameters<typeof buildLadderTree>[0],
+  'minimumRateBps' | 'maximumRateBps' | 'ownBootstrapBuyTickCeiling'
+>
+
+/** Rebuilds already-published pending ladder offers without prospective clearance or current bounds. */
+export const reconstructPendingLadderBookOffers = (
+  parameters: PendingLadderReconstructionParameters
+) => buildLadderTree(parameters).bookOffers
+
 type BootstrapMakeLendArguments = {
   accountAddress: Address
   offers: [Offer]
@@ -448,7 +458,7 @@ export const createProductionBootstrapAdapters = (
     blueRates
   )
   const completeBookOffers = async (marketId: Hex) => {
-    const [groups, ladderPublications, wholeBook, ownedBootstrapIds] = await Promise.all([
+    const [groups, ladderPublications, wholeBook] = await Promise.all([
       readGroups(),
       readLadderPublications(),
       readLadderBookOffers({
@@ -456,44 +466,24 @@ export const createProductionBootstrapAdapters = (
         marketIds: [marketId],
         timeoutMs: config.requestTimeoutMs,
         ignoredOfferGroupIds
-      }),
-      ownership.read()
+      })
     ])
-    const liveBootstrapTickCeiling = strategyBootstrapGroups(groups, ownedBootstrapIds)
-      .filter(group => group.marketId === marketId && group.maxAssets > group.consumed)
-      .reduce<bigint | undefined>(
-        (highest, group) =>
-          group.tick !== undefined && (highest === undefined || group.tick > highest)
-            ? group.tick
-            : highest,
-        undefined
-      )
     const pendingLadderOffers = (
       await mapSelectedMarketItems(
         marketId,
         pendingLadderQuoteSets(ladderPublications, groups),
         async quote => {
-          const ladderBounds = config.ladder.find(item => item.marketId === quote.marketId)
           const [market, block] = await Promise.all([
             midnight.getMarketData(quote.marketId),
             client.getBlock({ blockTag: 'latest' })
           ])
-          return buildLadderTree({
+          return reconstructPendingLadderBookOffers({
             quote,
             market,
             maker,
             ratifier: config.setup.ratifier,
-            now: block.timestamp,
-            ...(ladderBounds === undefined
-              ? {}
-              : {
-                  minimumRateBps: ladderBounds.minimumRateBps,
-                  maximumRateBps: ladderBounds.maximumRateBps
-                }),
-            ...(liveBootstrapTickCeiling === undefined
-              ? {}
-              : { ownBootstrapBuyTickCeiling: liveBootstrapTickCeiling })
-          }).bookOffers
+            now: block.timestamp
+          })
         }
       )
     ).flat()

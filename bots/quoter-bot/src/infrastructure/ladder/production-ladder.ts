@@ -82,13 +82,13 @@ const BPS_WAD = 10n ** 18n / 10_000n
 type OwnedBootstrapOffer = BootstrapOffer & { groupId: Hex }
 
 /**
- * Finds the highest live own-bootstrap buy rate relevant to one ladder market.
+ * Finds the lowest live own-bootstrap buy rate relevant to one ladder market.
  * @param parameters - Indexed groups, durable ownership, persisted and pending intents, market, and block time.
- * @returns The highest nominal or exact tick-derived annual rate, or `undefined` without a live own buy.
+ * @returns The lowest nominal or exact tick-derived annual rate, or `undefined` without a live own buy.
  * @remarks Configured V0 groups may predate persisted offer intents, so their indexed tick and maturity
  * are authoritative fallback evidence while the projection is live.
  */
-export const highestBootstrapBuyRateBps = (parameters: {
+export const lowestBootstrapBuyRateBps = (parameters: {
   groups: readonly BootstrapRawGroup[]
   ownedGroupIds: readonly Hex[]
   persistedOffers: readonly OwnedBootstrapOffer[]
@@ -112,7 +112,7 @@ export const highestBootstrapBuyRateBps = (parameters: {
     .filter(offer => offer.marketId === parameters.marketId)
     .map(offer => offer.rateBps)
   return [...indexedRates, ...pendingRates].reduce<bigint | undefined>(
-    (highest, rateBps) => (highest === undefined || rateBps > highest ? rateBps : highest),
+    (lowest, rateBps) => (lowest === undefined || rateBps < lowest ? rateBps : lowest),
     undefined
   )
 }
@@ -414,7 +414,7 @@ export const createProductionLadderAdapters = (
         .filter(position => position.marketId !== marketId)
         .reduce((sum, position) => sum + position.credit, 0n)
 
-      const bootstrapBuyRateBps = highestBootstrapBuyRateBps({
+      const bootstrapBuyRateBps = lowestBootstrapBuyRateBps({
         groups,
         ownedGroupIds: bootstrapGroupIds,
         persistedOffers: persistedBootstrapOffers,

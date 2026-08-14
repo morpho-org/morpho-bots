@@ -1,12 +1,13 @@
 import type { Hex } from 'viem'
 
 import { isBytes32 } from '../bytes32'
-import { clampRateBps, CROSS_BOOK_CLEARANCE_BPS } from '../cross-book'
+import { CROSS_BOOK_CLEARANCE_BPS } from '../cross-book'
 import { LadderConfigurationError } from './ladder-configuration.error'
 
 const WEIGHT_SCALE_BPS = 10_000n
 const bigintAbs = (value: bigint) => (value < 0n ? -value : value)
 const bigintMin = (left: bigint, right: bigint) => (left < right ? left : right)
+const bigintMax = (left: bigint, right: bigint) => (left > right ? left : right)
 
 /**
  * Highest supported rung count per ladder side.
@@ -270,10 +271,11 @@ export const assertLadderShapeAtReference = (
  * @returns Exact desired quote set; only the nearest rates are funded when the side cannot support
  * every rung at `minimumOfferAssets`, and the outermost funded rung receives division remainders.
  * @throws LadderConfigurationError for an invalid config or negative capacity input.
- * @remarks Rungs walking outside the hard range saturate at the bound instead of failing: sells
- * settle on `minimumRateBps` and buys on `maximumRateBps`. Sells additionally quote at least
- * {@link CROSS_BOOK_CLEARANCE_BPS} below any live own bootstrap buy so both strategies cannot cross.
- * Saturated neighbouring rungs may share one rate; protocol tick mapping merges equal-tick rungs.
+ * @remarks Sells walking below the hard range saturate at `minimumRateBps`, while buys walking above
+ * it saturate at `maximumRateBps`. A sell above the maximum or buy below the minimum is suppressed
+ * instead of being moved through the opposite bound, so the two sides cannot collapse onto one rate.
+ * Sells additionally quote at least {@link CROSS_BOOK_CLEARANCE_BPS} below any live own bootstrap buy.
+ * Saturated neighbouring same-side rungs may share one rate; tick mapping merges equal-tick rungs.
  */
 export const generateLadder = (parameters: GenerateLadderParameters): LadderQuoteSet => {
   const { config, referenceRateBps, capacities = {}, retainedCenterRateBps } = parameters
@@ -297,7 +299,12 @@ export const generateLadder = (parameters: GenerateLadderParameters): LadderQuot
         side === 'lower'
           ? clearedSellRateBps(shapedRateBps, capacities.bootstrapBuyRateBps)
           : shapedRateBps
-      const rateBps = clampRateBps(clearedRateBps, config.minimumRateBps, config.maximumRateBps)
+      if (side === 'lower' && clearedRateBps > config.maximumRateBps) return []
+      if (side === 'higher' && clearedRateBps < config.minimumRateBps) return []
+      const rateBps =
+        side === 'lower'
+          ? bigintMax(clearedRateBps, config.minimumRateBps)
+          : bigintMin(clearedRateBps, config.maximumRateBps)
       return [{ index, rateBps, assets }]
     })
   const lower = buildRungs('lower', lowerAllocations)

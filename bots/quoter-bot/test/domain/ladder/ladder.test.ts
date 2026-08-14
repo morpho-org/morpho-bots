@@ -204,6 +204,22 @@ describe('ladder domain', () => {
     expect(ladder.higher.map(rung => rung.rateBps)).toEqual([450n, 550n, 650n])
   })
 
+  test.each([
+    [50n, [200n, 200n, 200n], [250n, 350n]],
+    [950n, [750n, 650n], [800n, 800n, 800n]]
+  ])(
+    'suppresses opposite-bound rungs when the center is %p',
+    (referenceRateBps, expectedLower, expectedHigher) => {
+      const ladder = generateLadder({ config: config(), referenceRateBps })
+
+      expect(ladder.lower.map(rung => rung.rateBps)).toEqual(expectedLower)
+      expect(ladder.higher.map(rung => rung.rateBps)).toEqual(expectedHigher)
+      expect(
+        ladder.lower.every(lower => ladder.higher.every(higher => lower.rateBps < higher.rateBps))
+      ).toBe(true)
+    }
+  )
+
   test('quotes sells at least the clearance below the live own bootstrap buy', () => {
     const ladder = generateLadder({
       config: config(),
