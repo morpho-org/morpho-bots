@@ -1,0 +1,157 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "quoter-bot.fullname" . }}
+  labels:
+    {{- include "quoter-bot.labels" . | nindent 4 }}
+spec:
+  # The bot is a singleton writer: its nonce cursor, serialized mutation queue, and durable
+  # offer-group ownership state are per-instance, so two replicas against one maker would race
+  # nonces and fight over the offer book. Recreate guarantees the old pod fully drains (offer
+  # cleanup included) before a replacement starts against the same state volume.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "quoter-bot.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- $chartManagedConfig := and .Values.config (not .Values.existingConfigSecret) }}
+      {{- if or $chartManagedConfig .Values.podAnnotations }}
+      annotations:
+        {{- if $chartManagedConfig }}
+        # Configuration is read once at startup and the file is mounted through subPath, so a
+        # config change must roll the pod; the checksum forces that on upgrade.
+        checksum/config: {{ include "quoter-bot.configYaml" . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      labels:
+        {{- include "quoter-bot.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      # The bot never talks to the Kubernetes API.
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.volumePermissions.enabled }}
+      initContainers:
+        # Mirrors the image's railway-entrypoint.sh chown for storage drivers that ignore
+        # fsGroup. The runtime container itself never runs as root.
+        - name: volume-permissions
+          image: {{ include "quoter-bot.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /usr/bin/chown
+            - -R
+            - '{{ .Values.podSecurityContext.runAsUser | default 1000 }}:{{ .Values.podSecurityContext.fsGroup | default 1000 }}'
+            - {{ .Values.persistence.mountPath | quote }}
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            runAsGroup: 0
+          volumeMounts:
+            - name: state
+              mountPath: {{ .Values.persistence.mountPath | quote }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: {{ include "quoter-bot.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          args:
+            {{- if include "quoter-bot.hasConfigFile" . }}
+            # Root flags precede the command; the mounted file uses the bot's native schema.
+            - --config
+            - /config/quoter-bot.yaml
+            {{- end }}
+            {{- range .Values.args }}
+            - {{ . | quote }}
+            {{- end }}
+          env:
+            # Durable offer-group ownership state lives on the state volume.
+            - name: XDG_STATE_HOME
+              value: {{ .Values.persistence.mountPath | quote }}
+            {{- with .Values.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: state
+              mountPath: {{ .Values.persistence.mountPath | quote }}
+            # The root filesystem is read-only; give Node a writable /tmp.
+            - name: tmp
+              mountPath: /tmp
+            {{- if include "quoter-bot.hasConfigFile" . }}
+            # subPath yields a regular file: the bot opens its config with O_NOFOLLOW and
+            # rejects the symlinks a plain Secret volume mount would expose.
+            - name: config
+              mountPath: /config/quoter-bot.yaml
+              subPath: quoter-bot.yaml
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: state
+          {{- if and .Values.persistence.enabled .Values.persistence.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim }}
+          {{- else if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "quoter-bot.fullname" . }}-state
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}
+        {{- if include "quoter-bot.hasConfigFile" . }}
+        - name: config
+          secret:
+            secretName: {{ include "quoter-bot.configSecretName" . }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
