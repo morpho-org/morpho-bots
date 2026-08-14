@@ -4,31 +4,23 @@
 node_modules
 .pnpm-store
 
-# Local env files (any name usable with `docker run --env-file` may hold the maker key)
+# Local env files
 .env
 .env.*
-*.env
 !.env.example
 
-# Encrypted keystore files hold the maker key material; the documented maker.json example and any
-# keystore-named JSON must never be committed. Keep keystores outside the repository tree.
-**/maker.json
-**/*keystore*.json
-
-# Local quoter-bot configuration under any quoter-bot-named variant (`--config` accepts arbitrary
-# filenames and the file may hold the maker key). Workflow files and the committed examples remain
-# trackable. Name custom configs with "quoter-bot" in the filename, or keep them outside the
-# repository tree entirely.
-**/*quoter-bot*.yaml
-**/*quoter-bot*.yml
-# Legacy pre-rename local configuration can still contain private keys after upgrading.
-**/*market-making*.yaml
-**/*market-making*.yml
-!.github/**
+# Local quoter-bot configuration (examples remain trackable)
+**/quoter-bot.yaml
+**/quoter-bot.yml
 !**/quoter-bot.example.yaml
 !**/quoter-bot.example.yml
+
+# Legacy local configuration can still contain private keys after upgrading.
+**/market-making.yaml
+**/market-making.yml
 !**/market-making.example.yaml
 !**/market-making.example.yml
+
 
 # Testing
 coverage

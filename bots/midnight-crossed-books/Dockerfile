@@ -5,7 +5,6 @@
 # Node only: pnpm installs, esbuild bundles, node runs.
 FROM node:24.14.1-slim
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-ENV HUSKY=0
 
 # The container's environment holds a funded EOA key, so nothing here may run as root — the previous
 # oven/bun base ended with `USER bun`, and the node images define `node` (uid 1000) but do not switch

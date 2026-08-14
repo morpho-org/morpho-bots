@@ -1,8 +1,6 @@
 import type { BookOffer } from '@repo/offers'
 import type { Hex } from 'viem'
 
-import { hasNegativeSpread } from '@repo/offers'
-
 import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
 
 import { clampRateBps, CROSS_BOOK_CLEARANCE_BPS } from '../../domain/cross-book'
@@ -25,20 +23,21 @@ const evidenceMissing = () => new BootstrapAdapterError('cross-book-evidence-mis
  * Resolves a premium-adjusted bootstrap buy against the current maker book.
  * @param parameters - Desired offer, its exact prospective projection, retained book, replacement
  * IDs, inclusive hard rate bounds, and the projector used to reprice a crossing buy.
- * @returns The original safe offer, a repriced offer quoting {@link CROSS_BOOK_CLEARANCE_BPS} above
- * the highest-rate retained sell, or `undefined` when no non-crossing tick exists inside the hard
- * rate range so this cycle publishes nothing.
- * @throws `BootstrapAdapterError` `negative-spread` when the retained book is already crossed, the
- * crossing is not caused by the prospective buy, or a repriced projection still crosses the
- * retained book; `cross-book-evidence-missing` when a projection omits the effective-rate or
- * tick-spacing evidence repricing requires.
+ * @returns The original offer when its prospective buy clears every retained sell, a repriced offer
+ * quoting {@link CROSS_BOOK_CLEARANCE_BPS} above the highest-rate retained sell, or `undefined` when
+ * no non-crossing tick exists inside the hard rate range so this cycle publishes nothing.
+ * @throws `BootstrapAdapterError` `negative-spread` when the prospective projection is not the
+ * selected-market buy or a repriced projection still crosses a retained sell;
+ * `cross-book-evidence-missing` when a projection omits the effective-rate or tick-spacing evidence
+ * repricing requires.
  * @remarks A crossing buy reprices against the lowest-tick (highest-rate) retained sell regardless
- * of who owns it. When tick rounding leaves the repriced buy at or above that sell tick, the buy
- * steps to exactly one tick spacing below it and adopts that tick's encoded rate. The final
- * projection always describes the returned offer, so a transport caching its latest projection for
- * publication can never observe a reference projection at the crossing sell tick last; because each
- * projection may read a newer block timestamp, that final projection's encoded rate is re-validated
- * against the hard bounds before the offer is returned.
+ * of who owns it. Existing crossings between retained third-party offers do not implicate the
+ * prospective buy and are ignored. When tick rounding leaves the repriced buy at or above the sell
+ * tick, the buy steps to exactly one tick spacing below it and adopts that tick's encoded rate. The
+ * final projection always describes the returned offer, so a transport caching its latest
+ * projection for publication can never observe a reference projection at the crossing sell tick
+ * last; because each projection may read a newer block timestamp, that final projection's encoded
+ * rate is re-validated against the hard bounds before the offer is returned.
  */
 export const resolveBootstrapProspectiveOffer = async (parameters: {
   desiredOffer: BootstrapOffer
@@ -57,12 +56,7 @@ export const resolveBootstrapProspectiveOffer = async (parameters: {
       offer.marketId === parameters.desiredOffer.marketId &&
       (offer.groupId === undefined || !parameters.replacedGroupIds.has(offer.groupId))
   )
-  if (hasNegativeSpread(retained)) throw negativeSpread()
-
   const prospective = parameters.prospective
-  if (!hasNegativeSpread([...retained, prospective])) {
-    return { offer: parameters.desiredOffer, prospective }
-  }
   if (!prospective.buy || prospective.marketId !== parameters.desiredOffer.marketId) {
     throw negativeSpread()
   }
@@ -73,7 +67,9 @@ export const resolveBootstrapProspectiveOffer = async (parameters: {
       (lowest, offer) => (lowest === undefined || offer.tick < lowest ? offer.tick : lowest),
       undefined
     )
-  if (highestRateSellTick === undefined) throw negativeSpread()
+  if (highestRateSellTick === undefined || prospective.tick < highestRateSellTick) {
+    return { offer: parameters.desiredOffer, prospective }
+  }
 
   const reference = await parameters.toProspectiveBookOffer(
     parameters.desiredOffer,
@@ -108,6 +104,6 @@ export const resolveBootstrapProspectiveOffer = async (parameters: {
       return undefined
     }
   }
-  if (hasNegativeSpread([...retained, adjusted])) throw negativeSpread()
+  if (adjusted.tick >= highestRateSellTick) throw negativeSpread()
   return { offer, prospective: adjusted }
 }

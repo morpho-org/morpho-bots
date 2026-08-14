@@ -8,21 +8,3 @@
 **/*.log
 **/.env
 **/.env.*
-# Env files under any name (`docker run --env-file` accepts arbitrary filenames such as
-# market-making.env) hold secrets like MAKER_PRIVATE_KEY and must never enter the build context.
-**/*.env
-# Encrypted keystore files (the documented maker.json example and any keystore-named JSON) hold the
-# maker key material and must never bake into an image via `COPY bots`.
-**/maker.json
-**/*keystore*.json
-# No non-example YAML enters the build context: market-making configuration is YAML, may hold a
-# private key, and `--config` accepts any operator-chosen filename — not just the default
-# market-making.yaml. Images need no YAML at runtime; committed *.example.* templates stay
-# copyable, and the root pnpm manifests are re-included because `pnpm install --frozen-lockfile`
-# needs them.
-**/*.yaml
-**/*.yml
-!**/*.example.yaml
-!**/*.example.yml
-!pnpm-lock.yaml
-!pnpm-workspace.yaml

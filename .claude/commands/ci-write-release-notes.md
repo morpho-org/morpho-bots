@@ -9,49 +9,40 @@ with a comprehensive summary.
 
 The release tags are provided in the `RELEASE_TAGS` environment variable as a space-separated list.
 
-Tag format: `{bot-name}-{version}` where version follows CalVer pattern `YYYY.MM.DD-N`
+Tag format: `{app-name}-{version}` where version follows CalVer pattern `YYYY.MM.DD-N`
 
-Example: `quoter-bot-2026.08.04-1`
+Example: `curator-app-2025.10.16-1`
 
-Loop through each tag and extract the bot name and version. Skip any tags that don't match the
+Loop through each tag and extract the app name and version. Skip any tags that don't match the
 expected pattern.
 
-### Step 2: Analyze Each Bot
+### Step 2: Analyze Each App
 
 For each release tag:
 
-1. **Find the previous release tag** for that bot — the highest tag strictly BELOW the release
-   being rewritten:
+1. **Find the previous release tag** for that app:
 
    ```bash
-   { git tag -l "{bot}-*" | grep -Fxv -- "$RELEASE_TAG" || true; echo "$RELEASE_TAG"; } \
-     | sort -V | awk -v cur="$RELEASE_TAG" '$0 == cur { exit } { print }' | tail -5
+   git tag -l "{app}-*" --sort=-version:refname | head -5
    ```
 
-   This lists up to five candidates in ascending order, all lower than `$RELEASE_TAG`; use the last
-   one as the baseline. Never select `$RELEASE_TAG` itself (it already exists locally when this
-   command runs) and never select a tag above it: for a backfilled older release, a newer baseline
-   would produce a backwards newer→older diff. An empty list means this is the lowest/first
-   release — treat it as an initial release.
-
-2. **Compare the diff** between the newly-published tag and the previous one. Bots assemble their
-   behavior from the shared `packages/*` workspace, so include it alongside the bot's own tree:
+2. **Compare the diff** between the newly-published tag and the previous one:
 
    ```bash
-   git diff {previous-tag}...{new-tag} -- bots/{bot} packages
+   git diff {previous-tag}...{new-tag} -- packages/{bot}
    ```
 
 3. **Get commit messages** in the release range for context:
 
    ```bash
-   git log {previous-tag}...{new-tag} --oneline -- bots/{bot} packages
+   git log {previous-tag}...{new-tag} --oneline -- packages/{bot}
    ```
 
 4. **Extract PR numbers** from commit messages:
 
    ```bash
    # Get PR numbers from merge commits and PR references
-   git log {previous-tag}...{new-tag} --oneline -- bots/{bot} packages | \
+   git log {previous-tag}...{new-tag} --oneline -- packages/{bot} | \
      grep -oE '#[0-9]+' | \
      sort -u
    ```
