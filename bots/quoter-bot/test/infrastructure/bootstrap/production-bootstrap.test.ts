@@ -33,7 +33,6 @@ import {
   legacyBootstrapOfferTickUpperBound,
   recoverLegacyBootstrapOfferTick
 } from '../../../src/infrastructure/bootstrap/bootstrap-offer.utils'
-import { bootstrapLadderSellOverlapBookOffers } from '../../../src/infrastructure/bootstrap/bootstrap-overlap.utils'
 import { prepareBootstrapRequirements } from '../../../src/infrastructure/bootstrap/bootstrap-requirements.utils'
 import { assertBootstrapTransaction } from '../../../src/infrastructure/bootstrap/bootstrap-transaction.utils'
 import {
@@ -145,13 +144,13 @@ describe('createProductionBootstrapAdapters', () => {
     expect(result.created.maxAssets).toBe(40n)
   })
 
-  test('keeps a capped read-only projection when tick rounding exceeds the buy bound', async () => {
+  test('rejects a capped read-only projection outside the configured rate bounds', async () => {
     await expect(
       prepareCappedBootstrapOffer({
         offer: {
           marketId,
           assets: 100n,
-          rateBps: 800n,
+          rateBps: 400n,
           referenceObservationId: 'test'
         },
         maximumAssets: 40n,
@@ -164,7 +163,7 @@ describe('createProductionBootstrapAdapters', () => {
           effectiveRateBps: 801n
         })
       })
-    ).resolves.toMatchObject({ offer: { assets: 40n, rateBps: 800n } })
+    ).rejects.toMatchObject({ operation: 'negative-spread' })
   })
 
   test('constructs address-only readers and selects the configured hardcoded bootstrap rate', async () => {
@@ -285,7 +284,8 @@ describe('Setter bootstrap publication sequencing', () => {
       invalidate: async () => {
         events.push('cancel-submit', 'cancel-confirmed')
         return groupId
-      }
+      },
+      invalidateBatch: async () => {}
     })
 
     await service.reconcile({
@@ -346,9 +346,12 @@ describe('Setter bootstrap publication sequencing', () => {
         tracked.delete(id)
         events.push('release')
       },
-      invalidate: async id => {
-        tracked.delete(id)
-        events.push('cleanup-cancel')
+      invalidate: async () => {},
+      invalidateBatch: async groups => {
+        for (const id of groups) {
+          tracked.delete(id)
+          events.push('cleanup-cancel')
+        }
       },
       forgetGroups: async ids => {
         for (const id of ids) tracked.delete(id)
@@ -755,69 +758,6 @@ describe('readBootstrapGroups', () => {
 
     expect(strategyBootstrapGroups(groups, [groupId, secondGroupId])).toEqual([])
     expect(bootstrapReservedLoanAssets(groups, [groupId, secondGroupId])).toBe(0n)
-  })
-
-  test('keeps rebuilt pending ladder sells ineligible as exact overlap evidence', () => {
-    expect(
-      bootstrapLadderSellOverlapBookOffers({
-        groups: [],
-        eligibleSellGroupIds: new Set(),
-        currentTimestamp: 1_000n,
-        pendingLadderOffers: [
-          {
-            marketId,
-            buy: false,
-            tick: 200n,
-            remainingAssets: 40n,
-            effectiveRateBps: 450n
-          }
-        ]
-      })
-    ).toEqual([
-      {
-        marketId,
-        buy: false,
-        tick: 200n,
-        remainingAssets: 40n,
-        effectiveRateBps: 450n
-      }
-    ])
-  })
-
-  test('retains a sell missing maturity but keeps it ineligible for overlap', async () => {
-    const sellOnly = { ...group().offers[0], buy: false, market: undefined }
-    const groups = await readBootstrapGroups(
-      { maker, requestTimeoutMs: 1_000 },
-      {
-        request: async () => ({
-          data: [group({ max_assets: '75', consumed: '5', offers: [sellOnly] })],
-          cursor: null
-        })
-      }
-    )
-
-    expect(groups).toHaveLength(1)
-    expect(groups[0]!.offers[0]).not.toHaveProperty('maturity')
-    expect(
-      bootstrapLadderSellOverlapBookOffers({
-        groups,
-        eligibleSellGroupIds: new Set([groupId]),
-        currentTimestamp: 1_000n
-      })
-    ).toEqual([
-      expect.objectContaining({
-        groupId,
-        buy: false,
-        remainingAssets: 70n
-      })
-    ])
-    expect(
-      bootstrapLadderSellOverlapBookOffers({
-        groups,
-        eligibleSellGroupIds: new Set([groupId]),
-        currentTimestamp: 1_000n
-      })[0]
-    ).not.toHaveProperty('bootstrapOverlap')
   })
 
   test('passes the full distinct owned reserve in the actual makeLend argument shape', async () => {

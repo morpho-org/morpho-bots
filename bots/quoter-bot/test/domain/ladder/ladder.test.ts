@@ -188,28 +188,39 @@ describe('ladder domain', () => {
     ).toThrow('lowerRateBudgetAssets must be at least minimumOfferAssets')
   })
 
-  test('clamps a sell rung below the configured range to the minimum rate', () => {
-    const ladder = generateLadder({ config: config(), referenceRateBps: 499n })
+  test('clamps runtime rungs at the hard range instead of rejecting them', () => {
+    const above = generateLadder({ config: config(), referenceRateBps: 501n })
+    expect(above.higher.map(rung => rung.rateBps)).toEqual([601n, 701n, 800n])
+    expect(above.lower.map(rung => rung.rateBps)).toEqual([401n, 301n, 201n])
 
-    expect(ladder.lower.map(rung => rung.rateBps)).toEqual([399n, 299n, 200n])
+    const below = generateLadder({ config: config(), referenceRateBps: 499n })
+    expect(below.lower.map(rung => rung.rateBps)).toEqual([399n, 299n, 200n])
+    expect(below.higher.map(rung => rung.rateBps)).toEqual([599n, 699n, 799n])
   })
 
-  test('clamps a sell rung above the configured range to the minimum rate', () => {
-    const ladder = generateLadder({ config: config(), referenceRateBps: 1_000n })
-
-    expect(ladder.lower.map(rung => rung.rateBps)).toEqual([200n, 800n, 700n])
+  test('saturates every rung walking past a bound onto that bound', () => {
+    const ladder = generateLadder({ config: config(), referenceRateBps: 350n })
+    expect(ladder.lower.map(rung => rung.rateBps)).toEqual([250n, 200n, 200n])
+    expect(ladder.higher.map(rung => rung.rateBps)).toEqual([450n, 550n, 650n])
   })
 
-  test('clamps a buy rung below the configured range to the maximum rate', () => {
-    const ladder = generateLadder({ config: config(), referenceRateBps: 0n })
-
-    expect(ladder.higher.map(rung => rung.rateBps)).toEqual([800n, 200n, 300n])
+  test('quotes sells at least the clearance below the live own bootstrap buy', () => {
+    const ladder = generateLadder({
+      config: config(),
+      referenceRateBps: 500n,
+      capacities: { bootstrapBuyRateBps: 380n }
+    })
+    expect(ladder.lower.map(rung => rung.rateBps)).toEqual([370n, 300n, 200n])
+    expect(ladder.higher.map(rung => rung.rateBps)).toEqual([600n, 700n, 800n])
   })
 
-  test('clamps a buy rung above the configured range to the maximum rate', () => {
-    const ladder = generateLadder({ config: config(), referenceRateBps: 501n })
-
-    expect(ladder.higher.map(rung => rung.rateBps)).toEqual([601n, 701n, 800n])
+  test('keeps bootstrap-cleared sells inside the hard range', () => {
+    const ladder = generateLadder({
+      config: config(),
+      referenceRateBps: 500n,
+      capacities: { bootstrapBuyRateBps: 205n }
+    })
+    expect(ladder.lower.map(rung => rung.rateBps)).toEqual([200n, 200n, 200n])
   })
 
   test('requires every deterministic skew weight to stay positive', () => {

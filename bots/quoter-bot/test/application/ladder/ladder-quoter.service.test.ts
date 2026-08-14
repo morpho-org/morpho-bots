@@ -510,7 +510,7 @@ describe('LadderQuoterService', () => {
     ])
   })
 
-  test('hard-halts on a reference read failure', async () => {
+  test('hard-halts on reference read failure', async () => {
     const subject = harness()
     subject.service = new LadderQuoterService(
       {
@@ -537,21 +537,26 @@ describe('LadderQuoterService', () => {
       },
       [config()]
     )
-
     const result = await subject.service.runOnce()
-
     expect(subject.halts).toEqual(['reference-read-failed'])
     expect(result).toMatchObject([{ status: 'halted' }])
   })
 
-  test('publishes with clamped runtime bounds instead of hard-halting', async () => {
+  test('publishes bound-clamped rungs instead of halting on a reference excursion', async () => {
     const subject = harness()
     subject.setRate(801n)
-
     const result = await subject.service.runOnce()
-
     expect(subject.halts).toEqual([])
     expect(result).toMatchObject([{ status: 'applied', action: 'publish' }])
-    expect(subject.reconciliations[0]?.desired?.higher.at(-1)?.rateBps).toBe(1_000n)
+    expect(subject.reconciliations[0]?.desired?.higher.map(rung => rung.rateBps)).toEqual([
+      901n,
+      1_000n,
+      1_000n
+    ])
+    expect(subject.reconciliations[0]?.desired?.lower.map(rung => rung.rateBps)).toEqual([
+      701n,
+      601n,
+      501n
+    ])
   })
 })

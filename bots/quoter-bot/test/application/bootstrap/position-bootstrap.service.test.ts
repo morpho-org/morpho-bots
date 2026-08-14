@@ -1122,7 +1122,7 @@ describe('PositionBootstrapService', () => {
   })
 
   test.each([100n, 900n])(
-    'observes zero capacity after clamping an out-of-bounds buy rate (%s BPS)',
+    'keeps an out-of-bounds rate observational with zero capacity (%s BPS)',
     async rateBps => {
       const { service, positions, rates, reconcile, hardHalt } = setup()
       positions.readPosition = vi.fn(async () => ({
@@ -1219,7 +1219,7 @@ describe('PositionBootstrapService', () => {
     ])
   })
 
-  test('replaces an active offer with the clamped bootstrap buy rate', async () => {
+  test('replaces an active offer at the clamped minimum when the reference collapses', async () => {
     const { service, positions, rates, reconcile, hardHalt } = setup()
     positions.readPosition = vi.fn(async () => ({
       credit: 0n,
@@ -1247,17 +1247,14 @@ describe('PositionBootstrapService', () => {
         action: 'replace'
       }
     ])
-    expect(reconcile).toHaveBeenCalledWith({
-      marketId,
-      desiredOffer: {
-        marketId,
-        assets: 500n,
-        rateBps: 800n,
-        referenceObservationId: 'static:100'
-      },
-      reason: 'replace'
-    })
     expect(hardHalt).not.toHaveBeenCalled()
+    expect(reconcile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        marketId,
+        desiredOffer: expect.objectContaining({ rateBps: 200n }),
+        reason: 'replace'
+      })
+    )
   })
 
   test('preflights a negative acceptance threshold before reading a live offer', async () => {

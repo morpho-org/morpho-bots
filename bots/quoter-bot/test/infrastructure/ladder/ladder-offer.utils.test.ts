@@ -17,16 +17,6 @@ const collateral: Address = '0x5555555555555555555555555555555555555555'
 const oracle: Address = '0x6666666666666666666666666666666666666666'
 const marketId: Hex = `0x${'77'.repeat(32)}`
 const now = 1_000n
-const yearSeconds = 31_536_000n
-const basisPointWad = 10n ** 14n
-const rateToTick = (rateBps: bigint, candidateMarket: IMarket, timestamp: bigint) => {
-  const timeToMaturity = BigInt(candidateMarket.params.maturity) - timestamp
-  const periodRateWad = (rateBps * basisPointWad * timeToMaturity) / yearSeconds
-  return TickLib.priceToTick(
-    TickLib.rateToPrice(periodRateWad),
-    BigInt(candidateMarket.tickSpacing)
-  )
-}
 const market = {
   params: {
     chainId: 8453,
@@ -63,103 +53,7 @@ const quote = (groupMode: LadderQuoteSet['groupMode']): LadderQuoteSet => ({
   ]
 })
 
-const expectOutOfRangeRateTargetsSideBoundary = (
-  side: 'lower' | 'higher',
-  nominalRateBps: bigint
-) => {
-  const coarseMarket = { ...market, tickSpacing: 4 } as IMarket
-  const minimumRateBps = 200n
-  const maximumRateBps = 800n
-  const buy = side === 'higher'
-  const boundaryRateBps = buy ? maximumRateBps : minimumRateBps
-  const rung = { index: 0, rateBps: nominalRateBps, assets: 10n }
-  const boundaryRung = { ...rung, rateBps: boundaryRateBps }
-  const bootstrapBuyRateBps = 500n
-  const bootstrap = buildLadderTree({
-    quote: {
-      ...quote('shared-rung'),
-      lower: [],
-      higher: [{ index: 0, rateBps: bootstrapBuyRateBps, assets: 1n }]
-    },
-    market: coarseMarket,
-    maker,
-    ratifier,
-    now
-  })
-  const sideQuote = (candidate: typeof rung): LadderQuoteSet => ({
-    ...quote('shared-rung'),
-    lower: buy ? [] : [candidate],
-    higher: buy ? [candidate] : []
-  })
-  const parameters = {
-    market: coarseMarket,
-    maker,
-    ratifier,
-    now,
-    minimumRateBps,
-    maximumRateBps,
-    bootstrapBuyTick: bootstrap.bookOffers[0]!.tick,
-    bootstrapBuyRateBps
-  }
-  const boundary = buildLadderTree({ ...parameters, quote: sideQuote(boundaryRung) })
-  const result = buildLadderTree({ ...parameters, quote: sideQuote(rung) })
-  const offer = result.bookOffers[0]!
-  const effectiveAprWad = TickLib.tickToApr(offer.tick, 31_536_000n)
-  const effectiveRateBps = (effectiveAprWad + 10n ** 14n - 1n) / 10n ** 14n
-  const adjustedRung = buy ? result.quote.higher[0] : result.quote.lower[0]
-
-  expect(offer.buy).toBe(buy)
-  expect(offer.tick).toBe(boundary.bookOffers[0]!.tick)
-  expect(effectiveAprWad).toBeGreaterThanOrEqual(minimumRateBps * 10n ** 14n)
-  expect(effectiveAprWad).toBeLessThanOrEqual(maximumRateBps * 10n ** 14n)
-  expect(adjustedRung?.rateBps).toBe(effectiveRateBps)
-  expect(offer.effectiveRateBps).toBe(effectiveRateBps)
-
-  const reconstructed = buildLadderTree({
-    quote: result.quote,
-    market: coarseMarket,
-    maker,
-    ratifier,
-    now
-  })
-  expect(reconstructed.bookOffers[0]).toMatchObject({
-    buy,
-    tick: offer.tick,
-    effectiveRateBps
-  })
-}
-
 describe('buildLadderTree', () => {
-  test('selects a reconstructable neighbor for unrepresentable crossing tick 4173', () => {
-    const result = buildLadderTree({
-      quote: {
-        ...quote('shared-rung'),
-        lower: [{ index: 0, rateBps: 185n, assets: 10n }],
-        higher: []
-      },
-      market,
-      maker,
-      ratifier,
-      now,
-      minimumRateBps: 100n,
-      maximumRateBps: 300n,
-      bootstrapBuyTick: 4_172n,
-      bootstrapBuyRateBps: 195n
-    })
-
-    const published = result.bookOffers[0]!
-    const persistedRateBps = result.quote.lower[0]!.rateBps
-    const reconstructedTick = TickLib.priceToTick(
-      TickLib.rateToPrice((persistedRateBps * basisPointWad * yearSeconds) / yearSeconds),
-      1n
-    )
-
-    expect(TickLib.tickToApr(4_173n, yearSeconds)).toBe(18_407_719_530_514_042n)
-    expect(published.tick).not.toBe(4_173n)
-    expect(published.tick).toBeGreaterThan(4_172n)
-    expect(reconstructedTick).toBe(published.tick)
-  })
-
   test('derives exact production offer maxAssets for the [10,20,30,40] fixture in both modes', () => {
     expect(offerMaxAssetsByRung(quote('shared-rung'))).toEqual({
       lower: [10n, 20n],
@@ -169,46 +63,6 @@ describe('buildLadderTree', () => {
       lower: [30n, 30n],
       higher: [70n, 70n]
     })
-  })
-
-  test('round-trips adjusted rates across sampled maturities, spacings, boundaries, and both sides', () => {
-    for (const timeToMaturity of [7n * 86_400n, 90n * 86_400n, yearSeconds]) {
-      for (const tickSpacing of [1, 2, 4]) {
-        const sampledMarket = {
-          ...market,
-          params: { ...market.params, maturity: now + timeToMaturity },
-          tickSpacing
-        } as IMarket
-        for (const [side, nominalRateBps] of [
-          ['lower', 99n],
-          ['lower', 301n],
-          ['higher', 99n],
-          ['higher', 301n]
-        ] as const) {
-          const result = buildLadderTree({
-            quote: {
-              ...quote('shared-rung'),
-              lower: side === 'lower' ? [{ index: 0, rateBps: nominalRateBps, assets: 10n }] : [],
-              higher: side === 'higher' ? [{ index: 0, rateBps: nominalRateBps, assets: 10n }] : []
-            },
-            market: sampledMarket,
-            maker,
-            ratifier,
-            now,
-            minimumRateBps: 100n,
-            maximumRateBps: 300n
-          })
-          const published = result.bookOffers[0]!
-          const persistedRateBps =
-            side === 'lower' ? result.quote.lower[0]!.rateBps : result.quote.higher[0]!.rateBps
-          const aprWad = TickLib.tickToApr(published.tick, timeToMaturity)
-
-          expect(rateToTick(persistedRateBps, sampledMarket, now)).toBe(published.tick)
-          expect(aprWad).toBeGreaterThanOrEqual(100n * basisPointWad)
-          expect(aprWad).toBeLessThanOrEqual(300n * basisPointWad)
-        }
-      }
-    }
   })
 
   test('maps lower sells and higher buys without crossing Midnight ticks', () => {
@@ -235,146 +89,6 @@ describe('buildLadderTree', () => {
     expect(result.tree.offers.every(offer => offer.start === now)).toBe(true)
     expect(new Set(result.tree.offers.map(offer => offer.group)).size).toBe(4)
     expect(result.groups.map(group => group.rungIndexes)).toEqual([[0], [1], [0], [1]])
-  })
-
-  test('targets the minimum-rate boundary for a sell below the hard bounds', () => {
-    expectOutOfRangeRateTargetsSideBoundary('lower', 199n)
-  })
-
-  test('targets the minimum-rate boundary for a sell above the hard bounds', () => {
-    expectOutOfRangeRateTargetsSideBoundary('lower', 801n)
-  })
-
-  test('targets the maximum-rate boundary for a buy below the hard bounds', () => {
-    expectOutOfRangeRateTargetsSideBoundary('higher', 199n)
-  })
-
-  test('targets the maximum-rate boundary for a buy above the hard bounds', () => {
-    expectOutOfRangeRateTargetsSideBoundary('higher', 801n)
-  })
-
-  test('moves a crossing ladder sell to the next safe coarse tick when nominal adjustment rounds to equality', () => {
-    const coarseMarket = { ...market, tickSpacing: 4 } as IMarket
-    const bootstrap = buildLadderTree({
-      quote: {
-        ...quote('shared-rung'),
-        lower: [],
-        higher: [{ index: 0, rateBps: 522n, assets: 1n }]
-      },
-      market: coarseMarket,
-      maker,
-      ratifier,
-      now
-    })
-    const bootstrapBuyTick = bootstrap.bookOffers[0]!.tick
-
-    const result = buildLadderTree({
-      quote: {
-        ...quote('shared-rung'),
-        lower: [{ index: 0, rateBps: 530n, assets: 10n }],
-        higher: []
-      },
-      market: coarseMarket,
-      maker,
-      ratifier,
-      now,
-      minimumRateBps: 200n,
-      maximumRateBps: 800n,
-      bootstrapBuyTick,
-      bootstrapBuyRateBps: 522n
-    })
-
-    const adjusted = result.bookOffers[0]!
-    const effectiveAprWad = TickLib.tickToApr(adjusted.tick, 31_536_000n)
-    const effectiveRateBps = (effectiveAprWad + 10n ** 14n - 1n) / 10n ** 14n
-    expect(adjusted.tick).toBeGreaterThan(bootstrapBuyTick)
-    expect(effectiveAprWad).toBeGreaterThanOrEqual(200n * 10n ** 14n)
-    expect(effectiveAprWad).toBeLessThanOrEqual(800n * 10n ** 14n)
-    expect(adjusted.effectiveRateBps).toBe(effectiveRateBps)
-    expect(result.quote.lower[0]?.rateBps).toBe(effectiveRateBps)
-
-    const reconstructed = buildLadderTree({
-      quote: result.quote,
-      market: coarseMarket,
-      maker,
-      ratifier,
-      now,
-      minimumRateBps: 200n,
-      maximumRateBps: 800n
-    })
-    expect(reconstructed.bookOffers[0]?.tick).toBe(adjusted.tick)
-  })
-
-  test('moves spacing-aligned ticks inside inclusive exact APR bounds', () => {
-    const result = buildLadderTree({
-      quote: {
-        ...quote('shared-rung'),
-        lower: [{ index: 0, rateBps: 450n, assets: 10n }],
-        higher: [{ index: 0, rateBps: 600n, assets: 10n }]
-      },
-      market,
-      maker,
-      ratifier,
-      now,
-      minimumRateBps: 450n,
-      maximumRateBps: 600n
-    })
-
-    const effectiveAprWads = result.bookOffers.map(offer =>
-      TickLib.tickToApr(offer.tick, 31_536_000n)
-    )
-    expect(effectiveAprWads.every(apr => apr >= 450n * 10n ** 14n)).toBe(true)
-    expect(effectiveAprWads.every(apr => apr <= 600n * 10n ** 14n)).toBe(true)
-    expect(result.quote.lower[0]?.rateBps).toBe(452n)
-    expect(result.bookOffers[0]?.effectiveRateBps).toBe(452n)
-  })
-
-  test('rejects a crossing sell when no bounded tick remains above the bootstrap buy', () => {
-    const coarseMarket = { ...market, tickSpacing: 4 } as IMarket
-    const bootstrapBuyTick = TickLib.priceToTick(TickLib.rateToPrice(522n * 10n ** 14n), 4n)
-
-    expect(() =>
-      buildLadderTree({
-        quote: {
-          ...quote('shared-rung'),
-          lower: [{ index: 0, rateBps: 530n, assets: 10n }],
-          higher: []
-        },
-        market: coarseMarket,
-        maker,
-        ratifier,
-        now,
-        minimumRateBps: 502n,
-        maximumRateBps: 800n,
-        bootstrapBuyTick,
-        bootstrapBuyRateBps: 522n
-      })
-    ).toThrow('Ladder adapter failed')
-  })
-
-  test('merges ladder rungs that encode to the same tick', () => {
-    const sameTickQuote: LadderQuoteSet = {
-      ...quote('shared-rung'),
-      lower: [
-        { index: 0, rateBps: 450n, assets: 10n },
-        { index: 1, rateBps: 450n, assets: 20n }
-      ],
-      higher: []
-    }
-
-    const result = buildLadderTree({
-      quote: sameTickQuote,
-      market,
-      maker,
-      ratifier,
-      now,
-      minimumRateBps: 1n,
-      maximumRateBps: 10_000n
-    })
-
-    expect(result.tree.offers).toHaveLength(1)
-    expect(result.tree.offers[0]?.maxAssets).toBe(30n)
-    expect(result.groups).toMatchObject([{ side: 'lower', rungIndexes: [0, 1] }])
   })
 
   test('derives fresh group IDs for a later publication of the same quote', () => {
@@ -433,9 +147,42 @@ describe('buildLadderTree', () => {
     ).not.toThrow()
   })
 
-  test('accepts an encoded APR fraction above the integer-bps maximum', () => {
-    const permissive = buildLadderTree({
+  test('saturates out-of-range ticks at the hard range and merges rungs meeting there', () => {
+    const result = buildLadderTree({
       quote: quote('shared-rung'),
+      market,
+      maker,
+      ratifier,
+      now,
+      minimumRateBps: 450n,
+      maximumRateBps: 600n
+    })
+
+    expect(result.bookOffers.map(offer => ({ buy: offer.buy, tick: offer.tick }))).toEqual([
+      { buy: false, tick: 3_993n },
+      { buy: true, tick: 3_954n },
+      { buy: true, tick: 3_937n }
+    ])
+    expect(result.tree.offers.map(offer => offer.maxAssets)).toEqual([30n, 30n, 40n])
+    expect(result.groups.map(group => group.rungIndexes)).toEqual([[0, 1], [0], [1]])
+    const timeToMaturity = BigInt(market.params.maturity) - now
+    const basisPointWad = 10n ** 14n
+    for (const offer of result.tree.offers) {
+      const encodedRateBps = TickLib.tickToApr(offer.tick, timeToMaturity) / basisPointWad
+      expect(encodedRateBps).toBeGreaterThanOrEqual(450n)
+      expect(encodedRateBps).toBeLessThanOrEqual(600n)
+    }
+  })
+
+  test('merges same-side rungs whose rates round onto one protocol tick', () => {
+    const result = buildLadderTree({
+      quote: {
+        ...quote('shared-rung'),
+        lower: [
+          { index: 0, rateBps: 453n, assets: 10n },
+          { index: 1, rateBps: 452n, assets: 20n }
+        ]
+      },
       market,
       maker,
       ratifier,
@@ -443,27 +190,46 @@ describe('buildLadderTree', () => {
       minimumRateBps: 1n,
       maximumRateBps: 10_000n
     })
-    const encodedRateWad = TickLib.tickToApr(
-      permissive.tree.offers.at(-1)!.tick,
-      BigInt(market.params.maturity) - now
-    )
-    const basisPointWad = 10n ** 14n
-    expect(encodedRateWad % basisPointWad).not.toBe(0n)
 
-    expect(() =>
-      buildLadderTree({
-        quote: quote('shared-rung'),
-        market,
-        maker,
-        ratifier,
-        now,
-        minimumRateBps: 1n,
-        maximumRateBps: encodedRateWad / basisPointWad
-      })
-    ).not.toThrow()
+    const sells = result.bookOffers.filter(offer => !offer.buy)
+    expect(sells).toEqual([{ marketId, buy: false, tick: 3_993n }])
+    expect(result.tree.offers[0]?.maxAssets).toBe(30n)
+    expect(result.groups.map(group => group.rungIndexes)).toEqual([[0, 1], [0], [1]])
   })
 
-  test('does not throw when tick rounding moves the encoded APR past a hard boundary', () => {
+  test('quotes every sell strictly above the own bootstrap buy tick', () => {
+    const result = buildLadderTree({
+      quote: quote('shared-rung'),
+      market,
+      maker,
+      ratifier,
+      now,
+      ownBootstrapBuyTickCeiling: 4_018n
+    })
+
+    const sells = result.bookOffers.filter(offer => !offer.buy)
+    expect(sells).toEqual([{ marketId, buy: false, tick: 4_019n }])
+    expect(result.tree.offers[0]?.maxAssets).toBe(30n)
+    expect(result.groups.map(group => group.rungIndexes)).toEqual([[0, 1], [0], [1]])
+  })
+
+  test('caps the bootstrap sell clearance at the minimum-rate tick', () => {
+    const result = buildLadderTree({
+      quote: quote('shared-rung'),
+      market,
+      maker,
+      ratifier,
+      now,
+      minimumRateBps: 450n,
+      maximumRateBps: 600n,
+      ownBootstrapBuyTickCeiling: 3_993n
+    })
+
+    const sells = result.bookOffers.filter(offer => !offer.buy)
+    expect(sells).toEqual([{ marketId, buy: false, tick: 3_993n }])
+  })
+
+  test('rejects a hard range too narrow to contain any aligned tick', () => {
     expect(() =>
       buildLadderTree({
         quote: quote('shared-rung'),
@@ -471,9 +237,9 @@ describe('buildLadderTree', () => {
         maker,
         ratifier,
         now,
-        minimumRateBps: 450n,
-        maximumRateBps: 600n
+        minimumRateBps: 500n,
+        maximumRateBps: 500n
       })
-    ).not.toThrow()
+    ).toThrow('Ladder adapter failed')
   })
 })

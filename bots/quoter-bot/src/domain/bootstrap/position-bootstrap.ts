@@ -1,6 +1,7 @@
 import type { Hex } from 'viem'
 
 import { isBytes32 } from '../bytes32'
+import { clampRateBps } from '../cross-book'
 import { BootstrapConfigurationError } from './bootstrap-configuration.error'
 
 const bigintMin = (left: bigint, right: bigint) => (left < right ? left : right)
@@ -177,8 +178,9 @@ export const decidePositionBootstrapTransition = ({
 /**
  * Computes the deterministic bootstrap action from current chain and Mempool truth.
  * @returns The exact observe, invalidate, rest, replace, or publish action for this snapshot.
- * @throws BootstrapConfigurationError when the static bootstrap configuration is invalid.
- * @remarks An out-of-range bootstrap buy rate is clamped to the configured maximum.
+ * @throws BootstrapConfigurationError when the static configuration itself is invalid.
+ * @remarks A premium-adjusted rate outside the hard range saturates at the nearest bound instead of
+ * failing, so a reference-rate excursion can never halt the strategy.
  */
 export const decidePositionBootstrap = ({
   config,
@@ -196,11 +198,11 @@ export const decidePositionBootstrap = ({
   })
   if (transition) return transition
 
-  const requestedRateBps = rate.rateBps + config.premiumBps
-  const offerRateBps =
-    requestedRateBps < config.minimumRateBps || requestedRateBps > config.maximumRateBps
-      ? config.maximumRateBps
-      : requestedRateBps
+  const requestedRateBps = clampRateBps(
+    rate.rateBps + config.premiumBps,
+    config.minimumRateBps,
+    config.maximumRateBps
+  )
 
   const assets = [
     config.offerSize,
@@ -224,7 +226,7 @@ export const decidePositionBootstrap = ({
   const offer: BootstrapOffer = {
     marketId: config.marketId,
     assets,
-    rateBps: offerRateBps,
+    rateBps: requestedRateBps,
     referenceObservationId: rate.observationId
   }
 

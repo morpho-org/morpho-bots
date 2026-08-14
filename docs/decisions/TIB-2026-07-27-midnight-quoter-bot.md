@@ -1,13 +1,22 @@
 # TIB-2026-07-27: Midnight ladder quoter-bot bot — v0
 
-| Field      | Value                |
-| ---------- | -------------------- |
-| **Status** | Proposed             |
-| **Date**   | 2026-07-27           |
-| **Author** | @devatom             |
-| **Scope**  | App: midnight-quoter |
+| Field             | Value                                                    |
+| ----------------- | -------------------------------------------------------- |
+| **Status**        | Proposed                                                 |
+| **Date**          | 2026-07-27                                               |
+| **Author**        | @devatom                                                 |
+| **Scope**         | App: midnight-quoter                                     |
+| **Superseded by** | TIB-2026-08-14-quoter-cross-book-clearance _(partially)_ |
 
 ---
+
+> **Partially superseded (2026-08-14).** Two edge-case postures below are no longer current: the
+> evidenced bootstrap/ladder overlap-netting design (§5 "Process 2 — bootstrap" and its
+> single-evidenced-overlap exemption in §7) and the never-clamp hard-bounds semantics (§4 "Bounds
+> and staleness", §9 row "Target or any rung outside bounds"). They are replaced by clearance
+> repricing, bound clamping, and same-tick rung merging — see
+> [TIB-2026-08-14-quoter-cross-book-clearance](./TIB-2026-08-14-quoter-cross-book-clearance.md).
+> Every other decision in this TIB remains in force.
 
 ## Context
 

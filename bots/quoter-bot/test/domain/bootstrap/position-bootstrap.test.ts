@@ -366,7 +366,7 @@ describe('decidePositionBootstrap', () => {
     ).toEqual({ kind: 'rest', offer: activeOffer })
   })
 
-  test('clamps a bootstrap buy below the configured range to the maximum rate', () => {
+  test('clamps a premium-adjusted requested rate onto the configured minimum', () => {
     expect(
       decidePositionBootstrap({
         ...parameters,
@@ -378,10 +378,10 @@ describe('decidePositionBootstrap', () => {
           premiumBps: -350n
         }
       })
-    ).toMatchObject({ kind: 'publish', offer: { rateBps: 800n } })
+    ).toMatchObject({ kind: 'publish', offer: { rateBps: 200n } })
   })
 
-  test('clamps a bootstrap buy above the configured range to the maximum rate', () => {
+  test('clamps a premium-adjusted requested rate onto the configured maximum', () => {
     expect(
       decidePositionBootstrap({
         ...parameters,
@@ -392,34 +392,34 @@ describe('decidePositionBootstrap', () => {
     ).toMatchObject({ kind: 'publish', offer: { rateBps: 800n } })
   })
 
-  test.each([100n, 900n])(
-    'keeps a zero-capacity position observational after clamping rate %p',
-    rateBps => {
-      const zeroCapacityPositions = [
-        { label: 'cash', values: { cashBalance: 0n } },
-        {
-          label: 'market exposure',
-          values: { marketExposure: parameters.config.maximumMarketExposure }
-        },
-        {
-          label: 'total exposure',
-          values: { totalExposure: parameters.config.maximumTotalExposure }
-        }
-      ] as const
-
-      for (const capacity of zeroCapacityPositions) {
-        expect(
-          decidePositionBootstrap({
-            ...parameters,
-            position: { ...parameters.position, credit: 0n, ...capacity.values },
-            rate: { mode: 'static', rateBps, observationId: `static:${rateBps}` },
-            config: { ...parameters.config, premiumBps: 0n }
-          }),
-          capacity.label
-        ).toEqual({ kind: 'observe', reason: 'no-capacity', assets: 0n })
+  test.each([
+    { label: 'below minimum', rateBps: 100n },
+    { label: 'above maximum', rateBps: 900n }
+  ])('keeps an out-of-bounds rate observational with zero capacity: $label', ({ rateBps }) => {
+    const zeroCapacityPositions = [
+      { label: 'cash', values: { cashBalance: 0n } },
+      {
+        label: 'market exposure',
+        values: { marketExposure: parameters.config.maximumMarketExposure }
+      },
+      {
+        label: 'total exposure',
+        values: { totalExposure: parameters.config.maximumTotalExposure }
       }
+    ] as const
+
+    for (const capacity of zeroCapacityPositions) {
+      expect(
+        decidePositionBootstrap({
+          ...parameters,
+          position: { ...parameters.position, credit: 0n, ...capacity.values },
+          rate: { mode: 'static', rateBps, observationId: `static:${rateBps}` },
+          config: { ...parameters.config, premiumBps: 0n }
+        }),
+        capacity.label
+      ).toEqual({ kind: 'observe', reason: 'no-capacity', assets: 0n })
     }
-  )
+  })
 
   test('keeps an in-bounds zero-capacity position observational', () => {
     expect(
@@ -480,14 +480,14 @@ describe('decidePositionBootstrap', () => {
     })
   })
 
-  test('clamps a premium-adjusted bootstrap buy below the minimum to the maximum', () => {
+  test('clamps a premium overshooting the reference rate onto the minimum', () => {
     expect(
       decidePositionBootstrap({
         ...parameters,
         position: { ...parameters.position, credit: 0n },
         config: { ...parameters.config, premiumBps: -501n }
       })
-    ).toMatchObject({ kind: 'publish', offer: { rateBps: 800n } })
+    ).toMatchObject({ kind: 'publish', offer: { rateBps: 200n } })
   })
 
   test('rejects a positive bootstrap premium', () => {

@@ -7,19 +7,17 @@ import type {
 } from '../../application/bootstrap/position-bootstrap-verbose'
 import type { BootstrapMakeService } from '../../application/bootstrap/position-bootstrap.service'
 import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
-import type { BootstrapOverlapBookOffer } from './bootstrap-overlap.utils'
+import type { BootstrapCrossBookOffer } from './bootstrap-cross-book.utils'
 import type { BootstrapActiveGroup } from './bootstrap-position.service'
 
 import { BootstrapOwnershipCleanupError } from '../../application/bootstrap/bootstrap-ownership-cleanup.error'
 import { operatorErrorName } from '../../application/operator-error-name.utils'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
+import { resolveBootstrapProspectiveOffer } from './bootstrap-cross-book.utils'
 import { BootstrapHardHaltError } from './bootstrap-hard-halt.error'
-import { resolveBootstrapProspectiveOffer } from './bootstrap-overlap.utils'
 import { bootstrapMarketGroupIds } from './bootstrap-spread.utils'
 
-const BPS_WAD = 100_000_000_000_000n
-
-type BootstrapBookOffer = BootstrapOverlapBookOffer & { continuousFeeCap?: bigint }
+type BootstrapBookOffer = BootstrapCrossBookOffer
 
 /** Protocol transport for confirmed Midnight publication and group invalidation. */
 interface BootstrapOfferTransport {
@@ -31,15 +29,8 @@ interface BootstrapOfferTransport {
   listOwnedGroupIds?(): Promise<readonly Hex[]>
   /** Lists the maker's current book for one market. @param marketId - Market being reconciled. @returns Every active offer needed for spread safety. */
   listBookOffers(marketId: Hex): Promise<readonly BootstrapBookOffer[]>
-  /** Projects a domain offer into its exact protocol tick. @param offer - Desired offer. @param exactTick - Existing owned sell tick required for an intentional overlap. @returns Prospective book offer. */
+  /** Projects a domain offer into its exact protocol tick. @param offer - Desired offer. @param exactTick - Exact tick overriding rate derivation during cross-book repricing. @returns Prospective book offer. */
   toProspectiveBookOffer(offer: BootstrapOffer, exactTick?: bigint): Promise<BootstrapBookOffer>
-  /** Projects an adjusted buy onto a bounded tick strictly below a crossing sell. @param offer - Nominally adjusted buy. @param maximumExclusiveTick - Crossing sell tick. @param minimumRateBps - Inclusive minimum effective APR. @param maximumRateBps - Inclusive maximum effective APR. @returns Safe prospective book offer with effective rate evidence. */
-  toBoundedProspectiveBookOffer?(
-    offer: BootstrapOffer,
-    maximumExclusiveTick: bigint,
-    minimumRateBps: bigint,
-    maximumRateBps: bigint
-  ): Promise<BootstrapBookOffer>
   /** Prepares one policy-checked publication without broadcasting it. @param offer - Desired offer. @returns Reserved group ID and a one-shot confirmed ratifier/publisher. */
   preparePublication(offer: BootstrapOffer): Promise<{
     groupId: Hex
@@ -62,6 +53,17 @@ interface BootstrapOfferTransport {
   /** Invalidates one active group onchain. @param group - Active group ID. @returns Completion after receipt confirmation. */
   invalidate(
     group: Hex,
+    onTransactionSubmitted?: BootstrapTransactionSubmittedObserver
+  ): Promise<Hex | void>
+  /**
+   * Invalidates every listed group in one native Midnight multicall.
+   * @param groups - Ordered distinct group IDs cancelled together.
+   * @param onTransactionSubmitted - Optional observer notified once after wallet submission.
+   * @returns The shared canonical transaction hash after receipt confirmation.
+   * @throws An adapter error when policy validation, submission, or receipt confirmation fails.
+   */
+  invalidateBatch(
+    groups: readonly Hex[],
     onTransactionSubmitted?: BootstrapTransactionSubmittedObserver
   ): Promise<Hex | void>
 }
@@ -135,60 +137,21 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
           minimumRateBps,
           maximumRateBps,
           toProspectiveBookOffer: (offer, exactTick) =>
-            this.transport.toProspectiveBookOffer(offer, exactTick),
-          ...(this.transport.toBoundedProspectiveBookOffer === undefined
-            ? {}
-            : {
-                toBoundedProspectiveBookOffer: (
-                  offer: BootstrapOffer,
-                  maximumExclusiveTick: bigint,
-                  minimumRate: bigint,
-                  maximumRate: bigint
-                ) =>
-                  this.transport.toBoundedProspectiveBookOffer!(
-                    offer,
-                    maximumExclusiveTick,
-                    minimumRate,
-                    maximumRate
-                  )
-              })
+            this.transport.toProspectiveBookOffer(offer, exactTick)
         })
         if (resolved) {
-          let cappedOffer =
+          const cappedOffer =
             parameters.maximumAssets !== undefined &&
             resolved.offer.assets > parameters.maximumAssets
               ? { ...resolved.offer, assets: parameters.maximumAssets }
               : resolved.offer
-          let publicationProspective = resolved.prospective
-          if (cappedOffer !== resolved.offer) {
-            if (
-              resolved.maximumExclusiveTick !== undefined &&
-              this.transport.toBoundedProspectiveBookOffer !== undefined
-            ) {
-              publicationProspective = await this.transport.toBoundedProspectiveBookOffer(
-                cappedOffer,
-                resolved.maximumExclusiveTick,
-                minimumRateBps,
-                maximumRateBps
-              )
-              if (
-                publicationProspective.effectiveAprWad === undefined ||
-                publicationProspective.effectiveRateBps === undefined ||
-                publicationProspective.effectiveAprWad < minimumRateBps * BPS_WAD ||
-                publicationProspective.effectiveAprWad > maximumRateBps * BPS_WAD
-              ) {
-                throw new BootstrapAdapterError('negative-spread')
-              }
-              cappedOffer = {
-                ...cappedOffer,
-                rateBps: publicationProspective.effectiveRateBps
-              }
-            } else {
-              publicationProspective = await this.transport.toProspectiveBookOffer(
-                cappedOffer,
-                resolved.prospective.tick
-              )
-            }
+          const publicationProspective =
+            cappedOffer === resolved.offer
+              ? resolved.prospective
+              : await this.transport.toProspectiveBookOffer(cappedOffer, resolved.prospective.tick)
+          const publicationRateBps = publicationProspective.effectiveRateBps ?? cappedOffer.rateBps
+          if (publicationRateBps < minimumRateBps || publicationRateBps > maximumRateBps) {
+            throw new BootstrapAdapterError('negative-spread')
           }
           resolvedOffer = cappedOffer
           retainedGroup = groups.find(
@@ -330,32 +293,17 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
         minimumRateBps: parameters.minimumRateBps,
         maximumRateBps: parameters.maximumRateBps,
         toProspectiveBookOffer: (offer, exactTick) =>
-          this.transport.toProspectiveBookOffer(offer, exactTick),
-        ...(this.transport.toBoundedProspectiveBookOffer === undefined
-          ? {}
-          : {
-              toBoundedProspectiveBookOffer: (
-                offer: BootstrapOffer,
-                maximumExclusiveTick: bigint,
-                minimumRate: bigint,
-                maximumRate: bigint
-              ) =>
-                this.transport.toBoundedProspectiveBookOffer!(
-                  offer,
-                  maximumExclusiveTick,
-                  minimumRate,
-                  maximumRate
-                )
-            })
+          this.transport.toProspectiveBookOffer(offer, exactTick)
       })
     )?.offer
   }
 
   /**
-   * Invalidates every currently re-derived strategy bootstrap group serially.
+   * Invalidates every currently re-derived strategy bootstrap group in one batch.
    * @param parameters - Stable strategy-wide halt reason.
    * @returns Confirmed cancellation transaction hashes in submission order.
-   * @throws When listing or invalidating any group fails.
+   * @throws When listing the groups or the batched cancellation fails.
+   * @remarks All groups still requiring cancellation share one native Midnight multicall.
    */
   hardHalt(parameters: {
     reason:
@@ -371,10 +319,11 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
 
   /**
    * Invalidates every explicitly owned bootstrap group during graceful shutdown.
-   * @param parameters - Optional observer notified as each cancellation receives its hash.
-   * @returns Confirmed cancellation transaction hashes in submission order.
-   * @throws `BootstrapHardHaltError` after all groups are attempted when any cancellation fails.
-   * @remarks Cleanup enters the same mutation queue as publication and normal reconciliation.
+   * @param parameters - Optional observer notified when the batched cancellation receives its hash.
+   * @returns The confirmed cancellation hash shared by every cancelled group.
+   * @throws `BootstrapHardHaltError` when the batched cancellation or ownership cleanup fails.
+   * @remarks Cleanup enters the same mutation queue as publication and normal reconciliation. All
+   * groups still requiring cancellation share one native Midnight multicall.
    */
   cleanup(
     parameters: {
@@ -391,28 +340,29 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
   private async invalidateOwnedGroups(
     onTransactionSubmitted?: BootstrapTransactionSubmittedObserver
   ): Promise<BootstrapMakeResult> {
-    const failures = []
     const submittedTransactions: BootstrapSubmittedTransaction[] = []
     const groupIds = new Set(
       this.transport.listOwnedGroupIds
         ? await this.transport.listOwnedGroupIds()
         : (await this.strategyGroups()).map(group => group.id)
     )
-    for (const groupId of groupIds) {
-      if (this.confirmedCanceledGroups.has(groupId)) continue
-      try {
-        const txHash = await this.transport.invalidate(
-          groupId,
-          this.safeObserver(onTransactionSubmitted)
-        )
-        if (txHash) submittedTransactions.push({ operation: 'cancel', txHash })
-        this.confirmedCanceledGroups.add(groupId)
-        await this.transport.forgetGroups?.([groupId])
-      } catch (error) {
-        failures.push({ groupId, errorName: operatorErrorName(error) })
-      }
+    const pendingGroupIds = [...groupIds].filter(
+      groupId => !this.confirmedCanceledGroups.has(groupId)
+    )
+    if (pendingGroupIds.length === 0) return { submittedTransactions }
+    try {
+      const txHash = await this.transport.invalidateBatch(
+        pendingGroupIds,
+        this.safeObserver(onTransactionSubmitted)
+      )
+      if (txHash) submittedTransactions.push({ operation: 'cancel', txHash })
+      for (const groupId of pendingGroupIds) this.confirmedCanceledGroups.add(groupId)
+      await this.transport.forgetGroups?.(pendingGroupIds)
+    } catch (error) {
+      throw new BootstrapHardHaltError(
+        pendingGroupIds.map(groupId => ({ groupId, errorName: operatorErrorName(error) }))
+      )
     }
-    if (failures.length > 0) throw new BootstrapHardHaltError(failures)
     return { submittedTransactions }
   }
 

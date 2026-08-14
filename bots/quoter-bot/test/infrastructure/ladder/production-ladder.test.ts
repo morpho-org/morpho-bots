@@ -1,5 +1,6 @@
 import type { Address, Hex } from 'viem'
 
+import { TickLib } from '@morpho-org/midnight-sdk'
 import { describe, expect, test } from 'vitest'
 
 import type { LadderQuoteSet } from '../../../src/domain/ladder/ladder'
@@ -12,7 +13,8 @@ import {
   cleanupRemovedLadderGroups,
   createProductionLadderAdapters,
   createRepeatableSingleFlight,
-  highestOwnedBootstrapBuyForMarket,
+  highestBootstrapBuyRateBps,
+  ownBootstrapBuyTickCeiling,
   publishLadderPublication
 } from '../../../src/infrastructure/ladder/production-ladder'
 
@@ -68,6 +70,59 @@ describe('calculateProductionLadderCapacities', () => {
       targetMarketCapacityAssets: 10n,
       maximumTotalCapacityAssets: 910n
     })
+  })
+})
+
+describe('highestBootstrapBuyRateBps', () => {
+  test('derives the rate of a live configured bootstrap group without persisted intent', () => {
+    const now = 1_000n
+    const maturity = now + 31_536_000n
+    const tick = 500n
+
+    expect(
+      highestBootstrapBuyRateBps({
+        groups: [
+          {
+            id: groupId,
+            consumed: 0n,
+            maxAssets: 100n,
+            marketId,
+            tick,
+            maturity,
+            continuousFeeCap: 0n,
+            offers: [{ marketId, maker, buy: true, tick, maturity, continuousFeeCap: 0n }]
+          }
+        ],
+        ownedGroupIds: [groupId],
+        persistedOffers: [],
+        pendingOffers: [],
+        marketId,
+        now
+      })
+    ).toBe(TickLib.tickToApr(tick, maturity - now) / (10n ** 18n / 10_000n))
+  })
+})
+
+describe('ownBootstrapBuyTickCeiling', () => {
+  test('selects the highest durably marked bootstrap-buy tick of the quoted market', () => {
+    expect(
+      ownBootstrapBuyTickCeiling(
+        [
+          { marketId, buy: true, tick: 90n, overlapOwner: 'bootstrap-buy' },
+          { marketId, buy: true, tick: 95n, overlapOwner: 'bootstrap-buy' },
+          { marketId, buy: true, tick: 120n },
+          { marketId: referenceMarketId, buy: true, tick: 130n, overlapOwner: 'bootstrap-buy' },
+          { marketId, buy: false, tick: 140n, overlapOwner: 'ladder-sell' }
+        ],
+        marketId
+      )
+    ).toBe(95n)
+  })
+
+  test('reports no ceiling without a marked own bootstrap buy', () => {
+    expect(
+      ownBootstrapBuyTickCeiling([{ marketId, buy: true, tick: 120n }], marketId)
+    ).toBeUndefined()
   })
 })
 
@@ -148,22 +203,6 @@ describe('cleanupRemovedLadderGroups', () => {
     expect(events).toEqual(['invalidate'])
     expect(tombstones).toEqual([groupId])
     expect(consumedReads).toBe(2)
-  })
-})
-
-describe('highestOwnedBootstrapBuyForMarket', () => {
-  test('ignores owned bootstrap buys from every other configured market', () => {
-    const otherMarketId: Hex = `0x${'99'.repeat(32)}`
-    const selected = highestOwnedBootstrapBuyForMarket(
-      [
-        { marketId: otherMarketId, buy: true, tick: 900n, overlapOwner: 'bootstrap-buy' as const },
-        { marketId, buy: true, tick: 100n, overlapOwner: 'bootstrap-buy' as const },
-        { marketId, buy: true, tick: 200n, overlapOwner: 'bootstrap-buy' as const }
-      ],
-      marketId
-    )
-
-    expect(selected).toMatchObject({ marketId, tick: 200n })
   })
 })
 
@@ -264,6 +303,7 @@ describe('publishLadderPublication', () => {
         for (const id of groupIds) retained.delete(id)
       },
       invalidate: async () => {},
+      invalidateBatch: async () => {},
       forgetGroups: async () => {}
     })
 
@@ -306,6 +346,7 @@ describe('publishLadderPublication', () => {
         for (const id of groupIds) retained.delete(id)
       },
       invalidate: async () => {},
+      invalidateBatch: async () => {},
       forgetGroups: async () => {}
     })
 

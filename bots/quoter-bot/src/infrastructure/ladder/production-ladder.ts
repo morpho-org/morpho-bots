@@ -22,12 +22,19 @@ import type {
   LadderTransactionSubmittedObserver
 } from '../../application/ladder/ladder-verbose'
 import type { ConfigService } from '../../config/config.service'
+import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
 import type { LadderQuoteSet } from '../../domain/ladder/ladder'
+import type { BootstrapRawGroup } from '../bootstrap/bootstrap-groups.utils'
+import type { OwnedOverlapBookOffer } from '../intentional-overlap.utils'
 import type { HistoricalBlockReader } from '../reference/blue-reference-reader.utils'
 import type { OwnedLadderPublication } from './ladder-group-ownership.utils'
 
 import { createBootstrapGroupOwnership } from '../bootstrap/bootstrap-group-ownership.utils'
-import { bootstrapBookOffers, readBootstrapGroups } from '../bootstrap/bootstrap-groups.utils'
+import {
+  bootstrapBookOffers,
+  readBootstrapGroups,
+  strategyBootstrapGroups
+} from '../bootstrap/bootstrap-groups.utils'
 import {
   legacyBootstrapOfferTickUpperBound,
   recoverLegacyBootstrapOfferTick
@@ -37,6 +44,8 @@ import {
   BlueBootstrapReferenceRateService,
   StrategyBootstrapReferenceRateService
 } from '../bootstrap/bootstrap-reference-rate.service'
+import { invalidateOffersBatch } from '../invalidation/batch-offer-invalidation.utils'
+import { OfferInvalidationAdapterError } from '../invalidation/offer-invalidation-adapter.error'
 import { createMakerAccount } from '../make/maker-account.utils'
 import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
 import { mapSelectedMarketItems } from '../selected-market-items.utils'
@@ -68,34 +77,45 @@ type ProductionLadderAdapters = {
 }
 
 const minimum = (left: bigint, right: bigint) => (left < right ? left : right)
-const BPS_WAD = 100_000_000_000_000n
+const BPS_WAD = 10n ** 18n / 10_000n
 
-type BootstrapBuyCandidate = {
-  marketId: Hex
-  buy: boolean
-  tick: bigint
-  overlapOwner?: 'bootstrap-buy'
-}
+type OwnedBootstrapOffer = BootstrapOffer & { groupId: Hex }
 
 /**
- * Selects the lowest-rate owned bootstrap buy for one exact ladder market.
- * @param offers - Complete potentially multi-market maker book.
- * @param marketId - Ladder market whose owned bootstrap buy may constrain sells.
- * @returns The matching owned bootstrap buy with the highest tick, or no candidate.
- * @remarks The market filter prevents unrelated bootstrap books from shifting or blocking a ladder.
+ * Finds the highest live own-bootstrap buy rate relevant to one ladder market.
+ * @param parameters - Indexed groups, durable ownership, persisted and pending intents, market, and block time.
+ * @returns The highest nominal or exact tick-derived annual rate, or `undefined` without a live own buy.
+ * @remarks Configured V0 groups may predate persisted offer intents, so their indexed tick and maturity
+ * are authoritative fallback evidence while the projection is live.
  */
-export const highestOwnedBootstrapBuyForMarket = <Offer extends BootstrapBuyCandidate>(
-  offers: readonly Offer[],
+export const highestBootstrapBuyRateBps = (parameters: {
+  groups: readonly BootstrapRawGroup[]
+  ownedGroupIds: readonly Hex[]
+  persistedOffers: readonly OwnedBootstrapOffer[]
+  pendingOffers: readonly OwnedBootstrapOffer[]
   marketId: Hex
-) =>
-  offers
-    .filter(
-      offer => offer.marketId === marketId && offer.buy && offer.overlapOwner === 'bootstrap-buy'
-    )
-    .reduce<Offer | undefined>(
-      (highest, offer) => (highest === undefined || offer.tick > highest.tick ? offer : highest),
-      undefined
-    )
+  now: bigint
+}) => {
+  const persistedByGroup = new Map(parameters.persistedOffers.map(offer => [offer.groupId, offer]))
+  const indexedRates = strategyBootstrapGroups(parameters.groups, parameters.ownedGroupIds)
+    .filter(group => group.marketId === parameters.marketId && group.maxAssets > group.consumed)
+    .flatMap(group => {
+      const persisted = persistedByGroup.get(group.id)
+      if (persisted?.marketId === parameters.marketId) return [persisted.rateBps]
+      if ((group.maturity as bigint) <= parameters.now) return []
+      return [
+        TickLib.tickToApr(group.tick as bigint, (group.maturity as bigint) - parameters.now) /
+          BPS_WAD
+      ]
+    })
+  const pendingRates = parameters.pendingOffers
+    .filter(offer => offer.marketId === parameters.marketId)
+    .map(offer => offer.rateBps)
+  return [...indexedRates, ...pendingRates].reduce<bigint | undefined>(
+    (highest, rateBps) => (highest === undefined || rateBps > highest ? rateBps : highest),
+    undefined
+  )
+}
 
 type ProductionLadderCapacityParameters = {
   marketId: Hex
@@ -188,6 +208,27 @@ const ownedLadderProspectiveOffers = (
     ...offer,
     ...(!offer.buy ? { overlapOwner: 'ladder-sell' as const } : {})
   }))
+
+const highestTick = (ticks: readonly bigint[]) =>
+  ticks.reduce<bigint | undefined>(
+    (highest, tick) => (highest === undefined || tick > highest ? tick : highest),
+    undefined
+  )
+
+/**
+ * Selects the highest live own bootstrap-buy tick that prospective ladder sells must clear.
+ * @param book - Complete selected-market book with durable bootstrap ownership marks attached.
+ * @param marketId - Canonical market being quoted.
+ * @returns The highest marked bootstrap-buy tick, or `undefined` without any live own bootstrap buy.
+ */
+export const ownBootstrapBuyTickCeiling = (book: readonly OwnedOverlapBookOffer[], marketId: Hex) =>
+  highestTick(
+    book
+      .filter(
+        offer => offer.marketId === marketId && offer.buy && offer.overlapOwner === 'bootstrap-buy'
+      )
+      .map(offer => offer.tick)
+  )
 
 const notifySubmitted = async (
   observer: LadderTransactionSubmittedObserver | undefined,
@@ -373,15 +414,27 @@ export const createProductionLadderAdapters = (
         .filter(position => position.marketId !== marketId)
         .reduce((sum, position) => sum + position.credit, 0n)
 
-      return calculateProductionLadderCapacities({
+      const bootstrapBuyRateBps = highestBootstrapBuyRateBps({
+        groups,
+        ownedGroupIds: bootstrapGroupIds,
+        persistedOffers: persistedBootstrapOffers,
+        pendingOffers: pendingBootstrapOffers,
         marketId,
-        balance: minimum(cashBalance, allowance),
-        currentCredit: selectedPosition.credit,
-        otherMarketCredit,
-        targetMarketExposureAssets: selectedConfig.targetMarketExposureAssets,
-        maximumTotalExposureAssets: selectedConfig.maximumTotalExposureAssets,
-        reservations
+        now: block.timestamp
       })
+
+      return {
+        ...calculateProductionLadderCapacities({
+          marketId,
+          balance: minimum(cashBalance, allowance),
+          currentCredit: selectedPosition.credit,
+          otherMarketCredit,
+          targetMarketExposureAssets: selectedConfig.targetMarketExposureAssets,
+          maximumTotalExposureAssets: selectedConfig.maximumTotalExposureAssets,
+          reservations
+        }),
+        ...(bootstrapBuyRateBps === undefined ? {} : { bootstrapBuyRateBps })
+      }
     }
   }
 
@@ -488,19 +541,18 @@ export const createProductionLadderAdapters = (
       .find(quote => quote !== undefined)
   }
 
-  const prepareUnsignedPublication = async (quote: LadderQuoteSet) => {
+  const prepareUnsignedPublication = async (
+    quote: LadderQuoteSet,
+    bookState?: Awaited<ReturnType<typeof completeBookOffers>>
+  ) => {
     const selectedConfig = config.ladder.find(item => item.marketId === quote.marketId)
     if (!selectedConfig) throw new LadderAdapterError('market-not-configured')
-    const [market, block, bookState] = await Promise.all([
+    const [state, market, block] = await Promise.all([
+      bookState ?? completeBookOffers(quote.marketId),
       midnight.getMarketData(quote.marketId),
-      client.getBlock({ blockTag: 'latest' }),
-      completeBookOffers(quote.marketId)
+      client.getBlock({ blockTag: 'latest' })
     ])
-    const bootstrapBuy = highestOwnedBootstrapBuyForMarket(bookState.book, quote.marketId)
-    const bootstrapBuyRateBps =
-      bootstrapBuy === undefined
-        ? undefined
-        : TickLib.tickToApr(bootstrapBuy.tick, market.params.maturity - block.timestamp) / BPS_WAD
+    const bootstrapTickCeiling = ownBootstrapBuyTickCeiling(state.book, quote.marketId)
     const prepared = buildLadderTree({
       quote,
       market,
@@ -509,12 +561,9 @@ export const createProductionLadderAdapters = (
       now: block.timestamp,
       minimumRateBps: selectedConfig.minimumRateBps,
       maximumRateBps: selectedConfig.maximumRateBps,
-      ...(bootstrapBuy === undefined || bootstrapBuyRateBps === undefined
+      ...(bootstrapTickCeiling === undefined
         ? {}
-        : {
-            bootstrapBuyTick: bootstrapBuy.tick,
-            bootstrapBuyRateBps
-          })
+        : { ownBootstrapBuyTickCeiling: bootstrapTickCeiling })
     })
     await prepared.tree.mempoolValidate({
       chainId: base.id,
@@ -525,11 +574,11 @@ export const createProductionLadderAdapters = (
 
   const validateReconcile: ProductionLadderAdapters['validateReconcile'] = async parameters => {
     if (parameters.reason === 'rest' || !parameters.desired) return
-    const prepared = await prepareUnsignedPublication(parameters.desired)
     const [bookState, publications] = await Promise.all([
       completeBookOffers(parameters.marketId),
       ladderOwnership.read()
     ])
+    const prepared = await prepareUnsignedPublication(parameters.desired, bookState)
     assertLadderProspectiveSpread({
       marketId: parameters.marketId,
       replacedGroupIds: new Set(
@@ -613,7 +662,6 @@ export const createProductionLadderAdapters = (
       })
       const groupIds = [...new Set(prepared.groups.map(group => group.groupId))]
       return {
-        quote: prepared.quote,
         groupIds,
         groups: prepared.groups,
         prospective: ownedLadderProspectiveOffers(prepared.bookOffers),
@@ -688,6 +736,23 @@ export const createProductionLadderAdapters = (
       })
       if (receipt.status !== 'success') throw new LadderAdapterError('transaction-reverted')
       return hash
+    },
+    invalidateBatch: async (groupIds, onTransactionSubmitted) => {
+      try {
+        return await invalidateOffersBatch({
+          wallet,
+          midnight: config.setup.midnight,
+          maker,
+          groupIds,
+          receiptTimeoutMs: config.transactionReceiptTimeoutMs,
+          onTransactionSubmitted: hash => notifySubmitted(onTransactionSubmitted, 'cancel', hash)
+        })
+      } catch (error) {
+        if (error instanceof OfferInvalidationAdapterError) {
+          throw new LadderAdapterError(error.operation)
+        }
+        throw error
+      }
     },
     forgetGroups: ladderOwnership.forget
   }
