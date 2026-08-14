@@ -75,7 +75,10 @@ type PendingLadderReconstructionParameters = Omit<
   'minimumRateBps' | 'maximumRateBps' | 'ownBootstrapBuyTickCeiling'
 >
 
-/** Rebuilds already-published pending ladder offers without prospective clearance or current bounds. */
+/**
+ * Rebuilds already-published pending ladder offers without prospective clearance or current bounds.
+ * @remarks The quote set records what was submitted, so changing its ticks would hide real crossings.
+ */
 export const reconstructPendingLadderBookOffers = (
   parameters: PendingLadderReconstructionParameters
 ) => buildLadderTree(parameters).bookOffers
