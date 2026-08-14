@@ -285,7 +285,7 @@ describe('Railway CLI output parsing', () => {
     expect(push).toBeLessThan(recoverLatest)
   })
 
-  test('publishes latest only after the quoter bot deploy succeeds', () => {
+  test('publishes latest only after the quoter bot deploy and release succeed', () => {
     const deployWorkflow = readFileSync(
       new URL('../../../../.github/workflows/deploy-production.yml', import.meta.url),
       'utf8'
@@ -299,7 +299,7 @@ describe('Railway CLI output parsing', () => {
       deployWorkflow.indexOf('  Release-blue:')
     )
 
-    expect(imageJob).toContain('needs: [Select, Quoter-bot]')
+    expect(imageJob).toContain('needs: [Select, Quoter-bot, Release-quoter-bot]')
     expect(imageJob).toContain("if: ${{ needs.Select.outputs.quoter_bot == 'true' }}")
     // Ancestry against release tags needs full history in the checkout.
     expect(publishWorkflow).toContain('fetch-depth: 0')

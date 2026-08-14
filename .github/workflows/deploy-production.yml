@@ -111,9 +111,9 @@ jobs:
       ref: ${{ github.sha }}
 
   Quoter-bot-image:
-    # Wait for a successful deploy before publishing either release image tag. Release-quoter-bot
-    # still depends only on Quoter-bot, so Docker Hub availability cannot block the GitHub release.
-    needs: [Select, Quoter-bot]
+    # Wait for both the successful deploy and its GitHub release tag before publishing image tags.
+    # Release-quoter-bot still depends only on Quoter-bot, so Docker Hub cannot block the release.
+    needs: [Select, Quoter-bot, Release-quoter-bot]
     if: ${{ needs.Select.outputs.quoter_bot == 'true' }}
     # A called workflow can never hold more permissions than its caller job grants, so the OIDC
     # token minting (id-token) the Docker Hub login needs must be granted here too.
