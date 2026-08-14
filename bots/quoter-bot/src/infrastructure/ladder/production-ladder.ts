@@ -1,4 +1,4 @@
-import { MAX_TICK, midnightAbi, Payload } from '@morpho-org/midnight-sdk'
+import { MAX_TICK, midnightAbi, Payload, TickLib } from '@morpho-org/midnight-sdk'
 import { morphoViemExtension } from '@morpho-org/morpho-sdk'
 import { getChainAddress } from '@morpho-org/morpho-ts'
 import {
@@ -22,7 +22,9 @@ import type {
   LadderTransactionSubmittedObserver
 } from '../../application/ladder/ladder-verbose'
 import type { ConfigService } from '../../config/config.service'
+import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
 import type { LadderQuoteSet } from '../../domain/ladder/ladder'
+import type { BootstrapRawGroup } from '../bootstrap/bootstrap-groups.utils'
 import type { OwnedOverlapBookOffer } from '../intentional-overlap.utils'
 import type { HistoricalBlockReader } from '../reference/blue-reference-reader.utils'
 import type { OwnedLadderPublication } from './ladder-group-ownership.utils'
@@ -75,6 +77,45 @@ type ProductionLadderAdapters = {
 }
 
 const minimum = (left: bigint, right: bigint) => (left < right ? left : right)
+const BPS_WAD = 10n ** 18n / 10_000n
+
+type OwnedBootstrapOffer = BootstrapOffer & { groupId: Hex }
+
+/**
+ * Finds the highest live own-bootstrap buy rate relevant to one ladder market.
+ * @param parameters - Indexed groups, durable ownership, persisted and pending intents, market, and block time.
+ * @returns The highest nominal or exact tick-derived annual rate, or `undefined` without a live own buy.
+ * @remarks Configured V0 groups may predate persisted offer intents, so their indexed tick and maturity
+ * are authoritative fallback evidence while the projection is live.
+ */
+export const highestBootstrapBuyRateBps = (parameters: {
+  groups: readonly BootstrapRawGroup[]
+  ownedGroupIds: readonly Hex[]
+  persistedOffers: readonly OwnedBootstrapOffer[]
+  pendingOffers: readonly OwnedBootstrapOffer[]
+  marketId: Hex
+  now: bigint
+}) => {
+  const persistedByGroup = new Map(parameters.persistedOffers.map(offer => [offer.groupId, offer]))
+  const indexedRates = strategyBootstrapGroups(parameters.groups, parameters.ownedGroupIds)
+    .filter(group => group.marketId === parameters.marketId && group.maxAssets > group.consumed)
+    .flatMap(group => {
+      const persisted = persistedByGroup.get(group.id)
+      if (persisted?.marketId === parameters.marketId) return [persisted.rateBps]
+      if ((group.maturity as bigint) <= parameters.now) return []
+      return [
+        TickLib.tickToApr(group.tick as bigint, (group.maturity as bigint) - parameters.now) /
+          BPS_WAD
+      ]
+    })
+  const pendingRates = parameters.pendingOffers
+    .filter(offer => offer.marketId === parameters.marketId)
+    .map(offer => offer.rateBps)
+  return [...indexedRates, ...pendingRates].reduce<bigint | undefined>(
+    (highest, rateBps) => (highest === undefined || rateBps > highest ? rateBps : highest),
+    undefined
+  )
+}
 
 type ProductionLadderCapacityParameters = {
   marketId: Hex
@@ -373,23 +414,14 @@ export const createProductionLadderAdapters = (
         .filter(position => position.marketId !== marketId)
         .reduce((sum, position) => sum + position.credit, 0n)
 
-      const liveIndexedBootstrapGroupIds = new Set(
-        strategyBootstrapGroups(groups, bootstrapGroupIds)
-          .filter(group => group.marketId === marketId && group.maxAssets > group.consumed)
-          .map(group => group.id)
-      )
-      const bootstrapBuyRateBps = [
-        ...persistedBootstrapOffers.filter(offer =>
-          liveIndexedBootstrapGroupIds.has(offer.groupId)
-        ),
-        ...pendingBootstrapOffers
-      ]
-        .filter(offer => offer.marketId === marketId)
-        .reduce<bigint | undefined>(
-          (highest, offer) =>
-            highest === undefined || offer.rateBps > highest ? offer.rateBps : highest,
-          undefined
-        )
+      const bootstrapBuyRateBps = highestBootstrapBuyRateBps({
+        groups,
+        ownedGroupIds: bootstrapGroupIds,
+        persistedOffers: persistedBootstrapOffers,
+        pendingOffers: pendingBootstrapOffers,
+        marketId,
+        now: block.timestamp
+      })
 
       return {
         ...calculateProductionLadderCapacities({

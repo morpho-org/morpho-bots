@@ -1,5 +1,6 @@
 import type { Address, Hex } from 'viem'
 
+import { TickLib } from '@morpho-org/midnight-sdk'
 import { describe, expect, test } from 'vitest'
 
 import type { LadderQuoteSet } from '../../../src/domain/ladder/ladder'
@@ -12,6 +13,7 @@ import {
   cleanupRemovedLadderGroups,
   createProductionLadderAdapters,
   createRepeatableSingleFlight,
+  highestBootstrapBuyRateBps,
   ownBootstrapBuyTickCeiling,
   publishLadderPublication
 } from '../../../src/infrastructure/ladder/production-ladder'
@@ -68,6 +70,36 @@ describe('calculateProductionLadderCapacities', () => {
       targetMarketCapacityAssets: 10n,
       maximumTotalCapacityAssets: 910n
     })
+  })
+})
+
+describe('highestBootstrapBuyRateBps', () => {
+  test('derives the rate of a live configured bootstrap group without persisted intent', () => {
+    const now = 1_000n
+    const maturity = now + 31_536_000n
+    const tick = 500n
+
+    expect(
+      highestBootstrapBuyRateBps({
+        groups: [
+          {
+            id: groupId,
+            consumed: 0n,
+            maxAssets: 100n,
+            marketId,
+            tick,
+            maturity,
+            continuousFeeCap: 0n,
+            offers: [{ marketId, maker, buy: true, tick, maturity, continuousFeeCap: 0n }]
+          }
+        ],
+        ownedGroupIds: [groupId],
+        persistedOffers: [],
+        pendingOffers: [],
+        marketId,
+        now
+      })
+    ).toBe(TickLib.tickToApr(tick, maturity - now) / (10n ** 18n / 10_000n))
   })
 })
 
