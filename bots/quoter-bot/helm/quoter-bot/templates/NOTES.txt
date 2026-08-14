@@ -2,7 +2,7 @@ quoter-bot deployed as {{ include "quoter-bot.fullname" . }} ({{ include "quoter
 
 {{- if and .Values.config (not .Values.existingConfigSecret) }}
 Configuration: chart-managed Secret {{ include "quoter-bot.configSecretName" . }}, mounted at
-/config/quoter-bot.yaml. Upgrades that change `config` roll the pod automatically.
+/repo/bots/quoter-bot/quoter-bot.yaml. Upgrades that change `config` roll the pod automatically.
 {{- else if .Values.existingConfigSecret }}
 Configuration: existing Secret {{ .Values.existingConfigSecret }} (key quoter-bot.yaml). The
 file is read once at startup; after editing the Secret, restart with:

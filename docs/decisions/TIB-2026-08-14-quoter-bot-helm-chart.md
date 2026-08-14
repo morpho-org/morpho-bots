@@ -67,7 +67,8 @@ constraint:
 **Configuration passthrough.** A single `config` values mapping mirrors the bot's native YAML
 schema — the same `chain`/`identity`/`contracts`/`apis`/`markets`/`setup`/`bootstrap`/`ladder`
 keys as `quoter-bot.example.yaml` — and is rendered verbatim (`toYaml`) into a chart-managed
-Secret, mounted and passed via the CLI root flag `--config /config/quoter-bot.yaml`. One values
+Secret, mounted and passed via the CLI root flag
+`--config /repo/bots/quoter-bot/quoter-bot.yaml`. One values
 file fully describes a deployment, and the bot's startup validation remains the only schema
 authority. It is a Secret, not a ConfigMap, because `identity` may carry signing material.
 
@@ -92,16 +93,17 @@ env-injected private key resolving to signing method `private-key`.
 **Non-root instead of the Railway entrypoint.** The image CMD
 (`scripts/railway-entrypoint.sh`) must start as root — it `chown -R`s `/state`, then `setpriv`s
 to `node`. The chart bypasses it and runs `node /repo/bots/quoter-bot/dist/src/index.js` directly
-as the image's `node` user (uid/gid 1000), with `podSecurityContext.fsGroup: 1000`
-(`fsGroupChangePolicy: OnRootMismatch`) making the state volume writable. This matters because
+as the image's `node` user (uid/gid 1000). A chown-only root init container makes the state
+volume writable without asking kubelet to apply `fsGroup` permission changes. This matters because
 the ownership-state readers (`src/infrastructure/bootstrap/bootstrap-group-ownership.utils.ts`,
 `src/infrastructure/ladder/ladder-group-ownership.utils.ts`) reject state files not owned by the
 process uid or carrying mode bits beyond `0600`, so a consistent non-root uid is required across
 restarts. Hardened defaults: `runAsNonRoot`, seccomp `RuntimeDefault`,
 `allowPrivilegeEscalation: false`, all capabilities dropped, `readOnlyRootFilesystem` with an
 emptyDir `/tmp`, and `automountServiceAccountToken: false` (the bot never talks to the
-Kubernetes API). An optional `volumePermissions` root init container — reusing the bot image's
-`/usr/bin/chown` — mirrors the Railway entrypoint for storage drivers that ignore `fsGroup`.
+Kubernetes API). The `volumePermissions` init container reuses the bot image's `/usr/bin/chown`
+and is enabled by default. It changes ownership but not mode bits, preserving secure restored
+state files that would be rejected if `fsGroup` handling added group access.
 
 **Singleton semantics.** The Deployment hardcodes `replicas: 1` with `strategy: Recreate`. The
 nonce cursor, serialized mutation queue, and durable offer-group ownership state are
@@ -158,9 +160,9 @@ verbatim configuration passthrough.
 Keep the image CMD (`railway-entrypoint.sh`) and let it chown the volume before dropping
 privileges.
 
-**Why rejected:** requires starting the container as root. `fsGroup` achieves the same volume
-ownership without any root execution in the default path; the optional `volumePermissions` init
-container covers the storage drivers that need the chown.
+**Why rejected:** requires starting the long-lived container as root. The short-lived
+`volumePermissions` init container performs only the required chown before the hardened runtime
+container starts, without changing restored state-file modes.
 
 ## Assumptions & Constraints
 
@@ -168,7 +170,7 @@ container covers the storage drivers that need the chown.
   `/repo/bots/quoter-bot/dist/src/index.js`, the `node` user at uid/gid 1000, and `/usr/bin/chown`
   for the optional init container. A Dockerfile restructure must update the chart in the same
   change.
-- The storage driver honors `fsGroup` — otherwise `volumePermissions.enabled` must be set.
+- The image contains `/usr/bin/chown` for the default `volumePermissions` init container.
 - Large integers in `config` (asset amounts, wei values, bytes32 IDs) must be quoted as YAML
   strings, exactly like `quoter-bot.example.yaml`: Helm parses unquoted numbers as floats and can
   re-render `10000000000000000` as `1e+16`, which the bot rejects at startup.
@@ -183,8 +185,8 @@ container covers the storage drivers that need the chown.
   it came from; `existingConfigSecret` keeps the file out of Helm entirely, and the env-injected
   signer keeps the key out of both the values and the rendered Secret.
 - Default pod posture: non-root uid 1000, seccomp `RuntimeDefault`, no privilege escalation, all
-  capabilities dropped, read-only root filesystem, no service-account token. The optional
-  `volumePermissions` init container is the only root surface and is off by default.
+  capabilities dropped, read-only root filesystem, no service-account token. The chown-only
+  `volumePermissions` init container is the only root surface and exits before the bot starts.
 
 ## Observability
 

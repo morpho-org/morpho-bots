@@ -20,8 +20,8 @@ fullnameOverride: ''
 
 # Entrypoint for the bot process. The chart deliberately bypasses the image's
 # railway-entrypoint.sh (which requires starting as root to chown the Railway volume) and runs
-# the bundle directly as the image's unprivileged `node` user; volume ownership is handled by
-# `podSecurityContext.fsGroup` instead.
+# the bundle directly as the image's unprivileged `node` user; the init container below handles
+# volume ownership without changing the strict modes of restored state files.
 command:
   - node
   - /repo/bots/quoter-bot/dist/src/index.js
@@ -136,20 +136,18 @@ persistence:
   # reinstall under the same release name and namespace re-adopts it.
   retain: true
 
-# Optional root init container that chowns the state volume to the runtime user, mirroring the
-# image's railway-entrypoint.sh. Only needed on storage drivers that ignore
-# `podSecurityContext.fsGroup` (for example some NFS provisioners).
+# Root init container that chowns the state volume to the runtime user, mirroring the image's
+# railway-entrypoint.sh. This is deliberately chown-only: Kubernetes fsGroup handling can add
+# group permission bits to restored state files, which the bot correctly rejects as insecure.
 volumePermissions:
-  enabled: false
+  enabled: true
 
-# The image runs as the bundled unprivileged `node` user (uid/gid 1000); fsGroup makes the
-# state volume writable without root.
+# The runtime container runs as the bundled unprivileged `node` user (uid/gid 1000). Do not add
+# fsGroup here: kubelet may chmod restored ownership-state files beyond their required 0600 mode.
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 1000
   runAsGroup: 1000
-  fsGroup: 1000
-  fsGroupChangePolicy: OnRootMismatch
   seccompProfile:
     type: RuntimeDefault
 
