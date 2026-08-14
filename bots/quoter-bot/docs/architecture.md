@@ -1,8 +1,9 @@
 # Quoter bot architecture
 
 This document describes the package structure and implementation boundaries for contributors. For
-installation, configuration, strategy behavior, commands, and operational safety, see the
-[operator README](../README.md).
+installation, configuration, and strategy behavior, see the [README](../README.md); for the complete
+command, deployment, and operational-safety reference, see the
+[operations reference](./reference.md).
 
 The implementation follows the quoter design from
 [TIB-2026-07-27](../../../docs/decisions/TIB-2026-07-27-midnight-quoter-bot.md) and the

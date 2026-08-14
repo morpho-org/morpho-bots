@@ -21,7 +21,7 @@ describe('quoter-bot container release artifacts', () => {
   })
 
   test('documents repo-root manual releases from the bot package version and commit', () => {
-    const readme = readFileSync(resolve(packageRoot, 'README.md'), 'utf8')
+    const readme = readFileSync(resolve(packageRoot, 'docs/reference.md'), 'utf8')
 
     expect(readme).toContain(
       `gh release create "quoter-bot-$(node -p "require('./bots/quoter-bot/package.json').version")" --target "$(git rev-parse HEAD)" --generate-notes`
@@ -29,7 +29,7 @@ describe('quoter-bot container release artifacts', () => {
   })
 
   test('documents the quoter-bot release tag environment policy', () => {
-    const readme = readFileSync(resolve(packageRoot, 'README.md'), 'utf8')
+    const readme = readFileSync(resolve(packageRoot, 'docs/reference.md'), 'utf8')
 
     expect(readme).toContain('tags matching `quoter-bot-*`')
     expect(readme).not.toContain('tags matching `market-making-*`')
@@ -58,7 +58,10 @@ describe('quoter-bot container release artifacts', () => {
   })
 
   test('documents that only the highest stable release moves latest', () => {
-    const readme = readFileSync(resolve(packageRoot, 'README.md'), 'utf8').replace(/\s+/g, ' ')
+    const readme = readFileSync(resolve(packageRoot, 'docs/reference.md'), 'utf8').replace(
+      /\s+/g,
+      ' '
+    )
 
     expect(readme).toContain(
       '`latest` (moved only when the release is the highest stable CalVer version)'
@@ -67,7 +70,10 @@ describe('quoter-bot container release artifacts', () => {
   })
 
   test('documents shared state for read-only deployment inspections', () => {
-    const readme = readFileSync(resolve(packageRoot, 'README.md'), 'utf8').replace(/\s+/g, ' ')
+    const readme = readFileSync(resolve(packageRoot, 'docs/reference.md'), 'utf8').replace(
+      /\s+/g,
+      ' '
+    )
 
     expect(readme).toContain(
       'Read-only inspections of an existing deployment should mount the same `/state` volume'
@@ -76,7 +82,7 @@ describe('quoter-bot container release artifacts', () => {
   })
 
   test('keeps the complete operator configuration reference', () => {
-    const readme = readFileSync(resolve(packageRoot, 'README.md'), 'utf8')
+    const readme = readFileSync(resolve(packageRoot, 'docs/reference.md'), 'utf8')
 
     expect(readme).not.toContain('[OUTPUT TRUNCATED')
     expect(readme).toContain('### Environment variables')
@@ -220,7 +226,7 @@ describe('quoter-bot container release artifacts', () => {
   })
 
   test('gives detached docker runs the full graceful shutdown window', () => {
-    const readme = readFileSync(resolve(packageRoot, 'README.md'), 'utf8')
+    const readme = readFileSync(resolve(packageRoot, 'docs/reference.md'), 'utf8')
     const detachedRun = readme.slice(
       readme.indexOf('docker run --pull always'),
       readme.indexOf('\n```', readme.indexOf('docker run --pull always'))

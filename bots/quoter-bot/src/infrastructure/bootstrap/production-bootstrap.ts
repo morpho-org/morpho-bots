@@ -27,6 +27,8 @@ import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
 import type { HistoricalBlockReader } from '../reference/blue-reference-reader.utils'
 import type { BootstrapActiveGroup, BootstrapInventoryReader } from './bootstrap-position.service'
 
+import { invalidateOffersBatch } from '../invalidation/batch-offer-invalidation.utils'
+import { OfferInvalidationAdapterError } from '../invalidation/offer-invalidation-adapter.error'
 import { pendingLadderQuoteSets } from '../ladder/ladder-active-publication.utils'
 import { readLadderBookOffers } from '../ladder/ladder-book.utils'
 import { pendingLadderBuyReservations } from '../ladder/ladder-cash-reservation.utils'
@@ -37,9 +39,11 @@ import { ReadOnlyBootstrapMakeService } from '../make/read-only-bootstrap-make.s
 import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
 import { mapSelectedMarketItems } from '../selected-market-items.utils'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
+import { resolveBootstrapProspectiveOffer } from './bootstrap-cross-book.utils'
 import { bootstrapExposureMarketIds } from './bootstrap-exposure.utils'
 import { createBootstrapGroupOwnership } from './bootstrap-group-ownership.utils'
 import {
+  bootstrapBookOffers,
   bootstrapReservedLoanAssets,
   readBootstrapGroups,
   strategyBootstrapGroups
@@ -50,10 +54,6 @@ import {
   validateBootstrapMempoolPublication
 } from './bootstrap-mempool-validation.utils'
 import { bootstrapContinuousFeeCap, createBootstrapOffer } from './bootstrap-offer.utils'
-import {
-  bootstrapLadderSellOverlapBookOffers,
-  resolveBootstrapProspectiveOffer
-} from './bootstrap-overlap.utils'
 import {
   readLivePendingBootstrapOffers,
   readOwnedGroupIdsForCleanup
@@ -235,20 +235,31 @@ export const createProductionBootstrapAdapters = (
       morphoApiBaseUrl: config.morphoApiBaseUrl,
       requestTimeoutMs: config.requestTimeoutMs
     })
+  const bootstrapRateBounds = (marketId: Hex) =>
+    config.bootstrap.find(item => item.marketId === marketId)
   const prepareOfferAtLatest = async (offer: BootstrapOffer, exactTick?: bigint) => {
     const [market, block] = await Promise.all([
       midnight.getMarketData(offer.marketId),
       client.getBlock({ blockTag: 'latest' })
     ])
+    const bounds = bootstrapRateBounds(offer.marketId)
     const created = createBootstrapOffer({
       offer,
       market,
       maker,
       ratifier: config.setup.ratifier,
       now: block.timestamp,
-      exactTick
+      exactTick,
+      ...(bounds === undefined
+        ? {}
+        : { minimumRateBps: bounds.minimumRateBps, maximumRateBps: bounds.maximumRateBps })
     })
-    return { created, timestamp: block.timestamp, maturity: market.params.maturity }
+    return {
+      created,
+      timestamp: block.timestamp,
+      maturity: market.params.maturity,
+      tickSpacing: BigInt(market.tickSpacing)
+    }
   }
   const readGroupConsumed = (groupId: Hex, blockNumber: bigint) =>
     client.readContract({
@@ -437,8 +448,7 @@ export const createProductionBootstrapAdapters = (
     blueRates
   )
   const completeBookOffers = async (marketId: Hex) => {
-    const [block, groups, ladderPublications, wholeBook] = await Promise.all([
-      client.getBlock({ blockTag: 'latest' }),
+    const [groups, ladderPublications, wholeBook, ownedBootstrapIds] = await Promise.all([
       readGroups(),
       readLadderPublications(),
       readLadderBookOffers({
@@ -446,13 +456,24 @@ export const createProductionBootstrapAdapters = (
         marketIds: [marketId],
         timeoutMs: config.requestTimeoutMs,
         ignoredOfferGroupIds
-      })
+      }),
+      ownership.read()
     ])
+    const liveBootstrapTickCeiling = strategyBootstrapGroups(groups, ownedBootstrapIds)
+      .filter(group => group.marketId === marketId && group.maxAssets > group.consumed)
+      .reduce<bigint | undefined>(
+        (highest, group) =>
+          group.tick !== undefined && (highest === undefined || group.tick > highest)
+            ? group.tick
+            : highest,
+        undefined
+      )
     const pendingLadderOffers = (
       await mapSelectedMarketItems(
         marketId,
         pendingLadderQuoteSets(ladderPublications, groups),
         async quote => {
+          const ladderBounds = config.ladder.find(item => item.marketId === quote.marketId)
           const [market, block] = await Promise.all([
             midnight.getMarketData(quote.marketId),
             client.getBlock({ blockTag: 'latest' })
@@ -462,31 +483,31 @@ export const createProductionBootstrapAdapters = (
             market,
             maker,
             ratifier: config.setup.ratifier,
-            now: block.timestamp
+            now: block.timestamp,
+            ...(ladderBounds === undefined
+              ? {}
+              : {
+                  minimumRateBps: ladderBounds.minimumRateBps,
+                  maximumRateBps: ladderBounds.maximumRateBps
+                }),
+            ...(liveBootstrapTickCeiling === undefined
+              ? {}
+              : { ownBootstrapBuyTickCeiling: liveBootstrapTickCeiling })
           }).bookOffers
         }
       )
     ).flat()
-    const enrichedBook = bootstrapLadderSellOverlapBookOffers({
-      groups,
-      eligibleSellGroupIds: new Set(
-        ladderPublications.flatMap(publication =>
-          publication.groups.filter(group => group.side === 'lower').map(group => group.groupId)
-        )
-      ),
-      currentTimestamp: block.timestamp,
-      pendingLadderOffers
-    })
+    const indexedOffers = bootstrapBookOffers(groups)
     const key = (offer: { groupId?: Hex; marketId: Hex; buy: boolean; tick: bigint }) =>
       `${offer.groupId ?? ''}:${offer.marketId}:${offer.buy ? 'buy' : 'sell'}:${offer.tick}`
-    const enrichedByKey = new Map(enrichedBook.map(offer => [key(offer), offer] as const))
     const wholeBookKeys = new Set(wholeBook.map(key))
     return {
       groups,
       ladderPublications,
       book: [
-        ...wholeBook.map(offer => ({ ...offer, ...enrichedByKey.get(key(offer)) })),
-        ...enrichedBook.filter(offer => !wholeBookKeys.has(key(offer)))
+        ...wholeBook,
+        ...indexedOffers.filter(offer => !wholeBookKeys.has(key(offer))),
+        ...pendingLadderOffers
       ]
     }
   }
@@ -548,6 +569,7 @@ export const createProductionBootstrapAdapters = (
             buy: true,
             tick: created.tick,
             continuousFeeCap: created.continuousFeeCap,
+            tickSpacing: prepared.tickSpacing,
             ...(exactTick === undefined
               ? {}
               : {
@@ -645,7 +667,7 @@ export const createProductionBootstrapAdapters = (
     return hash
   }
 
-  const preparedOffers = new Map<Hex, Offer>()
+  const preparedOffers = new Map<Hex, { created: Offer; assets: bigint; rateBps: bigint }>()
   const make = new MidnightBootstrapMakeService({
     rateBounds: marketId => config.bootstrap.find(item => item.marketId === marketId),
     listActiveGroups: activeGroups,
@@ -654,12 +676,13 @@ export const createProductionBootstrapAdapters = (
     toProspectiveBookOffer: async (offer, exactTick) => {
       const prepared = await prepareOfferAtLatest(offer, exactTick)
       const created = prepared.created
-      preparedOffers.set(offer.marketId, created)
+      preparedOffers.set(offer.marketId, { created, assets: offer.assets, rateBps: offer.rateBps })
       return {
         marketId: offer.marketId,
         buy: true,
         tick: created.tick,
         continuousFeeCap: created.continuousFeeCap,
+        tickSpacing: prepared.tickSpacing,
         ...(exactTick === undefined
           ? {}
           : {
@@ -682,14 +705,39 @@ export const createProductionBootstrapAdapters = (
         onTransactionSubmitted
       )
     },
+    invalidateBatch: async (groups, onTransactionSubmitted) => {
+      try {
+        return await invalidateOffersBatch({
+          wallet,
+          midnight: config.setup.midnight,
+          maker,
+          groupIds: groups,
+          receiptTimeoutMs: config.transactionReceiptTimeoutMs,
+          onTransactionSubmitted: hash =>
+            onTransactionSubmitted?.({ operation: 'cancel', txHash: hash })
+        })
+      } catch (error) {
+        if (error instanceof OfferInvalidationAdapterError) {
+          throw new BootstrapAdapterError(error.operation)
+        }
+        throw error
+      }
+    },
     reserveGroup: ownership.reserve,
     confirmPublishedGroup: ownership.confirm,
     releaseGroupReservation: ownership.release,
     forgetGroups: ownership.forget,
     preparePublication: async (offer: BootstrapOffer) => {
-      const created = preparedOffers.get(offer.marketId)
+      const prospectiveOffer = preparedOffers.get(offer.marketId)
       preparedOffers.delete(offer.marketId)
-      if (!created) throw new BootstrapAdapterError('prospective-offer-missing')
+      if (
+        !prospectiveOffer ||
+        prospectiveOffer.assets !== offer.assets ||
+        prospectiveOffer.rateBps !== offer.rateBps
+      ) {
+        throw new BootstrapAdapterError('prospective-offer-missing')
+      }
+      const created = prospectiveOffer.created
       const [groups, ownedIds, ladderOwnedIds, activeStrategyGroups] = await Promise.all([
         readGroups(),
         ownership.read(),

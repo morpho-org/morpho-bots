@@ -12,7 +12,9 @@ export type OwnedOverlapBookOffer = BookOffer & {
  * @returns `true` for any strict crossing, tie, missing ownership evidence, wrong-side evidence, or
  * multiple best-side offers; `false` for positive spreads and the narrow intentional equality.
  * @remarks This pure check fails closed. Ownership must be attached by each boundary from durable
- * bootstrap and ladder state; market membership alone is never evidence.
+ * bootstrap and ladder state; market membership alone is never evidence. Cross-book repricing keeps
+ * own offers strictly separated except when both strategies saturate the same hard rate bound, so
+ * the exempted equality remains reachable only at that bound and for legacy published overlaps.
  */
 export const hasInvalidOwnedBootstrapLadderSpread = (
   offers: readonly OwnedOverlapBookOffer[]

@@ -1,6 +1,7 @@
 import type { Hex } from 'viem'
 
 import { isBytes32 } from '../bytes32'
+import { clampRateBps } from '../cross-book'
 import { BootstrapConfigurationError } from './bootstrap-configuration.error'
 
 const bigintMin = (left: bigint, right: bigint) => (left < right ? left : right)
@@ -177,7 +178,9 @@ export const decidePositionBootstrapTransition = ({
 /**
  * Computes the deterministic bootstrap action from current chain and Mempool truth.
  * @returns The exact observe, invalidate, rest, replace, or publish action for this snapshot.
- * @throws BootstrapConfigurationError when the final premium-adjusted rate is outside hard bounds.
+ * @throws BootstrapConfigurationError when the static configuration itself is invalid.
+ * @remarks A premium-adjusted rate outside the hard range saturates at the nearest bound instead of
+ * failing, so a reference-rate excursion can never halt the strategy.
  */
 export const decidePositionBootstrap = ({
   config,
@@ -195,13 +198,11 @@ export const decidePositionBootstrap = ({
   })
   if (transition) return transition
 
-  const requestedRateBps = rate.rateBps + config.premiumBps
-  if (requestedRateBps < config.minimumRateBps) {
-    throw new BootstrapConfigurationError('requestedRateBps', 'must be at least minimumRateBps')
-  }
-  if (requestedRateBps > config.maximumRateBps) {
-    throw new BootstrapConfigurationError('requestedRateBps', 'must be at most maximumRateBps')
-  }
+  const requestedRateBps = clampRateBps(
+    rate.rateBps + config.premiumBps,
+    config.minimumRateBps,
+    config.maximumRateBps
+  )
 
   const assets = [
     config.offerSize,
