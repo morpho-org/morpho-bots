@@ -448,7 +448,7 @@ export const createProductionBootstrapAdapters = (
     blueRates
   )
   const completeBookOffers = async (marketId: Hex) => {
-    const [groups, ladderPublications, wholeBook] = await Promise.all([
+    const [groups, ladderPublications, wholeBook, ownedBootstrapIds] = await Promise.all([
       readGroups(),
       readLadderPublications(),
       readLadderBookOffers({
@@ -456,8 +456,18 @@ export const createProductionBootstrapAdapters = (
         marketIds: [marketId],
         timeoutMs: config.requestTimeoutMs,
         ignoredOfferGroupIds
-      })
+      }),
+      ownership.read()
     ])
+    const liveBootstrapTickCeiling = strategyBootstrapGroups(groups, ownedBootstrapIds)
+      .filter(group => group.marketId === marketId && group.maxAssets > group.consumed)
+      .reduce<bigint | undefined>(
+        (highest, group) =>
+          group.tick !== undefined && (highest === undefined || group.tick > highest)
+            ? group.tick
+            : highest,
+        undefined
+      )
     const pendingLadderOffers = (
       await mapSelectedMarketItems(
         marketId,
@@ -479,7 +489,10 @@ export const createProductionBootstrapAdapters = (
               : {
                   minimumRateBps: ladderBounds.minimumRateBps,
                   maximumRateBps: ladderBounds.maximumRateBps
-                })
+                }),
+            ...(liveBootstrapTickCeiling === undefined
+              ? {}
+              : { ownBootstrapBuyTickCeiling: liveBootstrapTickCeiling })
           }).bookOffers
         }
       )
