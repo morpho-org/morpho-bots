@@ -159,20 +159,20 @@ files over `--set` for the `config` block for the same reason.
 
 ### Persistence and security
 
-| Key                                  | Default                               | Meaning                                                                                                 |
-| ------------------------------------ | ------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `persistence.enabled`                | `true`                                | PersistentVolumeClaim for durable offer-group ownership state; `false` falls back to an emptyDir.       |
-| `persistence.mountPath`              | `/state`                              | Mount path; the chart always sets `XDG_STATE_HOME` to it.                                               |
-| `persistence.size`                   | `1Gi`                                 | Requested capacity (the state is tiny; this is a floor most provisioners accept).                       |
-| `persistence.accessModes`            | `[ReadWriteOnce]`                     | Claim access modes.                                                                                     |
-| `persistence.storageClass`           | `''`                                  | Storage class name; `-` disables dynamic provisioning; empty uses the cluster default.                  |
-| `persistence.existingClaim`          | `''`                                  | Reuse a pre-created claim instead of creating one.                                                      |
-| `persistence.annotations`            | `{}`                                  | Extra claim annotations.                                                                                |
-| `persistence.retain`                 | `true`                                | Keeps the claim on uninstall (`helm.sh/resource-policy: keep`); a same-name reinstall re-adopts it.     |
-| `volumePermissions.enabled`          | `false`                               | Root init container that chowns the state volume for storage drivers ignoring `fsGroup`.                |
-| `podSecurityContext`                 | non-root uid/gid 1000, `fsGroup` 1000 | Runs as the image's `node` user; `fsGroup` makes the volume writable without root.                      |
-| `securityContext`                    | hardened                              | No privilege escalation, all capabilities dropped, read-only root filesystem (with an emptyDir `/tmp`). |
-| `extraVolumes` / `extraVolumeMounts` | `[]`                                  | Escape hatches, e.g. a keystore file Secret for the `keystore` signer.                                  |
+| Key                                  | Default               | Meaning                                                                                                 |
+| ------------------------------------ | --------------------- | ------------------------------------------------------------------------------------------------------- |
+| `persistence.enabled`                | `true`                | PersistentVolumeClaim for durable offer-group ownership state; `false` falls back to an emptyDir.       |
+| `persistence.mountPath`              | `/state`              | Mount path; the chart always sets `XDG_STATE_HOME` to it.                                               |
+| `persistence.size`                   | `1Gi`                 | Requested capacity (the state is tiny; this is a floor most provisioners accept).                       |
+| `persistence.accessModes`            | `[ReadWriteOnce]`     | Claim access modes.                                                                                     |
+| `persistence.storageClass`           | `''`                  | Storage class name; `-` disables dynamic provisioning; empty uses the cluster default.                  |
+| `persistence.existingClaim`          | `''`                  | Reuse a pre-created claim instead of creating one.                                                      |
+| `persistence.annotations`            | `{}`                  | Extra claim annotations.                                                                                |
+| `persistence.retain`                 | `true`                | Keeps the claim on uninstall (`helm.sh/resource-policy: keep`); a same-name reinstall re-adopts it.     |
+| `volumePermissions.enabled`          | `true`                | Chown-only root init container; preserves strict modes on restored state files.                         |
+| `podSecurityContext`                 | non-root uid/gid 1000 | Runs the runtime container as the image's `node` user; intentionally omits `fsGroup`.                   |
+| `securityContext`                    | hardened              | No privilege escalation, all capabilities dropped, read-only root filesystem (with an emptyDir `/tmp`). |
+| `extraVolumes` / `extraVolumeMounts` | `[]`                  | Escape hatches, e.g. a keystore file Secret for the `keystore` signer.                                  |
 
 ## Operations
 

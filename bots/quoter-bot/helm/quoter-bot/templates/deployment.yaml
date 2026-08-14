@@ -18,15 +18,16 @@ spec:
   template:
     metadata:
       {{- $chartManagedConfig := and .Values.config (not .Values.existingConfigSecret) }}
-      {{- if or $chartManagedConfig .Values.podAnnotations }}
+      {{- $podAnnotations := omit .Values.podAnnotations "checksum/config" }}
+      {{- if or $chartManagedConfig $podAnnotations }}
       annotations:
+        {{- with $podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
         {{- if $chartManagedConfig }}
         # Configuration is read once at startup and the file is mounted through subPath, so a
-        # config change must roll the pod; the checksum forces that on upgrade.
+        # config change must roll the pod; the reserved checksum wins over custom annotations.
         checksum/config: {{ include "quoter-bot.configYaml" . | sha256sum }}
-        {{- end }}
-        {{- with .Values.podAnnotations }}
-        {{- toYaml . | nindent 8 }}
         {{- end }}
       {{- end }}
       labels:
@@ -51,15 +52,15 @@ spec:
       {{- end }}
       {{- if .Values.volumePermissions.enabled }}
       initContainers:
-        # Mirrors the image's railway-entrypoint.sh chown for storage drivers that ignore
-        # fsGroup. The runtime container itself never runs as root.
+        # Mirrors the image's railway-entrypoint.sh chown without changing state-file modes.
+        # The runtime container itself never runs as root.
         - name: volume-permissions
           image: {{ include "quoter-bot.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command:
             - /usr/bin/chown
             - -R
-            - '{{ .Values.podSecurityContext.runAsUser | default 1000 }}:{{ .Values.podSecurityContext.fsGroup | default 1000 }}'
+            - '{{ .Values.podSecurityContext.runAsUser | default 1000 }}:{{ .Values.podSecurityContext.runAsGroup | default 1000 }}'
             - {{ .Values.persistence.mountPath | quote }}
           securityContext:
             runAsNonRoot: false
