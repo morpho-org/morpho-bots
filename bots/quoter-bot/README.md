@@ -132,6 +132,11 @@ Two unit conventions apply everywhere: amounts are **raw loan-token units** (for
 | `BETTERSTACK_SOURCE_TOKEN`, `BETTERSTACK_INGESTING_HOST`     | No                        | Optional Better Stack log shipping; set both together.                                                               |
 | `BETTERSTACK_HEARTBEAT_URL`                                  | No                        | Optional heartbeat URL pinged at startup and once per minute.                                                        |
 
+CLI signer flags override the environment: `--private-key <key>` and `--password <password>` remain
+available for explicit automation, but they place secrets in argv, which is exposed through
+process listings and shell history. Prefer `MAKER_PRIVATE_KEY` and `KEYSTORE_PASSWORD` for
+unattended operation, or the hidden `--interactive` keystore prompt for attended runs.
+
 ### Strategies
 
 The bot ships one quoting strategy for now: the **ladder**. It maintains up to `rungCount` offers on
