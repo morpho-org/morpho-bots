@@ -30,10 +30,10 @@ spec:
         {{- end }}
       {{- end }}
       labels:
-        {{- include "quoter-bot.selectorLabels" . | nindent 8 }}
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
+        {{- include "quoter-bot.selectorLabels" . | nindent 8 }}
     spec:
       # The bot never talks to the Kubernetes API.
       automountServiceAccountToken: false
@@ -81,7 +81,7 @@ spec:
             {{- if include "quoter-bot.hasConfigFile" . }}
             # Root flags precede the command; the mounted file uses the bot's native schema.
             - --config
-            - /config/quoter-bot.yaml
+            - /repo/bots/quoter-bot/quoter-bot.yaml
             {{- end }}
             {{- range .Values.args }}
             - {{ . | quote }}
@@ -115,7 +115,7 @@ spec:
             # subPath yields a regular file: the bot opens its config with O_NOFOLLOW and
             # rejects the symlinks a plain Secret volume mount would expose.
             - name: config
-              mountPath: /config/quoter-bot.yaml
+              mountPath: /repo/bots/quoter-bot/quoter-bot.yaml
               subPath: quoter-bot.yaml
               readOnly: true
             {{- end }}

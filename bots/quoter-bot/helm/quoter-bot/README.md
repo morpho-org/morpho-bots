@@ -53,7 +53,20 @@ config:
   setup:
     nativeReserveWei: '10000000000000000'
     maximumLendExposureAssets: '10000000000'
-  bootstrap: []
+  bootstrap:
+    - marketId: '0x5555555555555555555555555555555555555555555555555555555555555555'
+      targetRate:
+        strategy: 'hardcoded'
+        hardcodedRateBps: '400'
+      creditTarget: '10000000000'
+      acceptanceAssets: '100000000'
+      offerSize: '500000000'
+      premiumBps: -50
+      maximumMarketExposure: '20000000000'
+      maximumTotalExposure: '30000000000'
+      minimumRateBps: 200
+      maximumRateBps: 800
+      autoRefill: false
   ladder:
     - marketId: '0x5555555555555555555555555555555555555555555555555555555555555555'
       quotePremiumBps: '0'
@@ -84,6 +97,7 @@ env:
 Create the signer Secret out of band, then install:
 
 ```sh
+kubectl create namespace quoter-bot
 kubectl --namespace quoter-bot create secret generic quoter-bot-signer \
   --from-literal=makerPrivateKey=0x...
 
@@ -102,10 +116,10 @@ files over `--set` for the `config` block for the same reason.
 ## How configuration reaches the bot
 
 - `config` renders into a chart-managed Secret (a Secret rather than a ConfigMap because
-  `identity` may carry signing material) and is mounted at `/config/quoter-bot.yaml` through
-  `subPath` — the bot opens its config with `O_NOFOLLOW` and would reject the symlinks a plain
-  Secret volume mount exposes. The chart prepends `--config /config/quoter-bot.yaml` to
-  `args`.
+  `identity` may carry signing material) and is mounted at
+  `/repo/bots/quoter-bot/quoter-bot.yaml` through `subPath` — the bot opens its config with
+  `O_NOFOLLOW` and would reject the symlinks a plain Secret volume mount exposes. The chart
+  prepends `--config /repo/bots/quoter-bot/quoter-bot.yaml` to `args`.
 - Configuration is read once at startup. Upgrades that change `config` roll the pod through a
   checksum annotation; changes to an `existingConfigSecret` instead require
   `kubectl rollout restart`.
