@@ -1,0 +1,162 @@
+name: Publish quoter-bot Docker Hub
+
+# Reusable publish-only job for quoter-bot's public Docker Hub image. Production's release selector
+# calls this workflow after the Railway deploy succeeds: the repo-root build of
+# bots/quoter-bot/Dockerfile is pushed tagged with the release commit hash and, when no newer
+# release has shipped, `latest`. The push never gates the GitHub release. Authentication exchanges
+# the run's GitHub OIDC token through the Docker org's OIDC connection (docker/login-action v4.5+), so CI stores no static Docker Hub
+# credential.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Git SHA/ref to build and publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  Publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Holds secret DOCKERHUB_OIDC_CONNECTIONID plus vars DOCKER_USERNAME and DOCKER_REPOSITORY;
+    # scope its deployment branches to `main` so the OIDC exchange is unreachable from arbitrary PR
+    # branches. Referencing an environment also makes GitHub mint the OIDC token with an
+    # environment-based subject (`repo:morpho-org/morpho-bots:environment:quoter-bot-dockerhub`) —
+    # the Docker-side connection ruleset must match that subject, not a `ref:refs/heads/*` one.
+    environment: quoter-bot-dockerhub
+    permissions:
+      contents: read
+      # Mints the GitHub OIDC token docker/login-action exchanges for a Docker Hub access token.
+      id-token: write
+    concurrency:
+      # Serialize pushes so `latest` cannot land out of order across overlapping runs.
+      group: publish-quoter-bot-dockerhub
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.ref }}
+          # Full history and tags: the latest-tag gate below needs release tags and ancestry.
+          fetch-depth: 0
+
+      # Fail loud up front on a misconfigured environment instead of failing late at push time with
+      # an opaque invalid-reference error.
+      - name: Check environment configuration
+        env:
+          DOCKER_USERNAME: ${{ vars.DOCKER_USERNAME }}
+          DOCKER_REPOSITORY: ${{ vars.DOCKER_REPOSITORY }}
+          DOCKERHUB_OIDC_CONNECTIONID: ${{ secrets.DOCKERHUB_OIDC_CONNECTIONID }}
+        run: |
+          set -euo pipefail
+          : "${DOCKER_USERNAME:?var unset in the quoter-bot-dockerhub environment}"
+          : "${DOCKER_REPOSITORY:?var unset in the quoter-bot-dockerhub environment}"
+          : "${DOCKERHUB_OIDC_CONNECTIONID:?secret unset in the quoter-bot-dockerhub environment}"
+
+      # Tag with the resolved hash so a branch/tag `ref` input still produces an immutable tag.
+      - name: Resolve commit
+        id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        env:
+          DOCKERHUB_OIDC_CONNECTIONID: ${{ secrets.DOCKERHUB_OIDC_CONNECTIONID }}
+          # The exchanged access token must outlive the image build that runs between login and
+          # push; the 300s default is shorter than this pnpm install + workspace build.
+          DOCKERHUB_OIDC_EXPIREIN: '1800'
+        with:
+          username: ${{ vars.DOCKER_USERNAME }}
+
+      # Docker tags are mutable by default. Check through the authenticated Docker session so a
+      # first publish can distinguish a missing repository from an existing private tag. An existing
+      # immutable tag is reused on reruns so a failed/missed `latest` update can recover safely.
+      - name: Check immutable SHA tag
+        id: sha-tag
+        env:
+          DOCKER_USERNAME: ${{ vars.DOCKER_USERNAME }}
+          DOCKER_REPOSITORY: ${{ vars.DOCKER_REPOSITORY }}
+          COMMIT_SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          image="${DOCKER_USERNAME}/${DOCKER_REPOSITORY}:${COMMIT_SHA}"
+          inspect_error="$(mktemp)"
+          trap 'rm -f "$inspect_error"' EXIT
+          if docker buildx imagetools inspect "$image" >/dev/null 2>"$inspect_error"; then
+            echo 'commit SHA tag already exists; reusing immutable image'
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if grep -Eqi 'manifest unknown|not found|pull access denied|repository does not exist' "$inspect_error"; then
+            echo 'commit SHA tag is not readable; proceeding with first publish'
+            exit 0
+          fi
+          echo 'unexpected Docker registry inspection failure'
+          exit 1
+
+      # `latest` must only move forward. A rerun may legitimately backfill an older release's
+      # commit tag, but when a quoter-bot release tag descends from the built commit a newer
+      # release already shipped — leave `latest` where it is. Release tags are cut by
+      # deploy-production.yml, whose concurrency group serializes release runs, so the newest
+      # release cannot change mid-run.
+      - name: Gate the latest tag
+        id: tags
+        env:
+          DOCKER_USERNAME: ${{ vars.DOCKER_USERNAME }}
+          DOCKER_REPOSITORY: ${{ vars.DOCKER_REPOSITORY }}
+          COMMIT_SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          tags="${DOCKER_USERNAME}/${DOCKER_REPOSITORY}:${COMMIT_SHA}"
+          newer=''
+          for tag in $(git tag -l 'quoter-bot-*'); do
+            commit="$(git rev-parse "${tag}^{commit}")"
+            if [ "$commit" != "$COMMIT_SHA" ] \
+              && git merge-base --is-ancestor "$COMMIT_SHA" "$commit"; then
+              newer="$tag"
+              break
+            fi
+          done
+          if [ -n "$newer" ]; then
+            echo "::notice::release ${newer} descends from ${COMMIT_SHA}; not moving latest"
+            echo "move_latest=false" >> "$GITHUB_OUTPUT"
+          else
+            tags="${tags},${DOCKER_USERNAME}/${DOCKER_REPOSITORY}:latest"
+            echo "move_latest=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        if: ${{ steps.sha-tag.outputs.exists != 'true' }}
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          # Path context (the checkout above, honoring inputs.ref) — the default Git context would
+          # rebuild from the triggering ref instead. The context must be the repository root so
+          # workspace packages resolve.
+          context: .
+          file: bots/quoter-bot/Dockerfile
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ steps.commit.outputs.sha }}
+
+      # A previous attempt may have published the immutable SHA before failing to update `latest`.
+      # Retag the existing manifest instead of rebuilding or mutating the immutable tag.
+      - name: Recover latest from immutable SHA tag
+        if: ${{ steps.sha-tag.outputs.exists == 'true' && steps.tags.outputs.move_latest == 'true' }}
+        env:
+          DOCKER_USERNAME: ${{ vars.DOCKER_USERNAME }}
+          DOCKER_REPOSITORY: ${{ vars.DOCKER_REPOSITORY }}
+          COMMIT_SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          image="${DOCKER_USERNAME}/${DOCKER_REPOSITORY}:${COMMIT_SHA}"
+          latest="${DOCKER_USERNAME}/${DOCKER_REPOSITORY}:latest"
+          docker buildx imagetools create --tag "$latest" "$image"

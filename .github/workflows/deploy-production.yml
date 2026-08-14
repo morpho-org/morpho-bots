@@ -4,8 +4,9 @@ name: Deploy production
 # GitHub release + git tag (CalVer `{bot}-YYYY.MM.DD-N`). Triggered on push:main (not
 # pull_request:closed) so the run's ref is refs/heads/main — satisfying a main-only environment
 # branch policy and giving the correct main HEAD in github.sha. Releasing publishes the tag, which
-# fires release-slack-notify.yml. Runs on every push; when no release-* label is present, the
-# deploy jobs are simply skipped.
+# fires release-slack-notify.yml. A quoter-bot release also pushes the bot image to Docker Hub
+# (commit-hash + `latest` tags) after the Railway deploy succeeds, without gating the release.
+# Runs on every push; when no release-* label is present, the deploy jobs are simply skipped.
 
 on:
   push:
@@ -105,6 +106,21 @@ jobs:
     needs: Select
     if: ${{ needs.Select.outputs.quoter_bot == 'true' }}
     uses: ./.github/workflows/deploy-quoter-bot-production.yml
+    secrets: inherit
+    with:
+      ref: ${{ github.sha }}
+
+  Quoter-bot-image:
+    # Wait for both the successful deploy and its GitHub release tag before publishing image tags.
+    # Release-quoter-bot still depends only on Quoter-bot, so Docker Hub cannot block the release.
+    needs: [Select, Quoter-bot, Release-quoter-bot]
+    if: ${{ needs.Select.outputs.quoter_bot == 'true' }}
+    # A called workflow can never hold more permissions than its caller job grants, so the OIDC
+    # token minting (id-token) the Docker Hub login needs must be granted here too.
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/publish-quoter-bot-dockerhub.yml
     secrets: inherit
     with:
       ref: ${{ github.sha }}
