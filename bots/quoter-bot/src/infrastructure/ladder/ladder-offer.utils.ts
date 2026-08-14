@@ -84,12 +84,12 @@ const lastAlignedTickAtOrAboveApr = (
 }
 
 const boundedQuoteTick = (
+  side: 'lower' | 'higher',
   rateBps: bigint,
   parameters: BuildLadderTreeParameters,
   minimumExclusiveTick?: bigint
 ) => {
   const tickSpacing = BigInt(parameters.market.tickSpacing)
-  const requestedTick = quoteTick(rateBps, parameters)
   const lowestTick =
     parameters.maximumRateBps === undefined
       ? 0n
@@ -103,6 +103,14 @@ const boundedQuoteTick = (
       ? lowestTick
       : (minimumExclusiveTick / tickSpacing + 1n) * tickSpacing
   const minimumTick = firstTickAfterCrossing > lowestTick ? firstTickAfterCrossing : lowestTick
+  const rateIsOutOfBounds =
+    (parameters.minimumRateBps !== undefined && rateBps < parameters.minimumRateBps) ||
+    (parameters.maximumRateBps !== undefined && rateBps > parameters.maximumRateBps)
+  const requestedTick = rateIsOutOfBounds
+    ? side === 'lower'
+      ? highestTick
+      : lowestTick
+    : quoteTick(rateBps, parameters)
   const tick = requestedTick < minimumTick ? minimumTick : requestedTick
   const boundedTick = tick > highestTick ? highestTick : tick
   const aprWad = effectiveAprWad(boundedTick, parameters)
@@ -151,18 +159,27 @@ const sideOffers = (
       crossingBootstrap && parameters.bootstrapBuyRateBps !== undefined
         ? parameters.bootstrapBuyRateBps - CROSS_BOOK_RATE_GAP_BPS
         : rung.rateBps
-    const rateBps =
-      crossingBootstrap &&
-      ((parameters.minimumRateBps !== undefined && crossingRateBps < parameters.minimumRateBps) ||
-        (parameters.maximumRateBps !== undefined && crossingRateBps > parameters.maximumRateBps))
+    const nominalRateIsOutOfBounds =
+      (parameters.minimumRateBps !== undefined && rung.rateBps < parameters.minimumRateBps) ||
+      (parameters.maximumRateBps !== undefined && rung.rateBps > parameters.maximumRateBps)
+    const sideBoundaryRateBps =
+      side === 'lower' ? parameters.minimumRateBps : parameters.maximumRateBps
+    const rateBps = nominalRateIsOutOfBounds
+      ? (sideBoundaryRateBps ?? rung.rateBps)
+      : crossingBootstrap &&
+          ((parameters.minimumRateBps !== undefined &&
+            crossingRateBps < parameters.minimumRateBps) ||
+            (parameters.maximumRateBps !== undefined &&
+              crossingRateBps > parameters.maximumRateBps))
         ? (parameters.minimumRateBps ?? crossingRateBps)
         : crossingRateBps
     const bounded = boundedQuoteTick(
+      side,
       rateBps,
       parameters,
       crossingBootstrap ? parameters.bootstrapBuyTick : undefined
     )
-    const adjusted = crossingBootstrap || bounded.tick !== requestedTick
+    const adjusted = nominalRateIsOutOfBounds || crossingBootstrap || bounded.tick !== requestedTick
     const adjustedRung = adjusted ? { ...rung, rateBps: bounded.effectiveRateBps } : rung
     const tick = bounded.tick
     const existing = merged.get(tick)
