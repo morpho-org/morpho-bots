@@ -59,10 +59,9 @@ A publish-only reusable workflow plus one non-gating caller job. The image ships
 **post-deploy side channel** of the existing production release:
 
 ```text
-push: main ──▶ Select ──▶ Quoter-bot ──┬─▶ Release-quoter-bot
-(release-quoter-bot        (Railway     │   (CalVer tag + GitHub release)
- label, or dispatch)        deploy)      └─▶ Quoter-bot-image
-                                               (Docker Hub push — gates nothing)
+push: main ──▶ Select ──▶ Quoter-bot ──▶ Release-quoter-bot ──▶ Quoter-bot-image
+(release-quoter-bot        (Railway       (CalVer tag +          (Docker Hub push —
+ label, or dispatch)        deploy)        GitHub release)        gates nothing)
 ```
 
 **Reusable publish workflow.** `.github/workflows/publish-quoter-bot-dockerhub.yml` is a
@@ -100,9 +99,10 @@ Concurrency is declared **job-level, not workflow-level**, because GitHub ignore
 
 **Caller job.** `Quoter-bot-image` in `deploy-production.yml` reuses the existing `quoter_bot`
 selector flag, so the `release-quoter-bot` label — and the `workflow_dispatch` path, which
-synthesizes the same label — stays the single entry point for "a release is expected". It needs the
-Railway deploy job, so neither image tag can publish for a failed deployment. Because **a called
-workflow's permissions are capped by the
+synthesizes the same label — stays the single entry point for "a release is expected". It needs
+both the Railway deploy and the release-tag job, so neither image tag can publish for a failed
+deployment and the latest gate always sees the release tag its own run just cut. Because **a
+called workflow's permissions are capped by the
 caller job's grant**, the job explicitly grants `contents: read` + `id-token: write`; it passes
 `secrets: inherit` because environment secrets only populate in a reusable workflow when the
 callee declares `environment:` **and** the caller inherits secrets
