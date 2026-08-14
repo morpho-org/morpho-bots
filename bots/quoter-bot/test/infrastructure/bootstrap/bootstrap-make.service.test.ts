@@ -36,7 +36,8 @@ describe('MidnightBootstrapMakeService', () => {
       reserveGroup: async () => {},
       confirmPublishedGroup: async () => {},
       releaseGroupReservation: async () => {},
-      invalidate: async () => {}
+      invalidate: async () => {},
+      invalidateBatch: async () => {}
     })
 
     await service.reconcile({ marketId, desiredOffer, reason: 'publish' })
@@ -83,7 +84,8 @@ describe('MidnightBootstrapMakeService', () => {
       },
       confirmPublishedGroup: async () => {},
       releaseGroupReservation: async () => {},
-      invalidate: async () => {}
+      invalidate: async () => {},
+      invalidateBatch: async () => {}
     })
 
     expect(
@@ -148,7 +150,8 @@ describe('MidnightBootstrapMakeService', () => {
       reserveGroup: async () => {},
       confirmPublishedGroup: async () => {},
       releaseGroupReservation: async () => {},
-      invalidate
+      invalidate,
+      invalidateBatch: async () => {}
     })
 
     expect(
@@ -181,7 +184,8 @@ describe('MidnightBootstrapMakeService', () => {
       reserveGroup: async () => {},
       confirmPublishedGroup: async () => {},
       releaseGroupReservation: async () => {},
-      invalidate: async () => {}
+      invalidate: async () => {},
+      invalidateBatch: async () => {}
     })
 
     const error = await service
@@ -220,7 +224,8 @@ describe('MidnightBootstrapMakeService', () => {
       reserveGroup: async () => {},
       confirmPublishedGroup: async () => {},
       releaseGroupReservation: async () => {},
-      invalidate: async () => {}
+      invalidate: async () => {},
+      invalidateBatch: async () => {}
     })
 
     const error = await service
@@ -268,7 +273,8 @@ describe('MidnightBootstrapMakeService', () => {
       reserveGroup: async () => {},
       confirmPublishedGroup: async () => {},
       releaseGroupReservation: async () => {},
-      invalidate: async () => {}
+      invalidate: async () => {},
+      invalidateBatch: async () => {}
     })
 
     const error = await service
@@ -314,7 +320,8 @@ describe('MidnightBootstrapMakeService', () => {
       reserveGroup: async () => {},
       confirmPublishedGroup: async () => {},
       releaseGroupReservation: async () => {},
-      invalidate: async () => {}
+      invalidate: async () => {},
+      invalidateBatch: async () => {}
     })
 
     await service.reconcile({
@@ -366,7 +373,8 @@ describe('MidnightBootstrapMakeService', () => {
       },
       invalidate: async () => {
         events.push('invalidate')
-      }
+      },
+      invalidateBatch: async () => {}
     })
 
     expect(
@@ -400,7 +408,8 @@ describe('MidnightBootstrapMakeService', () => {
       reserveGroup: async () => {},
       confirmPublishedGroup: async () => {},
       releaseGroupReservation: async () => {},
-      invalidate: async () => {}
+      invalidate: async () => {},
+      invalidateBatch: async () => {}
     })
 
     const error = await service
@@ -426,7 +435,8 @@ describe('MidnightBootstrapMakeService', () => {
       reserveGroup: async () => {},
       confirmPublishedGroup: async () => {},
       releaseGroupReservation: async () => {},
-      invalidate: async () => {}
+      invalidate: async () => {},
+      invalidateBatch: async () => {}
     })
 
     const error = await service
@@ -456,7 +466,8 @@ describe('MidnightBootstrapMakeService', () => {
       reserveGroup: async () => {},
       confirmPublishedGroup: async () => {},
       releaseGroupReservation: async () => {},
-      invalidate: async () => {}
+      invalidate: async () => {},
+      invalidateBatch: async () => {}
     })
 
     await service.reconcile({ marketId, desiredOffer, reason: 'publish' })
@@ -487,7 +498,8 @@ describe('MidnightBootstrapMakeService', () => {
       invalidate: async (_group, observer) => {
         await observer?.({ operation: 'cancel', txHash: cancellationHash })
         return cancellationHash
-      }
+      },
+      invalidateBatch: async () => {}
     })
 
     expect(
@@ -528,6 +540,7 @@ describe('MidnightBootstrapMakeService', () => {
         invalidations += 1
         return cancellationHash
       },
+      invalidateBatch: async () => cancellationHash,
       forgetGroups: async () => {
         throw new BootstrapAdapterError('group-ownership-state')
       }
@@ -564,7 +577,8 @@ describe('MidnightBootstrapMakeService', () => {
       reserveGroup: async () => {},
       confirmPublishedGroup: async () => {},
       releaseGroupReservation: async () => {},
-      invalidate: async () => cancellationHash
+      invalidate: async () => cancellationHash,
+      invalidateBatch: async () => {}
     })
 
     expect(
@@ -581,8 +595,9 @@ describe('MidnightBootstrapMakeService', () => {
     })
   })
 
-  test('returns confirmed cancellation hashes from graceful cleanup', async () => {
+  test('returns the shared cancellation hash from batched graceful cleanup', async () => {
     const forgotten: Hex[] = []
+    const batched: Hex[] = []
     const service = new MidnightBootstrapMakeService({
       listActiveGroups: async () => [],
       listOwnedGroupIds: async () => [groupId],
@@ -595,12 +610,17 @@ describe('MidnightBootstrapMakeService', () => {
       forgetGroups: async (groupIds: readonly Hex[]) => {
         forgotten.push(...groupIds)
       },
-      invalidate: async () => cancellationHash
+      invalidate: async () => cancellationHash,
+      invalidateBatch: async groups => {
+        batched.push(...groups)
+        return cancellationHash
+      }
     })
 
     expect(await service.cleanup()).toEqual({
       submittedTransactions: [{ operation: 'cancel', txHash: cancellationHash }]
     })
+    expect(batched).toEqual([groupId])
     expect(forgotten).toEqual([groupId])
   })
 
@@ -625,7 +645,8 @@ describe('MidnightBootstrapMakeService', () => {
       },
       invalidate: async (id: Hex) => {
         invalidated.push(id)
-      }
+      },
+      invalidateBatch: async () => {}
     }
 
     await new MidnightBootstrapMakeService(transport).reconcile({
@@ -664,7 +685,8 @@ describe('MidnightBootstrapMakeService', () => {
       releaseGroupReservation: async () => {
         events.push('release')
       },
-      invalidate: async () => {}
+      invalidate: async () => {},
+      invalidateBatch: async () => {}
     })
 
     const error = await service
@@ -697,7 +719,8 @@ describe('MidnightBootstrapMakeService', () => {
       releaseGroupReservation: async () => {
         events.push('release')
       },
-      invalidate: async () => {}
+      invalidate: async () => {},
+      invalidateBatch: async () => {}
     })
 
     const error = await service
@@ -740,6 +763,9 @@ describe('MidnightBootstrapMakeService', () => {
       },
       invalidate: async (group: Hex) => {
         invalidated.push(group)
+      },
+      invalidateBatch: async (groups: readonly Hex[]) => {
+        invalidated.push(...groups)
       }
     }
 
@@ -787,7 +813,8 @@ describe('MidnightBootstrapMakeService', () => {
         tracked.delete(id)
         events.push('release')
       },
-      invalidate: async () => {}
+      invalidate: async () => {},
+      invalidateBatch: async () => {}
     })
 
     const error = await service
@@ -824,7 +851,8 @@ describe('MidnightBootstrapMakeService', () => {
         tracked.delete(id)
         events.push('release')
       },
-      invalidate: async () => {}
+      invalidate: async () => {},
+      invalidateBatch: async () => {}
     })
 
     const error = await service
@@ -856,7 +884,8 @@ describe('MidnightBootstrapMakeService', () => {
       releaseGroupReservation: async () => {},
       invalidate: async () => {
         events.push('invalidate')
-      }
+      },
+      invalidateBatch: async () => {}
     })
 
     await service.reconcile({ marketId, desiredOffer, reason: 'replace' })
@@ -886,7 +915,8 @@ describe('MidnightBootstrapMakeService', () => {
       forgetGroups: async () => {},
       invalidate: async () => {
         events.push('invalidate')
-      }
+      },
+      invalidateBatch: async () => {}
     })
 
     await service.reconcile({ marketId, reason: 'target-reached' })
@@ -920,7 +950,8 @@ describe('MidnightBootstrapMakeService', () => {
       invalidate: async () => {
         events.push('invalidate')
         throw new BootstrapAdapterError('transaction-reverted')
-      }
+      },
+      invalidateBatch: async () => {}
     })
 
     const error = await service
@@ -944,7 +975,8 @@ describe('MidnightBootstrapMakeService', () => {
       },
       invalidate: async () => {
         throw new BootstrapAdapterError('transaction-reverted')
-      }
+      },
+      invalidateBatch: async () => {}
     })
 
     const error = await service
@@ -975,7 +1007,8 @@ describe('MidnightBootstrapMakeService', () => {
       releaseGroupReservation: async () => {},
       invalidate: async () => {
         events.push('invalidate')
-      }
+      },
+      invalidateBatch: async () => {}
     })
 
     const error = await service
@@ -1002,7 +1035,8 @@ describe('MidnightBootstrapMakeService', () => {
       releaseGroupReservation: async () => {},
       invalidate: async () => {
         events.push('invalidate')
-      }
+      },
+      invalidateBatch: async () => {}
     })
 
     const error = await service
@@ -1028,8 +1062,9 @@ describe('MidnightBootstrapMakeService', () => {
       reserveGroup: async () => {},
       confirmPublishedGroup: async () => {},
       releaseGroupReservation: async () => {},
-      invalidate: async id => {
-        attempted.push(id)
+      invalidate: async () => {},
+      invalidateBatch: async groups => {
+        attempted.push(...groups)
       }
     })
 
@@ -1049,8 +1084,9 @@ describe('MidnightBootstrapMakeService', () => {
       reserveGroup: async () => {},
       confirmPublishedGroup: async () => {},
       releaseGroupReservation: async () => {},
-      invalidate: async id => {
-        attempted.push(id)
+      invalidate: async () => {},
+      invalidateBatch: async groups => {
+        attempted.push(...groups)
       }
     })
 
@@ -1086,8 +1122,9 @@ describe('MidnightBootstrapMakeService', () => {
       reserveGroup: async () => {},
       confirmPublishedGroup: async () => {},
       releaseGroupReservation: async () => {},
-      invalidate: async id => {
-        events.push(`cleanup:${id}`)
+      invalidate: async () => {},
+      invalidateBatch: async groups => {
+        for (const id of groups) events.push(`cleanup:${id}`)
       }
     })
 
@@ -1103,9 +1140,9 @@ describe('MidnightBootstrapMakeService', () => {
     expect(events).toEqual(['publish:start', 'publish:end', `cleanup:${groupId}`])
   })
 
-  test('attempts every hard-halt cancellation and reports failures deterministically', async () => {
+  test('reports every group of a failed batched hard-halt cancellation deterministically', async () => {
     const lastGroupId: Hex = `0x${'44'.repeat(32)}`
-    const attempted: Hex[] = []
+    const attempted: (readonly Hex[])[] = []
     const service = new MidnightBootstrapMakeService({
       listActiveGroups: async () => [
         { id: groupId, marketId, assets: 100n, rateBps: 500n },
@@ -1118,19 +1155,21 @@ describe('MidnightBootstrapMakeService', () => {
       reserveGroup: async () => {},
       confirmPublishedGroup: async () => {},
       releaseGroupReservation: async () => {},
-      invalidate: async id => {
-        attempted.push(id)
-        if (id !== publishedGroupId) throw new BootstrapAdapterError('transaction-reverted')
+      invalidate: async () => {},
+      invalidateBatch: async groups => {
+        attempted.push(groups)
+        throw new BootstrapAdapterError('transaction-reverted')
       }
     })
 
     const error = await service.hardHalt({ reason: 'reference-read-failed' }).catch(value => value)
 
-    expect(attempted).toEqual([groupId, publishedGroupId, lastGroupId])
+    expect(attempted).toEqual([[groupId, publishedGroupId, lastGroupId]])
     expect(error).toBeInstanceOf(BootstrapHardHaltError)
     expect(error).toMatchObject({
       failures: [
         { groupId, errorName: 'BootstrapAdapterError' },
+        { groupId: publishedGroupId, errorName: 'BootstrapAdapterError' },
         { groupId: lastGroupId, errorName: 'BootstrapAdapterError' }
       ]
     })

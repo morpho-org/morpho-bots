@@ -37,6 +37,8 @@ import {
   BlueBootstrapReferenceRateService,
   StrategyBootstrapReferenceRateService
 } from '../bootstrap/bootstrap-reference-rate.service'
+import { invalidateOffersBatch } from '../invalidation/batch-offer-invalidation.utils'
+import { OfferInvalidationAdapterError } from '../invalidation/offer-invalidation-adapter.error'
 import { createMakerAccount } from '../make/maker-account.utils'
 import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
 import { mapSelectedMarketItems } from '../selected-market-items.utils'
@@ -647,6 +649,23 @@ export const createProductionLadderAdapters = (
       })
       if (receipt.status !== 'success') throw new LadderAdapterError('transaction-reverted')
       return hash
+    },
+    invalidateBatch: async (groupIds, onTransactionSubmitted) => {
+      try {
+        return await invalidateOffersBatch({
+          wallet,
+          midnight: config.setup.midnight,
+          maker,
+          groupIds,
+          receiptTimeoutMs: config.transactionReceiptTimeoutMs,
+          onTransactionSubmitted: hash => notifySubmitted(onTransactionSubmitted, 'cancel', hash)
+        })
+      } catch (error) {
+        if (error instanceof OfferInvalidationAdapterError) {
+          throw new LadderAdapterError(error.operation)
+        }
+        throw error
+      }
     },
     forgetGroups: ladderOwnership.forget
   }

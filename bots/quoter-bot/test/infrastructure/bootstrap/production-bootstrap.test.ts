@@ -285,7 +285,8 @@ describe('Setter bootstrap publication sequencing', () => {
       invalidate: async () => {
         events.push('cancel-submit', 'cancel-confirmed')
         return groupId
-      }
+      },
+      invalidateBatch: async () => {}
     })
 
     await service.reconcile({
@@ -346,9 +347,12 @@ describe('Setter bootstrap publication sequencing', () => {
         tracked.delete(id)
         events.push('release')
       },
-      invalidate: async id => {
-        tracked.delete(id)
-        events.push('cleanup-cancel')
+      invalidate: async () => {},
+      invalidateBatch: async groups => {
+        for (const id of groups) {
+          tracked.delete(id)
+          events.push('cleanup-cancel')
+        }
       },
       forgetGroups: async ids => {
         for (const id of ids) tracked.delete(id)
