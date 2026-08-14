@@ -36,7 +36,9 @@ const evidenceMissing = () => new BootstrapAdapterError('cross-book-evidence-mis
  * of who owns it. When tick rounding leaves the repriced buy at or above that sell tick, the buy
  * steps to exactly one tick spacing below it and adopts that tick's encoded rate. The final
  * projection always describes the returned offer, so a transport caching its latest projection for
- * publication can never observe a reference projection at the crossing sell tick last.
+ * publication can never observe a reference projection at the crossing sell tick last; because each
+ * projection may read a newer block timestamp, that final projection's encoded rate is re-validated
+ * against the hard bounds before the offer is returned.
  */
 export const resolveBootstrapProspectiveOffer = async (parameters: {
   desiredOffer: BootstrapOffer
@@ -100,6 +102,11 @@ export const resolveBootstrapProspectiveOffer = async (parameters: {
     }
     offer = { ...offer, rateBps: exactRateBps }
     adjusted = await parameters.toProspectiveBookOffer(offer, clearedTick)
+    const finalRateBps = adjusted.effectiveRateBps
+    if (finalRateBps === undefined) throw evidenceMissing()
+    if (finalRateBps < parameters.minimumRateBps || finalRateBps > parameters.maximumRateBps) {
+      return undefined
+    }
   }
   if (hasNegativeSpread([...retained, adjusted])) throw negativeSpread()
   return { offer, prospective: adjusted }

@@ -133,6 +133,28 @@ describe('resolveBootstrapProspectiveOffer', () => {
     )
   })
 
+  test('publishes nothing when the final exact-tick rate drifts beyond the hard bounds', async () => {
+    const toProspectiveBookOffer = projector([
+      { tick: 100n, tickSpacing: 1n, effectiveRateBps: 450n },
+      { tick: 100n, tickSpacing: 1n },
+      { tick: 99n, tickSpacing: 1n, effectiveRateBps: 600n },
+      { tick: 99n, tickSpacing: 1n, effectiveRateBps: 601n }
+    ])
+
+    expect(
+      await resolveBootstrapProspectiveOffer({
+        desiredOffer,
+        prospective: { marketId, buy: true, tick: 100n },
+        replacedGroupIds: new Set(),
+        book: [sell(100n)],
+        toProspectiveBookOffer,
+        minimumRateBps: 400n,
+        maximumRateBps: 600n
+      })
+    ).toBeUndefined()
+    expect(toProspectiveBookOffer).toHaveBeenCalledTimes(4)
+  })
+
   test('publishes nothing when the sell already rests at the lowest protocol tick', async () => {
     const toProspectiveBookOffer = projector([
       { tick: 0n, tickSpacing: 1n, effectiveRateBps: 450n },

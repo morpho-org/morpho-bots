@@ -240,7 +240,7 @@ describe('MidnightBootstrapMakeService', () => {
           tick: exactTick,
           tickSpacing: 1n,
           effectiveRateBps:
-            exactTickProjections === 1 ? 450n : exactTickProjections === 2 ? 455n : 700n
+            exactTickProjections === 1 ? 450n : exactTickProjections === 4 ? 700n : 455n
         }
       },
       preparePublication,
