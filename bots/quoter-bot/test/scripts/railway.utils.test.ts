@@ -270,6 +270,22 @@ describe('Railway CLI output parsing', () => {
     expect(workflow).toContain('--oauth2-bearer "$token"')
   })
 
+  test('moves the Docker Hub latest tag only forward', () => {
+    const workflow = readFileSync(
+      new URL('../../../../.github/workflows/publish-quoter-bot-dockerhub.yml', import.meta.url),
+      'utf8'
+    )
+
+    // Ancestry against release tags needs full history in the checkout.
+    expect(workflow).toContain('fetch-depth: 0')
+    expect(workflow).toContain('- name: Gate the latest tag')
+    expect(workflow).toContain("git tag -l 'quoter-bot-*'")
+    expect(workflow).toContain('git merge-base --is-ancestor "$COMMIT_SHA" "$commit"')
+    // The build pushes the gate's computed tag list; `latest` is never hardcoded unconditionally.
+    expect(workflow).toContain('tags: ${{ steps.tags.outputs.tags }}')
+    expect(workflow).not.toContain('}}:latest')
+  })
+
   test('creates fresh state only during authorized provisioning', () => {
     const deploy = readFileSync(new URL('../../scripts/deploy-railway.ts', import.meta.url), 'utf8')
     const fullProvisioningBranch = deploy.indexOf('if (!DEPLOY_ONLY)')

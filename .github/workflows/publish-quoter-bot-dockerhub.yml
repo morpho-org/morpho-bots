@@ -3,9 +3,10 @@ name: Publish quoter-bot Docker Hub
 # Reusable publish-only job for quoter-bot's public Docker Hub image. Production's release selector
 # calls this workflow when a `release-quoter-bot` label lands on main, in parallel with the Railway
 # deploy: the repo-root build of bots/quoter-bot/Dockerfile is pushed tagged with the release
-# commit hash and `latest`. The push never gates the Railway deploy or the GitHub release.
-# Authentication exchanges the run's GitHub OIDC token through the Docker org's OIDC connection
-# (docker/login-action v4.5+), so CI stores no static Docker Hub credential.
+# commit hash and, when no newer release has shipped, `latest`. The push never gates the Railway
+# deploy or the GitHub release. Authentication exchanges the run's GitHub OIDC token through the
+# Docker org's OIDC connection (docker/login-action v4.5+), so CI stores no static Docker Hub
+# credential.
 
 on:
   workflow_call:
@@ -40,6 +41,8 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           ref: ${{ inputs.ref }}
+          # Full history and tags: the latest-tag gate below needs release tags and ancestry.
+          fetch-depth: 0
 
       # Fail loud up front on a misconfigured environment instead of failing late at push time with
       # an opaque invalid-reference error.
@@ -86,6 +89,36 @@ jobs:
             *) echo "unexpected Docker registry status: ${status}"; exit 1 ;;
           esac
 
+      # `latest` must only move forward. A rerun may legitimately backfill an older release's
+      # commit tag, but when a quoter-bot release tag descends from the built commit a newer
+      # release already shipped — leave `latest` where it is. Release tags are cut by
+      # deploy-production.yml, whose concurrency group serializes release runs, so the newest
+      # release cannot change mid-run.
+      - name: Gate the latest tag
+        id: tags
+        env:
+          DOCKER_USERNAME: ${{ vars.DOCKER_USERNAME }}
+          DOCKER_REPOSITORY: ${{ vars.DOCKER_REPOSITORY }}
+          COMMIT_SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          tags="${DOCKER_USERNAME}/${DOCKER_REPOSITORY}:${COMMIT_SHA}"
+          newer=''
+          for tag in $(git tag -l 'quoter-bot-*'); do
+            commit="$(git rev-parse "${tag}^{commit}")"
+            if [ "$commit" != "$COMMIT_SHA" ] \
+              && git merge-base --is-ancestor "$COMMIT_SHA" "$commit"; then
+              newer="$tag"
+              break
+            fi
+          done
+          if [ -n "$newer" ]; then
+            echo "::notice::release ${newer} descends from ${COMMIT_SHA}; not moving latest"
+          else
+            tags="${tags},${DOCKER_USERNAME}/${DOCKER_REPOSITORY}:latest"
+          fi
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
@@ -108,9 +141,7 @@ jobs:
           context: .
           file: bots/quoter-bot/Dockerfile
           push: true
-          tags: |
-            ${{ vars.DOCKER_USERNAME }}/${{ vars.DOCKER_REPOSITORY }}:${{ steps.commit.outputs.sha }}
-            ${{ vars.DOCKER_USERNAME }}/${{ vars.DOCKER_REPOSITORY }}:latest
+          tags: ${{ steps.tags.outputs.tags }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ steps.commit.outputs.sha }}

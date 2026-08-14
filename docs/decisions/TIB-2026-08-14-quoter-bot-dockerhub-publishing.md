@@ -78,7 +78,11 @@ triggering ref instead of `inputs.ref`) and pushes:
   also stamped as OCI labels `org.opencontainers.image.revision` / `.source`. Before building, the
   workflow queries Docker's registry API and fails closed if this tag exists or the registry returns
   anything other than `404`, so reruns cannot replace an already-published commit image;
-- `morphoorg/quoter:latest` — tracks the newest release.
+- `morphoorg/quoter:latest` — tracks the newest release, and only moves forward: the workflow
+  skips `latest` whenever a `quoter-bot-*` release tag descends from the built commit, so a rerun
+  of an older release's job backfills that commit's tag without dragging `latest` backward.
+  Release tags are the pipeline's own record of "newest", and release runs are serialized, so the
+  gate cannot race a concurrent release.
 
 **Only the bot ships.** Publishing publicly must not leak the rest of the private monorepo, so
 `bots/quoter-bot/Dockerfile` is split in two stages: a workspace `build` stage (pnpm install +
