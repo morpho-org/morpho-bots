@@ -12,6 +12,7 @@ import {
   cleanupRemovedLadderGroups,
   createProductionLadderAdapters,
   createRepeatableSingleFlight,
+  highestOwnedBootstrapBuyForMarket,
   publishLadderPublication
 } from '../../../src/infrastructure/ladder/production-ladder'
 
@@ -147,6 +148,22 @@ describe('cleanupRemovedLadderGroups', () => {
     expect(events).toEqual(['invalidate'])
     expect(tombstones).toEqual([groupId])
     expect(consumedReads).toBe(2)
+  })
+})
+
+describe('highestOwnedBootstrapBuyForMarket', () => {
+  test('ignores owned bootstrap buys from every other configured market', () => {
+    const otherMarketId: Hex = `0x${'99'.repeat(32)}`
+    const selected = highestOwnedBootstrapBuyForMarket(
+      [
+        { marketId: otherMarketId, buy: true, tick: 900n, overlapOwner: 'bootstrap-buy' as const },
+        { marketId, buy: true, tick: 100n, overlapOwner: 'bootstrap-buy' as const },
+        { marketId, buy: true, tick: 200n, overlapOwner: 'bootstrap-buy' as const }
+      ],
+      marketId
+    )
+
+    expect(selected).toMatchObject({ marketId, tick: 200n })
   })
 })
 

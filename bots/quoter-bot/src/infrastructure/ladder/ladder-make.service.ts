@@ -11,6 +11,7 @@ import type { OwnedOverlapBookOffer } from '../intentional-overlap.utils'
 import type { LadderGroupReference } from './ladder-group-ownership.utils'
 
 import { LadderOwnershipCleanupError } from '../../application/ladder/ladder-ownership-cleanup.error'
+import { sameLadderQuoteSet } from '../../application/ladder/ladder-quoter.utils'
 import { operatorErrorName } from '../../application/operator-error-name.utils'
 import { LadderAdapterError } from './ladder-adapter.error'
 import { LadderHardHaltError } from './ladder-hard-halt.error'
@@ -100,6 +101,13 @@ export class MidnightLadderMakeService implements LadderMakeService {
       const publication = parameters.desired
         ? await this.transport.preparePublication(parameters.desired)
         : undefined
+      const adjustedQuote = publication?.quote
+      if (adjustedQuote !== undefined) {
+        const active = await this.transport.readActive(parameters.marketId)
+        if (active !== undefined && sameLadderQuoteSet(active, adjustedQuote)) {
+          return { submittedTransactions }
+        }
+      }
       if (publication) {
         assertLadderProspectiveSpread({
           marketId: parameters.marketId,

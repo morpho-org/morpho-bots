@@ -105,6 +105,29 @@ describe('MidnightLadderMakeService', () => {
     })
   })
 
+  test('skips replacement when preparation reproduces the active adjusted quote', async () => {
+    const subject = harness()
+    const adjustedQuote = {
+      ...quote,
+      lower: [{ ...quote.lower[0]!, rateBps: 430n }]
+    }
+    subject.transport.readActive = async () => adjustedQuote
+    subject.transport.preparePublication = async () => ({
+      quote: adjustedQuote,
+      groupIds: [newGroup],
+      groups: [{ groupId: newGroup, side: 'lower', rungIndexes: [0] }],
+      prospective: [{ marketId, buy: false, tick: 20n }],
+      publish: async () => {
+        subject.events.push('publish')
+      }
+    })
+
+    expect(await subject.service.reconcile({ marketId, desired: quote, reason: 'resize' })).toEqual(
+      { submittedTransactions: [] }
+    )
+    expect(subject.events).toEqual([])
+  })
+
   test('reserves, cancels, publishes, and confirms one replacement in order', async () => {
     const subject = harness()
 

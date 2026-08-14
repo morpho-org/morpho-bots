@@ -330,7 +330,23 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
         minimumRateBps: parameters.minimumRateBps,
         maximumRateBps: parameters.maximumRateBps,
         toProspectiveBookOffer: (offer, exactTick) =>
-          this.transport.toProspectiveBookOffer(offer, exactTick)
+          this.transport.toProspectiveBookOffer(offer, exactTick),
+        ...(this.transport.toBoundedProspectiveBookOffer === undefined
+          ? {}
+          : {
+              toBoundedProspectiveBookOffer: (
+                offer: BootstrapOffer,
+                maximumExclusiveTick: bigint,
+                minimumRate: bigint,
+                maximumRate: bigint
+              ) =>
+                this.transport.toBoundedProspectiveBookOffer!(
+                  offer,
+                  maximumExclusiveTick,
+                  minimumRate,
+                  maximumRate
+                )
+            })
       })
     )?.offer
   }

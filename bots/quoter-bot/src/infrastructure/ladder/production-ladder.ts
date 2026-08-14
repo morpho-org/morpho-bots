@@ -70,6 +70,33 @@ type ProductionLadderAdapters = {
 const minimum = (left: bigint, right: bigint) => (left < right ? left : right)
 const BPS_WAD = 100_000_000_000_000n
 
+type BootstrapBuyCandidate = {
+  marketId: Hex
+  buy: boolean
+  tick: bigint
+  overlapOwner?: 'bootstrap-buy'
+}
+
+/**
+ * Selects the lowest-rate owned bootstrap buy for one exact ladder market.
+ * @param offers - Complete potentially multi-market maker book.
+ * @param marketId - Ladder market whose owned bootstrap buy may constrain sells.
+ * @returns The matching owned bootstrap buy with the highest tick, or no candidate.
+ * @remarks The market filter prevents unrelated bootstrap books from shifting or blocking a ladder.
+ */
+export const highestOwnedBootstrapBuyForMarket = <Offer extends BootstrapBuyCandidate>(
+  offers: readonly Offer[],
+  marketId: Hex
+) =>
+  offers
+    .filter(
+      offer => offer.marketId === marketId && offer.buy && offer.overlapOwner === 'bootstrap-buy'
+    )
+    .reduce<Offer | undefined>(
+      (highest, offer) => (highest === undefined || offer.tick > highest.tick ? offer : highest),
+      undefined
+    )
+
 type ProductionLadderCapacityParameters = {
   marketId: Hex
   balance: bigint
@@ -469,12 +496,7 @@ export const createProductionLadderAdapters = (
       client.getBlock({ blockTag: 'latest' }),
       completeBookOffers(quote.marketId)
     ])
-    const bootstrapBuy = bookState.book
-      .filter(offer => offer.buy && offer.overlapOwner === 'bootstrap-buy')
-      .reduce<(typeof bookState.book)[number] | undefined>(
-        (highest, offer) => (highest === undefined || offer.tick > highest.tick ? offer : highest),
-        undefined
-      )
+    const bootstrapBuy = highestOwnedBootstrapBuyForMarket(bookState.book, quote.marketId)
     const bootstrapBuyRateBps =
       bootstrapBuy === undefined
         ? undefined

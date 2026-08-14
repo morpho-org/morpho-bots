@@ -148,6 +148,15 @@ describe('MidnightBootstrapMakeService', () => {
       )
     )
 
+    expect(
+      await service.preview({
+        marketId,
+        desiredOffer,
+        minimumRateBps: 400n,
+        maximumRateBps: 600n
+      })
+    ).toEqual({ ...desiredOffer, assets: 60n, rateBps: 462n })
+
     await expect(
       service.reconcile({
         marketId,
