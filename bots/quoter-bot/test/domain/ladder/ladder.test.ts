@@ -188,10 +188,28 @@ describe('ladder domain', () => {
     ).toThrow('lowerRateBudgetAssets must be at least minimumOfferAssets')
   })
 
-  test('rejects a runtime rung outside the hard range instead of clamping', () => {
-    expect(() => generateLadder({ config: config(), referenceRateBps: 501n })).toThrow(
-      'higher rung is outside the configured hard range'
-    )
+  test('clamps a sell rung below the configured range to the minimum rate', () => {
+    const ladder = generateLadder({ config: config(), referenceRateBps: 499n })
+
+    expect(ladder.lower.map(rung => rung.rateBps)).toEqual([399n, 299n, 200n])
+  })
+
+  test('clamps a sell rung above the configured range to the minimum rate', () => {
+    const ladder = generateLadder({ config: config(), referenceRateBps: 1_000n })
+
+    expect(ladder.lower.map(rung => rung.rateBps)).toEqual([200n, 800n, 700n])
+  })
+
+  test('clamps a buy rung below the configured range to the maximum rate', () => {
+    const ladder = generateLadder({ config: config(), referenceRateBps: 0n })
+
+    expect(ladder.higher.map(rung => rung.rateBps)).toEqual([800n, 200n, 300n])
+  })
+
+  test('clamps a buy rung above the configured range to the maximum rate', () => {
+    const ladder = generateLadder({ config: config(), referenceRateBps: 501n })
+
+    expect(ladder.higher.map(rung => rung.rateBps)).toEqual([601n, 701n, 800n])
   })
 
   test('requires every deterministic skew weight to stay positive', () => {

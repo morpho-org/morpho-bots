@@ -80,6 +80,31 @@ describe('MidnightLadderMakeService', () => {
 
     expect(selectedMarket).toBe(marketId)
   })
+  test('persists the adjusted quote returned by publication preparation', async () => {
+    const subject = harness()
+    const adjustedQuote = {
+      ...quote,
+      lower: [{ ...quote.lower[0]!, rateBps: 430n }]
+    }
+    const reservePublication = vi.fn(async () => {})
+    subject.transport.preparePublication = async () => ({
+      quote: adjustedQuote,
+      groupIds: [newGroup],
+      groups: [{ groupId: newGroup, side: 'lower', rungIndexes: [0] }],
+      prospective: [{ marketId, buy: false, tick: 20n }],
+      publish: async () => {}
+    })
+    subject.transport.reservePublication = reservePublication
+
+    await subject.service.reconcile({ marketId, desired: quote, reason: 'publish' })
+
+    expect(reservePublication).toHaveBeenCalledWith({
+      marketId,
+      quote: adjustedQuote,
+      groups: [{ groupId: newGroup, side: 'lower', rungIndexes: [0] }]
+    })
+  })
+
   test('reserves, cancels, publishes, and confirms one replacement in order', async () => {
     const subject = harness()
 

@@ -145,13 +145,13 @@ describe('createProductionBootstrapAdapters', () => {
     expect(result.created.maxAssets).toBe(40n)
   })
 
-  test('rejects a capped read-only projection outside the configured rate bounds', async () => {
+  test('keeps a capped read-only projection when tick rounding exceeds the buy bound', async () => {
     await expect(
       prepareCappedBootstrapOffer({
         offer: {
           marketId,
           assets: 100n,
-          rateBps: 400n,
+          rateBps: 800n,
           referenceObservationId: 'test'
         },
         maximumAssets: 40n,
@@ -164,7 +164,7 @@ describe('createProductionBootstrapAdapters', () => {
           effectiveRateBps: 801n
         })
       })
-    ).rejects.toMatchObject({ operation: 'negative-spread' })
+    ).resolves.toMatchObject({ offer: { assets: 40n, rateBps: 800n } })
   })
 
   test('constructs address-only readers and selects the configured hardcoded bootstrap rate', async () => {

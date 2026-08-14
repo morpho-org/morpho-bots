@@ -1122,7 +1122,7 @@ describe('PositionBootstrapService', () => {
   })
 
   test.each([100n, 900n])(
-    'hard-halts an out-of-bounds rate with zero capacity (%s BPS)',
+    'observes zero capacity after clamping an out-of-bounds buy rate (%s BPS)',
     async rateBps => {
       const { service, positions, rates, reconcile, hardHalt } = setup()
       positions.readPosition = vi.fn(async () => ({
@@ -1142,13 +1142,11 @@ describe('PositionBootstrapService', () => {
       expect(await service.runOnce()).toEqual([
         {
           marketId,
-          status: 'halted',
-          stage: 'decision',
-          strategyInvalidated: true,
-          errorName: 'BootstrapConfigurationError'
+          status: 'observed',
+          action: 'no-capacity'
         }
       ])
-      expect(hardHalt).toHaveBeenCalledWith({ reason: 'bootstrap-decision-failed' })
+      expect(hardHalt).not.toHaveBeenCalled()
       expect(reconcile).not.toHaveBeenCalled()
     }
   )
@@ -1221,8 +1219,8 @@ describe('PositionBootstrapService', () => {
     ])
   })
 
-  test('halts and invalidates the strategy when the bootstrap decision rejects active offers', async () => {
-    const { service, positions, rates, hardHalt } = setup()
+  test('replaces an active offer with the clamped bootstrap buy rate', async () => {
+    const { service, positions, rates, reconcile, hardHalt } = setup()
     positions.readPosition = vi.fn(async () => ({
       credit: 0n,
       debt: 0n,
@@ -1245,13 +1243,21 @@ describe('PositionBootstrapService', () => {
     expect(await service.runOnce()).toEqual([
       {
         marketId,
-        status: 'halted',
-        stage: 'decision',
-        strategyInvalidated: true,
-        errorName: 'BootstrapConfigurationError'
+        status: 'applied',
+        action: 'replace'
       }
     ])
-    expect(hardHalt).toHaveBeenCalledWith({ reason: 'bootstrap-decision-failed' })
+    expect(reconcile).toHaveBeenCalledWith({
+      marketId,
+      desiredOffer: {
+        marketId,
+        assets: 500n,
+        rateBps: 800n,
+        referenceObservationId: 'static:100'
+      },
+      reason: 'replace'
+    })
+    expect(hardHalt).not.toHaveBeenCalled()
   })
 
   test('preflights a negative acceptance threshold before reading a live offer', async () => {

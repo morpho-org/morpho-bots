@@ -138,10 +138,6 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
             cappedOffer === resolved.offer
               ? resolved.prospective
               : await this.transport.toProspectiveBookOffer(cappedOffer, resolved.prospective.tick)
-          const publicationRateBps = publicationProspective.effectiveRateBps ?? cappedOffer.rateBps
-          if (publicationRateBps < minimumRateBps || publicationRateBps > maximumRateBps) {
-            throw new BootstrapAdapterError('negative-spread')
-          }
           resolvedOffer = cappedOffer
           retainedGroup = groups.find(
             group =>

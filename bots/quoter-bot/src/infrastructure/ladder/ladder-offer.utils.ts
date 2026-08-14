@@ -11,6 +11,7 @@ import { LadderAdapterError } from './ladder-adapter.error'
 
 const WAD = 10n ** 18n
 const YEAR_SECONDS = 31_536_000n
+const CROSS_BOOK_RATE_GAP_BPS = 10n
 
 type BuildLadderTreeParameters = {
   quote: LadderQuoteSet
@@ -20,10 +21,13 @@ type BuildLadderTreeParameters = {
   now: bigint
   minimumRateBps?: bigint
   maximumRateBps?: bigint
+  bootstrapBuyTick?: bigint
+  bootstrapBuyRateBps?: bigint
 }
 
 /** Complete locally built ladder tree plus group/rung ownership metadata. */
 type PreparedLadderTree = {
+  quote: LadderQuoteSet
   tree: Tree
   groups: readonly LadderGroupReference[]
   bookOffers: readonly {
@@ -42,21 +46,8 @@ const rateToTick = (rateBps: bigint, market: IMarket, now: bigint) => {
   return TickLib.priceToTick(TickLib.rateToPrice(periodRateWad), BigInt(market.tickSpacing))
 }
 
-const boundedTick = (rateBps: bigint, parameters: BuildLadderTreeParameters) => {
-  const tick = rateToTick(rateBps, parameters.market, parameters.now)
-  const timeToMaturity = BigInt(parameters.market.params.maturity) - parameters.now
-  const encodedRateWad = TickLib.tickToApr(tick, timeToMaturity)
-  const basisPointWad = WAD / 10_000n
-  if (
-    (parameters.minimumRateBps !== undefined &&
-      encodedRateWad < parameters.minimumRateBps * basisPointWad) ||
-    (parameters.maximumRateBps !== undefined &&
-      encodedRateWad > parameters.maximumRateBps * basisPointWad)
-  ) {
-    throw new LadderAdapterError('encoded-rate-out-of-bounds')
-  }
-  return tick
-}
+const quoteTick = (rateBps: bigint, parameters: BuildLadderTreeParameters) =>
+  rateToTick(rateBps, parameters.market, parameters.now)
 
 const sideOffers = (
   side: 'lower' | 'higher',
@@ -81,29 +72,56 @@ const sideOffers = (
           receiverIfMakerIsSeller: parameters.maker
         })
   }
-  return rungs.map((rung, index) => ({
-    rung,
-    offer: Offer.create({
-      ...common,
-      tick: boundedTick(rung.rateBps, parameters),
-      maxAssets: maxAssetsByRung[index]!
-    })
+  const merged = new Map<bigint, { rungs: LadderRung[]; maxAssets: bigint }>()
+  for (const [index, rung] of rungs.entries()) {
+    const requestedTick = quoteTick(rung.rateBps, parameters)
+    const crossingBootstrap =
+      side === 'lower' &&
+      parameters.bootstrapBuyTick !== undefined &&
+      parameters.bootstrapBuyRateBps !== undefined &&
+      requestedTick <= parameters.bootstrapBuyTick
+    const crossingRateBps =
+      crossingBootstrap && parameters.bootstrapBuyRateBps !== undefined
+        ? parameters.bootstrapBuyRateBps - CROSS_BOOK_RATE_GAP_BPS
+        : rung.rateBps
+    const rateBps =
+      crossingBootstrap &&
+      ((parameters.minimumRateBps !== undefined && crossingRateBps < parameters.minimumRateBps) ||
+        (parameters.maximumRateBps !== undefined && crossingRateBps > parameters.maximumRateBps))
+        ? (parameters.minimumRateBps ?? crossingRateBps)
+        : crossingRateBps
+    const adjustedRung = rateBps === rung.rateBps ? rung : { ...rung, rateBps }
+    const tick = crossingBootstrap ? quoteTick(rateBps, parameters) : requestedTick
+    const existing = merged.get(tick)
+    if (existing) {
+      existing.rungs.push(adjustedRung)
+      if (parameters.quote.groupMode === 'shared-rung') {
+        existing.maxAssets += maxAssetsByRung[index]!
+      }
+    } else {
+      merged.set(tick, { rungs: [adjustedRung], maxAssets: maxAssetsByRung[index]! })
+    }
+  }
+  return [...merged].map(([tick, item]) => ({
+    rungs: item.rungs,
+    offer: Offer.create({ ...common, tick, maxAssets: item.maxAssets })
   }))
 }
 
 /**
  * Converts one domain quote set into the exact mixed-side Midnight offer tree.
- * @param parameters - Quote, fresh market, maker, ratifier, block timestamp, and optional minimum
- * and maximum APR bounds in basis points enforced against the exact encoded rate after tick rounding.
- * @returns Tree, protocol-group-to-rung mapping, and prospective book ticks.
- * @throws `LadderAdapterError` when the market has matured, the ladder is empty, or a rounded tick's
- * exact encoded APR is outside a supplied bound; SDK validation errors pass through.
+ * @param parameters - Quote, fresh market, maker, ratifier, block timestamp, optional integer APR
+ * bounds, and optional exact owned-bootstrap buy tick/rate evidence.
+ * @returns Adjusted quote, tree, protocol-group-to-rung mapping, and prospective book ticks.
+ * @throws `LadderAdapterError` when the market has matured or the ladder is empty; SDK validation
+ * errors pass through.
  * @remarks Midnight prices are inverse to rates, so lower rates map to reduce-only sells and higher
  * rates map to lend buys. This keeps every buy tick strictly below every sell tick. Each offer uses
  * the fresh block timestamp as its start so a later publication cannot reuse a previously consumed
  * content-addressed group. `shared-rung` gives each rung an independent cap; `per-book` shares one
- * cap across each side. This function constructs local values only and does not publish or mutate
- * persisted ownership.
+ * cap across each side. Crossing sells move ten basis points below an owned bootstrap buy, duplicate
+ * ticks merge, and adjusted rungs are returned for persistence. This function constructs local values
+ * only and does not publish or mutate persisted ownership.
  */
 export const buildLadderTree = (parameters: BuildLadderTreeParameters): PreparedLadderTree => {
   const caps = offerMaxAssetsByRung(parameters.quote)
@@ -131,7 +149,7 @@ export const buildLadderTree = (parameters: BuildLadderTreeParameters): Prepared
                 {
                   groupId: tree.offers[0]!.group,
                   side: 'lower' as const,
-                  rungIndexes: lower.map(item => item.rung.index)
+                  rungIndexes: lower.flatMap(item => item.rungs.map(rung => rung.index))
                 }
               ]
             : []),
@@ -140,7 +158,7 @@ export const buildLadderTree = (parameters: BuildLadderTreeParameters): Prepared
                 {
                   groupId: tree.offers[lower.length]!.group,
                   side: 'higher' as const,
-                  rungIndexes: higher.map(item => item.rung.index)
+                  rungIndexes: higher.flatMap(item => item.rungs.map(rung => rung.index))
                 }
               ]
             : [])
@@ -148,10 +166,15 @@ export const buildLadderTree = (parameters: BuildLadderTreeParameters): Prepared
       : tree.offers.map((offer, index) => ({
           groupId: offer.group,
           side: tagged[index]!.side,
-          rungIndexes: [tagged[index]!.rung.index]
+          rungIndexes: tagged[index]!.rungs.map(rung => rung.index)
         }))
 
   return {
+    quote: {
+      ...parameters.quote,
+      lower: lower.flatMap(item => item.rungs),
+      higher: higher.flatMap(item => item.rungs)
+    },
     tree,
     groups,
     bookOffers: tree.offers.map((offer, index) => ({
@@ -159,7 +182,7 @@ export const buildLadderTree = (parameters: BuildLadderTreeParameters): Prepared
       buy: offer.buy,
       tick: offer.tick,
       remainingAssets: offer.maxAssets,
-      effectiveRateBps: tagged[index]!.rung.rateBps
+      effectiveRateBps: tagged[index]!.rungs[0]!.rateBps
     }))
   }
 }

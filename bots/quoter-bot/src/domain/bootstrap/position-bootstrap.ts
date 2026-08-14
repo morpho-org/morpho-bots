@@ -177,7 +177,8 @@ export const decidePositionBootstrapTransition = ({
 /**
  * Computes the deterministic bootstrap action from current chain and Mempool truth.
  * @returns The exact observe, invalidate, rest, replace, or publish action for this snapshot.
- * @throws BootstrapConfigurationError when the final premium-adjusted rate is outside hard bounds.
+ * @throws BootstrapConfigurationError when the static bootstrap configuration is invalid.
+ * @remarks An out-of-range bootstrap buy rate is clamped to the configured maximum.
  */
 export const decidePositionBootstrap = ({
   config,
@@ -196,12 +197,10 @@ export const decidePositionBootstrap = ({
   if (transition) return transition
 
   const requestedRateBps = rate.rateBps + config.premiumBps
-  if (requestedRateBps < config.minimumRateBps) {
-    throw new BootstrapConfigurationError('requestedRateBps', 'must be at least minimumRateBps')
-  }
-  if (requestedRateBps > config.maximumRateBps) {
-    throw new BootstrapConfigurationError('requestedRateBps', 'must be at most maximumRateBps')
-  }
+  const offerRateBps =
+    requestedRateBps < config.minimumRateBps || requestedRateBps > config.maximumRateBps
+      ? config.maximumRateBps
+      : requestedRateBps
 
   const assets = [
     config.offerSize,
@@ -225,7 +224,7 @@ export const decidePositionBootstrap = ({
   const offer: BootstrapOffer = {
     marketId: config.marketId,
     assets,
-    rateBps: requestedRateBps,
+    rateBps: offerRateBps,
     referenceObservationId: rate.observationId
   }
 

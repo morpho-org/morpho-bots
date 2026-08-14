@@ -149,15 +149,6 @@ const aggregateBudget = (config: LadderConfig, capacities: LadderMarketState) =>
   return minimum(values)
 }
 
-const assertRungBounds = (rate: bigint, side: 'lower' | 'higher', config: LadderConfig) => {
-  if (rate < config.minimumRateBps || rate > config.maximumRateBps) {
-    throw new LadderConfigurationError(
-      `${side}RateBps`,
-      `${side} rung is outside the configured hard range`
-    )
-  }
-}
-
 /**
  * Validates one complete static ladder shape before any provider read.
  * @param config - Untrusted strategy configuration to validate.
@@ -239,8 +230,9 @@ export const validateLadderConfig = (config: LadderConfig): void => {
  * while still requiring every resulting rung to satisfy the configured hard range.
  * @returns Exact desired quote set; only the nearest rates are funded when the side cannot support
  * every rung at `minimumOfferAssets`, and the outermost funded rung receives division remainders.
- * @throws LadderConfigurationError for invalid config, capacities, or any out-of-bounds runtime rung.
- * @remarks This domain operation never clamps rates and performs no protocol direction/tick mapping.
+ * @throws LadderConfigurationError for invalid config or capacities.
+ * @remarks Sell rungs below the hard range clamp to its minimum and buy rungs above the range clamp
+ * to its maximum. Protocol direction and tick mapping remain infrastructure concerns.
  */
 export const generateLadder = (parameters: GenerateLadderParameters): LadderQuoteSet => {
   const { config, referenceRateBps, capacities = {}, retainedCenterRateBps } = parameters
@@ -259,8 +251,14 @@ export const generateLadder = (parameters: GenerateLadderParameters): LadderQuot
     allocations.flatMap((assets, index) => {
       if (assets === 0n) return []
       const offset = halfSpread + BigInt(index) * config.stepBps
-      const rateBps = side === 'lower' ? centerRateBps - offset : centerRateBps + offset
-      assertRungBounds(rateBps, side, config)
+      const requestedRateBps = side === 'lower' ? centerRateBps - offset : centerRateBps + offset
+      const outOfRange =
+        requestedRateBps < config.minimumRateBps || requestedRateBps > config.maximumRateBps
+      const rateBps = outOfRange
+        ? side === 'lower'
+          ? config.minimumRateBps
+          : config.maximumRateBps
+        : requestedRateBps
       return [{ index, rateBps, assets }]
     })
   const lower = buildRungs('lower', lowerAllocations)

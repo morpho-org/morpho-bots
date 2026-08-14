@@ -269,21 +269,6 @@ export const bootstrapConfigsValue = (
     }
     try {
       validateBootstrapConfig(config)
-      if (config.targetRate.strategy === 'hardcoded') {
-        const requestedRateBps = config.targetRate.hardcodedRateBps + config.premiumBps
-        if (requestedRateBps < config.minimumRateBps) {
-          throw new BootstrapConfigurationError(
-            'requestedRateBps',
-            'must be at least minimumRateBps'
-          )
-        }
-        if (requestedRateBps > config.maximumRateBps) {
-          throw new BootstrapConfigurationError(
-            'requestedRateBps',
-            'must be at most maximumRateBps'
-          )
-        }
-      }
     } catch (error) {
       if (error instanceof BootstrapConfigurationError) {
         throw new ConfigValidationError(

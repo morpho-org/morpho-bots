@@ -31,8 +31,9 @@ export interface LadderOfferTransport {
   listActiveGroupIds(marketId?: Hex): Promise<readonly Hex[]>
   /** Lists the maker's live offers for one market. @param marketId - Market being reconciled. @returns Every offer needed for spread safety. */
   listBookOffers(marketId: Hex): Promise<readonly LadderBookOffer[]>
-  /** Prepares a policy-checked desired tree without broadcasting it. @param quote - Exact desired quote set. @returns Publication metadata and one-shot ratifier/publisher. */
+  /** Prepares a policy-checked desired tree without broadcasting it. @param quote - Exact requested quote set. @returns Adjusted quote, publication metadata, and one-shot ratifier/publisher. */
   preparePublication(quote: LadderQuoteSet): Promise<{
+    quote?: LadderQuoteSet
     groupIds: readonly Hex[]
     groups: readonly LadderGroupReference[]
     prospective: readonly LadderBookOffer[]
@@ -108,7 +109,7 @@ export class MidnightLadderMakeService implements LadderMakeService {
         })
         await this.transport.reservePublication({
           marketId: parameters.marketId,
-          quote: parameters.desired!,
+          quote: publication.quote ?? parameters.desired!,
           groups: publication.groups
         })
       }

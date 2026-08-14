@@ -510,40 +510,48 @@ describe('LadderQuoterService', () => {
     ])
   })
 
-  test.each([
-    ['reference read', 'reference-read-failed'],
-    ['runtime bounds', 'ladder-decision-failed']
-  ])('hard-halts on %s', async (failure, reason) => {
+  test('hard-halts on a reference read failure', async () => {
     const subject = harness()
-    if (failure === 'reference read') {
-      subject.service = new LadderQuoterService(
-        {
-          async readMarket() {
-            return state()
-          }
+    subject.service = new LadderQuoterService(
+      {
+        async readMarket() {
+          return state()
+        }
+      },
+      {
+        async readRate() {
+          throw new RangeError('private')
+        }
+      },
+      {
+        async readActive() {
+          return undefined
         },
-        {
-          async readRate() {
-            throw new RangeError('private')
-          }
+        async reconcile() {},
+        async hardHalt(parameters) {
+          subject.halts.push(parameters.reason)
         },
-        {
-          async readActive() {
-            return undefined
-          },
-          async reconcile() {},
-          async hardHalt(parameters) {
-            subject.halts.push(parameters.reason)
-          },
-          async cleanup() {
-            subject.liveDesired.clear()
-          }
-        },
-        [config()]
-      )
-    } else subject.setRate(801n)
+        async cleanup() {
+          subject.liveDesired.clear()
+        }
+      },
+      [config()]
+    )
+
     const result = await subject.service.runOnce()
-    expect(subject.halts).toEqual([reason])
+
+    expect(subject.halts).toEqual(['reference-read-failed'])
     expect(result).toMatchObject([{ status: 'halted' }])
+  })
+
+  test('publishes with clamped runtime bounds instead of hard-halting', async () => {
+    const subject = harness()
+    subject.setRate(801n)
+
+    const result = await subject.service.runOnce()
+
+    expect(subject.halts).toEqual([])
+    expect(result).toMatchObject([{ status: 'applied', action: 'publish' }])
+    expect(subject.reconciliations[0]?.desired?.higher.at(-1)?.rateBps).toBe(1_000n)
   })
 })

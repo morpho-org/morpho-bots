@@ -1,4 +1,4 @@
-import { MAX_TICK, midnightAbi, Payload } from '@morpho-org/midnight-sdk'
+import { MAX_TICK, midnightAbi, Payload, TickLib } from '@morpho-org/midnight-sdk'
 import { morphoViemExtension } from '@morpho-org/morpho-sdk'
 import { getChainAddress } from '@morpho-org/morpho-ts'
 import {
@@ -68,6 +68,7 @@ type ProductionLadderAdapters = {
 }
 
 const minimum = (left: bigint, right: bigint) => (left < right ? left : right)
+const BPS_WAD = 100_000_000_000_000n
 
 type ProductionLadderCapacityParameters = {
   marketId: Hex
@@ -463,10 +464,21 @@ export const createProductionLadderAdapters = (
   const prepareUnsignedPublication = async (quote: LadderQuoteSet) => {
     const selectedConfig = config.ladder.find(item => item.marketId === quote.marketId)
     if (!selectedConfig) throw new LadderAdapterError('market-not-configured')
-    const [market, block] = await Promise.all([
+    const [market, block, bookState] = await Promise.all([
       midnight.getMarketData(quote.marketId),
-      client.getBlock({ blockTag: 'latest' })
+      client.getBlock({ blockTag: 'latest' }),
+      completeBookOffers(quote.marketId)
     ])
+    const bootstrapBuy = bookState.book
+      .filter(offer => offer.buy && offer.overlapOwner === 'bootstrap-buy')
+      .reduce<(typeof bookState.book)[number] | undefined>(
+        (highest, offer) => (highest === undefined || offer.tick > highest.tick ? offer : highest),
+        undefined
+      )
+    const bootstrapBuyRateBps =
+      bootstrapBuy === undefined
+        ? undefined
+        : TickLib.tickToApr(bootstrapBuy.tick, market.params.maturity - block.timestamp) / BPS_WAD
     const prepared = buildLadderTree({
       quote,
       market,
@@ -474,7 +486,13 @@ export const createProductionLadderAdapters = (
       ratifier: config.setup.ratifier,
       now: block.timestamp,
       minimumRateBps: selectedConfig.minimumRateBps,
-      maximumRateBps: selectedConfig.maximumRateBps
+      maximumRateBps: selectedConfig.maximumRateBps,
+      ...(bootstrapBuy === undefined || bootstrapBuyRateBps === undefined
+        ? {}
+        : {
+            bootstrapBuyTick: bootstrapBuy.tick,
+            bootstrapBuyRateBps
+          })
     })
     await prepared.tree.mempoolValidate({
       chainId: base.id,
@@ -573,6 +591,7 @@ export const createProductionLadderAdapters = (
       })
       const groupIds = [...new Set(prepared.groups.map(group => group.groupId))]
       return {
+        quote: prepared.quote,
         groupIds,
         groups: prepared.groups,
         prospective: ownedLadderProspectiveOffers(prepared.bookOffers),

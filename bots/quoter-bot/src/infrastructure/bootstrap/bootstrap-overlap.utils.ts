@@ -11,6 +11,7 @@ import { BootstrapAdapterError } from './bootstrap-adapter.error'
 import { bootstrapBookOffers } from './bootstrap-groups.utils'
 
 const BPS_WAD = 100_000_000_000_000n
+const CROSS_BOOK_RATE_GAP_BPS = 10n
 
 /** Live ladder-sell evidence that permits one intentional bootstrap overlap. */
 export type BootstrapOverlapBookOffer = BookOffer & {
@@ -77,14 +78,14 @@ export const bootstrapLadderSellOverlapBookOffers = (parameters: {
 
 /**
  * Resolves a premium-adjusted bootstrap buy against the current maker book.
- * @param parameters - Desired offer, its exact prospective tick, retained book, replacement IDs,
- * and exact tick projector used only when overlap requires repricing at the selected sell tick.
- * @returns The original safe offer, a sell-rate-adjusted positive remainder, or `undefined` when
+ * @param parameters - Desired offer, its prospective tick, retained book, replacement IDs, hard
+ * rate bounds, and projector used to verify the adjusted buy against the complete retained book.
+ * @returns The original safe offer, a sell-rate-plus-ten-bps positive remainder, or `undefined` when
  * the selected sell already covers the expected bootstrap assets.
  * @throws `BootstrapAdapterError` when a crossing is pre-existing, ambiguous, not caused by the
  * prospective buy, or lacks positive ladder-owned size and current effective-rate evidence.
  * @remarks Only the unique lowest-tick (highest-rate) eligible ladder sell may overlap. The
- * adjusted offer is re-projected and must remain non-crossing against every other retained offer.
+ * adjusted buy is clamped to its maximum bound, re-projected, and must remain non-crossing.
  */
 export const resolveBootstrapProspectiveOffer = async (parameters: {
   desiredOffer: BootstrapOffer
@@ -126,9 +127,7 @@ export const resolveBootstrapProspectiveOffer = async (parameters: {
   if (
     prospective.tick < crossingSell.tick ||
     evidence === undefined ||
-    evidence.remainingAssets <= 0n ||
-    evidence.effectiveRateBps < parameters.minimumRateBps ||
-    evidence.effectiveRateBps > parameters.maximumRateBps
+    evidence.remainingAssets <= 0n
   ) {
     throw negativeSpread()
   }
@@ -136,25 +135,22 @@ export const resolveBootstrapProspectiveOffer = async (parameters: {
   const assets = parameters.desiredOffer.assets - evidence.remainingAssets
   if (assets <= 0n) return undefined
 
+  const requestedRateBps = evidence.effectiveRateBps + CROSS_BOOK_RATE_GAP_BPS
+  const rateBps =
+    requestedRateBps < parameters.minimumRateBps || requestedRateBps > parameters.maximumRateBps
+      ? parameters.maximumRateBps
+      : requestedRateBps
   const offer = {
     ...parameters.desiredOffer,
     assets,
-    rateBps: evidence.effectiveRateBps
+    rateBps
   }
-  const adjustedProspective = await parameters.toProspectiveBookOffer(offer, crossingSell.tick)
-  const adjustedRateBps = adjustedProspective.effectiveRateBps ?? evidence.effectiveRateBps
-  if (
-    adjustedRateBps < parameters.minimumRateBps ||
-    adjustedRateBps > parameters.maximumRateBps ||
-    hasNegativeSpread([
-      ...retained.filter(candidate => candidate !== crossingSell),
-      adjustedProspective
-    ])
-  ) {
+  const adjustedProspective = await parameters.toProspectiveBookOffer(offer)
+  if (hasNegativeSpread([...retained, adjustedProspective])) {
     throw negativeSpread()
   }
   return {
-    offer: { ...offer, rateBps: adjustedRateBps },
+    offer,
     prospective: adjustedProspective
   }
 }

@@ -117,14 +117,7 @@ export const prepareCappedBootstrapOffer = async (
     return { offer: parameters.offer, created: parameters.created }
   }
   const offer = { ...parameters.offer, assets: parameters.maximumAssets }
-  const { created, effectiveRateBps } = await parameters.prepareOffer(offer, parameters.exactTick)
-  if (
-    effectiveRateBps !== undefined &&
-    ((parameters.minimumRateBps !== undefined && effectiveRateBps < parameters.minimumRateBps) ||
-      (parameters.maximumRateBps !== undefined && effectiveRateBps > parameters.maximumRateBps))
-  ) {
-    throw new BootstrapAdapterError('negative-spread')
-  }
+  const { created } = await parameters.prepareOffer(offer, parameters.exactTick)
   return { offer, created }
 }
 
