@@ -28,6 +28,24 @@ describe('quoter-bot container release artifacts', () => {
     )
   })
 
+  test('documents the quoter-bot release tag environment policy', () => {
+    const readme = readFileSync(resolve(packageRoot, 'README.md'), 'utf8')
+
+    expect(readme).toContain('tags matching `quoter-bot-*`')
+    expect(readme).not.toContain('tags matching `market-making-*`')
+  })
+
+  test('chooses release-note baselines below a backfilled release', () => {
+    const workflow = readFileSync(
+      resolve(repositoryRoot, '.github/workflows/tag-releases.yml'),
+      'utf8'
+    )
+
+    expect(workflow).toContain('grep -Fxv -- "$tag_name"')
+    expect(workflow).toContain('sort -V | grep -B1 -Fx -- "$tag_name" | head -n 1')
+    expect(workflow).toContain('[ "$prev_tag" = "$tag_name" ] && prev_tag=""')
+  })
+
   test('excludes the release being rewritten from release-note baselines', () => {
     const instructions = readFileSync(
       resolve(repositoryRoot, '.claude/commands/ci-write-release-notes.md'),
