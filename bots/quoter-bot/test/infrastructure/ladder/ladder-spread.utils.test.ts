@@ -21,6 +21,20 @@ describe('assertLadderProspectiveSpread', () => {
     ).not.toThrow()
   })
 
+  test('ignores an unrelated crossing among retained third-party offers', () => {
+    expect(() =>
+      assertLadderProspectiveSpread({
+        marketId,
+        replacedGroupIds: new Set(),
+        book: [
+          { marketId, buy: false, tick: 10n },
+          { marketId, buy: true, tick: 10n }
+        ],
+        prospective: [{ marketId, buy: true, tick: 9n }]
+      })
+    ).not.toThrow()
+  })
+
   test('rejects a prospective ladder crossing a retained sell', () => {
     let caught: unknown
     try {

@@ -358,7 +358,7 @@ describe('MidnightBootstrapMakeService', () => {
     expect(events).toEqual([])
   })
 
-  test('fails closed when the retained book is already crossed without the prospective buy', async () => {
+  test('ignores a retained crossing that is unrelated to the prospective buy', async () => {
     const service = new MidnightBootstrapMakeService({
       listActiveGroups: async () => [],
       listBookOffers: async () => [
@@ -366,7 +366,10 @@ describe('MidnightBootstrapMakeService', () => {
         { marketId, buy: true, tick: 100n }
       ],
       toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 99n }),
-      preparePublication: async () => ({ groupId: publishedGroupId, publish: async () => {} }),
+      preparePublication: async () => ({
+        groupId: publishedGroupId,
+        publish: async () => publicationHash
+      }),
       reserveGroup: async () => {},
       confirmPublishedGroup: async () => {},
       releaseGroupReservation: async () => {},
@@ -374,12 +377,11 @@ describe('MidnightBootstrapMakeService', () => {
       invalidateBatch: async () => {}
     })
 
-    const error = await service
-      .reconcile({ marketId, desiredOffer, reason: 'publish' })
-      .catch(value => value)
-
-    expect(error).toBeInstanceOf(BootstrapAdapterError)
-    expect(error).toMatchObject({ operation: 'negative-spread' })
+    await expect(service.reconcile({ marketId, desiredOffer, reason: 'publish' })).resolves.toEqual(
+      {
+        submittedTransactions: [{ operation: 'publish', txHash: publicationHash }]
+      }
+    )
   })
 
   test('never publishes a prospective buy that crosses the current whole book', async () => {
