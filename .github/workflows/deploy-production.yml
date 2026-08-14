@@ -140,6 +140,9 @@ jobs:
         with:
           app-id: ${{ secrets.GIT_BOT_CLIENT_ID }}
           private-key: ${{ secrets.GIT_BOT_PRIVATE_KEY }}
+          # Fail the mint itself when the installation cannot write releases: preflight must prove
+          # the post-deploy release step's exact capability before Railway is touched.
+          permission-contents: write
 
   Quoter-bot:
     needs: Quoter-bot-preflight
@@ -256,6 +259,9 @@ jobs:
         with:
           app-id: ${{ secrets.GIT_BOT_CLIENT_ID }}
           private-key: ${{ secrets.GIT_BOT_PRIVATE_KEY }}
+          # Fail the mint itself when the installation cannot write releases: preflight must prove
+          # the post-deploy release step's exact capability before Railway is touched.
+          permission-contents: write
       - name: Create release
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -276,3 +282,17 @@ jobs:
           echo "Creating release $tag (previous: ${prev:-none})"
           gh release create "$tag" --target "$SHA" --title "$tag" --generate-notes \
             ${prev:+--notes-start-tag "$prev"}
+      # Version-bump releases get their notes rewritten by claude-write-release-notes.yml via the
+      # repository_dispatch tag-releases.yml sends; labeled releases must dispatch it themselves or
+      # they keep the generated notes. Dispatch events fired with the default GITHUB_TOKEN do start
+      # workflows (unlike tag/release events).
+      - name: Dispatch write-release-notes event
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./bots/quoter-bot/package.json').version")"
+          gh api "repos/${{ github.repository }}/dispatches" \
+            --method POST \
+            --field event_type='write-release-notes' \
+            --field "client_payload[release_tags]=quoter-bot-$version"

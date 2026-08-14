@@ -94,10 +94,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
-          # Labels of the PR whose merge produced this commit.
-          labels="$(gh api "repos/$REPO/commits/$SHA/pulls" --jq '.[].labels[].name')"
+          # The label lives on the PR that BUMPED the version, which in a multi-commit push is not
+          # necessarily the final commit — so resolve the last commit in the pushed range that
+          # touched the manifest and read that commit's PR labels (falling back to the push head
+          # when the baseline is unavailable).
+          if [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ] \
+            && git cat-file -e "$BEFORE_SHA" 2>/dev/null; then
+            bump_commit="$(git log -1 --format=%H "$BEFORE_SHA..$SHA" -- bots/quoter-bot/package.json)"
+          else
+            bump_commit=""
+          fi
+          bump_commit="${bump_commit:-$SHA}"
+          labels="$(gh api "repos/$REPO/commits/$bump_commit/pulls" --jq '.[].labels[].name')"
           if echo "$labels" | grep -qx 'release-quoter-bot'; then
             echo "deploy_labeled=true" >> "$GITHUB_OUTPUT"
           else
@@ -113,6 +124,9 @@ jobs:
         with:
           app-id: ${{ secrets.GIT_BOT_CLIENT_ID }}
           private-key: ${{ secrets.GIT_BOT_PRIVATE_KEY }}
+          # Fail the mint itself when the installation cannot write releases, instead of
+          # discovering it at gh release create time.
+          permission-contents: write
 
       - name: Check and create releases
         id: create

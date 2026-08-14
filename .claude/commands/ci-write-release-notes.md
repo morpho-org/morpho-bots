@@ -20,14 +20,19 @@ expected pattern.
 
 For each release tag:
 
-1. **Find the previous release tag** for that bot:
+1. **Find the previous release tag** for that bot — the highest tag strictly BELOW the release
+   being rewritten:
 
    ```bash
-   git tag -l "{bot}-*" --sort=-version:refname | grep -Fxv -- "$RELEASE_TAG" | head -5
+   { git tag -l "{bot}-*" | grep -Fxv -- "$RELEASE_TAG" || true; echo "$RELEASE_TAG"; } \
+     | sort -V | awk -v cur="$RELEASE_TAG" '$0 == cur { exit } { print }' | tail -5
    ```
 
-   Exclude the release currently being rewritten (`$RELEASE_TAG`): it already exists locally when
-   this command runs and must not be selected as its own comparison baseline.
+   This lists up to five candidates in ascending order, all lower than `$RELEASE_TAG`; use the last
+   one as the baseline. Never select `$RELEASE_TAG` itself (it already exists locally when this
+   command runs) and never select a tag above it: for a backfilled older release, a newer baseline
+   would produce a backwards newer→older diff. An empty list means this is the lowest/first
+   release — treat it as an initial release.
 
 2. **Compare the diff** between the newly-published tag and the previous one. Bots assemble their
    behavior from the shared `packages/*` workspace, so include it alongside the bot's own tree:

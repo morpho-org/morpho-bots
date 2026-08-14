@@ -53,7 +53,7 @@ describe('quoter-bot container release artifacts', () => {
     )
 
     expect(instructions).toContain(
-      'git tag -l "{bot}-*" --sort=-version:refname | grep -Fxv -- "$RELEASE_TAG" | head -5'
+      `{ git tag -l "{bot}-*" | grep -Fxv -- "$RELEASE_TAG" || true; echo "$RELEASE_TAG"; } \\`
     )
   })
 
@@ -198,7 +198,7 @@ describe('quoter-bot container release artifacts', () => {
       workflow.indexOf('- name: Mint app installation token')
     )
 
-    expect(labelLookup).toContain('gh api "repos/$REPO/commits/$SHA/pulls"')
+    expect(labelLookup).toContain('gh api "repos/$REPO/commits/$bump_commit/pulls"')
     expect(labelLookup).not.toContain('|| true')
   })
 
