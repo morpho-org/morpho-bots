@@ -1,6 +1,7 @@
 import type { Hex } from 'viem'
 
 import { isBytes32 } from '../bytes32'
+import { clampRateBps, CROSS_BOOK_CLEARANCE_BPS } from '../cross-book'
 import { LadderConfigurationError } from './ladder-configuration.error'
 
 const WEIGHT_SCALE_BPS = 10_000n
@@ -39,13 +40,16 @@ export type LadderConfig = {
  * Fresh inventory by rate side plus exposure-increasing lend capacity for one ladder market.
  * @remarks Lower-rate capacity is accrued credit for reduce-only sells. Higher-rate capacity is
  * available loan-token balance and allowance for lend buys; target and total capacities cap only
- * that higher-rate exposure-increasing side.
+ * that higher-rate exposure-increasing side. `bootstrapBuyRateBps` is the highest live own
+ * bootstrap-buy rate; sells quote at least {@link CROSS_BOOK_CLEARANCE_BPS} below it so the ladder
+ * cannot cross the own bootstrap offer.
  */
 export type LadderMarketState = {
   lowerRateCapacityAssets?: bigint
   higherRateCapacityAssets?: bigint
   targetMarketCapacityAssets?: bigint
   maximumTotalCapacityAssets?: bigint
+  bootstrapBuyRateBps?: bigint
 }
 
 /** One exact domain rung before protocol-specific tick and buy/sell conversion. */
@@ -149,14 +153,10 @@ const aggregateBudget = (config: LadderConfig, capacities: LadderMarketState) =>
   return minimum(values)
 }
 
-const assertRungBounds = (rate: bigint, side: 'lower' | 'higher', config: LadderConfig) => {
-  if (rate < config.minimumRateBps || rate > config.maximumRateBps) {
-    throw new LadderConfigurationError(
-      `${side}RateBps`,
-      `${side} rung is outside the configured hard range`
-    )
-  }
-}
+const clearedSellRateBps = (rate: bigint, bootstrapBuyRateBps: bigint | undefined) =>
+  bootstrapBuyRateBps === undefined
+    ? rate
+    : bigintMin(rate, bootstrapBuyRateBps - CROSS_BOOK_CLEARANCE_BPS)
 
 /**
  * Validates one complete static ladder shape before any provider read.
@@ -231,16 +231,49 @@ export const validateLadderConfig = (config: LadderConfig): void => {
 }
 
 /**
+ * Validates that the full ladder shape quoted at one exact reference fits the hard range.
+ * @param config - Static strategy configuration whose shape and bounds are validated first.
+ * @param referenceRateBps - Exact reference the shape is anchored to, before the quote premium.
+ * @returns Nothing when every rung of the full shape stays inside the hard range.
+ * @throws LadderConfigurationError when the config is invalid or an outer rung leaves the range.
+ * @remarks Static preflight for operator-pinned references: runtime generation clamps rungs, so a
+ * hardcoded target that cannot fit unclamped must fail loud at configuration time instead.
+ */
+export const assertLadderShapeAtReference = (
+  config: LadderConfig,
+  referenceRateBps: bigint
+): void => {
+  validateLadderConfig(config)
+  const centerRateBps = referenceRateBps + config.quotePremiumBps
+  const outerOffsetBps = config.spreadBps / 2n + BigInt(config.rungCount - 1) * config.stepBps
+  if (centerRateBps - outerOffsetBps < config.minimumRateBps) {
+    throw new LadderConfigurationError(
+      'lowerRateBps',
+      'lower rung is outside the configured hard range'
+    )
+  }
+  if (centerRateBps + outerOffsetBps > config.maximumRateBps) {
+    throw new LadderConfigurationError(
+      'higherRateBps',
+      'higher rung is outside the configured hard range'
+    )
+  }
+}
+
+/**
  * Generates exact lower/higher rates and deterministic bigint allocations for one market snapshot.
  * @param parameters - Input object: `config` defines the static shape, budgets, cadence, and hard
  * rate range; `referenceRateBps` is the fresh reference in integer basis points; `capacities`
- * optionally supplies fresh balance, credit, and exposure-increasing lend caps; and
- * `retainedCenterRateBps` optionally keeps a previously active center inside movement tolerance
- * while still requiring every resulting rung to satisfy the configured hard range.
+ * optionally supplies fresh balance, credit, exposure-increasing lend caps, and the live own
+ * bootstrap-buy rate; and `retainedCenterRateBps` optionally keeps a previously active center
+ * inside movement tolerance while still clamping every resulting rung into the hard range.
  * @returns Exact desired quote set; only the nearest rates are funded when the side cannot support
  * every rung at `minimumOfferAssets`, and the outermost funded rung receives division remainders.
- * @throws LadderConfigurationError for invalid config, capacities, or any out-of-bounds runtime rung.
- * @remarks This domain operation never clamps rates and performs no protocol direction/tick mapping.
+ * @throws LadderConfigurationError for an invalid config or negative capacity input.
+ * @remarks Rungs walking outside the hard range saturate at the bound instead of failing: sells
+ * settle on `minimumRateBps` and buys on `maximumRateBps`. Sells additionally quote at least
+ * {@link CROSS_BOOK_CLEARANCE_BPS} below any live own bootstrap buy so both strategies cannot cross.
+ * Saturated neighbouring rungs may share one rate; protocol tick mapping merges equal-tick rungs.
  */
 export const generateLadder = (parameters: GenerateLadderParameters): LadderQuoteSet => {
   const { config, referenceRateBps, capacities = {}, retainedCenterRateBps } = parameters
@@ -259,8 +292,12 @@ export const generateLadder = (parameters: GenerateLadderParameters): LadderQuot
     allocations.flatMap((assets, index) => {
       if (assets === 0n) return []
       const offset = halfSpread + BigInt(index) * config.stepBps
-      const rateBps = side === 'lower' ? centerRateBps - offset : centerRateBps + offset
-      assertRungBounds(rateBps, side, config)
+      const shapedRateBps = side === 'lower' ? centerRateBps - offset : centerRateBps + offset
+      const clearedRateBps =
+        side === 'lower'
+          ? clearedSellRateBps(shapedRateBps, capacities.bootstrapBuyRateBps)
+          : shapedRateBps
+      const rateBps = clampRateBps(clearedRateBps, config.minimumRateBps, config.maximumRateBps)
       return [{ index, rateBps, assets }]
     })
   const lower = buildRungs('lower', lowerAllocations)
