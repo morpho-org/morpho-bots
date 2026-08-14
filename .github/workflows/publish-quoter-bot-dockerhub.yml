@@ -1,11 +1,10 @@
 name: Publish quoter-bot Docker Hub
 
 # Reusable publish-only job for quoter-bot's public Docker Hub image. Production's release selector
-# calls this workflow when a `release-quoter-bot` label lands on main, in parallel with the Railway
-# deploy: the repo-root build of bots/quoter-bot/Dockerfile is pushed tagged with the release
-# commit hash and, when no newer release has shipped, `latest`. The push never gates the Railway
-# deploy or the GitHub release. Authentication exchanges the run's GitHub OIDC token through the
-# Docker org's OIDC connection (docker/login-action v4.5+), so CI stores no static Docker Hub
+# calls this workflow after the Railway deploy succeeds: the repo-root build of
+# bots/quoter-bot/Dockerfile is pushed tagged with the release commit hash and, when no newer
+# release has shipped, `latest`. The push never gates the GitHub release. Authentication exchanges
+# the run's GitHub OIDC token through the Docker org's OIDC connection (docker/login-action v4.5+), so CI stores no static Docker Hub
 # credential.
 
 on:
@@ -76,9 +75,10 @@ jobs:
           username: ${{ vars.DOCKER_USERNAME }}
 
       # Docker tags are mutable by default. Check through the authenticated Docker session so a
-      # first publish can distinguish a missing repository from an existing private tag. Fail closed
-      # on an existing commit tag and on unexpected registry failures.
+      # first publish can distinguish a missing repository from an existing private tag. An existing
+      # immutable tag is reused on reruns so a failed/missed `latest` update can recover safely.
       - name: Check immutable SHA tag
+        id: sha-tag
         env:
           DOCKER_USERNAME: ${{ vars.DOCKER_USERNAME }}
           DOCKER_REPOSITORY: ${{ vars.DOCKER_REPOSITORY }}
@@ -89,8 +89,9 @@ jobs:
           inspect_error="$(mktemp)"
           trap 'rm -f "$inspect_error"' EXIT
           if docker buildx imagetools inspect "$image" >/dev/null 2>"$inspect_error"; then
-            echo 'commit SHA tag already exists'
-            exit 1
+            echo 'commit SHA tag already exists; reusing immutable image'
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           if grep -Eqi 'manifest unknown|not found|pull access denied|repository does not exist' "$inspect_error"; then
             echo 'commit SHA tag is not readable; proceeding with first publish'
@@ -124,12 +125,15 @@ jobs:
           done
           if [ -n "$newer" ]; then
             echo "::notice::release ${newer} descends from ${COMMIT_SHA}; not moving latest"
+            echo "move_latest=false" >> "$GITHUB_OUTPUT"
           else
             tags="${tags},${DOCKER_USERNAME}/${DOCKER_REPOSITORY}:latest"
+            echo "move_latest=true" >> "$GITHUB_OUTPUT"
           fi
           echo "tags=${tags}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
+        if: ${{ steps.sha-tag.outputs.exists != 'true' }}
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           # Path context (the checkout above, honoring inputs.ref) — the default Git context would
@@ -142,3 +146,17 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ steps.commit.outputs.sha }}
+
+      # A previous attempt may have published the immutable SHA before failing to update `latest`.
+      # Retag the existing manifest instead of rebuilding or mutating the immutable tag.
+      - name: Recover latest from immutable SHA tag
+        if: ${{ steps.sha-tag.outputs.exists == 'true' && steps.tags.outputs.move_latest == 'true' }}
+        env:
+          DOCKER_USERNAME: ${{ vars.DOCKER_USERNAME }}
+          DOCKER_REPOSITORY: ${{ vars.DOCKER_REPOSITORY }}
+          COMMIT_SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          image="${DOCKER_USERNAME}/${DOCKER_REPOSITORY}:${COMMIT_SHA}"
+          latest="${DOCKER_USERNAME}/${DOCKER_REPOSITORY}:latest"
+          docker buildx imagetools create --tag "$latest" "$image"

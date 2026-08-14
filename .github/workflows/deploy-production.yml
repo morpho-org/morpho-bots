@@ -5,9 +5,8 @@ name: Deploy production
 # pull_request:closed) so the run's ref is refs/heads/main — satisfying a main-only environment
 # branch policy and giving the correct main HEAD in github.sha. Releasing publishes the tag, which
 # fires release-slack-notify.yml. A quoter-bot release also pushes the bot image to Docker Hub
-# (commit-hash + `latest` tags) in parallel with the Railway deploy, gating neither the deploy nor
-# the release. Runs on every push; when no release-* label is present, the deploy jobs are simply
-# skipped.
+# (commit-hash + `latest` tags) after the Railway deploy succeeds, without gating the release.
+# Runs on every push; when no release-* label is present, the deploy jobs are simply skipped.
 
 on:
   push:
@@ -112,7 +111,9 @@ jobs:
       ref: ${{ github.sha }}
 
   Quoter-bot-image:
-    needs: Select
+    # Wait for a successful deploy before publishing either release image tag. Release-quoter-bot
+    # still depends only on Quoter-bot, so Docker Hub availability cannot block the GitHub release.
+    needs: [Select, Quoter-bot]
     if: ${{ needs.Select.outputs.quoter_bot == 'true' }}
     # A called workflow can never hold more permissions than its caller job grants, so the OIDC
     # token minting (id-token) the Docker Hub login needs must be granted here too.

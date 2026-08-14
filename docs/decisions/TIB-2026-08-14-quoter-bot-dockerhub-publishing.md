@@ -55,14 +55,14 @@ builds never leaves Railway; nothing publishes to a registry.
 
 ## Proposed Solution
 
-A publish-only reusable workflow plus one non-gating caller job. The image ships as a **parallel
-channel** of the existing production release:
+A publish-only reusable workflow plus one non-gating caller job. The image ships as a
+**post-deploy side channel** of the existing production release:
 
 ```text
-push: main ──▶ Select ──┬─▶ Quoter-bot ──────▶ Release-quoter-bot
-(release-quoter-bot     │   (Railway deploy)   (CalVer tag + GitHub release)
- label, or dispatch)    └─▶ Quoter-bot-image
-                            (Docker Hub push — gates nothing)
+push: main ──▶ Select ──▶ Quoter-bot ──┬─▶ Release-quoter-bot
+(release-quoter-bot        (Railway     │   (CalVer tag + GitHub release)
+ label, or dispatch)        deploy)      └─▶ Quoter-bot-image
+                                               (Docker Hub push — gates nothing)
 ```
 
 **Reusable publish workflow.** `.github/workflows/publish-quoter-bot-dockerhub.yml` is a
@@ -76,8 +76,9 @@ triggering ref instead of `inputs.ref`) and pushes:
 
 - `morphoorg/quoter:<release commit sha>` — an immutable, greppable mapping from image to source,
   also stamped as OCI labels `org.opencontainers.image.revision` / `.source`. Before building, the
-  workflow queries Docker's registry API and fails closed if this tag exists or the registry returns
-  anything other than `404`, so reruns cannot replace an already-published commit image;
+  workflow queries Docker Hub through the authenticated Docker session. A missing tag is built and
+  pushed; an existing tag is reused without rebuilding so a rerun can recover a missed `latest`
+  update without replacing the immutable image. Unexpected registry errors still fail closed;
 - `morphoorg/quoter:latest` — tracks the newest release, and only moves forward: the workflow
   skips `latest` whenever a `quoter-bot-*` release tag descends from the built commit, so a rerun
   of an older release's job backfills that commit's tag without dragging `latest` backward.
@@ -99,8 +100,9 @@ Concurrency is declared **job-level, not workflow-level**, because GitHub ignore
 
 **Caller job.** `Quoter-bot-image` in `deploy-production.yml` reuses the existing `quoter_bot`
 selector flag, so the `release-quoter-bot` label — and the `workflow_dispatch` path, which
-synthesizes the same label — stays the single entry point for "a release is expected". It runs in
-parallel with the Railway deploy job. Because **a called workflow's permissions are capped by the
+synthesizes the same label — stays the single entry point for "a release is expected". It needs the
+Railway deploy job, so neither image tag can publish for a failed deployment. Because **a called
+workflow's permissions are capped by the
 caller job's grant**, the job explicitly grants `contents: read` + `id-token: write`; it passes
 `secrets: inherit` because environment secrets only populate in a reusable workflow when the
 callee declares `environment:` **and** the caller inherits secrets
@@ -125,10 +127,9 @@ unreachable from arbitrary PR branches — the same load-bearing property the Ra
 rely on.
 
 **Non-gating by construction.** `Release-quoter-bot` still `needs:` only the Railway deploy, and
-the deploy does not depend on the image job. A Docker Hub outage cannot block a production
-release; conversely an image can publish even when the Railway deploy fails. That asymmetry is
-accepted: the GitHub release — cut only on deploy success — remains the source of truth for "what
-runs in production".
+the deploy does not depend on the image job. A Docker Hub outage cannot block a production release,
+while a failed deployment prevents both image tags from publishing. The GitHub release — cut only
+on deploy success — remains the source of truth for "what runs in production".
 
 ## Considered Alternatives
 
@@ -147,8 +148,8 @@ Trigger a standalone publish workflow from the GitHub release that `Release-quot
 
 **Why rejected:** the label selector in `deploy-production.yml` is the existing single entry point
 for "a release is expected", already covers the `workflow_dispatch` path, and keeps the pipeline
-in one file. A release trigger would also sequence the image behind the Railway deploy instead of
-in parallel with it.
+in one file. Depending directly on the successful deploy starts the non-gating image job sooner and
+does not require a second event-driven workflow.
 
 ### Alternative 3: gate the GitHub release on the image push
 

@@ -259,7 +259,7 @@ describe('Railway CLI output parsing', () => {
     ])
   })
 
-  test('fails closed when a Docker Hub commit tag already exists', () => {
+  test('reuses an existing Docker Hub commit tag when recovering latest', () => {
     const workflow = readFileSync(
       new URL('../../../../.github/workflows/publish-quoter-bot-dockerhub.yml', import.meta.url),
       'utf8'
@@ -268,32 +268,46 @@ describe('Railway CLI output parsing', () => {
     const login = workflow.indexOf('- name: Login to Docker Hub')
     const immutableCheck = workflow.indexOf('- name: Check immutable SHA tag')
     const push = workflow.indexOf('- name: Build and push')
+    const recoverLatest = workflow.indexOf('- name: Recover latest from immutable SHA tag')
 
     expect(workflow).toContain('docker buildx imagetools inspect "$image"')
-    expect(workflow).toContain("echo 'commit SHA tag already exists'")
+    expect(workflow).toContain('echo "exists=true" >> "$GITHUB_OUTPUT"')
+    expect(workflow).toContain("if: ${{ steps.sha-tag.outputs.exists != 'true' }}")
     expect(workflow).toContain(
-      "echo 'commit SHA tag is not readable; proceeding with first publish'"
+      "if: ${{ steps.sha-tag.outputs.exists == 'true' && steps.tags.outputs.move_latest == 'true' }}"
     )
+    expect(workflow).toContain('echo "move_latest=true" >> "$GITHUB_OUTPUT"')
+    expect(workflow).toContain('docker buildx imagetools create --tag "$latest" "$image"')
     expect(workflow).not.toContain('https://auth.docker.io/token')
     expect(setupBuildx).toBeLessThan(login)
     expect(login).toBeLessThan(immutableCheck)
     expect(immutableCheck).toBeLessThan(push)
+    expect(push).toBeLessThan(recoverLatest)
   })
 
-  test('moves the Docker Hub latest tag only forward', () => {
-    const workflow = readFileSync(
+  test('publishes latest only after the quoter bot deploy succeeds', () => {
+    const deployWorkflow = readFileSync(
+      new URL('../../../../.github/workflows/deploy-production.yml', import.meta.url),
+      'utf8'
+    )
+    const publishWorkflow = readFileSync(
       new URL('../../../../.github/workflows/publish-quoter-bot-dockerhub.yml', import.meta.url),
       'utf8'
     )
+    const imageJob = deployWorkflow.slice(
+      deployWorkflow.indexOf('  Quoter-bot-image:'),
+      deployWorkflow.indexOf('  Release-blue:')
+    )
 
+    expect(imageJob).toContain('needs: [Select, Quoter-bot]')
+    expect(imageJob).toContain("if: ${{ needs.Select.outputs.quoter_bot == 'true' }}")
     // Ancestry against release tags needs full history in the checkout.
-    expect(workflow).toContain('fetch-depth: 0')
-    expect(workflow).toContain('- name: Gate the latest tag')
-    expect(workflow).toContain("git tag -l 'quoter-bot-*'")
-    expect(workflow).toContain('git merge-base --is-ancestor "$COMMIT_SHA" "$commit"')
-    // The build pushes the gate's computed tag list; `latest` is never hardcoded unconditionally.
-    expect(workflow).toContain('tags: ${{ steps.tags.outputs.tags }}')
-    expect(workflow).not.toContain('}}:latest')
+    expect(publishWorkflow).toContain('fetch-depth: 0')
+    expect(publishWorkflow).toContain('- name: Gate the latest tag')
+    expect(publishWorkflow).toContain("git tag -l 'quoter-bot-*'")
+    expect(publishWorkflow).toContain('git merge-base --is-ancestor "$COMMIT_SHA" "$commit"')
+    expect(publishWorkflow).toContain('tags: ${{ steps.tags.outputs.tags }}')
+    expect(publishWorkflow).not.toContain('}}:latest')
   })
 
   test('creates fresh state only during authorized provisioning', () => {
