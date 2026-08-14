@@ -68,4 +68,8 @@ catalog:
   viem: 2.47.17
   vite: 7.3.6
   vitest: 4.1.2
-  zod: 3.25.76
+  # Must match the zod that `@morpho-org/morpho-sdk` (and knip) resolve. viem's transitive `abitype`
+  # declares an optional peer on zod, so a workspace package holding a DIFFERENT zod major gets its
+  # own peer-variation copy of viem — two `BaseError` classes, and every cross-package `instanceof`
+  # against a viem error silently returns false. `test/viem-dedupe.test.ts` guards the invariant.
+  zod: 4.4.3

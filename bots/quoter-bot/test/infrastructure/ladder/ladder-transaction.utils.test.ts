@@ -21,6 +21,10 @@ const ratifier: Address = '0x800B5F12A61B8198a5a6EfD794Cac6699B294d63'
 const root: Hex = `0x${'22'.repeat(32)}`
 const foreignRoot: Hex = `0x${'44'.repeat(32)}`
 const mempool: Address = '0x3333333333333333333333333333333333333333'
+const loanToken: Address = '0x5555555555555555555555555555555555555555'
+const collateral: Address = '0x6666666666666666666666666666666666666666'
+const oracle: Address = '0x7777777777777777777777777777777777777777'
+const alternateOracle: Address = '0x8888888888888888888888888888888888888888'
 
 const approval = (ratified = true, account: Address = maker, selectedRoot: Hex = root) => ({
   to: ratifier,
@@ -31,6 +35,33 @@ const approval = (ratified = true, account: Address = maker, selectedRoot: Hex =
     args: [account, selectedRoot, ratified]
   })
 })
+
+const ladderOffer = (collateralOracle: Address) =>
+  Offer.create({
+    market: {
+      chainId: 8453,
+      midnight: '0x4444444444444444444444444444444444444444',
+      loanToken,
+      collateralParams: [
+        {
+          token: collateral,
+          lltv: 800_000_000_000_000_000n,
+          liquidationCursor: 0n,
+          oracle: collateralOracle
+        }
+      ],
+      maturity: 54_000n,
+      rcfThreshold: 0n,
+      enterGate: '0x0000000000000000000000000000000000000000',
+      liquidatorGate: '0x0000000000000000000000000000000000000000'
+    },
+    buy: true,
+    maker,
+    tick: 100n,
+    expiry: 2_000n,
+    ratifier,
+    maxAssets: 100n
+  })
 
 describe('assertLadderRatificationTransaction', () => {
   test('rejects canonical Setter root approval calldata with trailing bytes', () => {
@@ -73,31 +104,7 @@ describe('assertLadderRatificationTransaction', () => {
 
 describe('assertLadderPublicationTransaction', () => {
   test('rejects altered ratifier data even when the offer set is unchanged', async () => {
-    const offer = Offer.create({
-      market: {
-        chainId: 8453,
-        midnight: '0x4444444444444444444444444444444444444444',
-        loanToken: '0x5555555555555555555555555555555555555555',
-        collateralParams: [
-          {
-            token: '0x6666666666666666666666666666666666666666',
-            lltv: 800_000_000_000_000_000n,
-            liquidationCursor: 0n,
-            oracle: '0x7777777777777777777777777777777777777777'
-          }
-        ],
-        maturity: 54_000n,
-        rcfThreshold: 0n,
-        enterGate: '0x0000000000000000000000000000000000000000',
-        liquidatorGate: '0x0000000000000000000000000000000000000000'
-      },
-      buy: true,
-      maker,
-      tick: 100n,
-      expiry: 2_000n,
-      ratifier,
-      maxAssets: 100n
-    })
+    const offer = ladderOffer(oracle)
     const items = SetterRatifierUtils.ratify({ tree: Tree.create([offer]) })
     const validTransaction = {
       to: mempool,
@@ -114,6 +121,21 @@ describe('assertLadderPublicationTransaction', () => {
     ).resolves.toBeUndefined()
     await expect(
       assertLadderPublicationTransaction(alteredTransaction, { target: mempool, items })
+    ).rejects.toMatchObject({ operation: 'transaction-policy' })
+  })
+
+  test('rejects a payload whose nested market struct differs from the intended offer', async () => {
+    const intended = ladderOffer(oracle)
+    const items = SetterRatifierUtils.ratify({ tree: Tree.create([intended]) })
+    const alteredItems = SetterRatifierUtils.ratify({
+      tree: Tree.create([ladderOffer(alternateOracle)])
+    })
+
+    await expect(
+      assertLadderPublicationTransaction(
+        { to: mempool, data: await Payload.encode(alteredItems), value: 0n },
+        { target: mempool, items }
+      )
     ).rejects.toMatchObject({ operation: 'transaction-policy' })
   })
 })

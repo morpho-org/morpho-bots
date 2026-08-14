@@ -101,6 +101,9 @@ export const runQuoterBotEntrypoint = async (
     logger.result(result)
     return 0
   } catch (error) {
+    if (runtime.signal?.aborted === true && error instanceof Error && error.name === 'AbortError') {
+      return 0
+    }
     const details = failureDetails(error)
     if (details === undefined && !(error instanceof MakerAccountError)) {
       observability?.unexpected(error, 'entrypoint')

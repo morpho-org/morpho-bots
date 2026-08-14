@@ -27,9 +27,6 @@ import {
 const SERVICE = 'quoter-bot'
 const DOCKERFILE_PATH = 'bots/quoter-bot/Dockerfile'
 const STATE_MOUNT_PATH = '/state'
-const LEGACY_STATE_VOLUME_NAME = 'market-making-volume'
-const LEGACY_STATE_VOLUME_MOUNT_PATH = '/state/morpho-quoter-bot'
-const VALID_STATE_VOLUME_MOUNT_PATHS = new Set([STATE_MOUNT_PATH, LEGACY_STATE_VOLUME_MOUNT_PATH])
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 const ENVIRONMENT = process.env.RAILWAY_ENVIRONMENT?.trim() || 'production'
 const DEPLOY_ONLY = /^(1|true)$/i.test(process.env.DEPLOY_ONLY?.trim() || '')
@@ -46,7 +43,6 @@ const requiredRuntimeVariableNames = [
   'LOAN_ASSET_ADDRESS',
   'RATIFIER_ADDRESS',
   'MORPHO_API_BASE_URL',
-  'ROUTER_API_BASE_URL',
   'MARKET_IDS',
   'NATIVE_RESERVE_WEI',
   'MAXIMUM_LEND_EXPOSURE_ASSETS',
@@ -179,50 +175,18 @@ const configuredStateVolume = async () => {
   if (volume.isPendingDeletion) {
     throw new RailwayDeploymentError('Railway state volume is pending deletion')
   }
-  if (!VALID_STATE_VOLUME_MOUNT_PATHS.has(volume.mountPath)) {
+  if (volume.mountPath !== STATE_MOUNT_PATH) {
     throw new RailwayDeploymentError('Railway state volume uses an unexpected mount path')
   }
 
   return volume
 }
 
-const detachedLegacyStateVolume = async () => {
-  const volumes = (await listVolumes()).filter(
-    candidate => candidate.serviceName === undefined && candidate.name === LEGACY_STATE_VOLUME_NAME
-  )
-  if (volumes.length > 1) {
-    throw new RailwayDeploymentError('Railway project has multiple detached legacy state volumes')
-  }
-
-  const volume = volumes[0]
-  if (volume?.isPendingDeletion) {
-    throw new RailwayDeploymentError('Railway legacy state volume is pending deletion')
-  }
-  return volume
-}
-
-const attachLegacyStateVolume = async (volume: { id: string; mountPath: string }) => {
-  if (volume.mountPath !== LEGACY_STATE_VOLUME_MOUNT_PATH) {
-    const { error } = await tryCatch(
-      $`railway volume update --volume ${volume.id} --mount-path ${LEGACY_STATE_VOLUME_MOUNT_PATH} --json`
-    )
-    if (error) throw new RailwayDeploymentError('Failed to update Railway state volume mount path')
-  }
-
-  const { error } = await tryCatch($`railway volume attach --volume ${volume.id} --yes --json`)
-  if (error) throw new RailwayDeploymentError('Failed to attach Railway legacy state volume')
-}
-
 const ensureStateVolume = async () => {
   if (await configuredStateVolume()) return
 
-  const legacyVolume = await detachedLegacyStateVolume()
-  if (legacyVolume) {
-    await attachLegacyStateVolume(legacyVolume)
-  } else {
-    const { error } = await tryCatch($`railway volume add --mount-path ${STATE_MOUNT_PATH} --json`)
-    if (error) throw new RailwayDeploymentError('Failed to create the Railway state volume')
-  }
+  const { error } = await tryCatch($`railway volume add --mount-path ${STATE_MOUNT_PATH} --json`)
+  if (error) throw new RailwayDeploymentError('Failed to create the Railway state volume')
 
   for (let attempt = 1; attempt <= 10; attempt++) {
     if (await configuredStateVolume()) return

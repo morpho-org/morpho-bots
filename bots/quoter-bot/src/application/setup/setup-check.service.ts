@@ -3,11 +3,13 @@ import type { Address, Hex } from 'viem'
 import { waitForMonitorInterval } from '@repo/monitoring'
 
 import { operatorErrorName } from '../operator-error-name.utils'
+import { SetupCheckAbortedError } from './setup-check-aborted.error'
 import {
   booksCheck,
   capture,
   captureSigner,
   chainCheck,
+  hasOnlyTransientProviderFailures,
   providerFailure,
   readOnlyMakerCheck,
   sameAddress,
@@ -17,6 +19,7 @@ import { SetupFailedError } from './setup-failed.error'
 import { SetupMonitorConfigurationError } from './setup-monitor-configuration.error'
 
 const SETUP_CHECK_MONITOR_INTERVAL_MS = 60_000
+const SETUP_CHECK_TRANSIENT_ATTEMPTS = 3
 type SetupCheckStatus = 'passed' | 'failed' | 'not-required'
 
 /** Read-only operator instruction or exact transaction description; never executed by the checker. */
@@ -104,7 +107,7 @@ export type SetupCheckConfig = {
   loanAsset: Address
   /** Minimum allowance granted to Midnight. */
   maximumLendExposure: bigint
-  /** Router-listed Ecrecover or Setter ratifier expected to authorize the maker. */
+  /** Canonical SDK Ecrecover or Setter ratifier expected to authorize the maker. */
   ratifier: Address
   /** Non-empty set of Midnight market identifiers to validate concurrently. */
   marketIds: readonly Hex[]
@@ -153,8 +156,8 @@ export interface SetupStateService {
     loanAsset: Address
   ): Promise<{ spender: Address; amount: bigint }>
   /**
-   * Reads Router registry, runtime-code, immutable-target, callable-surface, and authorization facts.
-   * Independent provider and contract reads should run concurrently with `Promise.all`.
+   * Reads SDK identity, runtime-code, immutable-target, callable-surface, and authorization facts.
+   * Independent contract reads should run concurrently with `Promise.all`.
    * @param maker - Maker whose authorization is checked.
    * @param ratifier - Candidate Ecrecover or Setter ratifier.
    * @returns Sanitized ratifier readiness facts.
@@ -209,12 +212,16 @@ export class SetupCheckService {
 
   /**
    * Evaluates the complete report and enforces readiness for downstream writers.
+   * @param signal - Optional shutdown signal that stops transient startup retries after the current read.
    * @returns The complete ready report.
-   * @throws `SetupFailedError` when any check fails; the error retains every check result.
-   * @remarks Read-only. Independent provider checks run concurrently through `Promise.all`.
+   * @throws `SetupFailedError` when an invariant fails or transient providers remain unavailable
+   * after three total attempts; the error retains every check result from the final attempt.
+   * @remarks Read-only. Independent provider checks run concurrently through `Promise.all` on each
+   * attempt. Only reports caused exclusively by explicitly transient provider failures are retried.
    */
-  async assertReady() {
-    const report = await this.check()
+  async assertReady(signal?: AbortSignal) {
+    const report = await this.checkWithTransientRetries(signal)
+    if (signal?.aborted === true) throw new SetupCheckAbortedError()
     if (!report.ready) throw new SetupFailedError(report)
     return report
   }
@@ -224,8 +231,10 @@ export class SetupCheckService {
    * @param parameters - Shutdown signal, optional report writer, and testable positive interval.
    * @returns A terminal report containing the number of emitted setup observations.
    * @throws `SetupMonitorConfigurationError` when the requested interval is not a positive safe integer.
-   * @remarks Cycles never overlap. Failed readiness is emitted once and halts monitoring so the CLI
-   * exits nonzero; no remediation, signing, transaction submission, or cleanup write is performed.
+   * @remarks Cycles never overlap. Explicitly transient provider-only failures receive three total
+   * read attempts before failed readiness is emitted and monitoring halts. Invariant and mixed
+   * failures halt immediately. No remediation, signing, transaction submission, or cleanup write
+   * is performed.
    */
   async runContinuously(parameters: {
     signal: AbortSignal
@@ -242,7 +251,9 @@ export class SetupCheckService {
 
     while (!parameters.signal.aborted) {
       try {
-        const report = await this.check()
+        const report = await this.checkWithTransientRetries(parameters.signal)
+        if (parameters.signal.aborted) break
+
         await parameters.onCycle?.(report)
         cycles += 1
         if (!report.ready) {
@@ -259,6 +270,17 @@ export class SetupCheckService {
     return cycleErrorName
       ? { status: 'halted', reason: 'cycle-error', cycles, cycleErrorName }
       : { status: 'stopped', reason: 'signal', cycles }
+  }
+
+  private async checkWithTransientRetries(signal?: AbortSignal) {
+    let report = await this.check()
+
+    for (let attempt = 1; attempt < SETUP_CHECK_TRANSIENT_ATTEMPTS; attempt += 1) {
+      if (signal?.aborted === true || !hasOnlyTransientProviderFailures(report)) break
+      report = await this.check()
+    }
+
+    return report
   }
 
   /**
@@ -380,7 +402,7 @@ export class SetupCheckService {
             ratifier.value.surfaceMatches &&
             !ratifier.value.authorized
             ? 'authorize the configured maker with the selected ratifier'
-            : 'select a Router-listed ratifier with the expected deployed surface'
+            : 'select a canonical SDK ratifier with the expected deployed surface'
         )
     const referenceRequired = {
       marketId: this.config.referenceMarketId,

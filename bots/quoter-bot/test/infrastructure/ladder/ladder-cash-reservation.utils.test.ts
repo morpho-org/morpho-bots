@@ -1,4 +1,4 @@
-import type { Hex } from 'viem'
+import type { Address, Hex } from 'viem'
 
 import { describe, expect, test } from 'vitest'
 
@@ -9,6 +9,7 @@ import {
   pendingLadderBuyReservations
 } from '../../../src/infrastructure/ladder/ladder-cash-reservation.utils'
 
+const maker: Address = '0x1111111111111111111111111111111111111111'
 const marketId: Hex = `0x${'11'.repeat(32)}`
 const ladderGroupId: Hex = `0x${'22'.repeat(32)}`
 const bootstrapGroupId: Hex = `0x${'33'.repeat(32)}`
@@ -64,6 +65,26 @@ describe('ladder cash reservations', () => {
         bootstrapGroupIds: [],
         bootstrapOffers: [],
         replacedGroupIds: new Set([ladderGroupId])
+      })
+    ).toEqual([])
+  })
+
+  test('does not reserve a canceled removed-market tombstone reported by the indexer', () => {
+    expect(
+      ladderCashReservations({
+        groups: [
+          {
+            id: ladderGroupId,
+            maxAssets: 50n,
+            consumed: 0n,
+            offers: [{ marketId, maker, buy: true, tick: 1n }]
+          }
+        ],
+        publications: [publication],
+        bootstrapGroupIds: [],
+        bootstrapOffers: [],
+        replacedGroupIds: new Set(),
+        ignoredGroupIds: new Set([ladderGroupId])
       })
     ).toEqual([])
   })

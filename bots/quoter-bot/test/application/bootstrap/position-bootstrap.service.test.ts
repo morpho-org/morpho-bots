@@ -616,6 +616,78 @@ describe('PositionBootstrapService', () => {
     })
   })
 
+  test('does not reserve a bootstrap offer fully covered by ladder liquidity', async () => {
+    const capped = {
+      ...config(),
+      maximumMarketExposure: 600n,
+      maximumTotalExposure: 600n
+    }
+    const { service, make, reconcile } = setup({
+      configs: [capped, { ...capped, marketId: secondMarketId }]
+    })
+    const preview = vi.fn(async parameters =>
+      parameters.marketId === marketId ? undefined : parameters.desiredOffer
+    )
+    make.preview = preview
+
+    expect(await service.runOnce()).toEqual([
+      { marketId, status: 'applied', action: 'publish' },
+      { marketId: secondMarketId, status: 'applied', action: 'publish' }
+    ])
+    expect(preview).toHaveBeenCalledTimes(2)
+    expect(reconcile).toHaveBeenNthCalledWith(2, {
+      marketId: secondMarketId,
+      desiredOffer: {
+        marketId: secondMarketId,
+        assets: 500n,
+        rateBps: 450n,
+        referenceObservationId: 'static:500'
+      },
+      reason: 'publish'
+    })
+  })
+
+  test('passes the original offer with the size reserved by the live preview as a cap', async () => {
+    const capped = {
+      ...config(),
+      maximumMarketExposure: 600n,
+      maximumTotalExposure: 600n
+    }
+    const { service, make, reconcile } = setup({
+      configs: [capped, { ...capped, marketId: secondMarketId }]
+    })
+    make.preview = vi.fn(async parameters =>
+      parameters.marketId === marketId
+        ? { ...parameters.desiredOffer, assets: 200n }
+        : parameters.desiredOffer
+    )
+
+    await service.runOnce()
+
+    expect(reconcile).toHaveBeenNthCalledWith(1, {
+      marketId,
+      desiredOffer: {
+        marketId,
+        assets: 500n,
+        rateBps: 450n,
+        referenceObservationId: 'static:500'
+      },
+      maximumAssets: 200n,
+      onTransactionSubmitted: undefined,
+      reason: 'publish'
+    })
+    expect(reconcile).toHaveBeenNthCalledWith(2, {
+      marketId: secondMarketId,
+      desiredOffer: {
+        marketId: secondMarketId,
+        assets: 400n,
+        rateBps: 450n,
+        referenceObservationId: 'static:500'
+      },
+      reason: 'publish'
+    })
+  })
+
   test('reserves only the net replacement delta before deciding a later market', async () => {
     const capped = {
       ...config(),

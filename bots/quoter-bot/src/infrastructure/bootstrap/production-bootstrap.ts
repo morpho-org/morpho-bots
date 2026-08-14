@@ -28,17 +28,18 @@ import type { HistoricalBlockReader } from '../reference/blue-reference-reader.u
 import type { BootstrapActiveGroup, BootstrapInventoryReader } from './bootstrap-position.service'
 
 import { pendingLadderQuoteSets } from '../ladder/ladder-active-publication.utils'
+import { readLadderBookOffers } from '../ladder/ladder-book.utils'
 import { pendingLadderBuyReservations } from '../ladder/ladder-cash-reservation.utils'
 import { createLadderGroupOwnership } from '../ladder/ladder-group-ownership.utils'
 import { buildLadderTree } from '../ladder/ladder-offer.utils'
 import { createMakerAccount } from '../make/maker-account.utils'
 import { ReadOnlyBootstrapMakeService } from '../make/read-only-bootstrap-make.service'
 import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
+import { mapSelectedMarketItems } from '../selected-market-items.utils'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 import { bootstrapExposureMarketIds } from './bootstrap-exposure.utils'
 import { createBootstrapGroupOwnership } from './bootstrap-group-ownership.utils'
 import {
-  bootstrapBookOffers,
   bootstrapReservedLoanAssets,
   readBootstrapGroups,
   strategyBootstrapGroups
@@ -49,7 +50,14 @@ import {
   validateBootstrapMempoolPublication
 } from './bootstrap-mempool-validation.utils'
 import { bootstrapContinuousFeeCap, createBootstrapOffer } from './bootstrap-offer.utils'
-import { readLivePendingBootstrapOffers } from './bootstrap-pending-offer.utils'
+import {
+  bootstrapLadderSellOverlapBookOffers,
+  resolveBootstrapProspectiveOffer
+} from './bootstrap-overlap.utils'
+import {
+  readLivePendingBootstrapOffers,
+  readOwnedGroupIdsForCleanup
+} from './bootstrap-pending-offer.utils'
 import { MidnightBootstrapPositionService } from './bootstrap-position.service'
 import {
   BlueBootstrapReferenceRateService,
@@ -57,7 +65,7 @@ import {
 } from './bootstrap-reference-rate.service'
 import { createBootstrapRequirementClient } from './bootstrap-requirement-client.utils'
 import { prepareBootstrapRequirements } from './bootstrap-requirements.utils'
-import { assertBootstrapProspectiveSpread, bootstrapMarketGroupIds } from './bootstrap-spread.utils'
+import { bootstrapMarketGroupIds } from './bootstrap-spread.utils'
 import { assertBootstrapTransaction } from './bootstrap-transaction.utils'
 
 const WAD = 10n ** 18n
@@ -79,6 +87,46 @@ type BootstrapMakeLendArguments = {
 export const bootstrapMakeLendArguments = (
   parameters: BootstrapMakeLendArguments
 ): BootstrapMakeLendArguments => parameters
+
+type PrepareCappedBootstrapOfferParameters = {
+  offer: BootstrapOffer
+  maximumAssets?: bigint
+  created: Offer
+  exactTick?: bigint
+  minimumRateBps?: bigint
+  maximumRateBps?: bigint
+  prepareOffer: (
+    offer: BootstrapOffer,
+    exactTick?: bigint
+  ) => Promise<{ created: Offer; effectiveRateBps?: bigint }>
+}
+
+/**
+ * Applies a reconciliation asset cap and re-projects the exact Midnight offer when it changes.
+ * @param parameters - Resolved domain offer, optional cap, current projection, and projection port.
+ * @returns The capped domain offer and matching Midnight offer used for read-only validation.
+ * @throws Forwards projection failures when applying the cap requires a fresh Midnight offer.
+ */
+export const prepareCappedBootstrapOffer = async (
+  parameters: PrepareCappedBootstrapOfferParameters
+) => {
+  if (
+    parameters.maximumAssets === undefined ||
+    parameters.offer.assets <= parameters.maximumAssets
+  ) {
+    return { offer: parameters.offer, created: parameters.created }
+  }
+  const offer = { ...parameters.offer, assets: parameters.maximumAssets }
+  const { created, effectiveRateBps } = await parameters.prepareOffer(offer, parameters.exactTick)
+  if (
+    effectiveRateBps !== undefined &&
+    ((parameters.minimumRateBps !== undefined && effectiveRateBps < parameters.minimumRateBps) ||
+      (parameters.maximumRateBps !== undefined && effectiveRateBps > parameters.maximumRateBps))
+  ) {
+    throw new BootstrapAdapterError('negative-spread')
+  }
+  return { offer, created }
+}
 
 type PublishBootstrapPublicationParameters = {
   ratifierType: 'ecrecover' | 'setter'
@@ -138,6 +186,7 @@ type ProductionBootstrapAdapters = {
  * @param config - Fully validated runtime configuration.
  * @param writeReadOnlyEvent - Optional terminal writer for read-only make records.
  * @param configuredAccount - Optional preconstructed account for write-mode adapter reuse.
+ * @param ignoredOfferGroupIds - Recently canceled ladder groups still visible in the API index.
  * @returns Production read ports and either a live mutation queue or terminal-only make adapter.
  * @throws `BootstrapAdapterError` when write-mode signer identity differs from the configured maker;
  * later provider reads, signing, publication, or invalidation may also fail.
@@ -148,7 +197,8 @@ type ProductionBootstrapAdapters = {
 export const createProductionBootstrapAdapters = (
   config: ConfigService,
   writeReadOnlyEvent?: (line: string) => void | Promise<void>,
-  configuredAccount?: Awaited<ReturnType<typeof createMakerAccount>>
+  configuredAccount?: Awaited<ReturnType<typeof createMakerAccount>>,
+  ignoredOfferGroupIds: readonly Hex[] = []
 ): ProductionBootstrapAdapters | Promise<ProductionBootstrapAdapters> => {
   const maker = config.identity.maker
   const client = createPublicClient({
@@ -169,24 +219,36 @@ export const createProductionBootstrapAdapters = (
     maker,
     strategyMarketIds: config.ladder.map(item => item.marketId)
   })
+  const ignoredGroupIds = new Set(ignoredOfferGroupIds)
+  const readLadderPublications = async () =>
+    (await ladderOwnership.read())
+      .map(publication => ({
+        ...publication,
+        groups: publication.groups.filter(group => !ignoredGroupIds.has(group.groupId))
+      }))
+      .filter(publication => publication.groups.length > 0)
+  const readLadderGroupIds = async () =>
+    (await ladderOwnership.readGroupIds()).filter((groupId: Hex) => !ignoredGroupIds.has(groupId))
   const readGroups = () =>
     readBootstrapGroups({
       maker,
       morphoApiBaseUrl: config.morphoApiBaseUrl,
       requestTimeoutMs: config.requestTimeoutMs
     })
-  const prepareOffer = async (offer: BootstrapOffer) => {
+  const prepareOfferAtLatest = async (offer: BootstrapOffer, exactTick?: bigint) => {
     const [market, block] = await Promise.all([
       midnight.getMarketData(offer.marketId),
       client.getBlock({ blockTag: 'latest' })
     ])
-    return createBootstrapOffer({
+    const created = createBootstrapOffer({
       offer,
       market,
       maker,
       ratifier: config.setup.ratifier,
-      now: block.timestamp
+      now: block.timestamp,
+      exactTick
     })
+    return { created, timestamp: block.timestamp, maturity: market.params.maturity }
   }
   const readGroupConsumed = (groupId: Hex, blockNumber: bigint) =>
     client.readContract({
@@ -263,7 +325,7 @@ export const createProductionBootstrapAdapters = (
       readGroups(),
       ownership.read(),
       ownership.readOffers(),
-      ladderOwnership.read()
+      readLadderPublications()
     ])
     const intended = new Map(
       ownedOffers.map(offer => [`${offer.groupId}:${offer.marketId}`, offer] as const)
@@ -328,7 +390,12 @@ export const createProductionBootstrapAdapters = (
     }
   }
 
-  const ownedGroupIds = () => ownership.read()
+  const uncanceledOwnedGroupIds = () =>
+    readOwnedGroupIdsForCleanup({
+      readOwnedGroupIds: ownership.read,
+      readBlockNumber: async () => (await client.getBlock({ blockTag: 'latest' })).number,
+      readGroupConsumed
+    })
 
   const inventory: BootstrapInventoryReader = {
     readPositions: async () => {
@@ -369,11 +436,23 @@ export const createProductionBootstrapAdapters = (
     new Map(config.bootstrap.map(item => [item.marketId, item.targetRate] as const)),
     blueRates
   )
-  const completeBookOffers = async () => {
-    const [groups, ladderPublications] = await Promise.all([readGroups(), ladderOwnership.read()])
+  const completeBookOffers = async (marketId: Hex) => {
+    const [block, groups, ladderPublications, wholeBook] = await Promise.all([
+      client.getBlock({ blockTag: 'latest' }),
+      readGroups(),
+      readLadderPublications(),
+      readLadderBookOffers({
+        baseUrl: config.morphoApiBaseUrl,
+        marketIds: [marketId],
+        timeoutMs: config.requestTimeoutMs,
+        ignoredOfferGroupIds
+      })
+    ])
     const pendingLadderOffers = (
-      await Promise.all(
-        pendingLadderQuoteSets(ladderPublications, groups).map(async quote => {
+      await mapSelectedMarketItems(
+        marketId,
+        pendingLadderQuoteSets(ladderPublications, groups),
+        async quote => {
           const [market, block] = await Promise.all([
             midnight.getMarketData(quote.marketId),
             client.getBlock({ blockTag: 'latest' })
@@ -385,13 +464,30 @@ export const createProductionBootstrapAdapters = (
             ratifier: config.setup.ratifier,
             now: block.timestamp
           }).bookOffers
-        })
+        }
       )
     ).flat()
+    const enrichedBook = bootstrapLadderSellOverlapBookOffers({
+      groups,
+      eligibleSellGroupIds: new Set(
+        ladderPublications.flatMap(publication =>
+          publication.groups.filter(group => group.side === 'lower').map(group => group.groupId)
+        )
+      ),
+      currentTimestamp: block.timestamp,
+      pendingLadderOffers
+    })
+    const key = (offer: { groupId?: Hex; marketId: Hex; buy: boolean; tick: bigint }) =>
+      `${offer.groupId ?? ''}:${offer.marketId}:${offer.buy ? 'buy' : 'sell'}:${offer.tick}`
+    const enrichedByKey = new Map(enrichedBook.map(offer => [key(offer), offer] as const))
+    const wholeBookKeys = new Set(wholeBook.map(key))
     return {
       groups,
       ladderPublications,
-      book: [...bootstrapBookOffers(groups), ...pendingLadderOffers]
+      book: [
+        ...wholeBook.map(offer => ({ ...offer, ...enrichedByKey.get(key(offer)) })),
+        ...enrichedBook.filter(offer => !wholeBookKeys.has(key(offer)))
+      ]
     }
   }
   const prepareMempoolPublication = (
@@ -416,28 +512,82 @@ export const createProductionBootstrapAdapters = (
 
   if (config.identity.readOnly) {
     const validate = async (parameters: Parameters<BootstrapMakeService['reconcile']>[0]) => {
-      if (!parameters.desiredOffer) return
+      if (!parameters.desiredOffer) return parameters
 
-      const [bookState, ownedIds, prospectiveOffer, activeStrategyGroups] = await Promise.all([
-        completeBookOffers(),
+      const [bookState, ownedIds, activeStrategyGroups, initialPrepared] = await Promise.all([
+        completeBookOffers(parameters.marketId),
         ownership.read(),
-        prepareOffer(parameters.desiredOffer),
-        activeGroups()
+        activeGroups(),
+        prepareOfferAtLatest(parameters.desiredOffer)
       ])
       const marketGroupIds = bootstrapMarketGroupIds(activeStrategyGroups, parameters.marketId)
-      assertBootstrapProspectiveSpread({
-        marketId: parameters.marketId,
-        replacedGroupIds: marketGroupIds,
-        book: bookState.book,
+      const spreadReplacedGroupIds = new Set([
+        ...bootstrapMarketGroupIds(activeStrategyGroups, parameters.marketId),
+        ...ownedIds
+      ])
+      const bounds = config.bootstrap.find(item => item.marketId === parameters.marketId)
+      if (!bounds) throw new BootstrapAdapterError('negative-spread')
+      let created = initialPrepared.created
+      const resolved = await resolveBootstrapProspectiveOffer({
+        desiredOffer: parameters.desiredOffer,
         prospective: {
           marketId: parameters.marketId,
           buy: true,
-          tick: prospectiveOffer.tick
+          tick: created.tick,
+          continuousFeeCap: created.continuousFeeCap
+        },
+        replacedGroupIds: spreadReplacedGroupIds,
+        book: bookState.book,
+        minimumRateBps: bounds.minimumRateBps,
+        maximumRateBps: bounds.maximumRateBps,
+        toProspectiveBookOffer: async (offer, exactTick) => {
+          const prepared = await prepareOfferAtLatest(offer, exactTick)
+          created = prepared.created
+          return {
+            marketId: offer.marketId,
+            buy: true,
+            tick: created.tick,
+            continuousFeeCap: created.continuousFeeCap,
+            ...(exactTick === undefined
+              ? {}
+              : {
+                  effectiveRateBps:
+                    TickLib.tickToApr(created.tick, prepared.maturity - prepared.timestamp) /
+                    (WAD / 10_000n)
+                })
+          }
         }
       })
+      if (!resolved) return { ...parameters, desiredOffer: undefined }
+      const capped = await prepareCappedBootstrapOffer({
+        offer: resolved.offer,
+        maximumAssets: parameters.maximumAssets,
+        created,
+        exactTick: resolved.prospective.tick,
+        minimumRateBps: bounds.minimumRateBps,
+        maximumRateBps: bounds.maximumRateBps,
+        prepareOffer: async (offer, exactTick) => {
+          const prepared = await prepareOfferAtLatest(offer, exactTick)
+          return {
+            created: prepared.created,
+            ...(exactTick === undefined
+              ? {}
+              : {
+                  effectiveRateBps:
+                    TickLib.tickToApr(
+                      prepared.created.tick,
+                      prepared.maturity - prepared.timestamp
+                    ) /
+                    (WAD / 10_000n)
+                })
+          }
+        }
+      })
+      const resolvedOffer = capped.offer
+      created = capped.created
       await prepareMempoolPublication(
-        parameters.desiredOffer,
-        prospectiveOffer,
+        resolvedOffer,
+        created,
         bookState.groups,
         [
           ...ownedIds,
@@ -447,6 +597,7 @@ export const createProductionBootstrapAdapters = (
         ],
         marketGroupIds
       )
+      return { ...parameters, desiredOffer: resolvedOffer }
     }
     return {
       positions,
@@ -458,7 +609,8 @@ export const createProductionBootstrapAdapters = (
   const account = configuredAccount ?? createMakerAccount(config.identity)
   if (account instanceof Promise) {
     return account.then(
-      value => createProductionBootstrapAdapters(config, writeReadOnlyEvent, value),
+      value =>
+        createProductionBootstrapAdapters(config, writeReadOnlyEvent, value, ignoredOfferGroupIds),
       () => {
         throw new BootstrapAdapterError('maker-private-key-mismatch')
       }
@@ -495,17 +647,26 @@ export const createProductionBootstrapAdapters = (
 
   const preparedOffers = new Map<Hex, Offer>()
   const make = new MidnightBootstrapMakeService({
+    rateBounds: marketId => config.bootstrap.find(item => item.marketId === marketId),
     listActiveGroups: activeGroups,
-    listOwnedGroupIds: ownedGroupIds,
-    listBookOffers: async () => (await completeBookOffers()).book,
-    toProspectiveBookOffer: async offer => {
-      const created = await prepareOffer(offer)
+    listOwnedGroupIds: uncanceledOwnedGroupIds,
+    listBookOffers: async marketId => (await completeBookOffers(marketId)).book,
+    toProspectiveBookOffer: async (offer, exactTick) => {
+      const prepared = await prepareOfferAtLatest(offer, exactTick)
+      const created = prepared.created
       preparedOffers.set(offer.marketId, created)
       return {
         marketId: offer.marketId,
         buy: true,
         tick: created.tick,
-        continuousFeeCap: created.continuousFeeCap
+        continuousFeeCap: created.continuousFeeCap,
+        ...(exactTick === undefined
+          ? {}
+          : {
+              effectiveRateBps:
+                TickLib.tickToApr(created.tick, prepared.maturity - prepared.timestamp) /
+                (WAD / 10_000n)
+            })
       }
     },
     invalidate: async (group, onTransactionSubmitted) => {
@@ -532,7 +693,7 @@ export const createProductionBootstrapAdapters = (
       const [groups, ownedIds, ladderOwnedIds, activeStrategyGroups] = await Promise.all([
         readGroups(),
         ownership.read(),
-        ladderOwnership.readGroupIds(),
+        readLadderGroupIds(),
         activeGroups()
       ])
       const replacedGroupIds = bootstrapMarketGroupIds(activeStrategyGroups, offer.marketId)

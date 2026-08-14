@@ -68,6 +68,15 @@ describe('ConfigService', () => {
     expect(config.transactionReceiptTimeoutMs).toBe(180_000)
   })
 
+  test('does not require the retired Router API configuration', () => {
+    const { ROUTER_API_BASE_URL: _retired, ...withoutRouterApi } = environment
+
+    expect(() => ConfigService.from(withoutRouterApi)).not.toThrow()
+    expect(() =>
+      ConfigService.from({ ...withoutRouterApi, ROUTER_API_BASE_URL: 'ignored legacy value' })
+    ).not.toThrow()
+  })
+
   test('canonicalizes equivalent mixed-case market, group, and reference IDs', () => {
     const mixedCase: Hex = `0x${'aB'.repeat(32)}`
     const canonical = bytesToHex(hexToBytes(mixedCase))

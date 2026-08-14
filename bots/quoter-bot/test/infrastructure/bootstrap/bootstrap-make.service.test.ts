@@ -1,6 +1,6 @@
 import type { Hex } from 'viem'
 
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
 
 import type { BootstrapSubmittedTransaction } from '../../../src/application/bootstrap/position-bootstrap-verbose'
 
@@ -23,6 +23,394 @@ const desiredOffer = {
 }
 
 describe('MidnightBootstrapMakeService', () => {
+  test('reads only the reconciled market book for spread validation', async () => {
+    let selectedMarket: Hex | undefined
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [],
+      listBookOffers: async (market: Hex) => {
+        selectedMarket = market
+        return []
+      },
+      toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 99n }),
+      preparePublication: async () => ({ groupId: publishedGroupId, publish: async () => {} }),
+      reserveGroup: async () => {},
+      confirmPublishedGroup: async () => {},
+      releaseGroupReservation: async () => {},
+      invalidate: async () => {}
+    })
+
+    await service.reconcile({ marketId, desiredOffer, reason: 'publish' })
+
+    expect(selectedMarket).toBe(marketId)
+  })
+
+  test('uses the highest-rate ladder sell to resize and reprice a crossing bootstrap offer', async () => {
+    const prepared: (typeof desiredOffer)[] = []
+    const reserved: (typeof desiredOffer)[] = []
+    const projected: { offer: typeof desiredOffer; exactTick?: bigint }[] = []
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [],
+      listBookOffers: async () => [
+        {
+          groupId,
+          marketId,
+          buy: false,
+          tick: 100n,
+          bootstrapOverlap: { remainingAssets: 40n, effectiveRateBps: 450n }
+        },
+        {
+          groupId: publishedGroupId,
+          marketId,
+          buy: false,
+          tick: 110n,
+          bootstrapOverlap: { remainingAssets: 80n, effectiveRateBps: 400n }
+        }
+      ],
+      toProspectiveBookOffer: async (offer, exactTick) => {
+        projected.push({ offer, ...(exactTick === undefined ? {} : { exactTick }) })
+        return {
+          marketId,
+          buy: true,
+          tick: exactTick ?? (offer.rateBps === desiredOffer.rateBps ? 105n : 101n)
+        }
+      },
+      preparePublication: async offer => {
+        prepared.push(offer)
+        return { groupId: publishedGroupId, publish: async () => publicationHash }
+      },
+      reserveGroup: async (_id, offer) => {
+        reserved.push(offer)
+      },
+      confirmPublishedGroup: async () => {},
+      releaseGroupReservation: async () => {},
+      invalidate: async () => {}
+    })
+
+    expect(
+      await service.reconcile({
+        marketId,
+        desiredOffer,
+        maximumAssets: 50n,
+        minimumRateBps: 400n,
+        maximumRateBps: 600n,
+        reason: 'publish'
+      })
+    ).toEqual({
+      submittedTransactions: [{ operation: 'publish', txHash: publicationHash }]
+    })
+    const adjusted = { ...desiredOffer, assets: 50n, rateBps: 450n }
+    expect(prepared).toEqual([adjusted])
+    expect(reserved).toEqual([adjusted])
+    expect(projected).toEqual([
+      { offer: desiredOffer },
+      { offer: { ...desiredOffer, assets: 60n, rateBps: 450n }, exactTick: 100n },
+      { offer: adjusted, exactTick: 100n }
+    ])
+  })
+
+  test('retains the same adjusted overlap offer on the next cycle', async () => {
+    const preparePublication = vi.fn(async () => ({
+      groupId: publishedGroupId,
+      publish: async () => publicationHash
+    }))
+    const invalidate = vi.fn(async () => cancellationHash)
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [
+        {
+          id: publishedGroupId,
+          marketId,
+          assets: 60n,
+          maximumAssets: 60n,
+          rateBps: 450n,
+          tick: 100n,
+          offerCount: 1,
+          continuousFeeCap: 17n
+        }
+      ],
+      listOwnedGroupIds: async () => [publishedGroupId],
+      listBookOffers: async () => [
+        { groupId: publishedGroupId, marketId, buy: true, tick: 100n },
+        {
+          groupId,
+          marketId,
+          buy: false,
+          tick: 100n,
+          bootstrapOverlap: { remainingAssets: 40n, effectiveRateBps: 450n }
+        }
+      ],
+      toProspectiveBookOffer: async (_offer, exactTick) => ({
+        marketId,
+        buy: true,
+        tick: exactTick ?? 105n,
+        continuousFeeCap: 17n
+      }),
+      preparePublication,
+      reserveGroup: async () => {},
+      confirmPublishedGroup: async () => {},
+      releaseGroupReservation: async () => {},
+      invalidate
+    })
+
+    expect(
+      await service.reconcile({
+        marketId,
+        desiredOffer,
+        minimumRateBps: 400n,
+        maximumRateBps: 600n,
+        reason: 'replace'
+      })
+    ).toBe('unchanged')
+    expect(preparePublication).not.toHaveBeenCalled()
+    expect(invalidate).not.toHaveBeenCalled()
+  })
+
+  test('rejects an overlap-derived rate outside bootstrap hard bounds', async () => {
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [],
+      listBookOffers: async () => [
+        {
+          groupId,
+          marketId,
+          buy: false,
+          tick: 100n,
+          bootstrapOverlap: { remainingAssets: 40n, effectiveRateBps: 700n }
+        }
+      ],
+      toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 105n }),
+      preparePublication: async () => ({ groupId: publishedGroupId, publish: async () => {} }),
+      reserveGroup: async () => {},
+      confirmPublishedGroup: async () => {},
+      releaseGroupReservation: async () => {},
+      invalidate: async () => {}
+    })
+
+    const error = await service
+      .reconcile({
+        marketId,
+        desiredOffer,
+        minimumRateBps: 400n,
+        maximumRateBps: 600n,
+        reason: 'publish'
+      })
+      .catch(value => value)
+
+    expect(error).toBeInstanceOf(BootstrapAdapterError)
+    expect(error).toMatchObject({ operation: 'negative-spread' })
+  })
+
+  test('rechecks the exact-tick rate at the publication timestamp', async () => {
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [],
+      listBookOffers: async () => [
+        {
+          groupId,
+          marketId,
+          buy: false,
+          tick: 100n,
+          bootstrapOverlap: { remainingAssets: 40n, effectiveRateBps: 450n }
+        }
+      ],
+      toProspectiveBookOffer: async (_offer, exactTick) => ({
+        marketId,
+        buy: true,
+        tick: exactTick ?? 105n,
+        ...(exactTick === undefined ? {} : { effectiveRateBps: 700n })
+      }),
+      preparePublication: async () => ({ groupId: publishedGroupId, publish: async () => {} }),
+      reserveGroup: async () => {},
+      confirmPublishedGroup: async () => {},
+      releaseGroupReservation: async () => {},
+      invalidate: async () => {}
+    })
+
+    const error = await service
+      .reconcile({
+        marketId,
+        desiredOffer,
+        minimumRateBps: 400n,
+        maximumRateBps: 600n,
+        reason: 'publish'
+      })
+      .catch(value => value)
+
+    expect(error).toBeInstanceOf(BootstrapAdapterError)
+    expect(error).toMatchObject({ operation: 'negative-spread' })
+  })
+
+  test('rejects a capped exact-tick rate that drifts outside bootstrap hard bounds', async () => {
+    let exactTickProjections = 0
+    const preparePublication = vi.fn(async () => ({
+      groupId: publishedGroupId,
+      publish: async () => publicationHash
+    }))
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [],
+      listBookOffers: async () => [
+        {
+          groupId,
+          marketId,
+          buy: false,
+          tick: 100n,
+          bootstrapOverlap: { remainingAssets: 40n, effectiveRateBps: 450n }
+        }
+      ],
+      toProspectiveBookOffer: async (_offer, exactTick) => {
+        if (exactTick === undefined) return { marketId, buy: true, tick: 105n }
+        exactTickProjections += 1
+        return {
+          marketId,
+          buy: true,
+          tick: exactTick,
+          effectiveRateBps: exactTickProjections === 1 ? 450n : 700n
+        }
+      },
+      preparePublication,
+      reserveGroup: async () => {},
+      confirmPublishedGroup: async () => {},
+      releaseGroupReservation: async () => {},
+      invalidate: async () => {}
+    })
+
+    const error = await service
+      .reconcile({
+        marketId,
+        desiredOffer,
+        maximumAssets: 50n,
+        minimumRateBps: 400n,
+        maximumRateBps: 600n,
+        reason: 'publish'
+      })
+      .catch(value => value)
+
+    expect(error).toBeInstanceOf(BootstrapAdapterError)
+    expect(error).toMatchObject({ operation: 'negative-spread' })
+    expect(preparePublication).not.toHaveBeenCalled()
+  })
+
+  test('excludes a fully consumed durably owned bootstrap group from reconciliation', async () => {
+    const preparePublication = vi.fn(async () => ({
+      groupId: publishedGroupId,
+      publish: async () => publicationHash
+    }))
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [],
+      listOwnedGroupIds: async () => [publishedGroupId],
+      listBookOffers: async () => [
+        { groupId: publishedGroupId, marketId, buy: true, tick: 100n },
+        {
+          groupId,
+          marketId,
+          buy: false,
+          tick: 100n,
+          bootstrapOverlap: { remainingAssets: 40n, effectiveRateBps: 450n }
+        }
+      ],
+      toProspectiveBookOffer: async (_offer, exactTick) => ({
+        marketId,
+        buy: true,
+        tick: exactTick ?? 105n
+      }),
+      preparePublication,
+      reserveGroup: async () => {},
+      confirmPublishedGroup: async () => {},
+      releaseGroupReservation: async () => {},
+      invalidate: async () => {}
+    })
+
+    await service.reconcile({
+      marketId,
+      desiredOffer,
+      minimumRateBps: 400n,
+      maximumRateBps: 600n,
+      reason: 'replace'
+    })
+
+    expect(preparePublication).toHaveBeenCalledWith({
+      ...desiredOffer,
+      assets: 60n,
+      rateBps: 450n
+    })
+  })
+
+  test('publishes nothing when the highest-rate ladder sell covers the bootstrap amount', async () => {
+    const events: string[] = []
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [],
+      listBookOffers: async () => [
+        {
+          groupId,
+          marketId,
+          buy: false,
+          tick: 100n,
+          bootstrapOverlap: { remainingAssets: 100n, effectiveRateBps: 450n }
+        }
+      ],
+      toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
+      preparePublication: async () => {
+        events.push('prepare')
+        return {
+          groupId: publishedGroupId,
+          publish: async () => {
+            events.push('publish')
+          }
+        }
+      },
+      reserveGroup: async () => {
+        events.push('reserve')
+      },
+      confirmPublishedGroup: async () => {
+        events.push('confirm')
+      },
+      releaseGroupReservation: async () => {
+        events.push('release')
+      },
+      invalidate: async () => {
+        events.push('invalidate')
+      }
+    })
+
+    expect(
+      await service.reconcile({
+        marketId,
+        desiredOffer,
+        minimumRateBps: 400n,
+        maximumRateBps: 600n,
+        reason: 'publish'
+      })
+    ).toEqual({
+      submittedTransactions: []
+    })
+    expect(events).toEqual([])
+  })
+
+  test('fails closed when a crossing sell has malformed overlap sizing evidence', async () => {
+    const service = new MidnightBootstrapMakeService({
+      listActiveGroups: async () => [],
+      listBookOffers: async () => [
+        {
+          groupId,
+          marketId,
+          buy: false,
+          tick: 100n,
+          bootstrapOverlap: { remainingAssets: 0n, effectiveRateBps: 450n }
+        }
+      ],
+      toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
+      preparePublication: async () => ({ groupId: publishedGroupId, publish: async () => {} }),
+      reserveGroup: async () => {},
+      confirmPublishedGroup: async () => {},
+      releaseGroupReservation: async () => {},
+      invalidate: async () => {}
+    })
+
+    const error = await service
+      .reconcile({ marketId, desiredOffer, reason: 'publish' })
+      .catch(value => value)
+
+    expect(error).toBeInstanceOf(BootstrapAdapterError)
+    expect(error).toMatchObject({ operation: 'negative-spread' })
+  })
+
   test('never publishes a prospective buy that crosses the current whole book', async () => {
     let published = false
     const service = new MidnightBootstrapMakeService({
@@ -650,7 +1038,7 @@ describe('MidnightBootstrapMakeService', () => {
     expect(attempted).toEqual([groupId])
   })
 
-  test('cancels an explicitly owned fully consumed group during a hard halt', async () => {
+  test('cancels an explicit cleanup candidate omitted from active groups', async () => {
     const attempted: Hex[] = []
     const service = new MidnightBootstrapMakeService({
       listActiveGroups: async () => [],

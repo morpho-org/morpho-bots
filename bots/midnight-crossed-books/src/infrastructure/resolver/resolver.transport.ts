@@ -8,6 +8,8 @@ import { call } from 'viem/actions'
 
 import type { PreparedResolution } from '../../domain/order-book'
 
+import { ReadonlyMutationError } from './readonly-mutation.error'
+
 export type ResolverSimulation =
   | { status: 'success'; data: Hex }
   | { status: 'revert'; reason: string }
@@ -18,13 +20,22 @@ export interface ResolverTransport {
 }
 
 export class ViemResolverTransport implements ResolverTransport {
+  /**
+   * Creates an RPC simulation transport with optional write capabilities.
+   * @param client - Public chain client used for `eth_call`.
+   * @param sender - Simulation caller and write-mode profit recipient.
+   * @param resolver - Resolver contract target.
+   * @param submission - Signer and queue dependencies; omission makes submission fail closed.
+   */
   constructor(
     private readonly client: Client,
     private readonly sender: Address,
     private readonly resolver: Address,
-    private readonly queue: PendingQueue,
-    private readonly signer: Signer,
-    private readonly maxFeeWei: bigint
+    private readonly submission?: {
+      queue: PendingQueue
+      signer: Signer
+      maxFeeWei: bigint
+    }
   ) {}
 
   async simulate(data: Hex): Promise<ResolverSimulation> {
@@ -48,10 +59,18 @@ export class ViemResolverTransport implements ResolverTransport {
     return { status: 'success', data: result.data.data }
   }
 
+  /**
+   * Queues the immutable request prepared by simulation.
+   * @param prepared - Resolver target calldata and market label.
+   * @param blockNumber - Block used to seed queue fee and replacement policy.
+   * @returns A promise that resolves once the request is accepted by the queue.
+   * @throws `ReadonlyMutationError` when submission dependencies were intentionally omitted.
+   */
   async submit(prepared: PreparedResolution, blockNumber: bigint) {
-    const fees = initialFees(await this.signer.getBaseFee(), this.maxFeeWei)
+    if (!this.submission) throw new ReadonlyMutationError()
+    const fees = initialFees(await this.submission.signer.getBaseFee(), this.submission.maxFeeWei)
 
-    await this.queue.submit({
+    await this.submission.queue.submit({
       request: { to: this.resolver, data: prepared.data },
       label: prepared.marketId,
       ...fees,

@@ -68,7 +68,8 @@ boundaries.
   maintaining the ordinary bid and ask ladders from the first quote cycle.
 - Serialize every bootstrap and ladder invalidation/sign/publication through one blocking
   `MakeService`, including a prospective-book check that rejects inverted spreads with a typed
-  `NEGATIVE_SPREAD` error.
+  `NEGATIVE_SPREAD` error except for the explicitly evidenced bootstrap/ladder overlap described
+  below.
 - Support explicit startup cleanup of every maker offer or one group, plus opt-in cleanup of both
   strategy namespaces through on-chain invalidation transactions during graceful shutdown, followed
   by a terminal report.
@@ -146,7 +147,8 @@ one job at a time:
 1. reload the active maker offers immediately before mutation;
 2. merge the proposed change with the still-live offer set;
 3. reject with the typed `NEGATIVE_SPREAD` error if any proposed or live V0 offer would create an
-   inverted spread;
+   inverted spread, unless a bootstrap buy overlaps the unique highest-rate owned ladder sell and
+   all current rate and remaining-size evidence is complete;
 4. invalidate the prior root/group when the job is a replacement;
 5. sign and publish the exact validated replacement; and
 6. settle the caller's promise only after the resulting active set is observable.
@@ -261,8 +263,9 @@ V0 checks:
 3. the maker has enough native token for the configured invalidation reserve;
 4. the loan-asset allowance to Midnight covers the maximum configured lend exposure and is not
    pointed at an unexpected spender;
-5. the selected Ecrecover ratifier is listed by the official Morpho Router, its deployed bytecode
-   matches the expected ratifier surface, and `Midnight.isAuthorized(maker, ratifier)` is true;
+5. the selected Ecrecover or Setter ratifier matches the canonical Base address in the pinned
+   Morpho SDK, its deployed bytecode matches the expected ratifier surface, and
+   `Midnight.isAuthorized(maker, ratifier)` is true;
 6. every configured book is on the explicit allowlist, is active, uses the expected loan asset, has
    accessible tick spacing, and has not matured;
 7. the reference-market configuration and archive RPC are readable; and
@@ -277,11 +280,12 @@ authorize a ratifier, move funds, or invalidate offers. Setup remains an explici
 Position-health checking is represented by a port and a `not-required` V0 result. It becomes
 mandatory before any strategy revision can increase collateralized debt.
 
-Any failed startup check rejects readiness, kills the runtime with a non-zero exit, and leaves
-bootstrap and ladder unstarted. The deployment supervisor then places the service in its expected
-crash loop until the operator repairs setup. A periodic post-readiness failure closes the make queue,
-attempts the configured safety cleanup, logs the precise failed check, and exits non-zero; the bot
-does not remain alive in a degraded readiness state.
+A failed startup check rejects readiness after bounded transient-provider retries, kills the runtime
+with a non-zero exit, and leaves bootstrap and ladder unstarted. The deployment supervisor then
+places the service in its expected crash loop until the operator repairs setup. A periodic
+post-readiness failure receives the same bounded tolerance, then closes the make queue, attempts the
+configured safety cleanup, logs the precise failed check, and exits non-zero; the bot does not remain
+alive in a degraded readiness state.
 
 ### 4. Target-rate strategies
 
@@ -352,6 +356,17 @@ For each allowlisted market:
 6. invalidate the active bootstrap group as soon as the observed credit enters the accepted target
    range.
 
+When the premium-adjusted bootstrap buy reaches or crosses the unique highest-rate existing ladder
+sell, `MakeService` treats that overlap as intentional only when the complete current book proves the
+sell is ladder-owned and provides its group cap, consumption, tick, and maturity. It derives the
+sell's current effective rate from that exact tick and remaining time to maturity, reprices the new
+bootstrap offer to that rate, and publishes only `expected bootstrap assets - sell remaining
+assets`. A zero or negative remainder produces no publication. Unknown ownership, ties at the
+highest rate, pending offers without indexed size, malformed size/rate evidence, pre-existing
+crossings, or a crossing against any other offer still fail closed with `NEGATIVE_SPREAD`. Live and
+`--readonly` use the same resolver; read-only output records the adjusted request without mutating
+the book.
+
 The temporary offer lends at a worse rate for a limited period, making it attractive for a taker
 and paying the bootstrap cost through reduced yield. It is the only discounted offer. Normal
 ladder roots remain present and continue to use their configured quote premium.
@@ -372,9 +387,9 @@ When `AUTO_REFILL=true`, the workflow resumes this behavior whenever credit fall
 false, bootstrap runs until the initial target transition and then remains observational until
 restarted with an explicit operator decision.
 
-Bootstrap does not proactively take standing offers. That avoids a separate taker transaction,
-and supersedes the original 10,000 USDC active-take sketch. A later iteration may opportunistically
-take when a standing offer is available at a strictly better rate than the expected bootstrap rate.
+Bootstrap does not proactively take standing offers. That avoids a separate taker transaction and
+supersedes the original 10,000 USDC active-take sketch. The overlap handling above instead accounts
+for the maker's own already-resting ladder sell while keeping both offers passive.
 
 ### 6. Process 3 — ladder quoter
 
@@ -453,8 +468,9 @@ No offer is published unless all invariants hold for the exact encoded offer:
 - exactly one of `maxUnits` and `maxAssets` is non-zero;
 - shared groups contain only compatible direction, loan asset, and cap semantics;
 - the prospective set, evaluated together with every already-published maker offer, does not cross
-  or create an inverted/negative spread on any market; `MakeService` rejects the whole job with
-  `NEGATIVE_SPREAD` before invalidating or publishing anything;
+  or create an inverted/negative spread on any market, except for the single evidenced
+  bootstrap/ladder overlap above; unresolved crossings are rejected with `NEGATIVE_SPREAD` before
+  invalidating or publishing anything;
 - offer start, expiry, maturity, tick spacing, settlement-fee assumptions, continuous-fee cap,
   callback, receiver, maker, and ratifier match policy;
 - the generated root contains only the expected allowlisted offers; and
@@ -494,23 +510,23 @@ the pending nonce and on-chain invalidation state before accepting another job f
 
 ### 9. Failure posture
 
-| Failure                                     | Required behavior                                                                 |
-| ------------------------------------------- | --------------------------------------------------------------------------------- |
-| Startup setup check fails                   | Reject readiness, start no writers, exit non-zero, enter supervisor crash loop    |
-| Setup drifts after readiness                | Close make queue, attempt configured cleanup, exit non-zero, enter crash loop     |
-| Stale/unavailable reference                 | Invalidate all V0 roots through `MakeService`, exit non-zero                      |
-| Target or any rung outside bounds           | Invalidate all V0 roots and exit; never clamp                                     |
-| Prospective or existing inverted spread     | Reject make with `NEGATIVE_SPREAD`; mutate nothing; existing inversion also exits |
-| One market read fails                       | Invalidate/halt that market; other allowlisted markets may continue               |
-| Mempool publication fails                   | Reject queued promise; reload fresh state; never assume publication               |
-| Invalidation simulation/revert              | Publish nothing new; retry invalidation with the exact reason logged              |
-| Cost basis unavailable                      | Do not publish the credit-reducing side                                           |
-| Credit inside acceptance threshold          | Invalidate bootstrap group; ladder continues                                      |
-| Credit below target, auto-refill off        | Log the deficit; do not publish a temporary top-up                                |
-| Credit below target, auto-refill on         | Bootstrap resumes capped top-up publication                                       |
-| Maker key or ratifier authorization changes | Treat as setup drift and crash-loop                                               |
-| Runtime restart                             | Rebuild from chain/Mempool and reconcile; no local-state recovery                 |
-| `SHUTDOWN_CLEANUP=true`                     | Drain make, submit on-chain group invalidation(s), await receipts, print report   |
+| Failure                                     | Required behavior                                                                                       |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Startup setup check fails                   | Retry transient provider-only failures; otherwise reject readiness, start no writers, and exit non-zero |
+| Setup drifts after readiness                | Retry transient provider-only failures; otherwise close make queue, clean up, and exit non-zero         |
+| Stale/unavailable reference                 | Invalidate all V0 roots through `MakeService`, exit non-zero                                            |
+| Target or any rung outside bounds           | Invalidate all V0 roots and exit; never clamp                                                           |
+| Prospective or existing inverted spread     | Reject make with `NEGATIVE_SPREAD`; mutate nothing; existing inversion also exits                       |
+| One market read fails                       | Invalidate/halt that market; other allowlisted markets may continue                                     |
+| Mempool publication fails                   | Reject queued promise; reload fresh state; never assume publication                                     |
+| Invalidation simulation/revert              | Publish nothing new; retry invalidation with the exact reason logged                                    |
+| Cost basis unavailable                      | Do not publish the credit-reducing side                                                                 |
+| Credit inside acceptance threshold          | Invalidate bootstrap group; ladder continues                                                            |
+| Credit below target, auto-refill off        | Log the deficit; do not publish a temporary top-up                                                      |
+| Credit below target, auto-refill on         | Bootstrap resumes capped top-up publication                                                             |
+| Maker key or ratifier authorization changes | Treat as setup drift and crash-loop                                                                     |
+| Runtime restart                             | Rebuild from chain/Mempool and reconcile; no local-state recovery                                       |
+| `SHUTDOWN_CLEANUP=true`                     | Drain make, submit on-chain group invalidation(s), await receipts, print report                         |
 
 ### 10. Configuration contract
 
@@ -524,14 +540,15 @@ validation path and produce the same validated runtime configuration.
 The public README, `.env.example`, and `quoter-bot.example.yaml` document every currently implemented
 setting, unit, default, precedence rule, and safety interaction. The current YAML schema is limited to
 `chain`, `identity`, `contracts`, `apis`, `markets`, `setup`, and `bootstrap`. In that schema,
-`MORPHO_API_BASE_URL` serves book and cursor-paginated offer-group reads, while
-`ROUTER_API_BASE_URL` serves the contract registry; neither current client has a configurable API-key
-header. The groups below describe the full V0 destination; settings not present in the current README
-schema remain explicitly planned until their workflows are implemented:
+`MORPHO_API_BASE_URL` serves book and cursor-paginated offer-group reads. Ratifier identity comes from
+the pinned Morpho SDK catalog; `ROUTER_API_BASE_URL` is accepted and ignored only as a deprecated
+compatibility key. The current Morpho API client has no configurable API-key header. The groups below
+describe the full V0 destination; settings not present in the current README schema remain explicitly
+planned until their workflows are implemented:
 
 - **Chain and identity:** `CHAIN_ID`, `RPC_URL`, optional fallback RPC, `MAKER_PRIVATE_KEY`,
-  Midnight address, Router origin, and ratifier selection. The ratifier address is accepted only
-  when it is listed by the Router.
+  Midnight address, and ratifier selection. The ratifier address is accepted only when it matches
+  the canonical Base catalog in the pinned Morpho SDK.
 - **Markets:** explicit allowlisted market IDs, per-market exposure, and group mode. Immutable market
   configuration—including loan asset, maturity, and protocol parameters—is retrieved on-chain from
   each ID and is not duplicated in operator config.
@@ -544,8 +561,8 @@ schema remain explicitly planned until their workflows are implemented:
   fixed top-up size, bootstrap premium, auto-refill.
 - **Ladder:** quote premium, spread, step, rungs, size skew, side budgets, loop interval, movement
   tolerance.
-- **Transport:** official API/Router origins, request timeout/retry limits, maximum fee and gas bounds
-  for invalidation.
+- **Transport:** official Morpho API origin, request timeout/retry limits, maximum fee and gas bounds
+  for invalidation. The retired Router config-contracts endpoint is not a readiness dependency.
 - **Lifecycle:** startup `--cleanup` / `--cleanup-group` CLI options, `SHUTDOWN_CLEANUP`, and cleanup
   timeout.
 - **Observability:** log level and optional BetterStack fields; logging works to stdout without a
@@ -564,9 +581,9 @@ separate, explicitly scaled contract rather than reinterpreting these fields.
 - **Phase 1 — architecture and public-release gate (July 27):** accept the TIB direction, settle
   public dependency/legal questions, define env/YAML configuration, and establish the three
   workflows plus shared `MakeService`.
-- **Phase 2 — setup and rate sources (July 28):** implement readiness/crash-loop behavior, Router
-  ratifier validation, the six-hour Blue reference adapter, static adapter, fixed-point bounds, and
-  domain tests.
+- **Phase 2 — setup and rate sources (July 28):** implement readiness/crash-loop behavior, canonical
+  SDK ratifier validation, the six-hour Blue reference adapter, static adapter, fixed-point bounds,
+  and domain tests.
 - **Phase 3 — bootstrap and ladder (July 29):** implement the serialized signing queue,
   negative-spread guard, startup/shutdown cleanup, offer construction, namespace ownership,
   acceptance threshold, one-minute inventory monitoring, ladder generation, and reconciliation.

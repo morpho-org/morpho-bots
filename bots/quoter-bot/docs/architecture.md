@@ -16,7 +16,7 @@ The package uses a pragmatic hexagonal architecture:
   validation. It has no provider, signer, persistence, or CLI responsibilities.
 - `src/application/` coordinates setup, bootstrap, ladder, invalidation, and the combined lifecycle.
   Application services own the ports they consume and return sanitized workflow reports.
-- `src/infrastructure/` implements those ports with viem, the Morpho and Router APIs, the Midnight
+- `src/infrastructure/` implements those ports with viem, the Morpho API, the Midnight
   SDK, local ownership state, transaction submission, and terminal output.
 - `src/config/` loads YAML and environment sources, applies precedence, and narrows external values
   into the types consumed by the application.
@@ -35,7 +35,7 @@ types; application code does not depend on concrete provider or signer implement
 
 `SetupCheckService` owns the read-only readiness workflow and the `SetupStateService` port.
 `ViemSetupStateService` implements that port across current-state RPC, archive RPC, the Morpho API,
-and the Router API.
+and the canonical contract catalog provided by the pinned Morpho SDK.
 
 Independent provider reads are launched concurrently with `Promise.all`. Each read has its own
 error boundary, so one rejected provider call becomes a failed report item without suppressing the
