@@ -146,7 +146,7 @@ describe('quoter-bot workflow on a pinned Base fork', () => {
     if (stateDirectory) await rm(stateDirectory, { recursive: true, force: true })
   })
 
-  test('enforces strict, equal, and adjacent-safe buy-to-sell spreads against a real external offer', async () => {
+  test('reprices strict and equal crossings below a real external sell and keeps safe spreads', async () => {
     expect(anvil).toBeDefined()
     expect(api).toBeDefined()
     if (!anvil || !api) return
@@ -177,9 +177,9 @@ describe('quoter-bot workflow on a pinned Base fork', () => {
 
     const tickSpacing = 4n
     const spreadCases = [
-      { label: 'strict crossing', sellTick: buyTick - tickSpacing, accepted: false },
-      { label: 'equal boundary', sellTick: buyTick, accepted: false },
-      { label: 'adjacent safe boundary', sellTick: buyTick + tickSpacing, accepted: true }
+      { label: 'strict crossing', sellTick: buyTick - tickSpacing, repriced: true },
+      { label: 'equal boundary', sellTick: buyTick, repriced: true },
+      { label: 'adjacent safe boundary', sellTick: buyTick + tickSpacing, repriced: false }
     ] as const
     for (const spreadCase of spreadCases) {
       const snapshot = await anvil.client.snapshot()
@@ -210,17 +210,17 @@ describe('quoter-bot workflow on a pinned Base fork', () => {
           config.bootstrap
         )
         const result = await bootstrap.runOnce()
-        if (spreadCase.accepted) {
-          expect(makeFailure, spreadCase.label).toBeUndefined()
-          expect(result, spreadCase.label).toMatchObject([{ status: 'applied', action: 'publish' }])
-          expect(await api.activeOffers()).toHaveLength(2)
-        } else {
-          expect(makeFailure, spreadCase.label).toMatchObject({ operation: 'negative-spread' })
-          expect(result, spreadCase.label).toMatchObject([
-            { status: 'failed', stage: 'make', errorName: 'BootstrapAdapterError' }
-          ])
-          expect(await api.activeOffers()).toHaveLength(1)
-        }
+        expect(makeFailure, spreadCase.label).toBeUndefined()
+        expect(result, spreadCase.label).toMatchObject([{ status: 'applied', action: 'publish' }])
+        const active = await api.activeOffers()
+        expect(active, spreadCase.label).toHaveLength(2)
+        const publishedBuy = active
+          .map(item => OfferUtils.toStruct({ offer: item.offer }))
+          .find(offer => offer.buy)
+        expect(publishedBuy, spreadCase.label).toBeDefined()
+        if (!publishedBuy) throw new TypeError('Expected a published bootstrap buy offer')
+        expect(publishedBuy.tick < spreadCase.sellTick, spreadCase.label).toBe(true)
+        if (!spreadCase.repriced) expect(publishedBuy.tick, spreadCase.label).toBe(buyTick)
       } finally {
         await anvil.client.revert({ id: snapshot })
         await resetStateDirectory()
