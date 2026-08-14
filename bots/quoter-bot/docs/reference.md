@@ -277,10 +277,14 @@ approval-blocked, removed, skipped, sleeping, unknown, or timed-out deployments 
 
 ## Docker
 
-The bot ships as a standalone Docker image whose entrypoint is the `mm` CLI itself, so every command
-and flag documented above is available as the container command; the default command is the verbose
-combined monitor (`start --verbose`). This section covers operator-run containers and the Docker Hub
-distribution; the Morpho-run Railway instance is documented under [Deploy](#deploy).
+The bot ships as a standalone Docker image. The image has no `ENTRYPOINT`: its default command runs
+the verbose combined monitor (`start --verbose`) through
+[`railway-entrypoint.sh`](../scripts/railway-entrypoint.sh), which starts as root only long enough
+to repair `/state` volume ownership, then drops privileges and forwards its remaining arguments to
+the `mm` CLI. Every command and flag documented above is therefore available by passing the full
+invocation as the container command, leading with `/usr/local/sbin/railway-entrypoint.sh`. This
+section covers operator-run containers and the Docker Hub distribution; the Morpho-run Railway
+instance is documented under [Deploy](#deploy).
 Configuration follows the exact precedence documented under [Configuration](#configuration):
 environment variables passed to the container override values from a mounted YAML file, and either
 source alone is sufficient. The build context must be the repo root so the pnpm workspace
@@ -288,20 +292,20 @@ source alone is sufficient. The build context must be the repo root so the pnpm 
 file out of the build context — whatever filename `--config` points at — so a local configuration
 holding a private key is never baked into an image.
 
-The image pins `XDG_STATE_HOME=/state`, where the bot persists its durable offer-group ownership
-records. Writer deployments (`start`, `bootstrap`, `ladder`) must mount a volume at `/state` so
-that state outlives the container — the compose file below does this automatically. A recreated
-container without it forgets which live on-chain offer groups the bot owns, treats its own offers
-as foreign, and cannot clean them up. Read-only inspections of an existing deployment should mount
-the same `/state` volume so readiness and ladder/bootstrap reconstruction observe the writer's
-persisted ownership records; standalone read-only checks that are not inspecting an existing writer
-can run without it.
+The bot persists its durable offer-group ownership records under `XDG_STATE_HOME`. The image does
+not pin that variable, so writer deployments (`start`, `bootstrap`, `ladder`) must both set
+`XDG_STATE_HOME=/state` and mount a volume at `/state` so that state outlives the container — the
+compose file below does both automatically. A recreated container without them forgets which live
+on-chain offer groups the bot owns, treats its own offers as foreign, and cannot clean them up.
+Read-only inspections of an existing deployment should use the same volume and variable so
+readiness and ladder/bootstrap reconstruction observe the writer's persisted ownership records;
+standalone read-only checks that are not inspecting an existing writer can run without them.
 
 ### Build
 
 ```sh
 # From the repo root.
-docker build -f bots/quoter-bot/Dockerfile.release -t quoter-bot .
+docker build -f bots/quoter-bot/Dockerfile -t quoter-bot .
 ```
 
 On Apple Silicon add `--platform linux/amd64` when the image is destined for x86 servers, or keep
@@ -327,7 +331,7 @@ docker run --rm \
   -e MAXIMUM_LEND_EXPOSURE_ASSETS=10000000000 \
   -e MORPHO_API_BASE_URL=https://api.example \
   -e ROUTER_API_BASE_URL=https://router.example \
-  quoter-bot --readonly setup-check
+  quoter-bot /usr/local/sbin/railway-entrypoint.sh --readonly setup-check
 ```
 
 `docker run --env-file <file>` works with a file in [`.env.example`](../.env.example) syntax. Every
@@ -344,7 +348,7 @@ Mount the configuration read-only and select it explicitly:
 ```sh
 docker run --rm \
   -v "$PWD/bots/quoter-bot/quoter-bot.yaml:/config/quoter-bot.yaml:ro" \
-  quoter-bot --config /config/quoter-bot.yaml --readonly setup-check
+  quoter-bot /usr/local/sbin/railway-entrypoint.sh --config /config/quoter-bot.yaml --readonly setup-check
 ```
 
 Both sources combine freely — for example, keep `identity.makerPrivateKey` out of the file and add
@@ -386,69 +390,68 @@ stop` delivers the same graceful SIGTERM the CLI handles everywhere else.
 
 ### Publish to Docker Hub
 
-Publishing is release-driven. A GitHub release whose tag starts with `quoter-bot-` (repo CalVer
-convention: `quoter-bot-YYYY.MM.DD-N`) triggers the `Deploy quoter-bot` workflow
-([`.github/workflows/deploy-quoter-bot.yml`](../../../.github/workflows/deploy-quoter-bot.yml)),
-which builds the **tagged commit** from the repo root on an `ubuntu-latest` (`linux/amd64`) runner
-and pushes the release tag verbatim (immutable), `git-<shortsha>` for the built commit, and `latest`
-(moved only when the release is the highest stable CalVer version). Backfilled older releases and
-prereleases leave `latest` unchanged. The Slack announcement is sent by the publish workflow only after every image tag is pushed — the repo-wide
-release notifier deliberately skips quoter-bot release events — so an announced release always
-has its image.
+Publishing runs through the reusable
+[`publish-quoter-bot-dockerhub.yml`](../../../.github/workflows/publish-quoter-bot-dockerhub.yml)
+workflow, which builds the requested commit from the repo root on an `ubuntu-latest`
+(`linux/amd64`) runner and pushes it to Docker Hub (`morphoorg/quoter`) tagged with the commit
+hash and, when no newer release has shipped, `latest`. The commit-hash tag is immutable — a rerun
+reuses an existing one instead of rebuilding — and `latest` only moves forward: when an existing
+`quoter-bot-*` release tag descends from the built commit, a newer release already shipped and
+`latest` stays put, so backfilled older releases never regress it. Authentication exchanges the
+run's GitHub OIDC token through the Docker organization's OIDC connection
+(`docker/login-action` v4.5+), so CI stores no static Docker Hub credential.
 
-To release, bump `version` in [`package.json`](../package.json) to the new CalVer value inside the
-PR (for example `2026.08.04-1`; increment the trailing `-N` for further same-day releases). On
-merge to `main`, [`tag-releases.yml`](../../../.github/workflows/tag-releases.yml) — ported from
-morpho-apps — creates the `quoter-bot-<version>` GitHub release with generated notes, using a
-GitHub App token precisely so the release event fires the publish workflow (GitHub never runs
-workflows for events raised with the default `GITHUB_TOKEN`), then dispatches
+Two release origins chain that workflow into their own run — nothing depends on GitHub firing
+workflows for release events (it never does for events raised with the default `GITHUB_TOKEN`), so
+plain `github.token` creates the releases:
+
+- **Labeled merge** — merging a PR labeled `release-quoter-bot` runs
+  [`deploy-production.yml`](../../../.github/workflows/deploy-production.yml): after the
+  [Railway deploy](#deploy) succeeds it creates the `quoter-bot-YYYY.MM.DD-N` GitHub release
+  (repo CalVer date convention), dispatches the notes rewrite, and publishes the image for the
+  deployed commit. The push never gates the GitHub release.
+- **Version bump** — bump `version` in [`package.json`](../package.json) to a new CalVer value
+  inside the PR (for example `2026.08.04-1`; increment the trailing `-N` for further same-day
+  releases). On merge to `main`,
+  [`tag-releases.yml`](../../../.github/workflows/tag-releases.yml) — ported from morpho-apps —
+  creates the `quoter-bot-<version>` GitHub release with generated notes, dispatches the notes
+  rewrite, and publishes the image for the merge commit. A non-CalVer version bump fails the run
+  loud. When the bump commit's PR also carries the `release-quoter-bot` label, the label flow
+  owns the release and this flow skips it, avoiding duplicate same-commit releases.
+
+Both origins dispatch
 [`claude-write-release-notes.yml`](../../../.github/workflows/claude-write-release-notes.yml) to
-rewrite the notes into a reviewed summary. A non-CalVer version bump fails the run loud. A
-`release-quoter-bot`-labeled merge produces a release the same way through
-`deploy-production.yml` after its [Railway deploy](#deploy) succeeds, so that release also
-publishes an image.
-
-Creating the release directly also works and publishes identically:
-
-```sh
-gh release create "quoter-bot-$(node -p "require('./bots/quoter-bot/package.json').version")" --target "$(git rev-parse HEAD)" --generate-notes
-```
-
-Manual dispatch remains available as the escape hatch and for re-publishing; it builds the
-dispatched ref (defaults to `main` HEAD) and pushes the `tag` input (default `latest`) plus
-`git-<shortsha>`:
-
-```sh
-gh workflow run deploy-quoter-bot.yml -f tag=latest
-```
+rewrite the generated notes into a reviewed summary.
 
 One-time repository setup: create the `quoter-bot-dockerhub` GitHub Environment holding the
 publish configuration (distinct from `quoter-bot-production`, which holds the [Railway
-deploy](#deploy) credentials). In its deployment branches/tags policy allow branch `main` **and**
-tags matching `quoter-bot-*` — release runs execute on the tag ref, so a branch-only policy
-rejects them, while the tag pattern keeps the token unreachable from arbitrary PR branches. The
-release
-automation additionally needs the org GitHub App credentials `GIT_BOT_CLIENT_ID` /
-`GIT_BOT_PRIVATE_KEY` (the same pair morpho-apps uses) available to this repository, and
-optionally `ANTHROPIC_API_KEY` — without it the notes-rewrite step skips cleanly and the
-GitHub-generated notes remain.
+deploy](#deploy) credentials), and scope its deployment branches to `main` so the OIDC exchange
+is unreachable from arbitrary PR branches. Referencing the environment makes GitHub mint the OIDC
+token with an environment-based subject
+(`repo:morpho-org/morpho-bots:environment:quoter-bot-dockerhub`); the Docker-side connection
+ruleset must match that subject, not a `ref:refs/heads/*` one. Optionally provide
+`ANTHROPIC_API_KEY` to the repository for the notes rewrite — without it the rewrite skips
+cleanly and the GitHub-generated notes remain.
 
-| Environment entry      | Kind     | Requirement and behavior                                                                                                                   |
-| ---------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `DOCKERHUB_REPOSITORY` | Variable | Required lowercase `<namespace>/<name>` Docker Hub repository, e.g. `morphoorg/quoter-bot`. Registry hosts and embedded tags are rejected. |
-| `DOCKERHUB_USERNAME`   | Secret   | Required Docker Hub account with write access to the repository.                                                                           |
-| `DOCKERHUB_TOKEN`      | Secret   | Required Docker Hub access token (write scope); it reaches `docker login` via stdin and never appears in argv or workflow logs.            |
+| Environment entry             | Kind     | Requirement and behavior                                                                     |
+| ----------------------------- | -------- | -------------------------------------------------------------------------------------------- |
+| `DOCKER_USERNAME`             | Variable | Docker Hub account/organization namespace the image publishes under, e.g. `morphoorg`.       |
+| `DOCKER_REPOSITORY`           | Variable | Docker Hub repository name within that namespace, e.g. `quoter`.                             |
+| `DOCKERHUB_OIDC_CONNECTIONID` | Secret   | Docker Hub OIDC connection ID `docker/login-action` exchanges the GitHub OIDC token against. |
 
-A deployed host then runs the published image with the exact parametrization documented above —
-substitute a `quoter-bot-YYYY.MM.DD-N` release tag for `latest` to pin an immutable version. The
-named volume keeps offer-group ownership across re-pulls and recreations:
+A deployed host then runs the published image with the exact parametrization documented above; the
+default command already starts the verbose combined monitor through the privilege-dropping
+entrypoint. Substitute a release's commit hash for `latest` to pin an immutable version
+(`git rev-parse 'quoter-bot-2026.08.04-1^{commit}'` resolves it from a release tag). The named
+volume plus `XDG_STATE_HOME` keep offer-group ownership across re-pulls and recreations:
 
 ```sh
 docker run --pull always --detach --restart unless-stopped \
   --stop-timeout 900 \
   --env-file /etc/quoter-bot.env \
+  -e XDG_STATE_HOME=/state \
   -v quoter-bot-state:/state \
-  <namespace>/<name>:latest start
+  morphoorg/quoter:latest
 ```
 
 ## Configuration

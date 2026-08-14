@@ -1,13 +1,23 @@
 # Runs the quoter-bot combined monitor (`mm start --verbose`). Copy quoter-bot.example.yaml to
 # quoter-bot.yaml next to this file (gitignored, chmod 600) and edit it; every environment variable
 # exported in the invoking shell overrides its YAML counterpart. The build context is the repo root
-# so the pnpm workspace (packages/*) resolves — see Dockerfile.release.
+# so the pnpm workspace (packages/*) resolves — see Dockerfile.
 services:
   bot:
     build:
       context: ../..
-      dockerfile: bots/quoter-bot/Dockerfile.release
-    command: ['--config', '/config/quoter-bot.yaml', 'start', '--verbose']
+      dockerfile: bots/quoter-bot/Dockerfile
+    # The image has no ENTRYPOINT (the railway entrypoint lives in CMD and forwards its args to
+    # the bot after repairing /state ownership and dropping privileges), so the command carries the
+    # full invocation.
+    command:
+      [
+        '/usr/local/sbin/railway-entrypoint.sh',
+        '--config',
+        '/config/quoter-bot.yaml',
+        'start',
+        '--verbose'
+      ]
     volumes:
       - type: bind
         source: ./quoter-bot.yaml
@@ -35,6 +45,8 @@ services:
     # `${VAR:-}` defaults here: they set empty strings, and any SET variable — even empty — replaces
     # the YAML value and fails validation with "Missing required env var".
     environment:
+      # The image does not pin the state home; point it at the mounted volume explicitly.
+      XDG_STATE_HOME: /state
       CHAIN_ID:
       RPC_URL:
       REFERENCE_RPC_URL:

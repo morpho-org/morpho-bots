@@ -809,6 +809,21 @@ describe('readBootstrapGroups', () => {
     expect(bootstrapBookOffers(groups)).toHaveLength(1_000)
   })
 
+  test('excludes fully consumed groups from the spread-book projection', async () => {
+    const activeGroupId: Hex = `0x${'ef'.repeat(32)}`
+    const groups = await readBootstrapGroups(
+      { maker, requestTimeoutMs: 1_000 },
+      {
+        request: async () => ({
+          data: [group({ consumed: '100' }), group({ id: activeGroupId, consumed: '99' })],
+          cursor: null
+        })
+      }
+    )
+
+    expect(bootstrapBookOffers(groups).map(offer => offer.groupId)).toEqual([activeGroupId])
+  })
+
   test('filters cleanup tombstones from the spread-book projection', async () => {
     const ignoredGroupId: Hex = `0x${'ef'.repeat(32)}`
     const groups = await readBootstrapGroups(

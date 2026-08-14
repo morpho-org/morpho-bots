@@ -2,23 +2,23 @@ name: Tag releases
 
 # Ported from morpho-apps' tag-releases.yml: merging a PR to main that bumps an allowlisted bot's
 # package.json `version` to a new CalVer value (YYYY.MM.DD-N) creates that bot's GitHub release
-# `<bot>-<version>`. The release is created with a GitHub App installation token so it FIRES
-# downstream `release` workflows — deploy-quoter-bot.yml publishes the image and the
-# post-publish step announces it; tag/release events created with the default GITHUB_TOKEN are
-# intentionally blocked by GitHub from triggering further workflows.
+# `<bot>-<version>`, then publishes the Docker Hub image by CHAINING the reusable
+# publish-quoter-bot-dockerhub.yml workflow in this same run — nothing depends on the release
+# event triggering other workflows, so the default GITHUB_TOKEN suffices (release events it
+# creates never fire workflows, which is fine here).
 #
 # ONLY quoter-bot releases this way. The Railway bots (blue-liquidation, midnight-liquidation,
 # midnight-crossed-books) release through deploy-production.yml's release-* label flow, which cuts
 # their `<bot>-*` tag strictly AFTER a successful production deploy — a version-bump release here
 # would announce a production release that was never deployed. Extending the allowlist below (and
 # the paths filter) is a deliberate decision, not a directory rename away. Quoter-bot's own
-# label flow (Release-quoter-bot in deploy-production.yml, after its Railway deploy) coexists
-# with this version-bump path: both mint the App token and both trigger the image publish. A merge
-# carrying BOTH a version bump and the release-quoter-bot label yields entirely to the label
-# flow (see the deploy-label check below) so one merge never races itself into two same-day tags,
-# and the already-exists guard keeps any remaining origin overlap from double-creating a tag.
-# Version changes are detected against the pre-push baseline (github.event.before), not HEAD~1,
-# so a bump buried in a multi-commit push is still released.
+# label flow (Release-quoter-bot in deploy-production.yml, after its Railway deploy, chained into
+# the same publish workflow) coexists with this version-bump path. A merge carrying BOTH a version
+# bump and the release-quoter-bot label yields entirely to the label flow (see the deploy-label
+# check below) so one merge never races itself into two same-day tags, and the already-exists
+# guard keeps any remaining origin overlap from double-creating a tag. Version changes are
+# detected against the pre-push baseline (github.event.before), not HEAD~1, so a bump buried in a
+# multi-commit push is still released.
 #
 # Adaptations from the morpho-apps original: apps/* → bots/*, depot runners → ubuntu-latest, an
 # allowlist instead of a static-version skip list, and initial notes are GitHub-generated from the
@@ -26,8 +26,7 @@ name: Tag releases
 # notes in place (morpho-apps posts to Slack only after that rewrite).
 #
 # An allowlisted version bump that is not CalVer fails the run loud — before any release is
-# created — so drive-by bumps cannot slip through unreleased. Requires org App credentials
-# GIT_BOT_CLIENT_ID / GIT_BOT_PRIVATE_KEY (the same pair morpho-apps uses).
+# created — so drive-by bumps cannot slip through unreleased.
 
 on:
   push:
@@ -46,7 +45,8 @@ jobs:
   create-releases:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      # Release creation writes tags/releases with the default token.
+      contents: write
       # The deploy-label lookup reads the merged PR's labels.
       pull-requests: read
     outputs:
@@ -60,8 +60,8 @@ jobs:
       - name: Fetch all tags
         run: git fetch --tags --prune --force
 
-      # Avoid requiring the release GitHub App credentials for package metadata changes that do not
-      # bump the version. The full create step repeats this comparison before any side effect.
+      # Skip all release work for package metadata changes that do not bump the version. The full
+      # create step repeats this comparison before any side effect.
       - name: Detect quoter-bot version bump
         id: version
         env:
@@ -115,24 +115,11 @@ jobs:
             echo "deploy_labeled=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # Mint a GitHub App installation token so the release/tag events fire downstream workflows
-      # (image publish, Slack notify). See the header for why the default GITHUB_TOKEN cannot.
-      - name: Mint app installation token
-        id: app-token
-        if: steps.version.outputs.bumped == 'true' && steps.label.outputs.deploy_labeled != 'true'
-        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2.1.4
-        with:
-          app-id: ${{ secrets.GIT_BOT_CLIENT_ID }}
-          private-key: ${{ secrets.GIT_BOT_PRIVATE_KEY }}
-          # Fail the mint itself when the installation cannot write releases, instead of
-          # discovering it at gh release create time.
-          permission-contents: write
-
       - name: Check and create releases
         id: create
         if: steps.version.outputs.bumped == 'true' && steps.label.outputs.deploy_labeled != 'true'
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
           DEPLOY_LABELED: ${{ steps.label.outputs.deploy_labeled }}
           BEFORE_SHA: ${{ github.event.before }}
         run: |
@@ -250,6 +237,22 @@ jobs:
             echo -e "\nNo new releases created (all versions unchanged or already released)"
             echo "tags=" >> "$GITHUB_OUTPUT"
           fi
+
+  # Version-bump releases publish through the same reusable engine as the label flow
+  # (deploy-production.yml's Quoter-bot-image); chaining it here is exactly why the release event
+  # itself never needs to trigger anything.
+  publish-image:
+    needs: create-releases
+    if: needs.create-releases.outputs.release_tags != ''
+    # A called workflow can never hold more permissions than its caller job grants, so the OIDC
+    # token minting (id-token) the Docker Hub login needs must be granted here too.
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/publish-quoter-bot-dockerhub.yml
+    secrets: inherit
+    with:
+      ref: ${{ github.sha }}
 
   # repository_dispatch events fired with the default GITHUB_TOKEN DO trigger workflows (unlike
   # tag/release events), so no App token is needed here.

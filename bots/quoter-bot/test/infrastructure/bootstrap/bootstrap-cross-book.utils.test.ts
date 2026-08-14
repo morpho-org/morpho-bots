@@ -194,13 +194,29 @@ describe('resolveBootstrapProspectiveOffer', () => {
     ).toBeUndefined()
   })
 
-  test('rejects a retained book that is crossed without the prospective buy', async () => {
+  test('ignores an unrelated retained crossing when the prospective buy clears every sell', async () => {
+    const prospective = { marketId, buy: true, tick: 99n }
+
+    expect(
+      await resolveBootstrapProspectiveOffer({
+        desiredOffer,
+        prospective,
+        replacedGroupIds: new Set(),
+        book: [sell(100n), { marketId, buy: true, tick: 100n }],
+        toProspectiveBookOffer: projector([]),
+        minimumRateBps: 400n,
+        maximumRateBps: 600n
+      })
+    ).toEqual({ offer: desiredOffer, prospective })
+  })
+
+  test('rejects a prospective projection that is not a selected-market buy', async () => {
     await expect(
       resolveBootstrapProspectiveOffer({
         desiredOffer,
-        prospective: { marketId, buy: true, tick: 99n },
+        prospective: { marketId, buy: false, tick: 99n },
         replacedGroupIds: new Set(),
-        book: [sell(100n), { marketId, buy: true, tick: 100n }],
+        book: [sell(100n)],
         toProspectiveBookOffer: projector([]),
         minimumRateBps: 400n,
         maximumRateBps: 600n

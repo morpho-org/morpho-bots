@@ -179,11 +179,16 @@ describe('Railway CLI output parsing', () => {
       fullProvisioningBranch
     )
     const instructions = parseDockerfile(dockerfile)
-    const users = instructions
+    const froms = instructions
+      .map((instruction, index) => ({ ...instruction, index }))
+      .filter(({ keyword }) => keyword === 'FROM')
+    const runtimeFrom = froms[1]!.index
+    const buildStage = instructions.slice(0, runtimeFrom)
+    const runtimeStage = instructions.slice(runtimeFrom + 1)
+    const buildUsers = buildStage
       .map((instruction, index) => ({ ...instruction, index }))
       .filter(({ keyword }) => keyword === 'USER')
-    const userNode = users[0]!.index
-    const userRoot = users[1]!.index
+    const userNode = buildUsers[0]!.index
     const requiredNodeRuns = [
       'corepack install',
       'pnpm install --frozen-lockfile',
@@ -194,17 +199,45 @@ describe('Railway CLI output parsing', () => {
     expect(deployOnlySource).not.toContain('setRuntimeVariable(')
     expect(fullProvisioningRuntimeUid).toBeGreaterThan(ensureService)
     expect(fullProvisioningRuntimeUid).toBeLessThan(deploy.indexOf('await startDeployment()'))
-    expect(dockerfile).toContain('apt-get install -y --no-install-recommends util-linux')
-    expect(dockerfile).toContain('ENV HOME=/home/node')
-    expect(users.map(({ value }) => value)).toEqual(['node', 'root'])
+
+    // Two stages: the workspace builds in `build`; the runtime stage ships only the bot's bundle.
+    expect(froms.map(({ value }) => value)).toEqual([
+      'node:24.14.1-slim AS build',
+      'node:24.14.1-slim'
+    ])
+
+    // Build stage: every workspace install and build step runs unprivileged after USER node.
+    expect(buildUsers.map(({ value }) => value)).toEqual(['node'])
     for (const command of requiredNodeRuns) {
-      const runIndex = instructions.findIndex(
+      const runIndex = buildStage.findIndex(
         ({ keyword, value }) => keyword === 'RUN' && value === command
       )
       expect(runIndex).toBeGreaterThan(userNode)
-      expect(runIndex).toBeLessThan(userRoot)
     }
-    expect(instructions.slice(userRoot + 1)).toEqual([
+
+    // Runtime stage, exactly: no USER switch (the container must start as root so the entrypoint
+    // can repair Railway's root-owned volume before setpriv drops privileges), setpriv and the
+    // state mount as the only RUNs, and no content beyond the bot's built output and the
+    // root-owned, non-writable entrypoint — the image publishes publicly, so no other bot's code,
+    // workspace source, or package manager may ship.
+    expect(runtimeStage).toEqual([
+      { keyword: 'ENV', value: 'HOME=/home/node' },
+      {
+        keyword: 'RUN',
+        value:
+          '/usr/bin/apt-get update && /usr/bin/apt-get install -y --no-install-recommends util-linux && /usr/bin/rm -rf /var/lib/apt/lists/*'
+      },
+      { keyword: 'RUN', value: '/usr/bin/mkdir -p /state' },
+      {
+        keyword: 'COPY',
+        value:
+          '--from=build --chown=0:0 --chmod=0555 /repo/bots/quoter-bot/package.json /repo/bots/quoter-bot/package.json'
+      },
+      {
+        keyword: 'COPY',
+        value:
+          '--from=build --chown=0:0 --chmod=0555 /repo/bots/quoter-bot/dist /repo/bots/quoter-bot/dist'
+      },
       {
         keyword: 'COPY',
         value:
@@ -224,6 +257,57 @@ describe('Railway CLI output parsing', () => {
       '/usr/bin/chown -R node:node "$STATE_MOUNT_PATH"',
       'exec /usr/bin/setpriv --reuid=node --regid=node --clear-groups --bounding-set=-all --no-new-privs /usr/local/bin/node dist/src/index.js "$@"'
     ])
+  })
+
+  test('reuses an existing Docker Hub commit tag when recovering latest', () => {
+    const workflow = readFileSync(
+      new URL('../../../../.github/workflows/publish-quoter-bot-dockerhub.yml', import.meta.url),
+      'utf8'
+    )
+    const setupBuildx = workflow.indexOf('- name: Set up Docker Buildx')
+    const login = workflow.indexOf('- name: Login to Docker Hub')
+    const immutableCheck = workflow.indexOf('- name: Check immutable SHA tag')
+    const push = workflow.indexOf('- name: Build and push')
+    const recoverLatest = workflow.indexOf('- name: Recover latest from immutable SHA tag')
+
+    expect(workflow).toContain('docker buildx imagetools inspect "$image"')
+    expect(workflow).toContain('echo "exists=true" >> "$GITHUB_OUTPUT"')
+    expect(workflow).toContain("if: ${{ steps.sha-tag.outputs.exists != 'true' }}")
+    expect(workflow).toContain(
+      "if: ${{ steps.sha-tag.outputs.exists == 'true' && steps.tags.outputs.move_latest == 'true' }}"
+    )
+    expect(workflow).toContain('echo "move_latest=true" >> "$GITHUB_OUTPUT"')
+    expect(workflow).toContain('docker buildx imagetools create --tag "$latest" "$image"')
+    expect(workflow).not.toContain('https://auth.docker.io/token')
+    expect(setupBuildx).toBeLessThan(login)
+    expect(login).toBeLessThan(immutableCheck)
+    expect(immutableCheck).toBeLessThan(push)
+    expect(push).toBeLessThan(recoverLatest)
+  })
+
+  test('publishes latest only after the quoter bot deploy and release succeed', () => {
+    const deployWorkflow = readFileSync(
+      new URL('../../../../.github/workflows/deploy-production.yml', import.meta.url),
+      'utf8'
+    )
+    const publishWorkflow = readFileSync(
+      new URL('../../../../.github/workflows/publish-quoter-bot-dockerhub.yml', import.meta.url),
+      'utf8'
+    )
+    const imageJob = deployWorkflow.slice(
+      deployWorkflow.indexOf('  Quoter-bot-image:'),
+      deployWorkflow.indexOf('  Release-blue:')
+    )
+
+    expect(imageJob).toContain('needs: [Select, Quoter-bot, Release-quoter-bot]')
+    expect(imageJob).toContain("if: ${{ needs.Select.outputs.quoter_bot == 'true' }}")
+    // Ancestry against release tags needs full history in the checkout.
+    expect(publishWorkflow).toContain('fetch-depth: 0')
+    expect(publishWorkflow).toContain('- name: Gate the latest tag')
+    expect(publishWorkflow).toContain("git tag -l 'quoter-bot-*'")
+    expect(publishWorkflow).toContain('git merge-base --is-ancestor "$COMMIT_SHA" "$commit"')
+    expect(publishWorkflow).toContain('tags: ${{ steps.tags.outputs.tags }}')
+    expect(publishWorkflow).not.toContain('}}:latest')
   })
 
   test('creates fresh state only during authorized provisioning', () => {

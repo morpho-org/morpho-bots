@@ -6,33 +6,54 @@ const packageRoot = resolve(import.meta.dirname, '..')
 const repositoryRoot = resolve(packageRoot, '../..')
 
 describe('quoter-bot container release artifacts', () => {
-  test('cuts labeled production releases from the package version', () => {
+  test('cuts labeled production releases with date-count tags and note baselines', () => {
     const workflow = readFileSync(
       resolve(repositoryRoot, '.github/workflows/deploy-production.yml'),
       'utf8'
     )
     const quoterBotRelease = workflow.slice(workflow.indexOf('  Release-quoter-bot:'))
 
-    expect(quoterBotRelease).toContain(
-      `version="$(node -p "require('./bots/quoter-bot/package.json').version")"`
-    )
-    expect(quoterBotRelease).toContain('tag="${BOT}-${version}"')
-    expect(quoterBotRelease).not.toContain('date="$(date -u +%Y.%m.%d)"')
+    expect(quoterBotRelease).toContain('date="$(date -u +%Y.%m.%d)"')
+    expect(quoterBotRelease).toContain('tag="${BOT}-${date}-${n}"')
+    expect(quoterBotRelease).toContain('${prev:+--notes-start-tag "$prev"}')
   })
 
-  test('documents repo-root manual releases from the bot package version and commit', () => {
-    const readme = readFileSync(resolve(packageRoot, 'docs/reference.md'), 'utf8')
+  test('dispatches the notes rewrite from both release origins', () => {
+    for (const workflowPath of [
+      '.github/workflows/deploy-production.yml',
+      '.github/workflows/tag-releases.yml'
+    ]) {
+      const workflow = readFileSync(resolve(repositoryRoot, workflowPath), 'utf8')
 
-    expect(readme).toContain(
-      `gh release create "quoter-bot-$(node -p "require('./bots/quoter-bot/package.json').version")" --target "$(git rev-parse HEAD)" --generate-notes`
-    )
+      expect(workflow).toContain("--field event_type='write-release-notes'")
+    }
   })
 
-  test('documents the quoter-bot release tag environment policy', () => {
+  test('chains the reusable publish workflow from both release origins', () => {
+    const production = readFileSync(
+      resolve(repositoryRoot, '.github/workflows/deploy-production.yml'),
+      'utf8'
+    )
+    const tagReleases = readFileSync(
+      resolve(repositoryRoot, '.github/workflows/tag-releases.yml'),
+      'utf8'
+    )
+
+    expect(production).toContain('needs: [Select, Quoter-bot, Release-quoter-bot]')
+    expect(production).toContain('uses: ./.github/workflows/publish-quoter-bot-dockerhub.yml')
+    expect(tagReleases).toContain("if: needs.create-releases.outputs.release_tags != ''")
+    expect(tagReleases).toContain('uses: ./.github/workflows/publish-quoter-bot-dockerhub.yml')
+    // The caller must grant id-token so the called workflow can mint the OIDC token Docker
+    // Hub login exchanges.
+    expect(tagReleases).toContain('id-token: write')
+  })
+
+  test('documents the branch-scoped OIDC publish environment policy', () => {
     const readme = readFileSync(resolve(packageRoot, 'docs/reference.md'), 'utf8')
 
-    expect(readme).toContain('tags matching `quoter-bot-*`')
-    expect(readme).not.toContain('tags matching `market-making-*`')
+    expect(readme).toContain('scope its deployment branches to `main`')
+    expect(readme).toContain('repo:morpho-org/morpho-bots:environment:quoter-bot-dockerhub')
+    expect(readme).not.toContain('GIT_BOT_CLIENT_ID')
   })
 
   test('chooses release-note baselines below a backfilled release', () => {
@@ -57,16 +78,14 @@ describe('quoter-bot container release artifacts', () => {
     )
   })
 
-  test('documents that only the highest stable release moves latest', () => {
+  test('documents that latest only moves forward across releases', () => {
     const readme = readFileSync(resolve(packageRoot, 'docs/reference.md'), 'utf8').replace(
       /\s+/g,
       ' '
     )
 
-    expect(readme).toContain(
-      '`latest` (moved only when the release is the highest stable CalVer version)'
-    )
-    expect(readme).not.toContain('`latest` (moved unless the release is marked a prerelease)')
+    expect(readme).toContain('`latest` only moves forward')
+    expect(readme).toContain('backfilled older releases never regress it')
   })
 
   test('documents shared state for read-only deployment inspections', () => {
@@ -76,7 +95,7 @@ describe('quoter-bot container release artifacts', () => {
     )
 
     expect(readme).toContain(
-      'Read-only inspections of an existing deployment should mount the same `/state` volume'
+      'Read-only inspections of an existing deployment should use the same volume and variable'
     )
     expect(readme).not.toContain('Read-only commands need no state volume.')
   })
@@ -99,23 +118,21 @@ describe('quoter-bot container release artifacts', () => {
     expect(workflow).toContain("allowed_bots: 'github-actions[bot]'")
   })
 
-  test('prevents manual dispatches from moving immutable release and commit tags', () => {
+  test('reuses immutable commit-hash images and recovers latest on reruns', () => {
     const workflow = readFileSync(
-      resolve(repositoryRoot, '.github/workflows/deploy-quoter-bot.yml'),
+      resolve(repositoryRoot, '.github/workflows/publish-quoter-bot-dockerhub.yml'),
       'utf8'
     )
 
-    expect(workflow).toContain(
-      'if [[ "$DISPATCH_TAG" == quoter-bot-* || "$DISPATCH_TAG" == git-* ]]'
-    )
-    expect(workflow).toContain('refusing to overwrite immutable release or commit tag')
+    expect(workflow).toContain('commit SHA tag already exists; reusing immutable image')
+    expect(workflow).toContain("if: ${{ steps.sha-tag.outputs.exists != 'true' }}")
+    expect(workflow).toContain('docker buildx imagetools create --tag "$latest" "$image"')
   })
 
   test('disables Husky in every workspace Docker install', () => {
     for (const dockerfilePath of [
       'bots/blue-liquidation/Dockerfile',
       'bots/quoter-bot/Dockerfile',
-      'bots/quoter-bot/Dockerfile.release',
       'bots/midnight-crossed-books/Dockerfile',
       'bots/midnight-liquidation/Dockerfile'
     ]) {
@@ -126,14 +143,14 @@ describe('quoter-bot container release artifacts', () => {
     }
   })
 
-  test('validates release CalVer before publishing the operator image', () => {
+  test('validates release CalVer before creating version-bump releases', () => {
     const workflow = readFileSync(
-      resolve(repositoryRoot, '.github/workflows/deploy-quoter-bot.yml'),
+      resolve(repositoryRoot, '.github/workflows/tag-releases.yml'),
       'utf8'
     )
 
     expect(workflow).toContain(`CALVER_PATTERN="^[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}-[1-9][0-9]*$"`)
-    expect(workflow).toContain('[[ "$package_version" =~ $CALVER_PATTERN ]]')
+    expect(workflow).toContain('[[ $current_version =~ $CALVER_PATTERN ]]')
   })
 
   test('accepts an existing release only when it targets the current commit', () => {
@@ -148,23 +165,27 @@ describe('quoter-bot container release artifacts', () => {
     expect(workflow).toContain('[ "$existing_target" = "$GITHUB_SHA" ]')
   })
 
-  test('exposes the built Node CLI while persisting writer state', () => {
-    const dockerfile = readFileSync(resolve(packageRoot, 'Dockerfile.release'), 'utf8')
+  test('exposes the entrypoint-wrapped CLI while persisting writer state', () => {
+    const dockerfile = readFileSync(resolve(packageRoot, 'Dockerfile'), 'utf8')
     const compose = readFileSync(resolve(packageRoot, 'docker-compose.yml'), 'utf8')
     const publishWorkflow = readFileSync(
-      resolve(repositoryRoot, '.github/workflows/deploy-quoter-bot.yml'),
+      resolve(repositoryRoot, '.github/workflows/publish-quoter-bot-dockerhub.yml'),
       'utf8'
     )
 
-    expect(dockerfile).toContain('RUN mkdir -p /repo /state')
-    expect(dockerfile).toContain('RUN pnpm --filter @morpho-org/quoter-bot run build')
-    expect(dockerfile).not.toContain('pnpm -r --if-present run build')
-    expect(dockerfile).toContain('ENV XDG_STATE_HOME=/state')
-    expect(dockerfile).toContain('ENTRYPOINT ["node", "dist/src/index.js"]')
-    expect(dockerfile).toContain('CMD ["start", "--verbose"]')
+    expect(dockerfile).toContain(
+      'CMD ["/usr/local/sbin/railway-entrypoint.sh", "start", "--verbose"]'
+    )
+    // No ENTRYPOINT and no pinned state home: container commands carry the full entrypoint
+    // invocation, and writer deployments must supply XDG_STATE_HOME themselves.
+    expect(dockerfile).not.toContain('ENTRYPOINT')
+    expect(dockerfile).not.toContain('XDG_STATE_HOME')
     expect(dockerfile).not.toContain('oven/bun')
-    expect(compose).toContain('dockerfile: bots/quoter-bot/Dockerfile.release')
-    expect(publishWorkflow).toContain('--file bots/quoter-bot/Dockerfile.release')
+    expect(compose).toContain('dockerfile: bots/quoter-bot/Dockerfile')
+    expect(compose).toContain("'/usr/local/sbin/railway-entrypoint.sh',")
+    expect(compose).toContain('XDG_STATE_HOME: /state')
+    expect(compose).toContain('target: /state')
+    expect(publishWorkflow).toContain('file: bots/quoter-bot/Dockerfile')
   })
 
   test('mounts an optional host keystore at the documented container path', () => {
@@ -183,15 +204,14 @@ describe('quoter-bot container release artifacts', () => {
     expect(compose).toContain('AWS_SESSION_TOKEN:')
   })
 
-  test('moves latest only for the highest stable quoter-bot CalVer release', () => {
+  test('leaves latest alone when a newer release descends from the built commit', () => {
     const workflow = readFileSync(
-      resolve(repositoryRoot, '.github/workflows/deploy-quoter-bot.yml'),
+      resolve(repositoryRoot, '.github/workflows/publish-quoter-bot-dockerhub.yml'),
       'utf8'
     )
 
-    expect(workflow).toContain('highest_stable_tag=')
-    expect(workflow).toContain('[ "$RELEASE_TAG" = "$highest_stable_tag" ]')
-    expect(workflow).not.toContain('[ "$PRERELEASE" = "true" ] || tags+=("latest")')
+    expect(workflow).toContain('git merge-base --is-ancestor "$COMMIT_SHA" "$commit"')
+    expect(workflow).toContain('echo "move_latest=false"')
   })
 
   test('fails closed on deploy-label lookup errors', () => {
@@ -201,28 +221,27 @@ describe('quoter-bot container release artifacts', () => {
     )
     const labelLookup = workflow.slice(
       workflow.indexOf('- name: Check deploy label'),
-      workflow.indexOf('- name: Mint app installation token')
+      workflow.indexOf('- name: Check and create releases')
     )
 
     expect(labelLookup).toContain('gh api "repos/$REPO/commits/$bump_commit/pulls"')
     expect(labelLookup).not.toContain('|| true')
   })
 
-  test('mints an app token only after detecting a pending version bump', () => {
+  test('creates version-bump releases with the default token only when unlabeled', () => {
     const workflow = readFileSync(
       resolve(repositoryRoot, '.github/workflows/tag-releases.yml'),
       'utf8'
     )
-    const detectIndex = workflow.indexOf('- name: Detect quoter-bot version bump')
-    const mintIndex = workflow.indexOf('- name: Mint app installation token')
 
-    expect(detectIndex).toBeGreaterThan(-1)
-    expect(mintIndex).toBeGreaterThan(detectIndex)
-    expect(
-      workflow.slice(mintIndex, workflow.indexOf('- name: Check and create releases'))
-    ).toContain(
+    expect(workflow).toContain(
       "if: steps.version.outputs.bumped == 'true' && steps.label.outputs.deploy_labeled != 'true'"
     )
+    expect(workflow).toContain('GH_TOKEN: ${{ github.token }}')
+    // The chained-publish design needs no GitHub App: nothing depends on the release event
+    // triggering other workflows.
+    expect(workflow).not.toContain('create-github-app-token')
+    expect(workflow).not.toContain('GIT_BOT_CLIENT_ID')
   })
 
   test('gives detached docker runs the full graceful shutdown window', () => {
@@ -233,5 +252,6 @@ describe('quoter-bot container release artifacts', () => {
     )
 
     expect(detachedRun).toContain('--stop-timeout 900')
+    expect(detachedRun).toContain('-e XDG_STATE_HOME=/state')
   })
 })

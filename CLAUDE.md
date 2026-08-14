@@ -158,9 +158,10 @@ This is a **pnpm workspaces monorepo** housing off-chain Morpho curator bots:
   positions, reads fresh on-chain state, sizes/simulates a liquidation, and broadcasts only
   simulation-ok transactions through an in-process pending-tx queue. No bot imports another bot.
   Each bot owns its own operator surface — `README.md`, `Dockerfile`, `docker-compose.yml`, and a
-  deploy path (`scripts/deploy-railway.ts` per bot for the Railway instances; the
-  `deploy-quoter-bot` GitHub Actions workflow additionally publishes quoter-bot's image to
-  Docker Hub for operator-run deployments) — so it ships as its own image and deploys
+  deploy path (`scripts/deploy-railway.ts` per bot for the Railway instances; the reusable
+  `publish-quoter-bot-dockerhub` GitHub Actions workflow, chained into both release flows,
+  additionally publishes quoter-bot's image to Docker Hub for operator-run deployments) — so it
+  ships as its own image and deploys
   independently. `bots/blue-liquidation` and `bots/midnight-liquidation` are the live
   liquidators; `bots/quoter-bot` is the Midnight maker bot (setup checks, position bootstrap,
   ladder quoting, combined monitoring); `bots/midnight-crossed-books` resolves crossed Midnight
