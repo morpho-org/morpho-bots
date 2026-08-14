@@ -263,8 +263,9 @@ V0 checks:
 3. the maker has enough native token for the configured invalidation reserve;
 4. the loan-asset allowance to Midnight covers the maximum configured lend exposure and is not
    pointed at an unexpected spender;
-5. the selected Ecrecover ratifier is listed by the official Morpho Router, its deployed bytecode
-   matches the expected ratifier surface, and `Midnight.isAuthorized(maker, ratifier)` is true;
+5. the selected Ecrecover or Setter ratifier matches the canonical Base address in the pinned
+   Morpho SDK, its deployed bytecode matches the expected ratifier surface, and
+   `Midnight.isAuthorized(maker, ratifier)` is true;
 6. every configured book is on the explicit allowlist, is active, uses the expected loan asset, has
    accessible tick spacing, and has not matured;
 7. the reference-market configuration and archive RPC are readable; and
@@ -279,11 +280,12 @@ authorize a ratifier, move funds, or invalidate offers. Setup remains an explici
 Position-health checking is represented by a port and a `not-required` V0 result. It becomes
 mandatory before any strategy revision can increase collateralized debt.
 
-Any failed startup check rejects readiness, kills the runtime with a non-zero exit, and leaves
-bootstrap and ladder unstarted. The deployment supervisor then places the service in its expected
-crash loop until the operator repairs setup. A periodic post-readiness failure closes the make queue,
-attempts the configured safety cleanup, logs the precise failed check, and exits non-zero; the bot
-does not remain alive in a degraded readiness state.
+A failed startup check rejects readiness after bounded transient-provider retries, kills the runtime
+with a non-zero exit, and leaves bootstrap and ladder unstarted. The deployment supervisor then
+places the service in its expected crash loop until the operator repairs setup. A periodic
+post-readiness failure receives the same bounded tolerance, then closes the make queue, attempts the
+configured safety cleanup, logs the precise failed check, and exits non-zero; the bot does not remain
+alive in a degraded readiness state.
 
 ### 4. Target-rate strategies
 
@@ -508,23 +510,23 @@ the pending nonce and on-chain invalidation state before accepting another job f
 
 ### 9. Failure posture
 
-| Failure                                     | Required behavior                                                                 |
-| ------------------------------------------- | --------------------------------------------------------------------------------- |
-| Startup setup check fails                   | Reject readiness, start no writers, exit non-zero, enter supervisor crash loop    |
-| Setup drifts after readiness                | Close make queue, attempt configured cleanup, exit non-zero, enter crash loop     |
-| Stale/unavailable reference                 | Invalidate all V0 roots through `MakeService`, exit non-zero                      |
-| Target or any rung outside bounds           | Invalidate all V0 roots and exit; never clamp                                     |
-| Prospective or existing inverted spread     | Reject make with `NEGATIVE_SPREAD`; mutate nothing; existing inversion also exits |
-| One market read fails                       | Invalidate/halt that market; other allowlisted markets may continue               |
-| Mempool publication fails                   | Reject queued promise; reload fresh state; never assume publication               |
-| Invalidation simulation/revert              | Publish nothing new; retry invalidation with the exact reason logged              |
-| Cost basis unavailable                      | Do not publish the credit-reducing side                                           |
-| Credit inside acceptance threshold          | Invalidate bootstrap group; ladder continues                                      |
-| Credit below target, auto-refill off        | Log the deficit; do not publish a temporary top-up                                |
-| Credit below target, auto-refill on         | Bootstrap resumes capped top-up publication                                       |
-| Maker key or ratifier authorization changes | Treat as setup drift and crash-loop                                               |
-| Runtime restart                             | Rebuild from chain/Mempool and reconcile; no local-state recovery                 |
-| `SHUTDOWN_CLEANUP=true`                     | Drain make, submit on-chain group invalidation(s), await receipts, print report   |
+| Failure                                     | Required behavior                                                                                       |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Startup setup check fails                   | Retry transient provider-only failures; otherwise reject readiness, start no writers, and exit non-zero |
+| Setup drifts after readiness                | Retry transient provider-only failures; otherwise close make queue, clean up, and exit non-zero         |
+| Stale/unavailable reference                 | Invalidate all V0 roots through `MakeService`, exit non-zero                                            |
+| Target or any rung outside bounds           | Invalidate all V0 roots and exit; never clamp                                                           |
+| Prospective or existing inverted spread     | Reject make with `NEGATIVE_SPREAD`; mutate nothing; existing inversion also exits                       |
+| One market read fails                       | Invalidate/halt that market; other allowlisted markets may continue                                     |
+| Mempool publication fails                   | Reject queued promise; reload fresh state; never assume publication                                     |
+| Invalidation simulation/revert              | Publish nothing new; retry invalidation with the exact reason logged                                    |
+| Cost basis unavailable                      | Do not publish the credit-reducing side                                                                 |
+| Credit inside acceptance threshold          | Invalidate bootstrap group; ladder continues                                                            |
+| Credit below target, auto-refill off        | Log the deficit; do not publish a temporary top-up                                                      |
+| Credit below target, auto-refill on         | Bootstrap resumes capped top-up publication                                                             |
+| Maker key or ratifier authorization changes | Treat as setup drift and crash-loop                                                                     |
+| Runtime restart                             | Rebuild from chain/Mempool and reconcile; no local-state recovery                                       |
+| `SHUTDOWN_CLEANUP=true`                     | Drain make, submit on-chain group invalidation(s), await receipts, print report                         |
 
 ### 10. Configuration contract
 
@@ -538,14 +540,15 @@ validation path and produce the same validated runtime configuration.
 The public README, `.env.example`, and `quoter-bot.example.yaml` document every currently implemented
 setting, unit, default, precedence rule, and safety interaction. The current YAML schema is limited to
 `chain`, `identity`, `contracts`, `apis`, `markets`, `setup`, and `bootstrap`. In that schema,
-`MORPHO_API_BASE_URL` serves book and cursor-paginated offer-group reads, while
-`ROUTER_API_BASE_URL` serves the contract registry; neither current client has a configurable API-key
-header. The groups below describe the full V0 destination; settings not present in the current README
-schema remain explicitly planned until their workflows are implemented:
+`MORPHO_API_BASE_URL` serves book and cursor-paginated offer-group reads. Ratifier identity comes from
+the pinned Morpho SDK catalog; `ROUTER_API_BASE_URL` is accepted and ignored only as a deprecated
+compatibility key. The current Morpho API client has no configurable API-key header. The groups below
+describe the full V0 destination; settings not present in the current README schema remain explicitly
+planned until their workflows are implemented:
 
 - **Chain and identity:** `CHAIN_ID`, `RPC_URL`, optional fallback RPC, `MAKER_PRIVATE_KEY`,
-  Midnight address, Router origin, and ratifier selection. The ratifier address is accepted only
-  when it is listed by the Router.
+  Midnight address, and ratifier selection. The ratifier address is accepted only when it matches
+  the canonical Base catalog in the pinned Morpho SDK.
 - **Markets:** explicit allowlisted market IDs, per-market exposure, and group mode. Immutable market
   configuration—including loan asset, maturity, and protocol parameters—is retrieved on-chain from
   each ID and is not duplicated in operator config.
@@ -558,8 +561,8 @@ schema remain explicitly planned until their workflows are implemented:
   fixed top-up size, bootstrap premium, auto-refill.
 - **Ladder:** quote premium, spread, step, rungs, size skew, side budgets, loop interval, movement
   tolerance.
-- **Transport:** official API/Router origins, request timeout/retry limits, maximum fee and gas bounds
-  for invalidation.
+- **Transport:** official Morpho API origin, request timeout/retry limits, maximum fee and gas bounds
+  for invalidation. The retired Router config-contracts endpoint is not a readiness dependency.
 - **Lifecycle:** startup `--cleanup` / `--cleanup-group` CLI options, `SHUTDOWN_CLEANUP`, and cleanup
   timeout.
 - **Observability:** log level and optional BetterStack fields; logging works to stdout without a
@@ -578,9 +581,9 @@ separate, explicitly scaled contract rather than reinterpreting these fields.
 - **Phase 1 — architecture and public-release gate (July 27):** accept the TIB direction, settle
   public dependency/legal questions, define env/YAML configuration, and establish the three
   workflows plus shared `MakeService`.
-- **Phase 2 — setup and rate sources (July 28):** implement readiness/crash-loop behavior, Router
-  ratifier validation, the six-hour Blue reference adapter, static adapter, fixed-point bounds, and
-  domain tests.
+- **Phase 2 — setup and rate sources (July 28):** implement readiness/crash-loop behavior, canonical
+  SDK ratifier validation, the six-hour Blue reference adapter, static adapter, fixed-point bounds,
+  and domain tests.
 - **Phase 3 — bootstrap and ladder (July 29):** implement the serialized signing queue,
   negative-spread guard, startup/shutdown cleanup, offer construction, namespace ownership,
   acceptance threshold, one-minute inventory monitoring, ladder generation, and reconciliation.

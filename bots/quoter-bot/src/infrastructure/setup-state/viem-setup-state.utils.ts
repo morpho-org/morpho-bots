@@ -186,32 +186,6 @@ export const offersFromGroups = (value: unknown) =>
     )
   })
 
-/**
- * Extracts supported Base ratifier addresses and kinds from Router configuration.
- * @param value - Untrusted Router config-contracts response.
- * @returns Checksummed Base ratifier addresses paired with their canonical kinds.
- * @throws When the response shape or selected contract fields are malformed.
- */
-export const routerRatifiers = (value: unknown) => {
-  const data = arrayValue(
-    objectValue(value, 'Router config contracts response').data,
-    'Router config contracts'
-  )
-  return data.flatMap(item => {
-    const contract = objectValue(item, 'Router config contract')
-    if (integerValue(contract.chain_id, 'config contract chain_id') !== BASE_CHAIN_ID) return []
-    const type =
-      contract.name === 'ecrecoverRatifier'
-        ? ('ecrecover' as const)
-        : contract.name === 'setterRatifier'
-          ? ('setter' as const)
-          : undefined
-    return type
-      ? [{ type, address: addressValue(contract.address, 'config contract address') }]
-      : []
-  })
-}
-
 type OverlapOwnership = {
   bootstrapBuyGroupIds?: ReadonlySet<Hex>
   ladderSellGroupIds?: ReadonlySet<Hex>

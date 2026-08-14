@@ -3,7 +3,7 @@ export type SafeProviderFailure = {
   kind: 'provider-error'
   provider: 'provider' | 'rpc' | 'archive-rpc' | 'morpho-api' | 'router-api'
   name: string
-  code?: string
+  code?: string | number
   status?: number
   context?: 'read' | 'request'
 }

@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net'
 
 import { createServer } from 'node:http'
 
-import { ANVIL_DEFAULT_ACCOUNT, ECRECOVER_RATIFIER, MARKET, MARKET_ID } from './constants'
+import { ANVIL_DEFAULT_ACCOUNT, MARKET, MARKET_ID } from './constants'
 
 const json = (body: unknown, status = 200) => Response.json(body, { status })
 type SetupApiMode = 'ready' | 'books-failed' | 'offers-failed'
@@ -67,19 +67,6 @@ const route = (request: Request) => {
     })
   }
 
-  if (pathname === '/v0/config/contracts') {
-    return json({
-      cursor: null,
-      data: [
-        {
-          chain_id: MARKET.chainId,
-          address: ECRECOVER_RATIFIER,
-          name: 'ecrecoverRatifier'
-        }
-      ]
-    })
-  }
-
   return json({ message: 'unsupported e2e fixture route' }, 404)
 }
 
@@ -131,7 +118,7 @@ const toNodeHandler =
   }
 
 /**
- * Starts deterministic Morpho and Router API fixtures for setup-check provider reads.
+ * Starts deterministic Morpho API fixtures for setup-check provider reads.
  *
  * @returns A loopback API origin and the running Node http server.
  * @remarks The responses mirror the pinned market's immutable Base state and intentionally contain

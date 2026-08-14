@@ -47,7 +47,6 @@ const environment = (rpcUrl: string, apiBaseUrl: string) => ({
   NATIVE_RESERVE_WEI: String(NATIVE_RESERVE),
   MAXIMUM_LEND_EXPOSURE_ASSETS: String(MAXIMUM_LEND_EXPOSURE),
   MORPHO_API_BASE_URL: apiBaseUrl,
-  ROUTER_API_BASE_URL: apiBaseUrl,
   REQUEST_TIMEOUT_MS: '30000'
 })
 

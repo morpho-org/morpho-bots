@@ -13,6 +13,7 @@ import { SafeProviderError } from '../../../src/application/setup/safe-provider.
 import { requestJson } from '../../../src/infrastructure/setup-state/http-json.utils'
 import { ProviderPaginationError } from '../../../src/infrastructure/setup-state/provider-pagination.error'
 import { ProviderReadError } from '../../../src/infrastructure/setup-state/provider-read.error'
+import { executeProviderRead } from '../../../src/infrastructure/setup-state/provider-read.utils'
 import { ProviderResponseError } from '../../../src/infrastructure/setup-state/provider-response.error'
 import { ViemSetupStateService } from '../../../src/infrastructure/setup-state/viem-setup-state.service'
 
@@ -75,8 +76,6 @@ const createState = (
     rejectRatifierReads?: boolean
     missingReferenceMarket?: boolean
     referenceLoanAsset?: Address
-    routerRatifier?: Address
-    routerRatifierName?: 'ecrecoverRatifier' | 'setterRatifier'
     requestLimit?: number
     requestTimeoutMs?: number
     now?: () => number
@@ -175,18 +174,6 @@ const createState = (
       throw new Error('test request limit reached')
     }
     if (overrides.onRequest) return overrides.onRequest(url, timeoutMs)
-    if (url.includes('/v0/config/contracts')) {
-      return {
-        data: [
-          {
-            chain_id: 8453,
-            name: overrides.routerRatifierName ?? 'ecrecoverRatifier',
-            address: overrides.routerRatifier ?? ratifier
-          }
-        ],
-        cursor: null
-      }
-    }
     const match = Object.entries(responses).find(([path]) => url.includes(path))
     if (match) return match[1]
     if (url.includes('/v0/midnight/markets')) {
@@ -209,7 +196,6 @@ const createState = (
       midnight,
       loanAsset,
       morphoApiBaseUrl: 'https://api.example',
-      routerApiBaseUrl: 'https://router.example',
       marketIds: overrides.marketIds ?? [marketId],
       referenceMarketId,
       v0OfferGroupIds: overrides.v0OfferGroupIds ?? [knownGroup],
@@ -270,9 +256,9 @@ describe('ViemSetupStateService', () => {
     ],
     [
       'getRatifier compound reads',
-      'request',
-      'router-api',
-      'ratifier-registry',
+      'other-contract',
+      'rpc',
+      'ratifier-authorization',
       (state: ViemSetupStateService) => state.getRatifier(maker, ratifier)
     ],
     [
@@ -341,7 +327,6 @@ describe('ViemSetupStateService', () => {
         midnight,
         loanAsset,
         morphoApiBaseUrl: 'https://api.example',
-        routerApiBaseUrl: 'https://router.example',
         marketIds: [marketId],
         v0OfferGroupIds: [knownGroup],
         readOwnedGroupIds: async () => [],
@@ -378,6 +363,77 @@ describe('ViemSetupStateService', () => {
       }
     }
   )
+
+  test('preserves safe timeout metadata from a viem provider rejection', async () => {
+    const raw = Object.assign(new Error('https://rpc.example/?key=private'), {
+      name: 'TimeoutError',
+      code: 'ETIMEDOUT'
+    })
+    const error = await executeProviderRead('rpc', 'chain-id', async () => {
+      throw raw
+    }).catch((value: unknown) => value)
+
+    expect(error).toBeInstanceOf(ProviderReadError)
+    expect(error).toMatchObject({
+      failure: {
+        kind: 'provider-error',
+        provider: 'rpc',
+        name: 'TimeoutError',
+        code: 'ETIMEDOUT',
+        context: 'read'
+      }
+    })
+    expect(JSON.stringify(error)).not.toContain('rpc.example')
+    expect(error).not.toHaveProperty('cause')
+  })
+
+  test('preserves safe numeric JSON-RPC server metadata from a viem provider rejection', async () => {
+    const raw = Object.assign(new Error('https://rpc.example/?key=private'), {
+      name: 'RpcRequestError',
+      code: -32_005
+    })
+    const error = await executeProviderRead('rpc', 'chain-id', async () => {
+      throw raw
+    }).catch((value: unknown) => value)
+
+    expect(error).toBeInstanceOf(ProviderReadError)
+    expect(error).toMatchObject({
+      failure: {
+        kind: 'provider-error',
+        provider: 'rpc',
+        name: 'ProviderError',
+        code: -32_005,
+        context: 'read'
+      }
+    })
+    expect(JSON.stringify(error)).not.toContain('rpc.example')
+    expect(error).not.toHaveProperty('cause')
+  })
+
+  test('does not preserve ambiguous JSON-RPC internal-error metadata from a viem rejection', async () => {
+    const raw = Object.assign(new Error('execution reverted: private details'), {
+      name: 'InternalRpcError',
+      code: -32_603
+    })
+    const error = await executeProviderRead('rpc', 'loan-allowance', async () => {
+      throw raw
+    }).catch((value: unknown) => value)
+
+    expect(error).toBeInstanceOf(ProviderReadError)
+    expect(error).toMatchObject({
+      failure: {
+        kind: 'provider-error',
+        provider: 'rpc',
+        name: 'ProviderError',
+        context: 'read'
+      }
+    })
+    expect((error as ProviderReadError).failure).toMatchObject({
+      code: 'PROVIDER_READ_FAILED'
+    })
+    expect(JSON.stringify(error)).not.toContain('execution reverted')
+    expect(error).not.toHaveProperty('cause')
+  })
 
   test('reports HTTP failures with a fixed provider id and no URL fields', async () => {
     const server = await startFixtureServer(() => new Response('private body', { status: 503 }))
@@ -566,8 +622,8 @@ describe('ViemSetupStateService', () => {
     await expect(state.getBook(marketId)).resolves.toMatchObject({ allowlisted: false })
   })
 
-  test('accepts only the registry-listed Ecrecover ratifier with its exact deployed interface', async () => {
-    const { state } = createState({})
+  test('accepts only the SDK-canonical Ecrecover ratifier without calling a registry endpoint', async () => {
+    const { state, calls } = createState({})
 
     expect(await state.getRatifier(maker, ratifier)).toEqual({
       type: 'ecrecover',
@@ -577,10 +633,7 @@ describe('ViemSetupStateService', () => {
       surfaceMatches: true,
       authorized: true
     })
-
-    expect(
-      (await createState({}, { routerRatifier: maker }).state.getRatifier(maker, ratifier)).listed
-    ).toBe(false)
+    expect(calls).toEqual([])
     expect(
       await state.getRatifier(maker, '0x4444444444444444444444444444444444444444')
     ).toMatchObject({ listed: false })
@@ -593,15 +646,8 @@ describe('ViemSetupStateService', () => {
     ).toBe(false)
   })
 
-  test('accepts the Router-listed Setter ratifier with its exact deployed interface', async () => {
-    const { state } = createState(
-      {},
-      {
-        code: authoritativeSetterRatifierRuntime,
-        routerRatifier: setterRatifier,
-        routerRatifierName: 'setterRatifier'
-      }
-    )
+  test('accepts the SDK-canonical Setter ratifier with its exact deployed interface', async () => {
+    const { state } = createState({}, { code: authoritativeSetterRatifierRuntime })
 
     expect(await state.getRatifier(maker, setterRatifier)).toEqual({
       type: 'setter',
@@ -620,8 +666,6 @@ describe('ViemSetupStateService', () => {
         {},
         {
           code: authoritativeSetterRatifierRuntime,
-          routerRatifier: setterRatifier,
-          routerRatifierName: 'setterRatifier',
           rootRatified
         }
       )
@@ -643,8 +687,6 @@ describe('ViemSetupStateService', () => {
       {},
       {
         code: authoritativeSetterRatifierRuntime,
-        routerRatifier: setterRatifier,
-        routerRatifierName: 'setterRatifier',
         rootRatified: 'false'
       }
     )
@@ -656,12 +698,9 @@ describe('ViemSetupStateService', () => {
     expect(error.message).toBe('SetterRatifier isRootRatified response must be boolean')
   })
 
-  test('rejects a non-canonical ratifier even when Router labels compatible runtime bytecode', async () => {
+  test('rejects a non-canonical ratifier even when it has compatible runtime bytecode', async () => {
     const unknownRatifier: Address = '0x1111111111111111111111111111111111111111'
-    const { state } = createState(
-      {},
-      { code: authoritativeRatifierRuntime, routerRatifier: unknownRatifier }
-    )
+    const { state } = createState({}, { code: authoritativeRatifierRuntime })
 
     expect(await state.getRatifier(maker, unknownRatifier)).toMatchObject({
       listed: false,

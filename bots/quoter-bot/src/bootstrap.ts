@@ -21,6 +21,7 @@ import { OfferInvalidationService } from './application/invalidation/offer-inval
 import { LadderQuoterService } from './application/ladder/ladder-quoter.service'
 import { serializeQuoterBotWrites } from './application/quoter-bot/quoter-bot-mutation.utils'
 import { QuoterBotService } from './application/quoter-bot/quoter-bot.service'
+import { SetupCheckAbortedError } from './application/setup/setup-check-aborted.error'
 import { SetupCheckService } from './application/setup/setup-check.service'
 import { VersionService } from './application/version.service'
 import { ConfigValidationError } from './config/config-validation.error'
@@ -135,7 +136,6 @@ const defaultState = async (config: ConfigService, ignoredOfferGroupIds: readonl
       midnight: config.setup.midnight,
       loanAsset: config.setup.loanAsset,
       morphoApiBaseUrl: config.morphoApiBaseUrl,
-      routerApiBaseUrl: config.routerApiBaseUrl,
       marketIds: config.setup.marketIds,
       referenceMarketId: config.setup.referenceMarketId ?? config.setup.marketIds[0]!,
       v0OfferGroupIds: config.v0OfferGroupIds,
@@ -240,8 +240,10 @@ export const createApplication = (
     async options => {
       const config = await loadConfig(options)
       assertReferenceConfigured(config, config.bootstrap)
+      if (options.signal.aborted) throw new SetupCheckAbortedError()
       const ladderAdapters = await (dependencies.createLadderAdapters?.(config) ??
         createProductionLadderAdapters(config))
+      if (options.signal.aborted) throw new SetupCheckAbortedError()
       const ignoredOfferGroupIds =
         config.readOnly || config.bootstrap.length === 0 || config.ladder.length === 0
           ? []
@@ -253,7 +255,7 @@ export const createApplication = (
         config.setup,
         config.readOnly,
         requiresVariableRateReference(config.bootstrap)
-      ).assertReady()
+      ).assertReady(options.signal)
       const injectedAdapters = dependencies.createBootstrapAdapters?.(config, ignoredOfferGroupIds)
       const writeReadOnlyEvent = parseEventWriter(options.writeEvent)
       const adapters =
@@ -264,6 +266,7 @@ export const createApplication = (
           undefined,
           ignoredOfferGroupIds
         ))
+      if (options.signal.aborted) throw new SetupCheckAbortedError()
       const make =
         config.readOnly && injectedAdapters
           ? new ReadOnlyBootstrapMakeService(writeReadOnlyEvent)
@@ -278,8 +281,10 @@ export const createApplication = (
     async options => {
       const config = await loadConfig(options)
       assertReferenceConfigured(config, config.ladder)
+      if (options.signal.aborted) throw new SetupCheckAbortedError()
       const adapters = await (dependencies.createLadderAdapters?.(config) ??
         createProductionLadderAdapters(config))
+      if (options.signal.aborted) throw new SetupCheckAbortedError()
       const ignoredOfferGroupIds =
         config.readOnly || config.ladder.length === 0
           ? []
@@ -291,7 +296,7 @@ export const createApplication = (
         config.setup,
         config.readOnly,
         requiresVariableRateReference(config.ladder)
-      ).assertReady()
+      ).assertReady(options.signal)
       const writeReadOnlyEvent = parseEventWriter(options.writeEvent)
       const make = config.readOnly
         ? new ReadOnlyLadderMakeService(
@@ -323,8 +328,10 @@ export const createApplication = (
         )
       }
       assertReferenceConfigured(config, [...config.bootstrap, ...config.ladder])
+      if (options.signal.aborted) throw new SetupCheckAbortedError()
       const ladderAdapters = await (dependencies.createLadderAdapters?.(config) ??
         createProductionLadderAdapters(config))
+      if (options.signal.aborted) throw new SetupCheckAbortedError()
       const ignoredOfferGroupIds = config.readOnly
         ? []
         : ((await ladderAdapters.make.cleanupRemovedMarkets?.()) ?? [])
@@ -337,7 +344,7 @@ export const createApplication = (
         config.readOnly,
         requiresVariableRateReference([...config.bootstrap, ...config.ladder])
       )
-      await setup.assertReady()
+      await setup.assertReady(options.signal)
 
       const injectedBootstrapAdapters = dependencies.createBootstrapAdapters?.(
         config,
@@ -350,6 +357,7 @@ export const createApplication = (
           undefined,
           ignoredOfferGroupIds
         ))
+      if (options.signal.aborted) throw new SetupCheckAbortedError()
       const bootstrapMake =
         config.readOnly && injectedBootstrapAdapters
           ? new ReadOnlyBootstrapMakeService(readOnlyWriter(options.writeEvent))
