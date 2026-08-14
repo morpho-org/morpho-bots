@@ -140,7 +140,8 @@ describe('MidnightBootstrapMakeService', () => {
       reserveGroup: async () => {},
       confirmPublishedGroup: async () => {},
       releaseGroupReservation: async () => {},
-      invalidate: async () => {}
+      invalidate: async () => {},
+      ...{ invalidateBatch: async () => {} }
     })
 
     await expect(
