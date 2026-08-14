@@ -1,0 +1,188 @@
+# Default values for the quoter-bot chart.
+#
+# The chart runs one quoter-bot container from the public Docker Hub image and feeds it the
+# bot's native YAML configuration file rendered from `config` below, so one values file fully
+# describes a deployment. See the chart README.md and the package-level
+# bots/quoter-bot/README.md#configuration for every supported configuration key.
+
+image:
+  repository: morphoorg/quoter
+  # Defaults to the chart appVersion (`latest`). Every release also publishes an immutable
+  # commit-hash tag; pin one for reproducible deployments.
+  tag: ''
+  # `Always` is the safe default while the tag is `latest`; switch to `IfNotPresent` when
+  # pinning an immutable commit tag.
+  pullPolicy: Always
+
+imagePullSecrets: []
+nameOverride: ''
+fullnameOverride: ''
+
+# Entrypoint for the bot process. The chart deliberately bypasses the image's
+# railway-entrypoint.sh (which requires starting as root to chown the Railway volume) and runs
+# the bundle directly as the image's unprivileged `node` user; volume ownership is handled by
+# `podSecurityContext.fsGroup` instead.
+command:
+  - node
+  - /repo/bots/quoter-bot/dist/src/index.js
+
+# Root flags and command passed to the bot after the chart-managed `--config <file>` pair.
+# Root flags precede the command, so for example a read-only rehearsal is
+# ["--readonly", "start", "--verbose"] and a monitored readiness-check deployment is
+# ["setup-check", "--monitor"].
+args:
+  - start
+  - --verbose
+
+# The complete quoter-bot YAML configuration, copied verbatim into a chart-managed Secret and
+# passed to the bot with `--config`. The mapping uses the bot's native schema — the same
+# `chain`, `identity`, `contracts`, `apis`, `markets`, `setup`, `bootstrap`, and `ladder` keys
+# as bots/quoter-bot/quoter-bot.example.yaml — and the bot validates it at startup, failing
+# loud on unknown keys or invalid values.
+#
+# IMPORTANT: quote every large integer (asset amounts, wei values, bytes32 IDs) as a YAML
+# string, exactly like quoter-bot.example.yaml does. Helm parses unquoted numbers as floats,
+# so an unquoted 10000000000000000 can re-render as 1e+16, which the bot rejects at startup.
+#
+# Prefer keeping the maker signing secret out of this block: leave `identity.makerPrivateKey`
+# unset here and provide MAKER_PRIVATE_KEY (or the keystore/AWS alternatives) through
+# `envFrom` below — every environment variable overrides its YAML counterpart. Alternatively
+# set `existingConfigSecret` to manage the complete file outside Helm.
+config: {}
+# config:
+#   chain:
+#     id: 8453
+#     rpcUrl: 'https://base-rpc.example'
+#     archiveRpcUrl: 'https://base-archive-rpc.example'
+#   identity:
+#     makerAddress: '0x1111111111111111111111111111111111111111'
+#   contracts:
+#     midnightAddress: '0x2222222222222222222222222222222222222222'
+#     loanAssetAddress: '0x3333333333333333333333333333333333333333'
+#     ratifierAddress: '0x4444444444444444444444444444444444444444'
+#   apis:
+#     morphoBaseUrl: 'https://api.example'
+#   markets:
+#     allowlist:
+#       - '0x5555555555555555555555555555555555555555555555555555555555555555'
+#     referenceMarketId: '0x7777777777777777777777777777777777777777777777777777777777777777'
+#   setup:
+#     nativeReserveWei: '10000000000000000'
+#     maximumLendExposureAssets: '10000000000'
+#   bootstrap: []
+#   ladder:
+#     - marketId: '0x5555555555555555555555555555555555555555555555555555555555555555'
+#       quotePremiumBps: '0'
+#       spreadBps: '200'
+#       stepBps: '100'
+#       rungCount: '3'
+#       sizeSkewBps: '0'
+#       lowerRateBudgetAssets: '10000000000'
+#       higherRateBudgetAssets: '10000000000'
+#       targetMarketExposureAssets: '20000000000'
+#       maximumTotalExposureAssets: '30000000000'
+#       minimumOfferAssets: '101000000'
+#       groupMode: 'shared-rung'
+#       loopIntervalSeconds: '60'
+#       movementToleranceBps: '10'
+#       minimumRateBps: '200'
+#       maximumRateBps: '800'
+
+# Name of a pre-created Secret holding the complete configuration file under the key
+# `quoter-bot.yaml`. When set, the chart mounts that Secret instead of rendering one from
+# `config`, keeping secrets out of Helm values and release storage entirely. Config changes in
+# an existing Secret are not detected by upgrades; restart with
+# `kubectl rollout restart deployment/<release>-quoter-bot`.
+existingConfigSecret: ''
+
+# Extra environment variables (list of EnvVar objects). Environment values override their YAML
+# counterparts, so this is the place for the signer secret and for the environment-only Better
+# Stack settings (BETTERSTACK_SOURCE_TOKEN, BETTERSTACK_INGESTING_HOST,
+# BETTERSTACK_HEARTBEAT_URL).
+env: []
+# env:
+#   - name: MAKER_PRIVATE_KEY
+#     valueFrom:
+#       secretKeyRef:
+#         name: quoter-bot-signer
+#         key: makerPrivateKey
+#   - name: BETTERSTACK_HEARTBEAT_URL
+#     value: 'https://uptime.betterstack.com/api/v1/heartbeat/example'
+
+# Extra envFrom sources (list of EnvFromSource objects), for injecting whole Secrets or
+# ConfigMaps of environment overrides.
+envFrom: []
+# envFrom:
+#   - secretRef:
+#       name: quoter-bot-signer
+
+# Durable ownership state (bot-issued offer-group IDs) lives under this mount; the chart
+# always sets XDG_STATE_HOME to `mountPath`. Losing it makes previously bot-issued groups
+# unknown, which fails readiness until an operator invalidates or adopts them — keep
+# persistence enabled for write-mode deployments.
+persistence:
+  enabled: true
+  mountPath: /state
+  size: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  # Set to a storage class name, or "-" to disable dynamic provisioning. Empty uses the
+  # cluster default.
+  storageClass: ''
+  # Reuse a pre-created PersistentVolumeClaim instead of creating one.
+  existingClaim: ''
+  annotations: {}
+  # Keep the claim (and the ownership state inside) when the release is uninstalled. A
+  # reinstall under the same release name and namespace re-adopts it.
+  retain: true
+
+# Optional root init container that chowns the state volume to the runtime user, mirroring the
+# image's railway-entrypoint.sh. Only needed on storage drivers that ignore
+# `podSecurityContext.fsGroup` (for example some NFS provisioners).
+volumePermissions:
+  enabled: false
+
+# The image runs as the bundled unprivileged `node` user (uid/gid 1000); fsGroup makes the
+# state volume writable without root.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container-level hardening. The root filesystem stays read-only: the bot writes only under
+# XDG_STATE_HOME, and the chart mounts an emptyDir at /tmp.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+resources: {}
+# resources:
+#   requests:
+#     cpu: 100m
+#     memory: 256Mi
+#   limits:
+#     memory: 512Mi
+
+# SIGTERM lets the in-flight cycle finish, then invalidates owned offer groups and waits for
+# transaction receipts (bounded by transactionReceiptTimeoutMs per transaction), so shutdown
+# legitimately takes minutes. Kubernetes' 30-second default would SIGKILL mid-cleanup and
+# leave owned offers on the book.
+terminationGracePeriodSeconds: 600
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ''
+
+# Extra volumes and mounts, for example a keystore file Secret for the `keystore` signer.
+extraVolumes: []
+extraVolumeMounts: []
