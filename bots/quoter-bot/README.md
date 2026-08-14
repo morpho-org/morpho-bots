@@ -804,7 +804,7 @@ can run without it.
 
 ```sh
 # From the repo root.
-docker build -f bots/quoter-bot/Dockerfile.release -t market-making-bot .
+docker build -f bots/quoter-bot/Dockerfile.release -t quoter-bot .
 ```
 
 On Apple Silicon add `--platform linux/amd64` when the image is destined for x86 servers, or keep
@@ -830,7 +830,7 @@ docker run --rm \
   -e MAXIMUM_LEND_EXPOSURE_ASSETS=10000000000 \
   -e MORPHO_API_BASE_URL=https://api.example \
   -e ROUTER_API_BASE_URL=https://router.example \
-  market-making-bot --readonly setup-check
+  quoter-bot --readonly setup-check
 ```
 
 `docker run --env-file <file>` works with a file in [`.env.example`](./.env.example) syntax. Every
@@ -847,14 +847,14 @@ Mount the configuration read-only and select it explicitly:
 ```sh
 docker run --rm \
   -v "$PWD/bots/quoter-bot/quoter-bot.yaml:/config/quoter-bot.yaml:ro" \
-  market-making-bot --config /config/quoter-bot.yaml --readonly setup-check
+  quoter-bot --config /config/quoter-bot.yaml --readonly setup-check
 ```
 
 Both sources combine freely — for example, keep `identity.makerPrivateKey` out of the file and add
 `-e MAKER_PRIVATE_KEY=0x…` only for write-mode commands. The container works from
 `/repo/bots/quoter-bot`, so a file mounted at `/repo/bots/quoter-bot/quoter-bot.yaml` is
 also picked up by default discovery without `--config`. When keeping a custom-named config inside
-the repository tree, include `market-making` in its filename — only such names (and no non-example
+the repository tree, include `quoter-bot` in its filename — only such names (and no non-example
 YAML at all, docker-side) are ignored by git, so an arbitrary `prod.yaml` holding the maker key
 could be committed by mistake.
 
@@ -890,7 +890,7 @@ stop` delivers the same graceful SIGTERM the CLI handles everywhere else.
 ### Publish to Docker Hub
 
 Publishing is release-driven. A GitHub release whose tag starts with `quoter-bot-` (repo CalVer
-convention: `quoter-bot-YYYY.MM.DD-N`) triggers the `Deploy market-making` workflow
+convention: `quoter-bot-YYYY.MM.DD-N`) triggers the `Deploy quoter-bot` workflow
 ([`.github/workflows/deploy-quoter-bot.yml`](../../.github/workflows/deploy-quoter-bot.yml)),
 which builds the **tagged commit** from the repo root on an `ubuntu-latest` (`linux/amd64`) runner
 and pushes the release tag verbatim (immutable), `git-<shortsha>` for the built commit, and `latest`
@@ -928,7 +928,7 @@ gh workflow run deploy-quoter-bot.yml -f tag=latest
 One-time repository setup: create the `quoter-bot-dockerhub` GitHub Environment holding the
 publish configuration (distinct from `quoter-bot-production`, which holds the [Railway
 deploy](#deploy) credentials). In its deployment branches/tags policy allow branch `main` **and**
-tags matching `market-making-*` — release runs execute on the tag ref, so a branch-only policy
+tags matching `quoter-bot-*` — release runs execute on the tag ref, so a branch-only policy
 rejects them, while the tag pattern keeps the token unreachable from arbitrary PR branches. The
 release
 automation additionally needs the org GitHub App credentials `GIT_BOT_CLIENT_ID` /
@@ -936,11 +936,11 @@ automation additionally needs the org GitHub App credentials `GIT_BOT_CLIENT_ID`
 optionally `ANTHROPIC_API_KEY` — without it the notes-rewrite step skips cleanly and the
 GitHub-generated notes remain.
 
-| Environment entry      | Kind     | Requirement and behavior                                                                                                                          |
-| ---------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DOCKERHUB_REPOSITORY` | Variable | Required lowercase `<namespace>/<name>` Docker Hub repository, e.g. `morphoorg/market-making-bot`. Registry hosts and embedded tags are rejected. |
-| `DOCKERHUB_USERNAME`   | Secret   | Required Docker Hub account with write access to the repository.                                                                                  |
-| `DOCKERHUB_TOKEN`      | Secret   | Required Docker Hub access token (write scope); it reaches `docker login` via stdin and never appears in argv or workflow logs.                   |
+| Environment entry      | Kind     | Requirement and behavior                                                                                                                   |
+| ---------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `DOCKERHUB_REPOSITORY` | Variable | Required lowercase `<namespace>/<name>` Docker Hub repository, e.g. `morphoorg/quoter-bot`. Registry hosts and embedded tags are rejected. |
+| `DOCKERHUB_USERNAME`   | Secret   | Required Docker Hub account with write access to the repository.                                                                           |
+| `DOCKERHUB_TOKEN`      | Secret   | Required Docker Hub access token (write scope); it reaches `docker login` via stdin and never appears in argv or workflow logs.            |
 
 A deployed host then runs the published image with the exact parametrization documented above —
 substitute a `quoter-bot-YYYY.MM.DD-N` release tag for `latest` to pin an immutable version. The

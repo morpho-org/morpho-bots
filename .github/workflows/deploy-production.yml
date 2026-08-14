@@ -267,9 +267,12 @@ jobs:
           echo "$version" | grep -Eq '^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[1-9][0-9]*$' \
             || { echo "quoter-bot package version must use CalVer YYYY.MM.DD-N" >&2; exit 1; }
           tag="${BOT}-${version}"
-          # `|| true` guards against SIGPIPE aborting the job under `set -o pipefail` (git is
-          # killed when head closes the pipe early once there are many tags).
-          prev="$(git tag -l "${BOT}-*" --sort=-version:refname | head -n 1 || true)"
+          # The notes baseline must be the highest tag BELOW the one being created — for a
+          # backfilled older release, the newest tag overall would generate a backwards
+          # newer→older diff. `|| true` guards against SIGPIPE under `set -o pipefail`.
+          prev="$( { git tag -l "${BOT}-*" | grep -Fxv -- "$tag" || true; echo "$tag"; } \
+            | sort -V | grep -B1 -Fx -- "$tag" | head -n 1 || true)"
+          [ "$prev" = "$tag" ] && prev=""
           echo "Creating release $tag (previous: ${prev:-none})"
           gh release create "$tag" --target "$SHA" --title "$tag" --generate-notes \
             ${prev:+--notes-start-tag "$prev"}

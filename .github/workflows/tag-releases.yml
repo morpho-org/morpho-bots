@@ -207,9 +207,14 @@ jobs:
               echo "ERROR: git tag $tag_name exists without a release — delete the stale tag or bump the version" >&2
               exit 1
             else
-              # `|| true` guards against SIGPIPE aborting the job under `set -o pipefail`
-              # (git is killed when head closes the pipe early once there are many tags).
-              prev_tag="$(git tag -l "${bot_name}-*" --sort=-version:refname | head -n 1 || true)"
+              # The notes baseline must be the highest tag BELOW the one being created — for a
+              # backfilled older release, the newest tag overall would generate a backwards
+              # newer→older diff. Sorting the candidate in with the existing tags and taking its
+              # predecessor yields that; an empty result (new tag is the lowest/first) skips the
+              # baseline flag. `|| true` guards against SIGPIPE under `set -o pipefail`.
+              prev_tag="$( { git tag -l "${bot_name}-*" | grep -Fxv -- "$tag_name" || true; echo "$tag_name"; } \
+                | sort -V | grep -B1 -Fx -- "$tag_name" | head -n 1 || true)"
+              [ "$prev_tag" = "$tag_name" ] && prev_tag=""
               # Target the exact triggering commit, not `main`: the branch pointer is resolved
               # server-side at API-call time, so a commit landing between the push and this call
               # would silently ship code the release never reviewed.
