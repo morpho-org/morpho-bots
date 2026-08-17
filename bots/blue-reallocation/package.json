@@ -1,0 +1,32 @@
+{
+  "name": "@morpho-org/blue-reallocation",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsx scripts/build.ts",
+    "deploy:railway": "tsx scripts/deploy-railway.ts",
+    "prestart": "pnpm --filter \"{.}...\" --if-present run build",
+    "start": "node --env-file-if-exists=.env dist/src/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@morpho-org/blue-sdk": "catalog:",
+    "@morpho-org/blue-sdk-viem": "catalog:",
+    "@morpho-org/morpho-ts": "catalog:",
+    "@repo/bot-kit": "workspace:*",
+    "@repo/utils": "workspace:*",
+    "viem": "catalog:"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@types/node": "catalog:",
+    "esbuild": "catalog:",
+    "execa": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:"
+  }
+}
