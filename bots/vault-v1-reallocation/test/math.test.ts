@@ -28,9 +28,7 @@ describe('getUtilization', () => {
     expect(
       getUtilization({
         totalSupplyAssets: 100n,
-        totalSupplyShares: 0n,
-        totalBorrowAssets: 90n,
-        totalBorrowShares: 0n
+        totalBorrowAssets: 90n
       })
     ).toBe((90n * WAD) / 100n)
   })
@@ -39,9 +37,7 @@ describe('getUtilization', () => {
     expect(
       getUtilization({
         totalSupplyAssets: 0n,
-        totalSupplyShares: 0n,
-        totalBorrowAssets: 0n,
-        totalBorrowShares: 0n
+        totalBorrowAssets: 0n
       })
     ).toBe(0n)
   })
@@ -98,9 +94,7 @@ describe('sizing helpers', () => {
     },
     state: {
       totalSupplyAssets: parseUnits('100000', 6),
-      totalSupplyShares: 0n,
-      totalBorrowAssets: parseUnits('45000', 6), // 45% utilization
-      totalBorrowShares: 0n
+      totalBorrowAssets: parseUnits('45000', 6) // 45% utilization
     },
     cap: parseUnits('100000', 6),
     vaultAssets: parseUnits('10000', 6),
@@ -116,17 +110,17 @@ describe('sizing helpers', () => {
   it('bounds deposits by the buffered cap headroom', () => {
     // Target 22.5% (half of current): utilization math would allow a 100k deposit, but the
     // buffered cap (99.99% of 100k) minus the current 10k position leaves ~89,990.
-    const depositable = getDepositableAmount(market, parseUnits('0.225', 18), 99.99)
+    const depositable = getDepositableAmount(market, parseUnits('0.225', 18), percentToWad(99.99))
     expect(depositable).toBe(parseUnits('89990', 6))
   })
 
   it('returns zero when the cap is already reached', () => {
     const atCap = { ...market, vaultAssets: market.cap }
-    expect(getDepositableAmount(atCap, parseUnits('0.225', 18), 99.99)).toBe(0n)
+    expect(getDepositableAmount(atCap, parseUnits('0.225', 18), percentToWad(99.99))).toBe(0n)
   })
 
   it('returns zero depositable for a zero target instead of dividing by zero', () => {
     // A configured max APY at or below the curve's minimum rate inverts to utilization 0.
-    expect(getDepositableAmount(market, 0n, 99.99)).toBe(0n)
+    expect(getDepositableAmount(market, 0n, percentToWad(99.99))).toBe(0n)
   })
 })

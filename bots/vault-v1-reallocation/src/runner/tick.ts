@@ -83,11 +83,8 @@ const processVault = async (
 
   if (deps.dryRun) {
     counters.dry_runs++
-    deps.logger.info('reallocation.dry_run', {
-      vault,
-      legs: allocations.length,
-      allocations: summary
-    })
+    // The plan itself was just logged by reallocation.found — this line only marks the decision.
+    deps.logger.info('reallocation.dry_run', { vault })
     return
   }
 

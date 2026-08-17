@@ -1,6 +1,7 @@
 import { getAddress, maxUint256, parseUnits, zeroAddress } from 'viem'
 import { beforeEach, describe, expect, it } from 'vitest'
 
+import { percentToWad } from '../../src/math'
 import { createEqualizeUtilizationsStrategy } from '../../src/strategies/equalize-utilizations'
 import {
   makeIdleMarket,
@@ -13,7 +14,7 @@ import {
 
 const makeStrategy = (minUtilizationDeltaBips: (vault: `0x${string}`) => number = () => 0) =>
   createEqualizeUtilizationsStrategy({
-    capBufferPercent: 99.99,
+    capBufferWad: percentToWad(99.99),
     minUtilizationDeltaBips
   })
 
@@ -202,6 +203,43 @@ describe('createEqualizeUtilizationsStrategy', () => {
     // Toward a 100% target: 100k * (1 - 0.5/1.0) = 50k moved, leaving 50k. An unclamped 125% target
     // would move 60k, past the market's available liquidity.
     expect(withdrawal.assets).toBe(parseUnits('50000', 6))
+  })
+
+  it('does not let a capped-out market arm the min-delta gate', () => {
+    // Four equal-supply markets → target = (95+70+40+40)/4 = 61.25%. Deviations: capped-hot
+    // 3375 bips, contributing-hot 875, colds 2125 each. With a 2500-bips threshold only the
+    // capped-out market deviates enough — and it can absorb nothing, so the gate must stay unarmed.
+    const strategy = makeStrategy(() => 2_500)
+    const vaultAssets = parseUnits('10000', 6)
+    const markets = (cappedHotCap: bigint) => [
+      makeMarket({
+        utilization: (95n * WAD) / 100n,
+        vaultAssets,
+        cap: cappedHotCap,
+        rateAtTarget: RATE_AT_TARGET
+      }),
+      makeMarket({
+        utilization: (70n * WAD) / 100n,
+        vaultAssets: 0n,
+        cap: parseUnits('100000', 6),
+        rateAtTarget: RATE_AT_TARGET
+      }),
+      makeMarket({
+        utilization: (40n * WAD) / 100n,
+        vaultAssets: parseUnits('20000', 6),
+        cap: parseUnits('100000', 6),
+        rateAtTarget: RATE_AT_TARGET
+      }),
+      makeMarket({
+        utilization: (40n * WAD) / 100n,
+        vaultAssets: parseUnits('20000', 6),
+        cap: parseUnits('100000', 6),
+        rateAtTarget: RATE_AT_TARGET
+      })
+    ]
+    expect(strategy(makeVaultData(markets(vaultAssets)))).toBeUndefined()
+    // Same shape with real cap headroom fires — proving the gate, not some other guard, decided.
+    expect(strategy(makeVaultData(markets(parseUnits('100000', 6))))).toBeDefined()
   })
 
   it('resolves the min-delta threshold by vault address', () => {

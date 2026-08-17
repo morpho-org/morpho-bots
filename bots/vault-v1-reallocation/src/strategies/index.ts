@@ -19,12 +19,14 @@ export type { MarketAllocation, Strategy } from './strategy'
  * Builds the configured {@link Strategy}, binding the checked-in strategy-config tables (market >
  * vault > env-default precedence) and the env-level knobs to a pure function of one vault's data.
  */
+const CAP_BUFFER_WAD = percentToWad(CAP_BUFFER_PERCENT)
+
 export const createStrategy = (config: Config): Strategy => {
   switch (config.strategy) {
     case 'apy-range':
       return createApyRangeStrategy({
         allowIdleReallocation: config.allowIdleReallocation,
-        capBufferPercent: CAP_BUFFER_PERCENT,
+        capBufferWad: CAP_BUFFER_WAD,
         apyRange: (vault, marketId) => {
           const range = resolveApyRange(config.chainId, vault, marketId)
           return { min: percentToWad(range.min), max: percentToWad(range.max) }
@@ -34,7 +36,7 @@ export const createStrategy = (config: Config): Strategy => {
       })
     case 'equalize-utilizations':
       return createEqualizeUtilizationsStrategy({
-        capBufferPercent: CAP_BUFFER_PERCENT,
+        capBufferWad: CAP_BUFFER_WAD,
         minUtilizationDeltaBips: vault =>
           resolveMinUtilizationDeltaBips(config.chainId, vault, config.minUtilizationDeltaBips)
       })

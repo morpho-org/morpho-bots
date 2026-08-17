@@ -28,7 +28,7 @@ const makeStrategy = (
   const defaultApyRange = overrides.defaultApyRange ?? { min: 2, max: 8 }
   const config: ApyRangeConfig = {
     allowIdleReallocation: overrides.allowIdleReallocation ?? true,
-    capBufferPercent: 99.99,
+    capBufferWad: percentToWad(99.99),
     apyRange: (_vault, marketId) => {
       const range = overrides.marketApyRanges?.[marketId] ?? defaultApyRange
       return { min: percentToWad(range.min), max: percentToWad(range.max) }

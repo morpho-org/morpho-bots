@@ -53,9 +53,7 @@ export const makeMarket = (opts: {
     params: opts.params ?? makeMarketParams(),
     state: {
       totalSupplyAssets,
-      totalSupplyShares: totalSupplyAssets * 1_000_000n, // 1:1 ratio simplified
-      totalBorrowAssets,
-      totalBorrowShares: totalBorrowAssets * 1_000_000n
+      totalBorrowAssets
     },
     cap: opts.cap,
     vaultAssets: opts.vaultAssets,
@@ -74,9 +72,7 @@ export const makeIdleMarket = (vaultAssets: bigint, cap?: bigint): VaultMarketDa
   }),
   state: {
     totalSupplyAssets: vaultAssets,
-    totalSupplyShares: vaultAssets * 1_000_000n,
-    totalBorrowAssets: 0n,
-    totalBorrowShares: 0n
+    totalBorrowAssets: 0n
   },
   cap: cap ?? maxUint256,
   vaultAssets,

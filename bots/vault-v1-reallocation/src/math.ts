@@ -46,15 +46,15 @@ export const getWithdrawableAmount = (
 
 /**
  * Assets depositable into a market before its utilization would fall below `targetUtilization`,
- * bounded by the vault's remaining headroom under `cap * capBufferPercent`. Callers must only
- * invoke this for markets whose current utilization is above the target.
+ * bounded by the vault's remaining headroom under `cap` scaled by the WAD `capBufferWad`. Callers
+ * must only invoke this for markets whose current utilization is above the target.
  */
 export const getDepositableAmount = (
   marketData: VaultMarketData,
   targetUtilization: bigint,
-  capBufferPercent: number
+  capBufferWad: bigint
 ): bigint => {
-  const bufferedCap = MathLib.wMulDown(marketData.cap, percentToWad(capBufferPercent))
+  const bufferedCap = MathLib.wMulDown(marketData.cap, capBufferWad)
   const remainingCap =
     bufferedCap > marketData.vaultAssets ? bufferedCap - marketData.vaultAssets : 0n
   return MathLib.min(getDepositToUtilization(marketData.state, targetUtilization), remainingCap)

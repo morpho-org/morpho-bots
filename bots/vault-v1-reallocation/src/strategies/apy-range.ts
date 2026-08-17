@@ -12,7 +12,6 @@ import {
   getDepositableAmount,
   getUtilization,
   getWithdrawableAmount,
-  percentToWad,
   rateToApy,
   rateToUtilization,
   utilizationToRate
@@ -21,7 +20,8 @@ import {
 export type ApyRangeConfig = {
   /** Whether excess withdrawals may be parked in the vault's idle market. */
   allowIdleReallocation: boolean
-  capBufferPercent: number
+  /** WAD-scaled cap scale factor (e.g. 99.99% as 0.9999e18). */
+  capBufferWad: bigint
   /** WAD-scaled borrow-APY bounds for (vault, market). */
   apyRange: (vault: Address, marketId: Hex) => { min: bigint; max: bigint }
   /** Firing threshold: at least one market's implied APY move must exceed this (bips). */
@@ -79,7 +79,7 @@ export const createApyRangeStrategy = (config: ApyRangeConfig): Strategy => {
       const { utilization, lowerBound, upperBound } = classifyMarket(config, vault, marketData)
 
       if (utilization > upperBound) {
-        const depositable = getDepositableAmount(marketData, upperBound, config.capBufferPercent)
+        const depositable = getDepositableAmount(marketData, upperBound, config.capBufferWad)
         totalDepositableAmount += depositable
         if (depositable > 0n) {
           didExceedMinApyDelta ||=
@@ -105,10 +105,7 @@ export const createApyRangeStrategy = (config: ApyRangeConfig): Strategy => {
         // Same clamped-headroom treatment every other deposit target gets: a curator can lower a cap
         // below the current allocation, and an unclamped `cap - vaultAssets` would go negative and
         // corrupt the plan.
-        const bufferedIdleCap = MathLib.wMulDown(
-          idleMarket.cap,
-          percentToWad(config.capBufferPercent)
-        )
+        const bufferedIdleCap = MathLib.wMulDown(idleMarket.cap, config.capBufferWad)
         const idleHeadroom =
           bufferedIdleCap > idleMarket.vaultAssets ? bufferedIdleCap - idleMarket.vaultAssets : 0n
         idleDeposit = min(totalWithdrawableAmount - totalDepositableAmount, idleHeadroom)
@@ -136,7 +133,7 @@ export const createApyRangeStrategy = (config: ApyRangeConfig): Strategy => {
 
       if (utilization > upperBound) {
         const deposit = min(
-          getDepositableAmount(marketData, upperBound, config.capBufferPercent),
+          getDepositableAmount(marketData, upperBound, config.capBufferWad),
           remainingDeposit
         )
         if (deposit === 0n) continue
@@ -165,7 +162,7 @@ export const createApyRangeStrategy = (config: ApyRangeConfig): Strategy => {
           assets: idleMarket.vaultAssets - idleWithdrawal
         })
       }
-      if (idleDeposit > 0n && config.allowIdleReallocation) {
+      if (idleDeposit > 0n) {
         deposits.push({ marketParams: idleMarket.params, assets: maxUint256 })
       }
     }

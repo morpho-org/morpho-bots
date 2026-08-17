@@ -8,9 +8,7 @@ import { getBlock } from 'viem/actions'
 
 export type MarketState = {
   totalSupplyAssets: bigint
-  totalSupplyShares: bigint
   totalBorrowAssets: bigint
-  totalBorrowShares: bigint
 }
 
 export type VaultMarketData = {
@@ -79,9 +77,7 @@ export const fetchVaultData = async (
       },
       state: {
         totalSupplyAssets: market.totalSupplyAssets,
-        totalSupplyShares: market.totalSupplyShares,
-        totalBorrowAssets: market.totalBorrowAssets,
-        totalBorrowShares: market.totalBorrowShares
+        totalBorrowAssets: market.totalBorrowAssets
       },
       cap: allocation.config.cap,
       vaultAssets: allocation.position.supplyAssets,

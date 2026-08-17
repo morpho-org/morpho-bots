@@ -9,7 +9,8 @@ import { isIdleMarket } from '../market.utils'
 import { getDepositableAmount, getUtilization, getWithdrawableAmount } from '../math'
 
 type EqualizeUtilizationsConfig = {
-  capBufferPercent: number
+  /** WAD-scaled cap scale factor (e.g. 99.99% as 0.9999e18). */
+  capBufferWad: bigint
   /** Firing threshold: at least one market's utilization must deviate from target by this (bips). */
   minUtilizationDeltaBips: (vault: Address) => number
 }
@@ -41,24 +42,23 @@ export const createEqualizeUtilizationsStrategy = (
     let totalWithdrawableAmount = 0n
     let totalDepositableAmount = 0n
 
-    let didExceedMinUtilizationDelta = false // true if *at least one* market moves enough
+    let didExceedMinUtilizationDelta = false // true if *at least one contributing* market moves enough
     const minUtilizationDeltaBips = config.minUtilizationDeltaBips(vaultData.vaultAddress)
 
     for (const marketData of marketsData) {
       const utilization = getUtilization(marketData.state)
-      if (utilization > targetUtilization) {
-        totalDepositableAmount += getDepositableAmount(
-          marketData,
-          targetUtilization,
-          config.capBufferPercent
-        )
-      } else {
-        totalWithdrawableAmount += getWithdrawableAmount(marketData, targetUtilization)
-      }
+      const contribution =
+        utilization > targetUtilization
+          ? getDepositableAmount(marketData, targetUtilization, config.capBufferWad)
+          : getWithdrawableAmount(marketData, targetUtilization)
+      if (utilization > targetUtilization) totalDepositableAmount += contribution
+      else totalWithdrawableAmount += contribution
 
-      didExceedMinUtilizationDelta ||=
-        Math.abs(Number((utilization - targetUtilization) / 1_000_000_000n) / 1e5) >
-        minUtilizationDeltaBips
+      if (contribution > 0n) {
+        didExceedMinUtilizationDelta ||=
+          Math.abs(Number((utilization - targetUtilization) / 1_000_000_000n) / 1e5) >
+          minUtilizationDeltaBips
+      }
     }
 
     const toReallocate = min(totalWithdrawableAmount, totalDepositableAmount)
@@ -75,7 +75,7 @@ export const createEqualizeUtilizationsStrategy = (
 
       if (utilization > targetUtilization) {
         const deposit = min(
-          getDepositableAmount(marketData, targetUtilization, config.capBufferPercent),
+          getDepositableAmount(marketData, targetUtilization, config.capBufferWad),
           remainingDeposit
         )
         if (deposit === 0n) continue
