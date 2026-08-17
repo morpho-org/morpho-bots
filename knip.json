@@ -26,6 +26,7 @@
     "bots/vault-v1-reallocation": {
       "entry": ["src/index.ts", "scripts/probe-live-lens.ts"]
     },
+    "bots/vault-v2-reallocation": {},
     "bots/midnight-crossed-books": {
       "ignore": ["src/infrastructure/*/generated/**"]
     },
