@@ -1,6 +1,6 @@
 import type { Address, Hex } from 'viem'
 
-import { isAddressEqual } from 'viem'
+import { decodeAbiParameters, isAddress, isAddressEqual } from 'viem'
 
 /** The only Executor entrypoint the signer authorizes: exec_606BaXt(bytes[]). */
 export const EXECUTOR_SELECTOR = '0x00000001'
@@ -10,6 +10,20 @@ export const DEFAULT_MAX_GAS_LIMIT = 15_000_000n
 
 /** Default calldata byte ceiling (matches the daemon-era signer policy default). */
 export const DEFAULT_MAX_DATA_BYTES = 65_536
+
+/**
+ * Deep authorization for a `multicall(bytes[])` envelope, evaluated declaratively by
+ * {@link evaluatePolicy}: the calldata must decode as a single non-empty `bytes[]`, every inner
+ * call's selector must be listed, and every inner call's FIRST argument (which must be an
+ * address — this rule only suits inner functions shaped like VaultV2's
+ * `allocate/deallocate(address, …)`) must be registered for the transaction's outer target.
+ */
+export type MulticallPolicy = {
+  /** Allowed inner selectors (e.g. allocate/deallocate). */
+  innerSelectors: readonly Hex[]
+  /** Allowed first-argument addresses per outer target (e.g. vault → its adapters). */
+  innerTargetsByOuter: Readonly<Record<Address, readonly Address[]>>
+}
 
 /** One signer authorizes one entrypoint on a fixed target set on one chain, under fixed fee/gas/size ceilings. */
 export type Policy = {
@@ -21,6 +35,8 @@ export type Policy = {
   maxDataBytes: number
   /** Allowed outer selector; defaults to Executor.exec_606BaXt. */
   selector?: Hex
+  /** When set, calldata must also satisfy the {@link MulticallPolicy} envelope rules. */
+  multicall?: MulticallPolicy
 }
 
 /** The prepared-transaction fields the pre-broadcast guard evaluates against a {@link Policy}. */
@@ -41,6 +57,7 @@ export type PolicyCheck =
   | 'gas'
   | 'maxDataBytes'
   | 'selector'
+  | 'data'
 
 export type PolicyDecision = { ok: true } | { ok: false; check: PolicyCheck; message: string }
 
@@ -65,7 +82,9 @@ export class PolicyViolationError extends Error {
  * ever sending value, hitting the wrong contract, or exceeding a ceiling.
  *
  * OUTER-ENVELOPE guard: target, selector, zero value, and fee/gas/size ceilings are pinned. It does
- * not interpret calldata beyond the selector; each bot simulates its exact request before submit.
+ * not interpret calldata beyond the selector — unless a {@link MulticallPolicy} is configured, in
+ * which case the envelope also authorizes each inner call declaratively (still no bot-supplied
+ * code). Each bot simulates its exact request before submit regardless.
  */
 export function evaluatePolicy(policy: Policy, tx: PolicyTx): PolicyDecision {
   const deny = (check: PolicyCheck, message: string): PolicyDecision => ({
@@ -94,5 +113,52 @@ export function evaluatePolicy(policy: Policy, tx: PolicyTx): PolicyDecision {
   if (tx.data.slice(0, 10).toLowerCase() !== selector) {
     return deny('selector', `calldata must call configured selector ${selector}`)
   }
+  if (policy.multicall) {
+    const reason = checkMulticall(policy.multicall, tx)
+    if (reason !== undefined) return deny('data', reason)
+  }
   return { ok: true }
+}
+
+// One inner call must span at least selector (4 bytes) + one 32-byte argument word.
+const MIN_INNER_CALL_HEX_LENGTH = 2 + 8 + 64
+
+const decodeMulticallData = (data: Hex): readonly Hex[] | undefined => {
+  try {
+    const [calls] = decodeAbiParameters([{ type: 'bytes[]' }] as const, `0x${data.slice(10)}`)
+    return calls
+  } catch {
+    return undefined
+  }
+}
+
+const checkMulticall = (spec: MulticallPolicy, tx: PolicyTx): string | undefined => {
+  const calls = decodeMulticallData(tx.data)
+  if (calls === undefined) return 'calldata does not decode as multicall(bytes[])'
+  if (calls.length === 0) return 'multicall bundle must not be empty'
+  const allowedTargets = Object.entries(spec.innerTargetsByOuter).find(([outer]) =>
+    isAddressEqual(tx.to, outer as Address)
+  )?.[1]
+  if (allowedTargets === undefined || allowedTargets.length === 0) {
+    return `no inner targets configured for outer target ${tx.to}`
+  }
+  const selectors = spec.innerSelectors.map(s => s.toLowerCase())
+  for (const call of calls) {
+    if (call.length < MIN_INNER_CALL_HEX_LENGTH) {
+      return `inner call ${call} is too short to carry a selector and an address argument`
+    }
+    const innerSelector = call.slice(0, 10).toLowerCase()
+    if (!selectors.includes(innerSelector)) {
+      return `inner selector ${innerSelector} is not allowed`
+    }
+    const word = call.slice(10, 74)
+    const firstArg = `0x${word.slice(24)}`
+    if (!/^0{24}$/.test(word.slice(0, 24)) || !isAddress(firstArg, { strict: false })) {
+      return 'inner call first argument is not an address'
+    }
+    if (!allowedTargets.some(target => isAddressEqual(firstArg, target))) {
+      return `inner call targets unregistered address ${firstArg}`
+    }
+  }
+  return undefined
 }
