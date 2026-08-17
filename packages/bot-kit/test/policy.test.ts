@@ -52,6 +52,23 @@ describe('evaluatePolicy', () => {
     expect(evaluatePolicy(POLICY, tx(overrides))).toMatchObject({ ok: false, check })
   })
 
+  it('accepts any member of a target list and rejects non-members', () => {
+    const listed: Policy = { ...POLICY, executor: [EXECUTOR, OTHER] }
+    expect(evaluatePolicy(listed, tx())).toEqual({ ok: true })
+    expect(evaluatePolicy(listed, tx({ to: OTHER }))).toEqual({ ok: true })
+    expect(evaluatePolicy(listed, tx({ to: getAddress(`0x${'44'.repeat(20)}`) }))).toMatchObject({
+      ok: false,
+      check: 'executor'
+    })
+  })
+
+  it('denies every transaction under an empty target list', () => {
+    expect(evaluatePolicy({ ...POLICY, executor: [] }, tx())).toMatchObject({
+      ok: false,
+      check: 'executor'
+    })
+  })
+
   it('accepts a caller-pinned selector', () => {
     const selector = '0x12345678' as const
     expect(evaluatePolicy({ ...POLICY, selector }, tx({ data: `${selector}deadbeef` }))).toEqual({
