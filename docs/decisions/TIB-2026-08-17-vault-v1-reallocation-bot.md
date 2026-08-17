@@ -68,7 +68,7 @@ src/
   vault-data.ts       // fetchAccrualVault → block-pinned snapshot; IRM classification
   math.ts             // utilization / withdrawable / depositable / apy⇄rate glue
   market.utils.ts     // idle-market predicate
-  strategies/         // apy-range | equalize-utilizations (pure)
+  strategies/         // reconcile.ts (sizing + legs) + apy-range | equalize classifiers (pure)
   runner/tick.ts      // one pass: read → strategy → encode → simulate → submit
   index.ts, *.error.ts
 ```
@@ -76,6 +76,11 @@ src/
 The whole bot is ~1.2k LOC of read → pure strategy → simulate → submit. Each tick reads a
 block-pinned vault snapshot, runs the configured strategy as a pure function of that snapshot,
 encodes a `reallocate`, simulates it, and submits only sim-ok transactions through the queue.
+
+A strategy is only a **classifier**: per market it answers "what utilization should this sit at, and
+does that move clear the min-delta threshold?". The single `strategies/reconcile.ts` owns every
+mechanic — clamped sizing, idle netting (`net` for apy-range, `ignore` for equalize), the firing
+gate, budget trimming in withdraw-queue order, and the `reallocate` legs.
 
 ### SDK-first math
 
