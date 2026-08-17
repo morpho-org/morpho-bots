@@ -15,7 +15,7 @@ import {
 } from '../math'
 
 type EqualizeUtilizationsConfig = {
-  capBufferPercent: number
+  capBufferWad: bigint
   /** Firing threshold: at least one market's utilization must deviate from target by this (bips). */
   minUtilizationDeltaBips: (vault: Address) => number
 }
@@ -65,7 +65,7 @@ export const createEqualizeUtilizationsStrategy = (
     // walk markets in the same order with the same clamps, so the totals gathered here equal what
     // the leg pass can actually emit.
     let totalAmountToDeallocate = 0n
-    const sizingPools = createDepositPools(vaultData, config.capBufferPercent)
+    const sizingPools = createDepositPools(vaultData, config.capBufferWad)
     for (const marketData of marketsData) {
       const utilization = getUtilization(marketData.state)
       if (utilization > targetUtilization) continue
@@ -88,7 +88,7 @@ export const createEqualizeUtilizationsStrategy = (
           marketData,
           vaultData.totalAssets,
           targetUtilization,
-          config.capBufferPercent
+          config.capBufferWad
         )
       )
       totalAmountToAllocate += contribution
@@ -118,7 +118,7 @@ export const createEqualizeUtilizationsStrategy = (
     const allocations: ReallocationAction[] = []
     const deallocations: ReallocationAction[] = []
 
-    const legPools = createDepositPools(vaultData, config.capBufferPercent)
+    const legPools = createDepositPools(vaultData, config.capBufferWad)
     for (const marketData of marketsData) {
       if (remainingAmountToDeallocate === 0n) break
       const utilization = getUtilization(marketData.state)
@@ -147,7 +147,7 @@ export const createEqualizeUtilizationsStrategy = (
           marketData,
           vaultData.totalAssets,
           targetUtilization,
-          config.capBufferPercent
+          config.capBufferWad
         ),
         remainingAmountToAllocate
       )

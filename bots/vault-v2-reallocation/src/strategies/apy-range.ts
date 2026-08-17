@@ -21,7 +21,7 @@ import {
 export type ApyRangeConfig = {
   /** Whether excess deallocations may be parked in the vault's idle balance. */
   allowIdleReallocation: boolean
-  capBufferPercent: number
+  capBufferWad: bigint
   /** WAD-scaled borrow-APY bounds for (vault, market). */
   apyRange: (vault: Address, marketId: Hex) => { min: bigint; max: bigint }
   /** Firing threshold: at least one market's implied APY move must exceed this (bips). */
@@ -79,7 +79,7 @@ export const createApyRangeStrategy = (config: ApyRangeConfig): Strategy => {
     // walk markets in the same order with the same clamps, so the totals gathered here equal what
     // the leg pass can actually emit.
     let totalAmountToDeallocate = 0n
-    const sizingPools = createDepositPools(vaultData, config.capBufferPercent)
+    const sizingPools = createDepositPools(vaultData, config.capBufferWad)
     for (const marketData of marketsData) {
       const { utilization, lowerBound } = classifyMarket(config, vault, marketData)
       if (utilization >= lowerBound) continue
@@ -100,7 +100,7 @@ export const createApyRangeStrategy = (config: ApyRangeConfig): Strategy => {
       const contribution = takeFromPools(
         sizingPools,
         marketData.params.collateralToken,
-        getDepositableAmount(marketData, vaultData.totalAssets, upperBound, config.capBufferPercent)
+        getDepositableAmount(marketData, vaultData.totalAssets, upperBound, config.capBufferWad)
       )
       totalAmountToAllocate += contribution
       if (contribution > 0n) {
@@ -128,7 +128,7 @@ export const createApyRangeStrategy = (config: ApyRangeConfig): Strategy => {
     const allocations: ReallocationAction[] = []
     const deallocations: ReallocationAction[] = []
 
-    const legPools = createDepositPools(vaultData, config.capBufferPercent)
+    const legPools = createDepositPools(vaultData, config.capBufferWad)
     for (const marketData of marketsData) {
       if (remainingAmountToDeallocate === 0n) break
       const { utilization, lowerBound } = classifyMarket(config, vault, marketData)
@@ -153,12 +153,7 @@ export const createApyRangeStrategy = (config: ApyRangeConfig): Strategy => {
       const { utilization, upperBound } = classifyMarket(config, vault, marketData)
       if (utilization <= upperBound) continue
       const desired = min(
-        getDepositableAmount(
-          marketData,
-          vaultData.totalAssets,
-          upperBound,
-          config.capBufferPercent
-        ),
+        getDepositableAmount(marketData, vaultData.totalAssets, upperBound, config.capBufferWad),
         remainingAmountToAllocate
       )
       const toAllocate = takeFromPools(legPools, marketData.params.collateralToken, desired)

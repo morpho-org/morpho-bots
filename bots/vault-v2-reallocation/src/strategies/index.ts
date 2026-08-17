@@ -24,7 +24,7 @@ export const createStrategy = (config: Config): Strategy => {
     case 'apy-range':
       return createApyRangeStrategy({
         allowIdleReallocation: config.allowIdleReallocation,
-        capBufferPercent: CAP_BUFFER_PERCENT,
+        capBufferWad: percentToWad(CAP_BUFFER_PERCENT),
         apyRange: (vault, marketId) => {
           const range = resolveApyRange(config.chainId, vault, marketId)
           return { min: percentToWad(range.min), max: percentToWad(range.max) }
@@ -34,7 +34,7 @@ export const createStrategy = (config: Config): Strategy => {
       })
     case 'equalize-utilizations':
       return createEqualizeUtilizationsStrategy({
-        capBufferPercent: CAP_BUFFER_PERCENT,
+        capBufferWad: percentToWad(CAP_BUFFER_PERCENT),
         minUtilizationDeltaBips: vault =>
           resolveMinUtilizationDeltaBips(config.chainId, vault, config.minUtilizationDeltaBips)
       })

@@ -16,9 +16,7 @@ import { InvalidVaultError } from './invalid-vault.error'
 
 export type MarketState = {
   totalSupplyAssets: bigint
-  totalSupplyShares: bigint
   totalBorrowAssets: bigint
-  totalBorrowShares: bigint
 }
 
 /**
@@ -221,9 +219,7 @@ export const fetchVaultV2Data = async (
       },
       state: {
         totalSupplyAssets: state.totalSupplyAssets,
-        totalSupplyShares: state.totalSupplyShares,
-        totalBorrowAssets: state.totalBorrowAssets,
-        totalBorrowShares: state.totalBorrowShares
+        totalBorrowAssets: state.totalBorrowAssets
       },
       cap: marketCaps[i]!,
       vaultAssets,

@@ -58,12 +58,7 @@ export const makeMarket = (opts: {
     id: makeMarketId(),
     capId: makeMarketId(),
     params: opts.params ?? makeMarketParams(),
-    state: {
-      totalSupplyAssets,
-      totalSupplyShares: totalSupplyAssets * 1_000_000n, // 1:1 ratio simplified
-      totalBorrowAssets,
-      totalBorrowShares: totalBorrowAssets * 1_000_000n
-    },
+    state: { totalSupplyAssets, totalBorrowAssets },
     // Default the enforced allocation to the accrued position value — tests that exercise the
     // divergence override `cap.allocation` explicitly.
     cap: { ...UNLIMITED_CAP, allocation: opts.vaultAssets, ...opts.cap },

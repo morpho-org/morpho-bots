@@ -1,6 +1,7 @@
 import { getAddress, parseUnits } from 'viem'
 import { beforeEach, describe, expect, it } from 'vitest'
 
+import { percentToWad } from '../../src/math'
 import { createEqualizeUtilizationsStrategy } from '../../src/strategies/equalize-utilizations'
 import {
   makeMarket,
@@ -12,7 +13,7 @@ import {
 } from './helpers'
 
 const makeStrategy = (minUtilizationDeltaBips: (vault: `0x${string}`) => number = () => 0) =>
-  createEqualizeUtilizationsStrategy({ capBufferPercent: 99.99, minUtilizationDeltaBips })
+  createEqualizeUtilizationsStrategy({ capBufferWad: percentToWad(99.99), minUtilizationDeltaBips })
 
 const WAD = 10n ** 18n
 

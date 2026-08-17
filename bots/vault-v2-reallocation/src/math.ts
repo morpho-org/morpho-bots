@@ -61,13 +61,12 @@ export const getCapHeadroom = (
   cap: CapState,
   basis: bigint,
   totalAssets: bigint,
-  capBufferPercent: number
+  capBufferWad: bigint
 ): bigint => {
-  const buffer = percentToWad(capBufferPercent)
-  const bufferedAbsolute = MathLib.wMulDown(cap.absolute, buffer)
+  const bufferedAbsolute = MathLib.wMulDown(cap.absolute, capBufferWad)
   const absoluteHeadroom = bufferedAbsolute > basis ? bufferedAbsolute - basis : 0n
   if (cap.relative === MathLib.WAD) return absoluteHeadroom
-  const bufferedRelative = MathLib.wMulDown(MathLib.wMulUp(totalAssets, cap.relative), buffer)
+  const bufferedRelative = MathLib.wMulDown(MathLib.wMulUp(totalAssets, cap.relative), capBufferWad)
   const relativeHeadroom = bufferedRelative > basis ? bufferedRelative - basis : 0n
   return MathLib.min(absoluteHeadroom, relativeHeadroom)
 }
@@ -88,7 +87,7 @@ export const getDepositableAmount = (
   marketData: VaultV2MarketData,
   totalAssets: bigint,
   targetUtilization: bigint,
-  capBufferPercent: number
+  capBufferWad: bigint
 ): bigint =>
   MathLib.min(
     getDepositToUtilization(marketData.state, targetUtilization),
@@ -96,7 +95,7 @@ export const getDepositableAmount = (
       marketData.cap,
       MathLib.max(marketData.cap.allocation, marketData.vaultAssets),
       totalAssets,
-      capBufferPercent
+      capBufferWad
     )
   )
 
@@ -114,10 +113,7 @@ type DepositPools = {
   byCollateral: Map<Address, bigint>
 }
 
-export const createDepositPools = (
-  vaultData: VaultV2Data,
-  capBufferPercent: number
-): DepositPools => {
+export const createDepositPools = (vaultData: VaultV2Data, capBufferWad: bigint): DepositPools => {
   const totalDrift = vaultData.marketsData.reduce((acc, m) => acc + accrualDrift(m), 0n)
   const driftByCollateral = new Map<Address, bigint>()
   for (const marketData of vaultData.marketsData) {
@@ -129,7 +125,7 @@ export const createDepositPools = (
       vaultData.adapterCap,
       vaultData.adapterCap.allocation + totalDrift,
       vaultData.totalAssets,
-      capBufferPercent
+      capBufferWad
     ),
     byCollateral: new Map(
       Object.entries(vaultData.collateralCaps).map(([token, cap]) => [
@@ -138,7 +134,7 @@ export const createDepositPools = (
           cap,
           cap.allocation + (driftByCollateral.get(getAddress(token)) ?? 0n),
           vaultData.totalAssets,
-          capBufferPercent
+          capBufferWad
         )
       ])
     )
