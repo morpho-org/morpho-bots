@@ -1,0 +1,211 @@
+import { parseUnits } from 'viem'
+import { beforeEach, describe, expect, it } from 'vitest'
+
+import type { Classify } from '../../src/strategies/reconcile'
+
+import { percentToWad } from '../../src/math'
+import { createReconciler } from '../../src/strategies/reconcile'
+import { makeMarket, makeVaultData, RATE_AT_TARGET, resetMarketCounter } from './helpers'
+
+const WAD = 10n ** 18n
+
+const makeReconciler = (
+  classify: Classify,
+  overrides: Partial<{ allowIdleParking: boolean; capBufferWad: bigint }> = {}
+) =>
+  createReconciler({
+    capBufferWad: overrides.capBufferWad ?? percentToWad(99.99),
+    allowIdleParking: overrides.allowIdleParking ?? true,
+    classifierFor: () => classify
+  })
+
+// Every market converges on 50% utilization and always clears the gate.
+const toHalf: Classify = () => ({ targetUtilization: (50n * WAD) / 100n, clearsMinDelta: true })
+
+describe('createReconciler', () => {
+  beforeEach(() => {
+    resetMarketCounter()
+  })
+
+  it('sizes both sides toward the classifier target and emits delta legs', () => {
+    const hotMarket = makeMarket({
+      utilization: (90n * WAD) / 100n,
+      vaultAssets: parseUnits('10000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const coldMarket = makeMarket({
+      utilization: (10n * WAD) / 100n,
+      vaultAssets: parseUnits('20000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const result = makeReconciler(toHalf)(makeVaultData([hotMarket, coldMarket]))
+    expect(result).toBeDefined()
+    expect(result!.deallocations.map(l => l.marketId)).toEqual([coldMarket.id])
+    expect(result!.allocations.map(l => l.marketId)).toEqual([hotMarket.id])
+    expect(result!.deallocations[0]!.assets).toBeGreaterThan(0n)
+    expect(result!.allocations[0]!.assets).toBeGreaterThan(0n)
+  })
+
+  it('leaves out markets the classifier returns undefined for', () => {
+    const excluded = makeMarket({
+      utilization: (90n * WAD) / 100n,
+      vaultAssets: parseUnits('10000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const coldMarket = makeMarket({
+      utilization: (10n * WAD) / 100n,
+      vaultAssets: parseUnits('20000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const classify: Classify = marketData =>
+      marketData.id === excluded.id
+        ? undefined
+        : { targetUtilization: (50n * WAD) / 100n, clearsMinDelta: true }
+    // The only allocation candidate is excluded → one-sided → no plan.
+    expect(makeReconciler(classify)(makeVaultData([excluded, coldMarket]))).toBeUndefined()
+  })
+
+  it('skips a market sitting exactly at its target', () => {
+    const atTarget = makeMarket({
+      utilization: (50n * WAD) / 100n,
+      vaultAssets: parseUnits('10000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const hotMarket = makeMarket({
+      utilization: (90n * WAD) / 100n,
+      vaultAssets: parseUnits('10000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const coldMarket = makeMarket({
+      utilization: (10n * WAD) / 100n,
+      vaultAssets: parseUnits('20000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const result = makeReconciler(toHalf)(makeVaultData([atTarget, hotMarket, coldMarket]))
+    expect(result).toBeDefined()
+    const legIds = [...result!.allocations, ...result!.deallocations].map(l => l.marketId)
+    expect(legIds).not.toContain(atTarget.id)
+  })
+
+  it('arms the min-delta gate only from markets that contribute assets', () => {
+    // The only gate-clearing market is cap-exhausted (contributes 0); the contributing pair does
+    // not clear the gate → no plan.
+    const vaultAssets = parseUnits('500', 6)
+    const gateOnlyMarket = makeMarket({
+      utilization: (90n * WAD) / 100n,
+      vaultAssets,
+      cap: { absolute: vaultAssets, relative: WAD, allocation: vaultAssets },
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const hotMarket = makeMarket({
+      utilization: (90n * WAD) / 100n,
+      vaultAssets: parseUnits('10000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const coldMarket = makeMarket({
+      utilization: (10n * WAD) / 100n,
+      vaultAssets: parseUnits('20000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const classify: Classify = marketData => ({
+      targetUtilization: (50n * WAD) / 100n,
+      clearsMinDelta: marketData.id === gateOnlyMarket.id
+    })
+    expect(
+      makeReconciler(classify)(makeVaultData([gateOnlyMarket, hotMarket, coldMarket]))
+    ).toBeUndefined()
+  })
+
+  it('clamps deallocations to the allocation total when idle parking is off', () => {
+    const hotMarket = makeMarket({
+      utilization: (90n * WAD) / 100n,
+      vaultAssets: parseUnits('100', 6),
+      supplyAssets: parseUnits('1000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const coldMarket = makeMarket({
+      utilization: (10n * WAD) / 100n,
+      vaultAssets: parseUnits('50000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const result = makeReconciler(toHalf, { allowIdleParking: false })(
+      makeVaultData([hotMarket, coldMarket])
+    )
+    expect(result).toBeDefined()
+    const totalAllocated = result!.allocations.reduce((acc, l) => acc + l.assets, 0n)
+    const totalDeallocated = result!.deallocations.reduce((acc, l) => acc + l.assets, 0n)
+    expect(totalDeallocated).toBe(totalAllocated)
+  })
+
+  it('lets allocations exceed deallocations by at most the idle balance', () => {
+    const hotMarket = makeMarket({
+      utilization: (90n * WAD) / 100n,
+      vaultAssets: parseUnits('40000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const coldMarket = makeMarket({
+      utilization: (10n * WAD) / 100n,
+      vaultAssets: parseUnits('100', 6),
+      supplyAssets: parseUnits('1000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const idleAssets = parseUnits('500', 6)
+    const result = makeReconciler(toHalf)(makeVaultData([hotMarket, coldMarket], { idleAssets }))
+    expect(result).toBeDefined()
+    const totalAllocated = result!.allocations.reduce((acc, l) => acc + l.assets, 0n)
+    const totalDeallocated = result!.deallocations.reduce((acc, l) => acc + l.assets, 0n)
+    expect(totalAllocated).toBeGreaterThan(totalDeallocated)
+    expect(totalAllocated).toBeLessThanOrEqual(totalDeallocated + idleAssets)
+  })
+
+  it('funds allocations under a full adapter cap only from its own deallocation credits', () => {
+    const hotMarket = makeMarket({
+      utilization: (90n * WAD) / 100n,
+      vaultAssets: parseUnits('10000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const coldMarket = makeMarket({
+      utilization: (10n * WAD) / 100n,
+      vaultAssets: parseUnits('20000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const result = makeReconciler(toHalf)(
+      makeVaultData([hotMarket, coldMarket], {
+        adapterCap: {
+          absolute: parseUnits('30000', 6),
+          relative: WAD,
+          allocation: parseUnits('30000', 6)
+        }
+      })
+    )
+    expect(result).toBeDefined()
+    const totalAllocated = result!.allocations.reduce((acc, l) => acc + l.assets, 0n)
+    const totalDeallocated = result!.deallocations.reduce((acc, l) => acc + l.assets, 0n)
+    expect(totalAllocated).toBeGreaterThan(0n)
+    expect(totalAllocated).toBeLessThanOrEqual(totalDeallocated)
+  })
+
+  it('trims the smaller side in market order', () => {
+    // Two allocation candidates but the single deallocation funds less than both want: the
+    // first-in-queue market takes the whole budget.
+    const hotA = makeMarket({
+      utilization: (90n * WAD) / 100n,
+      vaultAssets: parseUnits('10000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const hotB = makeMarket({
+      utilization: (90n * WAD) / 100n,
+      vaultAssets: parseUnits('10000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const coldMarket = makeMarket({
+      utilization: (10n * WAD) / 100n,
+      vaultAssets: parseUnits('100', 6),
+      supplyAssets: parseUnits('1000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const result = makeReconciler(toHalf)(makeVaultData([hotA, hotB, coldMarket]))
+    expect(result).toBeDefined()
+    expect(result!.allocations.map(l => l.marketId)).toEqual([hotA.id])
+  })
+})
